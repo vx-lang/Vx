@@ -175,6 +175,8 @@ jobs:
           python3 scripts/tools/gen_stdlib_reference.py
 
       - name: Run tests
+        env:
+          VX_TESTS_NEED_THREAD_SANITIZER: 1
         run: cargo test --release --workspace --verbose
 
       # Generated programs, each run on both code generators and as a Rust twin. A program

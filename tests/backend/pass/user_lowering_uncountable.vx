@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// The default code generator does not support a user transfer lowering yet, so this uses the AST one.
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s
 // The honesty witness for derived traffic (Vx#353).
 //

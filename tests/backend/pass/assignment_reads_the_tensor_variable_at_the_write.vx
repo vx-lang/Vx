@@ -7,9 +7,9 @@
 //===----------------------------------------------------------------------===//
 // In `t[1] = v`, the index runs before the value, but `t` itself is read at the write. Here the
 // value gives `t` a new tensor and frees the old one, so the 5 goes into the new tensor. Reading
-// `t` before the value would write into freed memory. The default code generator does not
-// compile a tensor given a new value inside a branch, so only the legacy one runs this.
+// `t` before the value would write into freed memory.
 //
+// RUN: vxc %s --run 2>&1 | FileCheck %s
 // RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
 
 fn main() -> i32 {

@@ -1,0 +1,142 @@
+// The MSL that vxc writes for kernels on the Apple GPU (`arch: applegpu` in fleet/m4-uma.vx).
+// Each tensor is one buffer, and its sizes and strides come from a buffer of 32-bit words.
+// A stride that the tensor's type fixes is a number, as on the CPU. The test needs no GPU.
+//
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx --emit-msl -o %t.metal
+// RUN: FileCheck %s --input-file=%t.metal
+
+// blur_rows writes `dst` and only reads `src`, so `src` is `const`. Row y of `src` starts at
+// y * (size of axis 1), and the last stride of a contiguous tensor is 1.
+// CHECK: #include <metal_stdlib>
+// CHECK-LABEL: // vx.kernel blur_rows m2 m2r i32 i32
+// CHECK-NEXT: kernel void blur_rows(
+// CHECK-NEXT: device float *p0 {{\[\[}}buffer(0){{\]\]}},
+// CHECK-NEXT: device const float *p1 {{\[\[}}buffer(1){{\]\]}},
+// CHECK-NEXT: constant uint *vx_w {{\[\[}}buffer(2){{\]\]}},
+// CHECK: const int p1_n1 = as_type<int>(vx_w[9]);
+// CHECK-NEXT: const int p1_s1 = 1;
+// CHECK: const int p3 = as_type<int>(vx_w[13]);
+// CHECK: const int [[ROW:o[0-9]+]] = p1_b + {{v[0-9]+}};
+// CHECK-NEXT: int [[X:v[0-9]+]] = (int){{v[0-9]+}};
+// CHECK-NEXT: float {{v[0-9]+}} = p1{{\[}}[[ROW]] + [[X]] * 1];
+// CHECK: p0[{{o[0-9]+}} + {{v[0-9]+}} * 1] = {{v[0-9]+}};
+pub fn blur_rows(dst : &mut Tensor<f32, [?, ?], Memory::HBM>, src : &Tensor<f32, [?, ?], Memory::HBM>, h : i32, w : i32) -> void {
+  spawn on(Topology::Device) {
+    for y in 0..h across blocks {
+      for x in 0..w across lanes(256) {
+        let mut acc : f32 = 0.0;
+        for d in 0..9 {
+          let mut xx = x + d - 4;
+          if xx < 0 {
+            xx = 0;
+          }
+          if xx > w - 1 {
+            xx = w - 1;
+          }
+          acc = acc + src[y][xx];
+        }
+        dst[y][x] = acc / 9.0;
+      }
+    }
+  }
+  return;
+}
+
+// A row of 64 goes into shared memory, the block waits, and the lanes write it back reversed.
+// The type fixes the row stride at 64.
+// CHECK-LABEL: // vx.kernel reverse_each_row m2 i32
+// CHECK: threadgroup float [[TILE:vx_npu_kernel_[0-9]+_smem_0]][64];
+// CHECK: const int p0_s0 = 64;
+// CHECK: [[TILE]][0 + {{v[0-9]+}} * 1] = {{v[0-9]+}};
+// CHECK: threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
+// CHECK: float {{v[0-9]+}} = [[TILE]][0 + {{v[0-9]+}} * 1];
+pub fn reverse_each_row(out : &mut Tensor<f32, [?, 64], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for r in 0..rows across blocks {
+      let mut tile = unsafe { Tensor<f32, [64], Memory::SMEM>::uninit() };
+      for t in 0..64 across lanes {
+        tile[t] = out[r][t];
+      }
+      for t in 0..64 across lanes {
+        out[r][t] = tile[63 - t];
+      }
+    }
+  }
+  return;
+}
+
+// A u8 becomes an f32 as an unsigned number, and back to u8 the same way.
+// CHECK-LABEL: // vx.kernel brighten m2 m2r i32 i32 f32
+// CHECK-NEXT: kernel void brighten(
+// CHECK-NEXT: device char *p0 {{\[\[}}buffer(0){{\]\]}},
+// CHECK-NEXT: device const char *p1 {{\[\[}}buffer(1){{\]\]}},
+// CHECK: const float p4 = as_type<float>(vx_w[14]);
+// CHECK: float {{v[0-9]+}} = (float)(uchar){{v[0-9]+}};
+// CHECK: char {{v[0-9]+}} = (char)(uchar){{v[0-9]+}};
+pub fn brighten(dst : &mut Tensor<u8, [?, ?], Memory::HBM>, src : &Tensor<u8, [?, ?], Memory::HBM>, h : i32, w : i32, gain : f32) -> void {
+  spawn on(Topology::Device) {
+    for y in 0..h across blocks {
+      for x in 0..w across lanes(256) {
+        let mut v = (src[y][x] as f32) * gain;
+        if v > 255.0 {
+          v = 255.0;
+        }
+        dst[y][x] = v as u8;
+      }
+    }
+  }
+  return;
+}
+
+// a when t is 0, b when t is 1, and a mix of the two between.
+fn mix(a : f32, b : f32, t : f32) on Topology::Device -> f32
+ensures writes_only()
+{
+  return a + (b - a) * t;
+}
+
+// v, moved into 0..=hi.
+fn clamp_to(v : i32, hi : i32) on Topology::Device -> i32
+ensures writes_only()
+{
+  if v < 0 {
+    return 0;
+  }
+  if v > hi {
+    return hi;
+  }
+  return v;
+}
+
+// The pixel of t at row y and column x. A row or column outside t becomes the nearest edge.
+fn pixel(t : &Tensor<f32, [?, ?], Memory::HBM>, y : i32, x : i32, h : i32, w : i32) on Topology::Device -> f32
+ensures reads_only(t)
+{
+  return t[clamp_to(y, h - 1)][clamp_to(x, w - 1)];
+}
+
+// A kernel that calls functions. Each kernel is one MSL function, so the bodies of `mix`,
+// `pixel` and `clamp_to` go into it. The checks find the body of `mix` with t = 0.75.
+// CHECK-LABEL: // vx.kernel shift_image m2 m2r i32 i32
+// CHECK: float [[T:v[0-9]+]] = 0.75f;
+// CHECK: float [[A:v[0-9]+]] = p1[{{.*}}];
+// CHECK: float [[B:v[0-9]+]] = p1[{{.*}}];
+// CHECK-NEXT: float [[D:v[0-9]+]] = [[B]] - [[A]];
+// CHECK-NEXT: float [[M:v[0-9]+]] = [[D]] * [[T]];
+// CHECK-NEXT: float {{v[0-9]+}} = [[A]] + [[M]];
+pub fn shift_image(dst : &mut Tensor<f32, [?, ?], Memory::HBM>, src : &Tensor<f32, [?, ?], Memory::HBM>, h : i32, w : i32) -> void {
+  spawn on(Topology::Device) {
+    for y in 0..h across blocks {
+      for x in 0..w across lanes(256) {
+        let top = mix(pixel(src, y, x, h, w), pixel(src, y, x + 1, h, w), 0.75);
+        let bottom = mix(pixel(src, y + 1, x, h, w), pixel(src, y + 1, x + 1, h, w), 0.75);
+        dst[y][x] = mix(top, bottom, 0.25);
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

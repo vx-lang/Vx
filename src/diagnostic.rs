@@ -139,8 +139,11 @@ pub enum DiagnosticCode {
     /// A `match` arm in a `loop` or `while` can take `Cancelled` from a wait and stays in the
     /// loop. In a cancelled task each wait gives `Cancelled` at once, so the loop never ends (F4).
     W1035,
-    /// A `drop` calls `send` or `recv`, which wait with no time limit. A drop runs with
-    /// cancellation off, so the wait never ends if the other end never acts.
+    /// A `drop` calls `send` or `recv`, which wait with no time limit of their own, outside a
+    /// `within` block. A drop runs with cancellation off, so when the other end never acts, the
+    /// wait holds up the drop until the limit of the drop: its type's `wait_limit`, 10 seconds by
+    /// default. Then the wait gives up, as in a cancelled block. A `wait_limit` that calls them
+    /// gets the warning too, because it runs before the drop and should only return a number.
     W1036,
 
     // --- Parser Errors (E1xxx) ---
@@ -440,8 +443,9 @@ pub enum DiagnosticCode {
     E3062,
     /// A `?` that cannot pass its error up. `x?` takes a `Result<T, E>`. It gives the `T` of an
     /// `Ok`, and it passes an `Err` up unchanged: to the function, which must return a
-    /// `Result<_, E>` with the same `E`, or to its task or `tasks` block, which must give one. `?`
-    /// does not convert the error. `.map_err(..)` converts it.
+    /// `Result<_, E>` with the same `E`, to its closure, which must return one, or to its task or
+    /// `tasks` block, which must give one. A `?` in a closure needs the closure's type written,
+    /// `|x| -> Result<T, E> { .. }`. `?` does not convert the error. `.map_err(..)` converts it.
     E3063,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
@@ -692,6 +696,10 @@ pub enum DiagnosticCode {
     /// A `Memory` declaration's `within:` names a space that is not built in, and that the
     /// program and its machine files do not declare. A typo in the name is the usual cause.
     E6035,
+    /// A token of `transfer_async` that the program drops with no `.wait()`: at the end of its
+    /// scope, or when an assignment gives its variable a new value. The copy may not be done
+    /// then, so its target may not hold the data. Call `.wait()`, which gives the placed tensor.
+    E6036,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch
@@ -729,11 +737,21 @@ pub enum DiagnosticCode {
     /// operation of a dialect that the list does not name, or the list names something that
     /// is not a dialect. The list is what the block says it uses, so it must be right.
     E8010,
-    /// A pointer clause that is not well formed: `requires valid(p, n)`, `requires
-    /// initialized(p, n)` or `requires !overlaps(p, q, n)`, where `p` and `q` are raw pointer
-    /// parameters. The checker cannot prove one at a call yet, so only an `unsafe fn` may have
-    /// one, and each clause is a `requires` of its own.
+    /// A pointer clause that is not well formed: `valid(p, n)`, `initialized(p, n)` or
+    /// `!overlaps(p, q, n)`, where `p` and `q` are raw pointer parameters, and each clause is a
+    /// `requires` or an `ensures` of its own. In an `ensures`, `return` can be the pointer. The
+    /// fact of an `assume` is one such clause. A call through a function value or a trait would
+    /// not prove a `requires`, so a safe function with one cannot be a function value, and a safe
+    /// method of a trait impl cannot have one. A `frees` clause is an `ensures` of its
+    /// own, `ensures frees(p)` or `ensures !frees(p)` for a parameter `p`, and a method of a trait
+    /// impl cannot add a `!frees` that the trait method does not have.
     E8011,
+    /// A body that breaks a pointer `ensures` of its function. The facts at a `return`, or at the
+    /// end of the body, do not prove a clause such as `ensures valid(return, n)`. Or the body
+    /// changes a parameter that such a clause names. Or the function says `ensures !frees(p)`,
+    /// and its body gives `p`, or a value that it gets from `p`, to code that can free memory,
+    /// such as a call without `!frees` for that parameter, a store or an `mlir!` block.
+    E8012,
 }
 
 impl std::fmt::Display for DiagnosticCode {

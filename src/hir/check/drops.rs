@@ -36,6 +36,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 /// generic instantiation can be checked again from a copy of it.
 pub(crate) const DROP_MARK: &str = "\u{1}drop";
 
+/// The default body of `Drop::wait_limit` in `stdlib/core/ops.vx`, in seconds.
+pub(crate) const DEFAULT_WAIT_LIMIT: &str = "10.0";
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Moved {
     No,
@@ -65,6 +68,15 @@ struct Owner {
     glue: Vec<GluePart>,
     /// Fields moved out of it, `let x = p.a`: their parts of `glue` are not dropped with it.
     fields: Vec<FieldMove>,
+    /// A struct or enum in a stack slot: its last drop also ends the lifetime of the slot.
+    ends_lifetime: bool,
+}
+
+impl Owner {
+    /// An owner with nothing to drop. It is an owner only so that its slot's lifetime ends.
+    fn only_ends_lifetime(&self) -> bool {
+        self.glue.is_empty()
+    }
 }
 
 /// A field's path, whether it was moved out, and the flag that says so when it may have been.
@@ -112,6 +124,10 @@ pub(crate) struct GluePart {
     /// Each field followed, with the type of the struct it is a field of.
     path: Vec<(crate::symbol::Symbol, String)>,
     call: Option<crate::symbol::Symbol>,
+    /// With `call`: the mangled name of the type's `Drop::wait_limit`.
+    limit: Option<crate::symbol::Symbol>,
+    /// The end of a `within` block (F6a): the drop of the block's hidden owner.
+    within_end: bool,
     /// For an enum: what dropping each variant's payload does, by element. Dropping it
     /// matches on the value.
     payload: Option<EnumGlue>,
@@ -192,6 +208,9 @@ enum FrameKind {
     Function {
         /// Whether drops are written into this body.
         rewrite: bool,
+        /// The body checked so far works with a raw pointer. A raw pointer into a struct
+        /// keeps no borrow, so the struct's slot then lives to the end of its block.
+        raw_pointers: bool,
     },
     Loop,
     /// A `spawn` region. A tensor it captures stays owned by the enclosing function, so a
@@ -290,6 +309,27 @@ impl DropFrames {
         }
         false
     }
+
+    /// The body being checked works with a raw pointer. A closure's pointer can point into
+    /// the function around it, so every function open now is marked.
+    pub(crate) fn note_raw_pointer(&mut self) {
+        for f in &mut self.frames {
+            if let FrameKind::Function { raw_pointers, .. } = f {
+                *raw_pointers = true;
+            }
+        }
+    }
+
+    fn uses_raw_pointers(&self) -> bool {
+        self.frames
+            .iter()
+            .rev()
+            .find_map(|f| match f {
+                FrameKind::Function { raw_pointers, .. } => Some(*raw_pointers),
+                _ => None,
+            })
+            .unwrap_or(false)
+    }
 }
 
 fn printing_requested() -> bool {
@@ -305,9 +345,29 @@ fn drop_stmt(name: &str, flag: Option<&str>) -> Statement {
         name: name.into(),
         path: Vec::new(),
         call: None,
+        limit: None,
         expr: None,
         flag: flag.map(Into::into),
         after_value: false,
+        ends_lifetime: false,
+        ends_within: false,
+        span: Span::default(),
+    })
+}
+
+/// The end of the lifetime of `name`'s stack slot. It needs no flag: after its last use, the
+/// slot is not read again, whether or not the value was moved out of it.
+fn lifetime_end(name: &str) -> Statement {
+    Statement::Drop(DropStmt {
+        name: name.into(),
+        path: Vec::new(),
+        call: None,
+        limit: None,
+        expr: None,
+        flag: None,
+        after_value: false,
+        ends_lifetime: true,
+        ends_within: false,
         span: Span::default(),
     })
 }
@@ -352,13 +412,25 @@ fn let_stmt(name: &str, is_mut: bool, ty: Type, value: Expr) -> Statement {
     })
 }
 
-/// `drop owner`, naming its flag when it may have been moved.
-fn owner_drop(owner: &Owner) -> Vec<Statement> {
+/// `drop owner`, naming its flag when it may have been moved, and then the end of its slot's
+/// lifetime. In a function with raw pointers, an owner with something to drop keeps its old
+/// drop point, which can come before the end of its block, so its slot gets no end.
+fn owner_drop(owner: &Owner, raw_pointers: bool) -> Vec<Statement> {
     let flag = match owner.moved {
         Moved::Maybe => owner.flag.as_deref(),
         _ => None,
     };
-    owner_glue_drops(owner, flag)
+    let mut out = owner_glue_drops(owner, flag);
+    if owner.ends_lifetime && (owner.only_ends_lifetime() || !raw_pointers) {
+        out.push(lifetime_end(&owner.name));
+    }
+    out
+}
+
+/// Whether `owner` is dropped at the end of its block. In a function with raw pointers, a
+/// struct with nothing to drop waits for it, as in Rust.
+fn waits_for_block_end(owner: &Owner, raw_pointers: bool) -> bool {
+    owner.to_block_end || (raw_pointers && owner.only_ends_lifetime())
 }
 
 /// The drops of what `owner` still holds: a field moved out is left out, and one that may
@@ -445,17 +517,56 @@ fn glue_drops_at(
                 access.struct_name = Some(struct_ty.as_str().into());
                 place = Expr::MemberAccess(access);
             }
+            if part.within_end {
+                return Statement::Drop(DropStmt {
+                    name: name.into(),
+                    path: Vec::new(),
+                    call: None,
+                    expr: None,
+                    flag: None,
+                    after_value: false,
+                    ends_lifetime: false,
+                    ends_within: true,
+                    span: Span::default(),
+                    limit: None,
+                });
+            }
             if let Some(payload) = &part.payload {
                 return Statement::Drop(DropStmt {
                     name: name.into(),
                     path: part.path.iter().map(|(f, _)| f.clone()).collect(),
                     call: None,
+                    limit: None,
                     expr: Some(Box::new(payload_match(name, place, payload))),
                     flag: flag.map(Into::into),
                     after_value: false,
+                    ends_lifetime: false,
+                    ends_within: false,
                     span: Span::default(),
                 });
             }
+            // `wait_limit(&place)`, which the code before the call of `drop` asks. An impl that
+            // does not write `wait_limit` has a copy of the default only when the resolver saw
+            // `core::ops`, so without one the limit is the default itself.
+            let limit = part.call.as_ref().map(|_| {
+                Box::new(match &part.limit {
+                    Some(limit) => Expr::FunctionCall(FunctionCallExpr::new(
+                        limit.clone(),
+                        None,
+                        vec![Expr::Borrow(BorrowExpr::new(
+                            Box::new(place.clone()),
+                            false,
+                            Span::default(),
+                        ))],
+                        Span::default(),
+                    )),
+                    None => Expr::Number(NumberExpr::new(
+                        DEFAULT_WAIT_LIMIT.to_string(),
+                        Some(ElementType::F64),
+                        Span::default(),
+                    )),
+                })
+            });
             let expr = match &part.call {
                 Some(call) => Some(Expr::FunctionCall(FunctionCallExpr::new(
                     call.clone(),
@@ -474,9 +585,12 @@ fn glue_drops_at(
                 name: name.into(),
                 path: part.path.iter().map(|(f, _)| f.clone()).collect(),
                 call: part.call.clone(),
+                limit,
                 expr: expr.map(Box::new),
                 flag: flag.map(Into::into),
                 after_value: false,
+                ends_lifetime: false,
+                ends_within: false,
                 span: Span::default(),
             })
         })
@@ -494,7 +608,7 @@ impl<'a> TypeChecker<'a> {
     fn drops_rewriting(&self) -> bool {
         !self.speculating
             && self.borrow.drops.frames.iter().rev().find_map(|f| match f {
-                FrameKind::Function { rewrite } => Some(*rewrite),
+                FrameKind::Function { rewrite, .. } => Some(*rewrite),
                 _ => None,
             }) == Some(true)
     }
@@ -534,6 +648,8 @@ impl<'a> TypeChecker<'a> {
             Type::Tensor(..) => vec![GluePart {
                 path: Vec::new(),
                 call: None,
+                limit: None,
+                within_end: false,
                 payload: None,
             }],
             // The same value as the type inside, with a proof or a location attached.
@@ -564,6 +680,8 @@ impl<'a> TypeChecker<'a> {
                     glue.push(GluePart {
                         path: Vec::new(),
                         call: Some(call),
+                        limit: self.drops_impl_method(ty, "wait_limit"),
+                        within_end: false,
                         payload: None,
                     });
                 }
@@ -628,6 +746,8 @@ impl<'a> TypeChecker<'a> {
             glue.push(GluePart {
                 path: Vec::new(),
                 call: Some(call),
+                limit: self.drops_impl_method(ty, "wait_limit"),
+                within_end: false,
                 payload: None,
             });
         }
@@ -635,6 +755,8 @@ impl<'a> TypeChecker<'a> {
             glue.push(GluePart {
                 path: Vec::new(),
                 call: None,
+                limit: None,
+                within_end: false,
                 payload: Some(EnumGlue {
                     name: ty.to_string(),
                     arms,
@@ -682,6 +804,16 @@ impl<'a> TypeChecker<'a> {
     /// The mangled name of `ty`'s `Drop::drop`, instantiated for `ty` when the impl is
     /// generic, or `None` when `ty` does not implement `Drop`.
     pub(crate) fn drops_impl_call(&mut self, ty: &Type) -> Option<crate::symbol::Symbol> {
+        self.drops_impl_method(ty, "drop")
+    }
+
+    /// The mangled name of the method `method` of `ty`'s `Drop` impl, as for `drop`. A default
+    /// method, such as `wait_limit`, is in the impl too.
+    pub(crate) fn drops_impl_method(
+        &mut self,
+        ty: &Type,
+        method: &str,
+    ) -> Option<crate::symbol::Symbol> {
         let impls: Vec<&decl::ImplBlock> = self.env.impls.get("Drop")?.clone();
         let base_name = |t: &Type| -> Option<String> {
             match t {
@@ -704,7 +836,7 @@ impl<'a> TypeChecker<'a> {
         let method = ib
             .methods
             .iter()
-            .find(|m| m.name.as_ref() == "drop")?
+            .find(|m| m.name.as_ref() == method)?
             .clone();
         let mut mapping = HashMap::new();
         self.unify_types(&ib.target_type, ty, &mut mapping);
@@ -727,7 +859,10 @@ impl<'a> TypeChecker<'a> {
         });
         let rewrite = !already;
         let d = &mut self.borrow.drops;
-        d.frames.push(FrameKind::Function { rewrite });
+        d.frames.push(FrameKind::Function {
+            rewrite,
+            raw_pointers: false,
+        });
         d.pending = params
             .into_iter()
             .map(|(p, glue, reads)| (p, scope, glue, reads))
@@ -830,6 +965,7 @@ impl<'a> TypeChecker<'a> {
                 flag: None,
                 glue,
                 fields: Vec::new(),
+                ends_lifetime: false,
             })
             .collect();
         d.frames.push(FrameKind::Block {
@@ -880,6 +1016,8 @@ impl<'a> TypeChecker<'a> {
     /// view, or a struct that implements `Drop` or holds one. A value whose drop runs a `Drop`
     /// impl waits for the end of its block, as in Rust, since what the impl does may be part
     /// of what the program means; one that only frees memory is freed after its last use.
+    /// A struct or enum with nothing to drop is an owner too, so that its stack slot's
+    /// lifetime ends after its last use.
     pub(crate) fn drops_note_owner(&mut self, name: &str, ty: &Type) {
         // `let (a, b) = e` holds `e` in a `$tuple` local and moves each part out of it, so the
         // parts are dropped as `a` and `b`, and the local owns nothing.
@@ -891,7 +1029,8 @@ impl<'a> TypeChecker<'a> {
             return;
         }
         let glue = self.drops_glue(ty);
-        if glue.is_empty() {
+        let ends_lifetime = Self::lives_in_a_stack_slot(ty);
+        if glue.is_empty() && !ends_lifetime {
             return;
         }
         let scope = self.scopes.len() - 1;
@@ -909,7 +1048,66 @@ impl<'a> TypeChecker<'a> {
                 flag: None,
                 glue,
                 fields: Vec::new(),
+                ends_lifetime,
             });
+        }
+    }
+
+    /// The start of a `within` block (F6a): an owner with no name in the program, whose drop
+    /// ends the block's deadline. It is dropped at the end of the block, so each `return`,
+    /// `break` and `continue` out of the block drops it first, as it drops a value with a `Drop`
+    /// impl.
+    pub(crate) fn drops_note_within(&mut self) {
+        let scope = self.scopes.len() - 1;
+        let Some(FrameKind::Block { owners, stmt, .. }) = self.borrow.drops.frames.last_mut()
+        else {
+            panic!("a `within` block starts in a block");
+        };
+        let name = format!("$within{}", owners.len());
+        owners.push(Owner {
+            name,
+            given_by: None,
+            decl: Some(*stmt),
+            to_block_end: true,
+            drop_reads_borrows: false,
+            scope,
+            moved: Moved::No,
+            moved_at: None,
+            flag: None,
+            glue: vec![GluePart {
+                path: Vec::new(),
+                call: None,
+                limit: None,
+                within_end: true,
+                payload: None,
+            }],
+            fields: Vec::new(),
+            ends_lifetime: false,
+        });
+    }
+
+    /// Whether a local of type `ty` lives in a stack slot of its own: a struct or an enum. A
+    /// number lives in a register, and a tensor's buffer has lifetime markers of its own.
+    fn lives_in_a_stack_slot(ty: &Type) -> bool {
+        match ty {
+            Type::Verified(inner) | Type::Pinned(inner, _) => Self::lives_in_a_stack_slot(inner),
+            // A closure's environment holds borrows of what it captured. A `void` holds nothing.
+            Type::Struct(name, _) => {
+                !name.starts_with("Closure_") && !crate::syntax::is_void_ty(ty)
+            }
+            Type::Enum(..) => true,
+            Type::GenericInstance(base, _) => {
+                matches!(base.as_ref(), Type::Struct(..) | Type::Enum(..))
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn is_raw_pointer(ty: &Type) -> bool {
+        match ty {
+            Type::Verified(inner) | Type::Pinned(inner, _) => Self::is_raw_pointer(inner),
+            Type::Pointer(..) => true,
+            _ => false,
         }
     }
 
@@ -948,6 +1146,7 @@ impl<'a> TypeChecker<'a> {
                 FrameKind::Block { owners, stmt, .. } => {
                     if let Some(o) = owners.iter_mut().rev().find(|o| o.name == name) {
                         let (scope, decl) = (o.scope, o.decl);
+                        let needs_no_flag = o.only_ends_lifetime();
                         // `o.p = v` after `let y = o.p.a`: the new `o.p` holds an `a` of its own.
                         if let (true, Some(path)) = (again && scope == here, field) {
                             o.fields.retain(|f| {
@@ -969,16 +1168,17 @@ impl<'a> TypeChecker<'a> {
                         } else {
                             Moved::Maybe
                         };
-                        found = Some((k, *moved, flag.clone(), decl, *moved_at));
+                        found = Some((k, *moved, flag.clone(), decl, *moved_at, needs_no_flag));
                         break;
                     }
                 }
             }
         }
-        let Some((k, Moved::Maybe, flag, decl, moved_at)) = found else {
+        let Some((k, Moved::Maybe, flag, decl, moved_at, needs_no_flag)) = found else {
             return;
         };
-        if !rewriting || (again && flag.is_some()) {
+        // The end of a lifetime frees nothing, so it needs no flag (see `lifetime_end`).
+        if !rewriting || (again && flag.is_some()) || needs_no_flag {
             return;
         }
         // The first move inside a nested block gives the owner a flag, declared beside it.
@@ -1013,9 +1213,19 @@ impl<'a> TypeChecker<'a> {
             }
             return;
         }
-        if let Some(FrameKind::Block { stmt, edits, .. }) =
-            self.borrow.drops.frames.get_mut(top - 1)
-        {
+        // A move in a task happens at its `spawn`, so the flag is set after the `spawn`, in the
+        // block around it. In the task the flag would be set too late, or not at all when the
+        // move is in the task's last value, which is checked after the task's block closes.
+        let first_task =
+            (k + 1..top).find(|&i| matches!(self.borrow.drops.frames[i], FrameKind::Task));
+        let at = match first_task {
+            Some(t) => (k..t)
+                .rev()
+                .find(|&i| matches!(self.borrow.drops.frames[i], FrameKind::Block { .. }))
+                .expect("the owner's block is below the task"),
+            None => top - 1,
+        };
+        if let Some(FrameKind::Block { stmt, edits, .. }) = self.borrow.drops.frames.get_mut(at) {
             edits
                 .after
                 .entry(*stmt)
@@ -1059,7 +1269,11 @@ impl<'a> TypeChecker<'a> {
                 FrameKind::Spawn => crossed = true,
                 FrameKind::Loop | FrameKind::Tasks | FrameKind::Task => {}
                 FrameKind::Block { owners, .. } => {
-                    if owners.iter().any(|o| o.name == name) {
+                    // A struct with nothing to drop is not dropped twice.
+                    if owners
+                        .iter()
+                        .any(|o| o.name == name && !o.only_ends_lifetime())
+                    {
                         return crossed;
                     }
                 }
@@ -1194,6 +1408,13 @@ impl<'a> TypeChecker<'a> {
         let Some(moved) = before else {
             return;
         };
+        // The old value has nothing to drop, and the slot keeps its lifetime.
+        if self
+            .drops_owner(name)
+            .is_some_and(Owner::only_ends_lifetime)
+        {
+            return;
+        }
         // `t = t + b` moved the old value into the operator, which queued its drop after the
         // statement, where it would free the new value. The drop moves before the store.
         let operand_drop = !self.speculating
@@ -1460,8 +1681,9 @@ impl<'a> TypeChecker<'a> {
             .find(|&i| users.iter().any(|n| uses.used[i].contains(n)))
     }
 
+    /// Prints the drops that free something or run a `Drop` impl.
     fn drops_print(&self, owner: &Owner, at: String) {
-        if !self.printing() {
+        if !self.printing() || owner.only_ends_lifetime() {
             return;
         }
         let flag = if owner.moved == Moved::Maybe {
@@ -1503,11 +1725,12 @@ impl<'a> TypeChecker<'a> {
         if rewriting {
             self.drops_hoist_temporaries(body, &mut edits, value_used);
         }
+        let raw_pointers = self.borrow.drops.uses_raw_pointers();
         for owner in owners.iter().rev() {
             if owner.moved == Moved::Yes {
                 continue;
             }
-            let at = if owner.to_block_end {
+            let at = if waits_for_block_end(owner, raw_pointers) {
                 if terminated_at.is_some() {
                     continue;
                 }
@@ -1527,7 +1750,7 @@ impl<'a> TypeChecker<'a> {
                                 lines[i]
                             ),
                         );
-                        let stmts = owner_drop(owner).into_iter().map(after_value);
+                        let stmts = owner_drop(owner, raw_pointers).into_iter().map(after_value);
                         edits.before.entry(i).or_default().extend(stmts);
                         continue;
                     }
@@ -1557,7 +1780,7 @@ impl<'a> TypeChecker<'a> {
                     },
                 }
             };
-            let stmts = owner_drop(owner);
+            let stmts = owner_drop(owner, raw_pointers);
             match at {
                 Some(i) => edits.after.entry(i).or_default().extend(stmts),
                 None => edits.before.entry(0).or_default().extend(stmts),
@@ -1838,7 +2061,9 @@ impl<'a> TypeChecker<'a> {
         let mut tasks_blocks = 0;
         // An owner outside the inner `tasks` block that the exit leaves.
         let mut outside_inner = None;
+        let mut lifetime_ends = Vec::new();
         let d = &self.borrow.drops;
+        let raw_pointers = d.uses_raw_pointers();
         'frames: for f in d.frames.iter().rev() {
             match f {
                 // A `return` inside a region leaves the region, not the function.
@@ -1858,13 +2083,17 @@ impl<'a> TypeChecker<'a> {
                             continue;
                         }
                         // Not used from this statement on, or never: dropped already.
-                        if !owner.to_block_end
+                        if !waits_for_block_end(owner, raw_pointers)
                             && self.drops_last_use(owner, uses).is_none_or(|i| i < *stmt)
                         {
                             continue;
                         }
+                        if owner.only_ends_lifetime() {
+                            lifetime_ends.extend(owner_drop(owner, raw_pointers));
+                            continue;
+                        }
                         self.drops_print(owner, format!("before the {what} on line {line}"));
-                        dropped.extend(owner_drop(owner));
+                        dropped.extend(owner_drop(owner, raw_pointers));
                         if tasks_blocks > 0 && outside_inner.is_none() {
                             outside_inner = Some(owner.name.clone());
                         }
@@ -1890,8 +2119,29 @@ impl<'a> TypeChecker<'a> {
         if tasks_blocks > 0 {
             dropped.insert(0, crate::syntax::tasks_wait_stmt(*span));
         }
+        // A task of the outer `tasks` block can still use a struct, so its slot keeps its
+        // lifetime on this path.
+        if tasks_blocks <= 1 {
+            dropped.extend(lifetime_ends);
+        }
         if let Some(FrameKind::Block { stmt, edits, .. }) = self.borrow.drops.frames.last_mut() {
             edits.before.entry(*stmt).or_default().extend(dropped);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The checker writes the default of `Drop::wait_limit` when an impl has no copy of it, so
+    /// the two must say the same number.
+    #[test]
+    fn the_default_wait_limit_is_the_one_in_core_ops() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/stdlib/core/ops.vx");
+        let ops = std::fs::read_to_string(path).expect("stdlib/core/ops.vx can be read");
+        let method = ops
+            .find("fn wait_limit(self : &Self) -> f64 {")
+            .expect("`Drop` has `wait_limit` with a default body");
+        let body = ops[method..].lines().nth(1).unwrap_or_default().trim();
+        assert_eq!(body, format!("return {};", super::DEFAULT_WAIT_LIMIT));
     }
 }

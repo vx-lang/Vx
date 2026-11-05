@@ -1,0 +1,94 @@
+//===- string_literal_equality.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `==` and `!=` with a string literal compare the text, not the address: they call
+// `c_str_equals` from `core::c_str`. Each literal is its own copy in memory, so `s == "hello"`
+// is true only when the text is compared. A string that starts with the literal, such as
+// "hello!", is not equal to it. A `match` arm with a string literal compares the text in the
+// same way, also when the subject is a call. When both sides are literals, the comparison
+// runs while compiling, and `both_literals` has no call left.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=FOLD
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s --check-prefix=FOLD
+// CHECK: {{^}}hello: true, hell: false, hello!: false{{$}}
+// CHECK: {{^}}literal first: true, != same: false, != other: true{{$}}
+// CHECK: {{^}}empty: true, hello is empty: false{{$}}
+// CHECK: {{^}}match: 1 2 3, on a call: 1 2 3{{$}}
+// CHECK: {{^}}both literals: 110{{$}}
+// FOLD-LABEL: func.func @both_literals
+// FOLD-NOT: call
+// FOLD: arith.constant true
+// FOLD-NEXT: arith.constant true
+// FOLD-NEXT: arith.constant false
+// FOLD-NOT: call
+// FOLD: return
+
+fn is_hello(s : *const i8) -> bool {
+  return s == "hello";
+}
+
+fn code(s : *const i8) -> i32 {
+  let mut out = 0;
+  match s {
+    "hello" => {
+      out = 1;
+    }
+    , "help" => {
+      out = 2;
+    }
+    , _ => {
+      out = 3;
+    }
+  }
+  return out;
+}
+
+fn greeting(n : i32) -> *const i8 {
+  if n == 0 {
+    return "hello";
+  }
+  if n == 1 {
+    return "bye";
+  }
+  return "?";
+}
+
+fn kind(n : i32) -> i32 {
+  let k = match greeting(n) {
+    "hello" => {
+      1
+    }
+    , other => {
+      if other == "bye" {
+        2
+      } else {
+        3
+      }
+    }
+  };
+  return k;
+}
+
+fn both_literals() -> i32 {
+  let a = "abc" == "abc";
+  let b = "abc" != "abd";
+  let c = "abc" == "ab";
+  return (a as i32) * 100 + (b as i32) * 10 + (c as i32);
+}
+
+fn main() -> i32 {
+  let hello = "hello";
+  let empty = "";
+  println!("hello: {}, hell: {}, hello!: {}", is_hello(hello), is_hello("hell"), is_hello("hello!"));
+  println!("literal first: {}, != same: {}, != other: {}", "hello" == hello, hello != "hello", hello != "help");
+  println!("empty: {}, hello is empty: {}", empty == "", hello == "");
+  println!("match: {} {} {}, on a call: {} {} {}", code("hello"), code("help"), code("hel"), kind(0), kind(1), kind(2));
+  println!("both literals: {}", both_literals());
+  return 0;
+}

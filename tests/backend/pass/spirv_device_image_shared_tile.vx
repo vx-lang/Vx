@@ -1,0 +1,57 @@
+//===- spirv_device_image_shared_tile.vx - a shared tile stays at home ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A tile in `Memory::SMEM` becomes real shared storage in the device copy, and
+// the SPIR-V image has no form for it yet. The region runs on the host, the
+// compiler says so, and the values come out right. The same program compiles
+// for `nvptx64`, where the tile becomes a `.shared` declaration.
+//
+// RUN: vxc %s --emit-llvm 2>&1 >/dev/null | FileCheck %s
+// CHECK: cannot become a `spirv64` device image: it keeps a tile in shared memory
+// CHECK-SAME: It will run on the host instead.
+// EXPECT: [[0,   1],
+// EXPECT:  [1,   2]]
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Memory SMEM {
+  within: Memory::GPU_HBM, capacity: 228 KiB, bandwidth: 128 B/cyc,
+  granule: 1 KiB, managed: explicit, scope: sm
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s,
+  transfer Memory::GPU_HBM -> Memory::SMEM
+}
+
+fn main() -> i32 {
+  let mut a = unsafe { Tensor<f32, [2, 2]>::uninit() };
+  let mut o = unsafe { Tensor<f32, [2, 2]>::uninit() };
+  for i in 0..2 {
+    for d in 0..2 {
+      a[i][d] = ((i + d) as f32) * 0.5;
+      o[i][d] = 0.0;
+    }
+  }
+  let ad = transfer(a, Memory::GPU_HBM);
+  let mut od = transfer(o, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    let tile = transfer(ad, Memory::SMEM);
+    for i in 0..2 {
+      for d in 0..2 {
+        od[i][d] = tile[i][d] * 2.0;
+      }
+    }
+  }
+  let home = transfer(od, Memory::CPU_DRAM);
+  print(home);
+  return 0;
+}

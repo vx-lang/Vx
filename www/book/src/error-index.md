@@ -20,9 +20,9 @@ the test suite has one, a program that triggers it.
 - [Type Errors](#type-errors) — `E3001`–`E3063` (62 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4016` (16 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
-- [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6035` (35 codes)
+- [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6036` (36 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
-- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8011` (11 codes)
+- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8012` (12 codes)
 
 ## Warnings
 
@@ -56,7 +56,7 @@ Reported without stopping the compile. A warning means the program is accepted b
 | [`W1033`](/errors/W1033/) | The loop of a `spawn` region runs on one thread although each pass writes only memory of its own, so its passes could run at the same time. The warning points at what stops it: a call the compiler cannot show writes nothing, inline MLIR, a read of a row another pass writes, bounds not known when compiling, and the like. A region that calls `barrier()` asks for blocks and threads, so it is warned about whenever it runs on one thread, with the first thing that stopped the split: two threads that may write the same element, a `break` out of a loop that holds a `barrier()`, a write to block-shared memory with no `barrier()` after it, and the like. |
 | [`W1034`](/errors/W1034/) | The program writes a variable that a closure copied, and uses the closure after the write. The closure keeps the value that it copied, so it does not see the write. A later release makes this an error (K4). |
 | [`W1035`](/errors/W1035/) | A `match` arm in a `loop` or `while` can take `Cancelled` from a wait and stays in the loop. In a cancelled task each wait gives `Cancelled` at once, so the loop never ends (F4). |
-| [`W1036`](/errors/W1036/) | A `drop` calls `send` or `recv`, which wait with no time limit. A drop runs with cancellation off, so the wait never ends if the other end never acts. |
+| [`W1036`](/errors/W1036/) | A `drop` calls `send` or `recv`, which wait with no time limit of their own, outside a `within` block. A drop runs with cancellation off, so when the other end never acts, the wait holds up the drop until the limit of the drop: its type's `wait_limit`, 10 seconds by default. Then the wait gives up, as in a cancelled block. A `wait_limit` that calls them gets the warning too, because it runs before the drop and should only return a number. |
 
 ## Parser Errors
 
@@ -159,7 +159,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3060`](/errors/E3060/) | A task that can fail, used in a way that could lose its failure. A task whose body gives `Result<T, E>` can fail, and its `join()` gives the `T`. When the task failed, the join leaves the `tasks` block, and the block gives the `Err`. So the task needs a handle, `let h = spawn { .. };`, and a join in its own block that always runs after the `spawn`. The block must give a `Result<U, E>` with the same `E`. |
 | [`E3061`](/errors/E3061/) | An impl of a trait does not write a method that the trait requires: one the trait declares with no default body. A call to that method would otherwise fail where it is called, with "method not found", though the fault is in the impl. |
 | [`E3062`](/errors/E3062/) | A struct literal that writes its fields in an order other than the struct's declaration. The fields run in the order the source writes them, so `P { y : f(), x : g() }` would run `f` before `g` and store `y` before `x`. Write the fields in the order the struct declares them. |
-| [`E3063`](/errors/E3063/) | A `?` that cannot pass its error up. `x?` takes a `Result<T, E>`. It gives the `T` of an `Ok`, and it passes an `Err` up unchanged: to the function, which must return a `Result<_, E>` with the same `E`, or to its task or `tasks` block, which must give one. `?` does not convert the error. `.map_err(..)` converts it. |
+| [`E3063`](/errors/E3063/) | A `?` that cannot pass its error up. `x?` takes a `Result<T, E>`. It gives the `T` of an `Ok`, and it passes an `Err` up unchanged: to the function, which must return a `Result<_, E>` with the same `E`, to its closure, which must return one, or to its task or `tasks` block, which must give one. A `?` in a closure needs the closure's type written, `|x| -> Result<T, E> { .. }`. `?` does not convert the error. `.map_err(..)` converts it. |
 
 ## Borrow/Ownership Errors
 
@@ -234,6 +234,7 @@ Raised by the placement and capacity rules — the checks that make Vx different
 | [`E6033`](/errors/E6033/) | An index into a tensor in a `scope: thread` space that is not known when compiling. Such a tensor stays in registers, and a register has no address. So each index must be a constant, or made of constants and the variables of `for` loops with constant bounds, at most 1024 passes each. The code generator unrolls those loops. |
 | [`E6034`](/errors/E6034/) | An `aligned(N)` in a tensor type that the compiler cannot give: the space is not one whose storage the compiler lays out (`scope: sm`, `cta` or `thread`), or N is less than the `alignment:` of the space, which every tensor there has. |
 | [`E6035`](/errors/E6035/) | A `Memory` declaration's `within:` names a space that is not built in, and that the program and its machine files do not declare. A typo in the name is the usual cause. |
+| [`E6036`](/errors/E6036/) | A token of `transfer_async` that the program drops with no `.wait()`: at the end of its scope, or when an assignment gives its variable a new value. The copy may not be done then, so its target may not hold the data. Call `.wait()`, which gives the placed tensor. |
 
 ## Tensor/Math Errors
 
@@ -262,8 +263,9 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 | [`E8008`](/errors/E8008/) | A loop invariant that the prover cannot show to hold when the loop starts |
 | [`E8009`](/errors/E8009/) | A loop invariant that the prover cannot show to hold after a pass through the loop body |
 | [`E8010`](/errors/E8010/) | An `mlir!` block whose `dialects` list does not match its body: the body uses an operation of a dialect that the list does not name, or the list names something that is not a dialect. The list is what the block says it uses, so it must be right. |
-| [`E8011`](/errors/E8011/) | A pointer clause that is not well formed: `requires valid(p, n)`, `requires initialized(p, n)` or `requires !overlaps(p, q, n)`, where `p` and `q` are raw pointer parameters. The checker cannot prove one at a call yet, so only an `unsafe fn` may have one, and each clause is a `requires` of its own. |
+| [`E8011`](/errors/E8011/) | A pointer clause that is not well formed: `valid(p, n)`, `initialized(p, n)` or `!overlaps(p, q, n)`, where `p` and `q` are raw pointer parameters, and each clause is a `requires` or an `ensures` of its own. In an `ensures`, `return` can be the pointer. The fact of an `assume` is one such clause. A call through a function value or a trait would not prove a `requires`, so a safe function with one cannot be a function value, and a safe method of a trait impl cannot have one. A `frees` clause is an `ensures` of its own, `ensures frees(p)` or `ensures !frees(p)` for a parameter `p`, and a method of a trait impl cannot add a `!frees` that the trait method does not have. |
+| [`E8012`](/errors/E8012/) | A body that breaks a pointer `ensures` of its function. The facts at a `return`, or at the end of the body, do not prove a clause such as `ensures valid(return, n)`. Or the body changes a parameter that such a clause names. Or the function says `ensures !frees(p)`, and its body gives `p`, or a value that it gets from `p`, to code that can free memory, such as a call without `!frees` for that parameter, a store or an `mlir!` block. |
 
 ______________________________________________________________________
 
-177 diagnostics.
+179 diagnostics.

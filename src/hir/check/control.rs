@@ -31,7 +31,7 @@ enum ComptimeFold {
 }
 
 /// The names that `pattern` binds, in order.
-fn pattern_names(pattern: &Pattern, out: &mut Vec<crate::symbol::Symbol>) {
+pub(crate) fn pattern_names(pattern: &Pattern, out: &mut Vec<crate::symbol::Symbol>) {
     match pattern {
         Pattern::Identifier(n) => out.push(n.clone()),
         Pattern::EnumVariant(_, _, Some(parts)) => {
@@ -593,6 +593,7 @@ impl<'a> TypeChecker<'a> {
         // The prover's facts follow the paths: the `then` branch knows the condition and the
         // `else` branch its negation, and what a branch learns ends with it.
         let facts_before = self.consteval.constraints.len();
+        let pointers_before = self.pointer_facts.clone();
         let cond_fact = (!if_expr.is_comptime && crate::hir::prover::is_modelled(&if_expr.cond))
             .then(|| (*if_expr.cond).clone());
         if let Some(c) = &cond_fact {
@@ -601,6 +602,9 @@ impl<'a> TypeChecker<'a> {
         // Each branch starts from the values known before the `if`, and the paths join after it.
         let taken = taken.or_else(|| self.known_condition(&if_expr.cond));
         let values_before = self.consteval.env.clone();
+        let (then_name, else_name) = Self::pointer_branch_names(if_expr).unzip();
+        let named = then_name.is_some();
+        self.pointer_branches.extend(then_name);
         self.push_releasing_scope();
         let mut then_ty = Type::Struct("void".into(), None);
         if !self.speculating && !if_expr.then_block.is_empty() {
@@ -608,7 +612,11 @@ impl<'a> TypeChecker<'a> {
             then_ty = self.check_expr_block(&mut if_expr.then_block, None, consume);
         }
         self.pop_scope();
+        if named {
+            self.pointer_branches.pop();
+        }
         let then_facts = self.consteval.constraints.split_off(facts_before);
+        let pointers_then = std::mem::replace(&mut self.pointer_facts, pointers_before);
         if let Some(c) = &cond_fact {
             self.consteval
                 .constraints
@@ -623,12 +631,16 @@ impl<'a> TypeChecker<'a> {
         let mut else_ty = Type::Struct("void".into(), None);
         if let Some(else_b) = if_expr.else_block.as_mut() {
             if !else_b.is_empty() {
+                self.pointer_branches.extend(else_name);
                 self.push_releasing_scope();
                 if !self.speculating {
                     self.value_unused = unused;
                     else_ty = self.check_expr_block(else_b, None, consume);
                 }
                 self.pop_scope();
+                if named {
+                    self.pointer_branches.pop();
+                }
                 marks_after_else = self.branch_end(else_b);
 
                 // A branch that never finishes, `todo()`, has no value: the other branch decides.
@@ -670,6 +682,7 @@ impl<'a> TypeChecker<'a> {
             }
         }
         let else_facts = self.consteval.constraints.split_off(facts_before);
+        let pointers_else = std::mem::take(&mut self.pointer_facts);
         // When one branch ends early, the code after the `if` is reached only through the other,
         // so what that branch knew at its end still holds. When both end early, it is not reached.
         let then_ends = self.branch_ends_early(&if_expr.then_block);
@@ -682,6 +695,11 @@ impl<'a> TypeChecker<'a> {
             (Some(true), _, _) | (None, false, true) => values_after_then,
             (Some(false), _, _) | (None, true, false) => values_after_else,
             (None, _, _) => Self::join_known_values(vec![values_after_then, values_after_else]),
+        };
+        self.pointer_facts = match (then_ends, else_ends) {
+            (true, false) => pointers_else,
+            (false, true) => pointers_then,
+            _ => pointers_then.join(&pointers_else),
         };
         match (then_ends, else_ends) {
             (true, false) => self.consteval.constraints.extend(else_facts),
@@ -727,12 +745,22 @@ impl<'a> TypeChecker<'a> {
                 ret: ret_expr,
                 span,
                 generated,
+                closure_body,
+                within,
                 ..
             }) => {
                 let block_span = *span;
-                let written = !*generated;
+                let closure_body = *closure_body;
+                let within = *within;
+                // The block body of a closure, and a `within` block, are plain blocks: they
+                // allow nothing more than the code around them.
+                let written = !*generated && !closure_body;
                 let prev_unsafe = self.in_unsafe_block;
-                self.in_unsafe_block = true;
+                self.in_unsafe_block = prev_unsafe || !(closure_body || within);
+                if within {
+                    self.within_depth += 1;
+                    self.within_start_next = true;
+                }
                 // A block the compiler made is transparent here: what it holds counts for the
                 // written block around it.
                 let prev_written = self.in_written_unsafe_block;
@@ -780,10 +808,14 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.push_scope();
                 self.value_unused = unused;
+                // A `return` of the closure, or its written return type, gives the last value of
+                // its body its type, as the return type of a function does.
+                self.closure_body_next = closure_body;
                 let ret_ty = match ret_expr {
                     Some(r) => self.check_expr_block_with_value(stmts, r, unused, consume),
                     None => self.check_expr_block(stmts, None, consume),
                 };
+                self.closure_body_next = false;
                 self.pop_scope();
                 if written {
                     // An error inside may hide the operation that needed `unsafe`, so only a
@@ -815,6 +847,9 @@ impl<'a> TypeChecker<'a> {
                     self.in_written_unsafe_block = prev_written;
                 }
                 self.in_unsafe_block = prev_unsafe;
+                if within {
+                    self.within_depth -= 1;
+                }
                 ret_ty
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
@@ -1095,7 +1130,103 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// A `match` with string literal arms as a chain of `if`s, since each arm compares the
+    /// text with `==`. `match s { "a" => A, _ => B }` is `if s == "a" { A } else { B }`. A subject
+    /// that is not a variable is bound to one first, by a match arm that only binds it, so it
+    /// runs once. `None` for any other `match`.
+    fn string_match_as_ifs(expr: &Expr) -> Option<Expr> {
+        let Expr::Match(MatchExpr {
+            expr: subject,
+            arms,
+            span,
+        }) = expr
+        else {
+            return None;
+        };
+        let span = *span;
+        if !arms
+            .iter()
+            .any(|arm| crate::syntax::is_string_pattern(&arm.pattern))
+            || !arms.iter().all(|arm| {
+                crate::syntax::is_string_pattern(&arm.pattern)
+                    || matches!(arm.pattern, Pattern::Wildcard | Pattern::Identifier(_))
+            })
+        {
+            return None;
+        }
+        // A first arm of `_` or a name is the only arm that can run.
+        if !crate::syntax::is_string_pattern(&arms[0].pattern) {
+            return Some(Expr::Match(MatchExpr::new(
+                subject.clone(),
+                vec![arms[0].clone()],
+                span,
+            )));
+        }
+        let name: crate::symbol::Symbol = match &**subject {
+            Expr::Identifier(id) => id.name.clone(),
+            _ => "match_subject".into(),
+        };
+        let value = || Expr::Identifier(IdentifierExpr::new(name.clone(), span));
+        // From the last arm to the first: each arm is an `if` whose `else` is the arms after it.
+        let mut rest: Option<Vec<Statement>> = None;
+        for arm in arms.iter().rev() {
+            rest = Some(match &arm.pattern {
+                Pattern::Wildcard => arm.body.clone(),
+                Pattern::Identifier(bound) => {
+                    let mut body = vec![Statement::LetDecl(crate::syntax::LetDeclStmt::new(
+                        bound.to_string(),
+                        false,
+                        None,
+                        value(),
+                        span,
+                    ))];
+                    body.extend(arm.body.iter().cloned());
+                    body
+                }
+                Pattern::Literal(text) => {
+                    let cond = Expr::RelationalOp(crate::syntax::RelationalOpExpr::new(
+                        Box::new(value()),
+                        crate::syntax::RelationalOp::Eq,
+                        text.clone(),
+                        span,
+                    ));
+                    let chain = IfExpr::new(false, Box::new(cond), arm.body.clone(), rest, span);
+                    vec![Statement::ExprStmt(crate::syntax::ExprStmtStmt::new(
+                        Expr::If(chain),
+                        false,
+                        span,
+                    ))]
+                }
+                Pattern::EnumVariant(..) => unreachable!("only string, `_` and name arms"),
+            });
+        }
+        // The first arm is a string literal, so `rest` is one `if`.
+        let first = match rest?.pop()? {
+            Statement::ExprStmt(e) => e.expr,
+            _ => return None,
+        };
+        if matches!(&**subject, Expr::Identifier(_)) {
+            return Some(first);
+        }
+        let arm = crate::syntax::MatchArm {
+            pattern: Pattern::Identifier(name),
+            body: vec![Statement::ExprStmt(crate::syntax::ExprStmtStmt::new(
+                first, false, span,
+            ))],
+            span: Span::default(),
+        };
+        Some(Expr::Match(MatchExpr::new(
+            subject.clone(),
+            vec![arm],
+            span,
+        )))
+    }
+
     pub(crate) fn check_match_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
+        if let Some(chain) = Self::string_match_as_ifs(expr) {
+            *expr = chain;
+            return self.check_expr_type_flag(expr, consume);
+        }
         let unused = std::mem::replace(&mut self.value_unused, false);
         match expr {
             Expr::Match(MatchExpr {
@@ -1147,8 +1278,12 @@ impl<'a> TypeChecker<'a> {
                 let mut every_arm_ends = !arms.is_empty();
                 let values_before = self.consteval.env.clone();
                 let mut values_after_arms = Vec::new();
+                let pointers_before = self.pointer_facts.clone();
+                let mut pointers_after: Option<crate::hir::check::pointer_facts::PointerFacts> =
+                    None;
                 for (i, arm) in arms.iter_mut().enumerate() {
                     self.consteval.env = values_before.clone();
+                    self.pointer_facts = pointers_before.clone();
                     self.consteval.constraints.truncate(facts_before);
                     self.restore_moved(marks_before.clone());
                     if i > 0 {
@@ -1173,6 +1308,8 @@ impl<'a> TypeChecker<'a> {
                     }
                     self.refuse_payload_subpattern(&arm.pattern, &arm.span);
                     self.check_variant_pattern(&arm.pattern, &expr_ty, &arm.span);
+                    self.pointer_branches
+                        .push(Self::pointer_arm_name(&arm.pattern));
                     self.push_scope();
                     self.check_literal_pattern_range(&arm.pattern, &expr_ty);
                     self.bind_pattern_variables(&arm.pattern, &expr_ty);
@@ -1203,9 +1340,15 @@ impl<'a> TypeChecker<'a> {
                         Type::Struct("void".into(), None)
                     };
                     self.pop_scope();
+                    self.pointer_branches.pop();
                     every_arm_ends &= self.branch_ends_early(&arm.body);
                     if !self.branch_ends_early(&arm.body) {
                         values_after_arms.push(self.consteval.env.clone());
+                        let arm_pointers = std::mem::take(&mut self.pointer_facts);
+                        pointers_after = Some(match pointers_after.take() {
+                            Some(joined) => joined.join(&arm_pointers),
+                            None => arm_pointers,
+                        });
                     }
                     if let Some(after) = self.branch_end(&arm.body) {
                         joined = Some(match joined.take() {
@@ -1237,6 +1380,11 @@ impl<'a> TypeChecker<'a> {
                 if !has_wildcard || values_after_arms.is_empty() {
                     values_after_arms.push(values_before);
                 }
+                self.pointer_facts = match pointers_after {
+                    Some(joined) if has_wildcard => joined,
+                    Some(joined) => joined.join(&pointers_before),
+                    None => pointers_before,
+                };
                 self.consteval.env = Self::join_known_values(values_after_arms);
                 self.consteval.constraints.truncate(facts_before);
                 if every_arm_ends {
@@ -1306,6 +1454,51 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The end of a closure with a block body, whose `return` or written type gives `returned`:
+    /// its last value, of type `ty`, must have that type, and it must not end with no value.
+    fn check_closure_end(&mut self, body: &Expr, ty: &Type, returned: &Type, span: &Span) {
+        if *ty == Type::Unknown || crate::syntax::is_never_ty(ty) {
+            return;
+        }
+        // Only a block body can end in another way than its value: a `comptime` body returns.
+        let Expr::UnsafeBlock(u) = body else {
+            return;
+        };
+        if !u.closure_body {
+            return;
+        }
+        let message = match body {
+            Expr::UnsafeBlock(u) if u.ret.is_none() => {
+                let functions = &self.env.functions;
+                let never = |name: &str| {
+                    functions
+                        .get(name)
+                        .is_some_and(|f| crate::syntax::is_never_ty(&f.0))
+                };
+                let exits = crate::syntax::block_always_exits(&u.stmts, &never);
+                (!exits && !crate::syntax::types::is_void_ty(returned)).then(|| {
+                    format!(
+                        "this closure returns '{returned}', so its body must end with a value \
+                         of that type or with a `return`"
+                    )
+                })
+            }
+            _ => (!self.is_assignable(returned, ty)).then(|| {
+                format!(
+                    "this closure returns '{returned}', so its last value must have that type. \
+                     It gives '{ty}'"
+                )
+            }),
+        };
+        if let Some(message) = message {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3002,
+                message,
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
+        }
+    }
+
     pub(crate) fn check_closure_expr(&mut self, expr: &mut Expr, _consume: bool) -> Type {
         match expr {
             Expr::Closure(e) => {
@@ -1319,13 +1512,22 @@ impl<'a> TypeChecker<'a> {
                     .let_closure
                     .take()
                     .zip(self.current_assignment_target.clone());
+                // The variable that holds the closure. A closure in another place, such as a
+                // call argument, holds its borrows until the end of its statement.
+                let holder = in_let.as_ref().map(|(_, closure)| closure.clone());
 
                 let closure_depth = self.scopes.len();
                 self.mono.closure_depths.push(closure_depth);
                 self.mono.closure_captures_stack.push(HashMap::new());
+                self.mono.closure_capture_uses.push(Vec::new());
+                // What the body changes decides which captures the closure borrows `&mut`.
+                let changed_outside = std::mem::take(&mut self.changed_vars);
 
                 let old_ret = self.current_return_type.take();
-                self.current_return_type = Some(Type::Unknown);
+                // `|x| -> T { .. }` returns `T`. Otherwise the first `return` gives the type.
+                self.current_return_type = Some(e.ret_ty.clone().unwrap_or(Type::Unknown));
+                // An `ensures` of the function is not about a `return` of the closure.
+                let outer_ensures = std::mem::take(&mut self.consteval.current_ensures);
 
                 self.push_scope();
                 for (name, ty) in &cloned_params {
@@ -1347,18 +1549,29 @@ impl<'a> TypeChecker<'a> {
                 self.drops_enter_function(Vec::new(), &[]);
                 self.traffic.closure_depth += 1;
                 self.consteval.comptime_return_is_value = matches!(*b, Expr::ComptimeBlock(_));
+                // The body runs when a call runs it, so it starts with no fact of its parent.
+                let outer_pointers = self.pointer_facts_enter_body();
+                // A borrow made in the body lasts for one call of the closure. What the closure
+                // holds between calls is the borrow of its environment, made below.
+                let outer_borrows = self.borrow.snapshot();
                 let expr_ret_ty = self.check_expr_type(&mut b);
+                self.borrow.restore(outer_borrows);
+                self.pointer_facts_leave_body(outer_pointers);
                 self.consteval.comptime_return_is_value = false;
                 self.traffic.closure_depth -= 1;
                 self.drops_exit_function();
                 self.consteval.closure_body_depth -= 1;
                 self.consteval.comptime_depth = outer_comptime;
 
+                self.consteval.current_ensures = outer_ensures;
                 let mut ret_ty = expr_ret_ty;
-                if let Some(inferred) = &self.current_return_type {
-                    if *inferred != Type::Unknown {
-                        ret_ty = inferred.clone();
-                    }
+                if let Some(returned) = self
+                    .current_return_type
+                    .clone()
+                    .filter(|t| *t != Type::Unknown)
+                {
+                    self.check_closure_end(&b, &ret_ty, &returned, &e.span);
+                    ret_ty = returned;
                 }
                 if !self.speculating
                     && self.type_can_hold_reference(&ret_ty)
@@ -1383,16 +1596,36 @@ impl<'a> TypeChecker<'a> {
                 self.current_return_type = old_ret;
 
                 let captured_vars_map = self.mono.closure_captures_stack.pop().unwrap_or_default();
+                let capture_uses = self.mono.closure_capture_uses.pop().unwrap_or_default();
                 self.mono.closure_depths.pop();
+                let changed_in_body = std::mem::replace(&mut self.changed_vars, changed_outside);
+                self.changed_vars.extend(changed_in_body.iter().cloned());
 
                 let mut captured_vars: Vec<(crate::symbol::Symbol, Type)> =
                     captured_vars_map.into_iter().collect();
                 captured_vars.sort_by(|a, b| a.0.cmp(&b.0)); // Stable layout
 
+                // How the closure takes each capture: by value, or through `&` or `&mut` (C1 in
+                // docs/discussions/closures_that_change_captured_locals.md).
+                let borrows: HashMap<crate::symbol::Symbol, bool> = captured_vars
+                    .iter()
+                    .filter_map(|(name, ty)| {
+                        if matches!(ty, Type::Tensor(..)) || self.is_moved(name.as_ref()) {
+                            None
+                        } else if changed_in_body.contains(name.as_ref()) {
+                            Some((name.clone(), true))
+                        } else if matches!(ty, Type::Struct(..)) && !self.is_copy(ty) {
+                            Some((name.clone(), false))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
                 if !self.speculating {
-                    // Consume captured variables in the outer scope if they are linear
+                    // A tensor is moved into the closure, as before.
                     for (name, ty) in &captured_vars {
-                        if matches!(ty, Type::Struct(_, _) | Type::Tensor(_, _, _))
+                        if matches!(ty, Type::Tensor(_, _, _))
                             && (self.is_copy(ty)
                                 || !self.refuse_move_behind_ref(name, name, &e.span))
                         {
@@ -1401,7 +1634,10 @@ impl<'a> TypeChecker<'a> {
                     }
                     let copied: Vec<String> = captured_vars
                         .iter()
-                        .filter(|(_, ty)| !matches!(ty, Type::Struct(_, _) | Type::Tensor(_, _, _)))
+                        .filter(|(name, ty)| {
+                            !borrows.contains_key(name)
+                                && !matches!(ty, Type::Struct(_, _) | Type::Tensor(_, _, _))
+                        })
                         .map(|(name, _)| name.to_string())
                         .collect();
                     if let Some((at, closure)) = in_let {
@@ -1409,11 +1645,59 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
+                // The field of a borrowed capture holds the reference.
+                let env_fields: Vec<(crate::symbol::Symbol, Type)> = captured_vars
+                    .iter()
+                    .map(|(name, ty)| match borrows.get(name) {
+                        Some(&is_mut) => (
+                            name.clone(),
+                            Type::Borrow {
+                                inner: Box::new(ty.clone()),
+                                mem_space: None,
+                                is_mut,
+                                region_id: 0,
+                            },
+                        ),
+                        None => (name.clone(), ty.clone()),
+                    })
+                    .collect();
+                // Each use of a borrowed capture in the body reads through the reference. A field
+                // access or a method call reads through a reference by itself, as on `self`.
+                let mut through_reference: std::collections::HashSet<(
+                    crate::symbol::Symbol,
+                    crate::syntax::Span,
+                )> = capture_uses
+                    .into_iter()
+                    .filter(|(name, _)| borrows.contains_key(name))
+                    .collect();
+                crate::syntax::visit_expr(&b, &mut |e| {
+                    let base = match e {
+                        Expr::MemberAccess(m) => &*m.base,
+                        Expr::MethodCall(m) => &*m.base,
+                        _ => return,
+                    };
+                    if let Expr::Identifier(id) = base {
+                        through_reference.remove(&(id.name.clone(), id.span));
+                    }
+                });
+                crate::syntax::visit_expr_mut(&mut b, &mut |use_| {
+                    if let Expr::Identifier(id) = use_ {
+                        if through_reference.contains(&(id.name.clone(), id.span)) {
+                            let ty = captured_vars.iter().find(|(n, _)| *n == id.name);
+                            *use_ = Expr::Dereference(crate::syntax::expr::DereferenceExpr {
+                                expr: Box::new(Expr::Identifier(id.clone())),
+                                ty: ty.map(|(_, t)| t.clone()),
+                                span: id.span,
+                            });
+                        }
+                    }
+                });
+
                 // Create StructDecl for the environment
                 let struct_decl = decl::StructDecl {
                     name: struct_name.clone().into(),
                     generics: vec![],
-                    fields: captured_vars.clone(),
+                    fields: env_fields.clone(),
                     doc_comment: None,
                 };
                 self.mono.generated_structs.push(struct_decl);
@@ -1433,7 +1717,7 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 let mut body_stmts = Vec::new();
-                for (cap_name, cap_ty) in &captured_vars {
+                for (cap_name, cap_ty) in &env_fields {
                     let env_access = Expr::MemberAccess(MemberAccessExpr {
                         base: Box::new(Expr::Identifier(IdentifierExpr::new(
                             "_env".to_string().into(),
@@ -1445,7 +1729,7 @@ impl<'a> TypeChecker<'a> {
                     });
                     body_stmts.push(Statement::LetDecl(LetDeclStmt {
                         name: cap_name.clone(),
-                        is_mut: true,
+                        is_mut: !borrows.contains_key(cap_name),
                         ty_ann: Some(cap_ty.clone()),
                         expr: env_access,
                         span: e.span,
@@ -1477,12 +1761,51 @@ impl<'a> TypeChecker<'a> {
 
                 self.mono.functions.push((call_func, 0));
 
+                // The environment is built where the closure is written, and the closure holds
+                // the borrow of each borrowed capture from there. The body already reported each
+                // conflict with a borrow made before the closure.
                 let mut fields = Vec::new();
                 for (cap_name, _) in &captured_vars {
-                    fields.push((
-                        cap_name.clone(),
-                        Expr::Identifier(IdentifierExpr::new(cap_name.clone(), e.span)),
-                    ));
+                    let mut value = Expr::Identifier(IdentifierExpr::new(cap_name.clone(), e.span));
+                    if let Some(&is_mut) = borrows.get(cap_name) {
+                        value = Expr::Borrow(BorrowExpr {
+                            expr: Box::new(value),
+                            is_mut,
+                            span: e.span,
+                        });
+                        if !self.speculating {
+                            self.borrow.record(
+                                cap_name.as_ref(),
+                                crate::hir::env::BorrowRecord {
+                                    carried_from: None,
+                                    is_mut,
+                                    scope_depth: self.scopes.len(),
+                                    borrower_name: holder.clone(),
+                                    path: Vec::new(),
+                                },
+                            );
+                            if is_mut {
+                                self.consteval_forget(cap_name.as_ref());
+                            }
+                            if holder.is_none() {
+                                self.mono
+                                    .closure_literal_borrows
+                                    .entry(struct_name.clone().into())
+                                    .or_default()
+                                    .push((cap_name.clone(), is_mut));
+                            }
+                        }
+                    }
+                    // In the body of a closure around this one, the value is a use of that
+                    // closure's capture.
+                    let outer = self.mono.closure_depths.last().copied();
+                    let depth = self.lookup_with_depth(cap_name.as_ref()).map(|(_, _, d)| d);
+                    if matches!((depth, outer), (Some(d), Some(o)) if d < o) {
+                        if let Some(uses) = self.mono.closure_capture_uses.last_mut() {
+                            uses.push((cap_name.clone(), e.span));
+                        }
+                    }
+                    fields.push((cap_name.clone(), value));
                 }
 
                 *expr = Expr::StructInit(StructInitExpr {

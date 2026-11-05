@@ -47,6 +47,8 @@ struct_decl ::= "struct" identifier generic_params? "{" ( identifier ":" type ",
 enum_decl ::= "enum" identifier generic_params? "{" ( identifier ( "(" type ( "," type )* ")" )? ","? )* "}"
 
 function_decl ::= "fn" identifier generic_params? "(" param_list? ")" ( "on" topology )? "->" type where_clause? ( "requires" expr )* ( "ensures" expr )* "{" statement* "}"
+// `on Topology::Any` says that the function runs where it is called. `Topology::Any` can
+// appear only here.
 
 // `Reachable<A, B>` asks whether a transfer path exists between two topologies. It was
 // spelled `Transfer<A, B>` until Vx#353; the old name now names an edge lowering instead
@@ -75,7 +77,8 @@ topology_field ::=
     | "arch" ":" identifier
     | "transfer" memory_space "->" memory_space ( ":" edge_cost )? transfer_marker*
 transfer_marker ::= "relaxed" | "sync" | "copy_engine"
-edge_cost ::= number | rate_literal        // a unitless relative cost, or a link bandwidth
+edge_cost ::= number | rate_literal | "shared"  // a unitless relative cost, a link bandwidth,
+                                                // or a memory that both sides address
 
 // A first-class memory space (all fields optional except the name). Unlike a topology, the
 // descriptor is stored on the AST, not a global registry. `within:` forms the hierarchy tree.

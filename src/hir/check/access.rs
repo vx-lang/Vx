@@ -399,14 +399,14 @@ impl<'a> TypeChecker<'a> {
                     // NLL: a borrow whose borrower is dead past this access no longer conflicts, so a
                     // semantically dead `&mut x` does not spuriously block reading `x` (#276). `live_borrows`
                     // sweeps first; the `!self.speculating` gate keeps speculative checks from mutating borrow state.
-                    for b in self.borrow.live_borrows(name.as_ref()) {
+                    for b in &self.borrow.live_borrows(name.as_ref()).to_vec() {
                         if b.is_mut {
                             self.errors.error_with_code(
                                 crate::diagnostic::DiagnosticCode::E4002,
                                 format!(
                                     "Cannot access '{}' because it is mutably borrowed.{}",
                                     name,
-                                    crate::hir::check::tasks::held_by_task_note(b)
+                                    self.held_by_note(b)
                                 ),
                                 Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                             );
@@ -428,6 +428,12 @@ impl<'a> TypeChecker<'a> {
                         if depth < closure_depth {
                             self.mono.closure_captures_stack[i]
                                 .insert(name.to_string().into(), ty.clone());
+                        }
+                    }
+                    // The use is in the body of the innermost closure.
+                    if self.mono.closure_depths.last().is_some_and(|d| depth < d) {
+                        if let Some(uses) = self.mono.closure_capture_uses.last_mut() {
+                            uses.push((name.clone(), span));
                         }
                     }
                 }
@@ -507,6 +513,7 @@ impl<'a> TypeChecker<'a> {
                             None => decl.ty.clone(),
                         };
                     }
+                    self.check_function_value(name.as_ref(), span);
                     if let Some((ret_ty, is_unsafe, params, _, _, _)) =
                         self.env.functions.get(name.as_ref())
                     {
@@ -654,7 +661,10 @@ impl<'a> TypeChecker<'a> {
 
                                     let old_allow = self.allow_cross_topology;
                                     self.allow_cross_topology = true;
-                                    let ret_ty = self.check_methodcall_expr(expr, consume);
+                                    let ret_ty = self
+                                        .check_a_call_that_can_change_facts(expr, |c, e| {
+                                            c.check_methodcall_expr(e, consume)
+                                        });
                                     self.allow_cross_topology = old_allow;
                                     return ret_ty;
                                 } else {
@@ -672,9 +682,12 @@ impl<'a> TypeChecker<'a> {
                                     // memory space is declared `managed: cached` (hardware-coherent)
                                     // and a path exists (`NeedsSeam`). `explicit`/undeclared spaces
                                     // and truly `Unreachable` ones still require an explicit transfer.
+                                    // A topology that can run on another node does not share
+                                    // this node's memory, so it gets no such use.
                                     let allowed = matches!(reach, Reachability::NeedsSeam { .. })
                                         && self
-                                            .space_is_cached(&self.value_memory_space(&ty, &top));
+                                            .space_is_cached(&self.value_memory_space(&ty, &top))
+                                        && !self.topology_offloads(&self.active_topology);
                                     if !allowed {
                                         self.unreadable_reported.insert(span);
                                         match reach {
@@ -920,14 +933,14 @@ impl<'a> TypeChecker<'a> {
                         // NLL: `live_borrows` sweeps dead borrows of the base before testing path overlap,
                         // so reading a field after its `&mut p.x` borrow is dead is accepted — Example B's
                         // `return p.x` after `*r = 42` (#276). Gated on `!self.speculating` like the identifier arm.
-                        for b in self.borrow.live_borrows(&name) {
+                        for b in &self.borrow.live_borrows(&name).to_vec() {
                             if b.is_mut && crate::hir::places::paths_may_alias(&path, &b.path) {
                                 self.errors.error_with_code(
                                     crate::diagnostic::DiagnosticCode::E4002,
                                     format!(
                                         "Cannot access '{}' because it is mutably borrowed.{}",
                                         name,
-                                        crate::hir::check::tasks::held_by_task_note(b)
+                                        self.held_by_note(b)
                                     ),
                                     Some(crate::diagnostic::SourceSpan::from_ast_span(&ma_span)),
                                 );
@@ -1503,10 +1516,11 @@ impl<'a> TypeChecker<'a> {
                 if let Some((name, mut path)) = place {
                     if !self.borrow.skip_borrow_check && !self.speculating {
                         path.push(crate::hir::places::index_element(idx));
-                        let conflict = self.borrow.live_borrows(&name).iter().find(|b| {
+                        let live = self.borrow.live_borrows(&name).to_vec();
+                        let conflict = live.iter().find(|b| {
                             b.is_mut && crate::hir::places::paths_may_alias(&path, &b.path)
                         });
-                        let conflict = conflict.map(crate::hir::check::tasks::held_by_task_note);
+                        let conflict = conflict.map(|b| self.held_by_note(b));
                         if let Some(note) = conflict {
                             // Point at the variable, as the whole-variable rule does.
                             let mut root = &**obj;
@@ -1760,6 +1774,7 @@ impl<'a> TypeChecker<'a> {
                     && self.check_expr_type_probe(inner).placement().is_some();
                 if *is_mut {
                     self.record_change(inner);
+                    self.note_a_change_to(inner);
                 }
                 let old_allow = self.allow_cross_topology;
                 self.allow_cross_topology |= borrows_placed;
@@ -1878,9 +1893,24 @@ impl<'a> TypeChecker<'a> {
         if self.speculating {
             return;
         }
+        // A token of a lane copy holds its borrow with no reference that the code generators
+        // keep.
+        let copy_tokens: std::collections::HashSet<String> = self
+            .tokens
+            .iter()
+            .filter(|(t, ..)| {
+                self.lookup(t.as_ref())
+                    .is_some_and(|(ty, _)| crate::syntax::types::is_copy_token(ty))
+            })
+            .map(|(t, ..)| t.as_ref().to_string())
+            .collect();
         let other_element = self.borrow.live_borrows(name).iter().any(|b| {
             // Overlapping borrows are refused by `check_borrow_conflicts` already.
             b.is_mut
+                && !b
+                    .borrower_name
+                    .as_ref()
+                    .is_some_and(|n| copy_tokens.contains(n))
                 && !crate::hir::places::paths_may_alias(path, &b.path)
                 && path
                     .iter()
@@ -1916,7 +1946,7 @@ impl<'a> TypeChecker<'a> {
         // NLL: `live_borrows` sweeps dead borrows first, so a borrow whose borrower is no longer
         // used does not block a new one (#276).
         let mut conflict_reported = false;
-        for b in self.borrow.live_borrows(name) {
+        for b in &self.borrow.live_borrows(name).to_vec() {
             // Split borrows: skip a record whose path is disjoint from this borrow's.
             if !crate::hir::places::paths_may_alias(path, &b.path) {
                 continue;
@@ -1928,7 +1958,7 @@ impl<'a> TypeChecker<'a> {
                     format!(
                         "Cannot borrow '{}' because it is already borrowed as mutable.{}",
                         name,
-                        crate::hir::check::tasks::held_by_task_note(b)
+                        self.held_by_note(b)
                     ),
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                 );
@@ -1939,7 +1969,7 @@ impl<'a> TypeChecker<'a> {
                     format!(
                         "Cannot borrow '{}' as mutable because it is also borrowed as immutable.{}",
                         name,
-                        crate::hir::check::tasks::held_by_task_note(b)
+                        self.held_by_note(b)
                     ),
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                 );
@@ -2467,7 +2497,7 @@ impl<'a> TypeChecker<'a> {
         // NLL: `live_borrows` drops records whose borrower is no longer used past this point (the same
         // sweep the access checks run, #276) before the shared-XOR-mutable conflict check.
         let mut mutable_conflict = false;
-        for b in self.borrow.live_borrows(base) {
+        for b in &self.borrow.live_borrows(base).to_vec() {
             // Overlapping-path conflict, shared with `check_borrow_expr` (#275 §16.2).
             if !crate::hir::places::paths_may_alias(&path, &b.path) {
                 continue;
@@ -2479,7 +2509,7 @@ impl<'a> TypeChecker<'a> {
                     format!(
                         "Cannot borrow '{}' because it is already borrowed as mutable.{}",
                         base,
-                        crate::hir::check::tasks::held_by_task_note(b)
+                        self.held_by_note(b)
                     ),
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                 );
@@ -2489,7 +2519,7 @@ impl<'a> TypeChecker<'a> {
                     format!(
                         "Cannot borrow '{}' as mutable because it is also borrowed as immutable.{}",
                         base,
-                        crate::hir::check::tasks::held_by_task_note(b)
+                        self.held_by_note(b)
                     ),
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                 );

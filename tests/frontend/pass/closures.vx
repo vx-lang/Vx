@@ -87,6 +87,9 @@ struct Captures {
   i : i32,
 }
 
+// A closure copies a `Copy` struct that it reads, so `Closure_9` keeps a slot for the copy.
+impl Copy for Captures {}
+
 fn main() -> i32 {
   // closure_basic
   let x1 = 40;

@@ -1,0 +1,35 @@
+// The CPU copy of a kernel shares the blocks of an `across` loop among the host's workers:
+// worker w of W runs blocks w, w + W, and so on. Each block adds 1 to each element of its row.
+// A worker that ran every block, or a block that no worker ran, changes the total.
+//
+// The host copy starts its loop of blocks at the worker's index and steps by the number of
+// workers. The payload tells the runtime that it may give the kernel several workers:
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard,vx-to-llvm)" 2>&1 | FileCheck %s --check-prefix=MLIR
+// MLIR-LABEL: func.func @vx_npu_kernel_0(
+// MLIR: call @vx_host_worker_id() : () -> i64
+// MLIR: call @vx_host_worker_count() : () -> i64
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm 2>&1 | FileCheck %s --check-prefix=PAYLOAD
+// PAYLOAD: grid_loops=1{{.}}00host_blocks=1
+//
+// RUN: env CUDA_VISIBLE_DEVICES= VX_HOST_THREADS=4 vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: total=19200;
+
+fn main() -> i32 {
+  let mut out = transfer(Tensor<f32, [64, 300]>::fill(0.0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for y in 0..64 across blocks {
+      for x in 0..300 across lanes(256) {
+        out[y][x] = out[y][x] + 1.0;
+      }
+    }
+  }
+  let back = transfer(out, Memory::CPU_DRAM);
+  let mut total = 0.0;
+  for y in 0..64 {
+    for x in 0..300 {
+      total = total + back[y][x];
+    }
+  }
+  println!("total={};", total);
+  return 0;
+}

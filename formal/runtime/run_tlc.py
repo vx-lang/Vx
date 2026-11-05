@@ -31,6 +31,11 @@ A_TIMED_TASK = {"OnB": "{}", "OnC": '{"f2"}', "Timed": '{"f2"}', "Cancel": "FALS
 # Thread t1 does the same.
 A_TIMED_THREAD = {"OnC": '{"t1"}', "Timed": '{"t1"}', "Cancel": "FALSE"}
 A_SEED = {"Seed": "TRUE"}
+# Task f2 waits for a socket, and only a cancel ends the wait of thread t1. The cancel can come
+# before the socket is ready.
+A_SOCKET = {"Fibers": '{"f2"}', "OnB": "{}", "OnIo": '{"f2"}', "SetWords": "FALSE"}
+# Thread t1 waits for a helper call, and task f1 for word "a".
+A_THREAD_ON_IO = {"Fibers": '{"f1"}', "OnB": "{}", "OnIo": '{"t1"}', "Cancel": "FALSE"}
 # The deadlock watcher makes a model about ten times larger. So it runs only in models with
 # one fiber and one thread, which both wait on word "a".
 WATCH = {"Watch": "TRUE", "Fibers": '{"f1"}', "OnB": "{}"}
@@ -39,6 +44,10 @@ WATCH_A_CALLBACK = {**WATCH, **A_CALLBACK}
 WATCH_A_DEADLOCK = {**WATCH, "Fibers": '{"f2"}', "OnC": '{"f2"}', "Cancel": "FALSE"}
 WATCH_A_DEADLOCK_IN_A_CALLBACK = {**WATCH, **A_DEADLOCK_IN_A_CALLBACK}
 WATCH_A_TIMED_TASK = {**WATCH_A_DEADLOCK, "Timed": '{"f2"}'}
+# Task f2 waits for a socket. Thread t1 waits on word "c", which no waker sets, so the watcher
+# must report a deadlock after the wait of f2 ended, and not before.
+WATCH_A_SOCKET = {**WATCH, "Fibers": '{"f2"}', "OnIo": '{"f2"}', "OnC": '{"t1"}',
+                  "SetWords": "FALSE", "Cancel": "FALSE"}
 MODELS = [
     ("as in WaitWake.cfg", {}),
     ("with no cancel", NO_CANCEL),
@@ -49,11 +58,14 @@ MODELS = [
     ("with a task that waits with a time limit", A_TIMED_TASK),
     ("with a thread that waits with a time limit", A_TIMED_THREAD),
     ("with a seed", A_SEED),
+    ("with a task that waits for a socket", A_SOCKET),
+    ("with a thread that waits for a helper call", A_THREAD_ON_IO),
     ("with the watcher", WATCH),
     ("with the watcher and a task under a callback", WATCH_A_CALLBACK),
     ("with the watcher and a deadlock", WATCH_A_DEADLOCK),
     ("with the watcher and a deadlock in a callback", WATCH_A_DEADLOCK_IN_A_CALLBACK),
     ("with the watcher and a task that waits with a time limit", WATCH_A_TIMED_TASK),
+    ("with the watcher and a task that waits for a socket", WATCH_A_SOCKET),
 ]
 
 # (a mistake, the constants of the check, the claim that TLC must report). The check of a
@@ -74,6 +86,9 @@ BUGS = [
     ("the_watcher_does_not_look_at_the_timer", WATCH_A_TIMED_TASK, "NoFalseDeadlock"),
     ("the_timer_looks_idle_before_its_wake", WATCH_A_TIMED_TASK, "NoFalseDeadlock"),
     ("the_watcher_reports_after_one_look", WATCH, "NoFalseDeadlock"),
+    ("the_watcher_does_not_look_at_io", WATCH_A_SOCKET, "NoFalseDeadlock"),
+    ("the_io_thread_looks_idle_before_its_wake", WATCH_A_SOCKET, "NoFalseDeadlock"),
+    ("the_waiter_returns_before_it_unlists", A_SOCKET, "NoFailedCheck"),
     ("a_push_does_not_wake_the_main_thread", {**A_SEED, **NO_CANCEL}, "EachWaitEnds"),
 ]
 

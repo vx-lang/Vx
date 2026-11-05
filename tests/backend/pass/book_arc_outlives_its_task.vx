@@ -1,0 +1,65 @@
+//===- book_arc_outlives_its_task.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on tasks (www/book/src/tasks.md): a task makes a value and sends
+// two `Arc`s of it to its parent, which keeps them after the `tasks` block.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}scale 10, owners 2{{$}}
+// CHECK: {{^}}owners 1{{$}}
+
+// ANCHOR: program
+import std::sync::arc;
+import std::sync::channel;
+
+struct Settings {
+  scale : i64,
+}
+
+fn load(tx : Sender<Arc<Settings>>) -> void {
+  let settings = Arc<Settings>::new(Settings {
+    scale : 10
+  });
+  // A clone shares the value and adds 1 to the count of owners.
+  match tx.send(settings.clone()) {
+    Result<void, SendError<Arc<Settings>>>::Ok() => {}
+    Result<void, SendError<Arc<Settings>>>::Err(_e) => {}
+  }
+  match tx.send(settings) {
+    Result<void, SendError<Arc<Settings>>>::Ok() => {}
+    Result<void, SendError<Arc<Settings>>>::Err(_e) => {}
+  }
+}
+
+fn receive(rx : &Receiver<Arc<Settings>>) -> Arc<Settings> {
+  match rx.recv() {
+    Result<Arc<Settings>, RecvError>::Ok(got) => {
+      return got;
+    }
+    Result<Arc<Settings>, RecvError>::Err(_e) => {
+      panic("the task sent nothing");
+    }
+  }
+}
+
+fn main() -> i32 {
+  let (tx, rx) = channel<Arc<Settings>>(2);
+  tasks {
+    spawn {
+      load(tx);
+    };
+  };
+  let a = receive(&rx);
+  let b = receive(&rx);
+  println!("scale {}, owners {}", a.get().scale, a.strong_count());
+  // The drop of the last owner drops the value.
+  drop(b);
+  println!("owners {}", a.strong_count());
+  return 0;
+}
+// ANCHOR_END: program

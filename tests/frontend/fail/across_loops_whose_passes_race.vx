@@ -289,6 +289,52 @@ pub fn pairs_that_overlap(out : &mut Tensor<f32, [?, 66], Memory::HBM>, n : i32)
   return;
 }
 
+// Lane `x` writes `x * 4 + 4`, which lane `x + 1` writes as `x * 4 + c` with `c` 0.
+pub fn alpha_in_the_next_pixel(out : &mut Tensor<u8, [?, 260], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for x in 0..64 across lanes {
+        for c in 0..4 {
+          out[b][x * 4 + c] = 128;
+        }
+        // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:[[# @LINE + 1]]:{{.*}}two passes of this lane loop may write the same element of `out`: the writes must use the same index that fixes `x`
+        out[b][x * 4 + 4] = 255;
+      }
+    }
+  }
+  return;
+}
+
+// With `k` 4, lane `x` writes `x * 4 + 4`, which lane `x + 1` writes as `x * 4`.
+pub fn offset_from_the_host(out : &mut Tensor<u8, [?, 512], Memory::HBM>, n : i32, k : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for x in 0..64 across lanes {
+        out[b][x * 4] = 128;
+        // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:[[# @LINE + 1]]:{{.*}}two passes of this lane loop may write the same element of `out`: the writes must use the same index that fixes `x`
+        out[b][x * 4 + k] = 255;
+      }
+    }
+  }
+  return;
+}
+
+// Lane 2 writes `2 * 4 + 1`, which lane 3 writes as `3 * 2 + 3`.
+pub fn two_steps_of_lanes(out : &mut Tensor<u8, [?, 260], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for x in 0..64 across lanes {
+        for c in 0..3 {
+          out[b][x * 4 + c] = 128;
+        }
+        // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:[[# @LINE + 1]]:{{.*}}two passes of this lane loop may write the same element of `out`: the writes must use the same index that fixes `x`
+        out[b][x * 2 + 3] = 255;
+      }
+    }
+  }
+  return;
+}
+
 fn main() -> i32 {
   return 0;
 }

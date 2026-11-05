@@ -38,6 +38,49 @@ use std::os::fd::RawFd;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
 
+/// The error of a wait for a socket that a cancel stopped (F4).
+#[derive(Debug)]
+struct Cancelled;
+
+/// The error of an address that is not `host:port`, or of a host with no address.
+#[derive(Debug)]
+struct BadAddress;
+
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the wait was cancelled")
+    }
+}
+
+impl std::fmt::Display for BadAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the address is not host:port, or the host has no address")
+    }
+}
+
+impl std::error::Error for Cancelled {}
+impl std::error::Error for BadAddress {}
+
+/// The status that a network call of `std/net.vx` gives for `e`: a number below 0 for each
+/// error that `NetError` names, or the error number of the system. `std/net.vx` reads the same
+/// numbers.
+pub fn net_status(e: &std::io::Error) -> i32 {
+    use std::io::ErrorKind as K;
+    let inner = e.get_ref();
+    if inner.is_some_and(|x| x.is::<Cancelled>()) {
+        return -1;
+    }
+    if inner.is_some_and(|x| x.is::<BadAddress>()) {
+        return -2;
+    }
+    match e.kind() {
+        K::ConnectionRefused => -3,
+        K::ConnectionReset | K::ConnectionAborted | K::BrokenPipe => -4,
+        K::AddrInUse => -5,
+        _ => e.raw_os_error().filter(|&n| n > 0).unwrap_or(-6),
+    }
+}
+
 /// Runs `call` until it does not give `WouldBlock` or `Interrupted`. Before each new try, it
 /// waits until `fd` is ready to read, or to write when `write` is set. A cancel of the block of
 /// the caller stops the wait, and gives an error.
@@ -50,7 +93,7 @@ pub fn when_ready<T>(
         match call() {
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 if !wait_ready(fd, write) {
-                    return Err(std::io::Error::other("the wait was cancelled"));
+                    return Err(std::io::Error::other(Cancelled));
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
@@ -81,14 +124,20 @@ pub fn lookup(addr: &str) -> std::io::Result<Vec<std::net::SocketAddr>> {
     off_the_worker(|| {
         #[cfg(test)]
         tests::before_a_lookup(addr);
-        Ok(std::net::ToSocketAddrs::to_socket_addrs(addr)?.collect())
+        let addrs: Vec<_> = std::net::ToSocketAddrs::to_socket_addrs(addr)
+            .map_err(|_| std::io::Error::other(BadAddress))?
+            .collect();
+        if addrs.is_empty() {
+            return Err(std::io::Error::other(BadAddress));
+        }
+        Ok(addrs)
     })
 }
 
 /// Connects to `addr`, written as `host:port`, and tries each address of the host in turn. The
 /// wait for each connection is as for `when_ready`.
 pub fn connect(addr: &str) -> std::io::Result<std::net::TcpStream> {
-    let mut last = std::io::Error::other("the host has no address");
+    let mut last = std::io::Error::other(BadAddress);
     for a in lookup(addr)? {
         match connect_to(a) {
             Ok(stream) => return Ok(stream),
@@ -122,7 +171,7 @@ fn connect_to(addr: std::net::SocketAddr) -> std::io::Result<std::net::TcpStream
     }
     loop {
         if !wait_ready(fd, true) {
-            return Err(std::io::Error::other("the wait was cancelled"));
+            return Err(std::io::Error::other(Cancelled));
         }
         if let Some(e) = stream.take_error()? {
             return Err(e);
@@ -224,12 +273,14 @@ pub fn off_the_worker<T>(call: impl FnOnce() -> T) -> T {
             eprintln!("vx: a call panicked on a helper thread. The program stops.");
             std::process::abort();
         }
-        BUSY.fetch_sub(1, Ordering::SeqCst);
         unsafe {
             (*(word as *const AtomicI64)).store(1, Ordering::SeqCst);
             // The wake reads only the address, so the word can be gone by now.
             wait::vx_wake_all(word as *const i64);
         }
+        // The call counts until its wake ended. Before the wake, the fiber still looks parked,
+        // and the deadlock watcher must not see an idle helper.
+        BUSY.fetch_sub(1, Ordering::SeqCst);
     }));
     while done.load(Ordering::SeqCst) == 0 {
         unsafe { wait::vx_wait_while(done.as_ptr(), 0) };
@@ -239,6 +290,9 @@ pub fn off_the_worker<T>(call: impl FnOnce() -> T) -> T {
 
 /// The calls that helper threads run now.
 static BUSY: AtomicUsize = AtomicUsize::new(0);
+
+/// The entries that the poller took off its list and did not wake yet.
+static WAKING: AtomicUsize = AtomicUsize::new(0);
 
 type Job = Box<dyn FnOnce() + Send>;
 
@@ -295,10 +349,12 @@ impl Helpers {
     }
 }
 
-/// Whether a task or thread waits for a socket, or a helper runs a call. The end of
-/// either can wake a task.
+/// Whether a task or thread waits for a socket, or a helper runs a call, or the wake of
+/// either did not end. That wake can let a task go on.
 pub(crate) fn pending() -> bool {
-    BUSY.load(Ordering::SeqCst) > 0 || POLLER.get().is_some_and(|p| !p.waiting().is_empty())
+    BUSY.load(Ordering::SeqCst) > 0
+        || WAKING.load(Ordering::SeqCst) > 0
+        || POLLER.get().is_some_and(|p| !p.waiting().is_empty())
 }
 
 fn poller() -> &'static Poller {
@@ -361,7 +417,8 @@ fn run(p: &'static Poller, wake_read: RawFd) {
         // word is gone. So only an entry that is still on the list gets its word set, under
         // the lock. A new entry at the same address gets a spurious wake, and tries again.
         let mut woken = Vec::new();
-        p.waiting().retain(|&(_, _, word)| {
+        let mut waiting = p.waiting();
+        waiting.retain(|&(_, _, word)| {
             if !fired.contains(&word) {
                 return true;
             }
@@ -369,10 +426,15 @@ fn run(p: &'static Poller, wake_read: RawFd) {
             woken.push(word);
             false
         });
-        for word in woken {
+        // An entry counts until its wake ended, so `pending` does not see an empty list
+        // before the wake. The count goes up before the lock is let go.
+        WAKING.fetch_add(woken.len(), Ordering::SeqCst);
+        drop(waiting);
+        for &word in &woken {
             // The wake reads only the address, so the word can be gone by now.
             unsafe { wait::vx_wake_all(word as *const i64) };
         }
+        WAKING.fetch_sub(woken.len(), Ordering::SeqCst);
     }
 }
 
@@ -391,6 +453,43 @@ mod tests {
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
+    /// Each network call gives a status, and its value through a pointer. These give both.
+    fn connect(addr: &CString) -> (*mut c_void, i32) {
+        let mut stream = std::ptr::null_mut();
+        let status = vx_tcp_stream_connect(addr.as_ptr(), &mut stream);
+        (stream, status)
+    }
+
+    fn listen(addr: &CString) -> (*mut c_void, i32) {
+        let mut listener = std::ptr::null_mut();
+        let status = vx_tcp_listener_bind(addr.as_ptr(), &mut listener);
+        (listener, status)
+    }
+
+    fn accept(listener: *mut c_void) -> (*mut c_void, i32) {
+        let mut stream = std::ptr::null_mut();
+        let status = vx_tcp_listener_accept(listener, &mut stream);
+        (stream, status)
+    }
+
+    fn read(stream: *mut c_void, byte: &mut u8) -> (u64, i32) {
+        let mut n = 0;
+        let status = vx_tcp_stream_read(stream, byte, 1, &mut n);
+        (n, status)
+    }
+
+    fn write(stream: *mut c_void, byte: &u8) -> (u64, i32) {
+        let mut n = 0;
+        let status = vx_tcp_stream_write(stream, byte, 1, &mut n);
+        (n, status)
+    }
+
+    fn bind_udp(addr: &CString) -> (*mut c_void, i32) {
+        let mut socket = std::ptr::null_mut();
+        let status = vx_udp_socket_bind(addr.as_ptr(), &mut socket);
+        (socket, status)
+    }
+
     struct Talk {
         listener: *mut c_void,
         address: CString,
@@ -407,11 +506,11 @@ mod tests {
     /// runs on the same worker.
     extern "C" fn server(env: *mut u8) {
         let t = talk(env);
-        let stream = vx_tcp_listener_accept(t.listener);
+        let (stream, _) = accept(t.listener);
         t.accepted.store(1, Ordering::SeqCst);
         unsafe { vx_wake_all(t.accepted.as_ptr()) };
         let mut byte = 0u8;
-        let n = vx_tcp_stream_read(stream, &mut byte, 1);
+        let (n, _) = read(stream, &mut byte);
         t.got.lock().unwrap().extend(&[byte][..n as usize]);
         vx_tcp_stream_drop(stream);
     }
@@ -420,12 +519,12 @@ mod tests {
     /// waits.
     extern "C" fn client(env: *mut u8) {
         let t = talk(env);
-        let stream = vx_tcp_stream_connect(t.address.as_ptr());
+        let (stream, _) = connect(&t.address);
         while t.accepted.load(Ordering::SeqCst) == 0 {
             unsafe { vx_wait_while(t.accepted.as_ptr(), 0) };
         }
         let byte = b'V';
-        assert_eq!(vx_tcp_stream_write(stream, &byte, 1), 1);
+        assert_eq!(write(stream, &byte), (1, 0));
         vx_tcp_stream_drop(stream);
     }
 
@@ -482,7 +581,7 @@ mod tests {
         // leave the client task with no thread to run on.
         let sched = Scheduler::start(1, 1);
         let any_port = CString::new("127.0.0.1:0").unwrap();
-        let listener = vx_tcp_listener_bind(any_port.as_ptr());
+        let (listener, _) = listen(&any_port);
         assert!(!listener.is_null(), "the test could not listen");
         let bound = unsafe { &*(listener as *const std::net::TcpListener) };
         let t = Talk {
@@ -508,7 +607,7 @@ mod tests {
         let _watchdog =
             Watchdog::new("a_thread_that_waits_for_a_socket_gets_the_data_that_comes_later");
         let any_port = CString::new("127.0.0.1:0").unwrap();
-        let listener = vx_tcp_listener_bind(any_port.as_ptr());
+        let (listener, _) = listen(&any_port);
         assert!(!listener.is_null(), "the test could not listen");
         let bound = unsafe { &*(listener as *const std::net::TcpListener) };
         let address = bound.local_addr().unwrap();
@@ -518,13 +617,13 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
             std::io::Write::write_all(&mut s, b"V").unwrap();
         });
-        let stream = vx_tcp_listener_accept(listener);
+        let (stream, _) = accept(listener);
         assert!(
             !stream.is_null(),
             "the accept gave up before the client connected"
         );
         let mut byte = 0u8;
-        let n = vx_tcp_stream_read(stream, &mut byte, 1);
+        let (n, _) = read(stream, &mut byte);
         assert_eq!(
             (n, byte),
             (1, b'V'),
@@ -551,8 +650,8 @@ mod tests {
     extern "C" fn read_until_cancelled(env: *mut u8) {
         let q = unsafe { &**(env as *const *const Quiet) };
         let mut byte = 0u8;
-        let n = vx_tcp_stream_read(q.stream, &mut byte, 1);
-        q.got.store(n as i64, Ordering::SeqCst);
+        let (_, status) = read(q.stream, &mut byte);
+        q.got.store(status as i64, Ordering::SeqCst);
     }
 
     /// Leaves a block early while its task waits for a socket that gets no data. The cancel
@@ -581,8 +680,8 @@ mod tests {
         }
         assert_eq!(
             q.got.load(Ordering::SeqCst),
-            0,
-            "the cancelled read did not give 0"
+            -1,
+            "the cancelled read did not give the status of Cancelled"
         );
         assert!(!waits_for(fd), "the poller still waits for the socket");
         vx_tcp_stream_drop(q.stream);
@@ -612,9 +711,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     extern "C" fn connect_to_a_full_listener(env: *mut u8) {
         let d = unsafe { &**(env as *const *const Dial) };
-        let stream = vx_tcp_stream_connect(d.address.as_ptr());
-        d.connected
-            .store(!stream.is_null() as i64, Ordering::SeqCst);
+        let (stream, status) = connect(&d.address);
+        d.connected.store(status as i64, Ordering::SeqCst);
         vx_tcp_stream_drop(stream);
     }
 
@@ -670,21 +768,26 @@ mod tests {
         }
         assert_eq!(
             d.connected.load(Ordering::SeqCst),
-            0,
-            "the cancelled connect did not give null"
+            -1,
+            "the cancelled connect did not give the status of Cancelled"
         );
         assert!(!waits_to_write(), "the poller still waits for the connect");
     }
 
-    /// A connect to a port where nothing listens gives null, after the wait for the socket.
+    /// A connect to a port where nothing listens gives the status of `Refused`, after the wait
+    /// for the socket.
     #[test]
-    fn a_refused_connect_gives_null() {
-        let _watchdog = Watchdog::new("a_refused_connect_gives_null");
+    fn a_refused_connect_gives_refused() {
+        let _watchdog = Watchdog::new("a_refused_connect_gives_refused");
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = CString::new(listener.local_addr().unwrap().to_string()).unwrap();
         drop(listener);
-        let stream = vx_tcp_stream_connect(address.as_ptr());
+        let (stream, status) = connect(&address);
         assert!(stream.is_null(), "a refused connect gave a stream");
+        assert_eq!(
+            status, -3,
+            "a refused connect did not give the status of Refused"
+        );
     }
 
     struct Fifo {
@@ -815,8 +918,8 @@ mod tests {
 
     extern "C" fn connect_after_the_lookup(env: *mut u8) {
         let l = lookup_of(env);
-        let stream = vx_tcp_stream_connect(l.address.as_ptr());
-        l.worked.store(!stream.is_null() as i64, Ordering::SeqCst);
+        let (stream, status) = connect(&l.address);
+        l.worked.store((status == 0) as i64, Ordering::SeqCst);
         vx_tcp_stream_drop(stream);
     }
 
@@ -832,8 +935,8 @@ mod tests {
 
     extern "C" fn listen_after_the_lookup(env: *mut u8) {
         let l = lookup_of(env);
-        let listener = vx_tcp_listener_bind(l.address.as_ptr());
-        l.worked.store(!listener.is_null() as i64, Ordering::SeqCst);
+        let (listener, status) = listen(&l.address);
+        l.worked.store((status == 0) as i64, Ordering::SeqCst);
         vx_tcp_listener_drop(listener);
     }
 
@@ -848,8 +951,8 @@ mod tests {
 
     extern "C" fn bind_a_udp_socket_after_the_lookup(env: *mut u8) {
         let l = lookup_of(env);
-        let socket = vx_udp_socket_bind(l.address.as_ptr());
-        l.worked.store(!socket.is_null() as i64, Ordering::SeqCst);
+        let (socket, status) = bind_udp(&l.address);
+        l.worked.store((status == 0) as i64, Ordering::SeqCst);
         vx_udp_socket_drop(socket);
     }
 
@@ -868,8 +971,10 @@ mod tests {
         let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let socket = Box::into_raw(Box::new(sender)).cast();
         let byte = b'V';
-        let sent = vx_udp_socket_send_to(socket, &byte, 1, l.address.as_ptr());
-        l.worked.store((sent == 1) as i64, Ordering::SeqCst);
+        let mut sent = 0;
+        let status = vx_udp_socket_send_to(socket, &byte, 1, l.address.as_ptr(), &mut sent);
+        l.worked
+            .store((status == 0 && sent == 1) as i64, Ordering::SeqCst);
         vx_udp_socket_drop(socket);
     }
 

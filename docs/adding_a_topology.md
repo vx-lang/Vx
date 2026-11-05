@@ -131,12 +131,31 @@ ______________________________________________________________________
 | `visible: [..]` | Every space it can address. Defaults to just its own memory. |
 | `arch:` | The instruction set it executes: `x86_64`, `aarch64`, `nvptx64`, `amdgcn`. |
 | `transfer A -> B` | An edge in the cost graph. Repeatable. |
+| `offload: true` | The fleet may run it on a worker of another node. Defaults to `false`. |
+
+A worker of another node does not share the memory of this node. So a topology with
+`offload: true` gets no exception for `managed: cached` memory: a host tensor in its region needs
+a `transfer` (E6003), as on a discrete GPU.
+
+A fleet manifest (`VX_FLEET_MANIFEST`) can send a topology to such a worker only when it says
+`offload: true`. The runtime stops a program whose manifest sends an unmarked topology to a worker.
+A built-in device, such as `GPU[0]`, has no machine file to say it, and it counts as
+`offload: true`. The host (`Topology::CPU`) runs the program itself, so it does not.
 
 A `transfer` clause takes an optional cost (`: 300`, or a bandwidth like `: 64 GB/s`), an optional
 consistency grade (`relaxed` or `sync`, default `sync`), and an optional `copy_engine` marker.
 `copy_engine` declares that hardware can drive the hop, and it is what makes `raw::async_copy`
 legal in a lowering for that edge. Omitting the cost declares that the move is possible and leaves
 the number to be derived from the endpoints.
+
+The cost `: shared` says that both sides address the same memory, as on a Mac with unified memory.
+The hop copies no bytes, so the cost model gives it a cost of 0 and the JSON report says
+`"cost_source": "shared"`.
+
+A transfer of a `&` tensor parameter over a shared edge is still a copy for the type system. But
+when every use of the copy only reads it, the compiler skips the copy: the program waits for the
+GPU and reads the parameter in place. When a use writes the copy or keeps it, the copy stays and
+the compiler gives a warning that names the use. A transfer of an owned tensor still copies.
 
 ### Memory fields
 

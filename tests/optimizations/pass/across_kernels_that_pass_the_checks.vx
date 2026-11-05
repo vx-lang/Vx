@@ -27,9 +27,13 @@
 // - `first_when_large`: the same, with `l == 0` as one side of `&&`.
 // - `rope_pairs`: each lane writes `2 * j` and `2 * j + 1`, and no two lanes make them equal.
 // - `rope_halves`: each lane writes `j` and `j + 32`, with `j` below 32.
+// - `pixels_with_alpha`: each lane writes the colors `x * 4 + c`, with `c` below 3, and the alpha
+//   `x * 4 + 3`. The two indices differ by 1 to 3, less than 4, so no two lanes make them equal.
+// - `bytes_to_floats`: `f32::from` says `ensures writes_only()`, so a lane can call it.
 //
 // RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --allow-empty --implicit-check-not=Error
 
+import core::convert;
 import core::num;
 
 pub fn rmsnorm(y : &mut Tensor<f32, [?, 4096], Memory::HBM>, x : &Tensor<f32, [?, 4096], Memory::HBM>, rows : i32) -> void {
@@ -240,6 +244,31 @@ pub fn rope_halves(out : &mut Tensor<f32, [?, ?, 64], Memory::HBM>, x : &Tensor<
           out[t][h][j] = a * c[t][j] - b * s[t][j];
           out[t][h][j + 32] = a * s[t][j] + b * c[t][j];
         }
+      }
+    }
+  }
+  return;
+}
+
+pub fn pixels_with_alpha(out : &mut Tensor<u8, [?, ?], Memory::HBM>, rows : i32, cols : i32) -> void {
+  spawn on(Topology::Device) {
+    for y in 0..rows across blocks {
+      for x in 0..cols across lanes(256) {
+        for c in 0..3 {
+          out[y][x * 4 + c] = 128;
+        }
+        out[y][x * 4 + 3] = 255;
+      }
+    }
+  }
+  return;
+}
+
+pub fn bytes_to_floats(dst : &mut Tensor<f32, [?, ?], Memory::HBM>, src : &Tensor<u8, [?, ?], Memory::HBM>, rows : i32, cols : i32) -> void {
+  spawn on(Topology::Device) {
+    for y in 0..rows across blocks {
+      for x in 0..cols across lanes(256) {
+        dst[y][x] = f32::from(src[y][x]);
       }
     }
   }

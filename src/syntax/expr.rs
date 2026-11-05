@@ -163,6 +163,12 @@ pub struct TransferExpr {
     /// lowering: two machines may implement `Memory::L2 -> Memory::SMEM` differently, and
     /// the one that runs here is the one sema picked, not whichever the lookup finds first.
     pub lowering: Option<(MemorySpace, MemorySpace, String)>,
+    /// `transfer_async(x, M)`: the copy gives a `Token`, whose `.wait()` gives the placed
+    /// tensor. The code generators copy as for `transfer` today, and the wait is the value.
+    pub is_async: bool,
+    /// Set by sema when the source is a `&` tensor and the edge is `: shared`. The result is still
+    /// a copy, but the lowering may skip the copy when every use of it only reads.
+    pub shared: bool,
     pub span: Span,
 }
 
@@ -187,6 +193,8 @@ impl TransferExpr {
             space,
             cost: None,
             lowering: None,
+            is_async: false,
+            shared: false,
             span,
         }
     }
@@ -508,6 +516,13 @@ pub struct UnsafeBlockExpr {
     /// A `tasks` block with a value: the type of that value, set by the checker. A code generator
     /// keeps the value in a slot of this type when an exit can leave the block.
     pub value_ty: Option<Type>,
+    /// The program wrote this block as the body of a closure, `|x| { .. }`. It is a plain block,
+    /// so the code in it cannot do what needs `unsafe`.
+    pub closure_body: bool,
+    /// The program wrote this block as `within(limit) { .. }` (F6a). It is a plain block whose
+    /// first statement is `vx::within_start(limit)`, so the code in it cannot do what needs
+    /// `unsafe`.
+    pub within: bool,
 }
 impl UnsafeBlockExpr {
     pub fn new(stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self {
@@ -520,6 +535,8 @@ impl UnsafeBlockExpr {
             fails_as: None,
             cancels_on_err: None,
             value_ty: None,
+            closure_body: false,
+            within: false,
         }
     }
 }
@@ -718,13 +735,33 @@ pub fn statement_always_exits(stmt: &Statement, never: &dyn Fn(&str) -> bool) ->
     }
 }
 
-/// Whether this call is `abort()` or `panic(msg)`, the two built-ins that end the program.
+/// Whether this call is `abort()` or `panic(msg)`, the two built-ins that end the program. A
+/// `panic` can also have a `Caller`, and after the checker it has a file and a line instead.
 pub fn is_abort_or_panic(c: &FunctionCallExpr) -> bool {
     match c.name.as_ref() {
         "abort" => c.args.is_empty(),
-        "panic" => c.args.len() == 1,
+        "panic" => (1..=3).contains(&c.args.len()),
         _ => false,
     }
+}
+
+/// What a checked `panic(msg, file, line)` prints, as the arguments of an `eprintln!`:
+/// `panic: <msg>`, and `  at <file>:<line>` on the next line.
+pub fn panic_message(c: &FunctionCallExpr) -> Vec<Expr> {
+    assert_eq!(
+        c.args.len(),
+        3,
+        "the checker gives each panic its file and line"
+    );
+    let text = |s: &str| Expr::StringLiteral(StringLiteralExpr::new(s.to_string(), c.span));
+    vec![
+        text("panic: "),
+        c.args[0].clone(),
+        text("\n  at "),
+        c.args[1].clone(),
+        text(":"),
+        c.args[2].clone(),
+    ]
 }
 
 /// The callee of the statement the checker puts before the drops of an exit from a `tasks`
@@ -1245,6 +1282,29 @@ pub fn locals_with_address_taken(stmts: &[Statement]) -> std::collections::HashS
     names
 }
 
+/// Whether `stmts` compare with a string literal: `==` or `!=` with one, or a `match` arm with a
+/// string literal pattern. Such code calls `core::c_str`.
+pub fn compares_with_a_string_literal(stmts: &[Statement]) -> bool {
+    let mut found = false;
+    visit_exprs(stmts, &mut |e| match e {
+        Expr::RelationalOp(r)
+            if matches!(r.op, RelationalOp::Eq | RelationalOp::NotEq)
+                && (matches!(&*r.lhs, Expr::StringLiteral(_))
+                    || matches!(&*r.rhs, Expr::StringLiteral(_))) =>
+        {
+            found = true
+        }
+        Expr::Match(m) if m.arms.iter().any(|arm| is_string_pattern(&arm.pattern)) => found = true,
+        _ => {}
+    });
+    found
+}
+
+/// Whether `pattern` is a string literal, such as `"hello" => ..`.
+pub fn is_string_pattern(pattern: &Pattern) -> bool {
+    matches!(pattern, Pattern::Literal(lit) if matches!(&**lit, Expr::StringLiteral(_)))
+}
+
 /// Calls `f` on every expression in `stmts`, each one before the expressions inside it. The
 /// tokens of a macro that was not expanded are not expressions, and are not visited.
 pub fn visit_exprs(stmts: &[Statement], f: &mut dyn FnMut(&Expr)) {
@@ -1394,6 +1454,161 @@ pub fn visit_expr(e: &Expr, f: &mut dyn FnMut(&Expr)) {
     }
 }
 
+/// Calls `f` on every expression in `stmts`, each one after the expressions inside it, so that
+/// `f` can replace an expression. See [`visit_exprs`].
+pub fn visit_exprs_mut(stmts: &mut [Statement], f: &mut dyn FnMut(&mut Expr)) {
+    for stmt in stmts {
+        match stmt {
+            Statement::LetDecl(l) => visit_expr_mut(&mut l.expr, f),
+            Statement::Return(r) => {
+                if let Some(e) = &mut r.expr {
+                    visit_expr_mut(e, f);
+                }
+            }
+            Statement::ExprStmt(e) => visit_expr_mut(&mut e.expr, f),
+            Statement::ForLoop(l) => {
+                visit_expr_mut(&mut l.iterable, f);
+                l.invariants.iter_mut().for_each(|e| visit_expr_mut(e, f));
+                visit_exprs_mut(&mut l.body, f);
+            }
+            Statement::Assign(a) => {
+                visit_expr_mut(&mut a.lhs, f);
+                visit_expr_mut(&mut a.rhs, f);
+            }
+            Statement::CompoundAssign(a) => {
+                visit_expr_mut(&mut a.lhs, f);
+                visit_expr_mut(&mut a.rhs, f);
+            }
+            Statement::Assert(a) => visit_expr_mut(&mut a.expr, f),
+            Statement::Loop(l) => {
+                l.invariants.iter_mut().for_each(|e| visit_expr_mut(e, f));
+                visit_exprs_mut(&mut l.body, f);
+            }
+            Statement::Break(_)
+            | Statement::Continue(_)
+            | Statement::MacroCall(_)
+            | Statement::Drop(_)
+            | Statement::Error(_) => {}
+        }
+    }
+}
+
+/// Calls `f` on every expression inside `e`, and then on `e`; see [`visit_exprs_mut`].
+pub fn visit_expr_mut(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
+    let all = |es: &mut [Expr], f: &mut dyn FnMut(&mut Expr)| {
+        es.iter_mut().for_each(|e| visit_expr_mut(e, f))
+    };
+    match e {
+        Expr::Identifier(_)
+        | Expr::Number(_)
+        | Expr::StringLiteral(_)
+        | Expr::TransferPredicate(_)
+        | Expr::MemorySpace(_)
+        | Expr::Topology(_)
+        | Expr::MacroCall(_)
+        | Expr::SizeOf(_) => {}
+        Expr::EnumVariant(v) => {
+            if let Some(payload) = &mut v.payload {
+                all(payload, f);
+            }
+        }
+        Expr::Transfer(t) => visit_expr_mut(&mut t.expr, f),
+        Expr::FunctionCall(c) => all(&mut c.args, f),
+        Expr::IndirectCall(c) => {
+            visit_expr_mut(&mut c.callee, f);
+            all(&mut c.args, f);
+        }
+        Expr::Array(a) => all(&mut a.elements, f),
+        Expr::MemberAccess(m) => visit_expr_mut(&mut m.base, f),
+        Expr::IndexAccess(i) => {
+            visit_expr_mut(&mut i.base, f);
+            visit_expr_mut(&mut i.index, f);
+        }
+        Expr::MethodCall(m) => {
+            visit_expr_mut(&mut m.base, f);
+            all(&mut m.args, f);
+        }
+        Expr::BinaryOp(b) => {
+            visit_expr_mut(&mut b.lhs, f);
+            visit_expr_mut(&mut b.rhs, f);
+        }
+        Expr::RelationalOp(r) => {
+            visit_expr_mut(&mut r.lhs, f);
+            visit_expr_mut(&mut r.rhs, f);
+        }
+        Expr::LogicalOp(l) => {
+            visit_expr_mut(&mut l.lhs, f);
+            visit_expr_mut(&mut l.rhs, f);
+        }
+        Expr::UnaryOp(u) => visit_expr_mut(&mut u.expr, f),
+        Expr::Borrow(b) => visit_expr_mut(&mut b.expr, f),
+        Expr::Dereference(d) => visit_expr_mut(&mut d.expr, f),
+        Expr::UnsafeBlock(b) => {
+            visit_exprs_mut(&mut b.stmts, f);
+            if let Some(r) = &mut b.ret {
+                visit_expr_mut(r, f);
+            }
+        }
+        Expr::ComptimeBlock(b) => {
+            visit_exprs_mut(&mut b.stmts, f);
+            if let Some(r) = &mut b.ret {
+                visit_expr_mut(r, f);
+            }
+        }
+        Expr::SpawnOn(b) => {
+            visit_exprs_mut(&mut b.stmts, f);
+            if let Some(r) = &mut b.ret {
+                visit_expr_mut(r, f);
+            }
+        }
+        Expr::TaskBlock(b) => {
+            visit_exprs_mut(&mut b.stmts, f);
+            if let Some(r) = &mut b.ret {
+                visit_expr_mut(r, f);
+            }
+        }
+        Expr::StructInit(s) => s.fields.iter_mut().for_each(|(_, e)| visit_expr_mut(e, f)),
+        Expr::If(i) => {
+            visit_expr_mut(&mut i.cond, f);
+            visit_exprs_mut(&mut i.then_block, f);
+            if let Some(b) = &mut i.else_block {
+                visit_exprs_mut(b, f);
+            }
+        }
+        Expr::Range(r) => {
+            visit_expr_mut(&mut r.start, f);
+            visit_expr_mut(&mut r.end, f);
+        }
+        Expr::Match(m) => {
+            visit_expr_mut(&mut m.expr, f);
+            m.arms
+                .iter_mut()
+                .for_each(|arm| visit_exprs_mut(&mut arm.body, f));
+        }
+        Expr::Grad(g) => all(&mut g.args, f),
+        Expr::Vjp(v) => {
+            all(&mut v.args, f);
+            visit_expr_mut(&mut v.cotangent, f);
+        }
+        Expr::Jvp(j) => {
+            all(&mut j.args, f);
+            visit_expr_mut(&mut j.tangent, f);
+        }
+        Expr::VecMacro(v) => all(&mut v.elements, f),
+        Expr::Closure(c) => visit_expr_mut(&mut c.body, f),
+        Expr::AsCast(c) => visit_expr_mut(&mut c.expr, f),
+        Expr::Print(p) => all(&mut p.args, f),
+        Expr::Println(p) => all(&mut p.args, f),
+        Expr::InlineMlir(m) => {
+            m.inputs
+                .iter_mut()
+                .for_each(|(_, e, _)| visit_expr_mut(e, f));
+            all(&mut m.clobbers, f);
+        }
+    }
+    f(e);
+}
+
 impl Expr {
     pub fn span(&self) -> Span {
         delegate_expr!(self, span)
@@ -1425,6 +1640,8 @@ impl Expr {
                 space: e.space.clone(),
                 cost: e.cost,
                 lowering: e.lowering.clone(),
+                is_async: e.is_async,
+                shared: e.shared,
                 span: e.span,
             }),
             // Type substitution does not touch topologies; topology substitution is done
@@ -1546,6 +1763,8 @@ impl Expr {
                 fails_as: e.fails_as.as_ref().map(|t| t.substitute(mapping)),
                 cancels_on_err: e.cancels_on_err.as_ref().map(|t| t.substitute(mapping)),
                 value_ty: e.value_ty.as_ref().map(|t| t.substitute(mapping)),
+                closure_body: e.closure_body,
+                within: e.within,
             }),
             Expr::StructInit(e) => {
                 let mut new_name = e.name.clone();

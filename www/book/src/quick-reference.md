@@ -46,6 +46,7 @@ when writing Vx with Rust habits.
 - A function that never returns has the type `-> !`, like `panic("..")`.
 - A last parameter `at : Caller` (`import core::panic;`) gets the place of each call that leaves
   it out: `at.location.file`, `.line` and `.column`. `Location::here()` is the place of that call.
+  `panic(msg, at)` reports that place instead of its own.
 
 ## Statements and expressions
 

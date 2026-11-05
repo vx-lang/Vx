@@ -200,6 +200,17 @@ vx_routing_worker_for_payload(const void *payload, size_t size) {
     // and what the manifest named is only legible with the spelling.
     vx_routing_note_unlisted(id, name);
   }
+  // A declared topology with `offload: false` may read `managed: cached` host
+  // memory with no transfer, and a worker of another node does not share it.
+  const char *offload = vx_payload_field(payload, size, "offload=");
+  if (w && offload && strcmp(offload, "0") == 0) {
+    fprintf(stderr,
+            "[Vx remote] FATAL: the manifest sends topology %s to the worker "
+            "at %s:%d, but its machine file does not say `offload: true`. "
+            "Add it, and give each host tensor of its regions a `transfer`\n",
+            name ? name : "(no name)", w->host, w->port);
+    abort();
+  }
   return w;
 }
 

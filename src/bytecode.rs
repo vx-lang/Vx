@@ -116,7 +116,8 @@ pub enum Opcode {
     /// Move a tensor to a memory space: `operand1` is the source, `type_idx` the result tensor (same
     /// element + shape, so the destination is sized to hold it). The low 32 bits of `imm` are the
     /// target space's dispatch id (`arch::memory_space_dispatch_id`); the high 32 bits are the
-    /// topology id of where the source is now, when its type is `Pinned`, and 0 otherwise. Backs
+    /// topology id of where the source is now, when its type is `Pinned`, and 0 otherwise. A
+    /// topology id is a positive `i32`, so bit 63 is free: it is [`TRANSFER_SHARED`]. Backs
     /// `transfer(src, Memory::X)`.
     Transfer = 28,
     /// One argument of the following `Call`: `operand1` is the argument's value register. The N-ary
@@ -330,14 +331,29 @@ pub enum Opcode {
     /// At the end of a task whose value is an `Err`: cancels the `tasks` block of the task (F3).
     TaskFailed = 75,
     /// Before the call of a `Drop` impl: turns cancellation off for this thread until `CancelOn`
-    /// (F6). A wait in the `drop` then cannot give `Cancelled`.
+    /// (F6). A wait in the `drop` then cannot give `Cancelled`, until the time limit in
+    /// `operand1`, an `f64` in seconds from the type's `Drop::wait_limit` (F6a).
     CancelOff = 76,
     /// After the call of a `Drop` impl: turns cancellation back on.
     CancelOn = 77,
     /// `h.join()`: waits for the task whose value is `operand1`, or is in the slot `operand1`.
     TaskJoin = 78,
+    /// The `let` of a struct or enum: the lifetime of its slot `operand1` (from `Alloca`)
+    /// starts, before the first store into it.
+    LifetimeStart = 79,
+    /// After the last use of a struct or enum: the lifetime of its slot `operand1` ends, so
+    /// LLVM can give the slot's memory to another value.
+    LifetimeEnd = 80,
+    /// The address of one tensor element, as a raw pointer: `&t[i]`. `operand1` is the element
+    /// place, a `TensorIndex` with `imm = 1`. The pointer points into the tensor's own buffer.
+    TensorElementAddress = 81,
+    /// The start of a `within` block (F6a): its deadline is `operand1` seconds from now, an
+    /// `f64`.
+    WithinStart = 82,
+    /// The end of a `within` block, on each path out of it.
+    WithinEnd = 83,
     /// Check that operand1 addresses the aggregate identified by type_idx. Generates no code.
-    CheckAggregate = 79,
+    CheckAggregate = 84,
 }
 
 /// A zero-based variant and payload field, stored entirely in an instruction's immediate.
@@ -388,6 +404,30 @@ pub const LANE_REDUCE_SUBGROUP: u64 = 4;
 /// `operand2` the tensor of indices, and the `Arg` just before is the count. The result is an
 /// `i32`.
 pub const LANE_REDUCE_ARGMAX: u64 = 8;
+/// `Opcode::LaneReduce` in the code of a subgroup: each tensor is `&tile[w]`, with `w` the index
+/// of the subgroup loop. So it is the row that a `TENSOR_STORE_LANE_ELEMENT` store of the
+/// subgroup writes.
+pub const LANE_REDUCE_OWN_ROW: u64 = 16;
+/// `Opcode::LaneReduce`: `lanes::sort`, an effect with no result. `operand1` is the tensor and
+/// `operand2` the count. The lanes of the block or the subgroup are in `imm >> 32`.
+pub const LANE_REDUCE_SORT: u64 = 32;
+/// `Opcode::LaneReduce` with `LANE_REDUCE_SORT`: from the largest value down.
+pub const LANE_REDUCE_DESCENDING: u64 = 64;
+/// `Opcode::LaneReduce`: `lanes::copy_async`. `operand1` is the tile in shared memory and
+/// `operand2` the tensor. The `Arg`s just before are the place of the tile, one for each of the
+/// `(imm >> 16) & 0xff` dimensions. The lanes of the block or the subgroup are in `imm >> 32`.
+/// The result is the `i32` token.
+pub const LANE_REDUCE_COPY: u64 = 128;
+/// `Opcode::LaneReduce`: the wait for the copy of the token `operand1`, an effect with no result.
+pub const LANE_REDUCE_COPY_WAIT: u64 = 256;
+
+/// `Opcode::TensorStore`: the place is `tile[t]` in a lane loop of the code of a block, with `t`
+/// the index of the loop. The loop goes from 0 over all of its lanes, so only lane `t` writes the
+/// element.
+pub const TENSOR_STORE_BLOCK_LANE_ELEMENT: u64 = 1;
+/// `Opcode::TensorStore`: as `TENSOR_STORE_BLOCK_LANE_ELEMENT`, but `tile[w][t]` in the code of a
+/// subgroup, with `w` the index of the subgroup loop.
+pub const TENSOR_STORE_SUBGROUP_LANE_ELEMENT: u64 = 2;
 
 /// `Opcode::LoopHint`: the loop was `across` a level of blocks.
 pub const LOOP_HINT_BLOCKS: u64 = 0;
@@ -404,6 +444,9 @@ pub const ACROSS_LANE: u64 = 0;
 /// `Opcode::AcrossId`: the step of a lane loop that shares its passes among the `imm >> 2` lanes:
 /// that number on the GPU, and 1 on the CPU copy, which has one lane.
 pub const ACROSS_STRIDE: u64 = 1;
+/// `Opcode::AcrossId`: the number of lanes in the block (`raw::lanes()`). It is the step of a
+/// lane loop that shares its passes among the most lanes an `i32` can count.
+pub const ACROSS_EVERY_LANE: u64 = ACROSS_STRIDE | (0x7fff_ffff << 2);
 /// `Opcode::AcrossId`: the index of this block on a grid axis.
 pub const ACROSS_BLOCK: u64 = 2;
 /// `Opcode::AcrossId`: the blocks on a grid axis.
@@ -411,6 +454,14 @@ pub const ACROSS_BLOCKS: u64 = 3;
 
 /// `Opcode::Barrier`'s `imm`: the lanes of one subgroup wait for each other, not the block.
 pub const BARRIER_SUBGROUP: u64 = 1;
+/// `Opcode::Barrier`'s `imm`: a `raw::barrier()` of a user transfer lowering. It is a
+/// `gpu.barrier` at once, as on the AST path.
+pub const BARRIER_GPU: u64 = 2;
+
+/// A bit of `Opcode::Transfer`'s `operand2`: a user `impl Transfer` lowering does the copy. The
+/// body follows the transfer, and the transfer only places the tile. The other bits are the
+/// string index of the arrival count, plus 1.
+pub const TRANSFER_USER_LOWERED: u32 = 1 << 31;
 
 /// `Opcode::TensorPad`'s `imm`: pad each axis (`t.pad(shape)`), not the flat row order.
 pub const TENSOR_PAD_EACH_AXIS: u64 = 1;
@@ -461,7 +512,9 @@ impl Opcode {
             69 => LoopHint,
             70 => EnumPayloadLoad,
             71 => LaneReduce,
-            79 => CheckAggregate,
+            79 => LifetimeStart,
+            80 => LifetimeEnd,
+            84 => CheckAggregate,
             8 => Call,
             9 => Ret,
             10 => Matmul,
@@ -504,6 +557,7 @@ impl Opcode {
             49 => TensorReshape,
             50 => TensorTranspose,
             51 => TensorMap,
+            81 => TensorElementAddress,
             _ => return None,
         })
     }
@@ -514,6 +568,9 @@ pub struct Register(pub u32);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TypeIdx(pub u32);
+
+/// Bit 63 of a `Transfer`'s `imm`: the source is a `&` tensor and the edge is `: shared`.
+pub const TRANSFER_SHARED: u64 = 1 << 63;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C)]

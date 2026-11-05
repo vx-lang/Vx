@@ -201,11 +201,11 @@ impl<'a> Parser<'a> {
                     "Expected ')' after assert condition",
                 )?;
                 self.consume(&TokenType::Semicolon, "Expected ';' after assert statement")?;
-                Ok(Statement::Assert(AssertStmt {
-                    expr: Box::new(expr),
+                Ok(Statement::Assert(AssertStmt::new(
+                    Box::new(expr),
                     msg,
-                    span: token_span,
-                }))
+                    token_span,
+                )))
             }
             TokenType::Return => {
                 self.advance();
@@ -335,6 +335,36 @@ impl<'a> Parser<'a> {
                 let ident_line = token_line;
                 let ident_end_col = token_col + token_len;
                 let next_token = self.peek_n(1);
+                // `within(limit) { .. }` (F6a). `within` is a word of its own only here, at the
+                // start of a statement and before `(`, so a machine file's `within:` stays a
+                // key.
+                if *s == "within" && next_token.kind == TokenType::LeftParen {
+                    let block = self.parse_within_block(token_span)?;
+                    return self.parse_expr_or_assign_stmt(block, token_span);
+                }
+                // `assume e;`. `assume` is a word of its own only before a name or a `!` with a
+                // space, so a function named `assume` can still be called.
+                let spaced_bang = next_token.kind == TokenType::Bang
+                    && !(next_token.line == ident_line && next_token.column == ident_end_col);
+                if *s == "assume"
+                    && (matches!(next_token.kind, TokenType::Identifier(_)) || spaced_bang)
+                {
+                    self.advance();
+                    let fact = self.parse_expr()?;
+                    self.consume(
+                        &TokenType::Semicolon,
+                        "Expected ';' after the fact of `assume`",
+                    )?;
+                    let call = Expr::FunctionCall(FunctionCallExpr::new(
+                        crate::syntax::stmt::ASSUME.into(),
+                        None,
+                        vec![fact],
+                        token_span,
+                    ));
+                    return Ok(Statement::ExprStmt(ExprStmtStmt::new(
+                        call, true, token_span,
+                    )));
+                }
 
                 let mut is_macro = false;
                 if next_token.kind == TokenType::Bang {
@@ -383,6 +413,41 @@ impl<'a> Parser<'a> {
                 self.parse_expr_or_assign_stmt(expr, token_span)
             }
         }
+    }
+
+    /// `within(limit) { .. }`: a plain block whose first statement is
+    /// `vx::within_start(limit)`. The checker ends the block's deadline on each path out of it.
+    fn parse_within_block(&mut self, span: Span) -> ParseResult<'a, Expr> {
+        self.advance();
+        self.consume(&TokenType::LeftParen, "Expected '(' after 'within'")?;
+        let limit = self.parse_expr()?;
+        self.consume(
+            &TokenType::RightParen,
+            "Expected ')' after the time limit of 'within'",
+        )?;
+        self.consume(
+            &TokenType::LeftBrace,
+            "Expected '{' after 'within(..)': 'within' starts a block",
+        )?;
+        let mut stmts = vec![Statement::ExprStmt(ExprStmtStmt::new(
+            Expr::FunctionCall(FunctionCallExpr::new(
+                crate::syntax::stmt::WITHIN_START.into(),
+                None,
+                vec![limit],
+                span,
+            )),
+            true,
+            span,
+        ))];
+        while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+            self.parse_statement_into(&mut stmts)?;
+        }
+        self.consume(&TokenType::RightBrace, "Expected '}'")?;
+        // The block is a statement, with no value. Its last expression is a statement too.
+        let mut block = UnsafeBlockExpr::new(stmts, None, span);
+        block.generated = true;
+        block.within = true;
+        Ok(Expr::UnsafeBlock(block))
     }
 
     /// `let (a, mut b, _) = e;`: a `let` of `e` under a name no source can spell, then one `let`

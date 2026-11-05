@@ -1,0 +1,52 @@
+//===- placed_kernel_whose_only_memory_use_is_a_call_on_amdgcn.vx ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The region's only memory use is a call to a helper. `arch: amdgcn` has no
+// kernel emission, so the region would run on the host, and `managed: explicit`
+// says the host cannot read that memory.
+//
+// RUN: not vxc %s --action emit-llvm 2>&1 | FileCheck %s
+// CHECK: this region is placed on `Topology::Dev`, but the compiler cannot
+// CHECK-SAME: its operands are in 'GPU_HBM', declared `managed: explicit`
+// CHECK: Falling back to the host would dereference device memory there
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: explicit
+}
+Topology Dev {
+  arch: amdgcn,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+}
+
+fn add_one(a: &Tensor<f32, [4], Memory::GPU_HBM>, o: &mut Tensor<f32, [4], Memory::GPU_HBM>) on Topology::Dev -> f32 {
+  for i in 0..4 {
+    o[i] = a[i] + 1.0;
+  }
+  return o[0];
+}
+
+fn main() -> i32 {
+  let mut a_h = unsafe { Tensor<f32, [4]>::uninit() };
+  let mut o_h = unsafe { Tensor<f32, [4]>::uninit() };
+  for i in 0..4 {
+    a_h[i] = 0.0;
+    o_h[i] = 0.0;
+  }
+  let d = transfer(a_h, Memory::GPU_HBM);
+  let mut o = transfer(o_h, Memory::GPU_HBM);
+
+  spawn on(Topology::Dev) {
+    add_one(&d, &mut o);
+  }
+
+  let back = transfer(o, Memory::CPU_DRAM);
+  print(back);
+  return 0;
+}

@@ -1,0 +1,39 @@
+//===- closures_that_return_in_a_wrong_way.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `return` in a closure gives the type of the closure, so the last value must have that type.
+// A closure with a written type must give a value of that type on each way out. The block body
+// of a closure is a plain block, so it does not allow what needs `unsafe`. A closure written
+// inside an `unsafe` block allows it, as the code around it does.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+fn main() -> i32 {
+  // CHECK-DAG: Error[E3002] at {{.*}}.vx:[[@LINE+1]]:15: this closure returns 'i32', so its last value must have that type. It gives 'bool'
+  let other = |x : i32| {
+    if x > 0 {
+      return 1;
+    }
+    true
+  };
+  // CHECK-DAG: Error[E3002] at {{.*}}.vx:[[@LINE+1]]:16: this closure returns 'i32', so its body must end with a value of that type or with a `return`
+  let no_end = |x : i32| -> i32 {
+    if x > 0 {
+      return 1;
+    }
+    println!("no value");
+  };
+  let mut v : i32 = 4;
+  let p = (&mut v) as *mut i32;
+  let read = |q : *mut i32| {
+    // CHECK-DAG: Error[E5002] at {{.*}}.vx:[[@LINE+1]]:5: Dereferencing a raw pointer requires an unsafe block
+    *q
+  };
+  let read_in_unsafe = unsafe { |q : *mut i32| { *q } };
+  println!("{} {} {} {}", other(1), no_end(1), read(p), read_in_unsafe(p));
+  return 0;
+}

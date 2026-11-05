@@ -5,11 +5,13 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// `unwrap` on a `None` stops the program with a fixed message.
+// `unwrap` on a `None` stops the program with a fixed message and the line of
+// the `unwrap`.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // RUN: not vxc %s --legacy-codegen 2>&1 | FileCheck %s
 // CHECK: panic: unwrap called on None
+// CHECK-NEXT: {{^}}  at {{.*}}core_option_unwrap_on_none.vx:20{{$}}
 // CHECK-NOT: after the panic
 import core::option;
 

@@ -421,6 +421,12 @@ impl MemorySpace {
     }
 }
 
+/// `on Topology::Any` says that a function runs where it is called. The parser writes it as a
+/// generic topology parameter named `ANY_TOPOLOGY_PARAM`. No program can write that name, so no
+/// parameter type can bind it.
+pub const ANY_TOPOLOGY: &str = "Any";
+pub const ANY_TOPOLOGY_PARAM: &str = "$Any";
+
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum TopologyKind {
     CPU,
@@ -1607,6 +1613,24 @@ impl Mangle for ElementType {
             _ => write!(w, "{}", self),
         }
     }
+}
+
+/// The placed tensor of the type of `transfer_async(x, M)`, `T` in `Token<T>`. A type that the
+/// program declares has a declaration, so a `struct Token` of the program is not a token. The
+/// code generators lower a token as its tensor.
+pub fn transfer_token_inner(ty: &Type) -> Option<&Type> {
+    match ty {
+        Type::GenericInstance(base, args) if args.len() == 1 => match base.as_ref() {
+            Type::Struct(name, None) if name.as_ref() == "Token" => args.first(),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether `ty` is the token of a `lanes::copy_async`, `Token<void>`.
+pub fn is_copy_token(ty: &Type) -> bool {
+    matches!(transfer_token_inner(ty), Some(Type::Struct(name, None)) if name.as_ref() == "void")
 }
 
 #[cfg(test)]

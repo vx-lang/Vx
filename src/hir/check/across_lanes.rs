@@ -24,6 +24,9 @@ pub(crate) fn holds_across(s: &Statement) -> bool {
         found |= match s {
             Statement::ForLoop(f) => f.across.is_some(),
             Statement::LetDecl(l) => crate::hir::check::lanes::bare_lanes_call(&l.expr).is_some(),
+            Statement::ExprStmt(e) => {
+                crate::hir::check::lanes::bare_lane_statement(&e.expr).is_some()
+            }
             _ => false,
         };
     });

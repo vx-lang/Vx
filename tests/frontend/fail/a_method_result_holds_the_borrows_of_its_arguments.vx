@@ -1,0 +1,72 @@
+//===- a_method_result_holds_the_borrows_of_its_arguments.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// The result of a method call can point where a reference argument points, as the result of a
+// function call can. So it holds the borrows that the argument holds, and a `&mut` that it is
+// made from stays borrowed while it is in use.
+
+import std::vec;
+
+struct Table {
+  n : i64,
+}
+
+impl Table {
+  fn first_of(self : &Table, v : &Vec<i64>) -> &i64 {
+    return v.get_ref(0);
+  }
+
+  fn pick(self : &Table, k : &i64) -> &i64 {
+    return k;
+  }
+
+  fn pick_mut(self : &Table, m : &mut i64) -> &mut i64 {
+    return m;
+  }
+}
+
+// A `push` can move the buffer that `r` points into.
+fn a_push_while_an_element_is_in_use(t : &Table) -> i64 {
+  let mut v = Vec<i64>::new();
+  v.push(7i64);
+  let rv = &v;
+  let r = t.first_of(rv);
+  // CHECK: Error[E4003] at {{.*}}.vx:[[@LINE+1]]:5: Cannot borrow 'v' as mutable because it is also borrowed as immutable
+  v.push(8i64);
+  return *r;
+}
+
+fn an_assignment_while_a_reference_to_it_is_in_use(t : &Table) -> i64 {
+  let mut y = 1i64;
+  let ry = &y;
+  let r = t.pick(ry);
+  // CHECK: Error[E4009] at {{.*}}.vx:[[@LINE+1]]:3: `y` is assigned while it is borrowed
+  y = 2i64;
+  return *r;
+}
+
+fn two_mut_paths_to_one_variable(t : &Table) -> i64 {
+  let mut x = 1i64;
+  let m = &mut x;
+  let p = t.pick_mut(m);
+  // CHECK: Error[E4002] at {{.*}}.vx:[[@LINE+1]]:4: Cannot access 'm' because it is mutably borrowed
+  *m = 5i64;
+  *p = 6i64;
+  return x;
+}
+
+fn main() -> i32 {
+  let t = Table {
+    n : 1i64
+  };
+  return (a_push_while_an_element_is_in_use(&t) + an_assignment_while_a_reference_to_it_is_in_use(&t)
+  + two_mut_paths_to_one_variable(&t)) as i32;
+}
+
+// CHECK: 3 error(s) emitted

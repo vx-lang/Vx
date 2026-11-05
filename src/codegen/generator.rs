@@ -120,6 +120,9 @@ pub struct MeliorGenerator<'c> {
     pub(crate) enum_payloads: std::cell::RefCell<EnumPayloads>,
     pub continue_blocks: Vec<*const melior::ir::Block<'c>>,
     pub allocs: std::collections::HashSet<String>,
+    /// The struct slots whose lifetime a `let` started, by their `llvm.alloca` value. Only
+    /// these get an end.
+    pub(crate) started_slots: std::collections::HashSet<usize>,
     /// One frame per block being lowered: what each name a `let` in the block shadows meant
     /// before it, put back when the block ends.
     pub(crate) blocks: Vec<Vec<Shadowed<'c>>>,
@@ -339,8 +342,11 @@ pub(crate) enum WaitingDrop<'c> {
         flag: Option<crate::symbol::Symbol>,
         field: bool,
     },
-    /// The statement that runs a drop, and whether it calls a `Drop` impl's `drop`.
-    Call(Box<Statement>, bool),
+    /// The statements that run a drop: a `Drop` impl's `drop`, with cancellation off around
+    /// it, or a `match` on an enum whose arms hold more drops.
+    Call(Vec<Statement>),
+    /// The `llvm.alloca` of a struct whose lifetime ends.
+    LifetimeEnd(melior::ir::Value<'c, 'c>),
 }
 
 impl<'c> MeliorGenerator<'c> {
@@ -938,6 +944,7 @@ impl<'c> MeliorGenerator<'c> {
             enum_payloads: Default::default(),
             continue_blocks: Vec::new(),
             allocs: std::collections::HashSet::new(),
+            started_slots: std::collections::HashSet::new(),
             blocks: Vec::new(),
             is_lvalue_context: false,
             place_indices: None,
@@ -1336,6 +1343,7 @@ impl<'c> MeliorGenerator<'c> {
     ) -> Result<melior::ir::Operation<'c>, LowerError> {
         self.env.clear();
         self.allocs.clear();
+        self.started_slots.clear();
         self.subspace_offsets.clear(); // per-function sub-space bump allocator (SS2)
         self.pointer_taken = syntax::locals_with_pointer_taken(&func.body);
         self.address_taken = syntax::locals_with_address_taken(&func.body);
@@ -1464,13 +1472,11 @@ impl<'c> MeliorGenerator<'c> {
                         .add_operands(&[c0])
                         .build()?,
                 );
-            } else if let syntax::Type::Struct(name, _) = &func.return_type {
-                if syntax::is_void_ty(&func.return_type) && name.as_ref() != "none" {
-                    current_block.append_operation(
-                        melior::ir::operation::OperationBuilder::new("func.return", self.loc())
-                            .build()?,
-                    );
-                }
+            } else if syntax::is_void_ty(&func.return_type) {
+                current_block.append_operation(
+                    melior::ir::operation::OperationBuilder::new("func.return", self.loc())
+                        .build()?,
+                );
             }
         }
 
@@ -1579,10 +1585,7 @@ impl<'c> MeliorGenerator<'c> {
             return Ok(Some(block));
         }
         let (cond, _ty, block) = self.generate_expr(&s.expr, block)?;
-        let msg = s
-            .msg
-            .clone()
-            .unwrap_or_else(|| "assertion failed".to_string());
+        let msg = s.failure_message();
         let op = melior::ir::operation::OperationBuilder::new("cf.assert", self.loc())
             .add_operands(&[cond])
             .add_attributes(&[(
@@ -1623,8 +1626,26 @@ impl<'c> MeliorGenerator<'c> {
         d: &syntax::stmt::DropStmt,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError> {
-        if let Some(stmt) = d.call_statement() {
-            let drop = WaitingDrop::Call(Box::new(stmt), d.call.is_some());
+        if d.ends_lifetime {
+            let (value, _) = *self.env.get(&d.name).ok_or_else(|| {
+                LowerError::from(format!(
+                    "the end of the lifetime of an unknown name {}",
+                    d.name
+                ))
+            })?;
+            // A struct that is not `mut` and not borrowed is a value with no slot.
+            if !self.started_slots.contains(&Self::slot_key(value)) {
+                return Ok(Some(block));
+            }
+            let drop = WaitingDrop::LifetimeEnd(value);
+            if d.after_value {
+                self.queued_drops.push(drop);
+                return Ok(Some(block));
+            }
+            return self.emit_waiting_drop(drop, block).map(Some);
+        }
+        if let Some(stmts) = d.call_statements() {
+            let drop = WaitingDrop::Call(stmts);
             if d.after_value {
                 self.queued_drops.push(drop);
                 return Ok(Some(block));
@@ -1668,21 +1689,40 @@ impl<'c> MeliorGenerator<'c> {
                 self.emit_drop(buffer, flag, field, block)?;
                 Ok(block)
             }
-            // A `Drop` impl runs with cancellation off (F6), so a `send` or a wait in it can
-            // finish.
-            WaitingDrop::Call(stmt, calls_drop) => {
-                if calls_drop {
-                    crate::codegen::lower::call_runtime_void(self, block, "vx_cancel_off")?;
-                }
-                let block = self
-                    .generate_statement_inner(&stmt, block)?
-                    .ok_or_else(|| LowerError::from("a drop ended its block".to_string()))?;
-                if calls_drop {
-                    crate::codegen::lower::call_runtime_void(self, block, "vx_cancel_on")?;
+            WaitingDrop::Call(stmts) => {
+                let mut block = block;
+                for stmt in &stmts {
+                    block = self
+                        .generate_statement_inner(stmt, block)?
+                        .ok_or_else(|| LowerError::from("a drop ended its block".to_string()))?;
                 }
                 Ok(block)
             }
+            WaitingDrop::LifetimeEnd(slot) => {
+                self.emit_lifetime_marker("llvm.intr.lifetime.end", slot, block)?;
+                Ok(block)
+            }
         }
+    }
+
+    /// The key of a struct's `llvm.alloca` in `started_slots`.
+    pub(crate) fn slot_key(slot: melior::ir::Value<'c, 'c>) -> usize {
+        melior::ir::ValueLike::to_raw(&slot).ptr as usize
+    }
+
+    /// `llvm.intr.lifetime.start` or `.end` on a struct's `llvm.alloca`. LLVM gives two slots
+    /// one place in the frame when their lifetimes do not overlap.
+    pub(crate) fn emit_lifetime_marker(
+        &mut self,
+        op: &str,
+        slot: melior::ir::Value<'c, 'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Result<(), LowerError> {
+        let marker = melior::ir::operation::OperationBuilder::new(op, self.loc())
+            .add_operands(&[slot])
+            .build()?;
+        block.append_operation(marker);
+        Ok(())
     }
 
     /// `vx.drop %buffer`, or `vx.drop %buffer unless %moved` when the tensor has a moved flag.
@@ -1833,9 +1873,9 @@ impl<'c> MeliorGenerator<'c> {
             // has no Vx-level definition to resolve -- it is a primitive, like `print`. Safe to
             // call; ending a process breaks no memory-safety property.
             //
-            // `panic(msg)` prints `panic: <msg>` and a newline to standard error first, as
-            // `eprintln!`, and then aborts with an empty message, which prints nothing. A kernel
-            // cannot print, so there it only aborts.
+            // `panic(msg)` prints `panic: <msg>`, and `  at <file>:<line>` on the next line, to
+            // standard error first, as `eprintln!`. Then it aborts with an empty message, which
+            // prints nothing. A kernel cannot print, so there it only aborts.
             Expr::FunctionCall(e) if syntax::is_abort_or_panic(e) => {
                 let mut block = block;
                 let mut abort_msg = "abort() called";
@@ -1843,13 +1883,7 @@ impl<'c> MeliorGenerator<'c> {
                     abort_msg = "panic";
                     if !self.in_spawn {
                         let print = Expr::Println(syntax::PrintlnExpr {
-                            args: vec![
-                                Expr::StringLiteral(syntax::StringLiteralExpr::new(
-                                    "panic: ".to_string(),
-                                    e.span,
-                                )),
-                                e.args[0].clone(),
-                            ],
+                            args: syntax::panic_message(e),
                             span: e.span,
                             to_stderr: true,
                         });
@@ -2237,6 +2271,14 @@ impl<'c> MeliorGenerator<'c> {
         &self,
         ty: &syntax::Type,
     ) -> Result<Type<'c>, crate::codegen::lower::LowerError> {
+        // A token of `transfer_async` is its tensor: the copy is done when it is made. A token of
+        // a lane copy is a number.
+        if syntax::types::is_copy_token(ty) {
+            return Ok(melior::ir::r#type::IntegerType::new(self.context, 32).into());
+        }
+        if let Some(inner) = syntax::types::transfer_token_inner(ty) {
+            return self.lower_type(inner);
+        }
         let ty_str = match ty {
             syntax::Type::Tensor(el_ty, dims, top) => {
                 return self.lower_tensor_type(el_ty, dims, top);
@@ -2309,7 +2351,7 @@ impl<'c> MeliorGenerator<'c> {
                         field_types.push(self.field_type_str(ty)?);
                     }
                     format!("!llvm.struct<\"{}\", ({})>", name, field_types.join(","))
-                } else if name.as_ref() == "void" || name.as_ref() == "!" {
+                } else if syntax::is_void_ty(ty) {
                     "none".to_string()
                 } else if name.contains('<') {
                     // A generic instance that was flattened to a bracketed nominal
@@ -2571,6 +2613,11 @@ impl<'c> MeliorGenerator<'c> {
             // to a type the checker already computed -- and a redundant annotation then decides
             // which code is generated. The flat path's inference already sees through it.
             Expr::UnsafeBlock(u) => self.infer_ast_type(u.ret.as_deref()?),
+            // An `if` that gives a value has the type of its first branch's last expression.
+            Expr::If(i) => match i.then_block.last()? {
+                syntax::Statement::ExprStmt(e) if !e.has_semi => self.infer_ast_type(&e.expr),
+                _ => None,
+            },
             // A number has the type the checker gave it.
             Expr::Number(n) => n.ty.clone().map(syntax::Type::Scalar),
             // `let p = &mut x` binds a reference. Recording that is what tells a later read of
@@ -2731,7 +2778,18 @@ impl<'c> MeliorGenerator<'c> {
             }
             // `transfer(x, space)` relocates x but preserves its shape, so a slice of a
             // transferred tensor (`q[i]` inside a spawn) can still recover its static dims.
-            Expr::Transfer(e) => self.infer_ast_type(&e.expr),
+            // The transfer of a borrowed tensor is a new tensor in `space`, not a borrow.
+            Expr::Transfer(e) => match self.infer_ast_type(&e.expr)? {
+                syntax::Type::Borrow { inner, .. } => match *inner {
+                    syntax::Type::Tensor(el, dims, _) => Some(syntax::Type::Tensor(
+                        el,
+                        dims,
+                        Some(syntax::Placement::at(e.space.clone())),
+                    )),
+                    _ => None,
+                },
+                other => Some(other),
+            },
             Expr::Dereference(d) => match self.infer_ast_type(&d.expr)? {
                 syntax::Type::Pointer(inner, ..)
                 | syntax::Type::Borrow { inner, .. }

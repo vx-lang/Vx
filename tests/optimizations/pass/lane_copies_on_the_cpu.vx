@@ -1,0 +1,147 @@
+//===- lane_copies_on_the_cpu.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `lanes::copy_async` on the CPU copy of a kernel (`CUDA_VISIBLE_DEVICES=`). Element `[r][c]` of
+// `x` is `100 * r + c + 1`. A block copies three 4x4 tiles of `x`, and the host prints the first
+// and the last element of each row of each tile. An element of a tile past the end of `x`, or
+// before its start, is zero. A loop then adds the tiles at `[0, 4 * k]` with two copies in each
+// pass, and again as a pipeline that starts the next copy before it waits for this one. Last,
+// each of two subgroups copies a tile into its own row of a tensor.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s -j 2 --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+
+// The tile at `[2, 3]`.
+// CHECK: tile 0 row 0: 204 207
+// CHECK-NEXT: tile 0 row 1: 304 307
+// CHECK-NEXT: tile 0 row 2: 404 407
+// CHECK-NEXT: tile 0 row 3: 504 507
+// The tile at `[8, 8]`: rows 10 and 11, and columns 10 and 11, are past the end.
+// CHECK-NEXT: tile 1 row 0: 809 0
+// CHECK-NEXT: tile 1 row 1: 909 0
+// CHECK-NEXT: tile 1 row 2: 0 0
+// CHECK-NEXT: tile 1 row 3: 0 0
+// The tile at `[-1, 0]`: row -1 is before the start.
+// CHECK-NEXT: tile 2 row 0: 0 0
+// CHECK-NEXT: tile 2 row 1: 1 4
+// CHECK-NEXT: tile 2 row 2: 101 104
+// CHECK-NEXT: tile 2 row 3: 201 204
+// The first element of row `r` of the sum adds columns 0, 4, 8 and 12 of row `r` of `x`, and the
+// last element columns 3, 7, 11 and 15. The columns from 10 on are past the end.
+// CHECK-NEXT: sum row 0: 15 12
+// CHECK-NEXT: sum row 3: 915 612
+// The pipeline adds the same tiles, so it gives the same sums.
+// CHECK-NEXT: pipeline row 0: 15 12
+// CHECK-NEXT: pipeline row 3: 915 612
+// Subgroup `w` copies the tile at `[4 * w + 1, 2]`, and gives the first column of the tile.
+// CHECK-NEXT: subgroup 0: 103 203 303 403
+// CHECK-NEXT: subgroup 1: 503 603 703 803
+
+fn main() -> i32 {
+  let mut src = Tensor<f32, [10, 10]>::fill(0.0);
+  for r in 0..10 {
+    for c in 0..10 {
+      src[r][c] = (100 * r + c + 1) as f32;
+    }
+  }
+  let x = transfer(src, Memory::HBM);
+  let mut out = transfer(Tensor<f32, [48]>::fill(-1.0), Memory::HBM);
+  let mut sums = transfer(Tensor<f32, [16]>::fill(-1.0), Memory::HBM);
+  let mut piped = transfer(Tensor<f32, [16]>::fill(-1.0), Memory::HBM);
+  let mut columns = transfer(Tensor<f32, [8]>::fill(-1.0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tiles = unsafe {
+        Tensor<f32, [2, 4, 4], Memory::SMEM>::uninit()
+      };
+      let first = lanes::copy_async(&mut tiles[0], &x, [2, 3]);
+      let second = lanes::copy_async(&mut tiles[1], &x, [8, 8]);
+      first.wait();
+      for t in 0..16 across lanes(32) {
+        out[t] = tiles[0][t / 4][t % 4];
+      }
+      second.wait();
+      for t in 0..16 across lanes(32) {
+        out[16 + t] = tiles[1][t / 4][t % 4];
+      }
+      let third = lanes::copy_async(&mut tiles[0], &x, [-1, 0]);
+      third.wait();
+      for t in 0..16 across lanes(32) {
+        out[32 + t] = tiles[0][t / 4][t % 4];
+      }
+      let mut acc = unsafe { Tensor<f32, [16], Memory::SMEM>::uninit() };
+      for t in 0..16 across lanes(32) {
+        acc[t] = 0.0;
+      }
+      for k in 0..2 {
+        let even = lanes::copy_async(&mut tiles[0], &x, [0, 8 * k]);
+        let odd = lanes::copy_async(&mut tiles[1], &x, [0, 8 * k + 4]);
+        even.wait();
+        for t in 0..16 across lanes(32) {
+          acc[t] = acc[t] + tiles[0][t / 4][t % 4];
+        }
+        odd.wait();
+        for t in 0..16 across lanes(32) {
+          acc[t] = acc[t] + tiles[1][t / 4][t % 4];
+        }
+      }
+      for t in 0..16 across lanes(32) {
+        sums[t] = acc[t];
+      }
+      // The pipeline: while the lanes add one tile, the copy of the next one runs.
+      for t in 0..16 across lanes(32) {
+        acc[t] = 0.0;
+      }
+      let mut even = lanes::copy_async(&mut tiles[0], &x, [0, 0]);
+      for k in 0..2 {
+        let odd = lanes::copy_async(&mut tiles[1], &x, [0, 8 * k + 4]);
+        even.wait();
+        for t in 0..16 across lanes(32) {
+          acc[t] = acc[t] + tiles[0][t / 4][t % 4];
+        }
+        even = lanes::copy_async(&mut tiles[0], &x, [0, 8 * k + 8]);
+        odd.wait();
+        for t in 0..16 across lanes(32) {
+          acc[t] = acc[t] + tiles[1][t / 4][t % 4];
+        }
+      }
+      // The last copy, at column 16, is past the end of `x`, and nothing adds it.
+      even.wait();
+      for t in 0..16 across lanes(32) {
+        piped[t] = acc[t];
+      }
+      let mut part = unsafe { Tensor<f32, [2, 4, 4], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        let copy = lanes::copy_async(&mut part[w], &x, [4 * w + 1, 2]);
+        copy.wait();
+        for t in 0..4 across lanes(32) {
+          columns[w * 4 + t] = part[w][t][0];
+        }
+      }
+    }
+  }
+  let o = transfer(out, Memory::CPU_DRAM);
+  for tile in 0..3 {
+    for row in 0..4 {
+      let at = tile * 16 + row * 4;
+      println!("tile {} row {}: {} {}", tile, row, o[at], o[at + 3]);
+    }
+  }
+  let s = transfer(sums, Memory::CPU_DRAM);
+  println!("sum row 0: {} {}", s[0], s[3]);
+  println!("sum row 3: {} {}", s[12], s[15]);
+  let p = transfer(piped, Memory::CPU_DRAM);
+  println!("pipeline row 0: {} {}", p[0], p[3]);
+  println!("pipeline row 3: {} {}", p[12], p[15]);
+  let c = transfer(columns, Memory::CPU_DRAM);
+  for w in 0..2 {
+    let at = w * 4;
+    println!("subgroup {}: {} {} {} {}", w, c[at], c[at + 1], c[at + 2], c[at + 3]);
+  }
+  return 0;
+}

@@ -502,7 +502,10 @@ impl<'a> TypeChecker<'a> {
             Statement::LetDecl(decl) if crate::hir::check::tasks::is_spawn(&decl.expr) => {
                 self.check_spawn_let(decl, consume)
             }
-            Statement::LetDecl(decl) => self.check_let_decl_stmt(decl, consume),
+            Statement::LetDecl(decl) => {
+                self.check_let_decl_stmt(decl, consume);
+                self.note_token_let(&decl.name, decl.span);
+            }
             Statement::ForLoop(floop) => self.check_for_loop_stmt(floop, consume, return_type),
             Statement::Loop(lp) => self.check_loop_stmt(lp, return_type),
             // The `Err` arm of the join of a task that failed: it leaves the `tasks` block,
@@ -518,6 +521,7 @@ impl<'a> TypeChecker<'a> {
             }
             Statement::Break(b) => {
                 self.check_task_exit(&Statement::Break(b.clone()));
+                self.pointer_facts_at_break();
                 self.drops_exit("break", &b.span, crate::hir::check::drops::ExitTo::Loop)
             }
             Statement::Continue(c) => {
@@ -526,6 +530,7 @@ impl<'a> TypeChecker<'a> {
             }
             Statement::Assign(AssignStmt { lhs, rhs, span }) => {
                 let span = *span;
+                self.check_token_overwrite(lhs, &span);
                 if let Some(call) = self.container_store(lhs, None, rhs, span) {
                     *stmt = Statement::ExprStmt(ExprStmtStmt::new(call, true, span));
                     self.check_statement(stmt, return_type, consume);
@@ -573,7 +578,7 @@ impl<'a> TypeChecker<'a> {
                 // call against.
                 let before = self.consteval_snapshot();
                 let scopes = self.consteval_scopes();
-                let saved_borrows = self.borrow.snapshot();
+                let saved_borrows = self.borrows_before_statement();
                 self.value_unused = true;
                 // `v;` reads `v`: it does not move it.
                 let consume = consume && !matches!(expr, Expr::Identifier(_));
@@ -775,7 +780,10 @@ impl<'a> TypeChecker<'a> {
         // proofs (a stale `i == 1` beside a new `i == 9` proves anything). Neutralized
         // for mutable bindings too -- they record no new fact, but they still shadow.
         self.set_mutable(name.as_ref(), *_is_mut);
+        let pointer = self.pointer_value_for(name.as_ref(), expr);
         self.neutralize_facts_mentioning(name.as_ref());
+        self.note_pointer_value(name.as_ref(), pointer);
+        self.pointer_facts_name_the_result(name.as_ref(), expr);
         if !*_is_mut {
             let id_expr = Expr::Identifier(IdentifierExpr {
                 name: name.clone(),
@@ -1144,12 +1152,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
-        for inv in invariants.iter() {
-            if !self.prove_expr(inv) {
-                self.report_unproven_invariant(inv, false);
-            }
-            self.consteval.constraints.push(inv.clone());
-        }
+        self.assume_loop_invariants(invariants, body);
 
         // What is known before the body is walked, and where each name lives. Both are
         // needed after: the walk folds one iteration's worth of assignments into the
@@ -1187,7 +1190,10 @@ impl<'a> TypeChecker<'a> {
                 bounds,
                 used: false,
             });
+        let pointers_at_head = self.pointer_facts.clone();
+        self.pointer_facts_enter_loop();
         self.check_loop_body(body, return_type, header);
+        self.pointer_facts_after_a_loop(Some(pointers_at_head));
         if let Some(c) = self.unroll_candidates.pop().filter(|c| c.used) {
             *unroll = c.bounds;
         }
@@ -1292,6 +1298,26 @@ impl<'a> TypeChecker<'a> {
         );
     }
 
+    /// Proves each invariant on entry to a loop, from the facts before it. The body then starts
+    /// from the facts that its writes cannot make false, and the invariants.
+    fn assume_loop_invariants(&mut self, invariants: &[Expr], body: &[Statement]) {
+        let facts_before = self.consteval.constraints.len();
+        for inv in invariants {
+            if !self.prove_expr(inv) {
+                self.report_unproven_invariant(inv, false);
+            }
+            self.consteval.constraints.push(inv.clone());
+        }
+        self.consteval.constraints.truncate(facts_before);
+        self.pointer_facts_events_then_changes(
+            |this| this.end_pointer_facts_a_loop_can_end(body),
+            |this| this.neutralize_facts_a_loop_writes(body),
+        );
+        self.consteval
+            .constraints
+            .extend(invariants.iter().cloned());
+    }
+
     fn check_loop_stmt(&mut self, lp: &mut LoopStmt, return_type: &Type) {
         let LoopStmt {
             body,
@@ -1304,12 +1330,7 @@ impl<'a> TypeChecker<'a> {
         self.push_releasing_scope();
 
         let prev_constraints_len = self.consteval.constraints.len();
-        for inv in invariants.iter() {
-            if !self.prove_expr(inv) {
-                self.report_unproven_invariant(inv, false);
-            }
-            self.consteval.constraints.push(inv.clone());
-        }
+        self.assume_loop_invariants(invariants, body);
 
         // See `check_for_loop_stmt`: the single pass the checker makes over the body is not
         // what the program does, so what it folded is settled up once the loop has been run.
@@ -1330,7 +1351,9 @@ impl<'a> TypeChecker<'a> {
         };
         self.cancel_loops
             .push(crate::hir::check::cancel_loops::loop_exits(body));
+        self.pointer_facts_enter_loop();
         self.check_loop_body(body, return_type, header);
+        self.pointer_facts_after_a_loop(None);
         self.cancel_loops.pop();
         self.drops_exit_loop();
         self.settle_loop_moves(marks_before, outer_depth, body, &loop_span);
@@ -1406,9 +1429,8 @@ impl<'a> TypeChecker<'a> {
         let Some((root, path)) = direct.or_else(|| self.reborrow_base_and_path(lhs)) else {
             return;
         };
-        let shared = self
-            .borrow
-            .live_borrows(&root)
+        let live = self.borrow.live_borrows(&root).to_vec();
+        let shared = live
             .iter()
             // A borrow with no borrower is a temporary, `f(&x)`, over by the end of its statement.
             .find(|b| {
@@ -1420,7 +1442,7 @@ impl<'a> TypeChecker<'a> {
                     })
                     && crate::hir::places::paths_may_alias(&path, &b.path)
             })
-            .map(crate::hir::check::tasks::held_by_task_note);
+            .map(|b| self.held_by_note(b));
         if let Some(note) = shared {
             let mut place = crate::hir::places::display_place(&root, &path);
             if through_deref {
@@ -1692,8 +1714,27 @@ impl<'a> TypeChecker<'a> {
                 _ => None,
             }
         }
+        let pointer = match lhs {
+            Expr::Identifier(id) => self.pointer_value_for(id.name.as_ref(), rhs),
+            _ => None,
+        };
         if let Some(root) = assigned_root(lhs) {
-            self.neutralize_facts_mentioning(root.as_ref());
+            // A write through a raw pointer changes the memory, but the pointer keeps its value.
+            let through_a_pointer = !matches!(lhs, Expr::Identifier(_))
+                && matches!(self.lookup(root.as_ref()), Some((Type::Pointer(..), _)));
+            if through_a_pointer {
+                self.note_a_change_behind(root.to_string());
+            } else {
+                self.note_a_change_to_variable(root.to_string());
+            }
+        }
+        if let Expr::Identifier(id) = lhs {
+            self.note_pointer_value(id.name.as_ref(), pointer);
+        }
+        // The old value of a type with a drop is dropped, which can free memory.
+        if !self.drops_glue(&lhs_ty).is_empty() {
+            let at = self.current_statement_span;
+            self.pointer_facts_event(at, |_| "an assignment that drops the old value".to_string());
         }
         // Keep the compile-time value of the assigned variable in step with the assignment.
         // An assignment the evaluator cannot compute makes the variable unknown rather than
@@ -1970,6 +2011,7 @@ impl<'a> TypeChecker<'a> {
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                 );
             }
+            self.prove_pointer_ensures(None, *span, "at this `return`");
             self.drops_exit("return", span, crate::hir::check::drops::ExitTo::Function);
             return false;
         };
@@ -1981,6 +2023,7 @@ impl<'a> TypeChecker<'a> {
         self.consteval.comptime_return_is_value = false;
         let ty = crate::hir::check::operators::round_narrow_arithmetic(expr, ty, Some(return_type));
         self.expected_type = prev_expected;
+        self.prove_pointer_ensures(Some(expr), *span, "at this `return`");
         self.drops_exit("return", span, crate::hir::check::drops::ExitTo::Function);
 
         let mut expected_ty = return_type.clone();
@@ -2065,7 +2108,13 @@ impl<'a> TypeChecker<'a> {
     /// Check an `assert`: require a boolean condition, evaluate it at comptime when possible, and
     /// either flag a failure or fold it into the SMT constraints (Verified<T> discharge).
     fn check_assert_stmt(&mut self, assert: &mut AssertStmt, consume: bool, return_type: &Type) {
-        let AssertStmt { expr, msg, span } = assert;
+        let AssertStmt {
+            expr,
+            msg,
+            span,
+            at,
+        } = assert;
+        *at = Some(format!("{}:{}", self.file_name(), span.line));
         let ty = self.check_expr_type_flag(expr, consume);
         if ty != Type::Scalar(ElementType::Bool) {
             self.errors
@@ -2122,18 +2171,35 @@ impl<'a> TypeChecker<'a> {
 
     /// `e` with each call replaced by a fresh name, `$call_N`. For a callee that declares
     /// `ensures`, each one is pushed onto `facts` with the call's arguments in place of the
-    /// parameters and the fresh name in place of `return`.
+    /// parameters and the fresh name in place of `return`. A method call is a call of its
+    /// instance by then, with the receiver as the first argument.
     fn abstract_calls(&self, e: &Expr, calls: &mut usize, facts: &mut Vec<Expr>) -> Expr {
         let mut sub = |x: &Expr| Box::new(self.abstract_calls(x, calls, facts));
         match e {
             Expr::FunctionCall(c) => {
-                let args: Vec<Expr> = c.args.iter().map(|a| *sub(a)).collect();
+                let args: Vec<Expr> = c
+                    .args
+                    .iter()
+                    .map(|a| *sub(hir::prover::without_borrow(a)))
+                    .collect();
                 let result = Expr::Identifier(IdentifierExpr {
                     name: format!("$call_{}", *calls).into(),
                     span: c.span,
                 });
                 *calls += 1;
-                if let Some(func) = self.env.syntax_functions.get(c.name.as_ref()) {
+                let callee = self
+                    .env
+                    .syntax_functions
+                    .get(c.name.as_ref())
+                    .copied()
+                    .or_else(|| {
+                        self.mono
+                            .functions
+                            .iter()
+                            .find(|(f, _)| f.name == c.name)
+                            .map(|(f, _)| f)
+                    });
+                if let Some(func) = callee {
                     let mut names: HashMap<crate::symbol::Symbol, Expr> = func
                         .params
                         .iter()
@@ -2173,6 +2239,11 @@ impl<'a> TypeChecker<'a> {
                 let mut u = u.clone();
                 u.expr = sub(&u.expr);
                 Expr::UnaryOp(u)
+            }
+            Expr::AsCast(c) => {
+                let mut c = c.clone();
+                c.expr = sub(&c.expr);
+                Expr::AsCast(c)
             }
             _ => e.clone(),
         }
@@ -2227,6 +2298,13 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // A goal that is one of the facts needs no solver.
+        if let Ok(smt) = prover.lower_term(&goal, &|n| self.prover_int_type(n)) {
+            if prover.has_fact(&smt) {
+                return true;
+            }
+        }
+
         // To prove `goal` holds under the facts, assert `!goal` and check for unsatisfiability.
         let negated_expr = Expr::UnaryOp(UnaryOpExpr {
             op: UnaryOp::Not,
@@ -2245,6 +2323,102 @@ impl<'a> TypeChecker<'a> {
             Err(e) => {
                 self.errors.push_warning(format!("SMT solver error: {}", e));
                 false
+            }
+        }
+    }
+
+    /// Whether the facts prove `goal`, whose sums and comparisons are of exact integers. A
+    /// fact that the prover cannot express is left out, and `prove_expr` warns about it.
+    pub(crate) fn prove_exact(&mut self, goal: &crate::hir::check::pointer_facts::Exact) -> bool {
+        let mut prover = hir::prover::SmtProver::new();
+        let mut calls = 0;
+        let mut facts = Vec::new();
+        let constraints: Vec<Expr> = self
+            .consteval
+            .constraints
+            .iter()
+            .map(|c| self.abstract_calls(c, &mut calls, &mut facts))
+            .collect();
+        let smt = self.lower_exact(goal, &mut prover, &mut calls, &mut facts);
+        for constraint in constraints.iter().chain(&facts) {
+            let _ = prover.add_constraint(constraint, &|n| self.prover_int_type(n));
+        }
+        let Some(smt) = smt else {
+            return false;
+        };
+        if self.holds_by_form(goal, &mut prover, &mut calls, &mut facts) {
+            return true;
+        }
+        prover.add_smt(format!("(not {smt})"));
+        matches!(prover.prove(), Ok(false))
+    }
+
+    /// Whether `goal` holds by its form, with no solver: each part of an `and`, or one part of an
+    /// `or`, holds. A comparison `a <= b` holds when `a` and `b` are the same term, or `a` is `0`
+    /// and a fact says that `b` is not negative. The pointer `ensures` of `Vec` hold in this way, so
+    /// a program that uses `Vec` needs no solver.
+    fn holds_by_form(
+        &self,
+        goal: &crate::hir::check::pointer_facts::Exact,
+        prover: &mut hir::prover::SmtProver,
+        calls: &mut usize,
+        facts: &mut Vec<Expr>,
+    ) -> bool {
+        use crate::hir::check::pointer_facts::Exact;
+        match goal {
+            Exact::And(gs) => gs
+                .iter()
+                .all(|g| self.holds_by_form(g, prover, calls, facts)),
+            Exact::Or(gs) => gs
+                .iter()
+                .any(|g| self.holds_by_form(g, prover, calls, facts)),
+            Exact::Le(a, b) => {
+                let a = self.lower_exact(a, prover, calls, facts);
+                let b = self.lower_exact(b, prover, calls, facts);
+                let (Some(a), Some(b)) = (a, b) else {
+                    return false;
+                };
+                a == b
+                    || a == "0"
+                        && (prover.has_fact(&format!("(>= {b} 0)"))
+                            || prover.has_fact(&format!("(<= 0 {b})")))
+            }
+            Exact::Term(_) | Exact::Sum(_) => false,
+        }
+    }
+
+    fn lower_exact(
+        &self,
+        goal: &crate::hir::check::pointer_facts::Exact,
+        prover: &mut hir::prover::SmtProver,
+        calls: &mut usize,
+        facts: &mut Vec<Expr>,
+    ) -> Option<String> {
+        use crate::hir::check::pointer_facts::Exact;
+        let mut all = |gs: &[Exact], op: &str, empty: &str| -> Option<String> {
+            let parts: Option<Vec<String>> = gs
+                .iter()
+                .map(|g| self.lower_exact(g, prover, calls, facts))
+                .collect();
+            let parts = parts?;
+            Some(if parts.is_empty() {
+                empty.to_string()
+            } else {
+                format!("({op} {})", parts.join(" "))
+            })
+        };
+        match goal {
+            Exact::Term(e) => {
+                let e = self.abstract_calls(e, calls, facts);
+                prover.lower_term(&e, &|n| self.prover_int_type(n)).ok()
+            }
+            Exact::Sum(ts) => all(ts, "+ 0", "0"),
+            Exact::And(gs) => all(gs, "and", "true"),
+            Exact::Or(gs) => all(gs, "or", "false"),
+            Exact::Le(a, b) => {
+                let a = self.lower_exact(a, prover, calls, facts)?;
+                let b = self.lower_exact(b, prover, calls, facts)?;
+                Some(format!("(<= {a} {b})"))
             }
         }
     }

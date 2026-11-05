@@ -138,6 +138,9 @@ pub enum EdgeCost {
     /// not scale with transfer size; kept for edges no bandwidth figure describes, and reported as
     /// such rather than quoted as a time.
     Fixed(u32),
+    /// `transfer A -> B : shared` -- both sides address the same memory, as on a Mac with unified
+    /// memory. The hop moves no bytes: the program only waits for the GPU.
+    Shared,
 }
 
 impl EdgeCost {
@@ -151,12 +154,13 @@ impl EdgeCost {
     /// hops instead picked a route 3.57x slower than one the same graph already contained.
     pub fn routing_weight(self) -> u32 {
         match self {
-            EdgeCost::Derived | EdgeCost::Rate(_) => 1,
+            EdgeCost::Derived | EdgeCost::Rate(_) | EdgeCost::Shared => 1,
             EdgeCost::Fixed(c) => c,
         }
     }
 
-    /// This edge's own cost per byte in attoseconds, when the edge declares a link rate.
+    /// This edge's own cost per byte in attoseconds, when the edge declares a link rate. A
+    /// `Shared` edge costs 0, because it copies nothing.
     ///
     /// `None` for `Derived` (the containment tree prices it -- see `resolve_derived_route_costs`),
     /// for `Fixed` (a relative latency is not a time), and for a link declared in `B/cyc`, which
@@ -168,6 +172,7 @@ impl EdgeCost {
             EdgeCost::Rate(bw) if bw.per == crate::syntax::RatePer::Second && bw.bytes > 0 => {
                 u64::try_from(ATTOS_PER_SEC / bw.bytes as u128).ok()
             }
+            EdgeCost::Shared => Some(0),
             _ => None,
         }
     }
@@ -217,6 +222,10 @@ pub struct TopologyDescriptor {
     /// The levels of a launch that `across` loops name -- `levels: [..]` in the declaration,
     /// outside in. `None` when the fleet file gives none: an `across` loop on it is E6032.
     pub levels: Option<Vec<Level>>,
+    /// The fleet may run this topology on a worker of another node -- `offload: true` in the
+    /// declaration. Such a worker does not share the memory of this node, so a host tensor in its
+    /// region needs a `transfer`, also from `managed: cached` memory. False by default.
+    pub offload: bool,
 }
 
 /// What a level of a launch is, given by its place in `levels:`: the first is a block, the last
@@ -601,6 +610,9 @@ pub enum DeviceTarget {
     /// The Intel XPU route (SPIR-V + Level Zero). Its storage-class numbering comes from
     /// MLIR's `SPIRVTypeConverter` and is added with the pipeline, not guessed here first.
     Spirv64,
+    /// The Apple GPU. Vx writes Metal Shading Language for it, and the MSL printer reads the
+    /// NVPTX numbers: 3 is `threadgroup` memory.
+    AppleGpu,
 }
 
 impl DeviceTarget {
@@ -614,15 +626,19 @@ impl DeviceTarget {
             "nvptx64" => Some(DeviceTarget::Nvptx64),
             "amdgcn" => Some(DeviceTarget::AmdGcn),
             "spirv64" => Some(DeviceTarget::Spirv64),
+            "applegpu" => Some(DeviceTarget::AppleGpu),
             _ => None,
         }
     }
 
     /// The most lanes in a block and the lanes in a subgroup, on a target whose code generator
-    /// can launch the levels of `across` loops. Only NVPTX can today.
+    /// can launch the levels of `across` loops.
     pub fn launch_limits(self) -> Option<(u64, u64)> {
         match self {
             DeviceTarget::Nvptx64 => Some((1024, 32)),
+            // spec: Metal Feature Set Tables: at most 1024 threads in a threadgroup, and a
+            // SIMD-group of 32 threads on Apple GPUs.
+            DeviceTarget::AppleGpu => Some((1024, 32)),
             DeviceTarget::X86_64
             | DeviceTarget::Aarch64
             | DeviceTarget::AmdGcn
@@ -634,7 +650,7 @@ impl DeviceTarget {
     pub fn address_space(self, space: AddressSpace) -> i32 {
         match self {
             // NVPTX: 0 generic, 1 global, 3 shared, 5 local.
-            DeviceTarget::Nvptx64 => space.nvptx_addrspace(),
+            DeviceTarget::Nvptx64 | DeviceTarget::AppleGpu => space.nvptx_addrspace(),
             // No other target's pipeline exists yet, so today's numbers stand in until that
             // target's own table replaces this arm. An `arch:` naming nothing never becomes a
             // `DeviceTarget`: `from_arch` returns `None` and the caller refuses it, so no arm
@@ -892,6 +908,7 @@ fn builtin_descriptors() -> HashMap<crate::syntax::TopologyKind, TopologyDescrip
         dtypes: None,
         chip: None,
         levels: None,
+        offload: false,
     };
     let mut m = HashMap::new();
     m.insert(K::CPU, d(CPUDRAM, &[CPUDRAM, NPUHBM]));
@@ -1392,6 +1409,15 @@ impl TransferCostGraph {
         })
     }
 
+    /// Whether a machine file declares `from -> to` as `: shared`, a hop that moves no bytes.
+    pub fn is_shared_edge(&self, from: &MemorySpace, to: &MemorySpace) -> bool {
+        self.descriptors.values().any(|d| {
+            d.transfers
+                .iter()
+                .any(|e| &e.from == from && &e.to == to && e.cost == EdgeCost::Shared)
+        })
+    }
+
     /// The cheapest route from `source` to `target`, and the declared-weight sum along it.
     ///
     /// Route selection minimises PREDICTED COST, not hop count. The old objective
@@ -1801,6 +1827,10 @@ mod tests {
             DeviceTarget::from_arch("spirv64"),
             Some(DeviceTarget::Spirv64)
         );
+        assert_eq!(
+            DeviceTarget::from_arch("applegpu"),
+            Some(DeviceTarget::AppleGpu)
+        );
         assert_eq!(DeviceTarget::from_arch("riscv64"), None);
 
         // No declared arch at all gives today's numbers -- the flat path has no arch for a
@@ -1811,7 +1841,9 @@ mod tests {
 
         // Every arch this compiler knows answers today's numbers too: the SPIR-V arm in
         // particular gets its storage classes from the pipeline, not a constant guessed here.
-        for arch in ["x86_64", "aarch64", "nvptx64", "amdgcn", "spirv64"] {
+        for arch in [
+            "x86_64", "aarch64", "nvptx64", "amdgcn", "spirv64", "applegpu",
+        ] {
             for (space, n) in spaces.iter().zip(today) {
                 assert_eq!(address_space_for_arch(Some(arch), *space), n);
             }
@@ -2097,6 +2129,7 @@ mod tests {
             dtypes: None,
             chip: None,
             levels: None,
+            offload: false,
         };
         let mut g = TransferCostGraph::default();
         g.apply_descriptor_edges(&desc);
@@ -2132,6 +2165,7 @@ mod tests {
             dtypes: None,
             chip: None,
             levels: None,
+            offload: false,
         };
         let mut g = TransferCostGraph::default();
         g.apply_descriptor_edges(&desc);
@@ -2172,6 +2206,7 @@ mod tests {
             dtypes: None,
             chip: None,
             levels: None,
+            offload: false,
         };
         let mut g = TransferCostGraph::default();
         g.apply_descriptor_edges(&desc);
@@ -2423,6 +2458,7 @@ mod tests {
                 dtypes: None,
                 chip: None,
                 levels: None,
+                offload: false,
             },
         }
     }
@@ -2506,6 +2542,7 @@ mod tests {
             dtypes: None,
             chip: None,
             levels: None,
+            offload: false,
         };
         graph.apply_descriptor_edges(&desc);
         graph.precompute_costs();
@@ -2539,6 +2576,7 @@ mod tests {
             dtypes: None,
             chip: None,
             levels: None,
+            offload: false,
         };
         graph.apply_descriptor_edges(&desc);
         graph.precompute_costs();
@@ -2560,6 +2598,7 @@ mod tests {
             dtypes: None,
             chip: None,
             levels: None,
+            offload: false,
         };
         assert!(
             descriptor_coherence(&bad, &graph).contains(&CoherenceIssue::MemoryUnreachableFromHost)
@@ -2574,6 +2613,7 @@ mod tests {
             dtypes: None,
             chip: None,
             levels: None,
+            offload: false,
         };
         assert!(descriptor_coherence(&bad2, &graph).contains(&CoherenceIssue::DefaultNotVisible));
 
@@ -2586,6 +2626,7 @@ mod tests {
             dtypes: None,
             chip: None,
             levels: None,
+            offload: false,
         };
         assert!(descriptor_coherence(&good, &graph).is_empty());
     }
@@ -2691,6 +2732,7 @@ mod tests {
                     dtypes: None,
                     chip: None,
                     levels: None,
+                    offload: false,
                 },
             );
         }

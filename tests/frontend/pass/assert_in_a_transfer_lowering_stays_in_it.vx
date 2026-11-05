@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// The default code generator does not support a user transfer lowering yet, so this uses the AST one.
+// RUN: vxc %s --emit-mlir --emit-seam-certs 2>&1 | FileCheck %s
 // RUN: vxc %s --legacy-codegen --emit-mlir --emit-seam-certs 2>&1 | FileCheck %s
 //
 // `move_tile` asserts `e > 5` about its own `e`, which is 1000. Its body is copied into the

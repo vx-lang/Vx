@@ -151,6 +151,8 @@ impl<'a> TypeChecker<'a> {
         consume: bool,
     ) -> Type {
         let has_value = value.is_some();
+        // Taken here, so that a block inside this one does not see it.
+        let closure_body = std::mem::take(&mut self.closure_body_next);
         let tail = tail.or(value.as_ref().map(|(v, _)| &**v));
         Self::name_loop_literals(stmts);
         self.hoist_spawn_allocations(stmts);
@@ -204,7 +206,7 @@ impl<'a> TypeChecker<'a> {
                 // about to drop have to be read before the arguments are checked.
                 let before = self.consteval_snapshot();
                 let scopes = self.consteval_scopes();
-                let saved_borrows = self.borrow.snapshot();
+                let saved_borrows = self.borrows_before_statement();
                 // With a `tail`, the last statement is not the block's value either.
                 self.value_unused = *has_semi || i != last || tail.is_some() || block_unused;
                 // `v;` reads `v`: it does not move it.
@@ -253,7 +255,14 @@ impl<'a> TypeChecker<'a> {
             self.borrow.set_stmt(stmts.len());
             self.drops_set_stmt(stmts.len());
             self.value_unused = unused;
-            self.check_expr_type_flag(value, consume)
+            let outer = self.expected_type.clone();
+            let returned = self.current_return_type.clone();
+            if let Some(t) = returned.filter(|t| closure_body && *t != Type::Unknown) {
+                self.expected_type = Some(t);
+            }
+            let ty = self.check_expr_type_flag(value, consume);
+            self.expected_type = outer;
+            ty
         });
         if let Some(ty) = type_at_end {
             ret_ty = ty;
@@ -324,6 +333,10 @@ impl<'a> TypeChecker<'a> {
                 None,
                 false, // const
             ),
+            Expr::Transfer(t) if t.is_async => {
+                let placed = self.check_transfer_expr(expr, consume);
+                crate::hir::check::transfer::token_of(placed)
+            }
             Expr::Transfer(..) => self.check_transfer_expr(expr, consume),
             // `Reachable<A, B>` is a comptime boolean.
             Expr::TransferPredicate(..) => Type::Scalar(ElementType::Bool),
@@ -345,14 +358,17 @@ impl<'a> TypeChecker<'a> {
                 self.check_expr_type_flag(&mut fc.args[0], consume)
             }
             Expr::FunctionCall(..) => {
-                let ty = self.check_functioncall_expr(expr);
+                let ty = self
+                    .check_a_call_that_can_change_facts(expr, |c, e| c.check_functioncall_expr(e));
                 // A comptime lambda runs while compiling, so its calls fold here. With every
                 // call folded the lambda is unused, and the `let` that bound it is dropped.
                 let span = expr.span();
                 self.fold_comptime_lambda_call(expr, &span, &ty);
                 ty
             }
-            Expr::IndirectCall(..) => self.check_indirectcall_expr(expr, consume),
+            Expr::IndirectCall(..) => self.check_a_call_that_can_change_facts(expr, |c, e| {
+                c.check_indirectcall_expr(e, consume)
+            }),
             Expr::Array(..) => self.check_array_expr(expr),
             Expr::MemberAccess(..) => {
                 let ty = self.check_memberaccess_expr(expr);
@@ -369,10 +385,15 @@ impl<'a> TypeChecker<'a> {
                 self.expected_type = expected;
                 ty
             }
-            Expr::MethodCall(..) => match self.check_task_join(expr, consume && !value_unused) {
-                Some(ty) => ty,
-                None => self.check_methodcall_expr(expr, consume),
-            },
+            Expr::MethodCall(..) => {
+                self.check_a_call_that_can_change_facts(expr, |c, e| match c.check_token_wait(e) {
+                    Some(ty) => ty,
+                    None => match c.check_task_join(e, consume && !value_unused) {
+                        Some(ty) => ty,
+                        None => c.check_methodcall_expr(e, consume),
+                    },
+                })
+            }
             Expr::BinaryOp(..) => self.check_binaryop_expr(expr, consume),
             Expr::RelationalOp(..) => self.check_relationalop_expr(expr),
             Expr::LogicalOp(..) => self.check_logicalop_expr(expr),
@@ -447,9 +468,21 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.check_atomic_block(e);
                 self.check_block_dialects(e);
+                // The block can free memory through a pointer that it gets.
+                let frees = !e.clobbers.is_empty()
+                    || e.inputs.iter().any(|(_, arg, _)| {
+                        let ty = self.check_expr_type_probe(arg);
+                        self.type_can_free(&ty, 0)
+                    });
+                if frees {
+                    self.pointer_facts_event(e.span, |_| {
+                        "the `mlir!` block, which can free memory".to_string()
+                    });
+                }
                 // Typecheck clobbers. The block writes to each of them, so each one changes.
                 for clobber in &mut e.clobbers {
                     self.record_change(clobber);
+                    self.note_a_change_to(clobber);
                     self.check_expr_type_flag(clobber, consume);
                 }
 
@@ -462,6 +495,11 @@ impl<'a> TypeChecker<'a> {
                 // Fallback type
             }
         };
+
+        // A raw pointer can point into a struct on the stack. A string literal points at a global.
+        if Self::is_raw_pointer(&ty) && !matches!(expr, Expr::StringLiteral(_)) {
+            self.borrow.drops.note_raw_pointer();
+        }
 
         // A value built inside a device region has no placement, so no placement check sees
         // it. The region's device has to be able to represent it. Silent outside a region,

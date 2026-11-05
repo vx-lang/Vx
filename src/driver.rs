@@ -49,6 +49,13 @@ pub enum Action {
     /// Write the program's GPU kernels as one PTX file, and a `.json` file beside it that
     /// gives each kernel's parameters (docs/lang/abi.md, section 3.5)
     EmitPtx,
+    /// Write the program's Apple GPU kernels as one Metal Shading Language file, and a `.json`
+    /// file beside it that gives each kernel's parameters
+    EmitMsl,
+    /// Parse and typecheck the program, then print each fact that the compiler trusts without a
+    /// proof: each `assume`, each pointer clause that a call in `unsafe` code trusts, each
+    /// `ensures` of an `extern` function, and each pointer `requires` of a `pub fn`
+    Audit,
 }
 
 /// What `vxc --version` prints after the name: the package version, then the commit the
@@ -60,7 +67,7 @@ pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), vx_build_commit::co
 pub struct DriverOptions {
     /// Action to perform
     #[arg(short = 'a', long = "action", value_enum, default_value_t = Action::RunJit)]
-    #[arg(overrides_with_all = ["compile", "parse_only", "print_ast", "emit_mlir", "emit_llvm", "run_jit", "emit_interface", "emit_ptx"])]
+    #[arg(overrides_with_all = ["compile", "parse_only", "print_ast", "emit_mlir", "emit_llvm", "run_jit", "emit_interface", "emit_ptx", "emit_msl", "audit"])]
     pub action: Action,
 
     /// Output file. With several inputs, a directory that receives one output per input
@@ -99,6 +106,14 @@ pub struct DriverOptions {
     /// Write the GPU kernels as PTX (alias for --action emit-ptx)
     #[arg(long = "emit-ptx", overrides_with = "action")]
     pub emit_ptx: bool,
+
+    /// Write the Apple GPU kernels as Metal Shading Language (alias for --action emit-msl)
+    #[arg(long = "emit-msl", overrides_with = "action")]
+    pub emit_msl: bool,
+
+    /// Print the facts that the compiler trusts without a proof (alias for --action audit)
+    #[arg(long = "audit", overrides_with = "action")]
+    pub audit: bool,
 
     /// Link a precompiled `.vxlib` module interface: its function signatures resolve imported calls in
     /// the frontend (type + borrow check, incl. cross-module return provenance) and its portable
@@ -347,6 +362,10 @@ impl CompilerDriver {
             options.action = Action::EmitInterface;
         } else if options.emit_ptx {
             options.action = Action::EmitPtx;
+        } else if options.emit_msl {
+            options.action = Action::EmitMsl;
+        } else if options.audit {
+            options.action = Action::Audit;
         } else if options.compile {
             options.action = Action::EmitObj;
         }
@@ -411,6 +430,7 @@ impl CompilerDriver {
             Action::EmitObj => "o",
             Action::EmitInterface => "vxlib",
             Action::EmitPtx => "ptx",
+            Action::EmitMsl => "metal",
             _ => return Ok(None),
         };
         if !out.is_dir() {
@@ -733,6 +753,9 @@ impl CompilerDriver {
             AstPrinter::print_program(&main_ast, &mut std::io::stdout()).unwrap();
             return Ok(());
         }
+        if self.options.action == Action::Audit {
+            return Ok(());
+        }
 
         self.run_codegen(
             main_ast,
@@ -882,6 +905,7 @@ impl CompilerDriver {
                     dtypes: None,
                     chip: None,
                     levels: None,
+                    offload: false,
                 },
             }],
             imports: Vec::new(),
@@ -1128,6 +1152,9 @@ impl CompilerDriver {
         if self.options.print_borrow_clauses {
             checker.print_borrow_clauses = ast.file.clone();
         }
+        if self.options.action == Action::Audit {
+            checker.trusted = Some(std::collections::BTreeSet::new());
+        }
 
         // The checks that look at the whole program's declarations at once can only name a
         // file when the program is one file; a `--host default` module was read from none.
@@ -1352,6 +1379,15 @@ impl CompilerDriver {
             ));
         }
 
+        if let Some(mut trusted) = checker.trusted.take() {
+            for p in std::iter::once(&*ast).chain(other_asts.values()) {
+                trusted.extend(crate::hir::check::audit::trusted_declarations(p));
+            }
+            for item in &trusted {
+                println!("{item}");
+            }
+        }
+
         let mut orig_functions = ast.functions.clone();
         orig_functions.retain(|f| f.generics.is_empty());
 
@@ -1416,7 +1452,8 @@ impl CompilerDriver {
         let context = melior::Context::new();
         let emit_diagnostics = self.options.emit_backend_diagnostics;
         context.attach_diagnostic_handler(move |diagnostic| {
-            // Errors always; anything quieter only when asked for.
+            // Errors and warnings always. Notes and remarks only when asked
+            // for.
             //
             // This dropped everything unless `--emit-backend-diagnostics` was
             // passed, which is right for the notes and remarks a pass pipeline
@@ -1434,7 +1471,17 @@ impl CompilerDriver {
                         | melior::diagnostic::DiagnosticSeverity::Warning
                 )
             {
-                eprintln!("{}", diagnostic);
+                // MLIR's C printer writes the message alone -- no location, no
+                // severity -- so a warning would arrive looking exactly like an
+                // error. Say which it is. Errors keep the text they had.
+                if matches!(
+                    diagnostic.severity(),
+                    melior::diagnostic::DiagnosticSeverity::Warning
+                ) {
+                    eprintln!("Warning: {}", diagnostic);
+                } else {
+                    eprintln!("{}", diagnostic);
+                }
             }
             true
         });
@@ -1515,7 +1562,7 @@ impl CompilerDriver {
                 &monomorphized_ast,
                 &module_syntaxes,
                 interfaces,
-                self.options.action == Action::EmitPtx,
+                matches!(self.options.action, Action::EmitPtx | Action::EmitMsl),
                 self.options.auto_schedule_levels(),
             )?
         };
@@ -1594,7 +1641,7 @@ impl CompilerDriver {
 
         let llvm_lower = matches!(
             self.options.action,
-            Action::EmitLlvm | Action::RunJit | Action::EmitObj | Action::EmitPtx
+            Action::EmitLlvm | Action::RunJit | Action::EmitObj | Action::EmitPtx | Action::EmitMsl
         );
         let pipeline_str = get_optimization_pipeline(
             self.options.opt_level,
@@ -1623,7 +1670,7 @@ impl CompilerDriver {
             }
         }
 
-        if self.options.action == Action::EmitPtx {
+        if matches!(self.options.action, Action::EmitPtx | Action::EmitMsl) {
             use melior::ir::operation::OperationMutLike;
             module
                 .as_operation_mut()
@@ -1704,10 +1751,11 @@ impl CompilerDriver {
                 .map_err(|e| e.to_string())?;
                 print_program_output(&out);
             }
-            Action::EmitPtx => {
+            Action::EmitPtx | Action::EmitMsl => {
+                let msl = self.options.action == Action::EmitMsl;
                 let ptx_path = self.options.output.clone().unwrap_or_else(|| {
                     let mut p = main_file.to_path_buf();
-                    p.set_extension("ptx");
+                    p.set_extension(if msl { "metal" } else { "ptx" });
                     p
                 });
                 let read = |name: &str| {
@@ -1716,12 +1764,16 @@ impl CompilerDriver {
                         .ok()
                         .map(|s| s.value().to_string())
                 };
-                let (Some(ptx), Some(manifest)) =
-                    (read("vx.exported_ptx"), read("vx.exported_kernels"))
-                else {
+                let image = if msl {
+                    "vx.exported_msl"
+                } else {
+                    "vx.exported_ptx"
+                };
+                let (Some(ptx), Some(manifest)) = (read(image), read("vx.exported_kernels")) else {
                     return Err(format!(
                         "{filename} has no GPU kernel to write. A GPU kernel is a `spawn on` \
-                         region whose topology has `arch: nvptx64`, and that can run on the GPU"
+                         region whose topology has `arch: {}`, and that can run on the GPU",
+                        if msl { "applegpu" } else { "nvptx64" }
                     ));
                 };
                 let json_path = ptx_path.with_extension("json");
@@ -1784,6 +1836,7 @@ impl CompilerDriver {
                         output_path.display()
                     ));
                 }
+                crate::jit::set_macos_minimum_version(output_path.to_str().unwrap())?;
             }
             _ => {}
         }
@@ -1885,6 +1938,23 @@ impl CompilerDriver {
             .collect();
         // A BTreeSet, not a HashSet: this drives the order imported bodies are appended in
         // below, and a HashSet iterates in whatever order the process's random hash seed gives.
+        // The `impl Transfer` bodies, keyed as the checker keys a transfer site's lowering.
+        let mut transfer_lowerings = crate::session::TransferLowerings::new();
+        for m in &mods {
+            for li in &m.transfer_impls {
+                if let [body] = li.methods.as_slice() {
+                    transfer_lowerings.insert(
+                        (
+                            li.from.name(),
+                            li.to.name(),
+                            li.topology.display_name().to_string(),
+                        ),
+                        body.clone(),
+                    );
+                }
+            }
+        }
+        let transfer_lowerings = std::sync::Arc::new(transfer_lowerings);
         let mut lowered_names = std::collections::BTreeSet::new();
         let mut entries: Vec<(crate::syntax::Function, LocalWorkerState)> = Vec::new();
         while let Some(name) = worklist.pop() {
@@ -1895,6 +1965,7 @@ impl CompilerDriver {
                 continue; // an extern or a non-function name use -> not lowered here
             };
             let mut worker = LocalWorkerState::new(session.clone());
+            worker.transfer_lowerings = transfer_lowerings.clone();
             if let Err(why) = crate::hir::flatten::lower_function_to_hir(f, &mut worker) {
                 // The reason is printed unconditionally, not behind VX_FLAT_DBG: "which construct
                 // is the flat path missing" is the number that steers the backend work, and a

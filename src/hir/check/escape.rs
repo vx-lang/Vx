@@ -862,7 +862,7 @@ impl<'a> TypeChecker<'a> {
 
     /// Is `name` a reference or pointer, so that storing through it reaches memory this
     /// function does not own?
-    fn is_reference_variable(&self, name: &crate::symbol::Symbol) -> bool {
+    pub(crate) fn is_reference_variable(&self, name: &crate::symbol::Symbol) -> bool {
         matches!(
             self.lookup(name.as_ref()).map(|(t, _)| t),
             Some(Type::Ref(..)) | Some(Type::Borrow { .. }) | Some(Type::Pointer(..))

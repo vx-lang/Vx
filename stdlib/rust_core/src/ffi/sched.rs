@@ -17,6 +17,9 @@
 // The state that the runtime keeps per thread (the cancel mark and the line that `print` keeps)
 // belongs to the task. So the worker swaps it in before the switch to a task, and out after.
 //
+// Under ThreadSanitizer, each task is a fiber of ThreadSanitizer too, and tsan.rs tells it of
+// each switch.
+//
 // The runtime is used only when VX_TASK_RUNTIME=shared, with VX_TASK_WORKERS worker threads or
 // one for each CPU.
 //
@@ -29,6 +32,7 @@
 
 use crate::ffi::stack::{self, Stack, StackPool};
 use crate::ffi::tasks::{CancelMark, VxTaskFn, TASK_STACK_BYTES};
+use crate::ffi::tsan;
 use crate::io::lines;
 use std::cell::Cell;
 use std::collections::VecDeque;
@@ -52,7 +56,7 @@ const WOKEN: u8 = 3;
 pub(crate) struct TaskLocals {
     pub(crate) mark: Option<Arc<CancelMark>>,
     /// The marks that `vx_cancel_off` put aside. A `drop` can park between the off and the on.
-    pub(crate) put_aside: Vec<Option<Arc<CancelMark>>>,
+    pub(crate) put_aside: crate::ffi::tasks::PutAside,
     pub(crate) line: Vec<u8>,
     pub(crate) to_stderr: bool,
     pub(crate) site: Option<crate::ffi::tasks::Site>,
@@ -81,6 +85,8 @@ pub(crate) struct Fiber {
     locals: TaskLocals,
     /// 0 while the task runs, and 1 after it ended. A join waits on this word.
     pub(crate) done: AtomicI64,
+    /// The fiber of ThreadSanitizer for this task, or null without ThreadSanitizer.
+    tsan: *mut std::ffi::c_void,
 }
 
 /// A fiber that a queue or a bucket holds. A fiber is in at most one of them at once.
@@ -101,6 +107,8 @@ struct Worker {
     sp: *mut u8,
     running: *mut Fiber,
     why: Why,
+    /// The fiber of ThreadSanitizer of the worker loop, or null without ThreadSanitizer.
+    tsan: *mut std::ffi::c_void,
 }
 
 thread_local! {
@@ -259,6 +267,7 @@ impl Scheduler {
             sp: std::ptr::null_mut(),
             running: std::ptr::null_mut(),
             why: Why::Ended,
+            tsan: tsan::current_fiber(),
         };
         // The fibers write the worker through this pointer too.
         let worker: *mut Worker = &raw mut worker;
@@ -274,6 +283,7 @@ impl Scheduler {
         (*fiber).state.store(RUNNING, Ordering::SeqCst);
         (*fiber).locals.swap_with_thread();
         (*worker).running = fiber;
+        tsan::switch_to_fiber((*fiber).tsan);
         stack::switch(&raw mut (*worker).sp, (*fiber).sp);
         (*fiber).locals.swap_with_thread();
         match (*worker).why {
@@ -290,6 +300,7 @@ impl Scheduler {
                 }
             }
             Why::Ended => {
+                tsan::destroy_fiber((*fiber).tsan);
                 self.stacks.give_back((*fiber).stack.take().unwrap());
                 // After this store, a join can free the fiber. Its address is all that the wake
                 // needs.
@@ -316,6 +327,7 @@ impl Scheduler {
             sp: std::ptr::null_mut(),
             running: std::ptr::null_mut(),
             why: Why::Ended,
+            tsan: tsan::current_fiber(),
         };
         let worker: *mut Worker = &raw mut worker;
         WORKER.with(|w| w.set(worker));
@@ -380,6 +392,7 @@ impl Scheduler {
                 ..Default::default()
             },
             done: AtomicI64::new(0),
+            tsan: tsan::create_fiber(),
         });
         let raw: *mut Fiber = &mut *fiber;
         fiber.sp = unsafe { stack::start_on(&stack, fiber_entry, raw as *mut u8) };
@@ -462,6 +475,8 @@ unsafe extern "C" fn fiber_entry(arg: *mut u8) -> ! {
     let fiber = arg as *mut Fiber;
     ((*fiber).run)((*fiber).env);
     lines::task_ended();
+    // The task happens before the end of its join, which acquires `done`.
+    tsan::release(&(*fiber).done);
     to_worker(Why::Ended);
     unreachable!("nothing continues a task that ended");
 }
@@ -536,6 +551,7 @@ fn to_worker(why: Why) {
         let fiber = (*worker).running;
         (*worker).why = why;
         let worker_sp = (*worker).sp;
+        tsan::switch_to_fiber((*worker).tsan);
         stack::switch(&raw mut (*fiber).sp, worker_sp);
     }
 }
@@ -919,7 +935,7 @@ mod tests {
     extern "C" fn first_drop(env: *mut u8) {
         let d = unsafe { &**(env as *const *const Drops) };
         let mine = current_mark();
-        crate::ffi::tasks::vx_cancel_off();
+        crate::ffi::tasks::vx_cancel_off(10.0);
         open(&d.first_off);
         wait_for(&d.second_off);
         crate::ffi::tasks::vx_cancel_on();
@@ -934,7 +950,7 @@ mod tests {
         let d = unsafe { &**(env as *const *const Drops) };
         wait_for(&d.first_off);
         let mine = current_mark();
-        crate::ffi::tasks::vx_cancel_off();
+        crate::ffi::tasks::vx_cancel_off(10.0);
         open(&d.second_off);
         wait_for(&d.first_on);
         crate::ffi::tasks::vx_cancel_on();
@@ -1238,7 +1254,7 @@ mod tests {
     struct Order {
         tasks: usize,
         arrived: AtomicUsize,
-        gate: AtomicI64,
+        gate: &'static AtomicI64,
         seen: Mutex<Vec<usize>>,
         threads: Mutex<HashSet<std::thread::ThreadId>>,
     }
@@ -1258,15 +1274,22 @@ mod tests {
             .insert(std::thread::current().id());
         o.seen.lock().unwrap().push(n.number);
         if o.arrived.fetch_add(1, Ordering::SeqCst) + 1 == o.tasks {
-            open(&o.gate);
+            open(o.gate);
         } else {
-            wait_for(&o.gate);
+            wait_for(o.gate);
         }
         o.seen.lock().unwrap().push(100 + n.number);
     }
 
     /// The order in which 8 tasks run with `seed`, and the threads that they ran on.
-    fn order_with_seed(seed: u64) -> (Vec<usize>, HashSet<std::thread::ThreadId>) {
+    ///
+    /// A wake on the address of `gate` puts a waiting task back on the ready queue and changes
+    /// the order. Another test can wake an address after it stops using it, so `gate` is a
+    /// static that no other test uses.
+    fn order_with_seed(
+        seed: u64,
+        gate: &'static AtomicI64,
+    ) -> (Vec<usize>, HashSet<std::thread::ThreadId>) {
         // The scheduler comes from this thread, as the deadlock watcher can make it. The thread
         // that starts the `tasks` block runs the tasks.
         let sched = Scheduler::start_with_seed(seed);
@@ -1274,7 +1297,7 @@ mod tests {
             let o = Order {
                 tasks: 8,
                 arrived: AtomicUsize::new(0),
-                gate: AtomicI64::new(0),
+                gate,
                 seen: Mutex::new(Vec::new()),
                 threads: Mutex::new(HashSet::new()),
             };
@@ -1298,9 +1321,10 @@ mod tests {
     #[test]
     fn a_seed_gives_the_same_order_each_time() {
         let _watchdog = Watchdog::new("a_seed_gives_the_same_order_each_time");
-        let (first, first_threads) = order_with_seed(1);
-        let (again, _) = order_with_seed(1);
-        let (other, _) = order_with_seed(2);
+        static GATES: [AtomicI64; 3] = [AtomicI64::new(0), AtomicI64::new(0), AtomicI64::new(0)];
+        let (first, first_threads) = order_with_seed(1, &GATES[0]);
+        let (again, _) = order_with_seed(1, &GATES[1]);
+        let (other, _) = order_with_seed(2, &GATES[2]);
         assert_eq!(first.len(), 16);
         assert_eq!(first, again, "the same seed gave another order");
         assert_ne!(first, other, "two seeds gave the same order");

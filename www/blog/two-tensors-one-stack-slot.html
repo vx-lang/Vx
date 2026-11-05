@@ -435,8 +435,9 @@ other. The lane calls no <code>malloc</code>. The test
 
 <ul>
 <li>vxc adds markers only to tensors, because the markers come from the drops of tensors. A struct
-keeps its slot for the whole call. Vx drops a value whose type implements <code>Drop</code> at the
-end of its scope, as Rust does.</li>
+keeps its slot for the whole call. Vx frees a tensor after its last use. But it drops a value whose
+type implements <code>Drop</code> at the end of its block, as Rust does, because the drop can have
+effects, such as releasing a lock.</li>
 <li>When a function passes a tensor by value to a call, that tensor stays on the heap.</li>
 <li>The older AST code generator keeps each tensor on the heap, so this change does not affect
 it.</li>

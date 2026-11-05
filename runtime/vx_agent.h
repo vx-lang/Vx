@@ -84,8 +84,25 @@ typedef struct {
   size_t descriptors_capacity;
 } vx_agent_args;
 
+/// Whether the view that `arg` describes fits in the region that `ref` names.
+/// A handle names only the view's first element, so this checks the rest.
+/// A view whose element size or span is unknown does not fit.
+static inline int vx_agent_view_fits(const vx_wire_arg *arg,
+                                     const vx_remote_ref *ref) {
+  uint64_t bytes = 0;
+  int32_t dim = 0;
+  if (arg->rank < 0 || arg->rank > VX_ABI_MAX_RANK ||
+      vx_memref_view_span(arg->sizes, arg->strides, arg->rank,
+                          (int32_t)VX_ABI_ELEM(arg->tag), &bytes,
+                          &dim) != VX_VIEW_OK) {
+    return 0;
+  }
+  return bytes <= ref->region->size - ref->offset;
+}
+
 /// Rebuild one argument. Returns 0 if it cannot be honoured -- an unresolvable
-/// handle, a rank that does not fit, or storage that has run out.
+/// handle, a view that does not fit in its region, a rank that does not fit,
+/// or storage that has run out.
 ///
 /// `desc_cursor` walks `storage->descriptors`; the caller starts it at zero.
 static inline int vx_agent_rebuild_arg(const vx_remote_table *table,
@@ -125,7 +142,8 @@ static inline int vx_agent_rebuild_arg(const vx_remote_table *table,
        into. */
     if (arg->handle != 0) {
       vx_remote_ref held;
-      if (!vx_remote_resolve(table, arg->handle, &held)) {
+      if (!vx_remote_resolve(table, arg->handle, &held) ||
+          !vx_agent_view_fits(arg, &held)) {
         return 0;
       }
       vx_agent_write_desc(inner_p, (char *)held.region->remote + held.offset,
@@ -156,7 +174,8 @@ static inline int vx_agent_rebuild_arg(const vx_remote_table *table,
        naming nothing, is deliberate: the caller reports the failure with the
        worker and the offending handle, which a silent substitution would not
        allow. */
-    if (!vx_remote_resolve(table, arg->handle, &ref)) {
+    if (!vx_remote_resolve(table, arg->handle, &ref) ||
+        !vx_agent_view_fits(arg, &ref)) {
       return 0;
     }
     if (arg->rank > VX_ABI_MAX_RANK ||

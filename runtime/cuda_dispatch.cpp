@@ -60,6 +60,7 @@
 #include "vx_kernel_launch.h"
 #include "vx_remote_routing.h"
 #include "vx_stream_policy.h"
+#include "vx_view_copy.h"
 
 #include <atomic>
 #include <cstdio>
@@ -133,6 +134,8 @@ struct DriverApi {
   decltype(&cuCtxGetDevice) CtxGetDevice;
   decltype(&cuDevicePrimaryCtxRetain) DevicePrimaryCtxRetain;
   decltype(&cuDevicePrimaryCtxRelease) DevicePrimaryCtxRelease;
+  /// Null on a driver older than CUDA 12, which has no TMA.
+  decltype(&cuTensorMapEncodeTiled) TensorMapEncodeTiled;
 };
 
 /// Loads the driver API once. Returns null and says why if it cannot.
@@ -166,6 +169,9 @@ const DriverApi *load_driver_api() {
     find(d.DevicePrimaryCtxRetain, "cuDevicePrimaryCtxRetain");
     // cuda.h maps the name to its second version.
     find(d.DevicePrimaryCtxRelease, "cuDevicePrimaryCtxRelease_v2");
+    d.TensorMapEncodeTiled =
+        reinterpret_cast<decltype(&cuTensorMapEncodeTiled)>(
+            dlsym(lib, "cuTensorMapEncodeTiled"));
     return ok ? &d : nullptr;
   }();
   return api;
@@ -878,6 +884,22 @@ bool run_gemm(const vx_gemm_plan &plan) {
 
 } // namespace
 
+/// One block of a dense copy of a strided device view, as vx_view_copy_blocks
+/// gives it: one cudaMemcpy2D, so one column of a matrix is one call.
+static void copy_block_to_host(void *ctx, uint64_t dense, uintptr_t view,
+                               uint64_t width, uint64_t pitch,
+                               uint64_t height) {
+  VX_CUDA_CHECK(cudaMemcpy2D((char *)ctx + dense, width, (const void *)view,
+                             pitch, width, height, cudaMemcpyDeviceToHost));
+}
+
+static void copy_block_to_device(void *ctx, uint64_t dense, uintptr_t view,
+                                 uint64_t width, uint64_t pitch,
+                                 uint64_t height) {
+  VX_CUDA_CHECK(cudaMemcpy2D((void *)view, pitch, (const char *)ctx + dense,
+                             width, width, height, cudaMemcpyHostToDevice));
+}
+
 extern "C" {
 
 /// The model said the host may read this space, and we are about to hand out
@@ -1054,6 +1076,13 @@ void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
 static unsigned dynamic_shared_bytes(const void *payload, size_t payload_size) {
   const char *field = vx_payload_field(payload, payload_size, "shared=");
   return field ? (unsigned)strtoul(field, nullptr, 10) : 0;
+}
+
+/// Whether the payload's image is PTX. A payload from before `format=` has
+/// only PTX.
+static bool is_ptx(const void *payload, size_t payload_size) {
+  const char *format = vx_payload_field(payload, payload_size, "format=");
+  return !format || strcmp(format, "ptx") == 0;
 }
 
 /// Run the kernel the payload carries, on this device.
@@ -1375,9 +1404,12 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
     if (run_gemm(plan)) {
       return 1;
     }
-  } else if (vx_payload_field(binary_payload, payload_size, "image=")) {
+  } else if (vx_payload_field(binary_payload, payload_size, "image=") &&
+             is_ptx(binary_payload, payload_size)) {
     /* Not a matmul, but the compiler emitted a kernel for it. This is the case
-       the header of this file said had to run on the host and could not. */
+       the header of this file said had to run on the host and could not. An
+       image for another GPU, such as MSL, runs on the host as if it had none.
+     */
     if (cuda_available()) {
       select_device(vx_payload_topology(binary_payload, payload_size),
                     "dispatch");
@@ -1408,15 +1440,9 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
   // the outlined kernel, three frames below anything that names the reason.
   //
   // So each operand in device memory is copied to the host for the call, and
-  // copied back after it.
-  struct HostCopy {
-    void **desc; // {allocated, aligned, ...}, pointed at the copy for the call
-    void *allocated;
-    void *aligned;
-    void *host;
-    size_t first; // the byte offset of the view's first element
-    size_t bytes; // the bytes the view reaches, from its first element
-  };
+  // copied back after it. vx_view_copy.h plans the copies: views that share
+  // memory share one copy, and a copy holds only the bytes its views reach.
+  //
   // The descriptor argument i refers to, or null. A slot holds a pointer to
   // one.
   auto arg_desc = [&](int64_t i) -> void * {
@@ -1429,7 +1455,8 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
     }
     return desc;
   };
-  std::vector<HostCopy> copies;
+  std::vector<vx_view_copy> views;
+  std::vector<int64_t> view_arg; // the argument of each view
   for (int64_t i = 0; i < num_args; ++i) {
     void *desc = arg_desc(i);
     if (!desc) {
@@ -1439,49 +1466,52 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
     if (!aligned || !is_device_ptr(aligned)) {
       continue;
     }
-    const int32_t rank = (int32_t)VX_ABI_RANK(arg_tags[i]);
-    const int64_t *sizes = vx_memref_sizes(desc);
-    const int64_t *strides = vx_memref_strides(desc, rank);
-    const int32_t elem = (int32_t)VX_ABI_ELEM(arg_tags[i]);
-    const size_t bytes = vx_memref_view_bytes(sizes, strides, rank, elem);
-    /* The host buffer starts at the base, so the offset still holds. The copies
-       cover only the view's span, so views whose spans do not overlap, such as
-       two rows of one tensor, keep each other's writes. */
-    const int64_t offset = vx_memref_offset(desc);
-    size_t first = 0, end = 1;
-    if (bytes &&
-        (offset < 0 ||
-         __builtin_mul_overflow((size_t)offset, vx_dtype_bytes(elem), &first) ||
-         __builtin_add_overflow(first, bytes, &end))) {
-      fprintf(stderr,
-              "[Vx CUDA] FATAL: argument %lld of %s has the offset %lld, and "
-              "its view does not fit in host memory\n",
-              (long long)i, kernel_name, (long long)offset);
-      abort();
-    }
-    void *host = malloc(end);
-    if (!host) {
-      fprintf(stderr,
-              "[Vx CUDA] FATAL: out of host memory copying %zu bytes "
-              "for %s\n",
-              end, kernel_name);
-      abort();
-    }
+    vx_view_copy v = {};
+    v.desc = desc;
+    v.rank = (int32_t)VX_ABI_RANK(arg_tags[i]);
+    v.elem = (int32_t)VX_ABI_ELEM(arg_tags[i]);
+    views.push_back(v);
+    view_arg.push_back(i);
+  }
+  std::vector<vx_copy_span> spans(views.size());
+  int64_t num_spans = 0, bad = 0;
+  if (!vx_view_copy_plan(views.data(), (int64_t)views.size(), spans.data(),
+                         &num_spans, &bad)) {
+    fprintf(stderr,
+            "[Vx CUDA] FATAL: argument %lld of %s has the offset %lld, and "
+            "its view does not fit in the address space\n",
+            (long long)view_arg[bad], kernel_name,
+            (long long)vx_memref_offset(views[bad].desc));
+    abort();
+  }
+  if (num_spans > 0) {
     wait_for_kernels("Vx copied a tensor to host memory to run a region on "
                      "the CPU");
-    VX_CUDA_CHECK(cudaMemcpy((char *)host + first, (char *)aligned + first,
-                             bytes, cudaMemcpyDeviceToHost));
-    void **ptrs = (void **)desc;
-    copies.push_back({ptrs, ptrs[0], aligned, host, first, bytes});
-    ptrs[0] = host;
-    ptrs[1] = host;
+  }
+  for (int64_t s = 0; s < num_spans; ++s) {
+    vx_copy_span &span = spans[s];
+    span.copy = malloc(span.bytes);
+    if (!span.copy) {
+      fprintf(stderr,
+              "[Vx CUDA] FATAL: out of host memory copying %llu bytes "
+              "for %s\n",
+              (unsigned long long)span.bytes, kernel_name);
+      abort();
+    }
+    if (span.view >= 0) {
+      vx_view_copy_blocks(&views[span.view], copy_block_to_host, span.copy);
+    } else {
+      VX_CUDA_CHECK(cudaMemcpy(span.copy, (const void *)span.start,
+                               span.bytes, cudaMemcpyDeviceToHost));
+    }
     if (verbose()) {
       fprintf(stderr,
-              "[Vx CUDA] %s runs on the host; argument %lld (%zu bytes) is "
-              "copied from device memory and back\n",
-              kernel_name, (long long)i, bytes);
+              "[Vx CUDA] %s runs on the host; %llu bytes are copied from "
+              "device memory and back\n",
+              kernel_name, (unsigned long long)span.bytes);
     }
   }
+  vx_view_copy_point_at(views.data(), (int64_t)views.size(), spans.data());
 
   vx_host_refuse_coop(binary_payload, payload_size, kernel_name, "CUDA");
   void *kernel = vx_host_kernel_symbol(kernel_name);
@@ -1492,27 +1522,34 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
   }
   if (!vx_host_call_kernel(
           kernel, device_args, arg_tags, num_args,
-          vx_host_worker_count_for(binary_payload, payload_size))) {
+          vx_host_worker_count_for(binary_payload, payload_size, device_args,
+                                   arg_tags, num_args),
+          vx_host_flushes_subnormals(binary_payload, payload_size))) {
     fprintf(stderr, "[Vx CUDA] FATAL: could not build a call for %s\n",
             kernel_name);
     abort();
   }
+  for (int64_t s = 0; s < num_spans; ++s) {
+    if (spans[s].view >= 0) {
+      vx_view_copy_blocks(&views[spans[s].view], copy_block_to_device,
+                          spans[s].copy);
+    } else {
+      VX_CUDA_CHECK(cudaMemcpy((void *)spans[s].start, spans[s].copy,
+                               spans[s].bytes, cudaMemcpyHostToDevice));
+    }
+  }
   // A region that ends in an operand publishes that operand's descriptor, so
   // every descriptor still pointing at a copy gets the device memory back.
-  for (const HostCopy &c : copies) {
-    VX_CUDA_CHECK(cudaMemcpy((char *)c.aligned + c.first,
-                             (char *)c.host + c.first, c.bytes,
-                             cudaMemcpyHostToDevice));
-    c.desc[0] = c.allocated;
-    c.desc[1] = c.aligned;
-    for (int64_t i = 0; i < num_args; ++i) {
-      void **d = (void **)arg_desc(i);
-      if (d && d[1] == c.host) {
-        d[0] = c.allocated;
-        d[1] = c.aligned;
-      }
-    }
-    free(c.host);
+  std::vector<void *> descs;
+  std::vector<int32_t> ranks;
+  for (int64_t i = 0; i < num_args; ++i) {
+    descs.push_back(arg_desc(i));
+    ranks.push_back((int32_t)VX_ABI_RANK(arg_tags[i]));
+  }
+  vx_view_copy_restore(views.data(), (int64_t)views.size(), spans.data(),
+                       descs.data(), ranks.data(), (int64_t)descs.size());
+  for (int64_t s = 0; s < num_spans; ++s) {
+    free(spans[s].copy);
   }
   return 1;
 }
@@ -1607,6 +1644,74 @@ void vx_plugin_free(void *device_ptr, uint32_t topology_id) {
 }
 
 void vx_plugin_release_future(uint64_t future_id) { (void)future_id; }
+
+/// A tensor map (`CUtensorMap`) in device memory for a `lanes::copy_async`
+/// that copies with TMA, or 0. With 0, the kernel copies with `cp.async`. 0
+/// comes when there is no device, when the driver has no
+/// `cuTensorMapEncodeTiled`, or when the tensor breaks one of its rules: a
+/// start at a multiple of 16 bytes, rows of a multiple of 16 bytes, and a last
+/// dimension with a stride of 1. `dims`, `strides` (in elements) and `box`
+/// start with the outermost dimension, as in the memref. This keeps each map,
+/// so a kernel in a loop makes each one once.
+int64_t vx_plugin_tensor_map(int64_t base, int64_t rank, int64_t elem_bytes,
+                             int64_t d0, int64_t d1, int64_t d2, int64_t d3,
+                             int64_t d4, int64_t s0, int64_t s1, int64_t s2,
+                             int64_t s3, int64_t s4, int64_t b0, int64_t b1,
+                             int64_t b2, int64_t b3, int64_t b4) {
+  const int64_t dims[5] = {d0, d1, d2, d3, d4};
+  const int64_t strides[5] = {s0, s1, s2, s3, s4};
+  const int64_t box[5] = {b0, b1, b2, b3, b4};
+  if (!cuda_available() || rank < 1 || rank > 5 ||
+      (elem_bytes != 4 && elem_bytes != 8) || base % 16 != 0 ||
+      strides[rank - 1] != 1 || !is_device_ptr(reinterpret_cast<void *>(base)))
+    return 0;
+  const DriverApi *api = load_driver_api();
+  if (!api || !api->TensorMapEncodeTiled)
+    return 0;
+  // cuTensorMapEncodeTiled takes the innermost dimension first, and the
+  // strides of the other dimensions in bytes.
+  cuuint64_t global_dim[5], global_strides[4];
+  cuuint32_t box_dim[5], element_strides[5];
+  for (int64_t r = 0; r < rank; ++r) {
+    const int64_t d = rank - 1 - r;
+    if (dims[d] < 1 || box[d] < 1 || box[d] > 256)
+      return 0;
+    global_dim[r] = static_cast<cuuint64_t>(dims[d]);
+    box_dim[r] = static_cast<cuuint32_t>(box[d]);
+    element_strides[r] = 1;
+    if (r > 0) {
+      const int64_t stride = strides[d] * elem_bytes;
+      if (stride % 16 != 0)
+        return 0;
+      global_strides[r - 1] = static_cast<cuuint64_t>(stride);
+    }
+  }
+  CUtensorMap map;
+  const CUresult rc = api->TensorMapEncodeTiled(
+      &map,
+      elem_bytes == 4 ? CU_TENSOR_MAP_DATA_TYPE_UINT32
+                      : CU_TENSOR_MAP_DATA_TYPE_UINT64,
+      static_cast<cuuint32_t>(rank), reinterpret_cast<void *>(base), global_dim,
+      global_strides, box_dim, element_strides, CU_TENSOR_MAP_INTERLEAVE_NONE,
+      CU_TENSOR_MAP_SWIZZLE_NONE, CU_TENSOR_MAP_L2_PROMOTION_L2_128B,
+      CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+  if (rc != CUDA_SUCCESS)
+    return 0;
+  int device = 0;
+  VX_CUDA_CHECK(cudaGetDevice(&device));
+  std::string key(reinterpret_cast<const char *>(&map), sizeof(map));
+  key.append(reinterpret_cast<const char *>(&device), sizeof(device));
+  static std::mutex maps_mutex;
+  static std::unordered_map<std::string, void *> maps;
+  std::lock_guard<std::mutex> lock(maps_mutex);
+  void *&on_device = maps[key];
+  if (!on_device) {
+    VX_CUDA_CHECK(cudaMalloc(&on_device, sizeof(map)));
+    VX_CUDA_CHECK(
+        cudaMemcpy(on_device, &map, sizeof(map), cudaMemcpyHostToDevice));
+  }
+  return reinterpret_cast<int64_t>(on_device);
+}
 
 /// Sets the CUDA stream for Vx's GPU work on the calling thread (#1986). Null
 /// gives back the legacy default stream. See docs/lang/abi.md section 3.6.
@@ -1742,6 +1847,11 @@ int32_t vx_plugin_control(uint32_t opcode, void *payload) {
   }
   case VX_CTRL_INIT_DEVICE:
     return cuda_available() ? 1 : 0;
+  case VX_CTRL_WAIT:
+    if (cuda_available()) {
+      wait_for_kernels("a read of GPU memory in place");
+    }
+    return 1;
   case VX_CTRL_SHUTDOWN:
     if (cuda_available()) {
       cudaDeviceReset();

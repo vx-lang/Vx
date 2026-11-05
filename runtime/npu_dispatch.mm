@@ -568,6 +568,10 @@ extern "C" int vx_dispatch_ane_affine(float *out, float *x, float alpha,
 extern "C" {
 #include <dlfcn.h>
 
+int vx_metal_dispatch(const void *payload, size_t payload_size,
+                      void **device_args, const int32_t *arg_tags,
+                      int64_t num_args);
+
 // `space_access` is accepted and ignored: the Neural Engine's staging is host
 // memory this process can read, so a model claiming the host may read it is
 // telling the truth. Only a backend handing out memory the host cannot read has
@@ -618,6 +622,17 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
   std::string kernel_str(kernel_name);
   assert(kernel_str.find("vx_npu_kernel_") == 0 &&
          "Expected kernel name to start with vx_npu_kernel_");
+
+  // A kernel that vxc compiled for the Apple GPU runs there
+  // (runtime/metal_dispatch.mm). With the GPU turned off, the host copy below
+  // runs instead.
+  const char *format =
+      vx_payload_field(binary_payload, payload_size, "format=");
+  if (format && strcmp(format, "msl") == 0 &&
+      vx_metal_dispatch(binary_payload, payload_size, device_args, arg_tags,
+                        num_args)) {
+    return 1;
+  }
 
   // A matmul the compiler recognised says so, and says which argument is which
   // (#325). That replaces what stood here: collect every memref argument, take
@@ -742,9 +757,11 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
   }
 
 #ifdef VX_ENABLE_CPU_FALLBACK
+  int workers = vx_host_worker_count_for(binary_payload, payload_size,
+                                         device_args, arg_tags, num_args);
   VX_NPU_LOG("[Vx Dispatcher] Hardware backend unsupported for %s. Falling "
-             "back to CPU libffi dispatch!\n",
-             kernel_name);
+             "back to CPU libffi dispatch on %d worker%s!\n",
+             kernel_name, workers, workers == 1 ? "" : "s");
 
   // Both failures below mean the kernel did not run. Neither is recoverable:
   // the buffer the caller expected to be filled holds whatever it held before,
@@ -759,7 +776,9 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
     abort();
   }
 
-  if (!vx_host_call_kernel(kernel, device_args, arg_tags, num_args)) {
+  if (!vx_host_call_kernel(
+          kernel, device_args, arg_tags, num_args, workers,
+          vx_host_flushes_subnormals(binary_payload, payload_size))) {
     fprintf(stderr, "[Vx Dispatcher] FATAL: could not build a call for %s\n",
             kernel_name);
     abort();
@@ -855,6 +874,19 @@ void vx_plugin_arrivals_give(const void *site, void *count, size_t bytes,
 
 void vx_plugin_release_future(uint64_t future_id) {
   // No-op for dummy implementation
+}
+
+/// No tensor maps without a CUDA GPU: the CPU copy of a kernel never reads the
+/// map.
+int64_t vx_plugin_tensor_map(int64_t base, int64_t rank, int64_t elem_bytes,
+                             int64_t d0, int64_t d1, int64_t d2, int64_t d3,
+                             int64_t d4, int64_t s0, int64_t s1, int64_t s2,
+                             int64_t s3, int64_t s4, int64_t b0, int64_t b1,
+                             int64_t b2, int64_t b3, int64_t b4) {
+  (void)base, (void)rank, (void)elem_bytes, (void)d0, (void)d1, (void)d2;
+  (void)d3, (void)d4, (void)s0, (void)s1, (void)s2, (void)s3, (void)s4;
+  (void)b0, (void)b1, (void)b2, (void)b3, (void)b4;
+  return 0;
 }
 
 int32_t vx_plugin_control(uint32_t opcode, void *payload) {

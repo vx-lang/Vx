@@ -75,6 +75,21 @@ impl CancelMark {
     }
 }
 
+/// One scope with a deadline (F6a): a `drop`, with the mark that `vx_cancel_off` put aside, or a
+/// `within` block.
+pub(crate) struct Deadline {
+    /// The mark put aside, for a `drop`.
+    mark: Option<Arc<CancelMark>>,
+    /// The earliest deadline of this scope and the scopes around it, on the clock of
+    /// `vx_clock_ns`.
+    at: i64,
+    /// A `drop`, not a `within` block.
+    drop: bool,
+}
+
+/// The scopes with a deadline that this task runs in, innermost last.
+pub(crate) type PutAside = Vec<Deadline>;
+
 /// Where the task that runs now started: one line for its `spawn`, and then one line for the
 /// `spawn` of each task around it. An abort in a task prints it (F9).
 pub(crate) type Site = Arc<[u8]>;
@@ -89,35 +104,90 @@ thread_local! {
     static CANCELS: Cell<u32> = const { Cell::new(0) };
     /// The mark of the innermost block whose task or code this thread runs.
     static CURRENT: RefCell<Option<Arc<CancelMark>>> = const { RefCell::new(None) };
-    /// The marks that `vx_cancel_off` put aside, innermost last.
-    static PUT_ASIDE: RefCell<Vec<Option<Arc<CancelMark>>>> = const { RefCell::new(Vec::new()) };
+    static PUT_ASIDE: RefCell<PutAside> = const { RefCell::new(Vec::new()) };
+}
+
+/// `VX_DROP_WAIT_SECONDS`, in nanoseconds: a cap on the time limit of each `drop`, for tests and
+/// debugging (F6a). `None` when the variable is not set. `vx_init_signals` reads it when the
+/// program starts, so a value that is not a number stops the program before it runs.
+pub(crate) fn drop_wait_cap_ns() -> Option<i64> {
+    static CAP: std::sync::OnceLock<Option<i64>> = std::sync::OnceLock::new();
+    *CAP.get_or_init(|| {
+        let text = std::env::var("VX_DROP_WAIT_SECONDS").ok()?;
+        match text.parse::<f64>() {
+            Ok(seconds) if seconds >= 0.0 && seconds.is_finite() => Some(seconds_to_ns(seconds)),
+            _ => {
+                eprintln!("vx: VX_DROP_WAIT_SECONDS must be a number of seconds, not '{text}'");
+                std::process::abort();
+            }
+        }
+    })
+}
+
+/// `seconds` in nanoseconds. A limit below 0, or one that is not a number, is 0, and a limit
+/// past the range of `i64` is the end of that range.
+fn seconds_to_ns(seconds: f64) -> i64 {
+    (seconds.max(0.0) * 1e9) as i64
+}
+
+/// The earliest deadline of the `drop`s and the `within` blocks that this thread runs in, if it
+/// runs in one. After it, each wait that can be cancelled gives up, as in a cancelled block.
+pub(crate) fn drop_deadline() -> Option<i64> {
+    PUT_ASIDE.with(|p| p.borrow().last().map(|d| d.at))
+}
+
+/// Starts a scope with a deadline `limit_ns` from now. It keeps the deadline of the scope
+/// around it when that is earlier.
+fn push_deadline(mark: Option<Arc<CancelMark>>, limit_ns: i64, drop: bool) {
+    let at = crate::ffi::wait::vx_clock_ns().saturating_add(limit_ns);
+    let at = drop_deadline().map_or(at, |outer| outer.min(at));
+    PUT_ASIDE.with(|p| p.borrow_mut().push(Deadline { mark, at, drop }));
 }
 
 /// Before a `drop`: this thread runs with no mark until `vx_cancel_on`, so no wait gives
-/// `Cancelled` (F6). A `tasks` block in the `drop` gets a mark with no parent.
+/// `Cancelled` (F6), until the deadline of the `drop`. The deadline is `limit` seconds from now,
+/// from the type's `Drop::wait_limit`, or `VX_DROP_WAIT_SECONDS` when that is shorter (F6a). A
+/// `drop` in a `drop` keeps the earlier deadline. A `tasks` block in the `drop` gets a mark
+/// with no parent.
 #[no_mangle]
-pub extern "C" fn vx_cancel_off() {
+pub extern "C" fn vx_cancel_off(limit: f64) {
     let mark = CURRENT.with(|c| c.borrow_mut().take());
-    PUT_ASIDE.with(|p| p.borrow_mut().push(mark));
+    let limit_ns = seconds_to_ns(limit);
+    let limit_ns = drop_wait_cap_ns().map_or(limit_ns, |cap| cap.min(limit_ns));
+    push_deadline(mark, limit_ns, true);
 }
 
 /// After a `drop`: the mark that `vx_cancel_off` put aside comes back.
 #[no_mangle]
 pub extern "C" fn vx_cancel_on() {
-    let mark = PUT_ASIDE.with(|p| p.borrow_mut().pop());
-    let mark = mark.expect("vx_cancel_on comes after vx_cancel_off");
+    let scope = PUT_ASIDE.with(|p| p.borrow_mut().pop());
+    let scope = scope.expect("vx_cancel_on comes after vx_cancel_off");
+    assert!(scope.drop, "a `within` block in a drop did not end");
     CURRENT.with(|c| {
         assert!(c.borrow().is_none(), "a tasks block in a drop did not end");
-        *c.borrow_mut() = mark;
+        *c.borrow_mut() = scope.mark;
     });
+}
+
+/// The start of a `within(limit) { .. }` block (F6a): each wait in it that can be cancelled gives
+/// up `limit` seconds from now, or at the deadline of a scope around it when that is earlier.
+/// Outside a `drop`, a cancel still stops the waits. `VX_DROP_WAIT_SECONDS` does not shorten it.
+#[no_mangle]
+pub extern "C" fn vx_within_start(limit: f64) {
+    push_deadline(None, seconds_to_ns(limit), false);
+}
+
+/// The end of a `within` block, on each path out of it.
+#[no_mangle]
+pub extern "C" fn vx_within_end() {
+    let scope = PUT_ASIDE.with(|p| p.borrow_mut().pop());
+    let scope = scope.expect("vx_within_end comes after vx_within_start");
+    assert!(!scope.drop, "a drop in a `within` block did not end");
 }
 
 /// Swaps the current mark and the marks put aside of this thread with these. The shared runtime
 /// gives each fiber its own.
-pub(crate) fn swap_marks(
-    mark: &mut Option<Arc<CancelMark>>,
-    put_aside: &mut Vec<Option<Arc<CancelMark>>>,
-) {
+pub(crate) fn swap_marks(mark: &mut Option<Arc<CancelMark>>, put_aside: &mut PutAside) {
     CURRENT.with(|c| std::mem::swap(&mut *c.borrow_mut(), mark));
     PUT_ASIDE.with(|p| std::mem::swap(&mut *p.borrow_mut(), put_aside));
 }
@@ -194,6 +264,7 @@ fn wait(task: &mut Task) {
             crate::ffi::wait::waiting_for_join(task.site.clone());
             unsafe { crate::ffi::wait::vx_wait_while(done, 0) };
         }
+        crate::ffi::tsan::acquire(&fiber.done);
     }
     if let Some(thread) = task.thread.take() {
         // The wait goes through `wait.rs`, so the deadlock watcher stops counting this thread
@@ -239,8 +310,9 @@ pub(crate) fn tasks_begin(sched: Option<&'static Scheduler>) -> *mut VxTaskGroup
     }))
 }
 
-/// Whether the block of this thread's task or code, or a block around it, was cancelled. A wait
-/// that can be cancelled then gives `Cancelled`.
+/// Whether the block of this thread's task or code, or a block around it, was cancelled, or a
+/// `drop` that this thread runs is past its deadline. A wait that can be cancelled then gives
+/// `Cancelled`.
 ///
 /// The mark stays, so a task that sees it many times is in a loop that waits again after each
 /// `Cancelled` (F4, F9). At the `CANCELS_TO_WARN`th time, a warning says which task it is.
@@ -255,7 +327,8 @@ pub extern "C" fn vx_cancelled() -> i32 {
             site.unwrap_or_else(|| "  in the main code\n".to_string())
         );
     }
-    set as i32
+    let late = drop_deadline().is_some_and(|d| crate::ffi::wait::vx_clock_ns() >= d);
+    (set || late) as i32
 }
 
 /// See `vx_cancelled`.

@@ -83,6 +83,27 @@ task here borrows the same counter and adds 1 to it 10000 times (`book_tasks_sha
 It prints `count 40000`. A plain `i64` in place of the atomic does not compile: a task cannot
 write a value that another task can read at the same time.
 
+### Memory orders
+
+Each operation on an atomic takes an `AtomicOrdering`: `Relaxed`, `Release`, `Acquire`, `AcqRel`
+or `SeqCst`. They mean what they mean in Rust and C++. The counter above uses `Relaxed`, because
+only the count matters. To pass other data from one task to another, write it, and then store a
+flag with `Release`. The task that reads the flag with `Acquire` then sees the data
+(`book_release_and_acquire.vx`):
+
+```rust
+{{#include ../../../tests/backend/pass/book_release_and_acquire.vx:program}}
+```
+
+It prints `data 42`.
+
+One difference from Rust: Vx compiles each `Relaxed` read as an `Acquire` read. This rules out
+values "out of thin air", which C++ and Rust allow on AArch64 and on GPUs. On x86 it costs
+nothing. Do not rely on it for order: ask for `Acquire` where you need it.
+`-fweak-relaxed-atomics` keeps `Relaxed` reads relaxed. Use it with `--sanitize=thread` to check
+that a program does not depend on the stronger read. The full rules are in
+[the semantics of Vx](https://github.com/vx-lang/Vx/blob/main/docs/lang/semantics.md#25-atomic-orders).
+
 ## Channels
 
 A channel moves values from tasks that send to one task that receives. `channel<T>(n)` makes a
@@ -118,9 +139,34 @@ A `join()` and a `lock()` cannot be cancelled.
 When each task waits and nothing can wake one, the program has a deadlock. The runtime then stops
 the program with the message `vx: deadlock: ...`, so that it does not hang.
 
-A `drop` runs with cancellation off, so that a cleanup can finish. So a wait in a `drop` must
+A `drop` runs with cancellation off, so that a cleanup can finish. So a wait in a `drop` should
 have a time limit: `send_for(v, seconds)` and `recv_for(seconds)` give `timed_out` and `TimedOut`
-after it. The compiler warns about a `send` or `recv` in a `drop` (W1036).
+after it. The compiler warns about a `send` or `recv` in a `drop` that has no limit (W1036).
+
+A `drop` also has a limit of its own. Its type says how long its waits can take, with a method of
+`Drop` that returns 10 seconds unless the type writes its own:
+
+```rust
+impl Drop for SlotGuard {
+  fn drop(self : &mut SlotGuard) -> void {
+    // The cleanup. Its waits get the limit below.
+  }
+
+  fn wait_limit(self : &SlotGuard) -> f64 {
+    return 0.05;
+  }
+}
+```
+
+After the limit, a `send` or `recv` in the `drop` gives up as in a cancelled block.
+`VX_DROP_WAIT_SECONDS` can make the limit of each `drop` shorter, for a test or to find a `drop`
+that hangs, but never longer.
+
+`within(seconds) { .. }` gives the waits in a block one time limit, in a `drop` or anywhere else.
+A flush, a close and a send in `within(0.05) { .. }` share the 50 ms. The limit also holds in the
+functions that the block calls. After the limit, a wait gives up as in a cancelled block, and
+`cancelled()` is true until the block ends. Outside a `drop`, a cancel still stops the waits in
+the block.
 
 ## `select`
 
@@ -147,6 +193,32 @@ unlocks the `Mutex` (`book_mutex_guards_a_total.vx`):
 
 It prints `total 20000`. Use an atomic for one number, and a `Mutex` when a change touches more
 than one number.
+
+## `Arc`
+
+A task can borrow the locals of its parent, so most programs need no `Arc`. Use an `Arc<T>` when a
+value must live longer than its `tasks` block. `clone()` gives another `Arc` that shares the value,
+and `get()` gives `&T`. The drop of the last `Arc` drops the value. It works as Rust's `Arc` does.
+An `Arc<T>` can move to another task only when `T` is `Send` and `Sync`
+(`book_arc_outlives_its_task.vx`):
+
+```rust
+{{#include ../../../tests/backend/pass/book_arc_outlives_its_task.vx:program}}
+```
+
+It prints `scale 10, owners 2`, and then `owners 1`. To change a shared value, put a `Mutex` in the
+`Arc`.
+
+## Finding a data race at run time
+
+The compiler cannot see a race through a raw pointer in `unsafe` code. To find one, run the program
+with `vxc --sanitize=thread program.vx`. LLVM's ThreadSanitizer then checks each memory access of
+the program. It prints `WARNING: ThreadSanitizer: data race` for each race, and the program fails.
+
+ThreadSanitizer sees the start and the end of a task, the atomics, and the waits of channels and
+`Mutex`. This is also true for the runtime that runs many tasks on a few OS threads
+(`VX_TASK_RUNTIME=shared`). It finds only the races that happen in that run. The option works only when `vxc` runs the program.
+On Ubuntu, the runtime of ThreadSanitizer is in the package `libclang-rt-22-dev`.
 
 ## Why Vx has no `async`
 

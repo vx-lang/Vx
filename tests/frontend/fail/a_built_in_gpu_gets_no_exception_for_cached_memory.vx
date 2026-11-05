@@ -1,0 +1,34 @@
+//===- a_built_in_gpu_gets_no_exception_for_cached_memory.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A built-in topology has no machine file to say `offload:`, and a fleet manifest can send it to
+// a worker of another node. So it counts as `offload: true`: a host tensor in its region needs a
+// `transfer`, also when its memory is `managed: cached`.
+//
+// RUN: not vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK-DAG: Error[E6003] {{.*}}: 'out' lives in CPU_DRAM but GPU[0] sees only [GPU_HBM]; insert an explicit transfer to GPU_HBM
+// CHECK-DAG: Error[E6003] {{.*}}: 'x' lives in CPU_DRAM but GPU[0] sees only [GPU_HBM]; insert an explicit transfer to GPU_HBM
+
+Memory CPU_DRAM {
+  capacity: 480 GiB, bandwidth: 500 GB/s, managed: cached
+}
+
+fn double(out : &mut Tensor<f32, [?]>, x : &Tensor<f32, [?]>, n : i32) -> void {
+  spawn on(Topology::GPU) {
+    for i in 0..n {
+      out[i] = 2.0 * x[i];
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let x = Tensor<f32, [4]>::fill(3.0);
+  let mut out = Tensor<f32, [4]>::fill(0.0);
+  double(&mut out, &x, 4);
+  return 0;
+}

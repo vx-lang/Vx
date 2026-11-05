@@ -5,8 +5,17 @@
   <link href="https://vxlang.org/blog/feed.xml" rel="self"/>
   <link href="https://vxlang.org/blog/"/>
   <id>https://vxlang.org/blog/</id>
-  <updated>2026-11-02T18:00:00Z</updated>
+  <updated>2026-11-03T18:00:00Z</updated>
   <author><name>Aditya Kumar</name></author>
+
+  <entry>
+    <title>Checking the deadlock watcher</title>
+    <link href="https://vxlang.org/blog/checking-the-deadlock-watcher.html"/>
+    <id>https://vxlang.org/blog/checking-the-deadlock-watcher.html</id>
+    <updated>2026-11-03T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>When each task of a Vx program waits and nothing can wake one, a watcher thread in the runtime stops the program and names each wait. It reports only when two looks in a row see every fiber parked, every thread asleep, no deadline pending and no progress. Its four reads are not atomic, so we wrote a TLA+ model of the wait protocol and the watcher, and TLC checked every order of the steps. Sixteen mistakes put into the model, two of them bugs fixed earlier, each break the claim they should. The first run found a new bug: the timer thread took a deadline off its heap and woke the word only after it let go of the lock, so in that gap the watcher could see no pending deadline and no progress, and report a deadlock that did not exist. A flag now covers the deadline until its wake ends. The watcher made the model ten times larger, so only models with one fiber and one thread turn it on. A Lean proof also showed that select could pass over a channel forever, and select now starts after its last choice.</summary>
+  </entry>
 
   <entry>
     <title>Stack coloring enabled by lifetime markers</title>

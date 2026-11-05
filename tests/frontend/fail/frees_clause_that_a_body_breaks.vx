@@ -1,0 +1,151 @@
+//===- frees_clause_that_a_body_breaks.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each function here says `ensures !frees(p)`, and its body does one thing that can free the
+// memory of `p`. So each one gets E8012 on the line of that thing. A function that gets a value
+// with a drop by value always drops it or moves it, so it cannot say `!frees` for it. An impl
+// of a trait method must keep the `!frees` of the trait.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+import core::ptr;
+import std::alloc;
+import std::vec;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print!("d{} ", self.id);
+  }
+}
+
+struct Holder {
+  p : *const i64,
+}
+
+// CHECK: E8012] at {{.*}}frees_clause_that_a_body_breaks.vx:[[@LINE+4]]:11: `frees_it` says `!frees(p)`, but its body can free memory through `p`: it gives `p` to 'dealloc', which has no `!frees` for that parameter
+fn frees_it(p : *mut i8) -> void
+ensures !frees(p)
+{
+  dealloc(p, 8i64);
+}
+
+// CHECK: E8012] at {{.*}}frees_clause_that_a_body_breaks.vx:[[@LINE+5]]:11: `frees_a_moved_pointer` says `!frees(p)`, but its body can free memory through `p`: it gives `q` to 'dealloc', which has no `!frees` for that parameter
+fn frees_a_moved_pointer(p : *mut i8) -> void
+ensures !frees(p)
+{
+  let q = offset_mut(p, 0i64);
+  dealloc(q, 8i64);
+}
+
+// CHECK: E8012] at {{.*}}frees_clause_that_a_body_breaks.vx:[[@LINE+4]]:9: `stores_it` says `!frees(p)`, but its body can free memory through `p`: it stores `p` in `h.p`
+fn stores_it(h : &mut Holder, p : *const i64) -> void
+ensures !frees(p)
+{
+  h.p = p;
+}
+
+// CHECK: E8012] at {{.*}}frees_clause_that_a_body_breaks.vx:[[@LINE+5]]:8: `puts_it_in_a_value` says `!frees(p)`, but its body can free memory through `p`: it puts `p` in a value of `Holder`
+fn puts_it_in_a_value(p : *const i64) -> i64
+ensures !frees(p)
+{
+  let h = Holder {
+    p: p
+  };
+  return 0i64;
+}
+
+// CHECK: E8012] at {{.*}}frees_clause_that_a_body_breaks.vx:[[@LINE+4]]:20: `moves_a_value_out` says `!frees(p)`, but its body can free memory through `p`: it reads `*p`, a value of `Noisy`, which has a drop, so the read moves it
+unsafe fn moves_a_value_out(p : *const Noisy) -> i32
+ensures !frees(p)
+{
+  let v = unsafe { *p };
+  return v.id;
+}
+
+// CHECK: E8012] at {{.*}}frees_clause_that_a_body_breaks.vx:[[@LINE+4]]:12: `writes_a_value` says `!frees(p)`, but its body can free memory through `p`: it writes `*p`, a place of `Noisy`, which has a drop, so the write drops the old value
+fn writes_a_value(p : *mut Noisy) -> void
+ensures !frees(p)
+{
+  unsafe { *p = Noisy { id: 2 }; }
+}
+
+// CHECK: E8012] at {{.*}}frees_clause_that_a_body_breaks.vx:[[@LINE+5]]:10: `gives_it_to_a_method` says `!frees(p)`, but its body can free memory through `p`: it gives `p` to 'Vec<*const i64>::push', which has no `!frees` for that parameter
+fn gives_it_to_a_method(p : *const i64) -> void
+ensures !frees(p)
+{
+  let mut v : Vec<*const i64> = Vec::new();
+  v.push(p);
+}
+
+// CHECK: E8012] at {{.*}}frees_clause_that_a_body_breaks.vx:[[@LINE+6]]:15: `frees_a_name_that_a_match_binds` says `!frees(o)`, but its body can free memory through `o`: it gives `q` to 'dealloc', which has no `!frees` for that parameter
+fn frees_a_name_that_a_match_binds(o : Option<*mut i8>) -> void
+ensures !frees(o)
+{
+  match o {
+    Option::Some(q) => {
+      dealloc(q, 8i64);
+    }
+    Option::None => {}
+  }
+}
+
+// CHECK: E8012] at {{.*}}frees_clause_that_a_body_breaks.vx:[[@LINE+4]]:12: `gives_it_to_a_function_value` says `!frees(p)`, but its body can free memory through `p`: it gives `p` to the call through `f`, which has no clauses
+fn gives_it_to_a_function_value(f : fn(*const i64) -> i64, p : *const i64) -> i64
+ensures !frees(p)
+{
+  return f(p);
+}
+
+// CHECK: E8012] at {{.*}}frees_clause_that_a_body_breaks.vx:[[@LINE+4]]:17: `gives_it_to_an_mlir_block` says `!frees(p)`, but its body can free memory through `p`: it gives `p` to an `mlir!` block
+fn gives_it_to_an_mlir_block(p : *const i64) -> i64
+ensures !frees(p)
+{
+  return mlir!( inputs : (%p = p : !llvm.ptr), returns : i64, dialects : ["llvm"]) {
+    %v = llvm.load %p : !llvm.ptr -> i64
+    macro.yield %v : i64
+  };
+}
+
+// CHECK: E8012] at {{.*}}frees_clause_that_a_body_breaks.vx:[[@LINE+1]]:4: `gets_a_vector` says `!frees(v)`, but its body can free memory through `v`: it gets `v` by value, so it drops it or moves it
+fn gets_a_vector(v : Vec<i64>) -> i64
+ensures !frees(v)
+{
+  return 0i64;
+}
+
+trait Reads {
+  fn read_one(self : &Self, p : *const i64) -> i64
+  ensures !frees(p);
+}
+
+struct Keeps {
+  k : i64,
+}
+
+// CHECK: E8012] at {{.*}}frees_clause_that_a_body_breaks.vx:[[@LINE+4]]:10: `Keeps::read_one` says `!frees(p)`, but its body can free memory through `p`: it puts `p` in a value of `Holder`
+impl Reads for Keeps {
+  fn read_one(self : &Keeps, p : *const i64) -> i64 {
+    let h = Holder {
+      p: p
+    };
+    return self.k;
+  }
+}
+
+fn main() -> i32 {
+  let x = 5i64;
+  let k = Keeps {
+    k: 1i64
+  };
+  return k.read_one(&x) as i32;
+}
+
+// CHECK: 12 error(s) emitted

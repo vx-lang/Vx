@@ -10,7 +10,8 @@
 // those elements. So it gets an alias scope of its pointer, and does not alias the other pointer's
 // scope. The clause says nothing about an access that the compiler cannot place in the first `n`
 // elements: in a `while` loop, in a loop to another length, or through an `i` that the body binds
-// again. Nor does it say anything once the body changes `dst`, `src` or `n`.
+// again. Nor does it say anything once the body changes `dst`, `src` or `n`. A safe function gets
+// the scopes too, because each call in safe code proves the clause.
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR
 // RUN: vxc %s 2>&1 | FileCheck %s --check-prefix=EXEC --implicit-check-not=Error
@@ -29,10 +30,25 @@
 // MLIR-LABEL: func.func @copy(
 // MLIR: llvm.load %{{.*}} {alias_scopes = [#[[SRC:.*]]], noalias_scopes = [#[[DST:.*]]]} : !llvm.ptr -> i64
 // MLIR: llvm.store %{{.*}}, %{{.*}} {alias_scopes = [#[[DST]]], noalias_scopes = [#[[SRC]]]} : i64, !llvm.ptr
+// MLIR-LABEL: func.func @copy_safe(
+// MLIR: llvm.load %{{.*}} {alias_scopes = [#[[SRC2:.*]]], noalias_scopes = [#[[DST2:.*]]]} : !llvm.ptr -> i64
+// MLIR: llvm.store %{{.*}}, %{{.*}} {alias_scopes = [#[[DST2]]], noalias_scopes = [#[[SRC2]]]} : i64, !llvm.ptr
 //
 // EXEC: {{^}}b=2;{{$}}
 
 import std::vec;
+
+// A safe function gets the same scopes, because each call in safe code proves the clause.
+fn copy_safe(dst : *mut i64, src : *mut i64, n : i64) -> void
+requires valid(dst, n)
+requires valid(src, n)
+requires initialized(src, n)
+requires !overlaps(dst, src, n)
+{
+  for i in 0i64..n {
+    unsafe { dst[i] = src[i]; }
+  }
+}
 
 unsafe fn copy(dst : *mut i64, src : *mut i64, n : i64) -> void
 requires !overlaps(dst, src, n)

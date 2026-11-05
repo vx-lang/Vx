@@ -5,11 +5,13 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// `expect` on an `Err` stops the program with the caller's message.
+// `expect` on an `Err` stops the program with the caller's message and the line
+// of the `expect`.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // RUN: not vxc %s --legacy-codegen 2>&1 | FileCheck %s
 // CHECK: panic: the parse should have worked
+// CHECK-NEXT: {{^}}  at {{.*}}core_result_expect_on_err.vx:20{{$}}
 // CHECK-NOT: after the panic
 import core::result;
 

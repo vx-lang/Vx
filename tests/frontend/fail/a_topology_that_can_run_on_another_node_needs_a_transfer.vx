@@ -1,0 +1,51 @@
+//===- a_topology_that_can_run_on_another_node_needs_a_transfer.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// CPU_DRAM is `managed: cached`, so a GPU that shares host memory may use host tensors with no
+// `transfer` (backend/pass/gpu_that_shares_host_memory_gets_host_tensors.vx). This GPU says
+// `offload: true`: the fleet may run it on a worker of another node, which does not share this
+// node's memory. So each host tensor in its region needs a `transfer`, as on a discrete GPU.
+//
+// RUN: not vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK-DAG: Error[E6003] {{.*}}: 'out' lives in CPU_DRAM but SharedGpu sees only [HBM]; insert an explicit transfer to HBM
+// CHECK-DAG: Error[E6003] {{.*}}: 'x' lives in CPU_DRAM but SharedGpu sees only [HBM]; insert an explicit transfer to HBM
+
+Memory CPU_DRAM {
+  capacity: 480 GiB, bandwidth: 500 GB/s, managed: cached
+}
+
+Memory HBM {
+  capacity: 96 GiB, bandwidth: 4 TB/s, managed: explicit, scope: device
+}
+
+Topology SharedGpu {
+  arch: nvptx64,
+  levels: [blocks(max_lanes: 1024, memory: cta), subgroups(lanes: 32), lanes(memory: thread)],
+  chip: sm_90,
+  offload: true,
+  memory: Memory::HBM,
+  visible: [Memory::HBM],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 450 GB/s,
+  transfer Memory::HBM -> Memory::CPU_DRAM : 450 GB/s
+}
+
+fn double(out : &mut Tensor<f32, [?]>, x : &Tensor<f32, [?]>, n : i32) -> void {
+  spawn on(Topology::SharedGpu) {
+    for i in 0..n across blocks {
+      out[i] = 2.0 * x[i];
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let x = Tensor<f32, [4]>::fill(3.0);
+  let mut out = Tensor<f32, [4]>::fill(0.0);
+  double(&mut out, &x, 4);
+  println!("{} {} {} {}", out[0], out[1], out[2], out[3]);
+  return 0;
+}

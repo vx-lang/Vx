@@ -18,13 +18,9 @@
 //   - two `tensor_view_2d` views over one pointer are two names for one buffer, which no rule
 //     about names can see at all. The destination has to be storage the compiler allocated.
 //
-// They are separate functions because a decline aborts the one it is in: together in `main`,
-// the first would take the second off the flat path with it and the second would go unchecked.
+// Both code generators put the product into a new tensor, which the destination then names.
 //
-// Both keep the allocate-and-publish form. The answer is the same either way, which is the
-// point: the choice of form is the compiler's and the numbers are not.
-//
-// The default code generator does not support a matmul whose result may be one of its operands yet, so this uses the AST one.
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s
 // CHECK-DAG: func.func @borrowed_self
 // CHECK-DAG: func.func @through_a_name

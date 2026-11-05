@@ -20,7 +20,9 @@ use super::*;
 use crate::arch::LevelKind;
 use crate::bytecode::{
     ACROSS_BLOCK, ACROSS_BLOCKS, ACROSS_LANE, ACROSS_STRIDE, BARRIER_SUBGROUP, LANE_REDUCE_ARGMAX,
-    LANE_REDUCE_MAX, LANE_REDUCE_ORDERED, LANE_REDUCE_SUBGROUP,
+    LANE_REDUCE_COPY, LANE_REDUCE_COPY_WAIT, LANE_REDUCE_DESCENDING, LANE_REDUCE_MAX,
+    LANE_REDUCE_ORDERED, LANE_REDUCE_OWN_ROW, LANE_REDUCE_SORT, LANE_REDUCE_SUBGROUP,
+    TENSOR_STORE_BLOCK_LANE_ELEMENT, TENSOR_STORE_SUBGROUP_LANE_ELEMENT,
 };
 use crate::hir::check::across_lanes;
 
@@ -55,6 +57,22 @@ pub(super) struct AcrossState {
     pub tail: Option<Tail>,
     /// The body of the loop of blocks whose passes end with an arrival, by its address.
     pub arrive_body: Option<usize>,
+    /// The row of a tile that the code of a subgroup alone writes. `None` when the body of the
+    /// subgroup loop binds the loop's index again.
+    pub subgroup_row: Option<SubgroupRow>,
+    /// In a lane loop from 0 over all the lanes of its level: the index `t` of the loop, and the
+    /// level. Only lane `t` writes `tile[t]` in the code of a block, or element `t` of the row of
+    /// the subgroup.
+    pub lane_element: Option<(Symbol, AcrossLevel)>,
+}
+
+/// The row of a tile that the code of a subgroup alone writes.
+#[derive(Clone)]
+pub(super) enum SubgroupRow {
+    /// `tile[w]`, with `w` the index of the subgroup loop.
+    Index(Symbol),
+    /// The whole tile, when the subgroup loop has one subgroup.
+    Whole,
 }
 
 /// The code after the passes of a nest of blocks, or of a group: each pass of the outer loop is
@@ -395,6 +413,31 @@ impl Lowerer<'_> {
         op: crate::hir::check::lanes::LaneOp,
         ordered: bool,
     ) -> Lowered<Val> {
+        if op.is_sort() {
+            return self.lower_lane_sort(fc, op);
+        }
+        match op {
+            crate::hir::check::lanes::LaneOp::CopyAsync => return self.lower_lane_copy(fc),
+            crate::hir::check::lanes::LaneOp::CopyWait => {
+                let [t] = fc.args.as_slice() else {
+                    return Err(crate::emitter_gap!());
+                };
+                let t = self.lower_expr(t)?;
+                let mut imm = LANE_REDUCE_COPY_WAIT;
+                if self.across.kinds.last() == Some(&LevelKind::Subgroups) {
+                    imm |= LANE_REDUCE_SUBGROUP;
+                }
+                self.emit_effect(Opcode::LaneReduce, t.reg, Register(0), imm);
+                return Ok(self.emit_value(
+                    Opcode::Const,
+                    Register(0),
+                    Register(0),
+                    ElementType::I32,
+                    0,
+                ));
+            }
+            _ => {}
+        }
         let argmax = op == crate::hir::check::lanes::LaneOp::ArgMax;
         let (n, tensors) = fc.args.split_last().ok_or(crate::emitter_gap!())?;
         if tensors.len() != if argmax { 2 } else { 1 } {
@@ -415,13 +458,19 @@ impl Lowerer<'_> {
         match op {
             crate::hir::check::lanes::LaneOp::Max => imm |= LANE_REDUCE_MAX,
             crate::hir::check::lanes::LaneOp::ArgMax => imm |= LANE_REDUCE_ARGMAX,
-            crate::hir::check::lanes::LaneOp::Sum => {}
+            _ => {}
         }
         if ordered {
             imm |= LANE_REDUCE_ORDERED;
         }
         if self.across.kinds.last() == Some(&LevelKind::Subgroups) {
             imm |= LANE_REDUCE_SUBGROUP;
+            if tensors
+                .iter()
+                .all(|t| matches!(t, Expr::Borrow(b) if self.is_subgroup_row(&b.expr)))
+            {
+                imm |= LANE_REDUCE_OWN_ROW;
+            }
         }
         if argmax {
             self.emit_effect(Opcode::Arg, n.reg, Register(0), 0);
@@ -434,6 +483,108 @@ impl Lowerer<'_> {
             ));
         }
         Ok(self.emit_value(Opcode::LaneReduce, regs[0], n.reg, ElementType::F32, imm))
+    }
+
+    /// `lanes::sort(&mut t, n)` and `lanes::sort_descending(&mut t, n)`: an effect on `t`. The
+    /// value is a constant that nothing reads, as for `barrier()`.
+    fn lower_lane_sort(
+        &mut self,
+        fc: &crate::syntax::expr::FunctionCallExpr,
+        op: crate::hir::check::lanes::LaneOp,
+    ) -> Lowered<Val> {
+        let [t, n] = fc.args.as_slice() else {
+            return Err(crate::emitter_gap!());
+        };
+        let t = self.lower_expr(t)?;
+        if !matches!(&t.ty, LoweredTy::Tensor { shape, .. } if shape.len() == 1) {
+            return Err(Decline::TypeNotModelled {
+                what: "a lane sort of something that is not a rank-1 tensor",
+            });
+        }
+        let n = self.lower_expr(n)?;
+        let mut imm = LANE_REDUCE_SORT | LANE_REDUCE_ORDERED;
+        if op == crate::hir::check::lanes::LaneOp::SortDescending {
+            imm |= LANE_REDUCE_DESCENDING;
+        }
+        let lanes = if self.across.kinds.last() == Some(&LevelKind::Subgroups) {
+            imm |= LANE_REDUCE_SUBGROUP;
+            self.subgroup_lanes()?
+        } else {
+            self.across.lanes
+        };
+        imm |= lanes << 32;
+        self.emit_effect(Opcode::LaneReduce, t.reg, n.reg, imm);
+        Ok(self.emit_value(Opcode::Const, Register(0), Register(0), ElementType::I32, 0))
+    }
+
+    /// `lanes::copy_async(&mut tile, &x, [i, j, ..])` in the code of a block or a subgroup: the
+    /// place goes in `Arg`s, and the value is the token.
+    fn lower_lane_copy(&mut self, fc: &crate::syntax::expr::FunctionCallExpr) -> Lowered<Val> {
+        let [dst, src, Expr::Array(place)] = fc.args.as_slice() else {
+            return Err(crate::emitter_gap!());
+        };
+        let dst = self.lower_expr(dst)?;
+        let src = self.lower_expr(src)?;
+        let rank = match (&dst.ty, &src.ty) {
+            (LoweredTy::Tensor { shape: d, .. }, LoweredTy::Tensor { shape: s, .. })
+                if d.len() == s.len() && d.len() == place.elements.len() =>
+            {
+                d.len() as u64
+            }
+            _ => {
+                return Err(Decline::TypeNotModelled {
+                    what: "a lane copy of something that is not a tensor",
+                })
+            }
+        };
+        let mut at = Vec::new();
+        for e in &place.elements {
+            at.push(self.lower_expr(e)?.reg);
+        }
+        for r in at {
+            self.emit_effect(Opcode::Arg, r, Register(0), 0);
+        }
+        let mut imm = LANE_REDUCE_COPY | (rank << 16);
+        let lanes = if self.across.kinds.last() == Some(&LevelKind::Subgroups) {
+            imm |= LANE_REDUCE_SUBGROUP;
+            self.subgroup_lanes()?
+        } else {
+            self.across.lanes
+        };
+        imm |= lanes << 32;
+        Ok(self.emit_value(Opcode::LaneReduce, dst.reg, src.reg, ElementType::I32, imm))
+    }
+
+    /// `TENSOR_STORE_BLOCK_LANE_ELEMENT` or `TENSOR_STORE_SUBGROUP_LANE_ELEMENT` when the store
+    /// `ix = ..` writes element `t` of `lane_element`, and otherwise 0.
+    pub(super) fn lane_element_store(&self, ix: &crate::syntax::expr::IndexAccessExpr) -> u64 {
+        let Some((lane, level)) = &self.across.lane_element else {
+            return 0;
+        };
+        if !matches!(&*ix.index, Expr::Identifier(id) if &id.name == lane) {
+            return 0;
+        }
+        match level {
+            AcrossLevel::Block if matches!(&*ix.base, Expr::Identifier(_)) => {
+                TENSOR_STORE_BLOCK_LANE_ELEMENT
+            }
+            AcrossLevel::Subgroup if self.is_subgroup_row(&ix.base) => {
+                TENSOR_STORE_SUBGROUP_LANE_ELEMENT
+            }
+            _ => 0,
+        }
+    }
+
+    /// Whether `e` is the row of a tile that the code of this subgroup alone writes.
+    fn is_subgroup_row(&self, e: &Expr) -> bool {
+        match (&self.across.subgroup_row, e) {
+            (Some(SubgroupRow::Whole), Expr::Identifier(_)) => true,
+            (Some(SubgroupRow::Index(w)), Expr::IndexAccess(r)) => {
+                matches!(&*r.base, Expr::Identifier(_))
+                    && matches!(&*r.index, Expr::Identifier(id) if &id.name == w)
+            }
+            _ => false,
+        }
     }
 
     /// The lanes of a subgroup of the region's topology.
@@ -524,7 +675,36 @@ impl Lowerer<'_> {
             &mut self.across.inner,
             inner_lane_loop(f).map(|g| g as *const crate::syntax::ForLoopStmt as usize),
         );
+        let index: Symbol = f.iter.as_str().into();
+        let rebound = binds_name(&f.body, &index);
+        let subgroup_row = match kind {
+            LevelKind::Subgroups => {
+                let row = if width == 1 {
+                    Some(SubgroupRow::Whole)
+                } else {
+                    (!rebound).then(|| SubgroupRow::Index(index.clone()))
+                };
+                Some(std::mem::replace(&mut self.across.subgroup_row, row))
+            }
+            _ => None,
+        };
+        let lane_element = self.across.lane_element.take();
+        let from_zero = matches!(&*f.iterable,
+            Expr::Range(r) if matches!(&*r.start, Expr::Number(n) if &*n.value == "0"));
+        let all_lanes = match root {
+            Some(AcrossLevel::Block) => true,
+            Some(AcrossLevel::Subgroup) => Some(width) == self.across.subgroup,
+            None => false,
+        };
+        let shared = f.across.as_ref().is_some_and(|a| a.share.is_some());
+        if kind == LevelKind::Lanes && inner == 1 && !rebound && from_zero && all_lanes && !shared {
+            self.across.lane_element = root.map(|level| (index, level));
+        }
         let lowered = self.lower_plain_for(f);
+        self.across.lane_element = lane_element;
+        if let Some(outer) = subgroup_row {
+            self.across.subgroup_row = outer;
+        }
         self.across.level = outer_level;
         self.across.inner = outer_inner;
         lowered?;

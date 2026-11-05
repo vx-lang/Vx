@@ -170,7 +170,7 @@ impl<'a> Parser<'a> {
         };
         let name = self.expect_identifier("Expected function name")?;
 
-        let generics = self.parse_generic_params()?;
+        let mut generics = self.parse_generic_params()?;
 
         self.consume(&TokenType::LeftParen, "Expected '(' after function name")?;
         self.mut_params.clear();
@@ -180,7 +180,19 @@ impl<'a> Parser<'a> {
 
         let mut topology = Topology::CPU;
         if self.match_token(&TokenType::On) {
-            topology = self.parse_topology()?;
+            topology = self.parse_topology_or_any()?;
+        }
+        // `on Topology::Any` is short for `<D : Topology> .. on Topology::D` with a `D` that no
+        // parameter names.
+        if topology == Topology::Custom(crate::syntax::ANY_TOPOLOGY.into()) {
+            generics.push(GenericParam::Type {
+                name: crate::syntax::ANY_TOPOLOGY_PARAM.into(),
+                bounds: vec![crate::syntax::TraitBound::named("Topology")],
+            });
+            // The end of this function pops one name for each generic.
+            self.generic_params
+                .push(crate::syntax::ANY_TOPOLOGY_PARAM.to_string());
+            topology = Topology::Custom(crate::syntax::ANY_TOPOLOGY_PARAM.into());
         }
 
         if !self.match_token(&TokenType::Arrow) {
@@ -323,6 +335,7 @@ impl<'a> Parser<'a> {
         let mut transfers: Vec<crate::arch::TransferEdge> = Vec::new();
         let mut dtypes: Option<Vec<crate::syntax::ElementType>> = None;
         let mut chip: Option<crate::symbol::Symbol> = None;
+        let mut offload = false;
         let mut levels: Option<Vec<crate::arch::Level>> = None;
 
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
@@ -468,6 +481,18 @@ impl<'a> Parser<'a> {
                     });
                 }
                 "levels" => levels = Some(self.parse_levels()?),
+                "offload" => {
+                    offload = match &self.advance().kind {
+                        TokenType::Identifier(s) if &**s == "true" => true,
+                        TokenType::Identifier(s) if &**s == "false" => false,
+                        other => {
+                            return Err(self.error(&format!(
+                                "`offload:` expects true or false, got {:?}",
+                                other
+                            )))
+                        }
+                    };
+                }
                 other => return Err(self.error(&format!("Unknown topology field '{}'", other))),
             }
             self.match_token(&TokenType::Comma);
@@ -506,6 +531,7 @@ impl<'a> Parser<'a> {
                 dtypes,
                 chip,
                 levels,
+                offload,
             },
         })
     }
@@ -938,12 +964,16 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// The value after `transfer A -> B :` — either a link bandwidth (`64 GB/s`) or a unitless
-    /// relative cost (`300`).
+    /// The value after `transfer A -> B :` — a link bandwidth (`64 GB/s`), a unitless relative
+    /// cost (`300`), or `shared` for a memory that both sides address.
     ///
     /// Disambiguated by whether a byte unit follows the number. The only other things that may
     /// follow are the `relaxed`/`sync` markers and a `,`, and no unit spelling collides with those.
     fn parse_edge_cost(&mut self) -> ParseResult<'a, crate::arch::EdgeCost> {
+        if matches!(&self.peek().kind, TokenType::Identifier(s) if *s == "shared") {
+            self.advance();
+            return Ok(crate::arch::EdgeCost::Shared);
+        }
         let mantissa = self.parse_number_text("a transfer cost or link bandwidth")?;
         let is_rate = matches!(
             &self.peek().kind,
@@ -1203,6 +1233,10 @@ impl<'a> Parser<'a> {
 
             self.consume(&TokenType::Arrow, "Expected '->'")?;
             let return_type = self.parse_return_type()?;
+            let mut ensures = Vec::new();
+            while self.match_token(&TokenType::Ensures) {
+                ensures.push(self.parse_expr()?);
+            }
             self.consume(&TokenType::Semicolon, "Expected ';'")?;
             for _ in 0..generics.len() {
                 self.generic_params.pop();
@@ -1214,6 +1248,7 @@ impl<'a> Parser<'a> {
                 memories,
                 params,
                 return_type,
+                ensures,
                 span: Span {
                     line: decl_line,
                     column: decl_column,
@@ -1765,6 +1800,22 @@ impl<'a> Parser<'a> {
         {
             imports.push(ImportDecl {
                 path: vec!["core".into(), "tuple".into()],
+            });
+        }
+        // `==` with a string literal is a call of `core::c_str`'s `c_str_equals`, so it brings
+        // that module with it. The module itself compares no literals, so it does not import
+        // itself.
+        let compares_text = functions
+            .iter()
+            .chain(impls.iter().flat_map(|i: &ImplBlock| i.methods.iter()))
+            .any(|f: &Function| crate::syntax::compares_with_a_string_literal(&f.body));
+        if compares_text
+            && !imports.iter().any(|i: &ImportDecl| {
+                i.path.len() == 2 && &*i.path[0] == "core" && &*i.path[1] == "c_str"
+            })
+        {
+            imports.push(ImportDecl {
+                path: vec!["core".into(), "c_str".into()],
             });
         }
         Ok(Program {

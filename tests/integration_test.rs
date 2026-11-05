@@ -4,6 +4,9 @@ mod integration_test {
     // helpers behind as dead code everywhere else.
     #[cfg(target_os = "macos")]
     mod ane_device_test;
+    // It runs kernels on the Apple GPU through Metal.
+    #[cfg(target_os = "macos")]
+    mod apple_gpu_kernels_called_from_c;
     mod architecture_test;
     mod arrival_counts_test;
     mod assert_codegen_test;
@@ -42,6 +45,8 @@ mod integration_test {
     // It builds the Mac dispatcher, which needs CoreML.
     #[cfg(target_os = "macos")]
     mod npu_affine_views_test;
+    #[cfg(target_os = "macos")]
+    mod objects_need_the_macos_of_the_host;
     mod output_does_not_depend_on_the_current_directory;
     mod payload_test;
     mod pipeline_scale_test;
@@ -53,11 +58,13 @@ mod integration_test {
     mod runtime_test_build;
     mod shipped_programs_compile;
     mod solver_policy_test;
+    mod tensors_with_gaps_from_c;
     mod traffic_test;
     mod transport_test;
     // It links with `cc -shared` and loads `.so` files.
     #[cfg(target_os = "linux")]
     mod two_kernel_libraries_in_one_process;
+    mod view_copy_test;
     mod vx_api_diff;
     mod wire_test;
     mod working_set_peak_test;

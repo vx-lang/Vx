@@ -59,8 +59,16 @@ trait Try {
 /// dropped -- at the end of its block, before a `return`, `break` or `continue` leaves it, or
 /// when the variable is given a new value -- and then drops the value's fields, in the order
 /// they are declared. A program does not call it; `core::mem::drop` gives a value up early.
+///
+/// `drop` runs with cancellation off, so a wait in it cannot be cancelled. `wait_limit` says how
+/// long its waits can take, in seconds. After it, each wait in the `drop` that can be cancelled
+/// gives up, as in a cancelled block. A type whose cleanup needs longer writes its own.
 trait Drop {
   fn drop(self : &mut Self) -> void;
+  /// How long the waits in `drop` can take, in seconds.
+  fn wait_limit(self : &Self) -> f64 {
+    return 10.0;
+  }
 }
 
 // The operators. `a + b` on a struct or an enum is `a.add(b)`, and the same for each

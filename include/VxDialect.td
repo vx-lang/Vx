@@ -213,13 +213,15 @@ def Vx_BarrierOp : Vx_Op<"barrier", [MemoryEffects<[MemRead, MemWrite]>]> {
 // elements of `input`. With `ordered`, the order is the one that
 // docs/lane_reductions.md gives. The device clone expands it into shuffles and
 // barriers, and the host lowering into loops. With `serial`, the kernel runs on
-// one lane, and the device clone also gets the loops. It reads and writes memory so
-// that nothing moves it past a write of `input` or into a branch.
+// one lane, and the device clone also gets the loops. With `own_row`, in the code of
+// a subgroup, `input` is the row of the tile that the `vx.lane_element` stores of the
+// subgroup write. It reads and writes memory so that nothing moves it past a write
+// of `input` or into a branch.
 def Vx_LaneReduceOp : Vx_Op<"lane_reduce", [MemoryEffects<[MemRead, MemWrite]>]> {
     let summary = "Combine the first elements of a tensor over the lanes.";
     let arguments = (ins AnyMemRef:$input, I32:$count, StrAttr:$kind,
                      UnitAttr:$ordered, UnitAttr:$subgroup,
-                     UnitAttr:$serial);
+                     UnitAttr:$serial, UnitAttr:$own_row);
     let results = (outs F32:$result);
 }
 
@@ -230,8 +232,51 @@ def Vx_LaneReduceOp : Vx_Op<"lane_reduce", [MemoryEffects<[MemRead, MemWrite]>]>
 def Vx_LaneArgmaxOp : Vx_Op<"lane_argmax", [MemoryEffects<[MemRead, MemWrite]>]> {
     let summary = "The index of the larger value over the lanes.";
     let arguments = (ins AnyMemRef:$values, AnyMemRef:$indices, I32:$count,
-                     UnitAttr:$ordered, UnitAttr:$subgroup, UnitAttr:$serial);
+                     UnitAttr:$ordered, UnitAttr:$subgroup, UnitAttr:$serial,
+                     UnitAttr:$own_row);
     let results = (outs I32:$result);
+}
+
+// `lanes::sort` and `lanes::sort_descending`: the first `count` elements of
+// `input`, an `i64` tensor whose size is a power of two, in order. The other
+// elements do not change. `lanes` is the number of lanes of the block, or 32 in
+// the code of a subgroup. The device clone expands it into a sorting network in
+// registers, and the host lowering and `serial` into loops. It reads and writes
+// memory so that nothing moves it past a use of `input` or into a branch.
+def Vx_LaneSortOp : Vx_Op<"lane_sort", [MemoryEffects<[MemRead, MemWrite]>]> {
+    let summary = "Sort the first elements of a tensor with the lanes.";
+    let arguments = (ins AnyMemRef:$input, I32:$count, I64Attr:$lanes,
+                     UnitAttr:$descending, UnitAttr:$subgroup,
+                     UnitAttr:$serial);
+}
+
+// `lanes::copy_async`: the lanes of a block copy the tile of `source` at `place`
+// into `tile`, in the background. An element past the end of `source` copies as
+// zero. The result is a token for `vx.lane_copy_wait`.
+def Vx_LaneCopyAsyncOp : Vx_Op<"lane_copy_async", [MemoryEffects<[MemRead, MemWrite]>]> {
+    let summary = "Start a copy of a tile into shared memory.";
+    let arguments = (ins AnyMemRef:$tile, AnyMemRef:$source,
+                     Variadic<AnySignlessInteger>:$place, I64Attr:$lanes,
+                     UnitAttr:$serial, UnitAttr:$subgroup);
+    let results = (outs I32:$token);
+}
+
+// `vx.lane_copy_async` with `map`, the address of a tensor map of `source` in
+// device memory, or 0. The host makes the map before the launch. The GPU
+// copies the tile with TMA when the map is not 0.
+def Vx_LaneCopyAsyncMapOp : Vx_Op<"lane_copy_async_map", [MemoryEffects<[MemRead, MemWrite]>]> {
+    let summary = "Start a copy of a tile into shared memory, with a tensor map.";
+    let arguments = (ins AnyMemRef:$tile, AnyMemRef:$source, I64:$map,
+                     Variadic<AnySignlessInteger>:$place, I64Attr:$lanes,
+                     UnitAttr:$serial, UnitAttr:$subgroup);
+    let results = (outs I32:$token);
+}
+
+// Waits until the copy of `token` ends, and then for every lane of the block,
+// or of the subgroup with `subgroup`.
+def Vx_LaneCopyWaitOp : Vx_Op<"lane_copy_wait", [MemoryEffects<[MemRead, MemWrite]>]> {
+    let summary = "Wait for a copy of a tile into shared memory.";
+    let arguments = (ins I32:$token, UnitAttr:$serial, UnitAttr:$subgroup);
 }
 
 // The launch shape of a `vx.spawn` region with `across` loops (#252): the
