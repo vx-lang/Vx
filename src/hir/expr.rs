@@ -206,7 +206,7 @@ impl<'a> TypeChecker<'a> {
                 // about to drop have to be read before the arguments are checked.
                 let before = self.consteval_snapshot();
                 let scopes = self.consteval_scopes();
-                let saved_borrows = self.borrow.snapshot();
+                let saved_borrows = self.borrows_before_statement();
                 // With a `tail`, the last statement is not the block's value either.
                 self.value_unused = *has_semi || i != last || tail.is_some() || block_unused;
                 // `v;` reads `v`: it does not move it.

@@ -1,0 +1,52 @@
+//===- a_return_in_a_closure_body.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `return` in a closure body ends the call of the closure, and gives the call its value.
+// Both code generators compile each closure here.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}only a return 42{{$}}
+// CHECK: {{^}}early 0 late 7{{$}}
+// CHECK: {{^}}from a loop 3{{$}}
+// CHECK: {{^}}no value 5{{$}}
+
+fn main() -> i32 {
+  let base : i64 = 40;
+  let plus = |x : i64| -> i64 {
+    return base + x;
+  };
+  println!("only a return {}", plus(2 as i64));
+
+  let clamp = |x : i64| -> i64 {
+    if x < 0 {
+      return 0;
+    }
+    return x;
+  };
+  println!("early {} late {}", clamp(-3 as i64), clamp(7 as i64));
+
+  let first_over = |limit : i64| -> i64 {
+    for i in 0i64..10 {
+      if i * i > limit {
+        return i;
+      }
+    }
+    return -1;
+  };
+  println!("from a loop {}", first_over(5 as i64));
+
+  let mut count : i64 = 0;
+  let add = |n : i64| {
+    count = count + n;
+    return;
+  };
+  add(2 as i64);
+  add(3 as i64);
+  println!("no value {}", count);
+  return 0;
+}

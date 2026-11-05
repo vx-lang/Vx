@@ -1,0 +1,85 @@
+//===- loop_invariants_that_hold_in_each_pass.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// Each invariant below holds when its loop starts and at the start of each later pass, so the
+// program compiles. A `for i in a..b` loop starts its next pass with `i + 1`. A `continue` starts
+// the next pass too.
+
+// An invariant about the loop variable, with `i <= n` for the pass after the last one.
+fn count(n : i64) -> i64
+requires n >= 0i64
+{
+  let mut s = 0i64;
+  for i in 0i64..n invariant s == i invariant i <= n {
+    s = s + 1i64;
+  }
+  return s;
+}
+
+// The proof at the end of the body uses the fact of `step`, a variable of the body.
+fn count_by_two(n : i64) -> i64 {
+  let mut s = 0i64;
+  for i in 0i64..n invariant s == 2i64 * i {
+    let step = 2i64;
+    s = s + step;
+  }
+  return s;
+}
+
+// The `continue` keeps the invariant: `s` grows by at most one in each pass. `0 <= s` keeps
+// `s + 1` from a wrap.
+fn count_the_odd_ones(n : i64) -> i64 {
+  let mut s = 0i64;
+  for i in 0i64..n invariant 0i64 <= s invariant s <= i {
+    if i % 2i64 == 0i64 {
+      continue;
+    }
+    s = s + 1i64;
+  }
+  return s;
+}
+
+// The same with `while`, where the body moves the counter.
+fn count_all_but_the_second(n : i64) -> i64 {
+  let mut s = 0i64;
+  let mut i = 0i64;
+  while i < n invariant 0i64 <= s invariant s <= i {
+    i = i + 1i64;
+    if i == 2i64 {
+      continue;
+    }
+    s = s + 1i64;
+  }
+  return s;
+}
+
+// The body never reaches its end, so no pass starts from there. Only the start of the loop
+// needs the invariant.
+fn stop_at_once() -> i64 {
+  let mut s = 0i64;
+  loop invariant s <= 1i64 {
+    s = 5i64;
+    break;
+  }
+  return s;
+}
+
+fn main() -> i32 {
+  // CHECK: stop_at_once 5
+  println!("stop_at_once {}", stop_at_once());
+  // CHECK-NEXT: count 4
+  println!("count {}", count(4i64));
+  // CHECK-NEXT: count_by_two 8
+  println!("count_by_two {}", count_by_two(4i64));
+  // CHECK-NEXT: count_the_odd_ones 2
+  println!("count_the_odd_ones {}", count_the_odd_ones(4i64));
+  // CHECK-NEXT: count_all_but_the_second 3
+  println!("count_all_but_the_second {}", count_all_but_the_second(4i64));
+  return 0;
+}

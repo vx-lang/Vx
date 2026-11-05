@@ -705,6 +705,11 @@ pub struct MonoState {
     pub closure_depths: Vec<usize>,
     /// Variables each open closure literal captured, innermost last.
     pub closure_captures_stack: Vec<HashMap<Symbol, Type>>,
+    /// Each use, in the body of each open closure literal, of a variable that the closure
+    /// captured: its name and its span. Innermost last.
+    pub closure_capture_uses: Vec<Vec<(Symbol, crate::syntax::Span)>>,
+    /// The borrows of each closure literal that is not the value of a `let`, by its struct name.
+    pub closure_literal_borrows: HashMap<Symbol, Vec<(Symbol, bool)>>,
     /// How many generic instantiations are open around the call being checked.
     ///
     /// `f<N - 1>()` whose base case is never reached instantiates a new `f` every time
@@ -726,6 +731,9 @@ pub struct MonoState {
     pub return_provenances: HashMap<Symbol, crate::hir::provenance::ReturnProvenance>,
     /// The parameters that each checked instance says `!keeps` for, as bits, by its name.
     pub not_kept: HashMap<Symbol, u32>,
+    /// The parameters that each checked instance says `!frees` for, or that the walk of its
+    /// body proves, as bits, by its name.
+    pub not_freed: HashMap<Symbol, u32>,
 }
 
 /// How deep a chain of generic instantiations the checker will follow before giving up.

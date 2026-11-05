@@ -981,6 +981,13 @@ fn run_lit_test(path: &Path) -> Result<(), String> {
         return Ok(());
     }
     if source.contains("// REQUIRES: thread-sanitizer") && !has_thread_sanitizer() {
+        // CI has the runtime, so a skip there means that a test stopped running.
+        if std::env::var_os("VX_TESTS_NEED_THREAD_SANITIZER").is_some() {
+            return Err(format!(
+                "{}: clang cannot link a program with -fsanitize=thread, so this test cannot run",
+                path.display()
+            ));
+        }
         return Ok(());
     }
     // A file with `// REQUIRES: x86_64` and `// REQUIRES: aarch64` lines runs on each machine it

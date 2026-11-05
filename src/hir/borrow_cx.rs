@@ -22,6 +22,9 @@ pub(crate) struct BorrowCx {
     /// `variable -> its borrow records`. **Private**: readable for a conflict check only via
     /// [`Self::live_borrows`], which sweeps dead borrows before returning.
     active_borrows: HashMap<Symbol, Vec<BorrowRecord>>,
+    /// The borrow table from before each expression statement around this point, innermost
+    /// last. The end of each statement puts its table back.
+    pub(crate) before_statements: Vec<HashMap<Symbol, Vec<BorrowRecord>>>,
     /// What each open block names and declares (NLL). The innermost block is `.last()`.
     block_liveness: Vec<BlockUses>,
     /// The statement index currently being checked, one entry per open block. Innermost is `.last()`.
@@ -108,6 +111,7 @@ impl Default for BorrowCx {
     fn default() -> Self {
         Self {
             active_borrows: HashMap::new(),
+            before_statements: Vec::new(),
             block_liveness: Vec::new(),
             current_stmt_idx: Vec::new(),
             skip_borrow_check: false,
@@ -337,6 +341,32 @@ impl BorrowCx {
         found
     }
 
+    /// Ends every borrow that `holder` holds, also in the tables that the statements around
+    /// this point put back when they end: the wait of a copy token, which ends the copy.
+    pub(crate) fn forget_borrows_of(&mut self, holder: &str) {
+        let held = |r: &BorrowRecord| r.borrower_name.as_deref() == Some(holder);
+        for table in std::iter::once(&mut self.active_borrows).chain(&mut self.before_statements) {
+            for list in table.values_mut() {
+                list.retain(|r| !held(r));
+            }
+            table.retain(|_, list| !list.is_empty());
+        }
+    }
+
+    /// Ends one borrow of `base` that no variable holds: the borrow of a closure literal whose
+    /// call ended.
+    pub(crate) fn forget_unheld_borrow(&mut self, base: &str, is_mut: bool) {
+        let list = self.active_borrows.get_mut(base);
+        let at = list.as_ref().and_then(|l| {
+            l.iter().position(|r| {
+                r.borrower_name.is_none() && r.carried_from.is_none() && r.is_mut == is_mut
+            })
+        });
+        if let (Some(list), Some(at)) = (list, at) {
+            list.remove(at);
+        }
+    }
+
     /// `to = from`: `to` now holds every borrow `from` holds, so each stays alive while either
     /// is used. A reference or a closure copied to another variable keeps what it points at
     /// borrowed.
@@ -410,6 +440,20 @@ impl BorrowCx {
             .get(base)
             .map(|s| s.iter().cloned().collect())
             .unwrap_or_default()
+    }
+
+    pub(crate) fn has_borrowed(&self, base: &str, name: &str) -> bool {
+        self.borrowers_ever
+            .get(base)
+            .is_some_and(|s| s.contains(name))
+    }
+
+    /// `name` was never a borrower of `base` after all, such as `s` in `let s = f(&a)` when `f`
+    /// returns a number.
+    pub(crate) fn forget_borrower(&mut self, base: &str, name: &str) {
+        if let Some(s) = self.borrowers_ever.get_mut(base) {
+            s.remove(name);
+        }
     }
 
     /// Start a function's list of borrowers, returning the enclosing function's.

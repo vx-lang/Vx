@@ -392,6 +392,32 @@ forms.
 - **No GPU.** A CPU backend, or the CUDA backend on a machine with no GPU, runs a job of one
   rank only. There, each collective copies `in` to `out`.
 
+### 3.8 Calling a Vx function that launches Apple GPU kernels
+
+A Swift, C or Rust program can call a `pub fn` from an object that
+`vxc --host default --machine fleet/m4-uma.vx --action emit-obj` builds. Its `spawn on` regions
+run on the Apple GPU through Metal (`runtime/metal_dispatch.mm`).
+
+- **Parameters.** A tensor parameter of rank r is 3 + 2r C arguments, as in §3.6. For rank 2:
+  the allocated pointer, the aligned pointer, the offset, the two sizes and the two strides.
+- **Memory.** A tensor can be in any memory that the program allocated, at any address. Metal
+  uses the pages that the tensor touches, with no copy. A tensor that the kernel writes is
+  ready when the call returns. Before it returns, the function waits for the kernels of the
+  calling thread, and for the kernels of other threads that write one of its tensor
+  parameters. So a call on one thread does not wait for the kernels of another thread on other
+  memory.
+- **CPU or GPU.** `void vx_metal_set_enabled(int on)` sets the device for the calling thread.
+  With 0, each launch runs the CPU copy of its kernel on the same memory, with the blocks
+  shared among the CPU's cores (`docs/spawn_on.md`). `VX_METAL=0` turns the GPU off for every
+  thread. The CPU copy flushes a subnormal `f32` to 0, as the GPU does.
+- **Rows.** Vx reads every tensor as packed, so row y of a `Tensor<T, [?, ?]>` starts at y times
+  the size of axis 1, on the CPU and on the GPU. Give a frame with padded rows as
+  `[height, bytes in a row]`, and index the pixels within each row.
+
+`--emit-msl` writes the kernels as MSL, with the manifest of §3.5. In it, `words` counts the
+32-bit words that a parameter takes in the constant buffer that follows the tensor buffers:
+2 + 2r for a tensor, 1 for a scalar of up to 32 bits, and 2 for an `i64`.
+
 ## 4. Symbol names
 
 - A function the program defines keeps its name, and is `hidden` and `dso_local`.

@@ -134,10 +134,11 @@ prover the fact `n >= 0`.
 
 Each fact has the memory of its base (section 3).
 
-Before a call, the checker gives the value of each argument a fresh name, as `check_call_requires`
-does today for an argument that the prover cannot model. The facts of the `ensures` use those
-names. So in `grab(k, &mut k)`, a fact `Valid(b, 0, k)` is about the value of `k` before the call,
-also when the call changes `k`.
+The facts of the `ensures` use each argument that the prover can model, and a fresh name for each
+other argument, as `check_call_requires` does. A call that can change a variable drops each fact
+that names the variable, after it adds the facts of its `ensures`. So in `grab(k, &mut k)`, the
+fact `Valid(b, 0, k)` ends at the call. A `let` of the result gives `return` in a length its
+name, as in `let got = read(buf, cap)`.
 
 ## 5. Where a fact ends
 
@@ -221,13 +222,20 @@ It infers `!frees(p)` when the body uses each value that it follows only in thes
 - It returns it.
 
 A read of a value of a type with a drop is a move. The body can then drop the value and free the
-memory that the value owns. So `ptr::read<T>` does not get `!frees(p)`. For the same reason, a
-parameter of a type with a drop that the function gets by value never gets `!frees`. The function
-drops it, or moves it to another owner.
+memory that the value owns. So `ptr::read<T>` gets `!frees(p)` only for a `T` without a drop. For
+the same reason, a parameter of a type with a drop that the function gets by value never gets
+`!frees`. The function drops it, or moves it to another owner.
 
 Each other use stops the inference, for example a store of `p` or a method call that the syntax
-cannot resolve. The checker checks a written `!frees(p)` on a Vx function by the same rules. It
-trusts one on an `extern` function, and the audit lists it.
+cannot resolve. The checker checks a written `!frees(p)` on a Vx function by the same rules, and a
+body that breaks it gets E8012. It trusts one on an `extern` function, and the audit lists it. An
+`extern` function states it after its return type, as in
+`safe fn strlen(s : *const i8) -> i64 ensures !frees(s);`. A written `frees(p)` says that the call
+can free that memory, so the compiler infers no `!frees(p)` for it.
+
+A method and an instance of a generic function get `!frees` from their checked body, as they get
+`!keeps`. There a method call is a call by name. A method of a trait impl gets only the clauses
+that it states, and it cannot add a `!frees` that the trait method does not have (section 7).
 
 ## 6. Joins
 
@@ -282,8 +290,8 @@ the call. So in v1, a body must not assign a parameter that a pointer `ensures` 
 | Where the proof runs | When the prover cannot prove the clause |
 | --- | --- |
 | A call in safe code | E8006. The message names the clause. If an event ended the fact, the message also gives the line of the event and its reason. |
-| A call in an `unsafe` block | The checker trusts the clause. The audit lists it. |
-| A `return` in a function with a pointer `ensures` | An error (open question 1) |
+| A call in an `unsafe` block | The checker trusts the clause. The audit lists it, and the block gets no W1010. |
+| A `return` in a function with a pointer `ensures` | E8012 |
 
 **`assume e`** adds the fact `e`, without a proof. It is a statement, and only an `unsafe` block can
 hold it. The audit lists each one. `e` can be a pointer clause or a boolean expression that the
@@ -346,6 +354,7 @@ impl<T> Vec<T> {
   fn as_mut_ptr(self : &Vec<T>) -> *mut T
   ensures valid(return, self.len)
   ensures initialized(return, self.len)
+  ensures !frees(self)
   {
     let p = self.data;
     unsafe {
@@ -357,6 +366,7 @@ impl<T> Vec<T> {
 
   fn len(self : &Vec<T>) -> i32
   ensures return == self.len
+  ensures !frees(self)
   {
     return self.len;
   }
@@ -386,18 +396,22 @@ fn total_in_a_loop(v : &mut Vec<i64>) -> i64 {
 
 - `total` compiles. After `as_mut_ptr`, `p` has a new base `b`, with `Valid(b, 0, v.len)` and
   `Init(b, 0, v.len)`. The `Valid` fact gives `v.len >= 0`. The `ensures` of `len` gives its result
-  as `v.len` (#2622). So both goals hold. `len` only reads a field of `self`, so the compiler
-  infers `!frees(self)`, and the call of `len` ends no fact.
+  as `v.len` (#2622). So both goals hold. `len` has `!frees(self)`, so the call of `len` ends no
+  fact. The other methods that only read the vector have it too: `get`, `get_ref`, `is_empty`,
+  `as_slice` and `as_mut_slice`.
 - In `total_after_push`, `v.push(1i64)` gets `&mut` to a vector, which can free memory. So the
   push ends both facts, and `sum` gets E8006 with a note on the line of the push. This is the bug
-  that `as_mut_ptr` warns about in its comment today.
+  that `as_mut_ptr` warns about in its comment.
 - In `total_in_a_loop`, the call of `sum` comes before the push in the body. The loop rule finds
   the push before it checks the body. So the facts are gone at the start of the body, and the call
-  gets E8006. On the second pass, the push of the first pass can move the buffer.
+  gets E8006. On the second pass, the push of the first pass can move the buffer. The error has no
+  note, because after the push `n` is not the length. With `v.len()` in place of `n`, the note
+  gives the line of the push.
 
-The `assume` in `as_mut_ptr` is true only when `data` is not null. Today `vec_alloc` returns null
-for a buffer of 0 bytes, for example for `Vec::with_capacity(0)`. So `Vec` must first keep an
-aligned pointer that is not null for an empty buffer, as the `Vec` of Rust does.
+The `assume` in `as_mut_ptr` is true only when `data` is not null. So an empty `Vec`, as from
+`Vec::with_capacity(0)`, keeps the address 16, which is aligned and not null, as the `Vec` of Rust
+does. It allocates no memory for a buffer of 0 bytes and frees none. A type with no fields gives a
+buffer of 0 bytes too.
 
 ### A pointer to a local variable
 
@@ -678,17 +692,28 @@ needs a fact there. Open question 6 asks about a warning for it.
 - A fact about other memory ends at each event that can free memory. That includes memory that the
   pointer cannot point into, such as a vector that the body made itself.
 - One fact must prove a clause. The checker does not join two ranges.
-- A write through a pointer makes no `Init` fact. So a loop that fills a buffer gives no fact.
-- The inference of `!frees` stops at a method call, as the inference of `!keeps` does.
+- A write through a pointer makes no `Init` fact. So a loop that fills a buffer gives no fact. The
+  write keeps the facts that the pointer has.
+- An `extern` function can state only `frees` clauses and pointer clauses. It cannot state a
+  value `ensures` such as `0i64 <= return`, so the `c_read_some` of section 8 cannot be written
+  yet.
+- A `spawn on` region ends the facts about other memory at its start. The code waits for the
+  region at its end, so no task of it runs after the region.
+- The inference from the syntax stops at a method call, as the inference of `!keeps` does. Only a
+  method or an instance of a generic function gets `!frees` from its checked body.
+- The loop rule reads the body before the checker checks it. At a method call, it uses only a
+  `!frees` that the method states, as the methods of `Vec` do.
 
 ## 12. Open questions
 
-1. The error for a body that breaks a pointer `ensures`. A body that breaks a value `ensures` gets
-   an error with no code today. A new code next to E8011 is one choice.
-1. The name `frees`. The extern note has `ensures freed(p)` for a call that ends the life of a
-   handle. `frees(p)` says that it can, and `freed(p)` says that it does.
-1. `assume` as a statement. The other choice is to trust each clause about a value that an
-   `unsafe` block gives as its value.
+1. Decided (#2674): a body that breaks a pointer `ensures` gets E8012, as a body that breaks
+   `!frees(p)` does. A body that breaks a value `ensures` still gets an error with no code.
+1. Decided (#2673): the name stays `frees`. The extern note has `ensures freed(p)` for a call that
+   ends the life of a handle. `frees(p)` says that it can, and a later `freed(p)` can say that it
+   does.
+1. Decided (#2674): `assume` is a statement, and only an `unsafe` block can hold it. Outside one
+   it gets E5002. The other choice was to trust each clause about a value that an `unsafe` block
+   gives as its value.
 1. A function value of a safe function with a pointer `requires`. V1 refuses it. Later, the value
    can have an `unsafe fn` type, so that each call through it needs `unsafe`.
 1. Safe code that reads `p[i]` when the facts prove `valid`, `initialized` and the bounds. V1 still
@@ -709,7 +734,8 @@ needs a fact there. Open question 6 asks about a warning for it.
    emits the `dereferenceable` assume after a call with `ensures valid`.
 1. A `Vec` with an empty buffer keeps an aligned pointer that is not null. Then the clauses of
    `Vec::as_mut_ptr` and `Vec::len` in the standard library.
-1. The audit lists each trusted pointer clause and each `assume`, with A1 of #1902.
+1. The audit lists each trusted pointer clause and each `assume`, with A1 of #1902. `vxc --audit`
+   prints one line for each: the file, the line, the column and the fact.
 
 Each step adds fixtures that pass and fail. Each test breaks one rule, for example one event or one
 term of a goal, and checks the line of the error.

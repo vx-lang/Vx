@@ -41,6 +41,9 @@ struct ReborrowPlan {
     ref_args: Vec<(usize, String, Vec<String>, bool, bool)>,
     /// Pre-call borrow list of each distinct reference-argument base, for the selective revert.
     base_snapshots: HashMap<String, Option<Vec<BorrowRecord>>>,
+    /// The bases that the variable the call's value goes to, `s` in `let s = f(&a)`, borrowed
+    /// before the call.
+    borrowed_before: std::collections::HashSet<String>,
     /// (arg index, variable) for each by-value argument that can hold a reference, `s` after
     /// `let s = View { r : &x }`.
     held_args: Vec<(usize, String)>,
@@ -259,7 +262,44 @@ impl<'a> TypeChecker<'a> {
                 return Type::Scalar(elem);
             }
         }
-        arg_ty.clone()
+        self.closure_literal_as(arg, param_ty)
+            .unwrap_or_else(|| arg_ty.clone())
+    }
+
+    /// A closure literal passed for a parameter of closure type takes its closure type, as if
+    /// the call wrote `as`. A closure in a variable still needs the `as`. Gives the literal's
+    /// closure type, which may not fit the parameter, or `None` when `arg` is not a literal.
+    pub(crate) fn closure_literal_as(&mut self, arg: &mut Expr, param_ty: &Type) -> Option<Type> {
+        let Type::Closure(..) = param_ty else {
+            return None;
+        };
+        let Expr::StructInit(init) = &*arg else {
+            return None;
+        };
+        let (name, span) = (init.name.clone(), init.span);
+        let (params, ret) = self.mono.closure_signatures.get(&name)?.clone();
+        let closure_ty = Type::Closure(params, Box::new(ret));
+        let literal = std::mem::replace(
+            arg,
+            Expr::Number(NumberExpr::new("0".to_string(), None, span)),
+        );
+        *arg = Expr::AsCast(AsCastExpr {
+            expr: Box::new(literal),
+            target_ty: closure_ty.clone(),
+            source_ty: Some(Type::Struct(name.clone(), None)),
+            span,
+        });
+        // Every argument of the call is checked by now, and the callee cannot keep a closure.
+        // So the literal's borrows end with the call.
+        for (base, is_mut) in self
+            .mono
+            .closure_literal_borrows
+            .remove(&name)
+            .unwrap_or_default()
+        {
+            self.borrow.forget_unheld_borrow(&base, is_mut);
+        }
+        Some(closure_ty)
     }
 
     /// Compute, *before* the argument loop, everything the post-call reborrow revert needs (#243):
@@ -368,6 +408,7 @@ impl<'a> TypeChecker<'a> {
         // plus a snapshot of each distinct base's pre-call borrow list.
         let mut ref_args: Vec<(usize, String, Vec<String>, bool, bool)> = Vec::new();
         let mut base_snapshots: HashMap<String, Option<Vec<BorrowRecord>>> = HashMap::new();
+        let mut borrowed_before = std::collections::HashSet::new();
         let mut held_args = Vec::new();
         let mut ptr_args = Vec::new();
         let is_extern = self
@@ -402,6 +443,11 @@ impl<'a> TypeChecker<'a> {
                             base_snapshots
                                 .entry(base.clone())
                                 .or_insert_with(|| self.borrow.snapshot_base(base.as_str()));
+                            if let Some(target) = &self.current_assignment_target {
+                                if self.borrow.has_borrowed(&base, target) {
+                                    borrowed_before.insert(base.clone());
+                                }
+                            }
                             ref_args.push((
                                 i,
                                 base,
@@ -430,6 +476,7 @@ impl<'a> TypeChecker<'a> {
             imported_prov,
             ref_args,
             base_snapshots,
+            borrowed_before,
             held_args,
             ptr_args,
             is_extern,
@@ -748,6 +795,12 @@ impl<'a> TypeChecker<'a> {
                 prev,
                 self.current_assignment_target.as_deref(),
             );
+            // A result that cannot hold a reference does not keep `base` alive.
+            if !plan.ret_is_ref && !plan.borrowed_before.contains(base) {
+                if let Some(target) = &self.current_assignment_target {
+                    self.borrow.forget_borrower(base, target);
+                }
+            }
         }
     }
 
@@ -815,6 +868,19 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub(crate) fn check_functioncall_expr(&mut self, expr: &mut Expr) -> Type {
+        // `assume e;`: the checker adds the fact, and the call becomes an empty block, so it
+        // generates no code.
+        if let Expr::FunctionCall(fc) = expr {
+            if fc.name.as_ref() == crate::syntax::stmt::ASSUME {
+                assert_eq!(fc.args.len(), 1, "the parser gives `assume` one fact");
+                let (fact, at) = (fc.args[0].clone(), fc.span);
+                self.check_assume(&fact, at);
+                let mut block = UnsafeBlockExpr::new(Vec::new(), None, at);
+                block.generated = true;
+                *expr = Expr::UnsafeBlock(block);
+                return Type::Struct("void".into(), None);
+            }
+        }
         // The first statement of a `within(limit) { .. }` block (F6a): the limit is a number of
         // seconds, and the block gets an owner whose drop ends its deadline.
         if let Expr::FunctionCall(fc) = expr {
@@ -1544,6 +1610,18 @@ impl<'a> TypeChecker<'a> {
                         continue;
                     }
                 }
+                let got = match (&args[i], &arg_ty, param_ty) {
+                    (Expr::Identifier(id), Type::Struct(n, _), Type::Closure(..))
+                        if n.starts_with("Closure_") =>
+                    {
+                        format!(
+                            "the closure '{0}'. A closure in a variable needs `as`: \
+                             `{0} as {param_ty}`",
+                            id.name
+                        )
+                    }
+                    _ => arg_ty.to_string(),
+                };
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E3003,
                     format!(
@@ -1551,7 +1629,7 @@ impl<'a> TypeChecker<'a> {
                         i + 1,
                         callee,
                         param_ty,
-                        arg_ty,
+                        got,
                         Self::rank_note(param_ty, &arg_ty)
                     ),
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
@@ -2161,7 +2239,7 @@ impl<'a> TypeChecker<'a> {
                 self.seam.lowering_edge = saved_edge;
                 self.mono.being_checked.remove(&inst_name);
                 self.mono.static_method_instances.insert(inst_name.clone());
-                self.summarize_instance(&inst_func);
+                self.summarize_instance(&inst_func, false);
                 self.mono.functions.push((inst_func, 0));
             }
 
@@ -2309,8 +2387,10 @@ impl<'a> TypeChecker<'a> {
             let explicit: Vec<crate::symbol::Symbol> = mapping.keys().cloned().collect();
             let mut bound_by: HashMap<crate::symbol::Symbol, usize> = HashMap::new();
             for (i, arg) in args.iter_mut().enumerate() {
-                let arg_ty = arg_types[i].clone();
                 let param_ty = &generic_func.params[i].1;
+                let arg_ty = self
+                    .closure_literal_as(arg, param_ty)
+                    .unwrap_or_else(|| arg_types[i].clone());
                 if !self.unify_types(param_ty, &arg_ty, &mut mapping)
                     && !self.accepts_like_a_plain_call(param_ty, &mapping, arg, &arg_ty)
                 {
@@ -2477,7 +2557,7 @@ impl<'a> TypeChecker<'a> {
                 self.check_instance(generic_func, &mut inst_func);
                 self.seam.lowering_edge = saved_edge;
                 self.mono.being_checked.remove(&inst_name);
-                self.summarize_instance(&inst_func);
+                self.summarize_instance(&inst_func, true);
                 self.mono.functions.push((inst_func, origin_hash));
             }
             Some(inst_ret)
@@ -3086,8 +3166,10 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Summarize a checked instance. Its method calls are calls by name by now, so the summary
-    /// follows each one through the summary of the instance it calls.
-    fn summarize_instance(&mut self, inst: &Function) {
+    /// follows each one through the summary of the instance it calls. A call through a trait
+    /// bound reads only the clauses of the trait, so `infer_frees` is false for an instance that
+    /// can be a method of a trait impl.
+    fn summarize_instance(&mut self, inst: &Function, infer_frees: bool) {
         let prov = {
             let instances = &self.mono.return_provenances;
             let functions = &self.env.return_provenances;
@@ -3112,6 +3194,21 @@ impl<'a> TypeChecker<'a> {
         let not_kept = crate::hir::check::borrow_clauses::not_kept_params(inst) | inferred;
         if not_kept != 0 {
             self.mono.not_kept.insert(inst.name.clone(), not_kept);
+        }
+        let clauses = crate::hir::check::pointer_clauses::frees_clause_params;
+        let inferred = if infer_frees {
+            let callee = |name: &str| self.frees_callee(name);
+            crate::hir::frees::inferred_not_freed(inst, &self.env.decls, &callee)
+                & !clauses(&inst.params, &inst.ensures)
+        } else {
+            0
+        };
+        let written =
+            crate::hir::check::pointer_clauses::not_freed_params(&inst.params, &inst.ensures);
+        if written | inferred != 0 {
+            self.mono
+                .not_freed
+                .insert(inst.name.clone(), written | inferred);
         }
     }
 
@@ -3190,7 +3287,7 @@ impl<'a> TypeChecker<'a> {
             self.current_assignment_target = saved_target;
             self.seam.lowering_edge = saved_edge;
             self.mono.being_checked.remove(&mangled_sym);
-            self.summarize_instance(&func_to_check);
+            self.summarize_instance(&func_to_check, ib.trait_name.is_none());
             self.mono.functions.push((func_to_check, 0)); // 0 will fall back to caller_module_idx
         }
         Some((method_func, mangled_name))

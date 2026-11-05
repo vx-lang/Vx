@@ -748,6 +748,16 @@ pub fn execute_mlir_streams(
     if std::env::var("RUST_BACKTRACE").is_err() {
         exe_cmd.env("RUST_BACKTRACE", "1");
     }
+    if thread_sanitizer {
+        // The Rust runtime has no checks of ThreadSanitizer, and orders its own memory with locks
+        // that ThreadSanitizer does not see. So its `memcpy` and `malloc` calls report races in
+        // the runtime, not in the program. The user's own TSAN_OPTIONS come after, and win.
+        let user = std::env::var("TSAN_OPTIONS").unwrap_or_default();
+        exe_cmd.env(
+            "TSAN_OPTIONS",
+            format!("ignore_noninstrumented_modules=1 {user}"),
+        );
+    }
 
     let exe_out = exe_cmd.output().map_err(|e| e.to_string())?;
 

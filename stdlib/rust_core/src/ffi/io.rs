@@ -273,12 +273,14 @@ pub fn off_the_worker<T>(call: impl FnOnce() -> T) -> T {
             eprintln!("vx: a call panicked on a helper thread. The program stops.");
             std::process::abort();
         }
-        BUSY.fetch_sub(1, Ordering::SeqCst);
         unsafe {
             (*(word as *const AtomicI64)).store(1, Ordering::SeqCst);
             // The wake reads only the address, so the word can be gone by now.
             wait::vx_wake_all(word as *const i64);
         }
+        // The call counts until its wake ended. Before the wake, the fiber still looks parked,
+        // and the deadlock watcher must not see an idle helper.
+        BUSY.fetch_sub(1, Ordering::SeqCst);
     }));
     while done.load(Ordering::SeqCst) == 0 {
         unsafe { wait::vx_wait_while(done.as_ptr(), 0) };
@@ -288,6 +290,9 @@ pub fn off_the_worker<T>(call: impl FnOnce() -> T) -> T {
 
 /// The calls that helper threads run now.
 static BUSY: AtomicUsize = AtomicUsize::new(0);
+
+/// The entries that the poller took off its list and did not wake yet.
+static WAKING: AtomicUsize = AtomicUsize::new(0);
 
 type Job = Box<dyn FnOnce() + Send>;
 
@@ -344,10 +349,12 @@ impl Helpers {
     }
 }
 
-/// Whether a task or thread waits for a socket, or a helper runs a call. The end of
-/// either can wake a task.
+/// Whether a task or thread waits for a socket, or a helper runs a call, or the wake of
+/// either did not end. That wake can let a task go on.
 pub(crate) fn pending() -> bool {
-    BUSY.load(Ordering::SeqCst) > 0 || POLLER.get().is_some_and(|p| !p.waiting().is_empty())
+    BUSY.load(Ordering::SeqCst) > 0
+        || WAKING.load(Ordering::SeqCst) > 0
+        || POLLER.get().is_some_and(|p| !p.waiting().is_empty())
 }
 
 fn poller() -> &'static Poller {
@@ -410,7 +417,8 @@ fn run(p: &'static Poller, wake_read: RawFd) {
         // word is gone. So only an entry that is still on the list gets its word set, under
         // the lock. A new entry at the same address gets a spurious wake, and tries again.
         let mut woken = Vec::new();
-        p.waiting().retain(|&(_, _, word)| {
+        let mut waiting = p.waiting();
+        waiting.retain(|&(_, _, word)| {
             if !fired.contains(&word) {
                 return true;
             }
@@ -418,10 +426,15 @@ fn run(p: &'static Poller, wake_read: RawFd) {
             woken.push(word);
             false
         });
-        for word in woken {
+        // An entry counts until its wake ended, so `pending` does not see an empty list
+        // before the wake. The count goes up before the lock is let go.
+        WAKING.fetch_add(woken.len(), Ordering::SeqCst);
+        drop(waiting);
+        for &word in &woken {
             // The wake reads only the address, so the word can be gone by now.
             unsafe { wait::vx_wake_all(word as *const i64) };
         }
+        WAKING.fetch_sub(woken.len(), Ordering::SeqCst);
     }
 }
 

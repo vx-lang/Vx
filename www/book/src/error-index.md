@@ -22,7 +22,7 @@ the test suite has one, a program that triggers it.
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6036` (36 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
-- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8011` (11 codes)
+- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8012` (12 codes)
 
 ## Warnings
 
@@ -261,10 +261,11 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 | [`E8006`](/errors/E8006/) | A call does not meet the called function's precondition (`requires`) |
 | [`E8007`](/errors/E8007/) | An access clause that does not hold: an `atomic(t)` whose body uses `t` without an atomic operation, a `reads_only(t)` whose body may write `t`, or a `writes_only()` whose body may write memory |
 | [`E8008`](/errors/E8008/) | A loop invariant that the prover cannot show to hold when the loop starts |
-| [`E8009`](/errors/E8009/) | A loop invariant that the prover cannot show to hold after a pass through the loop body |
+| [`E8009`](/errors/E8009/) | A loop invariant that the prover cannot show to hold in the next pass, after the loop body or after a `continue` |
 | [`E8010`](/errors/E8010/) | An `mlir!` block whose `dialects` list does not match its body: the body uses an operation of a dialect that the list does not name, or the list names something that is not a dialect. The list is what the block says it uses, so it must be right. |
-| [`E8011`](/errors/E8011/) | A pointer clause that is not well formed: `requires valid(p, n)`, `requires initialized(p, n)` or `requires !overlaps(p, q, n)`, where `p` and `q` are raw pointer parameters, and each clause is a `requires` of its own. A call through a function value or a trait would not prove the clause, so a safe function with one cannot be a function value, and a safe method of a trait impl cannot have one. |
+| [`E8011`](/errors/E8011/) | A pointer clause that is not well formed: `valid(p, n)`, `initialized(p, n)` or `!overlaps(p, q, n)`, where `p` and `q` are raw pointer parameters, and each clause is a `requires` or an `ensures` of its own. In an `ensures`, `return` can be the pointer. The fact of an `assume` is one such clause. A call through a function value or a trait would not prove a `requires`, so a safe function with one cannot be a function value, and a safe method of a trait impl cannot have one. A `frees` clause is an `ensures` of its own, `ensures frees(p)` or `ensures !frees(p)` for a parameter `p`, and a method of a trait impl cannot add a `!frees` that the trait method does not have. |
+| [`E8012`](/errors/E8012/) | A body that breaks a pointer `ensures` of its function. The facts at a `return`, or at the end of the body, do not prove a clause such as `ensures valid(return, n)`. Or the body changes a parameter that such a clause names. Or the function says `ensures !frees(p)`, and its body gives `p`, or a value that it gets from `p`, to code that can free memory, such as a call without `!frees` for that parameter, a store or an `mlir!` block. |
 
 ______________________________________________________________________
 
-178 diagnostics.
+179 diagnostics.

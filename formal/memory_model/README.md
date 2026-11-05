@@ -224,6 +224,11 @@ and adds 1 to `serving`. `unlock_hb_lock` gives the edge from each `unlock` to e
 also by `Counter.hb_of_lt`. `Lock.lean` shows that the `unlock` of the ticket `k` reads `serving`
 as `k` (`unlock_ticket`). So `lock_excl` shows that two tasks never hold a lock at the same time:
 each event of the block of ticket `k` happens before each event of the block of a later ticket.
+`MutexOrders.lean` shows the same for the orders of `Mutex` in the library, on executions. A
+`lock` takes its ticket with a relaxed read-modify-write, and reads `serving` with acquire.
+`lock_unlock_hb_lock` gives the edge from an unlock to a later `lock`, through a release sequence
+of the unlocks between them. `mutex_excl` shows that two `lock`s never hold the lock at the same
+time.
 `Fifo.lean` shows that each `recv` gets the value of one `send`, in order (`ring_fifo`). The
 `recv` with the number `k` reads element `k` of the values, and only the `send` with the number
 `k` writes it. By `ring_once`, two reads of the same write belong to the same `recv`, so no value
@@ -240,6 +245,15 @@ that a read of the slot that the winning CAS happens before gets its value.
 shows that the error of at most one failure moves into the slot. The CAS of each other failure
 does not write, so that failure drops its error. A task with no `result` never reads the slot, so
 `join` gives no error to its caller.
+`Arc.lean` checks the orders of `stdlib/std/sync/arc.vx`. A clone adds 1 to the count with a
+relaxed read-modify-write, and a drop takes 1 away with a release one. The drop that reads 1 runs
+an acquire fence and frees the value. `arc_last_drop_hb_free` shows that each event before another
+drop happens before each event after that fence. The clones and drops between the two drops form a
+release sequence. `arc_last_drop_release_sequence.litmus` checks this with three tasks.
+`ChannelOrders.lean` checks the slots of `stdlib/std/sync/channel.vx`. A `send` and a `recv` hand
+a slot over with a release store and an acquire load. No two writes to a slot write the same
+number, so the load reads that store. `slot_send_hb_recv` and `slot_recv_hb_send` give the edges.
+`ReleaseSequence.lean` has the lemmas that these three files share.
 `ChannelExample.lean` builds a run where the main code sends 7 and drops its sender, and a task
 makes two `recv`s. The first gets 7, and the second finds the channel closed. `check` finds that
 the model allows this run with no data race. `MutexExample.lean` builds a run where a lock orders

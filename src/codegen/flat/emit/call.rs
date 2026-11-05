@@ -166,6 +166,9 @@ impl FnEmit<'_> {
                 if let Some(pointee) = callee.ret_pointee {
                     self.agg_of[idx] = Some(pointee);
                 }
+                if let Some((len, size)) = callee.ret_valid.clone() {
+                    self.assume_valid_result(idx, &len, size, &args, &arg_names);
+                }
             } else if let Some(agg_gid) = callee.ret_agg {
                 // A struct-returning call result is a struct *value*; tracked so it can be
                 // spilled to a slot (`Store`), returned (`Ret`), or passed by value to another
@@ -178,6 +181,53 @@ impl FnEmit<'_> {
             }
         }
         Ok(())
+    }
+
+    /// `ensures valid(return, n)` of a callee: an `llvm.intr.assume` that `n` elements of `size`
+    /// bytes at the result `%v{idx}` can be read. `args` and `names` are the arguments of the
+    /// call. A length of a type that is not an integer gives none.
+    fn assume_valid_result(
+        &mut self,
+        idx: usize,
+        len: &crate::hir::check::pointer_clauses::Length,
+        size: u64,
+        args: &[u32],
+        names: &[String],
+    ) {
+        use crate::hir::check::pointer_clauses::Length;
+        let k = format!("%vx_rv{idx}");
+        let count = match len {
+            Length::Constant(c) => {
+                self.body += &format!("  {k}_n = arith.constant {c} : i64\n");
+                format!("{k}_n")
+            }
+            Length::Param(j) => {
+                let (Some(&arg), Some(name)) = (args.get(*j), names.get(*j)) else {
+                    return;
+                };
+                match self.elem_at(arg) {
+                    Some(ElementType::I64 | ElementType::U64 | ElementType::USize) => name.clone(),
+                    Some(e @ (ElementType::I32 | ElementType::I16 | ElementType::I8)) => {
+                        let from = mlir_scalar(&e).unwrap_or("i32");
+                        self.body += &format!("  {k}_n = arith.extsi {name} : {from} to i64\n");
+                        format!("{k}_n")
+                    }
+                    Some(e @ (ElementType::U32 | ElementType::U16 | ElementType::U8)) => {
+                        let from = mlir_scalar(&e).unwrap_or("i32");
+                        self.body += &format!("  {k}_n = arith.extui {name} : {from} to i64\n");
+                        format!("{k}_n")
+                    }
+                    _ => return,
+                }
+            }
+            Length::Other => return,
+        };
+        self.body += &format!(
+            "  {k}_t = arith.constant true\n  \
+             {k}_s = arith.constant {size} : i64\n  \
+             {k}_b = arith.muli {count}, {k}_s : i64\n  \
+             llvm.intr.assume {k}_t [\"dereferenceable\"(%v{idx}, {k}_b : !llvm.ptr, i64)] : i1\n"
+        );
     }
 
     // An inline `mlir!` block: a call to a private wrapper whose parameters are the block's

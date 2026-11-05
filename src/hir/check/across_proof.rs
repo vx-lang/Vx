@@ -18,6 +18,10 @@
 // Two accesses whose index forms differ by a number are apart when that number, as one more
 // digit, keeps the form a mixed-radix number: `2 * j` and `2 * j + 1` never meet.
 //
+// Two accesses whose forms have the same coefficient for the loop's variable are apart when the
+// rest of the two forms always differ by less than it: `4 * j + c`, with `c` below 3, and
+// `4 * j + 3` never meet.
+//
 // An access in `if v == c`, where `v` is the loop's variable and `c` a number, is made by one
 // pass only. Two such accesses with the same `c` are made by the same pass, so they never race.
 //
@@ -736,6 +740,14 @@ impl Proof<'_> {
         }
     }
 
+    /// The least and the greatest value of the loop index `v`, from its range or its type.
+    fn index_range(&self, v: &str) -> Option<(i128, i128)> {
+        match self.ranges.get(v).copied().flatten() {
+            Some((a, b)) if b > a => Some((a as i128, b as i128 - 1)),
+            _ => self.type_ranges.get(v).copied(),
+        }
+    }
+
     /// The least and the greatest value of `form`, when each of its variables is a loop index
     /// with known bounds, or `fallback` gives them. With `passes_only`, a value from outside the
     /// loop counts as zero.
@@ -750,10 +762,7 @@ impl Proof<'_> {
             if passes_only && v.ends_with("#outside") {
                 continue;
             }
-            let (a, b) = match self.ranges.get(v).copied().flatten() {
-                Some((a, b)) if b > a => (a as i128, b as i128 - 1),
-                _ => self.type_ranges.get(v).copied().or(fallback)?,
-            };
+            let (a, b) = self.index_range(v).or(fallback)?;
             let (x, y) = (c as i128 * a, c as i128 * b);
             lo += x.min(y);
             hi += x.max(y);
@@ -835,6 +844,46 @@ impl Proof<'_> {
         true
     }
 
+    /// Whether two passes that make `x` and `y` equal are the same pass, when the loop's
+    /// variable has the same coefficient `a` in both. Passes `v` and `v'` meet only when
+    /// `a * (v - v')` equals what the other terms differ by. When that difference is always
+    /// smaller than `a`, `v` is `v'`: `out[4 * x + c]` with `c` below 3 and `out[4 * x + 3]`.
+    fn own_term_decides(&self, x: &Affine, y: &Affine) -> bool {
+        let (Some(&a), Some(&b)) = (x.terms.get(&self.own), y.terms.get(&self.own)) else {
+            return false;
+        };
+        // A value from outside the loop is the same in both passes. It cancels only when both
+        // forms have it with the same coefficient.
+        let outside = |f: &Affine| {
+            f.terms
+                .iter()
+                .filter(|(v, _)| v.ends_with("#outside"))
+                .map(|(v, c)| (v.clone(), *c))
+                .collect::<Vec<_>>()
+        };
+        if a != b || outside(x) != outside(y) {
+            return false;
+        }
+        // Each pass gives its other loop indices their own values.
+        let mut lo = y.constant as i128 - x.constant as i128;
+        let mut hi = lo;
+        for (form, sign) in [(y, 1i128), (x, -1i128)] {
+            for (v, &c) in &form.terms {
+                if *v == self.own || v.ends_with("#outside") {
+                    continue;
+                }
+                let Some((p, q)) = self.index_range(v) else {
+                    return false;
+                };
+                let (s, t) = (sign * c as i128 * p, sign * c as i128 * q);
+                lo += s.min(t);
+                hi += s.max(t);
+            }
+        }
+        let a = (a as i128).abs();
+        -a < lo && hi < a
+    }
+
     fn check(&self, own: &str, level: &str) -> Option<(String, Span)> {
         for (name, accesses) in &self.accesses {
             if accesses.iter().any(|a| a.atomic) {
@@ -876,12 +925,17 @@ impl Proof<'_> {
                         .iter()
                         .zip(&other.indices)
                         .any(|(x, y)| match (x, y) {
-                            (Some(x), Some(y)) if x == y => self.fixes_own(x),
-                            (Some(x), Some(y)) if x.terms == y.terms => x
-                                .constant
-                                .checked_sub(y.constant)
-                                .and_then(i64::checked_abs)
-                                .is_some_and(|gap| self.fixes_own_with(x, Some(gap))),
+                            (Some(x), Some(y)) if x == y => {
+                                self.fixes_own(x) || self.own_term_decides(x, y)
+                            }
+                            (Some(x), Some(y)) if x.terms == y.terms => {
+                                x.constant
+                                    .checked_sub(y.constant)
+                                    .and_then(i64::checked_abs)
+                                    .is_some_and(|gap| self.fixes_own_with(x, Some(gap)))
+                                    || self.own_term_decides(x, y)
+                            }
+                            (Some(x), Some(y)) => self.own_term_decides(x, y),
                             _ => false,
                         });
                     if apart {

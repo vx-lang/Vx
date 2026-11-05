@@ -9,7 +9,9 @@
 // error has a note with the line of that event and its reason. An event is code that can free
 // memory: a call with an argument that can free memory, an assignment or a drop of a value with a
 // drop, an `mlir!` block, or a `spawn`. The end of the scope of a local ends the facts about its
-// storage, and a move out of it ends `initialized`.
+// storage, and a move out of it ends `initialized`. When the event is in a branch of an `if` or
+// an arm of a `match`, the note names that branch. The functions that get a pointer say
+// `ensures frees(p)`, so each call of them can free memory.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
 
@@ -18,6 +20,7 @@ import std::vec;
 
 fn need_valid(p : *const i64, n : i64) -> i64
 requires valid(p, n)
+ensures frees(p)
 {
   return n;
 }
@@ -28,12 +31,20 @@ requires initialized(p, n)
   return n;
 }
 
-fn touch(_p : *const i64) -> void {
+fn touch(_p : *const i64) -> void
+ensures frees(_p)
+{
   return;
 }
 
-fn change(_v : &mut Vec<i64>) -> void {
+fn change(_v : &mut Vec<i64>) -> void
+ensures frees(_v)
+{
   return;
+}
+
+fn ready(n : i64) -> bool {
+  return n > 0i64;
 }
 
 struct Holder {
@@ -125,7 +136,7 @@ requires valid(p, n)
 
 // The drop of `_v` at the end of the branch can free memory. The note gives the line of the `if`.
 // CHECK: E8006] at {{.*}}pointer_facts_that_an_event_ends.vx:[[@LINE+8]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
-// CHECK-NEXT: note: a fact that proves it ended at the end of the scope of `_v`, which drops its value (at [[@LINE+4]]:3)
+// CHECK-NEXT: note: a fact that proves it ended at the end of the scope of `_v`, which drops its value, in the branch where `c` is true (at [[@LINE+4]]:3)
 fn after_a_drop(p : *const i64, n : i64, c : bool) -> i64
 requires valid(p, n)
 {
@@ -167,23 +178,23 @@ fn after_a_call_that_can_change_a_local() -> i64 {
   return need_initialized(p, 1i64);
 }
 
-// The call on the first pass can free the memory before the call on the second pass.
+// The call gets the pointer. On the first pass it can free the memory before the call on the
+// second pass.
 // CHECK: E8006] at {{.*}}pointer_facts_that_an_event_ends.vx:[[@LINE+7]]:13: this call to 'need_valid' may not meet its precondition `valid(p, n)`
-// CHECK-NEXT: note: a fact that proves it ended at the loop, whose body can free memory (at [[@LINE+5]]:3)
+// CHECK-NEXT: note: a fact that proves it ended at the call to 'need_valid', which can free memory through `p`, in a pass of the loop (at [[@LINE+6]]:13)
 fn in_a_loop(p : *const i64, n : i64) -> i64
 requires valid(p, n)
 {
   let mut t = 0i64;
   for i in 0i64..3i64 {
     t = t + need_valid(p, n);
-    touch(p);
   }
   return t;
 }
 
-// The fact ends in one branch, so the note gives the line in that branch.
+// The fact ends in one branch, so the note names that branch and gives its line.
 // CHECK: E8006] at {{.*}}pointer_facts_that_an_event_ends.vx:[[@LINE+8]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
-// CHECK-NEXT: note: a fact that proves it ended at the call to 'touch', which can free memory through `p` (at [[@LINE+5]]:5)
+// CHECK-NEXT: note: a fact that proves it ended at the call to 'touch', which can free memory through `p`, in the branch where `c` is true (at [[@LINE+5]]:5)
 fn after_a_branch_that_gets_the_pointer(p : *const i64, n : i64, c : bool) -> i64
 requires valid(p, n)
 {
@@ -195,7 +206,7 @@ requires valid(p, n)
 
 // The event is in the `else` branch.
 // CHECK: E8006] at {{.*}}pointer_facts_that_an_event_ends.vx:[[@LINE+10]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
-// CHECK-NEXT: note: a fact that proves it ended at the call to 'touch', which can free memory through `p` (at [[@LINE+7]]:5)
+// CHECK-NEXT: note: a fact that proves it ended at the call to 'touch', which can free memory through `p`, in the branch where `c` is false (at [[@LINE+7]]:5)
 fn after_an_else_branch_that_gets_the_pointer(p : *const i64, n : i64, c : bool) -> i64
 requires valid(p, n)
 {
@@ -237,8 +248,62 @@ requires valid(p, n)
   return t;
 }
 
+// The event is in one arm of a `match`.
+// CHECK: E8006] at {{.*}}pointer_facts_that_an_event_ends.vx:[[@LINE+11]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the call to 'touch', which can free memory through `p`, in the arm for `Some` (at [[@LINE+6]]:7)
+fn after_a_match_arm_that_gets_the_pointer(p : *const i64, n : i64, o : Option<i64>) -> i64
+requires valid(p, n)
+{
+  match o {
+    Option::Some(_x) => {
+      touch(p);
+    }
+    Option::None => {}
+  }
+  return need_valid(p, n);
+}
+
+// CHECK: E8006] at {{.*}}pointer_facts_that_an_event_ends.vx:[[@LINE+11]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the call to 'touch', which can free memory through `p`, in the `_` arm of the `match` (at [[@LINE+7]]:7)
+fn after_a_wildcard_arm_that_gets_the_pointer(p : *const i64, n : i64, o : Option<i64>) -> i64
+requires valid(p, n)
+{
+  match o {
+    Option::None => {}
+    _ => {
+      touch(p);
+    }
+  }
+  return need_valid(p, n);
+}
+
+// The note cannot show a call in a condition, so it names the branch by its place in the `if`.
+// CHECK: E8006] at {{.*}}pointer_facts_that_an_event_ends.vx:[[@LINE+8]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the call to 'touch', which can free memory through `p`, in the first branch of the `if` (at [[@LINE+5]]:5)
+fn after_a_branch_whose_condition_is_a_call(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  if ready(n) {
+    touch(p);
+  }
+  return need_valid(p, n);
+}
+
+// CHECK: E8006] at {{.*}}pointer_facts_that_an_event_ends.vx:[[@LINE+10]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the call to 'touch', which can free memory through `p`, in the `else` branch of the `if` (at [[@LINE+7]]:5)
+fn after_an_else_branch_whose_condition_is_a_call(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  if ready(n) {
+    let _x = 1i64;
+  } else {
+    touch(p);
+  }
+  return need_valid(p, n);
+}
+
 fn main() -> i32 {
   return 0;
 }
 
-// CHECK: 19 error(s) emitted
+// CHECK: 23 error(s) emitted

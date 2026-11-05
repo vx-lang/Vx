@@ -1454,6 +1454,161 @@ pub fn visit_expr(e: &Expr, f: &mut dyn FnMut(&Expr)) {
     }
 }
 
+/// Calls `f` on every expression in `stmts`, each one after the expressions inside it, so that
+/// `f` can replace an expression. See [`visit_exprs`].
+pub fn visit_exprs_mut(stmts: &mut [Statement], f: &mut dyn FnMut(&mut Expr)) {
+    for stmt in stmts {
+        match stmt {
+            Statement::LetDecl(l) => visit_expr_mut(&mut l.expr, f),
+            Statement::Return(r) => {
+                if let Some(e) = &mut r.expr {
+                    visit_expr_mut(e, f);
+                }
+            }
+            Statement::ExprStmt(e) => visit_expr_mut(&mut e.expr, f),
+            Statement::ForLoop(l) => {
+                visit_expr_mut(&mut l.iterable, f);
+                l.invariants.iter_mut().for_each(|e| visit_expr_mut(e, f));
+                visit_exprs_mut(&mut l.body, f);
+            }
+            Statement::Assign(a) => {
+                visit_expr_mut(&mut a.lhs, f);
+                visit_expr_mut(&mut a.rhs, f);
+            }
+            Statement::CompoundAssign(a) => {
+                visit_expr_mut(&mut a.lhs, f);
+                visit_expr_mut(&mut a.rhs, f);
+            }
+            Statement::Assert(a) => visit_expr_mut(&mut a.expr, f),
+            Statement::Loop(l) => {
+                l.invariants.iter_mut().for_each(|e| visit_expr_mut(e, f));
+                visit_exprs_mut(&mut l.body, f);
+            }
+            Statement::Break(_)
+            | Statement::Continue(_)
+            | Statement::MacroCall(_)
+            | Statement::Drop(_)
+            | Statement::Error(_) => {}
+        }
+    }
+}
+
+/// Calls `f` on every expression inside `e`, and then on `e`; see [`visit_exprs_mut`].
+pub fn visit_expr_mut(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
+    let all = |es: &mut [Expr], f: &mut dyn FnMut(&mut Expr)| {
+        es.iter_mut().for_each(|e| visit_expr_mut(e, f))
+    };
+    match e {
+        Expr::Identifier(_)
+        | Expr::Number(_)
+        | Expr::StringLiteral(_)
+        | Expr::TransferPredicate(_)
+        | Expr::MemorySpace(_)
+        | Expr::Topology(_)
+        | Expr::MacroCall(_)
+        | Expr::SizeOf(_) => {}
+        Expr::EnumVariant(v) => {
+            if let Some(payload) = &mut v.payload {
+                all(payload, f);
+            }
+        }
+        Expr::Transfer(t) => visit_expr_mut(&mut t.expr, f),
+        Expr::FunctionCall(c) => all(&mut c.args, f),
+        Expr::IndirectCall(c) => {
+            visit_expr_mut(&mut c.callee, f);
+            all(&mut c.args, f);
+        }
+        Expr::Array(a) => all(&mut a.elements, f),
+        Expr::MemberAccess(m) => visit_expr_mut(&mut m.base, f),
+        Expr::IndexAccess(i) => {
+            visit_expr_mut(&mut i.base, f);
+            visit_expr_mut(&mut i.index, f);
+        }
+        Expr::MethodCall(m) => {
+            visit_expr_mut(&mut m.base, f);
+            all(&mut m.args, f);
+        }
+        Expr::BinaryOp(b) => {
+            visit_expr_mut(&mut b.lhs, f);
+            visit_expr_mut(&mut b.rhs, f);
+        }
+        Expr::RelationalOp(r) => {
+            visit_expr_mut(&mut r.lhs, f);
+            visit_expr_mut(&mut r.rhs, f);
+        }
+        Expr::LogicalOp(l) => {
+            visit_expr_mut(&mut l.lhs, f);
+            visit_expr_mut(&mut l.rhs, f);
+        }
+        Expr::UnaryOp(u) => visit_expr_mut(&mut u.expr, f),
+        Expr::Borrow(b) => visit_expr_mut(&mut b.expr, f),
+        Expr::Dereference(d) => visit_expr_mut(&mut d.expr, f),
+        Expr::UnsafeBlock(b) => {
+            visit_exprs_mut(&mut b.stmts, f);
+            if let Some(r) = &mut b.ret {
+                visit_expr_mut(r, f);
+            }
+        }
+        Expr::ComptimeBlock(b) => {
+            visit_exprs_mut(&mut b.stmts, f);
+            if let Some(r) = &mut b.ret {
+                visit_expr_mut(r, f);
+            }
+        }
+        Expr::SpawnOn(b) => {
+            visit_exprs_mut(&mut b.stmts, f);
+            if let Some(r) = &mut b.ret {
+                visit_expr_mut(r, f);
+            }
+        }
+        Expr::TaskBlock(b) => {
+            visit_exprs_mut(&mut b.stmts, f);
+            if let Some(r) = &mut b.ret {
+                visit_expr_mut(r, f);
+            }
+        }
+        Expr::StructInit(s) => s.fields.iter_mut().for_each(|(_, e)| visit_expr_mut(e, f)),
+        Expr::If(i) => {
+            visit_expr_mut(&mut i.cond, f);
+            visit_exprs_mut(&mut i.then_block, f);
+            if let Some(b) = &mut i.else_block {
+                visit_exprs_mut(b, f);
+            }
+        }
+        Expr::Range(r) => {
+            visit_expr_mut(&mut r.start, f);
+            visit_expr_mut(&mut r.end, f);
+        }
+        Expr::Match(m) => {
+            visit_expr_mut(&mut m.expr, f);
+            m.arms
+                .iter_mut()
+                .for_each(|arm| visit_exprs_mut(&mut arm.body, f));
+        }
+        Expr::Grad(g) => all(&mut g.args, f),
+        Expr::Vjp(v) => {
+            all(&mut v.args, f);
+            visit_expr_mut(&mut v.cotangent, f);
+        }
+        Expr::Jvp(j) => {
+            all(&mut j.args, f);
+            visit_expr_mut(&mut j.tangent, f);
+        }
+        Expr::VecMacro(v) => all(&mut v.elements, f),
+        Expr::Closure(c) => visit_expr_mut(&mut c.body, f),
+        Expr::AsCast(c) => visit_expr_mut(&mut c.expr, f),
+        Expr::Print(p) => all(&mut p.args, f),
+        Expr::Println(p) => all(&mut p.args, f),
+        Expr::InlineMlir(m) => {
+            m.inputs
+                .iter_mut()
+                .for_each(|(_, e, _)| visit_expr_mut(e, f));
+            all(&mut m.clobbers, f);
+        }
+    }
+    f(e);
+}
+
 impl Expr {
     pub fn span(&self) -> Span {
         delegate_expr!(self, span)

@@ -1977,6 +1977,12 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
                     .add_results(&[field_ty])
                     .build()?;
                 field_val = block.append_operation(cast_op).result(0)?.into();
+            } else if expr_ty != field_ty
+                && field_ty == gen.ptr_ty
+                && melior::ir::r#type::MemRefType::try_from(expr_ty).is_ok()
+            {
+                // A reference field holds the address that `&x` gives as a scalar memref.
+                field_val = memref_data_pointer(gen, block, field_val)?;
             } else if expr_ty != field_ty {
                 // A closure literal given to a `ClosureK` field: build the `{env, func}` pair,
                 // as a function argument of that type already gets.
@@ -2276,8 +2282,7 @@ fn region_value_slot<'c>(
         return this.fails_as.is_none().then_some(ValueSlot::No);
     }
     let ty = this.fails_as.as_ref().or(this.value_ty.as_ref())?;
-    let ty = gen.lower_type(ty).ok()?;
-    (!gen.is_memref(&ty)).then_some(ValueSlot::Typed(ty))
+    Some(ValueSlot::Typed(gen.lower_type(ty).ok()?))
 }
 
 /// Where a `tasks` block that runs on threads keeps its value, when an exit can leave it.
@@ -2346,6 +2351,92 @@ fn llvm_slot<'c>(
         )])
         .build()?;
     Ok(block.append_operation(op).result(0)?.into())
+}
+
+/// The slot for the value of a `tasks` block. A tensor goes in a `memref<memref<..>>` cell, as
+/// on the flat code generator, so that the lowering can follow the buffer to its drop.
+fn make_value_slot<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    ty: Type<'c>,
+) -> Result<Value<'c, 'c>, LowerError> {
+    if !gen.is_memref(&ty) {
+        return llvm_slot(gen, block, ty);
+    }
+    let desc = format!("memref<{ty}>");
+    let cell = Type::parse(gen.context, &desc).ok_or(LowerError::ParseType(desc))?;
+    let op = OperationBuilder::new("memref.alloca", gen.loc())
+        .add_results(&[cell])
+        .add_attributes(&[(
+            Identifier::new(gen.context, "operandSegmentSizes"),
+            melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[0, 0]).into(),
+        )])
+        .build()?;
+    Ok(block.append_operation(op).result(0)?.into())
+}
+
+/// Stores `val`, of type `ty`, in a slot from `make_value_slot`.
+fn store_to_value_slot<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    val: Value<'c, 'c>,
+    ty: Type<'c>,
+    slot: Value<'c, 'c>,
+) -> Result<(), LowerError> {
+    if !gen.is_memref(&ty) {
+        block.append_operation(
+            OperationBuilder::new("llvm.store", gen.loc())
+                .add_operands(&[val, slot])
+                .build()?,
+        );
+        return Ok(());
+    }
+    // The cell has the type of the block. The value can have a shape with fewer known extents,
+    // as a `memref<?xi64>` for a `Tensor<i64, [2]>`.
+    let cell: melior::ir::r#type::MemRefType = slot.r#type().try_into()?;
+    let want = melior::ir::r#type::ShapedTypeLike::element(&cell);
+    let val = if val.r#type() == want {
+        val
+    } else {
+        block
+            .append_operation(
+                OperationBuilder::new("memref.cast", gen.loc())
+                    .add_operands(&[val])
+                    .add_results(&[want])
+                    .build()?,
+            )
+            .result(0)?
+            .into()
+    };
+    block.append_operation(
+        OperationBuilder::new("memref.store", gen.loc())
+            .add_operands(&[val, slot])
+            .build()?,
+    );
+    Ok(())
+}
+
+/// Loads the value of type `ty` from a slot from `make_value_slot`.
+fn load_from_value_slot<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    slot: Value<'c, 'c>,
+    ty: Type<'c>,
+) -> Result<Value<'c, 'c>, LowerError> {
+    let name = if gen.is_memref(&ty) {
+        "memref.load"
+    } else {
+        "llvm.load"
+    };
+    Ok(block
+        .append_operation(
+            OperationBuilder::new(name, gen.loc())
+                .add_operands(&[slot])
+                .add_results(&[ty])
+                .build()?,
+        )
+        .result(0)?
+        .into())
 }
 
 /// Leaves the region of the innermost `tasks` block by the exit `kind`.
@@ -2501,7 +2592,7 @@ fn lower_tasks_block_with_exits<'c>(
         _ => None,
     };
     let value = match value_slot {
-        ValueSlot::Typed(ty) => Some((llvm_slot(gen, block, ty)?, ty)),
+        ValueSlot::Typed(ty) => Some((make_value_slot(gen, block, ty)?, ty)),
         ValueSlot::No => None,
     };
     gen.tasks_exits.push(TasksExits {
@@ -2605,15 +2696,7 @@ fn lower_tasks_block_with_exits<'c>(
         block = next_b;
     }
     if let Some((slot, slot_ty)) = value {
-        val = block
-            .append_operation(
-                OperationBuilder::new("llvm.load", gen.loc())
-                    .add_operands(&[slot])
-                    .add_results(&[slot_ty])
-                    .build()?,
-            )
-            .result(0)?
-            .into();
+        val = load_from_value_slot(gen, block, slot, slot_ty)?;
         ty = slot_ty;
     }
     Ok((val, ty, block))
@@ -2750,11 +2833,7 @@ fn lower_task_region<'c>(
                 body = cancel_on_err(gen, body, val)?;
             }
             if let Some(slot) = value_slot {
-                body.append_operation(
-                    OperationBuilder::new("llvm.store", gen.loc())
-                        .add_operands(&[val, slot])
-                        .build()?,
-                );
+                store_to_value_slot(gen, body, val, ty, slot)?;
             } else if wants_value {
                 result_types.push(ty);
                 yielded.push(val);
@@ -4884,6 +4963,7 @@ fn payload_binding_type(
     gen: &MeliorGenerator<'_>,
     arm: &syntax::MatchArm,
     value: &Expr,
+    scrutinee_ty: Option<&syntax::Type>,
 ) -> Option<syntax::Type> {
     let (Expr::Identifier(id), syntax::Pattern::EnumVariant(en, vn, Some(pats))) =
         (value, &arm.pattern)
@@ -4895,7 +4975,13 @@ fn payload_binding_type(
         .position(|p| matches!(p, syntax::Pattern::Identifier(n) if *n == id.name))?;
     let (base, args) = match crate::parser::types::parse_type_text(en)? {
         syntax::Type::GenericInstance(base, args) => (base.to_string(), args),
-        other => (other.to_string(), Vec::new()),
+        other => {
+            let args = match scrutinee_ty {
+                Some(syntax::Type::GenericInstance(_, args)) => args.clone(),
+                _ => Vec::new(),
+            };
+            (other.to_string(), args)
+        }
     };
     let base = crate::symbol::Symbol::from(base.split('<').next()?);
     let declared = gen
@@ -4945,15 +5031,21 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
         // argument and each arm branches with its own, which is what makes the match evaluate
         // to what its arms say. The type comes from the first such arm rather than from
         // `expected_type`, which is unset for an unannotated `let`.
-        let tail_arm = self.arms.iter().find_map(|arm| match arm.body.last() {
-            Some(syntax::Statement::ExprStmt(syntax::stmt::ExprStmtStmt {
-                expr,
-                has_semi: false,
-                ..
-            })) => Some((arm, expr)),
-            _ => None,
-        });
-        let tail_expr = tail_arm.map(|(_, e)| e);
+        let tail_arms: Vec<_> = self
+            .arms
+            .iter()
+            .filter_map(|arm| match arm.body.last() {
+                Some(syntax::Statement::ExprStmt(syntax::stmt::ExprStmtStmt {
+                    expr,
+                    has_semi: false,
+                    ..
+                })) => Some((arm, expr)),
+                _ => None,
+            })
+            .collect();
+        let tail_expr = tail_arms.first().map(|(_, e)| *e);
+        // A pattern such as `Option::Some(x)` names no type arguments. The scrutinee has them.
+        let scrutinee_ty = gen.infer_ast_type(&self.expr);
         // The fallback to `expected_type` applies only when there *is* a tail expression whose
         // type could not be inferred. Applying it to a match with no tail expression at all
         // would make a statement-position match look value-producing, and every arm would then
@@ -4961,24 +5053,39 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
         // A statement `match` produces no value, whatever its arms end in: a trailing `if` or
         // `unsafe { }` there is a statement too.
         let in_statement = outer_expected == Some(gen.none_ty);
-        let value_ty = tail_expr.filter(|_| !in_statement).and_then(|e| {
-            match e {
-                // `infer_ast_type` has no arm for a bare literal, and an arm body is usually
-                // exactly that. Read the literal's own type, which the checker stamps, and fall
-                // back to how the parser would have typed it.
-                Expr::Number(n) => {
-                    let elem = n.ty.clone().unwrap_or_else(|| {
-                        crate::parser::expr::default_number_elem(n.value.as_ref())
-                    });
-                    gen.lower_type(&syntax::Type::Scalar(elem)).ok()
-                }
-                other => gen
-                    .infer_ast_type(other)
-                    .or_else(|| payload_binding_type(gen, tail_arm?.0, other))
-                    .and_then(|t| gen.lower_type(&t).ok()),
+        // Every arm gives the same type, so the first arm whose value has a known type decides
+        // it. `r * 3` with a payload binding `r` has none, but a later `0` arm does.
+        let arm_value_ty = |gen: &MeliorGenerator<'c>, arm: &syntax::MatchArm, e: &Expr| match e {
+            // `infer_ast_type` has no arm for a bare literal, and an arm body is usually
+            // exactly that. Read the literal's own type, which the checker stamps, and fall
+            // back to how the parser would have typed it.
+            Expr::Number(n) => {
+                let elem = n
+                    .ty
+                    .clone()
+                    .unwrap_or_else(|| crate::parser::expr::default_number_elem(n.value.as_ref()));
+                gen.lower_type(&syntax::Type::Scalar(elem)).ok()
             }
-            .or(gen.expected_type)
-        });
+            other => gen
+                .infer_ast_type(other)
+                .or_else(|| payload_binding_type(gen, arm, other, scrutinee_ty.as_ref()))
+                .or_else(|| match other {
+                    // `r * 3`: the checker gives the operands' type, which is the result's.
+                    Expr::BinaryOp(b) if b.op != syntax::expr::BinaryOp::MatMul => {
+                        b.operand_ty.clone().map(syntax::Type::Scalar)
+                    }
+                    _ => None,
+                })
+                .and_then(|t| gen.lower_type(&t).ok()),
+        };
+        let value_ty = if tail_expr.is_none() || in_statement {
+            None
+        } else {
+            tail_arms
+                .iter()
+                .find_map(|(arm, e)| arm_value_ty(gen, arm, e))
+                .or(gen.expected_type)
+        };
         // An arm gives a value, so the placeholder below would replace it with a wrong one.
         if tail_expr.is_some() && !in_statement && value_ty.is_none() {
             return Err(LowerError::ParseType(

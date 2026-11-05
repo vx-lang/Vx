@@ -1342,45 +1342,115 @@ impl<'a> TypeChecker<'a> {
     /// the scope-exit truncation (`constraints.truncate(prev_len)`) keeps its meaning.
     pub(crate) fn neutralize_facts_mentioning(&mut self, name: &str) {
         self.pointer_facts.forget(name);
+        self.forget_value_facts_about(name);
+    }
+
+    /// Overwrite each prover fact that names `name`, as `neutralize_facts_mentioning` does, but
+    /// keep the pointer facts.
+    pub(crate) fn forget_value_facts_about(&mut self, name: &str) {
         for c in self.consteval.constraints.iter_mut() {
             if expr_mentions(c, name) {
-                *c = Expr::RelationalOp(RelationalOpExpr {
-                    lhs: Box::new(Expr::Number(NumberExpr {
-                        value: "0".to_string().into(),
-                        ty: None,
-                        span: Span::default(),
-                    })),
-                    op: RelationalOp::Eq,
-                    rhs: Box::new(Expr::Number(NumberExpr {
-                        value: "0".to_string().into(),
-                        ty: None,
-                        span: Span::default(),
-                    })),
-                    span: Span::default(),
-                    operand_ty: None,
-                });
+                *c = no_fact();
             }
         }
+    }
+
+    /// Before an assignment to the integer variable `place`: gives the old value a new name,
+    /// `$old_N`, in each fact, so the facts about it stay true, such as `y == x` after
+    /// `let y = x; x = 0;`. A fact that still names `x` after the rename ends. Returns the
+    /// renaming, or `None` when the assignment must end the facts as any other change does.
+    pub(crate) fn name_the_old_value(
+        &mut self,
+        place: &Expr,
+        ty: &Type,
+    ) -> Option<std::collections::HashMap<crate::symbol::Symbol, Expr>> {
+        let Expr::Identifier(id) = place else {
+            return None;
+        };
+        let is_int =
+            matches!(ty, Type::Scalar(e) if e.int_bits().is_some() && *e != ElementType::Bool);
+        // A change inside a call ends the facts after the call, which would end this fact too.
+        if !is_int || !self.fact_change_frames.is_empty() {
+            return None;
+        }
+        let old = Expr::Identifier(IdentifierExpr {
+            name: format!("$old_{}", self.old_values).into(),
+            span: Span::default(),
+        });
+        self.old_values += 1;
+        let x = id.name.as_ref();
+        let names = std::collections::HashMap::from([(id.name.clone(), old)]);
+        // Only a fact that names `x` changes, so a long run of assignments does not copy every
+        // fact at each one.
+        for c in self.consteval.constraints.iter_mut() {
+            if expr_mentions(c, x) {
+                *c = crate::hir::prover::substitute_names(c, &names);
+                if expr_mentions(c, x) {
+                    *c = no_fact();
+                }
+            }
+        }
+        Some(names)
+    }
+
+    /// The fact `place == value` after `name_the_old_value` gave the old value its new name in
+    /// `names`. In `x = x + 1`, the `x` on the right is the old value.
+    pub(crate) fn fact_of_an_assignment(
+        place: &Expr,
+        value: &Expr,
+        names: &std::collections::HashMap<crate::symbol::Symbol, Expr>,
+    ) -> Option<Expr> {
+        if !crate::hir::prover::is_modelled(value) {
+            return None;
+        }
+        Some(Expr::RelationalOp(RelationalOpExpr {
+            lhs: Box::new(place.clone()),
+            op: RelationalOp::Eq,
+            rhs: Box::new(crate::hir::prover::substitute_names(value, names)),
+            span: Span::default(),
+            operand_ty: None,
+        }))
     }
 
     /// Overwrite each fact that names a variable that the loop `body` can change. The checker
     /// makes one pass over the body, so a fact may stay only when it holds at the start of each
     /// pass.
+    /// A write through a raw pointer, as in `p[i] = x`, changes the memory behind `p`, and `p`
+    /// keeps its value, as at a write outside a loop.
     pub(crate) fn neutralize_facts_a_loop_writes(&mut self, body: &[Statement]) {
-        let mut changed = names_a_body_writes(body);
-        changed.extend(self.names_calls_in_a_body_can_change(body));
+        let is_pointer =
+            |this: &Self, name: &str| matches!(this.lookup(name), Some((Type::Pointer(..), _)));
+        let mut changed = std::collections::HashSet::new();
+        let mut behind = std::collections::HashSet::new();
+        for (name, through) in writes_in_a_body(body) {
+            if through && is_pointer(self, &name) {
+                behind.insert(name);
+            } else {
+                changed.insert(name);
+            }
+        }
+        let (calls_change, calls_write_behind) = self.names_calls_in_a_body_can_change(body);
+        changed.extend(calls_change);
+        behind.extend(calls_write_behind);
+        for name in behind.difference(&changed) {
+            self.neutralize_facts_behind(name);
+        }
         for name in changed {
             self.neutralize_facts_mentioning(&name);
         }
     }
 
     /// The variables that a call in `body` can change, among those that a fact names: the root
-    /// of an argument that the callee can write through, and of a receiver whose method takes
-    /// `&mut self`. A method that the checker cannot find counts as one that takes `&mut self`.
+    /// of a receiver whose method takes `&mut self`. A method that the checker cannot find counts
+    /// as one that takes `&mut self`. Then the root of each argument that the callee can write
+    /// through, which keeps its value.
     fn names_calls_in_a_body_can_change(
         &mut self,
         body: &[Statement],
-    ) -> std::collections::HashSet<String> {
+    ) -> (
+        std::collections::HashSet<String>,
+        std::collections::HashSet<String>,
+    ) {
         let mut in_facts = std::collections::HashSet::new();
         for fact in &self.consteval.constraints {
             crate::syntax::visit_expr(fact, &mut |e| {
@@ -1390,6 +1460,7 @@ impl<'a> TypeChecker<'a> {
             });
         }
         let mut changed = std::collections::HashSet::new();
+        let mut behind = std::collections::HashSet::new();
         let mut receivers = Vec::new();
         crate::syntax::visit_exprs(body, &mut |e| {
             let args: &[Expr] = match e {
@@ -1400,8 +1471,8 @@ impl<'a> TypeChecker<'a> {
             };
             for arg in args {
                 if let Some((root, _)) = Self::arg_reborrow_base(arg) {
-                    if in_facts.contains(&root) && self.callee_can_write_through(arg) {
-                        changed.insert(root);
+                    if in_facts.contains(&root) && self.callee_can_write_through(arg, None) {
+                        behind.insert(root);
                     }
                 }
             }
@@ -1432,7 +1503,7 @@ impl<'a> TypeChecker<'a> {
             }
         }
         self.speculating = speculating;
-        changed
+        (changed, behind)
     }
 
     /// Code can change `place`, so the facts about its variable end. Inside a call they end after
@@ -1451,6 +1522,15 @@ impl<'a> TypeChecker<'a> {
         let value = self.pointer_facts.entry_of(name);
         self.neutralize_facts_mentioning(name);
         self.note_pointer_value(name, value);
+    }
+
+    /// A write through the raw pointer `root`, such as `root[i] = v`: the facts about the memory
+    /// end, and the pointer keeps its value.
+    pub(crate) fn note_a_change_behind(&mut self, root: String) {
+        match self.fact_change_frames.last_mut() {
+            Some(frame) => frame.push((root, true)),
+            None => self.neutralize_facts_behind(&root),
+        }
     }
 
     pub(crate) fn note_a_change_to_variable(&mut self, root: String) {
@@ -1485,41 +1565,47 @@ impl<'a> TypeChecker<'a> {
                 .extend(changed);
             return ty;
         }
-        self.pointer_facts_at_call(expr, written);
         let args: &[Expr] = match &*expr {
             Expr::FunctionCall(fc) => &fc.args,
             Expr::MethodCall(m) => &m.args,
             Expr::IndirectCall(ic) => &ic.args,
             _ => &[],
         };
-        let written = args
-            .iter()
-            .filter(|arg| self.callee_can_write_through(arg))
-            .filter_map(|arg| Self::arg_reborrow_base(arg).map(|(root, _)| (root, true)))
-            .collect::<Vec<_>>();
-        let mut changes = self.fact_change_frames.pop().unwrap_or_default();
-        changes.extend(written);
-        // A method call checks the call of its function speculatively, before it proves the
-        // `requires`. So in a speculative check the changes go to the outer call.
-        if self.speculating {
-            if let Some(outer) = self.fact_change_frames.last_mut() {
-                outer.extend(changes);
-                return ty;
+        let events = |this: &mut Self| this.pointer_facts_at_call(expr, written);
+        self.pointer_facts_events_then_changes(events, |this| {
+            let params = match &*expr {
+                Expr::FunctionCall(fc) => this.call_param_types(fc.name.as_ref(), expr),
+                Expr::IndirectCall(_) => this.call_param_types("", expr),
+                _ => None,
+            };
+            let written = args
+                .iter()
+                .enumerate()
+                .filter(|(i, arg)| {
+                    this.callee_can_write_through(arg, params.as_ref().and_then(|p| p.get(*i)))
+                })
+                .filter_map(|(_, arg)| Self::arg_reborrow_base(arg).map(|(root, _)| (root, true)))
+                .collect::<Vec<_>>();
+            let mut changes = this.fact_change_frames.pop().unwrap_or_default();
+            changes.extend(written);
+            for (name, behind) in changes {
+                if behind {
+                    this.neutralize_facts_behind(&name);
+                } else {
+                    this.neutralize_facts_mentioning(&name);
+                }
             }
-        }
-        for (name, behind) in changes {
-            if behind {
-                self.neutralize_facts_behind(&name);
-            } else {
-                self.neutralize_facts_mentioning(&name);
-            }
-        }
+        });
         ty
     }
 
-    /// Can a callee write through the argument `arg`? A `&mut` borrow written in the argument is
-    /// noted where it is checked, so this answers for the other arguments.
-    fn callee_can_write_through(&self, arg: &Expr) -> bool {
+    /// Can a callee write through the argument `arg` for the parameter `param`? A `&mut` borrow
+    /// written in the argument is noted where it is checked, so this answers for the other
+    /// arguments. A `&mut` argument for a `&` parameter becomes a `&`.
+    fn callee_can_write_through(&self, arg: &Expr, param: Option<&Type>) -> bool {
+        if matches!(param, Some(Type::Borrow { is_mut: false, .. })) {
+            return false;
+        }
         let ty = match arg {
             Expr::Borrow(_) => return false,
             Expr::AsCast(cast) => cast.target_ty.clone(),
@@ -1531,6 +1617,24 @@ impl<'a> TypeChecker<'a> {
             other => self.type_can_hold_reference(&other),
         }
     }
+}
+
+/// `0 == 0`, which takes the place of a fact that ends, so the index of each later fact stays.
+pub(crate) fn no_fact() -> Expr {
+    let zero = || {
+        Box::new(Expr::Number(NumberExpr {
+            value: "0".to_string().into(),
+            ty: None,
+            span: Span::default(),
+        }))
+    };
+    Expr::RelationalOp(RelationalOpExpr {
+        lhs: zero(),
+        op: RelationalOp::Eq,
+        rhs: zero(),
+        span: Span::default(),
+        operand_ty: None,
+    })
 }
 
 /// Does the expression mention identifier `name` anywhere? Conservative: an expression
@@ -1553,6 +1657,7 @@ pub(crate) fn expr_mentions(e: &Expr, name: &str) -> bool {
         Expr::MemberAccess(m) => expr_mentions(&m.base, name),
         Expr::IndexAccess(ix) => expr_mentions(&ix.base, name) || expr_mentions(&ix.index, name),
         Expr::Range(r) => expr_mentions(&r.start, name) || expr_mentions(&r.end, name),
+        Expr::AsCast(c) => expr_mentions(&c.expr, name),
         _ => true,
     }
 }
@@ -1731,18 +1836,28 @@ pub(crate) fn body_reassigns(body: &[Statement], name: &str) -> bool {
 /// The variables that `body` writes at any depth: the root of each assignment, such as `x` in
 /// `x.f[i] = ..`, each variable that an `mlir!` block clobbers, and the root of each `&mut`.
 pub(crate) fn names_a_body_writes(body: &[Statement]) -> std::collections::HashSet<String> {
-    fn root(e: &Expr) -> Option<String> {
+    writes_in_a_body(body)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect()
+}
+
+/// The roots of `names_a_body_writes`, each with whether the write goes through its root first
+/// with an index or a `*`, as in `p[i] = ..` and `(*p).f = ..`.
+fn writes_in_a_body(body: &[Statement]) -> Vec<(String, bool)> {
+    fn root(e: &Expr) -> Option<(String, bool)> {
+        let through = |base: &Expr| matches!(base, Expr::Identifier(_));
         match e {
-            Expr::Identifier(id) => Some(id.name.to_string()),
-            Expr::IndexAccess(ix) => root(&ix.base),
+            Expr::Identifier(id) => Some((id.name.to_string(), false)),
+            Expr::IndexAccess(ix) => root(&ix.base).map(|(n, t)| (n, t || through(&ix.base))),
             Expr::MemberAccess(m) => root(&m.base),
-            Expr::Dereference(d) => root(&d.expr),
+            Expr::Dereference(d) => root(&d.expr).map(|(n, t)| (n, t || through(&d.expr))),
             _ => None,
         }
     }
     // The statements of one block and of the loops in it. `visit_exprs` finds the blocks that
     // are inside expressions.
-    fn own(stmts: &[Statement], out: &mut std::collections::HashSet<String>) {
+    fn own(stmts: &[Statement], out: &mut Vec<(String, bool)>) {
         for s in stmts {
             match s {
                 Statement::Assign(a) => out.extend(root(&a.lhs)),
@@ -1753,7 +1868,7 @@ pub(crate) fn names_a_body_writes(body: &[Statement]) -> std::collections::HashS
             }
         }
     }
-    let mut out = std::collections::HashSet::new();
+    let mut out = Vec::new();
     own(body, &mut out);
     crate::syntax::visit_exprs(body, &mut |e| match e {
         Expr::If(i) => {
@@ -1767,8 +1882,13 @@ pub(crate) fn names_a_body_writes(body: &[Statement]) -> std::collections::HashS
         Expr::ComptimeBlock(c) => own(&c.stmts, &mut out),
         Expr::TaskBlock(t) => own(&t.stmts, &mut out),
         Expr::SpawnOn(s) => own(&s.stmts, &mut out),
-        Expr::InlineMlir(m) => out.extend(m.clobbers.iter().filter_map(root)),
-        Expr::Borrow(b) if b.is_mut => out.extend(root(&b.expr)),
+        Expr::InlineMlir(m) => out.extend(
+            m.clobbers
+                .iter()
+                .filter_map(root)
+                .map(|(name, _)| (name, false)),
+        ),
+        Expr::Borrow(b) if b.is_mut => out.extend(root(&b.expr).map(|(name, _)| (name, false))),
         _ => {}
     });
     out

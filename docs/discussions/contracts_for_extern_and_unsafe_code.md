@@ -133,6 +133,10 @@ A fleet build can then forbid `unsafe` code outside of `stdlib` and a few review
 Section 7 of the waiting-tasks note asks for this list. The compiler has all of it after the
 freeze, so the list is complete and does not depend on a person.
 
+The first `vxc --audit` lists the trusted pointer facts of `raw_pointer_facts.md`: each `assume`,
+each pointer clause that a call in `unsafe` code trusts, each `ensures` of an `extern` function, and
+each pointer `requires` of a `pub fn`. The other items of A1 can go in the same list.
+
 **A2.** The audit is a stable text format. So a review can compare the audit of two versions and
 see each new trusted item.
 

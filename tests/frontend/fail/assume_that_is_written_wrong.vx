@@ -1,0 +1,43 @@
+//===- assume_that_is_written_wrong.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `assume e;` adds the fact `e` without a proof, so only an `unsafe` block can hold it (E5002),
+// also in an `unsafe fn`. The fact is one pointer clause (E8011), or a `bool` for the prover
+// (E3003).
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+// CHECK: E5002] at {{.*}}assume_that_is_written_wrong.vx:[[@LINE+2]]:3: `assume` adds a fact that the compiler does not prove, so it must be in an `unsafe` block
+fn outside_an_unsafe_block(p : *const i64, n : i64) -> void {
+  assume valid(p, n);
+}
+
+// CHECK: E5002] at {{.*}}assume_that_is_written_wrong.vx:[[@LINE+2]]:3: `assume` adds a fact that the compiler does not prove, so it must be in an `unsafe` block
+unsafe fn in_an_unsafe_fn(p : *const i64, n : i64) -> void {
+  assume valid(p, n);
+}
+
+// CHECK: E8011] at {{.*}}assume_that_is_written_wrong.vx:[[@LINE+2]]:12: write the fact of `assume` as one pointer clause, as in `assume valid(p, n)`
+fn a_clause_with_no_length(p : *const i64) -> void {
+  unsafe { assume valid(p); }
+}
+
+// CHECK: E8011] at {{.*}}assume_that_is_written_wrong.vx:[[@LINE+2]]:12: `valid` needs a raw pointer, but `x` is `i64`
+fn a_clause_about_a_number(x : i64) -> void {
+  unsafe { assume valid(x, 1i64); }
+}
+
+// CHECK: E3003] at {{.*}}assume_that_is_written_wrong.vx:[[@LINE+2]]:12: the fact of `assume` must be a `bool`, but it is `i64`
+fn a_number(n : i64) -> void {
+  unsafe { assume n + 1i64; }
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: 5 error(s) emitted

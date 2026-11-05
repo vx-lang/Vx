@@ -19,6 +19,7 @@ pub mod across;
 pub mod across_lanes;
 pub mod across_proof;
 pub mod atomic_contracts;
+pub mod audit;
 pub mod autodiff;
 pub mod borrow_clauses;
 pub mod calls;

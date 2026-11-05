@@ -145,6 +145,8 @@ fn pointee(ty: &Type) -> Option<&Type> {
 pub struct Decls<'d> {
     structs: HashMap<&'d str, &'d StructDecl>,
     enums: HashMap<&'d str, &'d EnumDecl>,
+    /// The types that have a `Drop` impl, by name.
+    with_drop: HashSet<&'d str>,
 }
 
 impl<'d> Decls<'d> {
@@ -155,7 +157,18 @@ impl<'d> Decls<'d> {
         Decls {
             structs: structs.into_iter().map(|s| (s.name.as_ref(), s)).collect(),
             enums: enums.into_iter().map(|e| (e.name.as_ref(), e)).collect(),
+            with_drop: HashSet::new(),
         }
+    }
+
+    /// The same declarations, with the `Drop` impls `drops`.
+    pub fn with_drop_impls(mut self, drops: impl IntoIterator<Item = &'d ImplBlock>) -> Self {
+        self.with_drop = drops
+            .into_iter()
+            .filter_map(|ib| Self::type_name(&ib.target_type))
+            .map(|name| name.rsplit("::").next().unwrap_or(name))
+            .collect();
+        self
     }
 
     /// The declaration named `name`, also when it is written `Vec<T>` or `std::vec::Vec`.
@@ -181,6 +194,68 @@ impl<'d> Decls<'d> {
             .iter()
             .find(|(name, _)| name.as_ref() == field)
             .map(|(_, ty)| ty)
+    }
+
+    /// The type of field `field` of the struct type `ty`, with the type arguments of `ty` in
+    /// place.
+    pub(crate) fn field_type(&self, ty: &Type, field: &str) -> Option<Type> {
+        let decl = Self::lookup(&self.structs, Self::type_name(ty)?)?;
+        let i = decl
+            .fields
+            .iter()
+            .position(|(name, _)| name.as_ref() == field)?;
+        self.parts(ty)?.into_iter().nth(i)
+    }
+
+    /// Whether the drop of a value of type `ty` can free memory: the type or a part of it has a
+    /// `Drop` impl or is a tensor. A type that the walk cannot look into, such as a type
+    /// parameter, counts as one with a drop.
+    pub(crate) fn has_drop(&self, ty: &Type, depth: usize) -> bool {
+        if depth > 8 {
+            return true;
+        }
+        match ty {
+            Type::Scalar(e) => matches!(e, ElementType::Generic(_)),
+            Type::Pointer(..)
+            | Type::Borrow { .. }
+            | Type::Ref(..)
+            | Type::Function(..)
+            | Type::Simd(..)
+            | Type::Const(_) => false,
+            Type::Verified(inner) | Type::Pinned(inner, _) => self.has_drop(inner, depth + 1),
+            Type::Struct(name, _) if name.as_ref() == "void" => false,
+            Type::Struct(..) | Type::Enum(..) | Type::GenericInstance(..) => {
+                let name = Self::type_name(ty).map(|n| n.split('<').next().unwrap_or(n));
+                name.is_none_or(|n| self.with_drop.contains(n.rsplit("::").next().unwrap_or(n)))
+                    || self
+                        .parts(ty)
+                        .is_none_or(|parts| parts.iter().any(|t| self.has_drop(t, depth + 1)))
+            }
+            _ => true,
+        }
+    }
+
+    /// Whether a value of type `ty` can free memory when the program gives it to a call: it
+    /// holds a raw pointer or a type with a drop, at any depth, through fields, references and
+    /// pointers.
+    pub(crate) fn can_free_through(&self, ty: &Type, depth: usize) -> bool {
+        if depth > 8 {
+            return true;
+        }
+        match ty {
+            Type::Pointer(..) => true,
+            Type::Borrow { inner, .. } | Type::Ref(inner, _) => {
+                self.can_free_through(inner, depth + 1)
+            }
+            Type::Struct(name, _) if name.as_ref() == "void" => false,
+            Type::Struct(..) | Type::Enum(..) | Type::GenericInstance(..) => {
+                self.has_drop(ty, depth)
+                    || self.parts(ty).is_none_or(|parts| {
+                        parts.iter().any(|t| self.can_free_through(t, depth + 1))
+                    })
+            }
+            _ => self.has_drop(ty, depth),
+        }
     }
 
     /// Whether `ty` names a declared struct or enum. Any other name may be a type parameter.

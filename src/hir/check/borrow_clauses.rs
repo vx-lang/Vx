@@ -541,7 +541,7 @@ impl<'a> TypeChecker<'a> {
     /// How a message names `f`. An instance of a generic function is named by its template. A
     /// method is named by its type, as in `Wrong::first`, because an impl can break a clause
     /// that its trait wrote, and the clause then points into the trait.
-    fn clause_owner_name(&self, f: &Function) -> String {
+    pub(crate) fn clause_owner_name(&self, f: &Function) -> String {
         if let Some((template, _)) = f.name.split_once('$') {
             if self.env.generic_functions.contains_key(template) {
                 return template.to_string();

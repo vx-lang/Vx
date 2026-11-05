@@ -584,7 +584,7 @@ struct Lowerer<'r> {
     /// codegen can attach `alias_scopes`/`noalias_scopes` — carrying the borrow checker's disjointness
     /// of simultaneously live `&mut o.field` borrows into the IR. (#275, §5.4)
     place_field_stores: Vec<(usize, Symbol, Vec<Symbol>)>,
-    /// The `requires !overlaps(p, q, n)` clauses of an `unsafe fn` whose `p`, `q` and `n` the body
+    /// The `requires !overlaps(p, q, n)` clauses of the function whose `p`, `q` and `n` the body
     /// never changes or binds again.
     overlap_clauses: Vec<(Symbol, Symbol, Symbol)>,
     /// The `for i in 0..n` loops around the statement being lowered, as `(i, n)`, where `n` is the
@@ -1890,6 +1890,12 @@ impl<'r> Lowerer<'r> {
                         me.run_queued_drops()?;
                         Ok(v)
                     }
+                    // A closure body such as `{ return x; }` already returned. An op after the
+                    // `return` is invalid, and nothing reads the value.
+                    None if me.block_terminated() => Ok(Val {
+                        reg: Register(0),
+                        ty: LoweredTy::Scalar(ElementType::I32),
+                    }),
                     // No trailing value: the block is an effect, which is what a nested
                     // `unsafe { unsafe { .. } }` parses to. Hand back a constant for the value
                     // position nobody should be using it in, as `barrier()` does.
@@ -2279,8 +2285,14 @@ impl<'r> Lowerer<'r> {
             },
             Expr::BinaryOp(b) => {
                 // Mirror `lower_expr`: the result is the tensor side if either operand is a tensor,
-                // else the left operand's type.
-                let l = self.infer_expr_ty(&b.lhs)?;
+                // else the left operand's type. A match arm's `r * 3` reads a binding that is not
+                // in scope yet, so the checker's operand type gives the answer there.
+                let Some(l) = self.infer_expr_ty(&b.lhs) else {
+                    return match (&b.op, &b.operand_ty) {
+                        (BinaryOp::MatMul, _) | (_, None) => None,
+                        (_, Some(e)) => Some(LoweredTy::Scalar(e.clone())),
+                    };
+                };
                 if matches!(l, LoweredTy::Tensor { .. }) {
                     return Some(l);
                 }
@@ -5484,27 +5496,45 @@ impl<'r> Lowerer<'r> {
             if matches!(el, ElementType::Generic(_)) {
                 return None;
             }
-            let dynamic = dims.iter().any(|d| matches!(d, Dim::Dyn));
+            // A dimension that names a local variable, as `n` in `[n, n]`, is a run-time extent
+            // too: its value is the extent.
+            let local_dim = |d: &Dim| match d {
+                Dim::Static(Expr::Identifier(id)) => self.scope.contains_key(&id.name),
+                _ => false,
+            };
+            let local_dims: Vec<bool> = dims.iter().map(local_dim).collect();
+            let dynamic =
+                local_dims.iter().any(|l| *l) || dims.iter().any(|d| matches!(d, Dim::Dyn));
             let mut extents: Vec<Register> = Vec::new();
+            let mut shape: Vec<String> = Vec::with_capacity(dims.len());
             let bytes = if dynamic {
-                let Some(Expr::Array(arr)) = fc.args.first() else {
-                    return None;
+                let written_shape = match fc.args.first() {
+                    Some(Expr::Array(arr)) if fc.args.len() == 1 => Some(&arr.elements),
+                    _ => None,
                 };
-                if fc.args.len() != 1 || arr.elements.len() != dims.len() {
-                    return None;
-                }
-                for (d, e) in dims.iter().zip(arr.elements.iter()) {
-                    if matches!(d, Dim::Dyn) {
-                        extents.push(self.lower_scalar_extent(e)?);
-                    }
+                for (i, d) in dims.iter().enumerate() {
+                    let extent = match d {
+                        Dim::Dyn => written_shape
+                            .filter(|s| s.len() == dims.len())
+                            .map(|s| &s[i])?,
+                        Dim::Static(e) if local_dims[i] => e,
+                        _ => {
+                            shape.push(tensor_dim_string(d)?);
+                            continue;
+                        }
+                    };
+                    extents.push(self.lower_scalar_extent(extent)?);
+                    shape.push(DYN_DIM.to_string());
                 }
                 0
-            } else if dims.is_empty() {
-                crate::hir::memory::element_bits(el)?.div_ceil(8)
             } else {
-                crate::hir::memory::static_tensor_bytes(el, dims)?
+                shape = dims.iter().map(tensor_dim_string).collect::<Option<_>>()?;
+                if dims.is_empty() {
+                    crate::hir::memory::element_bits(el)?.div_ceil(8)
+                } else {
+                    crate::hir::memory::static_tensor_bytes(el, dims)?
+                }
             };
-            let shape: Vec<String> = dims.iter().map(tensor_dim_string).collect::<Option<_>>()?;
             let ty = LoweredTy::Tensor {
                 elem: el.clone(),
                 shape,
@@ -7904,13 +7934,11 @@ fn place_root(e: &Expr) -> Option<Symbol> {
     }
 }
 
-/// The `requires !overlaps(p, q, n)` clauses of `func`, an `unsafe fn`, whose `p` and `q` are raw
-/// pointer parameters and `n` a parameter. A name that the body changes or binds again is left out,
-/// since then `p[i]` might not read the pointer or the length that the clause is about.
+/// The `requires !overlaps(p, q, n)` clauses of `func`, whose `p` and `q` are raw pointer
+/// parameters and `n` a parameter. A call in safe code proves each one, and the author of `unsafe`
+/// code keeps the promise. A name that the body changes or binds again is left out, since then
+/// `p[i]` might not read the pointer or the length that the clause is about.
 fn overlap_clauses(func: &Function, mutated: &HashSet<Symbol>) -> Vec<(Symbol, Symbol, Symbol)> {
-    if !func.is_unsafe {
-        return Vec::new();
-    }
     let param = |e: &Expr, pointer: bool| -> Option<Symbol> {
         let Expr::Identifier(id) = e else {
             return None;

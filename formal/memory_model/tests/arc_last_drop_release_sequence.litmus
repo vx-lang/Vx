@@ -1,0 +1,15 @@
+LISA arc_last_drop_release_sequence
+(* Three tasks each hold an `Arc`. P0 reads the value and drops first. P1 then takes 1 from the
+   count with a relaxed read-modify-write, as a clone adds 1. P2 drops last, runs an acquire fence
+   and frees the value. P0's release reaches P2 through P1's read-modify-write.
+   Expect: sometimes, no data race. *)
+{ count = 3; value = 0; }
+ P0                            | P1                            | P2                            ;
+ r[plain] r2 value             | rmw[rlx] r0 (add r0 -1) count | rmw[rel] r0 (add r0 -1) count ;
+ rmw[rel] r0 (add r0 -1) count |                               | mov r3 (neq r0 1)             ;
+                               |                               | b[] r3 LC00                   ;
+                               |                               | f[acq]                        ;
+                               |                               | w[plain] value 9              ;
+                               |                               | LC00:                         ;
+scopes: (system P0 P1 P2)
+exists (0:r0 = 3 /\ 1:r0 = 2 /\ 2:r0 = 1)

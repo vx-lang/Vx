@@ -1,0 +1,57 @@
+//===- a_name_reused_for_a_transfer_frees_each_buffer_once.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --run 2>&1 | FileCheck %s --check-prefix=OUT
+// RUN: vxc %s --legacy-codegen --run 2>&1 | FileCheck %s --check-prefix=OUT
+// RUN: vxc %s --action emit-mlir 2>/dev/null | FileCheck %s --check-prefix=AFTER
+// RUN: vxc %s --action emit-mlir 2>/dev/null | FileCheck %s --check-prefix=FOR
+//
+// A `let` that gives the result of a `transfer` the name `h` hides the first `h`. The program
+// frees each buffer once. It used to free the second `h` twice and the first `h` never, so it
+// stopped with "double free".
+
+// AFTER-LABEL: func.func @reused_after_a_transfer(
+// AFTER: %[[FIRST:.*]] = memref.alloc
+// AFTER: %[[A:.*]] = "vx.transfer"(%[[FIRST]])
+// AFTER-NEXT: vx.drop %[[FIRST]]
+// AFTER-NEXT: %[[SECOND:.*]] = "vx.transfer"(%[[A]])
+// AFTER-NEXT: vx.drop %[[A]]
+// AFTER-NOT: vx.drop
+// AFTER: vx.drop %[[SECOND]]
+// AFTER-NOT: vx.drop
+// AFTER: return
+fn reused_after_a_transfer() -> f32 {
+  let h = Tensor<f32, [4]>::fill(2.5);
+  let a = transfer(h, Memory::GPU_HBM);
+  let h = transfer(a, Memory::CPU_DRAM);
+  return h[0];
+}
+
+// FOR-LABEL: func.func @reused_for_the_transfer(
+// FOR: %[[FIRST:.*]] = memref.alloc
+// FOR: %[[SECOND:.*]] = "vx.transfer"(%[[FIRST]])
+// FOR-NEXT: vx.drop %[[FIRST]]
+// FOR-NEXT: %[[BACK:.*]] = "vx.transfer"(%[[SECOND]])
+// FOR-NEXT: vx.drop %[[SECOND]]
+// FOR-NOT: vx.drop
+// FOR: vx.drop %[[BACK]]
+// FOR-NOT: vx.drop
+// FOR: return
+fn reused_for_the_transfer() -> f32 {
+  let h = Tensor<f32, [4]>::fill(2.5);
+  let h = transfer(h, Memory::GPU_HBM);
+  let back = transfer(h, Memory::CPU_DRAM);
+  return back[0];
+}
+
+fn main() -> i32 {
+  // OUT: first 2.5
+  println!("first {}", reused_after_a_transfer());
+  // OUT-NEXT: second 2.5
+  println!("second {}", reused_for_the_transfer());
+  return 0;
+}

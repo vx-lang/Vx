@@ -1064,6 +1064,11 @@ pub fn build_frozen_registry_with(
                                 &crate::hir::provenance::ReturnProvenance::AnyParam,
                             ),
                             is_unsafe: !ext.is_safe,
+                            ret_valid: crate::hir::check::pointer_clauses::valid_result_length(
+                                &ext.params,
+                                &ext.return_type,
+                                &ext.ensures,
+                            ),
                         },
                     );
                 }
@@ -1118,6 +1123,11 @@ pub fn build_frozen_registry_with(
                                     &crate::hir::provenance::compute_return_provenance(m),
                                 ),
                                 is_unsafe: m.is_unsafe,
+                                ret_valid: crate::hir::check::pointer_clauses::valid_result_length(
+                                    &m.params,
+                                    &m.return_type,
+                                    &m.ensures,
+                                ),
                             },
                         );
                     }
@@ -1152,6 +1162,11 @@ pub fn fn_sig_of(module_hash: u64, f: &syntax::Function) -> crate::registry::FnS
             &crate::hir::provenance::compute_return_provenance(f),
         ),
         is_unsafe: f.is_unsafe,
+        ret_valid: crate::hir::check::pointer_clauses::valid_result_length(
+            &f.params,
+            &f.return_type,
+            &f.ensures,
+        ),
     }
 }
 

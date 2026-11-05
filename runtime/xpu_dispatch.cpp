@@ -975,7 +975,9 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
   }
   bool called = vx_host_call_kernel(
       kernel, device_args, arg_tags, num_args,
-      vx_host_worker_count_for(binary_payload, payload_size));
+      vx_host_worker_count_for(binary_payload, payload_size, device_args,
+                               arg_tags, num_args),
+      vx_host_flushes_subnormals(binary_payload, payload_size));
 
   for (HostMirror &mirror : mirrors) {
     unmirror_operand(&mirror);

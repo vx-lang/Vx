@@ -74,6 +74,10 @@ using namespace mlir::vx;
 
 #define DEBUG_TYPE "vx-lowering"
 
+// The Metal Shading Language of a `gpu.module`'s kernels, for the Apple GPU
+// (src/dialect/MetalImage.cpp). Empty with `error` set on failure.
+std::string mslImageOf(gpu::GPUModuleOp gpuModule, std::string &error);
+
 namespace {
 
 // Classify what an outlined region computes, for plugins that route to vendor
@@ -1595,8 +1599,12 @@ static LLVM::LLVMFuncOp getOrDeclareRuntimeFn(OpBuilder &builder,
                                               StringRef name, Type result,
                                               ArrayRef<Type> params);
 
-// `VX_CTRL_WAIT` in include/vx_hardware_runtime.h.
-constexpr int32_t kCtrlWait = 0x05;
+// `VX_CTRL_WAIT_FOR_TENSORS` and `VX_CTRL_WAIT_FOR_THREAD` in
+// include/vx_hardware_runtime.h.
+constexpr int32_t kCtrlWaitForTensors = 0x06;
+constexpr int32_t kCtrlWaitForThread = 0x07;
+
+static int32_t dtypeCode(Type t);
 
 // "Warning at file:line:col: " for an operation from the source, else
 // "Warning in function `f`: ". The driver prints only the message. The flat
@@ -1704,6 +1712,101 @@ static bool isParameter(Value v) {
          isa<func::FuncOp>(arg.getOwner()->getParentOp());
 }
 
+// A tensor that `tensorsToWaitFor` can describe: a strided memref of elements,
+// not a slot.
+static bool isTensorToWaitFor(Type t) {
+  auto type = dyn_cast<MemRefType>(t);
+  return type && !isa<MemRefType>(type.getElementType()) &&
+         (type.getLayout().isIdentity() ||
+          isa<StridedLayoutAttr>(type.getLayout()));
+}
+
+// A `vx_wait_for_tensors` for `vx_plugin_control`, with a descriptor for each
+// of `tensors` as a launch passes it. The stack slots go in the entry block of
+// `func`, so a wait in a loop does not grow the stack.
+static Value tensorsToWaitFor(OpBuilder &b, Location loc, func::FuncOp func,
+                              int32_t topology, ValueRange tensors) {
+  MLIRContext *ctx = b.getContext();
+  auto ptrType = LLVM::LLVMPointerType::get(ctx);
+  auto i32Type = b.getI32Type();
+  auto i64Type = b.getI64Type();
+  auto payloadType = LLVM::LLVMStructType::getLiteral(
+      ctx, {i32Type, i32Type, ptrType, ptrType});
+  const int32_t count = static_cast<int32_t>(tensors.size());
+  SmallVector<Type> descTypes;
+  SmallVector<Value> descs, slots;
+  Value args, tags, payload;
+  {
+    OpBuilder::InsertionGuard guard(b);
+    b.setInsertionPointToStart(&func.getBody().front());
+    Value one =
+        b.create<LLVM::ConstantOp>(loc, i64Type, b.getI64IntegerAttr(1));
+    Value all = b.create<LLVM::ConstantOp>(
+        loc, i64Type, b.getI64IntegerAttr(std::max(count, 1)));
+    for (Value t : tensors) {
+      const int64_t rank = cast<MemRefType>(t.getType()).getRank();
+      SmallVector<Type> fields{ptrType, ptrType, i64Type};
+      if (rank > 0)
+        fields.append(2, LLVM::LLVMArrayType::get(i64Type, rank));
+      descTypes.push_back(LLVM::LLVMStructType::getLiteral(ctx, fields));
+      descs.push_back(
+          b.create<LLVM::AllocaOp>(loc, ptrType, descTypes.back(), one));
+      slots.push_back(b.create<LLVM::AllocaOp>(loc, ptrType, ptrType, one));
+    }
+    args = b.create<LLVM::AllocaOp>(loc, ptrType, ptrType, all);
+    tags = b.create<LLVM::AllocaOp>(loc, ptrType, i32Type, all);
+    payload = b.create<LLVM::AllocaOp>(loc, ptrType, payloadType, one);
+  }
+  auto i64 = [&](Value index) -> Value {
+    return b.create<arith::IndexCastOp>(loc, i64Type, index);
+  };
+  auto i32 = [&](int32_t value) -> Value {
+    return b.create<LLVM::ConstantOp>(loc, i32Type, b.getI32IntegerAttr(value));
+  };
+  for (auto [i, t] : llvm::enumerate(tensors)) {
+    auto type = cast<MemRefType>(t.getType());
+    auto meta = b.create<memref::ExtractStridedMetadataOp>(loc, t);
+    Value aligned = b.create<LLVM::IntToPtrOp>(
+        loc, ptrType,
+        i64(b.create<memref::ExtractAlignedPointerAsIndexOp>(loc, t)));
+    Value desc = b.create<LLVM::UndefOp>(loc, descTypes[i]);
+    desc =
+        b.create<LLVM::InsertValueOp>(loc, desc, aligned, ArrayRef<int64_t>{0});
+    desc =
+        b.create<LLVM::InsertValueOp>(loc, desc, aligned, ArrayRef<int64_t>{1});
+    desc = b.create<LLVM::InsertValueOp>(loc, desc, i64(meta.getOffset()),
+                                         ArrayRef<int64_t>{2});
+    for (int64_t d = 0; d < type.getRank(); ++d) {
+      desc = b.create<LLVM::InsertValueOp>(loc, desc, i64(meta.getSizes()[d]),
+                                           ArrayRef<int64_t>{3, d});
+      desc = b.create<LLVM::InsertValueOp>(loc, desc, i64(meta.getStrides()[d]),
+                                           ArrayRef<int64_t>{4, d});
+    }
+    b.create<LLVM::StoreOp>(loc, desc, descs[i]);
+    b.create<LLVM::StoreOp>(loc, descs[i], slots[i]);
+    b.create<LLVM::StoreOp>(
+        loc, slots[i],
+        b.create<LLVM::GEPOp>(loc, ptrType, ptrType, args,
+                              ArrayRef<LLVM::GEPArg>{static_cast<int32_t>(i)}));
+    // The tag of a tensor argument of a launch.
+    const int32_t tag = static_cast<int32_t>(type.getRank()) << 16 |
+                        dtypeCode(type.getElementType()) << 8;
+    b.create<LLVM::StoreOp>(
+        loc, i32(tag),
+        b.create<LLVM::GEPOp>(loc, ptrType, i32Type, tags,
+                              ArrayRef<LLVM::GEPArg>{static_cast<int32_t>(i)}));
+  }
+  auto field = [&](int32_t k) -> Value {
+    return b.create<LLVM::GEPOp>(loc, ptrType, payloadType, payload,
+                                 ArrayRef<LLVM::GEPArg>{0, k});
+  };
+  b.create<LLVM::StoreOp>(loc, i32(topology), field(0));
+  b.create<LLVM::StoreOp>(loc, i32(count), field(1));
+  b.create<LLVM::StoreOp>(loc, args, field(2));
+  b.create<LLVM::StoreOp>(loc, tags, field(3));
+  return payload;
+}
+
 // Skip the copy of a transfer that sema marked `shared`: its source is a `&`
 // tensor and the edge is `: shared`, so the CPU can read the GPU's memory. The
 // caller cannot change a `&` parameter during the call, so when every use of
@@ -1748,34 +1851,26 @@ static void elideSharedTransfers(ModuleOp module) {
       continue;
     }
 
-    // Wait for the GPU, through `vx_plugin_control(VX_CTRL_WAIT, &topology)`.
-    // The slot for the topology goes at the start of the function, so a
-    // transfer in a loop does not grow the stack.
+    // Wait for the GPU launches that write `src`, through
+    // `vx_plugin_control(VX_CTRL_WAIT_FOR_TENSORS, ...)`.
     Location loc = t.getLoc();
     OpBuilder builder(t);
     auto ptrType = LLVM::LLVMPointerType::get(module.getContext());
     auto i32Type = builder.getI32Type();
-    auto func = t->getParentOfType<func::FuncOp>();
-    Value slot;
-    {
-      OpBuilder::InsertionGuard guard(builder);
-      builder.setInsertionPointToStart(&func.getBody().front());
-      Value one = builder.create<LLVM::ConstantOp>(
-          loc, builder.getI64Type(), builder.getI64IntegerAttr(1));
-      slot = builder.create<LLVM::AllocaOp>(loc, ptrType, i32Type, one);
-    }
-    Value topology = builder.create<LLVM::ConstantOp>(
-        loc, i32Type, builder.getI32IntegerAttr(sourceTopologyOf(t)));
-    builder.create<LLVM::StoreOp>(loc, topology, slot);
+    assert(isTensorToWaitFor(srcType) &&
+           "a `&` tensor parameter is a strided memref of elements");
+    Value tensors =
+        tensorsToWaitFor(builder, loc, t->getParentOfType<func::FuncOp>(),
+                         sourceTopologyOf(t), ValueRange{src});
     Value opcode = builder.create<LLVM::ConstantOp>(
-        loc, i32Type, builder.getI32IntegerAttr(kCtrlWait));
+        loc, i32Type, builder.getI32IntegerAttr(kCtrlWaitForTensors));
     // An unknown location: LLVM refuses a declaration with debug info.
     getOrDeclareRuntimeFn(builder, module, UnknownLoc::get(module.getContext()),
                           "vx_plugin_control", i32Type, {i32Type, ptrType});
     builder.create<LLVM::CallOp>(
         loc, TypeRange{i32Type},
         SymbolRefAttr::get(module.getContext(), "vx_plugin_control"),
-        ValueRange{opcode, slot});
+        ValueRange{opcode, tensors});
 
     Value inPlace = src;
     if (srcType != copyType)
@@ -3452,15 +3547,15 @@ static bool collectDeviceCallees(Operation *op, ModuleOp module, bool inCallee,
 
 /// The device-image pipelines a kernel's declared `arch:` can select.
 ///
-/// `None` is not an error -- `applegpu` reaches its device through the plugin
-/// ABI, so a topology Vx cannot compile for still type-checks. A row and its
-/// pipeline land together: a row without one would clone a body into a
-/// `gpu.module` that nothing compiles (docs/gpu_backends.md, item 1).
+/// `None` is not an error: a topology Vx cannot compile for still type-checks.
+/// A row and its pipeline land together: a row without one would clone a body
+/// into a `gpu.module` that nothing compiles (docs/gpu_backends.md, item 1).
 ///
-/// `nvptx64` selects the NVVM pipeline in `deviceImageOf`, and `spirv64` the
-/// SPIR-V pipeline in `spirvImageOf`. The second is what the Intel Arc's
-/// machine file declares (fleet/arc-a770.vx).
-enum class DevicePipeline { None, Nvptx, Spirv };
+/// `nvptx64` selects the NVVM pipeline in `deviceImageOf`, `spirv64` the
+/// SPIR-V pipeline in `spirvImageOf`, and `applegpu` the Metal Shading Language
+/// pipeline in `mslImageOf`. `spirv64` is what the Intel Arc's machine file
+/// declares (fleet/arc-a770.vx).
+enum class DevicePipeline { None, Nvptx, Spirv, Metal };
 
 /// The pipeline a declared architecture names, `None` for one Vx has no
 /// pipeline for.
@@ -3469,6 +3564,8 @@ static DevicePipeline pipelineForArch(StringRef arch) {
     return DevicePipeline::Nvptx;
   if (arch == "spirv64")
     return DevicePipeline::Spirv;
+  if (arch == "applegpu")
+    return DevicePipeline::Metal;
   return DevicePipeline::None;
 }
 
@@ -3479,9 +3576,8 @@ static DevicePipeline pipelineForArch(StringRef arch) {
 /// topology, whose descriptor declares no arch. The AST code generator stamps
 /// the attribute too, for a topology that declares one
 /// (src/codegen/lower/tensors.rs), so both code generators agree on which
-/// kernels ride the band. A declared arch with no row in the table --
-/// `applegpu` reaches its device through the plugin ABI, not through a device
-/// image -- answers `None`.
+/// kernels ride the band. A declared arch with no row in the table answers
+/// `None`.
 ///
 /// `materializeGpuKernels` asks this to decide whether a kernel gets a device
 /// copy, `spawnRunsOnDevice` asks it the same question about the `vx.spawn` the
@@ -3507,6 +3603,8 @@ static StringRef archNameOfPipeline(DevicePipeline pipeline) {
     return "nvptx64";
   case DevicePipeline::Spirv:
     return "spirv64";
+  case DevicePipeline::Metal:
+    return "applegpu";
   case DevicePipeline::None:
     // A kernel with no pipeline gets no device copy, so no refusal names it as
     // one of the architectures a program compiled for.
@@ -3740,6 +3838,9 @@ enum class BufferOrigin {
   // A view of another buffer, or a parameter taken by reference.
   Borrowed,
   Unknown,
+  // Only inside originOf: no path to the value brings a buffer, as for a loop
+  // value whose paths are poison or the loop itself. The other paths decide.
+  Undecided,
 };
 
 // Free a placed buffer through the plugin that allocated it. The legacy code
@@ -3884,13 +3985,15 @@ static BufferOrigin commonOrigin(ArrayRef<Value> values,
       continue;
     std::optional<int32_t> here;
     BufferOrigin o = originOf(v, seen, here);
+    if (o == BufferOrigin::Undecided)
+      continue;
     if ((common && *common != o) || (topology && here && *topology != *here))
       return BufferOrigin::Unknown;
     common = o;
     if (here)
       topology = here;
   }
-  return common.value_or(BufferOrigin::Unknown);
+  return common.value_or(BufferOrigin::Undecided);
 }
 
 static BufferOrigin originOf(Value v, llvm::SmallPtrSetImpl<void *> &seen,
@@ -4011,7 +4114,8 @@ static BufferOrigin originOf(Value v, llvm::SmallPtrSetImpl<void *> &seen,
 
 static BufferOrigin originOf(Value v, std::optional<int32_t> &topology) {
   llvm::SmallPtrSet<void *, 8> seen;
-  return originOf(v, seen, topology);
+  BufferOrigin origin = originOf(v, seen, topology);
+  return origin == BufferOrigin::Undecided ? BufferOrigin::Unknown : origin;
 }
 
 static BufferOrigin originOf(Value v) {
@@ -6114,23 +6218,24 @@ struct FreeOpLowering : public OpRewritePattern<vx::FreeOp> {
 
 /// One device image, and the format name the payload reports for it.
 ///
-/// `format` is what the payload's `format=` entry says: `ptx` for NVVM's text
-/// and `spirv` for the SPIR-V pipeline's binary. A text image goes in the
-/// payload's `image=` entry. A binary one cannot -- its first word holds NUL
-/// bytes, which would end that entry early -- and goes in the section after
-/// the text part (`vx_payload_section` in include/vx_hardware_runtime.h).
+/// `format` is what the payload's `format=` entry says: `ptx` for NVVM's text,
+/// `msl` for Metal Shading Language source, and `spirv` for the SPIR-V
+/// pipeline's binary. A text image goes in the payload's `image=` entry. A
+/// binary one cannot -- its first word holds NUL bytes, which would end that
+/// entry early -- and goes in the section after the text part
+/// (`vx_payload_section` in include/vx_hardware_runtime.h).
 struct DeviceImage {
   std::string format;
   std::string bytes;
 
   /// Whether the image can ride in a NUL-terminated `image=` entry.
-  bool isText() const { return format == "ptx"; }
+  bool isText() const { return format == "ptx" || format == "msl"; }
 };
 
 struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
   const LLVMTypeConverter &typeConverter;
   /// Kernel name -> device image, for the kernels that have one. Owned by the
-  /// pass; empty for a host launch, and empty everywhere until #251.
+  /// pass; empty for a host launch.
   const llvm::StringMap<DeviceImage> *deviceImages;
   const llvm::StringMap<int64_t> *dynamicShared;
 
@@ -6236,6 +6341,11 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
         payload += "grid_loops=1";
         payload.push_back('\0');
       }
+      // The host copy takes its blocks of axis x from the host worker.
+      if (op->hasAttr("vx.host_blocks")) {
+        payload += "host_blocks=1";
+        payload.push_back('\0');
+      }
     }
 
     if (auto trip = op->getAttrOfType<IntegerAttr>("vx_parallel_trip")) {
@@ -6278,11 +6388,11 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
     // changes it again the first time something else needs carrying.
     //
     // `format=` says what the image is, and the answer decides where it goes:
-    // PTX is text with no NUL, so it is one `image=` entry like any other and
-    // vx_payload_field walks past it unchanged, while a binary image -- SPIR-V
-    // -- holds NUL bytes in its first word and goes in the section after the
-    // entries (vx_payload_section reads it). Neither producer writes a NUL it
-    // did not mean: deviceImageOf refuses one in PTX rather than trusting it.
+    // PTX and MSL are text with no NUL, so each is one `image=` entry like any
+    // other and vx_payload_field walks past it unchanged, while a binary image
+    // -- SPIR-V -- holds NUL bytes in its first word and goes in the section
+    // after the entries (vx_payload_section reads it). deviceImageOf refuses a
+    // NUL in PTX rather than trusting it.
     //
     // Last, because a reader dumping a payload should meet the small fields
     // first, and because this is the only entry measured in kilobytes.
@@ -6307,8 +6417,10 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
         payload += image->second.format;
         payload.push_back('\0');
         if (image->second.isText()) {
-          // PTX is text with no NUL, so it is one entry like any other and
-          // vx_payload_field walks past it unchanged.
+          // PTX and MSL are text with no NUL, so each is one entry like any
+          // other and vx_payload_field walks past it unchanged.
+          assert(image->second.bytes.find('\0') == std::string::npos &&
+                 "a text device image holds no NUL");
           payload += "image=";
           payload += image->second.bytes;
           payload.push_back('\0');
@@ -7441,12 +7553,76 @@ static void declareLocalDevices(ModuleOp module) {
   }
 }
 
-/// For `--emit-ptx`: gives each kernel in `gpuModule` the name of the
-/// function that holds its region, and describes its parameters for a
-/// program that launches the kernel. Section 3.5 of `docs/lang/abi.md`
-/// gives the format.
+// A C caller reads the tensors of a `pub fn` as soon as it returns, with no
+// call into the runtime. So in a library with Apple GPU kernels, each `pub fn`
+// waits before each return. It waits for the launches of its thread, through
+// `VX_CTRL_WAIT_FOR_THREAD`. It also waits for the launches of other threads
+// that write its tensor parameters, through `VX_CTRL_WAIT_FOR_TENSORS`. A
+// program with `main` has no C caller, and the runtime waits at exit.
+static void waitBeforeReturningToC(ModuleOp module,
+                                   ArrayRef<int32_t> topologies) {
+  if (topologies.empty() || module.lookupSymbol<func::FuncOp>("main"))
+    return;
+  MLIRContext *ctx = module.getContext();
+  for (auto f : module.getOps<func::FuncOp>()) {
+    if (!f->hasAttr("vx.pub") || f.isExternal())
+      continue;
+    OpBuilder b = OpBuilder::atBlockBegin(&f.front());
+    auto i32Type = b.getI32Type();
+    auto ptrType = LLVM::LLVMPointerType::get(ctx);
+    getOrDeclareRuntimeFn(b, module, UnknownLoc::get(ctx), "vx_plugin_control",
+                          i32Type, {i32Type, ptrType});
+    Value one = b.create<LLVM::ConstantOp>(f.getLoc(), b.getI64Type(),
+                                           b.getI64IntegerAttr(1));
+    Value slot = b.create<LLVM::AllocaOp>(f.getLoc(), ptrType, i32Type, one);
+    SmallVector<func::ReturnOp> returns;
+    f.walk([&](func::ReturnOp r) { returns.push_back(r); });
+    SmallVector<Value> params;
+    for (BlockArgument arg : f.getArguments())
+      if (isTensorToWaitFor(arg.getType()))
+        params.push_back(arg);
+    for (func::ReturnOp r : returns) {
+      b.setInsertionPoint(r);
+      auto opcode = [&](int32_t code) -> Value {
+        return b.create<LLVM::ConstantOp>(r.getLoc(), i32Type,
+                                          b.getI32IntegerAttr(code));
+      };
+      auto control = [&](Value code, Value payload) {
+        b.create<LLVM::CallOp>(r.getLoc(), TypeRange{i32Type},
+                               SymbolRefAttr::get(ctx, "vx_plugin_control"),
+                               ValueRange{code, payload});
+      };
+      SmallVector<Value> tensors = params;
+      for (Value v : r.getOperands())
+        if (isTensorToWaitFor(v.getType()))
+          tensors.push_back(v);
+      Value forThread = opcode(kCtrlWaitForThread);
+      for (int32_t topology : topologies) {
+        b.create<LLVM::StoreOp>(
+            r.getLoc(),
+            b.create<LLVM::ConstantOp>(r.getLoc(), i32Type,
+                                       b.getI32IntegerAttr(topology)),
+            slot);
+        control(forThread, slot);
+        if (!tensors.empty())
+          control(opcode(kCtrlWaitForTensors),
+                  tensorsToWaitFor(b, r.getLoc(), f, topology, tensors));
+      }
+    }
+  }
+}
+
+/// For `--emit-ptx` and `--emit-msl`: gives each kernel in `gpuModule` the
+/// name of the function that holds its region, and describes its parameters
+/// for a program that launches the kernel. Section 3.5 of `docs/lang/abi.md`
+/// gives the format. For MSL, `words` counts 32-bit words in the constant
+/// buffer (src/dialect/MetalImage.cpp), and each tensor is also one buffer.
 static FailureOr<llvm::json::Array>
-nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule) {
+nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule,
+                     DevicePipeline pipeline) {
+  const bool msl = pipeline == DevicePipeline::Metal;
+  const std::string flag = msl ? "--emit-msl" : "--emit-ptx";
+  const std::string language = msl ? "MSL" : "PTX";
   llvm::StringMap<vx::KernelOp> kernelOf;
   module.walk([&](vx::KernelOp k) { kernelOf[k.getSymName()] = k; });
   SmallVector<gpu::GPUFuncOp> funcs;
@@ -7468,9 +7644,10 @@ nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule) {
     auto names = fn ? fn->getAttrOfType<ArrayAttr>("vx.param_names") : nullptr;
     auto types = fn ? fn->getAttrOfType<ArrayAttr>("vx.param_types") : nullptr;
     if (!paramOf || !names || !types) {
-      f.emitError("--emit-ptx cannot name this GPU kernel, because the code "
-                  "generator did not record the function that holds it. Only "
-                  "the flat code generator records it");
+      f.emitError() << flag
+                    << " cannot name this GPU kernel, because the code "
+                       "generator did not record the function that holds it. "
+                       "Only the flat code generator records it";
       return failure();
     }
     assert(paramOf.size() == static_cast<int64_t>(f.getNumArguments()) &&
@@ -7483,22 +7660,24 @@ nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule) {
       ptxName &= llvm::isAlnum(c) || c == '_';
     if (!ptxName) {
       emitError(loc) << "the GPU kernel in function '" << name
-                     << "' cannot have that name in PTX. Use a function name "
+                     << "' cannot have that name in " << language
+                     << ". Use a function name "
                         "that has only letters, digits and '_'";
       return failure();
     }
     if (!taken.insert(name).second) {
       emitError(loc) << "function '" << name
-                     << "' holds more than one GPU kernel. --emit-ptx gives "
-                        "a kernel the name of its function, so put each "
+                     << "' holds more than one GPU kernel. " << flag
+                     << " gives a kernel the name of its function, so put each "
                         "kernel in a function of its own";
       return failure();
     }
     Operation *other = SymbolTable::lookupSymbolIn(gpuModule, name);
     if (other && other != f.getOperation()) {
       emitError(loc) << "the GPU kernel in function '" << name
-                     << "' cannot have the name '" << name
-                     << "' in PTX, because the GPU code calls a function "
+                     << "' cannot have the name '" << name << "' in "
+                     << language
+                     << ", because the GPU code calls a function "
                         "with that name";
       return failure();
     }
@@ -7518,15 +7697,16 @@ nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule) {
                                {"kind", "arrivals"},
                                {"element", "i32"},
                                {"rank", 1},
-                               {"words", 5},
+                               {"words", msl ? 4 : 5},
                                {"zero_before_first_launch", true}});
         continue;
       }
       if (argIndex < 0 || k < 0) {
         emitError(loc) << "the GPU kernel in function '" << name
                        << "' uses a value that is not a parameter of '" << name
-                       << "'. A kernel that --emit-ptx writes gets its "
-                          "inputs only from the parameters of its function";
+                       << "'. A kernel that " << flag
+                       << " writes gets its inputs only from the parameters of "
+                          "its function";
         return failure();
       }
       StringRef vxType = cast<StringAttr>(types[k]).getValue();
@@ -7541,16 +7721,16 @@ nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule) {
         p["kind"] = "tensor";
         p["element"] = element;
         p["rank"] = m.getRank();
-        p["words"] = 3 + 2 * m.getRank();
+        p["words"] = (msl ? 2 : 3) + 2 * m.getRank();
       } else if (isa<IntegerType, FloatType, IndexType>(t)) {
         t.print(os);
         p["kind"] = "scalar";
         p["element"] = element;
-        p["words"] = 1;
+        p["words"] = msl && t.isInteger(64) ? 2 : 1;
       } else {
         emitError(loc) << "the GPU kernel in function '" << name
-                       << "' has a parameter of type " << t
-                       << ", which --emit-ptx cannot describe";
+                       << "' has a parameter of type " << t << ", which "
+                       << flag << " cannot describe";
         return failure();
       }
       params.push_back(std::move(p));
@@ -7594,10 +7774,11 @@ nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule) {
           kernel->getAttrOfType<StringAttr>("vx.launch_block").getValue());
       llvm::json::Array gridSizes = sizes(grid.getValue());
       if (failedSize) {
-        emitError(loc) << "the GPU kernel in function '" << name
-                       << "' has a launch size that --emit-ptx cannot "
-                          "describe. A size can come from parameters and "
-                          "numbers, with + - * / and %";
+        emitError(loc)
+            << "the GPU kernel in function '" << name
+            << "' has a launch size that " << flag
+            << " cannot describe. A size can come from parameters and "
+               "numbers, with + - * / and %";
         return failure();
       }
       // The count of a group has one element for each block of the first axis.
@@ -7611,8 +7792,7 @@ nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule) {
           emitError(loc) << "the GPU kernel in function '" << name
                          << "' has code of a group whose outer loop of blocks "
                             "does not go over the whole first axis. For "
-                            "--emit-ptx, write it `for h in 0..n across "
-                            "blocks`";
+                         << flag << ", write it `for h in 0..n across blocks`";
           return failure();
         }
         if (llvm::json::Array *ps = entry.getArray("params"))
@@ -7684,8 +7864,8 @@ struct ConvertVxToLLVMPass
     getOperation().walk(
         [&](gpu::GPUModuleOp m) { deviceModules.push_back(m); });
 
-    // `--emit-ptx` sets this attribute. The driver then writes the image and
-    // the description of its kernels, and makes no program.
+    // `--emit-ptx` and `--emit-msl` set this attribute. The driver then writes
+    // the image and the description of its kernels, and makes no program.
     ModuleOp module = getOperation();
     bool exporting = module->hasAttr("vx.export_kernels");
     assert((!exporting || deviceModules.size() <= 1) &&
@@ -7701,6 +7881,7 @@ struct ConvertVxToLLVMPass
 
     llvm::StringMap<DeviceImage> deviceImages;
     llvm::StringMap<int64_t> dynamicShared;
+    llvm::SmallSetVector<int32_t, 2> appleGpuTopologies;
     for (gpu::GPUModuleOp m : deviceModules) {
       // One image per module, and every kernel in it is an entry point: a
       // loader takes the module and then asks for a function by name. So the
@@ -7711,6 +7892,7 @@ struct ConvertVxToLLVMPass
       // `vx.kernel` name, and after that rename the two no longer match.
       std::optional<DevicePipeline> pipeline;
       vx::KernelOp disagrees; // the first kernel that asks for another pipeline
+      llvm::SmallSetVector<int32_t, 2> topologies;
       WalkResult walk = m.walk([&](gpu::GPUFuncOp f) -> WalkResult {
         auto it = kernelsByName.find(f.getName());
         // A `gpu.func` here is the copy of a `vx.kernel` of the same name: the
@@ -7728,6 +7910,7 @@ struct ConvertVxToLLVMPass
         // whose kernel answers `None` means the two answers have disagreed.
         assert(p != DevicePipeline::None &&
                "a kernel with no device pipeline got a device copy");
+        topologies.insert(static_cast<int32_t>(it->second.getTopology()));
         if (!pipeline)
           pipeline = p;
         else if (*pipeline != p && !disagrees)
@@ -7764,13 +7947,16 @@ struct ConvertVxToLLVMPass
         return;
       }
 
-      // `--emit-ptx` writes a PTX image and the manifest of its kernels. A
-      // SPIR-V image is binary and has no file of its own yet, so this arm
-      // leaves it unexported rather than writing its bytes into a `.ptx`.
-      const bool exportingPtx = exporting && *pipeline == DevicePipeline::Nvptx;
+      // `--emit-ptx` and `--emit-msl` write a text image and the manifest of
+      // its kernels. A SPIR-V image is binary and has no file of its own yet,
+      // so this arm leaves it unexported rather than writing its bytes into a
+      // text file.
+      const bool exportingText =
+          exporting && *pipeline != DevicePipeline::Spirv;
       llvm::json::Array exported;
-      if (exportingPtx) {
-        FailureOr<llvm::json::Array> kernels = nameKernelsForExport(module, m);
+      if (exportingText) {
+        FailureOr<llvm::json::Array> kernels =
+            nameKernelsForExport(module, m, *pipeline);
         if (failed(kernels)) {
           signalPassFailure();
           return;
@@ -7783,6 +7969,9 @@ struct ConvertVxToLLVMPass
       case DevicePipeline::Nvptx:
         image = deviceImageOf(m, error);
         break;
+      case DevicePipeline::Metal:
+        image = DeviceImage{"msl", mslImageOf(m, error)};
+        break;
       case DevicePipeline::Spirv:
         image = spirvImageOf(m, error);
         break;
@@ -7790,13 +7979,13 @@ struct ConvertVxToLLVMPass
         llvm_unreachable("the pipeline was checked to be present above");
       }
       if (image.bytes.empty()) {
-        // `--emit-ptx` asked for this image, so a refusal is the answer. So is
-        // any NVPTX refusal: the program placed a kernel on an NVPTX device,
-        // and carrying on produces a program that compiles, dispatches, and is
-        // then refused at the far end for a reason that does not name the
-        // cause -- the kernel is missing. The compile is the place where the
-        // cause is still legible.
-        if (exportingPtx || *pipeline == DevicePipeline::Nvptx) {
+        // An NVPTX or Apple GPU refusal is fatal, and so is one that
+        // `--emit-ptx` or `--emit-msl` asked for. The program placed a kernel
+        // on that device, and carrying on produces a program that compiles,
+        // dispatches, and is then refused at the far end for a reason that
+        // does not name the cause -- the kernel is missing. The compile is the
+        // place where the cause is still legible.
+        if (*pipeline != DevicePipeline::Spirv) {
           m.emitError("cannot compile ") << namedKernels(m) << ": " << error;
           signalPassFailure();
           return;
@@ -7860,13 +8049,19 @@ struct ConvertVxToLLVMPass
         if (auto bytes = f->getAttrOfType<IntegerAttr>("vx.dynamic_shared"))
           dynamicShared[f.getName()] = bytes.getInt();
       });
-      if (exportingPtx) {
-        llvm::json::Object manifest{{"target", deviceChip(m)},
+      if (*pipeline == DevicePipeline::Metal)
+        appleGpuTopologies.insert(topologies.begin(), topologies.end());
+      if (exportingText) {
+        std::string target = *pipeline == DevicePipeline::Metal
+                                 ? std::string("applegpu")
+                                 : deviceChip(m);
+        llvm::json::Object manifest{{"target", target},
                                     {"kernels", std::move(exported)}};
         std::string text;
         llvm::raw_string_ostream os(text);
         os << llvm::formatv("{0:2}", llvm::json::Value(std::move(manifest)));
-        module->setAttr("vx.exported_ptx",
+        module->setAttr(*pipeline == DevicePipeline::Metal ? "vx.exported_msl"
+                                                           : "vx.exported_ptx",
                         StringAttr::get(&getContext(), image.bytes));
         module->setAttr("vx.exported_kernels",
                         StringAttr::get(&getContext(), text));
@@ -7999,6 +8194,45 @@ struct ConvertVxToLLVMPass
     // to translate and started silently returning 1. A gpu op the compiler did
     // not put there still reaches LLVM translation and still fails loudly,
     // which is the right outcome for something nothing here knows how to lower.
+    //
+    // An `across` loop of blocks starts at the block id and steps by the grid
+    // size, so the host workers can share its blocks: worker w of W runs blocks
+    // w, w + W, ... of axis x, and the lanes of each block in order. The other
+    // axes have one block, the first. Each launch of such a kernel says
+    // `host_blocks=1` (`vx_host_worker_count_for` in runtime/vx_host_call.h).
+    llvm::StringSet<> sharing;
+    module.walk([&](vx::KernelOp kernel) {
+      if (!kernel->hasAttr("vx.across"))
+        return;
+      bool id = false, count = false;
+      kernel.walk([&](gpu::BlockIdOp o) {
+        id |= o.getDimension() == gpu::Dimension::x;
+      });
+      kernel.walk([&](gpu::GridDimOp o) {
+        count |= o.getDimension() == gpu::Dimension::x;
+      });
+      if (id && count)
+        sharing.insert(kernel.getSymName());
+    });
+    func::FuncOp workerId, workerCount;
+    auto declareQuery = [&](StringRef name) {
+      if (auto existing = module.lookupSymbol<func::FuncOp>(name))
+        return existing;
+      OpBuilder b = OpBuilder::atBlockBegin(module.getBody());
+      auto decl =
+          func::FuncOp::create(b, UnknownLoc::get(module.getContext()), name,
+                               b.getFunctionType({}, {b.getI64Type()}));
+      decl.setPrivate();
+      return decl;
+    };
+    if (!sharing.empty()) {
+      workerId = declareQuery("vx_host_worker_id");
+      workerCount = declareQuery("vx_host_worker_count");
+      module.walk([&](vx::LaunchOp launch) {
+        if (sharing.contains(launch.getCalleeAttr().getValue()))
+          launch->setAttr("vx.host_blocks", UnitAttr::get(module.getContext()));
+      });
+    }
     getOperation().walk([&](vx::KernelOp kernel) {
       kernel.walk([&](gpu::ThreadIdOp t) {
         OpBuilder b(t);
@@ -8012,18 +8246,25 @@ struct ConvertVxToLLVMPass
         d.getResult().replaceAllUsesWith(one);
         d.erase();
       });
-      // An `across` loop of blocks: one block, the first.
+      bool share = sharing.contains(kernel.getSymName());
+      // The block id or the grid size of axis x from the worker, else `value`.
+      auto blocks = [&](OpBuilder &b, Location loc, gpu::Dimension axis,
+                        func::FuncOp query, int64_t value) -> Value {
+        if (!share || axis != gpu::Dimension::x)
+          return b.create<arith::ConstantOp>(loc, b.getIndexAttr(value));
+        Value v = func::CallOp::create(b, loc, query).getResult(0);
+        return arith::IndexCastOp::create(b, loc, b.getIndexType(), v);
+      };
       kernel.walk([&](gpu::BlockIdOp id) {
         OpBuilder b(id);
-        Value zero =
-            b.create<arith::ConstantOp>(id.getLoc(), b.getIndexAttr(0));
-        id.getResult().replaceAllUsesWith(zero);
+        id.getResult().replaceAllUsesWith(
+            blocks(b, id.getLoc(), id.getDimension(), workerId, 0));
         id.erase();
       });
       kernel.walk([&](gpu::GridDimOp d) {
         OpBuilder b(d);
-        Value one = b.create<arith::ConstantOp>(d.getLoc(), b.getIndexAttr(1));
-        d.getResult().replaceAllUsesWith(one);
+        d.getResult().replaceAllUsesWith(
+            blocks(b, d.getLoc(), d.getDimension(), workerCount, 1));
         d.erase();
       });
       kernel.walk([](gpu::BarrierOp bar) { bar.erase(); });
@@ -8081,6 +8322,7 @@ struct ConvertVxToLLVMPass
       return;
     }
     declareLocalDevices(getOperation());
+    waitBeforeReturningToC(getOperation(), appleGpuTopologies.getArrayRef());
     checkPackedTensorArguments(getOperation());
   }
 };

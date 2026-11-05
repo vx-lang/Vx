@@ -782,14 +782,25 @@ fn encode_sig_record(sig: &FnSig) -> Result<Vec<u8>, String> {
     write_type(&mut rec, &sig.ret_ty)?;
     rec.u8(sig.ret_prov);
     rec.u8(u8::from(sig.is_unsafe));
+    // The length of an `ensures valid(return, n)`: none, a parameter or a number.
+    use crate::hir::check::pointer_clauses::Length;
+    match &sig.ret_valid {
+        None | Some(Length::Other) => rec.u8(0),
+        Some(Length::Param(i)) => {
+            rec.u8(1);
+            rec.u64(*i as u64);
+        }
+        Some(Length::Constant(c)) => {
+            rec.u8(2);
+            rec.u64(*c as u64);
+        }
+    }
     Ok(rec.buf)
 }
 
 /// Decode the payload written by [`encode_sig_record`] — params, return type, provenance code. The
 /// caller reads the name/gid/receiver that precede it.
-fn read_sig_record(
-    r: &mut Reader,
-) -> Result<(Vec<crate::syntax::Type>, crate::syntax::Type, u8, bool), String> {
+fn read_sig_record(r: &mut Reader) -> Result<SigRecord, String> {
     let n_params = r.u64()? as usize;
     let mut params = Vec::new();
     for _ in 0..n_params {
@@ -798,8 +809,25 @@ fn read_sig_record(
     let ret_ty = read_type(r)?;
     let ret_prov = r.u8()?;
     let is_unsafe = r.u8()? != 0;
-    Ok((params, ret_ty, ret_prov, is_unsafe))
+    use crate::hir::check::pointer_clauses::Length;
+    let ret_valid = match r.u8()? {
+        0 => None,
+        1 => Some(Length::Param(r.u64()? as usize)),
+        2 => Some(Length::Constant(r.u64()? as i64)),
+        tag => return Err(format!("the length of a `valid` result has the tag {tag}")),
+    };
+    Ok((params, ret_ty, ret_prov, is_unsafe, ret_valid))
 }
+
+/// The payload of a signature: params, return type, provenance code, `unsafe`, and the length of
+/// an `ensures valid(return, n)`.
+type SigRecord = (
+    Vec<crate::syntax::Type>,
+    crate::syntax::Type,
+    u8,
+    bool,
+    Option<crate::hir::check::pointer_clauses::Length>,
+);
 
 /// One table's encode/skip accounting for a `serialize_registry_interface` run (#292).
 #[derive(Debug)]
@@ -1101,7 +1129,7 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
     for _ in 0..n_fns {
         let name = r.sym()?;
         let gid = r.typeid()?;
-        let (params, ret_ty, ret_prov, is_unsafe) = read_sig_record(&mut r)?;
+        let (params, ret_ty, ret_prov, is_unsafe, ret_valid) = read_sig_record(&mut r)?;
         fn_sigs.insert(
             name,
             FnSig {
@@ -1110,6 +1138,7 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
                 ret_ty,
                 ret_prov,
                 is_unsafe,
+                ret_valid,
             },
         );
     }
@@ -1120,7 +1149,7 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
         let recv = r.typeid()?;
         let name = r.sym()?;
         let gid = r.typeid()?;
-        let (params, ret_ty, ret_prov, is_unsafe) = read_sig_record(&mut r)?;
+        let (params, ret_ty, ret_prov, is_unsafe, ret_valid) = read_sig_record(&mut r)?;
         methods.insert(
             (recv, name),
             FnSig {
@@ -1129,6 +1158,7 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
                 ret_ty,
                 ret_prov,
                 is_unsafe,
+                ret_valid,
             },
         );
     }
@@ -1398,6 +1428,8 @@ mod tests {
              fn zeros() -> Tensor<f32, [?, ?]> { return zeros(); }\n\
              fn pick(a: &Point, b: &Point) -> &i32 { return &b.x; }\n\
              unsafe fn peek(p: *mut i32) -> i32 { unsafe { return *p; } }\n\
+             fn grow(p: *mut i32, n: i64) -> *mut i32 ensures valid(return, n) { return p; }\n\
+             fn four(p: *mut i32) -> *mut i32 ensures valid(return, 4) { return p; }\n\
              impl Point { fn sum(self: Point) -> i32 { return self.x + self.y; } }\n\
              trait Sq { fn sq(self: Self) -> f32; }\n\
              impl Sq for f32 { fn sq(self: f32) -> f32 { return self * self; } }\n",
@@ -1422,7 +1454,23 @@ mod tests {
                 got.is_unsafe, sig.is_unsafe,
                 "fn unsafe-ness parity for {name}"
             );
+            assert_eq!(
+                got.ret_valid, sig.ret_valid,
+                "fn valid result parity for {name}"
+            );
         }
+        // The length of `ensures valid(return, n)` comes back, as a parameter or as a number.
+        use crate::hir::check::pointer_clauses::Length;
+        assert_eq!(
+            round.resolve_fn(&Symbol::from("grow")).unwrap().ret_valid,
+            Some(Length::Param(1)),
+            "grow's result is valid for its parameter `n`"
+        );
+        assert_eq!(
+            round.resolve_fn(&Symbol::from("four")).unwrap().ret_valid,
+            Some(Length::Constant(4)),
+            "four's result is valid for 4 elements"
+        );
         // The unsafe flag carries a real value across the boundary, so an importing module can
         // refuse a call from safe code without seeing the body.
         assert!(
@@ -1627,6 +1675,7 @@ mod tests {
                 ret_ty: Type::Scalar(ElementType::I32),
                 ret_prov: 0,
                 is_unsafe: false,
+                ret_valid: None,
             },
         );
         // A tensor return whose dimension is a name belongs to a template, and `write_type`
@@ -1647,6 +1696,7 @@ mod tests {
                 ),
                 ret_prov: 0,
                 is_unsafe: false,
+                ret_valid: None,
             },
         );
 

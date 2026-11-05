@@ -376,11 +376,29 @@ impl FnEmit<'_> {
             .ok_or(crate::emitter_gap!())?
             .clone()
             .ok_or(crate::emitter_gap!())?;
-        let val = self
+        let mut val = self
             .names
             .get(ins.operand2.0 as usize)
             .ok_or(crate::emitter_gap!())?
             .clone();
+        // A struct literal (`t[1] = Pair { .. }`) is a stack slot. Load the struct from it
+        // first. A place that holds a pointer stores the slot's address itself.
+        let slot_gid = self.agg_of.get(ins.operand2.0 as usize).copied().flatten();
+        if let (Some(gid), false) = (slot_gid, et == "!llvm.ptr") {
+            let struct_ty = &self
+                .ctx
+                .aggs
+                .get(&gid)
+                .ok_or(crate::emitter_gap!())?
+                .struct_ty;
+            assert_eq!(
+                *struct_ty, et,
+                "a struct stored through a pointer has the pointer's element type"
+            );
+            let loaded = format!("%ps{idx}");
+            self.body += &format!("  {loaded} = llvm.load {val} : !llvm.ptr -> {et}\n");
+            val = loaded;
+        }
         // A write in the first `n` elements of a `requires !overlaps(p, q, n)` pointer.
         let attrs = self
             .alias_scope_of

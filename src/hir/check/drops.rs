@@ -1213,9 +1213,19 @@ impl<'a> TypeChecker<'a> {
             }
             return;
         }
-        if let Some(FrameKind::Block { stmt, edits, .. }) =
-            self.borrow.drops.frames.get_mut(top - 1)
-        {
+        // A move in a task happens at its `spawn`, so the flag is set after the `spawn`, in the
+        // block around it. In the task the flag would be set too late, or not at all when the
+        // move is in the task's last value, which is checked after the task's block closes.
+        let first_task =
+            (k + 1..top).find(|&i| matches!(self.borrow.drops.frames[i], FrameKind::Task));
+        let at = match first_task {
+            Some(t) => (k..t)
+                .rev()
+                .find(|&i| matches!(self.borrow.drops.frames[i], FrameKind::Block { .. }))
+                .expect("the owner's block is below the task"),
+            None => top - 1,
+        };
+        if let Some(FrameKind::Block { stmt, edits, .. }) = self.borrow.drops.frames.get_mut(at) {
             edits
                 .after
                 .entry(*stmt)

@@ -25,12 +25,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // The same shape again, with a warning added: it states that a program checked by both
     // frontends has its warnings reported once, which needs a program that declines.
     "frontend/pass/jobs_warns_once_when_it_falls_back.vx",
-    // A parameter with run-time extents (Vx#409). It used to compile through the flat path
-    // while the dims-less spelling let it read as rank-0: `topology.vx` got a `memref<f32>`
-    // signature where the AST oracle gives `memref<?x?xf32>`, two ABIs for one function, plus
-    // a dropped vx.transfer. Declining is the honest answer until the flat lowerer carries
-    // run-time extents.
-    "warnings/pass/lowering_declined_for_dynamic_tile.vx",
 ];
 
 /// Every `.vx` file under `dir`, recursively, sorted for a stable report.
@@ -190,6 +184,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/across_loops_run_in_order_on_the_cpu.vx",         // needs --machine
             "optimizations/pass/atomic_adds_in_across_loops.vx",                  // needs --machine
             "optimizations/pass/functions_generic_over_memory.vx",                // needs --machine
+            "optimizations/pass/functions_that_run_where_they_are_called.vx",     // needs --machine
             "optimizations/pass/element_atomics_in_across_loops.vx",              // needs --machine
             "optimizations/pass/float_atomics_in_across_loops.vx",                // needs --machine
             "optimizations/pass/scoped_fences_in_across_loops.vx",                // needs --machine
@@ -226,6 +221,16 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/an_across_loop_whose_index_wraps_stops_at_the_launch.vx",
             // needs --machine
             "optimizations/pass/two_tensors_in_a_gpu_kernel_share_local_memory.vx",
+            // needs --machine
+            "optimizations/pass/apple_gpu_kernels_in_metal_shading_language.vx",
+            // needs --machine
+            "optimizations/pass/the_cpu_workers_share_the_blocks_of_an_across_loop.vx",
+            // needs --machine
+            "optimizations/pass/the_cpu_copy_of_an_apple_gpu_kernel_flushes_subnormals.vx",
+            // needs --machine
+            "optimizations/pass/a_library_for_the_apple_gpu_waits_before_it_returns.vx",
+            // needs --machine
+            "optimizations/pass/pub_fns_in_a_program_for_the_apple_gpu_return_without_a_wait.vx",
         ];
         if NOT_STANDALONE.contains(&name.as_str()) {
             continue;

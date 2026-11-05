@@ -9,6 +9,7 @@
 #include <cstring>
 #include <ffi/ffi.h>
 #include <iostream>
+#include <malloc/malloc.h>
 #include <vector>
 
 /// Whether to narrate what the dispatcher is doing.
@@ -568,6 +569,22 @@ extern "C" int vx_dispatch_ane_affine(float *out, float *x, float alpha,
 extern "C" {
 #include <dlfcn.h>
 
+int vx_metal_dispatch(const void *payload, size_t payload_size,
+                      void **device_args, const int32_t *arg_tags,
+                      int64_t num_args);
+
+// Waits for Apple GPU launches that are still open (runtime/metal_dispatch.mm).
+// Each entry point below that can touch the memory of a kernel waits first.
+// It waits only for the launches that write the memory it reads, or use the
+// memory it writes.
+void vx_metal_wait(void);
+void vx_metal_wait_for_memory(const void *start, size_t bytes, int written);
+void vx_metal_wait_for_tensors(void **args, const int32_t *tags, int64_t count);
+void vx_metal_wait_for_thread(void);
+void vx_metal_wait_for_launch(const void *payload, size_t payload_size,
+                              void **device_args, const int32_t *arg_tags,
+                              int64_t num_args);
+
 // `space_access` is accepted and ignored: the Neural Engine's staging is host
 // memory this process can read, so a model claiming the host may read it is
 // telling the truth. Only a backend handing out memory the host cannot read has
@@ -605,6 +622,15 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
                                              const int32_t *arg_tags,
                                              int64_t num_args) {
   const char *kernel_name = (const char *)binary_payload;
+  const char *format =
+      vx_payload_field(binary_payload, payload_size, "format=");
+  const bool msl = format && strcmp(format, "msl") == 0;
+  // A launch that does not go to this Mac's GPU can read what an open GPU
+  // launch writes.
+  if (!msl || vx_routing_worker_for_payload(binary_payload, payload_size)) {
+    vx_metal_wait_for_launch(binary_payload, payload_size, device_args,
+                             arg_tags, num_args);
+  }
 
   // Before anything local: does this placement name another machine?
   if (vx_routing_try_dispatch(binary_payload, payload_size, device_args,
@@ -618,6 +644,20 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
   std::string kernel_str(kernel_name);
   assert(kernel_str.find("vx_npu_kernel_") == 0 &&
          "Expected kernel name to start with vx_npu_kernel_");
+
+  // A kernel that vxc compiled for the Apple GPU runs there
+  // (runtime/metal_dispatch.mm). With the GPU turned off, the host copy below
+  // runs instead.
+  if (msl) {
+    if (vx_metal_dispatch(binary_payload, payload_size, device_args, arg_tags,
+                          num_args)) {
+      return 1;
+    }
+    // The GPU is off for this thread, so the host copy runs on memory that
+    // an open GPU launch can write.
+    vx_metal_wait_for_launch(binary_payload, payload_size, device_args,
+                             arg_tags, num_args);
+  }
 
   // A matmul the compiler recognised says so, and says which argument is which
   // (#325). That replaces what stood here: collect every memref argument, take
@@ -742,9 +782,11 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
   }
 
 #ifdef VX_ENABLE_CPU_FALLBACK
+  int workers = vx_host_worker_count_for(binary_payload, payload_size,
+                                         device_args, arg_tags, num_args);
   VX_NPU_LOG("[Vx Dispatcher] Hardware backend unsupported for %s. Falling "
-             "back to CPU libffi dispatch!\n",
-             kernel_name);
+             "back to CPU libffi dispatch on %d worker%s!\n",
+             kernel_name, workers, workers == 1 ? "" : "s");
 
   // Both failures below mean the kernel did not run. Neither is recoverable:
   // the buffer the caller expected to be filled holds whatever it held before,
@@ -759,7 +801,9 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
     abort();
   }
 
-  if (!vx_host_call_kernel(kernel, device_args, arg_tags, num_args)) {
+  if (!vx_host_call_kernel(
+          kernel, device_args, arg_tags, num_args, workers,
+          vx_host_flushes_subnormals(binary_payload, payload_size))) {
     fprintf(stderr, "[Vx Dispatcher] FATAL: could not build a call for %s\n",
             kernel_name);
     abort();
@@ -776,17 +820,21 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
 
 uint64_t vx_plugin_dispatch_async_flat(float *xout, float *x, float *w, int n,
                                        int d) {
+  vx_metal_wait();
   // Dispatch to Apple Neural Engine payload executor
   vx_dispatch_ane(xout, x, w, n, d);
   return 1;
 }
 
 void vx_plugin_await_future(uint64_t future_id) {
-  // Dummy synchronous implementation, so we don't need to block
+  (void)future_id;
+  vx_metal_wait();
 }
 
 int32_t vx_plugin_transfer_device_to_host(void *device_ptr, void *host_ptr,
                                           size_t bytes, uint32_t topology_id) {
+  vx_metal_wait_for_memory(device_ptr, bytes, 0);
+  vx_metal_wait_for_memory(host_ptr, bytes, 1);
   if (vx_routing_try_fetch(device_ptr, host_ptr, bytes, topology_id)) {
     return 1;
   }
@@ -800,6 +848,7 @@ int32_t vx_plugin_transfer_device_to_host(void *device_ptr, void *host_ptr,
 
 void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
                               uint32_t dst_topology_id, size_t bytes) {
+  vx_metal_wait_for_memory(src_device_ptr, bytes, 0);
   void *routed = nullptr;
   if (vx_routing_try_peer(src_device_ptr, src_topology_id, dst_topology_id,
                           bytes, &routed)) {
@@ -820,6 +869,14 @@ void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
 }
 
 void vx_plugin_free(void *device_ptr, uint32_t topology_id) {
+  // A handle of another machine is not memory of this process, and has no
+  // size here.
+  const size_t bytes = device_ptr ? malloc_size(device_ptr) : 0;
+  if (bytes) {
+    vx_metal_wait_for_memory(device_ptr, bytes, 1);
+  } else if (device_ptr) {
+    vx_metal_wait();
+  }
   if (vx_routing_try_free(device_ptr, topology_id)) {
     return;
   }
@@ -857,12 +914,42 @@ void vx_plugin_release_future(uint64_t future_id) {
   // No-op for dummy implementation
 }
 
+/// No tensor maps without a CUDA GPU: the CPU copy of a kernel never reads the
+/// map.
+int64_t vx_plugin_tensor_map(int64_t base, int64_t rank, int64_t elem_bytes,
+                             int64_t d0, int64_t d1, int64_t d2, int64_t d3,
+                             int64_t d4, int64_t s0, int64_t s1, int64_t s2,
+                             int64_t s3, int64_t s4, int64_t b0, int64_t b1,
+                             int64_t b2, int64_t b3, int64_t b4) {
+  (void)base, (void)rank, (void)elem_bytes, (void)d0, (void)d1, (void)d2;
+  (void)d3, (void)d4, (void)s0, (void)s1, (void)s2, (void)s3, (void)s4;
+  (void)b0, (void)b1, (void)b2, (void)b3, (void)b4;
+  return 0;
+}
+
 int32_t vx_plugin_control(uint32_t opcode, void *payload) {
   if (opcode == VX_CTRL_GET_DEVICE_COUNT) {
     return 1; // One Apple NPE device available
+  }
+  if (opcode == VX_CTRL_WAIT) {
+    vx_metal_wait();
+    return 1;
+  }
+  if (opcode == VX_CTRL_WAIT_FOR_TENSORS) {
+    const vx_wait_for_tensors *tensors =
+        static_cast<const vx_wait_for_tensors *>(payload);
+    vx_metal_wait_for_tensors(tensors->args, tensors->tags, tensors->count);
+    return 1;
+  }
+  if (opcode == VX_CTRL_WAIT_FOR_THREAD) {
+    vx_metal_wait_for_thread();
+    return 1;
   }
   return 0;
 }
 }
 
+#define VX_COLLECTIVE_CPU_BEFORE_COPY(input, output, bytes)                    \
+  (vx_metal_wait_for_memory(input, bytes, 0),                                  \
+   vx_metal_wait_for_memory(output, bytes, 1))
 #include "vx_collective_cpu.h"
