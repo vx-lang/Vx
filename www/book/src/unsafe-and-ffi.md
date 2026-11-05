@@ -182,10 +182,11 @@ fn main() -> i32 {
 From a `spawn` until its `join()` or the end of its `tasks` block, the task can free memory, so
 no fact about other memory starts in that time.
 
-In an `unsafe fn`, for `valid(p, n)` the compiler tells LLVM that `p` is not null and aligned,
-and that `n` elements at `p` can be read. For `!overlaps(p, q, n)` it tells LLVM that an access
-`p[i]` does not alias an access `q[i]`, where `i` is the variable of a `for i in 0..n` loop. A
-clause that does not hold is undefined behavior, as a wrong `*p` is.
+For `requires valid(p, n)`, the compiler tells LLVM that `p` is not null and aligned, and that
+`n` elements at `p` can be read. For `requires !overlaps(p, q, n)`, it tells LLVM that an access
+`p[i]` does not alias an access `q[i]`, where `i` is the variable of a `for i in 0..n` loop. After
+each call of a function with `ensures valid(return, n)`, it tells LLVM that `n` elements at the
+result can be read. A clause that does not hold is undefined behavior, as a wrong `*p` is.
 
 ## Calling C
 

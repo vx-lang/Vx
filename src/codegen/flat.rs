@@ -673,6 +673,9 @@ pub struct Callee {
     /// The memref spelling of each tensor parameter, by value or by reference; `None` for any
     /// other parameter. A row passed in is a strided view, and is cast to this at the call.
     pub param_tensors: Vec<Option<String>>,
+    /// For `ensures valid(return, n)`: the length `n` and the size of an element in bytes. After
+    /// the call, an `llvm.intr.assume` says that `n` elements at the result can be read.
+    pub ret_valid: Option<(crate::hir::check::pointer_clauses::Length, u64)>,
 }
 
 /// GID → callee: the reverse of the registry's name-keyed `fn_sigs`. A `Call`'s `type_idx` resolves
@@ -817,6 +820,10 @@ pub fn build_callee_map(
                         other => tensor_memref_of_type(other),
                     })
                     .collect(),
+                ret_valid: match &sig.ret_ty {
+                    Type::Pointer(inner, ..) => sig.ret_valid.clone().zip(scalar_bytes(inner)),
+                    _ => None,
+                },
             },
         )
     };
@@ -2725,7 +2732,8 @@ pub fn emit_function_mlir(
     if let Some((slot, memty)) = &ret_slot {
         params.push(format!("{slot}: {memty}"));
     }
-    // `requires valid(p, n)` on an `unsafe fn`, whose callers keep the promise in `unsafe` code.
+    // `requires valid(p, n)`: a call in safe code proves it, and the author of `unsafe` code keeps
+    // the promise.
     let valid = crate::hir::check::pointer_clauses::valid_params(func);
     for (i, (_, ty)) in func.params.iter().enumerate() {
         // Signature-position MLIR type: scalar, payload-free enum `i32`, `!llvm.ptr` (pointer /

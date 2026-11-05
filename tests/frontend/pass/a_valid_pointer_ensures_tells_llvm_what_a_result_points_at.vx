@@ -1,0 +1,93 @@
+//===- a_valid_pointer_ensures_tells_llvm_what_a_result_points_at.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `ensures valid(return, n)` says that the result points at `n` elements. After each call, the
+// code generator tells LLVM so, with an `llvm.intr.assume` that `n` times the element size bytes
+// at the result can be read. A length that is a number works too, and a length that is an `i32` is
+// widened first. A safe function with `requires valid(p, n)` gets the same attributes and assume
+// as an `unsafe fn`, because each call in safe code proves the clause.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR
+// RUN: vxc %s 2>&1 | FileCheck %s --check-prefix=EXEC --implicit-check-not=Error
+//
+// MLIR-LABEL: func.func @main
+// MLIR: %[[N:.*]] = arith.constant 4 : i64
+// MLIR-NEXT: %[[P:.*]] = call @alloc_i64(%[[N]]) : (i64) -> !llvm.ptr
+// MLIR: %[[SIZE:.*]] = arith.constant 8 : i64
+// MLIR-NEXT: %[[BYTES:.*]] = arith.muli %[[N]], %[[SIZE]] : i64
+// MLIR-NEXT: llvm.intr.assume %{{.*}} ["dereferenceable"(%[[P]], %[[BYTES]] : !llvm.ptr, i64)] : i1
+// MLIR: %[[ONE:.*]] = call @one_i64() : () -> !llvm.ptr
+// MLIR: llvm.intr.assume %{{.*}} ["dereferenceable"(%[[ONE]], %{{.*}} : !llvm.ptr, i64)] : i1
+// MLIR: %[[W:.*]] = call @alloc_i32(%{{.*}}) : (i32) -> !llvm.ptr
+// MLIR: arith.extsi %{{.*}} : i32 to i64
+// MLIR: llvm.intr.assume %{{.*}} ["dereferenceable"(%[[W]], %{{.*}} : !llvm.ptr, i64)] : i1
+//
+// MLIR-LABEL: func.func @first(%arg0: !llvm.ptr {llvm.align = 8 : i64, llvm.nonnull}, %arg1: i64) -> i64
+// MLIR: llvm.intr.assume %{{.*}} ["dereferenceable"(%arg0, %{{.*}} : !llvm.ptr, i64)] : i1
+//
+// EXEC: {{^}}first=7; one=1; small=2;{{$}}
+
+import core::convert;
+import core::ptr;
+import std::alloc;
+
+fn alloc_i64(n : i64) -> *mut i64
+requires n > 0i64
+ensures valid(return, n)
+{
+  let p : *mut i64 = alloc(n * 8i64, 16i64);
+  if is_null_mut(p) {
+    panic("out of memory");
+  }
+  unsafe { assume valid(p, n); }
+  return p;
+}
+
+fn one_i64() -> *mut i64
+ensures valid(return, 1i64)
+{
+  return alloc_i64(1i64);
+}
+
+fn alloc_i32(n : i32) -> *mut i32
+requires n > 0i32
+ensures valid(return, n)
+{
+  let p : *mut i32 = alloc(i64::from(n) * 4i64, 16i64);
+  if is_null_mut(p) {
+    panic("out of memory");
+  }
+  unsafe { assume valid(p, n); }
+  return p;
+}
+
+fn first(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+requires n > 0i64
+{
+  return unsafe { p[0] };
+}
+
+fn main() -> i32 {
+  let n = 4i64;
+  let p = alloc_i64(n);
+  let q = one_i64();
+  let w = alloc_i32(2i32);
+  unsafe { p[0] = 7i64; assume initialized(p, n); q[0] = 1i64; w[1] = 2i32; }
+  let x = first(p as *const i64, n);
+  let y = unsafe { q[0] };
+  let z = unsafe { w[1] };
+  let a : *mut i8 = p;
+  dealloc(a, 16i64);
+  let b : *mut i8 = q;
+  dealloc(b, 16i64);
+  let c : *mut i8 = w;
+  dealloc(c, 16i64);
+  println!("first={}; one={}; small={};", x, y, z);
+  return 0;
+}
