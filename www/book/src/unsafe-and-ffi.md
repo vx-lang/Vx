@@ -221,6 +221,16 @@ For `requires valid(p, n)`, the compiler tells LLVM that `p` is not null and ali
 each call of a function with `ensures valid(return, n)`, it tells LLVM that `n` elements at the
 result can be read. A clause that does not hold is undefined behavior, as a wrong `*p` is.
 
+`vxc --audit program.vx` prints each fact that the compiler trusts without a proof, one line each:
+
+- each `assume`
+- each pointer clause that a call in `unsafe` code trusts, because the compiler cannot prove it
+- each `ensures` of an `extern` function
+- each pointer `requires` of a `pub fn`, because a call from C proves nothing
+
+Each line starts with the file, the line and the column, and the lines are in that order. So a
+review can compare the audit of two versions of a program.
+
 ## Calling C
 
 An `extern` block declares functions that exist outside Vx.

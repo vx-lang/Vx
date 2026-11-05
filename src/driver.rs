@@ -52,6 +52,10 @@ pub enum Action {
     /// Write the program's Apple GPU kernels as one Metal Shading Language file, and a `.json`
     /// file beside it that gives each kernel's parameters
     EmitMsl,
+    /// Parse and typecheck the program, then print each fact that the compiler trusts without a
+    /// proof: each `assume`, each pointer clause that a call in `unsafe` code trusts, each
+    /// `ensures` of an `extern` function, and each pointer `requires` of a `pub fn`
+    Audit,
 }
 
 /// What `vxc --version` prints after the name: the package version, then the commit the
@@ -63,7 +67,7 @@ pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), vx_build_commit::co
 pub struct DriverOptions {
     /// Action to perform
     #[arg(short = 'a', long = "action", value_enum, default_value_t = Action::RunJit)]
-    #[arg(overrides_with_all = ["compile", "parse_only", "print_ast", "emit_mlir", "emit_llvm", "run_jit", "emit_interface", "emit_ptx", "emit_msl"])]
+    #[arg(overrides_with_all = ["compile", "parse_only", "print_ast", "emit_mlir", "emit_llvm", "run_jit", "emit_interface", "emit_ptx", "emit_msl", "audit"])]
     pub action: Action,
 
     /// Output file. With several inputs, a directory that receives one output per input
@@ -106,6 +110,10 @@ pub struct DriverOptions {
     /// Write the Apple GPU kernels as Metal Shading Language (alias for --action emit-msl)
     #[arg(long = "emit-msl", overrides_with = "action")]
     pub emit_msl: bool,
+
+    /// Print the facts that the compiler trusts without a proof (alias for --action audit)
+    #[arg(long = "audit", overrides_with = "action")]
+    pub audit: bool,
 
     /// Link a precompiled `.vxlib` module interface: its function signatures resolve imported calls in
     /// the frontend (type + borrow check, incl. cross-module return provenance) and its portable
@@ -356,6 +364,8 @@ impl CompilerDriver {
             options.action = Action::EmitPtx;
         } else if options.emit_msl {
             options.action = Action::EmitMsl;
+        } else if options.audit {
+            options.action = Action::Audit;
         } else if options.compile {
             options.action = Action::EmitObj;
         }
@@ -741,6 +751,9 @@ impl CompilerDriver {
 
         if self.options.action == Action::PrintAst {
             AstPrinter::print_program(&main_ast, &mut std::io::stdout()).unwrap();
+            return Ok(());
+        }
+        if self.options.action == Action::Audit {
             return Ok(());
         }
 
@@ -1139,6 +1152,9 @@ impl CompilerDriver {
         if self.options.print_borrow_clauses {
             checker.print_borrow_clauses = ast.file.clone();
         }
+        if self.options.action == Action::Audit {
+            checker.trusted = Some(std::collections::BTreeSet::new());
+        }
 
         // The checks that look at the whole program's declarations at once can only name a
         // file when the program is one file; a `--host default` module was read from none.
@@ -1361,6 +1377,15 @@ impl CompilerDriver {
                 "Semantic check failed on '{}': {} error(s) emitted",
                 filename, error_count
             ));
+        }
+
+        if let Some(mut trusted) = checker.trusted.take() {
+            for p in std::iter::once(&*ast).chain(other_asts.values()) {
+                trusted.extend(crate::hir::check::audit::trusted_declarations(p));
+            }
+            for item in &trusted {
+                println!("{item}");
+            }
         }
 
         let mut orig_functions = ast.functions.clone();

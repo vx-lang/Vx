@@ -608,6 +608,9 @@ pub struct TypeChecker<'a> {
     /// `vxc --print-borrow-clauses`: print the borrow clauses that the checker can prove for each
     /// function of this file.
     pub print_borrow_clauses: Option<crate::symbol::Symbol>,
+    /// `vxc --audit`: the facts that the bodies trust without a proof. `None` when the action is
+    /// not the audit.
+    pub trusted: Option<std::collections::BTreeSet<crate::hir::check::audit::Trusted>>,
     /// The E4016 errors given so far, by where and what, so that a body checked twice gives one.
     pub(crate) borrow_clause_errors: std::collections::HashSet<(Span, String)>,
     pub errors: crate::diagnostic::DiagnosticsVec,
@@ -782,6 +785,7 @@ impl<'a> TypeChecker<'a> {
             unsafe_op_seen: false,
             allow_cross_topology: false,
             print_borrow_clauses: None,
+            trusted: None,
             borrow_clause_errors: std::collections::HashSet::new(),
             active_topology: Topology::CPU,
             active_memory,

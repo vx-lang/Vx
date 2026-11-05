@@ -13,6 +13,7 @@
 | `--print-ast` | Parse and typecheck, then print the AST |
 | `--parse-only` | Lex and parse only |
 | `--emit-interface` | Serialize this module's import interface to a `.vxlib` |
+| `--audit` | Parse and typecheck, then print each fact that the compiler trusts without a proof |
 
 ```bash
 vxc --run program.vx
