@@ -43,11 +43,17 @@
 // refused outright. Neither is a guess dressed up as a fallback: the format key
 // exists to tell the two apart, and guessing is what it is there to prevent.
 //
+// The rest of the ABI. A collective is a copy and a job is one rank (there is
+// one GPU here and no library that joins several), and the count of a kernel
+// with code after its blocks is kept between launches -- both as on a CPU
+// backend, so a program that uses them links and runs the same way here.
+//
 // Built only when the oneAPI toolchain is present; the no-SDK build is
 // unchanged (build.rs).
 //
 //===----------------------------------------------------------------------===//
 
+#include "vx_arrival_counts.h"
 #include "vx_dispatch_plan.h"
 #include "vx_host_call.h"
 #include "vx_kernel_launch.h"
@@ -196,6 +202,36 @@ bool is_device_ptr(const void *ptr) {
 /// Whether a pointer is any USM allocation of this library's, device, shared or
 /// host -- which is what decides whether a `queue::memcpy` can name it at all.
 bool is_usm(const void *ptr) { return usm_type(ptr) != ZE_MEMORY_TYPE_UNKNOWN; }
+
+/// Runs before the one-rank collective of `vx_collective_cpu.h` copies its
+/// input to its output. A launch here waits before it returns, so the tensors
+/// the GPU wrote are finished, and this normally has nothing to wait for.
+///
+/// The copy is made by the host. Every allocation in the GPU band is shared
+/// USM, which the host may read, so the copy is always possible; a device-only
+/// one would not be, and says so instead of reading memory it cannot read.
+void xpu_collective_before_copy(const void *input, const void *output,
+                                size_t bytes) {
+  (void)bytes;
+  if (!xpu_available()) {
+    return;
+  }
+  try {
+    xpu_queue().wait();
+  } catch (const sycl::exception &e) {
+    fprintf(stderr,
+            "[Vx XPU] FATAL: a collective could not wait for the device: %s\n",
+            e.what());
+    abort();
+  }
+  if (is_device_ptr(input) || is_device_ptr(output)) {
+    fprintf(stderr,
+            "[Vx XPU] FATAL: a collective got device memory the host cannot "
+            "read,\n          and a job of one rank is a copy the host makes. "
+            "A collective needs shared USM.\n");
+    abort();
+  }
+}
 
 /// Copy host bytes into memory on the device.
 ///
@@ -1058,6 +1094,61 @@ void vx_plugin_free(void *device_ptr, uint32_t topology_id) {
 
 void vx_plugin_release_future(uint64_t future_id) { (void)future_id; }
 
+/// No tensor maps without a CUDA GPU: only a kernel compiled for `sm_90a` or a
+/// later chip is handed one, and this library loads SPIR-V images, so it never
+/// receives such a kernel. A kernel it cannot load runs on the host, and the
+/// host copy of the kernel never reads a map.
+int64_t vx_plugin_tensor_map(int64_t base, int64_t rank, int64_t elem_bytes,
+                             int64_t d0, int64_t d1, int64_t d2, int64_t d3,
+                             int64_t d4, int64_t s0, int64_t s1, int64_t s2,
+                             int64_t s3, int64_t s4, int64_t b0, int64_t b1,
+                             int64_t b2, int64_t b3, int64_t b4) {
+  (void)base, (void)rank, (void)elem_bytes, (void)d0, (void)d1, (void)d2;
+  (void)d3, (void)d4, (void)s0, (void)s1, (void)s2, (void)s3, (void)s4;
+  (void)b0, (void)b1, (void)b2, (void)b3, (void)b4;
+  return 0;
+}
+
+/// `vx_cuda_set_stream` selects a CUDA stream for the calls of the calling
+/// thread. This library has no CUDA stream: its launches go on one queue and
+/// wait before they return, so there is nothing to select and null is the
+/// answer that says so. The pair is here so that a host program links on every
+/// build, for the same reason the CPU backends carry it (#1986).
+void vx_cuda_set_stream(void *stream) { (void)stream; }
+void *vx_cuda_get_stream(void) { return nullptr; }
+
+/// The counts that no launch is using, one for each `spawn` site. A kept count
+/// is 0 -- the last pass of a launch sets it back -- so a kernel with code
+/// after its blocks allocates once rather than once per launch.
+static vx::ArrivalCounts &arrival_counts() {
+  static vx::ArrivalCounts counts;
+  return counts;
+}
+
+void *vx_plugin_arrivals_take(const void *site, size_t bytes, void *zeros,
+                              uint32_t topology_id, uint32_t space_access) {
+  /* The launch that uses this count goes on the one queue, and a launch waits
+     before it returns, so a count given back is free by the time the next
+     launch of the same site takes it. */
+  if (void *kept = arrival_counts().take(site, topology_id, nullptr, bytes)) {
+    return kept;
+  }
+  return vx_plugin_alloc_and_transfer(bytes, zeros, topology_id, space_access);
+}
+
+void vx_plugin_arrivals_give(const void *site, void *count, size_t bytes,
+                             uint32_t topology_id) {
+  // Keep only a count in this process. A count on a worker of the fleet is the
+  // worker's memory, which this process can neither keep nor free.
+  void *spare =
+      vx_routing_worker((int32_t)topology_id)
+          ? count
+          : arrival_counts().give(site, topology_id, nullptr, count, bytes);
+  if (spare) {
+    vx_plugin_free(spare, topology_id);
+  }
+}
+
 int32_t vx_plugin_control(uint32_t opcode, void *payload) {
   (void)payload;
   switch (opcode) {
@@ -1073,3 +1164,12 @@ int32_t vx_plugin_control(uint32_t opcode, void *payload) {
 }
 
 } // extern "C"
+
+/* The collectives of docs/lang/abi.md section 3.7. This library serves one GPU
+   and links no library that joins several ranks, so a job here is one rank and
+   each collective is a copy -- the answer a CPU backend gives, and the one the
+   Apple backend gives. A program that asks for more ranks is refused there
+   rather than being run with the wrong arithmetic. */
+#define VX_COLLECTIVE_CPU_BEFORE_COPY(input, output, bytes)                    \
+  xpu_collective_before_copy((input), (output), (bytes))
+#include "vx_collective_cpu.h"

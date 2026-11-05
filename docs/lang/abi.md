@@ -389,8 +389,9 @@ forms.
 - **Memory.** The tensors must be in GPU memory.
 - **Stream and graphs.** A collective goes on the stream from `vx_cuda_set_stream` (§3.6),
   with Vx's kernels, so a CUDA graph can record it. Call `init` before the recording.
-- **No GPU.** A CPU backend, or the CUDA backend on a machine with no GPU, runs a job of one
-  rank only. There, each collective copies `in` to `out`.
+- **One rank.** A backend with no library that joins several ranks runs a job of one rank
+  only: the CPU backends, the CUDA backend on a machine with no GPU, the Intel GPU backend,
+  and the Apple one. There, each collective copies `in` to `out`.
 
 ### 3.8 Calling a Vx function that launches Apple GPU kernels
 
