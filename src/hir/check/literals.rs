@@ -274,27 +274,31 @@ impl<'a> TypeChecker<'a> {
     /// does not. A `usize` never has its top bit set, which is what lets its arithmetic be
     /// marked as never wrapping.
     pub(crate) fn check_integer_literals_fit(&mut self, body: &[Statement]) {
-        let mut found: Vec<(String, ElementType, Span)> = Vec::new();
+        // The value to test, the literal as written for the message, its type, and where it is.
+        let mut found: Vec<(String, String, ElementType, Span)> = Vec::new();
         let mut negated: std::collections::HashSet<*const NumberExpr> = Default::default();
+        let written = |n: &NumberExpr| n.written.as_ref().map_or(&n.value, |w| &w.text).to_string();
         crate::syntax::visit_exprs(body, &mut |e| match e {
             Expr::UnaryOp(u) if u.op == UnaryOp::Neg => {
                 if let Expr::Number(n) = &*u.expr {
                     negated.insert(n as *const NumberExpr);
                     // `-` on a `usize` has its own error, E3030.
                     if let Some(ty) = n.ty.as_ref().filter(|t| **t != ElementType::USize) {
-                        found.push((format!("-{}", n.value), ty.clone(), u.span));
+                        let value = format!("-{}", n.value);
+                        found.push((value, format!("-{}", written(n)), ty.clone(), u.span));
                     }
                 }
             }
             Expr::Number(n) if !negated.contains(&(n as *const NumberExpr)) => {
                 if let Some(ty) = &n.ty {
-                    found.push((n.value.to_string(), ty.clone(), n.span));
+                    let at = n.written.as_ref().map_or(n.span, |w| w.span);
+                    found.push((n.value.to_string(), written(n), ty.clone(), at));
                 }
             }
             _ => {}
         });
-        for (text, ty, span) in found {
-            if ty.accepts_integer_literal(&text) != Some(false) {
+        for (value, text, ty, span) in found {
+            if ty.accepts_integer_literal(&value) != Some(false) {
                 continue;
             }
             let message = if ty == ElementType::USize {
@@ -305,8 +309,7 @@ impl<'a> TypeChecker<'a> {
             } else {
                 format!("{text} does not fit `{ty}`")
             };
-            // A number literal has no span of its own: spans take part in comparing types,
-            // and a literal is also a tensor dimension. The `-` before one has a span.
+            // A literal the compiler made has no position.
             let at = (span != Span::default())
                 .then(|| crate::diagnostic::SourceSpan::from_ast_span(&span));
             self.errors

@@ -2443,6 +2443,7 @@ impl<'a> TypeChecker<'a> {
     ) -> Option<Value> {
         match expr {
             Expr::Number(NumberExpr {
+                written: _,
                 value: n_str,
                 ty,
                 span: _,

@@ -2173,6 +2173,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
                 // A topology index is a compile-time dimension, stamped to its default type at
                 // parse time (#240) rather than left untyped like a value-position literal.
                 Topology::NPU(Box::new(Expr::Number(NumberExpr {
+                    written: None,
                     value: "0".to_string().into(),
                     ty: Some(ElementType::I32),
                     span: Span::default()
@@ -2373,6 +2374,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
                 assert_eq!(
                     **start,
                     Expr::Number(NumberExpr {
+                        written: None,
                         value: "0".to_string().into(),
                         ty: None,
                         span: Span::default()
@@ -2381,6 +2383,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
                 assert_eq!(
                     **end,
                     Expr::Number(NumberExpr {
+                        written: None,
                         value: "10".to_string().into(),
                         ty: None,
                         span: Span::default()

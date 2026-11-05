@@ -353,6 +353,7 @@ fn result_name(at: Span) -> Expr {
 
 fn zero() -> Expr {
     Expr::Number(NumberExpr {
+        written: None,
         value: "0".to_string().into(),
         ty: None,
         span: Span::default(),
@@ -361,6 +362,7 @@ fn zero() -> Expr {
 
 fn one() -> Expr {
     Expr::Number(NumberExpr {
+        written: None,
         value: "1".to_string().into(),
         ty: None,
         span: Span::default(),

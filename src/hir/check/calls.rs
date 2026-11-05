@@ -1846,6 +1846,7 @@ impl<'a> TypeChecker<'a> {
         for d in dims {
             if let Some(v) = self.extent_value(d) {
                 *d = Expr::Number(NumberExpr {
+                    written: None,
                     value: v.to_string().into(),
                     ty: None,
                     span: d.span(),
@@ -1871,6 +1872,7 @@ impl<'a> TypeChecker<'a> {
                 if !self.env.structs.contains_key(name) && !self.env.enums.contains_key(name) {
                     if let Some(v) = self.const_int(name) {
                         *arg = Type::Const(Box::new(Expr::Number(NumberExpr {
+                            written: None,
                             value: v.to_string().into(),
                             ty: None,
                             span: Span::default(),
@@ -1896,6 +1898,7 @@ impl<'a> TypeChecker<'a> {
                 continue;
             };
             **expr = Expr::Number(NumberExpr {
+                written: None,
                 value: value.into(),
                 ty: None,
                 span: Span::default(),
@@ -4459,6 +4462,7 @@ impl<'a> TypeChecker<'a> {
                     let empty_env = HashMap::new();
                     let mut new_dims = vec![
                         Dim::Static(Expr::Number(NumberExpr {
+                            written: None,
                             value: "0".into(),
                             ty: Some(ElementType::I32),
                             span: Span::default()

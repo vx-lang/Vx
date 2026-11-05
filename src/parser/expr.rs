@@ -25,30 +25,7 @@ use super::*;
 /// the spellings, so everything after the parser keeps reading a literal with `str::parse`.
 /// The formatter never sees this: it prints tokens, so the file keeps the spelling it had.
 pub(crate) fn infer_number_literal(s: &str) -> Result<(String, Option<ElementType>), String> {
-    let (base, prefix) = match s.as_bytes() {
-        [b'0', b'x', ..] => (16, "0x"),
-        [b'0', b'o', ..] => (8, "0o"),
-        [b'0', b'b', ..] => (2, "0b"),
-        _ => (10, ""),
-    };
-    // `0bf16` is zero as a `bf16`: the `b` starts the type, not a binary literal.
-    if base != 10 {
-        if let Ok(el) = s[1..].parse::<ElementType>() {
-            return Ok(("0".to_string(), Some(el)));
-        }
-    }
-    let body = &s[prefix.len()..];
-
-    // Where the digits end and the type suffix starts. In base 10 the first letter that does
-    // not start an exponent is the suffix. In the other bases a letter can be a digit (`0xFF`),
-    // so the digits run as far as the base allows and whatever is left is the suffix.
-    let idx = if base == 10 {
-        number_suffix_start(body)
-    } else {
-        body.find(|c: char| !(c == '_' || c.is_digit(base)))
-    }
-    .unwrap_or(body.len());
-    let (digits, suffix_part) = (&body[..idx], &body[idx..]);
+    let (base, prefix, digits, suffix_part) = split_number_literal(s);
 
     let el_ty = if !suffix_part.is_empty() {
         if base != 10 && suffix_part.starts_with('.') {
@@ -101,6 +78,39 @@ pub(crate) fn infer_number_literal(s: &str) -> Result<(String, Option<ElementTyp
     let value = u128::from_str_radix(&digits, base)
         .map_err(|_| format!("'{}' does not fit in 128 bits", s))?;
     Ok((value.to_string(), el_ty))
+}
+
+/// Split a literal token into its base, its prefix (`0x`), its digits and its type suffix.
+/// In base 10 the first letter that does not start an exponent is the suffix. In the other
+/// bases a letter can be a digit (`0xFF`), so the digits run as far as the base allows and
+/// whatever is left is the suffix.
+fn split_number_literal(s: &str) -> (u32, &str, &str, &str) {
+    let (base, prefix) = match s.as_bytes() {
+        [b'0', b'x', ..] => (16, "0x"),
+        [b'0', b'o', ..] => (8, "0o"),
+        [b'0', b'b', ..] => (2, "0b"),
+        _ => (10, ""),
+    };
+    // `0bf16` is zero as a `bf16`: the `b` starts the type, not a binary literal.
+    if base != 10 && s[1..].parse::<ElementType>().is_ok() {
+        return (10, "", &s[..1], &s[1..]);
+    }
+    let body = &s[prefix.len()..];
+    let idx = if base == 10 {
+        number_suffix_start(body)
+    } else {
+        body.find(|c: char| !(c == '_' || c.is_digit(base)))
+    }
+    .unwrap_or(body.len());
+    (base, prefix, &body[..idx], &body[idx..])
+}
+
+/// The number part of a literal token as the program wrote it, without the type suffix:
+/// `0x1FF` from `0x1FFu8`, `42` from `42_u8`. An error message shows this, not the decimal
+/// value [`infer_number_literal`] computes from it.
+pub(crate) fn written_number(s: &str) -> &str {
+    let (_, prefix, digits, _) = split_number_literal(s);
+    s[..prefix.len() + digits.len()].trim_end_matches('_')
 }
 
 /// How an error message names a literal's base, with its article: `0x` is "a hex".
@@ -1384,6 +1394,15 @@ impl<'a> Parser<'a> {
 
                         Expr::Number(NumberExpr {
                             value: num_str.into(),
+                            written: Some(WrittenNumber {
+                                text: written_number(s).into(),
+                                span: Span {
+                                    line: token.line,
+                                    column: token.column,
+                                    length: token.length,
+                                    expansion: self.expansion(),
+                                },
+                            }),
                             ty: el_ty,
                             span: Span::default(),
                         })
@@ -2145,6 +2164,17 @@ mod tests {
             infer_number_literal("1_0e1_0f64").unwrap(),
             ("10e10".to_string(), Some(ElementType::F64))
         );
+    }
+
+    #[test]
+    fn the_written_number_keeps_the_spelling_and_drops_the_suffix() {
+        assert_eq!(written_number("0x1FFu8"), "0x1FF");
+        assert_eq!(written_number("42_u8"), "42");
+        assert_eq!(written_number("0xFFFF_FFFF"), "0xFFFF_FFFF");
+        assert_eq!(written_number("1_000.5f64"), "1_000.5");
+        assert_eq!(written_number("1e-15f64"), "1e-15");
+        assert_eq!(written_number("0bf16"), "0");
+        assert_eq!(written_number("0b1010_1010u8"), "0b1010_1010");
     }
 
     #[test]

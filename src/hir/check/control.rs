@@ -316,11 +316,13 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn value_to_expr(value: &Value, span: &Span) -> Option<Expr> {
         match value {
             Value::Int(i) => Some(Expr::Number(NumberExpr {
+                written: None,
                 value: i.to_string().into(),
                 ty: None,
                 span: *span,
             })),
             Value::Number(n) => Some(Expr::Number(NumberExpr {
+                written: None,
                 value: n.to_string().into(),
                 ty: None,
                 span: *span,

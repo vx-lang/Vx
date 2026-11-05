@@ -618,6 +618,7 @@ impl ConstExtents<'_> {
 fn number(value: i128, span: Span, typed: bool) -> Expr {
     let value = value.to_string();
     Expr::Number(NumberExpr {
+        written: None,
         ty: typed.then(|| crate::parser::expr::default_number_elem(&value)),
         value: value.into(),
         span,

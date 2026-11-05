@@ -223,6 +223,7 @@ impl AstPrinter {
                 writeln!(w, "{}Identifier({})", prefix, name)?;
             }
             Expr::Number(NumberExpr {
+                written: _,
                 value: val,
                 ty: el_ty,
                 span: _,
