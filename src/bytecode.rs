@@ -347,11 +347,6 @@ pub enum Opcode {
     /// The address of one tensor element, as a raw pointer: `&t[i]`. `operand1` is the element
     /// place, a `TensorIndex` with `imm = 1`. The pointer points into the tensor's own buffer.
     TensorElementAddress = 81,
-    /// The start of a `within` block (F6a): its deadline is `operand1` seconds from now, an
-    /// `f64`.
-    WithinStart = 82,
-    /// The end of a `within` block, on each path out of it.
-    WithinEnd = 83,
     /// Check that operand1 addresses the aggregate identified by type_idx. Generates no code.
     CheckAggregate = 84,
 }
