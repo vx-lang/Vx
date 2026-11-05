@@ -14,10 +14,10 @@ it expects.
 | `sequential.cat` | Sequential consistency with barriers: every run is one interleaving. |
 | `vx.bell` | The tags that a test can put on an access or a fence. |
 | `run_litmus.py` | Runs every test and compares each result with its `Expect:` line. |
-| `run_lean.py` | Checks that the Lean model and `vx.cat` agree on the tests for CPUs. |
+| `run_lean.py` | Checks that the Lean model and `vx.cat` agree on the tests without branches. |
 | `tests/` | One test for each case of the rules. |
 | `memalloy/` | The CPU part of the model, compared with RC11 and with AArch64 by memalloy. |
-| `lean/` | The CPU part of the model in Lean 4, with proofs for executions of any size. |
+| `lean/` | The model in Lean 4, with proofs for executions of any size. |
 
 ## Running the tests
 
@@ -250,6 +250,18 @@ relaxed read-modify-write, and a drop takes 1 away with a release one. The drop 
 an acquire fence and frees the value. `arc_last_drop_hb_free` shows that each event before another
 drop happens before each event after that fence. The clones and drops between the two drops form a
 release sequence. `arc_last_drop_release_sequence.litmus` checks this with three tasks.
+
+`Scopes.lean` adds the scopes and the barriers of `vx.cat` as a separate layer. Each event has a
+scope, and each thread has a subgroup, a block and a device. `Reaches`, `Strong`, `sw`, `bar`,
+`hb` and `DataRace` follow `vx.cat`. With every scope `system`, they equal the definitions of
+`Rc11.lean` (`sw_eq`, `hb_eq`, `consistent_iff`, `dataRace_iff`), so the CPU proofs still hold.
+`LastArriver.lean` proves the last-arriver pattern of #2139. Each block writes its partial
+result, runs a release fence and adds 1 to a counter. The block whose add reads `n - 1` runs an
+acquire fence and reads the partials. `last_block_reads_every_partial` shows that each partial
+write happens before that read, when the fences and the adds have device scope.
+`LastArriverExample.lean` shows a run of two blocks where, with adds of block scope, the read of
+a partial races with its write. `last_arriver_*.litmus` check the same cases in herd7.
+
 `ChannelExample.lean` builds a run where the main code sends 7 and drops its sender, and a task
 makes two `recv`s. The first gets 7, and the second finds the channel closed. `check` finds that
 the model allows this run with no data race. `MutexExample.lean` builds a run where a lock orders
@@ -314,7 +326,7 @@ modulo `n`. It gives the bound only when no other event comes between two calls.
 shows that other events can keep a ready receiver waiting forever.
 
 The definitions in `lean/VxMemoryModel/Rc11.lean` follow `memalloy/vx_cpu.cat` line by line.
-`run_lean.py` checks that Lean and `vx.cat` agree on the 13 tests without scopes and barriers:
+`run_lean.py` checks that Lean and `vx.cat` agree on each test without a branch:
 
 ```bash
 python3 formal/memory_model/run_lean.py    # needs lake and herd7
@@ -322,8 +334,10 @@ python3 formal/memory_model/run_lean.py    # needs lake and herd7
 
 For each test, the script lists every candidate execution, and Lean decides which ones the
 model allows and which have a data race. `lean/VxMemoryModel/Check.lean` decides the
-definitions themselves, so a wrong answer cannot come from a second copy of the model. The
-final states, the observation and the race flag must be the same as those of herd7.
+definitions themselves, and `ScopedCheck.lean` decides those of `Scopes.lean`. A test with a
+scope or a barrier goes through `ScopedCheck.lean`, and a test for CPUs through both. So a wrong
+answer cannot come from a second copy of the model. The final states, the observation and the
+race flag must be the same as those of herd7.
 
 ## Reading a test
 
@@ -379,8 +393,8 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
 - The core language has no functions and no references.
 - The rules compare each task of an inner block with all the code of the outer block, also the
   code after the inner block joined it.
-- The Lean model has no scopes and no barriers.
 - In a release sequence, a read-modify-write continues the sequence whatever its scope.
+- `run_lean.py` skips the tests with a branch.
 - The model covers only C0 to C7. The rules for sequential code, E1 to E7 and A1 to A6, are not in
   it.
 - `Consistent` does not ask that `co` orders the writes to each place. A theorem that needs it
