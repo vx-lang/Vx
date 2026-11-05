@@ -1619,11 +1619,8 @@ impl<'a> TypeChecker<'a> {
     }
 }
 
-/// Does the expression mention identifier `name` anywhere? Conservative: an expression
-/// shape the walk does not enumerate counts as mentioning it, so an unknown container
-/// neutralizes rather than preserves.
 /// `0 == 0`, which takes the place of a fact that ends, so the index of each later fact stays.
-fn no_fact() -> Expr {
+pub(crate) fn no_fact() -> Expr {
     let zero = || {
         Box::new(Expr::Number(NumberExpr {
             value: "0".to_string().into(),
@@ -1640,6 +1637,9 @@ fn no_fact() -> Expr {
     })
 }
 
+/// Does the expression mention identifier `name` anywhere? Conservative: an expression
+/// shape the walk does not enumerate counts as mentioning it, so an unknown container
+/// neutralizes rather than preserves.
 pub(crate) fn expr_mentions(e: &Expr, name: &str) -> bool {
     match e {
         Expr::Identifier(id) => id.name.as_ref() == name,

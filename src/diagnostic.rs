@@ -731,7 +731,8 @@ pub enum DiagnosticCode {
     E8007,
     /// A loop invariant that the prover cannot show to hold when the loop starts
     E8008,
-    /// A loop invariant that the prover cannot show to hold after a pass through the loop body
+    /// A loop invariant that the prover cannot show to hold in the next pass, after the loop
+    /// body or after a `continue`
     E8009,
     /// An `mlir!` block whose `dialects` list does not match its body: the body uses an
     /// operation of a dialect that the list does not name, or the list names something that

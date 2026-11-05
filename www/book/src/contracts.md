@@ -67,6 +67,11 @@ Like `requires` and `ensures`, an invariant may be written bare or in parenthese
 such as `i >= 0`. The prover knows `i == 0` when the loop starts, and the effect of `i = i + 1` at the
 end of the body.
 
+The prover checks an invariant when the loop starts, and before each next pass: at the end of the body
+and at each `continue`. A `for i in a..b` loop runs as `let mut i = a;` and then
+`while i < b { ..; i = i + 1; }`. So its invariant must hold for `i == a` when the loop starts, and
+for `i + 1` after a pass. For example, `invariant i <= b` holds, and `invariant i < b` does not.
+
 ## What checks these
 
 Conditions are discharged by an SMT solver — z3 — at compile time. If the prover cannot show a

@@ -736,6 +736,8 @@ pub struct TypeChecker<'a> {
     pub(crate) method_call_written: Option<(crate::symbol::Symbol, crate::syntax::Span)>,
     /// The raw-pointer facts at the `break`s of each loop that the checker is in.
     pub(crate) pointer_loops: Vec<crate::hir::check::pointer_facts::LoopExit>,
+    /// The invariants of each loop that the checker is in, for each `continue`.
+    pub(crate) invariant_loops: Vec<crate::hir::stmt::InvariantLoop>,
     /// The branches of `if` and the arms of `match` that the checker is in, for the note of E8006.
     pub(crate) pointer_branches: Vec<String>,
     /// The function whose body the checker checks, as the raw-pointer facts need it.
@@ -828,6 +830,7 @@ impl<'a> TypeChecker<'a> {
             pointer_fact_ids: 0,
             method_call_written: None,
             pointer_loops: Vec::new(),
+            invariant_loops: Vec::new(),
             pointer_branches: Vec::new(),
             pointer_function: Default::default(),
             tasks: Default::default(),
