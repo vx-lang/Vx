@@ -17,6 +17,10 @@ values. Today no code states these facts, and nothing keeps them:
 A type invariant states such a fact once, in the type. The checker keeps it true, and each use of
 the type gets it as a fact.
 
+This gives contracts a new place. Until now, each contract of Vx is about code: `requires` and
+`ensures` describe a function, and `invariant` describes a loop. A type invariant is about data. It
+describes each value of the type, in each function that gets the value.
+
 ## 2. The syntax
 
 An `invariant` clause comes after the name of the struct and before its fields, as a `requires`
@@ -132,6 +136,7 @@ So `as_mut_ptr` proves its `ensures` with no `assume`. Outside the module, safe 
 ## 9. The work, in order
 
 1. The syntax, and the rule of section 3. Then `Vec` states its invariant, and that fixes #2840.
+   The contracts page of the book gets a section on type invariants.
 1. The proofs of section 4.
 1. The facts of section 5: first the prover's facts, then the pointer facts. Remove the `assume`s of
    `Vec::as_mut_ptr`.
