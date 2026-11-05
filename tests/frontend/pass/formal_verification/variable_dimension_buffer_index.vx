@@ -1,0 +1,31 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=Warning
+
+fn buffer_index(row : i64, rows : i64, dims : i64, d : i64) -> i64
+requires rows > 0 && rows <= 2147483647 && dims > 0 && dims <= 2147483647
+requires row >= 0 && row < rows && d >= 0 && d < dims
+ensures return >= 0 && return < rows * dims {
+  return row * dims + d;
+}
+
+fn main() -> i32 {
+  return buffer_index(2i64, 4i64, 128i64, 5i64) as i32;
+}
+
+// CHECK: module attributes {vx.drops} {
+// CHECK:   func.func private @vx_init_signals()
+// CHECK:   func.func @main() -> i32 {
+// CHECK:     call @vx_init_signals() : () -> ()
+// CHECK:     %c2_i64 = arith.constant 2 : i64
+// CHECK:     %c4_i64 = arith.constant 4 : i64
+// CHECK:     %c128_i64 = arith.constant 128 : i64
+// CHECK:     %c5_i64 = arith.constant 5 : i64
+// CHECK:     %0 = call @buffer_index(%c2_i64, %c4_i64, %c128_i64, %c5_i64) : (i64, i64, i64, i64) -> i64
+// CHECK:     %1 = arith.trunci %0 : i64 to i32
+// CHECK:     return %1 : i32
+// CHECK:   }
+// CHECK:   func.func @buffer_index(%arg0: i64, %arg1: i64, %arg2: i64, %arg3: i64) -> i64 {
+// CHECK:     %0 = arith.muli %arg0, %arg2 : i64
+// CHECK:     %1 = arith.addi %0, %arg3 : i64
+// CHECK:     return %1 : i64
+// CHECK:   }
+// CHECK: }

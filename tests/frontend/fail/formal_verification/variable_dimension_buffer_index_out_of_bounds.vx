@@ -1,0 +1,14 @@
+// RUN: not vxc %s --action emit-mlir 2>&1 | FileCheck %s
+
+fn index_past_the_buffer(row : i64, rows : i64, dims : i64, d : i64) -> i64
+requires rows > 0 && rows <= 2147483647 && dims > 0 && dims <= 2147483647
+requires row >= 0 && row < rows && d >= 0 && d < dims
+ensures return >= 0 && return < rows * dims {
+  // CHECK: Error[E8001]
+  // CHECK-SAME: Function 'index_past_the_buffer' cannot prove postcondition
+  return row * dims + d + 1i64;
+}
+
+fn main() -> i32 {
+  return index_past_the_buffer(3i64, 4i64, 128i64, 127i64) as i32;
+}

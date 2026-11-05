@@ -36,8 +36,8 @@ impl SmtProver {
 
     pub fn prove(&self) -> Result<bool, String> {
         let mut script = String::new();
-        // Setup QF_LIA (Quantifier-Free Linear Integer Arithmetic)
-        script.push_str("(set-logic QF_LIA)\n");
+        // Expressions can multiply two variables, so linear arithmetic is not sufficient.
+        script.push_str("(set-logic QF_NIA)\n(set-option :timeout 5000)\n");
 
         for decl in &self.declarations {
             script.push_str(&format!("(declare-const {} Int)\n", decl));
@@ -79,16 +79,7 @@ impl SmtProver {
 
         let output = child.wait_with_output().map_err(|e| e.to_string())?;
         let result_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let has_sat = result_str.lines().any(|l| l.trim() == "sat");
-        let has_unsat = result_str.lines().any(|l| l.trim() == "unsat");
-
-        if has_sat {
-            Ok(true)
-        } else if has_unsat {
-            Ok(false)
-        } else {
-            Err(format!("Unexpected z3 output: {}", result_str))
-        }
+        solver_result(&result_str, output.status.success())
     }
 
     /// Add `expr` as a fact. `type_of` gives the integer type of a name, so that the prover knows
@@ -250,6 +241,17 @@ impl SmtProver {
             }
             _ => Err(format!("a `{}` expression", kind_name(expr))),
         }
+    }
+}
+
+fn solver_result(result: &str, successful_exit: bool) -> Result<bool, String> {
+    if !successful_exit {
+        return Err(format!("z3 failed: {result}"));
+    }
+    match result {
+        "sat" => Ok(true),
+        "unsat" => Ok(false),
+        _ => Err(format!("Unexpected z3 output: {result}")),
     }
 }
 
@@ -500,4 +502,18 @@ pub fn unreachable_fact() -> Expr {
         span: Span::default(),
         operand_ty: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::solver_result;
+
+    #[test]
+    fn a_solver_error_or_timeout_is_not_a_proof() {
+        assert_eq!(solver_result("sat", true), Ok(true));
+        assert_eq!(solver_result("unsat", true), Ok(false));
+        assert!(solver_result("unknown", true).is_err());
+        assert!(solver_result("(error \"unsupported arithmetic\")\nunsat", true).is_err());
+        assert!(solver_result("unsat", false).is_err());
+    }
 }
