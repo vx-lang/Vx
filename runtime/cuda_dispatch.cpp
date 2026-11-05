@@ -1078,6 +1078,13 @@ static unsigned dynamic_shared_bytes(const void *payload, size_t payload_size) {
   return field ? (unsigned)strtoul(field, nullptr, 10) : 0;
 }
 
+/// Whether the payload's image is PTX. A payload from before `format=` has
+/// only PTX.
+static bool is_ptx(const void *payload, size_t payload_size) {
+  const char *format = vx_payload_field(payload, payload_size, "format=");
+  return !format || strcmp(format, "ptx") == 0;
+}
+
 /// Run the kernel the payload carries, on this device.
 ///
 /// The compiler compiles every self-contained device region to PTX and puts it
@@ -1397,9 +1404,12 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
     if (run_gemm(plan)) {
       return 1;
     }
-  } else if (vx_payload_field(binary_payload, payload_size, "image=")) {
+  } else if (vx_payload_field(binary_payload, payload_size, "image=") &&
+             is_ptx(binary_payload, payload_size)) {
     /* Not a matmul, but the compiler emitted a kernel for it. This is the case
-       the header of this file said had to run on the host and could not. */
+       the header of this file said had to run on the host and could not. An
+       image for another GPU, such as MSL, runs on the host as if it had none.
+     */
     if (cuda_available()) {
       select_device(vx_payload_topology(binary_payload, payload_size),
                     "dispatch");
