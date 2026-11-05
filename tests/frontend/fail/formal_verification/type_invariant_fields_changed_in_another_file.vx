@@ -1,0 +1,57 @@
+//===- type_invariant_fields_changed_in_another_file.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc --package tests=tests %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: not vxc -j 2 --package tests=tests %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// `Vec` and `Interval` have invariants, and other files declare them. So this file cannot change
+// their fields, and each change below gets E8014.
+import std::vec;
+import tests::modules::interval_with_an_invariant;
+
+struct Wrapper {
+  v : Vec<i64>,
+}
+
+fn through_a_reference(r : &mut Vec<i64>) -> i32 {
+  // CHECK: Error[E8014] at {{.*}}.vx:[[@LINE+1]]:5: this assignment changes the field `len` of `Vec`. `Vec` has an invariant, so only code in `vec.vx` can change its fields{{$}}
+  r.len = 0;
+  return 0;
+}
+
+fn main() -> i32 {
+  let mut v = Vec<i64>::new();
+  v.push(1i64);
+  // CHECK: Error[E8014] at {{.*}}.vx:[[@LINE+1]]:5: this assignment changes the field `len` of `Vec`.
+  v.len = 100000000;
+  // CHECK: Error[E8014] at {{.*}}.vx:[[@LINE+1]]:5: this assignment changes the field `len` of `Vec`.
+  v.len += 1;
+  // CHECK: Error[E8014] at {{.*}}.vx:[[@LINE+1]]:18: this `&mut` can change the field `capacity` of `Vec`. `Vec` has an invariant, so only code in `vec.vx` can change its fields{{$}}
+  let c = &mut v.capacity;
+  *c = 5;
+  let mut w = Wrapper {
+    v : Vec<i64>::new()
+  };
+  // CHECK: Error[E8014] at {{.*}}.vx:[[@LINE+1]]:7: this assignment changes the field `len` of `Vec`.
+  w.v.len = 3;
+  // CHECK: Error[E8014] at {{.*}}.vx:[[@LINE+1]]:11: this struct literal builds a `Vec`. `Vec` has an invariant, so only code in `vec.vx` can build it from its fields{{$}}
+  let u = Vec<i64> {
+    data : v.data, len : 0, capacity : 0
+  };
+  let mut i = Interval::new();
+  // CHECK: Error[E8014] at {{.*}}.vx:[[@LINE+1]]:5: this assignment changes the field `lo` of `Interval`. `Interval` has an invariant, so only code in `interval_with_an_invariant.vx` can change its fields{{$}}
+  i.lo = 5i64;
+  // `Counter` has no invariant, but this `Counter` is a field of an `Interval`.
+  // CHECK: Error[E8014] at {{.*}}.vx:[[@LINE+1]]:5: this assignment changes the field `count` of `Interval`.
+  i.count.value = 3i64;
+  // CHECK: Error[E8014] at {{.*}}.vx:[[@LINE+1]]:5: `bump` takes `&mut self`, so it can change the field `count` of `Interval`.
+  i.count.bump();
+  // CHECK: Error[E8014] at {{.*}}.vx:[[@LINE+1]]:5: `push` takes `&mut self`, so it can change the field `items` of `Interval`.
+  i.items.push(2i64);
+  println!("{} {} {}", v.len, u.len, i.lo);
+  return 0;
+}

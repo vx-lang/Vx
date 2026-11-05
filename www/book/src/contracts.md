@@ -72,6 +72,45 @@ and at each `continue`. A `for i in a..b` loop runs as `let mut i = a;` and then
 `while i < b { ..; i = i + 1; }`. So its invariant must hold for `i == a` when the loop starts, and
 for `i + 1` after a pass. For example, `invariant i <= b` holds, and `invariant i < b` does not.
 
+## Type invariants
+
+A contract can also be about data. An `invariant` on a struct states a fact about each value of the
+type. It comes after the name of the struct and before its fields:
+
+```rust
+struct Interval
+invariant self.lo <= self.hi
+{
+    lo : i64,
+    hi : i64,
+}
+
+fn widen(r : &mut Interval) -> i32 {
+    r.hi = r.hi + 1;
+    return 0;
+}
+
+fn main() -> i32 {
+    let mut r = Interval { lo : 0, hi : 1 };
+    widen(&mut r);
+    return 0;
+}
+```
+
+In an invariant, `self` is the value of the type. An invariant can use the fields of `self` at any
+depth, numbers, operators and the pointer clauses `valid`, `initialized` and `overlaps`. It calls no
+other function.
+
+Only the module (the `.vx` file) that declares the type can change its fields. Code in another
+module can read each field. It cannot write a field, take a `&mut` to a field, call a method that
+takes `&mut self` on a field, or build the type with a struct literal (`E8014`). It calls a function
+of the module instead. For example, `Vec` has an invariant, so `v.len = 5` is an error outside
+`std::vec`.
+
+The prover does not check the invariant yet, so the module of the type must keep it true. Later,
+each use of the type will get the invariant as a fact
+([Vx#2832](https://github.com/vx-lang/Vx/issues/2832)).
+
 ## What checks these
 
 Conditions are discharged by an SMT solver — z3 — at compile time. If the prover cannot show a

@@ -39,6 +39,8 @@ impl TypeChecker<'_> {
         self.check_declaration_conflicts();
         // A safe method of a trait impl with a pointer clause, or one that adds a `!frees`.
         self.check_trait_impl_pointer_clauses();
+        // An `invariant` of a struct that names something other than `self` and its fields.
+        self.check_type_invariants_are_well_formed();
         // The `ensures` of an `extern` function.
         self.check_extern_clauses();
         // `impl Copy for X` where one of X's fields moves rather than copies.

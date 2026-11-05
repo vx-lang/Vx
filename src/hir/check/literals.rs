@@ -690,6 +690,7 @@ impl<'a> TypeChecker<'a> {
                     }
                     generic_args = args;
                 }
+                self.check_struct_literal_module(base_name.as_ref(), &literal_span);
 
                 // Attach the struct's resolved GID so downstream consumers (the flat-HIR lowerer)
                 // reach its registry layout without re-resolving the name (#199). Resolved through the

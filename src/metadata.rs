@@ -1018,6 +1018,15 @@ pub fn serialize_registry_interface_reporting(
         skipped: Vec::new(),
     };
     for (gid, sf) in structs {
+        // Another program could write the fields of a struct with an invariant if the interface
+        // carried the struct without its invariant.
+        if reg.structs_with_invariants.contains(gid) {
+            struct_report.skipped.push((
+                nominal_name(reg, gid),
+                "it has an invariant, and an interface cannot carry one yet".to_string(),
+            ));
+            continue;
+        }
         let mut rec = Writer::new();
         rec.u64(sf.generics.len() as u64);
         for g in &sf.generics {
@@ -1225,6 +1234,8 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
         bodies,
         enum_variants,
         structs,
+        // The writer leaves out each struct with an invariant.
+        structs_with_invariants: Default::default(),
         // Data-carrying enum decls are not serialized into a `.vxlib` yet; constructing/matching a
         // monomorphized imported enum then falls back to the AST path (#242).
         enum_data: FxHashMap::default(),

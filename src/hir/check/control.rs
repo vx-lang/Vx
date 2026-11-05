@@ -1722,6 +1722,8 @@ impl<'a> TypeChecker<'a> {
                     name: struct_name.clone().into(),
                     generics: vec![],
                     fields: env_fields.clone(),
+                    invariants: Vec::new(),
+                    file: None,
                     doc_comment: None,
                 };
                 self.mono.generated_structs.push(struct_decl);
