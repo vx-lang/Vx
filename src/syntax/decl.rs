@@ -159,6 +159,9 @@ pub struct ExternDecl {
     pub memories: Vec<Symbol>,
     pub params: Vec<(Symbol, Type)>,
     pub return_type: Type,
+    /// The `ensures` clauses. The compiler trusts them, because it cannot read the body. Only a
+    /// `frees` clause can be one.
+    pub ensures: Vec<crate::syntax::Expr>,
     /// Where the declaration was written, so a diagnostic about the signature can point at it.
     pub span: Span,
     /// The `///` lines above the declaration. Six library modules are nothing but an extern

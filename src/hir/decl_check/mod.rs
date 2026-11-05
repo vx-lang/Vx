@@ -37,8 +37,10 @@ impl TypeChecker<'_> {
     pub fn check_whole_program_declarations(&mut self) {
         // A name declared by two inputs (e.g. a `--machine` file and the program) is ambiguous.
         self.check_declaration_conflicts();
-        // A safe method of a trait impl with a pointer clause.
+        // A safe method of a trait impl with a pointer clause, or one that adds a `!frees`.
         self.check_trait_impl_pointer_clauses();
+        // The `ensures` of an `extern` function.
+        self.check_extern_clauses();
         // `impl Copy for X` where one of X's fields moves rather than copies.
         self.check_copy_impls();
         // `impl Send for X` with no `unsafe`, and `unsafe impl` of another trait.

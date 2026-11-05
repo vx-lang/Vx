@@ -2161,7 +2161,7 @@ impl<'a> TypeChecker<'a> {
                 self.seam.lowering_edge = saved_edge;
                 self.mono.being_checked.remove(&inst_name);
                 self.mono.static_method_instances.insert(inst_name.clone());
-                self.summarize_instance(&inst_func);
+                self.summarize_instance(&inst_func, false);
                 self.mono.functions.push((inst_func, 0));
             }
 
@@ -2477,7 +2477,7 @@ impl<'a> TypeChecker<'a> {
                 self.check_instance(generic_func, &mut inst_func);
                 self.seam.lowering_edge = saved_edge;
                 self.mono.being_checked.remove(&inst_name);
-                self.summarize_instance(&inst_func);
+                self.summarize_instance(&inst_func, true);
                 self.mono.functions.push((inst_func, origin_hash));
             }
             Some(inst_ret)
@@ -3086,8 +3086,10 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Summarize a checked instance. Its method calls are calls by name by now, so the summary
-    /// follows each one through the summary of the instance it calls.
-    fn summarize_instance(&mut self, inst: &Function) {
+    /// follows each one through the summary of the instance it calls. A call through a trait
+    /// bound reads only the clauses of the trait, so `infer_frees` is false for an instance that
+    /// can be a method of a trait impl.
+    fn summarize_instance(&mut self, inst: &Function, infer_frees: bool) {
         let prov = {
             let instances = &self.mono.return_provenances;
             let functions = &self.env.return_provenances;
@@ -3112,6 +3114,21 @@ impl<'a> TypeChecker<'a> {
         let not_kept = crate::hir::check::borrow_clauses::not_kept_params(inst) | inferred;
         if not_kept != 0 {
             self.mono.not_kept.insert(inst.name.clone(), not_kept);
+        }
+        let clauses = crate::hir::check::pointer_clauses::frees_clause_params;
+        let inferred = if infer_frees {
+            let callee = |name: &str| self.frees_callee(name);
+            crate::hir::frees::inferred_not_freed(inst, &self.env.decls, &callee)
+                & !clauses(&inst.params, &inst.ensures)
+        } else {
+            0
+        };
+        let written =
+            crate::hir::check::pointer_clauses::not_freed_params(&inst.params, &inst.ensures);
+        if written | inferred != 0 {
+            self.mono
+                .not_freed
+                .insert(inst.name.clone(), written | inferred);
         }
     }
 
@@ -3190,7 +3207,7 @@ impl<'a> TypeChecker<'a> {
             self.current_assignment_target = saved_target;
             self.seam.lowering_edge = saved_edge;
             self.mono.being_checked.remove(&mangled_sym);
-            self.summarize_instance(&func_to_check);
+            self.summarize_instance(&func_to_check, ib.trait_name.is_none());
             self.mono.functions.push((func_to_check, 0)); // 0 will fall back to caller_module_idx
         }
         Some((method_func, mangled_name))

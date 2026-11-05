@@ -878,7 +878,7 @@ impl<'a> TypeChecker<'a> {
                         shown_argument(&ic.callee)
                     ))
                 } else {
-                    self.scan_argument_that_can_free(&ic.args, params.as_deref(), declared)
+                    self.scan_argument_that_can_free(&ic.args, params.as_deref(), 0, declared)
                         .map(|a| {
                             format!(
                                 "the call through {}, which can free memory through {a}",
@@ -948,22 +948,31 @@ impl<'a> TypeChecker<'a> {
             Some(_) => None,
             None => self.function_param_types(name),
         };
-        let arg = self.scan_argument_that_can_free(&fc.args, params.as_deref(), declared)?;
+        let not_freed = if local.is_none() {
+            self.not_freed_by(name)
+        } else {
+            0
+        };
+        let arg =
+            self.scan_argument_that_can_free(&fc.args, params.as_deref(), not_freed, declared)?;
         Some(match local {
             Some(_) => format!("the call through `{name}`, which can free memory through {arg}"),
             None => format!("the call to '{name}', which can free memory through {arg}"),
         })
     }
 
-    /// The first argument of `args` that can free memory, as the program wrote it.
+    /// The first argument of `args` that can free memory, as the program wrote it. An argument
+    /// for a parameter in `not_freed`, the `!frees` bits of the callee, frees nothing.
     fn scan_argument_that_can_free(
         &mut self,
         args: &[Expr],
         params: Option<&[Type]>,
+        not_freed: u32,
         declared: &HashMap<String, Type>,
     ) -> Option<String> {
         args.iter()
             .enumerate()
+            .filter(|(i, _)| *i >= 32 || not_freed & (1 << i) == 0)
             .find(|(i, a)| self.scan_can_free(a, params.and_then(|p| p.get(*i)), declared))
             .map(|(_, a)| shown_argument(a))
     }
@@ -1119,9 +1128,15 @@ impl<'a> TypeChecker<'a> {
             ))
         } else {
             let params = self.call_param_types(name, expr);
+            // An argument for a parameter with `!frees` frees nothing in the call.
+            let not_freed = match expr {
+                Expr::FunctionCall(_) if !local_call => self.not_freed_by(name),
+                _ => 0,
+            };
             let mut through = callee.filter(|c| self.argument_can_free(c, None));
             for (i, a) in args.iter().enumerate() {
                 if through.is_none()
+                    && (i >= 32 || not_freed & (1 << i) == 0)
                     && self.argument_can_free(a, params.as_ref().and_then(|p| p.get(i)))
                 {
                     through = Some(a);
@@ -1309,7 +1324,7 @@ impl<'a> TypeChecker<'a> {
 
     /// The callee `name` as the program wrote it: an instance of a generic function, such as
     /// `sum$i64`, is shown as `sum`.
-    fn shown_callee(&self, name: &str) -> String {
+    pub(crate) fn shown_callee(&self, name: &str) -> String {
         match name.split_once('$') {
             Some((first, _)) if self.env.generic_functions.contains_key(first) => first.to_string(),
             _ => name.to_string(),

@@ -741,8 +741,14 @@ pub enum DiagnosticCode {
     /// initialized(p, n)` or `requires !overlaps(p, q, n)`, where `p` and `q` are raw pointer
     /// parameters, and each clause is a `requires` of its own. A call through a function value or
     /// a trait would not prove the clause, so a safe function with one cannot be a function value,
-    /// and a safe method of a trait impl cannot have one.
+    /// and a safe method of a trait impl cannot have one. A `frees` clause is an `ensures` of its
+    /// own, `ensures frees(p)` or `ensures !frees(p)` for a parameter `p`, and a method of a trait
+    /// impl cannot add a `!frees` that the trait method does not have.
     E8011,
+    /// A function that says `ensures !frees(p)`, when its body can free memory through `p`: the
+    /// body gives `p`, or a value that it gets from `p`, to code that can free memory, such as a
+    /// call without `!frees` for that parameter, a store or an `mlir!` block.
+    E8012,
 }
 
 impl std::fmt::Display for DiagnosticCode {

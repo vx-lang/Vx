@@ -30,11 +30,12 @@ pub(crate) fn is_access_clause(e: &Expr) -> bool {
 }
 
 /// Whether the prover reads the clause `e`: one that is not an access clause and uses no borrow
-/// function and no pointer function.
+/// function, no pointer function and no `frees`.
 pub(crate) fn is_prover_clause(e: &Expr) -> bool {
     !is_access_clause(e)
         && !super::borrow_clauses::mentions_borrow_function(e)
         && super::pointer_clauses::first_pointer_call(e).is_none()
+        && super::pointer_clauses::first_frees_call(e).is_none()
 }
 
 /// Whether `e` is a `reads_only` clause, well formed or not.

@@ -88,12 +88,51 @@ fn main() -> i32 {
 
 At a call in safe code, the compiler proves each clause from what it knows there: the clauses
 of the caller, a pointer made from `&x` for a local variable `x`, and the pointer functions
-`offset`, `add` and `sub`. For now a call that gets a raw pointer can free memory, so after it
+`offset`, `add` and `sub`. A call that gets a raw pointer can free its memory, so after the call
 the compiler knows nothing about memory that the caller does not own. When such code ended a
 fact that the call needs, the error has a note with its line. In a loop, such code anywhere in
 the body ends the facts at the start of the body, because an earlier pass can run it. A call in
-`unsafe` code needs no proof: its author keeps the promise. A safe function with a pointer clause cannot be a
-function value yet, because a call through the value would not prove the clause.
+`unsafe` code needs no proof: its author keeps the promise. A safe function with a pointer
+clause cannot be a function value yet, because a call through the value would not prove the
+clause.
+
+`ensures !frees(p)` says that a call frees no memory that it reaches through `p`. Then a call
+keeps the facts about the memory of its argument, and the compiler checks the body against the
+clause. The compiler also finds `!frees(p)` itself when the body only reads and writes through
+`p`, moves `p` with `offset`, compares it, and gives it only to functions with `!frees`. So
+`split` compiles:
+
+```rust
+import core::ptr;
+
+fn sum(p : *const i64, n : i64) -> i64
+    requires valid(p, n)
+    requires initialized(p, n)
+{
+    let mut total = 0i64;
+    for i in 0i64..n {
+        total = total + unsafe { p[i] };
+    }
+    return total;
+}
+
+fn split(p : *const i64, n : i64, k : i64) -> i64
+    requires valid(p, n)
+    requires initialized(p, n)
+    requires 0i64 <= k
+    requires k <= n
+{
+    return sum(p, k) + sum(offset(p, k), n - k);
+}
+
+fn main() -> i32 {
+    return 0;
+}
+```
+
+`ensures frees(p)` says that the call can free that memory, so the compiler does not find
+`!frees(p)` for it. An `extern` function can say `!frees(p)` after its return type, and the
+compiler trusts it.
 
 In an `unsafe fn`, for `valid(p, n)` the compiler tells LLVM that `p` is not null and aligned,
 and that `n` elements at `p` can be read. For `!overlaps(p, q, n)` it tells LLVM that an access

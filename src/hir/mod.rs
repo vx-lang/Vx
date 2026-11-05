@@ -20,6 +20,7 @@ pub mod decl_check;
 pub mod env;
 pub mod expr;
 pub mod flatten;
+pub mod frees;
 pub mod memory;
 pub mod places;
 pub mod provenance;

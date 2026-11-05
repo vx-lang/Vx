@@ -1233,6 +1233,10 @@ impl<'a> Parser<'a> {
 
             self.consume(&TokenType::Arrow, "Expected '->'")?;
             let return_type = self.parse_return_type()?;
+            let mut ensures = Vec::new();
+            while self.match_token(&TokenType::Ensures) {
+                ensures.push(self.parse_expr()?);
+            }
             self.consume(&TokenType::Semicolon, "Expected ';'")?;
             for _ in 0..generics.len() {
                 self.generic_params.pop();
@@ -1244,6 +1248,7 @@ impl<'a> Parser<'a> {
                 memories,
                 params,
                 return_type,
+                ensures,
                 span: Span {
                     line: decl_line,
                     column: decl_column,
