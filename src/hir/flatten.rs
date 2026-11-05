@@ -1890,6 +1890,12 @@ impl<'r> Lowerer<'r> {
                         me.run_queued_drops()?;
                         Ok(v)
                     }
+                    // A closure body such as `{ return x; }` already returned. An op after the
+                    // `return` is invalid, and nothing reads the value.
+                    None if me.block_terminated() => Ok(Val {
+                        reg: Register(0),
+                        ty: LoweredTy::Scalar(ElementType::I32),
+                    }),
                     // No trailing value: the block is an effect, which is what a nested
                     // `unsafe { unsafe { .. } }` parses to. Hand back a constant for the value
                     // position nobody should be using it in, as `barrier()` does.
