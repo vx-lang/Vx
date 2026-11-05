@@ -30,7 +30,8 @@ An integer can be written in decimal (`42`), hex (`0x2A`), octal (`0o52`) or bin
 `_` can separate groups of digits in any of them: `1_000_000`, `0xDEAD_BEEF`, `0b1111_0000`. The
 spelling does not change the value or the type. A literal takes the type its context asks for, or
 the type its suffix names: `0xFFu8` is the `u8` 255. A prefixed literal is an integer, so it has no
-fraction (`0x1.5` is an error) and cannot take a float suffix.
+fraction (`0x1.5` is an error) and cannot take a float suffix. It has no exponent either: in
+`0x1E-5`, `E` is a hex digit, so the value is `0x1E - 5`.
 
 ```rust
 fn main() -> i32 {

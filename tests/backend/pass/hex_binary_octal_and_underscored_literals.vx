@@ -9,9 +9,10 @@
 // `_` can separate groups of digits in any spelling (`1_000_000`, `0xDEAD_BEEF`). The
 // spelling changes nothing about the value, so each line prints what its decimal spelling
 // would. A prefixed literal takes a type suffix and the type of its context like a decimal
-// one, and a decimal with `_` can still have a fraction.
+// one, and a decimal with `_` can still have a fraction. In a hex literal `E` is a digit
+// and not an exponent, so `0x1E-5` is 0x1E minus 5.
 //
-// EXPECT: 42 42 42 42 1000000 3735928559 255 240 -42 1 1
+// EXPECT: 42 42 42 42 1000000 3735928559 255 240 -42 1 1 25
 
 fn main() -> i32 {
   let hex = 0x2A;
@@ -23,6 +24,7 @@ fn main() -> i32 {
   let byte = 0xFFu8;
   let mask = 0b1111_0000u8;
   let neg = -0x2A;
+  let hex_minus = 0x1E-5;
   let half : i32 = if 1_000.5 == 1000.5 {
     1
   } else {
@@ -54,5 +56,7 @@ fn main() -> i32 {
   print(half);
   print(" ");
   print(same);
+  print(" ");
+  print(hex_minus);
   return 0;
 }
