@@ -1,0 +1,78 @@
+//===- a_match_value_whose_arms_use_their_bindings.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `match` gives a value, and its arms compute that value from the variables their patterns
+// bind. The code generator must find the type of the value from the arms. Both code generators
+// compile each function here.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}negated -4 0{{$}}
+// CHECK: {{^}}some or minus one 42 -1{{$}}
+// CHECK: {{^}}area 12 25{{$}}
+
+import core::option;
+
+enum Shape {
+  Circle(i64),
+  Empty,
+}
+
+enum Size {
+  Circle(i64),
+  Square(i64),
+}
+
+// The first arm is `-r`. The second arm, `0`, gives the type.
+fn negated(s : Shape) -> i64 {
+  let v = match s {
+    Shape::Circle(r) => {
+      -r
+    }
+    Shape::Empty => {
+      0
+    }
+  };
+  return v;
+}
+
+// The patterns do not say `Option<i64>`. The value that the match reads does.
+fn some_or_minus_one(o : Option<i64>) -> i64 {
+  let v = match o {
+    Option::Some(x) => {
+      x
+    }
+    Option::None => {
+      -1
+    }
+  };
+  return v;
+}
+
+// Each arm is arithmetic on its binding, with no literal to give the type.
+fn area(s : Size) -> i64 {
+  let a = match s {
+    Size::Circle(r) => {
+      r * 3
+    }
+    Size::Square(w) => {
+      w * w
+    }
+  };
+  return a;
+}
+
+fn main() -> i32 {
+  println!("negated {} {}", negated(Shape::Circle(4)), negated(Shape::Empty));
+  println!(
+  "some or minus one {} {}",
+  some_or_minus_one(Option<i64>::Some(42)),
+  some_or_minus_one(Option<i64>::None)
+  );
+  println!("area {} {}", area(Size::Circle(4)), area(Size::Square(5)));
+  return 0;
+}
