@@ -2276,8 +2276,7 @@ fn region_value_slot<'c>(
         return this.fails_as.is_none().then_some(ValueSlot::No);
     }
     let ty = this.fails_as.as_ref().or(this.value_ty.as_ref())?;
-    let ty = gen.lower_type(ty).ok()?;
-    (!gen.is_memref(&ty)).then_some(ValueSlot::Typed(ty))
+    Some(ValueSlot::Typed(gen.lower_type(ty).ok()?))
 }
 
 /// Where a `tasks` block that runs on threads keeps its value, when an exit can leave it.
@@ -2346,6 +2345,92 @@ fn llvm_slot<'c>(
         )])
         .build()?;
     Ok(block.append_operation(op).result(0)?.into())
+}
+
+/// The slot for the value of a `tasks` block. A tensor goes in a `memref<memref<..>>` cell, as
+/// on the flat code generator, so that the lowering can follow the buffer to its drop.
+fn make_value_slot<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    ty: Type<'c>,
+) -> Result<Value<'c, 'c>, LowerError> {
+    if !gen.is_memref(&ty) {
+        return llvm_slot(gen, block, ty);
+    }
+    let desc = format!("memref<{ty}>");
+    let cell = Type::parse(gen.context, &desc).ok_or(LowerError::ParseType(desc))?;
+    let op = OperationBuilder::new("memref.alloca", gen.loc())
+        .add_results(&[cell])
+        .add_attributes(&[(
+            Identifier::new(gen.context, "operandSegmentSizes"),
+            melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[0, 0]).into(),
+        )])
+        .build()?;
+    Ok(block.append_operation(op).result(0)?.into())
+}
+
+/// Stores `val`, of type `ty`, in a slot from `make_value_slot`.
+fn store_to_value_slot<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    val: Value<'c, 'c>,
+    ty: Type<'c>,
+    slot: Value<'c, 'c>,
+) -> Result<(), LowerError> {
+    if !gen.is_memref(&ty) {
+        block.append_operation(
+            OperationBuilder::new("llvm.store", gen.loc())
+                .add_operands(&[val, slot])
+                .build()?,
+        );
+        return Ok(());
+    }
+    // The cell has the type of the block. The value can have a shape with fewer known extents,
+    // as a `memref<?xi64>` for a `Tensor<i64, [2]>`.
+    let cell: melior::ir::r#type::MemRefType = slot.r#type().try_into()?;
+    let want = melior::ir::r#type::ShapedTypeLike::element(&cell);
+    let val = if val.r#type() == want {
+        val
+    } else {
+        block
+            .append_operation(
+                OperationBuilder::new("memref.cast", gen.loc())
+                    .add_operands(&[val])
+                    .add_results(&[want])
+                    .build()?,
+            )
+            .result(0)?
+            .into()
+    };
+    block.append_operation(
+        OperationBuilder::new("memref.store", gen.loc())
+            .add_operands(&[val, slot])
+            .build()?,
+    );
+    Ok(())
+}
+
+/// Loads the value of type `ty` from a slot from `make_value_slot`.
+fn load_from_value_slot<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    slot: Value<'c, 'c>,
+    ty: Type<'c>,
+) -> Result<Value<'c, 'c>, LowerError> {
+    let name = if gen.is_memref(&ty) {
+        "memref.load"
+    } else {
+        "llvm.load"
+    };
+    Ok(block
+        .append_operation(
+            OperationBuilder::new(name, gen.loc())
+                .add_operands(&[slot])
+                .add_results(&[ty])
+                .build()?,
+        )
+        .result(0)?
+        .into())
 }
 
 /// Leaves the region of the innermost `tasks` block by the exit `kind`.
@@ -2501,7 +2586,7 @@ fn lower_tasks_block_with_exits<'c>(
         _ => None,
     };
     let value = match value_slot {
-        ValueSlot::Typed(ty) => Some((llvm_slot(gen, block, ty)?, ty)),
+        ValueSlot::Typed(ty) => Some((make_value_slot(gen, block, ty)?, ty)),
         ValueSlot::No => None,
     };
     gen.tasks_exits.push(TasksExits {
@@ -2605,15 +2690,7 @@ fn lower_tasks_block_with_exits<'c>(
         block = next_b;
     }
     if let Some((slot, slot_ty)) = value {
-        val = block
-            .append_operation(
-                OperationBuilder::new("llvm.load", gen.loc())
-                    .add_operands(&[slot])
-                    .add_results(&[slot_ty])
-                    .build()?,
-            )
-            .result(0)?
-            .into();
+        val = load_from_value_slot(gen, block, slot, slot_ty)?;
         ty = slot_ty;
     }
     Ok((val, ty, block))
@@ -2750,11 +2827,7 @@ fn lower_task_region<'c>(
                 body = cancel_on_err(gen, body, val)?;
             }
             if let Some(slot) = value_slot {
-                body.append_operation(
-                    OperationBuilder::new("llvm.store", gen.loc())
-                        .add_operands(&[val, slot])
-                        .build()?,
-                );
+                store_to_value_slot(gen, body, val, ty, slot)?;
             } else if wants_value {
                 result_types.push(ty);
                 yielded.push(val);
