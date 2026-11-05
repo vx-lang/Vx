@@ -17,7 +17,7 @@
 // holds the value. A drop takes 1 away with `Release`. The drop that takes the count to 0 runs an
 // `Acquire` fence before it drops the value. So every use of the value through another `Arc`
 // happens before the drop of the value. formal/memory_model/tests/arc_last_drop_*.litmus check
-// this order.
+// this order, and formal/memory_model/lean/VxMemoryModel/Arc.lean proves it.
 //===----------------------------------------------------------------------===//
 import core::marker;
 import core::mem;
