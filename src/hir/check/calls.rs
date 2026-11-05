@@ -3744,7 +3744,10 @@ impl<'a> TypeChecker<'a> {
                     }
                     // `x.drop()` would run `drop`, and `x` would be dropped again when its owner
                     // gives it up, as in Rust.
-                    if ib.trait_name.as_deref() == Some("Drop") && !self.speculating {
+                    if ib.trait_name.as_deref() == Some("Drop")
+                        && _method.as_ref() == "drop"
+                        && !self.speculating
+                    {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E4012,
                             "`drop` is called for you when a value is dropped, and cannot be \

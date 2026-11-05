@@ -29,6 +29,7 @@
 // CHECK-NEXT: {{^}}the drop gave up, cancelled true{{$}}
 // CHECK-NEXT: {{^}}the drop took less than 5 seconds: true{{$}}
 
+import core::time;
 import std::sync::channel;
 import std::sync::wait;
 import std::time;
@@ -89,16 +90,16 @@ impl Drop for Waiter {
 fn main() -> i32 {
   let (tx, rx) = channel<i64>(1);
 
-  let start = now();
+  let start = Instant::now();
   within(0.5) {
     let first = gave_up(&rx);
     let second = gave_up(&rx);
     println!("two waits gave up: {} {}", first, second);
   }
-  println!("they took less than 1 second together: {}", now() - start < 1.0);
+  println!("they took less than 1 second together: {}", start.elapsed() < Duration::from_secs(1));
   println!("after the block, cancelled {}", cancelled());
 
-  let nested_start = now();
+  let nested_start = Instant::now();
   within(30.0) {
     within(0.2) {
       println!("the inner block gave up: {}", gave_up(&rx));
@@ -109,23 +110,23 @@ fn main() -> i32 {
       println!("the outer block gave up: {}", gave_up(&rx));
     }
   }
-  println!("nested blocks took less than 5 seconds: {}", now() - nested_start < 5.0);
+  println!("nested blocks took less than 5 seconds: {}", nested_start.elapsed() < Duration::from_secs(5));
 
   // Past the 0.1 seconds of the blocks, a deadline that did not end would still count.
   returns_from_a_block(&rx);
-  sleep(0.2);
+  sleep(Duration::from_millis(200));
   println!("after a return out of a block, cancelled {}", cancelled());
   breaks_from_a_block(&rx);
-  sleep(0.2);
+  sleep(Duration::from_millis(200));
   println!("after a break out of a block, cancelled {}", cancelled());
 
   let (tx2, rx2) = channel<i64>(1);
   let w = Waiter {
     rx : rx2
   };
-  let drop_start = now();
+  let drop_start = Instant::now();
   drop(w);
-  println!("the drop took less than 5 seconds: {}", now() - drop_start < 5.0);
+  println!("the drop took less than 5 seconds: {}", drop_start.elapsed() < Duration::from_secs(5));
   drop(tx2);
   drop(tx);
   return 0;

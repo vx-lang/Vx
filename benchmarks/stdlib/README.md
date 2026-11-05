@@ -47,5 +47,6 @@ once produced a number that measured nothing:
   was not enough: clang moved the call past the second clock read.
 - **Compute the same thing on both sides**, with the same inputs, so the answers can be compared.
 
-`std::time::now()` returns seconds as an `f32`, and `bench_report` takes an `f32`, so a Vx
-result carries about seven significant digits.
+A Vx benchmark reads the clock with `Instant::now()` from `std::time`. The difference of two
+readings is a `Duration`. `bench_report` takes seconds as an `f32`, so the benchmark converts the
+`Duration` with `as_secs_f32()`. A Vx result therefore carries about seven significant digits.

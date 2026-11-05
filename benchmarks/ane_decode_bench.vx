@@ -47,7 +47,7 @@ fn benchmark_matmul(m: i32, k: i32, n: i32, iters: i32) -> i32 {
   let mut out_ane = transfer(out_ane_host, Memory::NPU_HBM);
   let bounds = transfer(bounds_host, Memory::NPU_HBM);
 
-  let t_cpu_start: f32 = now();
+  let t_cpu_start = Instant::now();
   for _iter in 0..iters {
     for i in 0..m {
       for j in 0..n {
@@ -59,8 +59,8 @@ fn benchmark_matmul(m: i32, k: i32, n: i32, iters: i32) -> i32 {
       }
     }
   }
-  let t_cpu_end: f32 = now();
-  print!(t_cpu_end - t_cpu_start);
+  let t_cpu_end = Instant::now();
+  print!((t_cpu_end - t_cpu_start).as_secs_f32());
 
   // Warmup NPU kernel
   spawn on(Topology::NPU[0]) {
@@ -78,7 +78,7 @@ fn benchmark_matmul(m: i32, k: i32, n: i32, iters: i32) -> i32 {
     }
   }
 
-  let t_ane_start: f32 = now();
+  let t_ane_start = Instant::now();
   for _iter in 0..iters {
     spawn on(Topology::NPU[0]) {
       let m_npu = bounds[0][0] as i32;
@@ -95,8 +95,8 @@ fn benchmark_matmul(m: i32, k: i32, n: i32, iters: i32) -> i32 {
       }
     }
   }
-  let t_ane_end: f32 = now();
-  print!(t_ane_end - t_ane_start);
+  let t_ane_end = Instant::now();
+  print!((t_ane_end - t_ane_start).as_secs_f32());
 
   let out_ane_res = transfer(out_ane, Memory::CPU_DRAM);
   for i in 0..m {
@@ -120,7 +120,7 @@ fn benchmark_rmsnorm(dim: i32, iters: i32) -> i32 {
     w_host[0][j] = 1.0;
   }
 
-  let t_cpu_start: f32 = now();
+  let t_cpu_start = Instant::now();
   for _iter in 0..iters {
     let mut ss: f32 = 0.0;
     for j in 0..dim {
@@ -139,8 +139,8 @@ fn benchmark_rmsnorm(dim: i32, iters: i32) -> i32 {
       out_cpu_host[0][j] = w * (ss * val);
     }
   }
-  let t_cpu_end: f32 = now();
-  print!(t_cpu_end - t_cpu_start);
+  let t_cpu_end = Instant::now();
+  print!((t_cpu_end - t_cpu_start).as_secs_f32());
   assert(out_cpu_host[0][0] != -9999.0, "Prevent DCE");
 
   return 0;
@@ -152,7 +152,7 @@ fn benchmark_softmax(seq_len: i32, iters: i32) -> i32 {
     x_host[0][j] = 0.5;
   }
 
-  let t_cpu_start: f32 = now();
+  let t_cpu_start = Instant::now();
   for _iter in 0..iters {
     let mut max_val = x_host[0][0];
     for j in 1..seq_len {
@@ -174,8 +174,8 @@ fn benchmark_softmax(seq_len: i32, iters: i32) -> i32 {
       x_host[0][j] = val / sum;
     }
   }
-  let t_cpu_end: f32 = now();
-  print!(t_cpu_end - t_cpu_start);
+  let t_cpu_end = Instant::now();
+  print!((t_cpu_end - t_cpu_start).as_secs_f32());
   assert(x_host[0][0] != -9999.0, "Prevent DCE");
 
   return 0;
@@ -189,7 +189,7 @@ fn benchmark_rope(head_dim: i32, iters: i32) -> i32 {
     k[0][j] = 0.5;
   }
 
-  let t_cpu_start: f32 = now();
+  let t_cpu_start = Instant::now();
   for _iter in 0..iters {
     let pos = 100;
     for i in 0..head_dim {
@@ -216,8 +216,8 @@ fn benchmark_rope(head_dim: i32, iters: i32) -> i32 {
       }
     }
   }
-  let t_cpu_end: f32 = now();
-  print!(t_cpu_end - t_cpu_start);
+  let t_cpu_end = Instant::now();
+  print!((t_cpu_end - t_cpu_start).as_secs_f32());
   assert(q[0][0] != -9999.0, "Prevent DCE");
 
   return 0;
