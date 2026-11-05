@@ -778,7 +778,7 @@ impl<'a> TypeChecker<'a> {
         // Shadowing: this binding hides any earlier one with the same name, so earlier
         // facts about the name are now about a dead binding and must not participate in
         // proofs (a stale `i == 1` beside a new `i == 9` proves anything). Neutralized
-        // for mutable bindings too -- they record no new fact, but they still shadow.
+        // for mutable bindings too.
         self.set_mutable(name.as_ref(), *_is_mut);
         let pointer = self.pointer_value_for(name.as_ref(), expr);
         self.neutralize_facts_mentioning(name.as_ref());
@@ -790,8 +790,10 @@ impl<'a> TypeChecker<'a> {
         // (Vx#353). An `unsafe` block holding only a value is that value.
         let value = self.fold_raw_extent(crate::syntax::bare_unsafe_value(expr));
         // In `let y = y + 1`, the `y` on the right is the old variable, and the fact
-        // `y == y + 1` would be false.
-        if !*_is_mut && !crate::hir::check::raw::expr_mentions(&value, name.as_ref()) {
+        // `y == y + 1` would be false. Each change of a `let mut` ends its facts. Its fact
+        // must be one that the prover can model, so that no new program warns.
+        let recorded = !*_is_mut || crate::hir::prover::is_modelled(&value);
+        if recorded && !crate::hir::check::raw::expr_mentions(&value, name.as_ref()) {
             let id_expr = Expr::Identifier(IdentifierExpr {
                 name: name.clone(),
                 span: Span::default(),
@@ -1711,6 +1713,22 @@ impl<'a> TypeChecker<'a> {
             );
         }
 
+        // `x op= v` gives `x` the value of `x op v`.
+        let assigned = match op {
+            Some(op) => Expr::BinaryOp(BinaryOpExpr {
+                lhs: Box::new(lhs.clone()),
+                op: op.clone(),
+                rhs: Box::new(rhs.clone()),
+                span: Span::default(),
+                operand_ty: match &lhs_ty {
+                    Type::Scalar(elem) => Some(elem.clone()),
+                    _ => None,
+                },
+            }),
+            None => rhs.clone(),
+        };
+        let new_fact = self.fact_of_an_assignment(lhs, &assigned, &lhs_ty);
+
         // A fact the prover holds about the assigned variable stops being true here. A write to
         // a field, an element or through a pointer drops every fact about the variable.
         fn assigned_root(place: &Expr) -> Option<&crate::symbol::Symbol> {
@@ -1736,6 +1754,7 @@ impl<'a> TypeChecker<'a> {
                 self.note_a_change_to_variable(root.to_string());
             }
         }
+        self.consteval.constraints.extend(new_fact);
         if let Expr::Identifier(id) = lhs {
             self.note_pointer_value(id.name.as_ref(), pointer);
         }
@@ -1747,20 +1766,6 @@ impl<'a> TypeChecker<'a> {
         // Keep the compile-time value of the assigned variable in step with the assignment.
         // An assignment the evaluator cannot compute makes the variable unknown rather than
         // leaving the previous value behind, which later reads would report as a certainty.
-        // `x op= v` gives `x` the value of `x op v`.
-        let assigned = match op {
-            Some(op) => Expr::BinaryOp(BinaryOpExpr {
-                lhs: Box::new(lhs.clone()),
-                op: op.clone(),
-                rhs: Box::new(rhs.clone()),
-                span: Span::default(),
-                operand_ty: match &lhs_ty {
-                    Type::Scalar(elem) => Some(elem.clone()),
-                    _ => None,
-                },
-            }),
-            None => rhs.clone(),
-        };
         match lhs {
             Expr::Identifier(IdentifierExpr { name, span: _ }) => {
                 let tmp_env = self.consteval_snapshot();

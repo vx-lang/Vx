@@ -1,0 +1,87 @@
+//===- prover_facts_of_a_variable_that_changes.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// The facts that `let mut` and an assignment give stay true only until the variable changes. So
+// nothing proves these `ensures` and `requires`, and the comment above each function shows a
+// value that makes one false.
+
+fn add_one_through(p : &mut i32) -> i32 {
+  *p = *p + 1;
+  return 0;
+}
+
+fn need_five(a : i32, b : i32) -> i32
+requires a == 5 {
+  return a + b;
+}
+
+// Returns 4. The fact `x == 3` is about the old value.
+fn old_value() -> i32
+ensures return == 3 {
+  let mut x : i32 = 3;
+  x = x + 1;
+  // CHECK: Error[E8001] at {{.*}}prover_facts_of_a_variable_that_changes.vx:[[@LINE+1]]:3: Function 'old_value' cannot prove postcondition
+  return x;
+}
+
+// `in_a_branch(false)` returns 3. The fact `x == 4` ends with the branch.
+fn in_a_branch(c : bool) -> i32
+ensures return == 4 {
+  let mut x : i32 = 3;
+  if c {
+    x = x + 1;
+  }
+  // CHECK: Error[E8001] at {{.*}}prover_facts_of_a_variable_that_changes.vx:[[@LINE+1]]:3: Function 'in_a_branch' cannot prove postcondition
+  return x;
+}
+
+// The fact `i == 5` holds on the first pass only. The second pass calls `need_five(6, 0)`.
+fn in_a_loop() -> i32 {
+  let mut i : i32 = 5;
+  while i < 10 {
+    // CHECK: Error[E8006] at {{.*}}prover_facts_of_a_variable_that_changes.vx:[[@LINE+1]]:{{[0-9]+}}: this call to 'need_five' may not meet its precondition `a == 5`
+    let _ = need_five(i, 0);
+    i = i + 1;
+  }
+  return i;
+}
+
+// Returns 6.
+fn after_a_call() -> i32
+ensures return == 5 {
+  let mut x : i32 = 5;
+  let _ = add_one_through(&mut x);
+  // CHECK: Error[E8001] at {{.*}}prover_facts_of_a_variable_that_changes.vx:[[@LINE+1]]:3: Function 'after_a_call' cannot prove postcondition
+  return x;
+}
+
+// Returns 8. Each old value of `x` has its own name, so the facts about 3 and about 4 do not meet.
+fn two_changes() -> i32
+ensures return == 9 {
+  let mut x : i32 = 3;
+  x = x + 1;
+  x = x * 2;
+  // CHECK: Error[E8001] at {{.*}}prover_facts_of_a_variable_that_changes.vx:[[@LINE+1]]:3: Function 'two_changes' cannot prove postcondition
+  return x;
+}
+
+// The first argument is the old `x`, so this calls `need_five(3, 0)`. The `unsafe` block is only a
+// way to write an assignment inside an argument.
+fn in_an_argument() -> i32 {
+  let mut x : i32 = 3;
+  // CHECK: Error[E8006] at {{.*}}prover_facts_of_a_variable_that_changes.vx:[[@LINE+1]]:{{[0-9]+}}: this call to 'need_five' may not meet its precondition `a == 5`
+  let r = need_five(x, unsafe { x = 5; 0 });
+  return r + x;
+}
+
+fn main() -> i32 {
+  println!("{} {} {} {} {} {}", old_value(), in_a_branch(false), in_a_loop(), after_a_call(), two_changes(), in_an_argument());
+  return 0;
+}
+// CHECK: 6 error(s) emitted
