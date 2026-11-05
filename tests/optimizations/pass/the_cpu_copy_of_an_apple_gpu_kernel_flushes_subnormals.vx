@@ -1,0 +1,43 @@
+// The Apple GPU flushes a subnormal f32 to 0, so the CPU copy of an Apple GPU kernel does too.
+// The kernel halves 4e-38, 2e-38, 1e-39 and 1. The second and third results are subnormal, so
+// both are 0. First one worker runs the four rows, and then each row runs on its own worker.
+// VX_METAL=0 runs the CPU copy on a Mac. On another host, the CPU copy runs anyway.
+//
+// RUN: env VX_METAL=0 VX_HOST_THREADS=1 vxc %s --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_METAL=0 VX_HOST_THREADS=4 vxc %s --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: halve 14272477 0 0 1056964608
+// CHECK-NEXT: halve 14272477 0 0 1056964608
+// CHECK-NEXT: halve 14272477 0 0 1056964608
+// CHECK-NEXT: halve 14272477 0 0 1056964608
+
+import core::num;
+
+pub fn halve(dst : &mut Tensor<f32, [?, ?], Memory::HBM>, src : &Tensor<f32, [?, ?], Memory::HBM>, h : i32, w : i32) -> void {
+  spawn on(Topology::Device) {
+    for y in 0..h across blocks {
+      for x in 0..w across lanes(256) {
+        dst[y][x] = src[y][x] * 0.5;
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  // Each row holds the bits of 4e-38, 2e-38, 1e-39 and 1.
+  let mut tiny = Tensor<f32, [4, 4]>::fill(0.0);
+  for y in 0..4 {
+    tiny[y][0] = f32::from_bits(22661085);
+    tiny[y][1] = f32::from_bits(14272477);
+    tiny[y][2] = f32::from_bits(713624);
+    tiny[y][3] = 1.0;
+  }
+  let tiny_gpu = transfer(tiny, Memory::HBM);
+  let mut halves = transfer(Tensor<f32, [4, 4]>::fill(0.0), Memory::HBM);
+  halve(&mut halves, &tiny_gpu, 4, 4);
+  let host = transfer(halves, Memory::CPU_DRAM);
+  for y in 0..4 {
+    println!("halve {} {} {} {}", host[y][0].to_bits(), host[y][1].to_bits(), host[y][2].to_bits(), host[y][3].to_bits());
+  }
+  return 0;
+}
