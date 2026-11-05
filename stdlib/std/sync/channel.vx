@@ -21,7 +21,10 @@
 // Vyukov's queue, `full k` and `taken (k + 1)` are the same number when `n` is 1.
 //
 // So a `send` waits only for the `recv` `n` places before it, and a `recv` only for its own
-// `send`. Each access to a word is a `SeqCst` atomic, as in the model.
+// `send`. A `send` takes its number with a `Relaxed` add. The loads of a slot in `send`, `recv`
+// and `try_recv` are `Acquire`, and their stores to it are `Release`
+// (`formal/memory_model/lean/VxMemoryModel/ChannelOrders.lean`). The other accesses stay `SeqCst`.
+// With release and acquire, a wake could miss a sleeper while the sleeper misses the wake.
 //
 // The words of a channel are one array of `AtomicI64`: the counters below, and then the number of
 // each slot. A wait blocks the OS thread of the task (`std::sync::wait`). All waits of a channel
@@ -241,14 +244,14 @@ Sender<T> {
       });
     }
     let words = self.words;
-    let k = word(words, SENDS).fetch_add(1, AtomicOrdering::SeqCst);
+    let k = word(words, SENDS).fetch_add(1, AtomicOrdering::Relaxed);
     let slot = word(words, SLOTS + k % self.cap);
     let mut seen = word(words, WAKE).load(AtomicOrdering::SeqCst);
     while word(words, RECEIVER).load(AtomicOrdering::SeqCst) == 1 {
-      if slot.load(AtomicOrdering::SeqCst) == 2 * k {
+      if slot.load(AtomicOrdering::Acquire) == 2 * k {
         let data = self.data;
         unsafe { data[k % self.cap] = v; }
-        slot.store(2 * k + 1, AtomicOrdering::SeqCst);
+        slot.store(2 * k + 1, AtomicOrdering::Release);
         notify(words);
         return Result<void, SendError<T>>::Ok();
       }
@@ -317,11 +320,11 @@ Receiver<T> {
       // Read `SENDERS` before the slot, as the model does. The `send` with the number `k` comes
       // before the drop of its `Sender`, so a closed channel shows its value.
       let closed = word(words, SENDERS).load(AtomicOrdering::SeqCst) == 0;
-      if slot.load(AtomicOrdering::SeqCst) == 2 * k + 1 {
+      if slot.load(AtomicOrdering::Acquire) == 2 * k + 1 {
         word(words, RECVS).store(k + 1, AtomicOrdering::SeqCst);
         let data = self.data;
         let value : T = unsafe { take_slot(data, k % self.cap) };
-        slot.store(2 * (k + self.cap), AtomicOrdering::SeqCst);
+        slot.store(2 * (k + self.cap), AtomicOrdering::Release);
         notify(words);
         return Result<T, RecvError>::Ok(value);
       }
@@ -351,11 +354,11 @@ Receiver<T> {
     loop {
       let slot = word(words, SLOTS + k % self.cap);
       closed = word(words, SENDERS).load(AtomicOrdering::SeqCst) == 0;
-      if slot.load(AtomicOrdering::SeqCst) == 2 * k + 1 {
+      if slot.load(AtomicOrdering::Acquire) == 2 * k + 1 {
         word(words, RECVS).store(k + 1, AtomicOrdering::SeqCst);
         let data = self.data;
         let value : T = unsafe { take_slot(data, k % self.cap) };
-        slot.store(2 * (k + self.cap), AtomicOrdering::SeqCst);
+        slot.store(2 * (k + self.cap), AtomicOrdering::Release);
         notify(words);
         return Result<T, TryRecvError>::Ok(value);
       }
