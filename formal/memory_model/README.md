@@ -240,6 +240,11 @@ that a read of the slot that the winning CAS happens before gets its value.
 shows that the error of at most one failure moves into the slot. The CAS of each other failure
 does not write, so that failure drops its error. A task with no `result` never reads the slot, so
 `join` gives no error to its caller.
+`Arc.lean` checks the orders of `stdlib/std/sync/arc.vx`. A clone adds 1 to the count with a
+relaxed read-modify-write, and a drop takes 1 away with a release one. The drop that reads 1 runs
+an acquire fence and frees the value. `arc_last_drop_hb_free` shows that each event before another
+drop happens before each event after that fence. The clones and drops between the two drops form a
+release sequence. `arc_last_drop_release_sequence.litmus` checks this with three tasks.
 `ChannelExample.lean` builds a run where the main code sends 7 and drops its sender, and a task
 makes two `recv`s. The first gets 7, and the second finds the channel closed. `check` finds that
 the model allows this run with no data race. `MutexExample.lean` builds a run where a lock orders
