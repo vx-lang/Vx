@@ -190,6 +190,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/across_loops_run_in_order_on_the_cpu.vx",         // needs --machine
             "optimizations/pass/atomic_adds_in_across_loops.vx",                  // needs --machine
             "optimizations/pass/functions_generic_over_memory.vx",                // needs --machine
+            "optimizations/pass/functions_that_run_where_they_are_called.vx",     // needs --machine
             "optimizations/pass/element_atomics_in_across_loops.vx",              // needs --machine
             "optimizations/pass/float_atomics_in_across_loops.vx",                // needs --machine
             "optimizations/pass/scoped_fences_in_across_loops.vx",                // needs --machine

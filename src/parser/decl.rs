@@ -170,7 +170,7 @@ impl<'a> Parser<'a> {
         };
         let name = self.expect_identifier("Expected function name")?;
 
-        let generics = self.parse_generic_params()?;
+        let mut generics = self.parse_generic_params()?;
 
         self.consume(&TokenType::LeftParen, "Expected '(' after function name")?;
         self.mut_params.clear();
@@ -180,7 +180,19 @@ impl<'a> Parser<'a> {
 
         let mut topology = Topology::CPU;
         if self.match_token(&TokenType::On) {
-            topology = self.parse_topology()?;
+            topology = self.parse_topology_or_any()?;
+        }
+        // `on Topology::Any` is short for `<D : Topology> .. on Topology::D` with a `D` that no
+        // parameter names.
+        if topology == Topology::Custom(crate::syntax::ANY_TOPOLOGY.into()) {
+            generics.push(GenericParam::Type {
+                name: crate::syntax::ANY_TOPOLOGY_PARAM.into(),
+                bounds: vec![crate::syntax::TraitBound::named("Topology")],
+            });
+            // The end of this function pops one name for each generic.
+            self.generic_params
+                .push(crate::syntax::ANY_TOPOLOGY_PARAM.to_string());
+            topology = Topology::Custom(crate::syntax::ANY_TOPOLOGY_PARAM.into());
         }
 
         if !self.match_token(&TokenType::Arrow) {

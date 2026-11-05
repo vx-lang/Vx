@@ -1,0 +1,66 @@
+//===- functions_that_run_where_they_are_called.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `on Topology::Any` says that a function runs where it is called. It is short for
+// `fn f<D : Topology>(..) on Topology::D` with a `D` that no parameter names. The device region
+// and `main` call the same functions, and each call gets its own copy. The GPU kernel inlines
+// the copies that the region calls, so it stores the 7 of `seven`.
+//
+// `Cell::nine` is a method in an `impl<T>` block, and the method after it still knows `T`.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s -j 2 --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=PTX
+// CHECK: device 7 5 host 7 0 9 4
+// PTX: .entry vx_npu_kernel_0(
+// PTX-SAME: st.global.b32 {{[^"]*}}, 7;
+
+struct Cell<T> {
+  v : T,
+}
+
+impl<T> Cell<T> {
+  fn nine(self : Cell<T>) on Topology::Any -> i32 {
+    return 9;
+  }
+
+  fn get(self : Cell<T>) -> T {
+    return self.v;
+  }
+}
+
+fn seven() on Topology::Any -> i32 {
+  return 7;
+}
+
+fn clamp_i32(v : i32, lo : i32, hi : i32) on Topology::Any -> i32 {
+  if v < lo {
+    return lo;
+  }
+  if v > hi {
+    return hi;
+  }
+  return v;
+}
+
+fn main() -> i32 {
+  let mut out = transfer(Tensor<i32, [2]>::fill(0), Memory::HBM);
+  spawn on(Topology::Device) {
+    out[0] = seven();
+    out[1] = clamp_i32(12, 0, 5);
+  }
+  let o = transfer(out, Memory::CPU_DRAM);
+  let c = Cell<i32> {
+    v : 4
+  };
+  let d = Cell<i32> {
+    v : 4
+  };
+  println!("device {} {} host {} {} {} {}", o[0], o[1], seven(), clamp_i32(-3, 0, 5), c.nine(), d.get());
+  return 0;
+}

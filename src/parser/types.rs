@@ -35,6 +35,19 @@ pub fn parse_type_text(text: &str) -> Option<Type> {
 
 impl<'a> Parser<'a> {
     pub(crate) fn parse_topology(&mut self) -> ParseResult<'a, Topology> {
+        let topology = self.parse_topology_or_any()?;
+        if topology == Topology::Custom(crate::syntax::ANY_TOPOLOGY.into()) {
+            return Err(self.error(
+                "`Topology::Any` can only follow `on` in a function signature, where it means \
+                 that the function runs where it is called",
+            ));
+        }
+        Ok(topology)
+    }
+
+    /// `parse_topology`, but `Topology::Any` is allowed. Only the `on` clause of a function
+    /// gives it a meaning.
+    pub(crate) fn parse_topology_or_any(&mut self) -> ParseResult<'a, Topology> {
         self.consume(&TokenType::Topology, "Expected 'Topology'")?;
         self.consume(&TokenType::DoubleColon, "Expected '::' after 'Topology'")?;
         let ident = match &self.advance().kind {

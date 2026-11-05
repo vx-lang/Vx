@@ -142,6 +142,22 @@ fn run_on<D: Topology>(x: Pinned<i32, Topology::D>) -> i32 {
 where its caller runs. Host code and a `spawn on(Topology::Device)` region can both call a library
 function written this way, and each one gets its own copy.
 
+`on Topology::Any` is short for that form, with a `D` that no parameter names. These two
+functions differ only in their names:
+
+```rust
+fn add_one<D: Topology>(x: i32) on Topology::D -> i32 {
+    return x + 1;
+}
+
+fn add_one_any(x: i32) on Topology::Any -> i32 {
+    return x + 1;
+}
+```
+
+`Topology::Any` can follow only `on` in a function signature, and no topology can be called
+`Any` (E6016).
+
 **Memory parameters.** A function can also be generic over the memory of a tensor, with an
 `M: Memory` bound. Each call binds `M` to the memory of its tensor argument, and two arguments
 that name `Memory::M` must be in the same memory. A program with no memory called `M` can still
