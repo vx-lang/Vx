@@ -1,0 +1,14 @@
+LISA mutex_unlock_then_lock_relaxed_serving_load
+(* As mutex_unlock_then_lock_relaxed_ticket, but P1 reads serving with a relaxed load. Then
+   nothing orders P0's write before P1's read of the value, and the two race.
+   Expect: sometimes, a data race. *)
+{ next = 1; serving = 0; value = 0; }
+ P0                              | P1                             ;
+ w[plain] value 1                | rmw[rlx] r1 (add r1 1) next    ;
+ rmw[sc] r0 (add r0 1) serving   | r[rlx] r2 serving              ;
+                                 | mov r3 (neq r2 r1)             ;
+                                 | b[] r3 LC01                    ;
+                                 | r[plain] r4 value              ;
+                                 | LC01:                          ;
+scopes: (system P0 P1)
+exists (1:r2 = 1)

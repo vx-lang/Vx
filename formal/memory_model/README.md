@@ -224,6 +224,11 @@ and adds 1 to `serving`. `unlock_hb_lock` gives the edge from each `unlock` to e
 also by `Counter.hb_of_lt`. `Lock.lean` shows that the `unlock` of the ticket `k` reads `serving`
 as `k` (`unlock_ticket`). So `lock_excl` shows that two tasks never hold a lock at the same time:
 each event of the block of ticket `k` happens before each event of the block of a later ticket.
+`MutexOrders.lean` shows the same for the orders of `Mutex` in the library, on executions. A
+`lock` takes its ticket with a relaxed read-modify-write, and reads `serving` with acquire.
+`lock_unlock_hb_lock` gives the edge from an unlock to a later `lock`, through a release sequence
+of the unlocks between them. `mutex_excl` shows that two `lock`s never hold the lock at the same
+time.
 `Fifo.lean` shows that each `recv` gets the value of one `send`, in order (`ring_fifo`). The
 `recv` with the number `k` reads element `k` of the values, and only the `send` with the number
 `k` writes it. By `ring_once`, two reads of the same write belong to the same `recv`, so no value

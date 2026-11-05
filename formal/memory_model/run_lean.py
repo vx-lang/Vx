@@ -178,7 +178,9 @@ def main():
     tests = sys.argv[1:] or sorted(
         os.path.join(HERE, "tests", f) for f in os.listdir(os.path.join(HERE, "tests"))
         if f.endswith(".litmus"))
-    tests = [t for t in tests if not re.search(r"\[\w+,\w+\]|\bf\[", open(t).read())]
+    # The parser reads only loads and stores. Skip fences, read-modify-writes and branches.
+    tests = [t for t in tests
+             if not re.search(r"\[\w+,\w+\]|\bf\[|\brmw\[|\bb\[", open(t).read())]
     failed = 0
     for test in tests:
         errors = check(herd7, test)
