@@ -876,6 +876,19 @@ void vx_plugin_release_future(uint64_t future_id) {
   // No-op for dummy implementation
 }
 
+/// No tensor maps without a CUDA GPU: the CPU copy of a kernel never reads the
+/// map.
+int64_t vx_plugin_tensor_map(int64_t base, int64_t rank, int64_t elem_bytes,
+                             int64_t d0, int64_t d1, int64_t d2, int64_t d3,
+                             int64_t d4, int64_t s0, int64_t s1, int64_t s2,
+                             int64_t s3, int64_t s4, int64_t b0, int64_t b1,
+                             int64_t b2, int64_t b3, int64_t b4) {
+  (void)base, (void)rank, (void)elem_bytes, (void)d0, (void)d1, (void)d2;
+  (void)d3, (void)d4, (void)s0, (void)s1, (void)s2, (void)s3, (void)s4;
+  (void)b0, (void)b1, (void)b2, (void)b3, (void)b4;
+  return 0;
+}
+
 int32_t vx_plugin_control(uint32_t opcode, void *payload) {
   if (opcode == VX_CTRL_GET_DEVICE_COUNT) {
     return 1; // One Apple NPE device available
