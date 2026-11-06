@@ -8,7 +8,8 @@ of lean/VxMemoryModel/Scopes.lean, and for a test without scopes and barriers al
 lean/VxMemoryModel/Rc11.lean. The final states, the observation and the race flag must be the
 same as those of herd7 on vx.cat.
 
-Usage: run_lean.py [test.litmus ...]. Needs lake (Lean 4) and herd7.
+Usage: run_lean.py [test.litmus ...]. Needs lake (Lean 4) and herd7. The script builds the checker
+lean/CheckMain.lean with lake and gives it every candidate execution on its input.
 """
 
 import itertools
@@ -17,14 +18,14 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 
 import run_litmus
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LEAN = os.path.join(HERE, "lean")
-ORDERS = {"plain": ".plain", "rlx": ".rlx", "acq": ".acq", "rel": ".rel",
-          "acq_rel": ".acqRel", "sc": ".sc", "barrier": ".plain"}
+CHECKER = os.path.join(LEAN, ".lake", "build", "bin", "vxcheck")
+ORDERS = {"plain": "plain", "rlx": "rlx", "acq": "acq", "rel": "rel",
+          "acq_rel": "acqRel", "sc": "sc", "barrier": "plain"}
 LEVELS = ["subgroup", "block", "device", "system"]
 INSTR = re.compile(r"^(r|w|f|rmw)\[(\w+)(?:,(\w+))?\]\s*(.*)$")
 RMW_ADD = re.compile(r"^(\w+)\s+\(add\s+(\w+)\s+(-?\d+)\)\s+(\w+)$")
@@ -151,43 +152,35 @@ def final_state(events, threads, rf, orders, names):
 
 
 def lean_data(events, first, rf, co, rmw, groups):
-    """The execution in Lean. With `groups`, an SData for Scopes.lean, else a Data."""
+    """The execution as one line of input to the checker (lean/CheckMain.lean). With `groups`,
+    the checker uses Scopes.lean, else Rc11.lean."""
     n = len(events)
-    kinds = ", ".join({"r": ".read", "w": ".write", "f": ".fence"}[e[0]] for e in events)
-    orders = ", ".join(ORDERS[e[1]] for e in events)
+    kinds = " ".join(e[0] for e in events)
+    orders = " ".join(ORDERS[e[1]] for e in events)
     # A fence has no place. Give each fence a place of its own, so that it shares none.
     locs = sorted({e[2] for e in events if e[2] is not None})
-    loc = ", ".join(str(locs.index(e[2]) if e[2] is not None else len(locs) + i)
-                    for i, e in enumerate(events))
-    thread = ", ".join(str(1000 + i if e[4] is None else e[4]) for i, e in enumerate(events))
+    loc = " ".join(str(locs.index(e[2]) if e[2] is not None else len(locs) + i)
+                   for i, e in enumerate(events))
+    thread = " ".join(str(1000 + i if e[4] is None else e[4]) for i, e in enumerate(events))
     po = [(i, j) for i in range(first) for j in range(first, n)]
     po += [(i, j) for i in range(first, n) for j in range(i + 1, n)
            if events[i][4] == events[j][4]]
-    pairs = lambda ps: "[" + ", ".join(f"({a}, {b})" for a, b in ps) + "]"
-    common = (f"[{kinds}] [{orders}] [{loc}] [{thread}] "
-              f"{pairs(po)} {pairs(rf)} {pairs(co)} {pairs(rmw)}")
+    pairs = lambda ps: " ".join(f"{a},{b}" for a, b in ps)
+    fields = [kinds, orders, loc, thread, pairs(po), pairs(rf), pairs(co), pairs(rmw)]
     if groups is None:
-        return f"(Data.ofLists {n} {common}).check"
-    scopes = ", ".join("." + e[5] for e in events)
-    groups = ", ".join(f"({a}, {b}, {c})" for a, b, c in groups)
-    barrier = ", ".join("true" if e[1] == "barrier" else "false" for e in events)
-    return (f"(SData.ofLists {n} {common} [{scopes}] [{groups}] [{barrier}]).check")
+        return " | ".join([f"C {n}"] + fields)
+    scopes = " ".join(e[5] for e in events)
+    groups = " ".join(f"{a},{b},{c}" for a, b, c in groups)
+    barrier = " ".join("1" if e[1] == "barrier" else "0" for e in events)
+    return " | ".join([f"S {n}"] + fields + [scopes, groups, barrier])
 
 
 def lean_check(datas):
-    with tempfile.NamedTemporaryFile("w", suffix=".lean", delete=False) as f:
-        f.write("import VxMemoryModel.ScopedCheck\nopen Vx\n")
-        for d in datas:
-            f.write(f"#eval {d}\n")
-        path = f.name
-    try:
-        out = subprocess.run(["lake", "-d", LEAN, "env", "lean", path], capture_output=True,
-                             text=True, check=False)
-    finally:
-        os.unlink(path)
+    out = subprocess.run([CHECKER], input="\n".join(datas) + "\n", capture_output=True,
+                         text=True, check=False)
     results = re.findall(r"^(none|some \((true|false), (true|false)\))$", out.stdout, re.M)
-    if len(results) != len(datas):
-        sys.exit(f"lean gave {len(results)} results for {len(datas)} executions:\n"
+    if out.returncode != 0 or len(results) != len(datas):
+        sys.exit(f"the checker gave {len(results)} results for {len(datas)} executions:\n"
                  f"{out.stdout}{out.stderr}")
     return [None if r[0] == "none" else (r[1] == "true", r[2] == "true") for r in results]
 
@@ -246,7 +239,7 @@ def main():
     herd7 = os.environ.get("HERD7") or shutil.which("herd7")
     if not herd7 or not shutil.which("lake"):
         sys.exit("herd7 and lake must be on PATH.")
-    subprocess.run(["lake", "-d", LEAN, "build", "-q", "VxMemoryModel.ScopedCheck"], check=True)
+    subprocess.run(["lake", "-d", LEAN, "build", "-q", "vxcheck"], check=True)
     tests = sys.argv[1:] or sorted(
         os.path.join(HERE, "tests", f) for f in os.listdir(os.path.join(HERE, "tests"))
         if f.endswith(".litmus"))

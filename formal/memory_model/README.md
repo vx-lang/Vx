@@ -340,6 +340,10 @@ scope or a barrier goes through `ScopedCheck.lean`, and a test for CPUs through 
 answer cannot come from a second copy of the model. The final states, the observation and the
 race flag must be the same as those of herd7.
 
+The script runs `check` as a compiled program, `vxcheck` (`lean/CheckMain.lean`), that reads one
+execution on each line. This is about 70 times faster than `#eval`, so a test with three blocks
+takes less than a minute (`last_arriver_of_three_blocks.litmus`).
+
 ## Reading a test
 
 ```
@@ -401,6 +405,8 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
 - The rules compare each task of an inner block with all the code of the outer block, also the
   code after the inner block joined it.
 - `run_lean.py` skips the tests with a branch.
+- `vxcheck` copies each execution into arrays before `check` (`fastData`). No theorem shows that
+  the copy equals `Data.ofLists`. On the tests, its answers are those of `#eval`.
 - The model covers only C0 to C7. The rules for sequential code, E1 to E7 and A1 to A6, are not in
   it.
 - `Consistent` does not ask that `co` orders the writes to each place. A theorem that needs it
