@@ -2953,12 +2953,17 @@ pub(crate) fn tensor_descriptor_str(rank: usize) -> String {
     }
 }
 
-/// The rank of a tensor a struct field holds as a descriptor. `None` for any other type,
-/// including a reference to a tensor, which this code generator keeps as a cell holding the
-/// descriptor rather than as the descriptor.
+/// The rank of a tensor a struct field holds as a descriptor, or `None` for any other type. A
+/// reference to a tensor is held as the descriptor too, as on the flat code generator: a pointer
+/// to the cell that holds the descriptor would dangle after the function that made the cell
+/// returns. Writes through a `&mut` still reach the tensor, because the descriptor points at its
+/// data.
 pub(crate) fn tensor_field_rank(ty: &syntax::Type) -> Option<usize> {
     match ty {
         syntax::Type::Tensor(_, dims, _) => Some(dims.len()),
+        syntax::Type::Borrow { inner, .. } if matches!(**inner, syntax::Type::Tensor(..)) => {
+            tensor_field_rank(inner)
+        }
         _ => None,
     }
 }
