@@ -1632,7 +1632,7 @@ impl<'a> TypeChecker<'a> {
                             None
                         } else if changed_in_body.contains(name.as_ref()) {
                             Some((name.clone(), true))
-                        } else if matches!(ty, Type::Struct(..)) && !self.is_copy(ty) {
+                        } else if is_struct_like(ty) && !self.is_copy(ty) {
                             Some((name.clone(), false))
                         } else {
                             None
@@ -1879,5 +1879,14 @@ fn unsuffixed_number_tail(body: &mut [Statement]) -> Option<&mut NumberExpr> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+/// A struct, or an instance of a generic struct such as `Receiver<i64>`.
+fn is_struct_like(ty: &Type) -> bool {
+    match ty {
+        Type::Struct(..) => true,
+        Type::GenericInstance(base, _) => matches!(**base, Type::Struct(..)),
+        _ => false,
     }
 }

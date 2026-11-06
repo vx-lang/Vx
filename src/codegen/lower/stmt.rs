@@ -35,6 +35,17 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
             super::expr::emit_func_return(gen, block, None)?;
             return Ok(None);
         };
+        // `return unsafe { ..; return x; }`, as in the call function of a closure: every path in
+        // the block returns, so the block has no value of its own to return.
+        if crate::syntax::expr::diverges_on_every_path(expr) {
+            let (_, _, block) = gen.generate_expr(expr, block)?;
+            if block.terminator().is_none() {
+                block.append_operation(
+                    OperationBuilder::new("llvm.unreachable", gen.loc()).build()?,
+                );
+            }
+            return Ok(None);
+        }
         gen.expected_type = gen.current_return_type;
         // Offer the caller's buffer to the expression being returned, so a tensor operator builds
         // the answer there instead of in a buffer of its own that we then copy out of. Only an

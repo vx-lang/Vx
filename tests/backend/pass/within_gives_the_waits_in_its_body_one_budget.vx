@@ -14,7 +14,8 @@
 // - In two nested calls, the earlier deadline counts, so 0.2 seconds inside 30 seconds, and 30
 //   seconds inside 0.2 seconds, both give up soon.
 // - `within` gives the value of `body`, and the deadline ends when `body` returns, so a wait
-//   after the call does not give up at once. The same holds for a call in a loop.
+//   after the call does not give up at once. The same holds for a call in a loop, a body that
+//   leaves with `return`, and a body that gives back an error with `?`.
 // - In a `drop`, `within` shortens the drop's limit, and W1036 does not warn about its wait.
 //
 // RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=Warning
@@ -27,6 +28,8 @@
 // CHECK-NEXT: {{^}}nested calls took less than 5 seconds: true{{$}}
 // CHECK-NEXT: {{^}}the body gave 2, and after it, cancelled false{{$}}
 // CHECK-NEXT: {{^}}3 calls in a loop, and after them, cancelled false{{$}}
+// CHECK-NEXT: {{^}}the body returned 7 early, and after it, cancelled false{{$}}
+// CHECK-NEXT: {{^}}the body gave back an error with ?: true, and after it, cancelled false{{$}}
 // CHECK-NEXT: {{^}}the drop gave up, cancelled true{{$}}
 // CHECK-NEXT: {{^}}the drop took less than 5 seconds: true{{$}}
 
@@ -110,6 +113,29 @@ fn main() -> i32 {
   }
   sleep(Duration::from_millis(100));
   println!("{} calls in a loop, and after them, cancelled {}", calls, cancelled());
+
+  let early = within(Duration::from_millis(100), || -> i64 {
+    if gave_up(&rx) {
+      return 7;
+    }
+    return 1;
+  });
+  sleep(Duration::from_millis(200));
+  println!("the body returned {} early, and after it, cancelled {}", early, cancelled());
+
+  let received = within(Duration::from_millis(100), || -> Result<i64, RecvError> {
+    let v = rx.recv()?;
+    return Result<i64, RecvError>::Ok(v);
+  });
+  sleep(Duration::from_millis(200));
+  let mut gave_back_an_error = false;
+  match received {
+    Result<i64, RecvError>::Ok(_v) => {}
+    Result<i64, RecvError>::Err(_e) => {
+      gave_back_an_error = true;
+    }
+  }
+  println!("the body gave back an error with ?: {}, and after it, cancelled {}", gave_back_an_error, cancelled());
 
   let (tx2, rx2) = channel<i64>(1);
   let w = Waiter {

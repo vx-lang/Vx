@@ -1,0 +1,68 @@
+//===- a_closure_that_reads_a_receiver_borrows_it.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A closure that only reads a captured generic struct, here a `Receiver<i64>`, borrows it. It does
+// not take a copy that it drops at the end of each call, so `main` can still use the channel
+// after the calls. One body passes `&rx` to a function, and one gives back an error with `?`.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=Warning
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=Warning
+// CHECK: {{^}}the closure got a value: true{{$}}
+// CHECK-NEXT: {{^}}a send after the call worked{{$}}
+// CHECK-NEXT: {{^}}main got a value: true{{$}}
+// CHECK-NEXT: {{^}}the closure with ? gave back an error: true{{$}}
+
+import core::result;
+import std::sync::channel;
+
+fn run<T>(body : || -> T) -> T {
+  return body();
+}
+
+fn got_one(rx : &Receiver<i64>) -> bool {
+  match rx.recv() {
+    Result<i64, RecvError>::Ok(_v) => {
+      return true;
+    }
+    Result<i64, RecvError>::Err(_e) => {
+      return false;
+    }
+  }
+}
+
+fn main() -> i32 {
+  let (tx, rx) = channel<i64>(4);
+  let _a = tx.send(1);
+  let got = run(|| -> bool {
+    return got_one(&rx);
+  });
+  println!("the closure got a value: {}", got);
+  match tx.send(2) {
+    Result<void, SendError<i64>>::Ok(_) => {
+      println!("a send after the call worked");
+    }
+    Result<void, SendError<i64>>::Err(_e) => {
+      println!("a send after the call failed");
+    }
+  }
+  println!("main got a value: {}", got_one(&rx));
+
+  drop(tx);
+  let received = run(|| -> Result<i64, RecvError> {
+    let v = rx.recv()?;
+    return Result<i64, RecvError>::Ok(v);
+  });
+  let mut gave_back_an_error = false;
+  match received {
+    Result<i64, RecvError>::Ok(_v) => {}
+    Result<i64, RecvError>::Err(_e) => {
+      gave_back_an_error = true;
+    }
+  }
+  println!("the closure with ? gave back an error: {}", gave_back_an_error);
+  return 0;
+}
