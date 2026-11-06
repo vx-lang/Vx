@@ -888,6 +888,7 @@ impl<'a> TypeChecker<'a> {
                 _ => break,
             }
         }
+        self.check_field_change(expr, "this move leaves no value in");
         self.consume_field(&root, &path);
     }
 

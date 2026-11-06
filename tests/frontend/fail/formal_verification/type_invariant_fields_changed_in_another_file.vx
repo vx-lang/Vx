@@ -52,6 +52,9 @@ fn main() -> i32 {
   i.count.bump();
   // CHECK: Error[E8014] at {{.*}}.vx:[[@LINE+1]]:5: `push` takes `&mut self`, so it can change the field `items` of `Interval`.
   i.items.push(2i64);
-  println!("{} {} {}", v.len, u.len, i.lo);
+  let j = Interval::new();
+  // CHECK: Error[E8014] at {{.*}}.vx:[[@LINE+1]]:17: this move leaves no value in the field `items` of `Interval`.
+  let items = j.items;
+  println!("{} {} {} {}", v.len, u.len, i.lo, items.len);
   return 0;
 }

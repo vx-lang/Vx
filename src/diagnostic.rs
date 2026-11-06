@@ -759,8 +759,9 @@ pub enum DiagnosticCode {
     E8013,
     /// Code outside the module of a type with an invariant changes a field of the type. Only
     /// the module (the `.vx` file) that declares the type can write a field, take a `&mut` to a
-    /// field, call a method that takes `&mut self` on a field, or build the type with a struct
-    /// literal. Other code calls a function of the module to change a value of the type. Then
+    /// field, call a method that takes `&mut self` on a field, move a field out of the value, or
+    /// build the type with a struct literal. Other code calls a function of the module to change
+    /// a value of the type. Then
     /// the invariant holds for each value of the type outside its module.
     E8014,
 }

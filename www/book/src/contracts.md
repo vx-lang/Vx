@@ -102,10 +102,17 @@ depth, numbers, operators and the pointer clauses `valid`, `initialized` and `ov
 other function.
 
 Only the module (the `.vx` file) that declares the type can change its fields. Code in another
-module can read each field. It cannot write a field, take a `&mut` to a field, call a method that
-takes `&mut self` on a field, or build the type with a struct literal (`E8014`). It calls a function
-of the module instead. For example, `Vec` has an invariant, so `v.len = 5` is an error outside
-`std::vec`.
+module can read each field. It cannot do these things (`E8014`):
+
+- write a field
+- take a `&mut` to a field
+- call a method that takes `&mut self` on a field
+- move a field out of the value
+- build the type with a struct literal
+
+It calls a function of the module instead. For example, `Vec` has an invariant, so `v.len = 5` is an
+error outside `std::vec`. Code in another module can still assign a whole value, as in
+`v = Vec::new()`.
 
 The prover does not check the invariant yet, so the module of the type must keep it true. Later,
 each use of the type will get the invariant as a fact
