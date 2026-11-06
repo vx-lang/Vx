@@ -282,6 +282,41 @@ static StringRef spaceOfTransfer(vx::TransferOp xfer) {
   return "a device memory space";
 }
 
+/// A topology as the program names it, for a diagnostic: "`Topology::Dev`". A
+/// declared topology's id is a hash of its name, so the id is a last resort.
+static std::string topologyInWords(int32_t topology, StringAttr name) {
+  if (name)
+    return ("`Topology::" + name.getValue() + "`").str();
+  return "topology id " + std::to_string(topology);
+}
+
+/// A placed region as its author knows it, for a diagnostic: "the region placed
+/// on `Topology::Dev` in `main` (kernel `vx_npu_kernel_0`)". The compiler makes
+/// the kernel name from a counter, so it alone does not say which region it is.
+/// A kernel with several launches is named by its first launch.
+static std::string regionInWords(vx::KernelOp kernel) {
+  vx::LaunchOp launch;
+  if (auto module = kernel->getParentOfType<ModuleOp>())
+    module.walk([&](vx::LaunchOp l) {
+      if (l.getCalleeAttr().getValue() != kernel.getSymName())
+        return WalkResult::advance();
+      launch = l;
+      return WalkResult::interrupt();
+    });
+  StringAttr name;
+  func::FuncOp holder;
+  if (launch) {
+    name = launch->getAttrOfType<StringAttr>("vx.topology_name");
+    holder = launch->getParentOfType<func::FuncOp>();
+  }
+  std::string text =
+      "the region placed on " +
+      topologyInWords(static_cast<int32_t>(kernel.getTopology()), name);
+  if (holder)
+    text += (" in `" + holder.getSymName() + "`").str();
+  return text + " (kernel `" + kernel.getSymName().str() + "`)";
+}
+
 static StringRef kernelKindOf(Region &body, Operation **payloadOut = nullptr) {
   if (payloadOut)
     *payloadOut = nullptr;
@@ -2005,13 +2040,10 @@ static LogicalResult diagnoseUnrunnableSpawns(Operation *root) {
     if (!xfer)
       return;
 
-    // A declared topology's id is a hash of its name, so name it instead.
-    std::string where = "topology " + std::to_string(topology);
-    if (auto name = spawn->getAttrOfType<StringAttr>("topology_name"))
-      where = ("`Topology::" + name.getValue() + "`").str();
-
     spawn.emitError()
-        << "this region is placed on " << where
+        << "this region is placed on "
+        << topologyInWords(topology,
+                           spawn->getAttrOfType<StringAttr>("topology_name"))
         << ", but the compiler cannot emit a device kernel for it and its "
            "operands are in '"
         << spaceOfTransfer(xfer)
@@ -5089,8 +5121,7 @@ struct ConvertVxToStandardPass
           refusal = "it hands a value back through a host stack slot, which a "
                     "device cannot address";
         if (refusal) {
-          k.emitWarning() << "kernel `" << k.getSymName()
-                          << "` cannot become a `"
+          k.emitWarning() << regionInWords(k) << " cannot become a `"
                           << archNameOfPipeline(pipeline)
                           << "` device image: " << *refusal
                           << ". It will run on the host instead.";
@@ -5153,8 +5184,7 @@ struct ConvertVxToStandardPass
       // The region keeps the host path, which computes the right answer.
       if (pipeline == DevicePipeline::Spirv) {
         if (auto refusal = spirvRefusalOf(blocker)) {
-          k.emitWarning() << "kernel `" << k.getSymName()
-                          << "` cannot become a `"
+          k.emitWarning() << regionInWords(k) << " cannot become a `"
                           << archNameOfPipeline(pipeline)
                           << "` device image: " << *refusal
                           << ". It will run on the host instead.";
@@ -7366,9 +7396,10 @@ static LogicalResult serializeSpirv(std::unique_ptr<llvm::Module> module,
 ///    the image -- in this process, from the LLVM already linked, so compiling
 ///    a `.vx` file needs no external `llc`.
 ///
-/// An empty image on failure, with `error` naming the stage.
-static DeviceImage spirvImageOf(gpu::GPUModuleOp gpuModule,
-                                std::string &error) {
+/// An empty image on failure, with `error` naming the stage. When kernels are
+/// the cause, `refused` names each one with its own reason instead.
+static DeviceImage spirvImageOf(gpu::GPUModuleOp gpuModule, std::string &error,
+                                SmallVectorImpl<SpirvKernelRefusal> &refused) {
   MLIRContext *context = gpuModule.getContext();
   OwningOpRef<ModuleOp> device = deviceModuleCopy(gpuModule);
 
@@ -7384,7 +7415,7 @@ static DeviceImage spirvImageOf(gpu::GPUModuleOp gpuModule,
     error = "the device module vanished in the pipeline";
     return {};
   }
-  if (failed(flattenSpirvKernelArgs(*kernels.begin(), error)))
+  if (failed(flattenSpirvKernelArgs(*kernels.begin(), error, refused)))
     return {};
 
   PassManager toSpv(context, ModuleOp::getOperationName());
@@ -7964,6 +7995,7 @@ struct ConvertVxToLLVMPass
         exported = std::move(*kernels);
       }
       std::string error;
+      SmallVector<SpirvKernelRefusal> refused;
       DeviceImage image;
       switch (*pipeline) {
       case DevicePipeline::Nvptx:
@@ -7973,7 +8005,7 @@ struct ConvertVxToLLVMPass
         image = DeviceImage{"msl", mslImageOf(m, error)};
         break;
       case DevicePipeline::Spirv:
-        image = spirvImageOf(m, error);
+        image = spirvImageOf(m, error, refused);
         break;
       case DevicePipeline::None:
         llvm_unreachable("the pipeline was checked to be present above");
@@ -8004,6 +8036,31 @@ struct ConvertVxToLLVMPass
         module.walk([&](vx::LaunchOp l) {
           launchesByName[l.getCalleeAttr().getValue()].push_back(l);
         });
+        // The kernels share one image, so all of them lose it when one fails.
+        // Each kernel that fails gets its own reason, and each other kernel is
+        // told about the first one that failed.
+        llvm::StringMap<std::string> reasons;
+        for (const SpirvKernelRefusal &r : refused)
+          reasons[r.kernel] = r.reason;
+        vx::KernelOp firstFailed;
+        if (!refused.empty()) {
+          firstFailed = kernelsByName.lookup(refused.front().kernel);
+          assert(firstFailed && "every gpu.func here has a vx.kernel");
+        }
+        auto cannotBecomeAnImage = [&](vx::KernelOp kernel) {
+          std::string text = regionInWords(kernel) + " cannot become a `" +
+                             archNameOfPipeline(*pipeline).str() +
+                             "` device image";
+          if (!firstFailed)
+            return text + ": " + error;
+          auto own = reasons.find(kernel.getSymName());
+          if (own != reasons.end())
+            return text + ": " + own->second;
+          return text + ". It shares one image with " +
+                 regionInWords(firstFailed) +
+                 ". That region cannot become one: " +
+                 reasons.lookup(firstFailed.getSymName());
+        };
         bool unreadableOperands = false;
         m.walk([&](gpu::GPUFuncOp f) {
           vx::KernelOp kernel = kernelsByName.lookup(f.getName());
@@ -8017,14 +8074,14 @@ struct ConvertVxToLLVMPass
           if (!xfer)
             return;
           kernel.emitError()
-              << "kernel `" << f.getName() << "` cannot become a `"
-              << archNameOfPipeline(*pipeline) << "` device image: " << error
-              << ".\n  Its operands are in '" << spaceOfTransfer(xfer)
+              << cannotBecomeAnImage(kernel)
+              << ".\n  This region's operands are in '" << spaceOfTransfer(xfer)
               << "', declared `managed: explicit` -- memory the host cannot "
-                 "read, so running the kernel on the host instead would read "
+                 "read, so running the region on the host instead would read "
                  "device memory there.\n"
-              << "  Either the kernel must be one the target can compile, or "
-                 "its operands must stay in a space the host can read.";
+              << "  Either every region in the image must be one the target "
+                 "can compile, or this region's operands must stay in a space "
+                 "the host can read.";
           unreadableOperands = true;
         });
         if (unreadableOperands) {
@@ -8035,10 +8092,8 @@ struct ConvertVxToLLVMPass
           vx::KernelOp kernel = kernelsByName.lookup(f.getName());
           if (!kernel)
             return;
-          kernel.emitWarning()
-              << "kernel `" << f.getName() << "` cannot become a `"
-              << archNameOfPipeline(*pipeline) << "` device image: " << error
-              << ". It will run on the host instead.";
+          kernel.emitWarning() << cannotBecomeAnImage(kernel)
+                               << ". It will run on the host instead.";
         });
         continue;
       }

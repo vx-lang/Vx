@@ -1,0 +1,62 @@
+//===- spirv_two_regions_where_only_one_calls_a_helper.vx --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Two placed regions, one in `add_one` and one in `main`, share one SPIR-V
+// image. Only the region in `main` passes a tensor to a helper, which an image
+// cannot do yet, so both run on the host. The warning for the region in
+// `add_one` names the kernel of the region in `main` as the cause.
+//
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s
+// CHECK-DAG: the region placed on `Topology::Dev` in `add_one` (kernel `{{vx_npu_kernel_[0-9]+}}`) cannot become a `spirv64` device image. It shares one image with the region placed on `Topology::Dev` in `main` (kernel `[[FAILED:vx_npu_kernel_[0-9]+]]`). That region cannot become one: it passes a tensor to `second_element`
+// CHECK-DAG: the region placed on `Topology::Dev` in `main` (kernel `[[FAILED]]`) cannot become a `spirv64` device image: it passes a tensor to `second_element`
+// EXPECT: [2,  3,  4,  5]
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+}
+
+fn second_element(a: &Tensor<f32, [4], Memory::GPU_HBM>) on Topology::Dev -> f32 {
+  return a[1];
+}
+
+fn add_one(d: &Tensor<f32, [4], Memory::GPU_HBM>, o: &mut Tensor<f32, [4], Memory::GPU_HBM>) -> i32 {
+  spawn on(Topology::Dev) {
+    for i in 0..4 {
+      o[i] = d[i] + 1.0;
+    }
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let mut h = unsafe { Tensor<f32, [4]>::uninit() };
+  let mut o_h = unsafe { Tensor<f32, [4]>::uninit() };
+  for i in 0..4 {
+    h[i] = i as f32;
+    o_h[i] = 0.0;
+  }
+  let d = transfer(h, Memory::GPU_HBM);
+  let mut o = transfer(o_h, Memory::GPU_HBM);
+
+  let r = add_one(&d, &mut o);
+  spawn on(Topology::Dev) {
+    for i in 0..4 {
+      o[i] = o[i] + second_element(&d);
+    }
+  }
+
+  let back = transfer(o, Memory::CPU_DRAM);
+  print(back);
+  return r;
+}
