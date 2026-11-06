@@ -723,6 +723,9 @@ pub struct TypeChecker<'a> {
     /// prover facts end after the call, because its `requires` is proved before it runs.
     /// `true` marks a variable whose pointer value stays: only the memory behind it changes.
     pub(crate) fact_change_frames: Vec<Vec<(String, bool)>>,
+    /// How many old values the prover's facts have named, as `$old_N` in `x = x + 1`. Each name
+    /// is new, so the facts about two old values of `x` do not meet.
+    pub(crate) old_values: usize,
     /// The raw-pointer facts of the body being checked.
     pub(crate) pointer_facts: crate::hir::check::pointer_facts::PointerFacts,
     /// The last id given to a base or a fact. Never saved or restored, so that two branches
@@ -733,6 +736,8 @@ pub struct TypeChecker<'a> {
     pub(crate) method_call_written: Option<(crate::symbol::Symbol, crate::syntax::Span)>,
     /// The raw-pointer facts at the `break`s of each loop that the checker is in.
     pub(crate) pointer_loops: Vec<crate::hir::check::pointer_facts::LoopExit>,
+    /// The invariants of each loop that the checker is in, for each `continue`.
+    pub(crate) invariant_loops: Vec<crate::hir::stmt::InvariantLoop>,
     /// The branches of `if` and the arms of `match` that the checker is in, for the note of E8006.
     pub(crate) pointer_branches: Vec<String>,
     /// The function whose body the checker checks, as the raw-pointer facts need it.
@@ -820,10 +825,12 @@ impl<'a> TypeChecker<'a> {
             literal_typed_lets: std::collections::HashMap::new(),
             changed_vars: std::collections::HashSet::new(),
             fact_change_frames: Vec::new(),
+            old_values: 0,
             pointer_facts: Default::default(),
             pointer_fact_ids: 0,
             method_call_written: None,
             pointer_loops: Vec::new(),
+            invariant_loops: Vec::new(),
             pointer_branches: Vec::new(),
             pointer_function: Default::default(),
             tasks: Default::default(),
@@ -894,6 +901,10 @@ impl<'a> TypeChecker<'a> {
         let depth = self.scopes.len();
         if let Some(vars) = self.scopes.pop() {
             self.pointer_facts_end_scope(&vars);
+            // After the scope, the name is an outer variable, or no variable.
+            for name in vars.keys() {
+                self.forget_value_facts_about(name.as_ref());
+            }
         }
         self.borrow.moved_vars.pop();
         self.borrow.mutable_vars.pop();
@@ -992,6 +1003,8 @@ impl<'a> TypeChecker<'a> {
         if let Some(bound) = self.borrow.bound_behind_ref.last_mut() {
             bound.remove(&name);
         }
+        // Nor do the facts about the old one, such as an outer `y == 1` under `Some(y)`.
+        self.forget_value_facts_about(&name);
         let current_top = self.active_topology.clone();
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name.into(), (ty, current_top));

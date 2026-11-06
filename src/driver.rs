@@ -557,7 +557,8 @@ impl CompilerDriver {
             let host_arch = Self::host_arch_of(programs.iter());
             // Only the file the user named reports its diagnostics, matching what the
             // sequential driver keeps from its own import pass.
-            let reported = crate::pipeline::Reported::OnlyEntry(filename.into());
+            let reported =
+                crate::pipeline::Reported::OnlyEntry(self.module_loader().root_name(filename));
             // A failed check ends with the line the sequential driver prints, with the file.
             let text = crate::pipeline::compile_modules_mlir_in(
                 programs,
@@ -966,9 +967,7 @@ impl CompilerDriver {
     ) -> Result<(), String> {
         let ast = program_arr
             .iter()
-            .find(|p| {
-                p.module_path == <std::string::String as Clone>::clone(&filename.to_string()).into()
-            })
+            .find(|p| p.module_path == self.module_loader().root_name(filename))
             .unwrap();
         println!("{:#?}", ast);
         Ok(())
@@ -1042,9 +1041,7 @@ impl CompilerDriver {
     > {
         let syntax_idx = program_arr
             .iter()
-            .position(|p| {
-                p.module_path == <std::string::String as Clone>::clone(&filename.to_string()).into()
-            })
+            .position(|p| p.module_path == self.module_loader().root_name(filename))
             .unwrap();
         let ast = program_arr.remove(syntax_idx);
 
@@ -1314,6 +1311,7 @@ impl CompilerDriver {
         if !has_errors {
             checker.errors.inner.extend(unused_functions.inner);
         }
+        checker.errors.drop_repeats();
 
         // The machine-readable verdict, before the human-readable rendering below: one record on
         // stdout carrying every diagnostic plus the resolved staging routes, so an admission

@@ -143,7 +143,7 @@ pub enum DiagnosticCode {
     /// `within` block. A drop runs with cancellation off, so when the other end never acts, the
     /// wait holds up the drop until the limit of the drop: its type's `wait_limit`, 10 seconds by
     /// default. Then the wait gives up, as in a cancelled block. A `wait_limit` that calls them
-    /// gets the warning too, because it runs before the drop and should only return a number.
+    /// gets the warning too, because it runs before the drop and should only return a time.
     W1036,
 
     // --- Parser Errors (E1xxx) ---
@@ -731,7 +731,8 @@ pub enum DiagnosticCode {
     E8007,
     /// A loop invariant that the prover cannot show to hold when the loop starts
     E8008,
-    /// A loop invariant that the prover cannot show to hold after a pass through the loop body
+    /// A loop invariant that the prover cannot show to hold in the next pass, after the loop
+    /// body or after a `continue`
     E8009,
     /// An `mlir!` block whose `dialects` list does not match its body: the body uses an
     /// operation of a dialect that the list does not name, or the list names something that
@@ -1107,6 +1108,38 @@ impl DiagnosticsVec {
                 self.inner.remove(i);
             }
         }
+    }
+
+    /// Drops each diagnostic that repeats an earlier one. The checker checks some bodies twice,
+    /// such as a method that a call checks again, and each problem is reported once.
+    pub fn drop_repeats(&mut self) {
+        let mut seen = std::collections::HashSet::new();
+        self.inner
+            .retain(|d| d.repeat_key().is_none_or(|key| seen.insert(key)));
+    }
+}
+
+/// What makes two diagnostics one report: level, code, file, position and message.
+pub type RepeatKey = (
+    bool,
+    Option<DiagnosticCode>,
+    Option<crate::symbol::Symbol>,
+    (usize, usize, usize),
+    String,
+);
+
+impl Diagnostic {
+    /// `None` for a diagnostic with no position: two of them with one message can be about two
+    /// places, such as two casts that each need `unsafe`.
+    pub fn repeat_key(&self) -> Option<RepeatKey> {
+        let at = self.source_span.as_ref().filter(|s| s.line > 0)?;
+        Some((
+            self.level == DiagnosticLevel::Error,
+            self.code,
+            self.file.clone(),
+            (at.line, at.column, at.length),
+            self.message.to_string(),
+        ))
     }
 }
 

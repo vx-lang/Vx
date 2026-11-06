@@ -3817,14 +3817,14 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             return cancel_call_value(gen, block);
         }
         // Around the call of a `Drop` impl's `drop` (F6, F6a), with the time limit of the
-        // drop in seconds.
+        // drop in nanoseconds.
         if name.as_ref() == crate::syntax::stmt::CANCEL_OFF {
             let (limit, _, block) = gen.generate_expr(&args[0], block)?;
             crate::codegen::lower::call_runtime_void_with(
                 gen,
                 block,
                 "vx_cancel_off",
-                &[(limit, "f64")],
+                &[(limit, "i64")],
             )?;
             return cancel_call_value(gen, block);
         }
@@ -4963,6 +4963,7 @@ fn payload_binding_type(
     gen: &MeliorGenerator<'_>,
     arm: &syntax::MatchArm,
     value: &Expr,
+    scrutinee_ty: Option<&syntax::Type>,
 ) -> Option<syntax::Type> {
     let (Expr::Identifier(id), syntax::Pattern::EnumVariant(en, vn, Some(pats))) =
         (value, &arm.pattern)
@@ -4974,7 +4975,13 @@ fn payload_binding_type(
         .position(|p| matches!(p, syntax::Pattern::Identifier(n) if *n == id.name))?;
     let (base, args) = match crate::parser::types::parse_type_text(en)? {
         syntax::Type::GenericInstance(base, args) => (base.to_string(), args),
-        other => (other.to_string(), Vec::new()),
+        other => {
+            let args = match scrutinee_ty {
+                Some(syntax::Type::GenericInstance(_, args)) => args.clone(),
+                _ => Vec::new(),
+            };
+            (other.to_string(), args)
+        }
     };
     let base = crate::symbol::Symbol::from(base.split('<').next()?);
     let declared = gen
@@ -5024,15 +5031,21 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
         // argument and each arm branches with its own, which is what makes the match evaluate
         // to what its arms say. The type comes from the first such arm rather than from
         // `expected_type`, which is unset for an unannotated `let`.
-        let tail_arm = self.arms.iter().find_map(|arm| match arm.body.last() {
-            Some(syntax::Statement::ExprStmt(syntax::stmt::ExprStmtStmt {
-                expr,
-                has_semi: false,
-                ..
-            })) => Some((arm, expr)),
-            _ => None,
-        });
-        let tail_expr = tail_arm.map(|(_, e)| e);
+        let tail_arms: Vec<_> = self
+            .arms
+            .iter()
+            .filter_map(|arm| match arm.body.last() {
+                Some(syntax::Statement::ExprStmt(syntax::stmt::ExprStmtStmt {
+                    expr,
+                    has_semi: false,
+                    ..
+                })) => Some((arm, expr)),
+                _ => None,
+            })
+            .collect();
+        let tail_expr = tail_arms.first().map(|(_, e)| *e);
+        // A pattern such as `Option::Some(x)` names no type arguments. The scrutinee has them.
+        let scrutinee_ty = gen.infer_ast_type(&self.expr);
         // The fallback to `expected_type` applies only when there *is* a tail expression whose
         // type could not be inferred. Applying it to a match with no tail expression at all
         // would make a statement-position match look value-producing, and every arm would then
@@ -5040,24 +5053,39 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
         // A statement `match` produces no value, whatever its arms end in: a trailing `if` or
         // `unsafe { }` there is a statement too.
         let in_statement = outer_expected == Some(gen.none_ty);
-        let value_ty = tail_expr.filter(|_| !in_statement).and_then(|e| {
-            match e {
-                // `infer_ast_type` has no arm for a bare literal, and an arm body is usually
-                // exactly that. Read the literal's own type, which the checker stamps, and fall
-                // back to how the parser would have typed it.
-                Expr::Number(n) => {
-                    let elem = n.ty.clone().unwrap_or_else(|| {
-                        crate::parser::expr::default_number_elem(n.value.as_ref())
-                    });
-                    gen.lower_type(&syntax::Type::Scalar(elem)).ok()
-                }
-                other => gen
-                    .infer_ast_type(other)
-                    .or_else(|| payload_binding_type(gen, tail_arm?.0, other))
-                    .and_then(|t| gen.lower_type(&t).ok()),
+        // Every arm gives the same type, so the first arm whose value has a known type decides
+        // it. `r * 3` with a payload binding `r` has none, but a later `0` arm does.
+        let arm_value_ty = |gen: &MeliorGenerator<'c>, arm: &syntax::MatchArm, e: &Expr| match e {
+            // `infer_ast_type` has no arm for a bare literal, and an arm body is usually
+            // exactly that. Read the literal's own type, which the checker stamps, and fall
+            // back to how the parser would have typed it.
+            Expr::Number(n) => {
+                let elem = n
+                    .ty
+                    .clone()
+                    .unwrap_or_else(|| crate::parser::expr::default_number_elem(n.value.as_ref()));
+                gen.lower_type(&syntax::Type::Scalar(elem)).ok()
             }
-            .or(gen.expected_type)
-        });
+            other => gen
+                .infer_ast_type(other)
+                .or_else(|| payload_binding_type(gen, arm, other, scrutinee_ty.as_ref()))
+                .or_else(|| match other {
+                    // `r * 3`: the checker gives the operands' type, which is the result's.
+                    Expr::BinaryOp(b) if b.op != syntax::expr::BinaryOp::MatMul => {
+                        b.operand_ty.clone().map(syntax::Type::Scalar)
+                    }
+                    _ => None,
+                })
+                .and_then(|t| gen.lower_type(&t).ok()),
+        };
+        let value_ty = if tail_expr.is_none() || in_statement {
+            None
+        } else {
+            tail_arms
+                .iter()
+                .find_map(|(arm, e)| arm_value_ty(gen, arm, e))
+                .or(gen.expected_type)
+        };
         // An arm gives a value, so the placeholder below would replace it with a wrong one.
         if tail_expr.is_some() && !in_statement && value_ty.is_none() {
             return Err(LowerError::ParseType(

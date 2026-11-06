@@ -11,7 +11,7 @@
 // about such a call, and the fix is `send_for` or `recv_for`, or a `within` block (F6 and F6a in
 // docs/discussions/waiting_tasks_channels_and_task_errors.md). A wait inside a `within` block
 // has the block's limit, so it gets no warning. `wait_limit` runs before cancellation is off,
-// and it should return a number and not wait, so W1036 warns about a wait in it too.
+// and it should return a time and not wait, so W1036 warns about a wait in it too.
 // It is a warning, not an error, because the check does not look into the functions that the
 // `drop` calls.
 //
@@ -84,7 +84,7 @@ impl TypeChecker<'_> {
                 crate::diagnostic::DiagnosticCode::W1036,
                 format!(
                     "'{method}' waits in 'wait_limit'. 'wait_limit' runs before the drop, to say \
-                     how long its waits can take, so it should return a number and not wait"
+                     how long its waits can take, so it should return a time and not wait"
                 ),
                 Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
             );

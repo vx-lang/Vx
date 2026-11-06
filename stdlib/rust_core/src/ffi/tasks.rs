@@ -145,14 +145,14 @@ fn push_deadline(mark: Option<Arc<CancelMark>>, limit_ns: i64, drop: bool) {
 }
 
 /// Before a `drop`: this thread runs with no mark until `vx_cancel_on`, so no wait gives
-/// `Cancelled` (F6), until the deadline of the `drop`. The deadline is `limit` seconds from now,
-/// from the type's `Drop::wait_limit`, or `VX_DROP_WAIT_SECONDS` when that is shorter (F6a). A
+/// `Cancelled` (F6), until the deadline of the `drop`. The deadline is `limit_ns` nanoseconds from
+/// now, from the type's `Drop::wait_limit`, or `VX_DROP_WAIT_SECONDS` when that is shorter. A
 /// `drop` in a `drop` keeps the earlier deadline. A `tasks` block in the `drop` gets a mark
 /// with no parent.
 #[no_mangle]
-pub extern "C" fn vx_cancel_off(limit: f64) {
+pub extern "C" fn vx_cancel_off(limit_ns: i64) {
     let mark = CURRENT.with(|c| c.borrow_mut().take());
-    let limit_ns = seconds_to_ns(limit);
+    let limit_ns = limit_ns.max(0);
     let limit_ns = drop_wait_cap_ns().map_or(limit_ns, |cap| cap.min(limit_ns));
     push_deadline(mark, limit_ns, true);
 }

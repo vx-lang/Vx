@@ -63,8 +63,14 @@ fn main() -> i32 {
 ```
 
 Like `requires` and `ensures`, an invariant may be written bare or in parentheses:
-`invariant limit > 0` and `invariant(limit > 0)` are equivalent. An invariant about `i` itself, such
-as `i >= 0`, cannot be proven yet: see "Not yet" below.
+`invariant limit > 0` and `invariant(limit > 0)` are equivalent. An invariant can also be about `i`,
+such as `i >= 0`. The prover knows `i == 0` when the loop starts, and the effect of `i = i + 1` at the
+end of the body.
+
+The prover checks an invariant when the loop starts, and before each next pass: at the end of the body
+and at each `continue`. A `for i in a..b` loop runs as `let mut i = a;` and then
+`while i < b { ..; i = i + 1; }`. So its invariant must hold for `i == a` when the loop starts, and
+for `i + 1` after a pass. For example, `invariant i <= b` holds, and `invariant i < b` does not.
 
 ## What checks these
 
@@ -87,7 +93,10 @@ The prover checks each function on its own, from the facts it has at each point 
 **Where facts come from:**
 
 - the function's own `requires`;
-- `let x = e;`, which gives `x == e` (a `let mut` gives nothing, since `x` may change);
+- `let x = e;` and `let mut x = e;`, which give `x == e` (but not when `e` names an older `x`, as in
+  `let x = x + 1;`);
+- an assignment `x = e` or `x += e` to an integer variable, which gives `x == e`. The facts about the
+  old value stay, with a new name for it, so after `x = x + 1` the prover knows that `x` grew by one;
 - `assert(c, ..)`, which gives `c` after the `assert`;
 - the condition of an `if`: the `then` branch knows it is true, the `else` branch knows it is false;
 - a loop's `invariant`, inside the loop, and `a <= i && i < b` inside `for i in a..b`;
@@ -114,6 +123,11 @@ fn main() -> i32 {
 ```
 
 At `return x`, the prover knows `x > 0`, because the only way there is past the `if`.
+
+**Facts stay with their variable.** A fact about a variable ends with the variable's block. A new
+variable with an old name starts with no facts. The new variable can come from a `let`, a pattern or
+a closure's parameter. What a closure's body learns holds only inside the body, because the body
+runs only when something calls the closure.
 
 **`ensures` is checked at each `return`,** from what is known there, with `return` standing for that
 value. An error (`E8001`) points at the `return` that fails.
@@ -155,8 +169,7 @@ ignored, and the compiler warns that it was: "the prover ignores a condition her
 - A `match` arm does not know which pattern matched
   ([Vx#1352](https://github.com/vx-lang/Vx/issues/1352)).
 - After a loop, nothing is known about what happened in it: not its `invariant`, and not the
-  condition that ended it. And since a `let mut` gives no fact, an `invariant` about a loop counter
-  cannot be proven when the loop starts ([Vx#1353](https://github.com/vx-lang/Vx/issues/1353)).
+  condition that ended it ([Vx#1353](https://github.com/vx-lang/Vx/issues/1353)).
 
 ## assert
 

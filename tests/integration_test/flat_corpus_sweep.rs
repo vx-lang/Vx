@@ -227,6 +227,10 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/the_cpu_workers_share_the_blocks_of_an_across_loop.vx",
             // needs --machine
             "optimizations/pass/the_cpu_copy_of_an_apple_gpu_kernel_flushes_subnormals.vx",
+            // needs --machine
+            "optimizations/pass/a_library_for_the_apple_gpu_waits_before_it_returns.vx",
+            // needs --machine
+            "optimizations/pass/pub_fns_in_a_program_for_the_apple_gpu_return_without_a_wait.vx",
         ];
         if NOT_STANDALONE.contains(&name.as_str()) {
             continue;

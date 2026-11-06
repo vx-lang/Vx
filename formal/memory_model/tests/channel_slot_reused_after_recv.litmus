@@ -1,0 +1,12 @@
+LISA channel_slot_reused_after_recv
+(* A channel with room for 1. The slot holds 1, so it is full. The recv (P0) reads the value, then
+   a release store sets the slot to 2 (free for the next send). The next send (P1) waits for 2
+   with an acquire load, then writes its value. The read comes before the write, with no race.
+   Expect: never, no data race. *)
+{ slot = 1; value = 7; }
+ P0                  | P1                   ;
+ r[plain] r0 value   | r[acq] r1 slot       ;
+ w[rel] slot 2       | w[plain] value 9     ;
+scopes: (system P0 P1)
+filter (1:r1 = 2)
+exists (0:r0 = 9)

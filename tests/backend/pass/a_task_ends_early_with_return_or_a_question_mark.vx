@@ -34,6 +34,7 @@
 // CHECK-NEXT: {{^}}dropped the note of the function{{$}}
 // CHECK-NEXT: {{^}}4 is even{{$}}
 
+import core::time;
 import core::result;
 import std::sync::channel;
 import std::sync::wait;
@@ -46,7 +47,7 @@ fn half(n : i64) -> Result<i64, i64> {
 }
 
 fn wait_for_nothing(rx : Receiver<i64>) -> i64 {
-  match rx.recv_for(10.0) {
+  match rx.recv_for(Duration::from_secs(10)) {
     Result<i64, RecvError>::Ok(_v) => {
       println!("the waiter got a value");
     }

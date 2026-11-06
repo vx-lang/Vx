@@ -10,7 +10,8 @@
 // Apple GPU. It calls each one twice: on the GPU, and on the CPU after
 // `vx_metal_set_enabled(0)`. Both calls must give the same bytes. The tensors are in memory
 // that C allocated, at addresses that are not on a page boundary, and the memory around each
-// tensor must not change.
+// tensor must not change. C copies each GPU result as soon as the call returns, before any other
+// call into Vx, so the function must wait for the GPU before it returns.
 //
 //===----------------------------------------------------------------------===//
 
@@ -104,28 +105,31 @@ static void frame(uint8_t *out, int gpu) {
 }
 
 int main(void) {
-  static float on_gpu[H * W + 2 * GUARD], on_cpu[H * W + 2 * GUARD];
+  static float on_gpu[H * W + 2 * GUARD], seen[H * W + 2 * GUARD], on_cpu[H * W + 2 * GUARD];
   blur(on_gpu, 1);
+  memcpy(seen, on_gpu, sizeof seen);
   blur(on_cpu, 0);
   int guards = 1;
   for (int i = 0; i < GUARD; i++)
-    guards &= on_gpu[i] == -7.0f && on_gpu[GUARD + H * W + i] == -7.0f;
+    guards &= seen[i] == -7.0f && seen[GUARD + H * W + i] == -7.0f;
   printf("blur: %s, guards %s, sample %.9g\n",
-         memcmp(on_gpu, on_cpu, sizeof on_gpu) ? "different" : "same bytes",
-         guards ? "kept" : "changed", on_gpu[GUARD + 12 * W + 34]);
+         memcmp(seen, on_cpu, sizeof seen) ? "different" : "same bytes",
+         guards ? "kept" : "changed", seen[GUARD + 12 * W + 34]);
 
-  static uint8_t bright_gpu[H * PITCH + 2 * GUARD], bright_cpu[H * PITCH + 2 * GUARD];
+  static uint8_t bright_gpu[H * PITCH + 2 * GUARD], bright_seen[H * PITCH + 2 * GUARD];
+  static uint8_t bright_cpu[H * PITCH + 2 * GUARD];
   frame(bright_gpu, 1);
+  memcpy(bright_seen, bright_gpu, sizeof bright_seen);
   frame(bright_cpu, 0);
   int padding = 1;
   for (int y = 0; y < H; y++)
     for (int x = 4 * W; x < PITCH; x++)
-      padding &= bright_gpu[GUARD + y * PITCH + x] == 9;
+      padding &= bright_seen[GUARD + y * PITCH + x] == 9;
   printf("frame: %s, padding %s, pixel %d %d %d %d\n",
-         memcmp(bright_gpu, bright_cpu, sizeof bright_gpu) ? "different" : "same bytes",
-         padding ? "kept" : "changed", bright_gpu[GUARD + 3 * PITCH],
-         bright_gpu[GUARD + 3 * PITCH + 1], bright_gpu[GUARD + 3 * PITCH + 2],
-         bright_gpu[GUARD + 3 * PITCH + 3]);
+         memcmp(bright_seen, bright_cpu, sizeof bright_seen) ? "different" : "same bytes",
+         padding ? "kept" : "changed", bright_seen[GUARD + 3 * PITCH],
+         bright_seen[GUARD + 3 * PITCH + 1], bright_seen[GUARD + 3 * PITCH + 2],
+         bright_seen[GUARD + 3 * PITCH + 3]);
   return 0;
 }
 "#;

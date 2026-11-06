@@ -489,7 +489,7 @@ fn main() -> i32 {
     let mut pos : i32 = 0;
 
     // We'll generate max_tokens and print the time taken for every 1000 tokens
-    let mut start_time : f32 = now();
+    let mut start_time = Instant::now();
 
     let iterations : i32 = max_tokens / steps;
     for step in 0..iterations {
@@ -518,8 +518,8 @@ fn main() -> i32 {
       let mul : i32 = div * 1000;
       let remainder : i32 = pos - mul;
       if remainder == 0 {
-        let curr_time : f32 = now();
-        let elapsed : f32 = curr_time - start_time;
+        let curr_time = Instant::now();
+        let elapsed : f32 = (curr_time - start_time).as_secs_f32();
         unsafe {
           print!("
 [");

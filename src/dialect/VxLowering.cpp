@@ -1599,8 +1599,12 @@ static LLVM::LLVMFuncOp getOrDeclareRuntimeFn(OpBuilder &builder,
                                               StringRef name, Type result,
                                               ArrayRef<Type> params);
 
-// `VX_CTRL_WAIT` in include/vx_hardware_runtime.h.
-constexpr int32_t kCtrlWait = 0x05;
+// `VX_CTRL_WAIT_FOR_TENSORS` and `VX_CTRL_WAIT_FOR_THREAD` in
+// include/vx_hardware_runtime.h.
+constexpr int32_t kCtrlWaitForTensors = 0x06;
+constexpr int32_t kCtrlWaitForThread = 0x07;
+
+static int32_t dtypeCode(Type t);
 
 // "Warning at file:line:col: " for an operation from the source, else
 // "Warning in function `f`: ". The driver prints only the message. The flat
@@ -1708,6 +1712,101 @@ static bool isParameter(Value v) {
          isa<func::FuncOp>(arg.getOwner()->getParentOp());
 }
 
+// A tensor that `tensorsToWaitFor` can describe: a strided memref of elements,
+// not a slot.
+static bool isTensorToWaitFor(Type t) {
+  auto type = dyn_cast<MemRefType>(t);
+  return type && !isa<MemRefType>(type.getElementType()) &&
+         (type.getLayout().isIdentity() ||
+          isa<StridedLayoutAttr>(type.getLayout()));
+}
+
+// A `vx_wait_for_tensors` for `vx_plugin_control`, with a descriptor for each
+// of `tensors` as a launch passes it. The stack slots go in the entry block of
+// `func`, so a wait in a loop does not grow the stack.
+static Value tensorsToWaitFor(OpBuilder &b, Location loc, func::FuncOp func,
+                              int32_t topology, ValueRange tensors) {
+  MLIRContext *ctx = b.getContext();
+  auto ptrType = LLVM::LLVMPointerType::get(ctx);
+  auto i32Type = b.getI32Type();
+  auto i64Type = b.getI64Type();
+  auto payloadType = LLVM::LLVMStructType::getLiteral(
+      ctx, {i32Type, i32Type, ptrType, ptrType});
+  const int32_t count = static_cast<int32_t>(tensors.size());
+  SmallVector<Type> descTypes;
+  SmallVector<Value> descs, slots;
+  Value args, tags, payload;
+  {
+    OpBuilder::InsertionGuard guard(b);
+    b.setInsertionPointToStart(&func.getBody().front());
+    Value one =
+        b.create<LLVM::ConstantOp>(loc, i64Type, b.getI64IntegerAttr(1));
+    Value all = b.create<LLVM::ConstantOp>(
+        loc, i64Type, b.getI64IntegerAttr(std::max(count, 1)));
+    for (Value t : tensors) {
+      const int64_t rank = cast<MemRefType>(t.getType()).getRank();
+      SmallVector<Type> fields{ptrType, ptrType, i64Type};
+      if (rank > 0)
+        fields.append(2, LLVM::LLVMArrayType::get(i64Type, rank));
+      descTypes.push_back(LLVM::LLVMStructType::getLiteral(ctx, fields));
+      descs.push_back(
+          b.create<LLVM::AllocaOp>(loc, ptrType, descTypes.back(), one));
+      slots.push_back(b.create<LLVM::AllocaOp>(loc, ptrType, ptrType, one));
+    }
+    args = b.create<LLVM::AllocaOp>(loc, ptrType, ptrType, all);
+    tags = b.create<LLVM::AllocaOp>(loc, ptrType, i32Type, all);
+    payload = b.create<LLVM::AllocaOp>(loc, ptrType, payloadType, one);
+  }
+  auto i64 = [&](Value index) -> Value {
+    return b.create<arith::IndexCastOp>(loc, i64Type, index);
+  };
+  auto i32 = [&](int32_t value) -> Value {
+    return b.create<LLVM::ConstantOp>(loc, i32Type, b.getI32IntegerAttr(value));
+  };
+  for (auto [i, t] : llvm::enumerate(tensors)) {
+    auto type = cast<MemRefType>(t.getType());
+    auto meta = b.create<memref::ExtractStridedMetadataOp>(loc, t);
+    Value aligned = b.create<LLVM::IntToPtrOp>(
+        loc, ptrType,
+        i64(b.create<memref::ExtractAlignedPointerAsIndexOp>(loc, t)));
+    Value desc = b.create<LLVM::UndefOp>(loc, descTypes[i]);
+    desc =
+        b.create<LLVM::InsertValueOp>(loc, desc, aligned, ArrayRef<int64_t>{0});
+    desc =
+        b.create<LLVM::InsertValueOp>(loc, desc, aligned, ArrayRef<int64_t>{1});
+    desc = b.create<LLVM::InsertValueOp>(loc, desc, i64(meta.getOffset()),
+                                         ArrayRef<int64_t>{2});
+    for (int64_t d = 0; d < type.getRank(); ++d) {
+      desc = b.create<LLVM::InsertValueOp>(loc, desc, i64(meta.getSizes()[d]),
+                                           ArrayRef<int64_t>{3, d});
+      desc = b.create<LLVM::InsertValueOp>(loc, desc, i64(meta.getStrides()[d]),
+                                           ArrayRef<int64_t>{4, d});
+    }
+    b.create<LLVM::StoreOp>(loc, desc, descs[i]);
+    b.create<LLVM::StoreOp>(loc, descs[i], slots[i]);
+    b.create<LLVM::StoreOp>(
+        loc, slots[i],
+        b.create<LLVM::GEPOp>(loc, ptrType, ptrType, args,
+                              ArrayRef<LLVM::GEPArg>{static_cast<int32_t>(i)}));
+    // The tag of a tensor argument of a launch.
+    const int32_t tag = static_cast<int32_t>(type.getRank()) << 16 |
+                        dtypeCode(type.getElementType()) << 8;
+    b.create<LLVM::StoreOp>(
+        loc, i32(tag),
+        b.create<LLVM::GEPOp>(loc, ptrType, i32Type, tags,
+                              ArrayRef<LLVM::GEPArg>{static_cast<int32_t>(i)}));
+  }
+  auto field = [&](int32_t k) -> Value {
+    return b.create<LLVM::GEPOp>(loc, ptrType, payloadType, payload,
+                                 ArrayRef<LLVM::GEPArg>{0, k});
+  };
+  b.create<LLVM::StoreOp>(loc, i32(topology), field(0));
+  b.create<LLVM::StoreOp>(loc, i32(count), field(1));
+  b.create<LLVM::StoreOp>(loc, args, field(2));
+  b.create<LLVM::StoreOp>(loc, tags, field(3));
+  return payload;
+}
+
 // Skip the copy of a transfer that sema marked `shared`: its source is a `&`
 // tensor and the edge is `: shared`, so the CPU can read the GPU's memory. The
 // caller cannot change a `&` parameter during the call, so when every use of
@@ -1752,34 +1851,26 @@ static void elideSharedTransfers(ModuleOp module) {
       continue;
     }
 
-    // Wait for the GPU, through `vx_plugin_control(VX_CTRL_WAIT, &topology)`.
-    // The slot for the topology goes at the start of the function, so a
-    // transfer in a loop does not grow the stack.
+    // Wait for the GPU launches that write `src`, through
+    // `vx_plugin_control(VX_CTRL_WAIT_FOR_TENSORS, ...)`.
     Location loc = t.getLoc();
     OpBuilder builder(t);
     auto ptrType = LLVM::LLVMPointerType::get(module.getContext());
     auto i32Type = builder.getI32Type();
-    auto func = t->getParentOfType<func::FuncOp>();
-    Value slot;
-    {
-      OpBuilder::InsertionGuard guard(builder);
-      builder.setInsertionPointToStart(&func.getBody().front());
-      Value one = builder.create<LLVM::ConstantOp>(
-          loc, builder.getI64Type(), builder.getI64IntegerAttr(1));
-      slot = builder.create<LLVM::AllocaOp>(loc, ptrType, i32Type, one);
-    }
-    Value topology = builder.create<LLVM::ConstantOp>(
-        loc, i32Type, builder.getI32IntegerAttr(sourceTopologyOf(t)));
-    builder.create<LLVM::StoreOp>(loc, topology, slot);
+    assert(isTensorToWaitFor(srcType) &&
+           "a `&` tensor parameter is a strided memref of elements");
+    Value tensors =
+        tensorsToWaitFor(builder, loc, t->getParentOfType<func::FuncOp>(),
+                         sourceTopologyOf(t), ValueRange{src});
     Value opcode = builder.create<LLVM::ConstantOp>(
-        loc, i32Type, builder.getI32IntegerAttr(kCtrlWait));
+        loc, i32Type, builder.getI32IntegerAttr(kCtrlWaitForTensors));
     // An unknown location: LLVM refuses a declaration with debug info.
     getOrDeclareRuntimeFn(builder, module, UnknownLoc::get(module.getContext()),
                           "vx_plugin_control", i32Type, {i32Type, ptrType});
     builder.create<LLVM::CallOp>(
         loc, TypeRange{i32Type},
         SymbolRefAttr::get(module.getContext(), "vx_plugin_control"),
-        ValueRange{opcode, slot});
+        ValueRange{opcode, tensors});
 
     Value inPlace = src;
     if (srcType != copyType)
@@ -7462,6 +7553,65 @@ static void declareLocalDevices(ModuleOp module) {
   }
 }
 
+// A C caller reads the tensors of a `pub fn` as soon as it returns, with no
+// call into the runtime. So in a library with Apple GPU kernels, each `pub fn`
+// waits before each return. It waits for the launches of its thread, through
+// `VX_CTRL_WAIT_FOR_THREAD`. It also waits for the launches of other threads
+// that write its tensor parameters, through `VX_CTRL_WAIT_FOR_TENSORS`. A
+// program with `main` has no C caller, and the runtime waits at exit.
+static void waitBeforeReturningToC(ModuleOp module,
+                                   ArrayRef<int32_t> topologies) {
+  if (topologies.empty() || module.lookupSymbol<func::FuncOp>("main"))
+    return;
+  MLIRContext *ctx = module.getContext();
+  for (auto f : module.getOps<func::FuncOp>()) {
+    if (!f->hasAttr("vx.pub") || f.isExternal())
+      continue;
+    OpBuilder b = OpBuilder::atBlockBegin(&f.front());
+    auto i32Type = b.getI32Type();
+    auto ptrType = LLVM::LLVMPointerType::get(ctx);
+    getOrDeclareRuntimeFn(b, module, UnknownLoc::get(ctx), "vx_plugin_control",
+                          i32Type, {i32Type, ptrType});
+    Value one = b.create<LLVM::ConstantOp>(f.getLoc(), b.getI64Type(),
+                                           b.getI64IntegerAttr(1));
+    Value slot = b.create<LLVM::AllocaOp>(f.getLoc(), ptrType, i32Type, one);
+    SmallVector<func::ReturnOp> returns;
+    f.walk([&](func::ReturnOp r) { returns.push_back(r); });
+    SmallVector<Value> params;
+    for (BlockArgument arg : f.getArguments())
+      if (isTensorToWaitFor(arg.getType()))
+        params.push_back(arg);
+    for (func::ReturnOp r : returns) {
+      b.setInsertionPoint(r);
+      auto opcode = [&](int32_t code) -> Value {
+        return b.create<LLVM::ConstantOp>(r.getLoc(), i32Type,
+                                          b.getI32IntegerAttr(code));
+      };
+      auto control = [&](Value code, Value payload) {
+        b.create<LLVM::CallOp>(r.getLoc(), TypeRange{i32Type},
+                               SymbolRefAttr::get(ctx, "vx_plugin_control"),
+                               ValueRange{code, payload});
+      };
+      SmallVector<Value> tensors = params;
+      for (Value v : r.getOperands())
+        if (isTensorToWaitFor(v.getType()))
+          tensors.push_back(v);
+      Value forThread = opcode(kCtrlWaitForThread);
+      for (int32_t topology : topologies) {
+        b.create<LLVM::StoreOp>(
+            r.getLoc(),
+            b.create<LLVM::ConstantOp>(r.getLoc(), i32Type,
+                                       b.getI32IntegerAttr(topology)),
+            slot);
+        control(forThread, slot);
+        if (!tensors.empty())
+          control(opcode(kCtrlWaitForTensors),
+                  tensorsToWaitFor(b, r.getLoc(), f, topology, tensors));
+      }
+    }
+  }
+}
+
 /// For `--emit-ptx` and `--emit-msl`: gives each kernel in `gpuModule` the
 /// name of the function that holds its region, and describes its parameters
 /// for a program that launches the kernel. Section 3.5 of `docs/lang/abi.md`
@@ -7731,6 +7881,7 @@ struct ConvertVxToLLVMPass
 
     llvm::StringMap<DeviceImage> deviceImages;
     llvm::StringMap<int64_t> dynamicShared;
+    llvm::SmallSetVector<int32_t, 2> appleGpuTopologies;
     for (gpu::GPUModuleOp m : deviceModules) {
       // One image per module, and every kernel in it is an entry point: a
       // loader takes the module and then asks for a function by name. So the
@@ -7741,6 +7892,7 @@ struct ConvertVxToLLVMPass
       // `vx.kernel` name, and after that rename the two no longer match.
       std::optional<DevicePipeline> pipeline;
       vx::KernelOp disagrees; // the first kernel that asks for another pipeline
+      llvm::SmallSetVector<int32_t, 2> topologies;
       WalkResult walk = m.walk([&](gpu::GPUFuncOp f) -> WalkResult {
         auto it = kernelsByName.find(f.getName());
         // A `gpu.func` here is the copy of a `vx.kernel` of the same name: the
@@ -7758,6 +7910,7 @@ struct ConvertVxToLLVMPass
         // whose kernel answers `None` means the two answers have disagreed.
         assert(p != DevicePipeline::None &&
                "a kernel with no device pipeline got a device copy");
+        topologies.insert(static_cast<int32_t>(it->second.getTopology()));
         if (!pipeline)
           pipeline = p;
         else if (*pipeline != p && !disagrees)
@@ -7896,6 +8049,8 @@ struct ConvertVxToLLVMPass
         if (auto bytes = f->getAttrOfType<IntegerAttr>("vx.dynamic_shared"))
           dynamicShared[f.getName()] = bytes.getInt();
       });
+      if (*pipeline == DevicePipeline::Metal)
+        appleGpuTopologies.insert(topologies.begin(), topologies.end());
       if (exportingText) {
         std::string target = *pipeline == DevicePipeline::Metal
                                  ? std::string("applegpu")
@@ -8167,6 +8322,7 @@ struct ConvertVxToLLVMPass
       return;
     }
     declareLocalDevices(getOperation());
+    waitBeforeReturningToC(getOperation(), appleGpuTopologies.getArrayRef());
     checkPackedTensorArguments(getOperation());
   }
 };

@@ -250,6 +250,10 @@ relaxed read-modify-write, and a drop takes 1 away with a release one. The drop 
 an acquire fence and frees the value. `arc_last_drop_hb_free` shows that each event before another
 drop happens before each event after that fence. The clones and drops between the two drops form a
 release sequence. `arc_last_drop_release_sequence.litmus` checks this with three tasks.
+`ChannelOrders.lean` checks the slots of `stdlib/std/sync/channel.vx`. A `send` and a `recv` hand
+a slot over with a release store and an acquire load. No two writes to a slot write the same
+number, so the load reads that store. `slot_send_hb_recv` and `slot_recv_hb_send` give the edges.
+`ReleaseSequence.lean` has the lemmas that these three files share.
 
 `Scopes.lean` adds the scopes and the barriers of `vx.cat` as a separate layer. Each event has a
 scope, and each thread has a subgroup, a block and a device. `Reaches`, `Strong`, `rs`, `sw`,

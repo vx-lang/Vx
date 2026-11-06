@@ -81,7 +81,13 @@ copy. `--emit-msl` writes the MSL and the same manifest as `--emit-ptx`.
 - The GPU flushes a subnormal `f32` to 0, and the CPU copy does too, so the two
   give the same bits. The CPU copy sets FPCR.FZ on arm64, and FTZ and DAZ on
   x86-64, while it runs.
-- Each launch waits for the GPU to finish.
+- The launches of each thread share one command buffer, and the GPU runs them at a wait. The
+  runtime waits before the CPU reads or frees memory that a kernel can use, and before a launch
+  that runs on the CPU. It waits only for the kernels that write memory the CPU reads, or that
+  use memory the CPU writes. A `pub fn` of a library waits before it returns to C, for the
+  kernels of its thread and for the kernels that write its tensor parameters. `VX_METAL_SYNC=1`
+  waits after each launch, so a GPU fault names its kernel. `VX_DISPATCH_VERBOSE=1` prints each launch, and
+  at each wait the number of kernels and their time on the GPU.
 - Not yet: atomics, dynamic shared memory and `vector` ops. Each is a compile
   error that names the op. Kernels for two GPU architectures in one program
   are a compile error too.

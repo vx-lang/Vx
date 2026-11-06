@@ -8,8 +8,11 @@
 // the tensor's first element from the words. Metal compiles the MSL with safe
 // math, so a kernel gives the same bits as its host copy.
 //
-// Each launch waits until the GPU finishes, so a tensor that the kernel wrote
-// is ready when the call returns.
+// The launches of each host thread share one command buffer, and the GPU runs
+// them only at a wait. A wait commits a command buffer and waits for the GPU.
+// The Mac dispatcher waits before anything that can touch the memory of a
+// kernel, but only for the launches that use that memory. A `pub fn` waits
+// before it returns to C.
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -26,8 +29,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -36,6 +41,15 @@ namespace {
 bool verbose() {
   static const bool on = [] {
     const char *v = getenv("VX_DISPATCH_VERBOSE");
+    return v && v[0] != '\0' && strcmp(v, "0") != 0;
+  }();
+  return on;
+}
+
+// VX_METAL_SYNC=1 waits after each launch, so a GPU fault names its kernel.
+bool syncEachLaunch() {
+  static const bool on = [] {
+    const char *v = getenv("VX_METAL_SYNC");
     return v && v[0] != '\0' && strcmp(v, "0") != 0;
   }();
   return on;
@@ -76,6 +90,159 @@ Gpu &gpu() {
     return made;
   }();
   return g;
+}
+
+// The bytes from `first` to before `last` that a launch reads, or writes when
+// `written` is true.
+struct Access {
+  uintptr_t first = 0, last = 0;
+  bool written = false;
+
+  // Whether this access must wait for `other`: they share bytes, and one of
+  // them writes.
+  bool mustFollow(const Access &other) const {
+    return first < other.last && other.first < last &&
+           (written || other.written);
+  }
+};
+
+// A buffer over pages from `start` to before `end`, with no copy.
+struct Region {
+  uintptr_t start = 0, end = 0;
+  id<MTLBuffer> buffer;
+};
+
+const Region *holding(const std::vector<Region> &regions, uintptr_t start,
+                      uintptr_t end) {
+  for (const Region &r : regions)
+    if (r.start <= start && end <= r.end)
+      return &r;
+  return nullptr;
+}
+
+// The launches of one host thread that the GPU did not finish, in one command
+// buffer. A wait for some memory finishes only the batches that use it, so a
+// wait on one thread does not end the batch of another thread.
+//
+// Metal orders two launches only when they use the same buffer object. On an
+// M4, a kernel did not see what the kernel before it wrote through another
+// buffer over the same memory, even with a barrier between them. So no two
+// regions of a batch overlap, and a launch uses the region that holds each of
+// its tensors. Before a launch that must follow a launch of another batch,
+// that batch finishes. So two batches use the same memory only to read it.
+struct Batch {
+  std::thread::id owner;
+  id<MTLCommandBuffer> commands;
+  // Nil after the commit.
+  id<MTLComputeCommandEncoder> encoder;
+  std::vector<std::string> kernels;
+  std::vector<Region> regions;
+  std::vector<Access> accesses;
+
+  bool open() const { return encoder != nil; }
+
+  const Region *holding(uintptr_t start, uintptr_t end) const {
+    return ::holding(regions, start, end);
+  }
+
+  bool overlaps(uintptr_t start, uintptr_t end) const {
+    for (const Region &r : regions)
+      if (r.start < end && start < r.end)
+        return true;
+    return false;
+  }
+
+  bool mustPrecede(const Access &a) const {
+    for (const Access &b : accesses)
+      if (a.mustFollow(b))
+        return true;
+    return false;
+  }
+
+  void add(const Access &a) {
+    for (Access &b : accesses)
+      if (b.first == a.first && b.last == a.last) {
+        b.written |= a.written;
+        return;
+      }
+    accesses.push_back(a);
+  }
+};
+
+// Guards `batches()`. Only the owner of a batch adds launches to it, while it
+// holds this lock.
+std::mutex batchLock;
+
+// The batches that the GPU did not finish, open and committed.
+std::vector<std::shared_ptr<Batch>> &batches() {
+  static auto *all = new std::vector<std::shared_ptr<Batch>>;
+  return *all;
+}
+
+// The open batch of the calling thread, or null. The caller holds `batchLock`.
+std::shared_ptr<Batch> openBatchHere() {
+  for (const std::shared_ptr<Batch> &b : batches())
+    if (b->open() && b->owner == std::this_thread::get_id())
+      return b;
+  return nullptr;
+}
+
+// Stops the program when the GPU did not run a batch to its end.
+void report(const Batch &b) {
+  const size_t count = b.kernels.size();
+  if (b.commands.status != MTLCommandBufferStatusCompleted) {
+    std::string names;
+    for (const std::string &k : b.kernels)
+      names += (names.empty() ? "" : ", ") + k;
+    fprintf(stderr, "[Vx Metal] FATAL: the GPU did not finish %s: %s\n",
+            names.c_str(), b.commands.error.localizedDescription.UTF8String);
+    if (count > 1)
+      fprintf(stderr, "           Set VX_METAL_SYNC=1 to name the kernel that "
+                      "failed.\n");
+    abort();
+  }
+  if (verbose())
+    fprintf(stderr, "[Vx Metal] waited for %zu kernel%s, %.3f ms on the GPU\n",
+            count, count == 1 ? "" : "s",
+            (b.commands.GPUEndTime - b.commands.GPUStartTime) * 1e3);
+}
+
+// Commits each batch in `chosen` that is open, and waits until the GPU
+// finishes them. `hold` holds `batchLock`. The wait itself runs without the
+// lock, so other threads can add launches to their own batches meanwhile.
+void finish(const std::vector<std::shared_ptr<Batch>> &chosen,
+            std::unique_lock<std::mutex> &hold) {
+  if (chosen.empty())
+    return;
+  for (const std::shared_ptr<Batch> &b : chosen)
+    if (b->open()) {
+      [b->encoder endEncoding];
+      b->encoder = nil;
+      [b->commands commit];
+    }
+  hold.unlock();
+  for (const std::shared_ptr<Batch> &b : chosen)
+    [b->commands waitUntilCompleted];
+  hold.lock();
+  std::vector<std::shared_ptr<Batch>> &all = batches();
+  for (const std::shared_ptr<Batch> &b : chosen) {
+    auto at = std::find(all.begin(), all.end(), b);
+    // Another thread waited for this batch too, and reported it.
+    if (at == all.end())
+      continue;
+    all.erase(at);
+    report(*b);
+  }
+}
+
+// Finishes each batch for which `pick` is true.
+template <typename Pick> void finishEach(Pick pick) {
+  std::unique_lock<std::mutex> hold(batchLock);
+  std::vector<std::shared_ptr<Batch>> chosen;
+  for (const std::shared_ptr<Batch> &b : batches())
+    if (pick(*b))
+      chosen.push_back(b);
+  finish(chosen, hold);
 }
 
 // Compiled kernels, by image and name. The image is a constant of the program,
@@ -145,12 +312,37 @@ std::vector<std::string> parametersOf(const char *image, const char *kernel) {
   die(kernel, "the image has no `// vx.kernel` line for this kernel");
 }
 
+// The bytes that a tensor can reach. A kernel reads a stride or an offset that
+// its type fixes from the type, so they cover the contiguous layout too.
+Access reachOf(const void *desc, int rank, size_t bytes) {
+  char *aligned = static_cast<char *>(vx_memref_aligned(desc));
+  const int64_t offset = vx_memref_offset(desc);
+  const int64_t *sizes = vx_memref_sizes(desc);
+  const int64_t *strides = vx_memref_strides(desc, rank);
+  int64_t lo = offset, hi = offset + 1, contiguous = 1;
+  for (int d = 0; d < rank; ++d) {
+    contiguous *= sizes[d];
+    if (sizes[d] == 0) {
+      lo = hi = offset;
+      break;
+    }
+    int64_t reach = (sizes[d] - 1) * strides[d];
+    (reach < 0 ? lo : hi) += reach;
+  }
+  lo = std::min<int64_t>(lo, 0);
+  hi = std::max<int64_t>(hi, contiguous);
+  Access a;
+  a.first = reinterpret_cast<uintptr_t>(aligned + lo * (int64_t)bytes);
+  a.last = reinterpret_cast<uintptr_t>(aligned + hi * (int64_t)bytes);
+  return a;
+}
+
 // A tensor's buffer. `copied` is set when Metal could not use the memory as it
 // is, and the kernel ran on a copy.
 struct Bound {
   id<MTLBuffer> buffer;
   char *copied = nullptr;
-  uintptr_t first = 0, last = 0, start = 0;
+  uintptr_t first = 0, last = 0, start = 0, end = 0, offset = 0;
   bool written = false;
 };
 
@@ -165,6 +357,101 @@ void pushWord(std::vector<uint32_t> &words, int64_t value, const char *kernel,
 } // namespace
 
 extern "C" void vx_metal_set_enabled(int on) { enabledHere = on ? 1 : 0; }
+
+namespace {
+
+// The bytes of each tensor among the arguments of a launch, each one written.
+// Returns false when the bytes of a tensor are not known.
+bool tensorsOf(void **device_args, const int32_t *arg_tags, int64_t num_args,
+               std::vector<Access> &out) {
+  for (int64_t i = 0; i < num_args; ++i) {
+    const int32_t tag = arg_tags[i];
+    if (VX_ABI_KIND(tag) != VX_ABI_KIND_MEMREF)
+      continue;
+    const void *desc = vx_operand_desc(device_args, arg_tags, (int)i);
+    const size_t bytes = vx_dtype_bytes(VX_ABI_ELEM(tag));
+    if (!desc || bytes == 0)
+      return false;
+    out.push_back(reachOf(desc, VX_ABI_RANK(tag), bytes));
+    out.back().written = true;
+  }
+  return true;
+}
+
+bool anyMustPrecede(const Batch &b, const std::vector<Access> &accesses) {
+  return std::any_of(accesses.begin(), accesses.end(),
+                     [&](const Access &a) { return b.mustPrecede(a); });
+}
+
+} // namespace
+
+// Waits for every launch.
+extern "C" void vx_metal_wait(void) {
+  finishEach([](const Batch &) { return true; });
+}
+
+// Waits for every launch of the calling thread.
+extern "C" void vx_metal_wait_for_thread(void) {
+  const std::thread::id me = std::this_thread::get_id();
+  finishEach([&](const Batch &b) { return b.owner == me; });
+}
+
+// Waits for each launch that writes the `bytes` at `start`. With `written`, it
+// also waits for each launch that reads them.
+extern "C" void vx_metal_wait_for_memory(const void *start, size_t bytes,
+                                         int written) {
+  if (!start || bytes == 0)
+    return;
+  Access a;
+  a.first = reinterpret_cast<uintptr_t>(start);
+  a.last = a.first + bytes;
+  a.written = written != 0;
+  finishEach([&](const Batch &b) { return b.mustPrecede(a); });
+}
+
+// Waits for each launch that writes the memory of one of these tensors, before
+// the CPU reads them.
+extern "C" void vx_metal_wait_for_tensors(void **args, const int32_t *tags,
+                                          int64_t count) {
+  std::vector<Access> accesses;
+  if (!tensorsOf(args, tags, count, accesses)) {
+    vx_metal_wait();
+    return;
+  }
+  for (Access &a : accesses)
+    a.written = false;
+  finishEach([&](const Batch &b) { return anyMustPrecede(b, accesses); });
+}
+
+// Waits for each GPU launch that a launch with these arguments must follow,
+// when that launch does not run on this Mac's GPU. The `// vx.kernel` line of
+// an Apple GPU kernel says which tensors it only reads. Any other kernel can
+// write each of its tensors.
+extern "C" void vx_metal_wait_for_launch(const void *payload,
+                                         size_t payload_size,
+                                         void **device_args,
+                                         const int32_t *arg_tags,
+                                         int64_t num_args) {
+  std::vector<Access> accesses;
+  if (!tensorsOf(device_args, arg_tags, num_args, accesses)) {
+    vx_metal_wait();
+    return;
+  }
+  const char *format = vx_payload_field(payload, payload_size, "format=");
+  if (format && strcmp(format, "msl") == 0) {
+    const char *image = vx_payload_field(payload, payload_size, "image=");
+    if (!image)
+      die(static_cast<const char *>(payload),
+          "the payload says `format=msl` and has no image");
+    std::vector<std::string> params =
+        parametersOf(image, static_cast<const char *>(payload));
+    size_t k = 0;
+    for (int64_t i = 0; i < num_args && i < (int64_t)params.size(); ++i)
+      if (VX_ABI_KIND(arg_tags[i]) == VX_ABI_KIND_MEMREF)
+        accesses[k++].written = params[i][0] != 'm' || params[i].back() != 'r';
+  }
+  finishEach([&](const Batch &b) { return anyMustPrecede(b, accesses); });
+}
 
 // Returns 1 when the kernel ran on the GPU, and 0 when the GPU is turned off.
 // The caller then runs the host copy of the kernel.
@@ -209,29 +496,14 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
         const int64_t offset = vx_memref_offset(desc);
         const int64_t *sizes = vx_memref_sizes(desc);
         const int64_t *strides = vx_memref_strides(desc, rank);
-
-        // The elements the tensor can reach, from `lo` to before `hi`. The
-        // kernel reads a stride or an offset that its type fixes from the
-        // type, so the buffer covers the contiguous layout too.
-        int64_t lo = offset, hi = offset + 1, contiguous = 1;
-        for (int d = 0; d < rank; ++d) {
-          contiguous *= sizes[d];
-          if (sizes[d] == 0) {
-            lo = hi = offset;
-            break;
-          }
-          int64_t reach = (sizes[d] - 1) * strides[d];
-          (reach < 0 ? lo : hi) += reach;
-        }
-        lo = std::min<int64_t>(lo, 0);
-        hi = std::max<int64_t>(hi, contiguous);
+        const Access reach = reachOf(desc, rank, bytes);
         Bound b;
-        b.first = reinterpret_cast<uintptr_t>(aligned + lo * (int64_t)bytes);
-        b.last = reinterpret_cast<uintptr_t>(aligned + hi * (int64_t)bytes);
+        b.first = reach.first;
+        b.last = reach.last;
         b.start = b.first & ~(page - 1);
-        uintptr_t end = (b.last + page - 1) & ~(page - 1);
-        if (end == b.start)
-          end = b.start + page;
+        b.end = (b.last + page - 1) & ~(page - 1);
+        if (b.end == b.start)
+          b.end = b.start + page;
         b.written = p.back() != 'r';
         const int64_t base =
             (int64_t)(reinterpret_cast<uintptr_t>(aligned) - b.start) /
@@ -239,31 +511,11 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
         if ((reinterpret_cast<uintptr_t>(aligned) - b.start) % bytes != 0)
           die(kernel, "tensor %lld is not aligned to its element size",
               (long long)i);
-        if ((end - b.start) / bytes > (uintptr_t)INT32_MAX)
+        if ((b.end - b.start) / bytes > (uintptr_t)INT32_MAX)
           die(kernel,
               "tensor %lld spans %llu elements, and a Metal kernel "
               "takes 32-bit indices",
-              (long long)i, (unsigned long long)((end - b.start) / bytes));
-        b.buffer =
-            [device newBufferWithBytesNoCopy:reinterpret_cast<void *>(b.start)
-                                      length:end - b.start
-                                     options:MTLResourceStorageModeShared
-                                 deallocator:nil];
-        if (!b.buffer) {
-          // Metal refused this memory. The kernel runs on a copy, and a tensor
-          // that it writes is copied back.
-          b.buffer =
-              [device newBufferWithBytes:reinterpret_cast<void *>(b.start)
-                                  length:end - b.start
-                                 options:MTLResourceStorageModeShared];
-          b.copied = static_cast<char *>(b.buffer.contents);
-          if (verbose())
-            fprintf(stderr, "[Vx Metal] %s: tensor %lld is copied\n", kernel,
-                    (long long)i);
-        }
-        if (!b.buffer)
-          die(kernel, "Metal could not make a buffer for tensor %lld",
-              (long long)i);
+              (long long)i, (unsigned long long)((b.end - b.start) / bytes));
         pushWord(words, base, kernel, "a tensor's start in its buffer");
         pushWord(words, offset, kernel, "a tensor's offset");
         for (int d = 0; d < rank; ++d)
@@ -303,15 +555,6 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
       }
     }
 
-    // With the copies, two written tensors that share memory would undo each
-    // other's writes when they are copied back.
-    for (size_t a = 0; a < bound.size(); ++a)
-      for (size_t b = 0; b < bound.size(); ++b)
-        if (a != b && bound[a].copied && bound[a].written && bound[b].written &&
-            bound[a].first < bound[b].last && bound[b].first < bound[a].last)
-          die(kernel, "two tensors share memory that Metal could not use as "
-                      "it is");
-
     unsigned grid[3] = {1, 1, 1};
     unsigned block = 1;
     char why[256] = {0};
@@ -326,11 +569,120 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
 
     if (words.empty())
       words.push_back(0);
-    id<MTLCommandBuffer> commands = [gpu().queue commandBuffer];
-    id<MTLComputeCommandEncoder> encoder = [commands computeCommandEncoder];
+
+    // The pages of the tensors, where two tensors that share a page share one
+    // region.
+    std::vector<std::pair<uintptr_t, uintptr_t>> spans;
+    std::vector<Access> accesses;
+    for (const Bound &b : bound) {
+      spans.push_back({b.start, b.end});
+      accesses.push_back({b.first, b.last, b.written});
+    }
+    std::sort(spans.begin(), spans.end());
+    std::vector<std::pair<uintptr_t, uintptr_t>> joined;
+    for (const auto &span : spans)
+      if (!joined.empty() && span.first < joined.back().second)
+        joined.back().second = std::max(joined.back().second, span.second);
+      else
+        joined.push_back(span);
+
+    std::unique_lock<std::mutex> hold(batchLock);
+    // The batches of other threads that this launch must follow finish first.
+    // A region that only overlaps a region of this thread's batch cannot get a
+    // buffer of its own, so then this thread's batch finishes too.
+    for (;;) {
+      std::shared_ptr<Batch> here = openBatchHere();
+      std::vector<std::shared_ptr<Batch>> chosen;
+      for (const std::shared_ptr<Batch> &b : batches()) {
+        if (b != here) {
+          if (anyMustPrecede(*b, accesses))
+            chosen.push_back(b);
+          continue;
+        }
+        for (const auto &span : joined)
+          if (!here->holding(span.first, span.second) &&
+              here->overlaps(span.first, span.second)) {
+            chosen.push_back(b);
+            break;
+          }
+      }
+      if (chosen.empty())
+        break;
+      finish(chosen, hold);
+    }
+    std::shared_ptr<Batch> here = openBatchHere();
+    std::vector<Region> made;
+    for (const auto &span : joined) {
+      if (here && here->holding(span.first, span.second))
+        continue;
+      Region r;
+      r.start = span.first;
+      r.end = span.second;
+      r.buffer =
+          [device newBufferWithBytesNoCopy:reinterpret_cast<void *>(r.start)
+                                    length:r.end - r.start
+                                   options:MTLResourceStorageModeShared
+                               deallocator:nil];
+      // When Metal refuses this memory, its tensors run on a copy below.
+      if (r.buffer)
+        made.push_back(r);
+    }
+    for (Bound &b : bound) {
+      const Region *r = here ? here->holding(b.start, b.end) : nullptr;
+      if (!r)
+        r = holding(made, b.start, b.end);
+      if (r) {
+        b.buffer = r->buffer;
+        b.offset = b.start - r->start;
+      }
+    }
+    // A copy must hold what every launch writes, so all batches finish first.
+    const bool copies = std::any_of(bound.begin(), bound.end(),
+                                    [](const Bound &b) { return !b.buffer; });
+    if (copies) {
+      const std::vector<std::shared_ptr<Batch>> all = batches();
+      finish(all, hold);
+      here = nullptr;
+    }
+    for (size_t i = 0; i < bound.size(); ++i) {
+      Bound &b = bound[i];
+      if (b.buffer)
+        continue;
+      b.buffer = [device newBufferWithBytes:reinterpret_cast<void *>(b.start)
+                                     length:b.end - b.start
+                                    options:MTLResourceStorageModeShared];
+      if (!b.buffer)
+        die(kernel, "Metal could not make a buffer for tensor %zu", i);
+      b.copied = static_cast<char *>(b.buffer.contents);
+      if (verbose())
+        fprintf(stderr, "[Vx Metal] %s: tensor %zu is copied\n", kernel, i);
+    }
+    // With the copies, two written tensors that share memory would undo each
+    // other's writes when they are copied back.
+    for (size_t a = 0; a < bound.size(); ++a)
+      for (size_t b = 0; b < bound.size(); ++b)
+        if (a != b && bound[a].copied && bound[a].written && bound[b].written &&
+            bound[a].first < bound[b].last && bound[b].first < bound[a].last)
+          die(kernel, "two tensors share memory that Metal could not use as "
+                      "it is");
+
+    if (!here) {
+      here = std::make_shared<Batch>();
+      here->owner = std::this_thread::get_id();
+      here->commands = [gpu().queue commandBuffer];
+      here->encoder = [here->commands computeCommandEncoder];
+      batches().push_back(here);
+      // Report a fault of a kernel that nothing waited for.
+      static const bool waitAtExit = atexit(vx_metal_wait) == 0;
+      (void)waitAtExit;
+    }
+    here->regions.insert(here->regions.end(), made.begin(), made.end());
+    for (const Access &a : accesses)
+      here->add(a);
+    id<MTLComputeCommandEncoder> encoder = here->encoder;
     [encoder setComputePipelineState:pipeline];
     for (size_t k = 0; k < bound.size(); ++k)
-      [encoder setBuffer:bound[k].buffer offset:0 atIndex:k];
+      [encoder setBuffer:bound[k].buffer offset:bound[k].offset atIndex:k];
     const size_t wordBytes = words.size() * sizeof(uint32_t);
     // `setBytes` takes at most 4 KB.
     if (wordBytes <= 4096)
@@ -344,24 +696,19 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
             atIndex:bound.size()];
     [encoder dispatchThreadgroups:MTLSizeMake(grid[0], grid[1], grid[2])
             threadsPerThreadgroup:MTLSizeMake(block, 1, 1)];
-    [encoder endEncoding];
-    [commands commit];
-    [commands waitUntilCompleted];
-    if (commands.status != MTLCommandBufferStatusCompleted)
-      die(kernel, "the GPU did not finish the kernel: %s",
-          commands.error.localizedDescription.UTF8String);
-
-    for (const Bound &b : bound)
-      if (b.copied && b.written)
-        memcpy(reinterpret_cast<void *>(b.first),
-               b.copied + (b.first - b.start), b.last - b.first);
-
+    here->kernels.push_back(kernel);
     if (verbose())
-      fprintf(
-          stderr,
-          "[Vx Metal] %s: grid %u x %u x %u, block %u, %.3f ms on the GPU\n",
-          kernel, grid[0], grid[1], grid[2], block,
-          (commands.GPUEndTime - commands.GPUStartTime) * 1e3);
+      fprintf(stderr, "[Vx Metal] %s: grid %u x %u x %u, block %u\n", kernel,
+              grid[0], grid[1], grid[2], block);
+
+    // A copy goes back to its tensor after the GPU ran the kernel.
+    if (copies || syncEachLaunch()) {
+      finish({here}, hold);
+      for (const Bound &b : bound)
+        if (b.copied && b.written)
+          memcpy(reinterpret_cast<void *>(b.first),
+                 b.copied + (b.first - b.start), b.last - b.first);
+    }
   }
   return 1;
 }

@@ -102,9 +102,8 @@ fn clobbered_by_an_mlir_block() -> i64 {
 }
 
 // An invariant holds at the start of each pass, so the call meets `requires`, and E8006 does
-// not fire. The compiler cannot prove that the body keeps the invariant (E8009), because it
-// knows no fact about `n` after `n = k`.
-// CHECK-DAG: E8009] at {{.*}}requires_of_a_call_in_a_loop_that_changes_the_argument.vx:[[@LINE+5]]:32: this loop invariant `n < 5` may not hold after a pass
+// not fire. The body keeps the invariant, because `n = k` gives `n == k`, and `k < 3`. So this
+// function has no error.
 fn invariant_about_the_argument() -> i64 {
   let mut n = 0i64;
   let mut k = 0i64;
@@ -122,4 +121,4 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: 7 error(s) emitted
+// CHECK: 6 error(s) emitted

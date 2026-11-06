@@ -6,6 +6,8 @@ mod integration_test {
     mod ane_device_test;
     // It runs kernels on the Apple GPU through Metal.
     #[cfg(target_os = "macos")]
+    mod apple_gpu_functions_called_from_two_c_threads;
+    #[cfg(target_os = "macos")]
     mod apple_gpu_kernels_called_from_c;
     mod architecture_test;
     mod arrival_counts_test;

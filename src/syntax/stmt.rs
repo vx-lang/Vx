@@ -292,8 +292,8 @@ pub struct DropStmt {
     /// Ends a `within` block (F6a): `vx::within_end()`. `name` is the block's hidden owner.
     pub ends_within: bool,
     pub span: Span,
-    /// With `call`: how long the waits in the `drop` can take, in seconds. The call
-    /// `wait_limit(&name.path)`, or the default when the impl has no copy of it.
+    /// With `call`: how long the waits in the `drop` can take, in nanoseconds. The call
+    /// `wait_limit_nanos(&name.path)`, or the default when the impl has no copy of it.
     pub limit: Option<Box<super::Expr>>,
 }
 
@@ -302,7 +302,7 @@ impl DropStmt {
     /// it, inside `if !moved { .. }` when the value may have been moved.
     ///
     /// A `Drop` impl's `drop` runs with cancellation off (F6), so that a wait in it can finish,
-    /// until its time limit (F6a): `vx::cancel_off(wait_limit(&x)); drop(&mut x);
+    /// until its time limit (F6a): `vx::cancel_off(wait_limit_nanos(&x)); drop(&mut x);
     /// vx::cancel_on();`. The code generators lower the two `vx::` calls to the runtime.
     pub fn call_statements(&self) -> Option<Vec<Statement>> {
         let stmt = |e: Expr| Statement::ExprStmt(ExprStmtStmt::new(e, true, Span::default()));
