@@ -1840,6 +1840,10 @@ pub(crate) fn memref_in_space_of(ty: &str, like: &str) -> Option<String> {
 /// `memref.cast` from `from` to `to`, through a `memref.memory_space_cast` when the two are in
 /// different memory spaces: a placed tensor in a type with its address space, and the same
 /// buffer where a plain memref is wanted. A plain cast cannot change the space.
+///
+/// A row (`memref<4xf32, strided<[1], offset: ?>>`) given a plain memref type first has its data
+/// pointer moved to the row. A plain memref's offset is 0 by its type, so the code that uses it
+/// never reads the offset, and a cast alone would give it row 0.
 pub(crate) fn cast_memref<'c>(
     gen: &MeliorGenerator<'c>,
     block: &melior::ir::BlockRef<'c, 'c>,
@@ -1847,9 +1851,18 @@ pub(crate) fn cast_memref<'c>(
     from: melior::ir::Type<'c>,
     to: melior::ir::Type<'c>,
 ) -> Result<melior::ir::Value<'c, 'c>, LowerError> {
-    let (from_s, to_s) = (from.to_string(), to.to_string());
+    let (mut from_s, to_s) = (from.to_string(), to.to_string());
     let mut val = val;
     let mut current = from;
+    if from_s.contains("strided<") && !to_s.contains("strided<") {
+        let plain = expr::contiguous_view_as_plain(&from_s)
+            .ok_or_else(|| LowerError::from(format!("cannot use a {from_s} view as a {to_s}")))?;
+        let plain_ty = melior::ir::Type::parse(gen.context, &plain)
+            .ok_or_else(|| LowerError::ParseType(plain.clone()))?;
+        val = expr::move_view_pointer(gen, block, val, current, plain_ty)?;
+        current = plain_ty;
+        from_s = plain;
+    }
     if memref_space(&from_s) != memref_space(&to_s) {
         let spaced = memref_in_space_of(&from_s, &to_s)
             .ok_or_else(|| LowerError::from(format!("not a memref: {from_s}")))?;
