@@ -59,7 +59,7 @@ with `textkit` are read from that directory only, and the stdlib paths stay as t
 flag once for each package.
 
 ```bash
-vxc --package textkit=../textkit main.vx -o main
+vxc --package textkit=../textkit main.vx
 ```
 
 ## Separate compilation
@@ -70,7 +70,7 @@ parsing its source.
 
 ```bash
 vxc --emit-interface lib.vx -o lib.vxlib
-vxc --link-interface lib.vxlib main.vx -o main
+vxc --link-interface lib.vxlib main.vx
 ```
 
 The `.vxlib` format carries a version tag, and a compiler rejects artifacts written by a different

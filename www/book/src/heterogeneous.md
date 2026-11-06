@@ -144,11 +144,11 @@ argument on `Tensor` — the memory space it lives in — and that `Verified(...
 
 ## Choosing a machine at compile time
 
-The same program compiles against different hardware by swapping the machine file:
+The same program compiles and runs against different hardware by swapping the machine file:
 
 ```bash
-vxc --machine fleet/h100-sxm.vx program.vx -o program
-vxc --machine fleet/m4-uma.vx  program.vx -o program
+vxc --machine fleet/h100-sxm.vx program.vx
+vxc --machine fleet/m4-uma.vx  program.vx
 ```
 
 You can ask what the compiler concluded, as JSON, rather than reading it out of diagnostics:
