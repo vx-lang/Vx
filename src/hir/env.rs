@@ -722,9 +722,9 @@ pub struct TypeChecker<'a> {
     /// prover facts end after the call, because its `requires` is proved before it runs.
     /// `true` marks a variable whose pointer value stays: only the memory behind it changes.
     pub(crate) fact_change_frames: Vec<Vec<(String, bool)>>,
-    /// How many old values the prover's facts have named, as `$old_N` in `x = x + 1`. Each name
-    /// is new, so the facts about two old values of `x` do not meet.
-    pub(crate) old_values: usize,
+    /// The integer type of each old value that the prover's facts named, as `$old_N` in
+    /// `x = x + 1`. Each name is new, so the facts about two old values of `x` do not meet.
+    pub(crate) old_values: Vec<ElementType>,
     /// The raw-pointer facts of the body being checked.
     pub(crate) pointer_facts: crate::hir::check::pointer_facts::PointerFacts,
     /// The last id given to a base or a fact. Never saved or restored, so that two branches
@@ -824,7 +824,7 @@ impl<'a> TypeChecker<'a> {
             literal_typed_lets: std::collections::HashMap::new(),
             changed_vars: std::collections::HashSet::new(),
             fact_change_frames: Vec::new(),
-            old_values: 0,
+            old_values: Vec::new(),
             pointer_facts: Default::default(),
             pointer_fact_ids: 0,
             method_call_written: None,

@@ -1915,9 +1915,8 @@ impl<'a> TypeChecker<'a> {
                 && matches!(self.lookup(root.as_ref()), Some((Type::Pointer(..), _)));
             if through_a_pointer {
                 self.note_a_change_behind(root.to_string());
-            } else if renamed.is_some() {
-                // The rename ended each prover fact about the old value.
-                self.pointer_facts.forget(root.as_ref());
+            } else if let Some(names) = &renamed {
+                self.pointer_facts_name_the_old_value(root.as_ref(), names);
             } else {
                 self.note_a_change_to_variable(root.to_string());
             }
@@ -2438,6 +2437,14 @@ impl<'a> TypeChecker<'a> {
     /// wrong type would contradict that fact and so prove anything. `return` is bounded by its
     /// operands.
     fn prover_int_type(&self, n: &str) -> Option<(ElementType, bool)> {
+        // An old value has the type of its variable, and no `let` can hide its name.
+        if let Some(old) = n.strip_prefix("$old_") {
+            let int = old
+                .parse::<usize>()
+                .ok()
+                .and_then(|i| self.old_values.get(i));
+            return Some((int.expect("each `$old_N` has a type").clone(), true));
+        }
         let (ty, ranged) = if n == "return" {
             (self.current_return_type.clone()?, false)
         } else {

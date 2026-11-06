@@ -80,7 +80,7 @@ fn assigns_a_parameter(p : *const i64, mut n : i64) -> *const i64
 requires valid(p, n)
 ensures valid(return, n)
 {
-  n = n + 0i64;
+  n = n + 1i64;
   return p;
 }
 

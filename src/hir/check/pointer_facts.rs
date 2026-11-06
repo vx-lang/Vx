@@ -432,6 +432,51 @@ impl<'a> TypeChecker<'a> {
         });
     }
 
+    /// Before an assignment to the number `name`, after the prover's facts gave its old value
+    /// the new name in `names`: the pointer facts name the old value in the same way. A fact
+    /// that changes gets a new id, so the end of an `if` keeps it only when both branches have
+    /// it. A fact that still names `name` ends.
+    pub(crate) fn pointer_facts_name_the_old_value(
+        &mut self,
+        name: &str,
+        names: &HashMap<crate::symbol::Symbol, Expr>,
+    ) {
+        // Renames each term that names `name`, and says whether one did.
+        fn rename<'e>(
+            terms: impl Iterator<Item = &'e mut Expr>,
+            name: &str,
+            names: &HashMap<crate::symbol::Symbol, Expr>,
+        ) -> bool {
+            let mut changed = false;
+            for t in terms.filter(|t| expr_mentions(t, name)) {
+                *t = crate::hir::prover::substitute_names(t, names);
+                changed = true;
+            }
+            changed
+        }
+        let mut ids = self.pointer_fact_ids;
+        let facts = &mut self.pointer_facts;
+        for v in facts.entries.values_mut() {
+            rename(v.offset.iter_mut(), name, names);
+        }
+        let ended = facts.ended.iter_mut().map(|e| &mut e.range);
+        for r in facts.ranges.iter_mut().chain(ended) {
+            if rename(r.lo.iter_mut().chain(r.hi.iter_mut()), name, names) {
+                ids += 1;
+                r.id = ids;
+            }
+        }
+        for a in facts.aparts.iter_mut() {
+            let terms = a.first.1.iter_mut().chain(a.second.1.iter_mut());
+            if rename(terms.chain([&mut a.len]), name, names) {
+                ids += 1;
+                a.id = ids;
+            }
+        }
+        self.pointer_fact_ids = ids;
+        self.pointer_facts.forget(name);
+    }
+
     /// The facts at the start of the body of `func`: each raw pointer parameter has a base of
     /// its own, and each pointer `requires` is a fact. `valid(p, n)` also says that `n >= 0`.
     pub(crate) fn start_pointer_facts(&mut self, func: &Function) {

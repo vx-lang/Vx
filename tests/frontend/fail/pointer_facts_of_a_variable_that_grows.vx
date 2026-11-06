@@ -1,0 +1,78 @@
+//===- pointer_facts_of_a_variable_that_grows.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// After an assignment, the pointer facts name the old value of the number. Here `n` grows, so a
+// fact about the old `n` does not prove `valid(p, n)`. When only one branch of an `if` changes
+// `n`, no fact about `p` holds after the `if`. The `if n < 0i64` after it tells the prover that
+// `n` is not negative, so only the fact about `p` is missing.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+fn need_valid(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  return n;
+}
+
+fn grows(p : *const i64, mut n : i64) -> i64
+requires valid(p, n)
+{
+  n = n + 1i64;
+  // CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+1]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+  return need_valid(p, n);
+}
+
+fn grows_in_the_first_branch(p : *const i64, mut n : i64, c : bool) -> i64
+requires valid(p, n)
+{
+  if c {
+    n = n + 1i64;
+  } else {
+    n = n + 0i64;
+  }
+  if n < 0i64 {
+    return 0i64;
+  }
+  // CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+1]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+  return need_valid(p, n);
+}
+
+fn grows_in_the_second_branch(p : *const i64, mut n : i64, c : bool) -> i64
+requires valid(p, n)
+{
+  if c {
+    let _ = 0i64;
+  } else {
+    n = n + 1i64;
+  }
+  if n < 0i64 {
+    return 0i64;
+  }
+  // CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+1]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+  return need_valid(p, n);
+}
+
+fn grows_without_an_else(p : *const i64, mut n : i64, c : bool) -> i64
+requires valid(p, n)
+{
+  if c {
+    n = n + 1i64;
+  }
+  if n < 0i64 {
+    return 0i64;
+  }
+  // CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+1]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+  return need_valid(p, n);
+}
+
+fn main() -> i32 {
+  let x = 5i64;
+  let p : *const i64 = &x;
+  let a = grows(p, 0i64) + grows_in_the_first_branch(p, 0i64, true);
+  return (a + grows_in_the_second_branch(p, 0i64, false) + grows_without_an_else(p, 0i64, true))
+  as i32;
+}
