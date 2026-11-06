@@ -73,13 +73,14 @@ instance : DecidableRel d.toScoped.Strong := fun a b => by
 instance : DecidableRel d.toScoped.bar := fun a b => by
   unfold ScopedExecution.bar ScopedExecution.IsBarrier ScopedExecution.SameGroup; infer_instance
 
-def chainStep (x y : Fin n) : Prop := ∃ r, d.toScoped.rf x r ∧ d.toScoped.rmw r y
+def chainStep (x y : Fin n) : Prop := d.toScoped.rsStep x y
 def hbStep (a b : Fin n) : Prop := d.toScoped.po a b ∨ d.toScoped.sw a b ∨ d.toScoped.bar a b
 def ecoStep (a b : Fin n) : Prop :=
   d.toScoped.rf a b ∨ d.toScoped.co a b ∨ d.toScoped.fr a b
 def thinAirStep (a b : Fin n) : Prop := d.toScoped.po a b ∨ d.toScoped.rf a b
 
-instance : DecidableRel d.chainStep := fun x y => by unfold chainStep; infer_instance
+instance : DecidableRel d.chainStep := fun x y => by
+  unfold chainStep ScopedExecution.rsStep; infer_instance
 instance : DecidableRel d.ecoStep := fun a b => by unfold ecoStep; infer_instance
 instance : DecidableRel d.thinAirStep := fun a b => by unfold thinAirStep; infer_instance
 
@@ -95,10 +96,8 @@ section
 variable [hchain : DecidableRel (TransGen d.chainStep)]
 
 instance : DecidableRel d.toScoped.rs := fun a b => by
-  unfold Execution.rs
-  have : ∀ x y, Decidable
-      (TransGen (fun x y => ∃ r, d.toScoped.rf x r ∧ d.toScoped.rmw r y) x y) :=
-    fun x y => hchain x y
+  unfold ScopedExecution.rs
+  have : ∀ x y, Decidable (TransGen d.toScoped.rsStep x y) := fun x y => hchain x y
   infer_instance
 
 instance : DecidableRel d.toScoped.sw := fun a b => by

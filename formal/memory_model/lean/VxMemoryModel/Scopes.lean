@@ -8,7 +8,8 @@ A GPU puts its threads in subgroups, the subgroups in blocks and the blocks in d
 or a fence has a scope, and it reaches only the threads inside its scope. A barrier makes the
 threads of one subgroup, block or device wait for each other. This file adds both to an
 execution, as `../vx.cat` does. The CPU files do not change: with every scope `system`, the
-definitions here are those of `Rc11.lean` (`sw_eq`, `hb_eq`, `consistent_iff`, `dataRace_iff`).
+definitions here are those of `Rc11.lean` (`rs_eq`, `sw_eq`, `hb_eq`, `consistent_iff`,
+`dataRace_iff`).
 -/
 
 namespace Vx
@@ -76,6 +77,15 @@ def Reaches (a b : S.E) : Prop :=
 /-- `strong` of `vx.cat`: each one of `a` and `b` reaches the thread of the other. -/
 def Strong (a b : S.E) : Prop := S.Reaches a b ∧ S.Reaches b a
 
+/-- A step of a release sequence: a read-modify-write reads `x` and writes `y`. The read and `x`
+must reach each other, as in the "observation order" of PTX. -/
+def rsStep (x y : S.E) : Prop := ∃ r, S.rf x r ∧ S.Strong x r ∧ S.rmw r y
+
+/-- Release sequence, as in `Rc11.lean`, but each step is an `rsStep`. -/
+def rs (a b : S.E) : Prop :=
+  ∃ w, S.IsWrite a ∧ (a = w ∨ (S.po a w ∧ S.loc a = S.loc w)) ∧ S.IsWrite w ∧ S.IsAtomic w ∧
+    (w = b ∨ TransGen S.rsStep w b)
+
 /-- Synchronizes-with, as in `Rc11.lean`. The release and the acquire must reach each other, and
 so must the write and the read that link them. -/
 def sw (a b : S.E) : Prop :=
@@ -112,20 +122,63 @@ variable {S}
 theorem strong_iff (hs : S.AllSystem) {a b : S.E} : S.Strong a b ↔ S.IsAtomic a ∧ S.IsAtomic b :=
   ⟨fun h => ⟨h.1.1, h.2.1⟩, fun h => ⟨⟨h.1, Or.inl (hs a)⟩, ⟨h.2, Or.inl (hs b)⟩⟩⟩
 
+/-- The last write of a chain of read-modify-writes is the write of one. -/
+theorem chain_last {a b : S.E} (h : TransGen (fun x y => ∃ r, S.rf x r ∧ S.rmw r y) a b) :
+    ∃ r, S.rmw r b := by
+  cases h with
+  | single h => obtain ⟨r, -, hr⟩ := h; exact ⟨r, hr⟩
+  | tail _ h => obtain ⟨r, -, hr⟩ := h; exact ⟨r, hr⟩
+
+/-- A chain of read-modify-writes is a chain of `rsStep`, if each read in it and the write that
+it reads reach each other. Only the steps from `a` to `b` need to. -/
+theorem rsStep_chain {a b : S.E}
+    (h : TransGen (fun x y => ∃ r, S.rf x r ∧ S.rmw r y) a b)
+    (hs : ∀ x r y, S.rf x r → S.rmw r y → (x = a ∨ ∃ r', S.rmw r' x) →
+      (y = b ∨ TransGen (fun x y => ∃ r, S.rf x r ∧ S.rmw r y) y b) → S.Strong x r) :
+    TransGen S.rsStep a b := by
+  induction h with
+  | single h =>
+    obtain ⟨r, h1, h2⟩ := h
+    exact TransGen.single ⟨r, h1, hs _ _ _ h1 h2 (Or.inl rfl) (Or.inl rfl), h2⟩
+  | tail hac hcb ih =>
+    obtain ⟨q, h1, h2⟩ := hcb
+    refine (ih fun x r y hx hr ha hy => hs x r y hx hr ha ?_).tail
+      ⟨q, h1, hs _ _ _ h1 h2 (Or.inr (chain_last hac)) (Or.inl rfl), h2⟩
+    rcases hy with rfl | hy
+    · exact Or.inr (TransGen.single ⟨q, h1, h2⟩)
+    · exact Or.inr (hy.tail ⟨q, h1, h2⟩)
+
 theorem rs_atomic (wf : S.WellFormed) {x y : S.E} (h : S.rs x y) : S.IsAtomic y := by
   obtain ⟨w, -, -, -, hwa, rfl | hc⟩ := h
   · exact hwa
   · cases hc with
-    | single h => obtain ⟨r, -, hr⟩ := h; exact (wf.rmw_atomic _ _ hr).2.2.2
-    | tail _ h => obtain ⟨r, -, hr⟩ := h; exact (wf.rmw_atomic _ _ hr).2.2.2
+    | single h => obtain ⟨r, -, -, hr⟩ := h; exact (wf.rmw_atomic _ _ hr).2.2.2
+    | tail _ h => obtain ⟨r, -, -, hr⟩ := h; exact (wf.rmw_atomic _ _ hr).2.2.2
+
+theorem rs_eq (hs : S.AllSystem) (wf : S.WellFormed) : S.rs = S.toExecution.rs := by
+  funext a b
+  apply propext
+  constructor
+  · rintro ⟨w, h1, h2, h3, h4, h5⟩
+    refine ⟨w, h1, h2, h3, h4, h5.imp_right (TransGen.mono ?_)⟩
+    rintro x y ⟨r, h, -, h'⟩
+    exact ⟨r, h, h'⟩
+  · rintro ⟨w, h1, h2, h3, h4, h5⟩
+    refine ⟨w, h1, h2, h3, h4, h5.imp_right fun h => rsStep_chain h ?_⟩
+    rintro x r y - hr hx -
+    refine (strong_iff hs).2 ⟨?_, (wf.rmw_atomic r y hr).2.2.1⟩
+    rcases hx with rfl | ⟨r', hx⟩
+    · exact h4
+    · exact (wf.rmw_atomic r' x hx).2.2.2
 
 theorem sw_eq (hs : S.AllSystem) (wf : S.WellFormed) : S.sw = S.toExecution.sw := by
   funext a b
   apply propext
   constructor
   · rintro ⟨hr, ha, -, x, y, z, h1, h2, h3, -, h5, h6⟩
-    exact ⟨hr, ha, x, y, z, h1, h2, h3, h5, h6⟩
+    exact ⟨hr, ha, x, y, z, h1, rs_eq hs wf ▸ h2, h3, h5, h6⟩
   · rintro ⟨hr, ha, x, y, z, h1, h2, h3, h5, h6⟩
+    rw [← rs_eq hs wf] at h2
     exact ⟨hr, ha, (strong_iff hs).2 ⟨Execution.atomic_of_release hr,
       Execution.atomic_of_acquire ha⟩, x, y, z, h1, h2, h3,
       (strong_iff hs).2 ⟨rs_atomic wf h2, h5⟩, h5, h6⟩

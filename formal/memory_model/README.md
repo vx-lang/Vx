@@ -252,9 +252,10 @@ drop happens before each event after that fence. The clones and drops between th
 release sequence. `arc_last_drop_release_sequence.litmus` checks this with three tasks.
 
 `Scopes.lean` adds the scopes and the barriers of `vx.cat` as a separate layer. Each event has a
-scope, and each thread has a subgroup, a block and a device. `Reaches`, `Strong`, `sw`, `bar`,
-`hb` and `DataRace` follow `vx.cat`. With every scope `system`, they equal the definitions of
-`Rc11.lean` (`sw_eq`, `hb_eq`, `consistent_iff`, `dataRace_iff`), so the CPU proofs still hold.
+scope, and each thread has a subgroup, a block and a device. `Reaches`, `Strong`, `rs`, `sw`,
+`bar`, `hb` and `DataRace` follow `vx.cat`. With every scope `system`, they equal the definitions
+of `Rc11.lean` (`rs_eq`, `sw_eq`, `hb_eq`, `consistent_iff`, `dataRace_iff`), so the CPU proofs
+still hold.
 `LastArriver.lean` proves the last-arriver pattern of #2139. Each block writes its partial
 result, runs a release fence and adds 1 to a counter. The block whose add reads `n - 1` runs an
 acquire fence and reads the partials. `last_block_reads_every_partial` shows that each partial
@@ -382,6 +383,9 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
 - **A release and an acquire synchronize only when they reach each other**, and so do the write
   and the read that link them. With fences, these are two pairs, as in PTX.
   `last_arriver_with_fences_of_block_scope.litmus` shows the case.
+- **A read-modify-write continues a release sequence only when it and the write it reads reach
+  each other.** This is the "observation order" of the PTX model.
+  `release_sequence_broken_by_an_add_of_block_scope.litmus` shows the case.
 
 ## Limits
 
@@ -393,7 +397,6 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
 - The core language has no functions and no references.
 - The rules compare each task of an inner block with all the code of the outer block, also the
   code after the inner block joined it.
-- In a release sequence, a read-modify-write continues the sequence whatever its scope.
 - `run_lean.py` skips the tests with a branch.
 - The model covers only C0 to C7. The rules for sequential code, E1 to E7 and A1 to A6, are not in
   it.

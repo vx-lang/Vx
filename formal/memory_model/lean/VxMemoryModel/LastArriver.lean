@@ -112,9 +112,34 @@ theorem last_block_reads_every_partial (wf : S.WellFormed) (hc : S.Consistent) (
     · exact Or.inr (rmw_chain_of_co wfR hcR hoR hfinR hrmw hsrc w y hyx h)
   have reach : ∀ a b, S.IsAtomic a → S.scope a = .device → S.Reaches a b :=
     fun a b ha hs => ⟨ha, Or.inr (hs ▸ hone a b)⟩
+  -- Each write in the chain from `w` to `y` is on the counter, so each add in it has device
+  -- scope. So the chain continues the release sequence.
+  have step_loc : ∀ c d, (∃ r, S.rf c r ∧ S.rmw r d) → S.loc d = x → S.loc c = x :=
+    fun c d ⟨r, h1, h2⟩ hd => (wf.rf_write_read c r h1).2.2.trans (hC.add r d h2 hd).1
+  have chain_loc : ∀ c d, TransGen (fun x y => ∃ r, S.rf x r ∧ S.rmw r y) c d →
+      S.loc d = x → S.loc c = x := by
+    intro c d h
+    induction h with
+    | single h => exact step_loc _ _ h
+    | tail _ h ih => exact fun hd => ih (step_loc _ _ h hd)
+  have hchain' : w = y ∨ TransGen S.rsStep w y := by
+    refine hchain.imp_right fun h => rsStep_chain h ?_
+    intro c q d hc hq hcw hd
+    have hdx : S.loc d = x := by
+      rcases hd with rfl | hd
+      · exact hyx
+      · exact chain_loc d y hd hyx
+    have hqx := (hC.add q d hq hdx).1
+    refine ⟨reach c q ?_ ?_, reach q c (wf.rmw_atomic q d hq).2.2.1 (hdev q d hq hdx).1⟩
+    · rcases hcw with rfl | ⟨r', hc'⟩
+      · exact hwa
+      · exact (wf.rmw_atomic r' c hc').2.2.2
+    · rcases hcw with rfl | ⟨r', hc'⟩
+      · exact (hdev r c hrw hwx).2
+      · exact (hdev r' c hc' ((wf.rf_write_read c q hc).2.2.trans hqx)).2
   have hsw : S.sw f g := ⟨hfr, hga,
     ⟨reach f g (atomic_of_release hfr) hfd, reach g f (atomic_of_acquire hga) hgd⟩,
-    w, y, rl, Or.inr ⟨hf, hfw⟩, ⟨w, hww, Or.inl rfl, hww, hwa, hchain⟩, hy,
+    w, y, rl, Or.inr ⟨hf, hfw⟩, ⟨w, hww, Or.inl rfl, hww, hwa, hchain'⟩, hy,
     ⟨reach y rl hya.1 hya.2, reach rl y hla (hdev rl wl hl hlx).1⟩, hla, Or.inr ⟨hlg, hg⟩⟩
   have hpg : S.hb p g := TransGen.tail (TransGen.single (Or.inl hpf)) (Or.inr (Or.inl hsw))
   exact TransGen.tail hpg (Or.inl hgq)
