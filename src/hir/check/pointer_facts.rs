@@ -947,6 +947,35 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The write `p[k] = x` or `*p = x` gives the element a value, so a pointer `p` at the base
+    /// `b` and the offset `j` gets `Init(b, j + k, j + k + 1)`. The compiler trusts the write, as
+    /// it trusts the rest of the `unsafe` block. Inside a call, the facts change after the call,
+    /// so a write there gives no fact.
+    pub(crate) fn pointer_facts_note_a_write(&mut self, place: &Expr) {
+        let (pointer, index) = match place {
+            Expr::IndexAccess(a) => (&*a.base, Some(&*a.index)),
+            Expr::Dereference(d) => (&*d.expr, None),
+            _ => return,
+        };
+        let Expr::Identifier(p) = pointer else {
+            return;
+        };
+        if !self.fact_change_frames.is_empty()
+            || !matches!(self.lookup(p.name.as_ref()), Some((Type::Pointer(..), _)))
+            || index.is_some_and(|k| !crate::hir::prover::is_modelled(k))
+        {
+            return;
+        }
+        let Some(value) = self.pointer_facts.entry_of(p.name.as_ref()) else {
+            return;
+        };
+        let mut lo = value.offset;
+        lo.extend(index.cloned());
+        let mut hi = lo.clone();
+        hi.push(one());
+        self.add_range(Kind::Init, value.base, lo, hi);
+    }
+
     /// At the start of a loop: a fact holds in the body only when no pass ends it, so an event
     /// that the body can have ends the facts before the body.
     pub(crate) fn end_pointer_facts_a_loop_can_end(&mut self, body: &[Statement]) {
