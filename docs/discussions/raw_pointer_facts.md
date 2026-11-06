@@ -271,6 +271,18 @@ prover knows at the call, such as the conditions of the path.
 `valid(p, 0)` at the end of a range has `k == hi`. The goal accepts it, because the address one
 past the end of an allocation is not null and is aligned.
 
+Two facts of the same kind and base also prove `valid` or `initialized`. The first fact holds the
+start, and the second the end. For `Init(b, lo1, hi1)` and `Init(b, lo2, hi2)`, the goal is
+`0 <= m && lo1 <= k && lo1 <= lo2 && lo2 <= hi1 && k + m <= hi2`. For two `Valid` facts, the goal
+has `lo2 < hi1` in place of `lo2 <= hi1`. The two ranges must share an element, because two
+allocations can sit next to each other. `initialized(p, m)` also holds when the prover proves
+`m == 0`, because zero elements hold values.
+
+When the checker adds an `Init` fact that touches or overlaps another `Init` fact of the base, it
+adds one merged fact for both. It keeps the facts that it had, so the end of an `if` still keeps a
+fact that both branches have. A later write next to the merged fact grows it. So a chain of writes
+gives one fact, and a goal needs at most two facts.
+
 Each goal uses exact integer arithmetic, with no wrap. Otherwise an offset near `i64::MAX` plus a
 length could wrap to a small number and pass the bound. An address can still wrap: `offset(p, k)`
 multiplies `k` by the size of an element. So the rule for one base needs a `Valid` fact. Inside
@@ -478,8 +490,8 @@ requires valid(buf, cap)
 The C function `read` returns -1 on an error. `c_read_some` returns 0 instead, because
 `initialized` is false for a negative length. The checker trusts the `ensures` of an `extern`
 function, and the audit lists it. A second read into `offset_mut(buf, got)` gives a second `Init`
-fact. The checker does not join two ranges (section 11), so a checksum of both parts needs two
-calls.
+fact. The two `Init` facts touch, so the checker merges them (section 7), and a checksum of both
+parts can be one call.
 
 ### Allocation and free
 
@@ -692,7 +704,8 @@ needs a fact there. Open question 6 asks about a warning for it.
   the body. A loop that indexes, as in `p[i]`, keeps it.
 - A fact about other memory ends at each event that can free memory. That includes memory that the
   pointer cannot point into, such as a vector that the body made itself.
-- One fact must prove a clause. The checker does not join two ranges.
+- At most two facts prove a clause. The checker merges `Init` facts that touch, but a chain of
+  three `Valid` facts does not join.
 - A write through a pointer makes an `Init` fact for its one element only. So a loop that fills a
   buffer gives no fact for the buffer. The write keeps the facts that the pointer has.
 - An `extern` function can state only `frees` clauses and pointer clauses. It cannot state a
