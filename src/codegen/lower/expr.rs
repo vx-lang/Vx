@@ -4202,13 +4202,30 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                     "`{name}()` on something that is not a tensor: {ty_text}"
                 )));
             }
-            // The helper answers with the buffer's start. A view (a row, `q[i]`) starts at an
-            // offset into it, which this path does not add, so it is refused rather than
-            // answered wrongly. The flat path handles it.
+            // A view (a row, `q[i]`) starts at an offset into its buffer. Its pointer is the
+            // address of its first element, which the descriptor's offset and strides give.
             if ty_text.contains("strided<") {
-                return Err(LowerError::from(format!(
-                    "`{name}()` on a tensor view is not lowered by the legacy code generator"
-                )));
+                let shape = ty_text["memref<".len()..]
+                    .split([',', '>'])
+                    .next()
+                    .unwrap_or("");
+                let rank = shape.matches('x').count();
+                let index_ty = Type::index(gen.context);
+                let zero: Value = block
+                    .append_operation(
+                        OperationBuilder::new("arith.constant", gen.loc())
+                            .add_attributes(&[(
+                                Identifier::new(gen.context, "value"),
+                                IntegerAttribute::new(index_ty, 0).into(),
+                            )])
+                            .add_results(&[index_ty])
+                            .build()?,
+                    )
+                    .result(0)?
+                    .into();
+                let indices = vec![zero; rank];
+                let ptr = tensor_element_pointer(gen, block, val, &ty_text, &indices)?;
+                return Ok((ptr, gen.ptr_ty, block));
             }
             let ptr = memref_data_pointer(gen, block, val)?;
             return Ok((ptr, gen.ptr_ty, block));

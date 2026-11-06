@@ -7,12 +7,8 @@
 //===----------------------------------------------------------------------===//
 // A row `t[1]` is a view into the tensor's buffer that starts three elements in.
 // `as_ptr()` on the view points at the row's first element, not the buffer's, so
-// reading index 1 through it gives `t[1][1]`.
+// reading index 1 through it gives `t[1][1]`. Both code generators run it.
 //
-// Flat path only: the legacy code generator refuses `as_ptr()` on a view rather
-// than answer with the buffer's start.
-//
-// REQUIRES: flat-codegen
 // EXPECT: 9
 fn main() -> i32 {
   let mut t : Tensor<f32, [2, 3]> = Tensor<f32, [2, 3]>::new();
