@@ -1919,6 +1919,8 @@ impl<'a> TypeChecker<'a> {
             let at = self.current_statement_span;
             self.pointer_facts_event(at, |_| "an assignment that drops the old value".to_string());
         }
+        // After the event, so that the event does not end the new fact.
+        self.pointer_facts_note_a_write(lhs);
         // Keep the compile-time value of the assigned variable in step with the assignment.
         // An assignment the evaluator cannot compute makes the variable unknown rather than
         // leaving the previous value behind, which later reads would report as a certainty.

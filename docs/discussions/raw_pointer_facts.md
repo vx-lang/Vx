@@ -541,7 +541,8 @@ requires n > 0i64
    the same address.
 1. The second `sum` gets E8006, with a note on the line of the `dealloc`.
 
-`fill_zero` needs an `assume`, because a write gives no `Init` fact in v1 (section 11).
+`fill_zero` needs an `assume`, because a write gives a fact for one element only, and a loop
+cannot join them (section 11).
 
 ### A pointer in a field: lists and copies
 
@@ -692,8 +693,8 @@ needs a fact there. Open question 6 asks about a warning for it.
 - A fact about other memory ends at each event that can free memory. That includes memory that the
   pointer cannot point into, such as a vector that the body made itself.
 - One fact must prove a clause. The checker does not join two ranges.
-- A write through a pointer makes no `Init` fact. So a loop that fills a buffer gives no fact. The
-  write keeps the facts that the pointer has.
+- A write through a pointer makes an `Init` fact for its one element only. So a loop that fills a
+  buffer gives no fact for the buffer. The write keeps the facts that the pointer has.
 - An `extern` function can state only `frees` clauses and pointer clauses. It cannot state a
   value `ensures` such as `0i64 <= return`, so the `c_read_some` of section 8 cannot be written
   yet.
