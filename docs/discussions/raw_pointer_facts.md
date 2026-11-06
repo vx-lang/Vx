@@ -78,7 +78,9 @@ holds the elements `lo` to `hi - 1`, counted from the base.
 **A fact is about values.** When the body assigns a pointer variable, the variable gets the entry
 of its new value. When a call can change a variable (#2620), the variable loses its entry. In both
 cases, the checker also drops each fact and each entry whose expressions name the variable. A
-`let` that hides a name does the same, and so does the end of the scope of a variable. A variable
+`let` that hides a name does the same, and so does the end of the scope of a variable. An
+assignment to an integer variable outside a call keeps the facts: each one names the old value by
+the new name that the prover's facts give it, as `$old_N`. A variable
 that loses its entry gets a new base with no facts. A base keeps its facts when one of its
 variables gets a new value. So a fact about the old value of `p` stays true for each copy of that
 value.
@@ -143,7 +145,7 @@ name, as in `let got = read(buf, cap)`.
 ## 5. Where a fact ends
 
 **No event ends an `Apart` fact.** It is about addresses only, and a free does not change an
-address. The checker still drops it when the body assigns a variable that it names (section 3).
+address. An assignment to a variable that it names changes it or drops it, as section 3 says.
 
 `Valid` and `Init` facts end at events. Two definitions say which events can free memory:
 

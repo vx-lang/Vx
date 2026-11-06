@@ -1367,17 +1367,19 @@ impl<'a> TypeChecker<'a> {
         let Expr::Identifier(id) = place else {
             return None;
         };
-        let is_int =
-            matches!(ty, Type::Scalar(e) if e.int_bits().is_some() && *e != ElementType::Bool);
+        let int = match ty {
+            Type::Scalar(e) if e.int_bits().is_some() && *e != ElementType::Bool => e,
+            _ => return None,
+        };
         // A change inside a call ends the facts after the call, which would end this fact too.
-        if !is_int || !self.fact_change_frames.is_empty() {
+        if !self.fact_change_frames.is_empty() {
             return None;
         }
         let old = Expr::Identifier(IdentifierExpr {
-            name: format!("$old_{}", self.old_values).into(),
+            name: format!("$old_{}", self.old_values.len()).into(),
             span: Span::default(),
         });
-        self.old_values += 1;
+        self.old_values.push(int.clone());
         let x = id.name.as_ref();
         let names = std::collections::HashMap::from([(id.name.clone(), old)]);
         // Only a fact that names `x` changes, so a long run of assignments does not copy every
