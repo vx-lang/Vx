@@ -1089,12 +1089,17 @@ impl<'a> TypeChecker<'a> {
                     return Type::Tensor(ElementType::I32, vec![crate::syntax::Dim::Dyn], None);
                 } else if member.as_ref() == "shape" && Self::tensor_operand_elem(&obj_ty).is_some()
                 {
-                    self.errors.error_with_code(
-                        crate::diagnostic::DiagnosticCode::E3024,
-                        "`.shape` is gone; write `extent(i)` for the run-time extent of dimension i"
-                            .to_string(),
-                        Some(crate::diagnostic::SourceSpan::from_ast_span(&ma_span)),
-                    );
+                    // Indexing `t.shape[i]` probes the base through `operand_type` (speculating)
+                    // before the real check; skip the diagnostic while probing so E3024 is
+                    // reported once (#2489).
+                    if !self.speculating {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E3024,
+                            "`.shape` is gone; write `extent(i)` for the run-time extent of dimension i"
+                                .to_string(),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&ma_span)),
+                        );
+                    }
                 } else if base_ty != Type::Unknown {
                     // `Unknown` is what an error already reported leaves behind, such as a
                     // use of a moved value; a second message about it only adds noise.
