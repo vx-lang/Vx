@@ -896,9 +896,8 @@ impl<'a> TypeChecker<'a> {
 
     /// Refuse a `match` arm whose integer literal cannot be represented in the scrutinee's type.
     ///
-    /// Such an arm can never be selected. Codegen parses the literal with a zero fallback, which
-    /// silently turns it into a comparison against 0 -- so the arm fires for scrutinee 0 instead
-    /// of never. Reported here, where the scrutinee's type is known.
+    /// Such an arm can never be selected, and the code generator has no value to compare it
+    /// with. Reported here, where the scrutinee's type is known.
     pub(crate) fn check_literal_pattern_range(&mut self, pattern: &Pattern, expr_ty: &Type) {
         if self.speculating {
             return;

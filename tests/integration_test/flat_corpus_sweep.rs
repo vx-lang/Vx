@@ -25,6 +25,9 @@ const KNOWN_DECLINES: &[&str] = &[
     // The same shape again, with a warning added: it states that a program checked by both
     // frontends has its warnings reported once, which needs a program that declines.
     "frontend/pass/jobs_warns_once_when_it_falls_back.vx",
+    // A `match` on a `u64`, which the flat path declines: it takes only a subject that is an
+    // `i32`. The file checks how the AST path compares an arm above the largest `i64`.
+    "backend/pass/match_arm_above_the_largest_i64.vx",
 ];
 
 /// Every `.vx` file under `dir`, recursively, sorted for a stable report.
