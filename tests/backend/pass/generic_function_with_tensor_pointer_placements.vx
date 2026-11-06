@@ -6,8 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 // Call generic functions with host and GPU tensor pointers in both orders.
-// The program does not dereference the pointers.
-// REQUIRES: flat-codegen
+// The program does not dereference the pointers. Both code generators run it.
 // EXPECT: 5 7 7 5
 
 fn host_first<T>(value: T) -> T {
