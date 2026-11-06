@@ -3360,6 +3360,8 @@ impl<'a> TypeChecker<'a> {
                         let what = format!("`{method}`, which takes `&mut self`, cannot change it");
                         self.report_read_only(&root, &what, &span);
                     }
+                    let change = format!("`{method}` takes `&mut self`, so it can change");
+                    self.check_field_change(obj, &change);
                 } else if matches!(base_ty, Type::Borrow { is_mut: false, .. }) && !self.speculating
                 {
                     self.errors.error_with_code(

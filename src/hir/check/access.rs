@@ -888,6 +888,7 @@ impl<'a> TypeChecker<'a> {
                 _ => break,
             }
         }
+        self.check_field_change(expr, "this move leaves no value in");
         self.consume_field(&root, &path);
     }
 
@@ -1803,6 +1804,7 @@ impl<'a> TypeChecker<'a> {
                     if let Some(root) = self.read_only_root(inner) {
                         self.report_read_only(&root, "it cannot be borrowed `&mut`", span);
                     }
+                    self.check_field_change(inner, "this `&mut` can change");
                     // `&mut *r` through a shared `r` would make a `&mut` out of a `&`.
                     if let Expr::Dereference(d) = &**inner {
                         if matches!(
