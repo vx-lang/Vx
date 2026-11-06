@@ -1311,6 +1311,7 @@ impl CompilerDriver {
         if !has_errors {
             checker.errors.inner.extend(unused_functions.inner);
         }
+        checker.errors.drop_repeats();
 
         // The machine-readable verdict, before the human-readable rendering below: one record on
         // stdout carrying every diagnostic plus the resolved staging routes, so an admission

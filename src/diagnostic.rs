@@ -1109,6 +1109,38 @@ impl DiagnosticsVec {
             }
         }
     }
+
+    /// Drops each diagnostic that repeats an earlier one. The checker checks some bodies twice,
+    /// such as a method that a call checks again, and each problem is reported once.
+    pub fn drop_repeats(&mut self) {
+        let mut seen = std::collections::HashSet::new();
+        self.inner
+            .retain(|d| d.repeat_key().is_none_or(|key| seen.insert(key)));
+    }
+}
+
+/// What makes two diagnostics one report: level, code, file, position and message.
+pub type RepeatKey = (
+    bool,
+    Option<DiagnosticCode>,
+    Option<crate::symbol::Symbol>,
+    (usize, usize, usize),
+    String,
+);
+
+impl Diagnostic {
+    /// `None` for a diagnostic with no position: two of them with one message can be about two
+    /// places, such as two casts that each need `unsafe`.
+    pub fn repeat_key(&self) -> Option<RepeatKey> {
+        let at = self.source_span.as_ref().filter(|s| s.line > 0)?;
+        Some((
+            self.level == DiagnosticLevel::Error,
+            self.code,
+            self.file.clone(),
+            (at.line, at.column, at.length),
+            self.message.to_string(),
+        ))
+    }
 }
 
 /// What makes two warnings the same: code, position (line, column, length) and message.
