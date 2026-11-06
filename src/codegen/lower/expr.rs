@@ -3564,9 +3564,7 @@ pub(crate) fn load_tensor_slot<'c>(
 ///
 /// A `memref.cast` cannot change what a memref holds, so the descriptor is loaded, given type
 /// `B`, and stored in a new slot. It still points at the same data, so writes through a `&mut`
-/// reach the tensor. A row (`memref<4xf32, strided<[1], offset: ?>>`) passed as a plain memref
-/// has its data pointer moved to the row: a plain memref's offset is 0 by its type, so the code
-/// using it never reads the offset, and a cast would hand it row 0.
+/// reach the tensor.
 fn retype_tensor_reference<'c>(
     gen: &MeliorGenerator<'c>,
     block: &melior::ir::BlockRef<'c, 'c>,
@@ -3580,20 +3578,11 @@ fn retype_tensor_reference<'c>(
     let dst_str = &to_str["memref<".len()..to_str.len() - 1];
     let dst_ty =
         Type::parse(gen.context, dst_str).ok_or_else(|| LowerError::ParseType(dst_str.into()))?;
-    let src_str = src_ty.to_string();
     let mut desc = desc;
-    let mut desc_ty = src_ty;
-    if src_str.contains("strided<") && !dst_str.contains("strided<") {
-        let plain = contiguous_view_as_plain(&src_str).ok_or_else(|| {
-            LowerError::from(format!("cannot pass a {src_str} view as a {dst_str}"))
-        })?;
-        desc_ty = Type::parse(gen.context, &plain).ok_or(LowerError::ParseType(plain))?;
-        desc = move_view_pointer(gen, block, desc, src_ty, desc_ty)?;
-    }
-    if desc_ty != dst_ty {
-        // Through a space cast when the parameter names a memory: `&mut d` of a placed local
-        // into `&mut Tensor<f32, [1024], Memory::HBM>`.
-        desc = super::cast_memref(gen, block, desc, desc_ty, dst_ty)?;
+    if src_ty != dst_ty {
+        // A row, or a parameter that names a memory: `&mut d` of a placed local into
+        // `&mut Tensor<f32, [1024], Memory::HBM>`.
+        desc = super::cast_memref(gen, block, desc, src_ty, dst_ty)?;
     }
     let slot: Value = block
         .append_operation(
@@ -3619,7 +3608,7 @@ fn retype_tensor_reference<'c>(
 /// view's strides are not row-major or it is in a GPU memory space. `memref<4xf32, strided<[1],
 /// offset: ?>>` gives `memref<4xf32>`. A `?` stride cannot be checked here; only indexing a row
 /// out of a tensor makes one, and a row of a tensor is contiguous.
-fn contiguous_view_as_plain(memty: &str) -> Option<String> {
+pub(super) fn contiguous_view_as_plain(memty: &str) -> Option<String> {
     if !memty.ends_with("offset: ?>>") && !memty.ends_with("offset: 0>>") {
         return None;
     }
@@ -3649,7 +3638,7 @@ fn contiguous_view_as_plain(memty: &str) -> Option<String> {
 
 /// A view's descriptor with its data pointer moved forward by its offset and the offset set to
 /// 0, retyped as `plain`, the same shape with no layout.
-fn move_view_pointer<'c>(
+pub(super) fn move_view_pointer<'c>(
     gen: &MeliorGenerator<'c>,
     block: &melior::ir::BlockRef<'c, 'c>,
     view: Value<'c, 'c>,
