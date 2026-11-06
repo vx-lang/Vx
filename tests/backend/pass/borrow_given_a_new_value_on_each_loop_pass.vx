@@ -8,10 +8,8 @@
 // A borrow left by one pass of a loop ends when its variable gets a new value before any read,
 // so the borrowed variable may change before that.
 //
-// REQUIRES: flat-codegen
-// Only because the older code generator cannot store `&x` of a number into a variable.
-//
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}last=2;{{$}}
 // CHECK-NEXT: {{^}}sum=101;{{$}}
 // CHECK-NEXT: {{^}}first=1;{{$}}

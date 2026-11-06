@@ -842,8 +842,14 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                         .build()?;
                     block.append_operation(store_op);
                 } else if gen.allocs.contains(name.as_ref()) {
+                    // `last = &x` into a slot that holds a bare pointer gives `x`'s memref.
+                    let store_val = if rhs_ty != mem_ty {
+                        gen.coerce_type(&block, rhs_val, rhs_ty, mem_ty)?
+                    } else {
+                        rhs_val
+                    };
                     let store_op = OperationBuilder::new("llvm.store", gen.loc())
-                        .add_operands(&[rhs_val, mem_val])
+                        .add_operands(&[store_val, mem_val])
                         .build()?;
                     block.append_operation(store_op);
                 } else {
