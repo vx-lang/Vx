@@ -340,6 +340,42 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
                 gen.allocs.insert(name.to_string());
             }
         } else {
+            // A reference to a tensor is a cell that holds the descriptor. `let r = s.field` or a
+            // closure's capture gives the tensor itself, so `r` gets a cell of its own. A call
+            // passes that cell to a `&Tensor` parameter.
+            let tensor_reference = matches!(
+                ty_ann.clone().or_else(|| gen.infer_ast_type(expr)),
+                Some(syntax::Type::Borrow { inner, .. })
+                    if matches!(*inner, syntax::Type::Tensor(..))
+            );
+            let ty_str = ty.to_string();
+            let (val, ty) = if tensor_reference
+                && ty_str.starts_with("memref<")
+                && !ty_str.starts_with("memref<memref<")
+            {
+                let cell_ty = Type::parse(gen.context, &format!("memref<{ty_str}>"))
+                    .ok_or_else(|| LowerError::ParseType(format!("memref<{ty_str}>")))?;
+                let cell: Value = block
+                    .append_operation(
+                        OperationBuilder::new("memref.alloca", gen.loc())
+                            .add_attributes(&[(
+                                Identifier::new(gen.context, "operandSegmentSizes"),
+                                DenseI32ArrayAttribute::new(gen.context, &[0, 0]).into(),
+                            )])
+                            .add_results(&[cell_ty])
+                            .build()?,
+                    )
+                    .result(0)?
+                    .into();
+                block.append_operation(
+                    OperationBuilder::new("memref.store", gen.loc())
+                        .add_operands(&[val, cell])
+                        .build()?,
+                );
+                (cell, cell_ty)
+            } else {
+                (val, ty)
+            };
             gen.env.insert(name.to_string().into(), (val, ty));
             // A value, not a stack slot, even if an outer `let mut` of this name had one.
             gen.allocs.remove(name.as_ref());
