@@ -173,6 +173,19 @@ each exit:
 - Each `break` is an exit. The checker proves each invariant at each `break`, without an error. An
   invariant that does not hold at a `break` gives no fact after the loop.
 
+The invariant holds at the head because the proofs of section 2 also include the last pass. So in
+`for i in a..b`, the invariant must hold for `i == b`. `invariant i <= b` holds, and
+`invariant i < b` gets E8009.
+
+A `break` at which an invariant is false is not an error. A `break` ends the loop, so no pass starts
+after it. For example, a loop that searches can make an invariant false on the pass that finds the
+value, and then exit with `break`.
+
+At a `break` in `for i in a..b`, `i` is less than `b`, and after the loop `i` has no name. So the
+value of `i` at the exit gets a new name, `$exit`. When the prover proves `a <= b`, each invariant
+that holds at each exit gives its facts with `$exit` in place of `i`. The prover also knows
+`a <= $exit && $exit <= b`. Without a `break`, `$exit == b`.
+
 This is the same for the prover's facts and the pointer facts. In `fill_then_sum`, `valid(p, n)`
 gives `0 <= n` (section 4), so the loop gives `initialized(p, n)` after it. The call `sum(p, n)`
 then compiles.
@@ -183,9 +196,6 @@ All of this happens inside one body check. It reads no fact of another body.
 
 ## 9. Open questions
 
-1. Section 7 of this note proves each invariant at each `break` without an error. The other choice
-   is an error, as at a `continue`. Then each invariant holds after each loop, and a programmer
-   who wants a `break` that breaks the invariant must remove the invariant.
 1. Section 5 of this note tries pairs of facts only. A chain of three facts, as after two writes and
    an invariant, still fails. A loop does not need more than one pair.
 1. Section 6 of this note gives the new base of an assigned pointer the memory of its base when the
