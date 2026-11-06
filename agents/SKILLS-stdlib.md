@@ -16,7 +16,7 @@ Move the `extern "C"` declaration inside the new stdlib module. By centralizing 
 
 ### 4. Build a Safe Public Wrapper
 
-Write a strongly-typed, native public function (e.g., `pub fn now() -> f64`) that abstracts the underlying FFI call.
+Write a strongly-typed, native public function (e.g., `fn sleep(d : Duration) -> i32`) that abstracts the underlying FFI call.
 
 - *Why:* This scopes any potential `unsafe` behavior entirely inside the standard library, guaranteeing that user-space code remains completely safe and verified.
 
@@ -32,7 +32,7 @@ Update all downstream scripts, tests, and benchmarks to:
 
 1. `import` the new native module (e.g., `import std::time;`).
 1. Remove their local `extern` declarations.
-1. Replace manual, unsafe FFI calls with the new safe abstractions (e.g., `time::now()`).
+1. Replace manual, unsafe FFI calls with the new safe abstractions (e.g., `Instant::now()`).
 
 ### 7. Purge Redundant Mocks
 

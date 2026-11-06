@@ -36,8 +36,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 /// generic instantiation can be checked again from a copy of it.
 pub(crate) const DROP_MARK: &str = "\u{1}drop";
 
-/// The default body of `Drop::wait_limit` in `stdlib/core/ops.vx`, in seconds.
-pub(crate) const DEFAULT_WAIT_LIMIT: &str = "10.0";
+/// The default of `Drop::wait_limit` in `stdlib/core/ops.vx`, in seconds.
+pub(crate) const DEFAULT_WAIT_LIMIT_SECS: u64 = 10;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Moved {
@@ -124,7 +124,7 @@ pub(crate) struct GluePart {
     /// Each field followed, with the type of the struct it is a field of.
     path: Vec<(crate::symbol::Symbol, String)>,
     call: Option<crate::symbol::Symbol>,
-    /// With `call`: the mangled name of the type's `Drop::wait_limit`.
+    /// With `call`: the mangled name of the type's `Drop::wait_limit_nanos`.
     limit: Option<crate::symbol::Symbol>,
     /// The end of a `within` block (F6a): the drop of the block's hidden owner.
     within_end: bool,
@@ -545,9 +545,9 @@ fn glue_drops_at(
                     span: Span::default(),
                 });
             }
-            // `wait_limit(&place)`, which the code before the call of `drop` asks. An impl that
-            // does not write `wait_limit` has a copy of the default only when the resolver saw
-            // `core::ops`, so without one the limit is the default itself.
+            // `wait_limit_nanos(&place)`, which the code before the call of `drop` asks. An impl
+            // has a copy of it only when the resolver saw `core::ops`, so without one the limit
+            // is the default itself.
             let limit = part.call.as_ref().map(|_| {
                 Box::new(match &part.limit {
                     Some(limit) => Expr::FunctionCall(FunctionCallExpr::new(
@@ -561,8 +561,8 @@ fn glue_drops_at(
                         Span::default(),
                     )),
                     None => Expr::Number(NumberExpr::new(
-                        DEFAULT_WAIT_LIMIT.to_string(),
-                        Some(ElementType::F64),
+                        (DEFAULT_WAIT_LIMIT_SECS * 1_000_000_000).to_string(),
+                        Some(ElementType::I64),
                         Span::default(),
                     )),
                 })
@@ -680,7 +680,7 @@ impl<'a> TypeChecker<'a> {
                     glue.push(GluePart {
                         path: Vec::new(),
                         call: Some(call),
-                        limit: self.drops_impl_method(ty, "wait_limit"),
+                        limit: self.drops_impl_method(ty, "wait_limit_nanos"),
                         within_end: false,
                         payload: None,
                     });
@@ -746,7 +746,7 @@ impl<'a> TypeChecker<'a> {
             glue.push(GluePart {
                 path: Vec::new(),
                 call: Some(call),
-                limit: self.drops_impl_method(ty, "wait_limit"),
+                limit: self.drops_impl_method(ty, "wait_limit_nanos"),
                 within_end: false,
                 payload: None,
             });
@@ -2139,9 +2139,10 @@ mod tests {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/stdlib/core/ops.vx");
         let ops = std::fs::read_to_string(path).expect("stdlib/core/ops.vx can be read");
         let method = ops
-            .find("fn wait_limit(self : &Self) -> f64 {")
+            .find("fn wait_limit(self : &Self) -> Duration {")
             .expect("`Drop` has `wait_limit` with a default body");
         let body = ops[method..].lines().nth(1).unwrap_or_default().trim();
-        assert_eq!(body, format!("return {};", super::DEFAULT_WAIT_LIMIT));
+        let secs = super::DEFAULT_WAIT_LIMIT_SECS;
+        assert_eq!(body, format!("return Duration::from_secs({secs});"));
     }
 }

@@ -25,9 +25,9 @@ fn main() -> i32 {
   let mut best : f32 = 1000000.0;
   let mut total : f64 = 0.0;
   for rep in 0..5 {
-    let t0 = now();
+    let t0 = Instant::now();
     let r = kernel(n_items, rep);
-    let dt = now() - t0;
+    let dt = t0.elapsed().as_secs_f32();
     total += r;
     if dt < best {
       best = dt;

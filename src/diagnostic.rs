@@ -143,7 +143,7 @@ pub enum DiagnosticCode {
     /// `within` block. A drop runs with cancellation off, so when the other end never acts, the
     /// wait holds up the drop until the limit of the drop: its type's `wait_limit`, 10 seconds by
     /// default. Then the wait gives up, as in a cancelled block. A `wait_limit` that calls them
-    /// gets the warning too, because it runs before the drop and should only return a number.
+    /// gets the warning too, because it runs before the drop and should only return a time.
     W1036,
 
     // --- Parser Errors (E1xxx) ---

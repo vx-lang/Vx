@@ -29,28 +29,28 @@ fn main() -> i32 {
   let mut total_rows : f64 = 0.0;
   for rep in 0..20 {
     a[n - 1][n - 1 - rep] = 2.0 + (rep as f32);
-    let t0 = now();
+    let t0 = Instant::now();
     total_sum += a.sum() as f64;
-    let t1 = now();
+    let t1 = Instant::now();
     total_max += a.max() as f64;
-    let t2 = now();
+    let t2 = Instant::now();
     let columns = a.sum_axis(0);
-    let t3 = now();
+    let t3 = Instant::now();
     let rows = a.sum_axis(1);
-    let t4 = now();
+    let t4 = Instant::now();
     total_columns += columns[n - 1 - rep] as f64;
     total_rows += rows[n - 1] as f64;
-    if t1 - t0 < best_sum {
-      best_sum = t1 - t0;
+    if (t1 - t0).as_secs_f32() < best_sum {
+      best_sum = (t1 - t0).as_secs_f32();
     }
-    if t2 - t1 < best_max {
-      best_max = t2 - t1;
+    if (t2 - t1).as_secs_f32() < best_max {
+      best_max = (t2 - t1).as_secs_f32();
     }
-    if t3 - t2 < best_columns {
-      best_columns = t3 - t2;
+    if (t3 - t2).as_secs_f32() < best_columns {
+      best_columns = (t3 - t2).as_secs_f32();
     }
-    if t4 - t3 < best_rows {
-      best_rows = t4 - t3;
+    if (t4 - t3).as_secs_f32() < best_rows {
+      best_rows = (t4 - t3).as_secs_f32();
     }
   }
   unsafe {
