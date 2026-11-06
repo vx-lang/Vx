@@ -78,9 +78,8 @@ uint32_t g_worker_id = 1;
    something dead rather than to whatever was allocated next. That makes the
    table grow with the number of dispatches: llama2 at 64 tokens is about 5600
    stagings, and 4096 entries ran out mid-generation.
-   Reusing a slot once no handle can name it is the real fix and needs a
-   generation check on resolve; 256K entries is 12 MB and buys a run long
-   enough not to need it yet. */
+   The table gives every slot back when a host disconnects, so this limit
+   applies to one host. 256K entries is 12 MB. */
 vx_remote_region g_regions[262144];
 vx_remote_table g_table;
 
@@ -542,6 +541,10 @@ int serve(int fd) {
   }
 }
 
+void release_region(void *remote) {
+  vx_plugin_free(remote, (uint32_t)g_topology);
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -617,5 +620,12 @@ int main(int argc, char **argv) {
     fprintf(stderr, "[Vx worker] host connected\n");
     serve(fd);
     close(fd);
+    /* A host that stops early sends no FREE for its buffers. Each live region
+       belongs to that host, and the next host needs the memory. */
+    size_t left = vx_remote_table_free_all(&g_table, release_region);
+    if (left > 0) {
+      fprintf(stderr, "[Vx worker] freed %zu buffer(s) that the host left\n",
+              left);
+    }
   }
 }
