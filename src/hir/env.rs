@@ -678,12 +678,11 @@ pub struct TypeChecker<'a> {
     pub(crate) in_drop: bool,
     /// The function being checked is the `wait_limit` of a `Drop` impl, for W1036.
     pub(crate) in_wait_limit: bool,
-    /// The number of `within` blocks around the code being checked, in this function. A wait in
-    /// one has the block's time limit, so W1036 does not warn about it.
+    /// The number of closure bodies of `within` calls around the code being checked, in this
+    /// function. A wait in one has the time limit of the call, so W1036 does not warn about it.
     pub(crate) within_depth: usize,
-    /// The next call is the `vx::within_start` of a `within` block. A program cannot write that
-    /// call itself.
-    pub(crate) within_start_next: bool,
+    /// The closure literals written as the `body` of a call of `within`, by their spans.
+    pub(crate) within_bodies: std::collections::HashSet<crate::syntax::Span>,
     /// The variables that closures in `let`s copied, for W1034.
     pub(crate) closure_copies: Vec<crate::hir::check::closure_copies::ClosureCopy>,
     /// The `let` being checked, when its value is a closure.
@@ -808,7 +807,7 @@ impl<'a> TypeChecker<'a> {
             in_drop: false,
             in_wait_limit: false,
             within_depth: 0,
-            within_start_next: false,
+            within_bodies: std::collections::HashSet::new(),
             closure_copies: Vec::new(),
             let_closure: None,
             checking_assign_lhs: false,
