@@ -85,13 +85,13 @@ pub enum Opcode {
     /// schedule, so the host refuses the region instead of running it.
     SpawnEnd = 21,
     /// Load a struct field: `operand1` is the aggregate's slot handle (from `Alloca`), `imm` the
-    /// field's byte offset (from the registry layout), and `type_idx` the field's type. The result
+    /// encoded field index (`encode_field_index`), and `type_idx` the field's type. The result
     /// is the loaded field value — the field-addressed counterpart of `SlotLoad`.
     /// Enum tags use this operation. Enum payloads use `EnumPayloadLoad` instead.
     /// `operand2` is unused and must be zero.
     FieldLoad = 22,
     /// Store into a struct field (no result): `operand1` is the aggregate's slot handle, `operand2`
-    /// the value to store, and `imm` the field's byte offset. Used to initialize a struct field by
+    /// the value to store, and `imm` the encoded field index. Used to initialize a struct field by
     /// field — the field-addressed counterpart of `Store`.
     FieldStore = 23,
     /// Index a tensor along its outermost dimension: `operand1` is the base tensor, `operand2` the
@@ -163,7 +163,7 @@ pub enum Opcode {
     /// emits `call_indirect`. Backs `Closure1`'s `f_ptr(env, item)` and bare-fn-pointer calls. (#242)
     CallIndirect = 36,
     /// The address of a *by-value nested-aggregate field* (`&outer.inner`): `operand1` is the enclosing
-    /// aggregate's slot/pointer, `imm` the field's byte offset, and this instruction's own `type_idx`
+    /// aggregate's slot/pointer, `imm` the encoded field index, and this instruction's own `type_idx`
     /// the nested aggregate's layout GID. Codegen GEPs to the field and yields the pointer, tracked as an
     /// aggregate slot so a chained access (`outer.inner.a`) or a method receiver (`self.iter.next()`)
     /// addresses through it. The nested-aggregate analogue of `FieldLoad` that stops at the pointer. (#242)
@@ -352,6 +352,8 @@ pub enum Opcode {
     WithinStart = 82,
     /// The end of a `within` block, on each path out of it.
     WithinEnd = 83,
+    /// Check that operand1 addresses the aggregate identified by type_idx. Generates no code.
+    CheckAggregate = 84,
 }
 
 /// A zero-based variant and payload field, stored entirely in an instruction's immediate.
@@ -359,6 +361,24 @@ pub enum Opcode {
 pub struct EnumPayloadIndex {
     pub variant: u32,
     pub field: u32,
+}
+
+/// Mark explicit field indices in field instructions.
+pub const FIELD_INDEX_FLAG: u64 = 1 << 63;
+
+/// Field identity belongs in the immediate, never in a register operand.
+pub fn encode_field_index(index: usize) -> u64 {
+    FIELD_INDEX_FLAG | u64::from(u32::try_from(index).expect("a field index must fit in u32"))
+}
+
+/// Decode a field index. A missing flag indicates a compiler bug.
+pub fn decode_field_index(imm: u64) -> usize {
+    assert_ne!(
+        imm & FIELD_INDEX_FLAG,
+        0,
+        "a field instruction must carry FIELD_INDEX_FLAG"
+    );
+    usize::try_from(imm & !FIELD_INDEX_FLAG).expect("a field index must fit in usize")
 }
 
 impl EnumPayloadIndex {
@@ -494,6 +514,7 @@ impl Opcode {
             71 => LaneReduce,
             79 => LifetimeStart,
             80 => LifetimeEnd,
+            84 => CheckAggregate,
             8 => Call,
             9 => Ret,
             10 => Matmul,

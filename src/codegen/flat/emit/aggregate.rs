@@ -12,10 +12,8 @@ fn is_scalar_field(fty: &str) -> bool {
 }
 
 impl FnEmit<'_> {
-    // Store a scalar into a struct field (no result). `operand1` is the struct slot pointer,
-    // `operand2` the value, `imm` the field's byte offset. GEP to the field, then `llvm.store`;
-    // the field index comes from matching the offset against the layout, the value type from
-    // the stored register's tracked type.
+    // Store a field by explicit index.
+    // The stored register supplies the active value type, including enum payload values.
     pub(crate) fn op_field_store(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let gid = (*self
             .agg_of
@@ -23,11 +21,7 @@ impl FnEmit<'_> {
             .ok_or(crate::emitter_gap!())?)
         .ok_or(crate::emitter_gap!())?;
         let agg = self.ctx.aggs.get(&gid).ok_or(crate::emitter_gap!())?;
-        let field_idx = agg
-            .offsets
-            .iter()
-            .position(|&o| o == ins.imm)
-            .ok_or(crate::emitter_gap!())?;
+        let field_idx = agg.field_index(ins.imm)?;
         // Tensor descriptors use the storage field's declared type.
         let fty = agg
             .field_tys
@@ -113,7 +107,7 @@ impl FnEmit<'_> {
         Ok(())
     }
 
-    // Load a field using its byte offset, or an enum payload using its variant and field indices.
+    // Load a field by index, or an enum payload by variant and payload position.
     pub(crate) fn op_field_load(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let gid = (*self
             .agg_of
@@ -127,11 +121,7 @@ impl FnEmit<'_> {
             Some(index) => (index.field as usize)
                 .checked_add(1)
                 .ok_or(crate::emitter_gap!())?,
-            None => agg
-                .offsets
-                .iter()
-                .position(|&o| o == ins.imm)
-                .ok_or(crate::emitter_gap!())?,
+            None => agg.field_index(ins.imm)?,
         };
         // The field's declared MLIR type drives the load: a scalar field yields its element
         // (tracked in `etypes`), a pointer field (`Vec`'s `data`) an `!llvm.ptr` value
@@ -259,11 +249,7 @@ impl FnEmit<'_> {
             .aggs
             .get(&parent_gid)
             .ok_or(crate::emitter_gap!())?;
-        let field_idx = agg
-            .offsets
-            .iter()
-            .position(|&o| o == ins.imm)
-            .ok_or(crate::emitter_gap!())?;
+        let field_idx = agg.field_index(ins.imm)?;
         let field_gid = *self
             .types
             .get(ins.type_idx.0 as usize)
