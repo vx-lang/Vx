@@ -494,7 +494,8 @@ impl<'c> MeliorGenerator<'c> {
             .get(call_fn_name.as_str())
             .cloned()
             .ok_or_else(|| format!("closure call fn {} not found", call_fn_name))?;
-        let fn_ty = melior::ir::r#type::FunctionType::new(self.context, &arg_types, &[ret_ty]);
+        let (ret, args) = self.abi_signature(ret_ty, &arg_types);
+        let fn_ty = melior::ir::r#type::FunctionType::new(self.context, &args, ret.as_slice());
         let const_op = melior::ir::operation::OperationBuilder::new("func.constant", self.loc())
             .add_attributes(&[(
                 melior::ir::Identifier::new(self.context, "value"),
@@ -866,6 +867,69 @@ impl<'c> MeliorGenerator<'c> {
                 .result(0)?
                 .into();
             return Ok(ptr);
+        }
+
+        // The reverse: `&y` of a variable that is not `mut` is a bare `!llvm.ptr`, given where a
+        // `memref<i32>` reference is kept, as in `let mut r = &x; r = &y`. The memref is a rank-0
+        // descriptor whose two pointers are `val` and whose offset is 0.
+        if from_ty == self.ptr_ty
+            && to_str.starts_with("memref<")
+            && !to_str.contains('x')
+            && !to_str.starts_with("memref<memref<")
+        {
+            use melior::ir::operation::OperationBuilder;
+            let desc_ty =
+                Type::parse(self.context, "!llvm.struct<(ptr, ptr, i64)>").ok_or_else(|| {
+                    crate::codegen::lower::LowerError::from("a rank-0 descriptor".to_string())
+                })?;
+            let mut desc: Value = block
+                .append_operation(
+                    OperationBuilder::new("llvm.mlir.undef", self.loc())
+                        .add_results(&[desc_ty])
+                        .build()?,
+                )
+                .result(0)?
+                .into();
+            let zero: Value = block
+                .append_operation(
+                    OperationBuilder::new("llvm.mlir.constant", self.loc())
+                        .add_attributes(&[(
+                            melior::ir::Identifier::new(self.context, "value"),
+                            melior::ir::attribute::IntegerAttribute::new(self.i64_ty, 0).into(),
+                        )])
+                        .add_results(&[self.i64_ty])
+                        .build()?,
+                )
+                .result(0)?
+                .into();
+            for (pos, part) in [(0, val), (1, val), (2, zero)] {
+                desc = block
+                    .append_operation(
+                        OperationBuilder::new("llvm.insertvalue", self.loc())
+                            .add_operands(&[desc, part])
+                            .add_attributes(&[(
+                                melior::ir::Identifier::new(self.context, "position"),
+                                melior::ir::attribute::DenseI64ArrayAttribute::new(
+                                    self.context,
+                                    &[pos],
+                                )
+                                .into(),
+                            )])
+                            .add_results(&[desc_ty])
+                            .build()?,
+                    )
+                    .result(0)?
+                    .into();
+            }
+            return Ok(block
+                .append_operation(
+                    OperationBuilder::new("builtin.unrealized_conversion_cast", self.loc())
+                        .add_operands(&[desc])
+                        .add_results(&[to_ty])
+                        .build()?,
+                )
+                .result(0)?
+                .into());
         }
 
         if cfg!(debug_assertions) {
@@ -2312,7 +2376,10 @@ impl<'c> MeliorGenerator<'c> {
                     _ => unreachable!(),
                 };
                 let inner_str = self.lower_type_str(inner)?;
-                if inner_str.starts_with("memref<") {
+                // A raw pointer is a pointer, whatever it points at. Only a borrow of a tensor is
+                // the cell that holds the tensor's descriptor.
+                let is_pointer = matches!(ty, syntax::Type::Pointer(..));
+                if inner_str.starts_with("memref<") && !is_pointer {
                     // A borrowed tensor is the slot holding its descriptor, and every tensor
                     // this backend allocates is dynamically shaped. Naming the static shape
                     // here left the call site casting between two memref element types, which
@@ -2953,12 +3020,17 @@ pub(crate) fn tensor_descriptor_str(rank: usize) -> String {
     }
 }
 
-/// The rank of a tensor a struct field holds as a descriptor. `None` for any other type,
-/// including a reference to a tensor, which this code generator keeps as a cell holding the
-/// descriptor rather than as the descriptor.
+/// The rank of a tensor a struct field holds as a descriptor, or `None` for any other type. A
+/// reference to a tensor is held as the descriptor too, as on the flat code generator: a pointer
+/// to the cell that holds the descriptor would dangle after the function that made the cell
+/// returns. Writes through a `&mut` still reach the tensor, because the descriptor points at its
+/// data.
 pub(crate) fn tensor_field_rank(ty: &syntax::Type) -> Option<usize> {
     match ty {
         syntax::Type::Tensor(_, dims, _) => Some(dims.len()),
+        syntax::Type::Borrow { inner, .. } if matches!(**inner, syntax::Type::Tensor(..)) => {
+            tensor_field_rank(inner)
+        }
         _ => None,
     }
 }

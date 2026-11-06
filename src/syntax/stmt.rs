@@ -260,10 +260,6 @@ impl MacroCallStmt {
 pub const CANCEL_OFF: &str = "vx::cancel_off";
 /// The call that turns cancellation back on after a `drop`.
 pub const CANCEL_ON: &str = "vx::cancel_on";
-/// The first statement of a `within(limit) { .. }` block: its deadline starts.
-pub const WITHIN_START: &str = "vx::within_start";
-/// The drop that ends a `within` block, on each path out of it.
-pub const WITHIN_END: &str = "vx::within_end";
 /// `assume e;`: the checker adds the fact `e` without a proof. Only an `unsafe` block can hold
 /// it, and it generates no code.
 pub const ASSUME: &str = "vx::assume";
@@ -289,8 +285,6 @@ pub struct DropStmt {
     /// Frees nothing: the struct or enum `name` is no longer used, so its stack slot can hold
     /// another value. It comes after the other drops of `name`.
     pub ends_lifetime: bool,
-    /// Ends a `within` block (F6a): `vx::within_end()`. `name` is the block's hidden owner.
-    pub ends_within: bool,
     pub span: Span,
     /// With `call`: how long the waits in the `drop` can take, in nanoseconds. The call
     /// `wait_limit_nanos(&name.path)`, or the default when the impl has no copy of it.
@@ -314,9 +308,6 @@ impl DropStmt {
                 Span::default(),
             )))
         };
-        if self.ends_within {
-            return Some(vec![runtime(WITHIN_END, Vec::new())]);
-        }
         let payload = matches!(self.expr.as_deref(), Some(Expr::Match(_)));
         if self.call.is_none() && !payload {
             return None;

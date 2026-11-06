@@ -44,5 +44,6 @@ pub mod region_traffic;
 pub mod tasks;
 pub mod thread_safety;
 pub mod transfer;
+pub mod type_invariants;
 pub mod unused_functions;
 pub mod views;

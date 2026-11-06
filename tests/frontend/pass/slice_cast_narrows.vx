@@ -31,8 +31,8 @@
 // for the reader and for whatever runs the file next; run with `--action
 // run-jit` and the four rows print 0.75, 6, 1.25 and 2.
 //
-// Flat path only. The legacy walk builds a scalar conversion and has nothing to
-// do with a vector, so it says so rather than failing in the MLIR parser.
+// The RUN line checks the MLIR of the default code generator.
+// a_cast_over_a_half_slice.vx checks the values on both code generators.
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 

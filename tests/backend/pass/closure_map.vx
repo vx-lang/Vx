@@ -7,10 +7,8 @@
 // CHECK: call @vec_grow(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i64, i64, i64) -> !llvm.ptr
 // CHECK-LABEL: func.func @Closure_1_call(%arg0: !llvm.ptr, %arg1: !llvm.ptr) -> i32
 // CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"Closure_1", (i32)>
-// CHECK: llvm.load %[[V0]] : !llvm.ptr -> i32
-// CHECK: memref.alloca() : memref<i32>
+// CHECK: %[[V1:.*]] = llvm.load %[[V0]] : !llvm.ptr -> i32
 // CHECK: llvm.load %arg1 : !llvm.ptr -> i32
-// CHECK: %[[V1:.*]] = memref.load %{{.*}}[] : memref<i32>
 // CHECK: %[[V2:.*]] = arith.addi %{{.*}}, %[[V1]] : i32
 // CHECK: return %[[V2]] : i32
 // CHECK-LABEL: func.func @Vec$i32$iter$i32(%arg0: !llvm.ptr) -> !llvm.struct<"VecIter_i32", (ptr, i32, i32)>

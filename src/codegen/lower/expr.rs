@@ -2661,7 +2661,7 @@ fn lower_tasks_block_with_exits<'c>(
                             .result(0)?
                             .into();
                         let ty = gen.current_return_type.expect("a slot");
-                        Some(tensor_from_field(gen, &exit_b, loaded, stored, ty)?)
+                        Some(tensor_from_field(gen, &exit_b, loaded, stored, ty)?.0)
                     }
                     None => None,
                 };
@@ -3080,8 +3080,9 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
                             .unwrap();
                         let load_ref = block.append_operation(load_op);
                         let loaded = load_ref.result(0)?.into();
-                        let val = tensor_from_field(gen, &block, loaded, stored_ty, field_ty)?;
-                        return Ok((val, field_ty, block));
+                        let (val, val_ty) =
+                            tensor_from_field(gen, &block, loaded, stored_ty, field_ty)?;
+                        return Ok((val, val_ty, block));
                     } else {
                         let pos_attr = melior::ir::attribute::DenseI64ArrayAttribute::new(
                             gen.context,
@@ -3100,8 +3101,9 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
                             .unwrap();
                         let ext_ref = block.append_operation(ext_op);
                         let extracted = ext_ref.result(0)?.into();
-                        let val = tensor_from_field(gen, &block, extracted, stored_ty, field_ty)?;
-                        return Ok((val, field_ty, block));
+                        let (val, val_ty) =
+                            tensor_from_field(gen, &block, extracted, stored_ty, field_ty)?;
+                        return Ok((val, val_ty, block));
                     }
                 }
             }
@@ -3224,10 +3226,10 @@ fn slice_vec_len(ty_str: &str) -> Option<i64> {
         .strip_prefix("vector<")
         .or_else(|| ty_str.strip_prefix("memref<"))?;
     // Shape is the text before any `, strided<...>` layout, e.g. `4xf32`; require exactly one
-    // `x` (rank 1) and an f32 element (the slice ops emit vector<Dxf32>).
+    // `x` (rank 1) and a float element that `to_vector` widens to `f32`.
     let shape = inner.split(',').next()?.trim_end_matches('>');
     let parts: Vec<&str> = shape.split('x').collect();
-    if parts.len() == 2 && parts[1] == "f32" {
+    if parts.len() == 2 && matches!(parts[1], "f32" | "f16" | "bf16") {
         return parts[0].parse().ok();
     }
     None
@@ -3560,13 +3562,27 @@ pub(crate) fn load_tensor_slot<'c>(
     Ok(loaded)
 }
 
+/// Give `ty` the type of the descriptor that it holds when it is a cell, `memref<memref<A>>`
+/// to `memref<A>`. Return whether it was a cell.
+fn load_tensor_slot_ty<'c>(
+    gen: &MeliorGenerator<'c>,
+    ty: &mut Type<'c>,
+) -> Result<bool, LowerError> {
+    let ty_str = ty.to_string();
+    if !ty_str.starts_with("memref<memref<") {
+        return Ok(false);
+    }
+    let inner_str = &ty_str["memref<".len()..ty_str.len() - 1];
+    *ty = Type::parse(gen.context, inner_str)
+        .ok_or_else(|| LowerError::ParseType(inner_str.to_string()))?;
+    Ok(true)
+}
+
 /// A reference to a tensor, `memref<memref<A>>`, passed where `memref<memref<B>>` is expected.
 ///
 /// A `memref.cast` cannot change what a memref holds, so the descriptor is loaded, given type
 /// `B`, and stored in a new slot. It still points at the same data, so writes through a `&mut`
-/// reach the tensor. A row (`memref<4xf32, strided<[1], offset: ?>>`) passed as a plain memref
-/// has its data pointer moved to the row: a plain memref's offset is 0 by its type, so the code
-/// using it never reads the offset, and a cast would hand it row 0.
+/// reach the tensor.
 fn retype_tensor_reference<'c>(
     gen: &MeliorGenerator<'c>,
     block: &melior::ir::BlockRef<'c, 'c>,
@@ -3580,20 +3596,11 @@ fn retype_tensor_reference<'c>(
     let dst_str = &to_str["memref<".len()..to_str.len() - 1];
     let dst_ty =
         Type::parse(gen.context, dst_str).ok_or_else(|| LowerError::ParseType(dst_str.into()))?;
-    let src_str = src_ty.to_string();
     let mut desc = desc;
-    let mut desc_ty = src_ty;
-    if src_str.contains("strided<") && !dst_str.contains("strided<") {
-        let plain = contiguous_view_as_plain(&src_str).ok_or_else(|| {
-            LowerError::from(format!("cannot pass a {src_str} view as a {dst_str}"))
-        })?;
-        desc_ty = Type::parse(gen.context, &plain).ok_or(LowerError::ParseType(plain))?;
-        desc = move_view_pointer(gen, block, desc, src_ty, desc_ty)?;
-    }
-    if desc_ty != dst_ty {
-        // Through a space cast when the parameter names a memory: `&mut d` of a placed local
-        // into `&mut Tensor<f32, [1024], Memory::HBM>`.
-        desc = super::cast_memref(gen, block, desc, desc_ty, dst_ty)?;
+    if src_ty != dst_ty {
+        // A row, or a parameter that names a memory: `&mut d` of a placed local into
+        // `&mut Tensor<f32, [1024], Memory::HBM>`.
+        desc = super::cast_memref(gen, block, desc, src_ty, dst_ty)?;
     }
     let slot: Value = block
         .append_operation(
@@ -3619,7 +3626,7 @@ fn retype_tensor_reference<'c>(
 /// view's strides are not row-major or it is in a GPU memory space. `memref<4xf32, strided<[1],
 /// offset: ?>>` gives `memref<4xf32>`. A `?` stride cannot be checked here; only indexing a row
 /// out of a tensor makes one, and a row of a tensor is contiguous.
-fn contiguous_view_as_plain(memty: &str) -> Option<String> {
+pub(super) fn contiguous_view_as_plain(memty: &str) -> Option<String> {
     if !memty.ends_with("offset: ?>>") && !memty.ends_with("offset: 0>>") {
         return None;
     }
@@ -3649,7 +3656,7 @@ fn contiguous_view_as_plain(memty: &str) -> Option<String> {
 
 /// A view's descriptor with its data pointer moved forward by its offset and the offset set to
 /// 0, retyped as `plain`, the same shape with no layout.
-fn move_view_pointer<'c>(
+pub(super) fn move_view_pointer<'c>(
     gen: &MeliorGenerator<'c>,
     block: &melior::ir::BlockRef<'c, 'c>,
     view: Value<'c, 'c>,
@@ -3736,7 +3743,8 @@ fn is_slice_operand(ty_str: &str) -> bool {
 }
 
 /// Coerce a slice-elementwise operand to `vector<Dxf32>`: a vector passes through, a rank-1
-/// memref is `vector.load`ed, and a scalar is `vector.broadcast`ed to the slice width.
+/// memref is `vector.load`ed, and a scalar is `vector.broadcast`ed to the slice width. A half
+/// (`f16` or `bf16`) row or scalar widens to `f32` first, because the arithmetic is in `f32`.
 fn to_vector<'c>(
     gen: &mut MeliorGenerator<'c>,
     val: Value<'c, 'c>,
@@ -3744,12 +3752,34 @@ fn to_vector<'c>(
     d: i64,
     block: melior::ir::BlockRef<'c, 'c>,
 ) -> Result<Value<'c, 'c>, LowerError> {
-    let vec_ty = Type::parse(gen.context, &format!("vector<{}xf32>", d))
-        .ok_or_else(|| LowerError::ParseType(format!("vector<{}xf32>", d)))?;
+    let parse = |text: String| {
+        Type::parse(gen.context, &text).ok_or_else(|| LowerError::ParseType(text.clone()))
+    };
+    let vec_ty = parse(format!("vector<{d}xf32>"))?;
     if ty_str.starts_with("vector<") {
         return Ok(val);
     }
-    if ty_str.starts_with("memref<") {
+    let is_memref = ty_str.starts_with("memref<");
+    let elem = if is_memref {
+        let shape = ty_str["memref<".len()..]
+            .split([',', '>'])
+            .next()
+            .unwrap_or("");
+        shape.rsplit('x').next().unwrap_or(shape)
+    } else {
+        ty_str
+    };
+    let widen = match elem {
+        "f32" => false,
+        "f16" | "bf16" => true,
+        other => {
+            return Err(LowerError::from(format!(
+                "a slice operation on `{other}` values has no lowering on the AST code generator"
+            )))
+        }
+    };
+    let own_ty = parse(format!("vector<{d}x{elem}>"))?;
+    let own: Value = if is_memref {
         let index_ty = Type::index(gen.context);
         let c0_op = OperationBuilder::new("arith.constant", gen.loc())
             .add_attributes(&[(
@@ -3761,16 +3791,24 @@ fn to_vector<'c>(
         let c0: Value = block.append_operation(c0_op).result(0)?.into();
         let load_op = OperationBuilder::new("vector.load", gen.loc())
             .add_operands(&[val, c0])
-            .add_results(&[vec_ty])
+            .add_results(&[own_ty])
             .build()?;
-        return Ok(block.append_operation(load_op).result(0)?.into());
+        block.append_operation(load_op).result(0)?.into()
+    } else {
+        let bcast_op = OperationBuilder::new("vector.broadcast", gen.loc())
+            .add_operands(&[val])
+            .add_results(&[own_ty])
+            .build()?;
+        block.append_operation(bcast_op).result(0)?.into()
+    };
+    if !widen {
+        return Ok(own);
     }
-    // Scalar: broadcast to the slice width.
-    let bcast_op = OperationBuilder::new("vector.broadcast", gen.loc())
-        .add_operands(&[val])
+    let ext = OperationBuilder::new("arith.extf", gen.loc())
+        .add_operands(&[own])
         .add_results(&[vec_ty])
         .build()?;
-    Ok(block.append_operation(bcast_op).result(0)?.into())
+    Ok(block.append_operation(ext).result(0)?.into())
 }
 
 impl<'c> LowerToMelior<'c> for FunctionCallExpr {
@@ -3800,21 +3838,6 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
         }
         if let Some((op, ordered)) = crate::hir::check::lanes::lane_routine(name) {
             return lower_lane_reduce(gen, block, op, ordered, args);
-        }
-        // The start and the end of a `within` block (F6a).
-        if name.as_ref() == crate::syntax::stmt::WITHIN_START {
-            let (limit, _, block) = gen.generate_expr(&args[0], block)?;
-            crate::codegen::lower::call_runtime_void_with(
-                gen,
-                block,
-                "vx_within_start",
-                &[(limit, "f64")],
-            )?;
-            return cancel_call_value(gen, block);
-        }
-        if name.as_ref() == crate::syntax::stmt::WITHIN_END {
-            crate::codegen::lower::call_runtime_void(gen, block, "vx_within_end")?;
-            return cancel_call_value(gen, block);
         }
         // Around the call of a `Drop` impl's `drop` (F6, F6a), with the time limit of the
         // drop in nanoseconds.
@@ -4322,9 +4345,17 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 let prev_expected = gen.expected_type;
                 gen.expected_type = Some(field_ty);
                 // A name that holds a reference to a tensor is passed on as that reference.
-                // Reading the name would give the tensor itself.
+                // Reading the name would give the tensor itself. A `let mut` of a reference keeps
+                // its own cell, and that cell is the reference.
                 let reference = match arg {
-                    Expr::Identifier(id) if !gen.allocs.contains(id.name.as_ref()) => {
+                    Expr::Identifier(id)
+                        if !gen.allocs.contains(id.name.as_ref())
+                            || matches!(
+                                gen.ast_env.get(&id.name),
+                                Some(syntax::Type::Borrow { inner, .. })
+                                    if matches!(**inner, syntax::Type::Tensor(..))
+                            ) =>
+                    {
                         gen.env.get(&id.name).copied().filter(|(_, ty)| {
                             ty.to_string().starts_with("memref<memref<")
                                 && field_ty.to_string().starts_with("memref<memref<")
@@ -5814,15 +5845,40 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
         gen: &mut MeliorGenerator<'c>,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
-        // A slice `as` is a vector conversion, which only the flat path emits. Say so:
-        // without this the legacy walk tried to build a scalar conversion from a vector
-        // and failed much later with `ParseType`, naming nothing.
+        // A slice `as` converts each element. The slice arithmetic is in `f32`, so the value
+        // is a `vector<Dxf32>`, and a cast to a half type narrows it.
         if let Some(syntax::Type::Tensor(_, dims, _)) = self.source_ty.as_ref() {
             if dims.len() == 1 && matches!(&self.target_ty, syntax::Type::Scalar(_)) {
-                panic!(
-                    "an elementwise cast over a slice has no legacy (AST) lowering; it \
-                     requires the flat path (drop --legacy-codegen)"
-                );
+                let d = dims[0]
+                    .literal()
+                    .and_then(|v| v.parse::<i64>().ok())
+                    .ok_or_else(|| {
+                        LowerError::from(
+                            "a cast over a slice whose length is not known".to_string(),
+                        )
+                    })?;
+                let (val, val_ty, block) = gen.generate_expr(&self.expr, block)?;
+                let wide = to_vector(gen, val, &val_ty.to_string(), d, block)?;
+                let target = gen.lower_type(&self.target_ty)?.to_string();
+                let result = match target.as_str() {
+                    "f32" => wide,
+                    "f16" | "bf16" => {
+                        let ty = Type::parse(gen.context, &format!("vector<{d}x{target}>"))
+                            .ok_or_else(|| LowerError::ParseType(target.clone()))?;
+                        let op = OperationBuilder::new("arith.truncf", gen.loc())
+                            .add_operands(&[wide])
+                            .add_results(&[ty])
+                            .build()?;
+                        block.append_operation(op).result(0)?.into()
+                    }
+                    other => {
+                        return Err(LowerError::from(format!(
+                        "a cast of a slice to `{other}` has no lowering on the AST code generator"
+                    )))
+                    }
+                };
+                let result_ty = result.r#type();
+                return Ok((result, result_ty, block));
             }
         }
         let (source_val, _source_ty, block) = gen.generate_expr(&self.expr, block)?;
@@ -5847,8 +5903,10 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
                 .cloned()
                 .expect("Closure call function not found");
 
-            let fn_ty =
-                melior::ir::r#type::FunctionType::new(gen.context, &orig_arg_types, &[ret_ty]);
+            // The type of the call function's address, as its definition has it: no result for a
+            // `void` closure.
+            let (ret, args) = gen.abi_signature(ret_ty, &orig_arg_types);
+            let fn_ty = melior::ir::r#type::FunctionType::new(gen.context, &args, ret.as_slice());
             let const_op = OperationBuilder::new("func.constant", gen.loc())
                 .add_attributes(&[(
                     Identifier::new(gen.context, "value"),
@@ -6334,8 +6392,12 @@ pub(crate) fn tensor_into_field<'c>(
     field_ty: Type<'c>,
     rank: usize,
 ) -> Result<Value<'c, 'c>, LowerError> {
-    let mut val = val;
     let mut val_ty = val_ty;
+    // A reference to a tensor is a cell that holds the descriptor. The field holds the
+    // descriptor itself.
+    let mut val = load_tensor_slot(gen, block, val, &mut val_ty)?;
+    let mut field_ty = field_ty;
+    load_tensor_slot_ty(gen, &mut field_ty)?;
     let val_str = val_ty.to_string();
     if val_str.contains("strided<") {
         let plain = contiguous_view_as_plain(&val_str)
@@ -6379,15 +6441,19 @@ fn tensor_from_field<'c>(
     val: Value<'c, 'c>,
     stored_ty: Type<'c>,
     field_ty: Type<'c>,
-) -> Result<Value<'c, 'c>, LowerError> {
+) -> Result<(Value<'c, 'c>, Type<'c>), LowerError> {
     if stored_ty == field_ty {
-        return Ok(val);
+        return Ok((val, field_ty));
     }
+    // A reference to a tensor is read back as the tensor. A `let` of it, or a call, makes the
+    // cell that a reference is.
+    let mut tensor_ty = field_ty;
+    load_tensor_slot_ty(gen, &mut tensor_ty)?;
     let cast = OperationBuilder::new("builtin.unrealized_conversion_cast", gen.loc())
         .add_operands(&[val])
-        .add_results(&[field_ty])
+        .add_results(&[tensor_ty])
         .build()?;
-    Ok(block.append_operation(cast).result(0)?.into())
+    Ok((block.append_operation(cast).result(0)?.into(), tensor_ty))
 }
 
 /// `-t` on a tensor: a new tensor of each element negated, by a `linalg.generic`. A float uses

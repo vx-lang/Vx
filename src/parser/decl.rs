@@ -1093,6 +1093,11 @@ impl<'a> Parser<'a> {
 
         let generics = self.parse_generic_params()?;
 
+        let mut invariants = Vec::new();
+        while self.match_token(&TokenType::Invariant) {
+            invariants.push(self.parse_expr()?);
+        }
+
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
         let mut fields: Vec<(crate::symbol::Symbol, crate::syntax::types::Type)> = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
@@ -1116,6 +1121,8 @@ impl<'a> Parser<'a> {
             name: name.into(),
             generics,
             fields,
+            invariants,
+            file: None,
             doc_comment: None,
         })
     }

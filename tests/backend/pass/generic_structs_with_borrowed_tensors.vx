@@ -6,8 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 // Store borrowed tensors in generic structs with and without a precomputed registry layout.
-// Read scalar fields before and after each tensor descriptor.
-// REQUIRES: flat-codegen
+// Read scalar fields before and after each tensor descriptor. Both code generators run it.
 // EXPECT: 5 41 7 43
 
 struct Known<T> {

@@ -1115,12 +1115,13 @@ impl CompilerDriver {
             Self::session_with_interfaces(interfaces, self.options.auto_schedule_levels())?;
 
         // Every function names its file, so a diagnostic found while checking it names the
-        // file too, wherever the check runs from. Before the env takes its clones, since a
-        // generic instance is built from the env's copy of the function. After macro
-        // expansion, which adds functions.
-        ast.name_file_on_functions();
+        // file too, wherever the check runs from. A struct names its file, because only that
+        // file can change the fields of a type with an invariant. Before the env takes its
+        // clones, since a generic instance is built from the env's copy of the function. After
+        // macro expansion, which adds functions.
+        ast.name_file_on_items();
         for p in other_asts.values_mut() {
-            p.name_file_on_functions();
+            p.name_file_on_items();
         }
 
         // Build the resolution env from *owned* clones: full bodies for the imported modules (so
@@ -1311,6 +1312,7 @@ impl CompilerDriver {
         if !has_errors {
             checker.errors.inner.extend(unused_functions.inner);
         }
+        checker.errors.drop_repeats();
 
         // The machine-readable verdict, before the human-readable rendering below: one record on
         // stdout carrying every diagnostic plus the resolved staging routes, so an admission

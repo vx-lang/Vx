@@ -1663,6 +1663,7 @@ impl<'a> TypeChecker<'a> {
         self.checking_assign_lhs = true;
         let lhs_ty = self.check_expr_type_flag(lhs, false);
         self.checking_assign_lhs = false;
+        self.check_field_change(lhs, "this assignment changes");
         let temporary_place = matches!(lhs, Expr::Dereference(d)
             if matches!(*d.expr, Expr::FunctionCall(_) | Expr::MethodCall(_)));
         // The place runs before the value, so its mutable borrow is only reserved while the
