@@ -72,6 +72,9 @@ and at each `continue`. A `for i in a..b` loop runs as `let mut i = a;` and then
 `while i < b { ..; i = i + 1; }`. So its invariant must hold for `i == a` when the loop starts, and
 for `i + 1` after a pass. For example, `invariant i <= b` holds, and `invariant i < b` does not.
 
+When a `for` loop starts, the prover also knows `a <= b`. A loop with `a > b` runs no pass. So
+`for i in 0..n invariant i <= n` needs no `requires 0 <= n`.
+
 ## Type invariants
 
 A contract can also be about data. An `invariant` on a struct states a fact about each value of the
