@@ -1,0 +1,18 @@
+// RUN: not vxc %s --run 2>&1 | FileCheck %s
+// RUN: not vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: cast to usize is out of range
+// CHECK-NOT: cast returned
+
+fn convert(value : u128) -> usize {
+  return value as usize;
+}
+
+fn high_bit(value : u128) -> u128 {
+  return value << 127u128;
+}
+
+fn main() -> i32 {
+  let count = convert(high_bit(1u128));
+  println!("cast returned {}", count);
+  return 0;
+}

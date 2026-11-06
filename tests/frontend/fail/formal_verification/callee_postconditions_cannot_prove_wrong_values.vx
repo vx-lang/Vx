@@ -1,0 +1,31 @@
+// RUN: not vxc %s --action emit-mlir 2>&1 | FileCheck %s
+
+fn identity(value : i32) -> i32
+ensures (return as i64) == (value as i64) {
+  return value;
+}
+
+fn wrong_caller(value : i32) -> i32
+ensures return != value {
+  // CHECK: Error[E8001]
+  // CHECK-SAME: Function 'wrong_caller' cannot prove postcondition
+  return identity(value);
+}
+
+fn wrong_remainder_constant() -> i32
+ensures return == 5 % 2 {
+  // CHECK: Error[E8001]
+  // CHECK-SAME: Function 'wrong_remainder_constant' cannot prove postcondition
+  return 2;
+}
+
+fn wrong_cast_constant() -> i8
+ensures return == (255 as i8) {
+  // CHECK: Error[E8001]
+  // CHECK-SAME: Function 'wrong_cast_constant' cannot prove postcondition
+  return 0;
+}
+
+fn main() -> i32 {
+  return wrong_caller(1);
+}

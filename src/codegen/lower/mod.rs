@@ -436,6 +436,61 @@ fn is_plain_scalar(text: &str) -> bool {
     parse_scalar_type(text).is_some()
 }
 
+/// Check the original value before a cast to usize can discard any bits.
+pub(crate) fn check_usize_cast<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    value: melior::ir::Value<'c, 'c>,
+    from: &ElementType,
+) -> Result<(), LowerError> {
+    if *from == ElementType::USize || from.int_bits().is_none() {
+        return Ok(());
+    }
+    let ty = value.r#type();
+    let checks = [
+        (from.is_signed_int(), 0, 5),
+        (
+            from.int_bits().is_some_and(|bits| bits > 63),
+            i64::MAX,
+            if from.is_signed_int() { 3 } else { 7 },
+        ),
+    ];
+    for (needed, bound, predicate) in checks {
+        if !needed {
+            continue;
+        }
+        let bound = block.append_operation(
+            OperationBuilder::new("arith.constant", gen.loc())
+                .add_results(&[ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    IntegerAttribute::new(ty, bound).into(),
+                )])
+                .build()?,
+        );
+        let fits = block.append_operation(
+            OperationBuilder::new("arith.cmpi", gen.loc())
+                .add_operands(&[value, bound.result(0)?.into()])
+                .add_results(&[gen.i1_ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "predicate"),
+                    IntegerAttribute::new(gen.i64_ty, predicate).into(),
+                )])
+                .build()?,
+        );
+        block.append_operation(
+            OperationBuilder::new("cf.assert", gen.loc())
+                .add_operands(&[fits.result(0)?.into()])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "msg"),
+                    StringAttribute::new(gen.context, "cast to usize is out of range").into(),
+                )])
+                .build()?,
+        );
+    }
+    Ok(())
+}
+
 /// `a op b` on `usize`, for the operators that can leave its range: `+`, `-`, `*` and `<<`.
 /// The operands are checked first and a failed check traps through `cf.assert`; the operation
 /// itself then never wraps and carries `overflow<nsw, nuw>`. Checking the result instead would

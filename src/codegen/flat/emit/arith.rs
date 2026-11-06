@@ -546,6 +546,25 @@ impl FnEmit<'_> {
             .get(ins.operand1.0 as usize)
             .ok_or(crate::emitter_gap!())?
             .clone();
+        if tgt == ElementType::USize && src != ElementType::USize {
+            let ty = mlir_scalar(&src).ok_or(crate::emitter_gap!())?;
+            if src.is_signed_int() {
+                self.body += &format!(
+                    "  %cast{idx}zero = arith.constant 0 : {ty}\n  \
+                     %cast{idx}nonnegative = arith.cmpi sge, {a}, %cast{idx}zero : {ty}\n  \
+                     cf.assert %cast{idx}nonnegative, \"cast to usize is out of range\"\n"
+                );
+            }
+            if src.int_bits().is_some_and(|bits| bits > 63) {
+                let pred = if src.is_signed_int() { "sle" } else { "ule" };
+                self.body += &format!(
+                    "  %cast{idx}max = arith.constant {} : {ty}\n  \
+                     %cast{idx}fits = arith.cmpi {pred}, {a}, %cast{idx}max : {ty}\n  \
+                     cf.assert %cast{idx}fits, \"cast to usize is out of range\"\n",
+                    i64::MAX
+                );
+            }
+        }
         let op = cast_op(&src, &tgt).ok_or(crate::emitter_gap!())?;
         // Two different float types of one width (`f8e4m3` and `f8e5m2`, `f16` and `bf16`):
         // neither `extf` nor `truncf` converts between them. f32 holds every value of both, so
