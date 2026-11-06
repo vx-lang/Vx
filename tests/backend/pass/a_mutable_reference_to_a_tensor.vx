@@ -7,12 +7,14 @@
 //===----------------------------------------------------------------------===//
 // A `let mut` reference to a tensor is read by index and given to a function. Then it gets a
 // new value, `r = &b`, and both reads see `b`. A closure that uses a reference to a tensor reads
-// it by index. Both code generators run it.
+// it by index. A `let` of a reference read from a struct field is read by index and given to a
+// function. Both code generators run it.
 //
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}before 3 3 after 5 5 a 3{{$}}
 // CHECK: {{^}}closure 3{{$}}
+// CHECK: {{^}}from a field 3 3{{$}}
 
 fn first(v : &Tensor<f32, [4]>) -> f32 {
   return v[0];
@@ -38,8 +40,23 @@ fn closure_reads_a_reference() -> f32 {
   return f();
 }
 
+struct Holder {
+  r : &Tensor<f32, [4]>,
+}
+
+fn reference_from_a_field() -> void {
+  let mut a = Tensor<f32, [4]>::new();
+  a[0] = 3.0;
+  let h = Holder {
+    r : &a
+  };
+  let r = h.r;
+  println!("from a field {} {}", first(r), r[0]);
+}
+
 fn main() -> i32 {
   new_value_for_a_reference();
   println!("closure {}", closure_reads_a_reference());
+  reference_from_a_field();
   return 0;
 }
