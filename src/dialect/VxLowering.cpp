@@ -283,12 +283,13 @@ static StringRef spaceOfTransfer(vx::TransferOp xfer) {
 static std::string topologyInWords(int32_t topology, StringAttr name) {
   if (name)
     return ("`Topology::" + name.getValue() + "`").str();
-  return "topology " + std::to_string(topology);
+  return "topology id " + std::to_string(topology);
 }
 
 /// A placed region as its author knows it, for a diagnostic: "the region placed
 /// on `Topology::Dev` in `main` (kernel `vx_npu_kernel_0`)". The compiler makes
 /// the kernel name from a counter, so it alone does not say which region it is.
+/// A kernel with several launches is named by its first launch.
 static std::string regionInWords(vx::KernelOp kernel) {
   vx::LaunchOp launch;
   if (auto module = kernel->getParentOfType<ModuleOp>())
@@ -6581,10 +6582,10 @@ static LogicalResult serializeSpirv(std::unique_ptr<llvm::Module> module,
 ///    the image -- in this process, from the LLVM already linked, so compiling
 ///    a `.vx` file needs no external `llc`.
 ///
-/// An empty image on failure, with `error` naming the stage. When one kernel is
-/// the cause, `failedKernel` names it.
+/// An empty image on failure, with `error` naming the stage. When kernels are
+/// the cause, `refused` names each one with its own reason instead.
 static DeviceImage spirvImageOf(gpu::GPUModuleOp gpuModule, std::string &error,
-                                std::string &failedKernel) {
+                                SmallVectorImpl<SpirvKernelRefusal> &refused) {
   MLIRContext *context = gpuModule.getContext();
   OwningOpRef<ModuleOp> device = deviceModuleCopy(gpuModule);
 
@@ -6600,7 +6601,7 @@ static DeviceImage spirvImageOf(gpu::GPUModuleOp gpuModule, std::string &error,
     error = "the device module vanished in the pipeline";
     return {};
   }
-  if (failed(flattenSpirvKernelArgs(*kernels.begin(), error, failedKernel)))
+  if (failed(flattenSpirvKernelArgs(*kernels.begin(), error, refused)))
     return {};
 
   PassManager toSpv(context, ModuleOp::getOperationName());
@@ -7051,14 +7052,15 @@ struct ConvertVxToLLVMPass
         }
         exported = std::move(*kernels);
       }
-      std::string error, failedKernel;
+      std::string error;
+      SmallVector<SpirvKernelRefusal> refused;
       DeviceImage image;
       switch (*pipeline) {
       case DevicePipeline::Nvptx:
         image = deviceImageOf(m, error);
         break;
       case DevicePipeline::Spirv:
-        image = spirvImageOf(m, error, failedKernel);
+        image = spirvImageOf(m, error, refused);
         break;
       case DevicePipeline::None:
         llvm_unreachable("the pipeline was checked to be present above");
@@ -7090,18 +7092,29 @@ struct ConvertVxToLLVMPass
           launchesByName[l.getCalleeAttr().getValue()].push_back(l);
         });
         // The kernels share one image, so all of them lose it when one fails.
-        // Only that kernel gets the reason as its own, and each other kernel
-        // is told which region failed.
-        vx::KernelOp failedOne = kernelsByName.lookup(failedKernel);
+        // Each kernel that fails gets its own reason, and each other kernel is
+        // told about the first one that failed.
+        llvm::StringMap<std::string> reasons;
+        for (const SpirvKernelRefusal &r : refused)
+          reasons[r.kernel] = r.reason;
+        vx::KernelOp firstFailed;
+        if (!refused.empty()) {
+          firstFailed = kernelsByName.lookup(refused.front().kernel);
+          assert(firstFailed && "every gpu.func here has a vx.kernel");
+        }
         auto cannotBecomeAnImage = [&](vx::KernelOp kernel) {
           std::string text = regionInWords(kernel) + " cannot become a `" +
                              archNameOfPipeline(*pipeline).str() +
                              "` device image";
-          if (!failedOne || failedOne == kernel)
+          if (!firstFailed)
             return text + ": " + error;
-          return text + ", because it shares one image with " +
-                 regionInWords(failedOne) +
-                 ", and that region cannot become one: " + error;
+          auto own = reasons.find(kernel.getSymName());
+          if (own != reasons.end())
+            return text + ": " + own->second;
+          return text + ". It shares one image with " +
+                 regionInWords(firstFailed) +
+                 ". That region cannot become one: " +
+                 reasons.lookup(firstFailed.getSymName());
         };
         bool unreadableOperands = false;
         m.walk([&](gpu::GPUFuncOp f) {

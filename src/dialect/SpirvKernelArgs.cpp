@@ -521,20 +521,26 @@ std::optional<std::string> spirvRefusalOf(Operation *op) {
   return std::nullopt;
 }
 
-LogicalResult flattenSpirvKernelArgs(gpu::GPUModuleOp gpuModule,
-                                     std::string &error,
-                                     std::string &failedKernel) {
+LogicalResult
+flattenSpirvKernelArgs(gpu::GPUModuleOp gpuModule, std::string &error,
+                       SmallVectorImpl<SpirvKernelRefusal> &refused) {
   SmallVector<gpu::GPUFuncOp> kernels;
   gpuModule.walk([&](gpu::GPUFuncOp f) { kernels.push_back(f); });
   if (kernels.empty()) {
     error = "the device module holds no kernel";
     return failure();
   }
-  for (gpu::GPUFuncOp kernel : kernels)
-    if (failed(flattenKernel(kernel, error))) {
-      failedKernel = kernel.getName().str();
-      return failure();
-    }
+  // Each kernel is rewritten on its own, so one that fails does not stop the
+  // next. Every region that fails then gets its own reason.
+  for (gpu::GPUFuncOp kernel : kernels) {
+    std::string reason;
+    if (failed(flattenKernel(kernel, reason)))
+      refused.push_back({kernel.getName().str(), reason});
+  }
+  // A kernel that failed can be half rewritten, and a helper it calls still
+  // takes a tensor. So the check below runs only when every kernel passed.
+  if (!refused.empty())
+    return failure();
 
   // Nothing left anywhere in the module may mention a memref, including in a
   // function the kernel calls and in a global a kernel reads: a memref that
@@ -549,9 +555,10 @@ LogicalResult flattenSpirvKernelArgs(gpu::GPUModuleOp gpuModule,
       return WalkResult::interrupt();
     }
     if (mentionsMemref(op)) {
-      error = memrefRefusal(op);
       if (auto kernel = op->getParentOfType<gpu::GPUFuncOp>())
-        failedKernel = kernel.getName().str();
+        refused.push_back({kernel.getName().str(), memrefRefusal(op)});
+      else
+        error = memrefRefusal(op);
       return WalkResult::interrupt();
     }
     return WalkResult::advance();
@@ -584,10 +591,14 @@ struct FlattenSpirvKernelArgsPass
   }
 
   void runOnOperation() override {
-    std::string error, failedKernel;
-    if (succeeded(flattenSpirvKernelArgs(getOperation(), error, failedKernel)))
+    std::string error;
+    SmallVector<SpirvKernelRefusal> refused;
+    if (succeeded(flattenSpirvKernelArgs(getOperation(), error, refused)))
       return;
-    getOperation().emitError() << error;
+    if (refused.empty())
+      getOperation().emitError() << error;
+    for (const SpirvKernelRefusal &r : refused)
+      getOperation().lookupSymbol(r.kernel)->emitError() << r.reason;
     signalPassFailure();
   }
 };
