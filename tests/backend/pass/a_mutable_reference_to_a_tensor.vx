@@ -1,0 +1,62 @@
+//===- a_mutable_reference_to_a_tensor.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `let mut` reference to a tensor is read by index and given to a function. Then it gets a
+// new value, `r = &b`, and both reads see `b`. A closure that uses a reference to a tensor reads
+// it by index. A `let` of a reference read from a struct field is read by index and given to a
+// function. Both code generators run it.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}before 3 3 after 5 5 a 3{{$}}
+// CHECK: {{^}}closure 3{{$}}
+// CHECK: {{^}}from a field 3 3{{$}}
+
+fn first(v : &Tensor<f32, [4]>) -> f32 {
+  return v[0];
+}
+
+fn new_value_for_a_reference() -> void {
+  let mut a = Tensor<f32, [4]>::new();
+  a[0] = 3.0;
+  let mut b = Tensor<f32, [4]>::new();
+  b[0] = 5.0;
+  let mut r = &a;
+  let x = first(r);
+  let y = r[0];
+  r = &b;
+  println!("before {} {} after {} {} a {}", x, y, first(r), r[0], a[0]);
+}
+
+fn closure_reads_a_reference() -> f32 {
+  let mut a = Tensor<f32, [4]>::new();
+  a[0] = 3.0;
+  let ra = &a;
+  let f = || ra[0];
+  return f();
+}
+
+struct Holder {
+  r : &Tensor<f32, [4]>,
+}
+
+fn reference_from_a_field() -> void {
+  let mut a = Tensor<f32, [4]>::new();
+  a[0] = 3.0;
+  let h = Holder {
+    r : &a
+  };
+  let r = h.r;
+  println!("from a field {} {}", first(r), r[0]);
+}
+
+fn main() -> i32 {
+  new_value_for_a_reference();
+  println!("closure {}", closure_reads_a_reference());
+  reference_from_a_field();
+  return 0;
+}

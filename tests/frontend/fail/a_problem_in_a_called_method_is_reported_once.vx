@@ -1,0 +1,37 @@
+//===- a_problem_in_a_called_method_is_reported_once.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --check-prefixes=WARNING,CHECK --implicit-check-not=W1001
+// RUN: not vxc %s -j 4 --action emit-mlir 2>&1 | FileCheck %s
+//
+// The compiler checks the body of `reset` twice: once as a method, and once for the call in
+// `main`. Each check finds the same warning and the same error, and the compiler reports each one
+// once. A parallel compile (`-j`) prints no warnings when the program has an error.
+
+struct S {
+  x : i32,
+}
+
+impl S {
+  fn reset(self : &mut S) -> i32 {
+    // WARNING: Warning[W1001] at {{.*}}a_problem_in_a_called_method_is_reported_once.vx:[[@LINE+1]]:5: Unused variable 'unused'
+    let unused = 5;
+    let r = &self.x;
+    // CHECK: Error[E4009] at {{.*}}a_problem_in_a_called_method_is_reported_once.vx:[[@LINE+1]]:10: `self.x` is assigned while it is borrowed
+    self.x = 0;
+    return *r;
+  }
+}
+
+fn main() -> i32 {
+  let mut s = S {
+    x : 1
+  };
+  print(s.reset());
+  return 0;
+}
+// CHECK: 1 error(s) emitted

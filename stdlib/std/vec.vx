@@ -82,7 +82,14 @@ unsafe fn vec_take<T>(data : *mut T, index : i32) -> T {
 ///
 /// It holds a buffer from `std::alloc` and does its own element loads and stores. The buffer is
 /// released when the vector is dropped.
-struct Vec<T> {
+///
+/// Only the functions of this file can change the fields, so the invariant holds in each other
+/// file.
+struct Vec<T>
+invariant 0i32 <= self.len && self.len <= self.capacity
+invariant valid(self.data, self.capacity as i64)
+invariant initialized(self.data, self.len as i64)
+{
   data : *mut T,
   len : i32,
   capacity : i32,

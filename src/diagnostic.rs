@@ -139,8 +139,8 @@ pub enum DiagnosticCode {
     /// A `match` arm in a `loop` or `while` can take `Cancelled` from a wait and stays in the
     /// loop. In a cancelled task each wait gives `Cancelled` at once, so the loop never ends (F4).
     W1035,
-    /// A `drop` calls `send` or `recv`, which wait with no time limit of their own, outside a
-    /// `within` block. A drop runs with cancellation off, so when the other end never acts, the
+    /// A `drop` calls `send` or `recv`, which wait with no time limit of their own, outside the
+    /// body of a call of `within`. A drop runs with cancellation off, so when the other end never acts, the
     /// wait holds up the drop until the limit of the drop: its type's `wait_limit`, 10 seconds by
     /// default. Then the wait gives up, as in a cancelled block. A `wait_limit` that calls them
     /// gets the warning too, because it runs before the drop and should only return a time.
@@ -753,6 +753,17 @@ pub enum DiagnosticCode {
     /// and its body gives `p`, or a value that it gets from `p`, to code that can free memory,
     /// such as a call without `!frees` for that parameter, a store or an `mlir!` block.
     E8012,
+    /// A type invariant that is not well formed. An `invariant` of a struct can use `self`, the
+    /// fields of `self` at any depth, numbers, operators and the pointer clauses `valid`,
+    /// `initialized` and `overlaps`. It calls no other function.
+    E8013,
+    /// Code outside the module of a type with an invariant changes a field of the type. Only
+    /// the module (the `.vx` file) that declares the type can write a field, take a `&mut` to a
+    /// field, call a method that takes `&mut self` on a field, move a field out of the value, or
+    /// build the type with a struct literal. Other code calls a function of the module to change
+    /// a value of the type. Then
+    /// the invariant holds for each value of the type outside its module.
+    E8014,
 }
 
 impl std::fmt::Display for DiagnosticCode {
@@ -1108,6 +1119,38 @@ impl DiagnosticsVec {
                 self.inner.remove(i);
             }
         }
+    }
+
+    /// Drops each diagnostic that repeats an earlier one. The checker checks some bodies twice,
+    /// such as a method that a call checks again, and each problem is reported once.
+    pub fn drop_repeats(&mut self) {
+        let mut seen = std::collections::HashSet::new();
+        self.inner
+            .retain(|d| d.repeat_key().is_none_or(|key| seen.insert(key)));
+    }
+}
+
+/// What makes two diagnostics one report: level, code, file, position and message.
+pub type RepeatKey = (
+    bool,
+    Option<DiagnosticCode>,
+    Option<crate::symbol::Symbol>,
+    (usize, usize, usize),
+    String,
+);
+
+impl Diagnostic {
+    /// `None` for a diagnostic with no position: two of them with one message can be about two
+    /// places, such as two casts that each need `unsafe`.
+    pub fn repeat_key(&self) -> Option<RepeatKey> {
+        let at = self.source_span.as_ref().filter(|s| s.line > 0)?;
+        Some((
+            self.level == DiagnosticLevel::Error,
+            self.code,
+            self.file.clone(),
+            (at.line, at.column, at.length),
+            self.message.to_string(),
+        ))
     }
 }
 

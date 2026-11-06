@@ -8,9 +8,10 @@
 //
 // A `drop` runs with cancellation off, so a cancel cannot stop a wait in it. A `send` or `recv`
 // there waits until the time limit of the `drop` when the other end never acts. W1036 warns
-// about such a call, and the fix is `send_for` or `recv_for`, or a `within` block (F6 and F6a in
-// docs/discussions/waiting_tasks_channels_and_task_errors.md). A wait inside a `within` block
-// has the block's limit, so it gets no warning. `wait_limit` runs before cancellation is off,
+// about such a call, and the fix is `send_for` or `recv_for`, or a call of `within` (F6 and F6a
+// in docs/discussions/waiting_tasks_channels_and_task_errors.md). A wait in a closure literal
+// written as the body of `within` has the limit of the call, so it gets no warning. A closure in
+// a variable gets the warning, because the check cannot see that the variable goes to `within`. `wait_limit` runs before cancellation is off,
 // and it should return a time and not wait, so W1036 warns about a wait in it too.
 // It is a warning, not an error, because the check does not look into the functions that the
 // `drop` calls.
@@ -96,8 +97,8 @@ impl TypeChecker<'_> {
                 "'{method}' waits with no time limit of its own in a 'drop'. A drop runs with \
                  cancellation off, so if the other end of the channel never acts, this wait \
                  holds up the drop until the limit of the drop: its type's 'wait_limit', 10 \
-                 seconds by default. Use '{timed}' with a time limit, or put the wait in a \
-                 'within' block"
+                 seconds by default. Use '{timed}' with a time limit, or put the wait in the \
+                 body of 'within'"
             ),
             Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
         );

@@ -20,6 +20,7 @@
 //! collide, and the worker is killed on the way out whether the test passed or
 //! not.
 
+use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Child, Command};
 
@@ -133,7 +134,7 @@ fn a_dispatch_reaches_a_worker_process_over_tcp() {
     // backend is the device here; worker id 2 so a handle it mints is visibly
     // not the default.
     let port = 20000 + (std::process::id() % 10000) as u16;
-    let worker = Worker(
+    let mut worker = Worker(
         Command::new(&worker_bin)
             .args([
                 "--port",
@@ -143,6 +144,7 @@ fn a_dispatch_reaches_a_worker_process_over_tcp() {
                 "--worker-id",
                 "2",
             ])
+            .stderr(std::process::Stdio::piped())
             .spawn()
             .expect("failed to start the worker"),
     );
@@ -151,18 +153,30 @@ fn a_dispatch_reaches_a_worker_process_over_tcp() {
     // has to get there.
     std::thread::sleep(std::time::Duration::from_millis(300));
 
-    let run = Command::new(&client_bin)
-        .args(["127.0.0.1", &port.to_string()])
-        .output()
-        .expect("failed to run the client");
+    // The client does not free its two input buffers. The worker must free them
+    // when the first client disconnects, before it accepts the second client.
+    for attempt in ["first", "second"] {
+        let run = Command::new(&client_bin)
+            .args(["127.0.0.1", &port.to_string()])
+            .output()
+            .expect("failed to run the client");
+        assert!(
+            run.status.success(),
+            "the dispatch of the {attempt} client did not survive the trip:\n{}{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
 
+    let mut stderr = worker.0.stderr.take().expect("the worker has no stderr");
     drop(worker);
-
+    let mut log = String::new();
+    stderr
+        .read_to_string(&mut log)
+        .expect("failed to read the worker's log");
     assert!(
-        run.status.success(),
-        "the dispatch did not survive the trip:\n{}{}",
-        String::from_utf8_lossy(&run.stdout),
-        String::from_utf8_lossy(&run.stderr)
+        log.contains("freed 2 buffer(s) that the host left"),
+        "the worker did not free the buffers of the first client:\n{log}"
     );
 }
 
