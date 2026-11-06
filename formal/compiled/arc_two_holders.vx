@@ -1,0 +1,42 @@
+// Two tasks each hold an `Arc` of one value, read the value, and drop their `Arc`. The drop of
+// the last `Arc` drops the value, and the drop of the value writes to it. GenMC checks every
+// order: no data race between a read and that write. A second free of the block would be an
+// error that GenMC reports, so the value is dropped at most once.
+
+import core::sync::atomic;
+import std::sync::arc;
+
+struct Counted {
+  id : i64,
+}
+
+impl Drop for Counted {
+  fn drop(self : &mut Counted) -> void {
+    // A plain write. A read in the other task must happen before it.
+    self.id = 0;
+  }
+}
+
+fn read_and_drop(a : Arc<Counted>, sum : &AtomicI64) -> void {
+  sum.fetch_add(a.get().id, AtomicOrdering::Relaxed);
+}
+
+fn main() -> i32 {
+  let sum = AtomicI64::new(0);
+  let a = Arc<Counted>::new(Counted {
+    id : 7
+  });
+  let b = a.clone();
+  tasks {
+    spawn {
+      read_and_drop(a, &sum);
+    };
+    spawn {
+      read_and_drop(b, &sum);
+    };
+  };
+  if sum.load(AtomicOrdering::SeqCst) != 14 {
+    panic("a task read a dropped value");
+  }
+  return 0;
+}
