@@ -3836,6 +3836,20 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
         if let Some(prim) = name.as_ref().strip_prefix("raw::") {
             return lower_raw_primitive(gen, block, prim, args);
         }
+        // `barrier()` in a `spawn` region: the same `vx.barrier` the flat code generator emits.
+        // A later pass gives it the target's meaning, `gpu.barrier` in a GPU kernel.
+        if name.as_ref() == "barrier" && args.is_empty() {
+            block.append_operation(OperationBuilder::new("vx.barrier", gen.loc()).build()?);
+            let unit = OperationBuilder::new("arith.constant", gen.loc())
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    IntegerAttribute::new(Type::index(gen.context), 0).into(),
+                )])
+                .add_results(&[Type::index(gen.context)])
+                .build()?;
+            let unit = block.append_operation(unit).result(0)?.into();
+            return Ok((unit, gen.none_ty, block));
+        }
         if let Some((op, ordered)) = crate::hir::check::lanes::lane_routine(name) {
             return lower_lane_reduce(gen, block, op, ordered, args);
         }
