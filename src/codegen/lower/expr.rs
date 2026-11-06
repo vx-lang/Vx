@@ -3226,10 +3226,10 @@ fn slice_vec_len(ty_str: &str) -> Option<i64> {
         .strip_prefix("vector<")
         .or_else(|| ty_str.strip_prefix("memref<"))?;
     // Shape is the text before any `, strided<...>` layout, e.g. `4xf32`; require exactly one
-    // `x` (rank 1) and an f32 element (the slice ops emit vector<Dxf32>).
+    // `x` (rank 1) and a float element that `to_vector` widens to `f32`.
     let shape = inner.split(',').next()?.trim_end_matches('>');
     let parts: Vec<&str> = shape.split('x').collect();
-    if parts.len() == 2 && parts[1] == "f32" {
+    if parts.len() == 2 && matches!(parts[1], "f32" | "f16" | "bf16") {
         return parts[0].parse().ok();
     }
     None
@@ -3743,7 +3743,8 @@ fn is_slice_operand(ty_str: &str) -> bool {
 }
 
 /// Coerce a slice-elementwise operand to `vector<Dxf32>`: a vector passes through, a rank-1
-/// memref is `vector.load`ed, and a scalar is `vector.broadcast`ed to the slice width.
+/// memref is `vector.load`ed, and a scalar is `vector.broadcast`ed to the slice width. A half
+/// (`f16` or `bf16`) row or scalar widens to `f32` first, because the arithmetic is in `f32`.
 fn to_vector<'c>(
     gen: &mut MeliorGenerator<'c>,
     val: Value<'c, 'c>,
@@ -3751,12 +3752,34 @@ fn to_vector<'c>(
     d: i64,
     block: melior::ir::BlockRef<'c, 'c>,
 ) -> Result<Value<'c, 'c>, LowerError> {
-    let vec_ty = Type::parse(gen.context, &format!("vector<{}xf32>", d))
-        .ok_or_else(|| LowerError::ParseType(format!("vector<{}xf32>", d)))?;
+    let parse = |text: String| {
+        Type::parse(gen.context, &text).ok_or_else(|| LowerError::ParseType(text.clone()))
+    };
+    let vec_ty = parse(format!("vector<{d}xf32>"))?;
     if ty_str.starts_with("vector<") {
         return Ok(val);
     }
-    if ty_str.starts_with("memref<") {
+    let is_memref = ty_str.starts_with("memref<");
+    let elem = if is_memref {
+        let shape = ty_str["memref<".len()..]
+            .split([',', '>'])
+            .next()
+            .unwrap_or("");
+        shape.rsplit('x').next().unwrap_or(shape)
+    } else {
+        ty_str
+    };
+    let widen = match elem {
+        "f32" => false,
+        "f16" | "bf16" => true,
+        other => {
+            return Err(LowerError::from(format!(
+                "a slice operation on `{other}` values has no lowering on the AST code generator"
+            )))
+        }
+    };
+    let own_ty = parse(format!("vector<{d}x{elem}>"))?;
+    let own: Value = if is_memref {
         let index_ty = Type::index(gen.context);
         let c0_op = OperationBuilder::new("arith.constant", gen.loc())
             .add_attributes(&[(
@@ -3768,16 +3791,24 @@ fn to_vector<'c>(
         let c0: Value = block.append_operation(c0_op).result(0)?.into();
         let load_op = OperationBuilder::new("vector.load", gen.loc())
             .add_operands(&[val, c0])
-            .add_results(&[vec_ty])
+            .add_results(&[own_ty])
             .build()?;
-        return Ok(block.append_operation(load_op).result(0)?.into());
+        block.append_operation(load_op).result(0)?.into()
+    } else {
+        let bcast_op = OperationBuilder::new("vector.broadcast", gen.loc())
+            .add_operands(&[val])
+            .add_results(&[own_ty])
+            .build()?;
+        block.append_operation(bcast_op).result(0)?.into()
+    };
+    if !widen {
+        return Ok(own);
     }
-    // Scalar: broadcast to the slice width.
-    let bcast_op = OperationBuilder::new("vector.broadcast", gen.loc())
-        .add_operands(&[val])
+    let ext = OperationBuilder::new("arith.extf", gen.loc())
+        .add_operands(&[own])
         .add_results(&[vec_ty])
         .build()?;
-    Ok(block.append_operation(bcast_op).result(0)?.into())
+    Ok(block.append_operation(ext).result(0)?.into())
 }
 
 impl<'c> LowerToMelior<'c> for FunctionCallExpr {
@@ -5814,15 +5845,40 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
         gen: &mut MeliorGenerator<'c>,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
-        // A slice `as` is a vector conversion, which only the flat path emits. Say so:
-        // without this the legacy walk tried to build a scalar conversion from a vector
-        // and failed much later with `ParseType`, naming nothing.
+        // A slice `as` converts each element. The slice arithmetic is in `f32`, so the value
+        // is a `vector<Dxf32>`, and a cast to a half type narrows it.
         if let Some(syntax::Type::Tensor(_, dims, _)) = self.source_ty.as_ref() {
             if dims.len() == 1 && matches!(&self.target_ty, syntax::Type::Scalar(_)) {
-                panic!(
-                    "an elementwise cast over a slice has no legacy (AST) lowering; it \
-                     requires the flat path (drop --legacy-codegen)"
-                );
+                let d = dims[0]
+                    .literal()
+                    .and_then(|v| v.parse::<i64>().ok())
+                    .ok_or_else(|| {
+                        LowerError::from(
+                            "a cast over a slice whose length is not known".to_string(),
+                        )
+                    })?;
+                let (val, val_ty, block) = gen.generate_expr(&self.expr, block)?;
+                let wide = to_vector(gen, val, &val_ty.to_string(), d, block)?;
+                let target = gen.lower_type(&self.target_ty)?.to_string();
+                let result = match target.as_str() {
+                    "f32" => wide,
+                    "f16" | "bf16" => {
+                        let ty = Type::parse(gen.context, &format!("vector<{d}x{target}>"))
+                            .ok_or_else(|| LowerError::ParseType(target.clone()))?;
+                        let op = OperationBuilder::new("arith.truncf", gen.loc())
+                            .add_operands(&[wide])
+                            .add_results(&[ty])
+                            .build()?;
+                        block.append_operation(op).result(0)?.into()
+                    }
+                    other => {
+                        return Err(LowerError::from(format!(
+                        "a cast of a slice to `{other}` has no lowering on the AST code generator"
+                    )))
+                    }
+                };
+                let result_ty = result.r#type();
+                return Ok((result, result_ty, block));
             }
         }
         let (source_val, _source_ty, block) = gen.generate_expr(&self.expr, block)?;
