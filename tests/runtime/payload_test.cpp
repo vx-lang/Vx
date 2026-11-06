@@ -262,18 +262,25 @@ void refusals() {
         "nowhere to put the answer is not the same as no section");
 }
 
-/// The exact payload a `spirv64` region produces, read the way the dispatch
-/// library reads it: version first, then the format, then the section.
+/// A payload shaped like the one a `spirv64` region produces, read the way the
+/// dispatch library reads it: version first, then the format, then the section.
 ///
 /// Pinned as one shape rather than several, because that is what the library
 /// has to agree with: it refuses an `abi=` it does not know, refuses a
 /// `format=` it cannot load, and then loads the section. The three entries are
 /// the whole contract between the compiler's payload writer and the backend.
+///
+/// Built here rather than compiled, so the test does not need the compiler. The
+/// entries and the section's layout are the compiler's; the bytes inside the
+/// section only have to be bytes.
 void a_spirv_payload_reads_as_a_version_a_format_and_a_section() {
-  // SPIR-V's magic number, then bytes that would look like an entry if the
-  // walk strayed past the section's start.
-  const std::string image =
-      std::string("\x03\x02\x23\x07", 4) + "\x00\x00\x00\x00" + "evil=1\0";
+  // SPIR-V's magic number, then four NUL bytes, then a string that would look
+  // like an entry if the walk strayed past the section's start. Each piece is
+  // built with an explicit length: `"\x00\x00\x00\x00"` is a C string that
+  // stops at its first byte, so appending it adds nothing at all and the
+  // "separate entry" this comment describes would not be there.
+  const std::string image = std::string("\x03\x02\x23\x07", 4) +
+                            std::string(4, '\0') + std::string("evil=1\0", 7);
   const std::string payload = with_section(
       make_payload(
           "vx_npu_kernel_3", "1",
@@ -298,7 +305,14 @@ void a_spirv_payload_reads_as_a_version_a_format_and_a_section() {
   int64_t length = vx_payload_section(payload.data(), payload.size(), &out);
   check(length == (int64_t)image.size(), "the section is the image's length");
   check(out != nullptr && memcmp(out, image.data(), image.size()) == 0,
-        "and the image's bytes");
+        "and the image's bytes, NUL bytes and all");
+
+  // The image is 15 bytes and holds a NUL, which is what a reader that walked
+  // into it would trip over. Without that byte the tail reads as the key
+  // `evil` and the test would pass while pinning nothing.
+  check(image.size() == 15, "the image is the length this test describes");
+  check(image.find('\0') != std::string::npos,
+        "the image holds a NUL byte, which is why it rides in a section");
 
   // The other format a payload can name today. The library refuses it rather
   // than guessing a loader, so it has to be readable as its own answer.

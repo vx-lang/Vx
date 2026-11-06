@@ -710,7 +710,19 @@ pub fn execute_mlir_streams(
         // executable, interposes libc's `read` for the whole process, and the
         // initializer then reads with garbage arguments before `main` runs.
         // Keeping an unused backend out of the link is the backend's job.
-        clang_cmd.args(["-Wl,--as-needed", lib_npu.as_str(), "-Wl,--no-as-needed"]);
+        //
+        // The flag that does it is the linker's, so it differs by platform:
+        // GNU ld and lld take `--as-needed`, and the Apple linker does not
+        // know that name at all -- it fails the whole link with "unknown
+        // options". Mach-O spells the same job `-dead_strip_dylibs`, which
+        // drops a dylib nothing refers to.
+        if cfg!(target_os = "linux") {
+            clang_cmd.args(["-Wl,--as-needed", lib_npu.as_str(), "-Wl,--no-as-needed"]);
+        } else if cfg!(target_os = "macos") {
+            clang_cmd.args(["-Wl,-dead_strip_dylibs", lib_npu.as_str()]);
+        } else {
+            clang_cmd.arg(lib_npu.as_str());
+        }
         clang_cmd.arg("-lffi");
 
         // The dispatcher resolves the outlined kernel with

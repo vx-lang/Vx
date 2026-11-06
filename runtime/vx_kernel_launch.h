@@ -242,13 +242,13 @@ static inline uint32_t vx_spirv_word(const unsigned char *module,
 /// what the ABI produces is compared with what the image declares before
 /// anything runs.
 ///
-/// Returns -1 when the module is not SPIR-V, is malformed, or has no function
-/// with that name, so "absent" and "takes none" stay distinguishable.
+/// Returns -1 when the module is not SPIR-V, is malformed, or has no entry
+/// point with that name, so "absent" and "takes none" stay distinguishable.
 static inline int vx_launch_entry_param_count_spirv(const void *image,
                                                     size_t image_size,
                                                     const char *entry) {
-  /* OpName, OpFunction, OpFunctionParameter. */
-  enum { OpName = 5, OpFunction = 54, OpFunctionParameter = 55 };
+  /* OpEntryPoint, OpFunction, OpFunctionParameter. */
+  enum { OpEntryPoint = 15, OpFunction = 54, OpFunctionParameter = 55 };
   const unsigned char *module = (const unsigned char *)image;
   size_t words;
   size_t i;
@@ -262,20 +262,25 @@ static inline int vx_launch_entry_param_count_spirv(const void *image,
   }
   words = image_size / 4;
 
-  /* The id the entry's OpName names: a name and the function it names are two
-     instructions, and the id is the link between them. */
+  /* The entry point instruction carries both the name the driver enters by and
+     the id of the function it names. OpName would also link the two, but a
+     name is debug information: `spirv-opt --strip-debug` removes every OpName
+     and keeps the entry points, and then a launch would be refused as "no
+     entry named ...". It is also only a name, so a variable that happens to
+     carry the kernel's name matches it as well. */
   for (i = 5; i < words;) {
     uint32_t wc = vx_spirv_word(module, i) >> 16;
     uint32_t opcode = vx_spirv_word(module, i) & 0xFFFF;
     if (wc == 0 || i + wc > words) {
       return -1;
     }
-    if (opcode == OpName && wc >= 3) {
-      const char *name = (const char *)module + (i + 2) * 4;
-      size_t literal = (wc - 2) * 4;
+    /* Execution model, entry point id, then the name, then the interface. */
+    if (opcode == OpEntryPoint && wc >= 4) {
+      const char *name = (const char *)module + (i + 3) * 4;
+      size_t literal = (wc - 3) * 4;
       size_t need = strlen(entry) + 1;
       if (need <= literal && memcmp(name, entry, need) == 0) {
-        entry_id = vx_spirv_word(module, i + 1);
+        entry_id = vx_spirv_word(module, i + 2);
       }
     }
     i += wc;

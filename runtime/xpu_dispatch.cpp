@@ -8,40 +8,33 @@
 //
 // Provider of the vx_plugin_* ABI (include/vx_hardware_runtime.h) for Intel
 // GPUs. A placed kernel compiled for `arch: spirv64` travels in the dispatch
-// payload; this library takes the image out of the payload's section, loads it,
-// launches it with the flattened argument list, and routes `kind=matmul` to
-// oneMKL (#1137).
+// payload. This library takes the image out of the payload's section, loads it,
+// launches it with the flattened argument list, and runs a `kind=matmul` on
+// oneMKL.
 //
-// Which runtime, and why two of them. The plan routes this backend through the
-// SYCL *runtime*, because oneMKL takes a `sycl::queue`. SYCL itself has no
+// Two runtimes, for one reason: oneMKL takes a `sycl::queue`, and SYCL has no
 // public way to load a raw SPIR-V module -- a kernel bundle is built from
-// source the runtime compiled, not from bytes handed to it -- so the image goes
-// in through Level Zero, the layer SYCL sits on. It is loaded into the SYCL
-// queue's own Level Zero context (read back with sycl::get_native), so the
-// module, the USM allocations and oneMKL share one context and one device. A
-// second context would make each side's pointers unusable by the other.
+// source it compiled, not from bytes handed to it. So the image goes in through
+// Level Zero, the layer SYCL sits on, into the queue's own Level Zero context
+// (read back with sycl::get_native). The module, the USM allocations and oneMKL
+// then share one context and one device. A second context would make each
+// side's pointers unusable by the other.
 //
-// Allocation policy. Every space gets a host-visible USM allocation -- one the
-// device can address and the host can read -- so no program is wrong on it.
-// The plan's open question about which spaces get device-only memory is
-// answered where the allocation happens, and the reason the permissive answer
-// is the one taken is there too.
+// Allocation. Every space gets shared USM, which the device can address and the
+// host can read, so no program is wrong on it. Device-only memory is faster for
+// a large staged tensor and is not used yet -- the reason is at the allocation.
 //
-// Routing. This library serves one device. A transfer is keyed on the memory
-// space's canonical id: the GPU band (500) is this card, and a
-// `Memory::GPU_HBM` transfer carries it, so a placed program's device memory
-// lands here; every other id is memory the host owns. A dispatch runs here when
-// its payload names the GPU band, or when it carries a `format=spirv` image --
-// which only this backend can load, so the image itself says whose it is. A
-// matmul placed on another accelerator's band is not this library's work.
-// Routing every named topology is the shared work #1137 leaves open ("one
-// dispatch library per build").
+// Routing. This library serves one device, the Intel GPU of the GPU band (id
+// 500), and a `Memory::GPU_HBM` transfer carries that id, so a placed program's
+// device memory lands here. Every other id is memory the host owns. A dispatch
+// runs here when its payload names the GPU band, or when it carries a
+// `format=spirv` image, which only this backend can load.
 //
 // What it refuses. A kernel whose `format=` is not `spirv`, or whose image is
-// missing, is not launched -- it runs the outlined kernel on the host, the same
-// road a kernel with no image takes. An `abi=` this header does not know is
-// refused outright. Neither is a guess dressed up as a fallback: the format key
-// exists to tell the two apart, and guessing is what it is there to prevent.
+// missing, is not launched here: it runs its host copy, which is the road a
+// kernel with no image takes anyway. A payload `abi=` this build does not know
+// is refused instead, because a newer format may mean something else by the
+// entries it read.
 //
 // The rest of the ABI. A collective is a copy and a job is one rank (there is
 // one GPU here and no library that joins several), and the count of a kernel
@@ -66,6 +59,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 
@@ -208,8 +202,10 @@ bool is_usm(const void *ptr) { return usm_type(ptr) != ZE_MEMORY_TYPE_UNKNOWN; }
 /// the GPU wrote are finished, and this normally has nothing to wait for.
 ///
 /// The copy is made by the host. Every allocation in the GPU band is shared
-/// USM, which the host may read, so the copy is always possible; a device-only
-/// one would not be, and says so instead of reading memory it cannot read.
+/// USM, which the host may read, so a collective can always make it. The check
+/// below is therefore a guard and not a road a run takes today: it is here
+/// because device-only allocation would make the copy impossible, and reading
+/// memory the host cannot address would otherwise be the way that is found out.
 void xpu_collective_before_copy(const void *input, const void *output,
                                 size_t bytes) {
   (void)bytes;
@@ -305,11 +301,13 @@ struct LoadedKernel {
   ze_kernel_handle_t kernel = nullptr;
 };
 
-ze_kernel_handle_t load_kernel(const char *name, const void *image,
-                               size_t image_size) {
+ze_kernel_handle_t load_kernel(const std::string &key, const char *name,
+                               const void *image, size_t image_size) {
+  /* The caller holds the launch lock for the whole call, which is what keeps
+     this map safe. */
   static std::unordered_map<std::string, LoadedKernel> loaded;
 
-  auto found = loaded.find(name);
+  auto found = loaded.find(key);
   if (found != loaded.end()) {
     return found->second.kernel;
   }
@@ -354,7 +352,13 @@ ze_kernel_handle_t load_kernel(const char *name, const void *image,
     abort();
   }
 
-  loaded.emplace(name, entry);
+  /* A build log is a live handle even when the build succeeded -- it is where
+     the driver's warnings are -- and nothing here reads it after this point. */
+  if (log) {
+    zeModuleBuildLogDestroy(log);
+  }
+
+  loaded.emplace(key, entry);
   return entry.kernel;
 }
 
@@ -396,11 +400,21 @@ bool parameter_widths(const int32_t *arg_tags, int64_t num_args, size_t *out,
 /// Run the kernel the payload carries, on this device.
 ///
 /// Returns false when the payload is not a SPIR-V image this library knows how
-/// to launch, which leaves the caller's fallback in place rather than replacing
-/// it with a guess.
+/// to launch, or when this machine has no device to launch it on, which leaves
+/// the caller's host copy to do the work.
 bool run_device_image(const void *payload, size_t payload_size,
                       void **device_args, const int32_t *arg_tags,
                       int64_t num_args) {
+  /* A build with this backend in it still runs on a machine with no Intel GPU:
+     the same binary, a different box, and that is a reason to run the kernel on
+     the host rather than to fail. Everything below reaches `ze_context()`
+     through `xpu_queue()`, which dereferences the device pointer `xpu_device()`
+     returns, so this check has to come before any of them -- without it a
+     machine with oneAPI and no Intel GPU crashes on its first placed kernel. */
+  if (!xpu_available()) {
+    return false;
+  }
+
   const char *kernel_name = static_cast<const char *>(payload);
   const char *format = vx_payload_field(payload, payload_size, "format=");
 
@@ -429,12 +443,35 @@ bool run_device_image(const void *payload, size_t payload_size,
     return false;
   }
 
+  /* The key of everything this launch remembers about a kernel: its name and
+     the library the payload came from. The library is in the key because two
+     Vx libraries can each have a `vx_npu_kernel_0`, and a name-only key runs
+     the first library's kernel for the second library's call -- the parameter
+     check then reads the second image, so matching signatures hide the swap.
+     The CUDA cache keys on the same three things; the device is not one of them
+     here because `xpu_device()` has already picked the only one this library
+     serves. */
+  char library[32];
+  snprintf(library, sizeof library, "%p", vx_payload_library(payload));
+  const std::string key = std::string(kernel_name) + "@" + library;
+
+  /* One lock for the whole launch, the way cuda_dispatch.cpp locks its kernel
+     cache. Tasks can dispatch from several threads at once and everything below
+     is shared between them: both maps, the kernel handle that
+     `zeKernelSetArgumentValue` writes, and the one command list the launch is
+     recorded into. Level Zero does not allow two threads in one handle or one
+     list at a time -- a second thread's argument would land between the first
+     thread's arguments and its launch, and its `zeCommandListReset` would erase
+     a list that was half appended. Each launch here waits before it returns, so
+     one lock held from the load to the wait is enough. */
+  static std::mutex launch_mutex;
+  std::lock_guard<std::mutex> lock(launch_mutex);
+
   /* What the image is and that it ran is a property of the kernel, not of one
      dispatch, so the opt-in diagnostic says it once rather than once per launch
      of a timing loop. */
   static std::unordered_map<std::string, bool> announced;
-  const bool announce =
-      verbose() && announced.emplace(kernel_name, true).second;
+  const bool announce = verbose() && announced.emplace(key, true).second;
 
   if (announce) {
     fprintf(stderr, "[Vx XPU] %s: format=spirv accepted, %lld-byte image\n",
@@ -463,7 +500,7 @@ bool run_device_image(const void *payload, size_t payload_size,
     fprintf(stderr,
             "[Vx XPU] FATAL: %s declares %d parameters and its arguments "
             "produced %d.\n"
-            "          Launching would read past what was supplied (#251).\n",
+            "          Launching would read past what was supplied.\n",
             kernel_name, declared, params.count);
     abort();
   }
@@ -478,15 +515,52 @@ bool run_device_image(const void *payload, size_t payload_size,
     abort();
   }
 
-  ze_kernel_handle_t kernel =
-      load_kernel(kernel_name, image, (size_t)image_size);
+  /* Every pointer the kernel dereferences has to be memory the device can
+     address. The driver does not refuse a host address: the kernel reads memory
+     the GPU does not know, the process dies of a page fault, and nothing in the
+     message says which launch did it. Every allocation this library makes in
+     the GPU band is USM, so a non-USM pointer here is memory of the program's
+     own, and the kernel that reads it is one the host has to run. */
+  for (int64_t i = 0; i < num_args; ++i) {
+    if (VX_ABI_KIND(arg_tags[i]) != VX_ABI_KIND_MEMREF) {
+      continue;
+    }
+    const void *desc = *(const void *const *)device_args[i];
+    if (!is_usm(vx_memref_aligned(desc))) {
+      if (verbose()) {
+        fprintf(stderr,
+                "[Vx XPU] %s: argument %lld is at an address the device "
+                "cannot reach; not launching\n",
+                kernel_name, (long long)i);
+      }
+      return false;
+    }
+  }
 
-  /* The launch geometry, from `launch=`. A strided kernel is correct under any
-     configuration -- each thread walks its own stride -- so the field is a
-     sizing hint with a correctness floor: an absent `launch=` means one group
-     of one thread, which is what a serial region compiled against. */
-  uint32_t groups = 1, group_size = 1;
-  if (const char *launch = vx_payload_field(payload, payload_size, "launch=")) {
+  ze_kernel_handle_t kernel =
+      load_kernel(key, kernel_name, image, (size_t)image_size);
+
+  /* The launch geometry. `grid=` and `block=` are the shape a placed region's
+     `across` loop asked for, so they are read first: they are the sizes the
+     program gave. `launch=` is something else -- the trip count of one loop the
+     frontend proved stridable, a sizing hint with a correctness floor -- and a
+     region with blocks that do not stride would compute part of its answer, or
+     none, at a shape it did not ask for. A missing `grid=` means one group of
+     one thread, which is what a serial region compiled against. */
+  unsigned groups = 1, group_size = 1;
+  unsigned shape[3] = {1, 1, 1};
+  char why[160];
+  const int set_by_program =
+      vx_launch_shape(payload, payload_size, device_args, arg_tags, num_args,
+                      shape, &group_size, why, sizeof why);
+  if (set_by_program < 0) {
+    fprintf(stderr, "[Vx XPU] FATAL: %s: %s\n", kernel_name, why);
+    abort();
+  }
+  if (set_by_program) {
+    groups = shape[0];
+  } else if (const char *launch =
+                 vx_payload_field(payload, payload_size, "launch=")) {
     char *rest = nullptr;
     long trip = strtol(launch, &rest, 10);
     if (rest && *rest == ',') {
@@ -715,8 +789,8 @@ bool run_gemm(const vx_gemm_plan &plan) {
   } catch (const sycl::exception &e) {
     /* oneMKL refuses a call it cannot serve -- an unsupported shape, a device
        without the type -- by throwing. The outlined kernel is the answer to
-       that, not a dead process, so the refusal leaves through the same door as
-       every other one. */
+       that, not a dead process, so this returns false like the other refusals
+       and the caller runs the host copy. */
     fprintf(stderr, "[Vx XPU] oneMKL could not run this GEMM: %s\n", e.what());
     return false;
   }
@@ -728,9 +802,13 @@ bool run_gemm(const vx_gemm_plan &plan) {
   size_t width = (size_t)plan.n * elem_bytes;
   if (out_is_slot) {
     /* Standing in for a kernel that publishes an allocation means allocating
-       one and writing the descriptor. The result is copied home, because what
-       the descriptor names is memory the host will read. */
-    void *result = malloc((size_t)plan.m * width);
+       one and writing the descriptor. The allocation is shared USM rather than
+       `malloc` because the descriptor is memory a later placed kernel may read:
+       a host pointer in it is an address the GPU cannot reach, and the fault
+       names nothing. Shared USM is also readable by the host, which is the
+       other reader of a published tensor. */
+    void *result = device_alloc((size_t)plan.m * width,
+                                /*host_visible=*/true);
     if (!result) {
       fprintf(stderr, "[Vx XPU] FATAL: out of memory for a %lldx%lld result\n",
               (long long)plan.m, (long long)plan.n);
@@ -749,89 +827,45 @@ bool run_gemm(const vx_gemm_plan &plan) {
   return true;
 }
 
-/// A device operand made readable by the host for the duration of one call.
+/// Refuse a host run whose operands the host cannot read.
 ///
 /// A kernel this backend cannot route still has to run, and it runs on the
-/// host. Its operands may be device memory -- a `transfer` into a
-/// `managed: explicit` space put them there -- which the host cannot read. So
-/// each such operand is copied into a host buffer and its descriptor is pointed
-/// at that buffer for the length of the call; the buffer is copied back onto
-/// the device afterwards, so the program finds what the kernel wrote where it
-/// expects it. Only the operand's own reachable extent is copied, computed from
-/// the descriptor, so a row view costs what the row covers.
-struct HostMirror {
-  void **desc = nullptr;
-  void *saved_allocated = nullptr;
-  void *saved_aligned = nullptr;
-  void *host = nullptr;
-  size_t bytes = 0;
-  bool active = false;
-};
-
-/// Point this operand's descriptor at host memory holding its contents.
+/// host. Its operands are shared USM, which the host can read, so this normally
+/// finds nothing. It is here because device-only allocation would make a host
+/// copy of such a kernel impossible, and a kernel reading memory it cannot
+/// address is not a failure anyone can trace back from.
 ///
-/// Returns false only when the copy itself could not be made, which is out of
-/// memory and fatal. An operand the host can already read is left alone.
-bool mirror_operand(void *arg, int32_t tag, HostMirror *out) {
-  out->active = false;
-  /* A slot is where the kernel publishes a descriptor it allocated, so there
-     is no existing contents to mirror. */
-  if (VX_ABI_KIND(tag) != VX_ABI_KIND_MEMREF || VX_ABI_IS_SLOT(tag)) {
-    return true;
-  }
-
-  const int32_t rank = (int32_t)VX_ABI_RANK(tag);
-  const size_t elem_bytes = vx_dtype_bytes((int32_t)VX_ABI_ELEM(tag));
-  /* The argument points at a word holding the descriptor, exactly as
-     vx_launch_build_params reads it. */
-  void **desc = (void **)*(void *const *)arg;
-  if (!desc || elem_bytes == 0) {
-    return true;
-  }
-  if (!is_device_ptr(vx_memref_aligned(desc))) {
-    return true;
-  }
-
-  const int64_t offset = vx_memref_offset(desc);
-  const int64_t *sizes = vx_memref_sizes(desc);
-  const int64_t *strides = vx_memref_strides(desc, rank);
-  int64_t extent = 1;
-  for (int32_t d = 0; d < rank; ++d) {
-    if (sizes[d] > 0) {
-      extent += (sizes[d] - 1) * strides[d];
+/// Copying each operand to host memory and putting it back afterwards was
+/// written first, and there is no run that reaches it: every allocation in the
+/// GPU band is shared USM. It was removed rather than left standing, because
+/// code no test can reach is code no test keeps right. When device-only
+/// allocation lands, the mirroring is what has to come back here.
+void refuse_device_operands_on_host(void *const *device_args,
+                                    const int32_t *arg_tags, int64_t num_args,
+                                    const char *kernel_name) {
+  for (int64_t i = 0; i < num_args; ++i) {
+    const int32_t tag = arg_tags[i];
+    if (VX_ABI_KIND(tag) != VX_ABI_KIND_MEMREF) {
+      continue;
+    }
+    /* A slot holds either nothing yet or the descriptor the kernel published.
+       What it holds is device memory only if the program put it there, and
+       that is the case the check below is for. */
+    const void *slot = *(const void *const *)device_args[i];
+    const void *desc = VX_ABI_IS_SLOT(tag) ? vx_memref_aligned(slot) : slot;
+    if (!desc) {
+      continue;
+    }
+    if (is_device_ptr(vx_memref_aligned(desc))) {
+      fprintf(stderr,
+              "[Vx XPU] FATAL: %s was not routed, and argument %lld is "
+              "device-only memory\n"
+              "          the host cannot address. A host copy needs shared "
+              "USM.\n",
+              kernel_name, (long long)i);
+      abort();
     }
   }
-
-  size_t bytes = (size_t)(offset + extent) * elem_bytes;
-  void *host = malloc(bytes);
-  if (!host) {
-    return false;
-  }
-  copy_out(host, vx_memref_aligned(desc), bytes);
-
-  out->desc = desc;
-  out->saved_allocated = desc[0];
-  out->saved_aligned = desc[1];
-  out->host = host;
-  out->bytes = bytes;
-  out->active = true;
-  /* The offset stays as it is: the kernel addresses `aligned + offset`, so the
-     mirror has to start where the allocation did for that arithmetic to land
-     on the same elements. */
-  desc[0] = host;
-  desc[1] = host;
-  return true;
-}
-
-void unmirror_operand(HostMirror *mirror) {
-  if (!mirror->active) {
-    return;
-  }
-  copy_into(mirror->saved_aligned, mirror->host, mirror->bytes);
-  mirror->desc[0] = mirror->saved_allocated;
-  mirror->desc[1] = mirror->saved_aligned;
-  free(mirror->host);
-  mirror->active = false;
 }
 
 } // namespace
@@ -841,11 +875,10 @@ extern "C" {
 /// Allocate in this backend's memory and copy into it.
 ///
 /// `space_access` is the model's claim about whether the host may read the
-/// result, and it is what chooses the kind of allocation: a space declared
-/// `managed: explicit` gets device memory the host cannot read, and every other
-/// space -- `managed: cached`, or nothing said -- is host-visible. This is the
-/// policy #1137 leaves to the backend, and it is decided here rather than
-/// guessed from the topology, because the model is where the claim lives.
+/// result. It is ignored today: every allocation in the GPU band is shared USM,
+/// which the device can address and the host can read, so no program is wrong
+/// on it. The reason device-only memory is not used yet is at the allocation
+/// below.
 void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
                                    uint32_t topology_id,
                                    uint32_t space_access) {
@@ -883,19 +916,15 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
     return ptr;
   }
 
-  /* Host-visible memory, whatever the model claims, and this is where the
-     plan's open question about which spaces get device memory is answered
-     (§6, "The ReBAR allocation policy"). A shared USM allocation is
-     addressable by the device and readable by the host, so no program is wrong
-     on it. A device-only allocation is the faster choice for a large staged
-     tensor and is the obvious next step, but it cannot be told apart from this
-     one by topology id alone: the GPU band carries `Memory::GPU_HBM` whether
-     or not the machine file declared it `managed: explicit`, and the outlined
-     code for a placed tensor is free to read it from the host meanwhile --
-     which is what
+  /* Shared USM, whatever the model claims. The device can address it and the
+     host can read it, so no program is wrong on it. Device-only memory is the
+     faster choice for a large staged tensor and is not used yet: the GPU band
+     carries `Memory::GPU_HBM` whether or not the machine file declared it
+     `managed: explicit`, so the topology id cannot tell the two apart, and the
+     host copy of a placed tensor reads this memory meanwhile -- which is what
      tests/backend/pass/placed_tensors_are_allocated_on_their_device.vx does.
-     Tightening it waits for the topology routing #1137 leaves open; until then
-     the permissive allocation is the one that keeps every program correct. */
+     Until the space itself says which kind it wants, the permissive allocation
+     is the one that keeps every program correct. */
   (void)space_access;
   void *ptr = device_alloc(bytes, /*host_visible=*/true);
   if (!ptr) {
@@ -940,8 +969,9 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
      the key, and the GPU band is this library's own. A low band names other
      hardware -- the NPU is 100, an accelerator core 200 -- and must not be
      served by the GPU backend; a matmul placed there falls back to the outlined
-     kernel, which is where it ran before this library existed. Routing every
-     named topology is the shared work #1137 leaves open. */
+     kernel, which is where it ran before this library existed. Serving every
+     named topology needs one dispatch library per build, which is not what this
+     is. */
   int32_t topo = vx_payload_topology(binary_payload, payload_size);
   bool for_this_device =
       topo < 0 || vx_topology_device_index(topo, VX_TOPO_GPU_BASE) >= 0;
@@ -961,45 +991,14 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
     }
   }
 
-  /* Nothing here could run it, so it runs on the host. Its operands may be
-     device memory -- a `transfer` into a `managed: explicit` space put them
-     there -- which the host cannot read; those are copied into host buffers
-     and put back after the call. Refusing instead would make a kernel that
-     computes the right numbers on a machine with no backend fail on a machine
-     with one, which is the opposite of what a backend is for. */
-  std::vector<HostMirror> mirrors((size_t)(num_args > 0 ? num_args : 1));
-  for (int64_t i = 0; i < num_args; ++i) {
-    if (!device_args || !device_args[i] ||
-        VX_ABI_KIND(arg_tags[i]) != VX_ABI_KIND_MEMREF) {
-      continue;
-    }
-    if (VX_ABI_IS_SLOT(arg_tags[i])) {
-      /* A slot holds device memory the kernel would have published into. The
-         host clone publishes host memory instead, which is only right if the
-         program expects host memory there -- so a slot that holds device
-         memory is a shape this fallback has no answer for, and it says so
-         rather than writing a host pointer into a device space. */
-      const void *slot = *(const void *const *)device_args[i];
-      const void *held = slot ? vx_memref_aligned(slot) : nullptr;
-      if (held && is_device_ptr(vx_memref_data(
-                      held, (int32_t)VX_ABI_ELEM(arg_tags[i])))) {
-        fprintf(stderr,
-                "[Vx XPU] FATAL: %s was not routed, and argument %lld is a "
-                "publication slot\n"
-                "          holding device memory, which the host cannot "
-                "address.\n",
-                kernel_name, (long long)i);
-        abort();
-      }
-      continue;
-    }
-    if (!mirror_operand(device_args[i], arg_tags[i], &mirrors[(size_t)i])) {
-      fprintf(stderr,
-              "[Vx XPU] FATAL: out of memory staging %s's argument %lld for "
-              "the host\n",
-              kernel_name, (long long)i);
-      abort();
-    }
+  /* Nothing here could run it, so it runs on the host. Its operands are shared
+     USM, which the host can read, so this normally checks nothing at all. A
+     host-only pointer would mean the device could not have run the kernel
+     either, and the check says so rather than letting the call read a pointer
+     it cannot follow. */
+  if (device_args) {
+    refuse_device_operands_on_host(device_args, arg_tags, num_args,
+                                   kernel_name);
   }
 
   vx_host_refuse_coop(binary_payload, payload_size, kernel_name, "XPU");
@@ -1015,10 +1014,6 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
                                arg_tags, num_args),
       vx_host_flushes_subnormals(binary_payload, payload_size));
 
-  for (HostMirror &mirror : mirrors) {
-    unmirror_operand(&mirror);
-  }
-
   if (!called) {
     fprintf(stderr, "[Vx XPU] FATAL: could not build a call for %s\n",
             kernel_name);
@@ -1030,7 +1025,7 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
 uint64_t vx_plugin_dispatch_async_flat(float *xout, float *x, float *w, int n,
                                        int d) {
   // Reference matvec: xout[i] = sum_j w[i * n + j] * x[j], matching the
-  // signature the flat path emits (see #31).
+  // signature the flat path emits.
   for (int i = 0; i < d; ++i) {
     float acc = 0.0f;
     for (int j = 0; j < n; ++j) {
@@ -1064,10 +1059,18 @@ void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
     return routed;
   }
   vx_routing_refuse_handle("a peer handoff", src_device_ptr, src_topology_id);
-  /* One device, so both topologies name it and the movement between them is a
-     copy. Answering rather than refusing keeps a program written for two
-     devices correct on a machine that has one. */
-  void *dst = malloc(bytes);
+  /* This machine has one GPU, so a handoff into the GPU band lands on the same
+     card and is a copy. The destination has to be memory the device can
+     address, because the descriptor that names it can reach a later placed
+     kernel: a `malloc` buffer there is an address the GPU cannot read, and the
+     fault says nothing about which launch took it.
+     `vx_plugin_alloc_and_transfer` refuses a GPU index above 0, so the band
+     this can name is the first one. */
+  const bool to_device =
+      xpu_available() &&
+      vx_topology_device_index((int32_t)dst_topology_id, VX_TOPO_GPU_BASE) >= 0;
+  void *dst =
+      to_device ? device_alloc(bytes, /*host_visible=*/true) : malloc(bytes);
   if (dst && src_device_ptr) {
     copy_out(dst, src_device_ptr, bytes);
   }
@@ -1113,7 +1116,7 @@ int64_t vx_plugin_tensor_map(int64_t base, int64_t rank, int64_t elem_bytes,
 /// thread. This library has no CUDA stream: its launches go on one queue and
 /// wait before they return, so there is nothing to select and null is the
 /// answer that says so. The pair is here so that a host program links on every
-/// build, for the same reason the CPU backends carry it (#1986).
+/// build, for the same reason the CPU backends carry it.
 void vx_cuda_set_stream(void *stream) { (void)stream; }
 void *vx_cuda_get_stream(void) { return nullptr; }
 

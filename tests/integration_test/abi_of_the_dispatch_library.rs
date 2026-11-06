@@ -1,6 +1,6 @@
 //===- abi_of_the_dispatch_library.rs - the whole ABI ----------*- Rust -*-===//
 //
-// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// Part of the Vx Project, under the Apache License v2.0 WITH LLVM Exceptions.
 // See LICENSE for license information.
 //
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
@@ -23,8 +23,51 @@
 use std::path::Path;
 use std::process::Command;
 
-/// Every call a program can carry, as `runtime/x86_dispatch.cpp` provides them.
-const CALLS: &[&str] = &[
+/// The header the compiler includes to call the ABI, which is where the
+/// `vx_plugin_*` half of the list comes from.
+const ABI_HEADER: &str = include_str!("../../include/vx_hardware_runtime.h");
+
+/// Every `vx_plugin_*` function the header declares, in the order it declares
+/// them.
+///
+/// Read from the header rather than written out here: a new call is added to
+/// the header first, and a list that has to be updated by hand is a list that
+/// falls behind without anyone noticing.
+fn plugin_calls_from_the_header() -> Vec<&'static str> {
+    let mut found = Vec::new();
+    for line in ABI_HEADER.lines() {
+        let start = match line.find(|c: char| c.is_ascii_alphabetic() || c == '_') {
+            Some(at) => at,
+            None => continue,
+        };
+        let line = &line[start..];
+        // A declaration, not a definition, a typedef or a call of one.
+        if line.starts_with("static") || line.starts_with("typedef") {
+            continue;
+        }
+        let at = match line.find("vx_plugin_") {
+            Some(at) => at,
+            None => continue,
+        };
+        let rest = &line[at..];
+        let end = match rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+            Some(end) => end,
+            None => continue,
+        };
+        if rest[end..].starts_with('(') {
+            found.push(&rest[..end]);
+        }
+    }
+    found
+}
+
+/// The calls that have no declaring header, and so cannot be read off one.
+///
+/// `vx_cuda_set_stream` is defined by each backend rather than declared in the
+/// public header, and the collective and worker calls live in headers whose
+/// contents are not all part of this interface. Keeping those here is the
+/// honest record; the plugin half needs no list.
+const CALLS_WITHOUT_A_HEADER: &[&str] = &[
     "vx_collective_all_gather_bf16",
     "vx_collective_all_gather_f32",
     "vx_collective_all_reduce_sum_bf16",
@@ -37,19 +80,16 @@ const CALLS: &[&str] = &[
     "vx_cuda_set_stream",
     "vx_host_worker_count",
     "vx_host_worker_id",
-    "vx_plugin_alloc_and_transfer",
-    "vx_plugin_arrivals_give",
-    "vx_plugin_arrivals_take",
-    "vx_plugin_await_future",
-    "vx_plugin_control",
-    "vx_plugin_dispatch_async",
-    "vx_plugin_dispatch_async_flat",
-    "vx_plugin_free",
-    "vx_plugin_release_future",
-    "vx_plugin_tensor_map",
-    "vx_plugin_transfer_device_to_host",
-    "vx_plugin_transfer_peer",
 ];
+
+/// Every call a program can carry.
+fn calls() -> Vec<&'static str> {
+    let mut all = plugin_calls_from_the_header();
+    all.extend_from_slice(CALLS_WITHOUT_A_HEADER);
+    all.sort_unstable();
+    all.dedup();
+    all
+}
 
 #[test]
 fn the_dispatch_library_exports_every_call_the_compiler_emits() -> Result<(), String> {
@@ -67,11 +107,13 @@ fn the_dispatch_library_exports_every_call_the_compiler_emits() -> Result<(), St
         .output()
     {
         Ok(output) => output,
-        // No `nm` on this machine: there is no other way to read the symbols,
-        // and a test that cannot look must not claim the library is complete.
+        // No `nm` on this machine, so there is no other way to read the
+        // symbols. A test that cannot look must not report that it did.
         Err(e) => {
-            println!("skipped: cannot run nm ({e})");
-            return Ok(());
+            return Err(format!(
+                "cannot run nm ({e}), so {} was not checked",
+                library.display()
+            ))
         }
     };
     if !output.status.success() {
@@ -87,7 +129,8 @@ fn the_dispatch_library_exports_every_call_the_compiler_emits() -> Result<(), St
         .lines()
         .filter_map(|line| line.split_whitespace().nth(2))
         .collect();
-    let missing: Vec<&str> = CALLS
+    let wanted = calls();
+    let missing: Vec<&str> = wanted
         .iter()
         .copied()
         .filter(|call| !exported.contains(call))
@@ -103,4 +146,25 @@ fn the_dispatch_library_exports_every_call_the_compiler_emits() -> Result<(), St
         ));
     }
     Ok(())
+}
+
+/// The list is built from the header, so a header that stops declaring a call
+/// would shrink it silently and the check above would pass on less. This pins
+/// the size, and names what it covers.
+#[test]
+fn the_list_covers_the_whole_interface() {
+    let from_header = plugin_calls_from_the_header();
+    assert_eq!(
+        from_header.len(),
+        11,
+        "the header declares {} plugin calls, and this test was written \
+         against 11: {from_header:?}",
+        from_header.len()
+    );
+    assert!(
+        from_header.contains(&"vx_plugin_arrivals_take")
+            && from_header.contains(&"vx_plugin_arrivals_give"),
+        "the two calls whose absence went unnoticed are not in the list"
+    );
+    assert_eq!(calls().len(), 23, "the interface is 23 calls today");
 }
