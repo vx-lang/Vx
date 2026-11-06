@@ -1,0 +1,102 @@
+//===- facts_that_a_loop_does_not_give.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// After a loop, an invariant is a fact only when it holds at each place where the loop ends. A
+// `break` where an invariant may not hold is not an error, but the invariant gives no fact after
+// the loop. The error at the call that needed the fact has a note with that `break`.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+fn need_equal(x : i64, y : i64) -> i64
+requires x == y
+{
+  return x;
+}
+
+fn need_at_most(x : i64, y : i64) -> i64
+requires x <= y
+{
+  return x;
+}
+
+fn break_with_a_false_invariant(n : i64) -> i64
+requires 0i64 <= n
+{
+  let mut total = 0i64;
+  for i in 0i64..n invariant total == i {
+    if i == 2i64 {
+      total = 50i64;
+      break;
+    }
+    total = total + 1i64;
+  }
+  // CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+2]]:10: this call to 'need_at_most' may not meet its precondition `x <= y`
+  // CHECK-NEXT: note: the invariant at line [[#@LINE-8]] would prove this, but it may not hold at the `break` at line [[#@LINE-5]] (at [[#@LINE-5]]:7){{$}}
+  return need_at_most(total, n);
+}
+
+// The `break` keeps the invariant, but the loop can end before `i == n`.
+fn break_before_the_end(n : i64) -> i64
+requires 0i64 <= n
+{
+  let mut total = 0i64;
+  for i in 0i64..n invariant total == i {
+    if total == 5i64 {
+      break;
+    }
+    total = total + 1i64;
+  }
+  // CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+1]]:10: this call to 'need_equal' may not meet its precondition `x == y`
+  return need_equal(total, n);
+}
+
+// The `break` can end the loop while `i < n` still holds.
+fn while_with_a_break(n : i64) -> i64
+requires 0i64 <= n
+{
+  let mut i = 0i64;
+  while i < n invariant i <= n {
+    if i == 2i64 {
+      break;
+    }
+    i = i + 1i64;
+  }
+  // CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+1]]:10: this call to 'need_equal' may not meet its precondition `x == y`
+  return need_equal(i, n);
+}
+
+// Each loop over `i` has its own name for the value of `i` where it ends, so `a == n` and
+// `b == m` do not give `a == m`.
+fn two_loops(n : i64, m : i64) -> i64
+requires 0i64 <= n
+requires 0i64 <= m
+{
+  let mut a = 0i64;
+  for i in 0i64..n invariant a == i {
+    a = a + 1i64;
+  }
+  let mut b = 0i64;
+  for i in 0i64..m invariant b == i {
+    b = b + 1i64;
+  }
+  // CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+1]]:10: this call to 'need_equal' may not meet its precondition `x == y`
+  return need_equal(a, m) + b;
+}
+
+// The range `0..n` may have no values and `n < 0`, so the loop gives no fact.
+fn a_range_that_can_be_reversed(n : i64) -> i64 {
+  let mut total = 0i64;
+  for i in 0i64..n invariant total == i {
+    total = total + 1i64;
+  }
+  // CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+1]]:10: this call to 'need_at_most' may not meet its precondition `x <= y`
+  return need_at_most(0i64, total);
+}
+
+fn main() -> i32 {
+  return 0;
+}
