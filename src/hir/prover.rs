@@ -14,8 +14,8 @@ use crate::syntax::*;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-/// The type of a name in a contract, when it is an integer, and whether its range is a fact.
-pub type IntTypeOf<'a> = &'a dyn Fn(&str) -> Option<(ElementType, bool)>;
+/// The integer type of an expression, and whether its range is a fact.
+pub type IntTypeOf<'a> = &'a dyn Fn(&Expr) -> Option<(ElementType, bool)>;
 
 pub struct SmtProver {
     assertions: Vec<String>,
@@ -36,8 +36,8 @@ impl SmtProver {
 
     pub fn prove(&self) -> Result<bool, String> {
         let mut script = String::new();
-        // Setup QF_LIA (Quantifier-Free Linear Integer Arithmetic)
-        script.push_str("(set-logic QF_LIA)\n");
+        // Remainder and products of variables need nonlinear integer arithmetic.
+        script.push_str("(set-logic QF_NIA)\n(set-option :timeout 5000)\n");
 
         for decl in &self.declarations {
             script.push_str(&format!("(declare-const {} Int)\n", decl));
@@ -79,19 +79,10 @@ impl SmtProver {
 
         let output = child.wait_with_output().map_err(|e| e.to_string())?;
         let result_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let has_sat = result_str.lines().any(|l| l.trim() == "sat");
-        let has_unsat = result_str.lines().any(|l| l.trim() == "unsat");
-
-        if has_sat {
-            Ok(true)
-        } else if has_unsat {
-            Ok(false)
-        } else {
-            Err(format!("Unexpected z3 output: {}", result_str))
-        }
+        solver_result(&result_str, output.status.success())
     }
 
-    /// Add `expr` as a fact. `type_of` gives the integer type of a name, so that the prover knows
+    /// Add `expr` as a fact. `type_of` gives an expression's integer type, so that the prover knows
     /// the width of an operation on it, and its range.
     pub fn add_constraint(&mut self, expr: &Expr, type_of: IntTypeOf) -> Result<(), String> {
         let smt_expr = self.lower_expr(expr, type_of, None)?;
@@ -114,8 +105,7 @@ impl SmtProver {
         self.assertions.iter().any(|a| a == smt)
     }
 
-    /// `expected` is the integer type that the context gives `expr`: in a contract, which the
-    /// checker does not type, `return == p.x + p.y` adds at the width of `return`.
+    /// `expected` supplies context for literal arithmetic. Remainder requires its own operand type.
     fn lower_expr(
         &mut self,
         expr: &Expr,
@@ -127,19 +117,46 @@ impl SmtProver {
             Expr::Identifier(id) => {
                 let name = id.name.replace(".", "_");
                 self.declarations.insert(name.clone());
-                if let Some((ty, true)) = type_of(id.name.as_ref()) {
+                if let Some((ty, true)) = type_of(expr) {
                     self.ranges.insert(name.clone(), ty);
                 }
                 Ok(name)
             }
             Expr::BinaryOp(b) => {
-                let ty = b
-                    .operand_ty
-                    .clone()
-                    .or_else(|| int_type(expr, type_of))
-                    .or(expected);
+                let ty = if b.op == BinaryOp::Rem {
+                    // A comparison's result type cannot determine a remainder's signedness.
+                    int_type(expr, type_of)
+                } else {
+                    b.operand_ty
+                        .clone()
+                        .or_else(|| arithmetic_context_type(expr, type_of))
+                        .or(expected)
+                };
                 let lhs = self.lower_expr(&b.lhs, type_of, ty.clone())?;
                 let rhs = self.lower_expr(&b.rhs, type_of, ty.clone())?;
+                if b.op == BinaryOp::Rem {
+                    let ty = ty
+                        .filter(|t| t.int_bits().is_some() && *t != ElementType::Bool)
+                        .ok_or("a remainder whose integer type is not known")?;
+                    // Leave undefined operations unconstrained instead of assuming they cannot occur.
+                    let undefined = format!("|remainder.undefined.{}|", self.declarations.len());
+                    self.declarations.insert(undefined.clone());
+                    let magnitude = format!(
+                        "(mod (ite (< {lhs} 0) (- {lhs}) {lhs}) (ite (< {rhs} 0) (- {rhs}) {rhs}))"
+                    );
+                    let value = if ty.is_signed_int() {
+                        format!("(ite (< {lhs} 0) (- {magnitude}) {magnitude})")
+                    } else {
+                        format!("(mod {lhs} {rhs})")
+                    };
+                    let invalid = if ty.is_signed_int() {
+                        let (min, _) = int_range(&ty).expect("an integer remainder");
+                        format!("(or (= {rhs} 0) (and (= {lhs} {min}) (= {rhs} (- 1))))")
+                    } else {
+                        format!("(= {rhs} 0)")
+                    };
+                    return Ok(format!("(ite {invalid} {undefined} {value})"));
+                }
                 let op = match b.op {
                     BinaryOp::Add => "+",
                     BinaryOp::Sub => "-",
@@ -152,8 +169,8 @@ impl SmtProver {
                 let side = r
                     .operand_ty
                     .clone()
-                    .or_else(|| int_type(&r.lhs, type_of))
-                    .or_else(|| int_type(&r.rhs, type_of));
+                    .or_else(|| arithmetic_context_type(&r.lhs, type_of))
+                    .or_else(|| arithmetic_context_type(&r.rhs, type_of));
                 let lhs = self.lower_expr(&r.lhs, type_of, side.clone())?;
                 let rhs = self.lower_expr(&r.rhs, type_of, side)?;
                 let op = match r.op {
@@ -181,7 +198,10 @@ impl SmtProver {
                 match u.op {
                     UnaryOp::Not => Ok(format!("(not {})", inner)),
                     // A negative literal such as `-1000` is a constant, not an operation.
-                    UnaryOp::Neg if matches!(*u.expr, Expr::Number(_)) => {
+                    UnaryOp::Neg
+                        if matches!(*u.expr, Expr::Number(_))
+                            && int_type(&u.expr, type_of).is_none_or(|ty| ty.is_signed_int()) =>
+                    {
                         Ok(format!("(- {inner})"))
                     }
                     UnaryOp::Neg => wrap(
@@ -244,56 +264,212 @@ impl SmtProver {
                 self.declarations.insert(name.clone());
                 Ok(name)
             }
-            // A cast that keeps every value of its operand is the operand.
-            Expr::AsCast(c) if keeps_every_value(c) => {
-                self.lower_expr(&c.expr, type_of, cast_int_types(c).map(|(from, _)| from))
+            Expr::AsCast(c) => {
+                let (from, to) = cast_int_types(c, type_of)
+                    .ok_or("a cast whose integer source or destination type is not known")?;
+                let value = self.lower_expr(&c.expr, type_of, Some(from.clone()))?;
+                // A checked cast to usize preserves its value or traps.
+                if to == ElementType::USize || keeps_every_value(&from, &to) {
+                    Ok(value)
+                } else {
+                    wrap(value, Some(to))
+                }
             }
             _ => Err(format!("a `{}` expression", kind_name(expr))),
         }
     }
 }
 
-/// The integer type of `e`, from a typed literal, a name, or an operation's operand type.
-fn int_type(e: &Expr, type_of: IntTypeOf) -> Option<ElementType> {
+fn solver_result(result: &str, successful_exit: bool) -> Result<bool, String> {
+    if !successful_exit {
+        return Err(format!("z3 failed: {result}"));
+    }
+    match result {
+        "sat" => Ok(true),
+        "unsat" => Ok(false),
+        _ => Err(format!("Unexpected z3 output: {result}")),
+    }
+}
+
+/// Recover an expression's own type without borrowing a comparison's operand type.
+pub(crate) fn int_type(e: &Expr, type_of: IntTypeOf) -> Option<ElementType> {
+    if let Some((ty, _)) = type_of(e) {
+        return Some(ty);
+    }
     match e {
         Expr::Number(n) => n.ty.clone(),
-        Expr::Identifier(id) => type_of(id.name.as_ref()).map(|(ty, _)| ty),
-        Expr::BinaryOp(b) => b
-            .operand_ty
-            .clone()
-            .or_else(|| int_type(&b.lhs, type_of))
-            .or_else(|| int_type(&b.rhs, type_of)),
+        Expr::BinaryOp(b) => {
+            if let Some(ty) = &b.operand_ty {
+                return Some(ty.clone());
+            }
+            let lhs = int_type(&b.lhs, type_of);
+            let rhs = int_type(&b.rhs, type_of);
+            if (lhs.is_none() && !untyped_literal_expression(&b.lhs))
+                || (rhs.is_none() && !untyped_literal_expression(&b.rhs))
+            {
+                return None;
+            }
+            match (lhs, rhs) {
+                (Some(a), Some(b)) if a != b => None,
+                (None, None) => None,
+                (a, b) => a.or(b),
+            }
+        }
         Expr::UnaryOp(u) => int_type(&u.expr, type_of),
-        Expr::AsCast(c) => cast_int_types(c).map(|(_, to)| to),
+        Expr::AsCast(c) => integer_scalar(&c.target_ty),
         _ => None,
     }
 }
 
-/// The integer types that the cast `c` converts between, after the checker typed it.
-fn cast_int_types(c: &AsCastExpr) -> Option<(ElementType, ElementType)> {
-    let int = |ty: &Type| match ty {
-        Type::Scalar(e) if e.int_bits().is_some() && *e != ElementType::Bool => Some(e.clone()),
-        _ => None,
-    };
-    Some((int(c.source_ty.as_ref()?)?, int(&c.target_ty)?))
+fn untyped_integer_literal(e: &Expr) -> bool {
+    match e {
+        Expr::Number(n) => n.ty.is_none() && n.value.parse::<u128>().is_ok(),
+        Expr::UnaryOp(u) if u.op == UnaryOp::Neg => untyped_integer_literal(&u.expr),
+        _ => false,
+    }
 }
 
-/// Whether each value of the operand of `c` fits in the target type, as in `i32 as i64` or
-/// `u32 as i64`. Then the cast changes no value. A `usize` holds 0 to `i64::MAX`.
-fn keeps_every_value(c: &AsCastExpr) -> bool {
-    let Some((from, to)) = cast_int_types(c) else {
-        return false;
+fn untyped_literal_expression(e: &Expr) -> bool {
+    match e {
+        Expr::BinaryOp(b) if b.operand_ty.is_none() => {
+            untyped_literal_expression(&b.lhs) && untyped_literal_expression(&b.rhs)
+        }
+        Expr::UnaryOp(u) if u.op == UnaryOp::Neg => untyped_literal_expression(&u.expr),
+        _ => untyped_integer_literal(e),
+    }
+}
+
+fn literal_default_type(e: &Expr) -> Option<ElementType> {
+    match e {
+        Expr::Number(n) if n.ty.is_none() && untyped_integer_literal(e) => {
+            Some(crate::parser::expr::default_number_elem(&n.value))
+        }
+        Expr::UnaryOp(u) if u.op == UnaryOp::Neg => literal_default_type(&u.expr),
+        Expr::BinaryOp(b) if b.operand_ty.is_none() => {
+            let lhs = literal_default_type(&b.lhs)?;
+            (literal_default_type(&b.rhs)? == lhs).then_some(lhs)
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn cast_source_type(e: &Expr, type_of: IntTypeOf) -> Option<ElementType> {
+    int_type(e, type_of).or_else(|| literal_default_type(e))
+}
+
+/// Apply surrounding types before defaulting literal expressions or replacing callee names.
+pub(crate) fn with_integer_types(e: &Expr, type_of: IntTypeOf) -> Expr {
+    with_integer_context(e, None, type_of)
+}
+
+pub(crate) fn with_integer_context(
+    e: &Expr,
+    expected: Option<ElementType>,
+    type_of: IntTypeOf,
+) -> Expr {
+    fn typed(e: &Expr, expected: Option<ElementType>, type_of: IntTypeOf) -> Expr {
+        let mut result = e.clone();
+        match &mut result {
+            Expr::Number(n) if n.ty.is_none() && untyped_integer_literal(e) => {
+                n.ty = expected.or_else(|| literal_default_type(e));
+            }
+            Expr::BinaryOp(b) => {
+                let own = int_type(e, type_of);
+                let ty = own.or_else(|| {
+                    untyped_literal_expression(e)
+                        .then(|| expected.clone().or_else(|| literal_default_type(e)))
+                        .flatten()
+                });
+                b.operand_ty = ty.clone();
+                let child_context =
+                    ty.or_else(|| (b.op != BinaryOp::Rem).then_some(expected).flatten());
+                *b.lhs = typed(&b.lhs, child_context.clone(), type_of);
+                *b.rhs = typed(&b.rhs, child_context, type_of);
+            }
+            Expr::RelationalOp(r) => {
+                let ty = r
+                    .operand_ty
+                    .clone()
+                    .or_else(|| int_type(&r.lhs, type_of))
+                    .or_else(|| int_type(&r.rhs, type_of))
+                    .or_else(|| literal_default_type(&r.lhs))
+                    .or_else(|| literal_default_type(&r.rhs));
+                *r.lhs = typed(&r.lhs, ty.clone(), type_of);
+                *r.rhs = typed(&r.rhs, ty, type_of);
+            }
+            Expr::LogicalOp(l) => {
+                *l.lhs = typed(&l.lhs, None, type_of);
+                *l.rhs = typed(&l.rhs, None, type_of);
+            }
+            Expr::UnaryOp(u) => {
+                *u.expr = typed(
+                    &u.expr,
+                    if u.op == UnaryOp::Neg { expected } else { None },
+                    type_of,
+                );
+            }
+            Expr::AsCast(c) => {
+                // A cast's destination is not the context of its source expression.
+                *c.expr = typed(&c.expr, None, type_of);
+                if c.source_ty.is_none() {
+                    c.source_ty = int_type(&c.expr, type_of).map(Type::Scalar);
+                }
+            }
+            // Calls receive argument context from their declared parameters during abstraction.
+            _ => {}
+        }
+        result
+    }
+    typed(e, expected, type_of)
+}
+
+/// Preserve context for older arithmetic facts whose local variables left scope.
+fn arithmetic_context_type(e: &Expr, type_of: IntTypeOf) -> Option<ElementType> {
+    match e {
+        Expr::BinaryOp(b) if b.op != BinaryOp::Rem => b
+            .operand_ty
+            .clone()
+            .or_else(|| arithmetic_context_type(&b.lhs, type_of))
+            .or_else(|| arithmetic_context_type(&b.rhs, type_of)),
+        Expr::UnaryOp(u) => arithmetic_context_type(&u.expr, type_of),
+        _ => int_type(e, type_of),
+    }
+}
+
+fn integer_scalar(ty: &Type) -> Option<ElementType> {
+    match ty {
+        Type::Scalar(e) if e.int_bits().is_some() && *e != ElementType::Bool => Some(e.clone()),
+        _ => None,
+    }
+}
+
+fn cast_int_types(c: &AsCastExpr, type_of: IntTypeOf) -> Option<(ElementType, ElementType)> {
+    let from = match &c.source_ty {
+        Some(ty) => integer_scalar(ty)?,
+        None => cast_source_type(&c.expr, type_of)?,
     };
+    Some((from, integer_scalar(&c.target_ty)?))
+}
+
+/// Whether each source value fits in the destination. A usize holds 0 to i64::MAX.
+fn keeps_every_value(from: &ElementType, to: &ElementType) -> bool {
     let width = |e: &ElementType| match e {
         ElementType::USize => (63, false),
         e => (e.int_bits().unwrap_or(0), e.is_signed_int()),
     };
-    let ((from_bits, from_signed), (to_bits, to_signed)) = (width(&from), width(&to));
+    let ((from_bits, from_signed), (to_bits, to_signed)) = (width(from), width(to));
     match (from_signed, to_signed) {
         (true, false) => false,
         (false, true) => to_bits > from_bits,
         _ => to_bits >= from_bits,
     }
+}
+
+fn can_model_integer_cast(c: &AsCastExpr) -> bool {
+    integer_scalar(&c.target_ty).is_some()
+        && c.source_ty
+            .as_ref()
+            .is_none_or(|ty| integer_scalar(ty).is_some())
 }
 
 /// `e` without the `&` or `&mut` before a place. At a call, the field `self.n` of a `&c`
@@ -351,17 +527,19 @@ fn wrap(exact: String, ty: Option<ElementType>) -> Result<String, String> {
     }
 }
 
-/// Whether the prover can model `e`: names, numbers, `+`, `-`, `*`, comparisons, `&&`, `||`, `!`,
-/// negation, field and element reads of those, casts that keep every value, and calls with such
+/// Whether the prover can model `e`: names, numbers, `+`, `-`, `*`, `%`, comparisons, `&&`, `||`, `!`,
+/// negation, field and element reads of those, integer casts, and calls with such
 /// arguments, or references to them, whose results are known through the callee's `ensures`.
 pub fn is_modelled(e: &Expr) -> bool {
     match e {
         Expr::Number(_) | Expr::Identifier(_) => true,
         Expr::FunctionCall(c) => c.args.iter().all(|a| is_modelled(without_borrow(a))),
-        Expr::AsCast(c) => keeps_every_value(c) && is_modelled(&c.expr),
+        Expr::AsCast(c) => can_model_integer_cast(c) && is_modelled(&c.expr),
         Expr::BinaryOp(b) => {
-            matches!(b.op, BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul)
-                && is_modelled(&b.lhs)
+            matches!(
+                b.op,
+                BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Rem
+            ) && is_modelled(&b.lhs)
                 && is_modelled(&b.rhs)
         }
         Expr::RelationalOp(r) => is_modelled(&r.lhs) && is_modelled(&r.rhs),
@@ -417,6 +595,11 @@ pub fn substitute_names(
             i.index = sub(&i.index);
             Expr::IndexAccess(i)
         }
+        Expr::AsCast(c) => {
+            let mut c = c.clone();
+            c.expr = sub(&c.expr);
+            Expr::AsCast(c)
+        }
         _ => e.clone(),
     }
 }
@@ -431,6 +614,7 @@ pub fn to_source(e: &Expr) -> Option<String> {
                 BinaryOp::Add => "+",
                 BinaryOp::Sub => "-",
                 BinaryOp::Mul => "*",
+                BinaryOp::Rem => "%",
                 _ => return None,
             };
             format!("{} {op} {}", to_source(&b.lhs)?, to_source(&b.rhs)?)
@@ -500,4 +684,54 @@ pub fn unreachable_fact() -> Expr {
         span: Span::default(),
         operand_ty: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn literal_defaults_do_not_type_unknown_variables() {
+        let literal = Expr::Number(NumberExpr::new("255".into(), None, Span::default()));
+        assert_eq!(
+            cast_source_type(&literal, &|_| None),
+            Some(ElementType::I32)
+        );
+        let unknown = Expr::Identifier(IdentifierExpr::new("unknown".into(), Span::default()));
+        assert_eq!(cast_source_type(&unknown, &|_| None), None);
+    }
+
+    #[test]
+    fn a_remainder_needs_its_own_operand_type() {
+        let unknown = Expr::Identifier(IdentifierExpr::new("unknown".into(), Span::default()));
+        for divisor_type in [None, Some(ElementType::U32)] {
+            let remainder = Expr::BinaryOp(BinaryOpExpr::new(
+                Box::new(unknown.clone()),
+                BinaryOp::Rem,
+                Box::new(Expr::Number(NumberExpr::new(
+                    "10".into(),
+                    divisor_type.clone(),
+                    Span::default(),
+                ))),
+                Span::default(),
+            ));
+            let mut prover = SmtProver::new();
+            let remainder = with_integer_context(&remainder, Some(ElementType::U32), &|_| None);
+            assert!(
+                prover
+                    .lower_expr(&remainder, &|_| None, Some(ElementType::U32))
+                    .is_err(),
+                "unknown operand with divisor type {divisor_type:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_solver_error_or_timeout_is_not_a_proof() {
+        assert_eq!(solver_result("sat", true), Ok(true));
+        assert_eq!(solver_result("unsat", true), Ok(false));
+        assert!(solver_result("unknown", true).is_err());
+        assert!(solver_result("(error \"unsupported arithmetic\")\nunsat", true).is_err());
+        assert!(solver_result("unsat", false).is_err());
+    }
 }

@@ -829,7 +829,13 @@ impl<'a> TypeChecker<'a> {
         });
         let Some((params, requires)) = callee.filter(|f| !f.requires.is_empty()).map(|f| {
             let params: Vec<_> = f.params.iter().map(|(p, _)| p.clone()).collect();
-            (params, f.requires.clone())
+            (
+                params,
+                f.requires
+                    .iter()
+                    .map(|req| self.typed_callee_contract(req, f))
+                    .collect::<Vec<_>>(),
+            )
         }) else {
             return;
         };
