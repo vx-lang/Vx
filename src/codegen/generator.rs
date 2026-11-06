@@ -2312,7 +2312,10 @@ impl<'c> MeliorGenerator<'c> {
                     _ => unreachable!(),
                 };
                 let inner_str = self.lower_type_str(inner)?;
-                if inner_str.starts_with("memref<") {
+                // A raw pointer is a pointer, whatever it points at. Only a borrow of a tensor is
+                // the cell that holds the tensor's descriptor.
+                let is_pointer = matches!(ty, syntax::Type::Pointer(..));
+                if inner_str.starts_with("memref<") && !is_pointer {
                     // A borrowed tensor is the slot holding its descriptor, and every tensor
                     // this backend allocates is dynamically shaped. Naming the static shape
                     // here left the call site casting between two memref element types, which
