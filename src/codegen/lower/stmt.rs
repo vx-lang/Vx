@@ -536,6 +536,85 @@ pub(crate) fn struct_instance_ty<'c>(
     gen.lower_type(&syntax::Type::GenericInstance(Box::new(nominal), args))
 }
 
+/// `place.member = val` where `place` is a struct behind a pointer: `(*p).a = v` with a raw
+/// pointer `p`, or `m.r.x = v` where the field `m.r` is a reference. The value is stored through
+/// the pointer. `None` when `place` is not a struct behind a pointer.
+fn store_field_through_pointer<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    place: &Expr,
+    member: &crate::symbol::Symbol,
+    val: melior::ir::Value<'c, 'c>,
+    val_ty: Type<'c>,
+) -> Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError> {
+    use syntax::Type as T;
+    // The expression that gives the pointer, and the type of the struct it points at.
+    let (ptr_expr, pointee) = match place {
+        Expr::Dereference(d) => match gen.infer_ast_type(&d.expr) {
+            Some(T::Pointer(inner, _, _) | T::Ref(inner, _) | T::Borrow { inner, .. }) => {
+                (d.expr.as_ref(), *inner)
+            }
+            _ => return Ok(None),
+        },
+        Expr::MemberAccess(_) => match gen.infer_ast_type(place) {
+            Some(T::Pointer(inner, _, _) | T::Ref(inner, _) | T::Borrow { inner, .. }) => {
+                (place, *inner)
+            }
+            _ => return Ok(None),
+        },
+        _ => return Ok(None),
+    };
+    let Some(base_struct) = nominal_struct_name(&pointee) else {
+        return Ok(None);
+    };
+    let base_struct: crate::symbol::Symbol =
+        base_struct.split('<').next().unwrap_or(&base_struct).into();
+    let Some(decl) = gen.structs.get(&base_struct).cloned() else {
+        return Ok(None);
+    };
+    let Some(field_idx) = decl.fields.iter().position(|(n, _)| n == member) else {
+        return Ok(None);
+    };
+    let (ptr_val, ptr_ty, block) = gen.generate_expr(ptr_expr, block)?;
+    assert!(
+        ptr_ty.to_string().starts_with("!llvm.ptr"),
+        "a struct behind a pointer lowers to a pointer, not {ptr_ty}"
+    );
+    let mapping = generic_arg_mapping(&pointee.to_string(), &decl.generics);
+    let field_ty = gen.lower_type(&decl.fields[field_idx].1.substitute(&mapping))?;
+    let field_val = if val_ty == field_ty {
+        val
+    } else {
+        gen.coerce_type(&block, val, val_ty, field_ty)?
+    };
+    let struct_ty = struct_instance_ty(gen, &base_struct, &decl, &mapping)?;
+    let field_ptr: melior::ir::Value = block
+        .append_operation(
+            OperationBuilder::new("llvm.getelementptr", gen.loc())
+                .add_attributes(&[
+                    (
+                        Identifier::new(gen.context, "rawConstantIndices"),
+                        DenseI32ArrayAttribute::new(gen.context, &[0, field_idx as i32]).into(),
+                    ),
+                    (
+                        Identifier::new(gen.context, "elem_type"),
+                        TypeAttribute::new(struct_ty).into(),
+                    ),
+                ])
+                .add_operands(&[ptr_val])
+                .add_results(&[gen.ptr_ty])
+                .build()?,
+        )
+        .result(0)?
+        .into();
+    block.append_operation(
+        OperationBuilder::new("llvm.store", gen.loc())
+            .add_operands(&[field_val, field_ptr])
+            .build()?,
+    );
+    Ok(Some(block))
+}
+
 /// Whether evaluating `e` runs no code: a variable, a field of one, or what one points at.
 fn runs_no_code(e: &Expr) -> bool {
     match e {
@@ -1173,6 +1252,10 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                         }
                     }
                 }
+                return Ok(Some(new_b));
+            } else if let Some(new_b) =
+                store_field_through_pointer(gen, block, base, member, rhs_val, rhs_ty)?
+            {
                 return Ok(Some(new_b));
             } else {
                 panic!("Complex struct assignment lhs not supported");
