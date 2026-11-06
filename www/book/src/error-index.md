@@ -22,7 +22,7 @@ the test suite has one, a program that triggers it.
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6036` (36 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
-- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8012` (12 codes)
+- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8014` (14 codes)
 
 ## Warnings
 
@@ -56,7 +56,7 @@ Reported without stopping the compile. A warning means the program is accepted b
 | [`W1033`](/errors/W1033/) | The loop of a `spawn` region runs on one thread although each pass writes only memory of its own, so its passes could run at the same time. The warning points at what stops it: a call the compiler cannot show writes nothing, inline MLIR, a read of a row another pass writes, bounds not known when compiling, and the like. A region that calls `barrier()` asks for blocks and threads, so it is warned about whenever it runs on one thread, with the first thing that stopped the split: two threads that may write the same element, a `break` out of a loop that holds a `barrier()`, a write to block-shared memory with no `barrier()` after it, and the like. |
 | [`W1034`](/errors/W1034/) | The program writes a variable that a closure copied, and uses the closure after the write. The closure keeps the value that it copied, so it does not see the write. A later release makes this an error (K4). |
 | [`W1035`](/errors/W1035/) | A `match` arm in a `loop` or `while` can take `Cancelled` from a wait and stays in the loop. In a cancelled task each wait gives `Cancelled` at once, so the loop never ends (F4). |
-| [`W1036`](/errors/W1036/) | A `drop` calls `send` or `recv`, which wait with no time limit of their own, outside a `within` block. A drop runs with cancellation off, so when the other end never acts, the wait holds up the drop until the limit of the drop: its type's `wait_limit`, 10 seconds by default. Then the wait gives up, as in a cancelled block. A `wait_limit` that calls them gets the warning too, because it runs before the drop and should only return a time. |
+| [`W1036`](/errors/W1036/) | A `drop` calls `send` or `recv`, which wait with no time limit of their own, outside the body of a call of `within`. A drop runs with cancellation off, so when the other end never acts, the wait holds up the drop until the limit of the drop: its type's `wait_limit`, 10 seconds by default. Then the wait gives up, as in a cancelled block. A `wait_limit` that calls them gets the warning too, because it runs before the drop and should only return a time. |
 
 ## Parser Errors
 
@@ -265,7 +265,9 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 | [`E8010`](/errors/E8010/) | An `mlir!` block whose `dialects` list does not match its body: the body uses an operation of a dialect that the list does not name, or the list names something that is not a dialect. The list is what the block says it uses, so it must be right. |
 | [`E8011`](/errors/E8011/) | A pointer clause that is not well formed: `valid(p, n)`, `initialized(p, n)` or `!overlaps(p, q, n)`, where `p` and `q` are raw pointer parameters, and each clause is a `requires` or an `ensures` of its own. In an `ensures`, `return` can be the pointer. The fact of an `assume` is one such clause. A call through a function value or a trait would not prove a `requires`, so a safe function with one cannot be a function value, and a safe method of a trait impl cannot have one. A `frees` clause is an `ensures` of its own, `ensures frees(p)` or `ensures !frees(p)` for a parameter `p`, and a method of a trait impl cannot add a `!frees` that the trait method does not have. |
 | [`E8012`](/errors/E8012/) | A body that breaks a pointer `ensures` of its function. The facts at a `return`, or at the end of the body, do not prove a clause such as `ensures valid(return, n)`. Or the body changes a parameter that such a clause names. Or the function says `ensures !frees(p)`, and its body gives `p`, or a value that it gets from `p`, to code that can free memory, such as a call without `!frees` for that parameter, a store or an `mlir!` block. |
+| [`E8013`](/errors/E8013/) | A type invariant that is not well formed. An `invariant` of a struct can use `self`, the fields of `self` at any depth, numbers, operators and the pointer clauses `valid`, `initialized` and `overlaps`. It calls no other function. |
+| [`E8014`](/errors/E8014/) | Code outside the module of a type with an invariant changes a field of the type. Only the module (the `.vx` file) that declares the type can write a field, take a `&mut` to a field, call a method that takes `&mut self` on a field, move a field out of the value, or build the type with a struct literal. Other code calls a function of the module to change a value of the type. Then the invariant holds for each value of the type outside its module. |
 
 ______________________________________________________________________
 
-179 diagnostics.
+181 diagnostics.

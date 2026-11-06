@@ -49,6 +49,10 @@ struct Range {
     base: usize,
     lo: Vec<Expr>,
     hi: Vec<Expr>,
+    /// Whether the checker made this `Init` fact from two others. A later `Init` fact that
+    /// touches it grows it in place. The other facts stay, so that the end of an `if` keeps them
+    /// when the other branch has them.
+    merged: bool,
 }
 
 /// The `len` elements from `lo` at each of two bases share no byte.
@@ -413,6 +417,9 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn add_range(&mut self, kind: Kind, base: usize, lo: Vec<Expr>, hi: Vec<Expr>) {
+        if kind == Kind::Init && self.merge_init(base, &lo, &hi) {
+            return;
+        }
         self.pointer_fact_ids += 1;
         let id = self.pointer_fact_ids;
         self.pointer_facts.ranges.push(Range {
@@ -421,6 +428,7 @@ impl<'a> TypeChecker<'a> {
             base,
             lo,
             hi,
+            merged: false,
         });
     }
 
@@ -945,6 +953,35 @@ impl<'a> TypeChecker<'a> {
             let at = self.current_statement_span;
             self.pointer_facts.end_init_of_local(var, at, &why);
         }
+    }
+
+    /// The write `p[k] = x` or `*p = x` gives the element a value, so a pointer `p` at the base
+    /// `b` and the offset `j` gets `Init(b, j + k, j + k + 1)`. The compiler trusts the write, as
+    /// it trusts the rest of the `unsafe` block. Inside a call, the facts change after the call,
+    /// so a write there gives no fact.
+    pub(crate) fn pointer_facts_note_a_write(&mut self, place: &Expr) {
+        let (pointer, index) = match place {
+            Expr::IndexAccess(a) => (&*a.base, Some(&*a.index)),
+            Expr::Dereference(d) => (&*d.expr, None),
+            _ => return,
+        };
+        let Expr::Identifier(p) = pointer else {
+            return;
+        };
+        if !self.fact_change_frames.is_empty()
+            || !matches!(self.lookup(p.name.as_ref()), Some((Type::Pointer(..), _)))
+            || index.is_some_and(|k| !crate::hir::prover::is_modelled(k))
+        {
+            return;
+        }
+        let Some(value) = self.pointer_facts.entry_of(p.name.as_ref()) else {
+            return;
+        };
+        let mut lo = value.offset;
+        lo.extend(index.cloned());
+        let mut hi = lo.clone();
+        hi.push(one());
+        self.add_range(Kind::Init, value.base, lo, hi);
     }
 
     /// At the start of a loop: a fact holds in the body only when no pass ends it, so an event
@@ -1701,6 +1738,7 @@ impl<'a> TypeChecker<'a> {
                 base: v.base,
                 lo,
                 hi,
+                merged: false,
             };
             let why = "the `spawn`, whose task can free memory until its `join()`".to_string();
             self.pointer_facts.ended.push(Ended {
@@ -1967,8 +2005,60 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Before a new fact `Init(base, lo, hi)`: whether another `Init` fact of the base takes its
+    /// place. A fact that covers the new range does. So does a fact whose range touches or
+    /// overlaps it: the two become one merged fact, from the lower `lo` to the higher `hi`. Then
+    /// no chain of three facts forms, and a goal needs at most two facts.
+    fn merge_init(&mut self, base: usize, lo: &[Expr], hi: &[Expr]) -> bool {
+        let mut same: Vec<Range> = self
+            .pointer_facts
+            .ranges
+            .iter()
+            .filter(|r| r.kind == Kind::Init && r.base == base)
+            .cloned()
+            .collect();
+        let at_most = |a: &[Expr], b: &[Expr]| le(sum(a, &[]), sum(b, &[]));
+        for r in &same {
+            if self.prove_exact(&Exact::And(vec![at_most(&r.lo, lo), at_most(hi, &r.hi)])) {
+                return true;
+            }
+        }
+        // A merged fact grows in place, so it comes first.
+        same.sort_by_key(|r| !r.merged);
+        for r in same {
+            let new_after = [at_most(&r.lo, lo), at_most(lo, &r.hi), at_most(&r.hi, hi)];
+            let new_before = [at_most(lo, &r.lo), at_most(&r.lo, hi), at_most(hi, &r.hi)];
+            let new_covers = [at_most(lo, &r.lo), at_most(&r.hi, hi)];
+            let (new_lo, new_hi) = if self.prove_exact(&Exact::And(new_after.into())) {
+                (r.lo.clone(), hi.to_vec())
+            } else if self.prove_exact(&Exact::And(new_before.into())) {
+                (lo.to_vec(), r.hi.clone())
+            } else if self.prove_exact(&Exact::And(new_covers.into())) {
+                (lo.to_vec(), hi.to_vec())
+            } else {
+                continue;
+            };
+            self.pointer_fact_ids += 1;
+            let merged = Range {
+                id: self.pointer_fact_ids,
+                kind: Kind::Init,
+                base,
+                lo: new_lo,
+                hi: new_hi,
+                merged: true,
+            };
+            let ranges = &mut self.pointer_facts.ranges;
+            match ranges.iter_mut().find(|f| f.id == r.id && f.merged) {
+                Some(f) => *f = merged,
+                None => ranges.push(merged),
+            }
+            return true;
+        }
+        false
+    }
+
     /// The goal that proves `valid`, `initialized` or `!overlaps` for the pointer values
-    /// `values` and the length `m`, from one fact. `extra` is one more range to use.
+    /// `values` and the length `m`, from one fact or two. `extra` is one more range to use.
     fn pointer_goal(
         &self,
         function: &str,
@@ -1992,10 +2082,31 @@ impl<'a> TypeChecker<'a> {
                     Kind::Init
                 };
                 let v = &values[0];
-                let goals = ranges()
+                let mine: Vec<&Range> = ranges()
                     .filter(|r| r.kind == kind && r.base == v.base)
-                    .map(|r| within(r, v))
                     .collect();
+                let mut goals: Vec<Exact> = mine.iter().map(|r| within(r, v)).collect();
+                // Two facts: the first holds the start, and the second the end. `Init` ranges
+                // can touch. `Valid` ranges must share an element, because two allocations can
+                // sit next to each other.
+                for a in &mine {
+                    for b in mine.iter().filter(|b| b.id != a.id) {
+                        let joins = match kind {
+                            Kind::Init => le(sum(&b.lo, &[]), sum(&a.hi, &[])),
+                            Kind::Valid => le(sum(&b.lo, &[&one()]), sum(&a.hi, &[])),
+                        };
+                        goals.push(Exact::And(vec![
+                            le(sum(&a.lo, &[]), sum(&v.offset, &[])),
+                            le(sum(&a.lo, &[]), sum(&b.lo, &[])),
+                            joins,
+                            le(sum(&v.offset, &[m]), sum(&b.hi, &[])),
+                        ]));
+                    }
+                }
+                // Zero elements hold values. `valid(p, 0)` still says that `p` is not null.
+                if kind == Kind::Init {
+                    goals.push(le(term(m.clone()), term(zero())));
+                }
                 Exact::And(vec![le(term(zero()), term(m.clone())), Exact::Or(goals)])
             }
             _ => {

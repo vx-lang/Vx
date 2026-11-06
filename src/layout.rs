@@ -884,6 +884,8 @@ mod tests {
             name: sym(name),
             generics: Vec::new(),
             fields: fields.into_iter().map(|(n, t)| (sym(n), t)).collect(),
+            invariants: Vec::new(),
+            file: None,
             doc_comment: None,
         }
     }

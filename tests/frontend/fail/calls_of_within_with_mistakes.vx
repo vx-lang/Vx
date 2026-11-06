@@ -1,0 +1,38 @@
+//===- calls_of_within_with_mistakes.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each function here calls `within` wrongly. The time limit is a `Duration`, not a number of
+// seconds. The body is a closure, and a closure body does not allow what needs `unsafe`.
+//
+// RUN: not vxc %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: Error[E3003] at {{.*}}calls_of_within_with_mistakes.vx:[[@LINE+8]]:10: Failed to deduce types for generic function 'within': Expected Duration, got f32
+// CHECK: Error[E5002] at {{.*}}calls_of_within_with_mistakes.vx:[[@LINE+14]]:5: Dereferencing a raw pointer requires an unsafe block
+// CHECK: Error[E3003] at {{.*}}calls_of_within_with_mistakes.vx:[[@LINE+19]]:10: Failed to deduce types for generic function 'within': Expected || -> T, got i64
+
+import core::time;
+import std::sync::wait;
+
+fn a_limit_in_seconds() -> i64 {
+  return within(0.1, || -> i64 {
+    7
+  });
+}
+
+fn a_raw_pointer_in_the_body(p : *const i64) -> i64 {
+  return within(Duration::from_millis(100), || -> i64 {
+    *p
+  });
+}
+
+fn a_body_that_is_not_a_closure() -> i64 {
+  let n : i64 = 7;
+  return within(Duration::from_millis(100), n);
+}
+
+fn main() -> i32 {
+  return 0;
+}

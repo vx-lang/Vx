@@ -746,21 +746,15 @@ impl<'a> TypeChecker<'a> {
                 span,
                 generated,
                 closure_body,
-                within,
                 ..
             }) => {
                 let block_span = *span;
                 let closure_body = *closure_body;
-                let within = *within;
-                // The block body of a closure, and a `within` block, are plain blocks: they
-                // allow nothing more than the code around them.
+                // The block body of a closure is a plain block: it allows nothing more than the
+                // code around it.
                 let written = !*generated && !closure_body;
                 let prev_unsafe = self.in_unsafe_block;
-                self.in_unsafe_block = prev_unsafe || !(closure_body || within);
-                if within {
-                    self.within_depth += 1;
-                    self.within_start_next = true;
-                }
+                self.in_unsafe_block = prev_unsafe || !closure_body;
                 // A block the compiler made is transparent here: what it holds counts for the
                 // written block around it.
                 let prev_written = self.in_written_unsafe_block;
@@ -847,9 +841,6 @@ impl<'a> TypeChecker<'a> {
                     self.in_written_unsafe_block = prev_written;
                 }
                 self.in_unsafe_block = prev_unsafe;
-                if within {
-                    self.within_depth -= 1;
-                }
                 ret_ty
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
@@ -1577,7 +1568,10 @@ impl<'a> TypeChecker<'a> {
                 let outer_borrows = self.borrow.snapshot();
                 // What the body learns, such as from an `assert`, holds only in a call.
                 let outer_facts = self.consteval.constraints.len();
+                let in_within = self.within_bodies.contains(&e.span);
+                self.within_depth += usize::from(in_within);
                 let expr_ret_ty = self.check_expr_type(&mut b);
+                self.within_depth -= usize::from(in_within);
                 self.consteval.constraints.truncate(outer_facts);
                 self.borrow.restore(outer_borrows);
                 self.pointer_facts_leave_body(outer_pointers);
@@ -1638,7 +1632,7 @@ impl<'a> TypeChecker<'a> {
                             None
                         } else if changed_in_body.contains(name.as_ref()) {
                             Some((name.clone(), true))
-                        } else if matches!(ty, Type::Struct(..)) && !self.is_copy(ty) {
+                        } else if is_struct_like(ty) && !self.is_copy(ty) {
                             Some((name.clone(), false))
                         } else {
                             None
@@ -1722,6 +1716,8 @@ impl<'a> TypeChecker<'a> {
                     name: struct_name.clone().into(),
                     generics: vec![],
                     fields: env_fields.clone(),
+                    invariants: Vec::new(),
+                    file: None,
                     doc_comment: None,
                 };
                 self.mono.generated_structs.push(struct_decl);
@@ -1751,9 +1747,16 @@ impl<'a> TypeChecker<'a> {
                         struct_name: Some(struct_name.clone().into()),
                         span: e.span,
                     });
+                    // Only a moved capture that the body changes needs `mut`: a tensor. The
+                    // others are borrowed, or copied and only read. A reference to a tensor is
+                    // `mut` too, because the AST code generator reads it from the environment
+                    // only into the cell of a `let mut`.
+                    let tensor_reference = matches!(cap_ty, Type::Borrow { inner, .. }
+                        if matches!(**inner, Type::Tensor(..)));
                     body_stmts.push(Statement::LetDecl(LetDeclStmt {
                         name: cap_name.clone(),
-                        is_mut: !borrows.contains_key(cap_name),
+                        is_mut: !borrows.contains_key(cap_name)
+                            && (changed_in_body.contains(cap_name.as_ref()) || tensor_reference),
                         ty_ann: Some(cap_ty.clone()),
                         expr: env_access,
                         span: e.span,
@@ -1876,5 +1879,14 @@ fn unsuffixed_number_tail(body: &mut [Statement]) -> Option<&mut NumberExpr> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+/// A struct, or an instance of a generic struct such as `Receiver<i64>`.
+fn is_struct_like(ty: &Type) -> bool {
+    match ty {
+        Type::Struct(..) => true,
+        Type::GenericInstance(base, _) => matches!(**base, Type::Struct(..)),
+        _ => false,
     }
 }

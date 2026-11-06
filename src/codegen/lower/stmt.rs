@@ -35,6 +35,17 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
             super::expr::emit_func_return(gen, block, None)?;
             return Ok(None);
         };
+        // `return unsafe { ..; return x; }`, as in the call function of a closure: every path in
+        // the block returns, so the block has no value of its own to return.
+        if crate::syntax::expr::diverges_on_every_path(expr) {
+            let (_, _, block) = gen.generate_expr(expr, block)?;
+            if block.terminator().is_none() {
+                block.append_operation(
+                    OperationBuilder::new("llvm.unreachable", gen.loc()).build()?,
+                );
+            }
+            return Ok(None);
+        }
         gen.expected_type = gen.current_return_type;
         // Offer the caller's buffer to the expression being returned, so a tensor operator builds
         // the answer there instead of in a buffer of its own that we then copy out of. Only an
@@ -308,6 +319,19 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
                 gen.env.insert(name.to_string().into(), (alloca_val, ty));
                 gen.allocs.insert(name.to_string());
             } else {
+                // `let mut r = &t` gets `t`'s cell. `r` gets a cell of its own that holds the
+                // same descriptor, so `r = &u` later does not change `t`.
+                let mut ty = ty;
+                let tensor_reference = matches!(
+                    ty_ann.clone().or_else(|| gen.infer_ast_type(expr)),
+                    Some(syntax::Type::Borrow { inner, .. })
+                        if matches!(*inner, syntax::Type::Tensor(..))
+                );
+                let val = if tensor_reference {
+                    crate::codegen::lower::expr::load_tensor_slot(gen, &block, val, &mut ty)?
+                } else {
+                    val
+                };
                 let memref_ty = format!("memref<{}>", ty);
                 let parsed_memref_ty = Type::parse(gen.context, &memref_ty).ok_or_else(|| {
                     crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
@@ -327,6 +351,42 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
                 gen.allocs.insert(name.to_string());
             }
         } else {
+            // A reference to a tensor is a cell that holds the descriptor. `let r = s.field` or a
+            // closure's capture gives the tensor itself, so `r` gets a cell of its own. A call
+            // passes that cell to a `&Tensor` parameter.
+            let tensor_reference = matches!(
+                ty_ann.clone().or_else(|| gen.infer_ast_type(expr)),
+                Some(syntax::Type::Borrow { inner, .. })
+                    if matches!(*inner, syntax::Type::Tensor(..))
+            );
+            let ty_str = ty.to_string();
+            let (val, ty) = if tensor_reference
+                && ty_str.starts_with("memref<")
+                && !ty_str.starts_with("memref<memref<")
+            {
+                let cell_ty = Type::parse(gen.context, &format!("memref<{ty_str}>"))
+                    .ok_or_else(|| LowerError::ParseType(format!("memref<{ty_str}>")))?;
+                let cell: Value = block
+                    .append_operation(
+                        OperationBuilder::new("memref.alloca", gen.loc())
+                            .add_attributes(&[(
+                                Identifier::new(gen.context, "operandSegmentSizes"),
+                                DenseI32ArrayAttribute::new(gen.context, &[0, 0]).into(),
+                            )])
+                            .add_results(&[cell_ty])
+                            .build()?,
+                    )
+                    .result(0)?
+                    .into();
+                block.append_operation(
+                    OperationBuilder::new("memref.store", gen.loc())
+                        .add_operands(&[val, cell])
+                        .build()?,
+                );
+                (cell, cell_ty)
+            } else {
+                (val, ty)
+            };
             gen.env.insert(name.to_string().into(), (val, ty));
             // A value, not a stack slot, even if an outer `let mut` of this name had one.
             gen.allocs.remove(name.as_ref());
@@ -833,8 +893,27 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                     // slot from the annotation and types its literal to match (#240), so a later
                     // assignment of a default-`i32` literal to a wider slot (`let mut r: i64; r = 5`)
                     // must widen; `coerce_type` also still handles the `index`↔`i32` loop case.
-                    if rhs_ty != inner_ty {
-                        store_val = gen.coerce_type(&block, rhs_val, rhs_ty, inner_ty)?;
+                    // `r = &u` on a `let mut` reference gives `u`'s cell. `r`'s cell takes the
+                    // descriptor that it holds.
+                    let mut rhs_ty = rhs_ty;
+                    if matches!(
+                        gen.ast_env.get(name),
+                        Some(syntax::Type::Borrow { inner, .. })
+                            if matches!(**inner, syntax::Type::Tensor(..))
+                    ) {
+                        store_val = crate::codegen::lower::expr::load_tensor_slot(
+                            gen,
+                            &block,
+                            store_val,
+                            &mut rhs_ty,
+                        )?;
+                    }
+                    if rhs_ty != inner_ty && gen.is_memref(&rhs_ty) && gen.is_memref(&inner_ty) {
+                        store_val = crate::codegen::lower::cast_memref(
+                            gen, &block, store_val, rhs_ty, inner_ty,
+                        )?;
+                    } else if rhs_ty != inner_ty {
+                        store_val = gen.coerce_type(&block, store_val, rhs_ty, inner_ty)?;
                     }
 
                     let store_op = OperationBuilder::new("memref.store", gen.loc())
@@ -842,8 +921,14 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                         .build()?;
                     block.append_operation(store_op);
                 } else if gen.allocs.contains(name.as_ref()) {
+                    // `last = &x` into a slot that holds a bare pointer gives `x`'s memref.
+                    let store_val = if rhs_ty != mem_ty {
+                        gen.coerce_type(&block, rhs_val, rhs_ty, mem_ty)?
+                    } else {
+                        rhs_val
+                    };
                     let store_op = OperationBuilder::new("llvm.store", gen.loc())
-                        .add_operands(&[rhs_val, mem_val])
+                        .add_operands(&[store_val, mem_val])
                         .build()?;
                     block.append_operation(store_op);
                 } else {
