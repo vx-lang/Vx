@@ -1748,11 +1748,15 @@ impl<'a> TypeChecker<'a> {
                         span: e.span,
                     });
                     // Only a moved capture that the body changes needs `mut`: a tensor. The
-                    // others are borrowed, or copied and only read.
+                    // others are borrowed, or copied and only read. A reference to a tensor is
+                    // `mut` too, because the AST code generator reads it from the environment
+                    // only into the cell of a `let mut`.
+                    let tensor_reference = matches!(cap_ty, Type::Borrow { inner, .. }
+                        if matches!(**inner, Type::Tensor(..)));
                     body_stmts.push(Statement::LetDecl(LetDeclStmt {
                         name: cap_name.clone(),
                         is_mut: !borrows.contains_key(cap_name)
-                            && changed_in_body.contains(cap_name.as_ref()),
+                            && (changed_in_body.contains(cap_name.as_ref()) || tensor_reference),
                         ty_ann: Some(cap_ty.clone()),
                         expr: env_access,
                         span: e.span,
