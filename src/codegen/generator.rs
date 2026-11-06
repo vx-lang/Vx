@@ -868,6 +868,69 @@ impl<'c> MeliorGenerator<'c> {
             return Ok(ptr);
         }
 
+        // The reverse: `&y` of a variable that is not `mut` is a bare `!llvm.ptr`, given where a
+        // `memref<i32>` reference is kept, as in `let mut r = &x; r = &y`. The memref is a rank-0
+        // descriptor whose two pointers are `val` and whose offset is 0.
+        if from_ty == self.ptr_ty
+            && to_str.starts_with("memref<")
+            && !to_str.contains('x')
+            && !to_str.starts_with("memref<memref<")
+        {
+            use melior::ir::operation::OperationBuilder;
+            let desc_ty =
+                Type::parse(self.context, "!llvm.struct<(ptr, ptr, i64)>").ok_or_else(|| {
+                    crate::codegen::lower::LowerError::from("a rank-0 descriptor".to_string())
+                })?;
+            let mut desc: Value = block
+                .append_operation(
+                    OperationBuilder::new("llvm.mlir.undef", self.loc())
+                        .add_results(&[desc_ty])
+                        .build()?,
+                )
+                .result(0)?
+                .into();
+            let zero: Value = block
+                .append_operation(
+                    OperationBuilder::new("llvm.mlir.constant", self.loc())
+                        .add_attributes(&[(
+                            melior::ir::Identifier::new(self.context, "value"),
+                            melior::ir::attribute::IntegerAttribute::new(self.i64_ty, 0).into(),
+                        )])
+                        .add_results(&[self.i64_ty])
+                        .build()?,
+                )
+                .result(0)?
+                .into();
+            for (pos, part) in [(0, val), (1, val), (2, zero)] {
+                desc = block
+                    .append_operation(
+                        OperationBuilder::new("llvm.insertvalue", self.loc())
+                            .add_operands(&[desc, part])
+                            .add_attributes(&[(
+                                melior::ir::Identifier::new(self.context, "position"),
+                                melior::ir::attribute::DenseI64ArrayAttribute::new(
+                                    self.context,
+                                    &[pos],
+                                )
+                                .into(),
+                            )])
+                            .add_results(&[desc_ty])
+                            .build()?,
+                    )
+                    .result(0)?
+                    .into();
+            }
+            return Ok(block
+                .append_operation(
+                    OperationBuilder::new("builtin.unrealized_conversion_cast", self.loc())
+                        .add_operands(&[desc])
+                        .add_results(&[to_ty])
+                        .build()?,
+                )
+                .result(0)?
+                .into());
+        }
+
         if cfg!(debug_assertions) {
             println!(
                 "Warning: Falling back to bitcast from {} to {}\nBacktrace:\n{:?}",
