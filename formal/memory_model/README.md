@@ -389,8 +389,11 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
 
 ## Limits
 
-- A test may have at most one barrier in each thread. The model matches barriers by scope, not
-  by count.
+- The model matches barriers by scope, not by count. So a thread may run two barriers of one
+  scope only when no other thread is in its group of that scope
+  (`two_barriers_in_a_block_of_one_thread.litmus`). A test with two such barriers in two threads
+  can get a wrong answer.
+- A barrier of system scope has no effect (`barrier_of_system_scope_orders_nothing.litmus`).
 - The rule for sequentially consistent atomics ignores scopes.
 - herd7 checks each test completely, but only the tests. memalloy checks every execution up to 5
   or 6 events.

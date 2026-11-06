@@ -20,7 +20,7 @@ structure SData (n : Nat) extends Data n where
   barrier : Fin n → Bool
 
 /-- `groups` gives the subgroup, the block and the device of each thread. A thread that is not in
-the list gets groups of its own. -/
+the list gets groups of its own. All the threads are in one system. -/
 def SData.ofLists (n : Nat) (kind : List Kind) (order : List Order) (loc thread : List Nat)
     (po rf co rmw : List (Nat × Nat)) (scope : List Scope) (groups : List (Nat × Nat × Nat))
     (barrier : List Bool) : SData n where
@@ -31,6 +31,7 @@ def SData.ofLists (n : Nat) (kind : List Kind) (order : List Order) (loc thread 
     | some (g, _, _), .subgroup => g
     | some (_, g, _), .block => g
     | some (_, _, g), .device => g
+    | _, .system => 0
     | _, _ => 1000000 + t
   barrier i := barrier.getD i.val false
 

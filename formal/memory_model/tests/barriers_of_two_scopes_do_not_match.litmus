@@ -1,0 +1,10 @@
+LISA barriers_of_two_scopes_do_not_match
+(* Two threads of one block run barriers of different scopes. A barrier of block scope does not
+   match a barrier of device scope, so the read races with the write.
+   Expect: sometimes, a data race. *)
+{ x = 0; }
+ P0               | P1                ;
+ w[plain] x 1     | f[barrier,device] ;
+ f[barrier,block] | r[plain] r0 x     ;
+scopes: (device (block P0 P1))
+exists (1:r0 = 0)
