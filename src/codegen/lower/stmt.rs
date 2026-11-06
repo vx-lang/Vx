@@ -308,6 +308,19 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
                 gen.env.insert(name.to_string().into(), (alloca_val, ty));
                 gen.allocs.insert(name.to_string());
             } else {
+                // `let mut r = &t` gets `t`'s cell. `r` gets a cell of its own that holds the
+                // same descriptor, so `r = &u` later does not change `t`.
+                let mut ty = ty;
+                let tensor_reference = matches!(
+                    ty_ann.clone().or_else(|| gen.infer_ast_type(expr)),
+                    Some(syntax::Type::Borrow { inner, .. })
+                        if matches!(*inner, syntax::Type::Tensor(..))
+                );
+                let val = if tensor_reference {
+                    crate::codegen::lower::expr::load_tensor_slot(gen, &block, val, &mut ty)?
+                } else {
+                    val
+                };
                 let memref_ty = format!("memref<{}>", ty);
                 let parsed_memref_ty = Type::parse(gen.context, &memref_ty).ok_or_else(|| {
                     crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
@@ -833,8 +846,27 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                     // slot from the annotation and types its literal to match (#240), so a later
                     // assignment of a default-`i32` literal to a wider slot (`let mut r: i64; r = 5`)
                     // must widen; `coerce_type` also still handles the `index`↔`i32` loop case.
-                    if rhs_ty != inner_ty {
-                        store_val = gen.coerce_type(&block, rhs_val, rhs_ty, inner_ty)?;
+                    // `r = &u` on a `let mut` reference gives `u`'s cell. `r`'s cell takes the
+                    // descriptor that it holds.
+                    let mut rhs_ty = rhs_ty;
+                    if matches!(
+                        gen.ast_env.get(name),
+                        Some(syntax::Type::Borrow { inner, .. })
+                            if matches!(**inner, syntax::Type::Tensor(..))
+                    ) {
+                        store_val = crate::codegen::lower::expr::load_tensor_slot(
+                            gen,
+                            &block,
+                            store_val,
+                            &mut rhs_ty,
+                        )?;
+                    }
+                    if rhs_ty != inner_ty && gen.is_memref(&rhs_ty) && gen.is_memref(&inner_ty) {
+                        store_val = crate::codegen::lower::cast_memref(
+                            gen, &block, store_val, rhs_ty, inner_ty,
+                        )?;
+                    } else if rhs_ty != inner_ty {
+                        store_val = gen.coerce_type(&block, store_val, rhs_ty, inner_ty)?;
                     }
 
                     let store_op = OperationBuilder::new("memref.store", gen.loc())

@@ -2661,7 +2661,7 @@ fn lower_tasks_block_with_exits<'c>(
                             .result(0)?
                             .into();
                         let ty = gen.current_return_type.expect("a slot");
-                        Some(tensor_from_field(gen, &exit_b, loaded, stored, ty)?)
+                        Some(tensor_from_field(gen, &exit_b, loaded, stored, ty)?.0)
                     }
                     None => None,
                 };
@@ -3080,8 +3080,9 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
                             .unwrap();
                         let load_ref = block.append_operation(load_op);
                         let loaded = load_ref.result(0)?.into();
-                        let val = tensor_from_field(gen, &block, loaded, stored_ty, field_ty)?;
-                        return Ok((val, field_ty, block));
+                        let (val, val_ty) =
+                            tensor_from_field(gen, &block, loaded, stored_ty, field_ty)?;
+                        return Ok((val, val_ty, block));
                     } else {
                         let pos_attr = melior::ir::attribute::DenseI64ArrayAttribute::new(
                             gen.context,
@@ -3100,8 +3101,9 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
                             .unwrap();
                         let ext_ref = block.append_operation(ext_op);
                         let extracted = ext_ref.result(0)?.into();
-                        let val = tensor_from_field(gen, &block, extracted, stored_ty, field_ty)?;
-                        return Ok((val, field_ty, block));
+                        let (val, val_ty) =
+                            tensor_from_field(gen, &block, extracted, stored_ty, field_ty)?;
+                        return Ok((val, val_ty, block));
                     }
                 }
             }
@@ -3558,6 +3560,22 @@ pub(crate) fn load_tensor_slot<'c>(
     let loaded: Value = block.append_operation(load_op).result(0)?.into();
     *ty = inner_ty;
     Ok(loaded)
+}
+
+/// Give `ty` the type of the descriptor that it holds when it is a cell, `memref<memref<A>>`
+/// to `memref<A>`. Return whether it was a cell.
+fn load_tensor_slot_ty<'c>(
+    gen: &MeliorGenerator<'c>,
+    ty: &mut Type<'c>,
+) -> Result<bool, LowerError> {
+    let ty_str = ty.to_string();
+    if !ty_str.starts_with("memref<memref<") {
+        return Ok(false);
+    }
+    let inner_str = &ty_str["memref<".len()..ty_str.len() - 1];
+    *ty = Type::parse(gen.context, inner_str)
+        .ok_or_else(|| LowerError::ParseType(inner_str.to_string()))?;
+    Ok(true)
 }
 
 /// A reference to a tensor, `memref<memref<A>>`, passed where `memref<memref<B>>` is expected.
@@ -4322,9 +4340,17 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 let prev_expected = gen.expected_type;
                 gen.expected_type = Some(field_ty);
                 // A name that holds a reference to a tensor is passed on as that reference.
-                // Reading the name would give the tensor itself.
+                // Reading the name would give the tensor itself. A `let mut` of a reference keeps
+                // its own cell, and that cell is the reference.
                 let reference = match arg {
-                    Expr::Identifier(id) if !gen.allocs.contains(id.name.as_ref()) => {
+                    Expr::Identifier(id)
+                        if !gen.allocs.contains(id.name.as_ref())
+                            || matches!(
+                                gen.ast_env.get(&id.name),
+                                Some(syntax::Type::Borrow { inner, .. })
+                                    if matches!(**inner, syntax::Type::Tensor(..))
+                            ) =>
+                    {
                         gen.env.get(&id.name).copied().filter(|(_, ty)| {
                             ty.to_string().starts_with("memref<memref<")
                                 && field_ty.to_string().starts_with("memref<memref<")
@@ -6334,8 +6360,12 @@ pub(crate) fn tensor_into_field<'c>(
     field_ty: Type<'c>,
     rank: usize,
 ) -> Result<Value<'c, 'c>, LowerError> {
-    let mut val = val;
     let mut val_ty = val_ty;
+    // A reference to a tensor is a cell that holds the descriptor. The field holds the
+    // descriptor itself.
+    let mut val = load_tensor_slot(gen, block, val, &mut val_ty)?;
+    let mut field_ty = field_ty;
+    load_tensor_slot_ty(gen, &mut field_ty)?;
     let val_str = val_ty.to_string();
     if val_str.contains("strided<") {
         let plain = contiguous_view_as_plain(&val_str)
@@ -6379,15 +6409,19 @@ fn tensor_from_field<'c>(
     val: Value<'c, 'c>,
     stored_ty: Type<'c>,
     field_ty: Type<'c>,
-) -> Result<Value<'c, 'c>, LowerError> {
+) -> Result<(Value<'c, 'c>, Type<'c>), LowerError> {
     if stored_ty == field_ty {
-        return Ok(val);
+        return Ok((val, field_ty));
     }
+    // A reference to a tensor is read back as the tensor. A `let` of it, or a call, makes the
+    // cell that a reference is.
+    let mut tensor_ty = field_ty;
+    load_tensor_slot_ty(gen, &mut tensor_ty)?;
     let cast = OperationBuilder::new("builtin.unrealized_conversion_cast", gen.loc())
         .add_operands(&[val])
-        .add_results(&[field_ty])
+        .add_results(&[tensor_ty])
         .build()?;
-    Ok(block.append_operation(cast).result(0)?.into())
+    Ok((block.append_operation(cast).result(0)?.into(), tensor_ty))
 }
 
 /// `-t` on a tensor: a new tensor of each element negated, by a `linalg.generic`. A float uses
