@@ -1164,15 +1164,27 @@ impl<'a> TypeChecker<'a> {
             Expr::Range(r) => Some((self.fold_raw_extent(&r.start), self.fold_raw_extent(&r.end))),
             _ => None,
         };
-        let first = range.as_ref().filter(|(lo, _)| usable(lo)).map(|(lo, _)| {
-            Expr::RelationalOp(RelationalOpExpr {
+        let mut first = Vec::new();
+        if let Some((lo, hi)) = range.as_ref().filter(|(lo, _)| usable(lo)) {
+            first.push(Expr::RelationalOp(RelationalOpExpr {
                 lhs: Box::new(iter_expr.clone()),
                 op: RelationalOp::Eq,
                 rhs: Box::new(lo.clone()),
                 span: Span::default(),
                 operand_ty: None,
-            })
-        });
+            }));
+            // The body runs only when `a < b`, and when `a > b` nothing uses this proof. So it
+            // can assume `a <= b`, and `invariant i <= n` needs no `requires 0 <= n`.
+            if usable(hi) {
+                first.push(Expr::RelationalOp(RelationalOpExpr {
+                    lhs: Box::new(lo.clone()),
+                    op: RelationalOp::Le,
+                    rhs: Box::new(hi.clone()),
+                    span: Span::default(),
+                    operand_ty: None,
+                }));
+            }
+        }
         self.prove_invariants_at_the_start(invariants, first);
         let next = range.as_ref().map(|_| {
             Expr::BinaryOp(syntax::expr::BinaryOpExpr {
@@ -1375,10 +1387,10 @@ impl<'a> TypeChecker<'a> {
         );
     }
 
-    /// Proves each invariant on entry to a loop, from the facts before it. `first` is a fact
-    /// about the variable of a `for` loop in the first pass. An invariant can use the
-    /// invariants before it.
-    fn prove_invariants_at_the_start(&mut self, invariants: &[Expr], first: Option<Expr>) {
+    /// Proves each invariant on entry to a loop, from the facts before it. `first` holds facts
+    /// about the range of a `for` loop in the first pass. An invariant can use the invariants
+    /// before it.
+    fn prove_invariants_at_the_start(&mut self, invariants: &[Expr], first: Vec<Expr>) {
         let facts_before = self.consteval.constraints.len();
         self.consteval.constraints.extend(first);
         for inv in invariants {
@@ -1483,7 +1495,7 @@ impl<'a> TypeChecker<'a> {
         self.push_releasing_scope();
 
         let prev_constraints_len = self.consteval.constraints.len();
-        self.prove_invariants_at_the_start(invariants, None);
+        self.prove_invariants_at_the_start(invariants, Vec::new());
         self.assume_loop_invariants(invariants, body);
 
         // See `check_for_loop_stmt`: the single pass the checker makes over the body is not

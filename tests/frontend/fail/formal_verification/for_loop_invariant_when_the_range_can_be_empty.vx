@@ -1,0 +1,41 @@
+//===- for_loop_invariant_when_the_range_can_be_empty.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// When `for i in a..b` starts, the checker assumes `a <= b`, and not `a < b`. A range with
+// `a == b` runs no pass. Also, the checker knows `a <= b` only in that proof, so the code after
+// the loop does not know it.
+
+fn needs_a_count(n : i64) -> i64
+requires 0i64 <= n
+{
+  return n;
+}
+
+fn the_range_can_be_empty(n : i64) -> i64 {
+  let mut total = 0i64;
+  // CHECK: Error[E8008] at {{.*}}.vx:[[@LINE+1]]:35: this loop invariant `0 < n` may not hold when the loop starts: the compiler cannot prove it from what it knows before the loop{{$}}
+  for i in 0i64..n invariant 0i64 < n {
+    total = total + i;
+  }
+  return total;
+}
+
+fn not_known_after_the_loop(n : i64) -> i64 {
+  let mut total = 0i64;
+  for i in 0i64..n invariant i <= n {
+    total = total + 1i64;
+  }
+  // CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+1]]:18: this call to 'needs_a_count' may not meet its precondition `0 <= n`: the compiler cannot prove it from what is known here{{$}}
+  return total + needs_a_count(n);
+}
+
+fn main() -> i32 {
+  println!("{} {}", the_range_can_be_empty(3i64), not_known_after_the_loop(3i64));
+  return 0;
+}
