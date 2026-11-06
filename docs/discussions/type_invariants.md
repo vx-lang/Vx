@@ -103,18 +103,22 @@ with an invariant. When Vx gets these levels, the rule becomes a rule about the 
 
 A type with an invariant can also make a field private. Then other modules cannot read it either.
 
-**Later: `const` fields.** After the struct literal, no code writes a `const` field. This includes
-code in the module. So `const` is the narrowest write level: `const`, then the module, `pkg`, `ws`
-and `pub`. For an invariant, a `const` field has two effects:
+**Later: `final` fields.** After the struct literal, no code writes a `final` field. This includes
+code in the module. So `final` is the narrowest write level: `final`, then the module, `pkg`, `ws`
+and `pub`. For an invariant, a `final` field has two effects:
 
-- A clause that names only `const` fields needs a proof only at the struct literal. Section 4 asks
+- A clause that names only `final` fields needs a proof only at the struct literal. Section 4 asks
   for no other proof of it.
-- A `const` field stops a write of the field, not a write of the whole value.
+- A `final` field stops a write of the field, not a write of the whole value.
   `*r = FixedBuf::new(8)` through a `&mut` is still legal. So a call that gets a `&mut` to the value
-  still ends the facts about a `const` field.
+  still ends the facts about a `final` field.
+
+A `final` field in Java has this meaning, and Vx has no inheritance for the word to clash with. Vx
+does not use `const`, because `const` already names a value known at compile time, as in
+`const N : i32`. `readonly` reads like `pub get`.
 
 In C++, a class with a `const` member has no copy assignment. So C++ also stops a write of the
-whole value. `Vec` cannot use `const`, because `push` gives `data` and `capacity` new values. A
+whole value. `Vec` cannot use `final`, because `push` gives `data` and `capacity` new values. A
 fixed buffer can:
 
 <!-- vx-doctest: skip (proposed syntax) -->
@@ -124,8 +128,8 @@ struct FixedBuf<T>
 invariant valid(self.data, self.cap as i64)
 invariant 0i32 <= self.len && self.len <= self.cap
 {
-  const data : *mut T,
-  const cap : i32,
+  final data : *mut T,
+  final cap : i32,
   len : i32,
 }
 ```
@@ -154,6 +158,18 @@ A `SharedCell` field is the exception, and a type with such a field cannot have 
 In `VecIntoIter::drop`, the body takes the elements out of `self.vec` and breaks
 `initialized(self.data, self.len)`. Then it sets `self.vec.len` to 0, and the invariant holds
 again at the `return`.
+
+**A helper that gets a broken value.** A function of the module can state the clause
+`without invariant`. Then the rules of this section change for it and for its callers:
+
+- When its body starts, it does not assume the invariant. At a `return`, it does not give it back.
+- Before a call to it, the caller proves nothing about the invariant.
+- After a call to it, the caller does not get the invariant for the values that the call can
+  change. The caller must still give the invariant back at its own `return`.
+
+Only code in the module can call such a function, so code outside the module never sees a broken
+value. Vx has no functions private to a module yet, because `pub fn` only exports a symbol. So
+the clause itself makes this rule: a call from another module gets an error.
 
 ## 5. Facts from an invariant
 
@@ -193,15 +209,10 @@ So `as_mut_ptr` proves its `ensures` with no `assume`. Outside the module, safe 
 
 ## 8. Open questions
 
-1. Section 4 needs the invariant before each call. So a helper function of the module cannot get a
-   value whose invariant is broken. The helper can take the fields one by one instead. A later
-   version can add a clause that says that a function does not assume the invariant.
 1. A type with a `SharedCell` field cannot have an invariant in v1.
 1. A write level wider than the module, such as `pkg`, for a field of a type with an invariant. It
    is sound, because each function that writes a field must give the invariant back. But then the
    invariant can be false in more than one file.
-1. The keyword for a `const` field. In Vx, `const` already names a value known at compile time, as
-   in `const N : i32` and in a `const` generic parameter.
 1. An invariant about memory behind a pointer. `initialized(self.data, self.len)` is a fact about
    the buffer, not about a field, so the rule of section 3 does not keep it. It holds because safe
    code cannot write through a `*mut T`, and unsafe code must keep the invariant. This is enough
@@ -214,7 +225,7 @@ So `as_mut_ptr` proves its `ensures` with no `assume`. Outside the module, safe 
 
 1. The syntax, and the rule of section 3. Then `Vec` states its invariant, and that fixes #2840.
    The contracts page of the book gets a section on type invariants.
-1. The proofs of section 4.
+1. The proofs of section 4, and the clause `without invariant`.
 1. The facts of section 5: first the prover's facts, then the pointer facts. Remove the `assume`s of
    `Vec::as_mut_ptr`.
 1. The invariants of `VecIter`, `VecIterMut` and `VecIntoIter`.

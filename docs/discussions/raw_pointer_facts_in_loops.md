@@ -78,6 +78,11 @@ this note, both functions compile.
 
 The pointer clauses in this note use the same three proofs.
 
+This note changes the proof when the loop starts. A `for i in a..b` loop also assumes `a <= b`
+there. The body runs only when `a < b`. Section 7 of this note gives facts after the loop only when
+the prover proves `a <= b`. So no fact depends on this proof when `a > b`. Then
+`for i in 0..n invariant i <= n` needs no `requires 0 <= n`.
+
 ## 3. An assignment keeps the pointer facts about the old value
 
 Today an assignment `i = i + 1i64` drops each pointer fact whose expressions name `i` (section 3).
@@ -122,8 +127,18 @@ The ranges of two `Init` facts can touch. The ranges of two `Valid` facts must s
 Two allocations can sit next to each other in memory, so two `Valid` ranges that only touch can be
 in two allocations. Then an `offset` from one into the other has undefined behavior.
 
-The checker tries each pair of facts of the base. It does not join three or more facts. A loop
-needs one pair: the invariant `Init(b, 0, i)` and the write `Init(b, i, i + 1)`.
+The checker tries each pair of facts of the base. A loop needs one pair: the invariant
+`Init(b, 0, i)` and the write `Init(b, i, i + 1)`.
+
+A chain of three or more `Init` facts does not form, because the checker merges `Init` facts when
+it adds one. For `Init(b, lo1, hi1)` and `Init(b, lo2, hi2)`, in either order, the prover must
+show `lo1 <= lo2 && lo2 <= hi1`. Then one fact takes the place of the two:
+
+- `Init(b, lo1, hi2)`, when the prover shows `hi1 <= hi2`
+- `Init(b, lo1, hi1)`, when the prover shows `hi2 <= hi1`
+
+So two writes and an invariant give one fact, and the search for a pair at a goal stays enough.
+`Valid` facts do not merge, because two `Valid` ranges that only touch can be in two allocations.
 
 Also, `initialized(p, m)` holds with no fact when the prover proves `m == 0`. Zero elements hold
 values. A negative `m` still needs a fact, as today. `fill_then_sum` needs this rule when its loop starts. `valid(p, 0)` still needs a fact,
@@ -181,10 +196,21 @@ A `break` at which an invariant is false is not an error. A `break` ends the loo
 after it. For example, a loop that searches can make an invariant false on the pass that finds the
 value, and then exit with `break`.
 
+Such a `break` only loses the fact after the loop. The error then comes later, at a goal that
+needed the fact. So the checker keeps each invariant that a `break` lost. When a goal fails, the
+checker tries it again with each of them. If one proves the goal, the error gets a note: "the
+invariant at line N would prove this, but it does not hold at the `break` at line M". Section 6 of
+this note adds a note to E8008 in the same way.
+
 At a `break` in `for i in a..b`, `i` is less than `b`, and after the loop `i` has no name. So the
-value of `i` at the exit gets a new name, `$exit`. When the prover proves `a <= b`, each invariant
-that holds at each exit gives its facts with `$exit` in place of `i`. The prover also knows
-`a <= $exit && $exit <= b`. Without a `break`, `$exit == b`.
+value of `i` at the exit gets a new name, `$exit_N`, numbered as `$old_N` is. Each loop gets its own
+name, so the facts of two loops over `i` do not meet. When the prover proves `a <= b`, each
+invariant that holds at each exit gives its facts with `$exit_N` in place of `i`. The prover also
+knows `a <= $exit_N && $exit_N <= b`. Without a `break`, `$exit_N == b`.
+
+In a nested loop, each pass of the outer loop has its own exit from the inner loop. So the proofs
+of section 2 for the outer loop give the `$exit_N` of the inner loop a new name, as they do for
+each variable of the body.
 
 This is the same for the prover's facts and the pointer facts. In `fill_then_sum`, `valid(p, n)`
 gives `0 <= n` (section 4), so the loop gives `initialized(p, n)` after it. The call `sum(p, n)`
@@ -196,18 +222,17 @@ All of this happens inside one body check. It reads no fact of another body.
 
 ## 9. Open questions
 
-1. Section 5 of this note tries pairs of facts only. A chain of three facts, as after two writes and
-   an invariant, still fails. A loop does not need more than one pair.
 1. Section 6 of this note gives the new base of an assigned pointer the memory of its base when the
    loop starts. A loop that makes the pointer point into a local variable gets E8009. A later
    version can let the invariant name the memory.
 
 ## 10. The work, in order
 
+1. Section 2 of this note: the proof when a `for` loop starts assumes `a <= b`.
 1. Section 3 of this note: the pointer facts keep the old value at an assignment.
 1. #2830: a write gives an `Init` fact.
-1. #2831: two facts prove a clause, and `initialized(p, 0)` needs no fact.
+1. #2831: two facts prove a clause, `Init` facts merge, and `initialized(p, 0)` needs no fact.
 1. #2837: pointer clauses in an invariant.
-1. #1358: the facts after a loop.
+1. #1358: the facts after a loop, and the note for a `break` that loses one.
 
 Each step adds fixtures that pass and fail, as in section 13.
