@@ -881,35 +881,12 @@ impl<'a> TypeChecker<'a> {
                 return Type::Struct("void".into(), None);
             }
         }
-        // The first statement of a `within(limit) { .. }` block (F6a): the limit is a number of
-        // seconds, and the block gets an owner whose drop ends its deadline.
+        // A closure literal written as the `body` of `within` runs within its time limit.
         if let Expr::FunctionCall(fc) = expr {
-            // A call that the program wrote itself is an unknown function, as it is without
-            // this check.
-            if fc.name.as_ref() == crate::syntax::stmt::WITHIN_START
-                && std::mem::take(&mut self.within_start_next)
-            {
-                assert_eq!(fc.args.len(), 1, "the parser gives `within` one limit");
-                let span = fc.args[0].span();
-                let ty = self.check_expr_expecting(
-                    &mut fc.args[0],
-                    Some(Type::Scalar(ElementType::F64)),
-                    true,
-                );
-                if ty != Type::Scalar(ElementType::F64) && !self.speculating {
-                    self.errors.error_with_code(
-                        crate::diagnostic::DiagnosticCode::E3003,
-                        format!(
-                            "the time limit of `within` is a number of seconds, an `f64`, but it \
-                             is `{ty}`"
-                        ),
-                        Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
-                    );
+            if fc.name.rsplit("::").next() == Some("within") && fc.args.len() == 2 {
+                if let Expr::Closure(body) = &fc.args[1] {
+                    self.within_bodies.insert(body.span);
                 }
-                if !self.speculating {
-                    self.drops_note_within();
-                }
-                return Type::Struct("void".into(), None);
             }
         }
         // `core::mem::needs_drop<T>()` answers whether dropping a `T` runs anything, which only

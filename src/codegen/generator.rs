@@ -494,7 +494,8 @@ impl<'c> MeliorGenerator<'c> {
             .get(call_fn_name.as_str())
             .cloned()
             .ok_or_else(|| format!("closure call fn {} not found", call_fn_name))?;
-        let fn_ty = melior::ir::r#type::FunctionType::new(self.context, &arg_types, &[ret_ty]);
+        let (ret, args) = self.abi_signature(ret_ty, &arg_types);
+        let fn_ty = melior::ir::r#type::FunctionType::new(self.context, &args, ret.as_slice());
         let const_op = melior::ir::operation::OperationBuilder::new("func.constant", self.loc())
             .add_attributes(&[(
                 melior::ir::Identifier::new(self.context, "value"),
