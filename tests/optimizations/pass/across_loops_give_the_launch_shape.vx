@@ -296,3 +296,9 @@ pub fn four_blocks(o : &mut Tensor<f32, [4], Memory::HBM>) -> void {
   }
   return;
 }
+
+// `--implicit-check-not` does not look past the first `PAYLOAD-DAG` match, so these lines
+// check the end of the output.
+// PAYLOAD-NOT: W1033
+// PAYLOAD-NOT: Warning in
+// PAYLOAD-NOT: Warning:

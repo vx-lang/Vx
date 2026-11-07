@@ -49,3 +49,7 @@ fn main() -> i32 {
   println!("{} {} {} {}", out[0], out[1], out[2], out[3]);
   return 0;
 }
+
+// The 2 errors above are the only ones. `--implicit-check-not` does not look past the first
+// `CHECK-DAG` match, so this line counts them.
+// CHECK: {{^}}Semantic check failed on {{.*}}: 2 error(s) emitted
