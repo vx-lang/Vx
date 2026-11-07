@@ -1938,7 +1938,8 @@ impl<'a> TypeChecker<'a> {
     /// out too, in order, into a `let` that is dropped after the statement only when its
     /// value was just read. Nothing moves out of a branch, a loop or the right of `&&` or `||`,
     /// and a temporary after one, or after a call whose type is not known, stays where it is
-    /// and is not dropped.
+    /// and is not dropped. The condition of an `if` and the value of a `match` run before the
+    /// branch, so their temporaries move out too.
     fn drops_hoist_temporaries(
         &mut self,
         body: &mut [Statement],
@@ -2050,6 +2051,31 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::UnaryOp(u) => return self.drops_scan_temps(&mut u.expr, false, scan),
             Expr::Identifier(_) | Expr::Number(_) | Expr::StringLiteral(_) => return,
+            // The condition of an `if`, and so of a `while`, runs before either branch. Its
+            // temporaries move out, and each branch drops them first, as in Rust.
+            Expr::If(i) if !i.is_comptime => {
+                let first = scan.found.len();
+                self.drops_scan_temps(&mut i.cond, false, scan);
+                let mut drops = Vec::new();
+                for (name, _, _, glue) in &mut scan.found[first..] {
+                    drops.extend(glue_drops(name, &std::mem::take(glue), None));
+                }
+                if !drops.is_empty() {
+                    i.then_block.splice(0..0, drops.clone());
+                    i.else_block
+                        .get_or_insert_with(Vec::new)
+                        .splice(0..0, drops);
+                }
+                scan.blocked = true;
+                return;
+            }
+            // The value that a `match` matches runs before its arms. Its temporaries drop after
+            // the statement, as Rust drops them at the end of the `match`.
+            Expr::Match(m) => {
+                self.drops_scan_temps(&mut m.expr, false, scan);
+                scan.blocked = true;
+                return;
+            }
             // A branch, a loop or a short-circuit runs its parts only sometimes, and a
             // closure later: nothing at or after it moves out.
             _ => {
