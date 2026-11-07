@@ -2538,9 +2538,27 @@ impl<'a> TypeChecker<'a> {
             span: *span,
             operand_ty: None,
         });
+        // A `match` or an `if` whose branches all return makes no value. The parser writes a
+        // `match` at the end of a body as such a `return`.
+        let makes_no_value = crate::syntax::is_never_ty(&ty)
+            || match expr {
+                Expr::Match(m) => {
+                    !m.arms.is_empty() && m.arms.iter().all(|a| self.branch_ends_early(&a.body))
+                }
+                Expr::If(i) => {
+                    self.branch_ends_early(&i.then_block)
+                        && i.else_block
+                            .as_ref()
+                            .is_some_and(|b| self.branch_ends_early(b))
+                }
+                _ => false,
+            };
         let ensures = self.consteval.current_ensures.clone();
         if !ensures.is_empty() && !self.speculating {
-            self.consteval.constraints.push(return_eq);
+            let facts = self.consteval.constraints.len();
+            if !makes_no_value {
+                self.consteval.constraints.push(return_eq);
+            }
             for ens in &ensures {
                 if !self.prove_expr(ens) {
                     self.errors.error_with_code(
@@ -2553,7 +2571,7 @@ impl<'a> TypeChecker<'a> {
                     );
                 }
             }
-            self.consteval.constraints.pop();
+            self.consteval.constraints.truncate(facts);
         }
         crate::syntax::is_never_ty(&ty)
     }

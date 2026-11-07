@@ -1277,8 +1277,7 @@ impl<'a> TypeChecker<'a> {
                 let borrows_before = self.borrow.snapshot();
                 let mut arm_borrows = Vec::new();
                 let mut joined: Option<Vec<std::collections::HashSet<String>>> = None;
-                // What an arm learns ends with it: the prover does not model the patterns, so
-                // it cannot say which arm the code after the `match` came through.
+                // Each arm starts from the facts before the `match`, and the arms join after it.
                 let facts_before = self.consteval.constraints.len();
                 let prefix_before = self.consteval.constraints.clone();
                 let mut ends_after = Vec::new();
@@ -1292,6 +1291,13 @@ impl<'a> TypeChecker<'a> {
                 // takes the type of the other arms once those are known.
                 let mut literal_arms = Vec::new();
                 let mut literal_ty = None;
+                // A `match` on an integer that the prover models: each arm knows which pattern
+                // matched, and which literal patterns above it did not.
+                let integer = matches!(&expr_ty, Type::Scalar(e)
+                    if e.int_bits().is_some() && *e != ElementType::Bool);
+                let matched_number = (integer && crate::hir::prover::is_modelled(match_expr))
+                    .then(|| (**match_expr).clone());
+                let mut literals_above: Vec<Expr> = Vec::new();
                 for (i, arm) in arms.iter_mut().enumerate() {
                     let literal_arm = self.expected_type.is_none()
                         && unsuffixed_number_tail(&mut arm.body).is_some_and(|n| n.ty.is_none());
@@ -1346,6 +1352,13 @@ impl<'a> TypeChecker<'a> {
                         let mut bound = Vec::new();
                         pattern_names(&arm.pattern, &mut bound);
                         self.drops_bind_arm(&bound);
+                    }
+                    if let Some(value) = &matched_number {
+                        let facts = facts_of_a_pattern(value, &literals_above, &arm.pattern);
+                        self.consteval.constraints.extend(facts);
+                    }
+                    if let Pattern::Literal(lit) = &arm.pattern {
+                        literals_above.push((**lit).clone());
                     }
 
                     let arm_ty = if !self.speculating {
@@ -1987,6 +2000,47 @@ fn is_a_condition(e: &Expr) -> bool {
         Expr::UnaryOp(u) if matches!(u.op, UnaryOp::Not) => is_a_condition(&u.expr),
         _ => false,
     }
+}
+
+/// The facts that an arm of a `match` on the number `value` knows from its pattern: `value == 5`
+/// for the literal `5`, `n == value` for the name `n`, and `value != l` for each literal `l` of an
+/// arm above it. A name that hides a variable of `value` would change what `value` means, so that
+/// arm knows nothing.
+fn facts_of_a_pattern(value: &Expr, literals_above: &[Expr], pattern: &Pattern) -> Vec<Expr> {
+    let number = |e: &Expr| matches!(e, Expr::Number(_));
+    let relation = |lhs: Expr, op: RelationalOp, rhs: Expr| {
+        Expr::RelationalOp(RelationalOpExpr {
+            lhs: Box::new(lhs),
+            op,
+            rhs: Box::new(rhs),
+            span: Span::default(),
+            operand_ty: None,
+        })
+    };
+    if let Pattern::Identifier(n) = pattern {
+        if crate::hir::check::raw::expr_mentions(value, n.as_ref()) {
+            return Vec::new();
+        }
+    }
+    let mut facts: Vec<Expr> = literals_above
+        .iter()
+        .filter(|l| number(l))
+        .map(|l| relation(value.clone(), RelationalOp::NotEq, l.clone()))
+        .collect();
+    match pattern {
+        Pattern::Literal(l) if number(l) => {
+            facts.push(relation(value.clone(), RelationalOp::Eq, (**l).clone()))
+        }
+        Pattern::Identifier(n) => {
+            let name = Expr::Identifier(IdentifierExpr {
+                name: n.clone(),
+                span: Span::default(),
+            });
+            facts.push(relation(name, RelationalOp::Eq, value.clone()))
+        }
+        _ => {}
+    }
+    facts
 }
 
 /// `facts` joined with `op`. Each list here has at least one fact.

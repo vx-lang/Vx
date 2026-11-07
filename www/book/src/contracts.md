@@ -218,6 +218,9 @@ The prover checks each function on its own, from the facts it has at each point 
 assign `x` keeps what was known about `x` before the `if`. The arms of a `match` join in the same
 way.
 
+An arm of a `match` on a number knows its pattern. In `match x`, the arm `5 =>` knows `x == 5`,
+and each later arm knows `x != 5`. The arm `n =>` knows `n == x`.
+
 When a branch ends early, by `return`, `break`, `continue`, `panic`, `abort` or a call to a function
 that never returns (`-> !`), the code after the `if` is reached only through the other branch, so
 it keeps what that branch knew:
@@ -281,8 +284,7 @@ ignored, and the compiler warns that it was: "the prover ignores a condition her
 
 **Not yet:**
 
-- A `match` arm does not know which pattern matched
-  ([Vx#1352](https://github.com/vx-lang/Vx/issues/1352)).
+- An arm of a `match` on an enum does not know which variant matched.
 - After a loop, the prover knows only the facts that its invariants and its end give. It does not
   know the other facts that the body learned
   ([Vx#1353](https://github.com/vx-lang/Vx/issues/1353)).
