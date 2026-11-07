@@ -1,0 +1,43 @@
+//===- spirv_device_image_tensor_reference.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `spirv64` kernel that writes through a `&mut Tensor` parameter in a memory
+// with `scope: device`. device_image_test.rs checks that it gets a SPIR-V image
+// on both code generators. Here: both code generators give the same answer.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Warning
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Warning
+// CHECK: [1,  2,  3,  4]
+
+Memory CPU_DRAM {}
+Memory HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: explicit, scope: device
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::HBM,
+  visible: [Memory::HBM],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 63 GB/s
+}
+
+fn fill(out : &mut Tensor<f32, [4], Memory::HBM>) -> void {
+  spawn on(Topology::Dev) {
+    for i in 0..4 {
+      out[i] = (i + 1) as f32;
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let h = Tensor<f32, [4]>::new();
+  let mut d = transfer(h, Memory::HBM);
+  fill(&mut d);
+  let back = transfer(d, Memory::CPU_DRAM);
+  print(back);
+  return 0;
+}
