@@ -22,7 +22,7 @@ use super::super::*;
 use crate::diagnostic::DiagnosticCode;
 use crate::hir::check::thread_safety::ThreadTrait;
 use crate::syntax::{Span, TaskBlockExpr, TaskBlockKind};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// What the checker knows about the `tasks` blocks and tasks around the code it checks.
 #[derive(Default)]
@@ -47,6 +47,9 @@ pub(crate) struct TaskCx {
     joining: bool,
     /// The tasks started in a loop that is in their `tasks` block.
     loop_tasks: Vec<LoopTask>,
+    /// `placement_order` at the join that always runs after the `spawn` of each task, by the
+    /// number of the task. The task has ended there.
+    ended: HashMap<usize, usize>,
 }
 
 enum Frame {
@@ -256,6 +259,22 @@ impl TypeChecker<'_> {
             ),
             _ => String::new(),
         }
+    }
+
+    fn task_ends_here(&mut self, task: &str) {
+        let number = task
+            .strip_prefix(TASK_PREFIX)
+            .and_then(|n| n.parse().ok())
+            .expect("a task name is the prefix and a number");
+        self.traffic.placement_order += 1;
+        self.tasks
+            .ended
+            .insert(number, self.traffic.placement_order);
+    }
+
+    /// Where each task that a join ends has ended, by the number of the task.
+    pub(crate) fn ended_tasks(&self) -> &HashMap<usize, usize> {
+        &self.tasks.ended
     }
 
     /// The count of passes of `for _ in iterable` when the range has constant bounds.
@@ -1219,6 +1238,7 @@ impl TypeChecker<'_> {
         if self.tasks.ending_joins.contains(&span) && !in_other_task {
             self.borrow.end_task(&task);
             self.tasks.loop_tasks.retain(|t| t.task != task);
+            self.task_ends_here(&task);
         }
         // The code waits for the task here, not where it first reads the value.
         if !self.speculating {
@@ -1303,6 +1323,7 @@ impl TypeChecker<'_> {
         if self.tasks.ending_joins.contains(&span) {
             self.borrow.end_task(task);
             self.tasks.loop_tasks.retain(|t| t.task != task);
+            self.task_ends_here(task);
             self.note_failure_joined(handle);
         }
         if !self.speculating {
