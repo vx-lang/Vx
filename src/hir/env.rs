@@ -994,10 +994,11 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub fn insert(&mut self, name: String, ty: Type) {
-        // A new variable of this name: the fields moved out of the old one say nothing about it.
+        // A new variable of this name: a move of the old one, or of its fields, says nothing
+        // about it.
         if let Some(moved) = self.borrow.moved_vars.last_mut() {
             let prefix = format!("{name}.");
-            moved.retain(|place| !place.starts_with(&prefix));
+            moved.retain(|place| *place != name && !place.starts_with(&prefix));
         }
         if let Some(bound) = self.borrow.bound_behind_ref.last_mut() {
             bound.remove(&name);
