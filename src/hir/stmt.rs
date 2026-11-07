@@ -47,6 +47,14 @@ pub(crate) struct InvariantLoop {
     next: Option<(crate::symbol::Symbol, Option<Expr>)>,
     /// Whether the body declares a variable with the name of the loop variable.
     hides_the_variable: bool,
+    /// Each pointer that a pointer clause of an invariant names and the body assigns, with the
+    /// base that it gets at the start of a pass.
+    pass_bases: Vec<(String, usize)>,
+}
+
+/// Whether the loop invariant `inv` is a pointer clause, which the raw-pointer facts prove.
+fn is_pointer_clause(inv: &Expr) -> bool {
+    crate::hir::check::pointer_facts::read_clause(inv).is_some()
 }
 
 /// Where the checker proves a loop invariant, for its error.
@@ -1185,6 +1193,10 @@ impl<'a> TypeChecker<'a> {
                 }));
             }
         }
+        // The proof when the loop starts assumes `a <= b`. So the facts of the pointer clauses
+        // hold after the loop only when the prover proves `a <= b` here.
+        let ordered = invariants.iter().any(is_pointer_clause)
+            && first.get(1).is_some_and(|a_le_b| self.prove_expr(a_le_b));
         self.prove_invariants_at_the_start(invariants, first);
         let next = range.as_ref().map(|_| {
             Expr::BinaryOp(syntax::expr::BinaryOpExpr {
@@ -1225,7 +1237,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
-        self.assume_loop_invariants(invariants, body);
+        let (pass_bases, without_clauses) = self.assume_loop_invariants(invariants, body);
 
         // What is known before the body is walked, and where each name lives. Both are
         // needed after: the walk folds one iteration's worth of assignments into the
@@ -1263,7 +1275,10 @@ impl<'a> TypeChecker<'a> {
                 bounds,
                 used: false,
             });
-        let pointers_at_head = self.pointer_facts.clone();
+        let pointers_at_head = match ordered {
+            true => self.pointer_facts.clone(),
+            false => without_clauses,
+        };
         self.pointer_facts_enter_loop();
         let next = next.filter(|_| !crate::hir::check::raw::body_reassigns(body, iter));
         self.invariant_loops.push(InvariantLoop {
@@ -1271,8 +1286,10 @@ impl<'a> TypeChecker<'a> {
             scope: self.scopes.len() - 1,
             next: Some((iter.as_str().into(), next)),
             hides_the_variable: crate::hir::check::pointer_facts::body_declares(body, iter),
+            pass_bases,
         });
         self.check_loop_body(body, return_type, header);
+        let at_the_end = self.pointer_facts.clone();
         self.pointer_facts_after_a_loop(Some(pointers_at_head));
         if let Some(c) = self.unroll_candidates.pop().filter(|c| c.used) {
             *unroll = c.bounds;
@@ -1281,7 +1298,7 @@ impl<'a> TypeChecker<'a> {
         self.settle_loop_moves(marks_before, outer_depth, body, &loop_span);
 
         if !self.branch_ends_early(body) {
-            self.prove_invariants_for_the_next_pass(None);
+            self.prove_invariants_at_the_end_of_the_body(at_the_end);
         }
         self.invariant_loops.pop();
 
@@ -1348,9 +1365,17 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// E8008 or E8009: a loop invariant that the prover cannot show to hold when the loop
-    /// starts, or in the next pass.
-    fn report_unproven_invariant(&mut self, inv: &Expr, proof: InvariantProof) {
+    /// starts, or in the next pass. `ended` is the event that ended a fact that would prove it.
+    fn report_unproven_invariant(
+        &mut self,
+        inv: &Expr,
+        proof: InvariantProof,
+        ended: Option<(Span, String)>,
+    ) {
         let condition = crate::hir::prover::to_source(inv)
+            .or_else(|| {
+                is_pointer_clause(inv).then(|| crate::hir::check::pointer_facts::clause_source(inv))
+            })
             .map(|c| format!(" `{c}`"))
             .unwrap_or_default();
         let (code, when, where_known) = match proof {
@@ -1377,7 +1402,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         };
-        self.errors.error_with_code(
+        let error = self.errors.error_with_code(
             code,
             format!(
                 "this loop invariant{condition} may not hold {when}: the compiler cannot prove \
@@ -1385,17 +1410,29 @@ impl<'a> TypeChecker<'a> {
             ),
             Some(crate::diagnostic::SourceSpan::from_ast_span(&inv.span())),
         );
+        if let Some((at, why)) = ended {
+            error.notes.push(crate::diagnostic::Note {
+                message: format!("a fact that proves it ended at {why}").into(),
+                span: Some(crate::diagnostic::SourceSpan::from_ast_span(&at)),
+            });
+        }
     }
 
     /// Proves each invariant on entry to a loop, from the facts before it. `first` holds facts
     /// about the range of a `for` loop in the first pass. An invariant can use the invariants
-    /// before it.
+    /// before it. The raw-pointer facts prove a pointer clause, as at a call.
     fn prove_invariants_at_the_start(&mut self, invariants: &[Expr], first: Vec<Expr>) {
         let facts_before = self.consteval.constraints.len();
         self.consteval.constraints.extend(first);
         for inv in invariants {
+            if is_pointer_clause(inv) {
+                if let Err(ended) = self.prove_pointer_clause_here(inv) {
+                    self.report_unproven_invariant(inv, InvariantProof::Start, ended);
+                }
+                continue;
+            }
             if !self.prove_expr(inv) {
-                self.report_unproven_invariant(inv, InvariantProof::Start);
+                self.report_unproven_invariant(inv, InvariantProof::Start, None);
             }
             self.consteval.constraints.push(inv.clone());
         }
@@ -1414,6 +1451,7 @@ impl<'a> TypeChecker<'a> {
             return;
         }
         let invariants = lp.invariants.clone();
+        let pass_bases = lp.pass_bases.clone();
         // The new names live only in this proof, so no fact outside it can meet them.
         let mut renamed = HashMap::new();
         for scope in &self.scopes[lp.scope..] {
@@ -1461,26 +1499,54 @@ impl<'a> TypeChecker<'a> {
         }
         self.consteval.constraints.extend(next_fact);
         for inv in &invariants {
-            if !self.prove_expr(inv) {
+            let holds = match is_pointer_clause(inv) {
+                true => self.pointer_clause_holds_in_the_next_pass(inv, &renamed, &pass_bases),
+                false => self.prove_expr(inv),
+            };
+            if !holds {
                 let mut names = HashSet::new();
                 Self::extract_uses_expr(inv, &mut names);
                 let var = var.as_deref().filter(|v| names.contains(*v));
-                self.report_unproven_invariant(inv, InvariantProof::Next { at_continue, var });
+                let proof = InvariantProof::Next { at_continue, var };
+                self.report_unproven_invariant(inv, proof, None);
             }
         }
         self.consteval.constraints = facts;
     }
 
+    /// Proves each invariant of the innermost loop at the end of its body. `at_the_end` holds the
+    /// raw-pointer facts there, because the facts after the loop have taken their place.
+    fn prove_invariants_at_the_end_of_the_body(
+        &mut self,
+        at_the_end: crate::hir::check::pointer_facts::PointerFacts,
+    ) {
+        let after_the_loop = std::mem::replace(&mut self.pointer_facts, at_the_end);
+        self.prove_invariants_for_the_next_pass(None);
+        self.pointer_facts = after_the_loop;
+    }
+
     /// The body of a loop starts from the facts that its writes cannot make false, and the
-    /// invariants.
-    fn assume_loop_invariants(&mut self, invariants: &[Expr], body: &[Statement]) {
+    /// invariants. The raw-pointer facts get the pointer clauses. Returns each pointer that the
+    /// body assigns with its base in a pass, and the raw-pointer facts without the clauses.
+    fn assume_loop_invariants(
+        &mut self,
+        invariants: &[Expr],
+        body: &[Statement],
+    ) -> (
+        Vec<(String, usize)>,
+        crate::hir::check::pointer_facts::PointerFacts,
+    ) {
+        let (clauses, others): (Vec<Expr>, Vec<Expr>) =
+            invariants.iter().cloned().partition(is_pointer_clause);
+        let pointers = self.invariant_pointers(&clauses);
         self.pointer_facts_events_then_changes(
             |this| this.end_pointer_facts_a_loop_can_end(body),
             |this| this.neutralize_facts_a_loop_writes(body),
         );
-        self.consteval
-            .constraints
-            .extend(invariants.iter().cloned());
+        let without_clauses = self.pointer_facts.clone();
+        self.consteval.constraints.extend(others);
+        let pass_bases = self.pointer_facts_assume_invariants(&clauses, &pointers);
+        (pass_bases, without_clauses)
     }
 
     fn check_loop_stmt(&mut self, lp: &mut LoopStmt, return_type: &Type) {
@@ -1496,7 +1562,7 @@ impl<'a> TypeChecker<'a> {
 
         let prev_constraints_len = self.consteval.constraints.len();
         self.prove_invariants_at_the_start(invariants, Vec::new());
-        self.assume_loop_invariants(invariants, body);
+        let (pass_bases, _) = self.assume_loop_invariants(invariants, body);
 
         // See `check_for_loop_stmt`: the single pass the checker makes over the body is not
         // what the program does, so what it folded is settled up once the loop has been run.
@@ -1523,15 +1589,17 @@ impl<'a> TypeChecker<'a> {
             scope: self.scopes.len() - 1,
             next: None,
             hides_the_variable: false,
+            pass_bases,
         });
         self.check_loop_body(body, return_type, header);
+        let at_the_end = self.pointer_facts.clone();
         self.pointer_facts_after_a_loop(None);
         self.cancel_loops.pop();
         self.drops_exit_loop();
         self.settle_loop_moves(marks_before, outer_depth, body, &loop_span);
 
         if !self.branch_ends_early(body) {
-            self.prove_invariants_for_the_next_pass(None);
+            self.prove_invariants_at_the_end_of_the_body(at_the_end);
         }
         self.invariant_loops.pop();
 

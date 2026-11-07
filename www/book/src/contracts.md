@@ -75,6 +75,41 @@ for `i + 1` after a pass. For example, `invariant i <= b` holds, and `invariant 
 When a `for` loop starts, the prover also knows `a <= b`. A loop with `a > b` runs no pass. So
 `for i in 0..n invariant i <= n` needs no `requires 0 <= n`.
 
+An invariant can also be a pointer clause, such as `initialized(p, i)` (see
+[Unsafe Code and FFI](unsafe-and-ffi.md)). The compiler checks it at the same places, and each pass
+starts with it as a fact. Here each pass writes one more element, so a call in the body can read
+all the elements so far:
+
+```rust
+import core::ptr;
+
+fn last(p : *const i64, n : i64) -> i64
+    requires valid(p, n)
+    requires initialized(p, n)
+    requires n > 0i64
+    ensures !frees(p)
+{
+    return unsafe { p[n - 1i64] };
+}
+
+fn fill(p : *mut i64, n : i64) -> i64
+    requires valid(p, n)
+{
+    let mut total = 0i64;
+    for i in 0i64..n invariant initialized(p, i) {
+        unsafe { p[i] = i; }
+        total = total + last(p as *const i64, i + 1i64);
+    }
+    return total;
+}
+
+fn main() -> i32 {
+    let mut x = 0i64;
+    let p : *mut i64 = &mut x;
+    return fill(p, 1i64) as i32;
+}
+```
+
 ## Type invariants
 
 A contract can also be about data. An `invariant` on a struct states a fact about each value of the
