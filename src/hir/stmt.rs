@@ -2380,17 +2380,18 @@ impl<'a> TypeChecker<'a> {
                             .iter()
                             .find(|(f, _)| f.name == c.name)
                             .map(|(f, _)| f)
+                    })
+                    .map(|f| (&f.params, &f.ensures))
+                    // The compiler trusts the `ensures` of an `extern` function.
+                    .or_else(|| {
+                        let ext = self.env.externs.iter().find(|x| x.name == c.name)?;
+                        Some((&ext.params, &ext.ensures))
                     });
-                if let Some(func) = callee {
-                    let mut names: HashMap<crate::symbol::Symbol, Expr> = func
-                        .params
-                        .iter()
-                        .map(|(p, _)| p.clone())
-                        .zip(args)
-                        .collect();
+                if let Some((params, ensures)) = callee {
+                    let mut names: HashMap<crate::symbol::Symbol, Expr> =
+                        params.iter().map(|(p, _)| p.clone()).zip(args).collect();
                     names.insert("return".into(), result.clone());
-                    for ens in func
-                        .ensures
+                    for ens in ensures
                         .iter()
                         .filter(|e| crate::hir::check::atomic_contracts::is_prover_clause(e))
                     {
