@@ -537,6 +537,11 @@ tasks makes that real. So:
   answer. The program gets a verdict with an `invariant` clause on the `for` loop that bounds the
   count. `hir/memory.rs` already reads these clauses.
 
+Done: the tasks of one block add up. A call in a task adds the largest callee peak of each other
+task, and the tiles of each other task, in `capacity_fold.rs`. A join does not end a task there
+yet, so the check can count two tasks that never overlap. Not done: a `spawn` in a loop, the
+values in a channel, and the stack of each task.
+
 ## 6. The runtime work
 
 For the first runtime:
