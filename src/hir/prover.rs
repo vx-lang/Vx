@@ -309,13 +309,13 @@ impl SmtProver {
     }
 }
 
+/// z3 skips a command that it rejects, prints an error and still answers. A skipped assertion
+/// leaves z3 fewer facts, so `unsat` after an error is still a proof, and `sat` means no proof.
 fn solver_result(result: &str, successful_exit: bool) -> Result<bool, String> {
-    if !successful_exit {
-        return Err(format!("z3 failed: {result}"));
-    }
-    match result {
-        "sat" => Ok(true),
+    match result.lines().next_back().unwrap_or("").trim() {
         "unsat" => Ok(false),
+        "sat" => Ok(true),
+        _ if !successful_exit => Err(format!("z3 failed: {result}")),
         "unknown" => Err(format!(
             "z3 found neither a proof nor a counterexample. It may have reached its limit of \
              {Z3_STEP_LIMIT} steps"
@@ -810,11 +810,14 @@ mod tests {
     }
 
     #[test]
-    fn a_solver_error_or_timeout_is_not_a_proof() {
+    fn the_answer_after_a_solver_error_still_counts() {
         assert_eq!(solver_result("sat", true), Ok(true));
         assert_eq!(solver_result("unsat", true), Ok(false));
         assert!(solver_result("unknown", true).is_err());
-        assert!(solver_result("(error \"unsupported arithmetic\")\nunsat", true).is_err());
-        assert!(solver_result("unsat", false).is_err());
+        let error = "(error \"line 8 column 15: invalid assert command, term is not Boolean\")";
+        assert_eq!(solver_result(&format!("{error}\nunsat"), false), Ok(false));
+        assert_eq!(solver_result(&format!("{error}\nsat"), false), Ok(true));
+        assert!(solver_result(&format!("{error}\nunknown"), false).is_err());
+        assert!(solver_result(error, false).is_err());
     }
 }
