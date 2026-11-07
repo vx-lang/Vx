@@ -194,6 +194,45 @@ pub(crate) fn strip_memref_space(s: &str) -> Option<String> {
 /// reaches: an imported module's function is emitted only when the program calls it, directly
 /// or through another function it calls. A function is reached by any `@name` in a reached
 /// function's code. Also returns every name the kept functions refer to.
+/// The order the flat code generator emits the program's functions in, as indices into
+/// `functions`. It takes the last function from a list that starts as the functions in source
+/// order, then adds the functions that one calls, sorted by name. The two code generators then
+/// write functions in one order, so a linker reports undefined symbols in one order too.
+fn flat_emission_order(functions: &[crate::syntax::Function]) -> Vec<usize> {
+    let index: HashMap<&str, usize> = functions
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.name.as_ref(), i))
+        .collect();
+    let mut worklist: Vec<String> = functions
+        .iter()
+        .filter(|f| f.generics.is_empty())
+        .map(|f| f.name.to_string())
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut order = Vec::with_capacity(functions.len());
+    while let Some(name) = worklist.pop() {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        let Some(&i) = index.get(name.as_str()) else {
+            continue;
+        };
+        order.push(i);
+        let mut uses = std::collections::HashSet::new();
+        for stmt in &functions[i].body {
+            crate::hir::TypeChecker::extract_uses_stmt(stmt, &mut uses);
+        }
+        let mut uses: Vec<_> = uses.into_iter().collect();
+        uses.sort();
+        worklist.extend(uses);
+    }
+    // A function the walk did not visit keeps its place after the others.
+    let visited: std::collections::HashSet<usize> = order.iter().copied().collect();
+    order.extend((0..functions.len()).filter(|i| !visited.contains(i)));
+    order
+}
+
 fn keep_reached_functions<'c>(
     operations: Vec<melior::ir::Operation<'c>>,
     imported: usize,
@@ -1316,8 +1355,12 @@ impl<'c> MeliorGenerator<'c> {
         }
         let imported = operations.len();
 
+        let mut own = Vec::with_capacity(program.functions.len());
         for func in &program.functions {
-            operations.push(self.generate_function(func)?);
+            own.push(Some(self.generate_function(func)?));
+        }
+        for i in flat_emission_order(&program.functions) {
+            operations.push(own[i].take().expect("each function is emitted once"));
         }
         let (operations, referenced) = keep_reached_functions(operations, imported);
 
