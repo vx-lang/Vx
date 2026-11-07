@@ -17,7 +17,7 @@ the test suite has one, a program that triggers it.
 - [Warnings](#warnings) — `W1001`–`W1036` (27 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
-- [Type Errors](#type-errors) — `E3001`–`E3063` (62 codes)
+- [Type Errors](#type-errors) — `E3001`–`E3064` (63 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4016` (16 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6037` (37 codes)
@@ -160,6 +160,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3061`](/errors/E3061/) | An impl of a trait does not write a method that the trait requires: one the trait declares with no default body. A call to that method would otherwise fail where it is called, with "method not found", though the fault is in the impl. |
 | [`E3062`](/errors/E3062/) | A struct literal that writes its fields in an order other than the struct's declaration. The fields run in the order the source writes them, so `P { y : f(), x : g() }` would run `f` before `g` and store `y` before `x`. Write the fields in the order the struct declares them. |
 | [`E3063`](/errors/E3063/) | A `?` that cannot pass its error up. `x?` takes a `Result<T, E>`. It gives the `T` of an `Ok`, and it passes an `Err` up unchanged: to the function, which must return a `Result<_, E>` with the same `E`, to its closure, which must return one, or to its task or `tasks` block, which must give one. A `?` in a closure needs the closure's type written, `|x| -> Result<T, E> { .. }`. `?` does not convert the error. `.map_err(..)` converts it. |
+| [`E3064`](/errors/E3064/) | A `break` or `continue` with no loop around it in its own function or closure. A closure body is not inside a loop around the closure, because the closure can run after the loop ends. |
 
 ## Borrow/Ownership Errors
 
@@ -271,4 +272,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-182 diagnostics.
+183 diagnostics.

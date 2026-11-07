@@ -447,6 +447,10 @@ pub enum DiagnosticCode {
     /// `tasks` block, which must give one. A `?` in a closure needs the closure's type written,
     /// `|x| -> Result<T, E> { .. }`. `?` does not convert the error. `.map_err(..)` converts it.
     E3063,
+    /// A `break` or `continue` with no loop around it in its own function or closure. A closure
+    /// body is not inside a loop around the closure, because the closure can run after the loop
+    /// ends.
+    E3064,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable
