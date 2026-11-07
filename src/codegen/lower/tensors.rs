@@ -78,6 +78,42 @@ fn lower_spawn_region<'c>(
         _ => None,
     };
     gen.spawn_arches.push(arch);
+    // A `&mut Tensor` parameter is a slot that holds the tensor. A SPIR-V kernel cannot take a
+    // memref of memrefs or a memref with a memory space. So the region reads the tensor, loaded
+    // here, before the region, with no memory space, as the flat code generator gives it.
+    let mut outer_slots = Vec::new();
+    if gen.in_spirv_region() {
+        let params: Vec<_> = gen
+            .env
+            .iter()
+            .filter(|(_, (v, t))| {
+                melior::ir::ValueLike::is_block_argument(v)
+                    && t.to_string().starts_with("memref<memref<")
+            })
+            .map(|(name, entry)| (name.clone(), *entry))
+            .collect();
+        for (name, (slot, slot_ty)) in params {
+            let slot_memref = melior::ir::r#type::MemRefType::try_from(slot_ty)
+                .map_err(|_| LowerError::from(format!("not a memref: {slot_ty}")))?;
+            let inner = melior::ir::r#type::ShapedTypeLike::element(&slot_memref);
+            let loaded: Value = block
+                .append_operation(
+                    OperationBuilder::new("memref.load", location)
+                        .add_operands(&[slot])
+                        .add_results(&[inner])
+                        .build()?,
+                )
+                .result(0)?
+                .into();
+            let plain_str = memref_in_space_of(&inner.to_string(), "memref<f32>")
+                .ok_or_else(|| LowerError::from(format!("not a memref: {inner}")))?;
+            let plain = Type::parse(gen.context, &plain_str)
+                .ok_or_else(|| LowerError::ParseType(plain_str.clone()))?;
+            let loaded = cast_memref(gen, &block, loaded, inner, plain)?;
+            gen.env.insert(name.clone(), (loaded, plain));
+            outer_slots.push((name, (slot, slot_ty)));
+        }
+    }
     for (i, stmt) in this.stmts.iter().enumerate() {
         gen.mark_next_for = one_loop.is_some_and(|(loop_at, _)| loop_at == i);
         if let Some(b) = gen.generate_statement(stmt, body_block)? {
@@ -126,6 +162,9 @@ fn lower_spawn_region<'c>(
 
     gen.in_spawn = prev_in_spawn;
     gen.spawn_arches.pop();
+    for (name, entry) in outer_slots {
+        gen.env.insert(name, entry);
+    }
 
     let topology_id = topology_to_i32(&this.top);
     let top_attr = IntegerAttribute::new(gen.i32_ty, topology_id as i64).into();

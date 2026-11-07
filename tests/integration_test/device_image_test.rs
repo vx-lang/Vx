@@ -830,7 +830,8 @@ fn the_host_stack_slot_warning_is_spirv_only() {
 /// On the AST code generator, a loop in a `spirv64` region keeps its counter in a
 /// stack slot, as on the flat code generator. The SPIR-V conversion cannot take a
 /// branch that carries an `index` value, so before this the kernel ran on the host.
-/// The four kernels that get an image on the flat path get one here too.
+/// The kernels that get an image on the flat path get one here too. A `&mut Tensor`
+/// parameter reaches the kernel as the tensor it holds, with no memory space.
 #[test]
 fn a_legacy_compiled_spirv_kernel_gets_a_spirv_module() {
     let kernel = "vx_npu_kernel_0";
@@ -839,6 +840,7 @@ fn a_legacy_compiled_spirv_kernel_gets_a_spirv_module() {
         "spirv_device_image_loop_kernel.vx",
         "spirv_device_image_strided_row.vx",
         "spirv_device_image_struct_local.vx",
+        "spirv_device_image_tensor_reference.vx",
     ] {
         let out = Command::new(env!("CARGO_BIN_EXE_vxc"))
             .arg(corpus(name))
