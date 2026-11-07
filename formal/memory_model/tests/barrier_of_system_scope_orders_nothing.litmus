@@ -1,0 +1,10 @@
+LISA barrier_of_system_scope_orders_nothing
+(* A barrier has subgroup, block or device scope. A barrier of system scope does not make the
+   threads wait for each other, so the read races with the write.
+   Expect: sometimes, a data race. *)
+{ x = 0; }
+ P0                | P1                ;
+ w[plain] x 1      | f[barrier,system] ;
+ f[barrier,system] | r[plain] r0 x     ;
+scopes: (device (block P0 P1))
+exists (1:r0 = 0)

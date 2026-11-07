@@ -50,3 +50,7 @@ import VxMemoryModel.Finish
 import VxMemoryModel.Scheduler
 import VxMemoryModel.Select
 import VxMemoryModel.TimeoutExample
+import VxMemoryModel.Scopes
+import VxMemoryModel.ScopedCheck
+import VxMemoryModel.LastArriver
+import VxMemoryModel.LastArriverExample
