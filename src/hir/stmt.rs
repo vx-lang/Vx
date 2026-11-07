@@ -1613,7 +1613,7 @@ impl<'a> TypeChecker<'a> {
                     })
                     && crate::hir::places::paths_may_alias(&path, &b.path)
             })
-            .map(|b| self.held_by_note(b));
+            .map(|b| self.held_by_note(b, root.as_ref()));
         if let Some(note) = shared {
             let mut place = crate::hir::places::display_place(&root, &path);
             if through_deref {

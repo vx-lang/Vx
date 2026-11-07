@@ -22,7 +22,7 @@ use super::super::*;
 use crate::diagnostic::DiagnosticCode;
 use crate::hir::check::thread_safety::ThreadTrait;
 use crate::syntax::{Span, TaskBlockExpr, TaskBlockKind};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// What the checker knows about the `tasks` blocks and tasks around the code it checks.
 #[derive(Default)]
@@ -45,6 +45,14 @@ pub(crate) struct TaskCx {
     joining: bool,
     /// The tasks started in a loop that is in their `tasks` block.
     loop_tasks: Vec<LoopTask>,
+    /// The `spawn` of each task, by its name, and where the task first uses each variable from
+    /// outside it. A borrow error names them when a task holds the borrow.
+    sites: HashMap<String, TaskSite>,
+}
+
+struct TaskSite {
+    spawn: Span,
+    used_at: BTreeMap<crate::symbol::Symbol, Span>,
 }
 
 enum Frame {
@@ -67,6 +75,8 @@ enum Frame {
         loops: usize,
         /// Each variable from outside that the body names, with its type.
         used: BTreeMap<crate::symbol::Symbol, Type>,
+        /// Where the body first names each variable of `used`.
+        used_at: BTreeMap<crate::symbol::Symbol, Span>,
         /// The error type and the place of each `?` that passes an error up to the task.
         passed_up: Vec<(Type, Span)>,
     },
@@ -178,28 +188,52 @@ const TASK_PREFIX: &str = "task#";
 /// The end of the borrower name of a task's hold on a variable that it copied.
 const COPY_SUFFIX: &str = "/copy";
 
-/// A sentence to add to a borrow error when the borrow `b` belongs to a task.
-pub(crate) fn held_by_task_note(b: &crate::hir::env::BorrowRecord) -> &'static str {
-    match &b.borrower_name {
-        Some(name) if name.starts_with(TASK_PREFIX) && name.ends_with(COPY_SUFFIX) => {
-            " A task that is not joined yet copied it, so it must not change until the task \
-             ends. To give the task the value that it has now, copy it into a new variable \
-             before the `spawn`. To share a value that changes, use an atomic."
-        }
-        Some(name) if name.starts_with(TASK_PREFIX) => {
-            " A task that is not joined yet uses it. A task holds what it uses until its \
-             `join()`, or until the end of its `tasks` block."
-        }
-        _ => "",
-    }
-}
-
 impl TypeChecker<'_> {
-    /// [`held_by_task_note`], or a note that names the closure that holds the borrow.
-    pub(crate) fn held_by_note(&self, b: &crate::hir::env::BorrowRecord) -> String {
-        let task = held_by_task_note(b);
+    /// Sentences to add to a borrow error on `var` when the borrow `b` belongs to a task. They
+    /// name the `spawn` of the task, the line where it uses `var`, and the join that ends it.
+    fn held_by_task_note(&self, b: &crate::hir::env::BorrowRecord, var: &str) -> String {
+        let Some(task) = b
+            .borrower_name
+            .as_deref()
+            .filter(|n| n.starts_with(TASK_PREFIX))
+        else {
+            return String::new();
+        };
+        let copied = task.ends_with(COPY_SUFFIX);
+        let task = task.strip_suffix(COPY_SUFFIX).unwrap_or(task);
+        let site = self.tasks.sites.get(task);
+        let which = match site {
+            Some(site) => format!("The task from the `spawn` at line {}", site.spawn.line),
+            None => "A task".to_string(),
+        };
+        let used_at = site
+            .and_then(|s| s.used_at.get(var))
+            .map(|at| format!(" at line {}", at.line))
+            .unwrap_or_default();
+        let join = match self.tasks.handles.iter().find(|h| h.task == task) {
+            Some(h) => format!(" Call `{}.join()` before this line.", h.name),
+            None => String::new(),
+        };
+        if copied {
+            format!(
+                " {which} copied it{used_at}, and it is not joined yet. So it must not change \
+                 until the task ends.{join} To give the task the value that it has now, copy it \
+                 into a new variable before the `spawn`. To share a value that changes, use an \
+                 atomic."
+            )
+        } else {
+            format!(
+                " {which} uses it{used_at}, and it is not joined yet. A task holds what it uses \
+                 until its `join()`, or until the end of its `tasks` block.{join}"
+            )
+        }
+    }
+
+    /// [`held_by_task_note`], or a note that names the closure that holds the borrow on `var`.
+    pub(crate) fn held_by_note(&self, b: &crate::hir::env::BorrowRecord, var: &str) -> String {
+        let task = self.held_by_task_note(b, var);
         let Some(holder) = b.borrower_name.as_deref().filter(|_| task.is_empty()) else {
-            return task.to_string();
+            return task;
         };
         match self.lookup(holder) {
             Some((Type::Struct(name, _), _)) if name.starts_with("Closure_") => format!(
@@ -695,6 +729,7 @@ impl TypeChecker<'_> {
             closures,
             loops,
             used: BTreeMap::new(),
+            used_at: BTreeMap::new(),
             passed_up: Vec::new(),
         });
         // A `return` in the body leaves the task, and its value is the value of the task. The
@@ -709,12 +744,20 @@ impl TypeChecker<'_> {
         self.pop_scope();
         let Some(Frame::Spawn {
             mut used,
+            used_at,
             passed_up,
             ..
         }) = self.tasks.frames.pop()
         else {
             unreachable!("pushed above")
         };
+        self.tasks.sites.insert(
+            id.clone(),
+            TaskSite {
+                spawn: span,
+                used_at,
+            },
+        );
         self.check_task_exits(&ty, returned, &passed_up, place, &span);
         let changed_in_task = std::mem::replace(&mut self.changed_vars, changed_outside);
         self.changed_vars.extend(changed_in_task.iter().cloned());
@@ -1056,9 +1099,16 @@ impl TypeChecker<'_> {
             );
         }
         for frame in &mut self.tasks.frames {
-            if let Frame::Spawn { depth: d, used, .. } = frame {
+            if let Frame::Spawn {
+                depth: d,
+                used,
+                used_at,
+                ..
+            } = frame
+            {
                 if depth < *d {
                     used.entry(name.into()).or_insert_with(|| ty.clone());
+                    used_at.entry(name.into()).or_insert(*span);
                 }
             }
         }
