@@ -115,3 +115,61 @@ pub fn rows_of_20(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?]
   }
   return;
 }
+
+// Each subgroup writes two rows of `part`, `part[w][0]` and `part[w][1]`, and sums each. Each row
+// keeps its own register, so `part` takes no shared memory. The sum of row 0 starts from `x`,
+// and the sum of row 1 from `x * 2`, which LLVM writes as `x + x`.
+// CHECK-LABEL: .entry two_rows_of_each_subgroup(
+// CHECK-NOT: .shared .align 16 .b8 {{.*}}[1024];
+// CHECK-NOT: ld.shared
+// CHECK: ld.global.nc.b32 %r[[X:[0-9]+]],
+// CHECK: add.rn.f32 %r[[TWICE:[0-9]+]], %r[[X]], %r[[X]];
+// CHECK-NOT: ld.shared
+// CHECK: shfl.sync.bfly.b32 %r{{[0-9]+}}, %r[[X]], 16, 31, -1;
+// CHECK-NOT: ld.shared
+// CHECK: shfl.sync.bfly.b32 %r{{[0-9]+}}, %r[[TWICE]], 16, 31, -1;
+// CHECK-LABEL: .entry a_row_that_the_code_picks(
+pub fn two_rows_of_each_subgroup(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..rows across blocks {
+      let mut part = unsafe {
+        Tensor<f32, [4, 2, 32], Memory::SMEM>::uninit()
+      };
+      for w in 0..4 across subgroups {
+        for t in 0..32 across lanes {
+          part[w][0][t] = x[(b * 4 + w) * 32 + t];
+          part[w][1][t] = x[(b * 4 + w) * 32 + t] * 2.0;
+        }
+        let s0 = lanes::sum(&part[w][0], 32);
+        let s1 = lanes::sum(&part[w][1], 32);
+        for t in 0..32 across lanes {
+          out[(b * 4 + w) * 32 + t] = s0 - s1;
+        }
+      }
+    }
+  }
+  return;
+}
+
+// The row `part[w][k]` depends on `k`, which the code picks at run time. So the row has no
+// register of its own, and `part` stays in shared memory.
+// CHECK: .shared .align 16 .b8 {{.*}}[1024];
+pub fn a_row_that_the_code_picks(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>, rows : i32, k : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..rows across blocks {
+      let mut part = unsafe {
+        Tensor<f32, [4, 2, 32], Memory::SMEM>::uninit()
+      };
+      for w in 0..4 across subgroups {
+        for t in 0..32 across lanes {
+          part[w][k][t] = x[(b * 4 + w) * 32 + t];
+        }
+        let s = lanes::sum(&part[w][k], 32);
+        for t in 0..32 across lanes {
+          out[(b * 4 + w) * 32 + t] = s;
+        }
+      }
+    }
+  }
+  return;
+}

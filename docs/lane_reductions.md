@@ -89,7 +89,8 @@ kernel expands it, and the argmax shuffles a value and an index at each step:
 - **A tensor in registers:** a lane loop from 0 over all the lanes of its level can write
   `part[t]`, or `part[w][t]` in the code of subgroup `w`. Then only lane `t` writes that element.
   When only lane reductions read `part`, the GPU kernel keeps each lane's element in a register,
-  and `part` takes no memory. The larger value in the code of a block also needs a count that is
+  and `part` takes no memory. A subgroup can also have several rows, `part[w][c][t]` for a number
+  `c`, and each row gets its own register. A row whose `c` is not a number keeps `part`. The larger value in the code of a block also needs a count that is
   a multiple of 32, because its pad is the element of lane 0.
 - **CPU:** loops that compute the same tree. The CPU copy of a kernel and
   `-fauto-schedule-levels` use them. So does the AST code generator (`--legacy-codegen`), which

@@ -423,6 +423,9 @@ pub const TENSOR_STORE_BLOCK_LANE_ELEMENT: u64 = 1;
 /// `Opcode::TensorStore`: as `TENSOR_STORE_BLOCK_LANE_ELEMENT`, but `tile[w][t]` in the code of a
 /// subgroup, with `w` the index of the subgroup loop.
 pub const TENSOR_STORE_SUBGROUP_LANE_ELEMENT: u64 = 2;
+/// The bits of a lane-element store's or an `own_row` reduction's `imm` from here up give the row
+/// of the subgroup: 0 for `t[w]`, and `c + 1` for `t[w][c]`.
+pub const LANE_ROW_SHIFT: u64 = 32;
 
 /// `Opcode::LoopHint`: the loop was `across` a level of blocks.
 pub const LOOP_HINT_BLOCKS: u64 = 0;
