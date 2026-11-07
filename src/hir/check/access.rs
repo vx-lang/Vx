@@ -584,6 +584,7 @@ impl<'a> TypeChecker<'a> {
                             && self.borrowed_name != Some(span);
                         let is_valid = matches!(&ty, Type::Borrow { inner, .. } if inner.placement().is_some())
                             || by_value
+                            || self.report_host_only_on_a_device(name.as_ref(), &ty, &span)
                             || self.transfer_cost_graph.is_type_accessible(
                                 &self.active_topology,
                                 &top,

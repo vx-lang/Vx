@@ -1,0 +1,96 @@
+//===- channel_ends_and_locks_in_a_device_body.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `spawn on` body for a device must not use a channel end or a lock, because a wait on the
+// device for the host can wait forever. A body on the CPU can use them, and so can the code
+// before and after a `spawn on`.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+import std::sync::channel;
+import std::sync::mutex;
+
+struct Waiter {
+  rx : Receiver<i64>,
+}
+
+fn send_on_the_gpu(tx : Sender<i64>) -> void {
+  let mut r = unsafe { Tensor<f32, [4], Memory::GPU_HBM>::uninit() };
+  spawn on(Topology::GPU) {
+    r[0] = 1.0;
+    // CHECK-DAG: Error[E6038] at {{.*}}.vx:[[@LINE+1]]:5: the body of the `spawn on` at line [[@LINE-2]] runs on GPU[0], and it uses 'tx': 'Sender<i64>' is a channel end. A channel end and a lock stay on the host, because a wait on the device for the host can wait forever. Use 'tx' before the `spawn on`, or after it
+    tx.send(7);
+  }
+}
+
+fn receive_through_a_reference_on_the_gpu(rx : &Receiver<i64>) -> void {
+  let mut r = unsafe { Tensor<f32, [4], Memory::GPU_HBM>::uninit() };
+  spawn on(Topology::GPU) {
+    r[0] = 1.0;
+    // CHECK-DAG: Error[E6038] at {{.*}}.vx:[[@LINE+1]]:11: {{.*}} it uses 'rx': 'Receiver<i64>' is a channel end.
+    match rx.recv() {
+      Result<i64, RecvError>::Ok(v) => {
+        r[1] = v as f32;
+      }
+      Result<i64, RecvError>::Err(_e) => {
+        r[1] = 0.0;
+      }
+    }
+    r[2] = 2.0;
+  }
+}
+
+fn a_struct_that_holds_a_channel_end(w : &Waiter) -> void {
+  let mut r = unsafe { Tensor<f32, [4], Memory::GPU_HBM>::uninit() };
+  spawn on(Topology::GPU) {
+    r[0] = 1.0;
+    // CHECK-DAG: Error[E6038] at {{.*}}.vx:[[@LINE+1]]:11: {{.*}} it uses 'w': field 'rx' of 'Waiter' has type 'Receiver<i64>', and 'Receiver<i64>' is a channel end.
+    match w.rx.recv() {
+      Result<i64, RecvError>::Ok(v) => {
+        r[1] = v as f32;
+      }
+      Result<i64, RecvError>::Err(_e) => {
+        r[1] = 0.0;
+      }
+    }
+    r[2] = 2.0;
+  }
+}
+
+fn lock_on_the_gpu(m : &Mutex<i64>) -> void {
+  let mut r = unsafe { Tensor<f32, [4], Memory::GPU_HBM>::uninit() };
+  spawn on(Topology::GPU) {
+    r[0] = 1.0;
+    // CHECK-DAG: Error[E6038] at {{.*}}.vx:[[@LINE+1]]:14: {{.*}} it uses 'm': 'Mutex<i64>' is a lock.
+    let _g = m.lock();
+  }
+}
+
+// A `spawn on(Topology::CPU)` body runs on the host, so it can use a channel end.
+fn send_on_the_cpu(tx : &Sender<i64>) -> void {
+  spawn on(Topology::CPU) {
+    tx.send(8);
+  }
+}
+
+// The code before and after a `spawn on` runs on the host.
+fn send_around_the_gpu(tx : &Sender<i64>) -> void {
+  tx.send(1);
+  let mut r = unsafe { Tensor<f32, [4], Memory::GPU_HBM>::uninit() };
+  spawn on(Topology::GPU) {
+    r[0] = 1.0;
+  }
+  tx.send(2);
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// The four errors above are the only ones. `--implicit-check-not` does not look past the last
+// `CHECK-DAG` line, so this line counts them.
+// CHECK: {{^}}Semantic check failed on {{.*}}: 4 error(s) emitted

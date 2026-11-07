@@ -2434,6 +2434,10 @@ impl<'a> TypeChecker<'a> {
 
                 let prev_top = self.active_topology.clone();
                 let prev_mem = self.active_memory.clone();
+                let prev_device_spawn = self.device_spawn;
+                if self.runs_on_a_device(&actual_top) {
+                    self.device_spawn = Some(spawn_span);
+                }
                 self.active_topology = actual_top.clone();
                 let region_mem = self.transfer_cost_graph.default_memory_for(&actual_top);
                 self.set_active_memory(region_mem);
@@ -2571,6 +2575,7 @@ impl<'a> TypeChecker<'a> {
 
                 self.active_topology = prev_top;
                 self.set_active_memory(prev_mem);
+                self.device_spawn = prev_device_spawn;
 
                 // The result of a device kernel is located ON that device: return
                 // `Pinned<ret_ty, d>` so reading it on another topology re-triggers the USE
