@@ -1,0 +1,104 @@
+//===- loop_invariants_with_pointer_clauses.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A loop invariant can be a pointer clause. The compiler proves it when the loop starts and for
+// the next pass, and each pass starts with it as a fact. So each call in these loops proves its
+// `requires`.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-NOT: E80
+// CHECK: func.func @main
+
+import core::ptr;
+
+fn first(p : *const i64) -> i64
+requires valid(p, 1i64)
+requires initialized(p, 1i64)
+{
+  return unsafe { p[0] };
+}
+
+fn sum(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+ensures !frees(p)
+{
+  let mut total = 0i64;
+  for i in 0i64..n {
+    total = total + unsafe { p[i] };
+  }
+  return total;
+}
+
+// `q` moves one element in each pass, so `n - i` elements are left at `q`.
+fn walk(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  let mut q = p;
+  let mut total = 0i64;
+  let mut i = 0i64;
+  while i < n invariant 0i64 <= i invariant valid(q, n - i) invariant initialized(q, n - i) {
+    total = total + first(q);
+    q = offset(q, 1i64);
+    i = i + 1i64;
+  }
+  return total;
+}
+
+// Each pass writes one more element, and sums the elements so far.
+fn fill(p : *mut i64, n : i64) -> i64
+requires valid(p, n)
+{
+  let mut total = 0i64;
+  for i in 0i64..n invariant initialized(p, i) {
+    unsafe { p[i] = 1i64; }
+    total = total + sum(p as *const i64, i + 1i64);
+  }
+  return total;
+}
+
+fn fill_with_while(p : *mut i64, n : i64) -> i64
+requires valid(p, n)
+{
+  let mut i = 0i64;
+  while i < n invariant 0i64 <= i invariant initialized(p, i) {
+    unsafe { p[i] = 1i64; }
+    i = i + 1i64;
+  }
+  return i;
+}
+
+// A `continue` starts the next pass too, so the invariant holds there.
+fn fill_and_skip(p : *mut i64, n : i64, c : bool) -> i64
+requires valid(p, n)
+{
+  for i in 0i64..n invariant initialized(p, i) {
+    unsafe { p[i] = 1i64; }
+    if c {
+      continue;
+    }
+    let _ = sum(p as *const i64, i + 1i64);
+  }
+  return 0i64;
+}
+
+fn copy(dst : *mut i64, src : *const i64, n : i64) -> i64
+requires valid(dst, n)
+requires valid(src, n)
+requires initialized(src, n)
+requires !overlaps(dst, src, n)
+{
+  for i in 0i64..n invariant !overlaps(dst, src, n) invariant initialized(dst, i) {
+    unsafe { dst[i] = src[i]; }
+  }
+  return 0i64;
+}
+
+fn main() -> i32 {
+  return 0;
+}

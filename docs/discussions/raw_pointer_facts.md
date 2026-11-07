@@ -704,7 +704,8 @@ needs a fact there. Open question 6 asks about a warning for it.
 - Only a local variable has an entry. A pointer in a field, such as `s.data`, gets a new base with
   no facts at each read. Only an `ensures` or an `assume` gives it a fact.
 - A loop that moves a pointer, as in `p = offset(p, 1i64)`, drops the entry of `p` at the start of
-  the body. A loop that indexes, as in `p[i]`, keeps it.
+  the body. A loop that indexes, as in `p[i]`, keeps it. A loop invariant that is a pointer clause
+  about `p` gives `p` its facts again in each pass (`raw_pointer_facts_in_loops.md`).
 - A fact about other memory ends at each event that can free memory. That includes memory that the
   pointer cannot point into, such as a vector that the body made itself.
 - At most two facts prove a clause. The checker merges `Init` facts that touch, but a chain of
