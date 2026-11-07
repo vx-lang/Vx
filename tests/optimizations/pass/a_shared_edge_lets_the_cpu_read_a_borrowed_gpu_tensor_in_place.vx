@@ -26,9 +26,9 @@
 // The warnings come in the order of the functions in each code generator's module.
 // FLAT: Warning in function `main`: this transfer copies the tensor. The CPU can read it in place only when it is a `&` parameter of this function.
 // FLAT: Warning in function `write_the_copy`: a transfer to CPU_DRAM copies a tensor, because the program writes an element of the copy.
-// AST: .vx:{{[0-9]+}}:{{[0-9]+}}: a transfer to CPU_DRAM copies a tensor, because the call to `total` can change the copy or keep it.
-// AST: .vx:{{[0-9]+}}:{{[0-9]+}}: a transfer to CPU_DRAM copies a tensor, because the program writes an element of the copy.
 // AST: .vx:{{[0-9]+}}:{{[0-9]+}}: this transfer copies the tensor. The CPU can read it in place only when it is a `&` parameter of this function.
+// AST: .vx:{{[0-9]+}}:{{[0-9]+}}: a transfer to CPU_DRAM copies a tensor, because the program writes an element of the copy.
+// AST: .vx:{{[0-9]+}}:{{[0-9]+}}: a transfer to CPU_DRAM copies a tensor, because the call to `total` can change the copy or keep it.
 //
 // OUT: first=10;
 // OUT-NEXT: sum=1236;
