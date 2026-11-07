@@ -855,7 +855,8 @@ impl<'a> TypeChecker<'a> {
                 let condition = crate::hir::prover::to_source(req)
                     .map(|c| format!(" `{c}`"))
                     .unwrap_or_default();
-                self.errors.error_with_code(
+                let note = self.note_of_a_lost_invariant(|c| c.prove_expr(&at_call));
+                let error = self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E8006,
                     format!(
                         "this call to '{shown}' may not meet its precondition{condition}: \
@@ -863,6 +864,7 @@ impl<'a> TypeChecker<'a> {
                     ),
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                 );
+                error.notes.extend(note);
             }
         }
     }

@@ -1118,12 +1118,24 @@ impl<'a> TypeChecker<'a> {
 
     /// After a loop: a fact holds when it holds at each place where the loop ends. A `for` loop
     /// also ends at its head, where `head` holds. A `loop` ends only at a `break`.
-    pub(crate) fn pointer_facts_after_a_loop(&mut self, head: Option<PointerFacts>) {
+    /// `renamed` gives the variable of a `for` loop its value where the loop ended.
+    pub(crate) fn pointer_facts_after_a_loop(
+        &mut self,
+        head: Option<PointerFacts>,
+        renamed: Option<(&str, &Expr)>,
+    ) {
         let exit = self
             .pointer_loops
             .pop()
             .expect("pushed at the start of the loop");
-        self.pointer_facts = match (head, exit.at_break) {
+        let names = renamed.map(|(var, value)| HashMap::from([(var.into(), value.clone())]));
+        let rename = |mut facts: PointerFacts| {
+            if let Some(names) = &names {
+                facts.rename_all(names);
+            }
+            facts
+        };
+        self.pointer_facts = match (head.map(rename), exit.at_break.map(rename)) {
             (Some(head), Some(at_break)) => head.join(&at_break),
             (Some(state), None) | (None, Some(state)) => state,
             // No path leaves the loop, so no code after it runs.
@@ -2115,6 +2127,10 @@ impl<'a> TypeChecker<'a> {
                 continue;
             }
             let ended = self.ended_fact_that_proves(function, &values, &m);
+            let lost = match ended {
+                Some(_) => None,
+                None => self.note_of_a_lost_invariant(|c| c.prove_exact(&goal)),
+            };
             let error = self.errors.error_with_code(
                 crate::diagnostic::DiagnosticCode::E8006,
                 format!(
@@ -2131,6 +2147,7 @@ impl<'a> TypeChecker<'a> {
                     span: Some(crate::diagnostic::SourceSpan::from_ast_span(&at)),
                 });
             }
+            error.notes.extend(lost);
         }
         any_trusted
     }
