@@ -1,0 +1,24 @@
+//===- an_error_in_an_imported_method_is_reported.vx - Vx -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A borrow error inside an imported method must still be reported when the
+// program calls it. The call is the only check of that body (#1825).
+//
+// RUN: not vxc --package tests=tests/modules/method_import_borrow %s 2>&1 | FileCheck %s
+// RUN: not vxc -j 2 --package tests=tests/modules/method_import_borrow %s 2>&1 | FileCheck %s
+
+import tests::shape;
+
+fn main() -> i32 {
+  let mut s = S {
+    x : 1
+  };
+  print(s.reset());
+  return 0;
+}
+// CHECK: Error[E4009]
+// CHECK: 1 error(s) emitted

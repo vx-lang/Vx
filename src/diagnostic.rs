@@ -772,7 +772,7 @@ impl std::fmt::Display for DiagnosticCode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiagnosticLevel {
     Warning,
     Error,
@@ -1078,6 +1078,36 @@ impl DiagnosticsVec {
 
     pub fn len(&self) -> usize {
         self.inner.len()
+    }
+
+    /// Drop every diagnostic added since `start`. Used when a body is checked
+    /// again only to rewrite it for emission, and the first check already reported.
+    pub fn discard_since(&mut self, start: usize) {
+        self.inner.truncate(start);
+    }
+
+    /// Drop each diagnostic added since `start` that already appears earlier in this
+    /// vector with the same code, place and message. Keep any new ones — a re-check
+    /// that first sees a callee's error must not throw that error away.
+    pub fn drop_already_reported_since(&mut self, start: usize) {
+        let mut i = start;
+        while i < self.inner.len() {
+            let d = &self.inner[i];
+            let at = d.source_span.as_ref().map(|s| (s.line, s.column, s.length));
+            let key = (d.level, d.code, at, d.message.as_ref());
+            let already = self.inner[..start].iter().any(|prev| {
+                let prev_at = prev
+                    .source_span
+                    .as_ref()
+                    .map(|s| (s.line, s.column, s.length));
+                (prev.level, prev.code, prev_at, prev.message.as_ref()) == key
+            });
+            if already {
+                self.inner.remove(i);
+            } else {
+                i += 1;
+            }
+        }
     }
 
     pub fn iter(&self) -> std::slice::Iter<'_, Diagnostic> {
