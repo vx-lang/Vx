@@ -406,7 +406,7 @@ impl<'a> TypeChecker<'a> {
                                 format!(
                                     "Cannot access '{}' because it is mutably borrowed.{}",
                                     name,
-                                    self.held_by_note(b)
+                                    self.held_by_note(b, name.as_ref())
                                 ),
                                 Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                             );
@@ -941,7 +941,7 @@ impl<'a> TypeChecker<'a> {
                                     format!(
                                         "Cannot access '{}' because it is mutably borrowed.{}",
                                         name,
-                                        self.held_by_note(b)
+                                        self.held_by_note(b, name.as_ref())
                                     ),
                                     Some(crate::diagnostic::SourceSpan::from_ast_span(&ma_span)),
                                 );
@@ -1521,7 +1521,7 @@ impl<'a> TypeChecker<'a> {
                         let conflict = live.iter().find(|b| {
                             b.is_mut && crate::hir::places::paths_may_alias(&path, &b.path)
                         });
-                        let conflict = conflict.map(|b| self.held_by_note(b));
+                        let conflict = conflict.map(|b| self.held_by_note(b, name.as_ref()));
                         if let Some(note) = conflict {
                             // Point at the variable, as the whole-variable rule does.
                             let mut root = &**obj;
@@ -1960,7 +1960,7 @@ impl<'a> TypeChecker<'a> {
                     format!(
                         "Cannot borrow '{}' because it is already borrowed as mutable.{}",
                         name,
-                        self.held_by_note(b)
+                        self.held_by_note(b, name.as_ref())
                     ),
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                 );
@@ -1971,7 +1971,7 @@ impl<'a> TypeChecker<'a> {
                     format!(
                         "Cannot borrow '{}' as mutable because it is also borrowed as immutable.{}",
                         name,
-                        self.held_by_note(b)
+                        self.held_by_note(b, name.as_ref())
                     ),
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                 );
@@ -2511,7 +2511,7 @@ impl<'a> TypeChecker<'a> {
                     format!(
                         "Cannot borrow '{}' because it is already borrowed as mutable.{}",
                         base,
-                        self.held_by_note(b)
+                        self.held_by_note(b, base.as_ref())
                     ),
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                 );
@@ -2521,7 +2521,7 @@ impl<'a> TypeChecker<'a> {
                     format!(
                         "Cannot borrow '{}' as mutable because it is also borrowed as immutable.{}",
                         base,
-                        self.held_by_note(b)
+                        self.held_by_note(b, base.as_ref())
                     ),
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                 );
