@@ -30,7 +30,7 @@ pub struct Placement {
     /// placed after it has closed.
     pub order: usize,
     /// The `tasks` blocks and tasks that the tile is placed in (`TaskCx::task_chain`).
-    pub tasks: Vec<(usize, Option<usize>)>,
+    pub(crate) tasks: Vec<crate::hir::check::tasks::TaskLevel>,
 }
 
 pub struct ConstEvalState {
@@ -855,5 +855,5 @@ pub struct CallSite {
     /// Made from a closure body, which may run anywhere in the function.
     pub in_closure: bool,
     /// The `tasks` blocks and tasks that the call is in (`TaskCx::task_chain`).
-    pub tasks: Vec<(usize, Option<usize>)>,
+    pub(crate) tasks: Vec<crate::hir::check::tasks::TaskLevel>,
 }

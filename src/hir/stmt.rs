@@ -1234,10 +1234,13 @@ impl<'a> TypeChecker<'a> {
         let scopes = self.consteval_scopes();
 
         let marks_before = self.moved_snapshot();
+        let passes = self.pass_count(iterable);
         self.borrow
             .loop_exits
             .push(crate::hir::borrow_cx::LoopExits {
                 changed_before: std::mem::take(&mut self.changed_vars),
+                passes,
+                order: self.traffic.placement_order,
                 ..Default::default()
             });
         self.drops_enter_loop();
@@ -1508,6 +1511,7 @@ impl<'a> TypeChecker<'a> {
             .loop_exits
             .push(crate::hir::borrow_cx::LoopExits {
                 changed_before: std::mem::take(&mut self.changed_vars),
+                order: self.traffic.placement_order,
                 ..Default::default()
             });
         self.drops_enter_loop();

@@ -20,7 +20,7 @@ the test suite has one, a program that triggers it.
 - [Type Errors](#type-errors) — `E3001`–`E3063` (62 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4016` (16 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
-- [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6037` (37 codes)
+- [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6039` (38 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
 - [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8014` (14 codes)
 
@@ -236,6 +236,7 @@ Raised by the placement and capacity rules — the checks that make Vx different
 | [`E6035`](/errors/E6035/) | A `Memory` declaration's `within:` names a space that is not built in, and that the program and its machine files do not declare. A typo in the name is the usual cause. |
 | [`E6036`](/errors/E6036/) | A token of `transfer_async` that the program drops with no `.wait()`: at the end of its scope, or when an assignment gives its variable a new value. The copy may not be done then, so its target may not hold the data. Call `.wait()`, which gives the placed tensor. |
 | [`E6037`](/errors/E6037/) | A placement whose memory is not built in and has no `scope:`. Such a memory has no address space on the target. Declare the memory with `scope: device`, `sm`, `cta` or `thread`. |
+| [`E6039`](/errors/E6039/) | A `spawn` in a loop of its `tasks` block, with a count of passes that is not known at compile time, and tasks that use a memory with a capacity. Each pass starts a task, and the tasks run at the same time, so their working set has no bound. Use a `for` loop over a constant range, or join each task in its pass. Downgraded to W1028 when the space is declared `overcommit`. |
 
 ## Tensor/Math Errors
 
@@ -271,4 +272,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-182 diagnostics.
+183 diagnostics.

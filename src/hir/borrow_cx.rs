@@ -105,6 +105,11 @@ pub(crate) struct LoopExits {
     /// What the function changed before the loop. While the loop is checked, `changed_vars`
     /// holds only what the loop changes.
     pub(crate) changed_before: HashSet<String>,
+    /// The count of passes when it is known at compile time: a `for` over a constant range.
+    pub(crate) passes: Option<u64>,
+    /// `placement_order` when the loop starts. A task that a pass starts runs during the later
+    /// passes too.
+    pub(crate) order: usize,
 }
 
 impl Default for BorrowCx {
