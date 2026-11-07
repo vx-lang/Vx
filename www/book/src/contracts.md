@@ -75,6 +75,68 @@ for `i + 1` after a pass. For example, `invariant i <= b` holds, and `invariant 
 When a `for` loop starts, the prover also knows `a <= b`. A loop with `a > b` runs no pass. So
 `for i in 0..n invariant i <= n` needs no `requires 0 <= n`.
 
+An invariant can also be a pointer clause, such as `initialized(p, i)` (see
+[Unsafe Code and FFI](unsafe-and-ffi.md)). The compiler checks it at the same places, and each pass
+starts with it as a fact. Here each pass writes one more element, so a call in the body can read
+all the elements so far:
+
+```rust
+import core::ptr;
+
+fn last(p : *const i64, n : i64) -> i64
+    requires valid(p, n)
+    requires initialized(p, n)
+    requires n > 0i64
+    ensures !frees(p)
+{
+    return unsafe { p[n - 1i64] };
+}
+
+fn fill(p : *mut i64, n : i64) -> i64
+    requires valid(p, n)
+{
+    let mut total = 0i64;
+    for i in 0i64..n invariant initialized(p, i) {
+        unsafe { p[i] = i; }
+        total = total + last(p as *const i64, i + 1i64);
+    }
+    return total;
+}
+
+fn main() -> i32 {
+    let mut x = 0i64;
+    let p : *mut i64 = &mut x;
+    return fill(p, 1i64) as i32;
+}
+```
+
+After a loop, each invariant is a fact when it holds at each place where the loop ends. A
+`while c` loop ends with `!c`. A `for i in a..b` loop ends with `i == b`, so its invariant holds
+with `b` in place of `i`. This needs a prover that knows `a <= b`. Here the loop gives
+`total == n`:
+
+```rust
+fn count(n : i64) -> i64
+    requires n >= 0i64
+    ensures return == n
+{
+    let mut total = 0i64;
+    for i in 0i64..n invariant total == i {
+        total = total + 1i64;
+    }
+    return total;
+}
+
+fn main() -> i32 {
+    return (count(3i64) - 3i64) as i32;
+}
+```
+
+A `break` can also end a loop. A `break` where an invariant may not hold is not an error, because
+no pass starts after it. But then the invariant gives no fact after the loop, and `!c` and
+`i == b` hold only when no `break` ends the loop. An error that the lost invariant would prevent
+has a note with the line of that `break`.
+
 ## Type invariants
 
 A contract can also be about data. An `invariant` on a struct states a fact about each value of the
@@ -151,10 +213,17 @@ The prover checks each function on its own, from the facts it has at each point 
 - a loop's `invariant`, inside the loop, and `a <= i && i < b` inside `for i in a..b`;
 - what a called function promises in its `ensures` (see below).
 
-**Facts follow the paths.** What a branch learns ends with the branch. When a branch ends early, by
-`return`, `break`, `continue`, `panic`, `abort` or a call to a function that never returns
-(`-> !`), the code after the `if` is reached only through the other branch, so it keeps what that
-branch knew:
+**Facts follow the paths.** The code after an `if` knows the facts of one branch or the other. After
+`if c { x = 1; } else { x = 2; }`, the prover knows that `x` is 1 or 2. A branch that does not
+assign `x` keeps what was known about `x` before the `if`. The arms of a `match` join in the same
+way.
+
+An arm of a `match` on a number knows its pattern. In `match x`, the arm `5 =>` knows `x == 5`,
+and each later arm knows `x != 5`. The arm `n =>` knows `n == x`.
+
+When a branch ends early, by `return`, `break`, `continue`, `panic`, `abort` or a call to a function
+that never returns (`-> !`), the code after the `if` is reached only through the other branch, so
+it keeps what that branch knew:
 
 ```rust
 fn positive(x : i32) -> i32
@@ -215,10 +284,11 @@ ignored, and the compiler warns that it was: "the prover ignores a condition her
 
 **Not yet:**
 
-- A `match` arm does not know which pattern matched
-  ([Vx#1352](https://github.com/vx-lang/Vx/issues/1352)).
-- After a loop, nothing is known about what happened in it: not its `invariant`, and not the
-  condition that ended it ([Vx#1353](https://github.com/vx-lang/Vx/issues/1353)).
+- An arm of a `match` on an enum does not know which variant matched.
+- After a loop, the prover knows only the facts that its invariants and its end give. It does not
+  know the other facts that the body learned
+  ([Vx#1353](https://github.com/vx-lang/Vx/issues/1353)).
+- The prover knows only numbers, so the `c` of `if c` with `c : bool` gives no fact.
 
 ## assert
 

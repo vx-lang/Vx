@@ -13,7 +13,6 @@
 //===----------------------------------------------------------------------===//
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// Programs the flat path declines today, relative to `tests/backend/pass/`.
 /// A worklist, not an exemption list: shrinking it is Vx#383.
@@ -94,7 +93,7 @@ fn tests_package() -> [String; 2] {
 /// The line that says the flat path ran is printed only when `VX_FLAT_DBG` is set,
 /// so this sets it. A normal compile stays quiet.
 fn path_taken(program: &Path) -> Result<CodegenPath, String> {
-    let output = Command::new(env!("CARGO_BIN_EXE_vxc"))
+    let output = super::time_limit::vxc()
         .arg(program)
         .args(tests_package())
         .args(["--action", "emit-mlir"])
@@ -211,6 +210,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/splits_read_from_gpu_memory.vx",           // needs --machine
             "optimizations/pass/a_kernel_tells_ptxas_its_block_size.vx",   // needs --machine
             "optimizations/pass/atomic_orders_and_fence_scopes_in_ptx.vx", // needs --machine
+            "optimizations/pass/a_tensor_that_atomics_change_is_not_readonly.vx", // needs --machine
+            "optimizations/pass/writes_at_slots_from_an_atomic_counter.vx", // needs --machine
             "optimizations/pass/atomics_on_a_mut_tensor.vx",               // needs --machine
             "optimizations/pass/code_after_the_blocks_in_a_kernel_for_emit_ptx.vx", // needs --machine
             "optimizations/pass/gpu_region_that_ends_in_a_value_runs_on_the_gpu.vx", // needs --machine
@@ -441,7 +442,7 @@ fn flat_path_answers_match_the_backend_expectations() {
             continue;
         }
 
-        let output = match Command::new(env!("CARGO_BIN_EXE_vxc"))
+        let output = match super::time_limit::vxc()
             .arg(&program)
             .args(tests_package())
             .env("PATH", &path_var)

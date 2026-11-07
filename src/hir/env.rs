@@ -725,6 +725,9 @@ pub struct TypeChecker<'a> {
     /// The integer type of each old value that the prover's facts named, as `$old_N` in
     /// `x = x + 1`. Each name is new, so the facts about two old values of `x` do not meet.
     pub(crate) old_values: Vec<ElementType>,
+    /// The integer type of each value of the variable of a `for` loop where the loop ends, as
+    /// `$exit_N`. Each loop gets its own name, so the facts of two loops over `i` do not meet.
+    pub(crate) exit_values: Vec<ElementType>,
     /// The raw-pointer facts of the body being checked.
     pub(crate) pointer_facts: crate::hir::check::pointer_facts::PointerFacts,
     /// The last id given to a base or a fact. Never saved or restored, so that two branches
@@ -825,6 +828,7 @@ impl<'a> TypeChecker<'a> {
             changed_vars: std::collections::HashSet::new(),
             fact_change_frames: Vec::new(),
             old_values: Vec::new(),
+            exit_values: Vec::new(),
             pointer_facts: Default::default(),
             pointer_fact_ids: 0,
             method_call_written: None,
@@ -994,10 +998,11 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub fn insert(&mut self, name: String, ty: Type) {
-        // A new variable of this name: the fields moved out of the old one say nothing about it.
+        // A new variable of this name: a move of the old one, or of its fields, says nothing
+        // about it.
         if let Some(moved) = self.borrow.moved_vars.last_mut() {
             let prefix = format!("{name}.");
-            moved.retain(|place| !place.starts_with(&prefix));
+            moved.retain(|place| *place != name && !place.starts_with(&prefix));
         }
         if let Some(bound) = self.borrow.bound_behind_ref.last_mut() {
             bound.remove(&name);
@@ -2156,6 +2161,9 @@ impl<'a> TypeChecker<'a> {
         let prev_in_wait_limit = std::mem::replace(&mut self.in_wait_limit, in_wait_limit);
         let prev_within_depth = std::mem::replace(&mut self.within_depth, 0);
         let prev_borrowers = self.borrow.take_borrowers();
+        // The drop frames too, so that a raw pointer in a generic callee does not make the
+        // caller count as a function that uses raw pointers.
+        let prev_drops = std::mem::take(&mut self.borrow.drops);
         for (name, ty) in &func.params {
             self.insert(name.to_string(), ty.clone());
             // A token that the caller passes must be waited by the function.
@@ -2351,6 +2359,7 @@ impl<'a> TypeChecker<'a> {
         self.in_wait_limit = prev_in_wait_limit;
         self.within_depth = prev_within_depth;
         self.borrow.restore_borrowers(prev_borrowers);
+        self.borrow.drops = prev_drops;
         self.used_vars = prev_used_vars;
         self.declared_vars = prev_declared_vars;
         self.declared_mut_vars = prev_declared_mut_vars;

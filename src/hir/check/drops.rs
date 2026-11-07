@@ -70,6 +70,7 @@ struct Owner {
     fields: Vec<FieldMove>,
     /// A struct or enum in a stack slot: its last drop also ends the lifetime of the slot.
     ends_lifetime: bool,
+    ty: Type,
 }
 
 impl Owner {
@@ -81,6 +82,17 @@ impl Owner {
 
 /// A field's path, whether it was moved out, and the flag that says so when it may have been.
 pub(crate) type MovedField = (Vec<String>, Moved, Option<String>);
+
+/// An owner that the `let` at statement `at` of its block hid. Its new name is `to`.
+#[derive(Clone)]
+struct Hidden {
+    from: String,
+    to: String,
+    /// The `let` that declares it, or `None` for a parameter or a name of a `match` arm.
+    decl: Option<usize>,
+    at: usize,
+    ty: Type,
+}
 
 /// A field moved out of an owner, with the same states the owner itself has.
 #[derive(Clone)]
@@ -231,6 +243,8 @@ enum FrameKind {
         /// The position in `uses` of a separate value, `v` in `unsafe { ..; v }`: one
         /// after the last statement. What it uses is dropped after it.
         value_at: Option<usize>,
+        /// The owners that a later `let` of the block hid, now under a name of their own.
+        hidden: Vec<Hidden>,
     },
 }
 
@@ -282,7 +296,7 @@ pub(crate) struct DropFrames {
     frames: Vec<FrameKind>,
     /// Owners to add to the next block: a function's parameters, or the names a `match` arm
     /// binds by value, that need dropping. `pending_by` is what gave them.
-    pending: Vec<(String, usize, Vec<GluePart>, bool)>,
+    pending: Vec<(String, usize, Vec<GluePart>, bool, Type)>,
     pending_by: &'static str,
     /// The names moved by the statement being checked. A `return t` moves `t` on its way out.
     moved_now: HashSet<String>,
@@ -406,6 +420,124 @@ fn let_stmt(name: &str, is_mut: bool, ty: Type, value: Expr) -> Statement {
         expr: value,
         span: Span::default(),
     })
+}
+
+/// Renames the variable `from` to `to` everywhere in `stmts`: each use, each `let`, each name
+/// that a pattern, a loop or a closure binds, and each drop. A nested `let from` gets the new
+/// name too, so it still hides the outer one.
+fn rename_in_stmts(stmts: &mut [Statement], from: &str, to: &str) {
+    crate::syntax::visit_exprs_mut(stmts, &mut |e| rename_in_node(e, from, to));
+    rename_stmt_names(stmts, from, to);
+}
+
+fn rename_in_expr(e: &mut Expr, from: &str, to: &str) {
+    crate::syntax::visit_expr_mut(e, &mut |e| rename_in_node(e, from, to));
+}
+
+/// The names that statements hold outside their expressions: a `let`, a `for` variable and a
+/// drop. The expressions of a drop are not visited by `visit_exprs_mut`.
+fn rename_stmt_names(stmts: &mut [Statement], from: &str, to: &str) {
+    for s in stmts {
+        match s {
+            Statement::LetDecl(l) if l.name.as_ref() == from => l.name = to.into(),
+            Statement::ForLoop(l) => {
+                if l.iter == from {
+                    l.iter = to.to_string();
+                }
+                rename_stmt_names(&mut l.body, from, to);
+            }
+            Statement::Loop(l) => rename_stmt_names(&mut l.body, from, to),
+            Statement::Drop(d) => {
+                if d.name.as_ref() == from {
+                    d.name = to.into();
+                }
+                for e in d.expr.iter_mut().chain(d.limit.iter_mut()) {
+                    rename_in_expr(e, from, to);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// One expression: a use of `from`, or the names that it binds and that its blocks hold.
+fn rename_in_node(e: &mut Expr, from: &str, to: &str) {
+    match e {
+        Expr::Identifier(id) if id.name.as_ref() == from => id.name = to.into(),
+        Expr::Closure(c) => {
+            for (n, _) in c.params.iter_mut().chain(c.captures.iter_mut()) {
+                if n.as_ref() == from {
+                    *n = to.into();
+                }
+            }
+        }
+        Expr::Match(m) => {
+            for arm in &mut m.arms {
+                rename_pattern(&mut arm.pattern, from, to);
+                rename_stmt_names(&mut arm.body, from, to);
+            }
+        }
+        Expr::If(i) => {
+            rename_stmt_names(&mut i.then_block, from, to);
+            if let Some(b) = &mut i.else_block {
+                rename_stmt_names(b, from, to);
+            }
+        }
+        Expr::UnsafeBlock(b) => rename_stmt_names(&mut b.stmts, from, to),
+        Expr::ComptimeBlock(b) => rename_stmt_names(&mut b.stmts, from, to),
+        Expr::SpawnOn(b) => rename_stmt_names(&mut b.stmts, from, to),
+        Expr::TaskBlock(b) => rename_stmt_names(&mut b.stmts, from, to),
+        _ => {}
+    }
+}
+
+fn rename_pattern(p: &mut Pattern, from: &str, to: &str) {
+    match p {
+        Pattern::Identifier(n) if n.as_ref() == from => *n = to.into(),
+        Pattern::EnumVariant(_, _, Some(parts)) => {
+            parts.iter_mut().for_each(|p| rename_pattern(p, from, to))
+        }
+        _ => {}
+    }
+}
+
+/// Gives the owner `h` its new name in the code from where it is declared to the `let` that
+/// hides it, and in that `let`'s value, which still reads it. A parameter or a name of an arm
+/// is declared outside the block, so the `let` that moves it to its new name is returned.
+fn rename_hidden_owner(body: &mut [Statement], edits: &mut Edits, h: &Hidden) -> Option<Statement> {
+    let start = match h.decl {
+        Some(d) => {
+            let Statement::LetDecl(l) = &mut body[d] else {
+                panic!("an owner with a statement is declared by a `let`");
+            };
+            assert_eq!(l.name.as_ref(), h.from, "the `let` declares the owner");
+            l.name = h.to.as_str().into();
+            d + 1
+        }
+        None => 0,
+    };
+    rename_in_stmts(&mut body[start..h.at], &h.from, &h.to);
+    let Statement::LetDecl(l) = &mut body[h.at] else {
+        panic!("only a `let` hides an owner");
+    };
+    rename_in_expr(&mut l.expr, &h.from, &h.to);
+    let range = start..h.at;
+    for (_, stmts) in edits
+        .lets
+        .range_mut(range.clone())
+        .chain(edits.before.range_mut(range.clone()))
+        .chain(edits.after.range_mut(range.clone()))
+    {
+        rename_in_stmts(stmts, &h.from, &h.to);
+    }
+    for (k, (stmts, _)) in edits.assign.iter_mut() {
+        if range.contains(k) {
+            rename_in_stmts(stmts, &h.from, &h.to);
+        }
+    }
+    h.decl
+        .is_none()
+        .then(|| let_stmt(&h.to, true, h.ty.clone(), ident(&h.from)))
 }
 
 /// `drop owner`, naming its flag when it may have been moved, and then the end of its slot's
@@ -585,7 +717,7 @@ impl<'a> TypeChecker<'a> {
         printing_requested() && self.drops_rewriting()
     }
 
-    fn drops_rewriting(&self) -> bool {
+    pub(crate) fn drops_rewriting(&self) -> bool {
         !self.speculating
             && self.borrow.drops.frames.iter().rev().find_map(|f| match f {
                 FrameKind::Function { rewrite, .. } => Some(*rewrite),
@@ -611,7 +743,7 @@ impl<'a> TypeChecker<'a> {
         body.insert(0, let_stmt(&user, is_mut, item_ty.clone(), ident(&item)));
     }
 
-    fn drops_fresh(&mut self, what: &str) -> String {
+    pub(crate) fn drops_fresh(&mut self, what: &str) -> String {
         self.borrow.drops.counter += 1;
         format!("__vx_{what}_{}", self.borrow.drops.counter)
     }
@@ -823,10 +955,13 @@ impl<'a> TypeChecker<'a> {
     /// A function or closure body begins. `params` are its parameters taken by value.
     pub(crate) fn drops_enter_function(&mut self, params: Vec<(String, Type)>, body: &[Statement]) {
         let scope = self.scopes.len() - 1;
-        let params: Vec<(String, Vec<GluePart>, bool)> = params
+        let params: Vec<(String, Vec<GluePart>, bool, Type)> = params
             .into_iter()
-            .map(|(name, ty)| (name, self.drops_glue(&ty), self.drop_reads_a_reference(&ty)))
-            .filter(|(_, glue, _)| !glue.is_empty())
+            .map(|(name, ty)| {
+                let glue = self.drops_glue(&ty);
+                (name, glue, self.drop_reads_a_reference(&ty), ty)
+            })
+            .filter(|(_, glue, _, _)| !glue.is_empty())
             .collect();
         let already = body.iter().any(|s| {
             let mut uses = HashSet::new();
@@ -841,7 +976,7 @@ impl<'a> TypeChecker<'a> {
         });
         d.pending = params
             .into_iter()
-            .map(|(p, glue, reads)| (p, scope, glue, reads))
+            .map(|(p, glue, reads, ty)| (p, scope, glue, reads, ty))
             .collect();
         d.pending_by = "the function";
     }
@@ -858,7 +993,7 @@ impl<'a> TypeChecker<'a> {
             let glue = self.drops_glue(&ty);
             if !glue.is_empty() {
                 let reads = self.drop_reads_a_reference(&ty);
-                pending.push((name.to_string(), scope, glue, reads));
+                pending.push((name.to_string(), scope, glue, reads, ty));
             }
         }
         let d = &mut self.borrow.drops;
@@ -929,7 +1064,7 @@ impl<'a> TypeChecker<'a> {
         let given_by = d.pending_by;
         let owners = std::mem::take(&mut d.pending)
             .into_iter()
-            .map(|(name, scope, glue, drop_reads_borrows)| Owner {
+            .map(|(name, scope, glue, drop_reads_borrows, ty)| Owner {
                 name,
                 given_by: Some(given_by),
                 decl: None,
@@ -942,6 +1077,7 @@ impl<'a> TypeChecker<'a> {
                 glue,
                 fields: Vec::new(),
                 ends_lifetime: false,
+                ty,
             })
             .collect();
         d.frames.push(FrameKind::Block {
@@ -955,6 +1091,7 @@ impl<'a> TypeChecker<'a> {
             stmt: 0,
             edits: Box::default(),
             value_at: value.map(|_| body.len()),
+            hidden: Vec::new(),
         });
     }
 
@@ -1011,6 +1148,7 @@ impl<'a> TypeChecker<'a> {
         }
         let scope = self.scopes.len() - 1;
         let drop_reads_borrows = self.drop_reads_a_reference(ty);
+        self.drops_hide_owner(name);
         if let Some(FrameKind::Block { owners, stmt, .. }) = self.borrow.drops.frames.last_mut() {
             owners.push(Owner {
                 name: name.to_string(),
@@ -1025,8 +1163,49 @@ impl<'a> TypeChecker<'a> {
                 glue,
                 fields: Vec::new(),
                 ends_lifetime,
+                ty: ty.clone(),
             });
         }
+    }
+
+    /// A `let name` hides an owner of the same block. A drop of the owner after the `let` would
+    /// name the new value: its drop at the end of the block, or its drop after the last use of
+    /// something that borrows it. So the owner gets a name of its own, and the end of the block
+    /// renames it in the code up to the `let`. An owner that something borrows waits for the end
+    /// of the block, since a borrow of it can be used after the `let`.
+    fn drops_hide_owner(&mut self, name: &str) {
+        let borrowed = !self.borrow.borrowers_of(name).is_empty();
+        let hides =
+            |o: &Owner| o.name == name && o.moved != Moved::Yes && (o.to_block_end || borrowed);
+        let found = matches!(self.borrow.drops.frames.last(), Some(FrameKind::Block { owners, .. })
+            if owners.iter().any(hides));
+        if !found {
+            return;
+        }
+        let to = self.drops_fresh("hidden");
+        let Some(FrameKind::Block {
+            owners,
+            stmt,
+            hidden,
+            ..
+        }) = self.borrow.drops.frames.last_mut()
+        else {
+            unreachable!("checked above");
+        };
+        let owner = owners
+            .iter_mut()
+            .rev()
+            .find(|o| hides(o))
+            .expect("checked above");
+        hidden.push(Hidden {
+            from: name.to_string(),
+            to: to.clone(),
+            decl: owner.decl,
+            at: *stmt,
+            ty: owner.ty.clone(),
+        });
+        owner.name = to;
+        owner.to_block_end = true;
     }
 
     /// Whether a local of type `ty` lives in a stack slot of its own: a struct or an enum. A
@@ -1657,6 +1836,7 @@ impl<'a> TypeChecker<'a> {
             lines,
             mut edits,
             value_at,
+            hidden,
             ..
         }) = self.borrow.drops.frames.pop()
         else {
@@ -1665,8 +1845,17 @@ impl<'a> TypeChecker<'a> {
         if self.speculating {
             return;
         }
+        let mut moves = Vec::new();
         if rewriting {
+            for h in &hidden {
+                moves.extend(rename_hidden_owner(body, &mut edits, h));
+            }
             self.drops_hoist_temporaries(body, &mut edits, value_used);
+        }
+        // A parameter or a name of an arm moves to its new name before the block starts.
+        if !moves.is_empty() {
+            let lets = edits.lets.entry(0).or_default();
+            lets.splice(0..0, moves);
         }
         let raw_pointers = self.borrow.drops.uses_raw_pointers();
         for owner in owners.iter().rev() {
@@ -1749,7 +1938,8 @@ impl<'a> TypeChecker<'a> {
     /// out too, in order, into a `let` that is dropped after the statement only when its
     /// value was just read. Nothing moves out of a branch, a loop or the right of `&&` or `||`,
     /// and a temporary after one, or after a call whose type is not known, stays where it is
-    /// and is not dropped.
+    /// and is not dropped. The condition of an `if` and the value of a `match` run before the
+    /// branch, so their temporaries move out too.
     fn drops_hoist_temporaries(
         &mut self,
         body: &mut [Statement],
@@ -1861,6 +2051,31 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::UnaryOp(u) => return self.drops_scan_temps(&mut u.expr, false, scan),
             Expr::Identifier(_) | Expr::Number(_) | Expr::StringLiteral(_) => return,
+            // The condition of an `if`, and so of a `while`, runs before either branch. Its
+            // temporaries move out, and each branch drops them first, as in Rust.
+            Expr::If(i) if !i.is_comptime => {
+                let first = scan.found.len();
+                self.drops_scan_temps(&mut i.cond, false, scan);
+                let mut drops = Vec::new();
+                for (name, _, _, glue) in &mut scan.found[first..] {
+                    drops.extend(glue_drops(name, &std::mem::take(glue), None));
+                }
+                if !drops.is_empty() {
+                    i.then_block.splice(0..0, drops.clone());
+                    i.else_block
+                        .get_or_insert_with(Vec::new)
+                        .splice(0..0, drops);
+                }
+                scan.blocked = true;
+                return;
+            }
+            // The value that a `match` matches runs before its arms. Its temporaries drop after
+            // the statement, as Rust drops them at the end of the `match`.
+            Expr::Match(m) => {
+                self.drops_scan_temps(&mut m.expr, false, scan);
+                scan.blocked = true;
+                return;
+            }
             // A branch, a loop or a short-circuit runs its parts only sometimes, and a
             // closure later: nothing at or after it moves out.
             _ => {

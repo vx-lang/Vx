@@ -84,3 +84,7 @@ fn main() -> i32 {
   print(checked(0i64 - 2i64));
   return 0;
 }
+
+// The 5 errors above are the only ones. `--implicit-check-not` does not look past the first
+// `CHECK-DAG` match, so this line counts them.
+// CHECK: {{^}}Semantic check failed on {{.*}}: 5 error(s) emitted

@@ -1,0 +1,120 @@
+//===- a_temporary_in_a_condition_is_dropped.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A value that a condition makes and nothing names, `n(1)` in `if n(1).id == 1`, is dropped, as
+// in Rust. Both code generators leaked it. Each `drop` prints `d` and its number:
+//
+// - `an_if` and `an_else`: before the branch that runs;
+// - `a_value`: before the branch, in an `if` that gives a value;
+// - `a_while`: on each pass, and on the last test that ends the loop;
+// - `a_break`: before a `break` in the body leaves the loop;
+// - `a_match` and `a_match_value`: at the end of the `match`.
+//
+// EXPECT: d1 then x | d2 else x | d3 b v10 | d4 w d5 w d6 x | d7 w d8 x | m d9 x | d10 k1 | end
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print!("d{} ", self.id);
+  }
+}
+
+fn n(id : i32) -> Noisy {
+  return Noisy {
+    id: id
+  };
+}
+
+fn an_if() -> void {
+  if n(1).id == 1 {
+    print!("then ");
+  }
+  print!("x ");
+}
+
+fn an_else() -> void {
+  if n(2).id == 0 {
+    print!("then ");
+  } else {
+    print!("else ");
+  }
+  print!("x ");
+}
+
+fn a_value() -> void {
+  let v = if n(3).id == 3 {
+    print!("b ");
+    10
+  } else {
+    20
+  };
+  print!("v{} ", v);
+}
+
+fn a_while() -> void {
+  let mut i = 0;
+  while n(4 + i).id < 6 {
+    print!("w ");
+    i = i + 1;
+  }
+  print!("x ");
+}
+
+fn a_break() -> void {
+  let mut i = 0;
+  while n(7 + i).id < 20 {
+    if i == 1 {
+      break;
+    }
+    print!("w ");
+    i = i + 1;
+  }
+  print!("x ");
+}
+
+fn a_match() -> void {
+  match n(9).id {
+    9 => {
+      print!("m ");
+    }
+    _ => {}
+  }
+  print!("x ");
+}
+
+fn a_match_value() -> void {
+  let k = match n(10).id {
+    10 => {
+      1
+    }
+    _ => {
+      2
+    }
+  };
+  print!("k{} ", k);
+}
+
+fn main() -> i32 {
+  an_if();
+  print!("| ");
+  an_else();
+  print!("| ");
+  a_value();
+  print!("| ");
+  a_while();
+  print!("| ");
+  a_break();
+  print!("| ");
+  a_match();
+  print!("| ");
+  a_match_value();
+  print!("| end\n");
+  return 0;
+}

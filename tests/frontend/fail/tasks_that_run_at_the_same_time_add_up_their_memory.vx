@@ -1,0 +1,137 @@
+//===- tasks_that_run_at_the_same_time_add_up_their_memory.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The tasks of a `tasks` block run at the same time, so the memory that each one uses adds up.
+// `use_one` places 3 MiB in `W`, which holds 4 MiB. Two calls of it fit one after the other, but
+// not at the same time.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 4 MiB, managed: explicit
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10,
+  transfer Memory::W -> Memory::CPU_DRAM : 10
+}
+
+fn use_one() -> f32 {
+  let aT = unsafe { Tensor<f32, [1024, 768]>::uninit() };
+  let a = transfer(aT, Memory::W);
+  let r = transfer(a, Memory::CPU_DRAM);
+  return r[0][0];
+}
+
+fn two_tasks_call_it() -> f32 {
+  let mut x = 0.0;
+  let mut y = 0.0;
+  tasks {
+    spawn {
+      // CHECK-DAG: Error[E6027] at {{.*}}.vx:[[@LINE+1]]:11: the working set along call path 'two_tasks_call_it -> use_one' in memory space 'W' peaks at 6291456 bytes, over its 4194304 byte capacity: the other tasks of 'two_tasks_call_it' that run at the same time as its call hold 3145728 bytes, 'use_one' itself peaks at 3145728 bytes
+      x = use_one();
+    };
+    spawn {
+      y = use_one();
+    };
+  }
+  return x + y;
+}
+
+// The code of the block runs at the same time as the task that it started before.
+fn the_block_calls_it_while_a_task_does() -> f32 {
+  let mut x = 0.0;
+  let mut y = 0.0;
+  tasks {
+    spawn {
+      // CHECK-DAG: Error[E6027] at {{.*}}.vx:[[@LINE+1]]:11: the working set along call path 'the_block_calls_it_while_a_task_does -> use_one' in memory space 'W' peaks at 6291456 bytes, over its 4194304 byte capacity: the other tasks of 'the_block_calls_it_while_a_task_does' that run at the same time as its call hold 3145728 bytes
+      x = use_one();
+    };
+    y = use_one();
+  }
+  return x + y;
+}
+
+// A task that calls it while another task holds a tile of 3 MiB.
+fn a_task_holds_a_tile_during_the_call() -> f32 {
+  let mut x = 0.0;
+  let mut y = 0.0;
+  tasks {
+    spawn {
+      // CHECK-DAG: Error[E6027] at {{.*}}.vx:[[@LINE+1]]:11: the working set along call path 'a_task_holds_a_tile_during_the_call -> use_one' in memory space 'W' peaks at 6291456 bytes, over its 4194304 byte capacity: 'a_task_holds_a_tile_during_the_call' holds 3145728 bytes across its call
+      x = use_one();
+    };
+    spawn {
+      let bT = unsafe { Tensor<f32, [1024, 768]>::uninit() };
+      let b = transfer(bT, Memory::W);
+      let r = transfer(b, Memory::CPU_DRAM);
+      y = r[0][0];
+    };
+  }
+  return x + y;
+}
+
+// Two tasks place a tile of 3 MiB each, with no call.
+fn two_tasks_place_a_tile() -> f32 {
+  let mut x = 0.0;
+  let mut y = 0.0;
+  tasks {
+    spawn {
+      let aT = unsafe { Tensor<f32, [1024, 768]>::uninit() };
+      // CHECK-DAG: Error[E6010] {{.*}}the working set placed in memory space 'W' (2 tiles) sums to 6291456 bytes, over its 4194304 byte capacity
+      let a = transfer(aT, Memory::W);
+      let r = transfer(a, Memory::CPU_DRAM);
+      x = r[0][0];
+    };
+    spawn {
+      let bT = unsafe { Tensor<f32, [1024, 768]>::uninit() };
+      let b = transfer(bT, Memory::W);
+      let r = transfer(b, Memory::CPU_DRAM);
+      y = r[0][0];
+    };
+  }
+  return x + y;
+}
+
+// One task calls it twice. The two calls run one after the other, so they fit.
+fn one_task_calls_it_twice() -> f32 {
+  let mut x = 0.0;
+  tasks {
+    spawn {
+      x = use_one() + use_one();
+    };
+  }
+  return x;
+}
+
+// The block calls it before the `spawn`, so that call ends before the task starts.
+fn the_block_calls_it_before_the_task() -> f32 {
+  let mut x = 0.0;
+  let mut y = 0.0;
+  tasks {
+    y = use_one();
+    spawn {
+      x = use_one();
+    };
+  }
+  return x + y;
+}
+
+fn two_calls_with_no_tasks() -> f32 {
+  return use_one() + use_one();
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// The four errors above are the only ones. `--implicit-check-not` does not look past the last
+// `CHECK-DAG` line, so this line counts them.
+// CHECK: {{^}}Semantic check failed on {{.*}}: 4 error(s) emitted

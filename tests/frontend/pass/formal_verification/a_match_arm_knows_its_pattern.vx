@@ -1,0 +1,92 @@
+//===- a_match_arm_knows_its_pattern.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not='Warning' --implicit-check-not='Error'
+// CHECK: 10 1 7 1 2
+//
+// Each arm of a `match` on a number knows which pattern matched. A later arm knows that the
+// literal patterns above it did not match.
+
+fn doubled_five(x : i32) -> i32
+ensures return == 10
+{
+  match x {
+    5 => {
+      return x * 2;
+    }
+    _ => {
+      return 10;
+    }
+  }
+}
+
+fn not_zero(x : i32) -> i32
+ensures return != 0
+{
+  match x {
+    0 => {
+      return 1;
+    }
+    _ => {
+      return x;
+    }
+  }
+}
+
+// `n` is the number that matched.
+fn more_than_three(x : i32) -> i32
+requires x > 3
+ensures return > 3
+{
+  match x {
+    0 => {
+      return 7;
+    }
+    n => {
+      return n;
+    }
+  }
+}
+
+// After the arms for 0 and 2, `x` is 1.
+fn neither(x : i32) -> i32
+requires 0 <= x && x <= 2
+ensures return == 1
+{
+  match x {
+    0 => {
+      return 1;
+    }
+    2 => {
+      return 1;
+    }
+    _ => {
+      return x;
+    }
+  }
+}
+
+// After the `match`, the prover knows the facts of one arm or another.
+fn after_the_match(x : i32) -> i32
+ensures return >= 2
+{
+  let mut r = 0;
+  match x {
+    5 => {
+      r = x;
+    }
+    _ => {
+      r = 2;
+    }
+  }
+  return r;
+}
+
+fn main() -> i32 {
+  println!("{} {} {} {} {}", doubled_five(5), not_zero(0), more_than_three(7), neither(1), after_the_match(4));
+  return 0;
+}

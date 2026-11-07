@@ -29,6 +29,8 @@ pub struct Placement {
     /// Position in program order, used to tell a tile placed before a sibling block from one
     /// placed after it has closed.
     pub order: usize,
+    /// The `tasks` blocks and tasks that the tile is placed in (`TaskCx::task_chain`).
+    pub(crate) tasks: Vec<crate::hir::check::tasks::TaskLevel>,
 }
 
 pub struct ConstEvalState {
@@ -852,4 +854,6 @@ pub struct CallSite {
     pub span: crate::syntax::Span,
     /// Made from a closure body, which may run anywhere in the function.
     pub in_closure: bool,
+    /// The `tasks` blocks and tasks that the call is in (`TaskCx::task_chain`).
+    pub(crate) tasks: Vec<crate::hir::check::tasks::TaskLevel>,
 }

@@ -32,7 +32,7 @@ impl Looks for Adds {
 }
 
 // CHECK: E8011] at {{.*}}frees_clause_that_is_written_wrong.vx:[[@LINE+4]]:12: `t` is not a parameter of `puts`
-// CHECK: E8011] at {{.*}}frees_clause_that_is_written_wrong.vx:[[@LINE+5]]:13: an `extern` function can have only a `frees` clause or a pointer clause in its `ensures`, as in `ensures !frees(p)`
+// CHECK: E8011] at {{.*}}frees_clause_that_is_written_wrong.vx:[[@LINE+5]]:13: an `extern` function can have only a `frees` clause, a pointer clause or a clause about numbers in its `ensures`, as in `ensures 0i64 <= return`
 extern "C" {
   safe fn puts(s : *const i8) -> i32
   ensures !frees(t);

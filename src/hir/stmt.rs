@@ -47,6 +47,67 @@ pub(crate) struct InvariantLoop {
     next: Option<(crate::symbol::Symbol, Option<Expr>)>,
     /// Whether the body declares a variable with the name of the loop variable.
     hides_the_variable: bool,
+    /// Each pointer that a pointer clause of an invariant names and the body assigns, with the
+    /// base that it gets at the start of a pass.
+    pass_bases: Vec<(String, usize)>,
+    /// The facts that can hold where the loop ends: each invariant that the prover models, and
+    /// `!c` for a `while c` loop.
+    exit_facts: Vec<Expr>,
+    /// For each fact of `exit_facts`, the first `break` of the loop where it may not hold.
+    lost_at: Vec<Option<Span>>,
+    /// Whether a `break` ends the loop.
+    breaks: bool,
+}
+
+/// Whether the loop invariant `inv` is a pointer clause, which the raw-pointer facts prove.
+fn is_pointer_clause(inv: &Expr) -> bool {
+    crate::hir::check::pointer_facts::read_clause(inv).is_some()
+}
+
+/// The name of a marker in the prover's facts. It holds a loop invariant that a `break` lost, for
+/// the note of a later error. The prover skips it.
+const LOST_INVARIANT: &str = "$lost_invariant";
+
+/// The marker for the invariant `inv`, whose fact after the loop is `fact`, and which may not
+/// hold at the `break` at `at_break`.
+fn lost_invariant_marker(fact: Expr, inv: &Expr, at_break: Span) -> Expr {
+    let at = |span| Expr::Number(syntax::expr::NumberExpr::new("0".to_string(), None, span));
+    let args = vec![fact, at(inv.span()), at(at_break)];
+    Expr::FunctionCall(syntax::expr::FunctionCallExpr::new(
+        LOST_INVARIANT.into(),
+        None,
+        args,
+        Span::default(),
+    ))
+}
+
+/// The fact of a marker, the line of its invariant and the place of its `break`.
+pub(crate) fn read_lost_invariant(e: &Expr) -> Option<(&Expr, usize, Span)> {
+    match e {
+        Expr::FunctionCall(fc) if fc.name.as_ref() == LOST_INVARIANT => {
+            Some((&fc.args[0], fc.args[1].span().line, fc.args[2].span()))
+        }
+        _ => None,
+    }
+}
+
+/// The facts that can hold where the loop `body` ends: the invariants that the prover models,
+/// and `!c` when the body is the `if c { .. } else { break; }` of `while c`.
+fn exit_facts_of_a_loop(invariants: &[Expr], body: &[Statement]) -> Vec<Expr> {
+    let mut facts: Vec<Expr> = invariants
+        .iter()
+        .filter(|inv| !is_pointer_clause(inv))
+        .cloned()
+        .collect();
+    if let [Statement::ExprStmt(s)] = body {
+        if let Expr::If(i) = &s.expr {
+            let ends = matches!(i.else_block.as_deref(), Some([Statement::Break(b)]) if b.tasks_value.is_none());
+            if ends && crate::hir::prover::is_modelled(&i.cond) {
+                facts.push(crate::hir::prover::negate(&i.cond));
+            }
+        }
+    }
+    facts
 }
 
 /// Where the checker proves a loop invariant, for its error.
@@ -545,6 +606,7 @@ impl<'a> TypeChecker<'a> {
             }
             Statement::Break(b) => {
                 self.check_task_exit(&Statement::Break(b.clone()));
+                self.note_exit_facts_at_break(b.span);
                 self.pointer_facts_at_break();
                 self.drops_exit("break", &b.span, crate::hir::check::drops::ExitTo::Loop)
             }
@@ -1185,6 +1247,11 @@ impl<'a> TypeChecker<'a> {
                 }));
             }
         }
+        // The proof when the loop starts assumes `a <= b`. So the invariants give facts after the
+        // loop only when the prover proves `a <= b` here.
+        let ordered =
+            !invariants.is_empty() && first.get(1).is_some_and(|a_le_b| self.prove_expr(a_le_b));
+        let exit_range = range.clone().filter(|_| ordered);
         self.prove_invariants_at_the_start(invariants, first);
         let next = range.as_ref().map(|_| {
             Expr::BinaryOp(syntax::expr::BinaryOpExpr {
@@ -1225,7 +1292,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
-        self.assume_loop_invariants(invariants, body);
+        let (pass_bases, without_clauses) = self.assume_loop_invariants(invariants, body);
 
         // What is known before the body is walked, and where each name lives. Both are
         // needed after: the walk folds one iteration's worth of assignments into the
@@ -1234,10 +1301,13 @@ impl<'a> TypeChecker<'a> {
         let scopes = self.consteval_scopes();
 
         let marks_before = self.moved_snapshot();
+        let passes = self.pass_count(iterable);
         self.borrow
             .loop_exits
             .push(crate::hir::borrow_cx::LoopExits {
                 changed_before: std::mem::take(&mut self.changed_vars),
+                passes,
+                order: self.traffic.placement_order,
                 ..Default::default()
             });
         self.drops_enter_loop();
@@ -1263,17 +1333,31 @@ impl<'a> TypeChecker<'a> {
                 bounds,
                 used: false,
             });
-        let pointers_at_head = self.pointer_facts.clone();
+        let pointers_at_head = match ordered {
+            true => self.pointer_facts.clone(),
+            false => without_clauses,
+        };
         self.pointer_facts_enter_loop();
         let next = next.filter(|_| !crate::hir::check::raw::body_reassigns(body, iter));
+        // A `for` loop also ends at its head, where `!c` is not known.
+        let exit_facts = exit_facts_of_a_loop(invariants, &[]);
         self.invariant_loops.push(InvariantLoop {
             invariants: invariants.clone(),
             scope: self.scopes.len() - 1,
             next: Some((iter.as_str().into(), next)),
             hides_the_variable: crate::hir::check::pointer_facts::body_declares(body, iter),
+            pass_bases,
+            lost_at: vec![None; exit_facts.len()],
+            exit_facts,
+            breaks: false,
         });
         self.check_loop_body(body, return_type, header);
-        self.pointer_facts_after_a_loop(Some(pointers_at_head));
+        let at_the_end = self.pointer_facts.clone();
+        // The value of `i` where the loop ends gets a new name, so that a fact about it stays
+        // after the end of the scope of `i`.
+        let exit = self.exit_value_of(iter);
+        let renamed = exit.as_ref().map(|e| (iter.as_str(), e));
+        self.pointer_facts_after_a_loop(Some(pointers_at_head), renamed);
         if let Some(c) = self.unroll_candidates.pop().filter(|c| c.used) {
             *unroll = c.bounds;
         }
@@ -1281,9 +1365,9 @@ impl<'a> TypeChecker<'a> {
         self.settle_loop_moves(marks_before, outer_depth, body, &loop_span);
 
         if !self.branch_ends_early(body) {
-            self.prove_invariants_for_the_next_pass(None);
+            self.prove_invariants_at_the_end_of_the_body(at_the_end);
         }
-        self.invariant_loops.pop();
+        let lp = self.invariant_loops.pop().expect("pushed above");
 
         let mut after = before.clone();
         let ran = self.run_loop_for_consteval(&mut after, |checker, env| {
@@ -1295,6 +1379,9 @@ impl<'a> TypeChecker<'a> {
         self.consteval.constraints.truncate(prev_constraints_len);
         self.pop_scope();
         self.borrow.forget(&iterable_borrows);
+        if let (true, Some(exit), Some((lo, hi))) = (ordered, exit, exit_range) {
+            self.add_facts_after_a_for_loop(&lp, iter, exit, lo, hi);
+        }
     }
 
     /// Check an infinite `loop`: prove invariants on entry, check the body, then re-prove them
@@ -1348,9 +1435,17 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// E8008 or E8009: a loop invariant that the prover cannot show to hold when the loop
-    /// starts, or in the next pass.
-    fn report_unproven_invariant(&mut self, inv: &Expr, proof: InvariantProof) {
+    /// starts, or in the next pass. `ended` is the event that ended a fact that would prove it.
+    fn report_unproven_invariant(
+        &mut self,
+        inv: &Expr,
+        proof: InvariantProof,
+        ended: Option<(Span, String)>,
+    ) {
         let condition = crate::hir::prover::to_source(inv)
+            .or_else(|| {
+                is_pointer_clause(inv).then(|| crate::hir::check::pointer_facts::clause_source(inv))
+            })
             .map(|c| format!(" `{c}`"))
             .unwrap_or_default();
         let (code, when, where_known) = match proof {
@@ -1377,7 +1472,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         };
-        self.errors.error_with_code(
+        let error = self.errors.error_with_code(
             code,
             format!(
                 "this loop invariant{condition} may not hold {when}: the compiler cannot prove \
@@ -1385,17 +1480,29 @@ impl<'a> TypeChecker<'a> {
             ),
             Some(crate::diagnostic::SourceSpan::from_ast_span(&inv.span())),
         );
+        if let Some((at, why)) = ended {
+            error.notes.push(crate::diagnostic::Note {
+                message: format!("a fact that proves it ended at {why}").into(),
+                span: Some(crate::diagnostic::SourceSpan::from_ast_span(&at)),
+            });
+        }
     }
 
     /// Proves each invariant on entry to a loop, from the facts before it. `first` holds facts
     /// about the range of a `for` loop in the first pass. An invariant can use the invariants
-    /// before it.
+    /// before it. The raw-pointer facts prove a pointer clause, as at a call.
     fn prove_invariants_at_the_start(&mut self, invariants: &[Expr], first: Vec<Expr>) {
         let facts_before = self.consteval.constraints.len();
         self.consteval.constraints.extend(first);
         for inv in invariants {
+            if is_pointer_clause(inv) {
+                if let Err(ended) = self.prove_pointer_clause_here(inv) {
+                    self.report_unproven_invariant(inv, InvariantProof::Start, ended);
+                }
+                continue;
+            }
             if !self.prove_expr(inv) {
-                self.report_unproven_invariant(inv, InvariantProof::Start);
+                self.report_unproven_invariant(inv, InvariantProof::Start, None);
             }
             self.consteval.constraints.push(inv.clone());
         }
@@ -1414,6 +1521,7 @@ impl<'a> TypeChecker<'a> {
             return;
         }
         let invariants = lp.invariants.clone();
+        let pass_bases = lp.pass_bases.clone();
         // The new names live only in this proof, so no fact outside it can meet them.
         let mut renamed = HashMap::new();
         for scope in &self.scopes[lp.scope..] {
@@ -1461,26 +1569,54 @@ impl<'a> TypeChecker<'a> {
         }
         self.consteval.constraints.extend(next_fact);
         for inv in &invariants {
-            if !self.prove_expr(inv) {
+            let holds = match is_pointer_clause(inv) {
+                true => self.pointer_clause_holds_in_the_next_pass(inv, &renamed, &pass_bases),
+                false => self.prove_expr(inv),
+            };
+            if !holds {
                 let mut names = HashSet::new();
                 Self::extract_uses_expr(inv, &mut names);
                 let var = var.as_deref().filter(|v| names.contains(*v));
-                self.report_unproven_invariant(inv, InvariantProof::Next { at_continue, var });
+                let proof = InvariantProof::Next { at_continue, var };
+                self.report_unproven_invariant(inv, proof, None);
             }
         }
         self.consteval.constraints = facts;
     }
 
+    /// Proves each invariant of the innermost loop at the end of its body. `at_the_end` holds the
+    /// raw-pointer facts there, because the facts after the loop have taken their place.
+    fn prove_invariants_at_the_end_of_the_body(
+        &mut self,
+        at_the_end: crate::hir::check::pointer_facts::PointerFacts,
+    ) {
+        let after_the_loop = std::mem::replace(&mut self.pointer_facts, at_the_end);
+        self.prove_invariants_for_the_next_pass(None);
+        self.pointer_facts = after_the_loop;
+    }
+
     /// The body of a loop starts from the facts that its writes cannot make false, and the
-    /// invariants.
-    fn assume_loop_invariants(&mut self, invariants: &[Expr], body: &[Statement]) {
+    /// invariants. The raw-pointer facts get the pointer clauses. Returns each pointer that the
+    /// body assigns with its base in a pass, and the raw-pointer facts without the clauses.
+    fn assume_loop_invariants(
+        &mut self,
+        invariants: &[Expr],
+        body: &[Statement],
+    ) -> (
+        Vec<(String, usize)>,
+        crate::hir::check::pointer_facts::PointerFacts,
+    ) {
+        let (clauses, others): (Vec<Expr>, Vec<Expr>) =
+            invariants.iter().cloned().partition(is_pointer_clause);
+        let pointers = self.invariant_pointers(&clauses);
         self.pointer_facts_events_then_changes(
             |this| this.end_pointer_facts_a_loop_can_end(body),
             |this| this.neutralize_facts_a_loop_writes(body),
         );
-        self.consteval
-            .constraints
-            .extend(invariants.iter().cloned());
+        let without_clauses = self.pointer_facts.clone();
+        self.consteval.constraints.extend(others);
+        let pass_bases = self.pointer_facts_assume_invariants(&clauses, &pointers);
+        (pass_bases, without_clauses)
     }
 
     fn check_loop_stmt(&mut self, lp: &mut LoopStmt, return_type: &Type) {
@@ -1496,7 +1632,7 @@ impl<'a> TypeChecker<'a> {
 
         let prev_constraints_len = self.consteval.constraints.len();
         self.prove_invariants_at_the_start(invariants, Vec::new());
-        self.assume_loop_invariants(invariants, body);
+        let (pass_bases, _) = self.assume_loop_invariants(invariants, body);
 
         // See `check_for_loop_stmt`: the single pass the checker makes over the body is not
         // what the program does, so what it folded is settled up once the loop has been run.
@@ -1508,6 +1644,7 @@ impl<'a> TypeChecker<'a> {
             .loop_exits
             .push(crate::hir::borrow_cx::LoopExits {
                 changed_before: std::mem::take(&mut self.changed_vars),
+                order: self.traffic.placement_order,
                 ..Default::default()
             });
         self.drops_enter_loop();
@@ -1518,22 +1655,28 @@ impl<'a> TypeChecker<'a> {
         self.cancel_loops
             .push(crate::hir::check::cancel_loops::loop_exits(body));
         self.pointer_facts_enter_loop();
+        let exit_facts = exit_facts_of_a_loop(invariants, body);
         self.invariant_loops.push(InvariantLoop {
             invariants: invariants.clone(),
             scope: self.scopes.len() - 1,
             next: None,
             hides_the_variable: false,
+            pass_bases,
+            lost_at: vec![None; exit_facts.len()],
+            exit_facts,
+            breaks: false,
         });
         self.check_loop_body(body, return_type, header);
-        self.pointer_facts_after_a_loop(None);
+        let at_the_end = self.pointer_facts.clone();
+        self.pointer_facts_after_a_loop(None, None);
         self.cancel_loops.pop();
         self.drops_exit_loop();
         self.settle_loop_moves(marks_before, outer_depth, body, &loop_span);
 
         if !self.branch_ends_early(body) {
-            self.prove_invariants_for_the_next_pass(None);
+            self.prove_invariants_at_the_end_of_the_body(at_the_end);
         }
-        self.invariant_loops.pop();
+        let lp = self.invariant_loops.pop().expect("pushed above");
 
         let mut after = before.clone();
         let ran =
@@ -1543,6 +1686,138 @@ impl<'a> TypeChecker<'a> {
 
         self.consteval.constraints.truncate(prev_constraints_len);
         self.pop_scope();
+        // A loop with no `break` never ends, so no code after it runs.
+        if lp.breaks {
+            self.add_facts_after_a_loop(&lp, &HashMap::new());
+        }
+    }
+
+    /// A `break` ends the innermost loop. A fact of the loop that may not hold here gives no fact
+    /// after the loop. This is not an error, because no pass starts after the `break`.
+    fn note_exit_facts_at_break(&mut self, at: Span) {
+        if self.speculating {
+            return;
+        }
+        let Some(lp) = self.invariant_loops.last() else {
+            return;
+        };
+        let open: Vec<(usize, Expr)> = lp
+            .exit_facts
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| lp.lost_at[*k].is_none())
+            .map(|(k, f)| (k, f.clone()))
+            .collect();
+        let lost: Vec<usize> = open
+            .into_iter()
+            .filter(|(_, fact)| !self.prove_expr(fact))
+            .map(|(k, _)| k)
+            .collect();
+        let lp = self.invariant_loops.last_mut().expect("checked above");
+        lp.breaks = true;
+        for k in lost {
+            lp.lost_at[k] = Some(at);
+        }
+    }
+
+    /// After a loop: each fact of the loop that holds at each place where it ends. `names` gives
+    /// the variable of a `for` loop its value there. A fact that a `break` lost gives a marker
+    /// instead, for the note of a later error.
+    fn add_facts_after_a_loop(
+        &mut self,
+        lp: &InvariantLoop,
+        names: &HashMap<crate::symbol::Symbol, Expr>,
+    ) {
+        for (fact, lost) in lp.exit_facts.iter().zip(&lp.lost_at) {
+            let after = crate::hir::prover::substitute_names(fact, names);
+            match lost {
+                None => self.consteval.constraints.push(after),
+                // The `!c` of a `while c` loop is no invariant, so its note would mislead.
+                Some(at) if lp.invariants.contains(fact) => {
+                    let marker = lost_invariant_marker(after, fact, *at);
+                    self.consteval.constraints.push(marker);
+                }
+                Some(_) => {}
+            }
+        }
+    }
+
+    /// After `for i in a..b`, when the prover proves `a <= b`: `exit` names the value of `i` where
+    /// the loop ended. Each invariant gives its fact with `exit` in place of `i`, and the prover
+    /// knows `a <= exit <= b`. Without a `break`, the loop ends at the head, where `exit == b`.
+    fn add_facts_after_a_for_loop(
+        &mut self,
+        lp: &InvariantLoop,
+        iter: &str,
+        exit: Expr,
+        lo: Expr,
+        hi: Expr,
+    ) {
+        self.add_facts_after_a_loop(
+            lp,
+            &HashMap::from([(crate::symbol::Symbol::from(iter), exit.clone())]),
+        );
+        let relation = |lhs: &Expr, op, rhs: &Expr| {
+            Expr::RelationalOp(RelationalOpExpr {
+                lhs: Box::new(lhs.clone()),
+                op,
+                rhs: Box::new(rhs.clone()),
+                span: Span::default(),
+                operand_ty: None,
+            })
+        };
+        let constraints = &mut self.consteval.constraints;
+        constraints.push(relation(&lo, RelationalOp::Le, &exit));
+        constraints.push(relation(&exit, RelationalOp::Le, &hi));
+        if !lp.breaks {
+            constraints.push(relation(&exit, RelationalOp::Eq, &hi));
+        }
+    }
+
+    /// A new name for the value of the integer variable `var` where its loop ends.
+    fn exit_value_of(&mut self, var: &str) -> Option<Expr> {
+        let int = match self.lookup(var)?.0.clone() {
+            Type::Scalar(e) if e.int_bits().is_some() && e != ElementType::Bool => e,
+            _ => return None,
+        };
+        let name = format!("$exit_{}", self.exit_values.len());
+        self.exit_values.push(int);
+        Some(Expr::Identifier(syntax::expr::IdentifierExpr {
+            name: name.into(),
+            span: Span::default(),
+        }))
+    }
+
+    /// The note for a goal that a loop invariant that a `break` lost would prove: the last such
+    /// invariant with which `proves` succeeds.
+    pub(crate) fn note_of_a_lost_invariant(
+        &mut self,
+        mut proves: impl FnMut(&mut Self) -> bool,
+    ) -> Option<crate::diagnostic::Note> {
+        let lost: Vec<(Expr, usize, Span)> = self
+            .consteval
+            .constraints
+            .iter()
+            .filter_map(read_lost_invariant)
+            .map(|(fact, line, at)| (fact.clone(), line, at))
+            .collect();
+        for (fact, line, at_break) in lost.into_iter().rev() {
+            self.consteval.constraints.push(fact);
+            let proven = proves(self);
+            self.consteval.constraints.pop();
+            if proven {
+                return Some(crate::diagnostic::Note {
+                    message: format!(
+                        "the invariant at line {line} would prove this, but it may not hold at \
+                         the `break` at line {}",
+                        at_break.line
+                    )
+                    .into(),
+                    span: Some(crate::diagnostic::SourceSpan::from_ast_span(&at_break)),
+                });
+            }
+        }
+        None
     }
 
     /// Check an assignment / compound assignment: type the LHS, then the RHS expecting the LHS
@@ -2267,9 +2542,27 @@ impl<'a> TypeChecker<'a> {
             span: *span,
             operand_ty: None,
         });
+        // A `match` or an `if` whose branches all return makes no value. The parser writes a
+        // `match` at the end of a body as such a `return`.
+        let makes_no_value = crate::syntax::is_never_ty(&ty)
+            || match expr {
+                Expr::Match(m) => {
+                    !m.arms.is_empty() && m.arms.iter().all(|a| self.branch_ends_early(&a.body))
+                }
+                Expr::If(i) => {
+                    self.branch_ends_early(&i.then_block)
+                        && i.else_block
+                            .as_ref()
+                            .is_some_and(|b| self.branch_ends_early(b))
+                }
+                _ => false,
+            };
         let ensures = self.consteval.current_ensures.clone();
         if !ensures.is_empty() && !self.speculating {
-            self.consteval.constraints.push(return_eq);
+            let facts = self.consteval.constraints.len();
+            if !makes_no_value {
+                self.consteval.constraints.push(return_eq);
+            }
             for ens in &ensures {
                 if !self.prove_expr(ens) {
                     self.errors.error_with_code(
@@ -2282,7 +2575,7 @@ impl<'a> TypeChecker<'a> {
                     );
                 }
             }
-            self.consteval.constraints.pop();
+            self.consteval.constraints.truncate(facts);
         }
         crate::syntax::is_never_ty(&ty)
     }
@@ -2380,17 +2673,18 @@ impl<'a> TypeChecker<'a> {
                             .iter()
                             .find(|(f, _)| f.name == c.name)
                             .map(|(f, _)| f)
+                    })
+                    .map(|f| (&f.params, &f.ensures))
+                    // The compiler trusts the `ensures` of an `extern` function.
+                    .or_else(|| {
+                        let ext = self.env.externs.iter().find(|x| x.name == c.name)?;
+                        Some((&ext.params, &ext.ensures))
                     });
-                if let Some(func) = callee {
-                    let mut names: HashMap<crate::symbol::Symbol, Expr> = func
-                        .params
-                        .iter()
-                        .map(|(p, _)| p.clone())
-                        .zip(args)
-                        .collect();
+                if let Some((params, ensures)) = callee {
+                    let mut names: HashMap<crate::symbol::Symbol, Expr> =
+                        params.iter().map(|(p, _)| p.clone()).zip(args).collect();
                     names.insert("return".into(), result.clone());
-                    for ens in func
-                        .ensures
+                    for ens in ensures
                         .iter()
                         .filter(|e| crate::hir::check::atomic_contracts::is_prover_clause(e))
                     {
@@ -2445,6 +2739,14 @@ impl<'a> TypeChecker<'a> {
                 .and_then(|i| self.old_values.get(i));
             return Some((int.expect("each `$old_N` has a type").clone(), true));
         }
+        // The same for the value of the variable of a `for` loop where the loop ends.
+        if let Some(exit) = n.strip_prefix("$exit_") {
+            let int = exit
+                .parse::<usize>()
+                .ok()
+                .and_then(|i| self.exit_values.get(i));
+            return Some((int.expect("each `$exit_N` has a type").clone(), true));
+        }
         let (ty, ranged) = if n == "return" {
             (self.current_return_type.clone()?, false)
         } else {
@@ -2475,6 +2777,7 @@ impl<'a> TypeChecker<'a> {
             .consteval
             .constraints
             .iter()
+            .filter(|c| read_lost_invariant(c).is_none())
             .map(|c| self.abstract_calls(c, &mut calls, &mut facts))
             .collect();
         let goal = self.abstract_calls(expr, &mut calls, &mut facts);
@@ -2527,6 +2830,7 @@ impl<'a> TypeChecker<'a> {
             .consteval
             .constraints
             .iter()
+            .filter(|c| read_lost_invariant(c).is_none())
             .map(|c| self.abstract_calls(c, &mut calls, &mut facts))
             .collect();
         let smt = self.lower_exact(goal, &mut prover, &mut calls, &mut facts);

@@ -20,7 +20,7 @@ the test suite has one, a program that triggers it.
 - [Type Errors](#type-errors) — `E3001`–`E3063` (62 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4016` (16 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
-- [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6037` (37 codes)
+- [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6039` (38 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
 - [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8014` (14 codes)
 
@@ -236,6 +236,7 @@ Raised by the placement and capacity rules — the checks that make Vx different
 | [`E6035`](/errors/E6035/) | A `Memory` declaration's `within:` names a space that is not built in, and that the program and its machine files do not declare. A typo in the name is the usual cause. |
 | [`E6036`](/errors/E6036/) | A token of `transfer_async` that the program drops with no `.wait()`: at the end of its scope, or when an assignment gives its variable a new value. The copy may not be done then, so its target may not hold the data. Call `.wait()`, which gives the placed tensor. |
 | [`E6037`](/errors/E6037/) | A placement whose memory is not built in and has no `scope:`. Such a memory has no address space on the target. Declare the memory with `scope: device`, `sm`, `cta` or `thread`. |
+| [`E6039`](/errors/E6039/) | A `spawn` in a loop of its `tasks` block, with a count of passes that is not known at compile time, and tasks that use a memory with a capacity. Each pass starts a task, and the tasks run at the same time, so their working set has no bound. Use a `for` loop over a constant range, or join each task in its pass. Downgraded to W1028 when the space is declared `overcommit`. |
 
 ## Tensor/Math Errors
 
@@ -264,11 +265,11 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 | [`E8008`](/errors/E8008/) | A loop invariant that the prover cannot show to hold when the loop starts |
 | [`E8009`](/errors/E8009/) | A loop invariant that the prover cannot show to hold in the next pass, after the loop body or after a `continue` |
 | [`E8010`](/errors/E8010/) | An `mlir!` block whose `dialects` list does not match its body: the body uses an operation of a dialect that the list does not name, or the list names something that is not a dialect. The list is what the block says it uses, so it must be right. |
-| [`E8011`](/errors/E8011/) | A pointer clause that is not well formed: `valid(p, n)`, `initialized(p, n)` or `!overlaps(p, q, n)`, where `p` and `q` are raw pointer parameters, and each clause is a `requires` or an `ensures` of its own. In an `ensures`, `return` can be the pointer. The fact of an `assume` is one such clause. A call through a function value or a trait would not prove a `requires`, so a safe function with one cannot be a function value, and a safe method of a trait impl cannot have one. A `frees` clause is an `ensures` of its own, `ensures frees(p)` or `ensures !frees(p)` for a parameter `p`, and a method of a trait impl cannot add a `!frees` that the trait method does not have. |
+| [`E8011`](/errors/E8011/) | A pointer clause that is not well formed: `valid(p, n)`, `initialized(p, n)` or `!overlaps(p, q, n)`, where `p` and `q` are raw pointer parameters, and each clause is a `requires` or an `ensures` of its own. In an `ensures`, `return` can be the pointer. The fact of an `assume` is one such clause. A call through a function value or a trait would not prove a `requires`, so a safe function with one cannot be a function value, and a safe method of a trait impl cannot have one. A `frees` clause is an `ensures` of its own, `ensures frees(p)` or `ensures !frees(p)` for a parameter `p`, and a method of a trait impl cannot add a `!frees` that the trait method does not have. An `extern` function can also ensure a clause about numbers that names only its integer parameters and `return`. |
 | [`E8012`](/errors/E8012/) | A body that breaks a pointer `ensures` of its function. The facts at a `return`, or at the end of the body, do not prove a clause such as `ensures valid(return, n)`. Or the body changes a parameter that such a clause names. Or the function says `ensures !frees(p)`, and its body gives `p`, or a value that it gets from `p`, to code that can free memory, such as a call without `!frees` for that parameter, a store or an `mlir!` block. |
 | [`E8013`](/errors/E8013/) | A type invariant that is not well formed. An `invariant` of a struct can use `self`, the fields of `self` at any depth, numbers, operators and the pointer clauses `valid`, `initialized` and `overlaps`. It calls no other function. |
 | [`E8014`](/errors/E8014/) | Code outside the module of a type with an invariant changes a field of the type. Only the module (the `.vx` file) that declares the type can write a field, take a `&mut` to a field, call a method that takes `&mut self` on a field, move a field out of the value, or build the type with a struct literal. Other code calls a function of the module to change a value of the type. Then the invariant holds for each value of the type outside its module. |
 
 ______________________________________________________________________
 
-182 diagnostics.
+183 diagnostics.

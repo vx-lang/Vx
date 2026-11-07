@@ -399,6 +399,10 @@ impl FnEmit<'_> {
         }
         if ins.imm & crate::bytecode::LANE_REDUCE_OWN_ROW != 0 {
             add("own_row");
+            let row = ins.imm >> crate::bytecode::LANE_ROW_SHIFT;
+            if row > 0 {
+                add(&format!("vx.lane_row = {row} : i64"));
+            }
         }
         let v = format!("%v{idx}");
         if argmax {

@@ -704,6 +704,11 @@ pub enum DiagnosticCode {
     /// address space on the target. Declare the memory with `scope: device`, `sm`, `cta` or
     /// `thread`.
     E6037,
+    /// A `spawn` in a loop of its `tasks` block, with a count of passes that is not known at compile
+    /// time, and tasks that use a memory with a capacity. Each pass starts a task, and the tasks run
+    /// at the same time, so their working set has no bound. Use a `for` loop over a constant range,
+    /// or join each task in its pass. Downgraded to W1028 when the space is declared `overcommit`.
+    E6039,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch
@@ -749,7 +754,8 @@ pub enum DiagnosticCode {
     /// not prove a `requires`, so a safe function with one cannot be a function value, and a safe
     /// method of a trait impl cannot have one. A `frees` clause is an `ensures` of its
     /// own, `ensures frees(p)` or `ensures !frees(p)` for a parameter `p`, and a method of a trait
-    /// impl cannot add a `!frees` that the trait method does not have.
+    /// impl cannot add a `!frees` that the trait method does not have. An `extern` function can
+    /// also ensure a clause about numbers that names only its integer parameters and `return`.
     E8011,
     /// A body that breaks a pointer `ensures` of its function. The facts at a `return`, or at the
     /// end of the body, do not prove a clause such as `ensures valid(return, n)`. Or the body

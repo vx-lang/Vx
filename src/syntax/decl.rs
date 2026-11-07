@@ -164,8 +164,8 @@ pub struct ExternDecl {
     pub memories: Vec<Symbol>,
     pub params: Vec<(Symbol, Type)>,
     pub return_type: Type,
-    /// The `ensures` clauses. The compiler trusts them, because it cannot read the body. Only a
-    /// `frees` clause can be one.
+    /// The `ensures` clauses. The compiler trusts them, because it cannot read the body. Each one
+    /// is a `frees` clause, a pointer clause or a clause about numbers.
     pub ensures: Vec<crate::syntax::Expr>,
     /// Where the declaration was written, so a diagnostic about the signature can point at it.
     pub span: Span,

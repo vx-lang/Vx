@@ -1701,6 +1701,87 @@ useThatNeedsTheCopy(Value copy, SmallVectorImpl<vx::DropOp> &drops) {
   return {nullptr, nullptr};
 }
 
+// Whether code can write the memory of `arg` through it: an element store, an
+// atomic, an `mlir!` block, or a call whose parameter is not `llvm.readonly`.
+// A load, a shape read, a view and a `let` slot that holds it only read it.
+static bool mayWriteThrough(Value arg) {
+  SmallVector<Value> work{arg};
+  llvm::DenseSet<Value> seen;
+  while (!work.empty()) {
+    Value value = work.pop_back_val();
+    if (!seen.insert(value).second)
+      continue;
+    for (OpOperand &use : value.getUses()) {
+      Operation *user = use.getOwner();
+      if (auto load = dyn_cast<memref::LoadOp>(user);
+          load && load.getMemRef() == value)
+        continue;
+      if (isa<memref::DimOp, vx::DropOp>(user))
+        continue;
+      if (auto meta = dyn_cast<memref::ExtractStridedMetadataOp>(user)) {
+        work.push_back(meta.getBaseBuffer());
+        continue;
+      }
+      if (isa<ViewLikeOpInterface, memref::CastOp>(user)) {
+        for (Value result : user->getResults())
+          work.push_back(result);
+        continue;
+      }
+      if (auto store = dyn_cast<memref::StoreOp>(user)) {
+        // The `let` slot of the parameter: its loads are the parameter again.
+        Value slot = store.getMemref();
+        if (store.getValueToStore() != value ||
+            !slot.getDefiningOp<memref::AllocaOp>())
+          return true;
+        for (Operation *u : slot.getUsers())
+          if (auto load = dyn_cast<memref::LoadOp>(u))
+            work.push_back(load.getResult());
+        continue;
+      }
+      if (auto call = dyn_cast<func::CallOp>(user)) {
+        auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+            call, call.getCalleeAttr());
+        if (callee && !callee.isExternal() &&
+            callee.getArgAttr(use.getOperandNumber(), "llvm.readonly"))
+          continue;
+        return true;
+      }
+      if (auto effects = dyn_cast<MemoryEffectOpInterface>(user)) {
+        SmallVector<MemoryEffects::EffectInstance> list;
+        effects.getEffectsOnValue(value, list);
+        if (llvm::none_of(list, [](const MemoryEffects::EffectInstance &e) {
+              return isa<MemoryEffects::Write, MemoryEffects::Free>(
+                  e.getEffect());
+            }))
+          continue;
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+// A `&` parameter is `llvm.readonly`, as Rust marks a `&T`. But the element
+// atomics of `core::sync::atomic` change a tensor through a `&`, and so does a
+// function that passes one on to them. Drops the mark from each parameter that
+// code can write through, until no mark changes: a call keeps a mark only when
+// the callee's parameter has it.
+static void dropReadonlyOfWrittenParameters(ModuleOp module) {
+  for (bool changed = true; changed;) {
+    changed = false;
+    module.walk([&](func::FuncOp f) {
+      if (f.isExternal())
+        return;
+      for (unsigned i = 0; i < f.getNumArguments(); ++i)
+        if (f.getArgAttr(i, "llvm.readonly") &&
+            mayWriteThrough(f.getArgument(i))) {
+          f.removeArgAttr(i, "llvm.readonly");
+          changed = true;
+        }
+    });
+  }
+}
+
 // A parameter of the function `v` is in: its block argument, or a load of the
 // argument's slot, which is how the AST code generator reads a `&` parameter.
 static bool isParameter(Value v) {
@@ -3311,6 +3392,16 @@ static void expandLaneSort(OpBuilder &b, vx::LaneSortOp op, bool device) {
   op.erase();
 }
 
+/// The memref that the row `row` is cut from: the source of a cast, or the
+/// memref whose strided metadata the cast starts from. `t[w][c]` is a cast of
+/// the metadata of the cast `t[w]`.
+static Value rowSource(memref::ReinterpretCastOp row) {
+  Value source = row.getSource();
+  if (auto meta = source.getDefiningOp<memref::ExtractStridedMetadataOp>())
+    return meta.getSource();
+  return source;
+}
+
 /// The tile behind the input of a lane reduction whose lanes can keep their
 /// elements in registers: the `memref.alloca` itself, or the alloca of a row in
 /// the code of a subgroup. A subgroup needs `own_row`.
@@ -3318,10 +3409,19 @@ template <typename OpTy>
 static memref::AllocaOp laneTile(OpTy op, Value input) {
   if (op.getSubgroup() && !op.getOwnRow())
     return {};
-  if (auto row = input.getDefiningOp<memref::ReinterpretCastOp>();
-      row && op.getSubgroup())
-    input = row.getSource();
+  while (auto row = input.getDefiningOp<memref::ReinterpretCastOp>()) {
+    if (!op.getSubgroup())
+      break;
+    input = rowSource(row);
+  }
   return input.getDefiningOp<memref::AllocaOp>();
+}
+
+/// The row of a subgroup that a lane-element store or a reduction is on:
+/// `vx.lane_row`, or 0. Each row of a tile has its own register.
+static int64_t laneRow(Operation *op) {
+  auto row = op->getAttrOfType<IntegerAttr>("vx.lane_row");
+  return row ? row.getInt() : 0;
 }
 
 /// Whether every use of `tile` is a store with `vx.lane_element` of `level`, a
@@ -3337,8 +3437,14 @@ static bool onlyLaneElements(Value tile, StringRef level,
       if (!attr || attr.getValue() != level || store.getMemRef() != tile)
         return false;
     } else if (auto cast = dyn_cast<memref::ReinterpretCastOp>(user)) {
-      if (row || level != "subgroup" ||
+      if (level != "subgroup" ||
           !onlyLaneElements(cast.getResult(), level, reads, /*row=*/true))
+        return false;
+    } else if (auto meta = dyn_cast<memref::ExtractStridedMetadataOp>(user)) {
+      // `t[w][c]`: the metadata of the row `t[w]`, for a cast of a row in it.
+      // The offset and the strides are numbers. Only the base buffer is memory.
+      if (!row || !onlyLaneElements(meta.getBaseBuffer(), level, reads,
+                                    /*row=*/true))
         return false;
     } else if (!reads.contains(user) && !(isa<vx::DropOp>(user) && !row)) {
       return false;
@@ -3404,16 +3510,20 @@ expandLaneReductionsFromRegisters(gpu::GPUFuncOp f,
         }
     }
   }
-  // One register a tile, as a stack slot in the entry block, which LLVM puts
-  // in a register.
-  llvm::MapVector<Operation *, Value> slots;
+  // One register a row of a tile, as a stack slot in the entry block, which
+  // LLVM puts in a register.
+  using Row = std::pair<Operation *, int64_t>;
+  llvm::MapVector<Row, Value> slots;
+  llvm::SetVector<Operation *> tiles;
   Block &entry = f.getBody().front();
   OpBuilder atEntry(&entry, entry.begin());
   for (Operation *op : reductions)
     for (memref::AllocaOp tile : chosen.contains(op)
                                      ? tilesOf(op)
                                      : SmallVector<memref::AllocaOp, 2>{}) {
-      if (slots.count(tile))
+      tiles.insert(tile);
+      Row key{tile, laneRow(op)};
+      if (slots.count(key))
         continue;
       Type elem = tile.getType().getElementType();
       Location loc = tile.getLoc();
@@ -3425,7 +3535,7 @@ expandLaneReductionsFromRegisters(gpu::GPUFuncOp f,
                        : atEntry.create<arith::ConstantOp>(
                              loc, atEntry.getIntegerAttr(elem, 0));
       atEntry.create<memref::StoreOp>(loc, zero, slot);
-      slots[tile] = slot;
+      slots[key] = slot;
     }
   SmallVector<Operation *> rest;
   for (Operation *op : reductions) {
@@ -3436,30 +3546,52 @@ expandLaneReductionsFromRegisters(gpu::GPUFuncOp f,
     OpBuilder b(op);
     SmallVector<Value, 2> registers;
     for (memref::AllocaOp tile : tilesOf(op))
-      registers.push_back(
-          b.create<memref::LoadOp>(op->getLoc(), slots[tile], ValueRange{}));
+      registers.push_back(b.create<memref::LoadOp>(
+          op->getLoc(), slots[Row{tile, laneRow(op)}], ValueRange{}));
     if (auto r = dyn_cast<vx::LaneReduceOp>(op))
       expandLaneReduction(b, r, /*device=*/true, registers);
     else
       expandLaneReduction(b, cast<vx::LaneArgmaxOp>(op), /*device=*/true,
                           registers);
   }
-  // The stores go to the registers. Then nothing uses the tiles.
-  for (auto [tile, slot] : slots) {
+  // The stores go to the registers of their rows. A store to a row that no
+  // reduction reads goes nowhere. Then nothing uses the tiles.
+  for (Operation *tile : tiles) {
     SmallVector<Operation *> users;
-    for (Operation *user : tile->getUsers()) {
-      users.push_back(user);
-      if (isa<memref::ReinterpretCastOp>(user))
-        users.append(user->getUsers().begin(), user->getUsers().end());
-    }
+    std::function<void(Operation *)> collect = [&](Operation *op) {
+      for (Operation *user : op->getUsers()) {
+        users.push_back(user);
+        if (isa<memref::ReinterpretCastOp, memref::ExtractStridedMetadataOp>(
+                user))
+          collect(user);
+      }
+    };
+    collect(tile);
     for (Operation *user : users)
       if (auto store = dyn_cast<memref::StoreOp>(user)) {
+        auto slot = slots.find(Row{tile, laneRow(store)});
+        if (slot == slots.end())
+          continue;
         OpBuilder b(store);
-        b.create<memref::StoreOp>(store.getLoc(), store.getValue(), slot);
+        b.create<memref::StoreOp>(store.getLoc(), store.getValue(),
+                                  slot->second);
       }
-    for (Operation *user : llvm::reverse(users))
-      user->erase();
-    tile->erase();
+    // The stores and the reductions are gone or moved. Erase what then has no
+    // use: the casts, the metadata, and the index arithmetic on it.
+    llvm::SetVector<Operation *> left(users.begin(), users.end());
+    left.insert(tile);
+    for (bool erased = true; erased;) {
+      erased = false;
+      for (Operation *op : left.takeVector()) {
+        if (isa<memref::StoreOp>(op) || op->use_empty()) {
+          op->erase();
+          erased = true;
+        } else {
+          left.insert(op);
+        }
+      }
+    }
+    assert(left.empty() && "a use of a lane tile that is not a lane element");
   }
   return rest;
 }
@@ -5668,6 +5800,10 @@ struct ConvertVxToStandardPass
 
   void runOnOperation() override {
     getOperation()->emitRemark("Lowering Vx to Standard dialects");
+
+    // First, so that every later step reads only the `llvm.readonly` marks
+    // that hold.
+    dropReadonlyOfWrittenParameters(getOperation());
 
     // First, so that each later step sees a task as a call that starts it, and
     // keeps what the task uses alive until the task is joined.
