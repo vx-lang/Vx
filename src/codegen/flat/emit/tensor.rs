@@ -1444,14 +1444,18 @@ impl FnEmit<'_> {
             }
             // docs/lane_reductions.md: the device copy of a kernel keeps this lane's element in a
             // register.
-            let lane = match ins.imm {
+            let row = ins.imm >> crate::bytecode::LANE_ROW_SHIFT;
+            let lane = match ins.imm & ((1 << crate::bytecode::LANE_ROW_SHIFT) - 1) {
                 crate::bytecode::TENSOR_STORE_BLOCK_LANE_ELEMENT => {
-                    " {vx.lane_element = \"block\"}"
+                    " {vx.lane_element = \"block\"}".to_string()
+                }
+                crate::bytecode::TENSOR_STORE_SUBGROUP_LANE_ELEMENT if row > 0 => {
+                    format!(" {{vx.lane_element = \"subgroup\", vx.lane_row = {row} : i64}}")
                 }
                 crate::bytecode::TENSOR_STORE_SUBGROUP_LANE_ELEMENT => {
-                    " {vx.lane_element = \"subgroup\"}"
+                    " {vx.lane_element = \"subgroup\"}".to_string()
                 }
-                _ => "",
+                _ => String::new(),
             };
             self.body += &format!("  memref.store {val}, {base}[{ic}]{lane} : {memty}\n");
         } else if let Some(rowty) = self

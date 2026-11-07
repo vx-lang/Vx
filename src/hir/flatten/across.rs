@@ -22,7 +22,7 @@ use crate::bytecode::{
     ACROSS_BLOCK, ACROSS_BLOCKS, ACROSS_LANE, ACROSS_STRIDE, BARRIER_SUBGROUP, LANE_REDUCE_ARGMAX,
     LANE_REDUCE_COPY, LANE_REDUCE_COPY_WAIT, LANE_REDUCE_DESCENDING, LANE_REDUCE_MAX,
     LANE_REDUCE_ORDERED, LANE_REDUCE_OWN_ROW, LANE_REDUCE_SORT, LANE_REDUCE_SUBGROUP,
-    TENSOR_STORE_BLOCK_LANE_ELEMENT, TENSOR_STORE_SUBGROUP_LANE_ELEMENT,
+    LANE_ROW_SHIFT, TENSOR_STORE_BLOCK_LANE_ELEMENT, TENSOR_STORE_SUBGROUP_LANE_ELEMENT,
 };
 use crate::hir::check::across_lanes;
 
@@ -465,11 +465,17 @@ impl Lowerer<'_> {
         }
         if self.across.kinds.last() == Some(&LevelKind::Subgroups) {
             imm |= LANE_REDUCE_SUBGROUP;
-            if tensors
+            let rows: Vec<Option<u64>> = tensors
                 .iter()
-                .all(|t| matches!(t, Expr::Borrow(b) if self.is_subgroup_row(&b.expr)))
-            {
-                imm |= LANE_REDUCE_OWN_ROW;
+                .map(|t| match t {
+                    Expr::Borrow(b) => self.subgroup_row_number(&b.expr),
+                    _ => None,
+                })
+                .collect();
+            if let Some(Some(row)) = rows.first() {
+                if rows.iter().all(|r| *r == Some(*row)) {
+                    imm |= LANE_REDUCE_OWN_ROW | (row << LANE_ROW_SHIFT);
+                }
             }
         }
         if argmax {
@@ -568,22 +574,35 @@ impl Lowerer<'_> {
             AcrossLevel::Block if matches!(&*ix.base, Expr::Identifier(_)) => {
                 TENSOR_STORE_BLOCK_LANE_ELEMENT
             }
-            AcrossLevel::Subgroup if self.is_subgroup_row(&ix.base) => {
-                TENSOR_STORE_SUBGROUP_LANE_ELEMENT
-            }
+            AcrossLevel::Subgroup => match self.subgroup_row_number(&ix.base) {
+                Some(row) => TENSOR_STORE_SUBGROUP_LANE_ELEMENT | (row << LANE_ROW_SHIFT),
+                None => 0,
+            },
             _ => 0,
         }
     }
 
-    /// Whether `e` is the row of a tile that the code of this subgroup alone writes.
-    fn is_subgroup_row(&self, e: &Expr) -> bool {
-        match (&self.across.subgroup_row, e) {
+    /// When `e` is a row of a tile that the code of this subgroup alone writes, the number that
+    /// tells it from the other rows of the subgroup: 0 for `t` or `t[w]`, and `c + 1` for
+    /// `t[w][c]` with a number `c`. Each row keeps its own register on the device.
+    fn subgroup_row_number(&self, e: &Expr) -> Option<u64> {
+        let is_own_row = |e: &Expr| match (&self.across.subgroup_row, e) {
             (Some(SubgroupRow::Whole), Expr::Identifier(_)) => true,
             (Some(SubgroupRow::Index(w)), Expr::IndexAccess(r)) => {
                 matches!(&*r.base, Expr::Identifier(_))
                     && matches!(&*r.index, Expr::Identifier(id) if &id.name == w)
             }
             _ => false,
+        };
+        if is_own_row(e) {
+            return Some(0);
+        }
+        match e {
+            Expr::IndexAccess(r) if is_own_row(&r.base) => match &*r.index {
+                Expr::Number(n) => n.value.parse::<u64>().ok().map(|c| c + 1),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
