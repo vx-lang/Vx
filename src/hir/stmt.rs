@@ -2664,24 +2664,7 @@ impl<'a> TypeChecker<'a> {
                     span: c.span,
                 });
                 *calls += 1;
-                let callee = self
-                    .env
-                    .syntax_functions
-                    .get(c.name.as_ref())
-                    .copied()
-                    .or_else(|| {
-                        self.mono
-                            .functions
-                            .iter()
-                            .find(|(f, _)| f.name == c.name)
-                            .map(|(f, _)| f)
-                    })
-                    .map(|f| (&f.params, &f.return_type, &f.ensures))
-                    // The compiler trusts the `ensures` of an `extern` function.
-                    .or_else(|| {
-                        let ext = self.env.externs.iter().find(|x| x.name == c.name)?;
-                        Some((&ext.params, &ext.return_type, &ext.ensures))
-                    });
+                let callee = self.declared_callee(&c.name);
                 // Keep the declared scalar type after replacing a call with a fresh name.
                 let result = match callee.map(|(_, ret, _)| ret) {
                     Some(Type::Scalar(ty))
@@ -2765,6 +2748,31 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The parameters, return type and `ensures` that the declaration of `name` states.
+    #[allow(clippy::type_complexity)]
+    fn declared_callee(
+        &self,
+        name: &crate::symbol::Symbol,
+    ) -> Option<(&[(crate::symbol::Symbol, Type)], &Type, &[Expr])> {
+        self.env
+            .syntax_functions
+            .get(name.as_ref())
+            .copied()
+            .or_else(|| {
+                self.mono
+                    .functions
+                    .iter()
+                    .find(|(f, _)| f.name == *name)
+                    .map(|(f, _)| f)
+            })
+            .map(|f| (&f.params[..], &f.return_type, &f.ensures[..]))
+            // The compiler trusts the `ensures` of an `extern` function.
+            .or_else(|| {
+                let ext = self.env.externs.iter().find(|x| x.name == *name)?;
+                Some((&ext.params[..], &ext.return_type, &ext.ensures[..]))
+            })
+    }
+
     /// Resolve clauses in the callee's scope before replacing its names.
     pub(crate) fn typed_callee_contract(
         &self,
@@ -2803,7 +2811,9 @@ impl<'a> TypeChecker<'a> {
                         _ => None,
                     }
                 }
-                Expr::FunctionCall(_) => Some(checker.check_expr_type_probe(expr)),
+                // The declared return type, not a type found in the caller's scope: a caller
+                // name can hide a callee parameter of another type.
+                Expr::FunctionCall(c) => Some(checker.declared_callee(&c.name)?.1.clone()),
                 _ => None,
             }
         }
