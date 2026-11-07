@@ -1,0 +1,86 @@
+//===- facts_after_both_branches_that_do_not_hold.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// After an `if`, the prover knows only the facts of one branch or the other. Each function here
+// asks for a fact that one of the branches does not give.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+fn equal(a : i64, b : i64) -> i64
+requires a == b
+{
+  return 0i64;
+}
+
+fn big(a : i64) -> i64
+requires a > 5i64
+{
+  return 0i64;
+}
+
+fn down(x : &mut i64) -> i64 {
+  *x = *x - 1i64;
+  return 0i64;
+}
+
+fn one_or_two(c : bool) -> i64
+ensures return == 1i64
+{
+  let mut x = 0i64;
+  if c {
+    x = 1i64;
+  } else {
+    x = 2i64;
+  }
+  // CHECK: Error[E8001] at {{.*}}.vx:[[@LINE+1]]:3: Function 'one_or_two' cannot prove postcondition
+  return x;
+}
+
+// A call that gets `&mut x` can change `x` in any way.
+fn changed_by_a_call(n : i64, c : bool) -> i64
+requires 0i64 <= n && n <= 100i64
+ensures return >= n
+{
+  let mut x = n;
+  if c {
+    x = x + 1i64;
+  } else {
+    down(&mut x);
+  }
+  // CHECK: Error[E8001] at {{.*}}.vx:[[@LINE+1]]:3: Function 'changed_by_a_call' cannot prove postcondition
+  return x;
+}
+
+// `s` is the sum from before the `if`. The `then` branch changes `x`, and the `else` branch
+// changes `y`. So `s == y + n` holds after the `then` branch only.
+fn sum_from_before(n : i64, c : bool) -> i64
+requires 0i64 < n && n <= 100i64
+{
+  let mut x = n;
+  let mut y = n;
+  let s = x + y;
+  if c {
+    x = 0i64;
+  } else {
+    y = 0i64;
+  }
+  // CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+1]]:10: this call to 'equal'
+  return equal(s, y + n) + x;
+}
+
+// What a branch learns holds only after that branch.
+fn assert_in_a_branch(x : i64, c : bool) -> i64 {
+  if c {
+    assert(x > 5i64, "x is big");
+  }
+  // CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+1]]:10: this call to 'big'
+  return big(x);
+}
+
+fn main() -> i32 {
+  return 0;
+}
