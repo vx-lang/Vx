@@ -1643,6 +1643,11 @@ impl<'a> TypeChecker<'a> {
                 self.consteval.closure_body_depth += 1;
                 // A `return` in the body leaves the closure, not the function around it.
                 self.drops_enter_function(Vec::new(), &[]);
+                // A `break` in the body needs a loop of the body.
+                let outer_loops = std::mem::replace(
+                    &mut self.borrow.loops_outside_the_closure,
+                    self.borrow.loop_exits.len(),
+                );
                 self.traffic.closure_depth += 1;
                 self.consteval.comptime_return_is_value = matches!(*b, Expr::ComptimeBlock(_));
                 // The body runs when a call runs it, so it starts with no fact of its parent.
@@ -1661,6 +1666,7 @@ impl<'a> TypeChecker<'a> {
                 self.pointer_facts_leave_body(outer_pointers);
                 self.consteval.comptime_return_is_value = false;
                 self.traffic.closure_depth -= 1;
+                self.borrow.loops_outside_the_closure = outer_loops;
                 self.drops_exit_function();
                 self.consteval.closure_body_depth -= 1;
                 self.consteval.comptime_depth = outer_comptime;

@@ -576,6 +576,25 @@ impl<'a> TypeChecker<'a> {
         last_use
     }
 
+    /// A `break` or `continue` with no loop around it in its own function or closure (E3064).
+    /// It returns whether it reported the error.
+    fn report_exit_outside_a_loop(&mut self, what: &str, span: Span) -> bool {
+        let loops_outside = self.borrow.loops_outside_the_closure;
+        if self.borrow.loop_exits.len() > loops_outside {
+            return false;
+        }
+        let mut message = format!("a `{what}` must be inside a loop");
+        if loops_outside > 0 {
+            message.push_str(". A closure body is not inside the loop around the closure");
+        }
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E3064,
+            message,
+            Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+        );
+        true
+    }
+
     pub(crate) fn check_statement(
         &mut self,
         stmt: &mut Statement,
@@ -604,6 +623,8 @@ impl<'a> TypeChecker<'a> {
                     crate::hir::check::drops::ExitTo::TasksBlock,
                 )
             }
+            Statement::Break(b) if self.report_exit_outside_a_loop("break", b.span) => {}
+            Statement::Continue(c) if self.report_exit_outside_a_loop("continue", c.span) => {}
             Statement::Break(b) => {
                 self.check_task_exit(&Statement::Break(b.clone()));
                 self.note_exit_facts_at_break(b.span);
