@@ -66,3 +66,7 @@ fn host_scalar_borrowed_on_the_gpu(out : &mut Tensor<f32, [4, 1], Memory::HBM>) 
 fn main() -> i32 {
   return 0;
 }
+
+Memory HBM {
+  scope: device, managed: explicit
+}

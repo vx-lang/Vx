@@ -700,6 +700,10 @@ pub enum DiagnosticCode {
     /// scope, or when an assignment gives its variable a new value. The copy may not be done
     /// then, so its target may not hold the data. Call `.wait()`, which gives the placed tensor.
     E6036,
+    /// A placement whose memory is not built in and has no `scope:`. Such a memory has no
+    /// address space on the target. Declare the memory with `scope: device`, `sm`, `cta` or
+    /// `thread`.
+    E6037,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch
