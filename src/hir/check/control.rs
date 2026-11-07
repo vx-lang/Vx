@@ -1093,35 +1093,18 @@ impl<'a> TypeChecker<'a> {
                 self.insert(name.to_string(), expr_ty.clone());
             }
             Pattern::EnumVariant(enum_name, variant_name, Some(payloads)) => {
-                let mut base_name = enum_name.clone();
-                if let Some(idx) = enum_name.find('<') {
-                    base_name = enum_name[..idx].to_string().into();
-                }
-                if let Some(enum_decl) = self.env.enums.get(base_name.as_ref()) {
-                    if let Some(variant) = enum_decl.variants.iter().find(|v| v.0 == *variant_name)
-                    {
-                        if let Some(payload_types) = &variant.1 {
-                            let mut mapping = std::collections::HashMap::new();
-                            let matched = match expr_ty {
-                                Type::Borrow { inner, .. } => inner,
-                                other => other,
-                            };
-                            if let Type::GenericInstance(_, args) = matched {
-                                for (i, param) in enum_decl.generics.iter().enumerate() {
-                                    if i < args.len() {
-                                        mapping.insert(param.name().into(), args[i].clone());
-                                    }
-                                }
-                            }
-                            // A pattern inside a payload is refused (E3050), but its names
-                            // are still bound, so that error is the only one.
-                            for (i, p) in payloads.iter().enumerate() {
-                                let p_ty = payload_types
-                                    .get(i)
-                                    .map_or(Type::Unknown, |t| t.substitute(&mapping));
-                                self.bind_pattern_variables(p, &p_ty);
-                            }
-                        }
+                let base = enum_name
+                    .find('<')
+                    .map_or(enum_name.as_ref(), |i| &enum_name[..i]);
+                if self.env.enums.contains_key(base) {
+                    // A pattern inside a payload is refused (E3050), but its names are still
+                    // bound, so that error is the only one.
+                    let Some(types) = self.payload_types(enum_name, variant_name, expr_ty) else {
+                        return;
+                    };
+                    for (i, p) in payloads.iter().enumerate() {
+                        let p_ty = types.get(i).cloned().unwrap_or(Type::Unknown);
+                        self.bind_pattern_variables(p, &p_ty);
                     }
                 } else {
                     for p in payloads {
@@ -1129,6 +1112,62 @@ impl<'a> TypeChecker<'a> {
                             self.insert(name.to_string(), Type::Unknown);
                         }
                     }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The type of each part of the payload of `enum_name::variant_name`, in a value of type
+    /// `expr_ty`. `None` when the enum or the variant is unknown, or the variant has no payload.
+    fn payload_types(
+        &self,
+        enum_name: &crate::symbol::Symbol,
+        variant_name: &crate::symbol::Symbol,
+        expr_ty: &Type,
+    ) -> Option<Vec<Type>> {
+        let base = enum_name
+            .find('<')
+            .map_or(enum_name.as_ref(), |i| &enum_name[..i]);
+        let enum_decl = self.env.enums.get(base)?;
+        let variant = enum_decl.variants.iter().find(|v| v.0 == *variant_name)?;
+        let mut mapping = std::collections::HashMap::new();
+        let matched = match expr_ty {
+            Type::Borrow { inner, .. } => inner,
+            other => other,
+        };
+        if let Type::GenericInstance(_, args) = matched {
+            for (param, arg) in enum_decl.generics.iter().zip(args) {
+                mapping.insert(param.name().into(), arg.clone());
+            }
+        }
+        let types = variant.1.as_ref()?;
+        Some(types.iter().map(|t| t.substitute(&mapping)).collect())
+    }
+
+    /// An arm that takes its value owns all of it, also the parts that its pattern does not
+    /// name: a `_`, or the payload of `One::It` written with no `(..)`. Each such part that
+    /// needs a drop gets a hidden name, so that the arm drops it with its other names.
+    fn name_the_parts_to_drop(&mut self, pattern: &mut Pattern, expr_ty: &Type) {
+        match pattern {
+            Pattern::Wildcard if !self.drops_glue(expr_ty).is_empty() => {
+                let name = self.drops_fresh("rest");
+                self.insert(name.clone(), expr_ty.clone());
+                *pattern = Pattern::Identifier(name.into());
+            }
+            Pattern::EnumVariant(enum_name, variant, payloads) => {
+                let Some(types) = self.payload_types(enum_name, variant, expr_ty) else {
+                    return;
+                };
+                let written = payloads.is_some();
+                let parts = payloads.get_or_insert_with(|| vec![Pattern::Wildcard; types.len()]);
+                for (part, ty) in parts.iter_mut().zip(&types) {
+                    if matches!(part, Pattern::Wildcard) {
+                        self.name_the_parts_to_drop(part, ty);
+                    }
+                }
+                if !written && parts.iter().all(|p| matches!(p, Pattern::Wildcard)) {
+                    *payloads = None;
                 }
             }
             _ => {}
@@ -1349,8 +1388,14 @@ impl<'a> TypeChecker<'a> {
                         takes_value = matches!(**match_expr, Expr::Identifier(_));
                     }
                     if takes_value && !self.speculating {
+                        if self.drops_rewriting() {
+                            self.name_the_parts_to_drop(&mut arm.pattern, &expr_ty);
+                        }
                         let mut bound = Vec::new();
                         pattern_names(&arm.pattern, &mut bound);
+                        // Listed first, the parts with no name drop last. In Rust too, the end
+                        // of a `match` drops the rest of the value that it took.
+                        bound.sort_by_key(|n| !n.starts_with("__vx_rest_"));
                         self.drops_bind_arm(&bound);
                     }
                     if let Some(value) = &matched_number {

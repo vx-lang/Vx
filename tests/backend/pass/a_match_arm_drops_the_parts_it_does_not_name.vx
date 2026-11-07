@@ -1,0 +1,158 @@
+//===- a_match_arm_drops_the_parts_it_does_not_name.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `match` arm that takes a value also drops the parts that its pattern does not name. It drops
+// them at its end, after its names. Each `drop` prints `d` and its number:
+//
+// - `in_a_wildcard`: the `_` in `One::It(_)`;
+// - `with_no_payload_written`: the payload of `One::It`, written with no `(..)`;
+// - `in_a_wildcard_arm`: all of the value, matched by `_`;
+// - `of_a_variable`: `Two::Pair(a, _)` moves all of `t` into the arm, which drops `a`, then
+//   the `_` part;
+// - `moves_nothing`: `Two::Pair(_, _)` moves nothing, so `t` drops at the end of the function;
+// - `early`: the `return` drops `a` and the `_` part;
+// - `generic`: the `_` of a `T`;
+// - `in_a_value`: an arm that gives a value drops the `_` part too.
+//
+// EXPECT: w d1 x | w d2 x | w d3 x | a4 d4 d5 x | m x d6 d7 | e d8 d9 r8 | g d10 x | d11 n1 | end
+
+import core::option;
+
+enum One {
+  It(Noisy),
+  No,
+}
+
+enum Two {
+  Pair(Noisy, Noisy),
+  Nothing,
+}
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print!("d{} ", self.id);
+  }
+}
+
+fn one(id : i32) -> One {
+  return One::It(Noisy {
+    id: id
+  });
+}
+
+fn two(id : i32) -> Two {
+  return Two::Pair(Noisy {
+    id: id
+  }, Noisy {
+    id: id + 1
+  });
+}
+
+fn in_a_wildcard() -> void {
+  match one(1) {
+    One::It(_) => {
+      print!("w ");
+    }
+    One::No => {}
+  }
+  print!("x | ");
+}
+
+fn with_no_payload_written() -> void {
+  match one(2) {
+    One::It => {
+      print!("w ");
+    }
+    One::No => {}
+  }
+  print!("x | ");
+}
+
+fn in_a_wildcard_arm() -> void {
+  match one(3) {
+    _ => {
+      print!("w ");
+    }
+  }
+  print!("x | ");
+}
+
+fn of_a_variable() -> void {
+  let t = two(4);
+  match t {
+    Two::Pair(a, _) => {
+      print!("a{} ", a.id);
+    }
+    Two::Nothing => {}
+  }
+  print!("x | ");
+}
+
+fn moves_nothing() -> void {
+  let t = two(6);
+  match t {
+    Two::Pair(_, _) => {
+      print!("m ");
+    }
+    Two::Nothing => {}
+  }
+  print!("x ");
+}
+
+fn early() -> i32 {
+  match two(8) {
+    Two::Pair(a, _) => {
+      print!("e ");
+      return a.id;
+    }
+    Two::Nothing => {}
+  }
+  return 0;
+}
+
+fn generic<T>(value : T) -> void {
+  match Option<T>::Some(value) {
+    Option<T>::Some(_) => {
+      print!("g ");
+    }
+    Option<T>::None => {}
+  }
+  print!("x | ");
+}
+
+fn in_a_value() -> i32 {
+  return match one(11) {
+    One::It(_) => {
+      1
+    }
+    One::No => {
+      2
+    }
+  };
+}
+
+fn main() -> i32 {
+  in_a_wildcard();
+  with_no_payload_written();
+  in_a_wildcard_arm();
+  of_a_variable();
+  moves_nothing();
+  print!("| ");
+  let r = early();
+  print!("r{} | ", r);
+  generic(Noisy {
+    id: 10
+  });
+  let n = in_a_value();
+  print!("n{} | ", n);
+  print!("end\n");
+  return 0;
+}
