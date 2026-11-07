@@ -439,8 +439,22 @@ Vx provides a comprehensive set of primitive types:
 
 - **Signed Integers**: `i4`, `i8`, `i16`, `i32`, `i64`, `i128`
 - **Unsigned Integers**: `u4`, `u8`, `u16`, `u32`, `u64`, `u128`
+- **Size**: `usize`, which holds 0 up to `i64::MAX`
 - **Floating Point**: `f16`, `bf16`, `f32`, `f64`
 - **Boolean**: `bool`
+
+### Integer casts
+
+`x as T` converts the integer `x` to the integer type `T`. A value that fits in `T` stays the
+same. A value that does not fit wraps at the width of `T`: `300 as u8` is 44.
+
+`usize` is the exception: a cast to it never wraps. A cast of a value outside 0 to `i64::MAX`
+stops the program with "cast to usize is out of range". When the compiler knows the value while
+it compiles, it also gives warning W1014. A cast from `u8`, `u16` or `u32` always fits, so it has
+no run-time check.
+
+In a contract, the prover reads a cast to `usize` as its value only for a value in range. So
+`requires (x as usize) < 10` holds only when `x` is in 0..10.
 
 ### Arrays, Tensors, and Matrices
 

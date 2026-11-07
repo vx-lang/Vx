@@ -1,0 +1,14 @@
+// RUN: not vxc %s --action emit-mlir 2>&1 | FileCheck %s
+
+import core::convert;
+
+fn incorrect_postcondition(value : i32) -> i64
+ensures return != value {
+  // CHECK: Error[E8001]
+  // CHECK-SAME: Function 'incorrect_postcondition' cannot prove postcondition
+  return i64::from(value);
+}
+
+fn main() -> i32 {
+  return incorrect_postcondition(17) as i32;
+}

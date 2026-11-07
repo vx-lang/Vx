@@ -1,0 +1,28 @@
+// RUN: not vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// `x as usize` stops the program when x is out of range, so then the cast has no value.
+// A precondition that uses the cast cannot hold for such an x: not -5 below, nor u64::MAX.
+
+fn take_signed(x : i64) -> i64
+requires (x as usize) < 10usize {
+  return x;
+}
+
+fn take_unsigned(x : u64) -> u64
+requires (x as usize) > 5usize {
+  return x;
+}
+
+fn main() -> i32 {
+  // Values in range meet the precondition.
+  // CHECK-NOT: Error
+  let small_signed = take_signed(5i64);
+  let large_unsigned = take_unsigned(9223372036854775807u64);
+  // CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+2]]:
+  // CHECK-SAME: this call to 'take_signed' may not meet its precondition
+  let negative = take_signed(-5i64);
+  // CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+2]]:
+  // CHECK-SAME: this call to 'take_unsigned' may not meet its precondition
+  let too_large = take_unsigned(18446744073709551615u64);
+  return 0;
+}
