@@ -4353,7 +4353,14 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             return Ok((call_op.result(0)?.into(), gen.i32_ty, current_b));
         }
 
-        if let Some((ret_ty, arg_tys)) = gen.functions.get(name).cloned() {
+        // A local that holds a function pointer hides a function of the same name, as it does in
+        // the checker.
+        let local_fn = gen.env.contains_key(name)
+            && matches!(
+                gen.ast_env.get(name),
+                Some(syntax::Type::Function(..) | syntax::Type::Closure(..))
+            );
+        if let (false, Some((ret_ty, arg_tys))) = (local_fn, gen.functions.get(name).cloned()) {
             // A callee returning a statically shaped tensor writes into a buffer we allocate and
             // pass as its first argument, and the call itself produces nothing -- the result is
             // that buffer (#643).

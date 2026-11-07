@@ -6433,7 +6433,12 @@ impl<'r> Lowerer<'r> {
         }
         // An indirect call: the callee name is a local holding a function pointer (a fn-pointer
         // parameter, or a `Closure1`'s loaded `func` field), not a registered function. (#242)
-        if !self.registry.fn_sigs.contains_key(fc.name.as_ref()) {
+        // Such a local hides a function of the same name, as it does in the checker.
+        let local_fn = matches!(
+            self.ast_types.get(fc.name.as_ref()),
+            Some(Type::Function(..) | Type::Closure(..))
+        );
+        if local_fn || !self.registry.fn_sigs.contains_key(fc.name.as_ref()) {
             if let Some(binding) = self.scope.get(&fc.name).cloned() {
                 return self.lower_indirect_call(fc, binding);
             }
