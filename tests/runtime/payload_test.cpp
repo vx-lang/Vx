@@ -196,12 +196,11 @@ void the_section_is_read_back() {
   // escape is empty, so the NUL that separates the two never reached the image
   // and the walk saw one entry, `\x03\x02\x23\x07evil=1`, rather than a key.
   const std::string image = std::string("\x03\x02\x23\x07", 4) +
-                            std::string(1, '\0') +
-                            std::string("evil=1\0", 7);
-  std::string payload = with_section(
-      make_payload("vx_npu_kernel_7", "1",
-                   {{"format=", "spirv"}, {"topo=", "500"}}),
-      image);
+                            std::string(1, '\0') + std::string("evil=1\0", 7);
+  std::string payload =
+      with_section(make_payload("vx_npu_kernel_7", "1",
+                                {{"format=", "spirv"}, {"topo=", "500"}}),
+                   image);
 
   const char *format =
       vx_payload_field(payload.data(), payload.size(), "format=");
@@ -223,8 +222,9 @@ void a_text_only_payload_carries_no_section() {
   // What a PTX payload looks like today: entries and no empty entry, so there
   // is nothing after the text and the section reader says so rather than
   // reading the end of the blob.
-  std::string payload = make_payload(
-      "vx_npu_kernel_1", "1", {{"format=", "ptx"}, {"image=", ".version 7.6\n"}});
+  std::string payload =
+      make_payload("vx_npu_kernel_1", "1",
+                   {{"format=", "ptx"}, {"image=", ".version 7.6\n"}});
   const void *out = nullptr;
   check(vx_payload_section(payload.data(), payload.size(), &out) == -1,
         "no section in a text-only payload");
@@ -262,6 +262,68 @@ void refusals() {
         "nowhere to put the answer is not the same as no section");
 }
 
+/// A payload shaped like the one a `spirv64` region produces, read the way the
+/// dispatch library reads it: version first, then the format, then the section.
+///
+/// Pinned as one shape rather than several, because that is what the library
+/// has to agree with: it refuses an `abi=` it does not know, refuses a
+/// `format=` it cannot load, and then loads the section. The three entries are
+/// the whole contract between the compiler's payload writer and the backend.
+///
+/// Built here rather than compiled, so the test does not need the compiler. The
+/// entries and the section's layout are the compiler's; the bytes inside the
+/// section only have to be bytes.
+void a_spirv_payload_reads_as_a_version_a_format_and_a_section() {
+  // SPIR-V's magic number, then four NUL bytes, then a string that would look
+  // like an entry if the walk strayed past the section's start. Each piece is
+  // built with an explicit length: `"\x00\x00\x00\x00"` is a C string that
+  // stops at its first byte, so appending it adds nothing at all and the
+  // "separate entry" this comment describes would not be there.
+  const std::string image = std::string("\x03\x02\x23\x07", 4) +
+                            std::string(4, '\0') + std::string("evil=1\0", 7);
+  const std::string payload = with_section(
+      make_payload(
+          "vx_npu_kernel_3", "1",
+          {{"topo=", "979280916"}, {"launch=", "8"}, {"format=", "spirv"}}),
+      image);
+
+  check(vx_payload_abi(payload.data(), payload.size()) == 1,
+        "the version the library checks before it trusts anything else");
+  const char *format =
+      vx_payload_field(payload.data(), payload.size(), "format=");
+  check(format != nullptr && std::string(format) == "spirv",
+        "the format decides which loader the bytes go to");
+
+  // A SPIR-V image is never carried in `image=`: its first word holds NUL
+  // bytes and would end the entry at the module's first word. A consumer that
+  // looked there would find nothing and refuse, and rightly -- so the section
+  // is what it must look at.
+  check(vx_payload_field(payload.data(), payload.size(), "image=") == nullptr,
+        "a SPIR-V payload carries no text image entry");
+
+  const void *out = nullptr;
+  int64_t length = vx_payload_section(payload.data(), payload.size(), &out);
+  check(length == (int64_t)image.size(), "the section is the image's length");
+  check(out != nullptr && memcmp(out, image.data(), image.size()) == 0,
+        "and the image's bytes, NUL bytes and all");
+
+  // The image is 15 bytes and holds a NUL, which is what a reader that walked
+  // into it would trip over. Without that byte the tail reads as the key
+  // `evil` and the test would pass while pinning nothing.
+  check(image.size() == 15, "the image is the length this test describes");
+  check(image.find('\0') != std::string::npos,
+        "the image holds a NUL byte, which is why it rides in a section");
+
+  // The other format a payload can name today. The library refuses it rather
+  // than guessing a loader, so it has to be readable as its own answer.
+  const std::string ptx =
+      make_payload("vx_npu_kernel_3", "1",
+                   {{"format=", "ptx"}, {"image=", ".version 7.6\n"}});
+  const char *ptx_format = vx_payload_field(ptx.data(), ptx.size(), "format=");
+  check(ptx_format != nullptr && std::string(ptx_format) == "ptx",
+        "a PTX payload says so, and carries its image as text");
+}
+
 } // namespace
 
 int main() {
@@ -270,6 +332,7 @@ int main() {
   an_empty_value_does_not_end_the_walk();
   the_section_is_read_back();
   a_text_only_payload_carries_no_section();
+  a_spirv_payload_reads_as_a_version_a_format_and_a_section();
   refusals();
 
   if (failures != 0) {

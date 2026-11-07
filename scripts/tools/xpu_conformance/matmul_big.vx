@@ -1,0 +1,49 @@
+//===- matmul_big.vx - the same matrix multiply, at a size worth timing -----===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `matmul.vx` at 8192 in each dimension, which is the size the card's
+// throughput was measured at before (8192^3 fp32 = 107.4 ms, 10.24 TFLOPS).
+// The runner times this region on the Arc and on the CPU backend and reports
+// both; it does not compare the results element by element, because the CPU
+// backend's reference loop takes minutes at this size.
+//
+// Three 8192x8192 fp32 tensors are 805 MiB, which is why the runner prints its
+// footprint and stays inside the shared VRAM ceiling.
+
+fn fill_a(i : i32, j : i32) -> f32 {
+  return ((((i * 131 + j * 17) % 200) as f32) - 100.0) / 97.0;
+}
+
+fn fill_b(i : i32, j : i32) -> f32 {
+  return ((((i * 61 + j * 29) % 200) as f32) - 100.0) / 89.0;
+}
+
+fn main() -> i32 {
+  let mut a = unsafe { Tensor<f32, [8192, 8192]>::uninit() };
+  let mut b = unsafe { Tensor<f32, [8192, 8192]>::uninit() };
+  for i in 0..8192 {
+    for j in 0..8192 {
+      a[i][j] = fill_a(i, j);
+      b[i][j] = fill_b(i, j);
+    }
+  }
+
+  // Three 8192-square f32 tensors are 768 MiB of GPU memory, well under the
+  // helper's ceiling, and the CPU copies are what the fill and the print use.
+  let a_g = transfer(a, Memory::GPU_HBM);
+  let b_g = transfer(b, Memory::GPU_HBM);
+  let mut c_g = unsafe {
+    Tensor<f32, [8192, 8192], Memory::GPU_HBM>::uninit()
+  };
+  spawn on(Topology::GPU) {
+    c_g = a_g @b_g;
+  }
+  let c = transfer(c_g, Memory::CPU_DRAM);
+
+  print(c[0][0]);
+  return 0;
+}

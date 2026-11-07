@@ -702,7 +702,27 @@ pub fn execute_mlir_streams(
     // resolution in `shared_library_paths` has always checked this; the link path had not.
     if !lib_npu.is_empty() && std::path::Path::new(&lib_npu).exists() {
         clang_cmd.arg(format!("-Wl,-rpath,{}", parent_of(&lib_npu)));
-        clang_cmd.args([&lib_npu]);
+        // Linked only if the program actually uses it. A program with no
+        // `spawn on` never calls the plugin, and a dispatch backend linked
+        // anyway drags its whole vendor runtime into every binary -- which is
+        // not free. libsycl's initializer calls `read`, and a Vx program that
+        // happens to define a function named `read` exports that name from the
+        // executable, interposes libc's `read` for the whole process, and the
+        // initializer then reads with garbage arguments before `main` runs.
+        // Keeping an unused backend out of the link is the backend's job.
+        //
+        // The flag that does it is the linker's, so it differs by platform:
+        // GNU ld and lld take `--as-needed`, and the Apple linker does not
+        // know that name at all -- it fails the whole link with "unknown
+        // options". Mach-O spells the same job `-dead_strip_dylibs`, which
+        // drops a dylib nothing refers to.
+        if cfg!(target_os = "linux") {
+            clang_cmd.args(["-Wl,--as-needed", lib_npu.as_str(), "-Wl,--no-as-needed"]);
+        } else if cfg!(target_os = "macos") {
+            clang_cmd.args(["-Wl,-dead_strip_dylibs", lib_npu.as_str()]);
+        } else {
+            clang_cmd.arg(lib_npu.as_str());
+        }
         clang_cmd.arg("-lffi");
 
         // The dispatcher resolves the outlined kernel with
