@@ -2365,9 +2365,21 @@ impl<'a> TypeChecker<'a> {
             let mut bound_by: HashMap<crate::symbol::Symbol, usize> = HashMap::new();
             for (i, arg) in args.iter_mut().enumerate() {
                 let param_ty = &generic_func.params[i].1;
-                let arg_ty = self
+                let mut arg_ty = self
                     .closure_literal_as(arg, param_ty)
                     .unwrap_or_else(|| arg_types[i].clone());
+                // A `&mut` can stand for a `&`, as in a call of a function that is not generic:
+                // `atomic_fetch_add_u32(t, ..)` with `t : &mut Tensor<..>`.
+                if let (
+                    Type::Borrow { is_mut: false, .. },
+                    Type::Borrow {
+                        is_mut: is_mut @ true,
+                        ..
+                    },
+                ) = (param_ty, &mut arg_ty)
+                {
+                    *is_mut = false;
+                }
                 if !self.unify_types(param_ty, &arg_ty, &mut mapping)
                     && !self.accepts_like_a_plain_call(param_ty, &mapping, arg, &arg_ty)
                 {
