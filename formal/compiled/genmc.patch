@@ -1,0 +1,49 @@
+diff --git a/lli/Runtime/Execution.cpp b/lli/Runtime/Execution.cpp
+index 9e26634..0b5a8f4 100644
+--- a/lli/Runtime/Execution.cpp
++++ b/lli/Runtime/Execution.cpp
+@@ -2441,6 +2441,14 @@ void Interpreter::visitBitCastInst(BitCastInst &I)
+ 	SetValue(&I, executeBitCastInst(I.getOperand(0), I.getType(), SF), SF);
+ }
+ 
++/* A freeze of a value that is not poison is the value. */
++void Interpreter::visitFreezeInst(FreezeInst &I)
++{
++	ExecutionContext &SF = ECStack().back();
++	updateDataDeps(getCurThr().id, &I, I.getOperand(0));
++	SetValue(&I, getOperandValue(I.getOperand(0), SF), SF);
++}
++
+ #define IMPLEMENT_VAARG(TY)                                                                        \
+ 	case Type::TY##TyID:                                                                       \
+ 		Dest.TY##Val = Src.TY##Val;                                                        \
+@@ -2764,6 +2772,17 @@ GenericValue Interpreter::getOperandValue(Value *V, ExecutionContext &SF)
+ {
+ 	if (ConstantExpr *CE = dyn_cast<ConstantExpr>(V)) {
+ 		return getConstantExprValue(CE, SF);
++	} else if (Constant *CPV = dyn_cast<Constant>(V);
++		   CPV && (CPV->getType()->isStructTy() || CPV->getType()->isArrayTy())) {
++		/* An aggregate constant, element by element. */
++		GenericValue Result;
++		auto n = isa<StructType>(CPV->getType())
++				 ? cast<StructType>(CPV->getType())->getNumElements()
++				 : cast<ArrayType>(CPV->getType())->getNumElements();
++		Result.AggregateVal.resize(n);
++		for (auto i = 0u; i < n; i++)
++			Result.AggregateVal[i] = getOperandValue(CPV->getAggregateElement(i), SF);
++		return Result;
+ 	} else if (Constant *CPV = dyn_cast<Constant>(V)) {
+ 		return getConstantValue(CPV);
+ 	} else if (GlobalValue *GV = dyn_cast<GlobalValue>(V)) {
+diff --git a/lli/Runtime/Interpreter.h b/lli/Runtime/Interpreter.h
+index a83eca2..1242ccb 100644
+--- a/lli/Runtime/Interpreter.h
++++ b/lli/Runtime/Interpreter.h
+@@ -492,6 +492,7 @@ public:
+ 	void visitPtrToIntInst(PtrToIntInst &I);
+ 	void visitIntToPtrInst(IntToPtrInst &I);
+ 	void visitBitCastInst(BitCastInst &I);
++	void visitFreezeInst(FreezeInst &I);
+ 	void visitSelectInst(SelectInst &I);
+ 
+ 	void visitCallInstWrapper(CallInstWrapper CIW);

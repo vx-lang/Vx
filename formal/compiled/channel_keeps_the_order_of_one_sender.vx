@@ -1,0 +1,36 @@
+// One task sends 1 and then 2 through a channel with room for 1 value. The main code receives
+// them. GenMC checks every order: no data race on the slot, and the values arrive in order.
+
+import std::sync::channel;
+
+fn main() -> i32 {
+  let (tx, rx) = channel<i64>(1);
+  tasks {
+    spawn {
+      let t = tx;
+      let first : i64 = 1;
+      for i in first..3 {
+        match t.send(i) {
+          Result<void, SendError<i64>>::Ok() => {}
+          Result<void, SendError<i64>>::Err(_) => {
+            panic("the receiver is gone");
+          }
+        }
+      }
+    };
+    let first : i64 = 1;
+    for want in first..3 {
+      match rx.recv() {
+        Result<i64, RecvError>::Ok(v) => {
+          if v != want {
+            panic("a value came out of order");
+          }
+        }
+        Result<i64, RecvError>::Err(_) => {
+          panic("the channel closed early");
+        }
+      }
+    }
+  };
+  return 0;
+}
