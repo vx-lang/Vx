@@ -64,8 +64,7 @@ enum Frame {
         passed_up: Vec<(Type, Span)>,
     },
     Spawn {
-        /// The number in the name of the task.
-        task: usize,
+        run: TaskRun,
         /// `scopes.len()` before the body. A variable of a lower scope is from outside the task.
         depth: usize,
         closures: usize,
@@ -79,15 +78,18 @@ enum Frame {
 
 impl TaskCx {
     /// Each `tasks` block around the code being checked, outermost first, with the task of that
-    /// block that the code is in. `None` is the code of the block itself.
-    pub(crate) fn task_chain(&self) -> Vec<(usize, Option<usize>)> {
-        let mut chain: Vec<(usize, Option<usize>)> = Vec::new();
+    /// block that the code is in.
+    pub(crate) fn task_chain(&self) -> Vec<TaskLevel> {
+        let mut chain: Vec<TaskLevel> = Vec::new();
         for f in &self.frames {
             match f {
-                Frame::Tasks { block, .. } => chain.push((*block, None)),
-                Frame::Spawn { task, .. } => {
+                Frame::Tasks { block, .. } => chain.push(TaskLevel {
+                    block: *block,
+                    run: None,
+                }),
+                Frame::Spawn { run, .. } => {
                     if let Some(last) = chain.last_mut() {
-                        last.1 = Some(*task);
+                        last.run = Some(*run);
                     }
                 }
             }
@@ -149,6 +151,28 @@ enum Take {
 pub(crate) enum SpawnPlace {
     Let,
     Statement,
+}
+
+/// A `tasks` block that code is in, and the task of the block that the code is in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TaskLevel {
+    pub(crate) block: usize,
+    /// `None` is the code of the block itself.
+    pub(crate) run: Option<TaskRun>,
+}
+
+/// A `spawn`, and how many of its tasks can run at the same time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TaskRun {
+    /// The number in the name of the task.
+    pub(crate) task: usize,
+    /// A `spawn` in a loop of the block starts a task in each pass, and nothing ends them before
+    /// the block ends. `None` when the count of passes is not known at compile time.
+    pub(crate) copies: Option<u64>,
+    /// `placement_order` when the first of the tasks can start: at the `spawn`, or at the start of
+    /// the outermost loop of the block around it.
+    pub(crate) start: usize,
+    pub(crate) spawn: Span,
 }
 
 struct LoopTask {
@@ -231,6 +255,31 @@ impl TypeChecker<'_> {
                 if b.is_mut { "changes" } else { "reads" }
             ),
             _ => String::new(),
+        }
+    }
+
+    /// The count of passes of `for _ in iterable` when the range has constant bounds.
+    pub(crate) fn pass_count(&self, iterable: &Expr) -> Option<u64> {
+        let Expr::Range(r) = iterable else {
+            return None;
+        };
+        let (a, b) = (self.known_int(&r.start)?, self.known_int(&r.end)?);
+        Some(b.saturating_sub(a).max(0) as u64)
+    }
+
+    fn known_int(&self, e: &Expr) -> Option<i64> {
+        match e {
+            Expr::Number(n) => n.value.as_ref().parse::<i64>().ok(),
+            Expr::BinaryOp(b) => {
+                let (l, r) = (self.known_int(&b.lhs)?, self.known_int(&b.rhs)?);
+                match b.op {
+                    BinaryOp::Add => l.checked_add(r),
+                    BinaryOp::Sub => l.checked_sub(r),
+                    BinaryOp::Mul => l.checked_mul(r),
+                    _ => None,
+                }
+            }
+            _ => None,
         }
     }
 }
@@ -717,8 +766,24 @@ impl TypeChecker<'_> {
         let changed_outside = std::mem::take(&mut self.changed_vars);
         let depth = self.scopes.len();
         let loops = self.borrow.loop_exits.len();
-        self.tasks.frames.push(Frame::Spawn {
+        // A join in the same block ends the task of a pass before the next pass starts.
+        let in_loops = if ended_by_join {
+            &[][..]
+        } else {
+            &self.borrow.loop_exits[tasks_loops..loops]
+        };
+        let run = TaskRun {
             task,
+            copies: in_loops
+                .iter()
+                .try_fold(1u64, |n, l| n.checked_mul(l.passes?)),
+            start: in_loops
+                .first()
+                .map_or(self.traffic.placement_order, |l| l.order),
+            spawn: span,
+        };
+        self.tasks.frames.push(Frame::Spawn {
+            run,
             depth,
             closures,
             loops,

@@ -18,6 +18,7 @@
 //===----------------------------------------------------------------------===//
 
 use super::super::*;
+use crate::hir::check::tasks::{TaskLevel, TaskRun};
 use crate::syntax::types::transfer_token_inner as token_inner;
 
 /// What resolving a transfer's edge produced: where the value is, where it is going, the route
@@ -832,16 +833,47 @@ impl<'a> TypeChecker<'a> {
                 })
                 .collect(),
         };
-        // The calls of the other tasks that run at the same time as each call, by task.
+        // The calls of the other tasks that run at the same time as each call, by group of tasks.
+        // In a group, the calls in one place of the nested `tasks` blocks run one after the other.
         for (k, c) in calls.iter().enumerate() {
-            let mut by_task: std::collections::BTreeMap<(usize, Option<usize>), Vec<usize>> =
+            type Place = Vec<(usize, Option<usize>)>;
+            type Group = (
+                crate::hir::check::capacity_fold::TaskGroup,
+                std::collections::BTreeMap<Place, Vec<usize>>,
+            );
+            let mut groups: std::collections::BTreeMap<(usize, Option<usize>, bool), Group> =
                 Default::default();
             for (j, other) in calls.iter().enumerate() {
-                if let Some(task) = at_the_same_time(&c.tasks, c.order, &other.tasks, other.order) {
-                    by_task.entry(task).or_default().push(j);
+                for o in at_the_same_time(&c.tasks, c.order, &other.tasks, other.order) {
+                    let place: Place = other.tasks[o.level + 1..]
+                        .iter()
+                        .map(|l| (l.block, l.run.map(|r| r.task)))
+                        .collect();
+                    groups
+                        .entry((o.level, o.task, o.other_copies))
+                        .or_insert_with(|| {
+                            (
+                                crate::hir::check::capacity_fold::TaskGroup {
+                                    copies: o.copies,
+                                    spawn: o.spawn,
+                                    parts: Vec::new(),
+                                },
+                                Default::default(),
+                            )
+                        })
+                        .1
+                        .entry(place)
+                        .or_default()
+                        .push(j);
                 }
             }
-            summary.calls[k].others = by_task.into_values().collect();
+            summary.calls[k].others = groups
+                .into_values()
+                .map(|(mut g, parts)| {
+                    g.parts = parts.into_values().collect();
+                    g
+                })
+                .collect();
         }
         let h = crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
         // (space, total, cap, tile_count, overcommit, granule)
@@ -882,28 +914,59 @@ impl<'a> TypeChecker<'a> {
                     )
                 })
                 .collect();
-            let tile_tasks: std::collections::HashMap<usize, &Vec<(usize, Option<usize>)>> =
+            let tile_tasks: std::collections::HashMap<usize, &Vec<TaskLevel>> =
                 tiles.values().map(|p| (p.order, &p.tasks)).collect();
             placed.sort_by_key(|&(_, _, order)| order);
+            // The bytes of the tiles of other tasks that run at the same time as code at `order`
+            // in `chain` and `scope`, and how many tiles that is. Each tile counts once for each
+            // copy of its task, also when its task places it after another one in the same task
+            // ends. The prefix test of the caller already counts one copy of some of them.
+            let mut not_known: Option<crate::syntax::Span> = None;
+            let mut of_other_tasks = |chain: &[TaskLevel], scope: &Vec<u32>, order: usize| {
+                let (mut bytes, mut count) = (0u64, 0usize);
+                for &(b, sc, ord) in &placed {
+                    let in_scope = ord <= order && sc.len() <= scope.len() && scope.starts_with(sc);
+                    for o in at_the_same_time(chain, order, tile_tasks[&ord], ord) {
+                        match o.copies {
+                            Some(n) => {
+                                let n = if in_scope && !o.other_copies {
+                                    n.saturating_sub(1)
+                                } else {
+                                    n
+                                };
+                                bytes = bytes.saturating_add(b.saturating_mul(n));
+                                count += n as usize;
+                            }
+                            None => not_known = not_known.or(o.spawn),
+                        }
+                    }
+                }
+                (bytes, count)
+            };
             let mut total: u64 = 0;
             let mut peak_tiles = 0usize;
-            for (i, (_, scope, _)) in placed.iter().enumerate() {
-                let live: u64 = placed[..=i]
-                    .iter()
-                    .filter(|(_, earlier, _)| {
-                        earlier.len() <= scope.len() && scope.starts_with(earlier)
-                    })
-                    .map(|&(b, _, _)| b)
-                    .sum();
+            let mut held_at_calls: Vec<u64> = Vec::new();
+            for (i, &(_, scope, ord)) in placed.iter().enumerate() {
+                let in_scope = placed[..=i].iter().filter(|(_, earlier, _)| {
+                    earlier.len() <= scope.len() && scope.starts_with(earlier)
+                });
+                let (others, other_count) = of_other_tasks(tile_tasks[&ord], scope, ord);
+                let live: u64 = in_scope.clone().map(|&(b, _, _)| b).sum::<u64>() + others;
                 if live > total {
                     total = live;
-                    peak_tiles = placed[..=i]
-                        .iter()
-                        .filter(|(_, earlier, _)| {
-                            earlier.len() <= scope.len() && scope.starts_with(earlier)
-                        })
-                        .count();
+                    peak_tiles = in_scope.count() + other_count;
                 }
+            }
+            for c in &calls {
+                held_at_calls.push(of_other_tasks(&c.tasks, &c.scope, c.order).0);
+            }
+            if let Some(spawn) = not_known {
+                crate::hir::check::capacity_fold::report_task_count_not_known(
+                    &mut self.errors,
+                    &space.name(),
+                    decl.overcommit,
+                    &spawn,
+                );
             }
             let tile_count = peak_tiles.max(1);
             if total > 0 {
@@ -926,11 +989,11 @@ impl<'a> TypeChecker<'a> {
                 let held: u64 = placed
                     .iter()
                     .filter(|(_, sc, ord)| {
-                        (*ord < c.order && sc.len() <= c.scope.len() && c.scope.starts_with(sc))
-                            || at_the_same_time(&c.tasks, c.order, tile_tasks[ord], *ord).is_some()
+                        *ord < c.order && sc.len() <= c.scope.len() && c.scope.starts_with(sc)
                     })
                     .map(|&(b, _, _)| b)
-                    .sum();
+                    .sum::<u64>()
+                    + held_at_calls[k];
                 if held > 0 {
                     summary.calls[k].live.insert(space.name(), held);
                 }
@@ -2742,28 +2805,68 @@ impl TypeChecker<'_> {
     }
 }
 
-/// Whether code in the `tasks` blocks and tasks `b`, at position `b_order`, can run at the same
-/// time as code in `a`, at `a_order`. Then the task of the shared block that `b` is in, else
-/// `None`. Two tasks of one block run at the same time. The code of a block runs at the same time
-/// as each task that it started before. A join can end a task earlier, so this can say yes for
-/// code that never overlaps.
+/// Code at position `b_order` in the `tasks` blocks and tasks `b` that can run at the same time
+/// as code at `a_order` in `a`. Each item is one group of tasks that `b` is in, with its count of
+/// copies. Two tasks of one block run at the same time. The code of a block runs at the same time
+/// as each task that it started before. The other tasks of a `spawn` in a loop run at the same
+/// time as each other. A join can end a task earlier, so this can say yes for code that never
+/// overlaps.
 fn at_the_same_time(
-    a: &[(usize, Option<usize>)],
+    a: &[TaskLevel],
     a_order: usize,
-    b: &[(usize, Option<usize>)],
+    b: &[TaskLevel],
     b_order: usize,
-) -> Option<(usize, Option<usize>)> {
-    for (x, y) in a.iter().zip(b) {
-        if x.0 != y.0 {
-            return None;
+) -> Vec<Overlap> {
+    let started = |x: &TaskRun, order: usize| order.min(x.start);
+    let mut found = Vec::new();
+    for (level, (x, y)) in a.iter().zip(b).enumerate() {
+        if x.block != y.block {
+            break;
         }
-        match (x.1, y.1) {
-            (Some(p), Some(q)) if p != q => return Some(*y),
-            (None, Some(_)) if b_order < a_order => return Some(*y),
-            (Some(_), None) if a_order < b_order => return Some(*y),
-            (p, q) if p == q => continue,
-            _ => return None,
+        let group = |run: Option<TaskRun>, copies: Option<u64>, other_copies: bool| Overlap {
+            level,
+            task: run.map(|r| r.task),
+            other_copies,
+            copies,
+            spawn: run.map(|r| r.spawn),
+        };
+        match (x.run, y.run) {
+            (Some(p), Some(q)) if p.task != q.task => {
+                found.push(group(Some(q), q.copies, false));
+                break;
+            }
+            (Some(p), Some(_)) => {
+                if p.copies != Some(1) {
+                    found.push(group(Some(p), p.copies.map(|n| n.saturating_sub(1)), true));
+                }
+            }
+            (None, Some(q)) => {
+                if started(&q, b_order) < a_order {
+                    found.push(group(Some(q), q.copies, false));
+                }
+                break;
+            }
+            (Some(p), None) => {
+                if started(&p, a_order) < b_order {
+                    found.push(group(None, Some(1), false));
+                }
+                break;
+            }
+            (None, None) => {}
         }
     }
-    None
+    found
+}
+
+/// A group of tasks that [`at_the_same_time`] found.
+struct Overlap {
+    /// The index of the shared `tasks` block in the chain.
+    level: usize,
+    /// `None` is the code of the block.
+    task: Option<usize>,
+    /// The other tasks of the same `spawn` in a loop, not a sibling task.
+    other_copies: bool,
+    /// How many of the group run at once. `None` when it is not known at compile time.
+    copies: Option<u64>,
+    spawn: Option<crate::syntax::Span>,
 }

@@ -704,6 +704,11 @@ pub enum DiagnosticCode {
     /// address space on the target. Declare the memory with `scope: device`, `sm`, `cta` or
     /// `thread`.
     E6037,
+    /// A `spawn` in a loop of its `tasks` block, with a count of passes that is not known at compile
+    /// time, and tasks that use a memory with a capacity. Each pass starts a task, and the tasks run
+    /// at the same time, so their working set has no bound. Use a `for` loop over a constant range,
+    /// or join each task in its pass. Downgraded to W1028 when the space is declared `overcommit`.
+    E6039,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

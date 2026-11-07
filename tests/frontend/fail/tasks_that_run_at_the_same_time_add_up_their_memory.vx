@@ -78,6 +78,28 @@ fn a_task_holds_a_tile_during_the_call() -> f32 {
   return x + y;
 }
 
+// Two tasks place a tile of 3 MiB each, with no call.
+fn two_tasks_place_a_tile() -> f32 {
+  let mut x = 0.0;
+  let mut y = 0.0;
+  tasks {
+    spawn {
+      let aT = unsafe { Tensor<f32, [1024, 768]>::uninit() };
+      // CHECK-DAG: Error[E6010] {{.*}}the working set placed in memory space 'W' (2 tiles) sums to 6291456 bytes, over its 4194304 byte capacity
+      let a = transfer(aT, Memory::W);
+      let r = transfer(a, Memory::CPU_DRAM);
+      x = r[0][0];
+    };
+    spawn {
+      let bT = unsafe { Tensor<f32, [1024, 768]>::uninit() };
+      let b = transfer(bT, Memory::W);
+      let r = transfer(b, Memory::CPU_DRAM);
+      y = r[0][0];
+    };
+  }
+  return x + y;
+}
+
 // One task calls it twice. The two calls run one after the other, so they fit.
 fn one_task_calls_it_twice() -> f32 {
   let mut x = 0.0;
@@ -110,6 +132,6 @@ fn main() -> i32 {
   return 0;
 }
 
-// The three errors above are the only ones. `--implicit-check-not` does not look past the last
+// The four errors above are the only ones. `--implicit-check-not` does not look past the last
 // `CHECK-DAG` line, so this line counts them.
-// CHECK: {{^}}Semantic check failed on {{.*}}: 3 error(s) emitted
+// CHECK: {{^}}Semantic check failed on {{.*}}: 4 error(s) emitted
