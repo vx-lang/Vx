@@ -85,6 +85,24 @@ fn two_counters(out : &mut Tensor<i32, [?], Memory::HBM>, first : &Tensor<u32, [
   return;
 }
 
+// A slot can be any element, so it can meet a write at an index that the pass number fixes.
+fn a_slot_and_a_fixed_index(out : &mut Tensor<i32, [?], Memory::HBM>, count : &Tensor<u32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      for l in 0..32 across lanes {
+        if l % 2 == 0 {
+          let at : u32 = atomic_fetch_add_u32(count, 0, 1u32, AtomicOrdering::Relaxed);
+          out[at as i64] = l;
+        } else {
+          // CHECK-DAG: Error[E6032] at {{.*}}.vx:[[@LINE+1]]:{{[0-9]+}}: two passes of this block loop may write the same element of `out`
+          out[b * 32 + l] = l;
+        }
+      }
+    }
+  }
+  return;
+}
+
 fn main() -> i32 {
   return 0;
 }
