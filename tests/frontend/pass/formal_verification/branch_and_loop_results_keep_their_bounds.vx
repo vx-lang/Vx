@@ -1,0 +1,176 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Error
+
+fn choose(k : i32, old : i32, candidate : i32, replace : bool) -> i32
+requires k > 0 && old >= 0 && old < k && candidate >= 0 && candidate < k
+ensures return >= 0 && return < k {
+  let mut best = old;
+  if replace {
+    best = candidate;
+  }
+  return best;
+}
+
+fn nearest_for(k : i32, selected : i32) -> i32
+requires k > 0 && selected >= 0 && selected < k
+ensures return >= 0 && return < k {
+  let mut best = 0;
+  for center in 1..k invariant best >= 0 && best < k {
+    if center == selected {
+      best = center;
+    }
+  }
+  return best;
+}
+
+fn nearest_while(k : i32, selected : i32) -> i32
+requires k > 0 && selected >= 0 && selected < k
+ensures return >= 0 && return < k {
+  let mut best = 0;
+  let mut center = 1;
+  while center < k
+  invariant best >= 0 && best < k
+  invariant center >= 1 && center <= k {
+    if center == selected {
+      best = center;
+    }
+    center += 1;
+  }
+  return best;
+}
+
+fn stop_early(k : i32, stop : bool) -> i32
+requires k > 0
+ensures return >= 0 && return < k {
+  let mut best = 0;
+  for center in 1..k invariant best >= 0 && best < k {
+    if stop {
+      break;
+    }
+    best = center;
+  }
+  return best;
+}
+
+fn main() -> i32 {
+  return choose(4, nearest_for(4, 2), nearest_while(4, 3), true) + stop_early(1, true);
+}
+
+// CHECK: module attributes {vx.drops} {
+// CHECK:   func.func private @vx_init_signals()
+// CHECK:   func.func @main() -> i32 {
+// CHECK:     call @vx_init_signals() : () -> ()
+// CHECK:     %c4_i32 = arith.constant 4 : i32
+// CHECK:     %c4_i32_0 = arith.constant 4 : i32
+// CHECK:     %c2_i32 = arith.constant 2 : i32
+// CHECK:     %0 = call @nearest_for(%c4_i32_0, %c2_i32) : (i32, i32) -> i32
+// CHECK:     %c4_i32_1 = arith.constant 4 : i32
+// CHECK:     %c3_i32 = arith.constant 3 : i32
+// CHECK:     %1 = call @nearest_while(%c4_i32_1, %c3_i32) : (i32, i32) -> i32
+// CHECK:     %true = arith.constant true
+// CHECK:     %2 = call @choose(%c4_i32, %0, %1, %true) : (i32, i32, i32, i1) -> i32
+// CHECK:     %c1_i32 = arith.constant 1 : i32
+// CHECK:     %true_2 = arith.constant true
+// CHECK:     %3 = call @stop_early(%c1_i32, %true_2) : (i32, i1) -> i32
+// CHECK:     %4 = arith.addi %2, %3 : i32
+// CHECK:     return %4 : i32
+// CHECK:   }
+// CHECK:   func.func @stop_early(%arg0: i32, %arg1: i1) -> i32 {
+// CHECK:     %alloca = memref.alloca() : memref<i32>
+// CHECK:     %alloca_0 = memref.alloca() : memref<i32>
+// CHECK:     %alloca_1 = memref.alloca() : memref<i32>
+// CHECK:     %c0_i32 = arith.constant 0 : i32
+// CHECK:     memref.store %c0_i32, %alloca[] : memref<i32>
+// CHECK:     %c1_i32 = arith.constant 1 : i32
+// CHECK:     memref.store %c1_i32, %alloca_0[] : memref<i32>
+// CHECK:     memref.store %arg0, %alloca_1[] : memref<i32>
+// CHECK:     cf.br ^bb1
+// CHECK:   ^bb1:  // 2 preds: ^bb0, ^bb5
+// CHECK:     %0 = memref.load %alloca_0[] : memref<i32>
+// CHECK:     %1 = memref.load %alloca_1[] : memref<i32>
+// CHECK:     %2 = arith.cmpi slt, %0, %1 : i32
+// CHECK:     cf.cond_br %2, ^bb2, ^bb6
+// CHECK:   ^bb2:  // pred: ^bb1
+// CHECK:     cf.cond_br %arg1, ^bb3, ^bb4
+// CHECK:   ^bb3:  // pred: ^bb2
+// CHECK:     cf.br ^bb6
+// CHECK:   ^bb4:  // pred: ^bb2
+// CHECK:     %3 = memref.load %alloca_0[] : memref<i32>
+// CHECK:     memref.store %3, %alloca[] : memref<i32>
+// CHECK:     cf.br ^bb5
+// CHECK:   ^bb5:  // pred: ^bb4
+// CHECK:     %4 = memref.load %alloca_0[] : memref<i32>
+// CHECK:     %c1_i32_2 = arith.constant 1 : i32
+// CHECK:     %5 = arith.addi %4, %c1_i32_2 : i32
+// CHECK:     memref.store %5, %alloca_0[] : memref<i32>
+// CHECK:     cf.br ^bb1
+// CHECK:   ^bb6:  // 2 preds: ^bb1, ^bb3
+// CHECK:     %6 = memref.load %alloca[] : memref<i32>
+// CHECK:     return %6 : i32
+// CHECK:   }
+// CHECK:   func.func @nearest_while(%arg0: i32, %arg1: i32) -> i32 {
+// CHECK:     %alloca = memref.alloca() : memref<i32>
+// CHECK:     %alloca_0 = memref.alloca() : memref<i32>
+// CHECK:     %c0_i32 = arith.constant 0 : i32
+// CHECK:     memref.store %c0_i32, %alloca[] : memref<i32>
+// CHECK:     %c1_i32 = arith.constant 1 : i32
+// CHECK:     memref.store %c1_i32, %alloca_0[] : memref<i32>
+// CHECK:     cf.br ^bb1
+// CHECK:   ^bb1:  // 2 preds: ^bb0, ^bb6
+// CHECK:     %0 = memref.load %alloca_0[] : memref<i32>
+// CHECK:     %1 = arith.cmpi slt, %0, %arg0 : i32
+// CHECK:     cf.cond_br %1, ^bb2, ^bb5
+// CHECK:   ^bb2:  // pred: ^bb1
+// CHECK:     %2 = memref.load %alloca_0[] : memref<i32>
+// CHECK:     %3 = arith.cmpi eq, %2, %arg1 : i32
+// CHECK:     cf.cond_br %3, ^bb3, ^bb4
+// CHECK:   ^bb3:  // pred: ^bb2
+// CHECK:     %4 = memref.load %alloca_0[] : memref<i32>
+// CHECK:     memref.store %4, %alloca[] : memref<i32>
+// CHECK:     cf.br ^bb4
+// CHECK:   ^bb4:  // 2 preds: ^bb2, ^bb3
+// CHECK:     %5 = memref.load %alloca_0[] : memref<i32>
+// CHECK:     %c1_i32_1 = arith.constant 1 : i32
+// CHECK:     %6 = arith.addi %5, %c1_i32_1 : i32
+// CHECK:     memref.store %6, %alloca_0[] : memref<i32>
+// CHECK:     cf.br ^bb6
+// CHECK:   ^bb5:  // pred: ^bb1
+// CHECK:     cf.br ^bb7
+// CHECK:   ^bb6:  // pred: ^bb4
+// CHECK:     cf.br ^bb1
+// CHECK:   ^bb7:  // pred: ^bb5
+// CHECK:     %7 = memref.load %alloca[] : memref<i32>
+// CHECK:     return %7 : i32
+// CHECK:   }
+// CHECK:   func.func @nearest_for(%arg0: i32, %arg1: i32) -> i32 {
+// CHECK:     %alloca = memref.alloca() : memref<i32>
+// CHECK:     %c0_i32 = arith.constant 0 : i32
+// CHECK:     memref.store %c0_i32, %alloca[] : memref<i32>
+// CHECK:     %c1_i32 = arith.constant 1 : i32
+// CHECK:     %0 = arith.index_cast %arg0 : i32 to index
+// CHECK:     affine.for %arg2 = 1 to %0 {
+// CHECK:       %2 = arith.index_cast %arg2 : index to i32
+// CHECK:       scf.execute_region {
+// CHECK:         %3 = arith.cmpi eq, %2, %arg1 : i32
+// CHECK:         cf.cond_br %3, ^bb1, ^bb2
+// CHECK:       ^bb1:  // pred: ^bb0
+// CHECK:         memref.store %2, %alloca[] : memref<i32>
+// CHECK:         cf.br ^bb2
+// CHECK:       ^bb2:  // 2 preds: ^bb0, ^bb1
+// CHECK:         scf.yield
+// CHECK:       }
+// CHECK:     }
+// CHECK:     %1 = memref.load %alloca[] : memref<i32>
+// CHECK:     return %1 : i32
+// CHECK:   }
+// CHECK:   func.func @choose(%arg0: i32, %arg1: i32, %arg2: i32, %arg3: i1) -> i32 {
+// CHECK:     %alloca = memref.alloca() : memref<i32>
+// CHECK:     memref.store %arg1, %alloca[] : memref<i32>
+// CHECK:     cf.cond_br %arg3, ^bb1, ^bb2
+// CHECK:   ^bb1:  // pred: ^bb0
+// CHECK:     memref.store %arg2, %alloca[] : memref<i32>
+// CHECK:     cf.br ^bb2
+// CHECK:   ^bb2:  // 2 preds: ^bb0, ^bb1
+// CHECK:     %0 = memref.load %alloca[] : memref<i32>
+// CHECK:     return %0 : i32
+// CHECK:   }
+// CHECK: }
