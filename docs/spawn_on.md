@@ -213,6 +213,11 @@ spawn on(Topology::Gpu) {
   the loop must then be atomic (#2139, `discussions/mlir_declared_writes_in_across.md`).
   `core::sync::atomic` has these functions for an integer or float element of a tensor in any
   memory, such as `atomic_fetch_add_u32(&counts, i, 1u32, AtomicOrdering::Relaxed)`.
+- A write at a slot from a counter races with no other write at such a slot.
+  `let at = atomic_fetch_add_u32(&count, i, k, ..)`, with a number `k` above 0, gives each call
+  the slots `at` to `at + k - 1`. Then `out[at + c]` with `c` below `k` is a place that no other
+  call gets. That holds when `i` is the same in every pass, and only such calls change `count` in
+  the loop.
 - A call to a function that says `ensures writes_only()` accesses no memory, so it races with
   nothing. `scoped_fence(order, FenceScope::Device)` is one.
 - A call to a function that says `ensures reads_only(t)`, or an `mlir!` block with
