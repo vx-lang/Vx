@@ -135,7 +135,8 @@ fn main() -> i32 {
 
 `ensures frees(p)` says that the call can free that memory, so the compiler does not find
 `!frees(p)` for it. An `extern` function can say `!frees(p)` after its return type, and the
-compiler trusts it.
+compiler trusts it. It can also say a clause about numbers, such as `ensures 0i64 <= return`.
+Each call then knows the clause, and `vxc --audit` lists it.
 
 A function can also promise a pointer clause in an `ensures`, where `return` is the result. A
 caller gets each such clause as a fact when the call returns. The body proves each one at each
