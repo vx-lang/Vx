@@ -913,17 +913,22 @@ mod tests {
         let sleeper = sleeper(&word, &rounds);
         let me = sleeper.thread().id();
         let b = bucket(word.as_ptr());
-        let asleep_in_round = |n| {
-            while rounds.load(Ordering::SeqCst) < n || sleeps(b, me) == 0 {
-                std::thread::yield_now();
+        // The count is the one that ended the wait. The system can return the sleeper with no
+        // wake at any time, so a second read can give 0.
+        let asleep_in_round = |n| loop {
+            if rounds.load(Ordering::SeqCst) >= n {
+                let count = sleeps(b, me);
+                if count != 0 {
+                    return count;
+                }
             }
+            std::thread::yield_now();
         };
         asleep_in_round(1);
         // A return of the condition variable with no wake, as the system may give.
         drop(b.lock.lock().unwrap());
         b.cond.notify_all();
-        asleep_in_round(2);
-        let counted = sleeps(b, me);
+        let counted = asleep_in_round(2);
         word.store(1, Ordering::SeqCst);
         wake(b, Fibers::Of(word.as_ptr() as usize));
         sleeper.join().unwrap();
