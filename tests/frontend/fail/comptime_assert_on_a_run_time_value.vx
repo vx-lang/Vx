@@ -75,3 +75,7 @@ fn main(argc : i32) -> i32 {
 fn is_zero_too(v : i64) -> bool {
   return v == 0i64;
 }
+
+// The 5 errors above are the only ones. `--implicit-check-not` does not look past the first
+// `CHECK-DAG` match, so this line counts them.
+// CHECK: {{^}}Semantic check failed on {{.*}}: 5 error(s) emitted
