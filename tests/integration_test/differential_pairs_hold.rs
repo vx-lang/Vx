@@ -23,7 +23,6 @@
 //===----------------------------------------------------------------------===//
 
 use std::path::PathBuf;
-use std::process::Command;
 
 fn field<'a>(env: &'a str, key: &str) -> Option<&'a str> {
     env.lines().find_map(|l| {
@@ -66,7 +65,7 @@ fn every_differential_pair_reaches_its_claimed_verdict() {
             .map(str::to_string)
             .collect();
 
-        let out = Command::new(env!("CARGO_BIN_EXE_vxc"))
+        let out = super::time_limit::vxc()
             .current_dir(&root)
             .arg(src)
             .args(&args)
