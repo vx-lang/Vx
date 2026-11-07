@@ -327,12 +327,13 @@ fn loop_marks(for_loop: &ForLoopStmt, gen: &mut MeliorGenerator<'_>) -> Option<L
     }
 }
 
-/// A marked loop over `start..end`, in the form the later pass reads: the counter is an integer
-/// in a stack slot, and the marks are on its two stores and its step. The body reads the
-/// counter as it reads a `let mut` variable.
+/// A loop over `start..end` whose counter is an integer in a stack slot, as the flat code
+/// generator makes it. A later pass reads the marks, when there are any, on the two stores and
+/// the step. The SPIR-V conversion needs this form, because it cannot take a block argument of
+/// type `index`. The body reads the counter as it reads a `let mut` variable.
 fn lower_marked_range_loop<'c>(
     for_loop: &ForLoopStmt,
-    marks: LoopMarks,
+    marks: Option<LoopMarks>,
     (start, end, ty): (Value<'c, 'c>, Value<'c, 'c>, Type<'c>),
     gen: &mut MeliorGenerator<'c>,
     block: melior::ir::BlockRef<'c, 'c>,
@@ -357,8 +358,8 @@ fn lower_marked_range_loop<'c>(
         block.append_operation(store.build()?);
         Ok::<_, LowerError>(slot)
     };
-    let counter = slot_of(gen, start, Some(marks.init))?;
-    let bound = slot_of(gen, end, marks.bound)?;
+    let counter = slot_of(gen, start, marks.as_ref().map(|m| m.init))?;
+    let bound = slot_of(gen, end, marks.as_ref().and_then(|m| m.bound))?;
 
     let region = block.parent_region().unwrap();
     let cond_block = region.append_block(melior::ir::Block::new(&[]));
@@ -454,14 +455,14 @@ fn lower_marked_range_loop<'c>(
         )
         .result(0)?
         .into();
+    let mut step = OperationBuilder::new("arith.addi", gen.loc())
+        .add_operands(&[now, one])
+        .add_results(&[ty]);
+    if let Some(marks) = &marks {
+        step = step.add_attributes(&[(Identifier::new(gen.context, marks.step), unit)]);
+    }
     let next: Value = latch_block
-        .append_operation(
-            OperationBuilder::new("arith.addi", gen.loc())
-                .add_operands(&[now, one])
-                .add_results(&[ty])
-                .add_attributes(&[(Identifier::new(gen.context, marks.step), unit)])
-                .build()?,
-        )
+        .append_operation(step.build()?)
         .result(0)?
         .into();
     latch_block.append_operation(
@@ -479,6 +480,9 @@ fn lower_for_loop<'c>(
     block: melior::ir::BlockRef<'c, 'c>,
 ) -> Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError> {
     let marks = loop_marks(for_loop, gen);
+    let in_spirv_kernel = gen.spawn_arches.last().cloned().flatten().is_some_and(|a| {
+        crate::arch::DeviceTarget::from_arch(&a) == Some(crate::arch::DeviceTarget::Spirv64)
+    });
     {
         let ForLoopStmt {
             iter,
@@ -501,19 +505,18 @@ fn lower_for_loop<'c>(
             let (end_val, end_ty, block) = gen.generate_expr(end, block)?;
 
             // The later pass reads only an integer counter, not an `index` one.
-            if let Some(marks) = marks {
-                if for_loop.unroll.is_none()
-                    && start_ty == end_ty
-                    && melior::ir::r#type::TypeLike::is_integer(&start_ty)
-                {
-                    return lower_marked_range_loop(
-                        for_loop,
-                        marks,
-                        (start_val, end_val, start_ty),
-                        gen,
-                        block,
-                    );
-                }
+            if (marks.is_some() || in_spirv_kernel)
+                && for_loop.unroll.is_none()
+                && start_ty == end_ty
+                && melior::ir::r#type::TypeLike::is_integer(&start_ty)
+            {
+                return lower_marked_range_loop(
+                    for_loop,
+                    marks,
+                    (start_val, end_val, start_ty),
+                    gen,
+                    block,
+                );
             }
 
             let ty_index = gen.index_ty;
