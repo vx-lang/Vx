@@ -871,6 +871,20 @@ pub fn diverges_on_every_path(expr: &Expr) -> bool {
         }
     }
     match expr {
+        // A folded `if comptime` keeps one branch and leaves the other empty.
+        Expr::If(IfExpr {
+            is_comptime: true,
+            then_block,
+            else_block,
+            ..
+        }) if then_block.is_empty() || else_block.as_ref().is_none_or(|e| e.is_empty()) => {
+            let taken = if then_block.is_empty() {
+                else_block.as_deref().unwrap_or_default()
+            } else {
+                then_block
+            };
+            block_returns(taken)
+        }
         // An `if` with no `else` always has a path that falls through.
         Expr::If(IfExpr {
             then_block,
