@@ -771,6 +771,7 @@ impl<'a> TypeChecker<'a> {
                 bytes: rounded,
                 scope,
                 order,
+                tasks: self.tasks.task_chain(),
             },
         );
     }
@@ -796,6 +797,7 @@ impl<'a> TypeChecker<'a> {
                 order: self.traffic.placement_order,
                 span: *span,
                 in_closure: self.traffic.closure_depth > 0,
+                tasks: self.tasks.task_chain(),
             },
         );
     }
@@ -826,9 +828,21 @@ impl<'a> TypeChecker<'a> {
                     callee: c.callee.clone(),
                     live: std::collections::BTreeMap::new(),
                     span: c.span,
+                    others: Vec::new(),
                 })
                 .collect(),
         };
+        // The calls of the other tasks that run at the same time as each call, by task.
+        for (k, c) in calls.iter().enumerate() {
+            let mut by_task: std::collections::BTreeMap<(usize, Option<usize>), Vec<usize>> =
+                Default::default();
+            for (j, other) in calls.iter().enumerate() {
+                if let Some(task) = at_the_same_time(&c.tasks, c.order, &other.tasks, other.order) {
+                    by_task.entry(task).or_default().push(j);
+                }
+            }
+            summary.calls[k].others = by_task.into_values().collect();
+        }
         let h = crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
         // (space, total, cap, tile_count, overcommit, granule)
         let mut violations: Vec<(MemorySpace, u64, u64, usize, bool, Option<u64>)> = Vec::new();
@@ -868,6 +882,8 @@ impl<'a> TypeChecker<'a> {
                     )
                 })
                 .collect();
+            let tile_tasks: std::collections::HashMap<usize, &Vec<(usize, Option<usize>)>> =
+                tiles.values().map(|p| (p.order, &p.tasks)).collect();
             placed.sort_by_key(|&(_, _, order)| order);
             let mut total: u64 = 0;
             let mut peak_tiles = 0usize;
@@ -905,10 +921,13 @@ impl<'a> TypeChecker<'a> {
                     }
                     continue;
                 }
+                // A tile of another task that runs at the same time is resident too, also when
+                // the task places it later in program order.
                 let held: u64 = placed
                     .iter()
                     .filter(|(_, sc, ord)| {
-                        *ord < c.order && sc.len() <= c.scope.len() && c.scope.starts_with(sc)
+                        (*ord < c.order && sc.len() <= c.scope.len() && c.scope.starts_with(sc))
+                            || at_the_same_time(&c.tasks, c.order, tile_tasks[ord], *ord).is_some()
                     })
                     .map(|&(b, _, _)| b)
                     .sum();
@@ -2717,4 +2736,30 @@ impl TypeChecker<'_> {
             Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
         );
     }
+}
+
+/// Whether code in the `tasks` blocks and tasks `b`, at position `b_order`, can run at the same
+/// time as code in `a`, at `a_order`. Then the task of the shared block that `b` is in, else
+/// `None`. Two tasks of one block run at the same time. The code of a block runs at the same time
+/// as each task that it started before. A join can end a task earlier, so this can say yes for
+/// code that never overlaps.
+fn at_the_same_time(
+    a: &[(usize, Option<usize>)],
+    a_order: usize,
+    b: &[(usize, Option<usize>)],
+    b_order: usize,
+) -> Option<(usize, Option<usize>)> {
+    for (x, y) in a.iter().zip(b) {
+        if x.0 != y.0 {
+            return None;
+        }
+        match (x.1, y.1) {
+            (Some(p), Some(q)) if p != q => return Some(*y),
+            (None, Some(_)) if b_order < a_order => return Some(*y),
+            (Some(_), None) if a_order < b_order => return Some(*y),
+            (p, q) if p == q => continue,
+            _ => return None,
+        }
+    }
+    None
 }
