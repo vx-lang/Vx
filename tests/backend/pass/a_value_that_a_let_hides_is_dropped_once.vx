@@ -1,0 +1,171 @@
+//===- a_value_that_a_let_hides_is_dropped_once.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `let` that hides a value with a `Drop` impl in the same block does not end that value. Both
+// values drop at the end of the block, the newer first, as in Rust. Each `drop` prints `d` and
+// its number. The compiler dropped the newer value twice, and freed the second `Vec` twice.
+//
+// - `a_parameter` and `an_arm_name`: the `let` hides a parameter, and a name of a `match` arm;
+// - `three_lets`: each `let` reads the value that it hides;
+// - `borrowed`: `r` still reads the hidden value after the `let`;
+// - `return_before` and `return_after`: a `return` drops what is alive at that point;
+// - `nested_let`: a `let a` in an `if` between the two;
+// - `moved_first` and `maybe_moved`: a value that was moved, or may have been, drops once;
+// - `assigned`: a new value for `a` drops the old one first.
+//
+// EXPECT: a2 d2 d1 | p3 a4 d4 d3 | v6 d6 d5 | a9 d9 d8 d7 | r10 a11 d11 d10 | d12 | d15 d14 | in17 d17 a18 d18 d16 | t19 d19 a20 d20 | t21 d21 a22 d22 | a22 d22 d21 | d23 a25 d25 d24 | 1 2 | end
+
+import core::option;
+import std::vec;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print!("d{} ", self.id);
+  }
+}
+
+fn n(id : i32) -> Noisy {
+  return Noisy {
+    id: id
+  };
+}
+
+fn take(x : Noisy) -> void {
+  print!("t{} ", x.id);
+}
+
+fn a_let() -> void {
+  let a = n(1);
+  let a = n(2);
+  print!("a{} ", a.id);
+}
+
+fn a_parameter(a : Noisy) -> void {
+  print!("p{} ", a.id);
+  let a = n(a.id + 1);
+  print!("a{} ", a.id);
+}
+
+fn an_arm_name(o : Option<Noisy>) -> void {
+  match o {
+    Option<Noisy>::Some(v) => {
+      let v = n(v.id + 1);
+      print!("v{} ", v.id);
+    }
+    Option<Noisy>::None => {}
+  }
+}
+
+fn three_lets() -> void {
+  let a = n(7);
+  let a = n(a.id + 1);
+  let a = n(a.id + 1);
+  print!("a{} ", a.id);
+}
+
+fn borrowed() -> void {
+  let a = n(10);
+  let r = &a;
+  let a = n(11);
+  print!("r{} a{} ", r.id, a.id);
+}
+
+fn return_before(c : bool) -> i32 {
+  let a = n(12);
+  if c {
+    return 0;
+  }
+  let a = n(13);
+  print!("a{} ", a.id);
+  return 1;
+}
+
+fn return_after(c : bool) -> i32 {
+  let a = n(14);
+  let a = n(15);
+  if c {
+    return 0;
+  }
+  print!("a{} ", a.id);
+  return 1;
+}
+
+fn nested_let(c : bool) -> void {
+  let a = n(16);
+  if c {
+    let a = n(17);
+    print!("in{} ", a.id);
+  }
+  let a = n(18);
+  print!("a{} ", a.id);
+}
+
+fn moved_first() -> void {
+  let a = n(19);
+  take(a);
+  let a = n(20);
+  print!("a{} ", a.id);
+}
+
+fn maybe_moved(c : bool, id : i32) -> void {
+  let a = n(id);
+  if c {
+    take(a);
+  }
+  let a = n(id + 1);
+  print!("a{} ", a.id);
+}
+
+fn assigned() -> void {
+  let mut a = n(23);
+  a = n(24);
+  let a = n(25);
+  print!("a{} ", a.id);
+}
+
+fn a_vec() -> void {
+  let mut v = Vec<i64>::new();
+  v.push(1i64);
+  let mut v = Vec<i64>::new();
+  v.push(2i64);
+  v.push(3i64);
+  print!("{} {} ", v.len() - 1, v.len());
+}
+
+fn main() -> i32 {
+  a_let();
+  print!("| ");
+  a_parameter(n(3));
+  print!("| ");
+  an_arm_name(Option<Noisy>::Some(n(5)));
+  print!("| ");
+  three_lets();
+  print!("| ");
+  borrowed();
+  print!("| ");
+  return_before(true);
+  print!("| ");
+  return_after(true);
+  print!("| ");
+  nested_let(true);
+  print!("| ");
+  moved_first();
+  print!("| ");
+  maybe_moved(true, 21);
+  print!("| ");
+  maybe_moved(false, 21);
+  print!("| ");
+  assigned();
+  print!("| ");
+  a_vec();
+  print!("| end\n");
+  return 0;
+}
