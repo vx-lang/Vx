@@ -3896,9 +3896,19 @@ impl<'r> Lowerer<'r> {
             };
             (inner, nest.body[1..].iter().collect(), Some(nest))
         } else {
-            let after = stmts[at + 1..]
+            let rest = &stmts[at + 1..];
+            // The code after the nest drops the names it declares. A drop of a name from
+            // before the nest stays in the body that every block runs.
+            let declared: Vec<_> = rest
                 .iter()
-                .filter(|s| !matches!(s, Statement::Drop(_)))
+                .filter_map(|s| match s {
+                    Statement::LetDecl(l) => Some(&l.name),
+                    _ => None,
+                })
+                .collect();
+            let after = rest
+                .iter()
+                .filter(|s| !matches!(s, Statement::Drop(d) if !declared.contains(&&d.name)))
                 .filter(|s| !crate::hir::check::across::same_level(s, nest))
                 .collect();
             (nest, after, None)
