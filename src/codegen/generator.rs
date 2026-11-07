@@ -3028,6 +3028,8 @@ pub(crate) fn tensor_descriptor_str(rank: usize) -> String {
 pub(crate) fn tensor_field_rank(ty: &syntax::Type) -> Option<usize> {
     match ty {
         syntax::Type::Tensor(_, dims, _) => Some(dims.len()),
+        // `Pinned<T, ..>` and `Verified<T>` are a tensor with a claim about it.
+        syntax::Type::Pinned(inner, _) | syntax::Type::Verified(inner) => tensor_field_rank(inner),
         syntax::Type::Borrow { inner, .. } if matches!(**inner, syntax::Type::Tensor(..)) => {
             tensor_field_rank(inner)
         }
