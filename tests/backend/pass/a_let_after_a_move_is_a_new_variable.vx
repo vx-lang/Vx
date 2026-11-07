@@ -1,0 +1,61 @@
+//===- a_let_after_a_move_is_a_new_variable.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `let` that hides a moved variable in the same block declares a new variable, and nothing
+// moved the new one. The checker refused its first use (E4001). Each `drop` prints `d` and its
+// number:
+//
+// - `moved`: `take` moves the first `a`;
+// - `moved_in_a_branch`: the `if` moves the first `a`.
+//
+// EXPECT: t1 d1 a2 d2 | t3 d3 a4 d4 | end
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print!("d{} ", self.id);
+  }
+}
+
+fn take(x : Noisy) -> void {
+  print!("t{} ", x.id);
+}
+
+fn moved() -> void {
+  let a = Noisy {
+    id: 1
+  };
+  take(a);
+  let a = Noisy {
+    id: 2
+  };
+  print!("a{} ", a.id);
+}
+
+fn moved_in_a_branch(c : bool) -> void {
+  let a = Noisy {
+    id: 3
+  };
+  if c {
+    take(a);
+  }
+  let a = Noisy {
+    id: 4
+  };
+  print!("a{} ", a.id);
+}
+
+fn main() -> i32 {
+  moved();
+  print!("| ");
+  moved_in_a_branch(true);
+  print!("| end\n");
+  return 0;
+}
