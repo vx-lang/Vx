@@ -32,7 +32,10 @@ use std::process::Command;
 /// Empty, and worth keeping rather than deleting: the check reads it in both directions, so an
 /// entry that starts working fails this test too. That is how `plugin_npe.vx` was found to have
 /// been fixed, and it is what stops the list becoming a place failures go to be forgotten.
-const KNOWN_BROKEN: &[(&str, &str)] = &[];
+const KNOWN_BROKEN: &[(&str, &str)] = &[(
+    "i128_min_divided_by_u64_max.vx",
+    "flat emit-obj cannot ParseType i128 yet; covered via --legacy-codegen RUN",
+)];
 
 #[test]
 fn the_backend_corpus_emits_object_files() {
