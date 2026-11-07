@@ -6,13 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 // A field of a struct is read and written through a raw pointer, `(*p).field`, and two raw
-// pointers are compared by address with `==` and `!=`.
+// pointers are compared by address with `==` and `!=`. Both code generators run it.
 //
-// The AST code generator stops with an internal error on the write through `(*p).a`, so this
-// test runs the default code generator only.
-//
-// REQUIRES: flat-codegen
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}read 2, then 40{{$}}
 // CHECK: {{^}}same true, other false, not other true, not same false{{$}}
 
