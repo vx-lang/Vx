@@ -19,25 +19,35 @@ pub type IntTypeOf<'a> = &'a dyn Fn(&Expr) -> Option<(ElementType, bool)>;
 
 pub struct SmtProver {
     assertions: Vec<String>,
-    declarations: std::collections::HashSet<String>,
+    /// Sorted, so that one program gives z3 the same query in every run. A step limit gives the
+    /// same answer only for the same query.
+    declarations: std::collections::BTreeSet<String>,
     /// The integer type of each declared name whose range is a fact.
     ranges: std::collections::HashMap<String, ElementType>,
+    /// Whether a fact multiplies two values that are not constants, or divides by one. Only then
+    /// does z3 need nonlinear arithmetic, which is much slower.
+    nonlinear: bool,
 }
+
+/// The most work z3 may do on one query. It counts steps, not seconds, so a proof that passes on
+/// one machine passes on every machine with the same z3. A proof in the tests needs at most about
+/// 6,000 steps, and any query at most about 250,000. A million steps took 0.5 to 2 seconds.
+const Z3_STEP_LIMIT: u64 = 1_000_000;
 
 impl SmtProver {
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
             assertions: Vec::new(),
-            declarations: std::collections::HashSet::new(),
+            declarations: std::collections::BTreeSet::new(),
             ranges: std::collections::HashMap::new(),
+            nonlinear: false,
         }
     }
 
     pub fn prove(&self) -> Result<bool, String> {
-        let mut script = String::new();
-        // Remainder and products of variables need nonlinear integer arithmetic.
-        script.push_str("(set-logic QF_NIA)\n(set-option :timeout 5000)\n");
+        let logic = if self.nonlinear { "QF_NIA" } else { "QF_LIA" };
+        let mut script = format!("(set-option :rlimit {Z3_STEP_LIMIT})\n(set-logic {logic})\n");
 
         for decl in &self.declarations {
             script.push_str(&format!("(declare-const {} Int)\n", decl));
@@ -141,9 +151,16 @@ impl SmtProver {
                     // Leave undefined operations unconstrained instead of assuming they cannot occur.
                     let undefined = format!("|remainder.undefined.{}|", self.declarations.len());
                     self.declarations.insert(undefined.clone());
-                    let magnitude = format!(
-                        "(mod (ite (< {lhs} 0) (- {lhs}) {lhs}) (ite (< {rhs} 0) (- {rhs}) {rhs}))"
-                    );
+                    // A remainder by a constant stays linear, so that z3 can use its fast logic.
+                    let divisor = match smt_constant_magnitude(&rhs) {
+                        Some("0") => return Ok(undefined),
+                        Some(digits) => digits.to_string(),
+                        None => {
+                            self.nonlinear = true;
+                            format!("(ite (< {rhs} 0) (- {rhs}) {rhs})")
+                        }
+                    };
+                    let magnitude = format!("(mod (ite (< {lhs} 0) (- {lhs}) {lhs}) {divisor})");
                     let value = if ty.is_signed_int() {
                         format!("(ite (< {lhs} 0) (- {magnitude}) {magnitude})")
                     } else {
@@ -163,6 +180,12 @@ impl SmtProver {
                     BinaryOp::Mul => "*",
                     _ => return Err(format!("the `{:?}` operator", b.op)),
                 };
+                if b.op == BinaryOp::Mul
+                    && smt_constant_magnitude(&lhs).is_none()
+                    && smt_constant_magnitude(&rhs).is_none()
+                {
+                    self.nonlinear = true;
+                }
                 wrap(format!("({} {} {})", op, lhs, rhs), ty)
             }
             Expr::RelationalOp(r) => {
@@ -293,8 +316,21 @@ fn solver_result(result: &str, successful_exit: bool) -> Result<bool, String> {
     match result {
         "sat" => Ok(true),
         "unsat" => Ok(false),
+        "unknown" => Err(format!(
+            "z3 found neither a proof nor a counterexample. It may have reached its limit of \
+             {Z3_STEP_LIMIT} steps"
+        )),
         _ => Err(format!("Unexpected z3 output: {result}")),
     }
+}
+
+/// The digits of `smt` when it is an integer constant, `5` or `(- 5)`, and `None` otherwise.
+fn smt_constant_magnitude(smt: &str) -> Option<&str> {
+    let digits = smt
+        .strip_prefix("(- ")
+        .and_then(|s| s.strip_suffix(')'))
+        .unwrap_or(smt);
+    (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())).then_some(digits)
 }
 
 /// Recover an expression's own type without borrowing a comparison's operand type.
@@ -723,13 +759,54 @@ mod tests {
             ));
             let mut prover = SmtProver::new();
             let remainder = with_integer_context(&remainder, Some(ElementType::U32), &|_| None);
-            assert!(
-                prover
-                    .lower_expr(&remainder, &|_| None, Some(ElementType::U32))
-                    .is_err(),
+            assert_eq!(
+                prover.lower_expr(&remainder, &|_| None, Some(ElementType::U32)),
+                Err("a remainder whose integer type is not known".to_string()),
                 "unknown operand with divisor type {divisor_type:?}"
             );
         }
+    }
+
+    /// Lower `lhs op rhs` as a fact on i64 values and say whether z3 needs nonlinear arithmetic.
+    fn needs_nonlinear(lhs: &str, op: BinaryOp, rhs: &str) -> bool {
+        let operand = |text: &str| match text.parse::<i64>() {
+            Ok(_) => Expr::Number(NumberExpr::new(
+                text.into(),
+                Some(ElementType::I64),
+                Span::default(),
+            )),
+            Err(_) => Expr::Identifier(IdentifierExpr::new(text.into(), Span::default())),
+        };
+        let fact = Expr::RelationalOp(RelationalOpExpr::new(
+            Box::new(Expr::BinaryOp(BinaryOpExpr::new(
+                Box::new(operand(lhs)),
+                op,
+                Box::new(operand(rhs)),
+                Span::default(),
+            ))),
+            RelationalOp::Eq,
+            Box::new(operand("0")),
+            Span::default(),
+        ));
+        let i64_names = |e: &Expr| match e {
+            Expr::Identifier(_) => Some((ElementType::I64, true)),
+            _ => None,
+        };
+        let mut prover = SmtProver::new();
+        prover
+            .add_constraint(&fact, &i64_names)
+            .expect("a fact the prover can model");
+        prover.nonlinear
+    }
+
+    #[test]
+    fn only_a_product_or_remainder_of_two_unknowns_is_nonlinear() {
+        assert!(!needs_nonlinear("x", BinaryOp::Mul, "3"));
+        assert!(!needs_nonlinear("3", BinaryOp::Mul, "x"));
+        assert!(!needs_nonlinear("x", BinaryOp::Rem, "10"));
+        assert!(!needs_nonlinear("x", BinaryOp::Add, "y"));
+        assert!(needs_nonlinear("x", BinaryOp::Mul, "y"));
+        assert!(needs_nonlinear("x", BinaryOp::Rem, "y"));
     }
 
     #[test]
