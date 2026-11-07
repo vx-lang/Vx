@@ -71,3 +71,7 @@ fn main(argc : i32) -> i32 {
   print(if_without_else(argc) + if_with_else(argc) + match_on_argc(argc) + if_comptime_after_if(argc));
   return 0;
 }
+
+// The 4 errors above are the only ones. `--implicit-check-not` does not look past the first
+// `CHECK-DAG` match, so this line counts them.
+// CHECK: {{^}}Semantic check failed on {{.*}}: 4 error(s) emitted
