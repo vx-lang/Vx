@@ -710,8 +710,8 @@ needs a fact there. Open question 6 asks about a warning for it.
   three `Valid` facts does not join.
 - A write through a pointer makes an `Init` fact for its one element only. So a loop that fills a
   buffer gives no fact for the buffer. The write keeps the facts that the pointer has.
-- An `extern` function can state only `frees` clauses and pointer clauses. It cannot state a
-  value `ensures` such as `0i64 <= return`, so the `c_read_some` of section 8 cannot be written
+- An `extern` function cannot state a `requires`. Its `ensures` can be a `frees` clause, a
+  pointer clause or a clause about numbers. So the `c_read_some` of section 8 cannot be written
   yet.
 - A `spawn on` region ends the facts about other memory at its start. The code waits for the
   region at its end, so no task of it runs after the region.

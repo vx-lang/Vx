@@ -1,0 +1,31 @@
+//===- an_extern_function_that_ensures_no_number.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A call of an `extern` function knows only what its `ensures` say. An `ensures` about numbers
+// can name only the parameters and `return`.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+extern "C" {
+  safe fn c_count(n : i64) -> i64;
+  // CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:{{[0-9]+}}: an `extern` function can have only a `frees` clause, a pointer clause or a clause about numbers in its `ensures`
+  safe fn c_other(n : i64) -> i64
+  ensures 0i64 <= m;
+}
+
+fn in_range(got : i64, n : i64) -> i64
+requires 0i64 <= got && got <= n
+{
+  return got;
+}
+
+fn main() -> i32 {
+  let n = 8i64;
+  let got = c_count(n);
+  // CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+1]]:10: this call to 'in_range'
+  return in_range(got, n) as i32;
+}
