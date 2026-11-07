@@ -2161,6 +2161,9 @@ impl<'a> TypeChecker<'a> {
         let prev_in_wait_limit = std::mem::replace(&mut self.in_wait_limit, in_wait_limit);
         let prev_within_depth = std::mem::replace(&mut self.within_depth, 0);
         let prev_borrowers = self.borrow.take_borrowers();
+        // The drop frames too, so that a raw pointer in a generic callee does not make the
+        // caller count as a function that uses raw pointers.
+        let prev_drops = std::mem::take(&mut self.borrow.drops);
         for (name, ty) in &func.params {
             self.insert(name.to_string(), ty.clone());
             // A token that the caller passes must be waited by the function.
@@ -2356,6 +2359,7 @@ impl<'a> TypeChecker<'a> {
         self.in_wait_limit = prev_in_wait_limit;
         self.within_depth = prev_within_depth;
         self.borrow.restore_borrowers(prev_borrowers);
+        self.borrow.drops = prev_drops;
         self.used_vars = prev_used_vars;
         self.declared_vars = prev_declared_vars;
         self.declared_mut_vars = prev_declared_mut_vars;
