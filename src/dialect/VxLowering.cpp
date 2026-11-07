@@ -1701,6 +1701,87 @@ useThatNeedsTheCopy(Value copy, SmallVectorImpl<vx::DropOp> &drops) {
   return {nullptr, nullptr};
 }
 
+// Whether code can write the memory of `arg` through it: an element store, an
+// atomic, an `mlir!` block, or a call whose parameter is not `llvm.readonly`.
+// A load, a shape read, a view and a `let` slot that holds it only read it.
+static bool mayWriteThrough(Value arg) {
+  SmallVector<Value> work{arg};
+  llvm::DenseSet<Value> seen;
+  while (!work.empty()) {
+    Value value = work.pop_back_val();
+    if (!seen.insert(value).second)
+      continue;
+    for (OpOperand &use : value.getUses()) {
+      Operation *user = use.getOwner();
+      if (auto load = dyn_cast<memref::LoadOp>(user);
+          load && load.getMemRef() == value)
+        continue;
+      if (isa<memref::DimOp, vx::DropOp>(user))
+        continue;
+      if (auto meta = dyn_cast<memref::ExtractStridedMetadataOp>(user)) {
+        work.push_back(meta.getBaseBuffer());
+        continue;
+      }
+      if (isa<ViewLikeOpInterface, memref::CastOp>(user)) {
+        for (Value result : user->getResults())
+          work.push_back(result);
+        continue;
+      }
+      if (auto store = dyn_cast<memref::StoreOp>(user)) {
+        // The `let` slot of the parameter: its loads are the parameter again.
+        Value slot = store.getMemref();
+        if (store.getValueToStore() != value ||
+            !slot.getDefiningOp<memref::AllocaOp>())
+          return true;
+        for (Operation *u : slot.getUsers())
+          if (auto load = dyn_cast<memref::LoadOp>(u))
+            work.push_back(load.getResult());
+        continue;
+      }
+      if (auto call = dyn_cast<func::CallOp>(user)) {
+        auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+            call, call.getCalleeAttr());
+        if (callee && !callee.isExternal() &&
+            callee.getArgAttr(use.getOperandNumber(), "llvm.readonly"))
+          continue;
+        return true;
+      }
+      if (auto effects = dyn_cast<MemoryEffectOpInterface>(user)) {
+        SmallVector<MemoryEffects::EffectInstance> list;
+        effects.getEffectsOnValue(value, list);
+        if (llvm::none_of(list, [](const MemoryEffects::EffectInstance &e) {
+              return isa<MemoryEffects::Write, MemoryEffects::Free>(
+                  e.getEffect());
+            }))
+          continue;
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+// A `&` parameter is `llvm.readonly`, as Rust marks a `&T`. But the element
+// atomics of `core::sync::atomic` change a tensor through a `&`, and so does a
+// function that passes one on to them. Drops the mark from each parameter that
+// code can write through, until no mark changes: a call keeps a mark only when
+// the callee's parameter has it.
+static void dropReadonlyOfWrittenParameters(ModuleOp module) {
+  for (bool changed = true; changed;) {
+    changed = false;
+    module.walk([&](func::FuncOp f) {
+      if (f.isExternal())
+        return;
+      for (unsigned i = 0; i < f.getNumArguments(); ++i)
+        if (f.getArgAttr(i, "llvm.readonly") &&
+            mayWriteThrough(f.getArgument(i))) {
+          f.removeArgAttr(i, "llvm.readonly");
+          changed = true;
+        }
+    });
+  }
+}
+
 // A parameter of the function `v` is in: its block argument, or a load of the
 // argument's slot, which is how the AST code generator reads a `&` parameter.
 static bool isParameter(Value v) {
@@ -5719,6 +5800,10 @@ struct ConvertVxToStandardPass
 
   void runOnOperation() override {
     getOperation()->emitRemark("Lowering Vx to Standard dialects");
+
+    // First, so that every later step reads only the `llvm.readonly` marks
+    // that hold.
+    dropReadonlyOfWrittenParameters(getOperation());
 
     // First, so that each later step sees a task as a call that starts it, and
     // keeps what the task uses alive until the task is joined.
