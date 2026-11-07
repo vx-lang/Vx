@@ -19,19 +19,7 @@ use std::sync::{Mutex, Once};
 static INIT_RAYON: Once = Once::new();
 static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
-/// The time limit of one RUN line of a backend test.
-const RUN_LINE_SECONDS: u32 = 300;
-
-/// Whether the machine has the `timeout` command.
-fn has_timeout() -> bool {
-    static HAS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *HAS.get_or_init(|| {
-        std::process::Command::new("timeout")
-            .arg("--version")
-            .output()
-            .is_ok_and(|o| o.status.success())
-    })
-}
+use super::time_limit::{has_timeout, SECONDS as RUN_LINE_SECONDS};
 
 /// Whether clang can link a program with ThreadSanitizer. Linux packages ship its runtime
 /// apart from clang, in `libclang-rt-<version>-dev`.
@@ -735,6 +723,7 @@ fn run_expect_lines_on_the_ast_code_generator(path: &Path) -> Result<(), String>
         return Ok(());
     }
 
+    let _watchdog = super::time_limit::Watchdog::new(path.display().to_string());
     let out = execute_mlir(&mlir_str, vec![], 0, false).expect("JIT execution failed");
 
     for expect in expect_lines {
@@ -869,11 +858,25 @@ fn run_the_run_lines(path: &Path) -> Result<(), String> {
             .replace("%t", &tmp_base.to_string_lossy());
         // `vxc` as a bare word is the binary under test, not whatever is on PATH.
         let cmd = cmd.replacen("vxc ", &format!("{} ", vxc), 1);
+        let cmd = if has_timeout() {
+            format!(
+                "timeout -k 5 {RUN_LINE_SECONDS} bash -c {}",
+                shell_quote(&cmd)
+            )
+        } else {
+            cmd
+        };
         let out = std::process::Command::new("bash")
             .arg("-c")
             .arg(&cmd)
             .output()
             .map_err(|e| format!("{:?}: could not run `{}`: {}", path, run, e))?;
+        // A hang is an error even in a file marked XFAIL-RUN.
+        if out.status.code() == Some(124) && has_timeout() {
+            return Err(format!(
+                "{path:?}: RUN line did not finish in {RUN_LINE_SECONDS} seconds: {run}"
+            ));
+        }
         if !out.status.success() {
             failure = Some(format!(
                 "{:?}: RUN line failed: {}\n{}",
@@ -1448,6 +1451,7 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
         return Ok(());
     }
 
+    let _watchdog = super::time_limit::Watchdog::new(path.display().to_string());
     let out = execute_mlir(&mlir_str, vec![], 0, false).expect("JIT execution failed");
 
     for expect in expect_lines {

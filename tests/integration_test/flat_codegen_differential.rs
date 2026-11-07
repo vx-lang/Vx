@@ -1593,7 +1593,7 @@ fn assert_nested_enum_takes_the_flat_path(jobs: Option<usize>) {
            return 0; }",
     )
     .expect("write fixture");
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_vxc"));
+    let mut command = super::time_limit::vxc();
     command
         .arg(&path)
         .arg("--emit-mlir")
@@ -1654,7 +1654,7 @@ fn assert_enum_layout_falls_back(jobs: Option<usize>) {
            return 0; }",
     )
     .expect("write fixture");
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_vxc"));
+    let mut command = super::time_limit::vxc();
     command
         .arg(&path)
         .arg("--emit-mlir")
@@ -1728,7 +1728,7 @@ fn assert_generated_aggregate_runs_at_optimization(
     )
     .expect("read fixture");
     std::fs::write(&path, source).expect("write fixture");
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_vxc"));
+    let mut command = super::time_limit::vxc();
     command
         .arg(&path)
         .arg("--run")
@@ -2508,7 +2508,6 @@ fn flat_matches_ast_scalar_casts() {
 #[case::normal(None)]
 #[case::parallel(Some(2))]
 fn same_named_pointer_targets_use_their_own_module_layout(#[case] jobs: Option<usize>) {
-    use std::process::Command;
     let directory = tempfile::tempdir().unwrap();
     for (name, source) in [
         ("left.vx", "struct Node { count: i32, value: i64 } struct Left { node: *const Node } fn read_left() -> i64 { let node = Node { count: 1, value: 42 }; let holder = Left { node: (&node) as *const Node }; return unsafe { holder.node.value }; }"),
@@ -2518,7 +2517,7 @@ fn same_named_pointer_targets_use_their_own_module_layout(#[case] jobs: Option<u
         std::fs::write(directory.path().join(name), source).unwrap();
     }
     for optimization in ["-O0", "-O2"] {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_vxc"));
+        let mut command = super::time_limit::vxc();
         command
             .arg(directory.path().join("app.vx"))
             .arg("--run")
@@ -2570,7 +2569,6 @@ fn answer() -> i32 {
 #[case::source_normal(None, false)]
 #[case::source_parallel(Some(2), false)]
 fn indexed_fields_survive_imports(#[case] jobs: Option<usize>, #[case] artifact_only: bool) {
-    use std::process::Command;
     use vxc::bytecode::Opcode;
     let directory = tempfile::tempdir().expect("create artifact test directory");
     let library = directory.path().join("fields.vx");
@@ -2578,7 +2576,7 @@ fn indexed_fields_survive_imports(#[case] jobs: Option<usize>, #[case] artifact_
     let app = directory.path().join("app.vx");
     std::fs::write(&library, LIBRARY_WITH_EMPTY_FIELDS).expect("write library");
     if artifact_only {
-        let export = Command::new(env!("CARGO_BIN_EXE_vxc"))
+        let export = super::time_limit::vxc()
             .arg("--emit-interface")
             .arg(&library)
             .arg("-o")
@@ -2637,7 +2635,7 @@ fn indexed_fields_survive_imports(#[case] jobs: Option<usize>, #[case] artifact_
         format!("{import}fn main() -> i32 {{ print(answer()); return 0; }}"),
     )
     .expect("write consumer");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_vxc"));
+    let mut command = super::time_limit::vxc();
     if artifact_only {
         command.arg("--link-interface").arg(&artifact);
     }
@@ -2673,7 +2671,7 @@ fn indexed_fields_survive_imports(#[case] jobs: Option<usize>, #[case] artifact_
             "imported {name} must select the number field: {mlir}"
         );
     }
-    let mut run = Command::new(env!("CARGO_BIN_EXE_vxc"));
+    let mut run = super::time_limit::vxc();
     if artifact_only {
         run.arg("--link-interface").arg(&artifact);
     }
@@ -4420,7 +4418,7 @@ fn a_generic_over_two_tensor_shapes_gets_two_monomorphs() {
     )
     .unwrap();
 
-    let run = std::process::Command::new(env!("CARGO_BIN_EXE_vxc"))
+    let run = super::time_limit::vxc()
         .args([src.to_str().unwrap(), "--action", "run-jit"])
         .output()
         .expect("run vxc");
@@ -4608,7 +4606,7 @@ fn generic_functions_keep_tensor_pointer_placements(#[case] jobs: Option<usize>)
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/backend/pass")
         .join(fixture);
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_vxc"));
+    let mut command = super::time_limit::vxc();
     command
         .arg(&path)
         .arg("--emit-mlir")

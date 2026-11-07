@@ -13,7 +13,6 @@
 //===----------------------------------------------------------------------===//
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// Programs the flat path declines today, relative to `tests/backend/pass/`.
 /// A worklist, not an exemption list: shrinking it is Vx#383.
@@ -94,7 +93,7 @@ fn tests_package() -> [String; 2] {
 /// The line that says the flat path ran is printed only when `VX_FLAT_DBG` is set,
 /// so this sets it. A normal compile stays quiet.
 fn path_taken(program: &Path) -> Result<CodegenPath, String> {
-    let output = Command::new(env!("CARGO_BIN_EXE_vxc"))
+    let output = super::time_limit::vxc()
         .arg(program)
         .args(tests_package())
         .args(["--action", "emit-mlir"])
@@ -440,7 +439,7 @@ fn flat_path_answers_match_the_backend_expectations() {
             continue;
         }
 
-        let output = match Command::new(env!("CARGO_BIN_EXE_vxc"))
+        let output = match super::time_limit::vxc()
             .arg(&program)
             .args(tests_package())
             .env("PATH", &path_var)
