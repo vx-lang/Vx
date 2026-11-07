@@ -224,7 +224,11 @@ impl<'a> TypeChecker<'a> {
 
     /// The fields of the struct or enum `name`, each with a name for an error and its type with
     /// `args` put in for the type parameters.
-    fn held_types(&self, name: &crate::symbol::Symbol, args: &[Type]) -> Vec<(String, Type)> {
+    pub(crate) fn held_types(
+        &self,
+        name: &crate::symbol::Symbol,
+        args: &[Type],
+    ) -> Vec<(String, Type)> {
         let substitute = |generics: &[decl::GenericParam], ty: &Type| -> Type {
             let mapping: HashMap<crate::symbol::Symbol, Type> = generics
                 .iter()

@@ -20,7 +20,7 @@ the test suite has one, a program that triggers it.
 - [Type Errors](#type-errors) — `E3001`–`E3063` (62 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4016` (16 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
-- [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6037` (37 codes)
+- [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6038` (38 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
 - [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8014` (14 codes)
 
@@ -236,6 +236,7 @@ Raised by the placement and capacity rules — the checks that make Vx different
 | [`E6035`](/errors/E6035/) | A `Memory` declaration's `within:` names a space that is not built in, and that the program and its machine files do not declare. A typo in the name is the usual cause. |
 | [`E6036`](/errors/E6036/) | A token of `transfer_async` that the program drops with no `.wait()`: at the end of its scope, or when an assignment gives its variable a new value. The copy may not be done then, so its target may not hold the data. Call `.wait()`, which gives the placed tensor. |
 | [`E6037`](/errors/E6037/) | A placement whose memory is not built in and has no `scope:`. Such a memory has no address space on the target. Declare the memory with `scope: device`, `sm`, `cta` or `thread`. |
+| [`E6038`](/errors/E6038/) | A `spawn on` body for a device that uses a channel end or a lock: a `Sender`, a `Receiver`, a `Mutex`, or a value that holds one. A wait on the device for the host can wait forever, because a GPU does not promise that its threads make progress. Send or receive before the `spawn on`, or after it. A `spawn on(Topology::CPU)` body runs on the host, so it can use them. |
 
 ## Tensor/Math Errors
 
@@ -271,4 +272,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-182 diagnostics.
+183 diagnostics.

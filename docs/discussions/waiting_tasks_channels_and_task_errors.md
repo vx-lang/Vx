@@ -503,6 +503,8 @@ of the block (F2). A `join()` of a task that failed leaves the block the same wa
 - A `Task<T>` that leaves its `tasks` block (T3): the line where it leaves.
 - A host wait in a device body, such as `recv` (W5, M6): the call, and the `spawn on` that puts the
   body on the device.
+  Done for a channel end and a lock: E6038 names the variable, the field that holds one, and the
+  line of the `spawn on`. A call of a host function, such as `sleep`, gets E6001.
 
 **F9. Run-time reports.**
 

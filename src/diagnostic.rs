@@ -704,6 +704,12 @@ pub enum DiagnosticCode {
     /// address space on the target. Declare the memory with `scope: device`, `sm`, `cta` or
     /// `thread`.
     E6037,
+    /// A `spawn on` body for a device that uses a channel end or a lock: a `Sender`, a
+    /// `Receiver`, a `Mutex`, or a value that holds one. A wait on the device for the host can
+    /// wait forever, because a GPU does not promise that its threads make progress. Send or
+    /// receive before the `spawn on`, or after it. A `spawn on(Topology::CPU)` body runs on the
+    /// host, so it can use them.
+    E6038,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch
