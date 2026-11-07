@@ -1576,7 +1576,9 @@ impl<'a> TypeChecker<'a> {
                 true
             }
             (Type::Pointer(t1, m1, mut1), Type::Pointer(t2, m2, mut2)) => {
-                m1 == m2 && mut1 == mut2 && self.unify_types_internal(t1, t2, mapping)
+                // `*mut T in Memory::M` binds `M` to the memory of the pointer, or to none.
+                let place_match = self.bind_memory(m1, m2, mapping).unwrap_or(m1 == m2);
+                place_match && mut1 == mut2 && self.unify_types_internal(t1, t2, mapping)
             }
             (
                 Type::Borrow {

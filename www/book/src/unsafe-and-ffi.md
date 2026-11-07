@@ -35,6 +35,10 @@ Two kinds, matching the two kinds of reference:
 Unlike `&T` and `&mut T`, raw pointers are not tracked by the borrow checker. Nothing stops two
 `*mut T` pointing at the same value. That is exactly why dereferencing one needs `unsafe`.
 
+A raw pointer can name a memory, as in `*mut f32 in Memory::GPU_HBM`. The functions of `core::ptr`
+that move a pointer keep its memory: `offset`, `add` and `sub` and their `_mut` forms take a pointer
+in any memory `M` and give a pointer in `M`. `read` and `write` take only a host pointer.
+
 ## unsafe functions
 
 A function whose *body* is not the dangerous part — but whose *contract* is — should be marked

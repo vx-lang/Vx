@@ -790,7 +790,7 @@ pub fn memory_variable(p: &Placement) -> Option<&Symbol> {
 }
 
 /// `place`, with a memory variable replaced by the memory that `mapping` binds it to.
-fn substitute_memory(
+pub(crate) fn substitute_memory(
     place: &Option<Placement>,
     mapping: &std::collections::HashMap<Symbol, Type>,
 ) -> Option<Placement> {
@@ -952,9 +952,11 @@ impl Type {
                 is_mut: *is_mut,
                 region_id: *region_id,
             },
-            Type::Pointer(inner, mem, is_mut) => {
-                Type::Pointer(Box::new(inner.substitute(mapping)), mem.clone(), *is_mut)
-            }
+            Type::Pointer(inner, mem, is_mut) => Type::Pointer(
+                Box::new(inner.substitute(mapping)),
+                substitute_memory(mem, mapping),
+                *is_mut,
+            ),
             Type::Tensor(el_ty, dims, top) => {
                 let new_el_ty = if let ElementType::Generic(ref name) = el_ty {
                     if let Some(Type::Scalar(concrete_el)) = mapping.get(name) {
