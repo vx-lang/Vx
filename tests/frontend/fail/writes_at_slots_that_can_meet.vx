@@ -1,0 +1,94 @@
+//===- writes_at_slots_that_can_meet.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `let at = atomic_fetch_add_u32(&count, 0, k, ..)` gives each call its own slots, `at` to
+// `at + k - 1`, so a write at one of them races with no other pass. Each function here breaks one
+// condition of that, and two passes can then write the same element of `out`. So each gets E6032.
+//
+// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6032
+import core::sync::atomic;
+
+// Each block has its own counter, so two blocks get the same slots.
+fn a_counter_for_each_block(out : &mut Tensor<i32, [?], Memory::HBM>, count : &Tensor<u32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      for l in 0..32 across lanes {
+        let at : u32 = atomic_fetch_add_u32(count, b, 1u32, AtomicOrdering::Relaxed);
+        // CHECK-DAG: Error[E6032] at {{.*}}.vx:[[@LINE+1]]:{{[0-9]+}}: two passes of this block loop may write the same element of `out`
+        out[at as i64] = l;
+      }
+    }
+  }
+  return;
+}
+
+// An increment that is not a number can be 0, and then every call gets the same slot.
+fn an_increment_that_can_be_0(out : &mut Tensor<i32, [?], Memory::HBM>, count : &Tensor<u32, [?], Memory::HBM>, k : u32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      for l in 0..32 across lanes {
+        let at : u32 = atomic_fetch_add_u32(count, 0, k, AtomicOrdering::Relaxed);
+        // CHECK-DAG: Error[E6032] at {{.*}}.vx:[[@LINE+1]]:{{[0-9]+}}: two passes of this block loop may write the same element of `out`
+        out[at as i64] = l;
+      }
+    }
+  }
+  return;
+}
+
+// A store to the counter can set it back, so two calls can get the same slot.
+fn a_store_to_the_counter(out : &mut Tensor<i32, [?], Memory::HBM>, count : &Tensor<u32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      for l in 0..32 across lanes {
+        let at : u32 = atomic_fetch_add_u32(count, 0, 1u32, AtomicOrdering::Relaxed);
+        atomic_store_u32(count, 0, 0u32, AtomicOrdering::Relaxed);
+        // CHECK-DAG: Error[E6032] at {{.*}}.vx:[[@LINE+1]]:{{[0-9]+}}: two passes of this block loop may write the same element of `out`
+        out[at as i64] = l;
+      }
+    }
+  }
+  return;
+}
+
+// With an increment of 1, `at + 1` is the slot of the next call.
+fn past_the_slot(out : &mut Tensor<i32, [?], Memory::HBM>, count : &Tensor<u32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      for l in 0..32 across lanes {
+        let at : u32 = atomic_fetch_add_u32(count, 0, 1u32, AtomicOrdering::Relaxed);
+        // CHECK-DAG: Error[E6032] at {{.*}}.vx:[[@LINE+1]]:{{[0-9]+}}: two passes of this block loop may write the same element of `out`
+        out[at as i64 + 1] = l;
+      }
+    }
+  }
+  return;
+}
+
+// Two counters give the same slots, so writes at slots of both can meet.
+fn two_counters(out : &mut Tensor<i32, [?], Memory::HBM>, first : &Tensor<u32, [?], Memory::HBM>, second : &Tensor<u32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      for l in 0..32 across lanes {
+        let at : u32 = atomic_fetch_add_u32(first, 0, 1u32, AtomicOrdering::Relaxed);
+        let other : u32 = atomic_fetch_add_u32(second, 0, 1u32, AtomicOrdering::Relaxed);
+        out[at as i64] = l;
+        // CHECK-DAG: Error[E6032] at {{.*}}.vx:[[@LINE+1]]:{{[0-9]+}}: two passes of this block loop may write the same element of `out`
+        out[other as i64] = l;
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// `--implicit-check-not` does not look past the first `CHECK-DAG` match, so this line checks the
+// end of the output.
+// CHECK-NOT: E6032

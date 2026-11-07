@@ -32,7 +32,7 @@ use crate::hir::flatten::is_tensor_alloc_call;
 use crate::syntax::stmt::{AcrossClause, ForLoopStmt, Statement};
 use crate::syntax::types::{scalar_of, ElementType};
 use crate::syntax::{BinaryOp, Expr, LogicalOp, RelationalOp, Span, UnaryOp};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// `Σ coefficient · variable + constant`. A variable is a loop index of this pass, by a name that
 /// is unique to its loop, or a value from outside the loop, which is the same in every pass.
@@ -131,6 +131,11 @@ struct Proof<'c> {
     at: Span,
     /// `c` in the `then` block of an `if` that tests that the loop's variable is `c`.
     pass: Option<i64>,
+    /// Each slot that `let at = atomic_fetch_add_..(count, i, k, ..)` takes, by its key: the
+    /// element of the counter, and `k`.
+    slots: HashMap<String, (String, i64)>,
+    /// The tensor argument of each call that takes a slot.
+    slot_calls: HashSet<Span>,
 }
 
 /// The position of an `across` clause, the largest end that its loop may have, and the type of
@@ -175,6 +180,8 @@ pub(crate) fn across_loop_race(
             error: None,
             at: f.span,
             pass: None,
+            slots: HashMap::new(),
+            slot_calls: HashSet::new(),
         };
         p.own = p.bind_index(&f.iter, &f.iterable, range, f.across.as_ref());
         p.stmts(&f.body);
@@ -354,7 +361,22 @@ impl Proof<'_> {
             Statement::LetDecl(l) => {
                 self.expr(&l.expr);
                 let value = crate::syntax::bare_unsafe_value(&l.expr);
+                let slot = match value {
+                    Expr::FunctionCall(fc) if !l.is_mut => self.slot_of(fc),
+                    _ => None,
+                };
                 let b = match value {
+                    _ if slot.is_some() => {
+                        let key = format!("{}#slot{}", l.name, self.next_key);
+                        self.next_key += 1;
+                        let (counter, step, ty) = slot.expect("matched above");
+                        self.slots.insert(key.clone(), (counter, step));
+                        // A slot is any value of its type.
+                        if let Some(range) = ComptimeInterpreter::integer_range(&ty) {
+                            self.type_ranges.insert(key.clone(), range);
+                        }
+                        Binding::Value(Affine::var(key), Some(ty))
+                    }
                     Expr::FunctionCall(fc) if is_tensor_alloc_call(fc) => Binding::Tensor,
                     _ if !l.is_mut => self.affine(&l.expr).map_or(Binding::Other, |a| {
                         Binding::Value(a, self.int_type(&l.expr))
@@ -417,6 +439,61 @@ impl Proof<'_> {
 
     fn outside(&self, name: &str) -> bool {
         self.lookup(name).is_none()
+    }
+
+    /// `atomic_fetch_add_..(count, i, k, ..)` of an integer, with a number `k` above 0 and an index
+    /// `i` that is the same in every pass: the element of the counter, and `k`. Each call gets the
+    /// old value, so the calls of all passes get the slots `[old, old + k)`, and no two of them
+    /// meet while only such calls change the counter.
+    fn slot_of(
+        &mut self,
+        fc: &crate::syntax::expr::FunctionCallExpr,
+    ) -> Option<(String, i64, ElementType)> {
+        // A generic instance is the name with `$` and its type arguments after it.
+        let name = fc.name.split('$').next().unwrap_or_default();
+        let ty = match name {
+            "atomic_fetch_add_i32" => ElementType::I32,
+            "atomic_fetch_add_u32" => ElementType::U32,
+            "atomic_fetch_add_i64" => ElementType::I64,
+            "atomic_fetch_add_u64" => ElementType::U64,
+            _ => return None,
+        };
+        if fc.args.len() < 3 {
+            return None;
+        }
+        let tensor = crate::hir::check::atomic_contracts::passed_tensor(&fc.args[0])?;
+        if !self.outside(tensor) {
+            return None;
+        }
+        let index = self.affine(&fc.args[1])?;
+        if !index.terms.keys().all(|k| k.ends_with("#outside")) {
+            return None;
+        }
+        let step = self.affine(&fc.args[2])?.as_constant().filter(|k| *k > 0)?;
+        self.slot_calls.insert(fc.args[0].span());
+        Some((format!("{tensor}[{index:?}]"), step, ty))
+    }
+
+    /// Whether `x` and `y` are slots of one counter, each plus a number below its `k`, while only
+    /// calls that take slots change the counter. Two such places never meet, in one pass or in
+    /// two.
+    fn slots_apart(&self, x: &Affine, y: &Affine) -> bool {
+        let slot = |a: &Affine| {
+            let (key, coefficient) = a.terms.iter().next().filter(|_| a.terms.len() == 1)?;
+            let (counter, step) = self.slots.get(key).filter(|_| *coefficient == 1)?;
+            (0..*step).contains(&a.constant).then_some(counter.as_str())
+        };
+        let trusted = |counter: &str| {
+            let tensor = counter.split('[').next().unwrap_or_default();
+            self.accesses.get(tensor).is_some_and(|all| {
+                all.iter()
+                    .all(|a| a.atomic && self.slot_calls.contains(&a.span))
+            })
+        };
+        match (slot(x), slot(y)) {
+            (Some(a), Some(b)) => a == b && trusted(a),
+            _ => false,
+        }
     }
 
     fn record(&mut self, name: &str, indices: &[&Expr], write: bool, at: Span) {
@@ -925,6 +1002,7 @@ impl Proof<'_> {
                         .iter()
                         .zip(&other.indices)
                         .any(|(x, y)| match (x, y) {
+                            (Some(x), Some(y)) if self.slots_apart(x, y) => true,
                             (Some(x), Some(y)) if x == y => {
                                 self.fixes_own(x) || self.own_term_decides(x, y)
                             }
