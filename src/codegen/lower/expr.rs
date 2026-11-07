@@ -1046,9 +1046,13 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
                     .map(|d| text(strides[d].0))
                     .collect::<Vec<_>>()
                     .join(", ");
+                // A row of a tile in shared memory is in shared memory too.
+                let space = crate::codegen::lower::memref_space(&base_ty_str)
+                    .map(|s| format!(", {s}"))
+                    .unwrap_or_default();
                 let result_ty_str = format!(
-                    "memref<{}x{}, strided<[{}], offset: ?>>",
-                    dims_str, inner_ty_str, strides_str
+                    "memref<{}x{}, strided<[{}], offset: ?>{}>",
+                    dims_str, inner_ty_str, strides_str, space
                 );
                 let result_ty = Type::parse(gen.context, &result_ty_str).ok_or_else(|| {
                     crate::codegen::lower::LowerError::ParseType(result_ty_str.clone())
@@ -3811,6 +3815,34 @@ fn to_vector<'c>(
     Ok(block.append_operation(ext).result(0)?.into())
 }
 
+/// The memref type and alignment of a tensor of type `written` when it is a tile that the
+/// threads of a block share: a static shape in a `scope: sm` memory. The alignment is at least
+/// 16 bytes, the `alignment:` of the memory, and the `aligned(N)` of the type.
+fn shared_tile(
+    gen: &MeliorGenerator<'_>,
+    written: Option<&syntax::Type>,
+    elem: &str,
+) -> Option<(String, u64)> {
+    let syntax::Type::Tensor(_, dims, Some(p)) = written? else {
+        return None;
+    };
+    let decl = gen.memories.get(&p.space)?;
+    if !matches!(decl.scope, Some(syntax::Scope::Sm)) {
+        return None;
+    }
+    let extents: Vec<&str> = dims.iter().map(|d| d.literal()).collect::<Option<_>>()?;
+    let arch = gen.spawn_arches.last().cloned().flatten();
+    let space =
+        crate::arch::address_space_for_arch(arch.as_deref(), crate::arch::AddressSpace::Workgroup);
+    let align = decl
+        .alignment
+        .map_or(0, |a| a.0)
+        .max(p.alignment.unwrap_or(0))
+        .max(16);
+    let shape = extents.iter().map(|e| format!("{e}x")).collect::<String>();
+    Some((format!("memref<{shape}{elem}, {space}>"), align))
+}
+
 impl<'c> LowerToMelior<'c> for FunctionCallExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
     fn lower(
@@ -3933,6 +3965,40 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 if let Some(shape) = arr.initializer_shape() {
                     return lower_tensor_initializer(gen, Some(&mlir_ty_str), &shape, arr, block);
                 }
+            }
+            if let Some((tile_str, align)) = shared_tile(gen, written, &mlir_ty_str) {
+                let tile_ty = Type::parse(gen.context, &tile_str)
+                    .ok_or_else(|| LowerError::ParseType(tile_str.clone()))?;
+                let alloca = OperationBuilder::new("memref.alloca", gen.loc())
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "alignment"),
+                        IntegerAttribute::new(gen.i64_ty, align as i64).into(),
+                    )])
+                    .add_results(&[tile_ty])
+                    .build()?;
+                // At the top of the region, so that a tile declared in a loop does not take a
+                // new stack slot on each pass.
+                let entry = block
+                    .parent_region()
+                    .and_then(|r| r.first_block())
+                    .ok_or_else(|| LowerError::from("a tile outside a region".to_string()))?;
+                let tile: Value = match entry.first_operation() {
+                    Some(first) => entry.insert_operation_before(first, alloca),
+                    None => entry.append_operation(alloca),
+                }
+                .result(0)?
+                .into();
+                if name.as_ref().ends_with("::new") || name.as_ref() == "Tensor" {
+                    emit_zero_fill(gen, &block, tile, &mlir_ty_str)?;
+                }
+                let block = if let Some(fe) = &fill_expr {
+                    let (fill_val, _, block) = gen.generate_expr(fe, block)?;
+                    emit_value_fill(gen, &block, tile, fill_val, &mlir_ty_str)?;
+                    block
+                } else {
+                    block
+                };
+                return Ok((tile, tile_ty, block));
             }
             let mut dynamic_sizes = Vec::new();
             // Number of dynamic dimensions; the type below uses one `?` per dim,

@@ -10,6 +10,7 @@
 // scratch: its start, end and step carry the marks that split it.
 //
 // RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
+// RUN: vxc %s --legacy-codegen --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
 // CHECK: {vx.parallel_init}
 // CHECK: {vx.parallel_bound}
 // CHECK: {vx.parallel_step}

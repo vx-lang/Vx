@@ -294,11 +294,191 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
     }
 }
 
+/// The marks of a loop whose passes a later pass runs on threads, blocks or host workers: on the
+/// store of its start, on the store of its bound, and on the step of its counter.
+struct LoopMarks {
+    init: &'static str,
+    bound: Option<&'static str>,
+    step: &'static str,
+}
+
+/// The marks the `spawn` region's proofs give this loop, if any. Taken, so that the loops in
+/// its body do not get them too.
+fn loop_marks(for_loop: &ForLoopStmt, gen: &mut MeliorGenerator<'_>) -> Option<LoopMarks> {
+    let one_loop = std::mem::take(&mut gen.mark_next_for);
+    let at = for_loop as *const ForLoopStmt as usize;
+    match &gen.two_level_plan {
+        Some(plan) if plan.block == at => Some(LoopMarks {
+            init: "vx.parallel_binit",
+            bound: Some("vx.parallel_bbound"),
+            step: "vx.parallel_bstep",
+        }),
+        Some(plan) if plan.threads.contains(&at) => Some(LoopMarks {
+            init: "vx.parallel_tinit",
+            bound: None,
+            step: "vx.parallel_tstep",
+        }),
+        _ if one_loop => Some(LoopMarks {
+            init: "vx.parallel_init",
+            bound: Some("vx.parallel_bound"),
+            step: "vx.parallel_step",
+        }),
+        _ => None,
+    }
+}
+
+/// A marked loop over `start..end`, in the form the later pass reads: the counter is an integer
+/// in a stack slot, and the marks are on its two stores and its step. The body reads the
+/// counter as it reads a `let mut` variable.
+fn lower_marked_range_loop<'c>(
+    for_loop: &ForLoopStmt,
+    marks: LoopMarks,
+    (start, end, ty): (Value<'c, 'c>, Value<'c, 'c>, Type<'c>),
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+) -> Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError> {
+    let unit = melior::ir::Attribute::unit(gen.context);
+    let slot_ty = Type::parse(gen.context, &format!("memref<{ty}>"))
+        .ok_or_else(|| LowerError::ParseType(format!("memref<{ty}>")))?;
+    let slot_of = |gen: &MeliorGenerator<'c>, value: Value<'c, 'c>, mark: Option<&str>| {
+        let slot: Value<'c, 'c> = block
+            .append_operation(
+                OperationBuilder::new("memref.alloca", gen.loc())
+                    .add_results(&[slot_ty])
+                    .build()?,
+            )
+            .result(0)?
+            .into();
+        let mut store =
+            OperationBuilder::new("memref.store", gen.loc()).add_operands(&[value, slot]);
+        if let Some(mark) = mark {
+            store = store.add_attributes(&[(Identifier::new(gen.context, mark), unit)]);
+        }
+        block.append_operation(store.build()?);
+        Ok::<_, LowerError>(slot)
+    };
+    let counter = slot_of(gen, start, Some(marks.init))?;
+    let bound = slot_of(gen, end, marks.bound)?;
+
+    let region = block.parent_region().unwrap();
+    let cond_block = region.append_block(melior::ir::Block::new(&[]));
+    let mut body_block = region.append_block(melior::ir::Block::new(&[]));
+    let latch_block = region.append_block(melior::ir::Block::new(&[]));
+    let merge_block = region.append_block(melior::ir::Block::new(&[]));
+    let branch_to = |gen: &MeliorGenerator<'c>,
+                     from: melior::ir::BlockRef<'c, 'c>,
+                     to: &melior::ir::Block<'c>| {
+        from.append_operation(
+            OperationBuilder::new("cf.br", gen.loc())
+                .add_successors(&[to])
+                .build()?,
+        );
+        Ok::<_, LowerError>(())
+    };
+    let load =
+        |gen: &MeliorGenerator<'c>, at: melior::ir::BlockRef<'c, 'c>, slot: Value<'c, 'c>| {
+            Ok::<Value<'c, 'c>, LowerError>(
+                at.append_operation(
+                    OperationBuilder::new("memref.load", gen.loc())
+                        .add_operands(&[slot])
+                        .add_results(&[ty])
+                        .build()?,
+                )
+                .result(0)?
+                .into(),
+            )
+        };
+    branch_to(gen, block, &cond_block)?;
+
+    let now = load(gen, cond_block, counter)?;
+    let last = load(gen, cond_block, bound)?;
+    let more: Value = cond_block
+        .append_operation(
+            OperationBuilder::new("arith.cmpi", gen.loc())
+                .add_operands(&[now, last])
+                .add_results(&[gen.i1_ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "predicate"),
+                    IntegerAttribute::new(
+                        gen.i64_ty,
+                        melior::dialect::arith::CmpiPredicate::Slt as i64,
+                    )
+                    .into(),
+                )])
+                .build()?,
+        )
+        .result(0)?
+        .into();
+    cond_block.append_operation(
+        OperationBuilder::new("cf.cond_br", gen.loc())
+            .add_operands(&[more])
+            .add_successors(&[&*body_block, &*merge_block])
+            .add_attributes(&[(
+                Identifier::new(gen.context, "operandSegmentSizes"),
+                melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[1, 0, 0]).into(),
+            )])
+            .build()?,
+    );
+
+    gen.env
+        .insert(for_loop.iter.clone().into(), (counter, slot_ty));
+    gen.allocs.insert(for_loop.iter.to_string());
+    gen.break_blocks.push(&*merge_block as *const _);
+    gen.continue_blocks.push(&*latch_block as *const _);
+    let mut body_terminated = false;
+    for stmt in &for_loop.body {
+        match gen.generate_statement(stmt, body_block)? {
+            Some(b) => body_block = b,
+            None => {
+                body_terminated = true;
+                break;
+            }
+        }
+    }
+    gen.break_blocks.pop();
+    gen.continue_blocks.pop();
+    if !body_terminated {
+        branch_to(gen, body_block, &latch_block)?;
+    }
+
+    let now = load(gen, latch_block, counter)?;
+    let one: Value = latch_block
+        .append_operation(
+            OperationBuilder::new("arith.constant", gen.loc())
+                .add_results(&[ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    IntegerAttribute::new(ty, 1).into(),
+                )])
+                .build()?,
+        )
+        .result(0)?
+        .into();
+    let next: Value = latch_block
+        .append_operation(
+            OperationBuilder::new("arith.addi", gen.loc())
+                .add_operands(&[now, one])
+                .add_results(&[ty])
+                .add_attributes(&[(Identifier::new(gen.context, marks.step), unit)])
+                .build()?,
+        )
+        .result(0)?
+        .into();
+    latch_block.append_operation(
+        OperationBuilder::new("memref.store", gen.loc())
+            .add_operands(&[next, counter])
+            .build()?,
+    );
+    branch_to(gen, latch_block, &cond_block)?;
+    Ok(Some(merge_block))
+}
+
 fn lower_for_loop<'c>(
     for_loop: &ForLoopStmt,
     gen: &mut MeliorGenerator<'c>,
     block: melior::ir::BlockRef<'c, 'c>,
 ) -> Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError> {
+    let marks = loop_marks(for_loop, gen);
     {
         let ForLoopStmt {
             iter,
@@ -319,6 +499,22 @@ fn lower_for_loop<'c>(
         {
             let (start_val, start_ty, block) = gen.generate_expr(start, block)?;
             let (end_val, end_ty, block) = gen.generate_expr(end, block)?;
+
+            // The later pass reads only an integer counter, not an `index` one.
+            if let Some(marks) = marks {
+                if for_loop.unroll.is_none()
+                    && start_ty == end_ty
+                    && melior::ir::r#type::TypeLike::is_integer(&start_ty)
+                {
+                    return lower_marked_range_loop(
+                        for_loop,
+                        marks,
+                        (start_val, end_val, start_ty),
+                        gen,
+                        block,
+                    );
+                }
+            }
 
             let ty_index = gen.index_ty;
 
