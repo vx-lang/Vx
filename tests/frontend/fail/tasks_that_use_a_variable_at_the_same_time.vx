@@ -17,7 +17,7 @@
 import core::cell;
 import std::vec;
 
-// CHECK: Error[E4002] at {{.*}}tasks_that_use_a_variable_at_the_same_time.vx:[[@LINE+7]]:13: Cannot access 'x' because it is mutably borrowed. A task that is not joined yet uses it.
+// CHECK: Error[E4002] at {{.*}}tasks_that_use_a_variable_at_the_same_time.vx:[[@LINE+7]]:13: Cannot access 'x' because it is mutably borrowed. The task from the `spawn` at line [[@LINE+4]] uses it at line [[@LINE+5]], and it is not joined yet. A task holds what it uses until its `join()`, or until the end of its `tasks` block.
 fn read_while_a_task_writes() -> i32 {
   let mut x = 0;
   tasks {
@@ -29,7 +29,7 @@ fn read_while_a_task_writes() -> i32 {
   return x;
 }
 
-// CHECK: Error[E4002] at {{.*}}tasks_that_use_a_variable_at_the_same_time.vx:[[@LINE+8]]:7: Cannot access 'x' because it is mutably borrowed. A task that is not joined yet uses it.
+// CHECK: Error[E4002] at {{.*}}tasks_that_use_a_variable_at_the_same_time.vx:[[@LINE+8]]:7: Cannot access 'x' because it is mutably borrowed. The task from the `spawn` at line [[@LINE+4]] uses it at line [[@LINE+5]], and it is not joined yet. A task holds what it uses until its `join()`, or until the end of its `tasks` block.
 fn two_tasks_write() -> i32 {
   let mut x = 0;
   tasks {
@@ -43,7 +43,7 @@ fn two_tasks_write() -> i32 {
   return x;
 }
 
-// CHECK: Error[E4009] at {{.*}}tasks_that_use_a_variable_at_the_same_time.vx:[[@LINE+7]]:5: `v` is assigned while it is borrowed, and the borrow is used after the assignment. A task that is not joined yet uses it.
+// CHECK: Error[E4009] at {{.*}}tasks_that_use_a_variable_at_the_same_time.vx:[[@LINE+7]]:5: `v` is assigned while it is borrowed, and the borrow is used after the assignment. The task from the `spawn` at line [[@LINE+4]] uses it at line [[@LINE+5]], and it is not joined yet. A task holds what it uses until its `join()`, or until the end of its `tasks` block. Call `h.join()` before this line.
 fn change_what_a_task_reads() -> i32 {
   let mut v = Vec<i32>::new();
   tasks {
