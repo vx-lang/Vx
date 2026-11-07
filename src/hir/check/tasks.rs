@@ -32,6 +32,8 @@ pub(crate) struct TaskCx {
     /// The task handles that `let h = spawn { .. }` made, in the order of their `let`s.
     handles: Vec<Handle>,
     next_id: usize,
+    /// The number of the next `tasks` block, unique in the program as task names are.
+    next_block: usize,
     /// The `spawn`s whose task a later statement of the same block always joins.
     joined_in_block: HashSet<Span>,
     /// The `h.join()` calls that always run after the `spawn` of `h`, in the same block. Such a
@@ -49,6 +51,7 @@ pub(crate) struct TaskCx {
 
 enum Frame {
     Tasks {
+        block: usize,
         /// `scopes.len()` in the block. A task's borrow made at this depth lasts until the end
         /// of the block.
         scope_len: usize,
@@ -61,6 +64,8 @@ enum Frame {
         passed_up: Vec<(Type, Span)>,
     },
     Spawn {
+        /// The number in the name of the task.
+        task: usize,
         /// `scopes.len()` before the body. A variable of a lower scope is from outside the task.
         depth: usize,
         closures: usize,
@@ -73,6 +78,23 @@ enum Frame {
 }
 
 impl TaskCx {
+    /// Each `tasks` block around the code being checked, outermost first, with the task of that
+    /// block that the code is in. `None` is the code of the block itself.
+    pub(crate) fn task_chain(&self) -> Vec<(usize, Option<usize>)> {
+        let mut chain: Vec<(usize, Option<usize>)> = Vec::new();
+        for f in &self.frames {
+            match f {
+                Frame::Tasks { block, .. } => chain.push((*block, None)),
+                Frame::Spawn { task, .. } => {
+                    if let Some(last) = chain.last_mut() {
+                        last.1 = Some(*task);
+                    }
+                }
+            }
+        }
+        chain
+    }
+
     /// The scope of the `spawn` of the task body whose top scope is `scope`.
     pub(crate) fn spawn_scope_of_body(&self, scope: usize) -> Option<usize> {
         self.frames.iter().find_map(|f| match f {
@@ -142,16 +164,18 @@ impl TaskCx {
     /// Start the check of a function body, and return the state of the code around it. The
     /// task names stay unique, so that a task of the function never ends one of its caller.
     pub(crate) fn enter_function(&mut self) -> TaskCx {
-        let next_id = self.next_id;
+        let (next_id, next_block) = (self.next_id, self.next_block);
         let outer = std::mem::take(self);
         self.next_id = next_id;
+        self.next_block = next_block;
         outer
     }
 
     pub(crate) fn exit_function(&mut self, outer: TaskCx) {
-        let next_id = self.next_id;
+        let (next_id, next_block) = (self.next_id, self.next_block);
         *self = outer;
         self.next_id = next_id;
+        self.next_block = next_block;
     }
 
     fn handle(&self, name: &str, depth: Option<usize>) -> Option<&Handle> {
@@ -359,7 +383,9 @@ impl TypeChecker<'_> {
         let loops = self.borrow.loop_exits.len();
         self.drops_enter_tasks();
         let ty = self.check_task_body(expr, consume, |me| {
+            me.tasks.next_block += 1;
             me.tasks.frames.push(Frame::Tasks {
+                block: me.tasks.next_block,
                 scope_len: me.scopes.len(),
                 closures,
                 loops,
@@ -685,12 +711,14 @@ impl TypeChecker<'_> {
         if !ended_by_join {
             self.move_locals_that_end_first(expr, tasks_scope_len);
         }
-        let id = format!("{TASK_PREFIX}{}", self.tasks.next_id);
+        let task = self.tasks.next_id;
+        let id = format!("{TASK_PREFIX}{task}");
         self.tasks.next_id += 1;
         let changed_outside = std::mem::take(&mut self.changed_vars);
         let depth = self.scopes.len();
         let loops = self.borrow.loop_exits.len();
         self.tasks.frames.push(Frame::Spawn {
+            task,
             depth,
             closures,
             loops,
