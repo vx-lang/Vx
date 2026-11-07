@@ -1328,7 +1328,11 @@ impl<'a> TypeChecker<'a> {
                 let why = "the `mlir!` block, which can free memory".to_string();
                 events.push((false, m.span, why));
             }
-            Expr::SpawnOn(s) => events.push((false, s.span, spawn.to_string())),
+            Expr::SpawnOn(s) => {
+                if let Some(v) = self.region_frees_through(&s.stmts, s.ret.as_deref(), declared) {
+                    events.push((false, s.span, region_event(&v)));
+                }
+            }
             Expr::TaskBlock(t) if t.kind == TaskBlockKind::Spawn => {
                 events.push((false, t.span, spawn.to_string()))
             }
@@ -1419,6 +1423,39 @@ impl<'a> TypeChecker<'a> {
             None => self.scan_type(arg, declared),
         };
         self.type_can_free(&ty, 0)
+    }
+
+    /// A variable from outside a `spawn on` region, with the statements `stmts` and the value
+    /// `ret`, that can free memory. The task of the region reaches the memory of the code around
+    /// it only through such a variable. `declared` holds the variables of a loop body that the
+    /// checker has not checked yet.
+    pub(crate) fn region_frees_through(
+        &mut self,
+        stmts: &[Statement],
+        ret: Option<&Expr>,
+        declared: &HashMap<String, Type>,
+    ) -> Option<crate::symbol::Symbol> {
+        let mut names = Vec::new();
+        let mut note = |e: &Expr| {
+            if let Expr::Identifier(id) = e {
+                if !names.contains(&id.name) {
+                    names.push(id.name.clone());
+                }
+            }
+        };
+        crate::syntax::visit_exprs(stmts, &mut note);
+        if let Some(r) = ret {
+            crate::syntax::visit_expr(r, &mut note);
+        }
+        names.into_iter().find(|name| {
+            let outside =
+                declared.contains_key(name.as_ref()) || self.lookup(name.as_ref()).is_some();
+            let use_of = Expr::Identifier(IdentifierExpr {
+                name: name.clone(),
+                span: Span::default(),
+            });
+            outside && self.scan_can_free(&use_of, None, declared)
+        })
     }
 
     /// Whether the drop of a value of the type `ty` can free memory.
@@ -2189,6 +2226,12 @@ impl<'a> TypeChecker<'a> {
             }
         }
     }
+}
+
+/// The event of a `spawn on` region whose task can free memory through the variable `v`, for the
+/// note of E8006.
+pub(crate) fn region_event(v: &str) -> String {
+    format!("the `spawn on` region, whose task can free memory through `{v}`")
 }
 
 /// The argument `e` as the program wrote it, for the note of E8006.
