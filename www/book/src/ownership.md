@@ -220,6 +220,12 @@ fn main() -> i32 {
 }
 ```
 
+A `match` arm that moves a part out of the matched value takes all of the value. For example,
+`match t { Two::Pair(a, _) => .. }` moves all of `t` into the arm. Each arm of a `match` on a value
+with no name, such as `match make() { .. }`, takes the value too. At its end, the arm drops the
+names that it binds, and then the parts that it does not name, such as the `_` part. Rust keeps
+the `_` part in `t` and drops it at the end of the block of `t`.
+
 `Vec`, `Box`, `String`, `File` and the socket types implement `Drop`, so none of them is freed by
 hand. `drop` cannot be called directly (E4012). To end a value's life early, `core::mem` has
 `drop(x)`; `forget(x)` ends it without dropping anything, and `needs_drop<T>()` says whether
