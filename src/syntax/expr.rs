@@ -1194,7 +1194,7 @@ fn substitute_mlir_returns(ty: &Type, mapping: &std::collections::HashMap<Symbol
         Type::Struct(name, None) if mapping.contains_key(name) => mapping[name].clone(),
         Type::Pointer(inner, mem, is_mut) => Type::Pointer(
             Box::new(substitute_mlir_returns(inner, mapping)),
-            mem.clone(),
+            super::types::substitute_memory(mem, mapping),
             *is_mut,
         ),
         _ => ty.substitute(mapping),
