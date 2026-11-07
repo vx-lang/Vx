@@ -480,9 +480,7 @@ fn lower_for_loop<'c>(
     block: melior::ir::BlockRef<'c, 'c>,
 ) -> Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError> {
     let marks = loop_marks(for_loop, gen);
-    let in_spirv_kernel = gen.spawn_arches.last().cloned().flatten().is_some_and(|a| {
-        crate::arch::DeviceTarget::from_arch(&a) == Some(crate::arch::DeviceTarget::Spirv64)
-    });
+    let in_spirv_kernel = gen.in_spirv_region();
     {
         let ForLoopStmt {
             iter,

@@ -496,6 +496,17 @@ impl<'c> MeliorGenerator<'c> {
     /// A rank-0 `memref` over a single scalar (`memref<i32>`), which is how a mutable scalar
     /// local's storage and a borrow of one are both spelled. Ranked memrefs (`memref<4xf32>`)
     /// and nested ones (`memref<memref<i32>>`) are different shapes and are excluded.
+    /// Whether the innermost `spawn` region runs on a `spirv64` topology.
+    pub(crate) fn in_spirv_region(&self) -> bool {
+        self.spawn_arches
+            .last()
+            .cloned()
+            .flatten()
+            .is_some_and(|a| {
+                crate::arch::DeviceTarget::from_arch(&a) == Some(crate::arch::DeviceTarget::Spirv64)
+            })
+    }
+
     pub fn is_scalar_memref(&self, ty: &Type<'c>) -> bool {
         let ty_str = ty.to_string();
         ty_str.starts_with("memref<")
