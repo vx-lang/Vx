@@ -268,9 +268,15 @@ impl SmtProver {
                 let (from, to) = cast_int_types(c, type_of)
                     .ok_or("a cast whose integer source or destination type is not known")?;
                 let value = self.lower_expr(&c.expr, type_of, Some(from.clone()))?;
-                // A checked cast to usize preserves its value or traps.
-                if to == ElementType::USize || keeps_every_value(&from, &to) {
+                if keeps_every_value(&from, &to) {
                     Ok(value)
+                } else if to == ElementType::USize {
+                    // A cast to usize stops the program on a value out of range, so that cast has
+                    // no value. Like a remainder by zero, it becomes a name with no facts.
+                    let (lo, hi) = int_range(&to).expect("the range of usize");
+                    let undefined = format!("|cast.undefined.{}|", self.declarations.len());
+                    self.declarations.insert(undefined.clone());
+                    Ok(format!("(ite (<= {lo} {value} {hi}) {value} {undefined})"))
                 } else {
                     wrap(value, Some(to))
                 }
