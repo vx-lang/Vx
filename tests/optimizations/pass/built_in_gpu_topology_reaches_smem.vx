@@ -7,10 +7,12 @@
 //===----------------------------------------------------------------------===//
 // A kernel on the built-in `Topology::GPU` can use the SMEM that a machine file
 // declares within GPU_HBM. The kernel runs one block per row and keeps its
-// partial sums in shared memory. Before, the compiler said 'part' was
-// unreachable from GPU[0] unless the program declared its own topology.
+// partial sums in shared memory, on both code generators. Before, the compiler
+// said 'part' was unreachable from GPU[0] unless the program declared its own
+// topology.
 //
 // RUN: vxc %s --action emit-llvm -o /dev/null 2>&1 | FileCheck %s
+// RUN: vxc %s --legacy-codegen --action emit-llvm -o /dev/null 2>&1 | FileCheck %s
 // CHECK-NOT: Error
 // CHECK: toponame=GPU[0]{{.*}}launch=64,32
 // CHECK-SAME: .shared .align 16 .b8 vx_npu_kernel_0_smem_0[128]

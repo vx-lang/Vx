@@ -102,6 +102,15 @@ pub struct MeliorGenerator<'c> {
     /// The levels of the `across` loops around the code, for the lane reductions.
     pub(crate) across_kinds: Vec<crate::arch::LevelKind>,
     pub in_spawn: bool,
+    /// The next `for` loop is the one loop of a `spawn` region that `parallel_outer_for` proved.
+    /// It gets marks so that a later pass can run its passes on threads or host workers.
+    pub(crate) mark_next_for: bool,
+    /// The block loop and the thread loops that `parallel_two_level` proved, while their
+    /// `spawn` region is lowered.
+    pub(crate) two_level_plan: Option<crate::hir::check::parallel::TwoLevelPlan>,
+    /// The declared `arch:` of each open `spawn` region, innermost last. `None` for a topology
+    /// that declares none, such as every built-in one.
+    pub(crate) spawn_arches: Vec<Option<String>>,
     pub break_blocks: Vec<*const melior::ir::Block<'c>>,
     /// The open `tasks` blocks that can fail: the block after each, which takes the value of
     /// the block, and the type `Result<U, E>` of that value.
@@ -1000,6 +1009,9 @@ impl<'c> MeliorGenerator<'c> {
             expected_type: None,
             across_kinds: Vec::new(),
             in_spawn: false,
+            mark_next_for: false,
+            two_level_plan: None,
+            spawn_arches: Vec::new(),
             break_blocks: Vec::new(),
             tasks_leaves: Vec::new(),
             tasks_inline: false,
