@@ -575,6 +575,10 @@ impl<'c> MeliorGenerator<'c> {
         if from_ty == to_ty {
             return Ok(val);
         }
+        // A closure literal given where a `ClosureK` is expected, as in a `return` or an assignment.
+        if let Some(adapted) = self.adapt_closure_to_nominal(block, val, from_ty, to_ty)? {
+            return Ok(adapted);
+        }
 
         // Scalar -> tensor: broadcast the scalar across a fresh buffer (fill),
         // rather than emitting an invalid f32->memref bitcast. Handles static,

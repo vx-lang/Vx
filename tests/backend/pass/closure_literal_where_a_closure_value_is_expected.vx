@@ -9,13 +9,10 @@
 // its captures and a pointer to its code. This test writes one in a struct field, in a field
 // of a generic struct, in an assignment to a field, in a `let` with a type, in an assignment to that variable, in a
 // `return`, and as a call argument. Each call through the stored closure must give its own
-// answer.
+// answer, on both code generators.
 //
-// The AST code generator cannot compile these when the closure uses a variable (#2600), so
-// this test runs the default code generator only.
-//
-// REQUIRES: flat-codegen
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=Warning
 // CHECK: {{^}}field 11{{$}}
 // CHECK: {{^}}generic field 16{{$}}
 // CHECK: {{^}}assigned 21{{$}}
