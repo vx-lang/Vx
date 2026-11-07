@@ -2369,18 +2369,7 @@ impl<'a> TypeChecker<'a> {
                     span: c.span,
                 });
                 *calls += 1;
-                let callee = self
-                    .env
-                    .syntax_functions
-                    .get(c.name.as_ref())
-                    .copied()
-                    .or_else(|| {
-                        self.mono
-                            .functions
-                            .iter()
-                            .find(|(f, _)| f.name == c.name)
-                            .map(|(f, _)| f)
-                    });
+                let callee = self.declared_function(&c.name);
                 // Keep the declared scalar type after replacing a call with a fresh name.
                 let result = match callee.map(|f| &f.return_type) {
                     Some(Type::Scalar(ty))
@@ -2470,6 +2459,21 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The function that a call to `name` calls, from its declaration.
+    fn declared_function(&self, name: &crate::symbol::Symbol) -> Option<&Function> {
+        self.env
+            .syntax_functions
+            .get(name.as_ref())
+            .copied()
+            .or_else(|| {
+                self.mono
+                    .functions
+                    .iter()
+                    .find(|(f, _)| f.name == *name)
+                    .map(|(f, _)| f)
+            })
+    }
+
     /// Resolve clauses in the callee's scope before replacing its names.
     pub(crate) fn typed_callee_contract(&self, expr: &Expr, callee: &Function) -> Expr {
         fn declared_type(
@@ -2505,7 +2509,11 @@ impl<'a> TypeChecker<'a> {
                         _ => None,
                     }
                 }
-                Expr::FunctionCall(_) => Some(checker.check_expr_type_probe(expr)),
+                // The declared return type, not a type found in the caller's scope: a caller
+                // name can hide a callee parameter of another type.
+                Expr::FunctionCall(c) => {
+                    Some(checker.declared_function(&c.name)?.return_type.clone())
+                }
                 _ => None,
             }
         }
