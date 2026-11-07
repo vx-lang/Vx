@@ -706,20 +706,24 @@ impl<'a> TypeChecker<'a> {
             _ => pointers_then.join(&pointers_else),
         };
         let else_prefix = std::mem::take(&mut self.consteval.constraints);
-        self.consteval.constraints = match (then_ends, else_ends) {
-            (true, false) => else_prefix,
-            (false, true) => then_prefix,
-            _ => join_facts_before_branches(&prefix_before, &[then_prefix, else_prefix]),
-        };
-        match (then_ends, else_ends) {
-            (true, false) => self.consteval.constraints.extend(else_facts),
-            (false, true) => self.consteval.constraints.extend(then_facts),
-            (true, true) => self
-                .consteval
-                .constraints
-                .push(crate::hir::prover::unreachable_fact()),
-            (false, false) => {}
-        }
+        let ends = [
+            BranchEnd {
+                before: then_prefix,
+                learned: then_facts,
+            },
+            BranchEnd {
+                before: else_prefix,
+                learned: else_facts,
+            },
+        ];
+        // A branch that ends early does not reach the code after the `if`.
+        let reaching: Vec<BranchEnd> = ends
+            .into_iter()
+            .zip([then_ends, else_ends])
+            .filter(|(_, ends_early)| !ends_early)
+            .map(|(end, _)| end)
+            .collect();
+        self.consteval.constraints = facts_after_branches(prefix_before, reaching);
         let joined = match (marks_after_then, marks_after_else) {
             (Some(a), Some(b)) => Self::union_moved(a, b),
             (Some(a), None) | (None, Some(a)) => a,
@@ -1277,7 +1281,7 @@ impl<'a> TypeChecker<'a> {
                 // it cannot say which arm the code after the `match` came through.
                 let facts_before = self.consteval.constraints.len();
                 let prefix_before = self.consteval.constraints.clone();
-                let mut prefixes_after = Vec::new();
+                let mut ends_after = Vec::new();
                 let mut every_arm_ends = !arms.is_empty();
                 let values_before = self.consteval.env.clone();
                 let mut values_after_arms = Vec::new();
@@ -1355,7 +1359,9 @@ impl<'a> TypeChecker<'a> {
                     every_arm_ends &= self.branch_ends_early(&arm.body);
                     if !self.branch_ends_early(&arm.body) {
                         values_after_arms.push(self.consteval.env.clone());
-                        prefixes_after.push(self.consteval.constraints[..facts_before].to_vec());
+                        let mut before = std::mem::take(&mut self.consteval.constraints);
+                        let learned = before.split_off(facts_before);
+                        ends_after.push(BranchEnd { before, learned });
                         let arm_pointers = std::mem::take(&mut self.pointer_facts);
                         pointers_after = Some(match pointers_after.take() {
                             Some(joined) => joined.join(&arm_pointers),
@@ -1415,15 +1421,15 @@ impl<'a> TypeChecker<'a> {
                 self.consteval.env = Self::join_known_values(values_after_arms);
                 // With no `_` arm, the code after the `match` can come from before it.
                 if !has_wildcard {
-                    prefixes_after.push(prefix_before.clone());
+                    ends_after.push(BranchEnd {
+                        before: prefix_before.clone(),
+                        learned: Vec::new(),
+                    });
                 }
-                self.consteval.constraints =
-                    join_facts_before_branches(&prefix_before, &prefixes_after);
                 if every_arm_ends {
-                    self.consteval
-                        .constraints
-                        .push(crate::hir::prover::unreachable_fact());
+                    ends_after.clear();
                 }
+                self.consteval.constraints = facts_after_branches(prefix_before, ends_after);
 
                 // Coverage. An enum scrutinee can be enumerated, so a missing variant is a fact
                 // about the match wherever it sits: the uncovered value falls through, and if
@@ -1878,30 +1884,124 @@ impl<'a> TypeChecker<'a> {
     }
 }
 
-/// The prover's facts from before branches, after the branches whose facts are `ends` reach the
-/// code after them. A branch changes such a fact in place when it changes a variable of the fact.
-/// A fact that one branch changed takes that branch's version: it names the old values, and the
-/// other branches changed no variable of it. A fact that two branches changed ends.
-fn join_facts_before_branches(before: &[Expr], ends: &[Vec<Expr>]) -> Vec<Expr> {
+/// What the prover knows where a branch reaches the code after the branches.
+struct BranchEnd {
+    /// The facts from before the branches, as the branch changed them.
+    before: Vec<Expr>,
+    /// The facts that the branch learned, such as its condition.
+    learned: Vec<Expr>,
+}
+
+/// The prover's facts after branches. `before` holds the facts from before the branches, and
+/// `reaching` the branches that reach the code after them.
+fn facts_after_branches(before: Vec<Expr>, mut reaching: Vec<BranchEnd>) -> Vec<Expr> {
+    match reaching.len() {
+        0 => {
+            let mut facts = before;
+            facts.push(crate::hir::prover::unreachable_fact());
+            facts
+        }
+        1 => {
+            let end = reaching.pop().expect("one branch");
+            let mut facts = end.before;
+            facts.extend(end.learned);
+            facts
+        }
+        _ => join_facts_of_branches(&before, reaching),
+    }
+}
+
+/// The prover's facts after branches that reach the code after them, `ends`. `before` holds the
+/// facts from before the branches. A branch changes such a fact in place when it changes a
+/// variable of the fact: an assignment renames the old value to `$old_N`, and any other change
+/// ends the fact.
+///
+/// - A fact that no branch changed holds after the branches.
+/// - A fact that one branch changed takes the version of that branch. It names the old values,
+///   and the other branches changed no variable of it. Those branches also keep the fact as it was.
+/// - The other facts hold only in their branch. So the code after the branches knows "the facts
+///   of the first branch, or the facts of the second".
+fn join_facts_of_branches(before: &[Expr], ends: Vec<BranchEnd>) -> Vec<Expr> {
     assert!(
-        ends.iter().all(|e| e.len() == before.len()),
+        ends.iter().all(|e| e.before.len() == before.len()),
         "a branch keeps the facts before it"
     );
-    let changed_in = |k: usize| {
-        ends.iter()
-            .map(move |e| &e[k])
-            .filter(move |f| **f != before[k])
+    let no_fact = crate::hir::check::raw::no_fact();
+    let mut joined = Vec::with_capacity(before.len());
+    let mut either: Vec<Vec<Expr>> = vec![Vec::new(); ends.len()];
+    let keep = |facts: &mut Vec<Expr>, fact: &Expr| {
+        if *fact != no_fact && is_a_condition(fact) {
+            facts.push(fact.clone());
+        }
     };
-    (0..before.len())
-        .map(|k| {
-            let mut changed = changed_in(k);
-            match (changed.next(), changed.next()) {
-                (None, _) => before[k].clone(),
-                (Some(f), None) => f.clone(),
-                (Some(_), Some(_)) => crate::hir::check::raw::no_fact(),
+    for (k, fact) in before.iter().enumerate() {
+        let changed: Vec<usize> = (0..ends.len())
+            .filter(|&j| ends[j].before[k] != *fact)
+            .collect();
+        match changed[..] {
+            [] => joined.push(fact.clone()),
+            [one] => {
+                joined.push(ends[one].before[k].clone());
+                for (j, facts) in either.iter_mut().enumerate() {
+                    if j != one {
+                        keep(facts, fact);
+                    }
+                }
             }
+            _ => {
+                joined.push(no_fact.clone());
+                for (j, facts) in either.iter_mut().enumerate() {
+                    keep(facts, &ends[j].before[k]);
+                }
+            }
+        }
+    }
+    for (j, end) in ends.into_iter().enumerate() {
+        for fact in end.learned {
+            // A marker is a note for a later error, and the prover skips it.
+            if crate::hir::stmt::read_lost_invariant(&fact).is_some() {
+                joined.push(fact);
+            } else {
+                keep(&mut either[j], &fact);
+            }
+        }
+    }
+    // A branch that knows nothing new makes "one branch or another" say nothing.
+    if either.iter().all(|facts| !facts.is_empty()) {
+        let all = |facts: Vec<Expr>| join_with(facts, LogicalOp::And);
+        joined.push(join_with(
+            either.into_iter().map(all).collect(),
+            LogicalOp::Or,
+        ));
+    }
+    joined
+}
+
+/// Whether the prover can read the fact `e` as true or false. It knows only numbers, so a `bool`
+/// variable such as the `c` of `if c` is not one. Inside "one branch or another", such a fact
+/// would make the prover ignore the whole fact.
+fn is_a_condition(e: &Expr) -> bool {
+    match e {
+        Expr::RelationalOp(_) => true,
+        Expr::LogicalOp(l) => is_a_condition(&l.lhs) && is_a_condition(&l.rhs),
+        Expr::UnaryOp(u) if matches!(u.op, UnaryOp::Not) => is_a_condition(&u.expr),
+        _ => false,
+    }
+}
+
+/// `facts` joined with `op`. Each list here has at least one fact.
+fn join_with(facts: Vec<Expr>, op: LogicalOp) -> Expr {
+    facts
+        .into_iter()
+        .reduce(|lhs, rhs| {
+            Expr::LogicalOp(LogicalOpExpr {
+                lhs: Box::new(lhs),
+                op: op.clone(),
+                rhs: Box::new(rhs),
+                span: Span::default(),
+            })
         })
-        .collect()
+        .expect("a list with a fact")
 }
 
 /// The number that a block's value is, as in `{ 0 }` or `{ -1 }`.

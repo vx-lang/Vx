@@ -82,7 +82,7 @@ fn lost_invariant_marker(fact: Expr, inv: &Expr, at_break: Span) -> Expr {
 }
 
 /// The fact of a marker, the line of its invariant and the place of its `break`.
-fn read_lost_invariant(e: &Expr) -> Option<(&Expr, usize, Span)> {
+pub(crate) fn read_lost_invariant(e: &Expr) -> Option<(&Expr, usize, Span)> {
     match e {
         Expr::FunctionCall(fc) if fc.name.as_ref() == LOST_INVARIANT => {
             Some((&fc.args[0], fc.args[1].span().line, fc.args[2].span()))
