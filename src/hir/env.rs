@@ -660,6 +660,8 @@ pub struct TypeChecker<'a> {
     /// Identifiers already reported as unreadable from the active topology, so the indexing of
     /// the same read (`c[0][0]`) does not report it again.
     pub(crate) unreadable_reported: std::collections::HashSet<crate::syntax::Span>,
+    /// The `spawn on` of the device body being checked, for E6038. `None` on the host.
+    pub(crate) device_spawn: Option<crate::syntax::Span>,
     /// The name being indexed while the base of `name[i]` is checked: the one place a `const`
     /// table may be named.
     pub(crate) indexed_name: Option<crate::symbol::Symbol>,
@@ -807,6 +809,7 @@ impl<'a> TypeChecker<'a> {
             speculating: false,
             unroll_candidates: Vec::new(),
             unreadable_reported: Default::default(),
+            device_spawn: None,
             indexed_name: None,
             value_unused: false,
             cancel_loops: Vec::new(),
