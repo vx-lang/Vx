@@ -110,6 +110,33 @@ fn main() -> i32 {
 }
 ```
 
+After a loop, each invariant is a fact when it holds at each place where the loop ends. A
+`while c` loop ends with `!c`. A `for i in a..b` loop ends with `i == b`, so its invariant holds
+with `b` in place of `i`. This needs a prover that knows `a <= b`. Here the loop gives
+`total == n`:
+
+```rust
+fn count(n : i64) -> i64
+    requires n >= 0i64
+    ensures return == n
+{
+    let mut total = 0i64;
+    for i in 0i64..n invariant total == i {
+        total = total + 1i64;
+    }
+    return total;
+}
+
+fn main() -> i32 {
+    return (count(3i64) - 3i64) as i32;
+}
+```
+
+A `break` can also end a loop. A `break` where an invariant may not hold is not an error, because
+no pass starts after it. But then the invariant gives no fact after the loop, and `!c` and
+`i == b` hold only when no `break` ends the loop. An error that the lost invariant would prevent
+has a note with the line of that `break`.
+
 ## Type invariants
 
 A contract can also be about data. An `invariant` on a struct states a fact about each value of the

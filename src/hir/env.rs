@@ -725,6 +725,9 @@ pub struct TypeChecker<'a> {
     /// The integer type of each old value that the prover's facts named, as `$old_N` in
     /// `x = x + 1`. Each name is new, so the facts about two old values of `x` do not meet.
     pub(crate) old_values: Vec<ElementType>,
+    /// The integer type of each value of the variable of a `for` loop where the loop ends, as
+    /// `$exit_N`. Each loop gets its own name, so the facts of two loops over `i` do not meet.
+    pub(crate) exit_values: Vec<ElementType>,
     /// The raw-pointer facts of the body being checked.
     pub(crate) pointer_facts: crate::hir::check::pointer_facts::PointerFacts,
     /// The last id given to a base or a fact. Never saved or restored, so that two branches
@@ -825,6 +828,7 @@ impl<'a> TypeChecker<'a> {
             changed_vars: std::collections::HashSet::new(),
             fact_change_frames: Vec::new(),
             old_values: Vec::new(),
+            exit_values: Vec::new(),
             pointer_facts: Default::default(),
             pointer_fact_ids: 0,
             method_call_written: None,

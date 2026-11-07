@@ -593,6 +593,7 @@ impl<'a> TypeChecker<'a> {
         // The prover's facts follow the paths: the `then` branch knows the condition and the
         // `else` branch its negation, and what a branch learns ends with it.
         let facts_before = self.consteval.constraints.len();
+        let prefix_before = self.consteval.constraints.clone();
         let pointers_before = self.pointer_facts.clone();
         let cond_fact = (!if_expr.is_comptime && crate::hir::prover::is_modelled(&if_expr.cond))
             .then(|| (*if_expr.cond).clone());
@@ -616,6 +617,9 @@ impl<'a> TypeChecker<'a> {
             self.pointer_branches.pop();
         }
         let then_facts = self.consteval.constraints.split_off(facts_before);
+        // An assignment in the `then` branch renames the facts from before the `if` in place, so
+        // the `else` branch starts from a copy of them.
+        let then_prefix = std::mem::replace(&mut self.consteval.constraints, prefix_before.clone());
         let pointers_then = std::mem::replace(&mut self.pointer_facts, pointers_before);
         if let Some(c) = &cond_fact {
             self.consteval
@@ -700,6 +704,12 @@ impl<'a> TypeChecker<'a> {
             (true, false) => pointers_else,
             (false, true) => pointers_then,
             _ => pointers_then.join(&pointers_else),
+        };
+        let else_prefix = std::mem::take(&mut self.consteval.constraints);
+        self.consteval.constraints = match (then_ends, else_ends) {
+            (true, false) => else_prefix,
+            (false, true) => then_prefix,
+            _ => join_facts_before_branches(&prefix_before, &[then_prefix, else_prefix]),
         };
         match (then_ends, else_ends) {
             (true, false) => self.consteval.constraints.extend(else_facts),
@@ -1266,6 +1276,8 @@ impl<'a> TypeChecker<'a> {
                 // What an arm learns ends with it: the prover does not model the patterns, so
                 // it cannot say which arm the code after the `match` came through.
                 let facts_before = self.consteval.constraints.len();
+                let prefix_before = self.consteval.constraints.clone();
+                let mut prefixes_after = Vec::new();
                 let mut every_arm_ends = !arms.is_empty();
                 let values_before = self.consteval.env.clone();
                 let mut values_after_arms = Vec::new();
@@ -1281,7 +1293,9 @@ impl<'a> TypeChecker<'a> {
                         && unsuffixed_number_tail(&mut arm.body).is_some_and(|n| n.ty.is_none());
                     self.consteval.env = values_before.clone();
                     self.pointer_facts = pointers_before.clone();
-                    self.consteval.constraints.truncate(facts_before);
+                    // An arm renames the facts from before the `match` in place, so each arm
+                    // starts from a copy of them.
+                    self.consteval.constraints = prefix_before.clone();
                     self.restore_moved(marks_before.clone());
                     if i > 0 {
                         arm_borrows.extend(self.borrow.next_branch(&borrows_before));
@@ -1341,6 +1355,7 @@ impl<'a> TypeChecker<'a> {
                     every_arm_ends &= self.branch_ends_early(&arm.body);
                     if !self.branch_ends_early(&arm.body) {
                         values_after_arms.push(self.consteval.env.clone());
+                        prefixes_after.push(self.consteval.constraints[..facts_before].to_vec());
                         let arm_pointers = std::mem::take(&mut self.pointer_facts);
                         pointers_after = Some(match pointers_after.take() {
                             Some(joined) => joined.join(&arm_pointers),
@@ -1398,7 +1413,12 @@ impl<'a> TypeChecker<'a> {
                     None => pointers_before,
                 };
                 self.consteval.env = Self::join_known_values(values_after_arms);
-                self.consteval.constraints.truncate(facts_before);
+                // With no `_` arm, the code after the `match` can come from before it.
+                if !has_wildcard {
+                    prefixes_after.push(prefix_before.clone());
+                }
+                self.consteval.constraints =
+                    join_facts_before_branches(&prefix_before, &prefixes_after);
                 if every_arm_ends {
                     self.consteval
                         .constraints
@@ -1856,6 +1876,32 @@ impl<'a> TypeChecker<'a> {
             _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
     }
+}
+
+/// The prover's facts from before branches, after the branches whose facts are `ends` reach the
+/// code after them. A branch changes such a fact in place when it changes a variable of the fact.
+/// A fact that one branch changed takes that branch's version: it names the old values, and the
+/// other branches changed no variable of it. A fact that two branches changed ends.
+fn join_facts_before_branches(before: &[Expr], ends: &[Vec<Expr>]) -> Vec<Expr> {
+    assert!(
+        ends.iter().all(|e| e.len() == before.len()),
+        "a branch keeps the facts before it"
+    );
+    let changed_in = |k: usize| {
+        ends.iter()
+            .map(move |e| &e[k])
+            .filter(move |f| **f != before[k])
+    };
+    (0..before.len())
+        .map(|k| {
+            let mut changed = changed_in(k);
+            match (changed.next(), changed.next()) {
+                (None, _) => before[k].clone(),
+                (Some(f), None) => f.clone(),
+                (Some(_), Some(_)) => crate::hir::check::raw::no_fact(),
+            }
+        })
+        .collect()
 }
 
 /// The number that a block's value is, as in `{ 0 }` or `{ -1 }`.
