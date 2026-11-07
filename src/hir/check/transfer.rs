@@ -2480,9 +2480,13 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 self.drops_enter_spawn();
-                self.pointer_facts_event(*span, |_| {
-                    "the `spawn`, whose task can free memory".to_string()
-                });
+                if let Some(v) =
+                    self.region_frees_through(stmts, ret.as_deref(), &Default::default())
+                {
+                    self.pointer_facts_event(*span, |_| {
+                        crate::hir::check::pointer_facts::region_event(&v)
+                    });
+                }
                 let outer_pointers = self.pointer_facts_enter_body();
                 self.check_expr_block(stmts, ret.as_deref(), consume);
                 self.pointer_facts_leave_body(outer_pointers);

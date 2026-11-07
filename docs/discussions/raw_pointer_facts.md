@@ -170,6 +170,7 @@ A fact whose base has other memory ends at these events:
 | An assignment to a place of a type with a drop | `*b = Box::new(2i64)` frees the old box. |
 | The drop of a value of a type with a drop | A local `Vec` at the end of its block |
 | A `spawn` whose task captures an argument that can free memory | The task can free memory at any point until its `join()` or the end of its `tasks` block. So in that time, the checker keeps no fact about other memory, also a fact that starts in that time. |
+| A `spawn on` region that uses a variable from outside it that can free memory | `spawn on(..) { v.push(1i64); }`. The code waits for the region at its end, so the event is at the start of the region. |
 
 A call of a closure also gets the values that the closure captures, as arguments. So a closure
 that captures `&mut v` can free memory, also when the call passes only an `i64`. A closure value
@@ -713,8 +714,8 @@ needs a fact there. Open question 6 asks about a warning for it.
 - An `extern` function can state only `frees` clauses and pointer clauses. It cannot state a
   value `ensures` such as `0i64 <= return`, so the `c_read_some` of section 8 cannot be written
   yet.
-- A `spawn on` region ends the facts about other memory at its start. The code waits for the
-  region at its end, so no task of it runs after the region.
+- A `spawn on` region that uses a variable from outside it that can free memory ends the facts
+  about other memory at its start, also when its task frees nothing.
 - The inference from the syntax stops at a method call, as the inference of `!keeps` does. Only a
   method or an instance of a generic function gets `!frees` from its checked body.
 - The loop rule reads the body before the checker checks it. At a method call, it uses only a
