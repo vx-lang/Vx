@@ -585,7 +585,7 @@ impl<'a> TypeChecker<'a> {
         printing_requested() && self.drops_rewriting()
     }
 
-    fn drops_rewriting(&self) -> bool {
+    pub(crate) fn drops_rewriting(&self) -> bool {
         !self.speculating
             && self.borrow.drops.frames.iter().rev().find_map(|f| match f {
                 FrameKind::Function { rewrite, .. } => Some(*rewrite),
@@ -611,7 +611,7 @@ impl<'a> TypeChecker<'a> {
         body.insert(0, let_stmt(&user, is_mut, item_ty.clone(), ident(&item)));
     }
 
-    fn drops_fresh(&mut self, what: &str) -> String {
+    pub(crate) fn drops_fresh(&mut self, what: &str) -> String {
         self.borrow.drops.counter += 1;
         format!("__vx_{what}_{}", self.borrow.drops.counter)
     }
