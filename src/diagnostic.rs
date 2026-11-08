@@ -264,13 +264,11 @@ pub enum DiagnosticCode {
     /// in value position, where the fall-through edge would otherwise have no value to carry --
     /// codegen used to paper over that by evaluating the whole match to a constant zero.
     E3020,
-    /// An enum variant whose payload is a tensor.
+    /// An enum variant whose payload is a tensor in a memory space.
     ///
-    /// A payload is stored into the variant's tagged-union slot with `llvm.insertvalue`, which
-    /// takes primitive operands, and a tensor is a memref descriptor. The AST path dropped such a
-    /// payload silently: the construction emitted the tag and nothing else, so a program carrying
-    /// a tensor through an enum compiled, ran, and lost it with no diagnostic. A struct field
-    /// holding a tensor is the same representational gap in another position.
+    /// A payload tensor is stored as its memref descriptor, and the drop of a payload frees a
+    /// heap buffer. A tensor in a memory space came from its plugin and must go back through it,
+    /// so it is refused until the drop does that. A tensor with no memory space is allowed.
     E3021,
     /// An `extern` function whose signature mentions a tensor.
     ///

@@ -511,6 +511,9 @@ struct Lowerer<'r> {
     /// The slots whose lifetime `start_lifetime` started. Only these get an end: a task writes
     /// into the slot of its `let` while the code goes on, so that slot gets neither.
     started_slots: std::collections::HashSet<u32>,
+    /// The tensors that a `match` moved out of an enum's payload. Like a struct field, a payload
+    /// holds only heap buffers, so the drop of such a tensor frees it.
+    payload_tensors: std::collections::HashSet<u32>,
     /// Locals whose element pointer the function takes: a view through it can share their memory.
     pointer_taken: std::collections::HashSet<Symbol>,
     /// Generated struct and enum layouts, transferred to the worker without discarding metadata.
@@ -599,6 +602,9 @@ struct Lowerer<'r> {
     queued_drops: Vec<PendingDrop>,
     /// The `queued_drops` of the statement being lowered: they run once its value is computed.
     value_drops: Vec<PendingDrop>,
+    /// The drops waiting for the value of a returned `match` whose arms return. Each `Ret` in the
+    /// arms runs them.
+    return_drops: Vec<PendingDrop>,
     /// The fresh tensors the statement being lowered has made: each is
     /// dropped when the statement ends unless something took it.
     temps: Vec<Register>,
@@ -610,17 +616,22 @@ struct Lowerer<'r> {
 
 /// A tensor drop waiting for a value to be computed: the owner's register, and the name of its
 /// moved flag, read when the drop runs.
+#[derive(Clone)]
 enum PendingDrop {
-    /// A tensor to free: the owner itself, or (`field`) a tensor field of a struct being
-    /// dropped. The struct owned what the field holds.
+    /// A tensor to free: the owner itself, or (`field`) a tensor that a struct field or an enum
+    /// payload held. The struct or the enum owned it. `owner` is the name that the drop names.
     Tensor {
         reg: Register,
         flag: Option<Symbol>,
         field: bool,
+        owner: Symbol,
     },
     /// The statements that run a drop: a `Drop` impl's `drop`, with cancellation off around
     /// it, or a `match` on an enum whose arms hold more drops.
-    Call { stmts: Vec<Statement> },
+    Call {
+        stmts: Vec<Statement>,
+        owner: Symbol,
+    },
     /// The end of the lifetime of a struct's or enum's stack slot.
     LifetimeEnd { slot: Register },
 }
@@ -646,6 +657,7 @@ impl<'r> Lowerer<'r> {
             block_frames: Vec::new(),
             owned_tensors: std::collections::HashSet::new(),
             started_slots: std::collections::HashSet::new(),
+            payload_tensors: std::collections::HashSet::new(),
             pointer_taken: std::collections::HashSet::new(),
             agg_layouts: Vec::new(),
             agg_layout_indices: HashMap::new(),
@@ -673,6 +685,7 @@ impl<'r> Lowerer<'r> {
             across: AcrossState::default(),
             queued_drops: Vec::new(),
             value_drops: Vec::new(),
+            return_drops: Vec::new(),
             temps: Vec::new(),
             moved_args: HashSet::new(),
             tensor_depth: HashMap::new(),
@@ -839,6 +852,9 @@ impl<'r> Lowerer<'r> {
 
     /// The function returns `v`. In a `tasks` block, `v` waits in a slot until the block ends.
     fn emit_ret(&mut self, v: Option<Val>) -> Lowered<()> {
+        for d in self.return_drops.clone() {
+            self.emit_drop(d)?;
+        }
         if !self.leaving_tasks(false) {
             match v {
                 Some(v) => {
@@ -1145,7 +1161,10 @@ impl<'r> Lowerer<'r> {
                 }
             }
         } else if let Some(stmts) = d.call_statements() {
-            PendingDrop::Call { stmts }
+            PendingDrop::Call {
+                stmts,
+                owner: d.name.clone(),
+            }
         } else if let Some(place) = d.expr.as_deref() {
             let v = self.lower_expr(place)?;
             if !matches!(v.ty, LoweredTy::Tensor { .. }) {
@@ -1157,13 +1176,17 @@ impl<'r> Lowerer<'r> {
                 reg: v.reg,
                 flag: d.flag.clone(),
                 field: true,
+                owner: d.name.clone(),
             }
         } else {
-            let reg = match self.scope.get(&d.name).cloned() {
-                Some(Binding::Reg(v)) if matches!(v.ty, LoweredTy::Tensor { .. }) => v.reg,
+            let (reg, from_payload) = match self.scope.get(&d.name).cloned() {
+                Some(Binding::Reg(v)) if matches!(v.ty, LoweredTy::Tensor { .. }) => {
+                    (v.reg, self.payload_tensors.contains(&v.reg.0))
+                }
                 Some(Binding::Slot { reg, ty }) if matches!(ty, LoweredTy::Tensor { .. }) => {
-                    self.emit_typed(Opcode::SlotLoad, reg, Register(0), ty, 0)
-                        .reg
+                    let from_payload = self.payload_tensors.contains(&reg.0);
+                    let v = self.emit_typed(Opcode::SlotLoad, reg, Register(0), ty, 0);
+                    (v.reg, from_payload)
                 }
                 _ => {
                     return Err(Decline::Unsupported {
@@ -1174,7 +1197,8 @@ impl<'r> Lowerer<'r> {
             PendingDrop::Tensor {
                 reg,
                 flag: d.flag.clone(),
-                field: false,
+                field: from_payload,
+                owner: d.name.clone(),
             }
         };
         if d.after_value {
@@ -1187,12 +1211,14 @@ impl<'r> Lowerer<'r> {
 
     fn emit_drop(&mut self, d: PendingDrop) -> Lowered<()> {
         let (reg, flag, field) = match d {
-            PendingDrop::Tensor { reg, flag, field } => (reg, flag, field),
+            PendingDrop::Tensor {
+                reg, flag, field, ..
+            } => (reg, flag, field),
             PendingDrop::LifetimeEnd { slot } => {
                 self.emit_effect(Opcode::LifetimeEnd, slot, Register(0), 0);
                 return Ok(());
             }
-            PendingDrop::Call { stmts } => {
+            PendingDrop::Call { stmts, .. } => {
                 for stmt in &stmts {
                     self.lower_stmt_inner(stmt)?;
                 }
@@ -3083,9 +3109,21 @@ impl<'r> Lowerer<'r> {
                                     }
                                     .encode(),
                                 );
+                                let tensor = matches!(pval.ty, LoweredTy::Tensor { .. });
                                 self.note_shadow(pname);
                                 self.ast_types.insert(pname.clone(), payload_type);
                                 self.bind_local(pname.clone(), pval, false);
+                                if tensor {
+                                    match self.scope.get(pname) {
+                                        Some(Binding::Reg(v)) => {
+                                            self.payload_tensors.insert(v.reg.0);
+                                        }
+                                        Some(Binding::Slot { reg, .. }) => {
+                                            self.payload_tensors.insert(reg.0);
+                                        }
+                                        _ => {}
+                                    }
+                                }
                             }
                         }
                     }
@@ -3096,6 +3134,24 @@ impl<'r> Lowerer<'r> {
                     self.emit_effect(Opcode::BlockStart, Register(0), Register(0), next_b as u64);
                 }
                 crate::syntax::Pattern::Wildcard => {
+                    self.lower_match_arm(&arm.body, result)?;
+                    if !self.block_terminated() {
+                        self.emit_effect(Opcode::Br, Register(0), Register(0), merge as u64);
+                    }
+                    break;
+                }
+                // The default with the subject under the name. The checker writes one for a `_`
+                // that must drop the payloads that the other arms did not take.
+                crate::syntax::Pattern::Identifier(name) => {
+                    self.note_shadow(name);
+                    self.ast_types.insert(name.clone(), enum_ty.clone());
+                    self.scope.insert(
+                        name.clone(),
+                        Binding::Slot {
+                            reg: slot,
+                            ty: LoweredTy::Aggregate(gid),
+                        },
+                    );
                     self.lower_match_arm(&arm.body, result)?;
                     if !self.block_terminated() {
                         self.emit_effect(Opcode::Br, Register(0), Register(0), merge as u64);
@@ -7282,14 +7338,27 @@ impl<'r> Lowerer<'r> {
                     }
                     // Each arm returns, so nothing runs after the match. A slot whose lifetime
                     // does not end lives to the end of the call, which is correct.
-                    self.value_drops
-                        .retain(|d| !matches!(d, PendingDrop::LifetimeEnd { .. }));
-                    if !self.value_drops.is_empty() {
-                        return Err(Decline::Unsupported {
-                            what: "a drop waiting for the value of a returned match",
-                        });
-                    }
-                    self.lower_match(m)?;
+                    // An owner that the `match` uses is still alive in the arms, so each arm's
+                    // `return` drops it. The other drops wait for a value that never comes, so
+                    // they run before each `return` in the arms.
+                    let mut used = HashSet::new();
+                    let returned = r.expr.as_ref().expect("matched above");
+                    crate::syntax::expr::visit_expr(returned, &mut |e| {
+                        if let Expr::Identifier(id) = e {
+                            used.insert(id.name.clone());
+                        }
+                    });
+                    let outer = self.return_drops.len();
+                    let waiting = std::mem::take(&mut self.value_drops);
+                    self.return_drops.extend(waiting.into_iter().filter(|d| match d {
+                        PendingDrop::Tensor { owner, .. } | PendingDrop::Call { owner, .. } => {
+                            !used.contains(owner)
+                        }
+                        PendingDrop::LifetimeEnd { .. } => false,
+                    }));
+                    let lowered = self.lower_match(m);
+                    self.return_drops.truncate(outer);
+                    lowered?;
                     if !self.block_terminated() {
                         let rty = self.ret_ty.clone().ok_or(Decline::TypeNotModelled {
                             what: "a function with no recorded return type",
@@ -8589,6 +8658,12 @@ fn enum_payload_field(ty: &Type) -> Option<(u64, u64, String)> {
         Type::Pointer(..) | Type::Borrow { .. } | Type::Ref(..) => {
             Some((8, 8, "!llvm.ptr".to_string()))
         }
+        // A tensor is its descriptor: two pointers, an offset, and a size and a stride per rank.
+        Type::Tensor(_, shape, ..) => Some((
+            8 * (3 + 2 * shape.len() as u64),
+            8,
+            crate::codegen::flat::memref_descriptor_ty(shape.len()),
+        )),
         _ => None,
     }
 }

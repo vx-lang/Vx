@@ -5575,6 +5575,15 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
             // Each element of the payload goes in the slot for its position.
             let slots = enum_payload_slot_texts(&struct_ty.to_string());
             for (i, payload_expr) in payload_exprs.iter().enumerate() {
+                if matches!(
+                    gen.infer_ast_type(payload_expr),
+                    Some(syntax::Type::Tensor(..))
+                ) {
+                    return Err(LowerError::from(format!(
+                        "the legacy code generator cannot put a tensor in an enum payload, as \
+                         in {enum_name}::{variant_name}"
+                    )));
+                }
                 let (payload_val, payload_val_ty, next) = gen.generate_expr(payload_expr, block)?;
                 block = next;
                 let slot = slots.get(i).ok_or_else(|| {

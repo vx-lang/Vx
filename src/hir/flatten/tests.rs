@@ -2560,10 +2560,21 @@ fn call_to_unknown_fn_declines() {
 }
 
 #[test]
-fn unmodelled_aggregate_param_is_declined() {
-    // A tensor inside a payload enum has no supported storage layout.
+fn a_tensor_inside_a_payload_enum_has_a_layout() {
+    // The payload of `Nested` is the tensor's memref descriptor.
     let (did, w) = lower_with_registry(
         "enum Outer { Nested(Tensor<f32, [2]>), Empty } fn f(value: Outer) -> i32 { return 0; }",
+        "f",
+    );
+    assert!(did, "a tensor payload has a layout");
+    verify_hir_stream(&w);
+}
+
+#[test]
+fn unmodelled_aggregate_param_is_declined() {
+    // A closure inside a payload enum has no supported storage layout.
+    let (did, w) = lower_with_registry(
+        "enum Outer { Nested(Closure1<i32, i32>), Empty } fn f(value: Outer) -> i32 { return 0; }",
         "f",
     );
     assert!(

@@ -1,0 +1,40 @@
+//===- an_enum_variant_cannot_carry_a_tensor_in_a_memory_space.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An enum variant can carry a tensor, but not one in a memory space such as `W`. Such a tensor
+// came from its memory's plugin and must go back through it, and the drop of a payload frees
+// heap memory. A tensor with no memory space and a scalar payload stay legal.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 4 MiB, managed: explicit, scope: device
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10,
+  transfer Memory::W -> Memory::CPU_DRAM : 10
+}
+
+enum Payload {
+  Placed(Tensor<f32, [2, 2], Memory::W>),
+  Host(Tensor<f32, [2, 2]>),
+  Val(i32),
+}
+
+fn main() -> i32 {
+  let _ok = Payload::Val(7);
+  let _host = Payload::Host(Tensor<f32, [2, 2]>::fill(1.0));
+  // CHECK: Error[E3021] at {{.*}}.vx:[[@LINE+1]]:14: payload argument 1 of Payload::Placed is a tensor of F32 placed on Topology::W. An enum variant cannot carry a tensor in a memory space yet
+  let _bad = Payload::Placed(transfer(Tensor<f32, [2, 2]>::fill(1.0), Memory::W));
+  return 0;
+}
+
+// CHECK: {{^}}Semantic check failed on {{.*}}: 1 error(s) emitted

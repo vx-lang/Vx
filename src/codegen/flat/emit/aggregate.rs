@@ -45,11 +45,18 @@ impl FnEmit<'_> {
         // A tensor value goes in as its descriptor. A rank the field does not have (a rank-0
         // `Tensor<f32>()` for a `[?, ?]` field, which the checker admits) has no descriptor the
         // field can hold, and no pass folds the cast, so the function declines.
+        // An enum's payload slot is plain bytes, so a tensor goes in as the descriptor of its
+        // own rank.
+        let mut descriptor = None;
         let val = match self.mem_of.get(ins.operand2.0 as usize).cloned().flatten() {
             Some(memty) => {
-                if memref_rank(&memty) != descriptor_rank(&fty) {
-                    return Err(crate::emitter_gap!());
-                }
+                let rank = memref_rank(&memty).ok_or(crate::emitter_gap!())?;
+                let fty = match descriptor_rank(&fty) {
+                    Some(r) if r == rank => fty.clone(),
+                    None if !agg.variant_payloads.is_empty() => memref_descriptor_ty(rank),
+                    _ => return Err(crate::emitter_gap!()),
+                };
+                descriptor = Some(fty.clone());
                 // A row is a strided view whose descriptor carries an offset into its tensor. The
                 // field is read back as a plain memref, whose type says the offset is 0, so the
                 // offset would be lost and the read would land in row 0. Move the data pointer
@@ -93,7 +100,9 @@ impl FnEmit<'_> {
             .cloned()
             .flatten()
             .is_some();
-        let store_ty = if self.is_pointer_value(ins.operand2.0 as usize)? {
+        let store_ty = if let Some(d) = descriptor {
+            d
+        } else if self.is_pointer_value(ins.operand2.0 as usize)? {
             "!llvm.ptr".to_string()
         } else {
             match self.etypes.get(ins.operand2.0 as usize).cloned().flatten() {
@@ -180,8 +189,19 @@ impl FnEmit<'_> {
             .types
             .get(ins.type_idx.0 as usize)
             .is_some_and(|g| self.ctx.tensors.contains_key(g));
+        // A tensor in an enum's payload slot is the descriptor of its own rank.
+        let fty = match self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .and_then(|g| self.ctx.tensors.get(g))
+        {
+            Some((_, shape)) if payload.is_some() => memref_descriptor_ty(shape.len()),
+            _ => fty,
+        };
         let load_ty = if pointer {
             "!llvm.ptr".to_string()
+        } else if payload.is_some() && result_is_tensor {
+            fty.clone()
         } else {
             match self
                 .types
