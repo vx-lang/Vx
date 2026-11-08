@@ -139,6 +139,9 @@ pub(crate) enum EvalFlow {
     Continue,
 }
 
+/// The parameters and the `ensures` clauses of a function.
+type CalleeContract<'c> = (&'c [(crate::symbol::Symbol, Type)], &'c [Expr]);
+
 impl<'a> TypeChecker<'a> {
     /// Run the comptime interpreter and return the observation that decides folding.
     ///
@@ -883,7 +886,9 @@ impl<'a> TypeChecker<'a> {
         if recorded && !crate::hir::check::raw::expr_mentions(&value, name.as_ref()) {
             // A call can change its arguments. Re-evaluating it in a later proof would use
             // their new values, not the values from when the result was returned.
-            if !matches!(&value, Expr::FunctionCall(_)) {
+            let changes_an_argument = matches!(&value, Expr::FunctionCall(c)
+                if c.args.iter().any(|a| self.call_may_change_argument(a)));
+            if !changes_an_argument {
                 let id_expr = Expr::Identifier(IdentifierExpr {
                     name: name.clone(),
                     span: Span::default(),
@@ -901,41 +906,53 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// A returned number keeps its postconditions even when a later call changes an input
-    /// buffer. Retaining only `name == call(args)` would tie that number to the old buffer.
-    fn keep_call_result_ensures(&mut self, name: &crate::symbol::Symbol, value: &Expr) {
-        let Expr::FunctionCall(call) = crate::syntax::bare_unsafe_value(value) else {
-            return;
-        };
-        let callee = self
-            .env
+    /// Whether a call can change the value behind the argument `arg`: a `&mut` or a pointer.
+    fn call_may_change_argument(&self, arg: &Expr) -> bool {
+        matches!(arg, Expr::Borrow(b) if b.is_mut)
+            || matches!(
+                self.check_expr_type_probe(arg),
+                Type::Borrow { is_mut: true, .. } | Type::Pointer(..) | Type::Ref(..)
+            )
+    }
+
+    /// The parameters and `ensures` of the function `name`. The compiler trusts the
+    /// `ensures` of an `extern` function.
+    fn callee_contract(&self, name: &str) -> Option<CalleeContract<'_>> {
+        self.env
             .syntax_functions
-            .get(call.name.as_ref())
+            .get(name)
             .copied()
             .or_else(|| {
                 self.mono
                     .functions
                     .iter()
-                    .find(|(f, _)| f.name == call.name)
+                    .find(|(f, _)| f.name.as_ref() == name)
                     .map(|(f, _)| f)
-            });
-        let Some(callee) = callee else {
+            })
+            .map(|f| (f.params.as_slice(), f.ensures.as_slice()))
+            .or_else(|| {
+                let ext = self.env.externs.iter().find(|x| x.name.as_ref() == name)?;
+                Some((ext.params.as_slice(), ext.ensures.as_slice()))
+            })
+    }
+
+    /// A returned number keeps its postconditions even when a later call changes an input
+    /// buffer. The equation `name == call(args)` does not: a later proof evaluates the call
+    /// again with the new buffer.
+    fn keep_call_result_ensures(&mut self, name: &crate::symbol::Symbol, value: &Expr) {
+        let Expr::FunctionCall(call) = crate::syntax::bare_unsafe_value(value) else {
+            return;
+        };
+        let Some((params, ensures)) = self.callee_contract(call.name.as_ref()) else {
             return;
         };
         let changed: Vec<_> = call
             .args
             .iter()
-            .filter(|arg| {
-                matches!(arg, Expr::Borrow(b) if b.is_mut)
-                    || matches!(
-                        self.check_expr_type_probe(arg),
-                        Type::Borrow { is_mut: true, .. } | Type::Pointer(..) | Type::Ref(..)
-                    )
-            })
+            .filter(|arg| self.call_may_change_argument(arg))
             .filter_map(|arg| Self::arg_reborrow_base(arg).map(|(root, _)| root))
             .collect();
-        let mut names: HashMap<_, _> = callee
-            .params
+        let mut names: HashMap<_, _> = params
             .iter()
             .map(|(p, _)| p.clone())
             .zip(
@@ -951,8 +968,7 @@ impl<'a> TypeChecker<'a> {
                 span: Span::default(),
             }),
         );
-        let facts: Vec<_> = callee
-            .ensures
+        let facts: Vec<_> = ensures
             .iter()
             .filter(|e| crate::hir::check::atomic_contracts::is_prover_clause(e))
             .map(|e| hir::prover::substitute_names(e, &names))
@@ -2739,25 +2755,7 @@ impl<'a> TypeChecker<'a> {
                     span: c.span,
                 });
                 *calls += 1;
-                let callee = self
-                    .env
-                    .syntax_functions
-                    .get(c.name.as_ref())
-                    .copied()
-                    .or_else(|| {
-                        self.mono
-                            .functions
-                            .iter()
-                            .find(|(f, _)| f.name == c.name)
-                            .map(|(f, _)| f)
-                    })
-                    .map(|f| (&f.params, &f.ensures))
-                    // The compiler trusts the `ensures` of an `extern` function.
-                    .or_else(|| {
-                        let ext = self.env.externs.iter().find(|x| x.name == c.name)?;
-                        Some((&ext.params, &ext.ensures))
-                    });
-                if let Some((params, ensures)) = callee {
+                if let Some((params, ensures)) = self.callee_contract(c.name.as_ref()) {
                     let mut names: HashMap<crate::symbol::Symbol, Expr> =
                         params.iter().map(|(p, _)| p.clone()).zip(args).collect();
                     names.insert("return".into(), result.clone());
