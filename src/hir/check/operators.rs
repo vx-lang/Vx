@@ -206,6 +206,9 @@ impl<'a> TypeChecker<'a> {
             _ => None,
         };
         let expected = std::mem::replace(&mut self.expected_type, operand_expected);
+        // A cast to a number only reads its operand: a tensor cast makes a new tensor, and the
+        // operand stays usable.
+        let consume = consume && !matches!(expr.target_ty, Type::Scalar(_));
         let source_ty = self.check_expr_type_flag(&mut expr.expr, consume);
         self.expected_type = expected;
         let target_ty = expr.target_ty.clone();
@@ -263,14 +266,21 @@ impl<'a> TypeChecker<'a> {
                     return Type::Unknown;
                 }
             }
-            // `slice as f16`: an elementwise cast over a rank-1 float slice, yielding a
-            // slice of the target element type. This is the spelling that narrows a
-            // widened slice back into half storage, which the assignment rules require
-            // rather than performing silently.
+            // `t as f32`: a cast of each element of a float tensor, to a tensor of the same
+            // shape. On a slice, it narrows a widened slice back into half storage, which the
+            // assignment rules require rather than performing silently.
             (Type::Tensor(src_el, dims, top), Type::Scalar(dst_el))
-                if dims.len() == 1 && src_el.is_float() && dst_el.is_float() =>
+                if src_el.is_float() && dst_el.is_float() =>
             {
                 return Type::Tensor(dst_el.clone(), dims.clone(), top.clone());
+            }
+            // A borrowed tensor, such as a parameter `a : &Tensor<bf16, ..>`.
+            (Type::Borrow { inner, .. }, Type::Scalar(dst_el)) if dst_el.is_float() => {
+                if let Type::Tensor(src_el, dims, top) = &**inner {
+                    if src_el.is_float() {
+                        return Type::Tensor(dst_el.clone(), dims.clone(), top.clone());
+                    }
+                }
             }
             (Type::Scalar(src), Type::Scalar(dst)) => {
                 // A literal is left alone, since a cast is one way to give a number its type.
@@ -341,8 +351,7 @@ impl<'a> TypeChecker<'a> {
         }
 
         self.errors.push(format!(
-            "Unsupported cast: cannot cast from {:?} to {:?}",
-            source_ty, target_ty
+            "Unsupported cast: cannot cast from `{source_ty}` to `{target_ty}`"
         ));
         Type::Unknown
     }

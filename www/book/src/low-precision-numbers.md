@@ -35,6 +35,15 @@ let h = x as bf16;
 let back = h as f32;
 ```
 
+`as` also converts each element of a float tensor, and gives a new tensor of the same shape. The
+cast only reads the tensor, so you can use the tensor again after it:
+
+```rust
+let w = Tensor<bf16, [64, 64]>::new();
+let wide = w as f32;     // a Tensor<f32, [64, 64]>
+let narrow = wide as f16;
+```
+
 A conversion to a narrower float rounds to the nearest value it can hold. On a tie it picks the
 value whose last bit is 0.
 
