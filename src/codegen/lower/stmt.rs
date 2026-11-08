@@ -963,6 +963,36 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
             return Ok(Some(block));
         }
 
+        // A tile into a row of a larger tensor, `acc[w] = acc[w] + p`: a copy into the row's view.
+        let rhs_ty_str = rhs_ty.to_string();
+        if lhs_is_a_row
+            && rhs_ty_str.starts_with("memref<")
+            && !rhs_ty_str.starts_with("memref<memref<")
+        {
+            let (dst, dst_ty, block) = gen.generate_expr(lhs, block)?;
+            if !dst_ty.to_string().starts_with("memref<") {
+                return Err(LowerError::from(format!(
+                    "a tensor assigned to an element of another: {rhs_ty} into {dst_ty}"
+                )));
+            }
+            block.append_operation(
+                OperationBuilder::new("memref.copy", gen.loc())
+                    .add_operands(&[rhs_val, dst])
+                    .build()?,
+            );
+            // The value is freed when it is a buffer of its own, and left alone when it is a view.
+            block.append_operation(
+                OperationBuilder::new("vx.drop", gen.loc())
+                    .add_operands(&[rhs_val])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "owned_only"),
+                        melior::ir::attribute::Attribute::unit(gen.context),
+                    )])
+                    .build()?,
+            );
+            return Ok(Some(block));
+        }
+
         // The old value's drops run now that the new value is computed, before it is stored.
         let block = gen.run_value_drops(block)?;
         if let Expr::Identifier(IdentifierExpr { name, span: _ }) = lhs {

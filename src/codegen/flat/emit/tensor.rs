@@ -1514,6 +1514,12 @@ impl FnEmit<'_> {
                 .ok_or(crate::emitter_gap!())?
                 .clone()
             {
+                // A tile into a row of a larger tensor, `acc[w] = acc[w] + p`: a copy into the
+                // row's view. The checker matched the shapes and the element types.
+                if memref_lead_dims_and_elem(&srcty).is_some_and(|(d, _)| d.len() >= 2) {
+                    self.body += &format!("  memref.copy {vecname}, {dst} : {srcty} to {rowty}\n");
+                    return Ok(());
+                }
                 // The stored value is a rank-1 tensor, not a vector -- `m[0] = [10.0, ..]`, a row
                 // written from an array literal's buffer. Read the whole source row as a vector
                 // and store it; the checker already matched the two lengths.
