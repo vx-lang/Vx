@@ -349,6 +349,9 @@ pub enum Opcode {
     TensorElementAddress = 81,
     /// Check that operand1 addresses the aggregate identified by type_idx. Generates no code.
     CheckAggregate = 84,
+    /// `t as f32`: a fresh tensor of the result type, each element of `operand1` cast to the
+    /// result's element type.
+    TensorCast = 85,
 }
 
 /// A zero-based variant and payload field, stored entirely in an instruction's immediate.
@@ -513,6 +516,7 @@ impl Opcode {
             79 => LifetimeStart,
             80 => LifetimeEnd,
             84 => CheckAggregate,
+            85 => TensorCast,
             8 => Call,
             9 => Ret,
             10 => Matmul,

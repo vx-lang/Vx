@@ -5955,8 +5955,24 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
     ) -> Self::Output {
         // A slice `as` converts each element. The slice arithmetic is in `f32`, so the value
         // is a `vector<Dxf32>`, and a cast to a half type narrows it.
-        if let Some(syntax::Type::Tensor(_, dims, _)) = self.source_ty.as_ref() {
-            if dims.len() == 1 && matches!(&self.target_ty, syntax::Type::Scalar(_)) {
+        let tensor_dims = match self.source_ty.as_ref() {
+            Some(syntax::Type::Tensor(_, dims, _)) => Some(dims),
+            Some(syntax::Type::Borrow { inner, .. }) => match &**inner {
+                syntax::Type::Tensor(_, dims, _) => Some(dims),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(dims) =
+            tensor_dims.filter(|_| matches!(&self.target_ty, syntax::Type::Scalar(_)))
+        {
+            let (val, val_ty, block) = gen.generate_expr(&self.expr, block)?;
+            // A tensor in memory: a new tensor of each element cast.
+            if val_ty.to_string().starts_with("memref<") {
+                let target = gen.lower_type(&self.target_ty)?.to_string();
+                return lower_tensor_cast(gen, block, val, val_ty, &target);
+            }
+            {
                 let d = dims[0]
                     .literal()
                     .and_then(|v| v.parse::<i64>().ok())
@@ -5965,7 +5981,6 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
                             "a cast over a slice whose length is not known".to_string(),
                         )
                     })?;
-                let (val, val_ty, block) = gen.generate_expr(&self.expr, block)?;
                 let wide = to_vector(gen, val, &val_ty.to_string(), d, block)?;
                 let target = gen.lower_type(&self.target_ty)?.to_string();
                 let result = match target.as_str() {
@@ -6587,24 +6602,28 @@ fn without_strided_layout(ty: &str) -> String {
     ty.to_string()
 }
 
-/// `-t` on a tensor: a new tensor of each element negated, by a `linalg.generic`. A float uses
-/// `arith.negf`, which keeps the sign of zero right; an integer is `0 - x`.
-fn lower_tensor_negate<'c>(
+/// A new tensor of the shape of `src`, with elements of type `out_elem`, or of the element type
+/// of `src` when that is `None`. Returns the tensor, its type, the rank and the element type of
+/// `src`.
+fn alloc_like<'c>(
     gen: &mut MeliorGenerator<'c>,
     block: melior::ir::BlockRef<'c, 'c>,
     src: Value<'c, 'c>,
     src_ty: Type<'c>,
-) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    out_elem: Option<&str>,
+) -> Result<(Value<'c, 'c>, Type<'c>, usize, String), LowerError> {
     let src_str = src_ty.to_string();
     let inner = src_str
         .strip_prefix("memref<")
         .and_then(|s| s.split([',', '>']).next())
-        .ok_or_else(|| format!("negation of something that is not a tensor: {src_str}"))?;
+        .ok_or_else(|| {
+            format!("an element operation on something that is not a tensor: {src_str}")
+        })?;
     let mut parts: Vec<&str> = inner.split('x').collect();
     let elem = parts
         .pop()
-        .ok_or_else(|| format!("negation of a tensor with no element type: {src_str}"))?;
-    let rank = parts.len();
+        .ok_or_else(|| format!("a tensor with no element type: {src_str}"))?
+        .to_string();
     let index_ty = Type::index(gen.context);
     let mut sizes = Vec::new();
     for (k, d) in parts.iter().enumerate() {
@@ -6622,8 +6641,10 @@ fn lower_tensor_negate<'c>(
             sizes.push(block.append_operation(dim).result(0)?.into());
         }
     }
-    let out_ty = Type::parse(gen.context, &format!("memref<{}x{elem}>", parts.join("x")))
-        .ok_or_else(|| format!("negation of a tensor with no memref type: {src_str}"))?;
+    let out_elem = out_elem.unwrap_or(&elem);
+    let shape: String = parts.iter().map(|d| format!("{d}x")).collect();
+    let out_ty = Type::parse(gen.context, &format!("memref<{shape}{out_elem}>"))
+        .ok_or_else(|| format!("a tensor with no memref type: {src_str}"))?;
     let alloc = OperationBuilder::new("memref.alloc", gen.loc())
         .add_operands(&sizes)
         .add_attributes(&[(
@@ -6633,9 +6654,62 @@ fn lower_tensor_negate<'c>(
         .add_results(&[out_ty])
         .build()?;
     let out: Value = block.append_operation(alloc).result(0)?.into();
+    Ok((out, out_ty, parts.len(), elem))
+}
 
+/// A `linalg.generic` that writes each element of `out` from the same element of `src`. `body`
+/// takes the two elements and ends with a `linalg.yield`.
+fn each_element<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    src: Value<'c, 'c>,
+    out: Value<'c, 'c>,
+    rank: usize,
+    body: melior::ir::Block<'c>,
+) -> Result<(), LowerError> {
+    let region = Region::new();
+    region.append_block(body);
+    let dims: Vec<String> = (0..rank).map(|k| format!("d{k}")).collect();
+    let map = Attribute::parse(
+        gen.context,
+        &format!("affine_map<({0}) -> ({0})>", dims.join(", ")),
+    )
+    .ok_or_else(|| "an affine map that does not parse".to_string())?;
+    let parallel = Attribute::parse(gen.context, "#linalg.iterator_type<parallel>")
+        .ok_or_else(|| "an iterator type that does not parse".to_string())?;
+    let generic = OperationBuilder::new("linalg.generic", gen.loc())
+        .add_operands(&[src, out])
+        .add_attributes(&[
+            (
+                Identifier::new(gen.context, "operandSegmentSizes"),
+                DenseI32ArrayAttribute::new(gen.context, &[1, 1]).into(),
+            ),
+            (
+                Identifier::new(gen.context, "indexing_maps"),
+                ArrayAttribute::new(gen.context, &[map, map]).into(),
+            ),
+            (
+                Identifier::new(gen.context, "iterator_types"),
+                ArrayAttribute::new(gen.context, &vec![parallel; rank]).into(),
+            ),
+        ])
+        .add_regions([region])
+        .build()?;
+    block.append_operation(generic);
+    Ok(())
+}
+
+/// `-t` on a tensor: a new tensor of each element negated, by a `linalg.generic`. A float uses
+/// `arith.negf`, which keeps the sign of zero right; an integer is `0 - x`.
+fn lower_tensor_negate<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    src: Value<'c, 'c>,
+    src_ty: Type<'c>,
+) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    let (out, out_ty, rank, elem) = alloc_like(gen, block, src, src_ty, None)?;
     let el_ty =
-        Type::parse(gen.context, elem).ok_or_else(|| format!("negation of a tensor of {elem}"))?;
+        Type::parse(gen.context, &elem).ok_or_else(|| format!("negation of a tensor of {elem}"))?;
     let body = melior::ir::Block::new(&[(el_ty, gen.loc()), (el_ty, gen.loc())]);
     let x: Value = body.argument(0)?.into();
     let negated: Value = if elem.starts_with('f') || elem == "bf16" {
@@ -6664,36 +6738,53 @@ fn lower_tensor_negate<'c>(
             .add_operands(&[negated])
             .build()?,
     );
-    let region = Region::new();
-    region.append_block(body);
+    each_element(gen, block, src, out, rank, body)?;
+    Ok((out, out_ty, block))
+}
 
-    let dims: Vec<String> = (0..rank).map(|k| format!("d{k}")).collect();
-    let map = Attribute::parse(
-        gen.context,
-        &format!("affine_map<({0}) -> ({0})>", dims.join(", ")),
-    )
-    .ok_or_else(|| "negation: an affine map that does not parse".to_string())?;
-    let parallel = Attribute::parse(gen.context, "#linalg.iterator_type<parallel>")
-        .ok_or_else(|| "negation: an iterator type that does not parse".to_string())?;
-    let generic = OperationBuilder::new("linalg.generic", gen.loc())
-        .add_operands(&[src, out])
-        .add_attributes(&[
-            (
-                Identifier::new(gen.context, "operandSegmentSizes"),
-                DenseI32ArrayAttribute::new(gen.context, &[1, 1]).into(),
-            ),
-            (
-                Identifier::new(gen.context, "indexing_maps"),
-                ArrayAttribute::new(gen.context, &[map, map]).into(),
-            ),
-            (
-                Identifier::new(gen.context, "iterator_types"),
-                ArrayAttribute::new(gen.context, &vec![parallel; rank]).into(),
-            ),
-        ])
-        .add_regions([region])
-        .build()?;
-    block.append_operation(generic);
+/// `t as f32` on a float tensor: a new tensor of each element cast, by a `linalg.generic`. Two
+/// float types of one width (`f16` and `bf16`) go through `f32`, which holds every value of both.
+fn lower_tensor_cast<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    src: Value<'c, 'c>,
+    src_ty: Type<'c>,
+    target: &str,
+) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    let (out, out_ty, rank, elem) = alloc_like(gen, block, src, src_ty, Some(target))?;
+    let bits = |t: &str| crate::mlir_ty::float_elem_of_mlir(t).and_then(|e| e.bits());
+    let (src_bits, dst_bits) = (
+        bits(&elem).ok_or_else(|| format!("a cast of a tensor of {elem}"))?,
+        bits(target).ok_or_else(|| format!("a cast to a tensor of {target}"))?,
+    );
+    let parse =
+        |t: &str| Type::parse(gen.context, t).ok_or_else(|| LowerError::ParseType(t.to_string()));
+    let (from, to, f32_ty) = (parse(&elem)?, parse(target)?, parse("f32")?);
+    let body = melior::ir::Block::new(&[(from, gen.loc()), (to, gen.loc())]);
+    let mut x: Value = body.argument(0)?.into();
+    let convert = |op: &str, ty: Type<'c>, v: Value<'c, '_>| -> Result<Value<'c, '_>, LowerError> {
+        let op = OperationBuilder::new(op, gen.loc())
+            .add_operands(&[v])
+            .add_results(&[ty])
+            .build()?;
+        Ok(body.append_operation(op).result(0)?.into())
+    };
+    if elem != target {
+        x = match src_bits.cmp(&dst_bits) {
+            std::cmp::Ordering::Less => convert("arith.extf", to, x)?,
+            std::cmp::Ordering::Greater => convert("arith.truncf", to, x)?,
+            std::cmp::Ordering::Equal => {
+                let wide = convert("arith.extf", f32_ty, x)?;
+                convert("arith.truncf", to, wide)?
+            }
+        };
+    }
+    body.append_operation(
+        OperationBuilder::new("linalg.yield", gen.loc())
+            .add_operands(&[x])
+            .build()?,
+    );
+    each_element(gen, block, src, out, rank, body)?;
     Ok((out, out_ty, block))
 }
 

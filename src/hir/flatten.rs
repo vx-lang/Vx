@@ -1601,6 +1601,14 @@ impl<'r> Lowerer<'r> {
                 let target = scalar_of(&c.target_ty).ok_or(Decline::TypeNotModelled {
                     what: "a cast to a non-scalar",
                 })?;
+                // `t as f32` on a tensor in memory: a new tensor of the same shape.
+                if let LoweredTy::Tensor { shape, .. } = &v.ty {
+                    let ty = LoweredTy::Tensor {
+                        elem: target,
+                        shape: shape.clone(),
+                    };
+                    return Ok(self.emit_typed(Opcode::TensorCast, v.reg, Register(0), ty, 0));
+                }
                 Ok(self.emit_value(Opcode::Cast, v.reg, Register(0), target, 0))
             }
             // A struct field read `base.member`. `base` is either a local aggregate slot (`p.x`,
@@ -6997,6 +7005,7 @@ impl<'r> Lowerer<'r> {
                 | Opcode::TensorTranspose
                 | Opcode::TensorPad
                 | Opcode::TensorMap
+                | Opcode::TensorCast
                 | Opcode::TensorReduce
                 | Opcode::TensorDim
                 | Opcode::TensorLoad
@@ -8921,6 +8930,7 @@ fn makes_a_fresh_tensor(opcode: Opcode) -> bool {
             | Opcode::TensorTranspose
             | Opcode::TensorPad
             | Opcode::TensorMap
+            | Opcode::TensorCast
     )
 }
 
