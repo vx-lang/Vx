@@ -15,6 +15,9 @@
 // - A comment line `// vx.kernel <name> <param>...` before each kernel gives
 //   its parameters: `m<rank>` for a memref, with `r` when the kernel only
 //   reads it, and the MLIR type of a scalar (`i32`, `f32`, `index`, ...).
+// - A kernel with asserts has a line `// vx.assert <name> <number> <message>`
+//   for each, numbered from 1, with the message percent-encoded. It takes one
+//   more buffer, a zeroed `uint`. A failed assert stores its number there.
 // - `index` is a 32-bit `int`. The runtime refuses a buffer of 2^31 elements
 //   or more, so no index can overflow.
 
@@ -104,6 +107,8 @@ private:
   unsigned next = 0;
   DenseMap<Value, std::string> names;
   DenseMap<Value, View> views;
+  // The number of each assert in the kernel, from 1.
+  DenseMap<Operation *, unsigned> asserts;
 
   bool fail(Operation *op, const Twine &why) {
     if (failure.empty()) {
@@ -320,10 +325,28 @@ bool Printer::constantTable(memref::GlobalOp g) {
   return true;
 }
 
+// `s` on one line, with `%`, `\` and control characters as `%XX`. A `\` at the
+// end of a comment line would join the next line to the comment.
+static std::string percentEncoded(StringRef s) {
+  std::string out;
+  for (unsigned char c : s) {
+    if (c == '%' || c == '\\' || c < 0x20 || c == 0x7f)
+      out += "%" + llvm::utohexstr(c, /*LowerCase=*/false, /*Width=*/2);
+    else
+      out += c;
+  }
+  return out;
+}
+
 bool Printer::kernel(gpu::GPUFuncOp f) {
   names.clear();
   views.clear();
+  asserts.clear();
   next = 0;
+  SmallVector<cf::AssertOp> checks;
+  f.walk([&](cf::AssertOp a) { checks.push_back(a); });
+  for (auto [k, a] : llvm::enumerate(checks))
+    asserts[a] = k + 1;
   auto access = f->getAttrOfType<ArrayAttr>("vx.arg_access");
 
   auto readonly = [&](unsigned i) {
@@ -348,9 +371,16 @@ bool Printer::kernel(gpu::GPUFuncOp f) {
     }
   }
   os << "\n";
-  // Metal binds at most 31 buffers to a kernel, and one holds the words.
+  for (auto [k, a] : llvm::enumerate(checks))
+    os << "// vx.assert " << f.getName() << " " << k + 1 << " "
+       << percentEncoded(a.getMsg()) << "\n";
+  // Metal binds at most 31 buffers to a kernel. One holds the words, and one
+  // holds the number of a failed assert.
   if (buffers > 30)
     return fail(f, "a kernel with more than 30 tensor parameters");
+  if (buffers > 29 && !checks.empty())
+    return fail(f,
+                "a kernel with an assert and more than 29 tensor parameters");
 
   os << "kernel void " << f.getName() << "(\n";
   unsigned binding = 0;
@@ -366,6 +396,9 @@ bool Printer::kernel(gpu::GPUFuncOp f) {
     names[f.getArgument(i)] = "p" + std::to_string(i);
   }
   os << "    constant uint *vx_w [[buffer(" << buffers << ")]],\n";
+  if (!checks.empty())
+    os << "    device atomic_uint *vx_fail [[buffer(" << buffers + 1
+       << ")]],\n";
   os << "    uint3 vx_tgid [[threadgroup_position_in_grid]],\n";
   os << "    uint3 vx_tid [[thread_position_in_threadgroup]],\n";
   os << "    uint3 vx_ntg [[threadgroups_per_grid]],\n";
@@ -476,6 +509,16 @@ bool Printer::block(Block &b) {
 bool Printer::op(Operation *o) {
   if (isa<scf::YieldOp, scf::ConditionOp>(o))
     return true; // The parent op prints what these give.
+  if (auto a = dyn_cast<cf::AssertOp>(o)) {
+    // Metal cannot stop a kernel. The runtime reads the number when it waits
+    // for the launch, and stops the program with the message.
+    line() << "if (!" << name(a.getArg()) << ") {\n";
+    line() << "  atomic_store_explicit(vx_fail, " << asserts.lookup(o)
+           << "u, memory_order_relaxed);\n";
+    line() << "  return;\n";
+    line() << "}\n";
+    return true;
+  }
   if (auto i = dyn_cast<scf::IfOp>(o))
     return ifOp(i);
   if (auto w = dyn_cast<scf::WhileOp>(o))

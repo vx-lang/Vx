@@ -88,6 +88,9 @@ copy. `--emit-msl` writes the MSL and the same manifest as `--emit-ptx`.
   kernels of its thread and for the kernels that write its tensor parameters. `VX_METAL_SYNC=1`
   waits after each launch, so a GPU fault names its kernel. `VX_DISPATCH_VERBOSE=1` prints each launch, and
   at each wait the number of kernels and their time on the GPU.
+- Metal cannot stop a kernel. So a failed `assert` in a kernel stores the number of the assert in
+  a buffer, and the thread ends. The wait that finishes the launch prints the assert's message and
+  stops the program, as a failed assert on NVIDIA stops it at the next wait.
 - Not yet: atomics, dynamic shared memory and `vector` ops. Each is a compile
   error that names the op. Kernels for two GPU architectures in one program
   are a compile error too.

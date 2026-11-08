@@ -12,7 +12,8 @@
 // them only at a wait. A wait commits a command buffer and waits for the GPU.
 // The Mac dispatcher waits before anything that can touch the memory of a
 // kernel, but only for the launches that use that memory. A `pub fn` waits
-// before it returns to C.
+// before it returns to C. A failed assert in a kernel stops the program at the
+// wait that finishes its launch.
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -24,6 +25,7 @@
 #include <mach/vm_page_size.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -120,6 +122,14 @@ const Region *holding(const std::vector<Region> &regions, uintptr_t start,
   return nullptr;
 }
 
+// A launch of a kernel with asserts, and the word where a failed assert
+// stores its number.
+struct Check {
+  std::string kernel;
+  const char *image;
+  id<MTLBuffer> word;
+};
+
 // The launches of one host thread that the GPU did not finish, in one command
 // buffer. A wait for some memory finishes only the batches that use it, so a
 // wait on one thread does not end the batch of another thread.
@@ -138,6 +148,7 @@ struct Batch {
   std::vector<std::string> kernels;
   std::vector<Region> regions;
   std::vector<Access> accesses;
+  std::vector<Check> checks;
 
   bool open() const { return encoder != nil; }
 
@@ -187,8 +198,48 @@ std::shared_ptr<Batch> openBatchHere() {
   return nullptr;
 }
 
-// Stops the program when the GPU did not run a batch to its end.
+// The text after the number in the line `// vx.assert <kernel> <number> ...`
+// of `image`, or null when the image has no such line.
+const char *assertLine(const char *image, const char *kernel, uint32_t number) {
+  std::string key = std::string("// vx.assert ") + kernel + " " +
+                    std::to_string(number) + " ";
+  for (const char *at = strstr(image, key.c_str()); at;
+       at = strstr(at + 1, key.c_str()))
+    if (at == image || at[-1] == '\n')
+      return at + key.size();
+  return nullptr;
+}
+
+// The message of assert `number` of `kernel`, without its percent-encoding.
+std::string assertMessage(const char *image, const char *kernel,
+                          uint32_t number) {
+  const char *at = assertLine(image, kernel, number);
+  if (!at)
+    return "assert " + std::to_string(number) +
+           " failed, and the image has no message for it";
+  std::string out;
+  for (; *at && *at != '\n'; ++at) {
+    if (at[0] == '%' && isxdigit(at[1]) && isxdigit(at[2])) {
+      out += static_cast<char>(std::stoi(std::string(at + 1, 2), nullptr, 16));
+      at += 2;
+    } else {
+      out += *at;
+    }
+  }
+  return out;
+}
+
+// Stops the program when an assert failed in a batch, or when the GPU did not
+// run the batch to its end.
 void report(const Batch &b) {
+  // A failed assert can also stop the GPU, so it is reported first.
+  for (const Check &c : b.checks) {
+    const uint32_t number =
+        *static_cast<const volatile uint32_t *>(c.word.contents);
+    if (number != 0)
+      die(c.kernel.c_str(), "%s",
+          assertMessage(c.image, c.kernel.c_str(), number).c_str());
+  }
   const size_t count = b.kernels.size();
   if (b.commands.status != MTLCommandBufferStatusCompleted) {
     std::string names;
@@ -694,6 +745,16 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
                                        options:MTLResourceStorageModeShared]
              offset:0
             atIndex:bound.size()];
+    if (assertLine(image, kernel, 1)) {
+      Check c{kernel, image,
+              [device newBufferWithLength:sizeof(uint32_t)
+                                  options:MTLResourceStorageModeShared]};
+      if (!c.word)
+        die(kernel, "Metal could not make the buffer for its asserts");
+      memset(c.word.contents, 0, sizeof(uint32_t));
+      [encoder setBuffer:c.word offset:0 atIndex:bound.size() + 1];
+      here->checks.push_back(c);
+    }
     [encoder dispatchThreadgroups:MTLSizeMake(grid[0], grid[1], grid[2])
             threadsPerThreadgroup:MTLSizeMake(block, 1, 1)];
     here->kernels.push_back(kernel);
