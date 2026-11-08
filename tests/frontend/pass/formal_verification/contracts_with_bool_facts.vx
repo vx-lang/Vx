@@ -1,0 +1,50 @@
+//===- contracts_with_bool_facts.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `bool` parameter, a `bool` field, a `bool` return value and `true` can be facts and goals.
+// Each `ensures` here needs such a fact, and each call proves its `requires`.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-NOT: E80
+// CHECK: func.func @main
+
+fn positive_either_way(c: bool, x: i64) -> i64
+requires (c && x > 0) || (!c && x > 10)
+ensures return > 0 {
+  return x;
+}
+
+struct Reading {
+  valid: bool,
+  value: i64,
+}
+
+fn value_of_a_valid_reading(r: Reading) -> i64
+requires r.valid && r.value >= 0
+ensures return >= 0 {
+  return r.value;
+}
+
+fn is_positive(x: i64) -> bool
+ensures return == (x > 0) {
+  return x > 0;
+}
+
+fn always_true() -> bool
+ensures return {
+  return true;
+}
+
+fn main() -> i32 {
+  let a = positive_either_way(true, 1);
+  let c = is_positive(a);
+  let d = always_true();
+  if c && d {
+    return a as i32;
+  }
+  return 0;
+}

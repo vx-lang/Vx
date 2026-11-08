@@ -27,6 +27,28 @@ pub struct SmtProver {
     /// Whether a fact multiplies two values that are not constants, or divides by one. Only then
     /// does z3 need nonlinear arithmetic, which is much slower.
     nonlinear: bool,
+    /// The sort of each name that a fact uses as a number or as a condition.
+    sorts: std::collections::HashMap<String, Sort>,
+    /// Pairs of names that `==` or `!=` compares, so that they have the same sort.
+    same_sort: Vec<(String, String)>,
+}
+
+/// The SMT sort of a term. A name that no fact uses as a condition is an `Int`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Sort {
+    Int,
+    Bool,
+}
+
+/// Checks that a term of sort `have` can stand where a term of sort `want` is expected.
+fn expect(want: Option<Sort>, have: Sort) -> Result<(), String> {
+    match want {
+        Some(w) if w != have => Err(match have {
+            Sort::Int => "a number where a condition is expected".to_string(),
+            Sort::Bool => "a condition where a number is expected".to_string(),
+        }),
+        _ => Ok(()),
+    }
 }
 
 /// The most work z3 may do on one query. It counts steps, not seconds, so a proof that passes on
@@ -42,14 +64,66 @@ impl SmtProver {
             declarations: std::collections::BTreeSet::new(),
             ranges: std::collections::HashMap::new(),
             nonlinear: false,
+            sorts: std::collections::HashMap::new(),
+            same_sort: Vec::new(),
+        }
+    }
+
+    /// Declares `name`, quoted so that it cannot be an SMT keyword such as `_` or `mod`, and
+    /// notes its sort when the place of the name tells it.
+    /// Each `_` gets a name of its own: `let _ = a; let _ = b;` says nothing about `a == b`.
+    fn name(&mut self, name: &str, want: Option<Sort>) -> Result<String, String> {
+        let name = match name {
+            "_" => format!("|discarded.{}|", self.declarations.len()),
+            _ => format!("|{}|", name.replace('|', "")),
+        };
+        self.declarations.insert(name.clone());
+        if let Some(sort) = want {
+            if *self.sorts.entry(name.clone()).or_insert(sort) != sort {
+                return Err(format!("`{name}`, which is both a number and a condition"));
+            }
+        }
+        Ok(name)
+    }
+
+    /// The sort of each declared name: the sort that a fact gives it or a name that `==`
+    /// compares it with, and `Int` when no fact tells.
+    fn resolve_sorts(&self) -> Result<std::collections::HashMap<String, Sort>, String> {
+        let mut sorts = self.sorts.clone();
+        loop {
+            let mut changed = false;
+            for (a, b) in &self.same_sort {
+                match (sorts.get(a).copied(), sorts.get(b).copied()) {
+                    (Some(x), None) => {
+                        sorts.insert(b.clone(), x);
+                        changed = true;
+                    }
+                    (None, Some(y)) => {
+                        sorts.insert(a.clone(), y);
+                        changed = true;
+                    }
+                    (Some(x), Some(y)) if x != y => {
+                        return Err(format!("`{a} == {b}` compares a number with a condition"));
+                    }
+                    _ => {}
+                }
+            }
+            if !changed {
+                return Ok(sorts);
+            }
         }
     }
 
     pub fn prove(&self) -> Result<bool, String> {
         let logic = if self.nonlinear { "QF_NIA" } else { "QF_LIA" };
         let mut script = format!("(set-option :rlimit {Z3_STEP_LIMIT})\n(set-logic {logic})\n");
+        let sorts = self.resolve_sorts()?;
 
         for decl in &self.declarations {
+            if sorts.get(decl) == Some(&Sort::Bool) {
+                script.push_str(&format!("(declare-const {decl} Bool)\n"));
+                continue;
+            }
             script.push_str(&format!("(declare-const {} Int)\n", decl));
             if let Some((lo, hi)) = self.ranges.get(decl).and_then(int_range) {
                 script.push_str(&format!("(assert (<= {lo} {decl} {hi}))\n"));
@@ -89,20 +163,27 @@ impl SmtProver {
 
         let output = child.wait_with_output().map_err(|e| e.to_string())?;
         let result_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        // Each name has its sort and each term is well formed, so z3 rejects nothing. A rejected
+        // fact would be left out without a word.
+        assert!(
+            !result_str.contains("(error"),
+            "z3 rejected part of a query of the prover. This is a bug in the compiler.\n\
+             The query:\n{script}\nThe answer of z3:\n{result_str}"
+        );
         solver_result(&result_str, output.status.success())
     }
 
     /// Add `expr` as a fact. `type_of` gives an expression's integer type, so that the prover knows
     /// the width of an operation on it, and its range.
     pub fn add_constraint(&mut self, expr: &Expr, type_of: IntTypeOf) -> Result<(), String> {
-        let smt_expr = self.lower_expr(expr, type_of, None)?;
+        let smt_expr = self.lower_expr(expr, type_of, None, Some(Sort::Bool))?;
         self.assertions.push(smt_expr);
         Ok(())
     }
 
     /// The SMT term of the value `expr`, for a goal that the caller builds.
     pub fn lower_term(&mut self, expr: &Expr, type_of: IntTypeOf) -> Result<String, String> {
-        self.lower_expr(expr, type_of, None)
+        self.lower_expr(expr, type_of, None, None)
     }
 
     /// Adds `smt`, a term that the caller built from `lower_term`, as a fact.
@@ -116,18 +197,33 @@ impl SmtProver {
     }
 
     /// `expected` supplies context for literal arithmetic. Remainder requires its own operand type.
+    /// `want` is the sort that the place of `expr` needs, when the place tells it.
     fn lower_expr(
         &mut self,
         expr: &Expr,
         type_of: IntTypeOf,
         expected: Option<ElementType>,
+        want: Option<Sort>,
     ) -> Result<String, String> {
         match expr {
-            Expr::Number(n) => Ok(n.value.to_string()),
+            Expr::Number(n) => {
+                expect(want, Sort::Int)?;
+                Ok(n.value.to_string())
+            }
+            Expr::Identifier(id) if is_bool_literal(&id.name) => {
+                expect(want, Sort::Bool)?;
+                Ok(id.name.to_string())
+            }
             Expr::Identifier(id) => {
-                let name = id.name.replace(".", "_");
-                self.declarations.insert(name.clone());
-                if let Some((ty, true)) = type_of(expr) {
+                let ranged = match type_of(expr) {
+                    Some((ty, ranged)) => {
+                        expect(want, Sort::Int)?;
+                        ranged.then_some(ty)
+                    }
+                    None => None,
+                };
+                let name = self.name(&id.name.replace(".", "_"), want)?;
+                if let Some(ty) = ranged {
                     self.ranges.insert(name.clone(), ty);
                 }
                 Ok(name)
@@ -142,15 +238,18 @@ impl SmtProver {
                         .or_else(|| arithmetic_context_type(expr, type_of))
                         .or(expected)
                 };
-                let lhs = self.lower_expr(&b.lhs, type_of, ty.clone())?;
-                let rhs = self.lower_expr(&b.rhs, type_of, ty.clone())?;
+                expect(want, Sort::Int)?;
+                let lhs = self.lower_expr(&b.lhs, type_of, ty.clone(), Some(Sort::Int))?;
+                let rhs = self.lower_expr(&b.rhs, type_of, ty.clone(), Some(Sort::Int))?;
                 if b.op == BinaryOp::Rem {
                     let ty = ty
                         .filter(|t| t.int_bits().is_some() && *t != ElementType::Bool)
                         .ok_or("a remainder whose integer type is not known")?;
                     // Leave undefined operations unconstrained instead of assuming they cannot occur.
-                    let undefined = format!("|remainder.undefined.{}|", self.declarations.len());
-                    self.declarations.insert(undefined.clone());
+                    let undefined = self.name(
+                        &format!("remainder.undefined.{}", self.declarations.len()),
+                        Some(Sort::Int),
+                    )?;
                     // A remainder by a constant stays linear, so that z3 can use its fast logic.
                     let divisor = match smt_constant_magnitude(&rhs) {
                         Some("0") => return Ok(undefined),
@@ -194,8 +293,19 @@ impl SmtProver {
                     .clone()
                     .or_else(|| arithmetic_context_type(&r.lhs, type_of))
                     .or_else(|| arithmetic_context_type(&r.rhs, type_of));
-                let lhs = self.lower_expr(&r.lhs, type_of, side.clone())?;
-                let rhs = self.lower_expr(&r.rhs, type_of, side)?;
+                expect(want, Sort::Bool)?;
+                let equality = matches!(r.op, RelationalOp::Eq | RelationalOp::NotEq);
+                // The sides of `==` have one sort, which either side can tell. An order needs numbers.
+                let sort = if equality {
+                    static_sort(&r.lhs, type_of).or_else(|| static_sort(&r.rhs, type_of))
+                } else {
+                    Some(Sort::Int)
+                };
+                let lhs = self.lower_expr(&r.lhs, type_of, side.clone(), sort)?;
+                let rhs = self.lower_expr(&r.rhs, type_of, side, sort)?;
+                if sort.is_none() && is_name(&r.lhs) && is_name(&r.rhs) {
+                    self.same_sort.push((lhs.clone(), rhs.clone()));
+                }
                 let op = match r.op {
                     RelationalOp::Eq => "=",
                     RelationalOp::NotEq => "distinct",
@@ -207,8 +317,9 @@ impl SmtProver {
                 Ok(format!("({} {} {})", op, lhs, rhs))
             }
             Expr::LogicalOp(l) => {
-                let lhs = self.lower_expr(&l.lhs, type_of, None)?;
-                let rhs = self.lower_expr(&l.rhs, type_of, None)?;
+                expect(want, Sort::Bool)?;
+                let lhs = self.lower_expr(&l.lhs, type_of, None, Some(Sort::Bool))?;
+                let rhs = self.lower_expr(&l.rhs, type_of, None, Some(Sort::Bool))?;
                 let op = match l.op {
                     LogicalOp::And => "and",
                     LogicalOp::Or => "or",
@@ -217,7 +328,13 @@ impl SmtProver {
             }
             Expr::UnaryOp(u) => {
                 let inner_expected = (u.op == UnaryOp::Neg).then_some(expected.clone()).flatten();
-                let inner = self.lower_expr(&u.expr, type_of, inner_expected)?;
+                let sort = if u.op == UnaryOp::Not {
+                    Sort::Bool
+                } else {
+                    Sort::Int
+                };
+                expect(want, sort)?;
+                let inner = self.lower_expr(&u.expr, type_of, inner_expected, Some(sort))?;
                 match u.op {
                     UnaryOp::Not => Ok(format!("(not {})", inner)),
                     // A negative literal such as `-1000` is a constant, not an operation.
@@ -237,19 +354,20 @@ impl SmtProver {
             // A field or an element is a name of its own, `|p.x|` or `|a[0]|`. The `|` quotes it
             // in SMT, so it cannot be the name of a variable: `p_x` was both.
             Expr::MemberAccess(m) => {
-                let base = self.lower_expr(&m.base, type_of, None)?;
-                let name = format!("|{}.{}|", base.replace('|', ""), m.member);
-                self.declarations.insert(name.clone());
-                Ok(name)
+                let base = self.lower_expr(&m.base, type_of, None, None)?;
+                let want = want.or(type_of(expr).map(|_| Sort::Int));
+                self.name(&format!("{}.{}", base.replace('|', ""), m.member), want)
             }
             Expr::IndexAccess(i) => {
-                let base = self.lower_expr(&i.base, type_of, None)?;
-                let index = self.lower_expr(&i.index, type_of, None)?;
+                let base = self.lower_expr(&i.base, type_of, None, None)?;
+                let index = self.lower_expr(&i.index, type_of, None, Some(Sort::Int))?;
                 // For now, treat array indexing as a flattened variable (e.g. a_0).
                 // Full theory of arrays would require (select a 0).
-                let name = format!("|{}[{}]|", base.replace('|', ""), index.replace('|', ""));
-                self.declarations.insert(name.clone());
-                Ok(name)
+                let want = want.or(type_of(expr).map(|_| Sort::Int));
+                self.name(
+                    &format!("{}[{}]", base.replace('|', ""), index.replace('|', "")),
+                    want,
+                )
             }
             Expr::Topology(t) => {
                 let name = match &t.top {
@@ -279,26 +397,32 @@ impl SmtProver {
                     }
                     _ => "Topology_Complex".to_string(),
                 };
-                self.declarations.insert(name.clone());
-                Ok(name)
+                expect(want, Sort::Int)?;
+                self.name(&name, Some(Sort::Int))
             }
             Expr::EnumVariant(e) => {
-                let name = format!("{}_{}", e.enum_name, e.variant_name);
-                self.declarations.insert(name.clone());
-                Ok(name)
+                expect(want, Sort::Int)?;
+                self.name(
+                    &format!("{}_{}", e.enum_name, e.variant_name),
+                    Some(Sort::Int),
+                )
             }
             Expr::AsCast(c) => {
                 let (from, to) = cast_int_types(c, type_of)
                     .ok_or("a cast whose integer source or destination type is not known")?;
-                let value = self.lower_expr(&c.expr, type_of, Some(from.clone()))?;
+                expect(want, Sort::Int)?;
+                let value =
+                    self.lower_expr(&c.expr, type_of, Some(from.clone()), Some(Sort::Int))?;
                 if keeps_every_value(&from, &to) {
                     Ok(value)
                 } else if to == ElementType::USize {
                     // A cast to usize stops the program on a value out of range, so that cast has
                     // no value. Like a remainder by zero, it becomes a name with no facts.
                     let (lo, hi) = int_range(&to).expect("the range of usize");
-                    let undefined = format!("|cast.undefined.{}|", self.declarations.len());
-                    self.declarations.insert(undefined.clone());
+                    let undefined = self.name(
+                        &format!("cast.undefined.{}", self.declarations.len()),
+                        Some(Sort::Int),
+                    )?;
                     Ok(format!("(ite (<= {lo} {value} {hi}) {value} {undefined})"))
                 } else {
                     wrap(value, Some(to))
@@ -309,8 +433,39 @@ impl SmtProver {
     }
 }
 
-/// z3 skips a command that it rejects, prints an error and still answers. A skipped assertion
-/// leaves z3 fewer facts, so `unsat` after an error is still a proof, and `sat` means no proof.
+fn is_bool_literal(name: &str) -> bool {
+    name == "true" || name == "false"
+}
+
+/// Whether the prover lowers `e` to a name of its own.
+fn is_name(e: &Expr) -> bool {
+    match e {
+        Expr::Identifier(id) => !is_bool_literal(&id.name),
+        Expr::MemberAccess(_) | Expr::IndexAccess(_) => true,
+        _ => false,
+    }
+}
+
+/// The sort of `e` that its form or its integer type tells, before any fact about a name.
+fn static_sort(e: &Expr, type_of: IntTypeOf) -> Option<Sort> {
+    match e {
+        Expr::Identifier(id) if is_bool_literal(&id.name) => Some(Sort::Bool),
+        Expr::Identifier(_) | Expr::MemberAccess(_) | Expr::IndexAccess(_) => {
+            type_of(e).map(|_| Sort::Int)
+        }
+        Expr::RelationalOp(_) | Expr::LogicalOp(_) => Some(Sort::Bool),
+        Expr::UnaryOp(u) if u.op == UnaryOp::Not => Some(Sort::Bool),
+        Expr::Number(_)
+        | Expr::BinaryOp(_)
+        | Expr::UnaryOp(_)
+        | Expr::AsCast(_)
+        | Expr::EnumVariant(_)
+        | Expr::Topology(_) => Some(Sort::Int),
+        _ => None,
+    }
+}
+
+/// The answer of z3 is its last line.
 fn solver_result(result: &str, successful_exit: bool) -> Result<bool, String> {
     match result.lines().next_back().unwrap_or("").trim() {
         "unsat" => Ok(false),
@@ -760,7 +915,7 @@ mod tests {
             let mut prover = SmtProver::new();
             let remainder = with_integer_context(&remainder, Some(ElementType::U32), &|_| None);
             assert_eq!(
-                prover.lower_expr(&remainder, &|_| None, Some(ElementType::U32)),
+                prover.lower_expr(&remainder, &|_| None, Some(ElementType::U32), None),
                 Err("a remainder whose integer type is not known".to_string()),
                 "unknown operand with divisor type {divisor_type:?}"
             );
@@ -807,6 +962,52 @@ mod tests {
         assert!(!needs_nonlinear("x", BinaryOp::Add, "y"));
         assert!(needs_nonlinear("x", BinaryOp::Mul, "y"));
         assert!(needs_nonlinear("x", BinaryOp::Rem, "y"));
+    }
+
+    fn name_expr(name: &str) -> Expr {
+        Expr::Identifier(IdentifierExpr::new(name.into(), Span::default()))
+    }
+
+    fn equal(lhs: Expr, rhs: Expr) -> Expr {
+        Expr::RelationalOp(RelationalOpExpr::new(
+            Box::new(lhs),
+            RelationalOp::Eq,
+            Box::new(rhs),
+            Span::default(),
+        ))
+    }
+
+    /// `d == c` comes before the fact `c`, which makes `c` a condition. `d` must be one too.
+    #[test]
+    fn a_name_compared_with_a_condition_is_a_condition() {
+        let mut prover = SmtProver::new();
+        let facts = [equal(name_expr("d"), name_expr("c")), name_expr("c")];
+        for fact in &facts {
+            prover
+                .add_constraint(fact, &|_| None)
+                .expect("a fact on names");
+        }
+        let sorts = prover.resolve_sorts().expect("one sort for each name");
+        assert_eq!(
+            sorts.get("|c|"),
+            Some(&Sort::Bool),
+            "a fact `c` did not make `c` a condition"
+        );
+        assert_eq!(
+            sorts.get("|d|"),
+            Some(&Sort::Bool),
+            "`d == c` did not give `d` the sort of `c`"
+        );
+    }
+
+    /// `let _ = a; let _ = b;` says nothing about `a == b`.
+    #[test]
+    fn each_underscore_is_a_name_of_its_own() {
+        let mut prover = SmtProver::new();
+        let i64_names = |_: &Expr| Some((ElementType::I64, false));
+        let first = prover.lower_term(&name_expr("_"), &i64_names).unwrap();
+        let second = prover.lower_term(&name_expr("_"), &i64_names).unwrap();
+        assert_ne!(first, second, "two `_` got one name");
     }
 
     #[test]
