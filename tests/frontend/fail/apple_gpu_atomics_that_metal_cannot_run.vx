@@ -1,0 +1,180 @@
+//===- apple_gpu_atomics_that_metal_cannot_run.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Element atomics that a kernel for the Apple GPU cannot use. Each one is a compile error that
+// gives the reason.
+// - Metal on the Apple GPU has no 64-bit compare-and-swap, add, load or store.
+// - Metal atomics take only the order Relaxed.
+// - The Metal code generator prints atomics only on i32 and u32, so not on f32.
+// - Metal has no atomics on memory that only one thread uses.
+//
+// RUN: split-file %s %t
+// RUN: not vxc %t/cas_u64.vx --host default --machine fleet/m4-uma.vx --emit-msl -o /dev/null 2>&1 | FileCheck %s --check-prefix=CAS_U64
+// RUN: not vxc %t/add_u64.vx --host default --machine fleet/m4-uma.vx --emit-msl -o /dev/null 2>&1 | FileCheck %s --check-prefix=ADD_U64
+// RUN: not vxc %t/load_i64.vx --host default --machine fleet/m4-uma.vx --emit-msl -o /dev/null 2>&1 | FileCheck %s --check-prefix=LOAD_I64
+// RUN: not vxc %t/acquire.vx --host default --machine fleet/m4-uma.vx --emit-msl -o /dev/null 2>&1 | FileCheck %s --check-prefix=ACQUIRE
+// RUN: not vxc %t/release.vx --host default --machine fleet/m4-uma.vx --emit-msl -o /dev/null 2>&1 | FileCheck %s --check-prefix=RELEASE
+// RUN: not vxc %t/acq_rel.vx --host default --machine fleet/m4-uma.vx --emit-msl -o /dev/null 2>&1 | FileCheck %s --check-prefix=ACQ_REL
+// RUN: not vxc %t/seq_cst.vx --host default --machine fleet/m4-uma.vx --emit-msl -o /dev/null 2>&1 | FileCheck %s --check-prefix=SEQ_CST
+// RUN: not vxc %t/float.vx --host default --machine fleet/m4-uma.vx --emit-msl -o /dev/null 2>&1 | FileCheck %s --check-prefix=FLOAT
+// RUN: not vxc %t/one_thread.vx --host default --machine fleet/m4-uma.vx --emit-msl -o /dev/null 2>&1 | FileCheck %s --check-prefix=ONE_THREAD
+//
+// CAS_U64: cannot compile kernel `swap_slot`: 'llvm.cmpxchg': a 64-bit atomic. The Apple GPU has 64-bit atomics only for min and max, and they do not give the old value
+// ADD_U64: cannot compile kernel `count`: 'llvm.atomicrmw': a 64-bit atomic.
+// LOAD_I64: cannot compile kernel `read_one`: 'llvm.load': a 64-bit atomic.
+// ACQUIRE: cannot compile kernel `read_one`: 'llvm.load': an atomic with the order Acquire. Metal atomics on the Apple GPU take only Relaxed
+// RELEASE: cannot compile kernel `write_one`: 'llvm.store': an atomic with the order Release.
+// ACQ_REL: cannot compile kernel `swap_slot`: 'llvm.cmpxchg': an atomic with the order AcqRel.
+// SEQ_CST: cannot compile kernel `count`: 'llvm.atomicrmw': an atomic with the order SeqCst.
+// FLOAT: cannot compile kernel `count`: 'llvm.atomicrmw': an atomic on f32. The Metal code generator prints atomics only on i32 and u32
+// ONE_THREAD: cannot compile kernel `count`: 'llvm.atomicrmw': an atomic on a tensor in the memory of one thread
+
+//--- cas_u64.vx
+import core::sync::atomic;
+pub fn swap_slot(t : &Tensor<u64, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..32 across lanes {
+        let _old = atomic_compare_and_swap_u64(t, 0, 0u64, 1u64, AtomicOrdering::Relaxed);
+      }
+    }
+  }
+  return;
+}
+fn main() -> i32 {
+  return 0;
+}
+
+//--- add_u64.vx
+import core::sync::atomic;
+pub fn count(t : &Tensor<u64, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..32 across lanes {
+        let _old = atomic_fetch_add_u64(t, 0, 1u64, AtomicOrdering::Relaxed);
+      }
+    }
+  }
+  return;
+}
+fn main() -> i32 {
+  return 0;
+}
+
+//--- load_i64.vx
+import core::sync::atomic;
+pub fn read_one(t : &Tensor<i64, [?], Memory::HBM>, out : &mut Tensor<i64, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..32 across lanes {
+        out[l] = atomic_load_i64(t, 0, AtomicOrdering::Relaxed);
+      }
+    }
+  }
+  return;
+}
+fn main() -> i32 {
+  return 0;
+}
+
+//--- acquire.vx
+import core::sync::atomic;
+pub fn read_one(t : &Tensor<i32, [?], Memory::HBM>, out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..32 across lanes {
+        out[l] = atomic_load_i32(t, 0, AtomicOrdering::Acquire);
+      }
+    }
+  }
+  return;
+}
+fn main() -> i32 {
+  return 0;
+}
+
+//--- release.vx
+import core::sync::atomic;
+pub fn write_one(t : &Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..32 across lanes {
+        atomic_store_i32(t, 0, l, AtomicOrdering::Release);
+      }
+    }
+  }
+  return;
+}
+fn main() -> i32 {
+  return 0;
+}
+
+//--- acq_rel.vx
+import core::sync::atomic;
+pub fn swap_slot(t : &Tensor<u32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..32 across lanes {
+        let _old = atomic_compare_and_swap_u32(t, 0, 0u32, 1u32, AtomicOrdering::AcqRel);
+      }
+    }
+  }
+  return;
+}
+fn main() -> i32 {
+  return 0;
+}
+
+//--- seq_cst.vx
+import core::sync::atomic;
+pub fn count(t : &Tensor<u32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..32 across lanes {
+        let _old = atomic_fetch_add_u32(t, 0, 1u32, AtomicOrdering::SeqCst);
+      }
+    }
+  }
+  return;
+}
+fn main() -> i32 {
+  return 0;
+}
+
+//--- float.vx
+import core::sync::atomic;
+pub fn count(t : &Tensor<f32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..32 across lanes {
+        let _old = atomic_fetch_add_f32(t, 0, 1.0, AtomicOrdering::Relaxed);
+      }
+    }
+  }
+  return;
+}
+fn main() -> i32 {
+  return 0;
+}
+
+//--- one_thread.vx
+import core::sync::atomic;
+pub fn count(out : &mut Tensor<u32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..32 across lanes {
+        let mine = Tensor<u32, [4]>::fill(0u32);
+        let _old = atomic_fetch_add_u32(&mine, 0, 1u32, AtomicOrdering::Relaxed);
+        out[l] = mine[0];
+      }
+    }
+  }
+  return;
+}
+fn main() -> i32 {
+  return 0;
+}

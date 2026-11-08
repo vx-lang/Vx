@@ -113,7 +113,7 @@ Each operation on an atomic takes an `AtomicOrdering`. The orders are those of C
 - the read of a `Relaxed` read-modify-write (a `Release` one becomes `AcqRel`),
 - both the success and the failure read of a `Relaxed` compare-exchange.
 
-A `Relaxed` store stays relaxed. On x86 the change costs nothing, because each load there is already an acquire load. On AArch64 and on GPUs, a `Relaxed` read costs as much as an `Acquire` read.
+A `Relaxed` store stays relaxed. On x86 the change costs nothing, because each load there is already an acquire load. On AArch64 and on GPUs, a `Relaxed` read costs as much as an `Acquire` read. Metal atomics on the Apple GPU take only `memory_order_relaxed`, so there the read stays relaxed and an acquire fence follows it.
 
 **`-fweak-relaxed-atomics`** keeps `Relaxed` reads relaxed, for the whole program. A program compiled with it may show load buffering (`formal/memory_model/tests/load_buffering_relaxed.litmus`). The default is `-fno-weak-relaxed-atomics`. When a command has both, the last one wins.
 
