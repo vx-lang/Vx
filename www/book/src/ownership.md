@@ -226,6 +226,11 @@ with no name, such as `match make() { .. }`, takes the value too. At its end, th
 names that it binds, and then the parts that it does not name, such as the `_` part. Rust keeps
 the `_` part in `t` and drops it at the end of the block of `t`.
 
+In a `let`, `_` is a name like any other. `let _ = e;` drops the value at the same point as
+`let _x = e;`, and `let _ = a;` moves `a`. In Rust, `let _ = e;` drops the value at the end of the
+statement, and `let _ = a;` moves nothing. The reasons are in
+[the language semantics](https://github.com/vx-lang/Vx/blob/main/docs/lang/semantics.md#26-drops).
+
 `Vec`, `Box`, `String`, `File` and the socket types implement `Drop`, so none of them is freed by
 hand. `drop` cannot be called directly (E4012). To end a value's life early, `core::mem` has
 `drop(x)`; `forget(x)` ends it without dropping anything, and `needs_drop<T>()` says whether
