@@ -250,6 +250,19 @@ def Vx_LaneSortOp : Vx_Op<"lane_sort", [MemoryEffects<[MemRead, MemWrite]>]> {
                      UnitAttr:$serial);
 }
 
+// `acc = acc + (lhs as f32) @ (rhs as f32)` in the code of a subgroup, or with
+// no `acc +` when `accumulate` is not set. `acc` is an `f32` matrix, and `lhs`
+// and `rhs` are matrices of `f32`, `bf16` or `f16`. Each element of `acc` gets
+// the sum of its products from 0, in the order of `k`, and then its old value.
+// The device clone gives the elements to the lanes of the subgroup, and the host
+// lowering and `serial` compute them in loops.
+def Vx_LaneMatmulOp : Vx_Op<"lane_matmul", [MemoryEffects<[MemRead, MemWrite]>]> {
+    let summary = "A matmul of tiles with the lanes of a subgroup.";
+    let arguments = (ins AnyMemRef:$acc, AnyMemRef:$lhs, AnyMemRef:$rhs,
+                     UnitAttr:$accumulate, UnitAttr:$subgroup,
+                     UnitAttr:$serial);
+}
+
 // `lanes::copy_async`: the lanes of a block copy the tile of `source` at `place`
 // into `tile`, in the background. An element past the end of `source` copies as
 // zero. The result is a token for `vx.lane_copy_wait`.

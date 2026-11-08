@@ -3392,6 +3392,93 @@ static void expandLaneSort(OpBuilder &b, vx::LaneSortOp op, bool device) {
   op.erase();
 }
 
+/// Element (i, j) of a lane matmul: the sum of the products from 0, in the
+/// order of `k`, and then the old value of the element when the op adds.
+static void laneMatmulElement(OpBuilder &b, Location loc, vx::LaneMatmulOp op,
+                              Value i, Value j) {
+  Type f32 = b.getF32Type();
+  auto wide = [&](OpBuilder &nb, Location l, Value v) -> Value {
+    return v.getType().isF32() ? v : nb.create<arith::ExtFOp>(l, f32, v);
+  };
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  Value one = b.create<arith::ConstantIndexOp>(loc, 1);
+  Value depth = b.create<memref::DimOp>(loc, op.getLhs(), 1);
+  Value start =
+      b.create<arith::ConstantFloatOp>(loc, b.getF32Type(), APFloat(0.0f));
+  auto sum = b.create<scf::ForOp>(
+      loc, zero, depth, one, ValueRange{start},
+      [&](OpBuilder &nb, Location l, Value k, ValueRange s) {
+        Value x = wide(
+            nb, l, nb.create<memref::LoadOp>(l, op.getLhs(), ValueRange{i, k}));
+        Value y = wide(
+            nb, l, nb.create<memref::LoadOp>(l, op.getRhs(), ValueRange{k, j}));
+        Value p = nb.create<arith::MulFOp>(l, x, y);
+        nb.create<scf::YieldOp>(
+            l, ValueRange{nb.create<arith::AddFOp>(l, s[0], p)});
+      });
+  Value result = sum.getResult(0);
+  if (op.getAccumulate()) {
+    Value old = b.create<memref::LoadOp>(loc, op.getAcc(), ValueRange{i, j});
+    result = b.create<arith::AddFOp>(loc, old, result);
+  }
+  b.create<memref::StoreOp>(loc, result, op.getAcc(), ValueRange{i, j});
+}
+
+/// A lane matmul in loops over the rows and the columns, for the host and for a
+/// kernel that runs on one lane.
+static void expandLaneMatmulOnHost(OpBuilder &b, vx::LaneMatmulOp op) {
+  Location loc = op.getLoc();
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  Value one = b.create<arith::ConstantIndexOp>(loc, 1);
+  Value rows = b.create<memref::DimOp>(loc, op.getAcc(), 0);
+  Value cols = b.create<memref::DimOp>(loc, op.getAcc(), 1);
+  b.create<scf::ForOp>(loc, zero, rows, one, ValueRange{},
+                       [&](OpBuilder &nb, Location l, Value i, ValueRange) {
+                         nb.create<scf::ForOp>(l, zero, cols, one, ValueRange{},
+                                               [&](OpBuilder &mb, Location m,
+                                                   Value j, ValueRange) {
+                                                 laneMatmulElement(mb, m, op, i,
+                                                                   j);
+                                                 mb.create<scf::YieldOp>(m);
+                                               });
+                         nb.create<scf::YieldOp>(l);
+                       });
+}
+
+/// A lane matmul on the lanes of a subgroup: lane `l` computes the elements
+/// `l`, `l + 32` and so on, in row order. The subgroup barrier after the op
+/// makes the elements visible to the other lanes.
+static void expandLaneMatmulOnDevice(OpBuilder &b, vx::LaneMatmulOp op) {
+  assert(op.getSubgroup() &&
+         "the checker allows a lane matmul only in the code "
+         "of a subgroup");
+  Location loc = op.getLoc();
+  Value lanes = b.create<arith::ConstantIndexOp>(loc, 32);
+  Value tid =
+      b.create<gpu::ThreadIdOp>(loc, b.getIndexType(), gpu::Dimension::x);
+  Value lane = b.create<arith::RemUIOp>(loc, tid, lanes);
+  Value cols = b.create<memref::DimOp>(loc, op.getAcc(), 1);
+  Value all = b.create<arith::MulIOp>(
+      loc, b.create<memref::DimOp>(loc, op.getAcc(), 0), cols);
+  b.create<scf::ForOp>(loc, lane, all, lanes, ValueRange{},
+                       [&](OpBuilder &nb, Location l, Value e, ValueRange) {
+                         Value i = nb.create<arith::DivUIOp>(l, e, cols);
+                         Value j = nb.create<arith::RemUIOp>(l, e, cols);
+                         laneMatmulElement(nb, l, op, i, j);
+                         nb.create<scf::YieldOp>(l);
+                       });
+}
+
+/// Replaces a lane matmul with its expansion: the host's loops with `serial`,
+/// and otherwise the expansion that `device` picks.
+static void expandLaneMatmul(OpBuilder &b, vx::LaneMatmulOp op, bool device) {
+  if (device && !op.getSerial())
+    expandLaneMatmulOnDevice(b, op);
+  else
+    expandLaneMatmulOnHost(b, op);
+  op.erase();
+}
+
 /// The memref that the row `row` is cut from: the source of a cast, or the
 /// memref whose strided metadata the cast starts from. `t[w][c]` is a cast of
 /// the metadata of the cast `t[w]`.
@@ -3835,7 +3922,7 @@ static bool runsOnDevice(Operation *op, ModuleOp module,
   // Rewritten to `gpu.return` and `gpu.barrier` in the device clone (Vx#379).
   // A `vx.launch_dim` leaves the region when it is outlined.
   if (isa<vx::YieldOp, vx::ReturnOp, vx::BarrierOp, vx::LaunchDimOp,
-          vx::LaneReduceOp, vx::LaneArgmaxOp, vx::LaneSortOp,
+          vx::LaneReduceOp, vx::LaneArgmaxOp, vx::LaneSortOp, vx::LaneMatmulOp,
           vx::LaneCopyAsyncOp, vx::LaneCopyAsyncMapOp, vx::LaneCopyWaitOp>(op))
     return true;
   // The SPIR-V path's own rules, from the one place that holds them. NVPTX
@@ -5456,6 +5543,12 @@ struct ConvertVxToStandardPass
           OpBuilder b(op);
           expandLaneSort(b, op, /*device=*/true);
         }
+        SmallVector<vx::LaneMatmulOp> matmuls;
+        gpuFunc.walk([&](vx::LaneMatmulOp op) { matmuls.push_back(op); });
+        for (vx::LaneMatmulOp op : matmuls) {
+          OpBuilder b(op);
+          expandLaneMatmul(b, op, /*device=*/true);
+        }
         LaneCopyState copies{gpuFunc};
         SmallVector<Operation *> copyOps;
         gpuFunc.walk([&](Operation *op) {
@@ -6929,6 +7022,17 @@ struct LaneCopyWaitLowering : public OpRewritePattern<vx::LaneCopyWaitOp> {
 
   LogicalResult matchAndRewrite(vx::LaneCopyWaitOp op,
                                 PatternRewriter &rewriter) const override {
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct LaneMatmulLowering : public OpRewritePattern<vx::LaneMatmulOp> {
+  using OpRewritePattern<vx::LaneMatmulOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vx::LaneMatmulOp op,
+                                PatternRewriter &rewriter) const override {
+    expandLaneMatmulOnHost(rewriter, op);
     rewriter.eraseOp(op);
     return success();
   }
@@ -8431,8 +8535,8 @@ struct ConvertVxToLLVMPass
     // not know the vx dialect (Vx#379).
     target.addIllegalOp<vx::BarrierOp>();
     target.addIllegalOp<vx::LaneReduceOp, vx::LaneArgmaxOp, vx::LaneSortOp,
-                        vx::LaneCopyAsyncOp, vx::LaneCopyAsyncMapOp,
-                        vx::LaneCopyWaitOp>();
+                        vx::LaneMatmulOp, vx::LaneCopyAsyncOp,
+                        vx::LaneCopyAsyncMapOp, vx::LaneCopyWaitOp>();
 
     LLVMTypeConverter typeConverter(&getContext());
     RewritePatternSet patterns(&getContext());
@@ -8446,7 +8550,7 @@ struct ConvertVxToLLVMPass
     patterns.add<BarrierOpLowering>(&getContext());
     patterns.add<LaneReductionLowering<vx::LaneReduceOp>,
                  LaneReductionLowering<vx::LaneArgmaxOp>, LaneSortLowering,
-                 LaneCopyAsyncLowering<vx::LaneCopyAsyncOp>,
+                 LaneMatmulLowering, LaneCopyAsyncLowering<vx::LaneCopyAsyncOp>,
                  LaneCopyAsyncLowering<vx::LaneCopyAsyncMapOp>,
                  LaneCopyWaitLowering>(&getContext());
 

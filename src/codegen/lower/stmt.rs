@@ -751,6 +751,36 @@ fn matmul_assign_shapes_agree(gen: &MeliorGenerator<'_>, dst: &Expr, a: &Expr, b
     d.len() == 2 && l.len() == 2 && r.len() == 2 && l[1] == r[0] && d[0] == l[0] && d[1] == r[1]
 }
 
+/// `vx.lane_matmul` with `serial`, which the host lowering expands into loops.
+fn lower_lane_matmul<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    m: &crate::hir::check::lanes::LaneMatmul,
+) -> Result<melior::ir::BlockRef<'c, 'c>, LowerError> {
+    let mut block = block;
+    let mut operands = Vec::new();
+    for e in [m.acc, m.lhs, m.rhs] {
+        let (v, mut ty, b) = gen.generate_expr(e, block)?;
+        block = b;
+        operands.push(super::expr::load_tensor_slot(gen, &block, v, &mut ty)?);
+    }
+    let unit = melior::ir::attribute::Attribute::unit(gen.context);
+    let mut attrs = vec![
+        (Identifier::new(gen.context, "serial"), unit),
+        (Identifier::new(gen.context, "subgroup"), unit),
+    ];
+    if m.accumulate {
+        attrs.push((Identifier::new(gen.context, "accumulate"), unit));
+    }
+    block.append_operation(
+        OperationBuilder::new("vx.lane_matmul", gen.loc())
+            .add_operands(&operands)
+            .add_attributes(&attrs)
+            .build()?,
+    );
+    Ok(block)
+}
+
 impl<'c> LowerToMelior<'c> for AssignStmt {
     type Output = Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError>;
     fn lower(
@@ -759,6 +789,13 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
         let AssignStmt { lhs, rhs, span } = self;
+
+        // A lane matmul in the code of a subgroup, which this code generator runs on one lane.
+        if gen.across_kinds.last() == Some(&crate::arch::LevelKind::Subgroups) {
+            if let Some(m) = crate::hir::check::lanes::lane_matmul(self) {
+                return lower_lane_matmul(gen, block, &m).map(Some);
+            }
+        }
 
         // `a.b.c = v` is lowered as `a.b = B { c: v, d: a.b.d, ... }`. The store below handles
         // only a field of a variable, so each level of nesting peels off one field.

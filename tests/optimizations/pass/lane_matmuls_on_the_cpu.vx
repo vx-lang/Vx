@@ -1,0 +1,83 @@
+//===- lane_matmuls_on_the_cpu.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// In the code of a subgroup loop, `acc[w] = acc[w] + (sa[w] as f32) @ (sb[w] as f32)` is a matmul
+// that every lane of the subgroup computes together. Each subgroup of a block keeps the sum of
+// its 16 rows in its own row of `acc`, over two chunks of k. `last[w]` gets the second chunk
+// alone, with no `+`. `sa` holds bf16 and `sb` f16. The inputs are small integers, so each sum is
+// exact, and a Python loop gave the expected values. The kernel runs on the CPU here, with the flat and the AST code generators.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/a100-80.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s -j 2 --host default --machine fleet/a100-80.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/a100-80.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}sum: -4 6 -3 sum of all 1{{$}}
+// CHECK: {{^}}last chunk: 4 6 sum of all -30{{$}}
+
+fn main() -> i32 {
+  let mut c = transfer(Tensor<f32, [2, 4, 16, 8]>::fill(0.0), Memory::HBM);
+  let mut d = transfer(Tensor<f32, [2, 4, 16, 8]>::fill(0.0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for blk in 0..2 across blocks {
+      let mut sa = unsafe {
+        Tensor<bf16, [4, 16, 16], Memory::SMEM>::uninit()
+      };
+      let mut sb = unsafe { Tensor<f16, [4, 16, 8], Memory::SMEM>::uninit() };
+      let mut acc = unsafe { Tensor<f32, [4, 16, 8], Memory::SMEM>::uninit() };
+      let mut last = unsafe {
+        Tensor<f32, [4, 16, 8], Memory::SMEM>::uninit()
+      };
+      for w in 0..4 across subgroups {
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for j in 0..8 {
+              acc[w][i][j] = 0.0;
+            }
+          }
+        }
+        for kk in 0..2 {
+          for i in 0..32 across lanes {
+            if i < 16 {
+              for k in 0..16 {
+                sa[w][i][k] = (((blk * 64 + w * 16 + i) * 3 + (kk * 16 + k) * 5) % 7 - 3) as bf16;
+              }
+              for j in 0..8 {
+                sb[w][i][j] = (((kk * 16 + i) * 2 + j) % 5 - 2) as f16;
+              }
+            }
+          }
+          acc[w] = acc[w] + (sa[w] as f32) @ (sb[w] as f32);
+        }
+        last[w] = (sa[w] as f32) @ (sb[w] as f32);
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for j in 0..8 {
+              c[blk][w][i][j] = acc[w][i][j];
+              d[blk][w][i][j] = last[w][i][j];
+            }
+          }
+        }
+      }
+    }
+  }
+  let hc = transfer(c, Memory::CPU_DRAM);
+  let hd = transfer(d, Memory::CPU_DRAM);
+  let mut all = 0.0;
+  let mut all_last = 0.0;
+  for b in 0..2 {
+    for w in 0..4 {
+      for i in 0..16 {
+        for j in 0..8 {
+          all = all + hc[b][w][i][j];
+          all_last = all_last + hd[b][w][i][j];
+        }
+      }
+    }
+  }
+  println!("sum: {} {} {} sum of all {}", hc[0][0][0][0], hc[1][3][15][7], hc[1][0][6][3], all);
+  println!("last chunk: {} {} sum of all {}", hd[0][2][5][1], hd[1][1][9][6], all_last);
+  return 0;
+}
