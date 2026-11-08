@@ -2155,7 +2155,9 @@ impl<'a> TypeChecker<'a> {
             } else {
                 match self.literal_default_note(lhs, &lhs_ty, &rhs_ty) {
                     Some(note) => {
-                        format!("Type mismatch in assignment: cannot assign {rhs_ty} to {lhs_ty}; {note}")
+                        format!(
+                            "Type mismatch in assignment: cannot assign {rhs_ty} to {lhs_ty}; {note}"
+                        )
                     }
                     None => format!(
                         "Type mismatch in assignment: cannot assign {} to {}; write an explicit \
@@ -2670,38 +2672,58 @@ impl<'a> TypeChecker<'a> {
     /// parameters and the fresh name in place of `return`. A method call is a call of its
     /// instance by then, with the receiver as the first argument.
     fn abstract_calls(&self, e: &Expr, calls: &mut usize, facts: &mut Vec<Expr>) -> Expr {
-        let mut sub = |x: &Expr| Box::new(self.abstract_calls(x, calls, facts));
+        let typed = hir::prover::with_integer_types(e, &|e| self.prover_int_type(e));
+        self.abstract_typed_calls(&typed, calls, facts)
+    }
+
+    fn abstract_typed_calls(&self, e: &Expr, calls: &mut usize, facts: &mut Vec<Expr>) -> Expr {
+        let mut sub = |x: &Expr| Box::new(self.abstract_typed_calls(x, calls, facts));
         match e {
             Expr::FunctionCall(c) => {
-                let args: Vec<Expr> = c
-                    .args
-                    .iter()
-                    .map(|a| *sub(hir::prover::without_borrow(a)))
-                    .collect();
                 let result = Expr::Identifier(IdentifierExpr {
                     name: format!("$call_{}", *calls).into(),
                     span: c.span,
                 });
                 *calls += 1;
-                let callee = self
-                    .env
-                    .syntax_functions
-                    .get(c.name.as_ref())
-                    .copied()
-                    .or_else(|| {
-                        self.mono
-                            .functions
-                            .iter()
-                            .find(|(f, _)| f.name == c.name)
-                            .map(|(f, _)| f)
-                    })
-                    .map(|f| (&f.params, &f.ensures))
-                    // The compiler trusts the `ensures` of an `extern` function.
-                    .or_else(|| {
-                        let ext = self.env.externs.iter().find(|x| x.name == c.name)?;
-                        Some((&ext.params, &ext.ensures))
-                    });
-                if let Some((params, ensures)) = callee {
+                let callee = self.declared_callee(&c.name);
+                // Keep the declared scalar type after replacing a call with a fresh name.
+                let result = match callee.map(|(_, ret, _)| ret) {
+                    Some(Type::Scalar(ty))
+                        if ty.int_bits().is_some() && *ty != ElementType::Bool =>
+                    {
+                        Expr::AsCast(AsCastExpr {
+                            expr: Box::new(result),
+                            target_ty: Type::Scalar(ty.clone()),
+                            source_ty: Some(Type::Scalar(ty.clone())),
+                            span: c.span,
+                        })
+                    }
+                    _ => result,
+                };
+                let args: Vec<Expr> =
+                    c.args
+                        .iter()
+                        .enumerate()
+                        .map(|(i, arg)| {
+                            let expected = callee
+                                .and_then(|(params, _, _)| params.get(i))
+                                .and_then(|(_, ty)| match ty {
+                                    Type::Scalar(e)
+                                        if e.int_bits().is_some() && *e != ElementType::Bool =>
+                                    {
+                                        Some(e.clone())
+                                    }
+                                    _ => None,
+                                });
+                            let arg = hir::prover::with_integer_context(
+                                hir::prover::without_borrow(arg),
+                                expected,
+                                &|e| self.prover_int_type(e),
+                            );
+                            self.abstract_typed_calls(&arg, calls, facts)
+                        })
+                        .collect();
+                if let Some((params, return_type, ensures)) = callee {
                     let mut names: HashMap<crate::symbol::Symbol, Expr> =
                         params.iter().map(|(p, _)| p.clone()).zip(args).collect();
                     names.insert("return".into(), result.clone());
@@ -2709,7 +2731,8 @@ impl<'a> TypeChecker<'a> {
                         .iter()
                         .filter(|e| crate::hir::check::atomic_contracts::is_prover_clause(e))
                     {
-                        facts.push(hir::prover::substitute_names(ens, &names));
+                        let typed = self.typed_callee_contract(ens, params, return_type);
+                        facts.push(hir::prover::substitute_names(&typed, &names));
                     }
                 }
                 result
@@ -2746,12 +2769,102 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// The integer type of the name `n` in a contract, a variable in scope or `return`, and
-    /// whether its range is a fact. Only a parameter's range is: a fact can be about another
-    /// variable of the same name, from a `let` or an arm that hides it, and a range of the
-    /// wrong type would contradict that fact and so prove anything. `return` is bounded by its
-    /// operands.
-    fn prover_int_type(&self, n: &str) -> Option<(ElementType, bool)> {
+    /// The parameters, return type and `ensures` that the declaration of `name` states.
+    #[allow(clippy::type_complexity)]
+    fn declared_callee(
+        &self,
+        name: &crate::symbol::Symbol,
+    ) -> Option<(&[(crate::symbol::Symbol, Type)], &Type, &[Expr])> {
+        self.env
+            .syntax_functions
+            .get(name.as_ref())
+            .copied()
+            .or_else(|| {
+                self.mono
+                    .functions
+                    .iter()
+                    .find(|(f, _)| f.name == *name)
+                    .map(|(f, _)| f)
+            })
+            .map(|f| (&f.params[..], &f.return_type, &f.ensures[..]))
+            // The compiler trusts the `ensures` of an `extern` function.
+            .or_else(|| {
+                let ext = self.env.externs.iter().find(|x| x.name == *name)?;
+                Some((&ext.params[..], &ext.return_type, &ext.ensures[..]))
+            })
+    }
+
+    /// Resolve clauses in the callee's scope before replacing its names.
+    pub(crate) fn typed_callee_contract(
+        &self,
+        expr: &Expr,
+        params: &[(crate::symbol::Symbol, Type)],
+        return_type: &Type,
+    ) -> Expr {
+        fn declared_type(
+            checker: &TypeChecker<'_>,
+            expr: &Expr,
+            params: &[(crate::symbol::Symbol, Type)],
+            return_type: &Type,
+        ) -> Option<Type> {
+            match expr {
+                Expr::Identifier(id) if id.name.as_ref() == "return" => Some(return_type.clone()),
+                Expr::Identifier(id) => params
+                    .iter()
+                    .find(|(name, _)| *name == id.name)
+                    .map(|(_, ty)| ty.clone()),
+                Expr::MemberAccess(m) => {
+                    let mut base = declared_type(checker, &m.base, params, return_type)?;
+                    while let Type::Borrow { inner, .. }
+                    | Type::Pointer(inner, ..)
+                    | Type::Ref(inner, _) = base
+                    {
+                        base = *inner;
+                    }
+                    match base {
+                        Type::Struct(name, _) => checker.struct_field_type(&name, &[], &m.member),
+                        Type::GenericInstance(base, args) => match *base {
+                            Type::Struct(name, _) => {
+                                checker.struct_field_type(&name, &args, &m.member)
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    }
+                }
+                // The declared return type, not a type found in the caller's scope: a caller
+                // name can hide a callee parameter of another type.
+                Expr::FunctionCall(c) => Some(checker.declared_callee(&c.name)?.1.clone()),
+                _ => None,
+            }
+        }
+        hir::prover::with_integer_types(expr, &|e| match declared_type(
+            self,
+            e,
+            params,
+            return_type,
+        )? {
+            Type::Scalar(ty) if ty.int_bits().is_some() && ty != ElementType::Bool => {
+                Some((ty, false))
+            }
+            _ => None,
+        })
+    }
+
+    /// The integer type of an expression. Parameters and saved old values have range facts.
+    /// Other names can hide an earlier binding, so their ranges cannot be assumed.
+    /// A range from the wrong binding could contradict valid facts and prove anything.
+    /// The return value is bounded by its operands.
+    fn prover_int_type(&self, expr: &Expr) -> Option<(ElementType, bool)> {
+        let Expr::Identifier(id) = expr else {
+            return match self.check_expr_type_probe(expr) {
+                Type::Scalar(e) if e.int_bits().is_some() && e != ElementType::Bool => {
+                    Some((e, false))
+                }
+                _ => None,
+            };
+        };
+        let n = id.name.as_ref();
         // An old value has the type of its variable, and no `let` can hide its name.
         if let Some(old) = n.strip_prefix("$old_") {
             let int = old

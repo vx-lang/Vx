@@ -317,7 +317,13 @@ impl<'a> TypeChecker<'a> {
                     {
                         self.errors.warn(
                             crate::diagnostic::DiagnosticCode::W1014,
-                            format!("{v} does not fit in {dst}, so `as` changes its value"),
+                            if *dst == ElementType::USize {
+                                format!(
+                                    "{v} does not fit in usize, so this cast will stop the program"
+                                )
+                            } else {
+                                format!("{v} does not fit in {dst}, so `as` changes its value")
+                            },
                             Some(crate::diagnostic::SourceSpan::from_ast_span(&expr.span)),
                         );
                     }

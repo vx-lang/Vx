@@ -41,7 +41,7 @@ Reported without stopping the compile. A warning means the program is accepted b
 | [`W1009`](/errors/W1009/) | Unused function parameter |
 | [`W1010`](/errors/W1010/) | An `unsafe` block with nothing inside it that needs `unsafe`. |
 | [`W1013`](/errors/W1013/) | An `as` cast to the type the value already has, such as `x as i32` when `x` is an `i32`. |
-| [`W1014`](/errors/W1014/) | An `as` cast of a number known while compiling that does not fit the target type, such as `100000 as i8`, which gives -96. |
+| [`W1014`](/errors/W1014/) | An `as` cast of a number known while compiling that does not fit the target type, such as `100000 as i8`, which gives -96. For a cast to `usize`, such as `(-1i64) as usize`, the program stops at that cast. |
 | [`W1020`](/errors/W1020/) | `*&x`, a borrow that is dereferenced at once. It is the same as `x`. |
 | [`W1022`](/errors/W1022/) | A `transfer` into the memory the value is already in. It only makes a copy. |
 | [`W1023`](/errors/W1023/) | `spawn on(Topology::Current)`: the region runs where the code around it already runs. |

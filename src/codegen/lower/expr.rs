@@ -6124,6 +6124,9 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
             // `coerce_type` cannot tell: it sees only the printed MLIR type, which has no
             // sign. The cast does know, because it kept the type it started from.
             if let Some(syntax::Type::Scalar(source_elem)) = self.source_ty.as_ref() {
+                if *target_elem == syntax::ElementType::USize {
+                    super::check_usize_cast(gen, &block, source_val, source_elem)?;
+                }
                 let widening = matches!(
                     (source_elem.int_bits(), target_elem.int_bits()),
                     (Some(from), Some(to)) if from < to
