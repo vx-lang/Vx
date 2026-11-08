@@ -1213,10 +1213,14 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
         }
 
         let mut final_ty = lhs_ty;
-        let _lhs_ty_str = lhs_ty.to_string();
-        let _rhs_ty_str = rhs_ty.to_string();
+        // A row of a larger tensor, such as `acc[w]`, is a strided view. An element operation
+        // reads it as it is, so two operands that differ only in that layout need no cast.
+        let same_but_layout = gen.is_memref(&lhs_ty)
+            && gen.is_memref(&rhs_ty)
+            && without_strided_layout(&lhs_ty.to_string())
+                == without_strided_layout(&rhs_ty.to_string());
 
-        if lhs_ty != rhs_ty && op != &BinaryOp::MatMul {
+        if lhs_ty != rhs_ty && op != &BinaryOp::MatMul && !same_but_layout {
             // Priority coercion: f64 > f32 > i64 > i32
             // To simplify, we'll cast rhs to lhs for now.
             // `t + b` with `memref<?xf32>` and `memref<4xf32>` operands needs a `memref.cast`.
@@ -1234,8 +1238,8 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
         let mut is_matmul = false;
         let mut lhs_parts = Vec::new();
         let mut rhs_parts = Vec::new();
-        let lhs_ty_str = lhs_ty.to_string();
-        let rhs_ty_str = rhs_ty.to_string();
+        let lhs_ty_str = without_strided_layout(&lhs_ty.to_string());
+        let rhs_ty_str = without_strided_layout(&rhs_ty.to_string());
 
         let lhs_inner = lhs_ty_str.replace("memref<", "").replace('>', "");
         let rhs_inner = rhs_ty_str.replace("memref<", "").replace('>', "");
@@ -6581,6 +6585,29 @@ fn tensor_from_field<'c>(
         .add_results(&[tensor_ty])
         .build()?;
     Ok((block.append_operation(cast).result(0)?.into(), tensor_ty))
+}
+
+/// The memref type `ty` with no `strided<..>` layout: the type of a new buffer of the same
+/// shape, element type and memory space.
+fn without_strided_layout(ty: &str) -> String {
+    let Some(at) = ty.find(", strided<") else {
+        return ty.to_string();
+    };
+    // The layout ends at the `>` that closes its `strided<`.
+    let mut depth = 0;
+    for (i, c) in ty[at + 2..].char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => {
+                depth -= 1;
+                if depth == 0 {
+                    return format!("{}{}", &ty[..at], &ty[at + 2 + i + 1..]);
+                }
+            }
+            _ => {}
+        }
+    }
+    ty.to_string()
 }
 
 /// A new tensor of the shape of `src`, with elements of type `out_elem`, or of the element type
