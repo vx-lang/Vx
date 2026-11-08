@@ -198,6 +198,14 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
         let prev_expected = gen.expected_type;
         gen.expected_type = ty_ann.as_ref().and_then(|ann| gen.lower_type(ann).ok());
         let (val, ty, block) = gen.generate_expr(expr, block)?;
+        // `let c : Closure1<..> = |x| ..` holds the `{env, func}` pair, not the literal's captures.
+        let (val, ty) = match gen.expected_type {
+            Some(want) => match gen.adapt_closure_to_nominal(&block, val, ty, want)? {
+                Some(adapted) => (adapted, want),
+                None => (val, ty),
+            },
+            None => (val, ty),
+        };
         if let Expr::Closure(c) = expr {
             let func_args = c.params.iter().map(|(_, t)| t.clone()).collect();
             let ret_ty = c
@@ -955,6 +963,36 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
             return Ok(Some(block));
         }
 
+        // A tile into a row of a larger tensor, `acc[w] = acc[w] + p`: a copy into the row's view.
+        let rhs_ty_str = rhs_ty.to_string();
+        if lhs_is_a_row
+            && rhs_ty_str.starts_with("memref<")
+            && !rhs_ty_str.starts_with("memref<memref<")
+        {
+            let (dst, dst_ty, block) = gen.generate_expr(lhs, block)?;
+            if !dst_ty.to_string().starts_with("memref<") {
+                return Err(LowerError::from(format!(
+                    "a tensor assigned to an element of another: {rhs_ty} into {dst_ty}"
+                )));
+            }
+            block.append_operation(
+                OperationBuilder::new("memref.copy", gen.loc())
+                    .add_operands(&[rhs_val, dst])
+                    .build()?,
+            );
+            // The value is freed when it is a buffer of its own, and left alone when it is a view.
+            block.append_operation(
+                OperationBuilder::new("vx.drop", gen.loc())
+                    .add_operands(&[rhs_val])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "owned_only"),
+                        melior::ir::attribute::Attribute::unit(gen.context),
+                    )])
+                    .build()?,
+            );
+            return Ok(Some(block));
+        }
+
         // The old value's drops run now that the new value is computed, before it is stored.
         let block = gen.run_value_drops(block)?;
         if let Expr::Identifier(IdentifierExpr { name, span: _ }) = lhs {
@@ -1245,6 +1283,10 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                                     .build()
                                     .unwrap();
                                 field_val = new_b.append_operation(cast_op).result(0)?.into();
+                            } else if let Some(adapted) =
+                                gen.adapt_closure_to_nominal(&new_b, rhs_val, rhs_ty, field_ty)?
+                            {
+                                field_val = adapted;
                             }
                             if let Some(rank) = crate::codegen::generator::tensor_field_rank(
                                 &struct_decl.fields[field_idx].1,

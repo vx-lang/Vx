@@ -1,0 +1,18 @@
+// RUN: not vxc %s --run 2>&1 | FileCheck %s
+// RUN: not vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: cast to usize is out of range
+// CHECK-NOT: cast returned
+
+fn convert(value : i128) -> usize {
+  return value as usize;
+}
+
+fn double_next(value : i128) -> i128 {
+  return (value + 1i128) * 2i128;
+}
+
+fn main() -> i32 {
+  let count = convert(double_next(9223372036854775807i128));
+  println!("cast returned {}", count);
+  return 0;
+}

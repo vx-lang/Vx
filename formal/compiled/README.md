@@ -83,5 +83,5 @@ Each line gives the number of executions that GenMC explored. On an error, the s
 the execution that GenMC found. `--vxc-flag=-fweak-relaxed-atomics` keeps `Relaxed` reads relaxed
 (docs/lang/semantics.md, section 2.5). `--keep DIR` keeps the IR files.
 
-CI does not run these checks. CI would need a build of GenMC with the patch (about 10 minutes, or
-a cached build) and the packages `libffi-dev`, `zlib1g-dev` and `libedit-dev`.
+CI runs these checks in `.github/workflows/genmc.yml` when the library, the lowering of atomics
+or this directory changes. It keeps the build of GenMC in its cache.

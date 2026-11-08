@@ -1576,7 +1576,9 @@ impl<'a> TypeChecker<'a> {
                 true
             }
             (Type::Pointer(t1, m1, mut1), Type::Pointer(t2, m2, mut2)) => {
-                m1 == m2 && mut1 == mut2 && self.unify_types_internal(t1, t2, mapping)
+                // `*mut T in Memory::M` binds `M` to the memory of the pointer, or to none.
+                let place_match = self.bind_memory(m1, m2, mapping).unwrap_or(m1 == m2);
+                place_match && mut1 == mut2 && self.unify_types_internal(t1, t2, mapping)
             }
             (
                 Type::Borrow {
@@ -2155,6 +2157,9 @@ impl<'a> TypeChecker<'a> {
         let prev_shadowed = self.borrow.take_shadowed();
         let prev_closure_copies = std::mem::take(&mut self.closure_copies);
         let prev_cancel_loops = std::mem::take(&mut self.cancel_loops);
+        // A `break` in the body leaves a loop of the body, never a loop around the call.
+        let prev_loop_exits = std::mem::take(&mut self.borrow.loop_exits);
+        let prev_loops_outside = std::mem::take(&mut self.borrow.loops_outside_the_closure);
         let in_drop = self.is_drop_impl(func);
         let prev_in_drop = std::mem::replace(&mut self.in_drop, in_drop);
         let in_wait_limit = self.is_wait_limit_impl(func);
@@ -2355,6 +2360,8 @@ impl<'a> TypeChecker<'a> {
         self.borrow.restore_shadowed(prev_shadowed);
         self.closure_copies = prev_closure_copies;
         self.cancel_loops = prev_cancel_loops;
+        self.borrow.loop_exits = prev_loop_exits;
+        self.borrow.loops_outside_the_closure = prev_loops_outside;
         self.in_drop = prev_in_drop;
         self.in_wait_limit = prev_in_wait_limit;
         self.within_depth = prev_within_depth;

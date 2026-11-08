@@ -102,6 +102,15 @@ pub struct MeliorGenerator<'c> {
     /// The levels of the `across` loops around the code, for the lane reductions.
     pub(crate) across_kinds: Vec<crate::arch::LevelKind>,
     pub in_spawn: bool,
+    /// The next `for` loop is the one loop of a `spawn` region that `parallel_outer_for` proved.
+    /// It gets marks so that a later pass can run its passes on threads or host workers.
+    pub(crate) mark_next_for: bool,
+    /// The block loop and the thread loops that `parallel_two_level` proved, while their
+    /// `spawn` region is lowered.
+    pub(crate) two_level_plan: Option<crate::hir::check::parallel::TwoLevelPlan>,
+    /// The declared `arch:` of each open `spawn` region, innermost last. `None` for a topology
+    /// that declares none, such as every built-in one.
+    pub(crate) spawn_arches: Vec<Option<String>>,
     pub break_blocks: Vec<*const melior::ir::Block<'c>>,
     /// The open `tasks` blocks that can fail: the block after each, which takes the value of
     /// the block, and the type `Result<U, E>` of that value.
@@ -487,6 +496,17 @@ impl<'c> MeliorGenerator<'c> {
     /// A rank-0 `memref` over a single scalar (`memref<i32>`), which is how a mutable scalar
     /// local's storage and a borrow of one are both spelled. Ranked memrefs (`memref<4xf32>`)
     /// and nested ones (`memref<memref<i32>>`) are different shapes and are excluded.
+    /// Whether the innermost `spawn` region runs on a `spirv64` topology.
+    pub(crate) fn in_spirv_region(&self) -> bool {
+        self.spawn_arches
+            .last()
+            .cloned()
+            .flatten()
+            .is_some_and(|a| {
+                crate::arch::DeviceTarget::from_arch(&a) == Some(crate::arch::DeviceTarget::Spirv64)
+            })
+    }
+
     pub fn is_scalar_memref(&self, ty: &Type<'c>) -> bool {
         let ty_str = ty.to_string();
         ty_str.starts_with("memref<")
@@ -613,6 +633,10 @@ impl<'c> MeliorGenerator<'c> {
     ) -> Result<Value<'c, 'c>, crate::codegen::lower::LowerError> {
         if from_ty == to_ty {
             return Ok(val);
+        }
+        // A closure literal given where a `ClosureK` is expected, as in a `return` or an assignment.
+        if let Some(adapted) = self.adapt_closure_to_nominal(block, val, from_ty, to_ty)? {
+            return Ok(adapted);
         }
 
         // Scalar -> tensor: broadcast the scalar across a fresh buffer (fill),
@@ -1039,6 +1063,9 @@ impl<'c> MeliorGenerator<'c> {
             expected_type: None,
             across_kinds: Vec::new(),
             in_spawn: false,
+            mark_next_for: false,
+            two_level_plan: None,
+            spawn_arches: Vec::new(),
             break_blocks: Vec::new(),
             tasks_leaves: Vec::new(),
             tasks_inline: false,

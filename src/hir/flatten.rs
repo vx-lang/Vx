@@ -1601,6 +1601,14 @@ impl<'r> Lowerer<'r> {
                 let target = scalar_of(&c.target_ty).ok_or(Decline::TypeNotModelled {
                     what: "a cast to a non-scalar",
                 })?;
+                // `t as f32` on a tensor in memory: a new tensor of the same shape.
+                if let LoweredTy::Tensor { shape, .. } = &v.ty {
+                    let ty = LoweredTy::Tensor {
+                        elem: target,
+                        shape: shape.clone(),
+                    };
+                    return Ok(self.emit_typed(Opcode::TensorCast, v.reg, Register(0), ty, 0));
+                }
                 Ok(self.emit_value(Opcode::Cast, v.reg, Register(0), target, 0))
             }
             // A struct field read `base.member`. `base` is either a local aggregate slot (`p.x`,
@@ -3896,9 +3904,19 @@ impl<'r> Lowerer<'r> {
             };
             (inner, nest.body[1..].iter().collect(), Some(nest))
         } else {
-            let after = stmts[at + 1..]
+            let rest = &stmts[at + 1..];
+            // The code after the nest drops the names it declares. A drop of a name from
+            // before the nest stays in the body that every block runs.
+            let declared: Vec<_> = rest
                 .iter()
-                .filter(|s| !matches!(s, Statement::Drop(_)))
+                .filter_map(|s| match s {
+                    Statement::LetDecl(l) => Some(&l.name),
+                    _ => None,
+                })
+                .collect();
+            let after = rest
+                .iter()
+                .filter(|s| !matches!(s, Statement::Drop(d) if !declared.contains(&&d.name)))
                 .filter(|s| !crate::hir::check::across::same_level(s, nest))
                 .collect();
             (nest, after, None)
@@ -6987,6 +7005,7 @@ impl<'r> Lowerer<'r> {
                 | Opcode::TensorTranspose
                 | Opcode::TensorPad
                 | Opcode::TensorMap
+                | Opcode::TensorCast
                 | Opcode::TensorReduce
                 | Opcode::TensorDim
                 | Opcode::TensorLoad
@@ -8911,6 +8930,7 @@ fn makes_a_fresh_tensor(opcode: Opcode) -> bool {
             | Opcode::TensorTranspose
             | Opcode::TensorPad
             | Opcode::TensorMap
+            | Opcode::TensorCast
     )
 }
 

@@ -1,0 +1,41 @@
+//===- pointer_functions_keep_the_memory_of_the_pointer.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not='Warning[' --implicit-check-not='Error['
+// CHECK: func.func @main
+//
+// The functions of `core::ptr` that move a pointer keep its memory. A pointer into GPU memory
+// gives a pointer into GPU memory, and a host pointer gives a host pointer.
+
+import core::ptr;
+
+fn rows_on_the_gpu(p : *mut f32 in Memory::GPU_HBM, width : usize) -> *mut f32 in Memory::GPU_HBM {
+  let next : *mut f32 in Memory::GPU_HBM = add_mut(p, width);
+  let back : *mut f32 in Memory::GPU_HBM = sub_mut(next, width);
+  return offset_mut(back, 2i64);
+}
+
+fn read_only_rows_on_the_gpu(p : *const f32 in Memory::GPU_HBM, width : usize) -> *const f32 in Memory::GPU_HBM {
+  let next : *const f32 in Memory::GPU_HBM = add(p, width);
+  let back : *const f32 in Memory::GPU_HBM = sub(next, width);
+  return offset(back, 2i64);
+}
+
+fn rows_on_the_host(p : *mut i64, width : usize) -> *mut i64 {
+  let next : *mut i64 = add_mut(p, width);
+  return sub_mut(next, width);
+}
+
+fn main() -> i32 {
+  let gpu = unsafe { 0 as *mut f32 in Memory::GPU_HBM };
+  let _a = rows_on_the_gpu(gpu, 4usize);
+  let _b = read_only_rows_on_the_gpu(gpu as *const f32 in Memory::GPU_HBM, 4usize);
+  let mut x = 5i64;
+  let host : *mut i64 = &mut x;
+  let c = rows_on_the_host(host, 0usize);
+  return (unsafe { *c } - 5i64) as i32;
+}

@@ -32,9 +32,12 @@ when writing Vx with Rust habits.
 
 ## Types
 
-- Integers `i4` `i8` `i16` `i32` `i64`, `u4` `u8` `u16` `u32` `u64`; floats `f16` `bf16` `f32` `f64`;
-  `bool`. The fp8 and fp4 types are in [Low-precision numbers](low-precision-numbers.md).
+- Integers `i4` `i8` `i16` `i32` `i64`, `u4` `u8` `u16` `u32` `u64`, `usize`; floats `f16` `bf16`
+  `f32` `f64`; `bool`. The fp8 and fp4 types are in [Low-precision numbers](low-precision-numbers.md).
   Nothing converts by itself: write `x as i64`. An integer variable with no written type is `i32`.
+- An `as` cast to a narrower integer type wraps: `300 as u8` is 44. A `usize` holds 0 up to the
+  largest `i64`. A cast to `usize` never wraps. It stops the program when the value does not fit,
+  for example `(-1i64) as usize`.
 - Tuples `(i64, f32)`, read as `t.0` or taken apart with `let (a, b) = t;`.
 - References `&T` and `&mut T`, checked by the borrow checker; raw pointers `*const T` and
   `*mut T`, used inside `unsafe`.

@@ -212,7 +212,9 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/atomic_orders_and_fence_scopes_in_ptx.vx", // needs --machine
             "optimizations/pass/a_tensor_that_atomics_change_is_not_readonly.vx", // needs --machine
             "optimizations/pass/writes_at_slots_from_an_atomic_counter.vx", // needs --machine
+            "optimizations/pass/atomics_on_a_mut_tensor.vx",               // needs --machine
             "optimizations/pass/code_after_the_blocks_in_a_kernel_for_emit_ptx.vx", // needs --machine
+            "optimizations/pass/a_shared_tile_in_the_code_after_the_blocks.vx", // needs --machine
             "optimizations/pass/gpu_region_that_ends_in_a_value_runs_on_the_gpu.vx", // needs --machine
             "optimizations/pass/across_loops_with_auto_schedule_levels_carry_their_level.vx", // needs -f
             "frontend/pass/packages/import_from_a_package.vx", // needs --package

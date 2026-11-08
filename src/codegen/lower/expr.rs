@@ -1046,9 +1046,13 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
                     .map(|d| text(strides[d].0))
                     .collect::<Vec<_>>()
                     .join(", ");
+                // A row of a tile in shared memory is in shared memory too.
+                let space = crate::codegen::lower::memref_space(&base_ty_str)
+                    .map(|s| format!(", {s}"))
+                    .unwrap_or_default();
                 let result_ty_str = format!(
-                    "memref<{}x{}, strided<[{}], offset: ?>>",
-                    dims_str, inner_ty_str, strides_str
+                    "memref<{}x{}, strided<[{}], offset: ?>{}>",
+                    dims_str, inner_ty_str, strides_str, space
                 );
                 let result_ty = Type::parse(gen.context, &result_ty_str).ok_or_else(|| {
                     crate::codegen::lower::LowerError::ParseType(result_ty_str.clone())
@@ -1209,13 +1213,22 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
         }
 
         let mut final_ty = lhs_ty;
-        let _lhs_ty_str = lhs_ty.to_string();
-        let _rhs_ty_str = rhs_ty.to_string();
+        // A row of a larger tensor, such as `acc[w]`, is a strided view. An element operation
+        // reads it as it is, so two operands that differ only in that layout need no cast.
+        let same_but_layout = gen.is_memref(&lhs_ty)
+            && gen.is_memref(&rhs_ty)
+            && without_strided_layout(&lhs_ty.to_string())
+                == without_strided_layout(&rhs_ty.to_string());
 
-        if lhs_ty != rhs_ty && op != &BinaryOp::MatMul {
+        if lhs_ty != rhs_ty && op != &BinaryOp::MatMul && !same_but_layout {
             // Priority coercion: f64 > f32 > i64 > i32
             // To simplify, we'll cast rhs to lhs for now.
-            rhs_val = gen.coerce_type(&block, rhs_val, rhs_ty, lhs_ty)?;
+            // `t + b` with `memref<?xf32>` and `memref<4xf32>` operands needs a `memref.cast`.
+            rhs_val = if gen.is_memref(&lhs_ty) && gen.is_memref(&rhs_ty) {
+                crate::codegen::lower::cast_memref(gen, &block, rhs_val, rhs_ty, lhs_ty)?
+            } else {
+                gen.coerce_type(&block, rhs_val, rhs_ty, lhs_ty)?
+            };
             rhs_ty = lhs_ty;
             final_ty = lhs_ty;
         }
@@ -1225,8 +1238,8 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
         let mut is_matmul = false;
         let mut lhs_parts = Vec::new();
         let mut rhs_parts = Vec::new();
-        let lhs_ty_str = lhs_ty.to_string();
-        let rhs_ty_str = rhs_ty.to_string();
+        let lhs_ty_str = without_strided_layout(&lhs_ty.to_string());
+        let rhs_ty_str = without_strided_layout(&rhs_ty.to_string());
 
         let lhs_inner = lhs_ty_str.replace("memref<", "").replace('>', "");
         let rhs_inner = rhs_ty_str.replace("memref<", "").replace('>', "");
@@ -3811,6 +3824,34 @@ fn to_vector<'c>(
     Ok(block.append_operation(ext).result(0)?.into())
 }
 
+/// The memref type and alignment of a tensor of type `written` when it is a tile that the
+/// threads of a block share: a static shape in a `scope: sm` memory. The alignment is at least
+/// 16 bytes, the `alignment:` of the memory, and the `aligned(N)` of the type.
+fn shared_tile(
+    gen: &MeliorGenerator<'_>,
+    written: Option<&syntax::Type>,
+    elem: &str,
+) -> Option<(String, u64)> {
+    let syntax::Type::Tensor(_, dims, Some(p)) = written? else {
+        return None;
+    };
+    let decl = gen.memories.get(&p.space)?;
+    if !matches!(decl.scope, Some(syntax::Scope::Sm)) {
+        return None;
+    }
+    let extents: Vec<&str> = dims.iter().map(|d| d.literal()).collect::<Option<_>>()?;
+    let arch = gen.spawn_arches.last().cloned().flatten();
+    let space =
+        crate::arch::address_space_for_arch(arch.as_deref(), crate::arch::AddressSpace::Workgroup);
+    let align = decl
+        .alignment
+        .map_or(0, |a| a.0)
+        .max(p.alignment.unwrap_or(0))
+        .max(16);
+    let shape = extents.iter().map(|e| format!("{e}x")).collect::<String>();
+    Some((format!("memref<{shape}{elem}, {space}>"), align))
+}
+
 impl<'c> LowerToMelior<'c> for FunctionCallExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
     fn lower(
@@ -3933,6 +3974,40 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 if let Some(shape) = arr.initializer_shape() {
                     return lower_tensor_initializer(gen, Some(&mlir_ty_str), &shape, arr, block);
                 }
+            }
+            if let Some((tile_str, align)) = shared_tile(gen, written, &mlir_ty_str) {
+                let tile_ty = Type::parse(gen.context, &tile_str)
+                    .ok_or_else(|| LowerError::ParseType(tile_str.clone()))?;
+                let alloca = OperationBuilder::new("memref.alloca", gen.loc())
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "alignment"),
+                        IntegerAttribute::new(gen.i64_ty, align as i64).into(),
+                    )])
+                    .add_results(&[tile_ty])
+                    .build()?;
+                // At the top of the region, so that a tile declared in a loop does not take a
+                // new stack slot on each pass.
+                let entry = block
+                    .parent_region()
+                    .and_then(|r| r.first_block())
+                    .ok_or_else(|| LowerError::from("a tile outside a region".to_string()))?;
+                let tile: Value = match entry.first_operation() {
+                    Some(first) => entry.insert_operation_before(first, alloca),
+                    None => entry.append_operation(alloca),
+                }
+                .result(0)?
+                .into();
+                if name.as_ref().ends_with("::new") || name.as_ref() == "Tensor" {
+                    emit_zero_fill(gen, &block, tile, &mlir_ty_str)?;
+                }
+                let block = if let Some(fe) = &fill_expr {
+                    let (fill_val, _, block) = gen.generate_expr(fe, block)?;
+                    emit_value_fill(gen, &block, tile, fill_val, &mlir_ty_str)?;
+                    block
+                } else {
+                    block
+                };
+                return Ok((tile, tile_ty, block));
             }
             let mut dynamic_sizes = Vec::new();
             // Number of dynamic dimensions; the type below uses one `?` per dim,
@@ -5885,8 +5960,24 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
     ) -> Self::Output {
         // A slice `as` converts each element. The slice arithmetic is in `f32`, so the value
         // is a `vector<Dxf32>`, and a cast to a half type narrows it.
-        if let Some(syntax::Type::Tensor(_, dims, _)) = self.source_ty.as_ref() {
-            if dims.len() == 1 && matches!(&self.target_ty, syntax::Type::Scalar(_)) {
+        let tensor_dims = match self.source_ty.as_ref() {
+            Some(syntax::Type::Tensor(_, dims, _)) => Some(dims),
+            Some(syntax::Type::Borrow { inner, .. }) => match &**inner {
+                syntax::Type::Tensor(_, dims, _) => Some(dims),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(dims) =
+            tensor_dims.filter(|_| matches!(&self.target_ty, syntax::Type::Scalar(_)))
+        {
+            let (val, val_ty, block) = gen.generate_expr(&self.expr, block)?;
+            // A tensor in memory: a new tensor of each element cast.
+            if val_ty.to_string().starts_with("memref<") {
+                let target = gen.lower_type(&self.target_ty)?.to_string();
+                return lower_tensor_cast(gen, block, val, val_ty, &target);
+            }
+            {
                 let d = dims[0]
                     .literal()
                     .and_then(|v| v.parse::<i64>().ok())
@@ -5895,7 +5986,6 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
                             "a cast over a slice whose length is not known".to_string(),
                         )
                     })?;
-                let (val, val_ty, block) = gen.generate_expr(&self.expr, block)?;
                 let wide = to_vector(gen, val, &val_ty.to_string(), d, block)?;
                 let target = gen.lower_type(&self.target_ty)?.to_string();
                 let result = match target.as_str() {
@@ -6038,6 +6128,9 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
             // `coerce_type` cannot tell: it sees only the printed MLIR type, which has no
             // sign. The cast does know, because it kept the type it started from.
             if let Some(syntax::Type::Scalar(source_elem)) = self.source_ty.as_ref() {
+                if *target_elem == syntax::ElementType::USize {
+                    super::check_usize_cast(gen, &block, source_val, source_elem)?;
+                }
                 let widening = matches!(
                     (source_elem.int_bits(), target_elem.int_bits()),
                     (Some(from), Some(to)) if from < to
@@ -6494,24 +6587,51 @@ fn tensor_from_field<'c>(
     Ok((block.append_operation(cast).result(0)?.into(), tensor_ty))
 }
 
-/// `-t` on a tensor: a new tensor of each element negated, by a `linalg.generic`. A float uses
-/// `arith.negf`, which keeps the sign of zero right; an integer is `0 - x`.
-fn lower_tensor_negate<'c>(
+/// The memref type `ty` with no `strided<..>` layout: the type of a new buffer of the same
+/// shape, element type and memory space.
+fn without_strided_layout(ty: &str) -> String {
+    let Some(at) = ty.find(", strided<") else {
+        return ty.to_string();
+    };
+    // The layout ends at the `>` that closes its `strided<`.
+    let mut depth = 0;
+    for (i, c) in ty[at + 2..].char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => {
+                depth -= 1;
+                if depth == 0 {
+                    return format!("{}{}", &ty[..at], &ty[at + 2 + i + 1..]);
+                }
+            }
+            _ => {}
+        }
+    }
+    ty.to_string()
+}
+
+/// A new tensor of the shape of `src`, with elements of type `out_elem`, or of the element type
+/// of `src` when that is `None`. Returns the tensor, its type, the rank and the element type of
+/// `src`.
+fn alloc_like<'c>(
     gen: &mut MeliorGenerator<'c>,
     block: melior::ir::BlockRef<'c, 'c>,
     src: Value<'c, 'c>,
     src_ty: Type<'c>,
-) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    out_elem: Option<&str>,
+) -> Result<(Value<'c, 'c>, Type<'c>, usize, String), LowerError> {
     let src_str = src_ty.to_string();
     let inner = src_str
         .strip_prefix("memref<")
         .and_then(|s| s.split([',', '>']).next())
-        .ok_or_else(|| format!("negation of something that is not a tensor: {src_str}"))?;
+        .ok_or_else(|| {
+            format!("an element operation on something that is not a tensor: {src_str}")
+        })?;
     let mut parts: Vec<&str> = inner.split('x').collect();
     let elem = parts
         .pop()
-        .ok_or_else(|| format!("negation of a tensor with no element type: {src_str}"))?;
-    let rank = parts.len();
+        .ok_or_else(|| format!("a tensor with no element type: {src_str}"))?
+        .to_string();
     let index_ty = Type::index(gen.context);
     let mut sizes = Vec::new();
     for (k, d) in parts.iter().enumerate() {
@@ -6529,8 +6649,10 @@ fn lower_tensor_negate<'c>(
             sizes.push(block.append_operation(dim).result(0)?.into());
         }
     }
-    let out_ty = Type::parse(gen.context, &format!("memref<{}x{elem}>", parts.join("x")))
-        .ok_or_else(|| format!("negation of a tensor with no memref type: {src_str}"))?;
+    let out_elem = out_elem.unwrap_or(&elem);
+    let shape: String = parts.iter().map(|d| format!("{d}x")).collect();
+    let out_ty = Type::parse(gen.context, &format!("memref<{shape}{out_elem}>"))
+        .ok_or_else(|| format!("a tensor with no memref type: {src_str}"))?;
     let alloc = OperationBuilder::new("memref.alloc", gen.loc())
         .add_operands(&sizes)
         .add_attributes(&[(
@@ -6540,9 +6662,62 @@ fn lower_tensor_negate<'c>(
         .add_results(&[out_ty])
         .build()?;
     let out: Value = block.append_operation(alloc).result(0)?.into();
+    Ok((out, out_ty, parts.len(), elem))
+}
 
+/// A `linalg.generic` that writes each element of `out` from the same element of `src`. `body`
+/// takes the two elements and ends with a `linalg.yield`.
+fn each_element<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    src: Value<'c, 'c>,
+    out: Value<'c, 'c>,
+    rank: usize,
+    body: melior::ir::Block<'c>,
+) -> Result<(), LowerError> {
+    let region = Region::new();
+    region.append_block(body);
+    let dims: Vec<String> = (0..rank).map(|k| format!("d{k}")).collect();
+    let map = Attribute::parse(
+        gen.context,
+        &format!("affine_map<({0}) -> ({0})>", dims.join(", ")),
+    )
+    .ok_or_else(|| "an affine map that does not parse".to_string())?;
+    let parallel = Attribute::parse(gen.context, "#linalg.iterator_type<parallel>")
+        .ok_or_else(|| "an iterator type that does not parse".to_string())?;
+    let generic = OperationBuilder::new("linalg.generic", gen.loc())
+        .add_operands(&[src, out])
+        .add_attributes(&[
+            (
+                Identifier::new(gen.context, "operandSegmentSizes"),
+                DenseI32ArrayAttribute::new(gen.context, &[1, 1]).into(),
+            ),
+            (
+                Identifier::new(gen.context, "indexing_maps"),
+                ArrayAttribute::new(gen.context, &[map, map]).into(),
+            ),
+            (
+                Identifier::new(gen.context, "iterator_types"),
+                ArrayAttribute::new(gen.context, &vec![parallel; rank]).into(),
+            ),
+        ])
+        .add_regions([region])
+        .build()?;
+    block.append_operation(generic);
+    Ok(())
+}
+
+/// `-t` on a tensor: a new tensor of each element negated, by a `linalg.generic`. A float uses
+/// `arith.negf`, which keeps the sign of zero right; an integer is `0 - x`.
+fn lower_tensor_negate<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    src: Value<'c, 'c>,
+    src_ty: Type<'c>,
+) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    let (out, out_ty, rank, elem) = alloc_like(gen, block, src, src_ty, None)?;
     let el_ty =
-        Type::parse(gen.context, elem).ok_or_else(|| format!("negation of a tensor of {elem}"))?;
+        Type::parse(gen.context, &elem).ok_or_else(|| format!("negation of a tensor of {elem}"))?;
     let body = melior::ir::Block::new(&[(el_ty, gen.loc()), (el_ty, gen.loc())]);
     let x: Value = body.argument(0)?.into();
     let negated: Value = if elem.starts_with('f') || elem == "bf16" {
@@ -6571,36 +6746,53 @@ fn lower_tensor_negate<'c>(
             .add_operands(&[negated])
             .build()?,
     );
-    let region = Region::new();
-    region.append_block(body);
+    each_element(gen, block, src, out, rank, body)?;
+    Ok((out, out_ty, block))
+}
 
-    let dims: Vec<String> = (0..rank).map(|k| format!("d{k}")).collect();
-    let map = Attribute::parse(
-        gen.context,
-        &format!("affine_map<({0}) -> ({0})>", dims.join(", ")),
-    )
-    .ok_or_else(|| "negation: an affine map that does not parse".to_string())?;
-    let parallel = Attribute::parse(gen.context, "#linalg.iterator_type<parallel>")
-        .ok_or_else(|| "negation: an iterator type that does not parse".to_string())?;
-    let generic = OperationBuilder::new("linalg.generic", gen.loc())
-        .add_operands(&[src, out])
-        .add_attributes(&[
-            (
-                Identifier::new(gen.context, "operandSegmentSizes"),
-                DenseI32ArrayAttribute::new(gen.context, &[1, 1]).into(),
-            ),
-            (
-                Identifier::new(gen.context, "indexing_maps"),
-                ArrayAttribute::new(gen.context, &[map, map]).into(),
-            ),
-            (
-                Identifier::new(gen.context, "iterator_types"),
-                ArrayAttribute::new(gen.context, &vec![parallel; rank]).into(),
-            ),
-        ])
-        .add_regions([region])
-        .build()?;
-    block.append_operation(generic);
+/// `t as f32` on a float tensor: a new tensor of each element cast, by a `linalg.generic`. Two
+/// float types of one width (`f16` and `bf16`) go through `f32`, which holds every value of both.
+fn lower_tensor_cast<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    src: Value<'c, 'c>,
+    src_ty: Type<'c>,
+    target: &str,
+) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    let (out, out_ty, rank, elem) = alloc_like(gen, block, src, src_ty, Some(target))?;
+    let bits = |t: &str| crate::mlir_ty::float_elem_of_mlir(t).and_then(|e| e.bits());
+    let (src_bits, dst_bits) = (
+        bits(&elem).ok_or_else(|| format!("a cast of a tensor of {elem}"))?,
+        bits(target).ok_or_else(|| format!("a cast to a tensor of {target}"))?,
+    );
+    let parse =
+        |t: &str| Type::parse(gen.context, t).ok_or_else(|| LowerError::ParseType(t.to_string()));
+    let (from, to, f32_ty) = (parse(&elem)?, parse(target)?, parse("f32")?);
+    let body = melior::ir::Block::new(&[(from, gen.loc()), (to, gen.loc())]);
+    let mut x: Value = body.argument(0)?.into();
+    let convert = |op: &str, ty: Type<'c>, v: Value<'c, '_>| -> Result<Value<'c, '_>, LowerError> {
+        let op = OperationBuilder::new(op, gen.loc())
+            .add_operands(&[v])
+            .add_results(&[ty])
+            .build()?;
+        Ok(body.append_operation(op).result(0)?.into())
+    };
+    if elem != target {
+        x = match src_bits.cmp(&dst_bits) {
+            std::cmp::Ordering::Less => convert("arith.extf", to, x)?,
+            std::cmp::Ordering::Greater => convert("arith.truncf", to, x)?,
+            std::cmp::Ordering::Equal => {
+                let wide = convert("arith.extf", f32_ty, x)?;
+                convert("arith.truncf", to, wide)?
+            }
+        };
+    }
+    body.append_operation(
+        OperationBuilder::new("linalg.yield", gen.loc())
+            .add_operands(&[x])
+            .build()?,
+    );
+    each_element(gen, block, src, out, rank, body)?;
     Ok((out, out_ty, block))
 }
 

@@ -77,7 +77,8 @@ pub enum DiagnosticCode {
     /// An `as` cast to the type the value already has, such as `x as i32` when `x` is an `i32`.
     W1013,
     /// An `as` cast of a number known while compiling that does not fit the target type, such
-    /// as `100000 as i8`, which gives -96.
+    /// as `100000 as i8`, which gives -96. For a cast to `usize`, such as `(-1i64) as usize`, the
+    /// program stops at that cast.
     W1014,
     /// `*&x`, a borrow that is dereferenced at once. It is the same as `x`.
     W1020,
@@ -447,6 +448,10 @@ pub enum DiagnosticCode {
     /// `tasks` block, which must give one. A `?` in a closure needs the closure's type written,
     /// `|x| -> Result<T, E> { .. }`. `?` does not convert the error. `.map_err(..)` converts it.
     E3063,
+    /// A `break` or `continue` with no loop around it in its own function or closure. A closure
+    /// body is not inside a loop around the closure, because the closure can run after the loop
+    /// ends.
+    E3064,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

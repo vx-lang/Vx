@@ -798,7 +798,7 @@ impl<'a> TypeChecker<'a> {
 
     /// The declared type of `field` in struct `name`, with the struct's parameters
     /// substituted from `args`.
-    fn struct_field_type(
+    pub(crate) fn struct_field_type(
         &self,
         name: &crate::symbol::Symbol,
         args: &[Type],

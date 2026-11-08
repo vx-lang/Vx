@@ -871,6 +871,20 @@ pub fn diverges_on_every_path(expr: &Expr) -> bool {
         }
     }
     match expr {
+        // A folded `if comptime` keeps one branch and leaves the other empty.
+        Expr::If(IfExpr {
+            is_comptime: true,
+            then_block,
+            else_block,
+            ..
+        }) if then_block.is_empty() || else_block.as_ref().is_none_or(|e| e.is_empty()) => {
+            let taken = if then_block.is_empty() {
+                else_block.as_deref().unwrap_or_default()
+            } else {
+                then_block
+            };
+            block_returns(taken)
+        }
         // An `if` with no `else` always has a path that falls through.
         Expr::If(IfExpr {
             then_block,
@@ -1194,7 +1208,7 @@ fn substitute_mlir_returns(ty: &Type, mapping: &std::collections::HashMap<Symbol
         Type::Struct(name, None) if mapping.contains_key(name) => mapping[name].clone(),
         Type::Pointer(inner, mem, is_mut) => Type::Pointer(
             Box::new(substitute_mlir_returns(inner, mapping)),
-            mem.clone(),
+            super::types::substitute_memory(mem, mapping),
             *is_mut,
         ),
         _ => ty.substitute(mapping),

@@ -667,6 +667,94 @@ impl FnEmit<'_> {
         Ok(())
     }
 
+    // `TensorCast`: a fresh buffer of the source's shape, each element of the source cast to the
+    // result's element type, as a `linalg.generic`. A `?` extent is read off the source.
+    pub(crate) fn op_tensor_cast(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let gid = *self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let (elem, shape) = self
+            .ctx
+            .tensors
+            .get(&gid)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let memty = tensor_memref_ty(&elem, &shape).ok_or(crate::emitter_gap!())?;
+        let dst = mlir_scalar(&elem).ok_or(crate::emitter_gap!())?;
+        let s = ins.operand1.0 as usize;
+        // A slice value from an elementwise operation is a vector, not a buffer.
+        if let Some(src_vec) = self.vec_of.get(s).cloned().flatten() {
+            return self.cast_vector(idx, ins, &elem, &src_vec);
+        }
+        let src = self.names.get(s).ok_or(crate::emitter_gap!())?.clone();
+        let src_mem = self
+            .mem_of
+            .get(s)
+            .cloned()
+            .flatten()
+            .ok_or(crate::emitter_gap!())?;
+        // The element type is the last part of the memref's shape: `memref<2x4xbf16, ...>`.
+        let src_el = src_mem
+            .strip_prefix("memref<")
+            .and_then(|t| t.split([',', '>']).next())
+            .and_then(|t| t.rsplit('x').next())
+            .ok_or(crate::emitter_gap!())?
+            .to_string();
+        let src_ty = crate::mlir_ty::float_elem_of_mlir(&src_el).ok_or(crate::emitter_gap!())?;
+        let (src_bits, dst_bits) = (
+            src_ty.bits().ok_or(crate::emitter_gap!())?,
+            elem.bits().ok_or(crate::emitter_gap!())?,
+        );
+        let mut sizes: Vec<String> = Vec::new();
+        for (k, d) in shape.iter().enumerate() {
+            if d == DYN_DIM {
+                let c = format!("%tcc{idx}_{k}");
+                let sz = format!("%tcs{idx}_{k}");
+                self.body += &format!("  {c} = arith.constant {k} : index\n");
+                self.body += &format!("  {sz} = memref.dim {src}, {c} : {src_mem}\n");
+                sizes.push(sz);
+            }
+        }
+        let n = match self.nrvo_slot(idx, &memty) {
+            Some(slot) => slot,
+            None => {
+                let n = format!("%v{idx}");
+                self.body += &format!("  {n} = memref.alloc({}) : {memty}\n", sizes.join(", "));
+                n
+            }
+        };
+        let dims: Vec<String> = (0..shape.len()).map(|i| format!("d{i}")).collect();
+        let map = format!("affine_map<({0}) -> ({0})>", dims.join(", "));
+        let iters: Vec<&str> = shape.iter().map(|_| "\"parallel\"").collect();
+        self.body += &format!(
+            "  linalg.generic {{indexing_maps = [{map}, {map}], iterator_types = [{}]}} ins({src} : {src_mem}) outs({n} : {memty}) {{\n",
+            iters.join(", ")
+        );
+        let (i, r) = (format!("%tci{idx}"), format!("%tcr{idx}"));
+        self.body += &format!("  ^bb0({i}: {src_el}, %tco{idx}: {dst}):\n");
+        let out = if src_el == dst {
+            i
+        } else if src_bits < dst_bits {
+            self.body += &format!("    {r} = arith.extf {i} : {src_el} to {dst}\n");
+            r
+        } else if src_bits > dst_bits {
+            self.body += &format!("    {r} = arith.truncf {i} : {src_el} to {dst}\n");
+            r
+        } else {
+            // Two float types of one width (`f16` and `bf16`): neither `extf` nor `truncf`
+            // converts between them. f32 holds every value of both, so this rounds once.
+            let w = format!("%tcw{idx}");
+            self.body += &format!("    {w} = arith.extf {i} : {src_el} to f32\n");
+            self.body += &format!("    {r} = arith.truncf {w} : f32 to {dst}\n");
+            r
+        };
+        self.body += &format!("    linalg.yield {out} : {dst}\n  }}\n");
+        self.names[idx] = n;
+        self.mem_of[idx] = Some(memty);
+        Ok(())
+    }
+
     // `TensorReduce`: every element combined with the closure adapter into one scalar, starting
     // from the preceding `Arg`. The accumulator is a rank-0 buffer the `linalg.generic` reduces
     // into. `vx.reassoc` marks it for `vx-reorderable-reductions`, which lets the closure's
@@ -1514,6 +1602,12 @@ impl FnEmit<'_> {
                 .ok_or(crate::emitter_gap!())?
                 .clone()
             {
+                // A tile into a row of a larger tensor, `acc[w] = acc[w] + p`: a copy into the
+                // row's view. The checker matched the shapes and the element types.
+                if memref_lead_dims_and_elem(&srcty).is_some_and(|(d, _)| d.len() >= 2) {
+                    self.body += &format!("  memref.copy {vecname}, {dst} : {srcty} to {rowty}\n");
+                    return Ok(());
+                }
                 // The stored value is a rank-1 tensor, not a vector -- `m[0] = [10.0, ..]`, a row
                 // written from an array literal's buffer. Read the whole source row as a vector
                 // and store it; the checker already matched the two lengths.

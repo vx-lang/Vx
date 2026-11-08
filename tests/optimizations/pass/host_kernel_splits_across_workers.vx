@@ -47,14 +47,17 @@
 // in every worker.
 //
 // REQUIRES: flat-codegen
-// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard,vx-to-llvm)" 2>&1 | FileCheck %s
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard,vx-to-llvm)" 2>&1 | FileCheck %s --check-prefixes=CHECK,FLAT
+// RUN: vxc %s --legacy-codegen --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard,vx-to-llvm)" 2>&1 | FileCheck %s --check-prefixes=CHECK,AST
 
 // The queries are declared once, privately, at module scope.
 // CHECK-DAG: func.func private @vx_host_worker_id() -> i64
 // CHECK-DAG: func.func private @vx_host_worker_count() -> i64
 
 // The host kernel keeps its original signature -- no worker parameters added.
-// CHECK: func.func @vx_npu_kernel_0(%arg0: memref<4x8xf32>) attributes {llvm.emit_c_interface}
+// The AST code generator gives the tensor a dynamic shape.
+// FLAT: func.func @vx_npu_kernel_0(%arg0: memref<4x8xf32>) attributes {llvm.emit_c_interface}
+// AST: func.func @vx_npu_kernel_0(%arg0: memref<?x?xf32>) attributes {llvm.emit_c_interface}
 
 // Both queries are asked, and narrowed to the induction variable's width.
 // CHECK: %[[IDW:.*]] = call @vx_host_worker_id() : () -> i64

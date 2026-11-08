@@ -498,6 +498,8 @@ of the block (F2). A `join()` of a task that failed leaves the block the same wa
 
 - A race: the two tasks, the variable, and the line of each access, and the `join` where the
   first access ends.
+  Done for a task that holds the variable: the error names the line of its `spawn`, the line
+  where it uses the variable, and the `join()` to call before the line of the error.
 - A value that is not `Send`: the field path that makes it so, for example "`Job` is not `Send`
   because `Job.cache.buf` is a `*mut u8`". Rust gives a chain of future types here.
 - A `Task<T>` that leaves its `tasks` block (T3): the line where it leaves.
