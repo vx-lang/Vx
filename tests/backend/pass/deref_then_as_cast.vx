@@ -5,8 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// `*p as i64` is `(*p) as i64`. The old parse `*(p as i64)` was refused as an
-// unsupported cast from a borrow.
+// `*p as i64` is `(*p) as i64`, so the pointer is loaded before the cast.
 //
 // EXPECT: 7
 fn main() -> i32 {

@@ -5,8 +5,9 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// `-1i32 as u8` is `(-1i32) as u8`, which folds to 255. The old parse
-// `-(1i32 as u8)` had no value for the negation of 1u8.
+// `-1i32 as u8` is `(-1i32) as u8`, which folds to 255.
+//
+// EXPECT: 255
 
 fn main() -> i32 {
   let d : u8 = comptime {

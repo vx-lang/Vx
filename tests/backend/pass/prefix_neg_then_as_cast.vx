@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 // `-x as T` is `(-x) as T`. With x = -128i8, the negation wraps in i8 and the
-// cast then yields -128. The old parse `-(x as T)` printed 128.
+// cast then yields -128.
 //
 // EXPECT: -128
 fn main() -> i32 {

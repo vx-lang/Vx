@@ -700,7 +700,7 @@ impl<'a> Parser<'a> {
                             return Err(self.error(&format!(
                                 "Expected field name in struct init, found {:?}",
                                 token_kind
-                            )));
+                            )))
                         }
                     };
                     self.consume(&TokenType::Colon, "Expected ':'")?;
@@ -987,8 +987,9 @@ impl<'a> Parser<'a> {
             let mut else_block = None;
             if self.match_token(&TokenType::Else) {
                 if self.check(&TokenType::If) {
-                    // `else if`
-                    let inner_if = self.parse_primary_expr()?;
+                    // `else if`. Use parse_prefixed_primary so a trailing `as`
+                    // applies to the whole if, not only this inner one.
+                    let inner_if = self.parse_prefixed_primary()?;
                     else_block = Some(vec![Statement::ExprStmt(ExprStmtStmt {
                         expr: inner_if,
                         has_semi: false,
@@ -1144,7 +1145,7 @@ impl<'a> Parser<'a> {
                     _ => {
                         return Err(
                             self.error("Expected function identifier as first argument to grad")
-                        );
+                        )
                     }
                 };
                 let mut args = Vec::new();
@@ -1171,7 +1172,7 @@ impl<'a> Parser<'a> {
                     _ => {
                         return Err(
                             self.error("Expected function identifier as first argument to vjp")
-                        );
+                        )
                     }
                 };
                 self.consume(&TokenType::Comma, "Expected comma after function name")?;
@@ -1204,7 +1205,7 @@ impl<'a> Parser<'a> {
                     _ => {
                         return Err(
                             self.error("Expected function identifier as first argument to jvp")
-                        );
+                        )
                     }
                 };
                 self.consume(&TokenType::Comma, "Expected comma after function name")?;
@@ -1368,7 +1369,7 @@ impl<'a> Parser<'a> {
                                         _ => {
                                             return Err(
                                                 self.error("Expected identifier in closure params")
-                                            );
+                                            )
                                         }
                                     };
                                     let ty = if self.match_token(&TokenType::Colon) {
@@ -1457,20 +1458,21 @@ impl<'a> Parser<'a> {
                         })
                     }
                     TokenType::Unknown('"') => {
-                        return Err(self.error_at(&token, super::UNCLOSED_STRING));
+                        return Err(self.error_at(&token, super::UNCLOSED_STRING))
                     }
                     _ => {
                         return Err(self.error_at(
                             &token,
                             &format!("Expected expression, found {:?}", token.kind),
-                        ));
+                        ))
                     }
                 }
             }
         };
 
         // Postfix operators: .member, .method(), [index], ?. `as` is applied by
-        // `parse_primary_expr` after a prefix `-` or `!`, so `-x as T` is `(-x) as T`.
+        // `parse_primary_expr` after a prefix `-` / `!` / `*` / `&` / `&&`, so
+        // `-x as T` is `(-x) as T` and `*p as T` is `(*p) as T`.
         loop {
             if self.match_token(&TokenType::Dot) {
                 // The method name's own token, so a diagnostic about the call points at it.
@@ -2233,6 +2235,23 @@ mod tests {
             }
         } else {
             panic!("Expected If, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_else_if_chain_then_as_cast() {
+        // `as` applies to the whole if, not only the last `else if`.
+        let expr = parse_expr("if a { 1i32 } else if b { 2i32 } else { 3i32 } as i64");
+        if let Expr::AsCast(AsCastExpr {
+            expr: inner,
+            target_ty,
+            ..
+        }) = expr
+        {
+            assert_eq!(target_ty.to_string(), "i64");
+            assert!(matches!(&*inner, Expr::If(_)));
+        } else {
+            panic!("Expected AsCast(If(...), i64), got {:?}", expr);
         }
     }
 
