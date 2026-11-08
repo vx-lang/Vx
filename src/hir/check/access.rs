@@ -379,6 +379,20 @@ impl<'a> TypeChecker<'a> {
         );
     }
 
+    /// Run `check` on an expression whose whole value is moved. When it is a name, the name
+    /// is marked, so a placed tensor there is allowed where its memory is not visible.
+    pub(crate) fn check_whole_value<R>(
+        &mut self,
+        expr: &mut Expr,
+        check: impl FnOnce(&mut Self, &mut Expr) -> R,
+    ) -> R {
+        let name = matches!(expr, Expr::Identifier(_)).then(|| expr.span());
+        let old = std::mem::replace(&mut self.whole_value_name, name);
+        let result = check(self, expr);
+        self.whole_value_name = old;
+        result
+    }
+
     pub(crate) fn check_identifier_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::Identifier(id) => {
@@ -582,8 +596,13 @@ impl<'a> TypeChecker<'a> {
                         let by_value = matches!(ty, Type::Scalar(_))
                             && !self.is_mutable(name.as_ref())
                             && self.borrowed_name != Some(span);
+                        // A move of a placed tensor copies its pointer and its shape, and a
+                        // host drop frees it through the runtime. Neither reads an element.
+                        let handle_only =
+                            ty.placement().is_some() && self.whole_value_name == Some(span);
                         let is_valid = matches!(&ty, Type::Borrow { inner, .. } if inner.placement().is_some())
                             || by_value
+                            || handle_only
                             || self.transfer_cost_graph.is_type_accessible(
                                 &self.active_topology,
                                 &top,

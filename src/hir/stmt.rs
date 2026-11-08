@@ -738,7 +738,7 @@ impl<'a> TypeChecker<'a> {
         let prev_expected = self.expected_type.take();
         self.expected_type = ty_ann.clone();
         self.let_closure = matches!(&*expr, Expr::Closure(_)).then_some(*span);
-        let ty = self.check_expr_type_flag(expr, consume);
+        let ty = self.check_whole_value(expr, |c, e| c.check_expr_type_flag(e, consume));
         self.let_closure = None;
         let ty = crate::hir::check::operators::round_narrow_arithmetic(expr, ty, ty_ann.as_ref());
         self.expected_type = prev_expected;
@@ -1969,7 +1969,12 @@ impl<'a> TypeChecker<'a> {
         // The check is what turns `v[i]` into that call, so the place is looked at after it.
         let before_lhs = self.borrow.snapshot();
         self.checking_assign_lhs = true;
-        let lhs_ty = self.check_expr_type_flag(lhs, false);
+        // `b = a` replaces the whole of `b`, and `b += a` reads it.
+        let lhs_ty = if op.is_none() {
+            self.check_whole_value(lhs, |c, e| c.check_expr_type_flag(e, false))
+        } else {
+            self.check_expr_type_flag(lhs, false)
+        };
         self.checking_assign_lhs = false;
         self.check_field_change(lhs, "this assignment changes");
         let temporary_place = matches!(lhs, Expr::Dereference(d)
@@ -2052,8 +2057,9 @@ impl<'a> TypeChecker<'a> {
             }
         }
         let before_rhs = self.borrow.snapshot();
-        let mut rhs_ty =
-            self.check_expr_expecting(rhs, Some(lhs_ty.clone()), consume && !copies_into_tensor);
+        let mut rhs_ty = self.check_whole_value(rhs, |c, e| {
+            c.check_expr_expecting(e, Some(lhs_ty.clone()), consume && !copies_into_tensor)
+        });
         rhs_ty = crate::hir::check::operators::round_narrow_arithmetic(rhs, rhs_ty, Some(&lhs_ty));
         // What the value left in the target is stored there, not borrowed only for a call.
         if let Some(target) = self.current_assignment_target.take() {
@@ -2499,7 +2505,7 @@ impl<'a> TypeChecker<'a> {
         let prev_expected = self.expected_type.take();
         self.expected_type = Some(return_type.clone());
         self.consteval.comptime_return_is_value = matches!(&*expr, Expr::ComptimeBlock(_));
-        let ty = self.check_expr_type_flag(expr, consume);
+        let ty = self.check_whole_value(expr, |c, e| c.check_expr_type_flag(e, consume));
         self.consteval.comptime_return_is_value = false;
         let ty = crate::hir::check::operators::round_narrow_arithmetic(expr, ty, Some(return_type));
         self.expected_type = prev_expected;
