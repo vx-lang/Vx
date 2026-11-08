@@ -2568,6 +2568,7 @@ impl<'a> FnEmit<'a> {
             Opcode::TensorTranspose => self.op_tensor_transpose(idx, ins),
             Opcode::TensorPad => self.op_tensor_pad(idx, ins),
             Opcode::TensorMap => self.op_tensor_map(idx, ins),
+            Opcode::TensorCast => self.op_tensor_cast(idx, ins),
             Opcode::TensorReduce => self.op_tensor_reduce(idx, ins),
             Opcode::TensorClone => self.op_tensor_clone(idx, ins),
             Opcode::TensorDataPtr => self.op_tensor_data_ptr(idx, ins),
