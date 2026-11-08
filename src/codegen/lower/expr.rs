@@ -1219,7 +1219,12 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
         if lhs_ty != rhs_ty && op != &BinaryOp::MatMul {
             // Priority coercion: f64 > f32 > i64 > i32
             // To simplify, we'll cast rhs to lhs for now.
-            rhs_val = gen.coerce_type(&block, rhs_val, rhs_ty, lhs_ty)?;
+            // `t + b` with `memref<?xf32>` and `memref<4xf32>` operands needs a `memref.cast`.
+            rhs_val = if gen.is_memref(&lhs_ty) && gen.is_memref(&rhs_ty) {
+                crate::codegen::lower::cast_memref(gen, &block, rhs_val, rhs_ty, lhs_ty)?
+            } else {
+                gen.coerce_type(&block, rhs_val, rhs_ty, lhs_ty)?
+            };
             rhs_ty = lhs_ty;
             final_ty = lhs_ty;
         }
