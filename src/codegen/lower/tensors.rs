@@ -29,6 +29,7 @@ fn lower_spawn_region<'c>(
 ) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
     // A region whose `across` loops run on blocks and lanes. The host computes its launch shape
     // before the region starts.
+    gen.spawns += 1;
     let mapped = super::across::mapped_lanes(this);
     let (shape, block) = match mapped {
         Some(lanes) => {
@@ -100,9 +101,12 @@ fn lower_spawn_region<'c>(
     gen.spawn_arches.push(arch);
     // A `&mut Tensor` parameter is a slot that holds the tensor. A SPIR-V kernel cannot take a
     // memref of memrefs or a memref with a memory space. So the region reads the tensor, loaded
-    // here, before the region, with no memory space, as the flat code generator gives it.
+    // here, before the region, with no memory space, as the flat code generator gives it. A kernel
+    // that `--emit-ptx` or `--emit-msl` writes also takes the tensor, so that its manifest
+    // describes the tensor and not the slot.
+    let spirv = gen.in_spirv_region();
     let mut outer_slots = Vec::new();
-    if gen.in_spirv_region() {
+    if spirv || (gen.describe_params && is_device) {
         let params: Vec<_> = gen
             .env
             .iter()
@@ -129,8 +133,12 @@ fn lower_spawn_region<'c>(
                 .ok_or_else(|| LowerError::from(format!("not a memref: {inner}")))?;
             let plain = Type::parse(gen.context, &plain_str)
                 .ok_or_else(|| LowerError::ParseType(plain_str.clone()))?;
-            let loaded = cast_memref(gen, &block, loaded, inner, plain)?;
-            gen.env.insert(name.clone(), (loaded, plain));
+            let (loaded, ty) = if spirv {
+                (cast_memref(gen, &block, loaded, inner, plain)?, plain)
+            } else {
+                (loaded, inner)
+            };
+            gen.env.insert(name.clone(), (loaded, ty));
             outer_slots.push((name, (slot, slot_ty)));
         }
     }

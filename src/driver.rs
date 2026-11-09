@@ -1624,6 +1624,8 @@ impl CompilerDriver {
                 let mut codegen =
                     MeliorGenerator::new(&context, monomorphized_ast.module_path.to_string());
                 codegen.emit_seam_certs = self.options.emit_seam_certs;
+                codegen.describe_params =
+                    matches!(self.options.action, Action::EmitPtx | Action::EmitMsl);
                 codegen
                     .generate(&monomorphized_ast, &module_syntaxes)
                     .map_err(|e| format!("Codegen Error: {:?}", e))?;

@@ -18,6 +18,10 @@
 // RUN: FileCheck %s --implicit-check-not=local_depot < %t.ptx
 // RUN: env VX_GPU_CHIP=sm_75 vxc %s --host default --machine fleet/a100-80.vx --emit-ptx -o %t.sm75.ptx
 // RUN: FileCheck %s --check-prefix=SM75 --implicit-check-not=mma.sync < %t.sm75.ptx
+// RUN: env -u VX_GPU_CHIP vxc %s --legacy-codegen --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ast.ptx
+// RUN: FileCheck %s --implicit-check-not=local_depot < %t.ast.ptx
+// RUN: env VX_GPU_CHIP=sm_75 vxc %s --legacy-codegen --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ast.sm75.ptx
+// RUN: FileCheck %s --check-prefix=SM75 --implicit-check-not=mma.sync < %t.ast.sm75.ptx
 // CHECK-LABEL: .entry bf16_tiles(
 // CHECK: bar.warp.sync
 // The old value of `acc` is the first value of the chain.
