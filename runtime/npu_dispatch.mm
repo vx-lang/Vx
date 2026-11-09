@@ -266,11 +266,12 @@ extern "C" int vx_dispatch_gpu(float *xout, float *x, float *w, int n, int d) {
 // only ever have run the one primitive it was written against.
 //
 // Precision is still a real constraint rather than a lookup: asked through
-// MLComputePlan which device it prefers, CoreML answers CPU for every fp32
-// matmul at every size tried, and for fp16 up to 384, switching to the Neural
-// Engine at 512. So an fp32 model never reaches the ANE however large, and a
-// small f16 one does not either -- which is why only f16 is routed here, and why
-// generating a 64x64 primitive would add a model that runs on the CPU.
+// MLComputePlan which device it prefers, CoreML answers the CPU for every fp32
+// matmul up to 512x512 and the GPU at 1024x1024, never the Neural Engine. For
+// fp16 it answers the CPU up to 384 and the Neural Engine from 512. So an fp32
+// model never reaches the ANE however large, and a small f16 one does not
+// either. That is why only f16 is routed here, and why generating a 64x64
+// primitive would add a model that runs on the CPU.
 
 // The fp16 matmul, which is the one that reaches the Neural Engine.
 //
@@ -317,12 +318,15 @@ extern "C" int vx_dispatch_ane_f16(void *xout, const void *x, const void *w,
 
     const size_t elems = (size_t)d * (size_t)n;
 
-    // The model computes in fp16 on the Neural Engine, and its *interface* is
-    // fp32 regardless: CoreML normalises an mlprogram's boundary to fp32 even
-    // when the MIL spec asks for fp16 inputs. So the halves are widened here and
-    // narrowed on the way back. Widening is exact, and the narrowing is over
-    // values the ANE already produced in fp16, so nothing is lost that the
-    // program did not already ask for by declaring `f16`.
+    // The model computes in fp16 on the Neural Engine, but its interface is
+    // fp32: generate_ane_primitives.py declares fp32 inputs and asks only for
+    // fp16 compute, so the model casts at its edges. CoreML itself takes fp16
+    // arrays. An fp16 interface needs fp16 input specs and a MIL opset of
+    // iOS 16 or later; at the default iOS 15 opset, coremltools turns fp16
+    // inputs back into fp32. Until the primitive changes, the halves are
+    // widened here and narrowed on the way back. Widening is exact, and the
+    // narrowing is over values the ANE already produced in fp16, so nothing is
+    // lost that the program did not already ask for by declaring `f16`.
     const __fp16 *w16 = (const __fp16 *)w;
     const __fp16 *x16 = (const __fp16 *)x;
     __fp16 *out16 = (__fp16 *)xout;

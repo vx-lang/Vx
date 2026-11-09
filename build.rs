@@ -257,10 +257,10 @@ fn main() {
             if status.success() {
                 // Compile the .mlpackage into .mlmodelc
                 // The fp16 512x512 is the one the Neural Engine will actually take:
-                // CoreML prefers the CPU for every fp32 matmul at every size, and
-                // for fp16 below 512. The 4x4 pair stays because the dispatcher's
-                // fp32 matmul and affine routes are written against it; no test
-                // covers the affine route.
+                // CoreML prefers the CPU or the GPU for every fp32 matmul, never
+                // the Neural Engine, and the CPU for fp16 below 512. The 4x4 pair
+                // stays because the dispatcher's fp32 matmul and affine routes are
+                // written against it; no test covers the affine route.
                 for model_name in &[
                     "matmul_4x4",
                     "affine_4",
