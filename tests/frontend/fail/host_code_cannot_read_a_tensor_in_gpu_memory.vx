@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 // Host code can move a tensor that lives in the GPU memory `W`, but it cannot read an element.
-// An index, an operator and `print` read the elements. A generic parameter that names no memory,
+// An index, an operator and `print` read the elements, also through a reference. A generic parameter that names no memory,
 // such as `Tensor<T, [4]>`, makes the function read the tensor on the host, by value or by
 // reference. A struct field and an enum payload only store the tensor, so they get no E6003.
 //
@@ -68,7 +68,15 @@ fn main() -> i32 {
   };
   let g = on_gpu();
   let _p = Payload::Placed(g);
+  let h = on_gpu();
+  let r = &h;
+  // CHECK: Error[E6003] at {{.*}}.vx:[[@LINE+1]]:12: '*r' lives in W but CPU sees only
+  let _v = r[0];
+  let mut m = on_gpu();
+  let w = &mut m;
+  // CHECK: Error[E6003] at {{.*}}.vx:[[@LINE+1]]:3: '*w' lives in W but CPU sees only
+  w[0] = 1.0;
   return 0;
 }
 
-// CHECK: {{^}}Semantic check failed on {{.*}}: 6 error(s) emitted
+// CHECK: {{^}}Semantic check failed on {{.*}}: 8 error(s) emitted
