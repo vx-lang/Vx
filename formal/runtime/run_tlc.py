@@ -118,9 +118,11 @@ AGENT_MODELS = [
     ("with both", {**STOP_EARLY, **WORKER_DIES}),
 ]
 AGENT_BUGS = [
-    ("one_connection_per_name", {}, "EachHostEnds"),
-    ("no_free_after_a_host_leaves", {}, "EachBufferBelongsToTheServedHost"),
-    ("free_before_the_fetch", {}, "EachFetchGetsItsBytes"),
+    ("one_host_at_a_time", {}, "EachHostEnds"),
+    ("one_connection_per_name", {}, "EachRequestFindsItsBuffer"),
+    ("one_table_for_every_host", {}, "EachRequestFindsItsBuffer"),
+    ("no_free_after_a_host_leaves", {}, "NoBufferOutlivesItsHost"),
+    ("free_before_the_fetch", {}, "EachRequestFindsItsBuffer"),
     ("a_host_waits_after_eof", WORKER_DIES, "EachHostEnds"),
 ]
 
