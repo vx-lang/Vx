@@ -892,6 +892,7 @@ impl<'a> TypeChecker<'a> {
         self.pointer_facts.forget(name.as_ref());
         self.note_pointer_value(name.as_ref(), pointer);
         self.pointer_facts_name_the_result(name.as_ref(), expr);
+        self.pointer_facts_note_an_owner(name.as_ref(), expr);
         // `raw::extent(t)` folds to its literal element count first: the prover cannot
         // lower a function call, so `let n = raw::extent(src)` would otherwise record
         // an unlowerable fact and every bound written against `n` would be unprovable

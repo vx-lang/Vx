@@ -14,10 +14,11 @@
 // Each event that can free memory ends each fact about memory that the body does not name: a
 // call with an argument that can free memory, an assignment that drops a value, the drop of a
 // local, an `mlir!` block with such an input or a clobber, and a `spawn`. No callee is known to
-// keep memory alive yet, so a call that gets a raw pointer is such an event. Each ended fact
-// keeps the place and the reason of its event, for the note of E8006. Before a loop body, a scan
-// of the body finds its first event, which ends the facts for each pass. After a loop, the facts
-// are those that hold at each place where the loop ends.
+// keep memory alive yet, so a call that gets a raw pointer is such an event. A call that can free
+// memory only through owners, locals that own only memory that the body made, is no event. Each
+// ended fact keeps the place and the reason of its event, for the note of E8006. Before a loop
+// body, a scan of the body finds its first event, which ends the facts for each pass. After a
+// loop, the facts are those that hold at each place where the loop ends.
 //
 //===----------------------------------------------------------------------===//
 
@@ -112,6 +113,8 @@ pub(crate) struct PointerFunction {
     scope: usize,
     /// The parameters that the body assigns or takes a `&mut` to.
     params_changed: std::collections::HashSet<String>,
+    /// The local variables that can be owners (see `PointerFacts::owners`).
+    owner_candidates: std::collections::HashSet<String>,
 }
 
 /// A pointer value: a base, and an offset in elements that is the exact sum of its terms.
@@ -139,6 +142,9 @@ pub(crate) struct PointerFacts {
     /// yet, by an id and the name of the handle. While one runs, it can free memory, so no fact
     /// about other memory starts.
     tasks: Vec<(usize, Option<String>, Span)>,
+    /// The owners: local variables that own only memory that the body made, and that no pointer
+    /// can point into. A call that can free memory only through owners ends no fact.
+    owners: std::collections::HashSet<String>,
 }
 
 impl PointerFacts {
@@ -258,6 +264,7 @@ impl PointerFacts {
                 self.tasks.push(t.clone());
             }
         }
+        self.owners.retain(|o| other.owners.contains(o));
         self
     }
 }
@@ -347,6 +354,121 @@ fn declarations_of_a_body(body: &[Statement]) -> (HashMap<String, usize>, Vec<Bo
         _ => {}
     });
     (out, lets)
+}
+
+/// The local variables of `body` that can be owners. The body declares each one once, with a
+/// `let` of a call. It names each one only as the receiver of a method call, as an argument of a
+/// call, as `&v` or `&mut v` there, or as the value that the function returns. So only a call can
+/// make a pointer into its memory or put memory into it. No closure, task, `spawn on` region or
+/// `mlir!` block names it.
+fn owner_candidates(
+    body: &[Statement],
+    params: &[(crate::symbol::Symbol, Type)],
+) -> std::collections::HashSet<String> {
+    fn names_in(e: &Expr) -> Vec<String> {
+        let mut names = Vec::new();
+        crate::syntax::visit_expr(e, &mut |e| {
+            if let Expr::Identifier(id) = e {
+                names.push(id.name.to_string());
+            }
+        });
+        names
+    }
+    // Counts each `return v` of `stmts`, and finds each macro statement.
+    fn statements(stmts: &[Statement], plain: &mut HashMap<String, usize>, macros: &mut bool) {
+        for s in stmts {
+            match s {
+                Statement::Return(r) => {
+                    if let Some(Expr::Identifier(id)) = &r.expr {
+                        *plain.entry(id.name.to_string()).or_default() += 1;
+                    }
+                }
+                Statement::ForLoop(l) => statements(&l.body, plain, macros),
+                Statement::Loop(l) => statements(&l.body, plain, macros),
+                Statement::MacroCall(_) => *macros = true,
+                _ => {}
+            }
+        }
+    }
+    let (declared, lets) = declarations_of_a_body(body);
+    let mut candidates: std::collections::HashSet<String> = lets
+        .into_iter()
+        .filter(|(name, _, init)| {
+            declared.get(name) == Some(&1)
+                && matches!(init, Expr::FunctionCall(_) | Expr::MethodCall(_))
+                && !params.iter().any(|(p, _)| p.as_ref() == name)
+        })
+        .map(|(name, _, _)| name)
+        .collect();
+    // Each mention of a name, and each mention in one of the places above.
+    let mut all: HashMap<String, usize> = HashMap::new();
+    let mut plain: HashMap<String, usize> = HashMap::new();
+    let mut ruled_out = Vec::new();
+    // The walk does not read the tokens of a macro that is not expanded.
+    let mut macros = false;
+    let argument = |a: &Expr| match a {
+        Expr::Borrow(b) => match &*b.expr {
+            Expr::Identifier(id) => Some(id.name.to_string()),
+            _ => None,
+        },
+        Expr::Identifier(id) => Some(id.name.to_string()),
+        _ => None,
+    };
+    statements(body, &mut plain, &mut macros);
+    crate::syntax::visit_exprs(body, &mut |e| match e {
+        Expr::Identifier(id) => *all.entry(id.name.to_string()).or_default() += 1,
+        Expr::FunctionCall(fc) => {
+            for name in fc.args.iter().filter_map(argument) {
+                *plain.entry(name).or_default() += 1;
+            }
+        }
+        Expr::MethodCall(m) => {
+            if let Expr::Identifier(id) = &*m.base {
+                *plain.entry(id.name.to_string()).or_default() += 1;
+            }
+            for name in m.args.iter().filter_map(argument) {
+                *plain.entry(name).or_default() += 1;
+            }
+        }
+        Expr::Closure(_) | Expr::InlineMlir(_) => ruled_out.extend(names_in(e)),
+        Expr::SpawnOn(_) | Expr::TaskBlock(_) | Expr::ComptimeBlock(_) => {
+            ruled_out.extend(names_in(e));
+            let stmts = match e {
+                Expr::SpawnOn(b) => &b.stmts,
+                Expr::TaskBlock(b) => &b.stmts,
+                Expr::ComptimeBlock(b) => &b.stmts,
+                _ => unreachable!("matched above"),
+            };
+            statements(stmts, &mut plain, &mut macros);
+        }
+        Expr::MacroCall(_) => macros = true,
+        Expr::If(i) => {
+            statements(&i.then_block, &mut plain, &mut macros);
+            if let Some(b) = &i.else_block {
+                statements(b, &mut plain, &mut macros);
+            }
+        }
+        Expr::Match(m) => {
+            for arm in &m.arms {
+                statements(&arm.body, &mut plain, &mut macros);
+            }
+        }
+        Expr::UnsafeBlock(u) => statements(&u.stmts, &mut plain, &mut macros),
+        _ => {}
+    });
+    if let Some(Statement::ExprStmt(ExprStmtStmt {
+        expr: Expr::Identifier(id),
+        has_semi: false,
+        ..
+    })) = body.last()
+    {
+        *plain.entry(id.name.to_string()).or_default() += 1;
+    }
+    if macros {
+        return Default::default();
+    }
+    candidates.retain(|name| all.get(name) == plain.get(name) && !ruled_out.contains(name));
+    candidates
 }
 
 /// A term of an exact goal for the prover: program values are compared and added as exact
@@ -516,6 +638,7 @@ impl<'a> TypeChecker<'a> {
             ensures: func.ensures.iter().filter(well_formed).cloned().collect(),
             scope: self.scopes.len() - 1,
             params_changed: crate::hir::check::raw::names_a_body_writes(&func.body),
+            owner_candidates: owner_candidates(&func.body, &func.params),
         };
         for (name, ty) in &func.params {
             if matches!(ty, Type::Pointer(..)) {
@@ -683,6 +806,62 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// `let name = init` declared the candidate `name`. It is an owner when it holds a value, and
+    /// `init` calls a function with no argument that can free memory, as `Vec<i64>::new()` does.
+    /// A call reaches the memory of its caller only through its arguments, so the value owns only
+    /// new memory.
+    pub(crate) fn pointer_facts_note_an_owner(&mut self, name: &str, init: &Expr) {
+        if !self.pointer_function.owner_candidates.contains(name) {
+            return;
+        }
+        let Expr::FunctionCall(fc) = init else {
+            return;
+        };
+        let holds_a_value = self.lookup(name).is_some_and(|(t, _)| {
+            !matches!(
+                t,
+                Type::Pointer(..)
+                    | Type::Borrow { .. }
+                    | Type::Ref(..)
+                    | Type::Closure(..)
+                    | Type::Function(..)
+                    | Type::Generic(..)
+                    | Type::Unknown
+            )
+        });
+        if !holds_a_value {
+            return;
+        }
+        // The call of a closure gets the closure as its first argument, which can free memory.
+        let params = self.call_param_types(fc.name.as_ref(), init);
+        let frees = fc.args.iter().enumerate().any(|(i, a)| {
+            let param = params.as_ref().and_then(|p| p.get(i));
+            self.argument_can_free(a, param)
+        });
+        if !frees {
+            self.pointer_facts.owners.insert(name.to_string());
+        }
+    }
+
+    /// Whether a value of the type `ty` can point into memory: it holds a reference, a raw
+    /// pointer or a type with a drop, at any depth.
+    fn type_can_point(&mut self, ty: &Type, depth: usize) -> bool {
+        if depth > 8 {
+            return true;
+        }
+        let parts = match ty {
+            Type::Borrow { .. } | Type::Ref(..) => return true,
+            Type::Struct(name, _) if name.as_ref() == "void" => return false,
+            Type::Struct(name, _) | Type::Enum(name, _) => self.declared_part_types(name, &[]),
+            Type::GenericInstance(base, args) => match &**base {
+                Type::Struct(name, _) | Type::Enum(name, _) => self.declared_part_types(name, args),
+                _ => return true,
+            },
+            _ => return self.type_can_free(ty, depth),
+        };
+        self.type_can_free(ty, depth) || parts.iter().any(|t| self.type_can_point(t, depth + 1))
+    }
+
     /// The value of `init` for the variable `name`, when `name` is a raw pointer. Computed before
     /// the facts about `name` are dropped, because `init` can use the old value.
     pub(crate) fn pointer_value_for(&mut self, name: &str, init: &Expr) -> Option<PointerValue> {
@@ -800,7 +979,9 @@ impl<'a> TypeChecker<'a> {
                 let why = self.in_branch(format!("the end of the scope of `{name}`"));
                 self.pointer_facts.end_local(name.as_ref(), at, &why);
             }
-            if !self.drops_glue(ty).is_empty() || matches!(ty, Type::Generic(..)) {
+            // The drop of an owner frees only memory that the body made.
+            let drops = !self.drops_glue(ty).is_empty() || matches!(ty, Type::Generic(..));
+            if drops && !self.pointer_facts.owners.contains(name.as_ref()) {
                 dropped.push(name.as_ref());
             }
         }
@@ -1051,6 +1232,16 @@ impl<'a> TypeChecker<'a> {
     /// At the start of a loop: a fact holds in the body only when no pass ends it, so an event
     /// that the body can have ends the facts before the body.
     pub(crate) fn end_pointer_facts_a_loop_can_end(&mut self, body: &[Statement]) {
+        // The checker checks the body once. A later statement of the body can put memory from
+        // outside into an owner before the next pass, so an owner that the body names stops
+        // being one.
+        let mut named = std::collections::HashSet::new();
+        crate::syntax::visit_exprs(body, &mut |e| {
+            if let Expr::Identifier(id) = e {
+                named.insert(id.name.to_string());
+            }
+        });
+        self.pointer_facts.owners.retain(|o| !named.contains(o));
         if self.pointer_facts.ranges.is_empty() {
             return;
         }
@@ -1714,9 +1905,56 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The owner that the argument `a` is, as `v`, or borrows, as `&v` and `&mut v`.
+    fn owner_named_by(&self, a: &Expr) -> Option<String> {
+        let e = match a {
+            Expr::Borrow(b) => &*b.expr,
+            e => e,
+        };
+        match e {
+            Expr::Identifier(id) if self.pointer_facts.owners.contains(id.name.as_ref()) => {
+                Some(id.name.to_string())
+            }
+            _ => None,
+        }
+    }
+
+    /// A call with the arguments `args` gives a value of the type `result`. Each owner of `args`
+    /// stops being one when another argument can free memory, because the call can then put
+    /// memory or a pointer from outside into the owner. It also stops when the result can point
+    /// into it.
+    fn owners_at_a_call(&mut self, args: &[&Expr], result: &Type) {
+        let named: Vec<String> = args.iter().filter_map(|a| self.owner_named_by(a)).collect();
+        if named.is_empty() {
+            return;
+        }
+        // A number points nowhere.
+        let others: Vec<&Expr> = args
+            .iter()
+            .copied()
+            .filter(|a| self.owner_named_by(a).is_none() && !matches!(a, Expr::Number(_)))
+            .collect();
+        let mut others_can_free = false;
+        for a in others {
+            let ty = self.check_expr_type_probe(a);
+            others_can_free |= self.type_can_free(&ty, 0);
+        }
+        if others_can_free || self.type_can_point(result, 0) {
+            for o in &named {
+                self.pointer_facts.owners.remove(o);
+            }
+        }
+    }
+
     /// After the call `expr` is checked and its value `requires` is proved: prove each pointer
-    /// `requires` of the callee in safe code, and then apply the events of the call.
-    pub(crate) fn pointer_facts_at_call(&mut self, expr: &Expr, written: WrittenCall) {
+    /// `requires` of the callee in safe code, and then apply the events of the call. `result` is
+    /// the type of the value of the call.
+    pub(crate) fn pointer_facts_at_call(
+        &mut self,
+        expr: &Expr,
+        written: WrittenCall,
+        result: &Type,
+    ) {
         let WrittenCall {
             name: written,
             local_can_free,
@@ -1756,15 +1994,20 @@ impl<'a> TypeChecker<'a> {
                 Expr::FunctionCall(_) if !local_call => self.not_freed_by(name),
                 _ => 0,
             };
-            let mut through = callee.filter(|c| self.argument_can_free(c, None));
+            let mut freeing: Vec<&Expr> = callee
+                .filter(|c| self.argument_can_free(c, None))
+                .into_iter()
+                .collect();
             for (i, a) in args.iter().enumerate() {
-                if through.is_none()
-                    && (i >= 32 || not_freed & (1 << i) == 0)
+                if (i >= 32 || not_freed & (1 << i) == 0)
                     && self.argument_can_free(a, params.as_ref().and_then(|p| p.get(i)))
                 {
-                    through = Some(a);
+                    freeing.push(a);
                 }
             }
+            // A call that can free memory only through owners ends no fact.
+            let only_owners = freeing.iter().all(|a| self.owner_named_by(a).is_some());
+            let through = freeing.first().copied().filter(|_| !only_owners);
             // The check gives a call of a closure the closure value as an argument.
             let is_the_closure = |a: &Expr| match a {
                 Expr::Borrow(b) => {
@@ -1801,6 +2044,8 @@ impl<'a> TypeChecker<'a> {
         if let Some(why) = why {
             self.pointer_facts_event(at, |_| why);
         }
+        let every: Vec<&Expr> = callee.into_iter().chain(args).collect();
+        self.owners_at_a_call(&every, result);
         if !self.speculating && !local_call && matches!(expr, Expr::FunctionCall(_)) {
             self.add_facts_of_ensures(name, args, at);
         }

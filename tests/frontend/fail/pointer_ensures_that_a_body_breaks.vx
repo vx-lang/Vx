@@ -64,13 +64,14 @@ ensures valid(return, 1i64)
   return p;
 }
 
+// `v` holds a vector of the caller, so its drop can free the memory of `p`.
 // CHECK: E8012] at {{.*}}pointer_ensures_that_a_body_breaks.vx:[[@LINE+7]]:3: `drops_a_vector` says `valid(return, n)`, but the compiler cannot prove it at this `return`
 // CHECK-NEXT: note: a fact that proves it ended at the end of the scope of `v`, which drops its value (at [[@LINE+6]]:3)
-fn drops_a_vector(p : *const i64, n : i64) -> *const i64
+fn drops_a_vector(p : *const i64, n : i64, w : Vec<i64>) -> *const i64
 requires valid(p, n)
 ensures valid(return, n)
 {
-  let v = Vec<i64>::new();
+  let v = w;
   return p;
 }
 
