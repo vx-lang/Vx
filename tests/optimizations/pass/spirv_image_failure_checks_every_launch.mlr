@@ -15,8 +15,8 @@
 // makes two launches of one kernel. This is that IR by hand.
 //
 // RUN: not vx-opt %s --vx-to-llvm 2>&1 | FileCheck %s
-// CHECK: kernel `k` cannot become a `spirv64` device image
-// CHECK: Its operands are in 'GPU_HBM', declared `managed: explicit`
+// CHECK: the region placed on topology id 501 in `main` (kernel `k`) cannot become a `spirv64` device image
+// CHECK: This region's operands are in 'GPU_HBM', declared `managed: explicit`
 // CHECK-NOT: will run on the host instead
 
 module {
