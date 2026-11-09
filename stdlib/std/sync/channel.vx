@@ -240,7 +240,7 @@ Sender<T> {
 
   /// `send` until the clock reaches `deadline`.
   fn send_until(self : &Sender<T>, v : T, deadline : Instant, at : Caller) -> Result<void, SendError<T>> {
-    if cancelled() {
+    if cancelled_at(at) {
       return Result<void, SendError<T>>::Err(SendError<T> {
         value : v, cancelled : true, timed_out : false
       });
@@ -257,7 +257,7 @@ Sender<T> {
         notify(words);
         return Result<void, SendError<T>>::Ok();
       }
-      let was_cancelled = cancelled();
+      let was_cancelled = cancelled_at(at);
       if was_cancelled || past_deadline(deadline) {
         unsafe { vx_channel_skip(words, k); }
         word(words, SKIPS).fetch_add(1, AtomicOrdering::SeqCst);
@@ -314,7 +314,7 @@ Receiver<T> {
     let mut seen = word(words, WAKE).load(AtomicOrdering::SeqCst);
     let mut why = RecvError::Closed;
     loop {
-      if cancelled() {
+      if cancelled_at(at) {
         why = RecvError::Cancelled;
         break;
       }
@@ -403,7 +403,7 @@ Selector<T> {
     let mut got = Option<Selected<T>>::None;
     let mut why = RecvError::Closed;
     while n > 0 {
-      if cancelled() {
+      if cancelled_at(at) {
         why = RecvError::Cancelled;
         break;
       }
