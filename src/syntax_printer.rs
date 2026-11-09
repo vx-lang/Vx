@@ -153,6 +153,7 @@ impl AstPrinter {
                     path,
                     call,
                     limit: _,
+                    placement: _,
                     expr,
                     flag,
                     after_value,

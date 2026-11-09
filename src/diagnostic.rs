@@ -264,11 +264,12 @@ pub enum DiagnosticCode {
     /// in value position, where the fall-through edge would otherwise have no value to carry --
     /// codegen used to paper over that by evaluating the whole match to a constant zero.
     E3020,
-    /// An enum variant whose payload is a tensor in a memory space.
+    /// An enum variant whose payload is a `Pinned` or `Ref` tensor.
     ///
-    /// A payload tensor is stored as its memref descriptor, and the drop of a payload frees a
-    /// heap buffer. A tensor in a memory space came from its plugin and must go back through it,
-    /// so it is refused until the drop does that. A tensor with no memory space is allowed.
+    /// A payload tensor is stored as its memref descriptor. Its drop frees a tensor in a memory
+    /// space through the plugin that the memory's type names. `Pinned` and `Ref` give the
+    /// location outside the tensor type, so the drop does not know it, and such a payload is
+    /// refused.
     E3021,
     /// An `extern` function whose signature mentions a tensor.
     ///

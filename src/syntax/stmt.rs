@@ -289,6 +289,8 @@ pub struct DropStmt {
     /// With `call`: how long the waits in the `drop` can take, in nanoseconds. The call
     /// `wait_limit_nanos(&name.path)`, or the default when the impl has no copy of it.
     pub limit: Option<Box<super::Expr>>,
+    /// The memory of the tensor freed, when the type names one. Its plugin frees it.
+    pub placement: Option<crate::syntax::Placement>,
 }
 
 impl DropStmt {

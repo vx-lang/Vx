@@ -389,6 +389,8 @@ pub(crate) enum WaitingDrop<'c> {
         buffer: melior::ir::Value<'c, 'c>,
         flag: Option<crate::symbol::Symbol>,
         field: bool,
+        /// For a field in a device memory: the topology whose plugin frees it.
+        placed: Option<i32>,
     },
     /// The statements that run a drop: a `Drop` impl's `drop`, with cancellation off around
     /// it, or a `match` on an enum whose arms hold more drops.
@@ -1799,6 +1801,7 @@ impl<'c> MeliorGenerator<'c> {
             buffer,
             flag: d.flag.clone(),
             field: d.expr.is_some(),
+            placed: d.placement.as_ref().and_then(|p| self.placed_topology(p)),
         };
         if d.after_value {
             self.queued_drops.push(drop);
@@ -1819,8 +1822,9 @@ impl<'c> MeliorGenerator<'c> {
                 buffer,
                 flag,
                 field,
+                placed,
             } => {
-                self.emit_drop(buffer, flag, field, block)?;
+                self.emit_drop(buffer, flag, field.then_some(placed), block)?;
                 Ok(block)
             }
             WaitingDrop::Call(stmts) => {
@@ -1860,12 +1864,13 @@ impl<'c> MeliorGenerator<'c> {
     }
 
     /// `vx.drop %buffer`, or `vx.drop %buffer unless %moved` when the tensor has a moved flag.
-    /// `field`: the buffer is a tensor field of a struct being dropped.
+    /// `field`: the buffer is a tensor field of a struct being dropped, with the topology whose
+    /// plugin frees it when it is in a device memory.
     pub(crate) fn emit_drop(
         &mut self,
         buffer: melior::ir::Value<'c, 'c>,
         flag: Option<crate::symbol::Symbol>,
-        field: bool,
+        field: Option<Option<i32>>,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Result<(), LowerError> {
         let mut operands = vec![buffer];
@@ -1876,11 +1881,18 @@ impl<'c> MeliorGenerator<'c> {
         }
         let mut op = melior::ir::operation::OperationBuilder::new("vx.drop", self.loc())
             .add_operands(&operands);
-        if field {
+        if let Some(placed) = field {
             op = op.add_attributes(&[(
                 melior::ir::Identifier::new(self.context, "field"),
                 melior::ir::Attribute::unit(self.context),
             )]);
+            if let Some(topology) = placed {
+                let i32_ty = melior::ir::r#type::IntegerType::new(self.context, 32).into();
+                op = op.add_attributes(&[(
+                    melior::ir::Identifier::new(self.context, "placed"),
+                    melior::ir::attribute::IntegerAttribute::new(i32_ty, topology.into()).into(),
+                )]);
+            }
         }
         block.append_operation(op.build()?);
         Ok(())

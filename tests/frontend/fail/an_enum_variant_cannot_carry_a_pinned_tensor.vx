@@ -1,13 +1,13 @@
-//===- an_enum_variant_cannot_carry_a_tensor_in_a_memory_space.vx - Vx Compiler -*- Vx -*-===//
+//===- an_enum_variant_cannot_carry_a_pinned_tensor.vx - Vx Compiler -*- Vx -*-===//
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// An enum variant can carry a tensor, but not one in a memory space such as `W`. Such a tensor
-// came from its memory's plugin and must go back through it, and the drop of a payload frees
-// heap memory. A tensor with no memory space and a scalar payload stay legal.
+// An enum variant can carry a tensor, also one in a memory space such as `W`. Its drop frees
+// the tensor through the plugin of `W`. A `Pinned` tensor gives its place outside the tensor
+// type, so the drop does not know it, and the variant cannot carry one yet.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 
@@ -26,14 +26,19 @@ Topology Dev {
 enum Payload {
   Placed(Tensor<f32, [2, 2], Memory::W>),
   Host(Tensor<f32, [2, 2]>),
+  Kept(Pinned<Tensor<f32, [2, 2]>, Topology::Dev>),
   Val(i32),
+}
+
+fn keep(t : Pinned<Tensor<f32, [2, 2]>, Topology::Dev>) -> Payload {
+  // CHECK: Error[E3021] at {{.*}}.vx:[[@LINE+1]]:10: payload argument 1 of Payload::Kept is {{.*}}. An enum variant cannot carry a `Pinned` or `Ref` tensor yet
+  return Payload::Kept(t);
 }
 
 fn main() -> i32 {
   let _ok = Payload::Val(7);
   let _host = Payload::Host(Tensor<f32, [2, 2]>::fill(1.0));
-  // CHECK: Error[E3021] at {{.*}}.vx:[[@LINE+1]]:14: payload argument 1 of Payload::Placed is a tensor of F32 placed on Topology::W. An enum variant cannot carry a tensor in a memory space yet
-  let _bad = Payload::Placed(transfer(Tensor<f32, [2, 2]>::fill(1.0), Memory::W));
+  let _placed = Payload::Placed(transfer(Tensor<f32, [2, 2]>::fill(1.0), Memory::W));
   return 0;
 }
 
