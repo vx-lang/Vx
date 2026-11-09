@@ -24,7 +24,7 @@
 // RUN: env CUDA_VISIBLE_DEVICES= not vxc %t/short_out.vx --host default --machine fleet/h100-sxm.vx 2>&1 | FileCheck %s --check-prefix=OUT
 //
 // FULL: {{^}}held 10{{$}}
-// FULL-NEXT: bulk_hash_insert_all: the keys do not fit. The table must keep one empty slot
+// FULL: bulk_hash_insert_all: the keys do not fit. The table must keep one empty slot
 // FULL-NOT: not printed
 // EMPTY-KEY: bulk_hash_insert_all: a key cannot be 4294967295, the key of an empty slot
 // EMPTY-KEY-NOT: not printed
