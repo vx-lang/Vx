@@ -30,6 +30,17 @@ static void expect(int fd, int level, int name, int want, const char *what) {
   }
 }
 
+// A flag that is on reads back as 1 on Linux, and as the value of the flag
+// on macOS.
+static void expect_on(int fd, int level, int name, const char *what) {
+  int got = 0;
+  socklen_t len = sizeof(got);
+  if (getsockopt(fd, level, name, &got, &len) != 0 || got == 0) {
+    fprintf(stderr, "FAIL: %s is off\n", what);
+    ++failures;
+  }
+}
+
 int main() {
   int listener = socket(AF_INET, SOCK_STREAM, 0);
   sockaddr_in addr;
@@ -56,7 +67,7 @@ int main() {
     return 1;
   }
 
-  expect(fd, SOL_SOCKET, SO_KEEPALIVE, 1, "SO_KEEPALIVE");
+  expect_on(fd, SOL_SOCKET, SO_KEEPALIVE, "SO_KEEPALIVE");
 #if defined(TCP_KEEPIDLE)
   expect(fd, IPPROTO_TCP, TCP_KEEPIDLE, 4, "TCP_KEEPIDLE");
 #elif defined(TCP_KEEPALIVE)
