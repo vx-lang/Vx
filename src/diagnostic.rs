@@ -366,7 +366,8 @@ pub enum DiagnosticCode {
     E3045,
     /// A `for` loop over a tensor that is not a variable or a flat array literal, such as one a
     /// function call returns, or a nested array literal. The loop reads the tensor by index, so
-    /// it needs a name: bind the tensor with `let` first.
+    /// it needs a name: bind the tensor with `let` first. Also a loop over `&mut t`: the loop
+    /// gives copies of the elements, so it cannot change them.
     E3046,
     /// A `reshape` call the compiler cannot check: the new shape has a different number of
     /// elements than the tensor (without `PadMode::Pad` or `PadMode::Trim`), a size is not known
