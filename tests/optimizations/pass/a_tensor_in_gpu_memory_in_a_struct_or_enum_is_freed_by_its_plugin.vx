@@ -10,16 +10,19 @@
 // `vx_plugin_free`, with the topology of `W`, 1376527430. It must not call libc `free`, which
 // cannot free GPU memory.
 //
-// - `holder.vx`: a struct with such a field, with both code generators.
-// - `slot.vx`: an enum with such a payload. The old code generator cannot put a tensor in an
-//   enum, so only the default one compiles it.
+// - `holder.vx`: a struct with such a field.
+// - `slot.vx`: an enum with such a payload.
 // - `run.vx`: the payload goes to a function, which reads it back on the host.
+//
+// Each file runs with both code generators.
 //
 // RUN: split-file %s %t
 // RUN: vxc %t/holder.vx --action emit-llvm 2>&1 | FileCheck %s --check-prefix=HOLDER
 // RUN: vxc %t/holder.vx --action emit-llvm --legacy-codegen 2>&1 | FileCheck %s --check-prefix=HOLDER
 // RUN: vxc %t/slot.vx --action emit-llvm 2>&1 | FileCheck %s --check-prefix=SLOT
+// RUN: vxc %t/slot.vx --action emit-llvm --legacy-codegen 2>&1 | FileCheck %s --check-prefix=SLOT
 // RUN: vxc %t/run.vx 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
+// RUN: vxc %t/run.vx --legacy-codegen 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
 //===----------------------------------------------------------------------===//
 
 // HOLDER-LABEL: llvm.func hidden @drop_a_holder(
@@ -34,7 +37,7 @@
 // SLOT-NOT: llvm.call @free(
 // SLOT: llvm.call @vx_plugin_free({{%[0-9]+}}, [[W]])
 // SLOT-NOT: llvm.call @free(
-// SLOT: llvm.return
+// SLOT: {{^  }}}{{$}}
 
 // OUT: {{^}}3 0{{$}}
 

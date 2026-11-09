@@ -127,11 +127,16 @@ pub struct MeliorGenerator<'c> {
     /// and the position. A slot can be wider than a variant's payload, or a byte slot that
     /// holds payloads of different kinds, so a `match` reads the payload back as this type.
     pub(crate) enum_payloads: std::cell::RefCell<EnumPayloads>,
+    /// The memref type of each tensor payload, by the same keys. The slot holds its descriptor.
+    pub(crate) enum_tensor_payloads: std::cell::RefCell<EnumPayloads>,
     pub continue_blocks: Vec<*const melior::ir::Block<'c>>,
     pub allocs: std::collections::HashSet<String>,
     /// The struct slots whose lifetime a `let` started, by their `llvm.alloca` value. Only
     /// these get an end.
     pub(crate) started_slots: std::collections::HashSet<usize>,
+    /// The names that a `match` arm binds to a tensor payload. The enum owned the tensor, as a
+    /// struct owns a tensor field, so the drop of such a name frees it as a field.
+    pub(crate) payload_tensors: std::collections::HashSet<crate::symbol::Symbol>,
     /// One frame per block being lowered: what each name a `let` in the block shadows meant
     /// before it, put back when the block ends.
     pub(crate) blocks: Vec<Vec<Shadowed<'c>>>,
@@ -1074,9 +1079,11 @@ impl<'c> MeliorGenerator<'c> {
             tasks_exits: Vec::new(),
             task_bodies: Vec::new(),
             enum_payloads: Default::default(),
+            enum_tensor_payloads: Default::default(),
             continue_blocks: Vec::new(),
             allocs: std::collections::HashSet::new(),
             started_slots: std::collections::HashSet::new(),
+            payload_tensors: std::collections::HashSet::new(),
             blocks: Vec::new(),
             is_lvalue_context: false,
             place_indices: None,
@@ -1800,7 +1807,7 @@ impl<'c> MeliorGenerator<'c> {
         let drop = WaitingDrop::Tensor {
             buffer,
             flag: d.flag.clone(),
-            field: d.expr.is_some(),
+            field: d.expr.is_some() || self.payload_tensors.contains(&d.name),
             placed: d.placement.as_ref().and_then(|p| self.placed_topology(p)),
         };
         if d.after_value {
@@ -1930,7 +1937,17 @@ impl<'c> MeliorGenerator<'c> {
         self.current_span = stmt.span();
         match stmt {
             Statement::Return(s) => LowerToMelior::lower(s, self, block),
-            Statement::LetDecl(s) => LowerToMelior::lower(s, self, block),
+            Statement::LetDecl(s) => {
+                // `let h = b` of a tensor that a `match` took out of an enum: `h` owns it now.
+                let from_payload = matches!(&s.expr,
+                    Expr::Identifier(id) if self.payload_tensors.contains(&id.name));
+                if from_payload {
+                    self.payload_tensors.insert(s.name.clone());
+                } else {
+                    self.payload_tensors.remove(&s.name);
+                }
+                LowerToMelior::lower(s, self, block)
+            }
             Statement::Assign(s) => LowerToMelior::lower(s, self, block),
             Statement::CompoundAssign(s) => LowerToMelior::lower(s, self, block),
             // An `if`/`match` whose every path returns is a statement that control does not
@@ -2286,7 +2303,17 @@ impl<'c> MeliorGenerator<'c> {
                     None => ty.clone(),
                 };
                 let mut lowered = self.lower_type_str(&ty)?;
-                if lowered.starts_with("memref<") {
+                // A tensor is its descriptor, as in a struct field, so its shape travels with it.
+                if let (syntax::Type::Tensor(_, dims, _), true) =
+                    (&ty, lowered.starts_with("memref<"))
+                {
+                    self.enum_tensor_payloads
+                        .borrow_mut()
+                        .entry(struct_name.to_string())
+                        .or_default()
+                        .insert((v_name.to_string(), position), lowered);
+                    lowered = tensor_descriptor_str(dims.len());
+                } else if lowered.starts_with("memref<") {
                     lowered = "!llvm.ptr".to_string();
                 }
                 by_variant.push((v_name.to_string(), lowered.clone()));

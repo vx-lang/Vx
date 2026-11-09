@@ -868,9 +868,18 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
 
         if is_ptr {
             let mut inferred_el_ty_str = None;
+            // A buffer of tensors holds the descriptor of each one.
+            let mut tensor = None;
             if let Some(syntax::Type::Pointer(inner, _, _)) = gen.infer_ast_type(self.base.as_ref())
             {
-                inferred_el_ty_str = Some(gen.lower_type_str(&inner)?);
+                let el = gen.lower_type_str(&inner)?;
+                if let syntax::Type::Tensor(_, dims, _) = &*inner {
+                    tensor = Some(el.clone());
+                    inferred_el_ty_str =
+                        Some(crate::codegen::generator::tensor_descriptor_str(dims.len()));
+                } else {
+                    inferred_el_ty_str = Some(el);
+                }
             }
 
             let inner_ty_str = if base_ty_str.contains("<") {
@@ -921,7 +930,13 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
                 .build()?;
 
             let load_ref = block.append_operation(load_op);
-            Ok((load_ref.result(0)?.into(), inner_ty, block))
+            let loaded: Value = load_ref.result(0)?.into();
+            if let Some(text) = tensor {
+                let memref =
+                    Type::parse(gen.context, &text).ok_or(LowerError::ParseType(text.clone()))?;
+                return Ok((memref_of(gen, &block, loaded, memref)?, memref, block));
+            }
+            Ok((loaded, inner_ty, block))
         } else {
             let inner_ty_str = if base_ty_str.starts_with("memref<") {
                 let inner = base_ty_str.replace("memref<", "").replace('>', "");
@@ -5575,17 +5590,25 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
             // Each element of the payload goes in the slot for its position.
             let slots = enum_payload_slot_texts(&struct_ty.to_string());
             for (i, payload_expr) in payload_exprs.iter().enumerate() {
-                if matches!(
-                    gen.infer_ast_type(payload_expr),
-                    Some(syntax::Type::Tensor(..))
-                ) {
-                    return Err(LowerError::from(format!(
-                        "the legacy code generator cannot put a tensor in an enum payload, as \
-                         in {enum_name}::{variant_name}"
-                    )));
-                }
-                let (payload_val, payload_val_ty, next) = gen.generate_expr(payload_expr, block)?;
+                let rank = match gen.infer_ast_type(payload_expr) {
+                    Some(syntax::Type::Tensor(_, dims, _)) => Some(dims.len()),
+                    _ => None,
+                };
+                let (mut payload_val, mut payload_val_ty, next) =
+                    gen.generate_expr(payload_expr, block)?;
                 block = next;
+                // A tensor goes in as its descriptor.
+                if let Some(rank) = rank {
+                    payload_val = tensor_into_field(
+                        gen,
+                        &block,
+                        payload_val,
+                        payload_val_ty,
+                        payload_val_ty,
+                        rank,
+                    )?;
+                    payload_val_ty = payload_val.r#type();
+                }
                 let slot = slots.get(i).ok_or_else(|| {
                     crate::codegen::lower::LowerError::from(format!(
                         "enum variant {enum_name}::{variant_name} has more payload values than \
@@ -6556,18 +6579,135 @@ pub(crate) fn tensor_into_field<'c>(
             gen.coerce_type(block, val, val_ty, field_ty)?
         };
     }
-    let desc = crate::codegen::generator::tensor_descriptor_str(rank);
-    let desc_ty = Type::parse(gen.context, &desc).ok_or(LowerError::ParseType(desc))?;
+    descriptor_of(gen, block, val, val_ty, rank)
+}
+
+/// The memory space number of a memref type, `1` in `memref<4xf32, 1>`. 0 when it has none.
+fn memref_space(ty: &str) -> u32 {
+    ty.strip_suffix('>')
+        .and_then(|t| t.rsplit(", ").next())
+        .and_then(|last| last.parse().ok())
+        .unwrap_or(0)
+}
+
+/// The descriptor of a memref in memory space `space`, whose two pointers are in that space.
+fn spaced_descriptor_str(rank: usize, space: u32) -> String {
+    let plain = crate::codegen::generator::tensor_descriptor_str(rank);
+    if space == 0 {
+        return plain;
+    }
+    plain.replacen("(ptr, ptr", &format!("(ptr<{space}>, ptr<{space}>"), 1)
+}
+
+/// The descriptor `from`, of a tensor of `rank`, with its two pointers cast from address space
+/// `from_space` to `to_space`. A slot, such as a struct field, holds the descriptor with plain
+/// pointers, in any memory.
+fn recast_descriptor<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    from: Value<'c, 'c>,
+    rank: usize,
+    from_space: u32,
+    to_space: u32,
+) -> Result<Value<'c, 'c>, LowerError> {
+    let parse = |gen: &MeliorGenerator<'c>, text: String| {
+        Type::parse(gen.context, &text).ok_or(LowerError::ParseType(text))
+    };
+    let to = parse(gen, spaced_descriptor_str(rank, to_space))?;
+    let pointer = |space: u32| match space {
+        0 => "!llvm.ptr".to_string(),
+        n => format!("!llvm.ptr<{n}>"),
+    };
+    let from_ptr = parse(gen, pointer(from_space))?;
+    let to_ptr = parse(gen, pointer(to_space))?;
+    let mut fields = vec![from_ptr, from_ptr, gen.i64_ty];
+    if rank > 0 {
+        let array = parse(gen, format!("!llvm.array<{rank} x i64>"))?;
+        fields.extend([array, array]);
+    }
+    let undef = OperationBuilder::new("llvm.mlir.undef", gen.loc())
+        .add_results(&[to])
+        .build()?;
+    let mut out: Value = block.append_operation(undef).result(0)?.into();
+    for (i, field_ty) in fields.into_iter().enumerate() {
+        let position = (
+            Identifier::new(gen.context, "position"),
+            DenseI64ArrayAttribute::new(gen.context, &[i as i64]).into(),
+        );
+        let extract = OperationBuilder::new("llvm.extractvalue", gen.loc())
+            .add_operands(&[from])
+            .add_results(&[field_ty])
+            .add_attributes(&[position])
+            .build()?;
+        let mut v: Value = block.append_operation(extract).result(0)?.into();
+        if i < 2 {
+            let cast = OperationBuilder::new("llvm.addrspacecast", gen.loc())
+                .add_operands(&[v])
+                .add_results(&[to_ptr])
+                .build()?;
+            v = block.append_operation(cast).result(0)?.into();
+        }
+        let position = (
+            Identifier::new(gen.context, "position"),
+            DenseI64ArrayAttribute::new(gen.context, &[i as i64]).into(),
+        );
+        let insert = OperationBuilder::new("llvm.insertvalue", gen.loc())
+            .add_operands(&[out, v])
+            .add_results(&[to])
+            .add_attributes(&[position])
+            .build()?;
+        out = block.append_operation(insert).result(0)?.into();
+    }
+    Ok(out)
+}
+
+/// A tensor as the descriptor that a slot holds: two plain pointers, an offset, and the sizes
+/// and strides.
+pub(crate) fn descriptor_of<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    val: Value<'c, 'c>,
+    memref: Type<'c>,
+    rank: usize,
+) -> Result<Value<'c, 'c>, LowerError> {
+    let space = memref_space(&memref.to_string());
+    let own = spaced_descriptor_str(rank, space);
+    let own_ty = Type::parse(gen.context, &own).ok_or(LowerError::ParseType(own))?;
     let cast = OperationBuilder::new("builtin.unrealized_conversion_cast", gen.loc())
         .add_operands(&[val])
-        .add_results(&[desc_ty])
+        .add_results(&[own_ty])
+        .build()?;
+    let own_val: Value = block.append_operation(cast).result(0)?.into();
+    if space == 0 {
+        return Ok(own_val);
+    }
+    recast_descriptor(gen, block, own_val, rank, space, 0)
+}
+
+/// The tensor of type `memref` that the descriptor `desc` of a slot holds.
+pub(crate) fn memref_of<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    desc: Value<'c, 'c>,
+    memref: Type<'c>,
+) -> Result<Value<'c, 'c>, LowerError> {
+    let text = memref.to_string();
+    let space = memref_space(&text);
+    let mut val = desc;
+    if space != 0 {
+        let rank = buffer_rank(gen, memref).ok_or_else(|| LowerError::from(text.clone()))?;
+        val = recast_descriptor(gen, block, desc, rank, 0, space)?;
+    }
+    let cast = OperationBuilder::new("builtin.unrealized_conversion_cast", gen.loc())
+        .add_operands(&[val])
+        .add_results(&[memref])
         .build()?;
     Ok(block.append_operation(cast).result(0)?.into())
 }
 
 /// The rank of `ty` when it is a buffer, `memref<4x?xf32>`, which a slot keeps as its
 /// descriptor.
-fn buffer_rank(gen: &MeliorGenerator, ty: Type) -> Option<usize> {
+pub(crate) fn buffer_rank(gen: &MeliorGenerator, ty: Type) -> Option<usize> {
     if !gen.is_memref(&ty) {
         return None;
     }
@@ -6591,11 +6731,7 @@ fn tensor_from_field<'c>(
     // cell that a reference is.
     let mut tensor_ty = field_ty;
     load_tensor_slot_ty(gen, &mut tensor_ty)?;
-    let cast = OperationBuilder::new("builtin.unrealized_conversion_cast", gen.loc())
-        .add_operands(&[val])
-        .add_results(&[tensor_ty])
-        .build()?;
-    Ok((block.append_operation(cast).result(0)?.into(), tensor_ty))
+    Ok((memref_of(gen, block, val, tensor_ty)?, tensor_ty))
 }
 
 /// The memref type `ty` with no `strided<..>` layout: the type of a new buffer of the same

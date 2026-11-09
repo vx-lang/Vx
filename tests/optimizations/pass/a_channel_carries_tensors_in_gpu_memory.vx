@@ -15,10 +15,8 @@
 // - `dropped_full`: the last end to drop frees the 2 tensors that no `recv` took.
 // - `selected`: `select` takes the tensor 8 from channel 1: 8 + 1 = 9.
 //
-// The old code generator cannot put a tensor in an enum, such as the `Result` of `recv`, so this
-// test runs only the default one.
-//
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}10 10 7 3 2 9{{$}}
 //===----------------------------------------------------------------------===//
 
