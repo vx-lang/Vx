@@ -751,7 +751,8 @@ fn matmul_assign_shapes_agree(gen: &MeliorGenerator<'_>, dst: &Expr, a: &Expr, b
     d.len() == 2 && l.len() == 2 && r.len() == 2 && l[1] == r[0] && d[0] == l[0] && d[1] == r[1]
 }
 
-/// `vx.lane_matmul` with `serial`, which the host lowering expands into loops.
+/// `vx.lane_matmul`. In a region whose `across` loops run on one lane it is `serial`, which the
+/// host lowering expands into loops.
 fn lower_lane_matmul<'c>(
     gen: &mut MeliorGenerator<'c>,
     block: melior::ir::BlockRef<'c, 'c>,
@@ -765,10 +766,11 @@ fn lower_lane_matmul<'c>(
         operands.push(super::expr::load_tensor_slot(gen, &block, v, &mut ty)?);
     }
     let unit = melior::ir::attribute::Attribute::unit(gen.context);
-    let mut attrs = vec![
-        (Identifier::new(gen.context, "serial"), unit),
-        (Identifier::new(gen.context, "subgroup"), unit),
-    ];
+    let mapped = gen.across_map.is_some();
+    let mut attrs = vec![(Identifier::new(gen.context, "subgroup"), unit)];
+    if !mapped {
+        attrs.push((Identifier::new(gen.context, "serial"), unit));
+    }
     if m.accumulate {
         attrs.push((Identifier::new(gen.context, "accumulate"), unit));
     }
@@ -778,6 +780,10 @@ fn lower_lane_matmul<'c>(
             .add_attributes(&attrs)
             .build()?,
     );
+    // Each lane of the subgroup writes some elements of `acc`, and reads the others after this.
+    if mapped {
+        super::across::barrier(gen, block, super::across::Level::Subgroup)?;
+    }
     Ok(block)
 }
 
@@ -790,7 +796,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
     ) -> Self::Output {
         let AssignStmt { lhs, rhs, span } = self;
 
-        // A lane matmul in the code of a subgroup, which this code generator runs on one lane.
+        // A lane matmul in the code of a subgroup.
         if gen.across_kinds.last() == Some(&crate::arch::LevelKind::Subgroups) {
             if let Some(m) = crate::hir::check::lanes::lane_matmul(self) {
                 return lower_lane_matmul(gen, block, &m).map(Some);
@@ -1182,6 +1188,10 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
 
                     let mut store_builder = OperationBuilder::new("memref.store", gen.loc())
                         .add_operands(&[store_val, base_val]);
+                    if let Expr::IndexAccess(ix) = lhs {
+                        store_builder = store_builder
+                            .add_attributes(&super::across::lane_element_attrs(gen, ix));
+                    }
 
                     for idx in indices {
                         store_builder = store_builder.add_operands(&[idx]);
