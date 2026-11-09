@@ -1301,6 +1301,27 @@ bool Printer::memrefOp(Operation *o) {
     views[sv.getResult()] = v;
     return true;
   }
+  // The parts of a view. A reinterpret_cast of the base buffer with them gives
+  // the view back, as for a row of a row of a tensor of rank 3.
+  if (auto meta = dyn_cast<memref::ExtractStridedMetadataOp>(o)) {
+    View src;
+    if (!viewOf(meta.getSource(), src, o))
+      return false;
+    View buffer;
+    buffer.ptr = src.ptr;
+    buffer.base = src.base;
+    buffer.origin = src.base;
+    buffer.space = src.space;
+    views[meta.getBaseBuffer()] = buffer;
+    line() << "const int " << define(meta.getOffset()) << " = " << src.origin
+           << " - " << src.base << ";\n";
+    for (auto [k, size] : llvm::enumerate(meta.getSizes()))
+      line() << "const int " << define(size) << " = " << src.sizes[k] << ";\n";
+    for (auto [k, stride] : llvm::enumerate(meta.getStrides()))
+      line() << "const int " << define(stride) << " = " << src.strides[k]
+             << ";\n";
+    return true;
+  }
   if (auto get = dyn_cast<memref::GetGlobalOp>(o)) {
     MemRefType t = get.getType();
     View v;
