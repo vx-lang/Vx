@@ -31,6 +31,11 @@ pub struct Placement {
     pub order: usize,
     /// The `tasks` blocks and tasks that the tile is placed in (`TaskCx::task_chain`).
     pub(crate) tasks: Vec<crate::hir::check::tasks::TaskLevel>,
+    /// The variable that a `let` binds the tile to.
+    pub holder: Option<String>,
+    /// The first position in program order where the tile is gone, because a statement moved
+    /// it out of its variable.
+    pub end: Option<usize>,
 }
 
 pub struct ConstEvalState {
@@ -843,6 +848,11 @@ pub struct TrafficState {
     /// Where the current function calls `channel` for tensors in a memory with a capacity. The
     /// room of such a channel is counted there.
     pub channel_rooms: Vec<crate::syntax::Span>,
+    /// The variable of the `let` being checked, which the tiles placed for it go to.
+    pub tile_holder: Option<String>,
+    /// The variables that the current statement moved out of, with the blocks and tasks open at
+    /// the move. A tile of one of them ends after the statement.
+    pub(crate) moved_out: Vec<(String, Vec<u32>, Vec<crate::hir::check::tasks::TaskLevel>)>,
     /// One finished capacity summary per checked function, in check order -- what the
     /// cross-call fold reads after every body is done.
     pub capacity_summaries: Vec<crate::hir::check::capacity_fold::FnCapacitySummary>,
