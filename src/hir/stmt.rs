@@ -918,19 +918,84 @@ impl<'a> TypeChecker<'a> {
         // must be one that the prover can model, so that no new program warns.
         let recorded = !*_is_mut || crate::hir::prover::is_modelled(&value);
         if recorded && !crate::hir::check::raw::expr_mentions(&value, name.as_ref()) {
-            let id_expr = Expr::Identifier(IdentifierExpr {
+            // A call can change its arguments. Re-evaluating it in a later proof would use
+            // their new values, not the values from when the result was returned.
+            let changes_an_argument = matches!(&value, Expr::FunctionCall(c)
+                if c.args.iter().any(|a| self.call_may_change_argument(a)));
+            if !changes_an_argument {
+                let id_expr = Expr::Identifier(IdentifierExpr {
+                    name: name.clone(),
+                    span: Span::default(),
+                });
+                let eq_expr = Expr::RelationalOp(RelationalOpExpr {
+                    lhs: Box::new(id_expr),
+                    op: RelationalOp::Eq,
+                    rhs: Box::new(value),
+                    span: Span::default(),
+                    operand_ty: None,
+                });
+                self.consteval.constraints.push(eq_expr);
+            }
+            self.keep_call_result_ensures(name, expr);
+        }
+    }
+
+    /// Whether a call can change the value behind the argument `arg`: a `&mut` or a pointer.
+    fn call_may_change_argument(&self, arg: &Expr) -> bool {
+        matches!(arg, Expr::Borrow(b) if b.is_mut)
+            || matches!(
+                self.check_expr_type_probe(arg),
+                Type::Borrow { is_mut: true, .. } | Type::Pointer(..) | Type::Ref(..)
+            )
+    }
+
+    /// A returned number keeps its postconditions even when a later call changes an input
+    /// buffer. The equation `name == call(args)` does not: a later proof evaluates the call
+    /// again with the new buffer.
+    fn keep_call_result_ensures(&mut self, name: &crate::symbol::Symbol, value: &Expr) {
+        let Expr::FunctionCall(call) = crate::syntax::bare_unsafe_value(value) else {
+            return;
+        };
+        let Some((params, return_type, ensures)) = self.declared_callee(&call.name) else {
+            return;
+        };
+        let changed: Vec<_> = call
+            .args
+            .iter()
+            .filter(|arg| self.call_may_change_argument(arg))
+            .filter_map(|arg| Self::arg_reborrow_base(arg).map(|(root, _)| root))
+            .collect();
+        let mut names: HashMap<_, _> = params
+            .iter()
+            .map(|(p, _)| p.clone())
+            .zip(
+                call.args
+                    .iter()
+                    .map(|a| crate::hir::prover::without_borrow(a).clone()),
+            )
+            .collect();
+        names.insert(
+            "return".into(),
+            Expr::Identifier(IdentifierExpr {
                 name: name.clone(),
                 span: Span::default(),
-            });
-            let eq_expr = Expr::RelationalOp(RelationalOpExpr {
-                lhs: Box::new(id_expr),
-                op: RelationalOp::Eq,
-                rhs: Box::new(value),
-                span: Span::default(),
-                operand_ty: None,
-            });
-            self.consteval.constraints.push(eq_expr);
-        }
+            }),
+        );
+        let facts: Vec<_> = ensures
+            .iter()
+            .filter(|e| crate::hir::check::atomic_contracts::is_prover_clause(e))
+            .map(|e| {
+                let typed = self.typed_callee_contract(e, params, return_type);
+                hir::prover::substitute_names(&typed, &names)
+            })
+            .filter(hir::prover::is_modelled)
+            .filter(|e| {
+                !changed
+                    .iter()
+                    .any(|root| crate::hir::check::raw::expr_mentions(e, root))
+            })
+            .collect();
+        self.consteval.constraints.extend(facts);
     }
 
     /// Check a `for` loop: type the iterable, bind the induction variable's element type, prove
