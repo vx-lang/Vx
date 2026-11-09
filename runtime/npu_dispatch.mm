@@ -690,6 +690,16 @@ void vx_metal_wait_for_launch(const void *payload, size_t payload_size,
                               void **device_args, const int32_t *arg_tags,
                               int64_t num_args);
 
+// GPU memory with one Metal buffer for its whole life. vx_metal_alloc returns
+// null for memory that `malloc` gives instead.
+void *vx_metal_alloc(size_t bytes);
+int vx_metal_free(void *memory);
+
+static void *alloc_gpu_memory(size_t bytes) {
+  void *ptr = vx_metal_alloc(bytes);
+  return ptr ? ptr : malloc(bytes);
+}
+
 // `space_access` is accepted and ignored: the Neural Engine's staging is host
 // memory this process can read, so a model claiming the host may read it is
 // telling the truth. Only a backend handing out memory the host cannot read has
@@ -707,7 +717,7 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
   if (vx_routing_try_alloc(bytes, host_ptr, topology_id, &remote)) {
     return remote;
   }
-  void *ptr = malloc(bytes);
+  void *ptr = alloc_gpu_memory(bytes);
   if (host_ptr) {
     memcpy(ptr, host_ptr, bytes);
   }
@@ -964,7 +974,7 @@ void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
   vx_routing_refuse_handle("a peer handoff", src_device_ptr, src_topology_id);
   (void)src_topology_id;
   (void)dst_topology_id;
-  void *dst = malloc(bytes);
+  void *dst = alloc_gpu_memory(bytes);
   if (dst && src_device_ptr) {
     memcpy(dst, src_device_ptr, bytes);
   }
@@ -972,6 +982,10 @@ void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
 }
 
 void vx_plugin_free(void *device_ptr, uint32_t topology_id) {
+  // A handle of another machine can have the value of a local address.
+  if (!vx_routing_worker((int32_t)topology_id) && vx_metal_free(device_ptr)) {
+    return;
+  }
   // A handle of another machine is not memory of this process, and has no
   // size here.
   const size_t bytes = device_ptr ? malloc_size(device_ptr) : 0;

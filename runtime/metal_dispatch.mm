@@ -8,6 +8,11 @@
 // the tensor's first element from the words. Metal compiles the MSL with safe
 // math, so a kernel gives the same bits as its host copy.
 //
+// Metal maps every page of a buffer when it makes the buffer. So GPU memory
+// from vx_metal_alloc gets one buffer over all of its pages, once. Other memory
+// gets a buffer at each batch, because the program can free it without telling
+// this file.
+//
 // The launches of each host thread share one command buffer, and the GPU runs
 // them only at a wait. A wait commits a command buffer and waits for the GPU.
 // The Mac dispatcher waits before anything that can touch the memory of a
@@ -23,6 +28,7 @@
 #include "vx_kernel_launch.h"
 
 #include <mach/vm_page_size.h>
+#include <sys/mman.h>
 
 #include <algorithm>
 #include <cctype>
@@ -31,6 +37,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -71,12 +78,16 @@ bool syncEachLaunch() {
 // for every thread. vx_metal_set_enabled changes it for the calling thread.
 thread_local int enabledHere = -1;
 
-bool enabled() {
-  static const bool byEnvironment = [] {
+bool enabledByEnvironment() {
+  static const bool on = [] {
     const char *v = getenv("VX_METAL");
     return !(v && strcmp(v, "0") == 0);
   }();
-  return enabledHere < 0 ? byEnvironment : enabledHere == 1;
+  return on;
+}
+
+bool enabled() {
+  return enabledHere < 0 ? enabledByEnvironment() : enabledHere == 1;
 }
 
 struct Gpu {
@@ -120,6 +131,26 @@ const Region *holding(const std::vector<Region> &regions, uintptr_t start,
     if (r.start <= start && end <= r.end)
       return &r;
   return nullptr;
+}
+
+// The GPU memory from vx_metal_alloc, by its first byte. Its pages hold
+// nothing else, so each launch uses the same buffer for a tensor in it.
+std::mutex keptLock;
+
+std::map<uintptr_t, Region> &kept() {
+  static auto *all = new std::map<uintptr_t, Region>;
+  return *all;
+}
+
+// The region of GPU memory that holds the bytes from `start` to before `end`,
+// or a region with no buffer.
+Region keptHolding(uintptr_t start, uintptr_t end) {
+  std::lock_guard<std::mutex> hold(keptLock);
+  auto at = kept().upper_bound(start);
+  if (at == kept().begin())
+    return {};
+  --at;
+  return end <= at->second.end ? at->second : Region{};
 }
 
 // A launch of a kernel with asserts, and the word where a failed assert
@@ -460,6 +491,70 @@ extern "C" void vx_metal_wait_for_memory(const void *start, size_t bytes,
   finishEach([&](const Batch &b) { return b.mustPrecede(a); });
 }
 
+// Maps new pages for `bytes` of GPU memory, and makes their buffer. Returns
+// null when the GPU is off, when `bytes` is less than a page, or when Metal
+// refuses. The caller then uses `malloc`.
+extern "C" void *vx_metal_alloc(size_t bytes) {
+  const size_t page = vm_page_size;
+  if (bytes < page || !enabledByEnvironment())
+    return nullptr;
+  @autoreleasepool {
+    id<MTLDevice> device = gpu().device;
+    const size_t length = (bytes + page - 1) & ~(page - 1);
+    if (!device || length > device.maxBufferLength)
+      return nullptr;
+    void *memory = mmap(nullptr, length, PROT_READ | PROT_WRITE,
+                        MAP_ANON | MAP_PRIVATE, -1, 0);
+    if (memory == MAP_FAILED)
+      return nullptr;
+    // A batch can hold the buffer after vx_metal_free, so the pages go when
+    // Metal releases the buffer.
+    Region r;
+    r.start = reinterpret_cast<uintptr_t>(memory);
+    r.end = r.start + length;
+    r.buffer = [device newBufferWithBytesNoCopy:memory
+                                         length:length
+                                        options:MTLResourceStorageModeShared
+                                    deallocator:^(void *pointer, NSUInteger n) {
+                                      munmap(pointer, n);
+                                    }];
+    if (!r.buffer) {
+      munmap(memory, length);
+      return nullptr;
+    }
+    {
+      std::lock_guard<std::mutex> hold(keptLock);
+      kept()[r.start] = r;
+    }
+    if (verbose())
+      fprintf(stderr, "[Vx Metal] made a buffer of %zu bytes of GPU memory\n",
+              length);
+    return memory;
+  }
+}
+
+// Frees memory from vx_metal_alloc, after the launches that use it. Returns 0
+// when `memory` did not come from vx_metal_alloc.
+extern "C" int vx_metal_free(void *memory) {
+  const uintptr_t at = reinterpret_cast<uintptr_t>(memory);
+  size_t length = 0;
+  {
+    std::lock_guard<std::mutex> hold(keptLock);
+    auto found = kept().find(at);
+    if (found == kept().end())
+      return 0;
+    length = found->second.end - at;
+  }
+  vx_metal_wait_for_memory(memory, length, 1);
+  {
+    std::lock_guard<std::mutex> hold(keptLock);
+    kept().erase(at);
+  }
+  if (verbose())
+    fprintf(stderr, "[Vx Metal] freed %zu bytes of GPU memory\n", length);
+  return 1;
+}
+
 // Waits for each launch that writes the memory of one of these tensors, before
 // the CPU reads them.
 extern "C" void vx_metal_wait_for_tensors(void **args, const int32_t *tags,
@@ -664,16 +759,22 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
     std::shared_ptr<Batch> here = openBatchHere();
     std::vector<Region> made;
     for (const auto &span : joined) {
-      if (here && here->holding(span.first, span.second))
+      if ((here && here->holding(span.first, span.second)) ||
+          holding(made, span.first, span.second))
         continue;
-      Region r;
-      r.start = span.first;
-      r.end = span.second;
-      r.buffer =
-          [device newBufferWithBytesNoCopy:reinterpret_cast<void *>(r.start)
-                                    length:r.end - r.start
-                                   options:MTLResourceStorageModeShared
-                               deallocator:nil];
+      Region r = keptHolding(span.first, span.second);
+      if (!r.buffer) {
+        r.start = span.first;
+        r.end = span.second;
+        r.buffer =
+            [device newBufferWithBytesNoCopy:reinterpret_cast<void *>(r.start)
+                                      length:r.end - r.start
+                                     options:MTLResourceStorageModeShared
+                                 deallocator:nil];
+        if (r.buffer && verbose())
+          fprintf(stderr, "[Vx Metal] made a buffer of %zu bytes for a batch\n",
+                  (size_t)(r.end - r.start));
+      }
       // When Metal refuses this memory, its tensors run on a copy below.
       if (r.buffer)
         made.push_back(r);
