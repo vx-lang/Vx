@@ -3969,44 +3969,12 @@ impl<'r> Lowerer<'r> {
         space: &crate::syntax::MemorySpace,
         shared: &crate::syntax::MemorySpace,
     ) -> Lowered<across::Tail> {
-        let at = stmts
-            .iter()
-            .position(|s| matches!(s, Statement::ForLoop(f) if f.across.is_some()))
-            .ok_or(crate::emitter_gap!())?;
-        let Statement::ForLoop(nest) = &stmts[at] else {
-            return Err(crate::emitter_gap!());
-        };
-        let grouped =
-            nest.body.len() > 1 && crate::hir::check::across::same_level(&nest.body[0], nest);
-        // The loop whose passes count, the statements that run after them, and the outer loop
-        // of a group.
-        let (counted, after, outer): (
-            &crate::syntax::ForLoopStmt,
-            Vec<&Statement>,
-            Option<&crate::syntax::ForLoopStmt>,
-        ) = if grouped {
-            let Statement::ForLoop(inner) = &nest.body[0] else {
-                return Err(crate::emitter_gap!());
-            };
-            (inner, nest.body[1..].iter().collect(), Some(nest))
-        } else {
-            let rest = &stmts[at + 1..];
-            // The code after the nest drops the names it declares. A drop of a name from
-            // before the nest stays in the body that every block runs.
-            let declared: Vec<_> = rest
-                .iter()
-                .filter_map(|s| match s {
-                    Statement::LetDecl(l) => Some(&l.name),
-                    _ => None,
-                })
-                .collect();
-            let after = rest
-                .iter()
-                .filter(|s| !matches!(s, Statement::Drop(d) if !declared.contains(&&d.name)))
-                .filter(|s| !crate::hir::check::across::same_level(s, nest))
-                .collect();
-            (nest, after, None)
-        };
+        let across::Arrivals {
+            counted,
+            after,
+            outer,
+            length,
+        } = across::arrivals(stmts).ok_or(crate::emitter_gap!())?;
         let range = |f: &crate::syntax::ForLoopStmt| match &*f.iterable {
             Expr::Range(r) => Ok(r.clone()),
             _ => Err(crate::emitter_gap!()),
@@ -4030,18 +3998,7 @@ impl<'r> Lowerer<'r> {
         let host = self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty.clone(), 0);
         self.emit_effect(Opcode::TensorZero, host.reg, Register(0), 0);
         let mem_id = crate::arch::memory_space_dispatch_id(space) as u32 as u64;
-        // `--emit-ptx` names the count by its length: one for a whole nest, or the size of the
-        // first axis of blocks when the outer loop of a group goes over all of it.
-        let whole_axis = outer.is_some_and(|o| {
-            o.across.as_ref().is_some_and(|a| a.share.is_none())
-                && matches!(&*o.iterable, Expr::Range(r)
-                    if matches!(&*r.start, Expr::Number(n) if n.value.as_ref() == "0"))
-        });
-        let length = match outer {
-            None => "one",
-            Some(_) if whole_axis => "axis0",
-            Some(_) => "",
-        };
+        // `--emit-ptx` names the count by its length.
         self.strings.push(length.to_string());
         let length = Register(self.strings.len() as u32);
         let count = self.emit_typed(Opcode::Transfer, host.reg, length, ty, mem_id);
