@@ -317,8 +317,17 @@ impl FnEmit<'_> {
         // — the deref loads/stores an 8-byte pointer and the loaded value is itself a pointer
         // (`ptr_of`), so a further deref (`**rr`) chains. (#278)
         let elem_is_ptr = gid == ptr_gid();
+        // A tensor element (`*mut Tensor<f32, [4]>`, a channel's buffer) is its descriptor.
+        let tensor_memty = match self.ctx.tensors.get(&gid) {
+            Some((elem, shape)) => {
+                Some(tensor_memref_ty(elem, shape).ok_or(crate::emitter_gap!())?)
+            }
+            None => None,
+        };
         let (et, scalar_e, agg_gid) = if elem_is_ptr {
             ("!llvm.ptr".to_string(), None, None)
+        } else if let Some((_, shape)) = self.ctx.tensors.get(&gid) {
+            (memref_descriptor_ty(shape.len()), None, None)
         } else if let Some(e) = elem_of_gid(gid) {
             (
                 mlir_scalar(&e).ok_or(crate::emitter_gap!())?.to_string(),
@@ -355,6 +364,14 @@ impl FnEmit<'_> {
                 .map(|(own, sibs)| alias_store_attrs(*own, sibs))
                 .unwrap_or_default();
             self.body += &format!("  {n} = llvm.load {p}{attrs} : !llvm.ptr -> {et}\n");
+            if let Some(memty) = tensor_memty {
+                let m = format!("%pm{idx}");
+                self.body +=
+                    &format!("  {m} = builtin.unrealized_conversion_cast {n} : {et} to {memty}\n");
+                self.names[idx] = m;
+                self.mem_of[idx] = Some(memty);
+                return Ok(());
+            }
             self.names[idx] = n;
             self.etypes[idx] = scalar_e;
             self.agg_val_of[idx] = agg_gid;
@@ -404,6 +421,13 @@ impl FnEmit<'_> {
             let loaded = format!("%ps{idx}");
             self.body += &format!("  {loaded} = llvm.load {val} : !llvm.ptr -> {et}\n");
             val = loaded;
+        }
+        // A tensor goes in as its descriptor.
+        if let Some(memty) = self.mem_of.get(ins.operand2.0 as usize).cloned().flatten() {
+            let d = format!("%pd{idx}");
+            self.body +=
+                &format!("  {d} = builtin.unrealized_conversion_cast {val} : {memty} to {et}\n");
+            val = d;
         }
         // A write in the first `n` elements of a `requires !overlaps(p, q, n)` pointer.
         let attrs = self

@@ -80,6 +80,21 @@ fn impl_display(trait_name: &crate::symbol::Symbol, ib: &decl::ImplBlock) -> Str
     format!("{}<{}>", trait_name, args.join(", "))
 }
 
+/// The byte index of the first `::` in `name` that is outside angle brackets.
+fn top_level_path_sep(name: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    let bytes = name.as_bytes();
+    for i in 0..bytes.len() {
+        match bytes[i] {
+            b'<' => depth += 1,
+            b'>' => depth -= 1,
+            b':' if depth == 0 && bytes.get(i + 1) == Some(&b':') => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
 impl<'a> TypeChecker<'a> {
     pub(crate) fn check_indirectcall_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         let (callee, args, call_span) = match expr {
@@ -1969,7 +1984,8 @@ impl<'a> TypeChecker<'a> {
         arg_types: &[Type],
         span: &crate::syntax::Span,
     ) -> Type {
-        let idx = resolved_name.find("::").expect("caller guards on `::`");
+        // The first `::` outside `<..>`: `Vec<Tensor<f32, [4], Memory::W>>::new` names `new`.
+        let idx = top_level_path_sep(resolved_name).expect("caller guards on `::`");
         let mut struct_name = resolved_name[..idx].to_string();
         let mut method_name = resolved_name[idx + 2..].to_string();
         let mut explicit_ty_str = String::new();
