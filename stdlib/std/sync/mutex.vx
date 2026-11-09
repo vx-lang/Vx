@@ -43,6 +43,10 @@ struct Mutex<T> {
 unsafe impl<T : Send> Send for Mutex<T> {}
 unsafe impl<T : Send> Sync for Mutex<T> {}
 
+// A `lock` can wait for another task on the host, and the drop of a guard wakes one.
+impl<T> HostOnly for Mutex<T> {}
+impl<T> HostOnly for MutexGuard<T> {}
+
 /// The lock on a `Mutex`. Its drop unlocks the `Mutex`.
 struct MutexGuard<T> {
   serving : &AtomicI64,

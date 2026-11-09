@@ -138,6 +138,10 @@ struct Receiver<T> {
 unsafe impl<T : Send> Send for Sender<T> {}
 unsafe impl<T : Send> Send for Receiver<T> {}
 
+// A `send` and a `recv` can wait for another task on the host.
+impl<T> HostOnly for Sender<T> {}
+impl<T> HostOnly for Receiver<T> {}
+
 /// A channel with room for `n` values. `n` must be at least 1.
 fn channel<T : Send + Owned>(n : i64, at : Caller) -> (Sender<T>, Receiver<T>) {
   assert(n >= 1, "channel: the room must be at least 1");
