@@ -127,16 +127,14 @@ impl<'a> TypeChecker<'a> {
                                                 )
                                             }
                                         });
-                                        // A tensor in a memory space is freed through its plugin,
-                                        // and the drop of a payload frees a heap buffer.
-                                        if Self::is_placed_tensor_payload(&expected_ty) {
+                                        if Self::is_located_tensor_payload(&expected_ty) {
                                             if !self.speculating {
                                                 self.errors.error_with_code(
                                                     crate::diagnostic::DiagnosticCode::E3021,
                                                     format!(
                                                         "payload argument {} of {}::{} is {}. An \
-                                                         enum variant cannot carry a tensor in a \
-                                                         memory space yet",
+                                                         enum variant cannot carry a `Pinned` or \
+                                                         `Ref` tensor yet",
                                                         i + 1,
                                                         actual_enum_name,
                                                         variant,
@@ -478,20 +476,19 @@ impl<'a> TypeChecker<'a> {
         )
     }
 
-    /// A short human name for a type, for diagnostics that only need to say what KIND of thing
-    /// the programmer wrote. The `{:?}` rendering used elsewhere prints the whole AST of every
-    /// dimension expression, which buries the one word the reader needs.
-    /// Whether a payload type is a tensor with a memory space, through the wrappers that
-    /// restate where it lives without changing how it is represented.
-    fn is_placed_tensor_payload(t: &Type) -> bool {
+    /// Whether a payload type is a tensor that `Pinned` or `Ref` gives a location. The drop of
+    /// such a payload does not know where the tensor lives.
+    fn is_located_tensor_payload(t: &Type) -> bool {
         match t {
-            Type::Tensor(_, _, placement) => placement.is_some(),
             Type::Pinned(inner, _) | Type::Ref(inner, _) => matches!(**inner, Type::Tensor(..)),
-            Type::Verified(inner) => Self::is_placed_tensor_payload(inner),
+            Type::Verified(inner) => Self::is_located_tensor_payload(inner),
             _ => false,
         }
     }
 
+    /// A short human name for a type, for diagnostics that only need to say what KIND of thing
+    /// the programmer wrote. The `{:?}` rendering used elsewhere prints the whole AST of every
+    /// dimension expression, which buries the one word the reader needs.
     pub(crate) fn short_type_name(t: &Type) -> String {
         match t {
             Type::Scalar(e) => format!("a scalar {e:?}"),

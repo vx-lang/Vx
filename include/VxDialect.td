@@ -103,15 +103,15 @@ def Vx_HeapFreeOp : Vx_Op<"heap_free"> {
 // convert-vx-to-standard frees the buffer when it is a heap buffer this
 // function owns, and erases the drop otherwise. With `unless`,
 // nothing is freed when the flag is true: the tensor was moved. With
-// `field`, the buffer is a tensor field of a struct being dropped, which owned it.
-// With `owned_only`, a buffer this function does not own is left alone rather than
-// reported as an error.
+// `field`, the buffer is a tensor field of a struct being dropped, which owned
+// it. With `owned_only`, a buffer this function does not own is left alone
+// rather than reported as an error. With `placed`, the field is a tensor in a
+// device memory, and the plugin of that topology frees it.
 def Vx_DropOp : Vx_Op<"drop"> {
     let summary = "Frees a tensor whose owner gives it up.";
     let arguments = (ins Arg<AnyType, "the buffer to free", [MemFree]>:$buffer,
-                         Optional<I1>:$moved,
-                         UnitAttr:$owned_only,
-                         UnitAttr:$field);
+        Optional<I1>:$moved, UnitAttr:$owned_only, UnitAttr:$field,
+        OptionalAttr<I32Attr>:$placed);
     let assemblyFormat = "$buffer (`unless` $moved^)? attr-dict `:` type($buffer)";
 }
 
