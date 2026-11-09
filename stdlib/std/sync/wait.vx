@@ -27,6 +27,8 @@ extern {
   fn vx_wake_all(word : *mut i64) -> void;
   /// The Rust core behind `cancelled`.
   fn vx_cancelled() -> i32;
+  /// The Rust core behind `cancelled_at`.
+  fn vx_cancelled_at(at_file : *const i8, at_line : i32) -> i32;
   /// The Rust core behind `clock_ns`.
   fn vx_clock_ns() -> i64;
   /// The Rust core behind `wait_while_until`.
@@ -75,6 +77,13 @@ fn wait_while_or_cancel(word : &AtomicI64, value : i64) -> void {
 /// wait can check it.
 fn cancelled() -> bool {
   return unsafe { vx_cancelled() } != 0;
+}
+
+/// `cancelled` for a wait at the line `at`. A task that sees the cancel many times gets a warning
+/// that names the line.
+fn cancelled_at(at : Caller) -> bool {
+  let l = at.location;
+  return unsafe { vx_cancelled_at(l.file, l.line) } != 0;
 }
 
 /// Runs `body`, and gives its value. Each wait in `body` that can be cancelled gives up `limit`
