@@ -221,8 +221,9 @@ fn main() -> i32 {
 ```
 
 A `match` arm that moves a part out of the matched value takes all of the value. For example,
-`match t { Two::Pair(a, _) => .. }` moves all of `t` into the arm. Each arm of a `match` on a value
-with no name, such as `match make() { .. }`, takes the value too. At its end, the arm drops the
+`match t { Two::Pair(a, _) => .. }` moves all of `t` into the arm. An arm that moves nothing leaves
+`t` as it is, and when that arm runs, `t` drops at the end of its block. Each arm of a `match` on a
+value with no name, such as `match make() { .. }`, takes the value too. At its end, the arm drops the
 names that it binds, and then the parts that it does not name, such as the `_` part. Rust keeps
 the `_` part in `t` and drops it at the end of the block of `t`.
 

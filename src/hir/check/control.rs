@@ -940,15 +940,22 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Whether `pattern`, just bound, takes a value that has to move: a name bound to
-    /// something linear that is not `Copy`.
-    fn pattern_moves(&mut self, pattern: &Pattern) -> bool {
-        let mut bound = Vec::new();
-        pattern_names(pattern, &mut bound);
-        bound.iter().any(|n| {
-            let ty = self.lookup(n).map(|(t, _)| t.clone());
-            ty.is_some_and(|t| t.is_linear() && !self.is_copy(&t))
-        })
+    /// Whether `pattern`, matched against a value of type `ty`, takes a part that has to move:
+    /// it binds a name to something linear that is not `Copy`. The names get their types as
+    /// in `bind_pattern_variables`.
+    fn pattern_moves(&mut self, pattern: &Pattern, ty: &Type) -> bool {
+        match pattern {
+            Pattern::Identifier(_) => ty.is_linear() && !self.is_copy(ty),
+            Pattern::EnumVariant(enum_name, variant, Some(parts)) => self
+                .payload_types(enum_name, variant, ty)
+                .is_some_and(|types| {
+                    parts
+                        .iter()
+                        .zip(&types)
+                        .any(|(p, t)| self.pattern_moves(p, t))
+                }),
+            _ => false,
+        }
     }
 
     /// The names of `pattern`, just bound by a `match` on a reference, are parts of a value that
@@ -1306,6 +1313,13 @@ impl<'a> TypeChecker<'a> {
                 let behind_ref = matches!(expr_ty, Type::Borrow { .. })
                     || matches!(&**match_expr, Expr::Identifier(id)
                         if self.is_bound_behind_ref(id.name.as_ref()));
+                // When only some arms move a part, the value may still be there after the
+                // `match`, as after an `if` that moves it in one branch.
+                let every_arm_moves = place
+                    && !self.speculating
+                    && arms
+                        .iter()
+                        .all(|arm| self.pattern_moves(&arm.pattern, &expr_ty));
 
                 let mut match_ty: Option<Type> = None;
                 let mut covered: Vec<crate::symbol::Symbol> = Vec::new();
@@ -1377,10 +1391,17 @@ impl<'a> TypeChecker<'a> {
                     if behind_ref {
                         self.mark_bound_behind_ref(&arm.pattern);
                         takes_value = false;
-                    } else if place && !self.speculating && self.pattern_moves(&arm.pattern) {
+                    } else if place
+                        && !self.speculating
+                        && self.pattern_moves(&arm.pattern, &expr_ty)
+                    {
                         // Moved before the arm's own names exist, which may hide it.
                         self.pop_scope();
-                        self.match_moves(match_expr);
+                        if every_arm_moves {
+                            self.match_moves(match_expr);
+                        } else {
+                            self.drops_arm_takes(|c| c.match_moves(match_expr));
+                        }
                         self.push_scope();
                         self.bind_pattern_variables(&arm.pattern, &expr_ty);
                         // `match *p` takes nothing: through a reference the move is refused
