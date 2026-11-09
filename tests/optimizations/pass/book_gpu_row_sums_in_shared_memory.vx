@@ -1,0 +1,44 @@
+//===- book_gpu_row_sums_in_shared_memory.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on GPU code (www/book/src/gpu.md): each block copies one row
+// into a tile in shared memory, and `lanes::sum` adds it. Row r holds 256 copies of r + 1.
+//
+// The RUN lines run the CPU copy of the kernel (`CUDA_VISIBLE_DEVICES=`), with both code
+// generators. The last one checks the PTX of the kernel.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=PTX
+// CHECK: {{^}}row 0: 256, row 7: 2048{{$}}
+// PTX: shfl.sync.bfly.b32
+
+// ANCHOR: program
+fn main() -> i32 {
+  let mut m = Tensor<f32, [8, 256]>::fill(0.0);
+  for r in 0..8 {
+    for c in 0..256 {
+      m[r][c] = (r + 1) as f32;
+    }
+  }
+  let rows = transfer(m, Memory::HBM);
+  let mut sums = transfer(Tensor<f32, [8]>::fill(0.0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..8 across blocks {
+      let mut part = unsafe { Tensor<f32, [256], Memory::SMEM>::uninit() };
+      for t in 0..256 across lanes {
+        part[t] = rows[b][t];
+      }
+      let s = lanes::sum(&part, 256);
+      sums[b] = s;
+    }
+  }
+  let back = transfer(sums, Memory::CPU_DRAM);
+  println!("row 0: {}, row 7: {}", back[0], back[7]);
+  return 0;
+}
+// ANCHOR_END: program
