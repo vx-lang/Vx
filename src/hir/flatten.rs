@@ -1141,6 +1141,15 @@ impl<'r> Lowerer<'r> {
     }
 
     /// `Statement::Drop`: free the owner now, or once the next statement has its value.
+    /// Whether the tensor local `name` came out of an enum payload.
+    fn payload_binding(&self, name: &Symbol) -> bool {
+        match self.scope.get(name) {
+            Some(Binding::Reg(v)) => self.payload_tensors.contains(&v.reg.0),
+            Some(Binding::Slot { reg, .. }) => self.payload_tensors.contains(&reg.0),
+            _ => false,
+        }
+    }
+
     fn lower_drop(&mut self, d: &crate::syntax::DropStmt) -> Lowered<()> {
         let drop = if d.ends_lifetime {
             match self.scope.get(&d.name) {
@@ -4624,6 +4633,9 @@ impl<'r> Lowerer<'r> {
         };
         match self.lower_ty_synth(inner)? {
             e @ (LoweredTy::Scalar(_) | LoweredTy::Aggregate(_) | LoweredTy::Ptr) => Some(e),
+            // A raw pointer to tensors, a channel's buffer, holds their descriptors. A reference to
+            // a tensor is the descriptor itself, so its elements are the tensor's numbers.
+            e @ LoweredTy::Tensor { .. } if matches!(ty, Type::Pointer(..)) => Some(e),
             _ => None,
         }
     }
@@ -4673,15 +4685,23 @@ impl<'r> Lowerer<'r> {
     }
 
     fn declared_field_ty(&mut self, gid: &TypeId, member: &str) -> Option<LoweredTy> {
-        let ty = self
-            .registry
-            .structs
-            .get(gid)?
+        // A generic instance, `SendError<Tensor<..>>`, has its declaration's fields with its
+        // type arguments put in.
+        let (declaration, args) = match self.registry.structs.get(gid) {
+            Some(_) => (*gid, Vec::new()),
+            None => {
+                let identity = self.completed_layout_identities.get(gid)?;
+                (identity.declaration, identity.arguments.clone())
+            }
+        };
+        let decl = self.registry.structs.get(&declaration)?;
+        let mapping: HashMap<_, _> = decl.generics.iter().cloned().zip(args).collect();
+        let ty = decl
             .fields
             .iter()
             .find(|(n, _)| n.as_ref() == member)?
             .1
-            .clone();
+            .substitute(&mapping);
         self.lower_ty_synth(&ty)
     }
 
@@ -7289,9 +7309,19 @@ impl<'r> Lowerer<'r> {
                 // function with branches keeps its memref in a slot, so the new value can leave the
                 // branch.
                 if matches!(v.ty, LoweredTy::Tensor { .. }) {
+                    // `let h = b`, with `b` a tensor out of an enum payload: `h` owns it now, and
+                    // its drop frees it as the drop of `b` would.
+                    let from_payload = matches!(&l.expr, Expr::Identifier(id)
+                        if self.payload_binding(&id.name));
+                    if from_payload {
+                        self.payload_tensors.insert(v.reg.0);
+                    }
                     if self.has_control_flow && self.mutated.contains(&l.name) {
                         let slot = self.emit_alloca(v.ty.clone());
                         self.emit_effect(Opcode::Store, slot.reg, v.reg, 0);
+                        if from_payload {
+                            self.payload_tensors.insert(slot.reg.0);
+                        }
                         self.scope.insert(
                             l.name.clone(),
                             Binding::Slot {
@@ -8634,6 +8664,14 @@ fn parse_scalar_type_arg(s: &str) -> Type {
             region_id: 0,
         };
     }
+    // A tensor argument (`Sender<Tensor<f32, [4], Memory::W>>`), with its shape and memory.
+    if s.starts_with("Tensor<") {
+        let tokens = crate::lexer::Lexer::new(s).tokenize();
+        let mut parser = crate::parser::Parser::new(&tokens, s);
+        if let Ok(ty @ Type::Tensor(..)) = parser.parse_type() {
+            return ty;
+        }
+    }
     // A `const` argument (`Array<f32, 10>`) is the literal it was written as.
     if s.chars().all(|c| c.is_ascii_digit()) && !s.is_empty() {
         return Type::Const(Box::new(Expr::Number(crate::syntax::NumberExpr::new(
@@ -8823,6 +8861,10 @@ fn sizeof_bytes(ty: &Type) -> Option<u64> {
         Type::Scalar(I8 | U8 | Bool) => 1,
         Type::Scalar(I16 | U16 | BF16 | F16) => 2,
         Type::Pointer(..) | Type::Borrow { .. } | Type::Ref(..) => 8,
+        // A tensor is held as its memref descriptor. A rank-0 tensor is a plain number.
+        Type::Tensor(_, dims, _) if !dims.is_empty() => {
+            crate::layout::tensor_descriptor_bytes(dims.len()) as u64
+        }
         _ => return None,
     })
 }

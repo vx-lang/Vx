@@ -2183,6 +2183,10 @@ impl<'c> MeliorGenerator<'c> {
             syntax::Type::Pinned(inner, _) | syntax::Type::Verified(inner) => {
                 self.type_size_align(inner, depth)
             }
+            // A tensor is held as its memref descriptor. A rank-0 tensor is a plain number.
+            syntax::Type::Tensor(_, dims, _) if !dims.is_empty() => {
+                Some((crate::layout::tensor_descriptor_bytes(dims.len()), 8))
+            }
             // `Holder<i64>`: the fields with `T` replaced by `i64`.
             syntax::Type::GenericInstance(base, args) => {
                 let syntax::Type::Struct(name, _) = &**base else {
