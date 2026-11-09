@@ -2,6 +2,8 @@
 
 A Vx program can do several things at the same time on the CPU. It starts each one as a task. This
 chapter shows how to start tasks, how they share data, and how they send values to each other.
+[What Vx guarantees about concurrency](guarantees.md) lists what you can rely on when tasks run at
+the same time, and how we check each promise.
 
 Each program in this chapter is also a test of the compiler. You can find it under
 `tests/backend/pass/` with the name that its section gives.
