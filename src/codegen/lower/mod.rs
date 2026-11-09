@@ -21,6 +21,7 @@ use melior::ir::{
 };
 
 use crate::syntax;
+pub(crate) mod across;
 mod control_flow;
 pub(crate) mod expr;
 mod seam_cert;
