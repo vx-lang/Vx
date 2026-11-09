@@ -1573,7 +1573,7 @@ impl<'a> TypeChecker<'a> {
             Expr::IndirectCall(ic) => &ic.args,
             _ => &[],
         };
-        let events = |this: &mut Self| this.pointer_facts_at_call(expr, written);
+        let events = |this: &mut Self| this.pointer_facts_at_call(expr, written, &ty);
         self.pointer_facts_events_then_changes(events, |this| {
             let params = match &*expr {
                 Expr::FunctionCall(fc) => this.call_param_types(fc.name.as_ref(), expr),
