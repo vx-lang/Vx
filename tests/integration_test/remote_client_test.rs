@@ -180,6 +180,104 @@ fn a_dispatch_reaches_a_worker_process_over_tcp() {
     );
 }
 
+/// Two hosts use two workers in opposite order, and both finish. Host A holds
+/// worker 1 and then asks worker 2, while host B holds worker 2 and then asks
+/// worker 1. A worker that served one host until it disconnected left both
+/// hosts waiting forever.
+#[test]
+fn two_hosts_that_use_two_workers_in_opposite_order_both_finish() {
+    let root = repo_root();
+    let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    let cxx = runtime_test_build::cxx();
+
+    let worker_bin = tmp.join("vx-worker-two-hosts");
+    compile(
+        &cxx,
+        &[
+            root.join("runtime/vx_worker_main.cpp"),
+            root.join("runtime/host_dispatch.cpp"),
+        ],
+        &worker_bin,
+        &ffi_flags(),
+    );
+    let client_bin = tmp.join("two_workers_client");
+    compile(
+        &cxx,
+        &[root.join("tests/runtime/two_workers_client.cpp")],
+        &client_bin,
+        &[],
+    );
+
+    let port_1 = 20000 + ((std::process::id() + 4) % 10000) as u16;
+    let port_2 = 20000 + ((std::process::id() + 5) % 10000) as u16;
+    let mut workers = Vec::new();
+    for (port, id) in [(port_1, "1"), (port_2, "2")] {
+        workers.push(Worker(
+            Command::new(&worker_bin)
+                .args([
+                    "--port",
+                    &port.to_string(),
+                    "--topology",
+                    "0",
+                    "--worker-id",
+                    id,
+                ])
+                .spawn()
+                .expect("failed to start a worker"),
+        ));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(400));
+
+    // Each host makes its file when it holds its first worker.
+    let file_a = tmp.join("two-hosts-a-ready");
+    let file_b = tmp.join("two-hosts-b-ready");
+    let _ = std::fs::remove_file(&file_a);
+    let _ = std::fs::remove_file(&file_b);
+    let start = |first: u16, second: u16, mine: &PathBuf, other: &PathBuf| {
+        Command::new(&client_bin)
+            .args([
+                "127.0.0.1",
+                &first.to_string(),
+                &second.to_string(),
+                mine.to_str().unwrap(),
+                other.to_str().unwrap(),
+            ])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("failed to start a host")
+    };
+    let mut hosts = [
+        ("A", start(port_1, port_2, &file_a, &file_b)),
+        ("B", start(port_2, port_1, &file_b, &file_a)),
+    ];
+
+    // A deadlock does not fail, it waits. So stop the hosts after 30 s.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while hosts
+        .iter_mut()
+        .any(|(_, h)| h.try_wait().expect("failed to poll a host").is_none())
+    {
+        if std::time::Instant::now() > deadline {
+            for (_, h) in hosts.iter_mut() {
+                let _ = h.kill();
+            }
+            panic!("the two hosts did not finish in 30 s: a deadlock across the two workers");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    drop(workers);
+    for (name, h) in hosts {
+        let out = h.wait_with_output().expect("failed to collect a host");
+        assert!(
+            out.status.success(),
+            "host {name} failed:\n{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
 /// A Vx program placing its data on a worker, computing there, and reading the
 /// answer home -- checked against the same program run with no manifest.
 ///
