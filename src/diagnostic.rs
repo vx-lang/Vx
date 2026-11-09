@@ -714,6 +714,14 @@ pub enum DiagnosticCode {
     /// at the same time, so their working set has no bound. Use a `for` loop over a constant range,
     /// or join each task in its pass. Downgraded to W1028 when the space is declared `overcommit`.
     E6039,
+    /// A channel of tensors in a memory with a capacity, with a room that is not known at compile
+    /// time. The channel can hold that many tensors at once, so the working set has no bound.
+    /// Downgraded to W1028 when the space is declared `overcommit`.
+    E6040,
+    /// A function that makes a channel of tensors in a memory with a capacity, and returns an end
+    /// of that channel. The room of the channel is counted in the function that calls `channel`,
+    /// only until that function returns.
+    E6041,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

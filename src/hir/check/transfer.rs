@@ -580,7 +580,114 @@ impl<'a> TypeChecker<'a> {
         context: &str,
         span: &Span,
     ) {
-        self.check_capacity_of(elem, dims, space, context, span, true)
+        self.check_capacity_of(elem, dims, space, context, span, true, 1)
+    }
+
+    /// A channel of tensors in a memory with a capacity holds up to `n` of them, from the
+    /// `channel(n)` call until both of its ends drop. The check cannot bound how many are in the
+    /// channel at a time, so it counts all `n` at the call, as a tile of the caller.
+    pub(crate) fn count_channel_room(&mut self, t: &Type, n: &Expr, span: &Span) {
+        let h = crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
+        let bounded: Vec<_> = self
+            .placed_tensors(t)
+            .into_iter()
+            .filter(|(_, _, space)| h.descriptor(space).is_some_and(|d| d.capacity.is_some()))
+            .collect();
+        if bounded.is_empty() {
+            return;
+        }
+        if !self.traffic.channel_rooms.contains(span) {
+            self.traffic.channel_rooms.push(*span);
+        }
+        let room = match n {
+            Expr::Number(num) => num.value.parse::<i64>().ok(),
+            e => self.extent_value(e),
+        };
+        for (elem, dims, space) in bounded {
+            match room {
+                Some(room) if room >= 1 => {
+                    let context = format!("the room of this channel, {room} of `{t}`,");
+                    self.check_capacity_of(&elem, &dims, &space, &context, span, true, room as u64);
+                }
+                _ => self.report_channel_room_not_known(&space, t, span),
+            }
+        }
+    }
+
+    /// E6040: the room of a channel of tensors in `space` is not known at compile time.
+    fn report_channel_room_not_known(&mut self, space: &MemorySpace, t: &Type, span: &Span) {
+        if self.speculating {
+            return;
+        }
+        let overcommit = self.env.memories.values().any(|m| {
+            m.overcommit && crate::syntax::MemorySpace::from_name(m.name.as_ref()) == *space
+        });
+        let msg = format!(
+            "this channel holds `{t}`, which lives in memory space '{}', and its room is not \
+             known at compile time. The channel can hold that many tensors at once, so the \
+             working set of '{}' has no bound. Give `channel` a constant room",
+            space.name(),
+            space.name()
+        );
+        let at = Some(crate::diagnostic::SourceSpan::from_ast_span(span));
+        if overcommit {
+            self.errors.warn(
+                crate::diagnostic::DiagnosticCode::W1028,
+                format!(
+                    "{msg}. This is allowed because '{}' is `overcommit`",
+                    space.name()
+                ),
+                at,
+            );
+        } else {
+            self.errors
+                .error_with_code(crate::diagnostic::DiagnosticCode::E6040, msg, at);
+        }
+    }
+
+    /// E6041: the room of a channel is counted in the function that calls `channel`, until that
+    /// function returns. So such a function cannot give an end of the channel to its caller.
+    pub(crate) fn refuse_a_returned_channel_end(&mut self, return_type: &Type) {
+        let rooms = std::mem::take(&mut self.traffic.channel_rooms);
+        if rooms.is_empty() || self.speculating || !Self::holds_a_channel_end(return_type) {
+            return;
+        }
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E6041,
+            format!(
+                "'{}' makes a channel of tensors in a memory with a capacity, and returns an \
+                 end of a channel. The room of the channel is counted in the function that calls \
+                 `channel`, only until it returns. Make the channel in the function that uses \
+                 its ends",
+                self.current_function
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(&rooms[0])),
+        );
+    }
+
+    /// Whether `ty` holds a `Sender` or a `Receiver`.
+    fn holds_a_channel_end(ty: &Type) -> bool {
+        match ty {
+            Type::GenericInstance(base, args) => {
+                Self::is_channel_end(base) || args.iter().any(Self::holds_a_channel_end)
+            }
+            Type::Struct(..) => Self::is_channel_end(ty),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn is_channel_end_type(ty: &Type) -> bool {
+        match ty {
+            Type::GenericInstance(base, _) => Self::is_channel_end(base),
+            other => Self::is_channel_end(other),
+        }
+    }
+
+    /// `Sender<T>` or `Receiver<T>` of `std::sync::channel`. Each holds a pointer to the room of
+    /// its channel, which `channel` counts, and no `T` of its own.
+    fn is_channel_end(ty: &Type) -> bool {
+        matches!(ty, Type::Struct(n, _)
+            if matches!(n.split('<').next(), Some("Sender" | "Receiver")))
     }
 
     /// E6031: a static shape that folds to a negative extent, or to more bytes than 64 bits hold.
@@ -624,6 +731,7 @@ impl<'a> TypeChecker<'a> {
         true
     }
 
+    /// `copies`: how many tensors of this shape the placement holds.
     #[allow(clippy::too_many_arguments)]
     fn check_capacity_of(
         &mut self,
@@ -633,6 +741,7 @@ impl<'a> TypeChecker<'a> {
         context: &str,
         span: &Span,
         record: bool,
+        copies: u64,
     ) {
         if self.refuse_unrepresentable_shape(elem, dims, span) {
             return;
@@ -680,7 +789,8 @@ impl<'a> TypeChecker<'a> {
                     });
                 return;
             };
-            let rounded = crate::hir::memory::granule_round(raw, decl.granule.map(|g| g.0));
+            let rounded = crate::hir::memory::granule_round(raw, decl.granule.map(|g| g.0))
+                .saturating_mul(copies);
             (rounded, cap)
         };
         let (rounded, cap) = sized;
@@ -693,7 +803,8 @@ impl<'a> TypeChecker<'a> {
                         "{context} needs {rounded} bytes but memory space '{}' has capacity {cap} bytes",
                         space.name()
                     ),
-                    None,
+                    // The room of a channel is at the `channel` call.
+                    (copies > 1).then(|| crate::diagnostic::SourceSpan::from_ast_span(span)),
                 )
                 // Machine-readable form of the same verdict, for `--diagnostics-json` (#282).
                 .facts = Some(crate::diagnostic::DiagnosticFacts::Capacity {
@@ -1160,6 +1271,8 @@ impl<'a> TypeChecker<'a> {
             | Type::Pointer(inner, _, _)
             | Type::Verified(inner)
             | Type::Pinned(inner, _) => self.collect_placed_tensors(inner, out),
+            // A channel end holds no tensor: `channel` counts the room of the channel.
+            Type::GenericInstance(base, _) if Self::is_channel_end(base) => return,
             Type::GenericInstance(base, args) => {
                 self.collect_placed_tensors(base, out);
                 for a in args {
@@ -1285,7 +1398,7 @@ impl<'a> TypeChecker<'a> {
         self.report_unheld_placements(ty, context);
         self.check_alignments_in(ty, context, span);
         for (e, d, space) in self.placed_tensors(ty) {
-            self.check_capacity_of(&e, &d, &space, context, span, record);
+            self.check_capacity_of(&e, &d, &space, context, span, record, 1);
             self.check_element_type(
                 &e,
                 &space,
