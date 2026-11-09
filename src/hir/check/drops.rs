@@ -770,8 +770,22 @@ impl<'a> TypeChecker<'a> {
                 payload: None,
                 placement: ty.placement().cloned(),
             }],
-            // The same value as the type inside, with a proof or a location attached.
-            Type::Verified(inner) | Type::Pinned(inner, _) => self.drops_glue_at(inner, depth),
+            // The same value as the type inside, with a proof attached.
+            Type::Verified(inner) => self.drops_glue_at(inner, depth),
+            // A pinned tensor is in the memory of the topology the pin names, so its drop
+            // frees through that memory's plugin. The type is all the drop has to go on once
+            // the descriptor sits in a struct: a field is not a transfer's result, so nothing
+            // else remembers where its memory came from.
+            Type::Pinned(inner, topology) => self
+                .drops_glue_at(inner, depth)
+                .into_iter()
+                .map(|mut part| {
+                    if part.placement.is_none() {
+                        part.placement = Some(crate::syntax::Placement::on(topology.clone()));
+                    }
+                    part
+                })
+                .collect(),
             // A type is often written as a struct before anything knows it names an enum, so
             // the declarations decide.
             _ if self.drops_enum_decl(ty).is_some() => self.drops_enum_glue(ty, depth),
