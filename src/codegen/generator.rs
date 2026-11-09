@@ -169,6 +169,11 @@ pub struct MeliorGenerator<'c> {
     /// `llvm.intr.assume` certificates (`vxc --emit-seam-certs`). Off by default so
     /// ordinary lowering is unchanged. See `crate::codegen::lower::seam_cert`.
     pub emit_seam_certs: bool,
+    /// For `--emit-ptx` and `--emit-msl`: a function that holds a `spawn` keeps the Vx name and
+    /// type of each parameter, so the compiler can describe the parameters of its GPU kernel.
+    pub describe_params: bool,
+    /// The `spawn` regions lowered so far.
+    pub(crate) spawns: usize,
     /// Host-proven facts (the conditions of `assert`s lowered so far in the current
     /// function) available for transport into a device kernel body. Reset per function.
     pub(crate) assert_facts: Vec<syntax::Expr>,
@@ -1116,6 +1121,8 @@ impl<'c> MeliorGenerator<'c> {
             ptr_ty,
             none_ty,
             emit_seam_certs: false,
+            describe_params: false,
+            spawns: 0,
             assert_facts: Vec::new(),
         }
     }
@@ -1588,6 +1595,7 @@ impl<'c> MeliorGenerator<'c> {
         // transported into a device kernel in an unrelated function (which could name the
         // same variable but bind a different, non-dominating SSA value).
         self.assert_facts.clear();
+        let spawns = self.spawns;
         let mut terminated = false;
         for stmt in &func.body {
             if let Some(b) = self.generate_statement(stmt, current_block)? {
@@ -1687,6 +1695,33 @@ impl<'c> MeliorGenerator<'c> {
                 melior::ir::Identifier::new(self.context, "passthrough"),
                 attr,
             ));
+        }
+
+        if self.describe_params && self.spawns > spawns {
+            let quoted =
+                |s: String| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
+            let list = |items: Vec<String>| format!("[{}]", items.join(", "));
+            for (name, items) in [
+                (
+                    "vx.param_names",
+                    func.params
+                        .iter()
+                        .map(|(n, _)| quoted(n.to_string()))
+                        .collect(),
+                ),
+                (
+                    "vx.param_types",
+                    func.params
+                        .iter()
+                        .map(|(_, t)| quoted(t.to_string()))
+                        .collect(),
+                ),
+            ] {
+                let text = list(items);
+                let attr = melior::ir::Attribute::parse(self.context, &text)
+                    .ok_or_else(|| LowerError::from(format!("bad {name} attribute: {text}")))?;
+                func_attributes.push((melior::ir::Identifier::new(self.context, name), attr));
+            }
         }
 
         // A `pub fn` stays exported: `vx-hide-program-symbols` skips a function with `vx.pub`.

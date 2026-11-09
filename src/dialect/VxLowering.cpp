@@ -676,6 +676,16 @@ static void useStackScratchIn(Region &kernel, PatternRewriter &rewriter) {
   }
 }
 
+/// The block argument that `v` is, or that `v` reads. The AST code generator
+/// keeps a reference to a tensor in a slot, and a region reads the tensor from
+/// the slot before it starts.
+static BlockArgument parameterOf(Value v) {
+  if (auto load = v.getDefiningOp<memref::LoadOp>();
+      load && load.getIndices().empty() && isa<MemRefType>(v.getType()))
+    v = load.getMemRef();
+  return dyn_cast<BlockArgument>(v);
+}
+
 /// A launch size as source text, from the parameters of `func` and numbers,
 /// for the `--emit-ptx` manifest: `(rows + 3) / 4`. Empty when the size comes
 /// from anything else.
@@ -1007,7 +1017,7 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     auto parentFunc = op->getParentOfType<func::FuncOp>();
     {
       auto paramIndex = [&](Value v) -> unsigned {
-        auto arg = dyn_cast<BlockArgument>(v);
+        auto arg = parameterOf(v);
         if (parentFunc && arg &&
             arg.getOwner() == &parentFunc.getBody().front())
           return arg.getArgNumber();
@@ -1108,7 +1118,7 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       // the kernel gives.
       SmallVector<int64_t> paramOf;
       for (Value cap : captures) {
-        auto arg = dyn_cast<BlockArgument>(cap);
+        auto arg = parameterOf(cap);
         auto count = cap.getDefiningOp<vx::TransferOp>();
         if (count && count->hasAttr("vx.arrivals")) {
           kernelOp->setAttr("vx.arrivals", count->getAttr("vx.arrivals"));
@@ -8082,8 +8092,7 @@ nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule,
     if (!paramOf || !names || !types) {
       f.emitError() << flag
                     << " cannot name this GPU kernel, because the code "
-                       "generator did not record the function that holds it. "
-                       "Only the flat code generator records it";
+                       "generator did not record the function that holds it";
       return failure();
     }
     assert(paramOf.size() == static_cast<int64_t>(f.getNumArguments()) &&
