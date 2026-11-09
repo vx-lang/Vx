@@ -12,9 +12,9 @@
 //
 // f16 and 512x512 are both required, and neither is a tuning choice. Asked
 // through CoreML's own `MLComputePlan` which device it prefers, CoreML answers
-// CPU for every fp32 matmul at every size tried, and for f16 up to 384. At 512
-// in f16 it answers Neural Engine. An f32 primitive therefore never reaches the
-// ANE however large it is (Vx#436).
+// the CPU or the GPU for every fp32 matmul tried, and the CPU for f16 up to
+// 384. At 512 in f16 it answers Neural Engine. An f32 primitive therefore never
+// reaches the ANE however large it is (Vx#436).
 //
 // What this test pins is the *answer*, on every platform: 2.0 x 1.0 summed over
 // 512 terms is 1024, whether the work went to the Neural Engine, to a CoreML CPU
