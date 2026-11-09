@@ -1,6 +1,6 @@
 //===- abi_of_the_dispatch_library.rs - the whole ABI ----------*- Rust -*-===//
 //
-// Part of the Vx Project, under the Apache License v2.0 WITH LLVM Exceptions.
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
 //
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

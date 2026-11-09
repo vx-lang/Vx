@@ -312,7 +312,7 @@ void a_spirv_payload_reads_as_a_version_a_format_and_a_section() {
   // `evil` and the test would pass while pinning nothing.
   check(image.size() == 15, "the image is the length this test describes");
   check(image.find('\0') != std::string::npos,
-        "the image holds a NUL byte, which is why it rides in a section");
+        "the image holds a NUL byte, which is why it is carried in a section");
 
   // The other format a payload can name today. The library refuses it rather
   // than guessing a loader, so it has to be readable as its own answer.
