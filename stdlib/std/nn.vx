@@ -1,0 +1,418 @@
+//===- nn.vx - Vx Standard Library --------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Kernels for one token of a transformer decoder, such as Llama or Qwen, on `Topology::Device`.
+// Each function is one kernel launch. Weights are bf16 and every other value is f32, and each
+// kernel adds in f32. Put all tensors in one memory that the device can read, such as
+// `Memory::HBM`.
+//
+// - A matrix of `rows` x `cols` is a rank-1 tensor, with row r at r * cols. `cols` must be a
+//   multiple of 8, because each lane reads 8 values at a time.
+// - The heads of Q, K, V and of the attention output are a tensor [heads, head_dim]. `head_dim`
+//   must be a multiple of 8 and at most 128.
+// - The KV cache of a layer is two tensors [max_seq, kv_heads, head_dim], one for K and one for V.
+//   Row `pos` holds the token at position `pos`.
+// - Head h of Q uses head h / (q_heads / kv_heads) of K and V (grouped-query attention).
+import core::num;
+
+/// y[r] = (row r of w) . x, for r below `rows`.
+fn nn_matvec<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<bf16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
+  nn_check_matrix(y.len(), w.len(), x.len(), rows, cols);
+  spawn on(Topology::Device) {
+    for r in 0..rows across blocks {
+      let mut part = unsafe { Tensor<f32, [128], Memory::SMEM>::uninit() };
+      for l in 0..128 across lanes {
+        let base = r * cols;
+        let mut acc : f32 = 0.0;
+        let mut c = l * 8;
+        while c < cols {
+          acc = acc + (w[base + c] as f32) * x[c];
+          acc = acc + (w[base + c + 1] as f32) * x[c + 1];
+          acc = acc + (w[base + c + 2] as f32) * x[c + 2];
+          acc = acc + (w[base + c + 3] as f32) * x[c + 3];
+          acc = acc + (w[base + c + 4] as f32) * x[c + 4];
+          acc = acc + (w[base + c + 5] as f32) * x[c + 5];
+          acc = acc + (w[base + c + 6] as f32) * x[c + 6];
+          acc = acc + (w[base + c + 7] as f32) * x[c + 7];
+          c = c + 1024;
+        }
+        part[l] = acc;
+      }
+      let s = lanes::sum(&part, 128);
+      y[r] = s;
+    }
+  }
+  return;
+}
+
+/// y[r] = y[r] + (row r of w) . x: a matrix-vector product and a residual add.
+fn nn_matvec_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<bf16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
+  nn_check_matrix(y.len(), w.len(), x.len(), rows, cols);
+  spawn on(Topology::Device) {
+    for r in 0..rows across blocks {
+      let mut part = unsafe { Tensor<f32, [128], Memory::SMEM>::uninit() };
+      for l in 0..128 across lanes {
+        let base = r * cols;
+        let mut acc : f32 = 0.0;
+        let mut c = l * 8;
+        while c < cols {
+          acc = acc + (w[base + c] as f32) * x[c];
+          acc = acc + (w[base + c + 1] as f32) * x[c + 1];
+          acc = acc + (w[base + c + 2] as f32) * x[c + 2];
+          acc = acc + (w[base + c + 3] as f32) * x[c + 3];
+          acc = acc + (w[base + c + 4] as f32) * x[c + 4];
+          acc = acc + (w[base + c + 5] as f32) * x[c + 5];
+          acc = acc + (w[base + c + 6] as f32) * x[c + 6];
+          acc = acc + (w[base + c + 7] as f32) * x[c + 7];
+          c = c + 1024;
+        }
+        part[l] = acc;
+      }
+      let s = lanes::sum(&part, 128);
+      y[r] = y[r] + s;
+    }
+  }
+  return;
+}
+
+/// y[r] = y[r] + (row r of w) . x, where x is a tensor of heads: value c of the row multiplies
+/// x[c / head_dim][c % head_dim]. This is the output projection of attention, with its residual
+/// add.
+fn nn_matvec_heads_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<bf16, [?], Memory::M>, x : &Tensor<f32, [?, ?], Memory::M>, rows : i32, heads : i32, head_dim : i32) -> void {
+  let cols = heads * head_dim;
+  nn_check_heads(x.extent(0), x.extent(1), heads, head_dim);
+  nn_check_matrix(y.len(), w.len(), cols, rows, cols);
+  spawn on(Topology::Device) {
+    for r in 0..rows across blocks {
+      let mut part = unsafe { Tensor<f32, [128], Memory::SMEM>::uninit() };
+      for l in 0..128 across lanes {
+        let base = r * cols;
+        let mut acc : f32 = 0.0;
+        let mut c = l * 8;
+        while c < cols {
+          // head_dim is a multiple of 8, so the 8 values from c are in one head.
+          let h = c / head_dim;
+          let d = c - h * head_dim;
+          acc = acc + (w[base + c] as f32) * x[h][d];
+          acc = acc + (w[base + c + 1] as f32) * x[h][d + 1];
+          acc = acc + (w[base + c + 2] as f32) * x[h][d + 2];
+          acc = acc + (w[base + c + 3] as f32) * x[h][d + 3];
+          acc = acc + (w[base + c + 4] as f32) * x[h][d + 4];
+          acc = acc + (w[base + c + 5] as f32) * x[h][d + 5];
+          acc = acc + (w[base + c + 6] as f32) * x[h][d + 6];
+          acc = acc + (w[base + c + 7] as f32) * x[h][d + 7];
+          c = c + 1024;
+        }
+        part[l] = acc;
+      }
+      let s = lanes::sum(&part, 128);
+      y[r] = y[r] + s;
+    }
+  }
+  return;
+}
+
+/// The Q, K and V projections of one token, with their bias. `w` has one row for each value of
+/// each head: first the q_heads heads of Q, then the kv_heads heads of K, then those of V. Row
+/// d of head h is row h * head_dim + d, and `b` has its bias at the same place. So `w` has
+/// (q_heads + 2 * kv_heads) * head_dim rows of `cols` values.
+fn nn_qkv<M : Memory>(q : &mut Tensor<f32, [?, ?], Memory::M>, k : &mut Tensor<f32, [?, ?], Memory::M>, v : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<bf16, [?], Memory::M>, b : &Tensor<bf16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, q_heads : i32, kv_heads : i32, head_dim : i32, cols : i32) -> void {
+  let heads = q_heads + 2 * kv_heads;
+  nn_check_heads(q.extent(0), q.extent(1), q_heads, head_dim);
+  nn_check_heads(k.extent(0), k.extent(1), kv_heads, head_dim);
+  nn_check_heads(v.extent(0), v.extent(1), kv_heads, head_dim);
+  nn_check_matrix(b.len(), w.len(), x.len(), heads * head_dim, cols);
+  spawn on(Topology::Device) {
+    for h in 0..heads across blocks {
+      for d in 0..head_dim across blocks {
+        let mut part = unsafe { Tensor<f32, [128], Memory::SMEM>::uninit() };
+        for l in 0..128 across lanes {
+          let base = (h * head_dim + d) * cols;
+          let mut acc : f32 = 0.0;
+          let mut c = l * 8;
+          while c < cols {
+            acc = acc + (w[base + c] as f32) * x[c];
+            acc = acc + (w[base + c + 1] as f32) * x[c + 1];
+            acc = acc + (w[base + c + 2] as f32) * x[c + 2];
+            acc = acc + (w[base + c + 3] as f32) * x[c + 3];
+            acc = acc + (w[base + c + 4] as f32) * x[c + 4];
+            acc = acc + (w[base + c + 5] as f32) * x[c + 5];
+            acc = acc + (w[base + c + 6] as f32) * x[c + 6];
+            acc = acc + (w[base + c + 7] as f32) * x[c + 7];
+            c = c + 1024;
+          }
+          part[l] = acc;
+        }
+        let dot = lanes::sum(&part, 128);
+        let s = dot + (b[h * head_dim + d] as f32);
+        if h < q_heads {
+          q[h][d] = s;
+        } else if h < q_heads + kv_heads {
+          k[h - q_heads][d] = s;
+        } else {
+          v[h - q_heads - kv_heads][d] = s;
+        }
+      }
+    }
+  }
+  return;
+}
+
+/// The SwiGLU input of the MLP of one token: out[r] = silu(g) * u, where g is the product of row
+/// r of `w` with x, u is the product of row rows + r, and silu(g) = g / (1 + e^-g). So `w` has
+/// the `rows` rows of the gate projection, and then the `rows` rows of the up projection.
+fn nn_swiglu<M : Memory>(out : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<bf16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
+  nn_check_matrix(out.len(), w.len() / 2, x.len(), rows, cols);
+  spawn on(Topology::Device) {
+    for r in 0..rows across blocks {
+      let mut gpart = unsafe { Tensor<f32, [128], Memory::SMEM>::uninit() };
+      let mut upart = unsafe { Tensor<f32, [128], Memory::SMEM>::uninit() };
+      for l in 0..128 across lanes {
+        let gate = r * cols;
+        let up = (rows + r) * cols;
+        let mut g : f32 = 0.0;
+        let mut u : f32 = 0.0;
+        let mut c = l * 8;
+        while c < cols {
+          g = g + (w[gate + c] as f32) * x[c];
+          g = g + (w[gate + c + 1] as f32) * x[c + 1];
+          g = g + (w[gate + c + 2] as f32) * x[c + 2];
+          g = g + (w[gate + c + 3] as f32) * x[c + 3];
+          g = g + (w[gate + c + 4] as f32) * x[c + 4];
+          g = g + (w[gate + c + 5] as f32) * x[c + 5];
+          g = g + (w[gate + c + 6] as f32) * x[c + 6];
+          g = g + (w[gate + c + 7] as f32) * x[c + 7];
+          u = u + (w[up + c] as f32) * x[c];
+          u = u + (w[up + c + 1] as f32) * x[c + 1];
+          u = u + (w[up + c + 2] as f32) * x[c + 2];
+          u = u + (w[up + c + 3] as f32) * x[c + 3];
+          u = u + (w[up + c + 4] as f32) * x[c + 4];
+          u = u + (w[up + c + 5] as f32) * x[c + 5];
+          u = u + (w[up + c + 6] as f32) * x[c + 6];
+          u = u + (w[up + c + 7] as f32) * x[c + 7];
+          c = c + 1024;
+        }
+        gpart[l] = g;
+        upart[l] = u;
+      }
+      let g = lanes::sum(&gpart, 128);
+      let u = lanes::sum(&upart, 128);
+      out[r] = g / (1.0 + (0.0 - g).fast_exp()) * u;
+    }
+  }
+  return;
+}
+
+/// y = x / sqrt(mean(x^2) + eps) * w, for the first n values.
+fn nn_rms_norm<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, w : &Tensor<bf16, [?], Memory::M>, n : i32, eps : f32) -> void {
+  assert(n > 0 && y.len() >= n && x.len() >= n && w.len() >= n, "nn_rms_norm: a tensor has fewer than n values");
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut part = unsafe { Tensor<f32, [1024], Memory::SMEM>::uninit() };
+      for l in 0..1024 across lanes {
+        let mut s : f32 = 0.0;
+        let mut i = l;
+        while i < n {
+          s = s + x[i] * x[i];
+          i = i + 1024;
+        }
+        part[l] = s;
+      }
+      let ss = lanes::sum(&part, 1024);
+      let inv = 1.0 / (ss / (n as f32) + eps).sqrt();
+      for l in 0..1024 across lanes {
+        for j in 0..(n + 1023) / 1024 {
+          let i = j * 1024 + l;
+          if i < n {
+            y[i] = x[i] * inv * (w[i] as f32);
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+/// RoPE for the token at position `pos`, and its K and V into the KV cache. Writes each head of
+/// q, turned, to `q_out`, and each head of k, turned, and of v to row `pos` of the cache. Value i
+/// of a head pairs with value i + head_dim / 2, as in the Llama and Qwen models of Hugging Face.
+/// Both turn by the angle whose cosine and sine are cos[pos][i] and sin[pos][i].
+fn nn_rope_and_store<M : Memory>(q_out : &mut Tensor<f32, [?, ?], Memory::M>, k_cache : &mut Tensor<f32, [?, ?, ?], Memory::M>, v_cache : &mut Tensor<f32, [?, ?, ?], Memory::M>, q : &Tensor<f32, [?, ?], Memory::M>, k : &Tensor<f32, [?, ?], Memory::M>, v : &Tensor<f32, [?, ?], Memory::M>, cos : &Tensor<f32, [?, ?], Memory::M>, sin : &Tensor<f32, [?, ?], Memory::M>, pos : i32, q_heads : i32, kv_heads : i32, head_dim : i32) -> void {
+  let half = head_dim / 2;
+  nn_check_heads(q.extent(0), q.extent(1), q_heads, head_dim);
+  nn_check_heads(q_out.extent(0), q_out.extent(1), q_heads, head_dim);
+  nn_check_heads(k.extent(0), k.extent(1), kv_heads, head_dim);
+  nn_check_heads(v.extent(0), v.extent(1), kv_heads, head_dim);
+  nn_check_cache(k_cache.extent(0), k_cache.extent(1), k_cache.extent(2), pos, kv_heads, head_dim);
+  nn_check_cache(v_cache.extent(0), v_cache.extent(1), v_cache.extent(2), pos, kv_heads, head_dim);
+  assert(pos < cos.extent(0) && pos < sin.extent(0) && half <= cos.extent(1) && half <= sin.extent(1), "nn_rope_and_store: `cos` and `sin` need a row for `pos` with head_dim / 2 values");
+  spawn on(Topology::Device) {
+    for h in 0..q_heads + kv_heads across blocks {
+      for i in 0..128 across lanes {
+        if i < head_dim {
+          // Value i of the head, its partner, and the angle that they share.
+          let mut j = i;
+          let mut sign : f32 = -1.0;
+          let mut partner = i + half;
+          if i >= half {
+            j = i - half;
+            sign = 1.0;
+            partner = i - half;
+          }
+          let c = cos[pos][j];
+          let s = sin[pos][j];
+          if h < q_heads {
+            q_out[h][i] = q[h][i] * c + sign * q[h][partner] * s;
+          } else {
+            k_cache[pos][h - q_heads][i] = k[h - q_heads][i] * c + sign * k[h - q_heads][partner] * s;
+            v_cache[pos][h - q_heads][i] = v[h - q_heads][i];
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+/// Attention of the token at position `pos` over rows 0 to `pos` of the KV cache, with a softmax
+/// of the scores q . k / sqrt(head_dim). `scores` has a row of at least pos + 1 values for each
+/// head of q, which the kernel uses as scratch space.
+fn nn_attention<M : Memory>(out : &mut Tensor<f32, [?, ?], Memory::M>, scores : &mut Tensor<f32, [?, ?], Memory::M>, q : &Tensor<f32, [?, ?], Memory::M>, k_cache : &Tensor<f32, [?, ?, ?], Memory::M>, v_cache : &Tensor<f32, [?, ?, ?], Memory::M>, pos : i32, q_heads : i32, kv_heads : i32, head_dim : i32) -> void {
+  nn_check_heads(q.extent(0), q.extent(1), q_heads, head_dim);
+  nn_check_heads(out.extent(0), out.extent(1), q_heads, head_dim);
+  nn_check_cache(k_cache.extent(0), k_cache.extent(1), k_cache.extent(2), pos, kv_heads, head_dim);
+  nn_check_cache(v_cache.extent(0), v_cache.extent(1), v_cache.extent(2), pos, kv_heads, head_dim);
+  assert(q_heads % kv_heads == 0, "nn_attention: q_heads must be a multiple of kv_heads");
+  assert(scores.extent(0) >= q_heads && scores.extent(1) > pos, "nn_attention: `scores` needs a row of pos + 1 values for each head of q");
+  let group = q_heads / kv_heads;
+  let scale = 1.0 / (head_dim as f32).sqrt();
+  spawn on(Topology::Device) {
+    for h in 0..q_heads across blocks {
+      let mut qh = unsafe { Tensor<f32, [128], Memory::SMEM>::uninit() };
+      let mut part = unsafe { Tensor<f32, [128], Memory::SMEM>::uninit() };
+      let g = h / group;
+      for l in 0..128 across lanes {
+        if l < head_dim {
+          qh[l] = q[h][l] * scale;
+        }
+      }
+      for l in 0..128 across lanes {
+        let mut m : f32 = -3.0e38;
+        for j in 0..(pos + 128) / 128 {
+          let t = j * 128 + l;
+          if t <= pos {
+            let mut s : f32 = 0.0;
+            for d in 0..head_dim {
+              s = s + qh[d] * k_cache[t][g][d];
+            }
+            scores[h][t] = s;
+            m = m.max(s);
+          }
+        }
+        part[l] = m;
+      }
+      let m = lanes::max(&part, 128);
+      for l in 0..128 across lanes {
+        let mut s : f32 = 0.0;
+        for j in 0..(pos + 128) / 128 {
+          let t = j * 128 + l;
+          if t <= pos {
+            let e = (scores[h][t] - m).fast_exp();
+            scores[h][t] = e;
+            s = s + e;
+          }
+        }
+        part[l] = s;
+      }
+      let total = lanes::sum(&part, 128);
+      for l in 0..128 across lanes {
+        if l < head_dim {
+          let mut acc : f32 = 0.0;
+          for t in 0..pos + 1 {
+            acc = acc + scores[h][t] * v_cache[t][g][l];
+          }
+          out[h][l] = acc / total;
+        }
+      }
+    }
+  }
+  return;
+}
+
+/// out[0] = the index of the largest of the first n values of `logits`. The lowest index wins a
+/// tie. So the next token stays on the device, and the host reads only `out[0]`.
+fn nn_argmax<M : Memory>(out : &mut Tensor<i32, [?], Memory::M>, logits : &Tensor<f32, [?], Memory::M>, n : i32) -> void {
+  assert(n > 0 && logits.len() >= n && out.len() >= 1, "nn_argmax: `logits` has fewer than n values, or `out` is empty");
+  let chunk = (n + 1023) / 1024;
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut vals = unsafe { Tensor<f32, [1024], Memory::SMEM>::uninit() };
+      let mut idx = unsafe { Tensor<i32, [1024], Memory::SMEM>::uninit() };
+      for l in 0..1024 across lanes {
+        // Each lane reads its own run of values, so a lower lane has the lower indices.
+        let mut best : f32 = -3.0e38;
+        let mut at : i32 = -1;
+        let mut i = l * chunk;
+        while i < n && i < (l + 1) * chunk {
+          if at < 0 || logits[i] > best {
+            best = logits[i];
+            at = i;
+          }
+          i = i + 1;
+        }
+        vals[l] = best;
+        idx[l] = at;
+      }
+      let r = lanes::argmax(&vals, &idx, 1024);
+      out[b] = r;
+    }
+  }
+  return;
+}
+
+/// x = row token[0] of `table`, which has `dim` values in each row. The token can come from
+/// `nn_argmax` on the device.
+fn nn_embed<M : Memory>(x : &mut Tensor<f32, [?], Memory::M>, table : &Tensor<bf16, [?], Memory::M>, token : &Tensor<i32, [?], Memory::M>, dim : i32) -> void {
+  assert(x.len() >= dim && token.len() >= 1, "nn_embed: `x` has fewer than dim values, or `token` is empty");
+  let rows = table.len() / dim;
+  spawn on(Topology::Device) {
+    for b in 0..(dim + 255) / 256 across blocks {
+      for l in 0..256 across lanes {
+        let i = b * 256 + l;
+        if i < dim {
+          let t = token[0];
+          assert(t >= 0 && t < rows, "nn_embed: the token is not a row of the table");
+          x[i] = table[t * dim + i] as f32;
+        }
+      }
+    }
+  }
+  return;
+}
+
+/// Asserts that a matrix-vector product with these sizes reads and writes only values that the
+/// tensors hold.
+fn nn_check_matrix(y_len : i32, w_len : i32, x_len : i32, rows : i32, cols : i32) -> void {
+  assert(cols > 0 && cols % 8 == 0, "nn: the number of columns must be a multiple of 8");
+  assert(rows >= 0 && y_len >= rows && x_len >= cols, "nn: the output has fewer values than rows, or the input fewer than cols");
+  assert(rows <= w_len / cols, "nn: the matrix has fewer than rows x cols values");
+  return;
+}
+
+/// Asserts that a tensor [a, b] holds `heads` heads of `head_dim` values.
+fn nn_check_heads(a : i32, b : i32, heads : i32, head_dim : i32) -> void {
+  assert(head_dim > 0 && head_dim <= 128 && head_dim % 8 == 0, "nn: head_dim must be a multiple of 8, at most 128");
+  assert(heads > 0 && a >= heads && b >= head_dim, "nn: a tensor of heads is smaller than [heads, head_dim]");
+  return;
+}
+
+/// Asserts that a KV cache [a, b, c] has a row for `pos`, with `heads` heads of `head_dim` values.
+fn nn_check_cache(a : i32, b : i32, c : i32, pos : i32, heads : i32, head_dim : i32) -> void {
+  assert(pos >= 0 && pos < a, "nn: the position is past the end of the KV cache");
+  assert(heads > 0 && b >= heads && c >= head_dim, "nn: the KV cache is smaller than [max_seq, kv_heads, head_dim]");
+  return;
+}
