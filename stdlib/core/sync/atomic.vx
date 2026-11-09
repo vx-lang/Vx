@@ -940,7 +940,8 @@ fn compiler_fence(order : AtomicOrdering) -> void {
 //
 // Each one answers the value from before the change. An index outside the tensor fails an
 // `assert`. Each function is stamped for `i32`, `u32`, `i64`, `u64`, `f32` and `f64`, and the name
-// ends with the type: `atomic_fetch_add_u32`.
+// ends with the type: `atomic_fetch_add_u32`. A kernel on the Apple GPU can use only the `i32` and
+// `u32` ones, with `AtomicOrdering::Relaxed` (docs/gpu_backends.md).
 
 /// Stamps the length, load and store for tensors of `$t`. `$mlir` is the MLIR type of `$t`, and
 /// `$align` its size in bytes.
