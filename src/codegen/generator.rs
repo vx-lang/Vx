@@ -101,6 +101,8 @@ pub struct MeliorGenerator<'c> {
     pub expected_type: Option<Type<'c>>,
     /// The levels of the `across` loops around the code, for the lane reductions.
     pub(crate) across_kinds: Vec<crate::arch::LevelKind>,
+    /// The blocks and lanes of a GPU region whose `across` loops run in parallel.
+    pub(crate) across_map: Option<crate::codegen::lower::across::AcrossMap>,
     pub in_spawn: bool,
     /// The next `for` loop is the one loop of a `spawn` region that `parallel_outer_for` proved.
     /// It gets marks so that a later pass can run its passes on threads or host workers.
@@ -1069,6 +1071,7 @@ impl<'c> MeliorGenerator<'c> {
             value_drops: Vec::new(),
             expected_type: None,
             across_kinds: Vec::new(),
+            across_map: None,
             in_spawn: false,
             mark_next_for: false,
             two_level_plan: None,
@@ -1747,6 +1750,9 @@ impl<'c> MeliorGenerator<'c> {
     ) -> Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError> {
         if matches!(stmt, Statement::Drop(_)) {
             return self.generate_statement_inner(stmt, block);
+        }
+        if let Some(level) = crate::codegen::lower::across::runs_on_lane0(self, stmt) {
+            return crate::codegen::lower::across::lower_on_lane0(self, stmt, level, block);
         }
         let mine = std::mem::take(&mut self.queued_drops);
         let outer = std::mem::replace(&mut self.value_drops, mine);

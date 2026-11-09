@@ -27,9 +27,29 @@ fn lower_spawn_region<'c>(
     gen: &mut MeliorGenerator<'c>,
     block: melior::ir::BlockRef<'c, 'c>,
 ) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    // A region whose `across` loops run on blocks and lanes. The host computes its launch shape
+    // before the region starts.
+    let mapped = super::across::mapped_lanes(this);
+    let (shape, block) = match mapped {
+        Some(lanes) => {
+            let (shape, block) = super::across::launch_shape(gen, &this.stmts, lanes, block)?;
+            (Some(shape), block)
+        }
+        None => (None, block),
+    };
     let location = gen.loc();
     let region = melior::ir::Region::new();
     let mut body_block = region.append_block(melior::ir::Block::new(&[]));
+    if let Some(shape) = &shape {
+        super::across::emit_launch_shape(gen, body_block, shape)?;
+    }
+    let outer_map = std::mem::replace(
+        &mut gen.across_map,
+        mapped.map(|lanes| super::across::AcrossMap {
+            lanes,
+            ..Default::default()
+        }),
+    );
     let prev_in_spawn = gen.in_spawn;
     gen.in_spawn = true;
 
@@ -162,6 +182,7 @@ fn lower_spawn_region<'c>(
 
     gen.in_spawn = prev_in_spawn;
     gen.spawn_arches.pop();
+    gen.across_map = outer_map;
     for (name, entry) in outer_slots {
         gen.env.insert(name, entry);
     }
@@ -194,6 +215,10 @@ fn lower_spawn_region<'c>(
     // What the proofs found, as the flat code generator writes it: the trip of the loop, and for
     // a loop of blocks, the widest loop of threads and whether a barrier is in a thread loop.
     let unit = melior::ir::Attribute::unit(gen.context);
+    if shape.is_some() {
+        spawn_builder =
+            spawn_builder.add_attributes(&[(Identifier::new(gen.context, "vx.across"), unit)]);
+    }
     let trip_attr = |n: u64| IntegerAttribute::new(gen.i64_ty, n as i64).into();
     if let Some((_, trip)) = one_loop {
         spawn_builder = spawn_builder.add_attributes(&[(

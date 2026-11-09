@@ -149,7 +149,7 @@ pub(crate) fn across_block_lanes(stmts: &[Statement]) -> Option<u64> {
 
 /// The loop of blocks in `stmts`, when the checker found one that the GPU launches. A loop that
 /// `-fauto-schedule-levels` made a plain loop is not one.
-pub(super) fn blocks_loop(stmts: &[Statement]) -> Option<&crate::syntax::ForLoopStmt> {
+pub(crate) fn blocks_loop(stmts: &[Statement]) -> Option<&crate::syntax::ForLoopStmt> {
     stmts.iter().find_map(|s| match s {
         Statement::ForLoop(f)
             if f.across
@@ -164,7 +164,7 @@ pub(super) fn blocks_loop(stmts: &[Statement]) -> Option<&crate::syntax::ForLoop
 
 /// The lanes that a lane loop or a subgroup loop shares its passes among: `n` of
 /// `across lanes(n)`, or else its trip. The checker made sure that it is a number.
-fn across_width(f: &crate::syntax::ForLoopStmt) -> Option<u64> {
+pub(crate) fn across_width(f: &crate::syntax::ForLoopStmt) -> Option<u64> {
     let number = |e: &Expr| match e {
         Expr::Number(n) => n.value.parse::<u64>().ok(),
         _ => None,
@@ -179,7 +179,9 @@ fn across_width(f: &crate::syntax::ForLoopStmt) -> Option<u64> {
 }
 
 /// The lane loop that is the whole body of the lane loop `f`, if there is one.
-fn inner_lane_loop(f: &crate::syntax::ForLoopStmt) -> Option<&crate::syntax::ForLoopStmt> {
+pub(crate) fn inner_lane_loop(
+    f: &crate::syntax::ForLoopStmt,
+) -> Option<&crate::syntax::ForLoopStmt> {
     let mut body = f.body.iter().filter(|s| !matches!(s, Statement::Drop(_)));
     match (body.next(), body.next()) {
         (Some(Statement::ForLoop(g)), None)
@@ -192,7 +194,7 @@ fn inner_lane_loop(f: &crate::syntax::ForLoopStmt) -> Option<&crate::syntax::For
 }
 
 /// The lanes of the lane loops inside the lane loop `f`, each the whole body of the one around it.
-fn inner_lanes(f: &crate::syntax::ForLoopStmt) -> u64 {
+pub(crate) fn inner_lanes(f: &crate::syntax::ForLoopStmt) -> u64 {
     match inner_lane_loop(f) {
         Some(g) => across_width(g).unwrap_or(1) * inner_lanes(g),
         None => 1,

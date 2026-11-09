@@ -246,6 +246,9 @@ fn lower_branch_statements<'c>(
     ),
     LowerError,
 > {
+    if !has_ret {
+        return Ok((super::across::lower_level_statements(gen, stmts, b)?, None));
+    }
     let mut val = None;
     for (i, stmt) in stmts.iter().enumerate() {
         if i == stmts.len() - 1 && has_ret {
@@ -296,7 +299,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
 
 /// The marks of a loop whose passes a later pass runs on threads, blocks or host workers: on the
 /// store of its start, on the store of its bound, and on the step of its counter.
-struct LoopMarks {
+pub(super) struct LoopMarks {
     init: &'static str,
     bound: Option<&'static str>,
     step: &'static str,
@@ -330,15 +333,30 @@ fn loop_marks(for_loop: &ForLoopStmt, gen: &mut MeliorGenerator<'_>) -> Option<L
 /// A loop over `start..end` whose counter is an integer in a stack slot, as the flat code
 /// generator makes it. A later pass reads the marks, when there are any, on the two stores and
 /// the step. The SPIR-V conversion needs this form, because it cannot take a block argument of
-/// type `index`. The body reads the counter as it reads a `let mut` variable.
-fn lower_marked_range_loop<'c>(
+/// type `index`. The body reads the counter as it reads a `let mut` variable. With `stride`, the
+/// counter starts at `start + first` and goes up by `step`: the passes of one lane or block of an
+/// `across` loop.
+pub(super) fn lower_marked_range_loop<'c>(
     for_loop: &ForLoopStmt,
     marks: Option<LoopMarks>,
     (start, end, ty): (Value<'c, 'c>, Value<'c, 'c>, Type<'c>),
+    stride: Option<(Value<'c, 'c>, Value<'c, 'c>)>,
     gen: &mut MeliorGenerator<'c>,
     block: melior::ir::BlockRef<'c, 'c>,
 ) -> Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError> {
     let unit = melior::ir::Attribute::unit(gen.context);
+    let start = match stride {
+        Some((first, _)) => block
+            .append_operation(
+                OperationBuilder::new("arith.addi", gen.loc())
+                    .add_operands(&[start, first])
+                    .add_results(&[ty])
+                    .build()?,
+            )
+            .result(0)?
+            .into(),
+        None => start,
+    };
     let slot_ty = Type::parse(gen.context, &format!("memref<{ty}>"))
         .ok_or_else(|| LowerError::ParseType(format!("memref<{ty}>")))?;
     let slot_of = |gen: &MeliorGenerator<'c>, value: Value<'c, 'c>, mark: Option<&str>| {
@@ -363,7 +381,7 @@ fn lower_marked_range_loop<'c>(
 
     let region = block.parent_region().unwrap();
     let cond_block = region.append_block(melior::ir::Block::new(&[]));
-    let mut body_block = region.append_block(melior::ir::Block::new(&[]));
+    let body_block = region.append_block(melior::ir::Block::new(&[]));
     let latch_block = region.append_block(melior::ir::Block::new(&[]));
     let merge_block = region.append_block(melior::ir::Block::new(&[]));
     let branch_to = |gen: &MeliorGenerator<'c>,
@@ -426,35 +444,29 @@ fn lower_marked_range_loop<'c>(
     gen.allocs.insert(for_loop.iter.to_string());
     gen.break_blocks.push(&*merge_block as *const _);
     gen.continue_blocks.push(&*latch_block as *const _);
-    let mut body_terminated = false;
-    for stmt in &for_loop.body {
-        match gen.generate_statement(stmt, body_block)? {
-            Some(b) => body_block = b,
-            None => {
-                body_terminated = true;
-                break;
-            }
-        }
-    }
+    let body_end = super::across::lower_level_statements(gen, &for_loop.body, body_block)?;
     gen.break_blocks.pop();
     gen.continue_blocks.pop();
-    if !body_terminated {
-        branch_to(gen, body_block, &latch_block)?;
+    if let Some(body_end) = body_end {
+        branch_to(gen, body_end, &latch_block)?;
     }
 
     let now = load(gen, latch_block, counter)?;
-    let one: Value = latch_block
-        .append_operation(
-            OperationBuilder::new("arith.constant", gen.loc())
-                .add_results(&[ty])
-                .add_attributes(&[(
-                    Identifier::new(gen.context, "value"),
-                    IntegerAttribute::new(ty, 1).into(),
-                )])
-                .build()?,
-        )
-        .result(0)?
-        .into();
+    let one: Value = match stride {
+        Some((_, step)) => step,
+        None => latch_block
+            .append_operation(
+                OperationBuilder::new("arith.constant", gen.loc())
+                    .add_results(&[ty])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "value"),
+                        IntegerAttribute::new(ty, 1).into(),
+                    )])
+                    .build()?,
+            )
+            .result(0)?
+            .into(),
+    };
     let mut step = OperationBuilder::new("arith.addi", gen.loc())
         .add_operands(&[now, one])
         .add_results(&[ty]);
@@ -479,6 +491,9 @@ fn lower_for_loop<'c>(
     gen: &mut MeliorGenerator<'c>,
     block: melior::ir::BlockRef<'c, 'c>,
 ) -> Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError> {
+    if let Some(kind) = super::across::mapped_kind(gen, for_loop) {
+        return super::across::lower_across_for(for_loop, kind, gen, block);
+    }
     let marks = loop_marks(for_loop, gen);
     let in_spirv_kernel = gen.in_spirv_region();
     {
@@ -512,6 +527,7 @@ fn lower_for_loop<'c>(
                     for_loop,
                     marks,
                     (start_val, end_val, start_ty),
+                    None,
                     gen,
                     block,
                 );
@@ -608,13 +624,9 @@ fn lower_for_loop<'c>(
             gen.continue_blocks.push(&*latch_block as *const _);
 
             let mut body_terminated = false;
-            for stmt in body {
-                if let Some(b) = gen.generate_statement(stmt, body_block)? {
-                    body_block = b;
-                } else {
-                    body_terminated = true;
-                    break;
-                }
+            match super::across::lower_level_statements(gen, body, body_block)? {
+                Some(b) => body_block = b,
+                None => body_terminated = true,
             }
 
             gen.break_blocks.pop();
@@ -770,13 +782,9 @@ fn lower_for_loop<'c>(
             gen.continue_blocks.push(&*latch_block as *const _);
 
             let mut body_terminated = false;
-            for stmt in body {
-                if let Some(b) = gen.generate_statement(stmt, body_block)? {
-                    body_block = b;
-                } else {
-                    body_terminated = true;
-                    break;
-                }
+            match super::across::lower_level_statements(gen, body, body_block)? {
+                Some(b) => body_block = b,
+                None => body_terminated = true,
             }
 
             gen.break_blocks.pop();
@@ -1023,13 +1031,9 @@ fn lower_for_loop<'c>(
         gen.continue_blocks.push(&*cond_block as *const _);
 
         let mut body_terminated = false;
-        for stmt in body {
-            if let Some(b) = gen.generate_statement(stmt, body_block)? {
-                body_block = b;
-            } else {
-                body_terminated = true;
-                break;
-            }
+        match super::across::lower_level_statements(gen, body, body_block)? {
+            Some(b) => body_block = b,
+            None => body_terminated = true,
         }
 
         gen.break_blocks.pop();
@@ -1090,13 +1094,9 @@ fn lower_loop_body<'c>(
     gen.continue_blocks.push(loop_entry_block);
 
     let mut body_terminated = false;
-    for stmt in body {
-        if let Some(b) = gen.generate_statement(stmt, body_block)? {
-            body_block = b;
-        } else {
-            body_terminated = true;
-            break;
-        }
+    match super::across::lower_level_statements(gen, body, body_block)? {
+        Some(b) => body_block = b,
+        None => body_terminated = true,
     }
 
     gen.break_blocks.pop();
