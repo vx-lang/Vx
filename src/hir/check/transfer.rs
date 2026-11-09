@@ -833,6 +833,7 @@ impl<'a> TypeChecker<'a> {
                 })
                 .collect(),
         };
+        let ended = self.ended_tasks().clone();
         // The calls of the other tasks that run at the same time as each call, by group of tasks.
         // In a group, the calls in one place of the nested `tasks` blocks run one after the other.
         for (k, c) in calls.iter().enumerate() {
@@ -844,7 +845,7 @@ impl<'a> TypeChecker<'a> {
             let mut groups: std::collections::BTreeMap<(usize, Option<usize>, bool), Group> =
                 Default::default();
             for (j, other) in calls.iter().enumerate() {
-                for o in at_the_same_time(&c.tasks, c.order, &other.tasks, other.order) {
+                for o in at_the_same_time(&c.tasks, c.order, &other.tasks, other.order, &ended) {
                     let place: Place = other.tasks[o.level + 1..]
                         .iter()
                         .map(|l| (l.block, l.run.map(|r| r.task)))
@@ -926,7 +927,7 @@ impl<'a> TypeChecker<'a> {
                 let (mut bytes, mut count) = (0u64, 0usize);
                 for &(b, sc, ord) in &placed {
                     let in_scope = ord <= order && sc.len() <= scope.len() && scope.starts_with(sc);
-                    for o in at_the_same_time(chain, order, tile_tasks[&ord], ord) {
+                    for o in at_the_same_time(chain, order, tile_tasks[&ord], ord, &ended) {
                         match o.copies {
                             Some(n) => {
                                 let n = if in_scope && !o.other_copies {
@@ -2809,15 +2810,25 @@ impl TypeChecker<'_> {
 /// as code at `a_order` in `a`. Each item is one group of tasks that `b` is in, with its count of
 /// copies. Two tasks of one block run at the same time. The code of a block runs at the same time
 /// as each task that it started before. The other tasks of a `spawn` in a loop run at the same
-/// time as each other. A join can end a task earlier, so this can say yes for code that never
-/// overlaps.
+/// time as each other. A join that always runs ends its task.
 fn at_the_same_time(
     a: &[TaskLevel],
     a_order: usize,
     b: &[TaskLevel],
     b_order: usize,
+    ended: &std::collections::HashMap<usize, usize>,
 ) -> Vec<Overlap> {
     let started = |x: &TaskRun, order: usize| order.min(x.start);
+    // Code at `order` runs while the task `x` runs: after the task starts, and before a join ends
+    // it.
+    let during = |x: &TaskRun, x_order: usize, order: usize| {
+        started(x, x_order) < order && ended.get(&x.task).is_none_or(|&end| order < end)
+    };
+    let one_ends_first = |p: &TaskRun, q: &TaskRun| {
+        let ends_before =
+            |x: &TaskRun, y: &TaskRun| ended.get(&x.task).is_some_and(|&e| e <= y.start);
+        ends_before(p, q) || ends_before(q, p)
+    };
     let mut found = Vec::new();
     for (level, (x, y)) in a.iter().zip(b).enumerate() {
         if x.block != y.block {
@@ -2832,7 +2843,9 @@ fn at_the_same_time(
         };
         match (x.run, y.run) {
             (Some(p), Some(q)) if p.task != q.task => {
-                found.push(group(Some(q), q.copies, false));
+                if !one_ends_first(&p, &q) {
+                    found.push(group(Some(q), q.copies, false));
+                }
                 break;
             }
             (Some(p), Some(_)) => {
@@ -2841,13 +2854,13 @@ fn at_the_same_time(
                 }
             }
             (None, Some(q)) => {
-                if started(&q, b_order) < a_order {
+                if during(&q, b_order, a_order) {
                     found.push(group(Some(q), q.copies, false));
                 }
                 break;
             }
             (Some(p), None) => {
-                if started(&p, a_order) < b_order {
+                if during(&p, a_order, b_order) {
                     found.push(group(None, Some(1), false));
                 }
                 break;
