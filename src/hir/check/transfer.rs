@@ -870,11 +870,11 @@ impl<'a> TypeChecker<'a> {
             .memory_placements
             .entry(space.clone())
             .or_default();
-        let order = match tiles.get(&key) {
-            Some(existing) => existing.order,
+        let (order, end) = match tiles.get(&key) {
+            Some(existing) => (existing.order, existing.end),
             None => {
                 self.traffic.placement_order += 1;
-                self.traffic.placement_order
+                (self.traffic.placement_order, None)
             }
         };
         tiles.insert(
@@ -884,8 +884,31 @@ impl<'a> TypeChecker<'a> {
                 scope,
                 order,
                 tasks: self.tasks.task_chain(),
+                holder: self.traffic.tile_holder.clone(),
+                end,
             },
         );
+    }
+
+    /// A statement that moves a tensor out of its variable ends the tile of the variable after
+    /// the statement. Only a move in the block of the tile ends it: a move in one arm of an `if`
+    /// leaves the tensor in place on the other arm.
+    pub(crate) fn end_moved_tiles(&mut self) {
+        let moved = std::mem::take(&mut self.traffic.moved_out);
+        let end = self.traffic.placement_order + 1;
+        for (name, scope, tasks) in moved {
+            for tiles in self.traffic.memory_placements.values_mut() {
+                let latest = tiles
+                    .values_mut()
+                    .filter(|p| p.holder.as_deref() == Some(name.as_str()))
+                    .max_by_key(|p| p.order);
+                if let Some(p) = latest {
+                    if p.end.is_none() && p.scope == scope && p.tasks == tasks {
+                        p.end = Some(end);
+                    }
+                }
+            }
+        }
     }
 
     /// Record a resolved call for the cross-call capacity fold: which function, from inside
@@ -1028,6 +1051,12 @@ impl<'a> TypeChecker<'a> {
                 .collect();
             let tile_tasks: std::collections::HashMap<usize, &Vec<TaskLevel>> =
                 tiles.values().map(|p| (p.order, &p.tasks)).collect();
+            // Whether the tile placed at `placed` is still there at `at`.
+            let ends: std::collections::HashMap<usize, usize> = tiles
+                .values()
+                .filter_map(|p| p.end.map(|e| (p.order, e)))
+                .collect();
+            let not_ended = |placed: usize, at: usize| ends.get(&placed).is_none_or(|&e| at < e);
             placed.sort_by_key(|&(_, _, order)| order);
             // The bytes of the tiles of other tasks that run at the same time as code at `order`
             // in `chain` and `scope`, and how many tiles that is. Each tile counts once for each
@@ -1059,8 +1088,10 @@ impl<'a> TypeChecker<'a> {
             let mut peak_tiles = 0usize;
             let mut held_at_calls: Vec<u64> = Vec::new();
             for (i, &(_, scope, ord)) in placed.iter().enumerate() {
-                let in_scope = placed[..=i].iter().filter(|(_, earlier, _)| {
-                    earlier.len() <= scope.len() && scope.starts_with(earlier)
+                let in_scope = placed[..=i].iter().filter(|(_, earlier, e_ord)| {
+                    earlier.len() <= scope.len()
+                        && scope.starts_with(earlier)
+                        && not_ended(*e_ord, ord)
                 });
                 let (others, other_count) = of_other_tasks(tile_tasks[&ord], scope, ord);
                 let live: u64 = in_scope.clone().map(|&(b, _, _)| b).sum::<u64>() + others;
@@ -1101,7 +1132,10 @@ impl<'a> TypeChecker<'a> {
                 let held: u64 = placed
                     .iter()
                     .filter(|(_, sc, ord)| {
-                        *ord < c.order && sc.len() <= c.scope.len() && c.scope.starts_with(sc)
+                        *ord < c.order
+                            && sc.len() <= c.scope.len()
+                            && c.scope.starts_with(sc)
+                            && not_ended(*ord, c.order)
                     })
                     .map(|&(b, _, _)| b)
                     .sum::<u64>()
@@ -1395,6 +1429,8 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn check_placement_of_type(&mut self, ty: &Type, context: &str, span: &Span, record: bool) {
+        // A raw pointer, such as the room of a channel, points at tensors that it does not hold.
+        let record = record && !matches!(ty, Type::Pointer(..));
         self.report_unheld_placements(ty, context);
         self.check_alignments_in(ty, context, span);
         for (e, d, space) in self.placed_tensors(ty) {

@@ -1277,6 +1277,11 @@ impl<'a> TypeChecker<'a> {
         };
         self.drops_note_move(name, false);
         self.pointer_facts_move_out(name);
+        // A closure runs where it is called, so its moves end no tile here.
+        if !self.speculating && self.traffic.closure_depth == 0 {
+            let at = (self.traffic.scope_chain.clone(), self.tasks.task_chain());
+            self.traffic.moved_out.push((name.to_string(), at.0, at.1));
+        }
         if let Some(moved) = self.borrow.moved_vars.get_mut(scope) {
             moved.insert(name.to_string());
         }
@@ -2116,6 +2121,8 @@ impl<'a> TypeChecker<'a> {
         let prev_tasks = self.tasks.enter_function();
         let prev_call_sites = std::mem::take(&mut self.traffic.call_sites);
         let prev_channel_rooms = std::mem::take(&mut self.traffic.channel_rooms);
+        let prev_moved_out = std::mem::take(&mut self.traffic.moved_out);
+        let prev_tile_holder = self.traffic.tile_holder.take();
         let prev_scope_chain = std::mem::take(&mut self.traffic.scope_chain);
         let prev_scope_releases = std::mem::take(&mut self.traffic.scope_releases);
         // The unused-name sets are per-function for the same reason, and used to be cleared
@@ -2348,6 +2355,8 @@ impl<'a> TypeChecker<'a> {
         self.traffic.memory_placements = prev_placements;
         self.traffic.call_sites = prev_call_sites;
         self.traffic.channel_rooms = prev_channel_rooms;
+        self.traffic.moved_out = prev_moved_out;
+        self.traffic.tile_holder = prev_tile_holder;
         self.traffic.scope_chain = prev_scope_chain;
         self.traffic.scope_releases = prev_scope_releases;
         self.current_return_type = prev_ret_ty;

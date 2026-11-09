@@ -702,7 +702,17 @@ impl<'a> TypeChecker<'a> {
             Statement::Drop(_) | Statement::Error(_) => {}
         }
         self.check_frame_escape(stmt);
+        self.end_moved_tiles();
         self.current_statement_span = prev_statement_span;
+    }
+
+    /// The tiles of the value of `let name`. A tensor that the initializer moved, as in
+    /// `let b = id(a)`, is gone before them.
+    fn place_for_let(&mut self, name: &str, ty: &Type, context: &str, span: &Span) {
+        self.end_moved_tiles();
+        let prev = self.traffic.tile_holder.replace(name.to_string());
+        self.check_type_placement(ty, context, span);
+        self.traffic.tile_holder = prev;
     }
 
     /// Check a `let` binding: type the initializer, bind the name (annotation wins), record the
@@ -738,7 +748,12 @@ impl<'a> TypeChecker<'a> {
         let prev_expected = self.expected_type.take();
         self.expected_type = ty_ann.clone();
         self.let_closure = matches!(&*expr, Expr::Closure(_)).then_some(*span);
+        let prev_holder = self.traffic.tile_holder.take();
+        if matches!(&*expr, Expr::Transfer(_)) {
+            self.traffic.tile_holder = Some(name.to_string());
+        }
         let ty = self.check_whole_value(expr, |c, e| c.check_expr_type_flag(e, consume));
+        self.traffic.tile_holder = prev_holder;
         self.let_closure = None;
         let ty = crate::hir::check::operators::round_narrow_arithmetic(expr, ty, ty_ann.as_ref());
         self.expected_type = prev_expected;
@@ -795,7 +810,7 @@ impl<'a> TypeChecker<'a> {
             }
             // Capacity: a placed tensor annotation must fit its memory space.
             if !memory_already_recorded {
-                self.check_type_placement(ann, &context, span);
+                self.place_for_let(name, ann, &context, span);
             }
             self.shadow_borrows(name);
             self.insert(name.to_string(), ann.clone());
@@ -806,7 +821,7 @@ impl<'a> TypeChecker<'a> {
             // only in the initializer -- the ordinary spelling -- escaped capacity admission,
             // element-type admission, and the working set.
             if !memory_already_recorded {
-                self.check_type_placement(&ty, &context, span);
+                self.place_for_let(name, &ty, &context, span);
             }
             self.shadow_borrows(name);
             self.insert(name.to_string(), ty.clone());
