@@ -1571,23 +1571,29 @@ impl<'a> TypeChecker<'a> {
                 // tensor stopped being checked the moment `transfer` started returning
                 // a placed tensor -- and the failure was silent, since an unchecked
                 // read simply compiles.
-                let located_on = match &obj_ty {
+                // The check on a reference lets it through, so its index checks what it refers to.
+                let read_ty = match &obj_ty {
+                    Type::Borrow { inner, .. } => inner.as_ref(),
+                    other => other,
+                };
+                let located_on = match read_ty {
                     Type::Pinned(_, top) => Some(top.clone()),
-                    _ => obj_ty.placement().map(|p| p.topology.clone()),
+                    _ => read_ty.placement().map(|p| p.topology.clone()),
                 };
                 if let Some(value_top) = located_on {
                     if !self.transfer_cost_graph.is_type_accessible(
                         &self.active_topology,
                         &value_top,
-                        &obj_ty,
+                        read_ty,
                     ) && !self.speculating
                     {
                         // A place whose root variable is not placed itself, such as the field
-                        // `h.t` of a struct, was not named by the check on the variable, so name
-                        // it here with the transfer that fixes it.
+                        // `h.t` of a struct or the reference `r`, was not named by the check on
+                        // the variable, so name it here with the transfer that fixes it.
+                        let through_ref = !std::ptr::eq(read_ty, &obj_ty);
                         let unnamed_place =
                             crate::hir::places::base_and_path(obj).filter(|(root, path)| {
-                                !path.is_empty()
+                                (through_ref || !path.is_empty())
                                     && self.lookup_with_depth(root.as_ref()).is_some_and(
                                         |(t, _, _)| {
                                             t.placement().is_none()
@@ -1598,17 +1604,27 @@ impl<'a> TypeChecker<'a> {
                         let reach = self.transfer_cost_graph.reachable(
                             &self.active_topology,
                             &value_top,
-                            &obj_ty,
+                            read_ty,
                         );
+                        // In `o[0][0]`, the index `o[0]` already reported the read.
+                        let reported = index_root_span(obj)
+                            .is_some_and(|at| self.unreadable_reported.contains(&at));
                         match (unnamed_place, reach) {
+                            _ if reported => {}
                             (Some((root, path)), crate::arch::Reachability::NeedsSeam { cost }) => {
-                                let what = crate::hir::places::display_place(root.as_ref(), &path);
-                                self.report_needs_transfer(
-                                    &what, &obj_ty, &value_top, cost, &ix_span,
-                                );
+                                let mut what =
+                                    crate::hir::places::display_place(root.as_ref(), &path);
+                                let mut at = ix_span;
+                                if through_ref {
+                                    what.insert(0, '*');
+                                    at = index_root_span(obj).unwrap_or(ix_span);
+                                    self.unreadable_reported.insert(at);
+                                }
+                                self.report_needs_transfer(&what, read_ty, &value_top, cost, &at);
                             }
-                            _ if index_root_span(obj)
-                                .is_some_and(|at| self.unreadable_reported.contains(&at)) => {}
+                            // A memory with no path to it, such as one that no topology holds,
+                            // was reported where the type names it.
+                            _ if through_ref => {}
                             _ => self.errors.push(format!(
                                 "Cross-topology access error: a value on {} cannot be read from {}",
                                 value_top.display_name(),
