@@ -54,27 +54,148 @@ pub(crate) struct AcrossMap {
     pub lane0: HashSet<String>,
     /// The code being lowered runs on lane 0 alone.
     pub on_lane0: bool,
+    /// The row of a tile that the code of a subgroup alone writes.
+    pub subgroup_row: Option<SubgroupRow>,
+    /// In a lane loop from 0 over all the lanes of its level: the index `t` of the loop, and the
+    /// level. Only lane `t` writes `tile[t]` in the code of a block, or element `t` of the row of
+    /// the subgroup.
+    pub lane_element: Option<(String, Level)>,
+}
+
+/// The row of a tile that the code of a subgroup alone writes.
+#[derive(Clone)]
+pub(crate) enum SubgroupRow {
+    /// `tile[w]`, with `w` the index of the subgroup loop.
+    Index(String),
+    /// The whole tile, when the subgroup loop has one subgroup.
+    Whole,
+}
+
+impl AcrossMap {
+    /// When `e` is a row of a tile that the code of this subgroup alone writes, the number that
+    /// tells it from the other rows of the subgroup: 0 for `t` or `t[w]`, and `c + 1` for
+    /// `t[w][c]` with a number `c`.
+    fn subgroup_row_number(&self, e: &Expr) -> Option<u64> {
+        let is_own_row = |e: &Expr| match (&self.subgroup_row, e) {
+            (Some(SubgroupRow::Whole), Expr::Identifier(_)) => true,
+            (Some(SubgroupRow::Index(w)), Expr::IndexAccess(r)) => {
+                matches!(&*r.base, Expr::Identifier(_))
+                    && matches!(&*r.index, Expr::Identifier(id) if id.name.as_ref() == w)
+            }
+            _ => false,
+        };
+        if is_own_row(e) {
+            return Some(0);
+        }
+        match e {
+            Expr::IndexAccess(r) if is_own_row(&r.base) => match &*r.index {
+                Expr::Number(n) => n.value.parse::<u64>().ok().map(|c| c + 1),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
+/// The attributes of a store `ix = ..` that writes element `t` of a tile, which only lane `t`
+/// writes: `vx.lane_element`, and `vx.lane_row` for a row after the first. The device copy of a
+/// kernel can then keep the element in a register.
+pub(crate) fn lane_element_attrs<'c>(
+    gen: &MeliorGenerator<'c>,
+    ix: &syntax::IndexAccessExpr,
+) -> Vec<(Identifier<'c>, melior::ir::Attribute<'c>)> {
+    let Some(map) = &gen.across_map else {
+        return Vec::new();
+    };
+    let Some((lane, level)) = &map.lane_element else {
+        return Vec::new();
+    };
+    if !matches!(&*ix.index, Expr::Identifier(id) if id.name.as_ref() == lane) {
+        return Vec::new();
+    }
+    let string = |s: &str| melior::ir::attribute::StringAttribute::new(gen.context, s).into();
+    match level {
+        Level::Block if matches!(&*ix.base, Expr::Identifier(_)) => {
+            vec![(
+                Identifier::new(gen.context, "vx.lane_element"),
+                string("block"),
+            )]
+        }
+        Level::Subgroup => match map.subgroup_row_number(&ix.base) {
+            Some(row) => {
+                let mut attrs = vec![(
+                    Identifier::new(gen.context, "vx.lane_element"),
+                    string("subgroup"),
+                )];
+                if row > 0 {
+                    attrs.push((
+                        Identifier::new(gen.context, "vx.lane_row"),
+                        IntegerAttribute::new(gen.i64_ty, row as i64).into(),
+                    ));
+                }
+                attrs
+            }
+            None => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
+}
+
+/// `own_row`, and `vx.lane_row` for a row after the first, when each tensor of a lane reduction
+/// in the code of a subgroup is the same row of a tile that the subgroup alone writes.
+pub(crate) fn own_row_attrs<'c>(
+    gen: &MeliorGenerator<'c>,
+    tensors: &[Expr],
+) -> Vec<(Identifier<'c>, melior::ir::Attribute<'c>)> {
+    let Some(map) = &gen.across_map else {
+        return Vec::new();
+    };
+    if gen.across_kinds.last() != Some(&LevelKind::Subgroups) {
+        return Vec::new();
+    }
+    let rows: Vec<Option<u64>> = tensors
+        .iter()
+        .map(|t| match t {
+            Expr::Borrow(b) => map.subgroup_row_number(&b.expr),
+            _ => None,
+        })
+        .collect();
+    let Some(Some(row)) = rows.first().copied() else {
+        return Vec::new();
+    };
+    if !rows.iter().all(|r| *r == Some(row)) {
+        return Vec::new();
+    }
+    let mut attrs = vec![(
+        Identifier::new(gen.context, "own_row"),
+        melior::ir::Attribute::unit(gen.context),
+    )];
+    if row > 0 {
+        attrs.push((
+            Identifier::new(gen.context, "vx.lane_row"),
+            IntegerAttribute::new(gen.i64_ty, row as i64).into(),
+        ));
+    }
+    attrs
 }
 
 /// The lanes of a block of `s`, when its `across` loops map to blocks and lanes. A region with
-/// a lane routine, or with code after its nest of blocks, stays on one thread.
+/// code after its nest of blocks stays on one thread.
 pub(crate) fn mapped_lanes(s: &syntax::SpawnOnExpr) -> Option<u64> {
     if s.arrivals.is_some() {
         return None;
     }
-    let lanes = crate::hir::flatten::across::across_block_lanes(&s.stmts)?;
-    let mut routine = false;
-    crate::hir::check::across_lanes::visit_stmts(&s.stmts, &mut |st| {
-        if let Statement::Assign(a) = st {
-            routine |= crate::hir::check::lanes::lane_matmul(a).is_some();
-        }
-    });
-    crate::syntax::visit_exprs(&s.stmts, &mut |e| {
-        if let Expr::FunctionCall(fc) = e {
-            routine |= fc.name.as_ref().starts_with("lanes::");
-        }
-    });
-    (!routine).then_some(lanes)
+    crate::hir::flatten::across::across_block_lanes(&s.stmts)
+}
+
+/// The lanes of a subgroup, in the code of a subgroup of a mapped region.
+pub(crate) fn subgroup_lanes(gen: &MeliorGenerator<'_>) -> Result<u64, LowerError> {
+    gen.across_map
+        .as_ref()
+        .and_then(|m| m.subgroup)
+        .ok_or_else(|| {
+            LowerError::from("a subgroup whose number of lanes is not known".to_string())
+        })
 }
 
 /// The size of each axis of blocks of `stmts`, computed in `block` before the region, and the
@@ -392,10 +513,36 @@ pub(crate) fn lower_across_for<'c>(
         &mut map.inner,
         inner_lane_loop(for_loop).map(|g| g as *const ForLoopStmt as usize),
     );
+    let index = for_loop.iter.to_string();
+    let rebound = crate::hir::flatten::binds_name(&for_loop.body, &index.as_str().into());
+    let outer_row = (kind == LevelKind::Subgroups).then(|| {
+        let row = if width == 1 {
+            Some(SubgroupRow::Whole)
+        } else {
+            (!rebound).then(|| SubgroupRow::Index(index.clone()))
+        };
+        std::mem::replace(&mut map.subgroup_row, row)
+    });
+    let outer_element = map.lane_element.take();
+    let from_zero = matches!(&*for_loop.iterable,
+        Expr::Range(r) if matches!(&*r.start, Expr::Number(n) if n.value.as_ref() == "0"));
+    let all_lanes = match root {
+        Some(Level::Block) => true,
+        Some(Level::Subgroup) => Some(width) == map.subgroup,
+        None => false,
+    };
+    let shared = for_loop.across.as_ref().is_some_and(|a| a.share.is_some());
+    if kind == LevelKind::Lanes && inner == 1 && !rebound && from_zero && all_lanes && !shared {
+        map.lane_element = root.map(|level| (index, level));
+    }
     let lowered = lower_strided(for_loop, (pass, step), gen, block);
     let map = gen.across_map.as_mut().expect("a mapped region");
     map.level = outer_level;
     map.inner = outer_inner;
+    map.lane_element = outer_element;
+    if let Some(row) = outer_row {
+        map.subgroup_row = row;
+    }
     let mut end = lowered?;
     if let Some(join) = join {
         close_guard(gen, end, join)?;

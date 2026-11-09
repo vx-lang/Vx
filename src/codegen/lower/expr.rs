@@ -6973,8 +6973,32 @@ fn lane_tensor_operand<'c>(
     Ok((t, block))
 }
 
+/// How a lane routine runs: `serial` in a region whose `across` loops run on one lane, and
+/// otherwise on the lanes of the block, or of the subgroup in the code of a subgroup. The
+/// attributes, and the lanes that the routine shares its work among.
+fn lane_routine_attrs<'c>(
+    gen: &MeliorGenerator<'c>,
+) -> Result<(Vec<(Identifier<'c>, melior::ir::Attribute<'c>)>, u64), LowerError> {
+    let unit = melior::ir::attribute::Attribute::unit(gen.context);
+    let subgroup = gen.across_kinds.last() == Some(&crate::arch::LevelKind::Subgroups);
+    let mut attrs = Vec::new();
+    let lanes = match &gen.across_map {
+        None => {
+            attrs.push((Identifier::new(gen.context, "serial"), unit));
+            1
+        }
+        Some(_) if subgroup => super::across::subgroup_lanes(gen)?,
+        Some(m) => m.lanes,
+    };
+    if subgroup {
+        attrs.push((Identifier::new(gen.context, "subgroup"), unit));
+    }
+    Ok((attrs, lanes))
+}
+
 /// `lanes::copy_async(&mut tile, &x, [i, j, ..])` as `vx.lane_copy_async`, and the wait of its
-/// token as `vx.lane_copy_wait`. Both are `serial`, so the copy ends where it starts.
+/// token as `vx.lane_copy_wait`. In a region on one lane, both are `serial`, so the copy ends
+/// where it starts.
 fn lower_lane_copy<'c>(
     gen: &mut MeliorGenerator<'c>,
     block: melior::ir::BlockRef<'c, 'c>,
@@ -6988,8 +7012,7 @@ fn lower_lane_copy<'c>(
     ),
     LowerError,
 > {
-    let unit = melior::ir::attribute::Attribute::unit(gen.context);
-    let mut attrs = vec![(Identifier::new(gen.context, "serial"), unit)];
+    let (mut attrs, lanes) = lane_routine_attrs(gen)?;
     if op == crate::hir::check::lanes::LaneOp::CopyWait {
         let [token] = args else {
             return Err(LowerError::ParseType(
@@ -7022,7 +7045,7 @@ fn lower_lane_copy<'c>(
     let i64_ty = melior::ir::r#type::IntegerType::new(gen.context, 64).into();
     attrs.push((
         Identifier::new(gen.context, "lanes"),
-        IntegerAttribute::new(i64_ty, 1).into(),
+        IntegerAttribute::new(i64_ty, lanes as i64).into(),
     ));
     let copy = OperationBuilder::new("vx.lane_copy_async", gen.loc())
         .add_operands(&operands)
@@ -7056,8 +7079,8 @@ fn cancel_call_value<'c>(
     Ok((v, gen.i32_ty, block))
 }
 
-/// `lanes::sum(&t, n)` and the other lane reductions, as `vx.lane_reduce` or `vx.lane_argmax`. This code generator
-/// runs `across` loops as plain loops, on one lane, so the op is `serial`: both copies of the
+/// `lanes::sum(&t, n)` and the other lane reductions, as `vx.lane_reduce` or `vx.lane_argmax`.
+/// In a region whose `across` loops run on one lane, the op is `serial`: both copies of the
 /// kernel expand it into the loops of the CPU.
 fn lower_lane_reduce<'c>(
     gen: &mut MeliorGenerator<'c>,
@@ -7096,13 +7119,13 @@ fn lower_lane_reduce<'c>(
     let (count, count_ty, block) = gen.generate_expr(n, block)?;
     operands.push(gen.coerce_type(&block, count, count_ty, gen.i32_ty)?);
     let unit = melior::ir::attribute::Attribute::unit(gen.context);
-    let mut attrs = vec![(Identifier::new(gen.context, "serial"), unit)];
+    let (mut attrs, lanes) = lane_routine_attrs(gen)?;
     if sort {
         // `vx.lane_sort`, whose `lanes` only the GPU expansion reads.
         let i64_ty = melior::ir::r#type::IntegerType::new(gen.context, 64).into();
         attrs.push((
             Identifier::new(gen.context, "lanes"),
-            IntegerAttribute::new(i64_ty, 1).into(),
+            IntegerAttribute::new(i64_ty, lanes as i64).into(),
         ));
         if op == crate::hir::check::lanes::LaneOp::SortDescending {
             attrs.push((Identifier::new(gen.context, "descending"), unit));
@@ -7128,9 +7151,7 @@ fn lower_lane_reduce<'c>(
     if ordered {
         attrs.push((Identifier::new(gen.context, "ordered"), unit));
     }
-    if gen.across_kinds.last() == Some(&crate::arch::LevelKind::Subgroups) {
-        attrs.push((Identifier::new(gen.context, "subgroup"), unit));
-    }
+    attrs.extend(super::across::own_row_attrs(gen, tensors));
     let (name, ty) = if argmax {
         ("vx.lane_argmax", gen.i32_ty)
     } else {

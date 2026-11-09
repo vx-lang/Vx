@@ -8144,7 +8144,7 @@ fn overlap_clauses(func: &Function, mutated: &HashSet<Symbol>) -> Vec<(Symbol, S
 }
 
 /// Whether `stmts` bind `name` anywhere: with `let`, as a `for` variable, or in a `match` pattern.
-fn binds_name(stmts: &[Statement], name: &Symbol) -> bool {
+pub(crate) fn binds_name(stmts: &[Statement], name: &Symbol) -> bool {
     fn in_pattern(p: &crate::syntax::Pattern, name: &Symbol) -> bool {
         match p {
             crate::syntax::Pattern::Identifier(n) => n == name,
