@@ -35,6 +35,17 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
             super::expr::emit_func_return(gen, block, None)?;
             return Ok(None);
         };
+        // `return unsafe { ..; return x; }`, as in the call function of a closure: every path in
+        // the block returns, so the block has no value of its own to return.
+        if crate::syntax::expr::diverges_on_every_path(expr) {
+            let (_, _, block) = gen.generate_expr(expr, block)?;
+            if block.terminator().is_none() {
+                block.append_operation(
+                    OperationBuilder::new("llvm.unreachable", gen.loc()).build()?,
+                );
+            }
+            return Ok(None);
+        }
         gen.expected_type = gen.current_return_type;
         // Offer the caller's buffer to the expression being returned, so a tensor operator builds
         // the answer there instead of in a buffer of its own that we then copy out of. Only an
@@ -187,6 +198,14 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
         let prev_expected = gen.expected_type;
         gen.expected_type = ty_ann.as_ref().and_then(|ann| gen.lower_type(ann).ok());
         let (val, ty, block) = gen.generate_expr(expr, block)?;
+        // `let c : Closure1<..> = |x| ..` holds the `{env, func}` pair, not the literal's captures.
+        let (val, ty) = match gen.expected_type {
+            Some(want) => match gen.adapt_closure_to_nominal(&block, val, ty, want)? {
+                Some(adapted) => (adapted, want),
+                None => (val, ty),
+            },
+            None => (val, ty),
+        };
         if let Expr::Closure(c) = expr {
             let func_args = c.params.iter().map(|(_, t)| t.clone()).collect();
             let ret_ty = c
@@ -308,6 +327,19 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
                 gen.env.insert(name.to_string().into(), (alloca_val, ty));
                 gen.allocs.insert(name.to_string());
             } else {
+                // `let mut r = &t` gets `t`'s cell. `r` gets a cell of its own that holds the
+                // same descriptor, so `r = &u` later does not change `t`.
+                let mut ty = ty;
+                let tensor_reference = matches!(
+                    ty_ann.clone().or_else(|| gen.infer_ast_type(expr)),
+                    Some(syntax::Type::Borrow { inner, .. })
+                        if matches!(*inner, syntax::Type::Tensor(..))
+                );
+                let val = if tensor_reference {
+                    crate::codegen::lower::expr::load_tensor_slot(gen, &block, val, &mut ty)?
+                } else {
+                    val
+                };
                 let memref_ty = format!("memref<{}>", ty);
                 let parsed_memref_ty = Type::parse(gen.context, &memref_ty).ok_or_else(|| {
                     crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
@@ -327,6 +359,42 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
                 gen.allocs.insert(name.to_string());
             }
         } else {
+            // A reference to a tensor is a cell that holds the descriptor. `let r = s.field` or a
+            // closure's capture gives the tensor itself, so `r` gets a cell of its own. A call
+            // passes that cell to a `&Tensor` parameter.
+            let tensor_reference = matches!(
+                ty_ann.clone().or_else(|| gen.infer_ast_type(expr)),
+                Some(syntax::Type::Borrow { inner, .. })
+                    if matches!(*inner, syntax::Type::Tensor(..))
+            );
+            let ty_str = ty.to_string();
+            let (val, ty) = if tensor_reference
+                && ty_str.starts_with("memref<")
+                && !ty_str.starts_with("memref<memref<")
+            {
+                let cell_ty = Type::parse(gen.context, &format!("memref<{ty_str}>"))
+                    .ok_or_else(|| LowerError::ParseType(format!("memref<{ty_str}>")))?;
+                let cell: Value = block
+                    .append_operation(
+                        OperationBuilder::new("memref.alloca", gen.loc())
+                            .add_attributes(&[(
+                                Identifier::new(gen.context, "operandSegmentSizes"),
+                                DenseI32ArrayAttribute::new(gen.context, &[0, 0]).into(),
+                            )])
+                            .add_results(&[cell_ty])
+                            .build()?,
+                    )
+                    .result(0)?
+                    .into();
+                block.append_operation(
+                    OperationBuilder::new("memref.store", gen.loc())
+                        .add_operands(&[val, cell])
+                        .build()?,
+                );
+                (cell, cell_ty)
+            } else {
+                (val, ty)
+            };
             gen.env.insert(name.to_string().into(), (val, ty));
             // A value, not a stack slot, even if an outer `let mut` of this name had one.
             gen.allocs.remove(name.as_ref());
@@ -536,6 +604,85 @@ pub(crate) fn struct_instance_ty<'c>(
     gen.lower_type(&syntax::Type::GenericInstance(Box::new(nominal), args))
 }
 
+/// `place.member = val` where `place` is a struct behind a pointer: `(*p).a = v` with a raw
+/// pointer `p`, or `m.r.x = v` where the field `m.r` is a reference. The value is stored through
+/// the pointer. `None` when `place` is not a struct behind a pointer.
+fn store_field_through_pointer<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    place: &Expr,
+    member: &crate::symbol::Symbol,
+    val: melior::ir::Value<'c, 'c>,
+    val_ty: Type<'c>,
+) -> Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError> {
+    use syntax::Type as T;
+    // The expression that gives the pointer, and the type of the struct it points at.
+    let (ptr_expr, pointee) = match place {
+        Expr::Dereference(d) => match gen.infer_ast_type(&d.expr) {
+            Some(T::Pointer(inner, _, _) | T::Ref(inner, _) | T::Borrow { inner, .. }) => {
+                (d.expr.as_ref(), *inner)
+            }
+            _ => return Ok(None),
+        },
+        Expr::MemberAccess(_) => match gen.infer_ast_type(place) {
+            Some(T::Pointer(inner, _, _) | T::Ref(inner, _) | T::Borrow { inner, .. }) => {
+                (place, *inner)
+            }
+            _ => return Ok(None),
+        },
+        _ => return Ok(None),
+    };
+    let Some(base_struct) = nominal_struct_name(&pointee) else {
+        return Ok(None);
+    };
+    let base_struct: crate::symbol::Symbol =
+        base_struct.split('<').next().unwrap_or(&base_struct).into();
+    let Some(decl) = gen.structs.get(&base_struct).cloned() else {
+        return Ok(None);
+    };
+    let Some(field_idx) = decl.fields.iter().position(|(n, _)| n == member) else {
+        return Ok(None);
+    };
+    let (ptr_val, ptr_ty, block) = gen.generate_expr(ptr_expr, block)?;
+    assert!(
+        ptr_ty.to_string().starts_with("!llvm.ptr"),
+        "a struct behind a pointer lowers to a pointer, not {ptr_ty}"
+    );
+    let mapping = generic_arg_mapping(&pointee.to_string(), &decl.generics);
+    let field_ty = gen.lower_type(&decl.fields[field_idx].1.substitute(&mapping))?;
+    let field_val = if val_ty == field_ty {
+        val
+    } else {
+        gen.coerce_type(&block, val, val_ty, field_ty)?
+    };
+    let struct_ty = struct_instance_ty(gen, &base_struct, &decl, &mapping)?;
+    let field_ptr: melior::ir::Value = block
+        .append_operation(
+            OperationBuilder::new("llvm.getelementptr", gen.loc())
+                .add_attributes(&[
+                    (
+                        Identifier::new(gen.context, "rawConstantIndices"),
+                        DenseI32ArrayAttribute::new(gen.context, &[0, field_idx as i32]).into(),
+                    ),
+                    (
+                        Identifier::new(gen.context, "elem_type"),
+                        TypeAttribute::new(struct_ty).into(),
+                    ),
+                ])
+                .add_operands(&[ptr_val])
+                .add_results(&[gen.ptr_ty])
+                .build()?,
+        )
+        .result(0)?
+        .into();
+    block.append_operation(
+        OperationBuilder::new("llvm.store", gen.loc())
+            .add_operands(&[field_val, field_ptr])
+            .build()?,
+    );
+    Ok(Some(block))
+}
+
 /// Whether evaluating `e` runs no code: a variable, a field of one, or what one points at.
 fn runs_no_code(e: &Expr) -> bool {
     match e {
@@ -604,6 +751,36 @@ fn matmul_assign_shapes_agree(gen: &MeliorGenerator<'_>, dst: &Expr, a: &Expr, b
     d.len() == 2 && l.len() == 2 && r.len() == 2 && l[1] == r[0] && d[0] == l[0] && d[1] == r[1]
 }
 
+/// `vx.lane_matmul` with `serial`, which the host lowering expands into loops.
+fn lower_lane_matmul<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    m: &crate::hir::check::lanes::LaneMatmul,
+) -> Result<melior::ir::BlockRef<'c, 'c>, LowerError> {
+    let mut block = block;
+    let mut operands = Vec::new();
+    for e in [m.acc, m.lhs, m.rhs] {
+        let (v, mut ty, b) = gen.generate_expr(e, block)?;
+        block = b;
+        operands.push(super::expr::load_tensor_slot(gen, &block, v, &mut ty)?);
+    }
+    let unit = melior::ir::attribute::Attribute::unit(gen.context);
+    let mut attrs = vec![
+        (Identifier::new(gen.context, "serial"), unit),
+        (Identifier::new(gen.context, "subgroup"), unit),
+    ];
+    if m.accumulate {
+        attrs.push((Identifier::new(gen.context, "accumulate"), unit));
+    }
+    block.append_operation(
+        OperationBuilder::new("vx.lane_matmul", gen.loc())
+            .add_operands(&operands)
+            .add_attributes(&attrs)
+            .build()?,
+    );
+    Ok(block)
+}
+
 impl<'c> LowerToMelior<'c> for AssignStmt {
     type Output = Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError>;
     fn lower(
@@ -612,6 +789,13 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
         let AssignStmt { lhs, rhs, span } = self;
+
+        // A lane matmul in the code of a subgroup, which this code generator runs on one lane.
+        if gen.across_kinds.last() == Some(&crate::arch::LevelKind::Subgroups) {
+            if let Some(m) = crate::hir::check::lanes::lane_matmul(self) {
+                return lower_lane_matmul(gen, block, &m).map(Some);
+            }
+        }
 
         // `a.b.c = v` is lowered as `a.b = B { c: v, d: a.b.d, ... }`. The store below handles
         // only a field of a variable, so each level of nesting peels off one field.
@@ -816,6 +1000,36 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
             return Ok(Some(block));
         }
 
+        // A tile into a row of a larger tensor, `acc[w] = acc[w] + p`: a copy into the row's view.
+        let rhs_ty_str = rhs_ty.to_string();
+        if lhs_is_a_row
+            && rhs_ty_str.starts_with("memref<")
+            && !rhs_ty_str.starts_with("memref<memref<")
+        {
+            let (dst, dst_ty, block) = gen.generate_expr(lhs, block)?;
+            if !dst_ty.to_string().starts_with("memref<") {
+                return Err(LowerError::from(format!(
+                    "a tensor assigned to an element of another: {rhs_ty} into {dst_ty}"
+                )));
+            }
+            block.append_operation(
+                OperationBuilder::new("memref.copy", gen.loc())
+                    .add_operands(&[rhs_val, dst])
+                    .build()?,
+            );
+            // The value is freed when it is a buffer of its own, and left alone when it is a view.
+            block.append_operation(
+                OperationBuilder::new("vx.drop", gen.loc())
+                    .add_operands(&[rhs_val])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "owned_only"),
+                        melior::ir::attribute::Attribute::unit(gen.context),
+                    )])
+                    .build()?,
+            );
+            return Ok(Some(block));
+        }
+
         // The old value's drops run now that the new value is computed, before it is stored.
         let block = gen.run_value_drops(block)?;
         if let Expr::Identifier(IdentifierExpr { name, span: _ }) = lhs {
@@ -833,8 +1047,27 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                     // slot from the annotation and types its literal to match (#240), so a later
                     // assignment of a default-`i32` literal to a wider slot (`let mut r: i64; r = 5`)
                     // must widen; `coerce_type` also still handles the `index`↔`i32` loop case.
-                    if rhs_ty != inner_ty {
-                        store_val = gen.coerce_type(&block, rhs_val, rhs_ty, inner_ty)?;
+                    // `r = &u` on a `let mut` reference gives `u`'s cell. `r`'s cell takes the
+                    // descriptor that it holds.
+                    let mut rhs_ty = rhs_ty;
+                    if matches!(
+                        gen.ast_env.get(name),
+                        Some(syntax::Type::Borrow { inner, .. })
+                            if matches!(**inner, syntax::Type::Tensor(..))
+                    ) {
+                        store_val = crate::codegen::lower::expr::load_tensor_slot(
+                            gen,
+                            &block,
+                            store_val,
+                            &mut rhs_ty,
+                        )?;
+                    }
+                    if rhs_ty != inner_ty && gen.is_memref(&rhs_ty) && gen.is_memref(&inner_ty) {
+                        store_val = crate::codegen::lower::cast_memref(
+                            gen, &block, store_val, rhs_ty, inner_ty,
+                        )?;
+                    } else if rhs_ty != inner_ty {
+                        store_val = gen.coerce_type(&block, store_val, rhs_ty, inner_ty)?;
                     }
 
                     let store_op = OperationBuilder::new("memref.store", gen.loc())
@@ -842,8 +1075,14 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                         .build()?;
                     block.append_operation(store_op);
                 } else if gen.allocs.contains(name.as_ref()) {
+                    // `last = &x` into a slot that holds a bare pointer gives `x`'s memref.
+                    let store_val = if rhs_ty != mem_ty {
+                        gen.coerce_type(&block, rhs_val, rhs_ty, mem_ty)?
+                    } else {
+                        rhs_val
+                    };
                     let store_op = OperationBuilder::new("llvm.store", gen.loc())
-                        .add_operands(&[rhs_val, mem_val])
+                        .add_operands(&[store_val, mem_val])
                         .build()?;
                     block.append_operation(store_op);
                 } else {
@@ -1081,6 +1320,10 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                                     .build()
                                     .unwrap();
                                 field_val = new_b.append_operation(cast_op).result(0)?.into();
+                            } else if let Some(adapted) =
+                                gen.adapt_closure_to_nominal(&new_b, rhs_val, rhs_ty, field_ty)?
+                            {
+                                field_val = adapted;
                             }
                             if let Some(rank) = crate::codegen::generator::tensor_field_rank(
                                 &struct_decl.fields[field_idx].1,
@@ -1173,6 +1416,10 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                         }
                     }
                 }
+                return Ok(Some(new_b));
+            } else if let Some(new_b) =
+                store_field_through_pointer(gen, block, base, member, rhs_val, rhs_ty)?
+            {
                 return Ok(Some(new_b));
             } else {
                 panic!("Complex struct assignment lhs not supported");

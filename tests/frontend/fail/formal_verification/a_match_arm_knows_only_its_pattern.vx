@@ -1,0 +1,57 @@
+//===- a_match_arm_knows_only_its_pattern.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An arm of a `match` on a number knows only its own pattern and the literal patterns above it.
+// Each function here asks for more.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+// The `_` arm knows `x != 5`, not `x == 5`.
+fn only_five(x : i32) -> i32
+ensures return == 5
+{
+  match x {
+    5 => {
+      return x;
+    }
+    _ => {
+      // CHECK: Error[E8001] at {{.*}}.vx:[[@LINE+1]]:7: Function 'only_five' cannot prove postcondition
+      return x;
+    }
+  }
+}
+
+// The arm for 5 runs when `x` is 5.
+fn the_arm_for_five_runs(x : i32) -> i32
+ensures return == 1
+{
+  match x {
+    5 => {
+      // CHECK: Error[E8001] at {{.*}}.vx:[[@LINE+1]]:7: Function 'the_arm_for_five_runs' cannot prove postcondition
+      return 0;
+    }
+    _ => {
+      return 1;
+    }
+  }
+}
+
+// The name `n` hides the parameter `n`, so `n == x + n` would not be a fact about one `n`.
+fn a_name_that_hides(x : i32, n : i32) -> i32
+ensures return == 0
+{
+  match x + n {
+    n => {
+      // CHECK: Error[E8001] at {{.*}}.vx:[[@LINE+1]]:7: Function 'a_name_that_hides' cannot prove postcondition
+      return x;
+    }
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}

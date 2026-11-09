@@ -29,6 +29,8 @@ pub struct Placement {
     /// Position in program order, used to tell a tile placed before a sibling block from one
     /// placed after it has closed.
     pub order: usize,
+    /// The `tasks` blocks and tasks that the tile is placed in (`TaskCx::task_chain`).
+    pub(crate) tasks: Vec<crate::hir::check::tasks::TaskLevel>,
 }
 
 pub struct ConstEvalState {
@@ -838,6 +840,9 @@ pub struct TrafficState {
     /// same expression twice; the first visit's program order wins). Taken, with the
     /// placements, when the function's summary is built.
     pub call_sites: HashMap<String, CallSite>,
+    /// Where the current function calls `channel` for tensors in a memory with a capacity. The
+    /// room of such a channel is counted there.
+    pub channel_rooms: Vec<crate::syntax::Span>,
     /// One finished capacity summary per checked function, in check order -- what the
     /// cross-call fold reads after every body is done.
     pub capacity_summaries: Vec<crate::hir::check::capacity_fold::FnCapacitySummary>,
@@ -852,4 +857,6 @@ pub struct CallSite {
     pub span: crate::syntax::Span,
     /// Made from a closure body, which may run anywhere in the function.
     pub in_closure: bool,
+    /// The `tasks` blocks and tasks that the call is in (`TaskCx::task_chain`).
+    pub(crate) tasks: Vec<crate::hir::check::tasks::TaskLevel>,
 }

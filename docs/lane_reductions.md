@@ -89,7 +89,8 @@ kernel expands it, and the argmax shuffles a value and an index at each step:
 - **A tensor in registers:** a lane loop from 0 over all the lanes of its level can write
   `part[t]`, or `part[w][t]` in the code of subgroup `w`. Then only lane `t` writes that element.
   When only lane reductions read `part`, the GPU kernel keeps each lane's element in a register,
-  and `part` takes no memory. The larger value in the code of a block also needs a count that is
+  and `part` takes no memory. A subgroup can also have several rows, `part[w][c][t]` for a number
+  `c`, and each row gets its own register. A row whose `c` is not a number keeps `part`. The larger value in the code of a block also needs a count that is
   a multiple of 32, because its pad is the element of lane 0.
 - **CPU:** loops that compute the same tree. The CPU copy of a kernel and
   `-fauto-schedule-levels` use them. So does the AST code generator (`--legacy-codegen`), which
@@ -115,6 +116,41 @@ network with a distance below 32 uses `shfl.sync.bfly`, and a step with a distan
 the lanes stays in the registers of a lane. Only the steps between them use shared memory and
 barriers: 20 of the 66 steps for 2048 elements on 1024 lanes. The CPU runs the same network in
 loops.
+
+## Matmuls of tiles
+
+In the code of a subgroup, outside its lane loops, a matmul of tiles is a statement that every
+lane of the subgroup computes together:
+
+```rust
+acc[w] = acc[w] + (sa[w] as f32) @ (sb[w] as f32);
+last[w] = (sa[w] as f32) @ (sb[w] as f32);
+```
+
+- The place on the left is an `f32` matrix, such as the row `acc[w]` of a tile in shared memory.
+  With `+`, the same place is the first operand of the sum.
+- Each operand of `@` is a matrix of `f32`, or `t as f32` for a matrix `t` of `bf16` or `f16`. A
+  product of two `bf16` or two `f16` values is exact in `f32`.
+- Every lane of the subgroup must get to the statement, as to a lane loop. A subgroup has 32
+  lanes. E6032 refuses a matmul in any other place of a region with `across` loops that launches.
+
+The meaning: each element gets the sum of its products from 0, in the order of `k`. With `+`, the
+old value is then added to the sum. The CPU copy of a kernel computes it in this order, in loops, with
+both code generators. A subgroup barrier follows the matmul on the GPU.
+
+On an NVIDIA GPU of `sm_80` or later, a matmul goes to the tensor cores when all of these are true:
+
+- Both tiles are `bf16`, or both are `f16`.
+- The result has a multiple of 16 rows and a multiple of 8 columns.
+- `k` is a multiple of 16.
+
+Each 16 x 8 piece of the result is then a chain of `mma.sync.m16n8k16`, one for each 16 values of
+`k`. The tile elements go to the tensor core as they are: the `as f32` makes no copy. The tensor
+core adds the products in an order of its own, so a result can differ from the CPU copy in its
+last bits. With small integer inputs, each sum is exact and the two results are equal.
+
+Each other matmul uses the lanes of the subgroup: they share the elements of the result, and each
+lane computes its elements in the order above.
 
 ## Copies
 

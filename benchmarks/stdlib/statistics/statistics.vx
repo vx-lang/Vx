@@ -31,32 +31,32 @@ fn main() -> i32 {
   let mut total_soft : f64 = 0.0;
   for rep in 0..20 {
     a[n - 1 - rep] = 2.0 + (rep as f32);
-    let t0 = now();
+    let t0 = Instant::now();
     total_sum += a.sum() as f64;
-    let t1 = now();
+    let t1 = Instant::now();
     total_var += a.variance() as f64;
-    let t2 = now();
+    let t2 = Instant::now();
     let index = a.argmax().unwrap();
-    let t3 = now();
+    let t3 = Instant::now();
     total_arg += index as f64;
     // The copy into `s` is timed with the softmax, as in statistics.cpp.
     for i in 0..soft_n {
       s[i] = a[i];
     }
     let _done = s.softmax_inplace();
-    let t5 = now();
+    let t5 = Instant::now();
     total_soft += s[rep] as f64;
-    if t1 - t0 < best_sum {
-      best_sum = t1 - t0;
+    if (t1 - t0).as_secs_f32() < best_sum {
+      best_sum = (t1 - t0).as_secs_f32();
     }
-    if t2 - t1 < best_var {
-      best_var = t2 - t1;
+    if (t2 - t1).as_secs_f32() < best_var {
+      best_var = (t2 - t1).as_secs_f32();
     }
-    if t3 - t2 < best_arg {
-      best_arg = t3 - t2;
+    if (t3 - t2).as_secs_f32() < best_arg {
+      best_arg = (t3 - t2).as_secs_f32();
     }
-    if t5 - t3 < best_soft {
-      best_soft = t5 - t3;
+    if (t5 - t3).as_secs_f32() < best_soft {
+      best_soft = (t5 - t3).as_secs_f32();
     }
   }
   unsafe {

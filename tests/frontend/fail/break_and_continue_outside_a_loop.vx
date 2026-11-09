@@ -1,0 +1,114 @@
+//===- break_and_continue_outside_a_loop.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `break` or `continue` must be inside a loop of its own function or closure. A closure body
+// and a function body are not inside a loop around the closure or around the call.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+fn break_with_no_loop(n : i64) -> i64 {
+  if n > 0i64 {
+    // CHECK: Error[E3064] at {{.*}}.vx:[[@LINE+1]]:5: a `break` must be inside a loop{{$}}
+    break;
+  }
+  return n;
+}
+
+fn continue_with_no_loop(n : i64) -> i64 {
+  if n > 0i64 {
+    // CHECK: Error[E3064] at {{.*}}.vx:[[@LINE+1]]:5: a `continue` must be inside a loop{{$}}
+    continue;
+  }
+  return n;
+}
+
+fn continue_in_a_closure_in_a_loop() -> i64 {
+  let mut total = 0i64;
+  for i in 0i64..3i64 {
+    let f = | x : i64 | -> i64 {
+      if x > 1i64 {
+        // CHECK: Error[E3064] at {{.*}}.vx:[[@LINE+1]]:9: a `continue` must be inside a loop. A closure body is not inside the loop around the closure{{$}}
+        continue;
+      }
+      return x;
+    };
+    total = total + f(i);
+  }
+  return total;
+}
+
+fn break_in_a_closure_with_no_loop(n : i64) -> i64 {
+  let f = | x : i64 | -> i64 {
+    if x > 1i64 {
+      // CHECK: Error[E3064] at {{.*}}.vx:[[@LINE+1]]:7: a `break` must be inside a loop{{$}}
+      break;
+    }
+    return x;
+  };
+  return f(n);
+}
+
+// A loop inside the closure is a loop of the closure, so this `break` is correct.
+fn break_in_a_loop_of_a_closure() -> i64 {
+  let mut total = 0i64;
+  for i in 0i64..3i64 {
+    let f = | x : i64 | -> i64 {
+      let mut j = 0i64;
+      loop {
+        if j >= x {
+          break;
+        }
+        j = j + 1i64;
+      }
+      return j;
+    };
+    total = total + f(i);
+  }
+  return total;
+}
+
+// The checker checks a generic function at its first call, here inside a loop. That loop is
+// not around the `break`.
+fn first<T>(x : T, stop : bool) -> T {
+  if stop {
+    // CHECK: Error[E3064] at {{.*}}.vx:[[@LINE+1]]:5: a `break` must be inside a loop{{$}}
+    break;
+  }
+  return x;
+}
+
+fn calls_first() -> i64 {
+  let mut total = 0i64;
+  for i in 0i64..3i64 {
+    total = total + first(i, i > 1i64);
+  }
+  return total;
+}
+
+// Here the first call is in a closure inside a loop. The `continue` is in neither of them.
+fn second<T>(x : T, stop : bool) -> T {
+  if stop {
+    // CHECK: Error[E3064] at {{.*}}.vx:[[@LINE+1]]:5: a `continue` must be inside a loop{{$}}
+    continue;
+  }
+  return x;
+}
+
+fn calls_second() -> i64 {
+  let mut total = 0i64;
+  for i in 0i64..3i64 {
+    let f = | x : i64 | -> i64 {
+      return second(x, x > 1i64);
+    };
+    total = total + f(i);
+  }
+  return total;
+}
+
+fn main() -> i32 {
+  return 0;
+}

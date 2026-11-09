@@ -17,12 +17,12 @@ the test suite has one, a program that triggers it.
 - [Warnings](#warnings) — `W1001`–`W1036` (27 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
-- [Type Errors](#type-errors) — `E3001`–`E3063` (62 codes)
+- [Type Errors](#type-errors) — `E3001`–`E3064` (63 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4016` (16 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
-- [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6036` (36 codes)
+- [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6041` (40 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
-- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8012` (12 codes)
+- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8014` (14 codes)
 
 ## Warnings
 
@@ -41,7 +41,7 @@ Reported without stopping the compile. A warning means the program is accepted b
 | [`W1009`](/errors/W1009/) | Unused function parameter |
 | [`W1010`](/errors/W1010/) | An `unsafe` block with nothing inside it that needs `unsafe`. |
 | [`W1013`](/errors/W1013/) | An `as` cast to the type the value already has, such as `x as i32` when `x` is an `i32`. |
-| [`W1014`](/errors/W1014/) | An `as` cast of a number known while compiling that does not fit the target type, such as `100000 as i8`, which gives -96. |
+| [`W1014`](/errors/W1014/) | An `as` cast of a number known while compiling that does not fit the target type, such as `100000 as i8`, which gives -96. For a cast to `usize`, such as `(-1i64) as usize`, the program stops at that cast. |
 | [`W1020`](/errors/W1020/) | `*&x`, a borrow that is dereferenced at once. It is the same as `x`. |
 | [`W1022`](/errors/W1022/) | A `transfer` into the memory the value is already in. It only makes a copy. |
 | [`W1023`](/errors/W1023/) | `spawn on(Topology::Current)`: the region runs where the code around it already runs. |
@@ -56,7 +56,7 @@ Reported without stopping the compile. A warning means the program is accepted b
 | [`W1033`](/errors/W1033/) | The loop of a `spawn` region runs on one thread although each pass writes only memory of its own, so its passes could run at the same time. The warning points at what stops it: a call the compiler cannot show writes nothing, inline MLIR, a read of a row another pass writes, bounds not known when compiling, and the like. A region that calls `barrier()` asks for blocks and threads, so it is warned about whenever it runs on one thread, with the first thing that stopped the split: two threads that may write the same element, a `break` out of a loop that holds a `barrier()`, a write to block-shared memory with no `barrier()` after it, and the like. |
 | [`W1034`](/errors/W1034/) | The program writes a variable that a closure copied, and uses the closure after the write. The closure keeps the value that it copied, so it does not see the write. A later release makes this an error (K4). |
 | [`W1035`](/errors/W1035/) | A `match` arm in a `loop` or `while` can take `Cancelled` from a wait and stays in the loop. In a cancelled task each wait gives `Cancelled` at once, so the loop never ends (F4). |
-| [`W1036`](/errors/W1036/) | A `drop` calls `send` or `recv`, which wait with no time limit of their own, outside a `within` block. A drop runs with cancellation off, so when the other end never acts, the wait holds up the drop until the limit of the drop: its type's `wait_limit`, 10 seconds by default. Then the wait gives up, as in a cancelled block. A `wait_limit` that calls them gets the warning too, because it runs before the drop and should only return a number. |
+| [`W1036`](/errors/W1036/) | A `drop` calls `send` or `recv`, which wait with no time limit of their own, outside the body of a call of `within`. A drop runs with cancellation off, so when the other end never acts, the wait holds up the drop until the limit of the drop: its type's `wait_limit`, 10 seconds by default. Then the wait gives up, as in a cancelled block. A `wait_limit` that calls them gets the warning too, because it runs before the drop and should only return a time. |
 
 ## Parser Errors
 
@@ -119,7 +119,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3019`](/errors/E3019/) | A `match` arm whose integer literal cannot be represented in the scrutinee's type. The arm can never be selected, so the program does not mean what it says. Codegen used to parse the literal with a zero fallback, which turned an unrepresentable arm into a comparison against 0 -- so the arm fired for scrutinee 0, the most common value there is, with no diagnostic. |
 | [`E3036`](/errors/E3036/) | A static call to a method several traits supply, where no impl takes the argument types written. Reported instead of an ambiguity (E3035), because ambiguity is not what went wrong: the call named one thing and the arguments ruled every candidate out. The message lists the impls that do exist, which is the edit. |
 | [`E3020`](/errors/E3020/) | A `match` that no arm is guaranteed to match. A match over an enum must name every variant or carry a wildcard arm, wherever it sits. The uncovered value falls through, and when every written arm returns, the function falls off its end and hands back whatever was in the return slot. A scrutinee that is not an enum cannot be enumerated, so it is only asked for a wildcard in value position, where the fall-through edge would otherwise have no value to carry -- codegen used to paper over that by evaluating the whole match to a constant zero. |
-| [`E3021`](/errors/E3021/) | An enum variant whose payload is a tensor. A payload is stored into the variant's tagged-union slot with `llvm.insertvalue`, which takes primitive operands, and a tensor is a memref descriptor. The AST path dropped such a payload silently: the construction emitted the tag and nothing else, so a program carrying a tensor through an enum compiled, ran, and lost it with no diagnostic. A struct field holding a tensor is the same representational gap in another position. |
+| [`E3021`](/errors/E3021/) | An enum variant whose payload is a `Pinned` or `Ref` tensor. A payload tensor is stored as its memref descriptor. Its drop frees a tensor in a memory space through the plugin that the memory's type names. `Pinned` and `Ref` give the location outside the tensor type, so the drop does not know it, and such a payload is refused. |
 | [`E3022`](/errors/E3022/) | An `extern` function whose signature mentions a tensor. A tensor is a memref, and lowering expands a memref parameter into the seven scalars of its descriptor -- allocated pointer, aligned pointer, offset, and a size and stride per rank. So `fn c_take(t : Tensor<f32, [?, ?]>) -> i32` declares a C symbol taking seven arguments, which is not a signature anyone writes on the C side; the call links by name and passes something the callee never agreed to. Take a raw pointer and build the tensor in Vx (`Tensor<f32, [?, ?]>::from_ptr_2d`), which is what the corpus already does. |
 | [`E3023`](/errors/E3023/) | A shaped tensor initialized from a scalar. `let a : Tensor<f32, [128, 64]> = 1.0` allocated and filled a whole buffer from something that reads as an assignment, and the two codegen paths disagreed about it: the AST path emitted the allocation and a `linalg.fill`, the flat path kept the bare constant and handed an `f32` to a call expecting a memref. `Tensor<T, [..]>::fill(v)` is the spelling. The rank-0 wrap (`Tensor<f32, []> = 1.0`) is a different thing and stays legal. |
 | [`E3024`](/errors/E3024/) | `.shape[i]` on a tensor. It answered on any value, not only a tensor, and typed its answer as a rank-0 tensor. `extent(i)` is the read of a run-time extent. |
@@ -160,6 +160,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3061`](/errors/E3061/) | An impl of a trait does not write a method that the trait requires: one the trait declares with no default body. A call to that method would otherwise fail where it is called, with "method not found", though the fault is in the impl. |
 | [`E3062`](/errors/E3062/) | A struct literal that writes its fields in an order other than the struct's declaration. The fields run in the order the source writes them, so `P { y : f(), x : g() }` would run `f` before `g` and store `y` before `x`. Write the fields in the order the struct declares them. |
 | [`E3063`](/errors/E3063/) | A `?` that cannot pass its error up. `x?` takes a `Result<T, E>`. It gives the `T` of an `Ok`, and it passes an `Err` up unchanged: to the function, which must return a `Result<_, E>` with the same `E`, to its closure, which must return one, or to its task or `tasks` block, which must give one. A `?` in a closure needs the closure's type written, `|x| -> Result<T, E> { .. }`. `?` does not convert the error. `.map_err(..)` converts it. |
+| [`E3064`](/errors/E3064/) | A `break` or `continue` with no loop around it in its own function or closure. A closure body is not inside a loop around the closure, because the closure can run after the loop ends. |
 
 ## Borrow/Ownership Errors
 
@@ -201,7 +202,7 @@ Raised by the placement and capacity rules — the checks that make Vx different
 | --- | --- |
 | [`E6001`](/errors/E6001/) | Topology mismatch in function call |
 | [`E6002`](/errors/E6002/) | Cannot transfer between memory spaces (no hardware path) |
-| [`E6003`](/errors/E6003/) | A value is used from a topology that cannot see the memory space it lives in. The diagnostic names the value's space, the visible set of the topology reading it, and the cost of the transfer that would fix it -- so a misplaced handoff (an un-transferred KV cache in a disaggregated prefill/decode split, say) is a compile error that carries its own remedy. A `managed: cached` space the topology can reach across a declared seam is coherent in hardware and is not reported here. |
+| [`E6003`](/errors/E6003/) | A value is used from a topology that cannot see the memory space it lives in. The diagnostic names the value's space, the visible set of the topology reading it, and the cost of the transfer that would fix it -- so a misplaced handoff (an un-transferred KV cache in a disaggregated prefill/decode split, say) is a compile error that carries its own remedy. A `managed: cached` space the topology can reach across a declared seam is coherent in hardware and is not reported here. A move of a tensor reads no element, so a `let`, an argument, a store or a `return` of it is allowed. |
 | [`E6004`](/errors/E6004/) | Transfer violates the boundary contract at a seam (per-seam local-completeness / soundness obligation is `sat`; a stale read can violate the contract). |
 | [`E6005`](/errors/E6005/) | A user-defined topology declaration is incoherent: it cannot see its own default memory space (`default_space ∉ visibility`). See the topology coherence check. |
 | [`E6006`](/errors/E6006/) | A `Memory` declaration's `within:` hierarchy forms a cycle (a space contains itself). |
@@ -235,6 +236,10 @@ Raised by the placement and capacity rules — the checks that make Vx different
 | [`E6034`](/errors/E6034/) | An `aligned(N)` in a tensor type that the compiler cannot give: the space is not one whose storage the compiler lays out (`scope: sm`, `cta` or `thread`), or N is less than the `alignment:` of the space, which every tensor there has. |
 | [`E6035`](/errors/E6035/) | A `Memory` declaration's `within:` names a space that is not built in, and that the program and its machine files do not declare. A typo in the name is the usual cause. |
 | [`E6036`](/errors/E6036/) | A token of `transfer_async` that the program drops with no `.wait()`: at the end of its scope, or when an assignment gives its variable a new value. The copy may not be done then, so its target may not hold the data. Call `.wait()`, which gives the placed tensor. |
+| [`E6037`](/errors/E6037/) | A placement whose memory is not built in and has no `scope:`. Such a memory has no address space on the target. Declare the memory with `scope: device`, `sm`, `cta` or `thread`. |
+| [`E6039`](/errors/E6039/) | A `spawn` in a loop of its `tasks` block, with a count of passes that is not known at compile time, and tasks that use a memory with a capacity. Each pass starts a task, and the tasks run at the same time, so their working set has no bound. Use a `for` loop over a constant range, or join each task in its pass. Downgraded to W1028 when the space is declared `overcommit`. |
+| [`E6040`](/errors/E6040/) | A channel of tensors in a memory with a capacity, with a room that is not known at compile time. The channel can hold that many tensors at once, so the working set has no bound. Downgraded to W1028 when the space is declared `overcommit`. |
+| [`E6041`](/errors/E6041/) | A function that makes a channel of tensors in a memory with a capacity, and returns an end of that channel. The room of the channel is counted in the function that calls `channel`, only until that function returns. |
 
 ## Tensor/Math Errors
 
@@ -263,9 +268,11 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 | [`E8008`](/errors/E8008/) | A loop invariant that the prover cannot show to hold when the loop starts |
 | [`E8009`](/errors/E8009/) | A loop invariant that the prover cannot show to hold in the next pass, after the loop body or after a `continue` |
 | [`E8010`](/errors/E8010/) | An `mlir!` block whose `dialects` list does not match its body: the body uses an operation of a dialect that the list does not name, or the list names something that is not a dialect. The list is what the block says it uses, so it must be right. |
-| [`E8011`](/errors/E8011/) | A pointer clause that is not well formed: `valid(p, n)`, `initialized(p, n)` or `!overlaps(p, q, n)`, where `p` and `q` are raw pointer parameters, and each clause is a `requires` or an `ensures` of its own. In an `ensures`, `return` can be the pointer. The fact of an `assume` is one such clause. A call through a function value or a trait would not prove a `requires`, so a safe function with one cannot be a function value, and a safe method of a trait impl cannot have one. A `frees` clause is an `ensures` of its own, `ensures frees(p)` or `ensures !frees(p)` for a parameter `p`, and a method of a trait impl cannot add a `!frees` that the trait method does not have. |
+| [`E8011`](/errors/E8011/) | A pointer clause that is not well formed: `valid(p, n)`, `initialized(p, n)` or `!overlaps(p, q, n)`, where `p` and `q` are raw pointer parameters, and each clause is a `requires` or an `ensures` of its own. In an `ensures`, `return` can be the pointer. The fact of an `assume` is one such clause. A call through a function value or a trait would not prove a `requires`, so a safe function with one cannot be a function value, and a safe method of a trait impl cannot have one. A `frees` clause is an `ensures` of its own, `ensures frees(p)` or `ensures !frees(p)` for a parameter `p`, and a method of a trait impl cannot add a `!frees` that the trait method does not have. An `extern` function can also ensure a clause about numbers that names only its integer parameters and `return`. |
 | [`E8012`](/errors/E8012/) | A body that breaks a pointer `ensures` of its function. The facts at a `return`, or at the end of the body, do not prove a clause such as `ensures valid(return, n)`. Or the body changes a parameter that such a clause names. Or the function says `ensures !frees(p)`, and its body gives `p`, or a value that it gets from `p`, to code that can free memory, such as a call without `!frees` for that parameter, a store or an `mlir!` block. |
+| [`E8013`](/errors/E8013/) | A type invariant that is not well formed. An `invariant` of a struct can use `self`, the fields of `self` at any depth, numbers, operators and the pointer clauses `valid`, `initialized` and `overlaps`. It calls no other function. |
+| [`E8014`](/errors/E8014/) | Code outside the module of a type with an invariant changes a field of the type. Only the module (the `.vx` file) that declares the type can write a field, take a `&mut` to a field, call a method that takes `&mut self` on a field, move a field out of the value, or build the type with a struct literal. Other code calls a function of the module to change a value of the type. Then the invariant holds for each value of the type outside its module. |
 
 ______________________________________________________________________
 
-179 diagnostics.
+186 diagnostics.

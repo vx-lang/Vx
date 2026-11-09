@@ -15,6 +15,9 @@
 // - A comment line `// vx.kernel <name> <param>...` before each kernel gives
 //   its parameters: `m<rank>` for a memref, with `r` when the kernel only
 //   reads it, and the MLIR type of a scalar (`i32`, `f32`, `index`, ...).
+// - A kernel with asserts has a line `// vx.assert <name> <number> <message>`
+//   for each, numbered from 1, with the message percent-encoded. It takes one
+//   more buffer, a zeroed `uint`. A failed assert stores its number there.
 // - `index` is a 32-bit `int`. The runtime refuses a buffer of 2^31 elements
 //   or more, so no index can overflow.
 
@@ -86,17 +89,32 @@ struct View {
   std::string base;
   SmallVector<std::string> sizes;
   SmallVector<std::string> strides;
+  // The MSL address space of `ptr`: `device`, `threadgroup`, `constant` or
+  // `thread`.
+  std::string space;
+};
+
+// The element that a pointer of the element atomics points to: `ptr[at]`.
+// `type` is the element type of the tensor.
+struct Address {
+  std::string ptr;
+  std::string at;
+  std::string space;
+  Type type;
 };
 
 class Printer {
 public:
-  explicit Printer(gpu::GPUModuleOp module) : module(module), os(text) {}
+  Printer(gpu::GPUModuleOp module, bool weakRelaxed)
+      : module(module), weakRelaxed(weakRelaxed), os(text) {}
 
   // Prints the whole module. Returns false with `error` set on failure.
   bool print(std::string &out, std::string &error);
 
 private:
   gpu::GPUModuleOp module;
+  // `-fweak-relaxed-atomics`: a Relaxed read gets no acquire fence.
+  bool weakRelaxed;
   std::string text;
   llvm::raw_string_ostream os;
   std::string failure;
@@ -104,6 +122,13 @@ private:
   unsigned next = 0;
   DenseMap<Value, std::string> names;
   DenseMap<Value, View> views;
+  // The number of each assert in the kernel, from 1.
+  DenseMap<Operation *, unsigned> asserts;
+  // The pointers that the element atomics make, from the aligned pointer of
+  // a memref. They are not printed.
+  DenseMap<Value, Address> addresses;
+  // The value that each compare-and-swap found, and whether it wrote.
+  DenseMap<Value, std::pair<std::string, std::string>> exchanges;
 
   bool fail(Operation *op, const Twine &why) {
     if (failure.empty()) {
@@ -147,6 +172,10 @@ private:
   bool memrefOp(Operation *op);
   bool gpuOp(Operation *op);
   bool mathOp(Operation *op);
+  bool llvmOp(Operation *op);
+  bool atomicOp(Operation *op);
+  bool atomicAt(Operation *op, Value ptr, Type t, Address &out);
+  void acquireFence(const Address &a);
   bool ifOp(scf::IfOp op);
   bool whileOp(scf::WhileOp op);
   bool forOp(scf::ForOp op);
@@ -320,10 +349,30 @@ bool Printer::constantTable(memref::GlobalOp g) {
   return true;
 }
 
+// `s` on one line, with `%`, `\` and control characters as `%XX`. A `\` at the
+// end of a comment line would join the next line to the comment.
+static std::string percentEncoded(StringRef s) {
+  std::string out;
+  for (unsigned char c : s) {
+    if (c == '%' || c == '\\' || c < 0x20 || c == 0x7f)
+      out += "%" + llvm::utohexstr(c, /*LowerCase=*/false, /*Width=*/2);
+    else
+      out += c;
+  }
+  return out;
+}
+
 bool Printer::kernel(gpu::GPUFuncOp f) {
   names.clear();
   views.clear();
+  asserts.clear();
+  addresses.clear();
+  exchanges.clear();
   next = 0;
+  SmallVector<cf::AssertOp> checks;
+  f.walk([&](cf::AssertOp a) { checks.push_back(a); });
+  for (auto [k, a] : llvm::enumerate(checks))
+    asserts[a] = k + 1;
   auto access = f->getAttrOfType<ArrayAttr>("vx.arg_access");
 
   auto readonly = [&](unsigned i) {
@@ -348,9 +397,16 @@ bool Printer::kernel(gpu::GPUFuncOp f) {
     }
   }
   os << "\n";
-  // Metal binds at most 31 buffers to a kernel, and one holds the words.
+  for (auto [k, a] : llvm::enumerate(checks))
+    os << "// vx.assert " << f.getName() << " " << k + 1 << " "
+       << percentEncoded(a.getMsg()) << "\n";
+  // Metal binds at most 31 buffers to a kernel. One holds the words, and one
+  // holds the number of a failed assert.
   if (buffers > 30)
     return fail(f, "a kernel with more than 30 tensor parameters");
+  if (buffers > 29 && !checks.empty())
+    return fail(f,
+                "a kernel with an assert and more than 29 tensor parameters");
 
   os << "kernel void " << f.getName() << "(\n";
   unsigned binding = 0;
@@ -366,6 +422,9 @@ bool Printer::kernel(gpu::GPUFuncOp f) {
     names[f.getArgument(i)] = "p" + std::to_string(i);
   }
   os << "    constant uint *vx_w [[buffer(" << buffers << ")]],\n";
+  if (!checks.empty())
+    os << "    device atomic_uint *vx_fail [[buffer(" << buffers + 1
+       << ")]],\n";
   os << "    uint3 vx_tgid [[threadgroup_position_in_grid]],\n";
   os << "    uint3 vx_tid [[thread_position_in_threadgroup]],\n";
   os << "    uint3 vx_ntg [[threadgroups_per_grid]],\n";
@@ -410,6 +469,7 @@ bool Printer::kernel(gpu::GPUFuncOp f) {
       View v;
       v.ptr = p;
       v.base = p + "_b";
+      v.space = "device";
       line() << "const int " << p << "_b = " << fromWord(word) << ";\n";
       line() << "const int " << p << "_o = " << p << "_b + "
              << (ShapedType::isDynamic(fixedOffset)
@@ -474,8 +534,28 @@ bool Printer::block(Block &b) {
 }
 
 bool Printer::op(Operation *o) {
+  // A pointer that the element atomics make is only followed to its tensor.
+  bool followsPointers =
+      isa<arith::IndexCastOp, arith::IndexCastUIOp, LLVM::IntToPtrOp,
+          LLVM::GEPOp, LLVM::LoadOp, LLVM::StoreOp, LLVM::AtomicRMWOp,
+          LLVM::AtomicCmpXchgOp>(o);
+  for (Value v : o->getOperands())
+    if ((addresses.count(v) && !followsPointers) ||
+        (exchanges.count(v) && !isa<LLVM::ExtractValueOp>(o)))
+      return fail(o, "a pointer into a tensor, used in a way that the Metal "
+                     "code generator cannot follow");
   if (isa<scf::YieldOp, scf::ConditionOp>(o))
     return true; // The parent op prints what these give.
+  if (auto a = dyn_cast<cf::AssertOp>(o)) {
+    // Metal cannot stop a kernel. The runtime reads the number when it waits
+    // for the launch, and stops the program with the message.
+    line() << "if (!" << name(a.getArg()) << ") {\n";
+    line() << "  atomic_store_explicit(vx_fail, " << asserts.lookup(o)
+           << "u, memory_order_relaxed);\n";
+    line() << "  return;\n";
+    line() << "}\n";
+    return true;
+  }
   if (auto i = dyn_cast<scf::IfOp>(o))
     return ifOp(i);
   if (auto w = dyn_cast<scf::WhileOp>(o))
@@ -506,12 +586,22 @@ bool Printer::op(Operation *o) {
     return memrefOp(o);
   if (ns == "gpu")
     return gpuOp(o);
+  if (ns == "llvm")
+    return llvmOp(o);
   if (ns == "math")
     return mathOp(o);
   return fail(o, "the Metal code generator cannot print this op");
 }
 
 bool Printer::arith(Operation *o) {
+  if (isa<arith::IndexCastOp, arith::IndexCastUIOp>(o)) {
+    auto it = addresses.find(o->getOperand(0));
+    if (it != addresses.end()) {
+      Address a = it->second;
+      addresses[o->getResult(0)] = a;
+      return true;
+    }
+  }
   if (auto c = dyn_cast<arith::ConstantOp>(o)) {
     Type t = c.getType();
     std::string ty;
@@ -802,6 +892,253 @@ bool Printer::mathOp(Operation *o) {
   return true;
 }
 
+// The element atomics of `core::sync::atomic` make a pointer from the aligned
+// pointer of a memref. These ops follow it back to the buffer and the index,
+// so the cast from an integer to a pointer is not printed.
+bool Printer::llvmOp(Operation *o) {
+  if (auto c = dyn_cast<LLVM::IntToPtrOp>(o)) {
+    auto it = addresses.find(c.getArg());
+    if (it == addresses.end())
+      return fail(o, "a pointer made from an integer that does not come from "
+                     "a tensor");
+    Address a = it->second;
+    addresses[c.getResult()] = a;
+    return true;
+  }
+  if (auto g = dyn_cast<LLVM::GEPOp>(o)) {
+    auto it = addresses.find(g.getBase());
+    if (it == addresses.end())
+      return fail(o, "a pointer that does not come from a tensor");
+    Address a = it->second;
+    auto indices = g.getIndices();
+    if (indices.size() != 1 || g.getElemType() != a.type)
+      return fail(o, "a pointer step that is not a number of elements of its "
+                     "tensor");
+    auto step = *indices.begin();
+    a.at =
+        "(" + a.at + " + " +
+        (isa<Value>(step) ? name(cast<Value>(step))
+                          : std::to_string(cast<IntegerAttr>(step).getInt())) +
+        ")";
+    addresses[g.getResult()] = a;
+    return true;
+  }
+  if (auto x = dyn_cast<LLVM::ExtractValueOp>(o)) {
+    auto it = exchanges.find(x.getContainer());
+    if (it == exchanges.end() || x.getPosition().size() != 1)
+      return fail(o, "a field of a value that is not a compare-and-swap");
+    names[x.getResult()] =
+        x.getPosition()[0] == 0 ? it->second.first : it->second.second;
+    return true;
+  }
+  if (isa<LLVM::LoadOp, LLVM::StoreOp, LLVM::AtomicRMWOp,
+          LLVM::AtomicCmpXchgOp>(o))
+    return atomicOp(o);
+  return fail(o, "the Metal code generator cannot print this op");
+}
+
+// The Vx name of an atomic order.
+static StringRef vxOrder(LLVM::AtomicOrdering o) {
+  switch (o) {
+  case LLVM::AtomicOrdering::monotonic:
+    return "Relaxed";
+  case LLVM::AtomicOrdering::acquire:
+    return "Acquire";
+  case LLVM::AtomicOrdering::release:
+    return "Release";
+  case LLVM::AtomicOrdering::acq_rel:
+    return "AcqRel";
+  case LLVM::AtomicOrdering::seq_cst:
+    return "SeqCst";
+  default:
+    return stringifyAtomicOrdering(o);
+  }
+}
+
+// Sets `out` to the element that `ptr` points to, when Metal has an atomic on
+// it that holds a `t`.
+bool Printer::atomicAt(Operation *o, Value ptr, Type t, Address &out) {
+  auto it = addresses.find(ptr);
+  if (it == addresses.end())
+    return fail(o, "an atomic on a pointer that does not come from a tensor");
+  out = it->second;
+  if (t.isInteger(64))
+    return fail(o, "a 64-bit atomic. The Apple GPU has 64-bit atomics only "
+                   "for min and max, and they do not give the old value");
+  if (!t.isInteger(32) || t != out.type) {
+    std::string s;
+    llvm::raw_string_ostream ts(s);
+    ts << t;
+    return fail(o, "an atomic on " + s +
+                       ". The Metal code generator prints atomics only on "
+                       "i32 and u32");
+  }
+  if (out.space == "thread")
+    return fail(o, "an atomic on a tensor in the memory of one thread");
+  if (out.space != "device" && out.space != "threadgroup")
+    return fail(o, "an atomic on a table of constants");
+  return true;
+}
+
+// A Relaxed read is an Acquire read in Vx (docs/lang/semantics.md, section
+// 2.5). Metal atomics take only `memory_order_relaxed`, so a fence after the
+// read gives the Acquire.
+void Printer::acquireFence(const Address &a) {
+  if (weakRelaxed)
+    return;
+  if (a.space == "threadgroup")
+    line() << "atomic_thread_fence(mem_flags::mem_threadgroup, "
+              "memory_order_acquire, thread_scope_threadgroup);\n";
+  else
+    line() << "atomic_thread_fence(mem_flags::mem_device, "
+              "memory_order_acquire, thread_scope_device);\n";
+}
+
+bool Printer::atomicOp(Operation *o) {
+  using LLVM::AtomicOrdering;
+  auto relaxedOnly = [&](AtomicOrdering order) {
+    if (order == AtomicOrdering::monotonic)
+      return true;
+    return fail(o, "an atomic with the order " + vxOrder(order) +
+                       ". Metal atomics on the Apple GPU take only Relaxed");
+  };
+  // The element as a Metal atomic, signed or not.
+  auto object = [](const Address &a, bool isSigned) {
+    return "(" + a.space + (isSigned ? " atomic_int *)&" : " atomic_uint *)&") +
+           a.ptr + "[" + a.at + "]";
+  };
+  constexpr const char *relaxed = "memory_order_relaxed";
+  Address a;
+
+  if (auto load = dyn_cast<LLVM::LoadOp>(o)) {
+    if (load.getOrdering() == AtomicOrdering::not_atomic)
+      return fail(o, "a load through a pointer that is not atomic");
+    if (!atomicAt(o, load.getAddr(), load.getType(), a) ||
+        !relaxedOnly(load.getOrdering()))
+      return false;
+    line() << "int " << define(load.getRes()) << " = atomic_load_explicit("
+           << object(a, true) << ", " << relaxed << ");\n";
+    acquireFence(a);
+    return true;
+  }
+
+  if (auto store = dyn_cast<LLVM::StoreOp>(o)) {
+    if (store.getOrdering() == AtomicOrdering::not_atomic)
+      return fail(o, "a store through a pointer that is not atomic");
+    if (addresses.count(store.getValue()))
+      return fail(o, "a store of a pointer into a tensor");
+    if (!atomicAt(o, store.getAddr(), store.getValue().getType(), a) ||
+        !relaxedOnly(store.getOrdering()))
+      return false;
+    line() << "atomic_store_explicit(" << object(a, true) << ", "
+           << name(store.getValue()) << ", " << relaxed << ");\n";
+    return true;
+  }
+
+  if (auto rmw = dyn_cast<LLVM::AtomicRMWOp>(o)) {
+    if (addresses.count(rmw.getVal()))
+      return fail(o, "an atomic on a pointer into a tensor");
+    if (!atomicAt(o, rmw.getPtr(), rmw.getVal().getType(), a) ||
+        !relaxedOnly(rmw.getOrdering()))
+      return false;
+    std::string r = define(rmw.getRes()), x = name(rmw.getVal());
+    using LLVM::AtomicBinOp;
+    if (rmw.getBinOp() == AtomicBinOp::uinc_wrap) {
+      // Metal has no such atomic, so a compare-and-swap writes it. The new
+      // value is 0 when the old one is `x` or more, and the old one plus 1
+      // otherwise.
+      std::string old = fresh("w");
+      line() << "int " << r << ";\n";
+      line() << "{\n";
+      line() << "  uint " << old << " = atomic_load_explicit("
+             << object(a, false) << ", " << relaxed << ");\n";
+      line() << "  while (!atomic_compare_exchange_weak_explicit("
+             << object(a, false) << ", &" << old << ", " << old << " >= (uint)"
+             << x << " ? 0u : " << old << " + 1u, " << relaxed << ", "
+             << relaxed << ")) {\n";
+      line() << "  }\n";
+      line() << "  " << r << " = (int)" << old << ";\n";
+      line() << "}\n";
+      acquireFence(a);
+      return true;
+    }
+    // A signed max or min compares with the sign. The others give the same
+    // bits on a signed and an unsigned atomic.
+    const char *fn = nullptr;
+    bool isSigned = false;
+    switch (rmw.getBinOp()) {
+    case AtomicBinOp::xchg:
+      fn = "atomic_exchange_explicit";
+      break;
+    case AtomicBinOp::add:
+      fn = "atomic_fetch_add_explicit";
+      break;
+    case AtomicBinOp::sub:
+      fn = "atomic_fetch_sub_explicit";
+      break;
+    case AtomicBinOp::_and:
+      fn = "atomic_fetch_and_explicit";
+      break;
+    case AtomicBinOp::_or:
+      fn = "atomic_fetch_or_explicit";
+      break;
+    case AtomicBinOp::_xor:
+      fn = "atomic_fetch_xor_explicit";
+      break;
+    case AtomicBinOp::max:
+      fn = "atomic_fetch_max_explicit";
+      isSigned = true;
+      break;
+    case AtomicBinOp::min:
+      fn = "atomic_fetch_min_explicit";
+      isSigned = true;
+      break;
+    case AtomicBinOp::umax:
+      fn = "atomic_fetch_max_explicit";
+      break;
+    case AtomicBinOp::umin:
+      fn = "atomic_fetch_min_explicit";
+      break;
+    default:
+      return fail(o, "the atomic operation '" +
+                         stringifyAtomicBinOp(rmw.getBinOp()) +
+                         "', which Metal does not have");
+    }
+    line() << "int " << r << " = (int)" << fn << "(" << object(a, isSigned)
+           << ", " << (isSigned ? "" : "(uint)") << x << ", " << relaxed
+           << ");\n";
+    acquireFence(a);
+    return true;
+  }
+
+  auto cas = cast<LLVM::AtomicCmpXchgOp>(o);
+  if (addresses.count(cas.getCmp()) || addresses.count(cas.getVal()))
+    return fail(o, "a compare-and-swap of a pointer into a tensor");
+  if (!atomicAt(o, cas.getPtr(), cas.getVal().getType(), a) ||
+      !relaxedOnly(cas.getSuccessOrdering()) ||
+      !relaxedOnly(cas.getFailureOrdering()))
+    return false;
+  std::string found = fresh(), wrote = fresh(), expected = fresh("e");
+  std::string current = name(cas.getCmp());
+  line() << "int " << found << ";\n";
+  line() << "bool " << wrote << ";\n";
+  line() << "{\n";
+  line() << "  uint " << expected << " = (uint)" << current << ";\n";
+  // MSL has only a weak compare-and-swap, which can fail with no change. Then
+  // the value it found is `current`, and it tries again.
+  line() << "  do {\n";
+  line() << "    " << wrote << " = atomic_compare_exchange_weak_explicit("
+         << object(a, false) << ", &" << expected << ", (uint)"
+         << name(cas.getVal()) << ", " << relaxed << ", " << relaxed << ");\n";
+  line() << "  } while (" << (cas.getWeak() ? "false" : "!" + wrote) << " && "
+         << expected << " == (uint)" << current << ");\n";
+  line() << "  " << found << " = (int)" << expected << ";\n";
+  line() << "}\n";
+  exchanges[cas.getRes()] = {found, wrote};
+  acquireFence(a);
+  return true;
+}
+
 bool Printer::gpuOp(Operation *o) {
   auto builtin = [&](StringRef var, gpu::Dimension d, Value r) {
     static const char *axis[] = {"x", "y", "z"};
@@ -904,11 +1241,22 @@ bool Printer::memrefOp(Operation *o) {
            << ";\n";
     return true;
   }
-  if (auto cast = dyn_cast<memref::CastOp>(o)) {
+  if (auto e = dyn_cast<memref::ExtractAlignedPointerAsIndexOp>(o)) {
     View v;
-    if (!viewOf(cast.getSource(), v, o))
+    if (!viewOf(e.getSource(), v, o))
       return false;
-    views[cast.getResult()] = v;
+    Type elem = cast<MemRefType>(e.getSource().getType()).getElementType();
+    addresses[e.getResult()] = {v.ptr, v.base, v.space, elem};
+    return true;
+  }
+  // A cast to another memory space changes only the type. The elements stay
+  // in the memory of the source, for example shared memory that a function
+  // for a tensor in any memory gets.
+  if (isa<memref::CastOp, memref::MemorySpaceCastOp>(o)) {
+    View v;
+    if (!viewOf(o->getOperand(0), v, o))
+      return false;
+    views[o->getResult(0)] = v;
     return true;
   }
   if (auto rc = dyn_cast<memref::ReinterpretCastOp>(o)) {
@@ -918,6 +1266,7 @@ bool Printer::memrefOp(Operation *o) {
     View v;
     v.ptr = src.ptr;
     v.base = src.base;
+    v.space = src.space;
     v.origin = fresh("o");
     line() << "const int " << v.origin << " = " << src.base << " + "
            << foldResult(rc.getMixedOffsets()[0]) << ";\n";
@@ -935,6 +1284,7 @@ bool Printer::memrefOp(Operation *o) {
     View v;
     v.ptr = src.ptr;
     v.base = src.base;
+    v.space = src.space;
     v.origin = fresh("o");
     std::string at = src.origin;
     for (auto [k, off] : llvm::enumerate(sv.getMixedOffsets()))
@@ -957,6 +1307,11 @@ bool Printer::memrefOp(Operation *o) {
     v.ptr = get.getName().str();
     v.base = "0";
     v.origin = "0";
+    auto space = dyn_cast_or_null<IntegerAttr>(t.getMemorySpace());
+    v.space = (space && space.getInt() == 3) ||
+                      isa_and_nonnull<gpu::AddressSpaceAttr>(t.getMemorySpace())
+                  ? "threadgroup"
+                  : "constant";
     for (int64_t s : t.getShape())
       v.sizes.push_back(std::to_string(s));
     if (!layoutStrides(t, v.sizes, v.strides, o))
@@ -975,6 +1330,7 @@ bool Printer::memrefOp(Operation *o) {
     v.ptr = fresh("a");
     v.base = "0";
     v.origin = "0";
+    v.space = "thread";
     line() << "thread " << elem << " " << v.ptr << "["
            << std::max<int64_t>(t.getNumElements(), 1) << "];\n";
     for (int64_t s : t.getShape())
@@ -1272,8 +1628,11 @@ std::string mslImageOf(gpu::GPUModuleOp gpuModule, std::string &error) {
   auto copy = cast<gpu::GPUModuleOp>(holder->getBody()->front());
   if (failed(structure(copy, error)))
     return {};
+  // `-fweak-relaxed-atomics` marks the module that holds the device module.
+  auto parent = gpuModule->getParentOfType<ModuleOp>();
+  bool weakRelaxed = parent && parent->hasAttr("vx.weak_relaxed_atomics");
   std::string image;
-  Printer printer(copy);
+  Printer printer(copy, weakRelaxed);
   if (!printer.print(image, error))
     return {};
   return image;

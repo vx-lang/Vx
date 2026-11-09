@@ -19,7 +19,9 @@
 // A task of the shared runtime (sched.rs) does not sleep: it parks. Under the lock it goes on
 // the list of fibers of the bucket, with the address of its word. A wake of a word puts each
 // fiber of that word back on the queue. A fiber of another word of the bucket stays parked, so
-// the queue does not depend on which words share a bucket.
+// the queue does not depend on which words share a bucket. A cancel wakes only the fibers whose
+// wait can be cancelled: another fiber would only park again, and with a seed, its extra turn
+// changes the order of the tasks.
 //
 //===----------------------------------------------------------------------===//
 
@@ -37,8 +39,8 @@ struct Bucket {
 }
 
 struct Waiters {
-    /// The fibers that park on a word of this bucket, with the address of the word.
-    fibers: Vec<(FiberRef, usize)>,
+    /// The fibers that park on a word of this bucket.
+    fibers: Vec<Parked>,
     /// The threads that sleep here with no time limit, which the deadlock watcher counts.
     sleepers: Vec<std::thread::ThreadId>,
     /// The scheduler of each fiber that sleeps here on its worker's thread, under a callback.
@@ -49,6 +51,15 @@ struct Waiters {
     /// What each thread and fiber above waits for, for the deadlock report. A timed sleep of a
     /// thread has no note: it cannot be part of a deadlock.
     notes: Vec<Note>,
+}
+
+/// A fiber that parks on a word.
+struct Parked {
+    fiber: FiberRef,
+    /// The address of the word.
+    word: usize,
+    /// Whether a cancel ends the wait.
+    can_cancel: bool,
 }
 
 /// What a wait is for, as the library says it with `vx_waiting_for`.
@@ -260,7 +271,7 @@ pub unsafe extern "C" fn vx_wait_while(word: *const i64, value: i64) {
 /// task or thread was not cancelled. With a deadline of `vx_clock_ns`, it also returns at the
 /// deadline: a thread sleeps with a time limit, and a fiber asks the timer to wake its bucket.
 unsafe fn wait(word: *const i64, value: i64, or_cancel: bool, deadline_ns: Option<i64>) {
-    // In a `drop` or a `within` block, a wait that can be cancelled ends at the earliest deadline
+    // In a `drop` or a call of `within`, a wait that can be cancelled ends at the earliest deadline
     // of the scopes around it (F6, F6a).
     let deadline_ns = match crate::ffi::tasks::drop_deadline().filter(|_| or_cancel) {
         Some(d) => Some(deadline_ns.map_or(d, |own| own.min(d))),
@@ -364,7 +375,11 @@ unsafe fn wait(word: *const i64, value: i64, or_cancel: bool, deadline_ns: Optio
         return;
     }
     sched::will_park(fiber);
-    waiters.fibers.push((FiberRef(fiber), word as usize));
+    waiters.fibers.push(Parked {
+        fiber: FiberRef(fiber),
+        word: word as usize,
+        can_cancel: or_cancel,
+    });
     waiters.notes.push(note(fiber as usize));
     drop(waiters);
     // A wake of the bucket before the park leaves the fiber `WOKEN`, so the timer can fire now.
@@ -421,11 +436,11 @@ pub unsafe extern "C" fn vx_wake_all(word: *const i64) {
     wake(bucket(word), Fibers::Of(word as usize));
 }
 
-/// Wake each thread that waits on any word. A cancel uses it: each wait reads its word again,
-/// and a wait that can be cancelled then sees the cancel.
+/// Wake each thread that waits on any word, and each fiber whose wait a cancel ends. A cancel
+/// uses it: each woken wait reads its word again, and a wait that can be cancelled sees the cancel.
 pub(crate) fn wake_every_thread() {
     for b in &TABLE {
-        wake(b, Fibers::All);
+        wake(b, Fibers::ThatCanCancel);
     }
 }
 
@@ -442,7 +457,8 @@ pub(crate) fn wake_every_sleeper() {
 enum Fibers {
     /// The fibers that park on the word at this address.
     Of(usize),
-    All,
+    /// The fibers whose wait a cancel ends.
+    ThatCanCancel,
     None,
 }
 
@@ -450,19 +466,19 @@ enum Fibers {
 fn take_fibers(waiters: &mut Waiters, which: Fibers) -> Vec<FiberRef> {
     let (taken, kept) = std::mem::take(&mut waiters.fibers)
         .into_iter()
-        .partition(|&(_, w)| match which {
-            Fibers::Of(word) => w == word,
-            Fibers::All => true,
+        .partition(|p: &Parked| match which {
+            Fibers::Of(word) => p.word == word,
+            Fibers::ThatCanCancel => p.can_cancel,
             Fibers::None => false,
         });
     waiters.fibers = kept;
-    taken.into_iter().map(|(fiber, _)| fiber).collect()
+    taken.into_iter().map(|p| p.fiber).collect()
 }
 
 /// Drops the notes of the waiters that a wake took. A wake takes every thread, but a fiber of
 /// another word stays parked, and it keeps its note for the deadlock report.
 fn keep_the_notes_of_parked_fibers(waiters: &mut Waiters) {
-    let parked: Vec<usize> = waiters.fibers.iter().map(|(f, _)| f.0 as usize).collect();
+    let parked: Vec<usize> = waiters.fibers.iter().map(|p| p.fiber.0 as usize).collect();
     waiters.notes.retain(|n| parked.contains(&n.owner));
 }
 
@@ -899,7 +915,7 @@ mod tests {
             std::thread::yield_now();
         }
         word.store(1, Ordering::SeqCst);
-        wake(b, Fibers::All);
+        wake(b, Fibers::None);
         // The sleeper needs this lock to come back from its wait, so it is still in it here.
         let counted = sleeps(b, me);
         sleeper.join().unwrap();
@@ -913,17 +929,22 @@ mod tests {
         let sleeper = sleeper(&word, &rounds);
         let me = sleeper.thread().id();
         let b = bucket(word.as_ptr());
-        let asleep_in_round = |n| {
-            while rounds.load(Ordering::SeqCst) < n || sleeps(b, me) == 0 {
-                std::thread::yield_now();
+        // The count is the one that ended the wait. The system can return the sleeper with no
+        // wake at any time, so a second read can give 0.
+        let asleep_in_round = |n| loop {
+            if rounds.load(Ordering::SeqCst) >= n {
+                let count = sleeps(b, me);
+                if count != 0 {
+                    return count;
+                }
             }
+            std::thread::yield_now();
         };
         asleep_in_round(1);
         // A return of the condition variable with no wake, as the system may give.
         drop(b.lock.lock().unwrap());
         b.cond.notify_all();
-        asleep_in_round(2);
-        let counted = sleeps(b, me);
+        let counted = asleep_in_round(2);
         word.store(1, Ordering::SeqCst);
         wake(b, Fibers::Of(word.as_ptr() as usize));
         sleeper.join().unwrap();
@@ -933,13 +954,26 @@ mod tests {
         );
     }
 
-    /// A wake of a word must not take a fiber that parks on another word of the same bucket.
-    /// With a seed, such a wake changes the order of the tasks. The fibers here never run.
+    fn parked(word: usize, can_cancel: bool) -> Parked {
+        Parked {
+            fiber: FiberRef(std::ptr::null_mut()),
+            word,
+            can_cancel,
+        }
+    }
+
+    /// A wake of a word must not take a fiber that parks on another word of the same bucket, and
+    /// a cancel must not take a fiber whose wait a cancel does not end. With a seed, such a wake
+    /// changes the order of the tasks. The fibers here never run.
     #[test]
     fn a_wake_takes_only_the_fibers_that_it_names() {
-        let fiber = || FiberRef(std::ptr::null_mut());
         let mut waiters = Waiters {
-            fibers: vec![(fiber(), 8), (fiber(), 16), (fiber(), 8)],
+            fibers: vec![
+                parked(8, false),
+                parked(16, true),
+                parked(8, true),
+                parked(24, false),
+            ],
             sleepers: Vec::new(),
             blocked: Vec::new(),
             notes: Vec::new(),
@@ -955,10 +989,22 @@ mod tests {
             2,
             "a wake of a word did not take each fiber of the word"
         );
-        let words: Vec<usize> = waiters.fibers.iter().map(|&(_, w)| w).collect();
-        assert_eq!(words, [16], "a wake of a word took a fiber of another word");
-        assert_eq!(take_fibers(&mut waiters, Fibers::All).len(), 1);
-        assert!(waiters.fibers.is_empty());
+        let words = |w: &Waiters| w.fibers.iter().map(|p| p.word).collect::<Vec<usize>>();
+        assert_eq!(
+            words(&waiters),
+            [16, 24],
+            "a wake of a word took a fiber of another word"
+        );
+        take_fibers(&mut waiters, Fibers::ThatCanCancel);
+        let left = words(&waiters);
+        assert!(
+            left.contains(&24),
+            "a cancel took a fiber whose wait it does not end"
+        );
+        assert!(
+            !left.contains(&16),
+            "a cancel did not take the fiber whose wait it ends"
+        );
     }
 
     /// A fiber that a wake leaves parked keeps its note for the deadlock report. The waiters
@@ -976,7 +1022,18 @@ mod tests {
             site: None,
         };
         let mut waiters = Waiters {
-            fibers: vec![(on_a, 100), (on_b, 200)],
+            fibers: vec![
+                Parked {
+                    fiber: on_a,
+                    word: 100,
+                    can_cancel: false,
+                },
+                Parked {
+                    fiber: on_b,
+                    word: 200,
+                    can_cancel: false,
+                },
+            ],
             sleepers: Vec::new(),
             blocked: Vec::new(),
             // A thread that sleeps on word 100 has the owner 24.

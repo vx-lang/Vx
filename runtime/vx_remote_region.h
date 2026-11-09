@@ -126,7 +126,9 @@ typedef struct {
   int32_t dtype;       /* VX_DTYPE_*, for descriptor reconstruction */
   void *remote;        /* the worker's own pointer; never leaves the plugin */
   uint64_t generation; /* bumped on free, so a stale handle is detectable */
-  int32_t live;        /* 0 once freed; the slot is not reused */
+  /* 0 once freed. A new region takes the slot only after
+     vx_remote_table_free_all empties the table. */
+  int32_t live;
 } vx_remote_region;
 
 /// Where a resolved handle points.
@@ -278,6 +280,25 @@ static inline int vx_remote_table_free(vx_remote_table *t, uint64_t base) {
     }
   }
   return 0;
+}
+
+/// Call `release` with the worker's pointer of each live region, then empty the
+/// table so that its slots can hold new regions. A worker calls this when its
+/// host disconnects. Returns the number of regions it freed.
+///
+/// The offsets do not go back, so each new base is above every old address,
+/// and a handle from the old host resolves to nothing.
+static inline size_t vx_remote_table_free_all(vx_remote_table *t,
+                                              void (*release)(void *remote)) {
+  size_t i, freed = 0;
+  for (i = 0; i < t->count; ++i) {
+    if (t->regions[i].live) {
+      release(t->regions[i].remote);
+      ++freed;
+    }
+  }
+  t->count = 0;
+  return freed;
 }
 
 #endif /* VX_REMOTE_REGION_H */

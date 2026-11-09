@@ -1,0 +1,46 @@
+//===- interval_with_an_invariant.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A type with an invariant, for the fixtures that use its fields from another file.
+import std::vec;
+
+struct Counter {
+  value : i64,
+}
+
+impl Counter {
+  fn bump(self : &mut Counter) -> i32 {
+    self.value = self.value + 1i64;
+    return 0;
+  }
+}
+
+struct Interval
+invariant 0i64 <= self.lo && self.lo <= self.hi
+{
+  lo : i64,
+  hi : i64,
+  count : Counter,
+  items : Vec<i64>,
+}
+
+impl Interval {
+  fn new() -> Interval {
+    return Interval {
+      lo : 0i64, hi : 1i64, count : Counter {
+        value : 0i64
+      }, items : Vec<i64>::new()
+    };
+  }
+
+  fn widen(self : &mut Interval) -> i32 {
+    self.hi = self.hi + 1i64;
+    self.count.bump();
+    self.items.push(self.hi);
+    return 0;
+  }
+}

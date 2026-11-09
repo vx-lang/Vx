@@ -1,0 +1,160 @@
+//===- tasks_that_a_loop_starts_add_up_their_memory.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `spawn` in a loop starts a task in each pass, and the tasks of all the passes run at the same
+// time. So the memory that one task uses counts once for each pass. `use_one` places 1 MiB in `W`,
+// which holds 4 MiB.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 4 MiB, managed: explicit
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10,
+  transfer Memory::W -> Memory::CPU_DRAM : 10
+}
+
+const PASSES: i64 = 5;
+
+fn use_one() -> f32 {
+  let aT = unsafe { Tensor<f32, [512, 512]>::uninit() };
+  let a = transfer(aT, Memory::W);
+  let r = transfer(a, Memory::CPU_DRAM);
+  return r[0][0];
+}
+
+// Five tasks call it at the same time.
+fn five_tasks_call_it() -> void {
+  tasks {
+    for i in 0..PASSES {
+      spawn {
+        // CHECK-DAG: Error[E6027] at {{.*}}.vx:[[@LINE+1]]:18: the working set along call path 'five_tasks_call_it -> use_one' in memory space 'W' peaks at 5242880 bytes, over its 4194304 byte capacity: the other tasks of 'five_tasks_call_it' that run at the same time as its call hold 4194304 bytes, 'use_one' itself peaks at 1048576 bytes
+        let _x = use_one();
+      };
+    }
+  }
+}
+
+// Two loops of two passes start four tasks. Four fit.
+fn four_tasks_call_it() -> void {
+  tasks {
+    for i in 0..2 {
+      for j in 0..2 {
+        spawn {
+          let _x = use_one();
+        };
+      }
+    }
+  }
+}
+
+// The block code calls it after the loop, while the four tasks run. The error is at the first
+// call that reaches the peak.
+fn the_block_calls_it_after_four_tasks() -> void {
+  tasks {
+    for i in 0..4 {
+      spawn {
+        // CHECK-DAG: Error[E6027] at {{.*}}.vx:[[@LINE+1]]:18: the working set along call path 'the_block_calls_it_after_four_tasks -> use_one' in memory space 'W' peaks at 5242880 bytes
+        let _x = use_one();
+      };
+    }
+    let _y = use_one();
+  }
+}
+
+// In a loop, the call before the `spawn` runs while the tasks of the earlier passes run.
+fn the_block_calls_it_before_the_spawn_in_the_loop() -> void {
+  tasks {
+    for i in 0..4 {
+      // CHECK-DAG: Error[E6027] at {{.*}}.vx:[[@LINE+1]]:16: the working set along call path 'the_block_calls_it_before_the_spawn_in_the_loop -> use_one' in memory space 'W' peaks at 5242880 bytes
+      let _y = use_one();
+      spawn {
+        let _x = use_one();
+      };
+    }
+  }
+}
+
+// Each task places a tile of 1 MiB itself, with no call.
+fn five_tasks_place_a_tile() -> void {
+  tasks {
+    for i in 0..5 {
+      spawn {
+        let bT = unsafe { Tensor<f32, [512, 512]>::uninit() };
+        // CHECK-DAG: Error[E6010] {{.*}}the working set placed in memory space 'W' (5 tiles) sums to 5242880 bytes, over its 4194304 byte capacity
+        let b = transfer(bT, Memory::W);
+        let _r = transfer(b, Memory::CPU_DRAM);
+      };
+    }
+  }
+}
+
+// A join in the same pass ends each task before the next pass starts.
+fn each_pass_joins_its_task() -> void {
+  tasks {
+    for i in 0..5 {
+      let h = spawn {
+        return use_one();
+      };
+      let _x = h.join();
+    }
+  }
+}
+
+// A loop outside the `tasks` block ends the tasks of a pass before the next pass.
+fn a_tasks_block_in_each_pass() -> void {
+  for i in 0..5 {
+    tasks {
+      spawn {
+        let _x = use_one();
+      };
+    }
+  }
+}
+
+// The count of passes is known only when the program runs.
+fn a_count_that_the_program_gives(n: i64) -> void {
+  tasks {
+    let mut i: i64 = 0;
+    while i < n {
+      // CHECK-DAG: Error[E6039] at {{.*}}.vx:[[@LINE+1]]:7: this `spawn` is in a loop with a count of passes that is not known at compile time, and its tasks use memory space 'W'
+      spawn {
+        let _x = use_one();
+      };
+      i = i + 1;
+    }
+  }
+}
+
+// The same, with a tile that each task places itself.
+fn a_count_that_the_program_gives_and_a_tile(n: i64) -> void {
+  tasks {
+    let mut i: i64 = 0;
+    while i < n {
+      // CHECK-DAG: Error[E6039] at {{.*}}.vx:[[@LINE+1]]:7: this `spawn` is in a loop
+      spawn {
+        let bT = unsafe { Tensor<f32, [512, 512]>::uninit() };
+        let b = transfer(bT, Memory::W);
+        let _r = transfer(b, Memory::CPU_DRAM);
+      };
+      i = i + 1;
+    }
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// The errors above are the only ones. `--implicit-check-not` does not look past the last
+// `CHECK-DAG` line, so this line counts them.
+// CHECK: {{^}}Semantic check failed on {{.*}}: 6 error(s) emitted

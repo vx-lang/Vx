@@ -88,7 +88,18 @@ copy. `--emit-msl` writes the MSL and the same manifest as `--emit-ptx`.
   kernels of its thread and for the kernels that write its tensor parameters. `VX_METAL_SYNC=1`
   waits after each launch, so a GPU fault names its kernel. `VX_DISPATCH_VERBOSE=1` prints each launch, and
   at each wait the number of kernels and their time on the GPU.
-- Not yet: atomics, dynamic shared memory and `vector` ops. Each is a compile
+- Metal cannot stop a kernel. So a failed `assert` in a kernel stores the number of the assert in
+  a buffer, and the thread ends. The wait that finishes the launch prints the assert's message and
+  stops the program, as a failed assert on NVIDIA stops it at the next wait.
+- The element atomics of `core::sync::atomic` work on `i32` and `u32` tensors in device and
+  shared memory, with the order `Relaxed`. Metal atomics take only `memory_order_relaxed`. So an
+  acquire fence follows each atomic that reads, because Vx makes each `Relaxed` read an
+  `Acquire` read (`docs/lang/semantics.md`, section 2.5). MSL has only a weak compare-and-swap,
+  so the printed code runs it again after a failure that changed nothing. Another order, an
+  atomic on a 64-bit integer or a float, and an atomic on memory of one thread are compile errors
+  that give the reason. The Apple GPU has 64-bit atomics only for min and max, and they do not
+  give the old value.
+- Not yet: dynamic shared memory and `vector` ops. Each is a compile
   error that names the op. Kernels for two GPU architectures in one program
   are a compile error too.
 

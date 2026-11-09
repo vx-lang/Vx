@@ -113,7 +113,7 @@ Each operation on an atomic takes an `AtomicOrdering`. The orders are those of C
 - the read of a `Relaxed` read-modify-write (a `Release` one becomes `AcqRel`),
 - both the success and the failure read of a `Relaxed` compare-exchange.
 
-A `Relaxed` store stays relaxed. On x86 the change costs nothing, because each load there is already an acquire load. On AArch64 and on GPUs, a `Relaxed` read costs as much as an `Acquire` read.
+A `Relaxed` store stays relaxed. On x86 the change costs nothing, because each load there is already an acquire load. On AArch64 and on GPUs, a `Relaxed` read costs as much as an `Acquire` read. Metal atomics on the Apple GPU take only `memory_order_relaxed`, so there the read stays relaxed and an acquire fence follows it.
 
 **`-fweak-relaxed-atomics`** keeps `Relaxed` reads relaxed, for the whole program. A program compiled with it may show load buffering (`formal/memory_model/tests/load_buffering_relaxed.litmus`). The default is `-fno-weak-relaxed-atomics`. When a command has both, the last one wins.
 
@@ -128,6 +128,79 @@ Other rules:
 - On a GPU, an atomic has a scope. Two atomics race unless the scope of each one includes the thread of the other, as in the PTX model.
 
 The model is `formal/memory_model/vx.cat`. [`formal/memory_model/README.md`](../../formal/memory_model/README.md) has its litmus tests and Lean proofs.
+
+### 2.6 Drops
+
+When its owner goes away, a value is *dropped*: the drop releases what the value owns. A moved value is not dropped, because its new owner drops it. An assignment drops the old value of the variable. The checker writes each drop into the program, so both code generators drop a value at the same point.
+
+- A value that only holds memory, such as a tensor or a `Vec` of numbers, drops after its last use.
+- A value whose type implements `Drop` waits for the end of its block. The values of one block drop in reverse order of declaration. The `drop` method of a value runs first, and then its fields drop in the order of their declaration. An enum drops the payload of the variant that it holds.
+- `core::mem::drop(x)` drops `x` at once.
+
+**A pattern that takes a value owns all of it.** At the end of its scope, the pattern drops the names that it binds. Then it drops the parts that it does not name, such as a `_` part.
+
+- A `match` arm takes the value when its pattern moves a part out of it. `match t { Two::Pair(a, _) => .. }` moves all of `t` into the arm, so code after the `match` cannot use `t`. At its end, the arm drops `a` and then the `_` part.
+- A `match` in which no arm moves a part, such as `match t { Two::Pair(_, _) => .. }`, leaves `t` as it is. Then `t` drops at the end of its block.
+- Each arm of a `match` on a value with no name, such as `match make() { .. }`, takes the value.
+- In a `let`, `_` is a name like any other, and its scope is the rest of the block. `let _ = e;` drops the value at the same point as `let _x = e;`. `let _ = a;` moves `a`.
+
+<!-- vx-doctest: run -->
+
+```rust
+import core::mem;
+
+struct Noisy {
+    id : i32,
+}
+
+impl Drop for Noisy {
+    fn drop(self : &mut Noisy) -> void {
+        println!("drop {}", self.id);
+    }
+}
+
+enum Two {
+    Pair(Noisy, Noisy),
+    Nothing,
+}
+
+fn main() -> i32 {
+    let t = Two::Pair(Noisy { id : 1 }, Noisy { id : 2 });
+    match t {
+        Two::Pair(a, _) => {
+            println!("the arm uses {}", a.id);
+        }
+        Two::Nothing => {}
+    }
+    let _ = Noisy { id : 3 };
+    let _x = Noisy { id : 4 };
+    drop(Noisy { id : 5 });
+    println!("end");
+    return 0;
+}
+```
+
+It prints:
+
+```text
+the arm uses 1
+drop 1
+drop 2
+drop 5
+end
+drop 4
+drop 3
+```
+
+**Rust decides by the place that a pattern reads.** In Rust, `_` never moves a value. So the time of a drop depends on whether the pattern reads a variable or a value with no name:
+
+- `match t { Pair(a, _) => .. }` leaves the `_` part in `t`. The `_` part drops at the end of the block of `t`.
+- `match make() { Pair(a, _) => .. }` drops the `_` part at the end of the `match`.
+- `let _ = make();` drops the value at the end of the statement, and `let _ = a;` moves nothing.
+
+Thus `let _ = m.lock();` releases a lock at once, and `let _g = m.lock();` holds it to the end of the block. `rustc` refuses the first form by default, with the `let_underscore_lock` lint. In Vx, the pattern and its scope decide when a value drops. A `_` part and a named part drop at the same point.
+
+[`drop_semantics.md`](../implementation_plans/drop_semantics.md) has the design of drops.
 
 ______________________________________________________________________
 

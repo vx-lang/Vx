@@ -123,8 +123,9 @@ cargo build --release
 # Run a smoke test with the JIT compiler (default action)
 ./target/release/vxc examples/docker_smoke.vx
 
-# Compile and check against a declared NVIDIA H100 machine (works on any host!)
-./target/release/vxc --host default --machine fleet/h100-sxm.vx examples/docker_smoke.vx -o smoke_h100
+# Build and run against a declared NVIDIA H100 machine. This works on any host.
+# run-jit writes no file, so do not pass -o. To write an object file, use --action emit-obj.
+./target/release/vxc --host default --machine fleet/h100-sxm.vx examples/docker_smoke.vx
 
 # Inspect capacity admission and routing costs as JSON
 ./target/release/vxc --host default --machine fleet/h100-sxm.vx examples/docker_smoke.vx --diagnostics-json out.json

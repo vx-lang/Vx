@@ -18,6 +18,7 @@
 // CHECK: {{^}}the first task timed out: true{{$}}
 // CHECK: {{^}}the second task ran during the wait: true{{$}}
 
+import core::time;
 import core::sync::atomic;
 import std::sync::channel;
 
@@ -29,7 +30,7 @@ fn main() -> i32 {
   tasks {
     spawn {
       let first_in = rx;
-      match first_in.recv_for(0.2) {
+      match first_in.recv_for(Duration::from_millis(200)) {
         Result<i64, RecvError>::Ok(_v) => {}
         Result<i64, RecvError>::Err(e) => {
           match e {

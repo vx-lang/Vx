@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Runs the TLC model checker on the models of the runtime protocols.
 
-Each model must pass. Then each mistake in BUGS goes into the model, one at a time, and TLC
-must report the claim that the mistake breaks. A claim that no mistake breaks may check
-nothing.
+Each check of each module must pass. Then each mistake in the list of the module goes into
+the model, one at a time, and TLC must report the claim that the mistake breaks. A claim that
+no mistake breaks may check nothing.
 
 TLC is in tla2tools.jar. Give its path in TLA2TOOLS, or put it next to this file.
 """
@@ -16,7 +16,7 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-# The model checks, each a change to the constants of WaitWake.cfg. The cancel and the second
+# The checks of WaitWake, each a change to the constants of WaitWake.cfg. The cancel and the second
 # waker wake the bucket again, and that can hide a lost wake. So some checks have only one.
 NO_CANCEL = {"Cancel": "FALSE"}
 ONLY_A_CANCEL = {"SetWords": "FALSE"}
@@ -92,30 +92,69 @@ BUGS = [
     ("a_push_does_not_wake_the_main_thread", {**A_SEED, **NO_CANCEL}, "EachWaitEnds"),
 ]
 
-TEMPORAL = {"EachWaitEnds", "DeadlockIsReported"}
+# The checks of Rendezvous. With an old id file, rank 0 stops at its check. With faults, rank 0
+# can fail before it writes the id file, and a rank can stop waiting for it.
+AN_OLD_FILE = {"OldFile": "TRUE"}
+FAULTS = {"Faults": "TRUE"}
+RENDEZVOUS_MODELS = [
+    ("as in Rendezvous.cfg", {}),
+    ("with an old id file", AN_OLD_FILE),
+    ("with faults", FAULTS),
+]
+RENDEZVOUS_BUGS = [
+    ("write_the_id_in_place", {}, "NoHalfId"),
+    ("no_check_for_an_old_file", AN_OLD_FILE, "AnOldIdStopsRankZero"),
+    ("a_rank_waits_with_no_time_limit", FAULTS, "EachRankEnds"),
+    ("rank_0_removes_the_file_before_its_init", {}, "EveryRankJoins"),
+]
+
+# The checks of Agent. A host can stop with no FREE, and the worker process can stop.
+STOP_EARLY = {"StopEarly": "TRUE"}
+WORKER_DIES = {"WorkerDies": "TRUE"}
+AGENT_MODELS = [
+    ("as in Agent.cfg", {}),
+    ("with a host that stops early", STOP_EARLY),
+    ("with a worker that stops", WORKER_DIES),
+    ("with both", {**STOP_EARLY, **WORKER_DIES}),
+]
+AGENT_BUGS = [
+    ("one_connection_per_name", {}, "EachHostEnds"),
+    ("no_free_after_a_host_leaves", {}, "EachBufferBelongsToTheServedHost"),
+    ("free_before_the_fetch", {}, "EachFetchGetsItsBytes"),
+    ("a_host_waits_after_eof", WORKER_DIES, "EachHostEnds"),
+]
+
+# Each module: its checks, its mistakes, and its temporal claims.
+MODULES = {
+    "WaitWake": (MODELS, BUGS, {"EachWaitEnds", "DeadlockIsReported"}),
+    "Rendezvous": (RENDEZVOUS_MODELS, RENDEZVOUS_BUGS, {"EachRankEnds", "EveryRankJoins"}),
+    "Agent": (AGENT_MODELS, AGENT_BUGS, {"EachHostEnds"}),
+}
 
 
-def config(constants, claim=None):
-    """The text of WaitWake.cfg with `constants`, and with only `claim` if it is given."""
-    text = open(os.path.join(HERE, "WaitWake.cfg")).read()
+def config(module, constants, temporal, claim=None):
+    """The text of the .cfg of `module` with `constants`, and with only `claim` if it is given."""
+    text = open(os.path.join(HERE, f"{module}.cfg")).read()
     for name, value in constants.items():
         text, n = re.subn(rf"^(\s*{name} = ).*$", rf"\g<1>{value}", text, flags=re.M)
         assert n == 1, name
     if claim:
-        kind = "PROPERTIES" if claim in TEMPORAL else "INVARIANTS"
+        kind = "PROPERTIES" if claim in temporal else "INVARIANTS"
         text, n = re.subn(r"^INVARIANTS\n(\s+\w+\n)+PROPERTIES\n(\s+\w+\n)+",
                           f"{kind}\n    {claim}\n", text, flags=re.M)
-        assert n == 1, "the claims of WaitWake.cfg"
+        assert n == 1, f"the claims of {module}.cfg"
     return text
 
 
-def tlc(jar, cfg_text, meta):
+def tlc(jar, module, cfg_text, meta):
+    # TLC names its folder by the time, so two runs in one second need different parents.
+    meta = tempfile.mkdtemp(dir=meta)
     with tempfile.NamedTemporaryFile("w", suffix=".cfg", dir=meta, delete=False) as f:
         f.write(cfg_text)
     workers = max(1, (os.cpu_count() or 4) - 2)
     run = subprocess.run(
         ["java", "-XX:+UseParallelGC", "-cp", jar, "tlc2.TLC", "-workers", str(workers),
-         "-metadir", meta, "-config", f.name, "WaitWake"],
+         "-metadir", meta, "-config", f.name, module],
         cwd=HERE, capture_output=True, text=True)
     return run.stdout + run.stderr
 
@@ -139,21 +178,23 @@ def main():
         sys.exit(f"tla2tools.jar is not at {jar}. Set TLA2TOOLS.")
     failed = 0
     with tempfile.TemporaryDirectory() as meta:
-        for name, constants in MODELS:
-            got = violated(tlc(jar, config(constants), meta))
-            ok = got is None
-            failed += not ok
-            print(f"{'ok  ' if ok else 'FAIL'} WaitWake {name}: " +
-                  ("no error" if ok else f"TLC reported {got}"))
-        for bug, constants, claim in BUGS:
-            got = violated(tlc(jar, config({**constants, "Bug": f'"{bug}"'}, claim), meta))
-            # The check has one claim, so a temporal property that TLC does not name is it.
-            if got == "a temporal property" and claim in TEMPORAL:
-                got = claim
-            ok = got == claim
-            failed += not ok
-            print(f"{'ok  ' if ok else 'FAIL'} WaitWake with {bug}: TLC reported {got}" +
-                  ("" if ok else f", not {claim}"))
+        for module, (models, bugs, temporal) in MODULES.items():
+            for name, constants in models:
+                got = violated(tlc(jar, module, config(module, constants, temporal), meta))
+                ok = got is None
+                failed += not ok
+                print(f"{'ok  ' if ok else 'FAIL'} {module} {name}: " +
+                      ("no error" if ok else f"TLC reported {got}"))
+            for bug, constants, claim in bugs:
+                cfg = config(module, {**constants, "Bug": f'"{bug}"'}, temporal, claim)
+                got = violated(tlc(jar, module, cfg, meta))
+                # The check has one claim, so a temporal property that TLC does not name is it.
+                if got == "a temporal property" and claim in temporal:
+                    got = claim
+                ok = got == claim
+                failed += not ok
+                print(f"{'ok  ' if ok else 'FAIL'} {module} with {bug}: TLC reported {got}" +
+                      ("" if ok else f", not {claim}"))
     sys.exit(1 if failed else 0)
 
 

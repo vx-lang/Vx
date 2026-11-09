@@ -204,6 +204,8 @@ enum Scope {
     EnumBody,
     /// An `impl` or `trait` body: `fn name` here is a method.
     ItemBody,
+    /// A `macro_rules` body. An `impl` or `trait` that it writes is an item of the file.
+    Macro,
 }
 
 fn is_trivia<S, C>(kind: &TokenTypeBase<S, C>) -> bool {
@@ -229,11 +231,13 @@ pub fn rename_tokens<'a>(
             continue;
         }
         let top_level = scopes.is_empty();
+        let item_level = top_level || scopes == [Scope::Macro, Scope::Block];
         match &tokens[i].kind {
             TokenTypeBase::Import => in_import = true,
             TokenTypeBase::Semicolon => in_import = false,
+            TokenTypeBase::MacroRules if top_level => next_brace = Some(Scope::Macro),
             TokenTypeBase::Enum if top_level => next_brace = Some(Scope::EnumBody),
-            TokenTypeBase::Impl | TokenTypeBase::Trait if top_level => {
+            TokenTypeBase::Impl | TokenTypeBase::Trait if item_level => {
                 next_brace = Some(Scope::ItemBody)
             }
             TokenTypeBase::LeftBrace => scopes.push(next_brace.take().unwrap_or(Scope::Block)),

@@ -384,6 +384,19 @@ impl CompilerDriver {
                     .to_string(),
             );
         }
+        // run-jit builds and runs in one step. It never writes `-o`. Saying nothing
+        // made readers think `vxc prog.vx -o out` produced an executable.
+        if self.options.action == Action::RunJit {
+            if let Some(out) = &self.options.output {
+                return Err(format!(
+                    "-o '{}' has no effect with run-jit, the default action. \
+                     run-jit runs the program and writes no file. \
+                     To write an object file, use --action emit-obj. \
+                     To run the program, remove -o.",
+                    out.display()
+                ));
+            }
+        }
         if self.options.inputs.len() == 1 {
             return self.execute_one();
         }
@@ -557,7 +570,8 @@ impl CompilerDriver {
             let host_arch = Self::host_arch_of(programs.iter());
             // Only the file the user named reports its diagnostics, matching what the
             // sequential driver keeps from its own import pass.
-            let reported = crate::pipeline::Reported::OnlyEntry(filename.into());
+            let reported =
+                crate::pipeline::Reported::OnlyEntry(self.module_loader().root_name(filename));
             // A failed check ends with the line the sequential driver prints, with the file.
             let text = crate::pipeline::compile_modules_mlir_in(
                 programs,
@@ -966,9 +980,7 @@ impl CompilerDriver {
     ) -> Result<(), String> {
         let ast = program_arr
             .iter()
-            .find(|p| {
-                p.module_path == <std::string::String as Clone>::clone(&filename.to_string()).into()
-            })
+            .find(|p| p.module_path == self.module_loader().root_name(filename))
             .unwrap();
         println!("{:#?}", ast);
         Ok(())
@@ -1042,9 +1054,7 @@ impl CompilerDriver {
     > {
         let syntax_idx = program_arr
             .iter()
-            .position(|p| {
-                p.module_path == <std::string::String as Clone>::clone(&filename.to_string()).into()
-            })
+            .position(|p| p.module_path == self.module_loader().root_name(filename))
             .unwrap();
         let ast = program_arr.remove(syntax_idx);
 
@@ -1118,12 +1128,13 @@ impl CompilerDriver {
             Self::session_with_interfaces(interfaces, self.options.auto_schedule_levels())?;
 
         // Every function names its file, so a diagnostic found while checking it names the
-        // file too, wherever the check runs from. Before the env takes its clones, since a
-        // generic instance is built from the env's copy of the function. After macro
-        // expansion, which adds functions.
-        ast.name_file_on_functions();
+        // file too, wherever the check runs from. A struct names its file, because only that
+        // file can change the fields of a type with an invariant. Before the env takes its
+        // clones, since a generic instance is built from the env's copy of the function. After
+        // macro expansion, which adds functions.
+        ast.name_file_on_items();
         for p in other_asts.values_mut() {
-            p.name_file_on_functions();
+            p.name_file_on_items();
         }
 
         // Build the resolution env from *owned* clones: full bodies for the imported modules (so
@@ -1314,6 +1325,7 @@ impl CompilerDriver {
         if !has_errors {
             checker.errors.inner.extend(unused_functions.inner);
         }
+        checker.errors.drop_repeats();
 
         // The machine-readable verdict, before the human-readable rendering below: one record on
         // stdout carrying every diagnostic plus the resolved staging routes, so an admission
@@ -2564,6 +2576,40 @@ mod tests {
             declined,
             Ok(None),
             "unparseable MLIR did not hand the compile back to the sequential driver"
+        );
+    }
+
+    /// `run-jit` (the default) never writes `-o`. Refusing it beats silently
+    /// ignoring the flag.
+    #[test]
+    fn run_jit_refuses_minus_o() {
+        // Use a path the message cannot contain by chance ("out" sits inside "without").
+        let driver = driver_for(&["vxc", "prog.vx", "-o", "not_written.bin"]);
+        let err = driver.execute().expect_err("run-jit must refuse -o");
+        assert!(
+            err.contains("has no effect with run-jit"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.contains("not_written.bin"),
+            "error should name the path: {err}"
+        );
+    }
+
+    /// With several inputs, `-o` must still be refused before each unit runs.
+    #[test]
+    fn run_jit_refuses_minus_o_with_two_inputs() {
+        let driver = driver_for(&["vxc", "one.vx", "two.vx", "-o", "not_written.bin"]);
+        let err = driver
+            .execute()
+            .expect_err("run-jit must refuse -o with two inputs");
+        assert!(
+            err.contains("has no effect with run-jit"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.contains("not_written.bin"),
+            "error should name the path: {err}"
         );
     }
 }

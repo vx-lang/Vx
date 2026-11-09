@@ -15,7 +15,8 @@
 // generator. So `offset` and `eq` are each one LLVM operation in an `mlir!` block.
 //
 // A pointer that `offset`, `add` or `sub` returns keeps its argument borrowed `&mut`
-// while it is in use, as any result made from a parameter does.
+// while it is in use, as any result made from a parameter does. It also keeps the memory
+// of its argument, such as `in Memory::GPU_HBM`. `read` and `write` take a host pointer.
 //
 // Still missing:
 //
@@ -48,40 +49,40 @@ unsafe fn write<T>(p : *mut T, v : T) -> void {
 
 /// The pointer `count` elements further on, or back for a negative `count`. Like Rust's
 /// `wrapping_offset`, it only computes the address.
-fn offset<T>(p : *const T, count : i64) -> *const T {
+fn offset<T, M : Memory>(p : *const T in Memory::M, count : i64) -> *const T in Memory::M {
   let bytes = count * sizeof<T>();
-  return mlir!( inputs : (%p = p : !llvm.ptr, %b = bytes : i64), returns : *const T, dialects : ["llvm"]) {
+  return mlir!( inputs : (%p = p : !llvm.ptr, %b = bytes : i64), returns : *const T in Memory::M, dialects : ["llvm"]) {
     %r = llvm.getelementptr %p[%b] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     macro.yield %r : !llvm.ptr
   };
 }
 
 /// `offset` for a mutable pointer.
-fn offset_mut<T>(p : *mut T, count : i64) -> *mut T {
+fn offset_mut<T, M : Memory>(p : *mut T in Memory::M, count : i64) -> *mut T in Memory::M {
   let bytes = count * sizeof<T>();
-  return mlir!( inputs : (%p = p : !llvm.ptr, %b = bytes : i64), returns : *mut T, dialects : ["llvm"]) {
+  return mlir!( inputs : (%p = p : !llvm.ptr, %b = bytes : i64), returns : *mut T in Memory::M, dialects : ["llvm"]) {
     %r = llvm.getelementptr %p[%b] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     macro.yield %r : !llvm.ptr
   };
 }
 
 /// The pointer `count` elements further on.
-fn add<T>(p : *const T, count : usize) -> *const T {
+fn add<T, M : Memory>(p : *const T in Memory::M, count : usize) -> *const T in Memory::M {
   return offset(p, count as i64);
 }
 
 /// `add` for a mutable pointer.
-fn add_mut<T>(p : *mut T, count : usize) -> *mut T {
+fn add_mut<T, M : Memory>(p : *mut T in Memory::M, count : usize) -> *mut T in Memory::M {
   return offset_mut(p, count as i64);
 }
 
 /// The pointer `count` elements back.
-fn sub<T>(p : *const T, count : usize) -> *const T {
+fn sub<T, M : Memory>(p : *const T in Memory::M, count : usize) -> *const T in Memory::M {
   return offset(p, -(count as i64));
 }
 
 /// `sub` for a mutable pointer.
-fn sub_mut<T>(p : *mut T, count : usize) -> *mut T {
+fn sub_mut<T, M : Memory>(p : *mut T in Memory::M, count : usize) -> *mut T in Memory::M {
   return offset_mut(p, -(count as i64));
 }
 

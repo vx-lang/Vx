@@ -379,6 +379,20 @@ impl<'a> TypeChecker<'a> {
         );
     }
 
+    /// Run `check` on an expression whose whole value is moved. When it is a name, the name
+    /// is marked, so a placed tensor there is allowed where its memory is not visible.
+    pub(crate) fn check_whole_value<R>(
+        &mut self,
+        expr: &mut Expr,
+        check: impl FnOnce(&mut Self, &mut Expr) -> R,
+    ) -> R {
+        let name = matches!(expr, Expr::Identifier(_)).then(|| expr.span());
+        let old = std::mem::replace(&mut self.whole_value_name, name);
+        let result = check(self, expr);
+        self.whole_value_name = old;
+        result
+    }
+
     pub(crate) fn check_identifier_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::Identifier(id) => {
@@ -406,7 +420,7 @@ impl<'a> TypeChecker<'a> {
                                 format!(
                                     "Cannot access '{}' because it is mutably borrowed.{}",
                                     name,
-                                    self.held_by_note(b)
+                                    self.held_by_note(b, name.as_ref())
                                 ),
                                 Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                             );
@@ -582,8 +596,13 @@ impl<'a> TypeChecker<'a> {
                         let by_value = matches!(ty, Type::Scalar(_))
                             && !self.is_mutable(name.as_ref())
                             && self.borrowed_name != Some(span);
+                        // A move of a placed tensor copies its pointer and its shape, and a
+                        // host drop frees it through the runtime. Neither reads an element.
+                        let handle_only =
+                            ty.placement().is_some() && self.whole_value_name == Some(span);
                         let is_valid = matches!(&ty, Type::Borrow { inner, .. } if inner.placement().is_some())
                             || by_value
+                            || handle_only
                             || self.transfer_cost_graph.is_type_accessible(
                                 &self.active_topology,
                                 &top,
@@ -888,6 +907,7 @@ impl<'a> TypeChecker<'a> {
                 _ => break,
             }
         }
+        self.check_field_change(expr, "this move leaves no value in");
         self.consume_field(&root, &path);
     }
 
@@ -940,7 +960,7 @@ impl<'a> TypeChecker<'a> {
                                     format!(
                                         "Cannot access '{}' because it is mutably borrowed.{}",
                                         name,
-                                        self.held_by_note(b)
+                                        self.held_by_note(b, name.as_ref())
                                     ),
                                     Some(crate::diagnostic::SourceSpan::from_ast_span(&ma_span)),
                                 );
@@ -1520,7 +1540,7 @@ impl<'a> TypeChecker<'a> {
                         let conflict = live.iter().find(|b| {
                             b.is_mut && crate::hir::places::paths_may_alias(&path, &b.path)
                         });
-                        let conflict = conflict.map(|b| self.held_by_note(b));
+                        let conflict = conflict.map(|b| self.held_by_note(b, name.as_ref()));
                         if let Some(note) = conflict {
                             // Point at the variable, as the whole-variable rule does.
                             let mut root = &**obj;
@@ -1803,6 +1823,7 @@ impl<'a> TypeChecker<'a> {
                     if let Some(root) = self.read_only_root(inner) {
                         self.report_read_only(&root, "it cannot be borrowed `&mut`", span);
                     }
+                    self.check_field_change(inner, "this `&mut` can change");
                     // `&mut *r` through a shared `r` would make a `&mut` out of a `&`.
                     if let Expr::Dereference(d) = &**inner {
                         if matches!(
@@ -1958,7 +1979,7 @@ impl<'a> TypeChecker<'a> {
                     format!(
                         "Cannot borrow '{}' because it is already borrowed as mutable.{}",
                         name,
-                        self.held_by_note(b)
+                        self.held_by_note(b, name.as_ref())
                     ),
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                 );
@@ -1969,7 +1990,7 @@ impl<'a> TypeChecker<'a> {
                     format!(
                         "Cannot borrow '{}' as mutable because it is also borrowed as immutable.{}",
                         name,
-                        self.held_by_note(b)
+                        self.held_by_note(b, name.as_ref())
                     ),
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                 );
@@ -2509,7 +2530,7 @@ impl<'a> TypeChecker<'a> {
                     format!(
                         "Cannot borrow '{}' because it is already borrowed as mutable.{}",
                         base,
-                        self.held_by_note(b)
+                        self.held_by_note(b, base.as_ref())
                     ),
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                 );
@@ -2519,7 +2540,7 @@ impl<'a> TypeChecker<'a> {
                     format!(
                         "Cannot borrow '{}' as mutable because it is also borrowed as immutable.{}",
                         base,
-                        self.held_by_note(b)
+                        self.held_by_note(b, base.as_ref())
                     ),
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                 );

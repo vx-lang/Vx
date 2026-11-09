@@ -678,12 +678,11 @@ pub struct TypeChecker<'a> {
     pub(crate) in_drop: bool,
     /// The function being checked is the `wait_limit` of a `Drop` impl, for W1036.
     pub(crate) in_wait_limit: bool,
-    /// The number of `within` blocks around the code being checked, in this function. A wait in
-    /// one has the block's time limit, so W1036 does not warn about it.
+    /// The number of closure bodies of `within` calls around the code being checked, in this
+    /// function. A wait in one has the time limit of the call, so W1036 does not warn about it.
     pub(crate) within_depth: usize,
-    /// The next call is the `vx::within_start` of a `within` block. A program cannot write that
-    /// call itself.
-    pub(crate) within_start_next: bool,
+    /// The closure literals written as the `body` of a call of `within`, by their spans.
+    pub(crate) within_bodies: std::collections::HashSet<crate::syntax::Span>,
     /// The variables that closures in `let`s copied, for W1034.
     pub(crate) closure_copies: Vec<crate::hir::check::closure_copies::ClosureCopy>,
     /// The `let` being checked, when its value is a closure.
@@ -693,6 +692,9 @@ pub struct TypeChecker<'a> {
     pub(crate) checking_assign_lhs: bool,
     /// The identifier that `&` or `&mut` takes a reference to, while it is checked.
     pub(crate) borrowed_name: Option<crate::syntax::Span>,
+    /// The identifier whose whole value is moved, while it is checked: a `let` value, an
+    /// argument, a stored or returned value. Such a use copies only the handle of a tensor.
+    pub(crate) whole_value_name: Option<crate::syntax::Span>,
     /// The identifier being checked is the base of a field access, `p` in `p.b`: a move of
     /// another field, `p.a`, does not stop it.
     pub(crate) checking_field_base: bool,
@@ -723,9 +725,12 @@ pub struct TypeChecker<'a> {
     /// prover facts end after the call, because its `requires` is proved before it runs.
     /// `true` marks a variable whose pointer value stays: only the memory behind it changes.
     pub(crate) fact_change_frames: Vec<Vec<(String, bool)>>,
-    /// How many old values the prover's facts have named, as `$old_N` in `x = x + 1`. Each name
-    /// is new, so the facts about two old values of `x` do not meet.
-    pub(crate) old_values: usize,
+    /// The integer type of each old value that the prover's facts named, as `$old_N` in
+    /// `x = x + 1`. Each name is new, so the facts about two old values of `x` do not meet.
+    pub(crate) old_values: Vec<ElementType>,
+    /// The integer type of each value of the variable of a `for` loop where the loop ends, as
+    /// `$exit_N`. Each loop gets its own name, so the facts of two loops over `i` do not meet.
+    pub(crate) exit_values: Vec<ElementType>,
     /// The raw-pointer facts of the body being checked.
     pub(crate) pointer_facts: crate::hir::check::pointer_facts::PointerFacts,
     /// The last id given to a base or a fact. Never saved or restored, so that two branches
@@ -808,11 +813,12 @@ impl<'a> TypeChecker<'a> {
             in_drop: false,
             in_wait_limit: false,
             within_depth: 0,
-            within_start_next: false,
+            within_bodies: std::collections::HashSet::new(),
             closure_copies: Vec::new(),
             let_closure: None,
             checking_assign_lhs: false,
             borrowed_name: None,
+            whole_value_name: None,
             checking_field_base: false,
             next_id: 1,
             current_return_type: None,
@@ -825,7 +831,8 @@ impl<'a> TypeChecker<'a> {
             literal_typed_lets: std::collections::HashMap::new(),
             changed_vars: std::collections::HashSet::new(),
             fact_change_frames: Vec::new(),
-            old_values: 0,
+            old_values: Vec::new(),
+            exit_values: Vec::new(),
             pointer_facts: Default::default(),
             pointer_fact_ids: 0,
             method_call_written: None,
@@ -995,10 +1002,11 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub fn insert(&mut self, name: String, ty: Type) {
-        // A new variable of this name: the fields moved out of the old one say nothing about it.
+        // A new variable of this name: a move of the old one, or of its fields, says nothing
+        // about it.
         if let Some(moved) = self.borrow.moved_vars.last_mut() {
             let prefix = format!("{name}.");
-            moved.retain(|place| !place.starts_with(&prefix));
+            moved.retain(|place| *place != name && !place.starts_with(&prefix));
         }
         if let Some(bound) = self.borrow.bound_behind_ref.last_mut() {
             bound.remove(&name);
@@ -1572,7 +1580,9 @@ impl<'a> TypeChecker<'a> {
                 true
             }
             (Type::Pointer(t1, m1, mut1), Type::Pointer(t2, m2, mut2)) => {
-                m1 == m2 && mut1 == mut2 && self.unify_types_internal(t1, t2, mapping)
+                // `*mut T in Memory::M` binds `M` to the memory of the pointer, or to none.
+                let place_match = self.bind_memory(m1, m2, mapping).unwrap_or(m1 == m2);
+                place_match && mut1 == mut2 && self.unify_types_internal(t1, t2, mapping)
             }
             (
                 Type::Borrow {
@@ -2105,6 +2115,7 @@ impl<'a> TypeChecker<'a> {
         // A callee checked from inside a caller's `tasks` block is not in that block.
         let prev_tasks = self.tasks.enter_function();
         let prev_call_sites = std::mem::take(&mut self.traffic.call_sites);
+        let prev_channel_rooms = std::mem::take(&mut self.traffic.channel_rooms);
         let prev_scope_chain = std::mem::take(&mut self.traffic.scope_chain);
         let prev_scope_releases = std::mem::take(&mut self.traffic.scope_releases);
         // The unused-name sets are per-function for the same reason, and used to be cleared
@@ -2151,12 +2162,18 @@ impl<'a> TypeChecker<'a> {
         let prev_shadowed = self.borrow.take_shadowed();
         let prev_closure_copies = std::mem::take(&mut self.closure_copies);
         let prev_cancel_loops = std::mem::take(&mut self.cancel_loops);
+        // A `break` in the body leaves a loop of the body, never a loop around the call.
+        let prev_loop_exits = std::mem::take(&mut self.borrow.loop_exits);
+        let prev_loops_outside = std::mem::take(&mut self.borrow.loops_outside_the_closure);
         let in_drop = self.is_drop_impl(func);
         let prev_in_drop = std::mem::replace(&mut self.in_drop, in_drop);
         let in_wait_limit = self.is_wait_limit_impl(func);
         let prev_in_wait_limit = std::mem::replace(&mut self.in_wait_limit, in_wait_limit);
         let prev_within_depth = std::mem::replace(&mut self.within_depth, 0);
         let prev_borrowers = self.borrow.take_borrowers();
+        // The drop frames too, so that a raw pointer in a generic callee does not make the
+        // caller count as a function that uses raw pointers.
+        let prev_drops = std::mem::take(&mut self.borrow.drops);
         for (name, ty) in &func.params {
             self.insert(name.to_string(), ty.clone());
             // A token that the caller passes must be waited by the function.
@@ -2325,10 +2342,12 @@ impl<'a> TypeChecker<'a> {
         // The whole function has been checked; verify the working set of each memory space
         // it places tiles into fits (or is `overcommit`). Clears the per-function placement map.
         self.check_cumulative_capacity();
+        self.refuse_a_returned_channel_end(&func.return_type);
 
         self.pop_scope();
         self.traffic.memory_placements = prev_placements;
         self.traffic.call_sites = prev_call_sites;
+        self.traffic.channel_rooms = prev_channel_rooms;
         self.traffic.scope_chain = prev_scope_chain;
         self.traffic.scope_releases = prev_scope_releases;
         self.current_return_type = prev_ret_ty;
@@ -2348,10 +2367,13 @@ impl<'a> TypeChecker<'a> {
         self.borrow.restore_shadowed(prev_shadowed);
         self.closure_copies = prev_closure_copies;
         self.cancel_loops = prev_cancel_loops;
+        self.borrow.loop_exits = prev_loop_exits;
+        self.borrow.loops_outside_the_closure = prev_loops_outside;
         self.in_drop = prev_in_drop;
         self.in_wait_limit = prev_in_wait_limit;
         self.within_depth = prev_within_depth;
         self.borrow.restore_borrowers(prev_borrowers);
+        self.borrow.drops = prev_drops;
         self.used_vars = prev_used_vars;
         self.declared_vars = prev_declared_vars;
         self.declared_mut_vars = prev_declared_mut_vars;

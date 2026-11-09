@@ -419,6 +419,11 @@ run on the Apple GPU through Metal (`runtime/metal_dispatch.mm`).
 32-bit words that a parameter takes in the constant buffer that follows the tensor buffers:
 2 + 2r for a tensor, 1 for a scalar of up to 32 bits, and 2 for an `i64`.
 
+A kernel with asserts takes one more buffer after the constant buffer: one `uint`, set to 0
+before the launch. A failed assert stores its number there, and the thread ends. The MSL has a
+line `// vx.assert <kernel> <number> <message>` for each assert, numbered from 1. In the
+message, `%`, `\` and each control character are `%` and two hex digits, so a new line is `%0A`.
+
 ## 4. Symbol names
 
 - A function the program defines keeps its name, and is `hidden` and `dso_local`.

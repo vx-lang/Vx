@@ -139,6 +139,11 @@ pub struct StructDecl {
     pub name: Symbol,
     pub generics: Vec<GenericParam>,
     pub fields: Vec<(Symbol, Type)>,
+    /// The `invariant` clauses, in which `self` is a value of the type. Only the module that
+    /// declares a type with an invariant can change its fields.
+    pub invariants: Vec<crate::syntax::Expr>,
+    /// The file of the module that declares the struct, as a [`Function`] has it.
+    pub file: Option<Symbol>,
     pub doc_comment: Option<String>,
 }
 
@@ -159,8 +164,8 @@ pub struct ExternDecl {
     pub memories: Vec<Symbol>,
     pub params: Vec<(Symbol, Type)>,
     pub return_type: Type,
-    /// The `ensures` clauses. The compiler trusts them, because it cannot read the body. Only a
-    /// `frees` clause can be one.
+    /// The `ensures` clauses. The compiler trusts them, because it cannot read the body. Each one
+    /// is a `frees` clause, a pointer clause or a clause about numbers.
     pub ensures: Vec<crate::syntax::Expr>,
     /// Where the declaration was written, so a diagnostic about the signature can point at it.
     pub span: Span,
@@ -483,9 +488,9 @@ impl Program {
         self.functions.push(func);
     }
 
-    /// Give every function in the program the program's file. Run after macro expansion, which
-    /// can add functions the parser never saw.
-    pub fn name_file_on_functions(&mut self) {
+    /// Give every function and struct in the program the program's file. Run after macro
+    /// expansion, which can add items the parser never saw.
+    pub fn name_file_on_items(&mut self) {
         let file = self.file.clone();
         let functions = self.functions.iter_mut();
         let methods = self.impls.iter_mut().flat_map(|i| i.methods.iter_mut());
@@ -495,6 +500,9 @@ impl Program {
             .flat_map(|t| t.methods.iter_mut());
         for f in functions.chain(methods).chain(lowerings) {
             f.file = file.clone();
+        }
+        for s in &mut self.structs {
+            s.file = file.clone();
         }
     }
 

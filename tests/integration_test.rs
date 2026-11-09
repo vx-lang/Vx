@@ -65,6 +65,7 @@ mod integration_test {
     mod shipped_programs_compile;
     mod solver_policy_test;
     mod tensors_with_gaps_from_c;
+    mod time_limit;
     mod traffic_test;
     mod transport_test;
     // It links with `cc -shared` and loads `.so` files.

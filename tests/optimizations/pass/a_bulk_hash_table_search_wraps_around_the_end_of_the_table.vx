@@ -1,0 +1,79 @@
+//===- a_bulk_hash_table_search_wraps_around_the_end_of_the_table.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `std::bulk_hash` on a table of 16 slots. The kernels run on the CPU, because the program
+// compiles for an NVIDIA machine and the run hides the GPUs.
+//
+// `bulk_hash_fmix32` must give the values of MurmurHash3's finalizer. They come from a Python
+// copy of it.
+//
+// The low 4 bits of the hash of each key 24, 37, 65, 74 and 110 are 15. So the search for each key
+// reads slot 15 first, the last slot, and the five keys must take slots 15, 0, 1, 2 and 3. The
+// program then finds them, and 124, 133 and 143. Those three keys are not in the table, and the
+// low 4 bits of their hash are 15 too. So each of their searches reads slots 15, 0, 1, 2, 3 and 4,
+// and ends at slot 4, which is empty. An empty batch changes nothing.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}fmix32 0 1364076727 821347078 2180083513{{$}}
+// CHECK-NEXT: {{^}}held 5 5{{$}}
+// CHECK-NEXT: {{^}}slots 0 1 2 3 15{{$}}
+// CHECK-NEXT: {{^}}found 240 370 650 740 1100 4294967295 4294967295 4294967295{{$}}
+import std::bulk_hash;
+
+fn main() -> i32 {
+  println!("fmix32 {} {} {} {}", bulk_hash_fmix32(0u32), bulk_hash_fmix32(1u32), bulk_hash_fmix32(2u32), bulk_hash_fmix32(4294967295u32));
+
+  // The first 8 keys from 1 on whose hash has 15 in its low 4 bits.
+  let mut host_keys = Tensor<u32, [5]>::fill(0u32);
+  let mut host_vals = Tensor<u32, [5]>::fill(0u32);
+  let mut host_probe = Tensor<u32, [8]>::fill(0u32);
+  let mut n = 0;
+  let mut k = 1u32;
+  loop {
+    if n == 8 {
+      break;
+    }
+    if (bulk_hash_fmix32(k) & 15u32) == 15u32 {
+      if n < 5 {
+        host_keys[n] = k;
+        host_vals[n] = k * 10u32;
+      }
+      host_probe[n] = k;
+      n = n + 1;
+    }
+    k = k + 1u32;
+  }
+  let keys = transfer(host_keys, Memory::HBM);
+  let vals = transfer(host_vals, Memory::HBM);
+  let probe = transfer(host_probe, Memory::HBM);
+  let no_keys = transfer(Tensor<u32, [0]>::fill(0u32), Memory::HBM);
+  let no_vals = transfer(Tensor<u32, [0]>::fill(0u32), Memory::HBM);
+  let slots = transfer(Tensor<u32, [16]>::fill(BULK_HASH_EMPTY), Memory::HBM);
+  let values = transfer(Tensor<u32, [16]>::fill(0u32), Memory::HBM);
+  let mut out = transfer(Tensor<u32, [8]>::fill(0u32), Memory::HBM);
+
+  let held = bulk_hash_insert_all(&slots, &values, &keys, &vals, 0);
+  let still = bulk_hash_insert_all(&slots, &values, &no_keys, &no_vals, held);
+  bulk_hash_find_all(&slots, &values, &probe, &mut out);
+  println!("held {} {}", held, still);
+
+  let table = transfer(slots, Memory::CPU_DRAM);
+  print!("slots");
+  for s in 0..16 {
+    if table[s] != BULK_HASH_EMPTY {
+      print!(" {}", s);
+    }
+  }
+  println!("");
+  let o = transfer(out, Memory::CPU_DRAM);
+  print!("found");
+  for i in 0..8 {
+    print!(" {}", o[i]);
+  }
+  println!("");
+  return 0;
+}

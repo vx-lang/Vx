@@ -140,8 +140,8 @@ When each task waits and nothing can wake one, the program has a deadlock. The r
 the program with the message `vx: deadlock: ...`, so that it does not hang.
 
 A `drop` runs with cancellation off, so that a cleanup can finish. So a wait in a `drop` should
-have a time limit: `send_for(v, seconds)` and `recv_for(seconds)` give `timed_out` and `TimedOut`
-after it. The compiler warns about a `send` or `recv` in a `drop` that has no limit (W1036).
+have a time limit: `send_for(v, limit)` and `recv_for(limit)` take a `Duration`, and give
+`timed_out` and `TimedOut` after it. The compiler warns about a `send` or `recv` in a `drop` that has no limit (W1036).
 
 A `drop` also has a limit of its own. Its type says how long its waits can take, with a method of
 `Drop` that returns 10 seconds unless the type writes its own:
@@ -152,8 +152,8 @@ impl Drop for SlotGuard {
     // The cleanup. Its waits get the limit below.
   }
 
-  fn wait_limit(self : &SlotGuard) -> f64 {
-    return 0.05;
+  fn wait_limit(self : &SlotGuard) -> Duration {
+    return Duration::from_millis(50);
   }
 }
 ```
@@ -162,11 +162,19 @@ After the limit, a `send` or `recv` in the `drop` gives up as in a cancelled blo
 `VX_DROP_WAIT_SECONDS` can make the limit of each `drop` shorter, for a test or to find a `drop`
 that hangs, but never longer.
 
-`within(seconds) { .. }` gives the waits in a block one time limit, in a `drop` or anywhere else.
-A flush, a close and a send in `within(0.05) { .. }` share the 50 ms. The limit also holds in the
-functions that the block calls. After the limit, a wait gives up as in a cancelled block, and
-`cancelled()` is true until the block ends. Outside a `drop`, a cancel still stops the waits in
-the block.
+`within(limit, body)`, from `std::sync::wait`, gives the waits in the closure `body` one time
+limit, in a `drop` or anywhere else. It gives the value of `body`:
+
+```rust
+let flushed = within(Duration::from_millis(50), || -> bool {
+  // A flush, a close and a send here share the 50 ms.
+  true
+});
+```
+
+The limit also holds in the functions that `body` calls. After the limit, a wait gives up as in a
+cancelled block, and `cancelled()` is true until `body` returns. Outside a `drop`, a cancel still
+stops the waits in `body`. A `return` in `body` ends `body`, and not the function around the call.
 
 ## `select`
 

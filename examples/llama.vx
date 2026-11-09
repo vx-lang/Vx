@@ -464,7 +464,7 @@ fn main() -> i32 {
   let tokenizer_ptr
   : *mut i8 = unsafe { vx_build_tokenizer(tokenizer_path, config.vocab_size) };
 
-  let start : f32 = now();
+  let start = Instant::now();
   let mut next : i32 = 0;
   let mut token : i32 = 1;
 

@@ -1,0 +1,41 @@
+//===- a_reference_to_a_number_given_a_new_value.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `let mut` reference to a number first refers to a `mut` variable, then to one that is not
+// `mut`, and the other way round. Each read through the reference sees the variable it refers
+// to at that time. Both code generators run it.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}mut first 1 then 2{{$}}
+// CHECK: {{^}}mut last 2 then 7{{$}}
+
+fn mut_variable_first() -> void {
+  let mut x : i32 = 1;
+  let y : i32 = 2;
+  let mut r = &x;
+  let before = *r;
+  r = &y;
+  x = 5;
+  println!("mut first {} then {}", before, *r);
+}
+
+fn mut_variable_last() -> void {
+  let mut x : i32 = 0;
+  let y : i32 = 2;
+  let mut r = &y;
+  let before = *r;
+  x = 7;
+  r = &x;
+  println!("mut last {} then {}", before, *r);
+}
+
+fn main() -> i32 {
+  mut_variable_first();
+  mut_variable_last();
+  return 0;
+}

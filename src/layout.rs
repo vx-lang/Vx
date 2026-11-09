@@ -176,7 +176,7 @@ pub(crate) fn structural_field_info(ty: &Type) -> Option<(usize, usize, FieldTy)
                 return None;
             }
             Some((
-                24 + 16 * dims.len(),
+                tensor_descriptor_bytes(dims.len()),
                 8,
                 FieldTy::Tensor(elem.clone(), dims.len()),
             ))
@@ -289,6 +289,12 @@ pub fn enum_slot_storage(slot: &EnumPayloadSlot) -> Option<String> {
 }
 
 /// Round `n` up to the next multiple of `align` (a power of two, `>= 1`).
+/// The bytes of the memref descriptor of a tensor of rank `rank`: two pointers, an offset, and a
+/// size and a stride per dimension.
+pub fn tensor_descriptor_bytes(rank: usize) -> usize {
+    24 + 16 * rank
+}
+
 pub fn align_up(n: usize, align: usize) -> usize {
     debug_assert!(align.is_power_of_two(), "alignment must be a power of two");
     (n + align - 1) & !(align - 1)
@@ -884,6 +890,8 @@ mod tests {
             name: sym(name),
             generics: Vec::new(),
             fields: fields.into_iter().map(|(n, t)| (sym(n), t)).collect(),
+            invariants: Vec::new(),
+            file: None,
             doc_comment: None,
         }
     }

@@ -17,6 +17,10 @@ values. Today no code states these facts, and nothing keeps them:
 A type invariant states such a fact once, in the type. The checker keeps it true, and each use of
 the type gets it as a fact.
 
+This gives contracts a new place. Until now, each contract of Vx is about code: `requires` and
+`ensures` describe a function, and `invariant` describes a loop. A type invariant is about data. It
+describes each value of the type, in each function that gets the value.
+
 ## 2. The syntax
 
 An `invariant` clause comes after the name of the struct and before its fields, as a `requires`
@@ -40,24 +44,97 @@ In an invariant, `self` is the value of the type. An invariant can name the fiel
 depth. It is an expression that the prover models, or a pointer clause: `valid`, `initialized` or
 `!overlaps`. It calls no function.
 
-## 3. Who can change the fields
+## 3. Who can write the fields
 
-The module that declares the type owns it. A module is one `.vx` file. Code in another module can
-read each field of a type with an invariant. It cannot do these things:
+Only the module that declares the type can write its fields. A module is one `.vx` file. Code in
+another module can read each field of a type with an invariant. It cannot do these things:
 
 - write a field, at any depth, as in `v.len = 0` or `v.len += 1`
 - take a `&mut` to a field, or to a place under one
+- move a field out of the value
 - build a value of the type with a struct literal
 
 Each one gets a new error. Such code calls a function of the module, such as
 `Vec::new` or `push`. An `unsafe` block does not lift this rule.
 
+Code in another module can still write a whole value. `v = Vec::new()` and a swap of two `Vec`s
+are legal. Each one puts a value whose invariant holds in the place of another such value.
+
 So the invariant holds for each value of the type in code outside the module. Unsafe code can
 still change a field through a raw pointer. It must keep the invariant, as it keeps each other
 promise of unsafe code.
 
-#489 is about visibility. When Vx gets private fields, a type with an invariant can make its fields
-private. Until then, this rule makes them read-only outside the module.
+This rule does not make the invariant sound. Section 4 does that: the checker proves the invariant
+at each `return` of each function that can write a field. This rule decides only where the
+invariant can be false for a short time:
+
+- Inside the module, a function can break the invariant. It must give it back before a call or a
+  `return`.
+- Outside the module, the invariant is never false.
+
+**Why the module, and not the impl blocks of the type.** In C++, only the member functions and the
+friends of a class can write its private fields. The class body declares each of them, so the class
+body is the full list of writers. In Vx, an impl block is a separate item, and a trait impl can be
+in any module. So the impl blocks of a type are a closed set only if the type also lists its
+friends.
+
+`VecIntoIter::drop` needs this access, because it sets `vec.len` to 0. Without a list of friends,
+`Vec` must give a function that sets `len`, such as the `unsafe fn set_len` of Rust's `Vec`. That
+function becomes part of the API of `Vec`. With the module as the boundary, `VecIntoIter` gets the
+access because it is in the same file. `Vec` adds nothing to its API.
+
+C++ needs a small boundary, because there the boundary is the only thing that keeps an invariant.
+In Vx, the checker keeps it. A larger boundary gives the checker more proofs to do. It does not
+make the invariant weaker.
+
+**A struct literal outside the module.** It is an error, for two reasons. A literal writes each
+field, so it needs the right to write each field. A literal also ties the code to the full list of
+fields. Then a new field in a `pub` type breaks each such literal, and that is a semver break. Rust
+adds `#[non_exhaustive]` to a struct to prevent this.
+
+**Later: visibility (#489).** `visibility-and-semver-package-management.md` gives each field a read
+level and a write level. Each module can read the field `pub get len`, and only the module that
+declares it can write it. The rule of this section is the same as `pub get` on each field of a type
+with an invariant. When Vx gets these levels, the rule becomes a rule about the write level:
+
+- Code that can write a field of the type has the duties of section 4.
+- Code that can only read the fields gets the facts of section 5.
+- A field of a type with an invariant cannot have a write level wider than its module.
+
+A type with an invariant can also make a field private. Then other modules cannot read it either.
+
+**Later: `final` fields.** After the struct literal, no code writes a `final` field. This includes
+code in the module. So `final` is the narrowest write level: `final`, then the module, `pkg`, `ws`
+and `pub`. For an invariant, a `final` field has two effects:
+
+- A clause that names only `final` fields needs a proof only at the struct literal. Section 4 asks
+  for no other proof of it.
+- A `final` field stops a write of the field, not a write of the whole value.
+  `*r = FixedBuf::new(8)` through a `&mut` is still legal. So a call that gets a `&mut` to the value
+  still ends the facts about a `final` field.
+
+A `final` field in Java has this meaning, and Vx has no inheritance for the word to clash with. Vx
+does not use `const`, because `const` already names a value known at compile time, as in
+`const N : i32`. `readonly` reads like `pub get`.
+
+In C++, a class with a `const` member has no copy assignment. So C++ also stops a write of the
+whole value. `Vec` cannot use `final`, because `push` gives `data` and `capacity` new values. A
+fixed buffer can:
+
+<!-- vx-doctest: skip (proposed syntax) -->
+
+```vx
+struct FixedBuf<T>
+invariant valid(self.data, self.cap as i64)
+invariant 0i32 <= self.len && self.len <= self.cap
+{
+  final data : *mut T,
+  final cap : i32,
+  len : i32,
+}
+```
+
+The first invariant needs a proof only where a struct literal builds a `FixedBuf`.
 
 ## 4. Inside the module
 
@@ -81,6 +158,18 @@ A `SharedCell` field is the exception, and a type with such a field cannot have 
 In `VecIntoIter::drop`, the body takes the elements out of `self.vec` and breaks
 `initialized(self.data, self.len)`. Then it sets `self.vec.len` to 0, and the invariant holds
 again at the `return`.
+
+**A helper that gets a broken value.** A function of the module can state the clause
+`without invariant`. Then the rules of this section change for it and for its callers:
+
+- When its body starts, it does not assume the invariant. At a `return`, it does not give it back.
+- Before a call to it, the caller proves nothing about the invariant.
+- After a call to it, the caller does not get the invariant for the values that the call can
+  change. The caller must still give the invariant back at its own `return`.
+
+Only code in the module can call such a function, so code outside the module never sees a broken
+value. Vx has no functions private to a module yet, because `pub fn` only exports a symbol. So
+the clause itself makes this rule: a call from another module gets an error.
 
 ## 5. Facts from an invariant
 
@@ -120,19 +209,23 @@ So `as_mut_ptr` proves its `ensures` with no `assume`. Outside the module, safe 
 
 ## 8. Open questions
 
-1. The owner of the fields is the module. The other choice is the impl blocks of the type. Then
-   `VecIntoIter::drop` needs a function of `Vec` to set `len`.
-1. Section 4 needs the invariant before each call. So a helper function of the module cannot get a
-   value whose invariant is broken. The helper can take the fields one by one instead. A later
-   version can add a clause that says that a function does not assume the invariant.
-1. A struct literal outside the module is an error here. The other choice is to allow it with a
-   proof of the invariant at the literal.
 1. A type with a `SharedCell` field cannot have an invariant in v1.
+1. A write level wider than the module, such as `pkg`, for a field of a type with an invariant. It
+   is sound, because each function that writes a field must give the invariant back. But then the
+   invariant can be false in more than one file.
+1. An invariant about memory behind a pointer. `initialized(self.data, self.len)` is a fact about
+   the buffer, not about a field, so the rule of section 3 does not keep it. It holds because safe
+   code cannot write through a `*mut T`, and unsafe code must keep the invariant. This is enough
+   while one value owns the buffer. It is not enough for a type whose invariant uses the invariant
+   of a value behind a pointer. Spec# (owners and `expose`) and Dafny (`Repr` sets) solve that case
+   with the ownership of memory. A later version of Vx can do the same. This note uses "own" only
+   in this sense, as `drop_semantics.md` does.
 
 ## 9. The work, in order
 
 1. The syntax, and the rule of section 3. Then `Vec` states its invariant, and that fixes #2840.
-1. The proofs of section 4.
+   The contracts page of the book gets a section on type invariants.
+1. The proofs of section 4, and the clause `without invariant`.
 1. The facts of section 5: first the prover's facts, then the pointer facts. Remove the `assume`s of
    `Vec::as_mut_ptr`.
 1. The invariants of `VecIter`, `VecIterMut` and `VecIntoIter`.

@@ -17,7 +17,7 @@
 // CHECK: 1 error(s) emitted
 
 Memory Extra {
-  capacity: 1 GB, bandwidth: 1 TB/s
+  scope: device, capacity: 1 GB, bandwidth: 1 TB/s
 }
 
 Topology Dev {

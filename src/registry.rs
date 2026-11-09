@@ -136,6 +136,9 @@ pub struct ImmutableGlobalRegistry {
     /// name through `struct_fields_of` / `resolve_unique_nominal`. Populated by
     /// `build_frozen_registry` and when deserialized from a `.vxlib` (#219/#242).
     pub structs: FxHashMap<TypeId, StructFields>,
+    /// The structs of `structs` that have an invariant. An interface cannot carry the invariant
+    /// yet, so it leaves these structs out.
+    pub structs_with_invariants: FxHashSet<TypeId>,
     /// Data-carrying (tagged-union) enum declarations keyed by name, carrying each variant's *declared*
     /// (possibly generic) payload types + the enum's generic parameters. A monomorphized instance
     /// (`Option<i32>`) has an instance-dependent layout (`{ i32 tag, i32 payload }`) that the frozen
@@ -490,6 +493,7 @@ impl ImmutableGlobalRegistry {
             bodies: FxHashMap::default(),
             enum_variants: FxHashMap::default(),
             structs: FxHashMap::default(),
+            structs_with_invariants: Default::default(),
             enum_data: FxHashMap::default(),
             merge_state: MergeState::default(),
             const_tables: Vec::new(),

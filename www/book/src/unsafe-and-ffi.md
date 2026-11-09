@@ -35,6 +35,10 @@ Two kinds, matching the two kinds of reference:
 Unlike `&T` and `&mut T`, raw pointers are not tracked by the borrow checker. Nothing stops two
 `*mut T` pointing at the same value. That is exactly why dereferencing one needs `unsafe`.
 
+A raw pointer can name a memory, as in `*mut f32 in Memory::GPU_HBM`. The functions of `core::ptr`
+that move a pointer keep its memory: `offset`, `add` and `sub` and their `_mut` forms take a pointer
+in any memory `M` and give a pointer in `M`. `read` and `write` take only a host pointer.
+
 ## unsafe functions
 
 A function whose *body* is not the dangerous part — but whose *contract* is — should be marked
@@ -88,7 +92,10 @@ fn main() -> i32 {
 
 At a call in safe code, the compiler proves each clause from what it knows there: the clauses
 of the caller, a pointer made from `&x` for a local variable `x`, and the pointer functions
-`offset`, `add` and `sub`. A call that gets a raw pointer can free its memory, so after the call
+`offset`, `add` and `sub`. A write `p[k] = x` or `*p = x` in `unsafe` code gives that one element
+a value, so after `p[0] = 7i64` the compiler knows `initialized(p, 1i64)`. Two facts whose ranges
+touch prove a clause together, so after `p[0] = 7i64; p[1] = 8i64;` it knows
+`initialized(p, 2i64)`. A call that gets a raw pointer can free its memory, so after the call
 the compiler knows nothing about memory that the caller does not own. When such code ended a
 fact that the call needs, the error has a note with its line. In a loop, such code anywhere in
 the body ends the facts at the start of the body, because an earlier pass can run it. A call in
@@ -132,7 +139,8 @@ fn main() -> i32 {
 
 `ensures frees(p)` says that the call can free that memory, so the compiler does not find
 `!frees(p)` for it. An `extern` function can say `!frees(p)` after its return type, and the
-compiler trusts it.
+compiler trusts it. It can also say a clause about numbers, such as `ensures 0i64 <= return`.
+Each call then knows the clause, and `vxc --audit` lists it.
 
 A function can also promise a pointer clause in an `ensures`, where `return` is the result. A
 caller gets each such clause as a fact when the call returns. The body proves each one at each
@@ -170,7 +178,6 @@ fn main() -> i32 {
     let p = alloc_i64(1i64);
     unsafe {
         p[0] = 7i64;
-        assume initialized(p, 1i64);
     }
     let x = first(p as *const i64);
     let bytes : *mut i8 = p;

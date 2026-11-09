@@ -103,15 +103,15 @@ def Vx_HeapFreeOp : Vx_Op<"heap_free"> {
 // convert-vx-to-standard frees the buffer when it is a heap buffer this
 // function owns, and erases the drop otherwise. With `unless`,
 // nothing is freed when the flag is true: the tensor was moved. With
-// `field`, the buffer is a tensor field of a struct being dropped, which owned it.
-// With `owned_only`, a buffer this function does not own is left alone rather than
-// reported as an error.
+// `field`, the buffer is a tensor field of a struct being dropped, which owned
+// it. With `owned_only`, a buffer this function does not own is left alone
+// rather than reported as an error. With `placed`, the field is a tensor in a
+// device memory, and the plugin of that topology frees it.
 def Vx_DropOp : Vx_Op<"drop"> {
     let summary = "Frees a tensor whose owner gives it up.";
     let arguments = (ins Arg<AnyType, "the buffer to free", [MemFree]>:$buffer,
-                         Optional<I1>:$moved,
-                         UnitAttr:$owned_only,
-                         UnitAttr:$field);
+        Optional<I1>:$moved, UnitAttr:$owned_only, UnitAttr:$field,
+        OptionalAttr<I32Attr>:$placed);
     let assemblyFormat = "$buffer (`unless` $moved^)? attr-dict `:` type($buffer)";
 }
 
@@ -247,6 +247,19 @@ def Vx_LaneSortOp : Vx_Op<"lane_sort", [MemoryEffects<[MemRead, MemWrite]>]> {
     let summary = "Sort the first elements of a tensor with the lanes.";
     let arguments = (ins AnyMemRef:$input, I32:$count, I64Attr:$lanes,
                      UnitAttr:$descending, UnitAttr:$subgroup,
+                     UnitAttr:$serial);
+}
+
+// `acc = acc + (lhs as f32) @ (rhs as f32)` in the code of a subgroup, or with
+// no `acc +` when `accumulate` is not set. `acc` is an `f32` matrix, and `lhs`
+// and `rhs` are matrices of `f32`, `bf16` or `f16`. Each element of `acc` gets
+// the sum of its products from 0, in the order of `k`, and then its old value.
+// The device clone gives the elements to the lanes of the subgroup, and the host
+// lowering and `serial` compute them in loops.
+def Vx_LaneMatmulOp : Vx_Op<"lane_matmul", [MemoryEffects<[MemRead, MemWrite]>]> {
+    let summary = "A matmul of tiles with the lanes of a subgroup.";
+    let arguments = (ins AnyMemRef:$acc, AnyMemRef:$lhs, AnyMemRef:$rhs,
+                     UnitAttr:$accumulate, UnitAttr:$subgroup,
                      UnitAttr:$serial);
 }
 

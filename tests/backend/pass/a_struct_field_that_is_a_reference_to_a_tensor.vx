@@ -1,0 +1,57 @@
+//===- a_struct_field_that_is_a_reference_to_a_tensor.vx --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A struct field holds a reference to a tensor. The program reads the tensor
+// through the field, through a reference to the struct, and through a copy of
+// the field. It writes the tensor through a `&mut` field. Both code
+// generators run it.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}5 9 9 1 10{{$}}
+// CHECK: {{^}}7{{$}}
+
+struct Reader {
+  value : i32,
+  tensor : &Tensor<f32, [4]>,
+}
+
+struct Writer {
+  tensor : &mut Tensor<f32, [4]>,
+}
+
+fn read_through_a_reference(p : &Reader) -> f32 {
+  return p.tensor[2];
+}
+
+fn sum_by_value(p : Reader) -> f32 {
+  let mut s = 0.0;
+  for i in 0..4 {
+    s = s + p.tensor[i];
+  }
+  return s;
+}
+
+fn main() -> i32 {
+  let mut t = Tensor<f32>([4]);
+  t[2] = 9.0;
+  t[3] = 1.0;
+  let p = Reader {
+    value : 5,
+    tensor : &t
+  };
+  let copy = p.tensor;
+  println!("{} {} {} {} {}", p.value, p.tensor[2], read_through_a_reference(&p), copy[3], sum_by_value(p));
+
+  let mut u = Tensor<f32>([4]);
+  let mut w = Writer {
+    tensor : &mut u
+  };
+  w.tensor[1] = 7.0;
+  println!("{}", u[1]);
+  return 0;
+}

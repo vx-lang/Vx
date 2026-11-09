@@ -102,6 +102,15 @@ pub struct MeliorGenerator<'c> {
     /// The levels of the `across` loops around the code, for the lane reductions.
     pub(crate) across_kinds: Vec<crate::arch::LevelKind>,
     pub in_spawn: bool,
+    /// The next `for` loop is the one loop of a `spawn` region that `parallel_outer_for` proved.
+    /// It gets marks so that a later pass can run its passes on threads or host workers.
+    pub(crate) mark_next_for: bool,
+    /// The block loop and the thread loops that `parallel_two_level` proved, while their
+    /// `spawn` region is lowered.
+    pub(crate) two_level_plan: Option<crate::hir::check::parallel::TwoLevelPlan>,
+    /// The declared `arch:` of each open `spawn` region, innermost last. `None` for a topology
+    /// that declares none, such as every built-in one.
+    pub(crate) spawn_arches: Vec<Option<String>>,
     pub break_blocks: Vec<*const melior::ir::Block<'c>>,
     /// The open `tasks` blocks that can fail: the block after each, which takes the value of
     /// the block, and the type `Result<U, E>` of that value.
@@ -194,6 +203,45 @@ pub(crate) fn strip_memref_space(s: &str) -> Option<String> {
 /// reaches: an imported module's function is emitted only when the program calls it, directly
 /// or through another function it calls. A function is reached by any `@name` in a reached
 /// function's code. Also returns every name the kept functions refer to.
+/// The order the flat code generator emits the program's functions in, as indices into
+/// `functions`. It takes the last function from a list that starts as the functions in source
+/// order, then adds the functions that one calls, sorted by name. The two code generators then
+/// write functions in one order, so a linker reports undefined symbols in one order too.
+fn flat_emission_order(functions: &[crate::syntax::Function]) -> Vec<usize> {
+    let index: HashMap<&str, usize> = functions
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.name.as_ref(), i))
+        .collect();
+    let mut worklist: Vec<String> = functions
+        .iter()
+        .filter(|f| f.generics.is_empty())
+        .map(|f| f.name.to_string())
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut order = Vec::with_capacity(functions.len());
+    while let Some(name) = worklist.pop() {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        let Some(&i) = index.get(name.as_str()) else {
+            continue;
+        };
+        order.push(i);
+        let mut uses = std::collections::HashSet::new();
+        for stmt in &functions[i].body {
+            crate::hir::TypeChecker::extract_uses_stmt(stmt, &mut uses);
+        }
+        let mut uses: Vec<_> = uses.into_iter().collect();
+        uses.sort();
+        worklist.extend(uses);
+    }
+    // A function the walk did not visit keeps its place after the others.
+    let visited: std::collections::HashSet<usize> = order.iter().copied().collect();
+    order.extend((0..functions.len()).filter(|i| !visited.contains(i)));
+    order
+}
+
 fn keep_reached_functions<'c>(
     operations: Vec<melior::ir::Operation<'c>>,
     imported: usize,
@@ -341,6 +389,8 @@ pub(crate) enum WaitingDrop<'c> {
         buffer: melior::ir::Value<'c, 'c>,
         flag: Option<crate::symbol::Symbol>,
         field: bool,
+        /// For a field in a device memory: the topology whose plugin frees it.
+        placed: Option<i32>,
     },
     /// The statements that run a drop: a `Drop` impl's `drop`, with cancellation off around
     /// it, or a `match` on an enum whose arms hold more drops.
@@ -448,6 +498,17 @@ impl<'c> MeliorGenerator<'c> {
     /// A rank-0 `memref` over a single scalar (`memref<i32>`), which is how a mutable scalar
     /// local's storage and a borrow of one are both spelled. Ranked memrefs (`memref<4xf32>`)
     /// and nested ones (`memref<memref<i32>>`) are different shapes and are excluded.
+    /// Whether the innermost `spawn` region runs on a `spirv64` topology.
+    pub(crate) fn in_spirv_region(&self) -> bool {
+        self.spawn_arches
+            .last()
+            .cloned()
+            .flatten()
+            .is_some_and(|a| {
+                crate::arch::DeviceTarget::from_arch(&a) == Some(crate::arch::DeviceTarget::Spirv64)
+            })
+    }
+
     pub fn is_scalar_memref(&self, ty: &Type<'c>) -> bool {
         let ty_str = ty.to_string();
         ty_str.starts_with("memref<")
@@ -494,7 +555,8 @@ impl<'c> MeliorGenerator<'c> {
             .get(call_fn_name.as_str())
             .cloned()
             .ok_or_else(|| format!("closure call fn {} not found", call_fn_name))?;
-        let fn_ty = melior::ir::r#type::FunctionType::new(self.context, &arg_types, &[ret_ty]);
+        let (ret, args) = self.abi_signature(ret_ty, &arg_types);
+        let fn_ty = melior::ir::r#type::FunctionType::new(self.context, &args, ret.as_slice());
         let const_op = melior::ir::operation::OperationBuilder::new("func.constant", self.loc())
             .add_attributes(&[(
                 melior::ir::Identifier::new(self.context, "value"),
@@ -573,6 +635,10 @@ impl<'c> MeliorGenerator<'c> {
     ) -> Result<Value<'c, 'c>, crate::codegen::lower::LowerError> {
         if from_ty == to_ty {
             return Ok(val);
+        }
+        // A closure literal given where a `ClosureK` is expected, as in a `return` or an assignment.
+        if let Some(adapted) = self.adapt_closure_to_nominal(block, val, from_ty, to_ty)? {
+            return Ok(adapted);
         }
 
         // Scalar -> tensor: broadcast the scalar across a fresh buffer (fill),
@@ -868,6 +934,69 @@ impl<'c> MeliorGenerator<'c> {
             return Ok(ptr);
         }
 
+        // The reverse: `&y` of a variable that is not `mut` is a bare `!llvm.ptr`, given where a
+        // `memref<i32>` reference is kept, as in `let mut r = &x; r = &y`. The memref is a rank-0
+        // descriptor whose two pointers are `val` and whose offset is 0.
+        if from_ty == self.ptr_ty
+            && to_str.starts_with("memref<")
+            && !to_str.contains('x')
+            && !to_str.starts_with("memref<memref<")
+        {
+            use melior::ir::operation::OperationBuilder;
+            let desc_ty =
+                Type::parse(self.context, "!llvm.struct<(ptr, ptr, i64)>").ok_or_else(|| {
+                    crate::codegen::lower::LowerError::from("a rank-0 descriptor".to_string())
+                })?;
+            let mut desc: Value = block
+                .append_operation(
+                    OperationBuilder::new("llvm.mlir.undef", self.loc())
+                        .add_results(&[desc_ty])
+                        .build()?,
+                )
+                .result(0)?
+                .into();
+            let zero: Value = block
+                .append_operation(
+                    OperationBuilder::new("llvm.mlir.constant", self.loc())
+                        .add_attributes(&[(
+                            melior::ir::Identifier::new(self.context, "value"),
+                            melior::ir::attribute::IntegerAttribute::new(self.i64_ty, 0).into(),
+                        )])
+                        .add_results(&[self.i64_ty])
+                        .build()?,
+                )
+                .result(0)?
+                .into();
+            for (pos, part) in [(0, val), (1, val), (2, zero)] {
+                desc = block
+                    .append_operation(
+                        OperationBuilder::new("llvm.insertvalue", self.loc())
+                            .add_operands(&[desc, part])
+                            .add_attributes(&[(
+                                melior::ir::Identifier::new(self.context, "position"),
+                                melior::ir::attribute::DenseI64ArrayAttribute::new(
+                                    self.context,
+                                    &[pos],
+                                )
+                                .into(),
+                            )])
+                            .add_results(&[desc_ty])
+                            .build()?,
+                    )
+                    .result(0)?
+                    .into();
+            }
+            return Ok(block
+                .append_operation(
+                    OperationBuilder::new("builtin.unrealized_conversion_cast", self.loc())
+                        .add_operands(&[desc])
+                        .add_results(&[to_ty])
+                        .build()?,
+                )
+                .result(0)?
+                .into());
+        }
+
         if cfg!(debug_assertions) {
             println!(
                 "Warning: Falling back to bitcast from {} to {}\nBacktrace:\n{:?}",
@@ -936,6 +1065,9 @@ impl<'c> MeliorGenerator<'c> {
             expected_type: None,
             across_kinds: Vec::new(),
             in_spawn: false,
+            mark_next_for: false,
+            two_level_plan: None,
+            spawn_arches: Vec::new(),
             break_blocks: Vec::new(),
             tasks_leaves: Vec::new(),
             tasks_inline: false,
@@ -1252,8 +1384,12 @@ impl<'c> MeliorGenerator<'c> {
         }
         let imported = operations.len();
 
+        let mut own = Vec::with_capacity(program.functions.len());
         for func in &program.functions {
-            operations.push(self.generate_function(func)?);
+            own.push(Some(self.generate_function(func)?));
+        }
+        for i in flat_emission_order(&program.functions) {
+            operations.push(own[i].take().expect("each function is emitted once"));
         }
         let (operations, referenced) = keep_reached_functions(operations, imported);
 
@@ -1665,6 +1801,7 @@ impl<'c> MeliorGenerator<'c> {
             buffer,
             flag: d.flag.clone(),
             field: d.expr.is_some(),
+            placed: d.placement.as_ref().and_then(|p| self.placed_topology(p)),
         };
         if d.after_value {
             self.queued_drops.push(drop);
@@ -1685,8 +1822,9 @@ impl<'c> MeliorGenerator<'c> {
                 buffer,
                 flag,
                 field,
+                placed,
             } => {
-                self.emit_drop(buffer, flag, field, block)?;
+                self.emit_drop(buffer, flag, field.then_some(placed), block)?;
                 Ok(block)
             }
             WaitingDrop::Call(stmts) => {
@@ -1726,12 +1864,13 @@ impl<'c> MeliorGenerator<'c> {
     }
 
     /// `vx.drop %buffer`, or `vx.drop %buffer unless %moved` when the tensor has a moved flag.
-    /// `field`: the buffer is a tensor field of a struct being dropped.
+    /// `field`: the buffer is a tensor field of a struct being dropped, with the topology whose
+    /// plugin frees it when it is in a device memory.
     pub(crate) fn emit_drop(
         &mut self,
         buffer: melior::ir::Value<'c, 'c>,
         flag: Option<crate::symbol::Symbol>,
-        field: bool,
+        field: Option<Option<i32>>,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Result<(), LowerError> {
         let mut operands = vec![buffer];
@@ -1742,11 +1881,18 @@ impl<'c> MeliorGenerator<'c> {
         }
         let mut op = melior::ir::operation::OperationBuilder::new("vx.drop", self.loc())
             .add_operands(&operands);
-        if field {
+        if let Some(placed) = field {
             op = op.add_attributes(&[(
                 melior::ir::Identifier::new(self.context, "field"),
                 melior::ir::Attribute::unit(self.context),
             )]);
+            if let Some(topology) = placed {
+                let i32_ty = melior::ir::r#type::IntegerType::new(self.context, 32).into();
+                op = op.add_attributes(&[(
+                    melior::ir::Identifier::new(self.context, "placed"),
+                    melior::ir::attribute::IntegerAttribute::new(i32_ty, topology.into()).into(),
+                )]);
+            }
         }
         block.append_operation(op.build()?);
         Ok(())
@@ -2037,6 +2183,10 @@ impl<'c> MeliorGenerator<'c> {
             syntax::Type::Pinned(inner, _) | syntax::Type::Verified(inner) => {
                 self.type_size_align(inner, depth)
             }
+            // A tensor is held as its memref descriptor. A rank-0 tensor is a plain number.
+            syntax::Type::Tensor(_, dims, _) if !dims.is_empty() => {
+                Some((crate::layout::tensor_descriptor_bytes(dims.len()), 8))
+            }
             // `Holder<i64>`: the fields with `T` replaced by `i64`.
             syntax::Type::GenericInstance(base, args) => {
                 let syntax::Type::Struct(name, _) = &**base else {
@@ -2312,7 +2462,10 @@ impl<'c> MeliorGenerator<'c> {
                     _ => unreachable!(),
                 };
                 let inner_str = self.lower_type_str(inner)?;
-                if inner_str.starts_with("memref<") {
+                // A raw pointer is a pointer, whatever it points at. Only a borrow of a tensor is
+                // the cell that holds the tensor's descriptor.
+                let is_pointer = matches!(ty, syntax::Type::Pointer(..));
+                if inner_str.starts_with("memref<") && !is_pointer {
                     // A borrowed tensor is the slot holding its descriptor, and every tensor
                     // this backend allocates is dynamically shaped. Naming the static shape
                     // here left the call site casting between two memref element types, which
@@ -2953,12 +3106,19 @@ pub(crate) fn tensor_descriptor_str(rank: usize) -> String {
     }
 }
 
-/// The rank of a tensor a struct field holds as a descriptor. `None` for any other type,
-/// including a reference to a tensor, which this code generator keeps as a cell holding the
-/// descriptor rather than as the descriptor.
+/// The rank of a tensor a struct field holds as a descriptor, or `None` for any other type. A
+/// reference to a tensor is held as the descriptor too, as on the flat code generator: a pointer
+/// to the cell that holds the descriptor would dangle after the function that made the cell
+/// returns. Writes through a `&mut` still reach the tensor, because the descriptor points at its
+/// data.
 pub(crate) fn tensor_field_rank(ty: &syntax::Type) -> Option<usize> {
     match ty {
         syntax::Type::Tensor(_, dims, _) => Some(dims.len()),
+        // `Pinned<T, ..>` and `Verified<T>` are a tensor with a claim about it.
+        syntax::Type::Pinned(inner, _) | syntax::Type::Verified(inner) => tensor_field_rank(inner),
+        syntax::Type::Borrow { inner, .. } if matches!(**inner, syntax::Type::Tensor(..)) => {
+            tensor_field_rank(inner)
+        }
         _ => None,
     }
 }

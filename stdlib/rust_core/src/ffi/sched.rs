@@ -935,7 +935,7 @@ mod tests {
     extern "C" fn first_drop(env: *mut u8) {
         let d = unsafe { &**(env as *const *const Drops) };
         let mine = current_mark();
-        crate::ffi::tasks::vx_cancel_off(10.0);
+        crate::ffi::tasks::vx_cancel_off(10_000_000_000);
         open(&d.first_off);
         wait_for(&d.second_off);
         crate::ffi::tasks::vx_cancel_on();
@@ -950,7 +950,7 @@ mod tests {
         let d = unsafe { &**(env as *const *const Drops) };
         wait_for(&d.first_off);
         let mine = current_mark();
-        crate::ffi::tasks::vx_cancel_off(10.0);
+        crate::ffi::tasks::vx_cancel_off(10_000_000_000);
         open(&d.second_off);
         wait_for(&d.first_on);
         crate::ffi::tasks::vx_cancel_on();
@@ -1333,6 +1333,34 @@ mod tests {
             1,
             "a task ran on a thread other than the one that waits"
         );
+    }
+
+    #[test]
+    fn a_cancel_elsewhere_does_not_change_the_order_of_a_seed() {
+        // A cancel in another test of this program wakes the waits that a cancel ends. The tasks
+        // here wait with no cancel, so they must stay parked.
+        let _watchdog = Watchdog::new("a_cancel_elsewhere_does_not_change_the_order_of_a_seed");
+        static GATES: [AtomicI64; 6] = [const { AtomicI64::new(0) }; 6];
+        let (quiet, _) = order_with_seed(1, &GATES[0]);
+        let stop = Arc::new(AtomicBool::new(false));
+        let cancels = {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::SeqCst) {
+                    crate::ffi::wait::wake_every_thread();
+                    std::thread::yield_now();
+                }
+            })
+        };
+        let rounds: Vec<Vec<usize>> = GATES[1..]
+            .iter()
+            .map(|gate| order_with_seed(1, gate).0)
+            .collect();
+        stop.store(true, Ordering::SeqCst);
+        cancels.join().unwrap();
+        for with_cancels in rounds {
+            assert_eq!(quiet, with_cancels, "a cancel elsewhere changed the order");
+        }
     }
 
     extern "C" fn wait_for_the_timer(env: *mut u8) {

@@ -58,6 +58,9 @@ pub(crate) struct BorrowCx {
     pub(crate) current_params: HashMap<Symbol, Type>,
     /// The moves at each `break` and `continue` of the loops being checked, innermost last.
     pub(crate) loop_exits: Vec<LoopExits>,
+    /// How many of `loop_exits` are around the closure being checked. A `break` or `continue`
+    /// in the closure needs a loop inside the closure.
+    pub(crate) loops_outside_the_closure: usize,
     /// Every borrower each variable has had in the function, kept after the borrow ends: a
     /// drop point is after the last use of all of them.
     borrowers_ever: HashMap<String, HashSet<String>>,
@@ -105,6 +108,11 @@ pub(crate) struct LoopExits {
     /// What the function changed before the loop. While the loop is checked, `changed_vars`
     /// holds only what the loop changes.
     pub(crate) changed_before: HashSet<String>,
+    /// The count of passes when it is known at compile time: a `for` over a constant range.
+    pub(crate) passes: Option<u64>,
+    /// `placement_order` when the loop starts. A task that a pass starts runs during the later
+    /// passes too.
+    pub(crate) order: usize,
 }
 
 impl Default for BorrowCx {
@@ -124,6 +132,7 @@ impl Default for BorrowCx {
             store_target_vars: HashMap::new(),
             current_params: HashMap::new(),
             loop_exits: Vec::new(),
+            loops_outside_the_closure: 0,
             views: HashMap::new(),
             view_owners_by_let: HashMap::new(),
             shadowed: Vec::new(),

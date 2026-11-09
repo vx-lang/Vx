@@ -56,22 +56,6 @@
 // keeps `a`, which is `mut`, in a cell, and passes `&a` as the cell.
 // RUN: vxc --legacy-codegen %s 2>&1 | FileCheck %s --check-prefix=OUT
 // RUN: vxc --legacy-codegen %s --action emit-llvm 2>&1 | FileCheck %s --check-prefix=LEGACY
-// LEGACY-LABEL: llvm.func {{(hidden )?}}@total(
-// LEGACY: llvm.call @free(%arg0)
-// LEGACY-LABEL: llvm.func {{(hidden )?}}@first_two(
-// LEGACY-NOT: llvm.call @free
-// LEGACY-LABEL: llvm.func {{(hidden )?}}@ones(
-// LEGACY-NOT: llvm.call @free
-// LEGACY-LABEL: llvm.func {{(hidden )?}}@four(
-// LEGACY: llvm.call @free
-// LEGACY-LABEL: llvm.func {{(hidden )?}}@passed(
-// LEGACY: llvm.call @free(%arg5)
-// LEGACY-LABEL: llvm.func {{(hidden )?}}@sum_of_four(
-// LEGACY: llvm.call @free(%arg0)
-// LEGACY-LABEL: llvm.func {{(hidden )?}}@maybe_moved(
-// LEGACY: llvm.cond_br %arg1
-// LEGACY: llvm.cond_br
-// LEGACY: llvm.call @free
 // LEGACY-LABEL: llvm.func {{(hidden )?}}@main(
 // LEGACY: llvm.call @first_two
 // LEGACY: llvm.call @first_two
@@ -83,6 +67,22 @@
 // LEGACY: llvm.call @passed(%[[G]], %[[G]], {{.*}}, %[[F]],
 // LEGACY: llvm.call @sum_of_four(%[[G]],
 // LEGACY: llvm.call @free
+// LEGACY-NOT: llvm.call @free
+// LEGACY-LABEL: llvm.func {{(hidden )?}}@total(
+// LEGACY: llvm.call @free(%arg0)
+// LEGACY-LABEL: llvm.func {{(hidden )?}}@sum_of_four(
+// LEGACY: llvm.call @free(%arg0)
+// LEGACY-LABEL: llvm.func {{(hidden )?}}@passed(
+// LEGACY: llvm.call @free(%arg5)
+// LEGACY-LABEL: llvm.func {{(hidden )?}}@ones(
+// LEGACY-NOT: llvm.call @free
+// LEGACY-LABEL: llvm.func {{(hidden )?}}@maybe_moved(
+// LEGACY: llvm.cond_br %arg1
+// LEGACY: llvm.cond_br
+// LEGACY: llvm.call @free
+// LEGACY-LABEL: llvm.func {{(hidden )?}}@four(
+// LEGACY: llvm.call @free
+// LEGACY-LABEL: llvm.func {{(hidden )?}}@first_two(
 // LEGACY-NOT: llvm.call @free
 
 fn total(v : Tensor<f32, [?]>) -> f32 {

@@ -83,9 +83,10 @@ static inline int vx_remote_connect(vx_remote_pool *pool,
   /* Keyed by where the worker is, not what it is called. One machine can serve
      several names -- a program placing data in `Memory::HBM_A` and dispatching
      to `Topology::DevA` names two things that are one process, and a two-GPU
-     pod is exactly that shape. Keyed by name, the second name opened a second
-     socket to a worker that accepts one connection at a time and serves it to
-     completion, so the second connect blocked forever and the program hung
+     pod is exactly that shape. A worker gives each connection its own
+     handles, so a buffer placed through one name must be used through the
+     same connection. Keyed by name, the second name opened a second socket.
+     The worker then served one connection to completion, so the program hung
      after its last transfer with no error anywhere (#348). */
   for (i = 0; i < pool->count; ++i) {
     if (pool->conns[i].port == w->port &&

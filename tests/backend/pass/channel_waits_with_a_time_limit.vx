@@ -18,6 +18,7 @@
 // CHECK: {{^}}try_recv found no value{{$}}
 // CHECK: {{^}}recv gave 3{{$}}
 
+import core::time;
 import std::sync::channel;
 import std::sync::wait;
 
@@ -58,12 +59,12 @@ fn send_now(tx : &Sender<i64>, v : i64) -> void {
 fn main() -> i32 {
   let (tx, rx) = channel<i64>(1);
   let start = clock_ns();
-  show_recv(rx.recv_for(0.05));
+  show_recv(rx.recv_for(Duration::from_millis(50)));
   let waited = clock_ns() - start >= 50000000;
   println!("it waited at least 0.05 seconds: {}", waited);
 
   send_now(&tx, 1);
-  match tx.send_for(2, 0.05) {
+  match tx.send_for(2, Duration::from_millis(50)) {
     Result<void, SendError<i64>>::Ok() => {
       println!("send_for sent 2");
     }

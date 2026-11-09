@@ -40,3 +40,7 @@ fn main() -> i32 {
   println!("{} {}", add_one(a), back[3]);
   return 0;
 }
+
+// `--implicit-check-not` does not look past the first `CHECK-DAG` match, so these lines
+// check the end of the output.
+// CHECK-NOT: _mlir_ciface_

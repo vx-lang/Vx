@@ -15,6 +15,8 @@
 import core::panic;
 import core::ptr;
 import core::sync::atomic;
+import core::time;
+import std::time;
 
 extern {
   /// The Rust core behind `wait_while`.
@@ -29,6 +31,10 @@ extern {
   fn vx_clock_ns() -> i64;
   /// The Rust core behind `wait_while_until`.
   fn vx_wait_while_until(word : *mut i64, value : i64, deadline : i64, or_cancel : i32) -> void;
+  /// The Rust core behind the start of `within`.
+  fn vx_within_start(limit_ns : i64) -> void;
+  /// The Rust core behind the end of `within`.
+  fn vx_within_end() -> void;
   /// The Rust core behind `waiting_for`.
   fn vx_waiting_for(what : i32, at_file : *const i8, at_line : i32, made_file : *const i8, made_line : i32) -> void;
 }
@@ -53,9 +59,6 @@ fn waiting_in_select(at : Caller) -> void {
   unsafe { vx_waiting_for(WAIT_IN_SELECT, l.file, l.line, null<i8>(), 0); }
 }
 
-/// A deadline that never comes.
-const NO_DEADLINE : i64 = 9223372036854775807;
-
 /// Block the thread while `word` holds `value`. It can also return when `word` did not change.
 /// So the caller reads `word` again, in a loop.
 fn wait_while(word : &AtomicI64, value : i64) -> void {
@@ -74,6 +77,20 @@ fn cancelled() -> bool {
   return unsafe { vx_cancelled() } != 0;
 }
 
+/// Runs `body`, and gives its value. Each wait in `body` that can be cancelled gives up `limit`
+/// after the call starts, or at the deadline of a call of `within` or a `drop` around it when that
+/// is earlier. The limit also holds in the functions that `body` calls. After the limit, a wait
+/// gives up as in a cancelled block, and `cancelled()` is true until `body` returns.
+///
+/// A `return` in `body` ends `body`, and not the function around the call. To give an error,
+/// `body` returns a `Result`.
+fn within<T>(limit : Duration, body : || -> T) -> T {
+  unsafe { vx_within_start(limit.as_nanos_i64()); }
+  let value = body();
+  unsafe { vx_within_end(); }
+  return value;
+}
+
 /// Wake each thread that waits on `word`. Change `word` before the call.
 fn wake_all(word : &AtomicI64) -> void {
   unsafe { vx_wake_all(word.as_ptr()); }
@@ -85,20 +102,27 @@ fn clock_ns() -> i64 {
   return unsafe { vx_clock_ns() };
 }
 
-/// The deadline `seconds` from now, for `wait_while_until` and the waits of a channel.
-fn deadline_after(seconds : f64) -> i64 {
-  return clock_ns() + (seconds * 1000000000.0) as i64;
+/// The deadline `d` from now, for `wait_while_until` and the waits of a channel.
+fn deadline_after(d : Duration) -> Instant {
+  match Instant::now().checked_add(&d) {
+    Option<Instant>::Some(at) => {
+      return at;
+    }
+    Option<Instant>::None => {
+      return Instant::never();
+    }
+  }
 }
 
 /// Whether the clock reached `deadline`.
-fn past_deadline(deadline : i64) -> bool {
-  return deadline != NO_DEADLINE && clock_ns() >= deadline;
+fn past_deadline(deadline : Instant) -> bool {
+  return deadline != Instant::never() && Instant::now() >= deadline;
 }
 
 /// As `wait_while`, and also return at `deadline`. With `can_cancel`, also return when the
 /// `tasks` block of this task was cancelled. The caller checks `past_deadline` after it.
-fn wait_while_until(word : &AtomicI64, value : i64, deadline : i64, can_cancel : bool) -> void {
-  if deadline == NO_DEADLINE {
+fn wait_while_until(word : &AtomicI64, value : i64, deadline : Instant, can_cancel : bool) -> void {
+  if deadline == Instant::never() {
     if can_cancel {
       wait_while_or_cancel(word, value);
     } else {
@@ -110,5 +134,7 @@ fn wait_while_until(word : &AtomicI64, value : i64, deadline : i64, can_cancel :
   if can_cancel {
     flag = 1;
   }
-  unsafe { vx_wait_while_until(word.as_ptr(), value, deadline, flag); }
+  unsafe {
+    vx_wait_while_until(word.as_ptr(), value, deadline.as_nanos_i64(), flag);
+  }
 }

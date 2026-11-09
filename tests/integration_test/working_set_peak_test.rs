@@ -30,7 +30,7 @@ use std::process::Command;
 const MACHINE: &str = "\
 Memory CPU_DRAM {}
 Memory W {
-  within: Memory::CPU_DRAM, capacity: 64 MiB, managed: explicit
+  within: Memory::CPU_DRAM, capacity: 64 MiB, scope: device, managed: explicit
 }
 Topology Dev {
   arch: nvptx64,

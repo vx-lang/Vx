@@ -16,12 +16,15 @@
 // TYPES-DAG: Error[E3003]{{.*}}wants_1024{{.*}}Tensor<f32, [16], Memory::SMEM, aligned(1024)>{{.*}}Tensor<f32, [16], Memory::SMEM>
 // TYPES-DAG: Error[E6034]{{.*}}`aligned(1024)` needs a space whose storage the compiler lays out, one declared with `scope: sm`, `cta` or `thread`, and 'HBM' is not
 // TYPES-DAG: Error[E6034]{{.*}}`aligned(64)` is less than the `alignment: 128 B` of 'SMEM', which every tensor there has
+// `--implicit-check-not` does not look past the first `TYPES-DAG` match, so this line counts
+// the errors.
+// TYPES: {{^}}Semantic check failed on {{.*}}: 3 error(s) emitted
 // PARSE: `aligned(N)` needs N to be a power of two, such as 1024
 
 //--- types.vx
 Memory CPU_DRAM {}
 Memory HBM {
-  within: Memory::CPU_DRAM, capacity: 8 GiB, managed: explicit
+  within: Memory::CPU_DRAM, capacity: 8 GiB, managed: explicit, scope: device
 }
 Memory SMEM {
   within: Memory::HBM, capacity: 64 KiB, managed: explicit, alignment: 128 B, scope: sm
