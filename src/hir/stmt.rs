@@ -991,6 +991,15 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Whether `e` is a tensor, or a reference to one, that a `for` loop reads by index.
+    fn is_tensor_or_reference_to_one(&mut self, e: &Expr) -> bool {
+        let mut ty = self.check_expr_type_probe(e);
+        while let Type::Borrow { inner, .. } | Type::Ref(inner, _) = ty {
+            ty = *inner;
+        }
+        matches!(ty, Type::Tensor(..))
+    }
+
     fn check_for_loop_stmt(&mut self, floop: &mut ForLoopStmt, consume: bool, return_type: &Type) {
         let ForLoopStmt {
             iter,
@@ -1020,10 +1029,30 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
+        // `for x in &t` reads the tensor as `for x in t` does: neither moves it. An `across` loop
+        // goes over a range, and the check of `across` refuses a tensor.
+        let over_tensor = across.is_none();
+        if let (Expr::Borrow(b), true) = (&**iterable, over_tensor) {
+            if self.is_tensor_or_reference_to_one(&b.expr) {
+                if b.is_mut && !self.speculating {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3046,
+                        "a `for` loop over a tensor gives copies of its elements, so it cannot \
+                         change them; write `for i in 0..t.len() { t[i] = ..; }`"
+                            .to_string(),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(
+                            &iterable.span(),
+                        )),
+                    );
+                }
+                **iterable = (*b.expr).clone();
+            }
+        }
         // `for x in t` over a tensor reads it by index: `for $i in 0..t.len() { let x = t[$i]; .. }`.
-        // A tensor of rank 2 or more gives its rows.
-        if matches!(&**iterable, Expr::Array(_))
-            || matches!(self.check_expr_type_probe(iterable), Type::Tensor(..))
+        // A tensor of rank 2 or more gives its rows. `t` can also be a reference to a tensor.
+        if over_tensor
+            && (matches!(&**iterable, Expr::Array(_))
+                || self.is_tensor_or_reference_to_one(iterable))
         {
             if let Expr::Identifier(id) = &**iterable {
                 let index = format!("$for_index_{}_{}", loop_span.line, loop_span.column);
