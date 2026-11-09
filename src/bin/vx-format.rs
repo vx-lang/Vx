@@ -59,10 +59,6 @@ fn process_file(
     check: bool,
 ) -> anyhow::Result<bool> {
     let path = Path::new(file_path);
-    if !path.exists() {
-        anyhow::bail!("File not found: {}", file_path);
-    }
-
     let formatted = format_file(content, config.indent);
     let changed = formatted != content;
     if changed {
