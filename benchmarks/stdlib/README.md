@@ -35,6 +35,19 @@ In Vx, `bench_report` from `std::time` prints them; in C++, `vxbench::measure` f
 does. Rows with the same quantity (the part before `/`) go in one table, and their answers
 should agree.
 
+Two kinds of comment line in the `.vx` file change how the harness builds and runs it:
+
+```
+// vx-bench flags: --host default --machine fleet/m4-uma.vx
+// vx-bench env: VX_METAL=0
+```
+
+- The harness gives the flags of each `vx-bench flags:` line to vxc. So does the test that
+  compiles every benchmark (`every_shipped_example_and_benchmark_compiles`).
+- For each `vx-bench env:` line, the harness runs the Vx program one more time, with these
+  environment variables. Its build column shows them, for example `vx VX_METAL=0`. The `vs vx`
+  column compares with the run that has no such variables.
+
 The compiler removes work whose result it can prove unused or unchanged. Each of these rules
 once produced a number that measured nothing:
 

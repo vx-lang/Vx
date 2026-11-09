@@ -264,6 +264,43 @@ mod compare {
         /// `vx`, or the C++ compiler and its extra flag.
         label: String,
         exe: PathBuf,
+        /// Environment variables for the run, from a `// vx-bench env:` line.
+        env: Vec<(String, String)>,
+    }
+
+    /// What the comments of a `.vx` benchmark ask for. Each `// vx-bench flags:` line gives
+    /// flags for vxc. Each `// vx-bench env: NAME=VALUE ...` line gives one more run of the
+    /// program, with these variables.
+    #[derive(Default)]
+    struct VxHeader {
+        flags: Vec<String>,
+        envs: Vec<Vec<(String, String)>>,
+    }
+
+    fn read_header(src: &Path) -> Result<VxHeader, String> {
+        let text = std::fs::read_to_string(src)
+            .map_err(|e| format!("cannot read {}: {e}", src.display()))?;
+        let mut header = VxHeader::default();
+        for line in text.lines().map(str::trim_start) {
+            if let Some(rest) = line.strip_prefix("// vx-bench flags:") {
+                header
+                    .flags
+                    .extend(rest.split_whitespace().map(String::from));
+            } else if let Some(rest) = line.strip_prefix("// vx-bench env:") {
+                let mut env = Vec::new();
+                for pair in rest.split_whitespace() {
+                    let (name, value) = pair.split_once('=').ok_or_else(|| {
+                        format!(
+                            "{}: `{pair}` in a `vx-bench env:` line is not NAME=VALUE",
+                            src.display()
+                        )
+                    })?;
+                    env.push((name.to_string(), value.to_string()));
+                }
+                header.envs.push(env);
+            }
+        }
+        Ok(header)
     }
 
     /// Everything one build reported for one `quantity/implementation`, over all rounds.
@@ -299,13 +336,22 @@ mod compare {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
-    /// Compiles `src` with `vxc --action emit-obj -O3` and links it the way `--run` does.
-    fn build_vx(vxc: &Path, src: &Path, out_dir: &Path, stem: &str) -> Result<PathBuf, String> {
+    /// Compiles `src` with `vxc --action emit-obj -O3` and `flags`, and links it the way `--run`
+    /// does.
+    fn build_vx(
+        vxc: &Path,
+        src: &Path,
+        flags: &[String],
+        out_dir: &Path,
+        stem: &str,
+    ) -> Result<PathBuf, String> {
         let obj = out_dir.join(format!("{stem}.o"));
         let exe = out_dir.join(format!("{stem}-vx"));
         let mut cmd = Command::new(vxc);
         cmd.arg(src)
-            .args(["--action", "emit-obj", "-O3", "-o"])
+            .args(["--action", "emit-obj", "-O3"])
+            .args(flags)
+            .arg("-o")
             .arg(&obj);
         run_to_completion(cmd, &format!("vxc on {}", src.display()))?;
         if !obj.exists() {
@@ -424,12 +470,27 @@ mod compare {
             }
             let vx_src = dir.join(format!("{name}.vx"));
             if vx_src.exists() {
-                match build_vx(&vxc, &vx_src, &out_dir, name) {
-                    Ok(exe) => builds.push(Build {
-                        benchmark: name.clone(),
-                        label: "vx".into(),
-                        exe,
-                    }),
+                match read_header(&vx_src)
+                    .and_then(|h| Ok((build_vx(&vxc, &vx_src, &h.flags, &out_dir, name)?, h)))
+                {
+                    Ok((exe, header)) => {
+                        builds.push(Build {
+                            benchmark: name.clone(),
+                            label: "vx".into(),
+                            exe: exe.clone(),
+                            env: Vec::new(),
+                        });
+                        for env in header.envs {
+                            let pairs: Vec<String> =
+                                env.iter().map(|(k, v)| format!("{k}={v}")).collect();
+                            builds.push(Build {
+                                benchmark: name.clone(),
+                                label: format!("vx {}", pairs.join(" ")),
+                                exe: exe.clone(),
+                                env,
+                            });
+                        }
+                    }
                     Err(e) => failures.push(format!("{name} (vx): {e}")),
                 }
             }
@@ -450,6 +511,7 @@ mod compare {
                                 benchmark: name.clone(),
                                 label,
                                 exe,
+                                env: Vec::new(),
                             }),
                             Err(e) => failures.push(format!("{name} ({label}): {e}")),
                         }
@@ -484,7 +546,7 @@ mod compare {
                     }
                     None => Command::new(&b.exe),
                 };
-                cmd.current_dir(&root);
+                cmd.current_dir(&root).envs(b.env.iter().cloned());
                 let what = format!("{} ({})", b.benchmark, b.label);
                 let stdout = match run_to_completion(cmd, &what) {
                     Ok(s) => s,
