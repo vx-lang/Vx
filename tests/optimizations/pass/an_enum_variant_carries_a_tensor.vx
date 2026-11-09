@@ -1,0 +1,94 @@
+//===- an_enum_variant_carries_a_tensor.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An enum variant can carry a tensor, in an enum of the program and in `Option`. A `match` takes
+// the tensor out, and its elements come back. A `_` arm, for a parameter and for a value that a
+// call gives, and an enum that no `match` reads drop the tensor. Only the default code generator
+// puts a tensor in an enum payload.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=declined
+// RUN: not vxc %s --legacy-codegen 2>&1 | FileCheck %s --check-prefix=LEGACY
+// CHECK: {{^}}has 2 3{{$}}
+// CHECK: {{^}}empty 7{{$}}
+// CHECK: {{^}}some 5{{$}}
+// CHECK: {{^}}rest 1{{$}}
+// CHECK: {{^}}temporary 1{{$}}
+// CHECK: {{^}}unread 0{{$}}
+// LEGACY: the legacy code generator cannot put a tensor in an enum payload
+
+import core::option;
+
+enum Maybe {
+  Has(Tensor<f32, [4]>),
+  Empty,
+}
+
+fn make(full : bool) -> Maybe {
+  if full {
+    let mut t = Tensor<f32, [4]>::fill(2.0);
+    t[3] = 3.0;
+    return Maybe::Has(t);
+  }
+  return Maybe::Empty;
+}
+
+fn read(m : Maybe) -> i32 {
+  match m {
+    Maybe::Has(t) => {
+      println!("has {} {}", t[1] as i32, t[3] as i32);
+      return 1;
+    }
+    Maybe::Empty => {
+      println!("empty 7");
+      return 0;
+    }
+  }
+}
+
+fn maybe_fives(full : bool) -> Option<Tensor<f32, [4]>> {
+  if full {
+    return Option<Tensor<f32, [4]>>::Some(Tensor<f32, [4]>::fill(5.0));
+  }
+  return Option<Tensor<f32, [4]>>::None;
+}
+
+// The `_` arm takes the `Has` value, so it drops the tensor.
+fn rest(m : Maybe) -> i32 {
+  match m {
+    Maybe::Empty => {
+      return 0;
+    }
+    _ => {
+      return 1;
+    }
+  }
+}
+
+fn main() -> i32 {
+  let _a = read(make(true));
+  let _b = read(make(false));
+  match maybe_fives(true) {
+    Option::Some(t) => {
+      println!("some {}", t[0] as i32);
+    }
+    Option::None => {
+      println!("none");
+    }
+  }
+  println!("rest {}", rest(make(true)));
+  match make(true) {
+    Maybe::Empty => {
+      println!("temporary 0");
+    }
+    _ => {
+      println!("temporary 1");
+    }
+  }
+  let _unread = make(true);
+  println!("unread 0");
+  return 0;
+}

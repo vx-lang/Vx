@@ -127,17 +127,16 @@ impl<'a> TypeChecker<'a> {
                                                 )
                                             }
                                         });
-                                        // A tensor payload has no lowering: the variant's slot is
-                                        // built with `llvm.insertvalue`, which takes primitives,
-                                        // and the AST path emitted the tag and dropped the tensor
-                                        // without saying so.
-                                        if Self::is_tensor_payload(&expected_ty) {
+                                        // A tensor in a memory space is freed through its plugin,
+                                        // and the drop of a payload frees a heap buffer.
+                                        if Self::is_placed_tensor_payload(&expected_ty) {
                                             if !self.speculating {
                                                 self.errors.error_with_code(
                                                     crate::diagnostic::DiagnosticCode::E3021,
                                                     format!(
-                                                        "payload argument {} of {}::{} is {}; an \
-                                                         enum variant cannot carry a tensor",
+                                                        "payload argument {} of {}::{} is {}. An \
+                                                         enum variant cannot carry a tensor in a \
+                                                         memory space yet",
                                                         i + 1,
                                                         actual_enum_name,
                                                         variant,
@@ -482,14 +481,13 @@ impl<'a> TypeChecker<'a> {
     /// A short human name for a type, for diagnostics that only need to say what KIND of thing
     /// the programmer wrote. The `{:?}` rendering used elsewhere prints the whole AST of every
     /// dimension expression, which buries the one word the reader needs.
-    /// Whether a payload type is a tensor, through the wrappers that restate where it lives
-    /// without changing how it is represented.
-    fn is_tensor_payload(t: &Type) -> bool {
+    /// Whether a payload type is a tensor with a memory space, through the wrappers that
+    /// restate where it lives without changing how it is represented.
+    fn is_placed_tensor_payload(t: &Type) -> bool {
         match t {
-            Type::Tensor(..) => true,
-            Type::Verified(inner) | Type::Pinned(inner, _) | Type::Ref(inner, _) => {
-                Self::is_tensor_payload(inner)
-            }
+            Type::Tensor(_, _, placement) => placement.is_some(),
+            Type::Pinned(inner, _) | Type::Ref(inner, _) => matches!(**inner, Type::Tensor(..)),
+            Type::Verified(inner) => Self::is_placed_tensor_payload(inner),
             _ => false,
         }
     }
