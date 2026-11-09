@@ -11,6 +11,9 @@ cargo vx-bench compare powi --rounds 20 --json results.json
 
 ## What the harness does
 
+- Prints the commit, the machine and its CPU model, the version of `vxc`, and for each compiler
+  in `--cxx` its version and the version of its C++ standard library. On macOS, `clang++` can be
+  Apple clang or Homebrew clang, depending on PATH.
 - Builds the Vx program with `vxc --action emit-obj -O3`, linked against the same libraries as
   `vxc --run`.
 - Builds the C++ program with each compiler in `--cxx` (default `clang++,g++`), with

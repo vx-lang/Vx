@@ -119,6 +119,61 @@ fn provenance() -> (String, String) {
     (commit, machine)
 }
 
+/// The CPU model, from `/proc/cpuinfo` on Linux and from `sysctl` on macOS.
+fn cpu_model_name() -> String {
+    if cfg!(target_os = "macos") {
+        capture("sysctl", &["-n", "machdep.cpu.brand_string"])
+    } else {
+        capture(
+            "sh",
+            &["-c", "grep -m1 'model name' /proc/cpuinfo | cut -d: -f2"],
+        )
+    }
+}
+
+/// The first line of `compiler --version`, and the version of the C++ standard library that
+/// `compiler` uses. The library version comes from the macros of its `<version>` header.
+fn cxx_versions(compiler: &str) -> (String, String) {
+    let version = capture(compiler, &["--version"])
+        .lines()
+        .next()
+        .unwrap_or("unknown")
+        .to_string();
+    let macros = capture(
+        compiler,
+        &[
+            "-std=c++20",
+            "-dM",
+            "-E",
+            "-x",
+            "c++",
+            "-include",
+            "version",
+            "/dev/null",
+        ],
+    );
+    let get = |name: &str| {
+        macros.lines().find_map(|l| {
+            let value = l.strip_prefix("#define ")?.strip_prefix(name)?;
+            value.strip_prefix(' ').map(|v| v.trim().to_string())
+        })
+    };
+    let library = if let Some(v) = get("_LIBCPP_VERSION") {
+        // Since LLVM 16 the number is major * 10000 + minor * 100 + patch.
+        match v.parse::<u32>() {
+            Ok(n) if n >= 160000 => {
+                format!("libc++ {}.{}.{}", n / 10000, n / 100 % 100, n % 100)
+            }
+            _ => format!("libc++ {v}"),
+        }
+    } else if let Some(v) = get("_GLIBCXX_RELEASE") {
+        format!("libstdc++ {v} ({})", get("__GLIBCXX__").unwrap_or_default())
+    } else {
+        "unknown".to_string()
+    };
+    (version, library)
+}
+
 /// Parse `vx-bench <name> <unit> <value>` out of a run's stdout, ignoring the JIT
 /// chatter it is mixed into.
 fn records_from(benchmark: &str, stdout: &str) -> Vec<Record> {
@@ -253,7 +308,10 @@ fn run_manifest() -> ExitCode {
 /// `cargo vx-bench compare`: build each benchmark in Vx and in C++, run the programs in
 /// alternating rounds, and compare what they report.
 mod compare {
-    use super::{capture, provenance, records_from, vxc_path, CompareArgs, Record};
+    use super::{
+        capture, cpu_model_name, cxx_versions, provenance, records_from, vxc_path, CompareArgs,
+        Record,
+    };
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
     use std::process::{Command, ExitCode};
@@ -453,11 +511,22 @@ mod compare {
         };
         let vxc = args.vxc.clone().unwrap_or_else(vxc_path);
         let (commit, machine) = provenance();
-        let cpu_model = capture(
-            "sh",
-            &["-c", "grep -m1 'model name' /proc/cpuinfo | cut -d: -f2"],
-        );
+        let cpu_model = cpu_model_name();
         println!("commit {commit}   machine {machine}   cpu {cpu_model}");
+        let vxc_version = capture(&vxc.to_string_lossy(), &["--version"]);
+        println!("{vxc_version}");
+        // (compiler, its version, its C++ standard library)
+        let compilers: Vec<(String, String, String)> = args
+            .cxx
+            .iter()
+            .map(|c| {
+                let (version, library) = cxx_versions(c);
+                (c.clone(), version, library)
+            })
+            .collect();
+        for (c, version, library) in &compilers {
+            println!("{c}: {version}, {library}");
+        }
 
         // Build everything first, so a round measures only running.
         let mut failures: Vec<String> = Vec::new();
@@ -679,10 +748,21 @@ mod compare {
 
         if let Some(path) = &args.json {
             let mut out = format!(
-                "{{\n  \"commit\": {},\n  \"machine\": {},\n  \"cpu_model\": {},\n  \"rounds\": {},\n  \"cpu\": {},\n  \"rows\": [\n",
+                "{{\n  \"commit\": {},\n  \"machine\": {},\n  \"cpu_model\": {},\n  \"vxc\": {},\n  \"cxx\": [{}],\n  \"rounds\": {},\n  \"cpu\": {},\n  \"rows\": [\n",
                 json_str(&commit),
                 json_str(&machine),
                 json_str(&cpu_model),
+                json_str(&vxc_version),
+                compilers
+                    .iter()
+                    .map(|(c, version, library)| format!(
+                        "{{\"compiler\": {}, \"version\": {}, \"library\": {}}}",
+                        json_str(c),
+                        json_str(version),
+                        json_str(library)
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 args.rounds,
                 args.cpu.map_or("null".to_string(), |c| c.to_string()),
             );
