@@ -103,6 +103,19 @@ copy. `--emit-msl` writes the MSL and the same manifest as `--emit-ptx`.
   error that names the op. Kernels for two GPU architectures in one program
   are a compile error too.
 
+**The Neural Engine.** On a Mac, CoreML runs some kernels placed on `Topology::NPU[i]` or
+`Topology::ANE`: a matmul or an affine map in a shape that has a compiled model. `build.rs`
+compiles these models into `ane-primitives/`. The runtime looks for a model in
+`VX_ANE_MODEL_DIR`, in the directory of the program, in `ane-primitives/` and in the working
+directory. Each other kernel runs on the CPU.
+
+- When the model of such a kernel is missing or CoreML cannot run it, the kernel runs on the CPU.
+  The runtime then prints one line for the kernel, with the reason and the directories that it
+  searched.
+- `VX_ENABLE_CPU_FALLBACK=0` stops the program instead, when a kernel placed on a device runs on
+  the CPU. Use it for a test or a benchmark that must use the device. A topology that a machine
+  file declares counts as a device.
+
 **SYCL first.** The first community backend targets Intel GPUs through the
 SYCL runtime. Vx still compiles each kernel itself, to SPIR-V; the dispatch
 library loads that SPIR-V into a SYCL kernel bundle and launches it on a
