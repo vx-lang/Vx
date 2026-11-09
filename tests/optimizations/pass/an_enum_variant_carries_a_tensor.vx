@@ -7,18 +7,16 @@
 //===----------------------------------------------------------------------===//
 // An enum variant can carry a tensor, in an enum of the program and in `Option`. A `match` takes
 // the tensor out, and its elements come back. A `_` arm, for a parameter and for a value that a
-// call gives, and an enum that no `match` reads drop the tensor. Only the default code generator
-// puts a tensor in an enum payload.
+// call gives, and an enum that no `match` reads drop the tensor.
 //
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=declined
-// RUN: not vxc %s --legacy-codegen 2>&1 | FileCheck %s --check-prefix=LEGACY
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=declined
 // CHECK: {{^}}has 2 3{{$}}
 // CHECK: {{^}}empty 7{{$}}
 // CHECK: {{^}}some 5{{$}}
 // CHECK: {{^}}rest 1{{$}}
 // CHECK: {{^}}temporary 1{{$}}
 // CHECK: {{^}}unread 0{{$}}
-// LEGACY: the legacy code generator cannot put a tensor in an enum payload
 
 import core::option;
 

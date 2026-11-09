@@ -1115,6 +1115,17 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
             if let Some((base_val, base_ty, indices, new_b)) = place {
                 let base_ty_str = base_ty.to_string();
                 if base_ty_str.starts_with("!llvm.ptr") {
+                    // A buffer of tensors holds the descriptor of each one.
+                    let (rhs_val, rhs_ty) =
+                        match crate::codegen::lower::expr::buffer_rank(gen, rhs_ty) {
+                            Some(rank) => {
+                                let d = crate::codegen::lower::expr::tensor_into_field(
+                                    gen, &new_b, rhs_val, rhs_ty, rhs_ty, rank,
+                                )?;
+                                (d, d.r#type())
+                            }
+                            None => (rhs_val, rhs_ty),
+                        };
                     let i64_ty = gen.i64_ty;
                     let cast_op = OperationBuilder::new("arith.index_cast", gen.loc())
                         .add_operands(&[indices[0]])
