@@ -17,13 +17,8 @@ use std::path::{Path, PathBuf};
 /// Programs the flat path declines today, relative to `tests/backend/pass/`.
 /// A worklist, not an exemption list: shrinking it is Vx#383.
 const KNOWN_DECLINES: &[&str] = &[
-    // The `vxc -j` fallback fixture: a program the flat path declines, chosen so the parallel
-    // frontend has something to hand back to the sequential driver. It declines "a match in
-    // value position".
-    "frontend/pass/jobs_falls_back_outside_the_flat_subset.vx",
-    // The same shape again, with a warning added: it states that a program checked by both
-    // frontends has its warnings reported once, which needs a program that declines.
-    "frontend/pass/jobs_warns_once_when_it_falls_back.vx",
+    // Empty: the flat path takes every program in the corpus. The tests of the fallback set
+    // VX_FLAT_DECLINE in their RUN lines to make it decline a function.
 ];
 
 /// Every `.vx` file under `dir`, recursively, sorted for a stable report.
@@ -170,7 +165,6 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         // flat path's business. Each names why; shrinking this list is separate work.
         const NOT_STANDALONE: &[&str] = &[
             "optimizations/pass/array_literal_nested.vx", // expects failure by design (RUN: not vxc)
-            "optimizations/pass/codegen_error_diagnostics.vx", // expects failure by design (RUN: not vxc)
             "optimizations/pass/host_flag_scope.vx",           // needs --host
             "optimizations/pass/device_transfer_plugin.vx",    // needs --machine and a plugin
             "optimizations/pass/numa_peer_node_is_priced.vx",  // needs --host and --machine

@@ -602,6 +602,18 @@ impl<'a> TypeChecker<'a> {
         consume: bool,
     ) {
         let prev_statement_span = std::mem::replace(&mut self.current_statement_span, stmt.span());
+        let value = match &*stmt {
+            Statement::LetDecl(d) => Some(&d.expr),
+            Statement::Assign(a) => Some(&a.rhs),
+            Statement::Return(r) => r.expr.as_ref(),
+            _ => None,
+        };
+        if let Some(Expr::Range(_)) = value {
+            self.errors.push(
+                "a range (`a..b`) cannot be a value. Use it as the bound of a `for` loop"
+                    .to_string(),
+            );
+        }
         match stmt {
             Statement::LetDecl(decl) if crate::hir::check::tasks::is_spawn(&decl.expr) => {
                 self.check_spawn_let(decl, consume)

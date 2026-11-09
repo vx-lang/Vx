@@ -2892,11 +2892,17 @@ impl<'r> Lowerer<'r> {
                 crate::syntax::Pattern::Wildcard | crate::syntax::Pattern::Identifier(_)
             )
         });
-        if !binds_only && !matches!(subj.ty, LoweredTy::Scalar(ElementType::I32)) {
-            return Err(Decline::Unsupported {
-                what: "a match subject that is not represented as an i32",
-            });
-        }
+        // The arms compare the subject with `==`: an enum tag, an integer of any width, or a
+        // `bool`.
+        let subj_elem = match &subj.ty {
+            LoweredTy::Scalar(e) if e.int_bits().is_some() || *e == ElementType::Bool => e.clone(),
+            _ if binds_only => ElementType::I32,
+            _ => {
+                return Err(Decline::Unsupported {
+                    what: "a match subject that is not an integer or a bool",
+                })
+            }
+        };
         let merge = self.new_block();
         // Each arm is a block: its pattern's names and its `let`s end with it.
         let depth = self.block_frames.len();
@@ -2939,11 +2945,26 @@ impl<'r> Lowerer<'r> {
                 }
                 // A literal arm (`0 => ..`): the same chain, with the literal as the tag.
                 crate::syntax::Pattern::Literal(lit) => {
-                    let lit_v = self.lower_expr(lit)?;
-                    if !matches!(lit_v.ty, LoweredTy::Scalar(ElementType::I32)) {
-                        return Err(Decline::TypeNotModelled {
-                            what: "a literal match pattern that is not an i32",
-                        });
+                    let mut lit_v = self.lower_expr(lit)?;
+                    match &lit_v.ty {
+                        LoweredTy::Scalar(e) if *e == subj_elem => {}
+                        // A literal with no suffix, at the width of the subject.
+                        LoweredTy::Scalar(e)
+                            if e.int_bits().is_some() && subj_elem.int_bits().is_some() =>
+                        {
+                            lit_v = self.emit_value(
+                                Opcode::Cast,
+                                lit_v.reg,
+                                Register(0),
+                                subj_elem.clone(),
+                                0,
+                            );
+                        }
+                        _ => {
+                            return Err(Decline::TypeNotModelled {
+                                what: "a literal match pattern of another type than the subject",
+                            })
+                        }
                     }
                     let cond = self.emit_value(
                         Opcode::Cmp,
@@ -7744,6 +7765,13 @@ impl<'r> Lowerer<'r> {
 /// `local_hir_stream` is only ever a complete, correct lowering or empty (keep-green). `Ok(())`
 /// when the full body lowered; otherwise the reason the flat path gave up.
 pub fn lower_function_to_hir(func: &Function, worker: &mut LocalWorkerState) -> Lowered<()> {
+    // For the tests of the fallback to the AST code generator, which need a function that the
+    // flat code generator does not take.
+    if std::env::var("VX_FLAT_DECLINE").is_ok_and(|name| func.name.as_ref() == name.as_str()) {
+        return Err(Decline::Unsupported {
+            what: "the function that VX_FLAT_DECLINE names",
+        });
+    }
     // Cheap `Arc` clone so the borrow of the registry doesn't collide with the later `&mut worker`
     // in `commit`; the frozen registry is immutable, so this is a pure reference bump.
     let registry = worker.global.registry.clone();

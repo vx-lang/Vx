@@ -3172,10 +3172,9 @@ fn driver_link_interface_declines_cleanly_outside_flat_subset() {
         dir.join("reflib.vxlib"),
     );
     std::fs::write(&lib, "fn double(x : i32) -> i32 { return x * 2; }\n").unwrap();
-    // `main` matches on an `i64`, which the flat path declines, while also calling the imported
-    // `double`. The decline forces the AST path, which has no AST for the imported body, so the
-    // driver must emit a clean diagnostic rather than ICE. (A tensor whose extent is a local,
-    // the construct this test used before, now lowers on the flat path.)
+    // VX_FLAT_DECLINE makes the flat path decline `main`, which calls the imported `double`.
+    // The decline forces the AST path, which has no AST for the imported body, so the driver
+    // must emit a clean diagnostic rather than ICE.
     std::fs::write(
         &app,
         "fn main() -> i32 { let n = 0i64; let k = match n { 0i64 => { 1 } _ => { 2 } }; \
@@ -3203,6 +3202,7 @@ fn driver_link_interface_declines_cleanly_outside_flat_subset() {
             app.to_str().unwrap(),
             "--run",
         ])
+        .env("VX_FLAT_DECLINE", "main")
         .output()
         .expect("run");
     let out = format!(
