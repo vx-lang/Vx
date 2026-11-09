@@ -2250,6 +2250,8 @@ pub(crate) struct FnEmit<'a> {
     /// `StringConst` reach their bytes through a module-level global; `Abort` needs the text
     /// itself, because `cf.assert` carries its message as an inline attribute.
     pub(crate) strings: &'a [String],
+    /// The file the function is written in, which each `spawn` of a task in it names.
+    pub(crate) file: Option<&'a str>,
     /// This function's inline `mlir!` blocks and the base their wrappers are numbered from.
     pub(crate) inline_base: usize,
     pub(crate) inline_blocks: &'a [crate::hir::flatten::InlineBlock],
@@ -2838,6 +2840,7 @@ pub fn emit_function_mlir(
         ctx,
         str_base,
         strings,
+        file: func.file.as_deref(),
         inline_base,
         inline_blocks,
         wrappers: String::new(),

@@ -203,7 +203,13 @@ impl FnEmit<'_> {
         // has no name: its high half is the line of its `spawn`.
         let name = match name.checked_sub(1) {
             _ if topo == crate::arch::TASK_DISPATCH_ID as i64 => {
-                format!(", vx.line = {name} : i64")
+                let file = self.file.map_or(String::new(), |f| {
+                    format!(
+                        ", vx.file = \"{}\"",
+                        f.replace('\\', "\\\\").replace('"', "\\\"")
+                    )
+                });
+                format!(", vx.line = {name} : i64{file}")
             }
             Some(i) => {
                 let s = self.strings.get(i as usize).ok_or(crate::emitter_gap!())?;
