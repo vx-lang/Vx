@@ -347,11 +347,7 @@ fn main() {
         let cxx = env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
         let cxxflags_env =
             env::var("CXXFLAGS").unwrap_or_else(|_| "-O3 -Wno-deprecated-declarations".to_string());
-        let mut cxxflags: Vec<&str> = cxxflags_env.split_whitespace().collect();
-        // Fall back to running the outlined kernel on the CPU (via libffi) when the ANE/CoreML
-        // path is unavailable -- no accelerator, or the CoreML models were not built (no
-        // coremltools/coremlc). Without this the dispatcher aborts on any unhandled kernel.
-        cxxflags.push("-DVX_ENABLE_CPU_FALLBACK");
+        let cxxflags: Vec<&str> = cxxflags_env.split_whitespace().collect();
 
         // Compile the Objective-C++ runtime file for AOT (Static Archive)
         let mut clang_cmd = Command::new(&cxx);
