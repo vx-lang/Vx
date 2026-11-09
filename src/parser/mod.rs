@@ -1,5 +1,6 @@
 pub mod decl;
 pub mod expr;
+pub(crate) mod formatting;
 pub mod macro_expand;
 pub mod stmt;
 mod tuple_match;

@@ -1,0 +1,490 @@
+use super::*;
+use source::dispatch::{NodeContext, NodeFormatter, NodeRegistry, SyntaxKind, SyntaxNode};
+use source::document::{self, Document, RenderState, Shape};
+use source::ownership::OwnershipMap;
+use source::{CoverageWarning, SourceFileView, TokenId};
+
+fn checked(input: &str, width: usize) -> FormatOutcome {
+    format_file_with_report(
+        input,
+        &FormatConfig {
+            indent: 2,
+            fn_signature_width: width,
+            ..FormatConfig::default()
+        },
+    )
+}
+
+#[test]
+fn active_pipeline_formats_headers_and_bodies_in_one_stable_pass() {
+    let input = "fn add(\nfirst: i32,\nsecond: i32\n) -> i32 {\nreturn first + second;\n}";
+    let result = checked(input, 100);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(
+        result.text,
+        "fn add(first: i32, second: i32) -> i32 {\n  return first + second;\n}"
+    );
+    let repeated = checked(&result.text, 100);
+    assert!(repeated.warnings.is_empty(), "{:?}", repeated.warnings);
+    assert_eq!(repeated.text, result.text);
+}
+
+#[test]
+fn nested_headers_keep_the_parent_renderer_state() {
+    let input = "struct Counter { value: i32 }\nimpl Counter {\nfn add(first: i32, second: i32) -> i32 {\nfirst + second\n}\n}";
+    let result = checked(input, 39);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert!(
+        result.text.contains(
+            "  fn add(\n    first: i32,\n    second: i32\n  ) -> i32 {\n    first + second\n  }"
+        ),
+        "{}",
+        result.text
+    );
+    assert_eq!(checked(&result.text, 39).text, result.text);
+}
+
+#[test]
+fn impl_generics_remain_available_to_tensor_parameter_types() {
+    let input = "impl<T> Holder<T> {\nfn read(value: Tensor<T, [2, 2]>) -> T {\nvalue[0][0]\n}\n}";
+    let result = checked(input, 100);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert!(
+        result
+            .text
+            .contains("  fn read(value: Tensor<T, [2, 2]>) -> T {\n    value[0][0]"),
+        "{}",
+        result.text
+    );
+}
+
+#[test]
+fn unrecognized_clauses_in_foreign_signatures_preserve_that_declaration() {
+    let input = "extern {\nfn future(value: i32) -> i32 requires value > 0;\nfn known(value: i32) -> i32;\n}";
+    let result = checked(input, 20);
+    assert!(!result.warnings.is_empty());
+    assert!(result
+        .text
+        .contains("fn future(value: i32) -> i32 requires value > 0;"));
+    assert!(
+        result
+            .text
+            .contains("fn known(\n    value: i32\n  ) -> i32;"),
+        "{}",
+        result.text
+    );
+}
+
+#[test]
+fn all_header_clauses_survive_the_active_path() {
+    let input = "fn compute(value: i32) on Topology::CPU -> i32 requires value > 0 ensures value > 0 where Reachable<CPU, GPU> {\nvalue\n}";
+    let result = checked(input, 40);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert!(result.text.contains("fn compute(\n  value: i32\n) on Topology::CPU -> i32 requires value > 0 ensures value > 0 where Reachable<CPU, GPU>"), "{}", result.text);
+    assert!(crate::parse_module(&result.text).is_ok());
+}
+
+#[test]
+fn opaque_macros_keep_bytes_columns_and_embedded_declarations() {
+    let input = "macro_rules! make { ($x:expr) => { fn   fake(x:i32)->i32 {$x} }; }\nfn real(value: i32) -> i32 {\nlet result = mlir!(inputs: ()) {\n%x = operation\n};\nreturn value;\n}";
+    let source = SourceFileView::parse(input);
+    let result = checked(input, 100);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert!(result
+        .text
+        .starts_with("macro_rules! make { ($x:expr) => { fn   fake(x:i32)->i32 {$x} }; }\n"));
+    assert!(result
+        .text
+        .contains("let result = mlir!(inputs: ()) {\n%x = operation\n};\n"));
+    assert!(result.text.contains("  return value;"), "{}", result.text);
+    assert!(source.verify_preservation(&result.text).is_ok());
+    assert_eq!(checked(&result.text, 100).text, result.text);
+}
+
+#[test]
+fn excluded_delimiters_update_the_enclosing_state_without_rewriting_bytes() {
+    let input = "fn read() -> i32 {\n// vx-format-begin: OFF\nif true {\n// vx-format-end: OFF\nreturn 1;\n}\nreturn 0;\n}";
+    let result = checked(input, 100);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.text, "fn read() -> i32 {\n// vx-format-begin: OFF\nif true {\n// vx-format-end: OFF\n    return 1;\n  }\n  return 0;\n}");
+}
+
+#[test]
+fn cleanup_never_trims_comment_or_string_contents() {
+    let input = "fn text() -> i32 {\n// keep these spaces   \nlet text = \"first  \nsecond  \";\nreturn 0;\n}";
+    let result = checked(input, 100);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert!(result.text.contains("// keep these spaces   \n"));
+    assert!(result.text.contains("\"first  \nsecond  \""));
+    assert!(SourceFileView::parse(input)
+        .verify_preservation(&result.text)
+        .is_ok());
+}
+
+#[test]
+fn unknown_root_syntax_warns_and_preserves_the_file() {
+    let input = "future_binding value=1;\n";
+    let result = checked(input, 100);
+    assert_eq!(result.text, input);
+    assert!(!result.warnings.is_empty());
+    assert_eq!(result.check_status(input), 0);
+}
+
+#[test]
+fn unsupported_bodies_do_not_hide_supported_formatting_differences() {
+    let input =
+        "fn future() -> i32 {\nfuture_binding value;\n}\nfn known(value: i32) -> i32 {\nvalue\n}";
+    let result = checked(input, 100);
+    assert!(!result.warnings.is_empty());
+    assert!(result
+        .text
+        .starts_with("fn future() -> i32 {\nfuture_binding value;\n}\n"));
+    assert!(
+        result
+            .text
+            .ends_with("fn known(value: i32) -> i32 {\n  value\n}"),
+        "{}",
+        result.text
+    );
+    assert_eq!(result.check_status(input), 1);
+}
+
+#[test]
+fn generic_closers_can_compact_without_separating_contract_shifts() {
+    let input =
+        "fn read(value: Vec<Vec<i32> >, count: i32) -> i32 requires (count >> 1) > 0 {\ncount\n}";
+    let result = checked(input, 100);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert!(result.text.contains("Vec<Vec<i32>>"), "{}", result.text);
+    assert!(result.text.contains(">>"));
+    assert!(crate::parse_module(&result.text).is_ok());
+    assert!(SourceFileView::parse(input)
+        .verify_preservation(&result.text)
+        .is_ok());
+}
+
+#[test]
+fn comments_between_parameters_keep_their_header_but_allow_body_formatting() {
+    let input =
+        "fn add(\nfirst: i32, // keep this comment\nsecond: i32\n) -> i32 {\nfirst + second\n}";
+    let result = checked(input, 20);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(
+        result.text,
+        "fn add(\nfirst: i32, // keep this comment\nsecond: i32\n) -> i32 {\n  first + second\n}"
+    );
+}
+
+struct RegisteredType;
+
+impl NodeFormatter for RegisteredType {
+    fn kind(&self) -> SyntaxKind {
+        SyntaxKind::Type
+    }
+    fn roots<'a>(&self, source: &'a SourceFileView<'_>) -> Vec<SyntaxNode<'a>> {
+        source
+            .functions
+            .iter()
+            .map(|function| SyntaxNode::Type(&function.header.return_type))
+            .collect()
+    }
+    fn format(
+        &self,
+        node: SyntaxNode<'_>,
+        _: &NodeContext<'_, '_, '_>,
+        _: Shape,
+    ) -> Result<Document, CoverageWarning> {
+        Ok(Document::Concat(vec![
+            Document::Line { indent_level: 0 },
+            Document::Token(TokenId(node.tokens().start)),
+        ]))
+    }
+}
+
+#[test]
+fn registering_a_syntax_owner_is_enough_to_enter_the_real_pipeline() {
+    let owner = RegisteredType;
+    let owners: &[&dyn NodeFormatter] = &[&owner];
+    let registry = NodeRegistry::new(owners).unwrap();
+    let result = format_file_with_registry(
+        "fn value(value: i32) -> i32 { value }",
+        &FormatConfig::default(),
+        &registry,
+    );
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.text, "fn value(value: i32) -> \ni32 {\n  value\n}");
+}
+
+#[test]
+fn layouts_reject_dropped_and_reordered_tokens_before_rendering_completes() {
+    let source = SourceFileView::parse("value;");
+    let ownership = OwnershipMap::from_source(&source);
+    let shape = Shape {
+        column: 0,
+        indent_level: 0,
+        indent_spaces: 2,
+        width: 100,
+    };
+    for layout in [
+        Document::Token(TokenId(0)),
+        Document::Concat(vec![
+            Document::Token(TokenId(1)),
+            Document::Token(TokenId(0)),
+        ]),
+    ] {
+        let result = document::render(
+            &source,
+            &ownership,
+            &layout,
+            0..source.text.len(),
+            shape,
+            RenderState::new(shape),
+        );
+        assert_eq!(
+            result.err().as_deref(),
+            Some("Layout removed, duplicated, or reordered source tokens")
+        );
+    }
+}
+
+#[test]
+fn macro_name_adjacency_is_checked_without_opaque_tree_fallback() {
+    assert!(SourceFileView::parse("name!")
+        .verify_preservation("name !")
+        .is_err());
+}
+
+struct BudgetHeader;
+struct BudgetType;
+
+impl NodeFormatter for BudgetHeader {
+    fn kind(&self) -> SyntaxKind {
+        SyntaxKind::Header
+    }
+    fn roots<'a>(&self, source: &'a SourceFileView<'_>) -> Vec<SyntaxNode<'a>> {
+        source
+            .functions
+            .iter()
+            .map(|function| SyntaxNode::Header(&function.header))
+            .collect()
+    }
+    fn format(
+        &self,
+        node: SyntaxNode<'_>,
+        context: &NodeContext<'_, '_, '_>,
+        shape: Shape,
+    ) -> Result<Document, CoverageWarning> {
+        let SyntaxNode::Header(header) = node else {
+            unreachable!()
+        };
+        let all = context.source.token_bytes(header.tokens.clone());
+        let ty = context
+            .source
+            .token_bytes(header.return_type.tokens.clone());
+        let prefix = all.start..ty.start;
+        let column = shape.column + context.source.text[prefix.clone()].chars().count();
+        let child = context.child(
+            SyntaxNode::Type(&header.return_type),
+            Shape {
+                column,
+                width: column,
+                ..shape
+            },
+        )?;
+        Ok(Document::Concat(vec![
+            Document::Preserve {
+                bytes: prefix,
+                keep_column: false,
+            },
+            child,
+            Document::Preserve {
+                bytes: ty.end..all.end,
+                keep_column: false,
+            },
+        ]))
+    }
+}
+
+impl NodeFormatter for BudgetType {
+    fn kind(&self) -> SyntaxKind {
+        SyntaxKind::Type
+    }
+    fn format(
+        &self,
+        node: SyntaxNode<'_>,
+        context: &NodeContext<'_, '_, '_>,
+        shape: Shape,
+    ) -> Result<Document, CoverageWarning> {
+        assert_eq!(shape.remaining(), 0);
+        let flat = Document::Preserve {
+            bytes: context.source.token_bytes(node.tokens()),
+            keep_column: false,
+        };
+        Ok(Document::Choice {
+            flat: Box::new(flat.clone()),
+            expanded: Box::new(Document::Concat(vec![
+                Document::Line { indent_level: 0 },
+                flat,
+            ])),
+        })
+    }
+}
+
+#[test]
+fn composed_children_keep_their_width_budget() {
+    let owners: &[&dyn NodeFormatter] = &[&BudgetHeader, &BudgetType];
+    let registry = NodeRegistry::new(owners).unwrap();
+    let result = format_file_with_registry("fn f() -> i32 {}", &FormatConfig::default(), &registry);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.text, "fn f() -> \ni32 {}");
+}
+
+#[test]
+fn excluded_root_syntax_does_not_disable_independent_declarations() {
+    let excluded = "// vx-format-begin: OFF\nfuture_binding value;\n// vx-format-end: OFF\n";
+    let input = format!("{excluded}fn   known(value:i32)->i32 {{\nvalue\n}}\n");
+    let result = checked(&input, 100);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(
+        result.text,
+        format!("{excluded}fn known(value: i32) -> i32 {{\n  value\n}}\n")
+    );
+    assert_eq!(result.check_status(&input), 1);
+}
+
+#[test]
+fn excluded_statements_do_not_disable_the_rest_of_the_body() {
+    let excluded = "// vx-format-begin: OFF\nfuture_binding value;\n// vx-format-end: OFF\n";
+    let input = format!("fn   known(value:i32)->i32 {{\n{excluded}return value;\n}}\n");
+    let result = checked(&input, 100);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(
+        result.text,
+        format!("fn known(value: i32) -> i32 {{\n{excluded}  return value;\n}}\n")
+    );
+    assert_eq!(checked(&result.text, 100).text, result.text);
+}
+
+#[test]
+fn source_intervals_keep_only_intersecting_tokens() {
+    let source = SourceFileView::parse("fn f() -> i32 {}\nfn g() -> i32 {}\n");
+    let bytes = source.functions[1].bytes.clone();
+    let range = source.token_range(&bytes);
+    assert!(range.start > 0);
+    assert_eq!(source.tokens[range.start].bytes.start, bytes.start);
+    assert_eq!(source.tokens[range.end - 1].bytes.end, bytes.end);
+}
+
+#[test]
+fn disabled_function_headers_preserve_layout_types_and_contracts() {
+    let header = "fn   long_name(a: Tensor< f32, [2, 2] >, b : i32) -> i32\nrequires b > 0\nensures return > 0 ";
+    let input = format!("{header}{{\nreturn b;\n}}\n");
+    let config = FormatConfig {
+        format_function_headers: false,
+        fn_signature_width: 20,
+        space_before_colon: true,
+        ..FormatConfig::default()
+    };
+    let result = format_file_with_report(&input, &config);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.text, format!("{header}{{\n  return b;\n}}\n"));
+    assert_eq!(
+        format_file_with_report(&result.text, &config).text,
+        result.text
+    );
+}
+
+#[test]
+fn unknown_tokens_in_macro_definitions_do_not_disable_surrounding_formatting() {
+    let opaque = "macro_rules! make { (# $x:expr) => { %acc#0 = operation }; }\n";
+    let input = format!("{opaque}fn real(value: i32) -> i32 {{\nreturn value;\n}}\n");
+    let source = SourceFileView::parse(&input);
+    assert!(source
+        .tokens
+        .iter()
+        .any(|token| matches!(token.token.kind, crate::lexer::TokenType::Unknown('#'))));
+    let result = checked(&input, 100);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(
+        result.text,
+        format!("{opaque}fn real(value: i32) -> i32 {{\n  return value;\n}}\n")
+    );
+    assert!(source.verify_preservation(&result.text).is_ok());
+}
+
+#[test]
+fn unknown_tokens_in_mlir_blocks_keep_their_bytes_and_columns() {
+    let opaque = "let result = mlir!(inputs: ()) {\n%acc#0 = operation\n};\n";
+    let input = format!("fn real(value: i32) -> i32 {{\n{opaque}return value;\n}}\n");
+    let result = checked(&input, 100);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(
+        result.text,
+        format!("fn real(value: i32) -> i32 {{\n{opaque}  return value;\n}}\n")
+    );
+    assert_eq!(checked(&result.text, 100).text, result.text);
+}
+
+#[test]
+fn unknown_tokens_outside_macros_still_warn_and_preserve_the_file() {
+    let input = "fn real(value: i32) -> i32 {\nreturn value;\n}\n#\n";
+    let result = checked(input, 100);
+    assert!(result
+        .warnings
+        .iter()
+        .any(|warning| warning.message.contains("Unrecognized lexer token")));
+    assert_eq!(result.text, input);
+    assert_eq!(result.check_status(input), 0);
+}
+
+#[test]
+fn inline_contracts_keep_expression_spacing_while_parameters_format() {
+    let input =
+        "fn   check(n : i32) -> i32 requires n > 0 && n < 100 ensures return > 0 {\nreturn n;\n}\n";
+    let result = checked(input, 100);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(
+        result.text,
+        "fn check(n: i32) -> i32 requires n > 0 && n < 100 ensures return > 0 {\n  return n;\n}\n"
+    );
+    assert!(crate::parse_module(&result.text).is_ok());
+    assert_eq!(checked(&result.text, 100).text, result.text);
+}
+
+#[test]
+fn multiline_contracts_do_not_force_short_parameters_to_wrap() {
+    let clauses = "\n  requires n > 0 && n < 100 && n < 1000\n  requires n << 1 > 0\n  ensures return > 0\n  where Reachable<CPU, GPU>\n";
+    let input = format!("fn   check(n : i32) -> i32{clauses}{{\nreturn n;\n}}\n");
+    let result = checked(&input, 28);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(
+        result.text,
+        format!("fn check(n: i32) -> i32{clauses}{{\n  return n;\n}}\n")
+    );
+    assert!(crate::parse_module(&result.text).is_ok());
+    assert_eq!(checked(&result.text, 28).text, result.text);
+}
+
+#[test]
+fn wrapped_parameters_keep_contracts_on_their_original_lines() {
+    let input = "fn   merge(first : i32, second : i32) -> i32\nrequires first > second\nensures return > 0 {\nreturn first;\n}\n";
+    let result = checked(input, 25);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.text, "fn merge(\n  first: i32,\n  second: i32\n) -> i32\nrequires first > second\nensures return > 0 {\n  return first;\n}\n");
+    assert_eq!(checked(&result.text, 25).text, result.text);
+}
+
+#[test]
+fn inline_contract_width_reserves_the_expression_and_body_delimiter() {
+    let input = "fn f(a: i32) -> i32 requires a > 0 {\n  return a;\n}\n";
+    let width = input.lines().next().unwrap().chars().count();
+    let fits = checked(input, width);
+    assert!(fits.warnings.is_empty(), "{:?}", fits.warnings);
+    assert_eq!(fits.text, input);
+    let wraps = checked(input, width - 1);
+    assert!(wraps.warnings.is_empty(), "{:?}", wraps.warnings);
+    assert_eq!(
+        wraps.text,
+        "fn f(\n  a: i32\n) -> i32 requires a > 0 {\n  return a;\n}\n"
+    );
+}
