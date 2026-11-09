@@ -134,12 +134,23 @@ last[w] = (sa[w] as f32) @ (sb[w] as f32);
 - Every lane of the subgroup must get to the statement, as to a lane loop. A subgroup has 32
   lanes. E6032 refuses a matmul in any other place of a region with `across` loops that launches.
 
-The meaning does not change: each element gets the sum of its products from 0, in the order of
-`k`, and then the sum is added to the old value. The CPU copy of a kernel and the AST code
-generator compute it in this order, in loops. On the GPU, the lanes of the subgroup share the
-elements of the result, each lane computes its elements in the same order, and a subgroup barrier
-follows. A later version will use the tensor cores, which add the products of a step of `k` in an
-order of their own. Then a result on the GPU can differ from the CPU copy in its last bits.
+The meaning: each element gets the sum of its products from 0, in the order of `k`. With `+`, the
+old value is then added to the sum. The CPU copy of a kernel computes it in this order, in loops, with
+both code generators. A subgroup barrier follows the matmul on the GPU.
+
+On an NVIDIA GPU of `sm_80` or later, a matmul goes to the tensor cores when all of these are true:
+
+- Both tiles are `bf16`, or both are `f16`.
+- The result has a multiple of 16 rows and a multiple of 8 columns.
+- `k` is a multiple of 16.
+
+Each 16 x 8 piece of the result is then a chain of `mma.sync.m16n8k16`, one for each 16 values of
+`k`. The tile elements go to the tensor core as they are: the `as f32` makes no copy. The tensor
+core adds the products in an order of its own, so a result can differ from the CPU copy in its
+last bits. With small integer inputs, each sum is exact and the two results are equal.
+
+Each other matmul uses the lanes of the subgroup: they share the elements of the result, and each
+lane computes its elements in the order above.
 
 ## Copies
 

@@ -1,0 +1,78 @@
+//===- lane_matmuls_on_tensor_cores.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Two matmuls of 32 x 32 by 32 x 16 tiles in the code of a subgroup loop: bf16 tiles added to
+// `acc`, which starts at 1, and f16 tiles with no `+`. On an NVIDIA GPU, both go to the tensor
+// cores (`lane_matmuls_on_the_gpu.vx` checks the PTX). With no GPU, the kernel runs on the CPU.
+// The inputs are small integers, so each sum is exact, and both give the values that a Python
+// loop gave.
+//
+// RUN: vxc %s --host default --machine fleet/a100-80.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/a100-80.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}bf16: -3 -2 7 sum of all 2041{{$}}
+// CHECK: {{^}}f16: -3 3 -2 sum of all -6{{$}}
+
+fn main() -> i32 {
+  let mut c = transfer(Tensor<f32, [2, 2, 32, 16]>::fill(0.0), Memory::HBM);
+  let mut d = transfer(Tensor<f32, [2, 2, 32, 16]>::fill(0.0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for blk in 0..2 across blocks {
+      let mut sa = unsafe {
+        Tensor<bf16, [2, 32, 32], Memory::SMEM>::uninit()
+      };
+      let mut sb = unsafe {
+        Tensor<bf16, [2, 32, 16], Memory::SMEM>::uninit()
+      };
+      let mut ha = unsafe { Tensor<f16, [2, 32, 32], Memory::SMEM>::uninit() };
+      let mut hb = unsafe { Tensor<f16, [2, 32, 16], Memory::SMEM>::uninit() };
+      let mut acc = unsafe {
+        Tensor<f32, [2, 32, 16], Memory::SMEM>::uninit()
+      };
+      let mut last = unsafe {
+        Tensor<f32, [2, 32, 16], Memory::SMEM>::uninit()
+      };
+      for w in 0..2 across subgroups {
+        for i in 0..32 across lanes {
+          for k in 0..32 {
+            sa[w][i][k] = (((blk * 64 + w * 32 + i) * 3 + k * 5) % 7 - 3) as bf16;
+            ha[w][i][k] = (((blk * 64 + w * 32 + i) + k * 3) % 5 - 2) as f16;
+          }
+          for j in 0..16 {
+            acc[w][i][j] = 1.0;
+            sb[w][i][j] = ((i * 2 + j) % 5 - 2) as bf16;
+            hb[w][i][j] = ((i + j * 3) % 7 - 3) as f16;
+          }
+        }
+        acc[w] = acc[w] + (sa[w] as f32) @ (sb[w] as f32);
+        last[w] = (ha[w] as f32) @ (hb[w] as f32);
+        for i in 0..32 across lanes {
+          for j in 0..16 {
+            c[blk][w][i][j] = acc[w][i][j];
+            d[blk][w][i][j] = last[w][i][j];
+          }
+        }
+      }
+    }
+  }
+  let hc = transfer(c, Memory::CPU_DRAM);
+  let hd = transfer(d, Memory::CPU_DRAM);
+  let mut all = 0.0;
+  let mut all_last = 0.0;
+  for b in 0..2 {
+    for w in 0..2 {
+      for i in 0..32 {
+        for j in 0..16 {
+          all = all + hc[b][w][i][j];
+          all_last = all_last + hd[b][w][i][j];
+        }
+      }
+    }
+  }
+  println!("bf16: {} {} {} sum of all {}", hc[0][0][0][0], hc[1][1][31][15], hc[0][1][20][5], all);
+  println!("f16: {} {} {} sum of all {}", hd[0][0][0][0], hd[1][1][31][15], hd[1][0][8][3], all_last);
+  return 0;
+}
