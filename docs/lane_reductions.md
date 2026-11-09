@@ -117,6 +117,30 @@ the lanes stays in the registers of a lane. Only the steps between them use shar
 barriers: 20 of the 66 steps for 2048 elements on 1024 lanes. The CPU runs the same network in
 loops.
 
+## Matmuls of tiles
+
+In the code of a subgroup, outside its lane loops, a matmul of tiles is a statement that every
+lane of the subgroup computes together:
+
+```rust
+acc[w] = acc[w] + (sa[w] as f32) @ (sb[w] as f32);
+last[w] = (sa[w] as f32) @ (sb[w] as f32);
+```
+
+- The place on the left is an `f32` matrix, such as the row `acc[w]` of a tile in shared memory.
+  With `+`, the same place is the first operand of the sum.
+- Each operand of `@` is a matrix of `f32`, or `t as f32` for a matrix `t` of `bf16` or `f16`. A
+  product of two `bf16` or two `f16` values is exact in `f32`.
+- Every lane of the subgroup must get to the statement, as to a lane loop. A subgroup has 32
+  lanes. E6032 refuses a matmul in any other place of a region with `across` loops that launches.
+
+The meaning does not change: each element gets the sum of its products from 0, in the order of
+`k`, and then the sum is added to the old value. The CPU copy of a kernel and the AST code
+generator compute it in this order, in loops. On the GPU, the lanes of the subgroup share the
+elements of the result, each lane computes its elements in the same order, and a subgroup barrier
+follows. A later version will use the tensor cores, which add the products of a step of `k` in an
+order of their own. Then a result on the GPU can differ from the CPU copy in its last bits.
+
 ## Copies
 
 `lanes::copy_async(&mut tile, &x, [i, j])` starts a copy of the tile of `x` that starts at

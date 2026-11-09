@@ -1,0 +1,68 @@
+//===- lane_matmuls_on_the_gpu.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A matmul of tiles in the code of a subgroup loop gives a GPU kernel. The lanes of the
+// subgroup share the elements of `acc[w]`. Each lane widens a bf16 element of `sa` and an f16
+// element of `sb` to f32, and multiplies and adds them in f32. A subgroup barrier comes before
+// the matmul and after it, so each lane reads the elements that the other lanes wrote.
+//
+// RUN: vxc %s --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s --implicit-check-not=local_depot < %t.ptx
+// CHECK-LABEL: .entry tile_matmul(
+// The barrier at the end of the lane loop that fills `sa` and `sb`.
+// CHECK: bar.warp.sync
+// CHECK: shl.b32 {{%r[0-9]+}}, {{%r[0-9]+}}, 16;
+// CHECK: cvt.f32.f16
+// CHECK: mul.rn.f32
+// CHECK: add.rn.f32
+// CHECK: bar.warp.sync
+
+pub fn tile_matmul(c : &mut Tensor<f32, [?, 4, 16, 8], Memory::HBM>, a : &Tensor<bf16, [?, 32], Memory::HBM>, b : &Tensor<f16, [32, 8], Memory::HBM>, blocks : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..blocks across blocks {
+      let mut sa = unsafe {
+        Tensor<bf16, [4, 16, 16], Memory::SMEM>::uninit()
+      };
+      let mut sb = unsafe { Tensor<f16, [4, 16, 8], Memory::SMEM>::uninit() };
+      let mut acc = unsafe { Tensor<f32, [4, 16, 8], Memory::SMEM>::uninit() };
+      for w in 0..4 across subgroups {
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for j in 0..8 {
+              acc[w][i][j] = 0.0;
+            }
+          }
+        }
+        for kk in 0..2 {
+          for i in 0..32 across lanes {
+            if i < 16 {
+              for k in 0..16 {
+                sa[w][i][k] = a[blk * 64 + w * 16 + i][kk * 16 + k];
+              }
+              for j in 0..8 {
+                sb[w][i][j] = b[kk * 16 + i][j];
+              }
+            }
+          }
+          acc[w] = acc[w] + (sa[w] as f32) @ (sb[w] as f32);
+        }
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for j in 0..8 {
+              c[blk][w][i][j] = acc[w][i][j];
+            }
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

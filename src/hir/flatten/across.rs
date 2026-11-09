@@ -19,10 +19,11 @@
 use super::*;
 use crate::arch::LevelKind;
 use crate::bytecode::{
-    ACROSS_BLOCK, ACROSS_BLOCKS, ACROSS_LANE, ACROSS_STRIDE, BARRIER_SUBGROUP, LANE_REDUCE_ARGMAX,
-    LANE_REDUCE_COPY, LANE_REDUCE_COPY_WAIT, LANE_REDUCE_DESCENDING, LANE_REDUCE_MAX,
-    LANE_REDUCE_ORDERED, LANE_REDUCE_OWN_ROW, LANE_REDUCE_SORT, LANE_REDUCE_SUBGROUP,
-    LANE_ROW_SHIFT, TENSOR_STORE_BLOCK_LANE_ELEMENT, TENSOR_STORE_SUBGROUP_LANE_ELEMENT,
+    ACROSS_BLOCK, ACROSS_BLOCKS, ACROSS_LANE, ACROSS_STRIDE, BARRIER_SUBGROUP,
+    LANE_REDUCE_ACCUMULATE, LANE_REDUCE_ARGMAX, LANE_REDUCE_COPY, LANE_REDUCE_COPY_WAIT,
+    LANE_REDUCE_DESCENDING, LANE_REDUCE_MATMUL, LANE_REDUCE_MAX, LANE_REDUCE_ORDERED,
+    LANE_REDUCE_OWN_ROW, LANE_REDUCE_SORT, LANE_REDUCE_SUBGROUP, LANE_ROW_SHIFT,
+    TENSOR_STORE_BLOCK_LANE_ELEMENT, TENSOR_STORE_SUBGROUP_LANE_ELEMENT,
 };
 use crate::hir::check::across_lanes;
 
@@ -492,6 +493,33 @@ impl Lowerer<'_> {
     }
 
     /// `lanes::sort(&mut t, n)` and `lanes::sort_descending(&mut t, n)`: an effect on `t`. The
+    /// `acc = acc + (a as f32) @ (b as f32)` in the code of a subgroup: an effect on `acc`, which
+    /// every lane of the subgroup computes. A subgroup barrier after it lets each lane read the
+    /// elements that the other lanes wrote.
+    pub(super) fn lower_lane_matmul(
+        &mut self,
+        m: &crate::hir::check::lanes::LaneMatmul,
+    ) -> Lowered<()> {
+        let matrix = |v: &Val, elems: &[ElementType]| matches!(&v.ty, LoweredTy::Tensor { elem, shape } if shape.len() == 2 && elems.contains(elem));
+        let acc = self.lower_expr(m.acc)?;
+        let lhs = self.lower_expr(m.lhs)?;
+        let rhs = self.lower_expr(m.rhs)?;
+        let tile = [ElementType::F32, ElementType::BF16, ElementType::F16];
+        if !matrix(&acc, &[ElementType::F32]) || !matrix(&lhs, &tile) || !matrix(&rhs, &tile) {
+            return Err(Decline::TypeNotModelled {
+                what: "a lane matmul of something that is not a matrix of floats",
+            });
+        }
+        let mut imm = LANE_REDUCE_MATMUL | LANE_REDUCE_SUBGROUP;
+        if m.accumulate {
+            imm |= LANE_REDUCE_ACCUMULATE;
+        }
+        self.emit_effect(Opcode::Arg, rhs.reg, Register(0), 0);
+        self.emit_effect(Opcode::LaneReduce, acc.reg, lhs.reg, imm);
+        self.barrier(AcrossLevel::Subgroup);
+        Ok(())
+    }
+
     /// value is a constant that nothing reads, as for `barrier()`.
     fn lower_lane_sort(
         &mut self,

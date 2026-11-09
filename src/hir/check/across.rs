@@ -87,6 +87,8 @@ struct Walk<'g> {
     lane_sizes: HashMap<Span, u64>,
     /// The lane reductions in a place that allows them.
     lane_calls: Vec<LaneCall>,
+    /// The `@` of each lane matmul in the code of a subgroup.
+    lane_matmuls: HashSet<Span>,
     /// The parameters of the function that are `&` tensors, not `&mut`.
     read_only: HashSet<String>,
 }
@@ -138,6 +140,7 @@ impl crate::hir::TypeChecker<'_> {
             contracts: self.atomic_contracts(),
             lane_sizes: self.lane_reductions.clone(),
             lane_calls: Vec::new(),
+            lane_matmuls: HashSet::new(),
             read_only,
         };
         walk.stmts(body, &Ctx::default());
@@ -298,24 +301,28 @@ impl Walk<'_> {
         after
     }
 
-    /// A matmul of whole tensors in a region with `across` loops. The code generator sends a
-    /// whole matmul to cuBLAS, which a kernel cannot call, so the region would get no GPU kernel.
-    /// Its loops ask for a launch, so that is an error here, with a position, and not a region
-    /// that runs on the CPU in silence.
+    /// A matmul of whole tensors in a region with `across` loops, other than a lane matmul in the
+    /// code of a subgroup. The code generator sends such a matmul to cuBLAS, which a kernel cannot
+    /// call, so the region would get no GPU kernel. Its loops ask for a launch, so that is an error
+    /// here, with a position, and not a region that runs on the CPU in silence.
     fn whole_matmuls(&mut self, stmts: &[Statement]) {
         let mut found = Vec::new();
         crate::syntax::visit_exprs(stmts, &mut |e| {
             if let Expr::BinaryOp(b) = e {
-                if matches!(b.op, crate::syntax::BinaryOp::MatMul) {
+                if matches!(b.op, crate::syntax::BinaryOp::MatMul)
+                    && !self.lane_matmuls.contains(&b.span)
+                {
                     found.push(b.span);
                 }
             }
         });
         for at in found {
             self.error(
-                "a region with `across` loops may not have a matmul of whole tensors: the code \
-                 generator sends it to cuBLAS, which a GPU kernel cannot call. Write its loops in \
-                 the region, or do the matmul before the region"
+                "a region with `across` loops may have a matmul of whole tensors only as a \
+                 statement `c = c + a @ b` or `c = a @ b` in the code of a subgroup loop, outside \
+                 its lane loops. The code generator sends any other matmul to cuBLAS, which a GPU \
+                 kernel cannot call. Write its loops in the region, or do the matmul before the \
+                 region"
                     .to_string(),
                 at,
             );
@@ -461,6 +468,9 @@ impl Walk<'_> {
                 self.expr(&e.expr, ctx)
             }
             Statement::Assign(a) => {
+                if let Some(m) = lanes::lane_matmul(a) {
+                    self.lane_matmul(&m, ctx);
+                }
                 // `t = lanes::copy_async(..)` gives a token variable its next copy, as a
                 // pipeline does when it starts the next copy before it waits for this one.
                 if let (Expr::Identifier(_), Some(fc)) = (&a.lhs, lanes::bare_lanes_call(&a.rhs)) {
@@ -501,6 +511,28 @@ impl Walk<'_> {
         }
     }
 
+    /// A lane matmul in the code of a subgroup. The subgroups of a region that launches have 32
+    /// lanes.
+    fn lane_matmul(&mut self, m: &lanes::LaneMatmul, ctx: &Ctx) {
+        if let (true, false, Some(region), Some(axis)) = (
+            Self::stretch_level(ctx),
+            ctx.in_closure,
+            ctx.region.clone(),
+            ctx.axes.last(),
+        ) {
+            if axis.kind != LevelKind::Subgroups {
+                return;
+            }
+            self.lane_matmuls.insert(m.at);
+            self.needs_subgroups_of_32(&LaneCall {
+                at: m.at,
+                name: lanes::MATMUL.to_string(),
+                scope: axis.kind,
+                region,
+            });
+        }
+    }
+
     /// The expressions in `e` that hold statements, with the context of each.
     fn expr(&mut self, e: &Expr, ctx: &Ctx) {
         match e {
@@ -521,17 +553,6 @@ impl Walk<'_> {
                     ..Ctx::default()
                 };
                 self.region_nests(&sp.stmts, &region);
-                // A region that `-fauto-schedule-levels` runs as plain loops has no launch, so its
-                // matmul goes to cuBLAS as in any other region.
-                let launches = region.region.as_ref().is_some_and(|r| r.launches);
-                if launches
-                    && sp
-                        .stmts
-                        .iter()
-                        .any(|s| matches!(s, Statement::ForLoop(f) if f.across.is_some()))
-                {
-                    self.whole_matmuls(&sp.stmts);
-                }
                 // The code after the nest runs in the last pass to end, as the body of one block.
                 let nest = sp
                     .stmts
@@ -548,6 +569,13 @@ impl Walk<'_> {
                 self.stmts(&sp.stmts[after..], &last_pass);
                 if let Some(r) = &sp.ret {
                     self.expr(r, &Self::inner(&region));
+                }
+                // A region that `-fauto-schedule-levels` runs as plain loops has no launch, so its
+                // matmul goes to cuBLAS as in any other region. The walk above found the lane
+                // matmuls.
+                let launches = region.region.as_ref().is_some_and(|r| r.launches);
+                if launches && nest.is_some() {
+                    self.whole_matmuls(&sp.stmts);
                 }
             }
             // A task runs on a CPU thread of its own, not in the region around it.

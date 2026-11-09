@@ -7388,7 +7388,14 @@ impl<'r> Lowerer<'r> {
                 self.emit_ret(Some(v))?;
                 Ok(())
             }
-            Statement::Assign(a) => self.lower_assign(&a.lhs, &a.rhs),
+            Statement::Assign(a) => {
+                if self.across.level == Some(across::AcrossLevel::Subgroup) {
+                    if let Some(m) = crate::hir::check::lanes::lane_matmul(a) {
+                        return self.lower_lane_matmul(&m);
+                    }
+                }
+                self.lower_assign(&a.lhs, &a.rhs)
+            }
             // Compound assignment `lhs op= rhs` desugars to `lhs = (lhs op rhs)`: read the current
             // value of the place, combine it with the right side, and store back.
             Statement::CompoundAssign(a) => {

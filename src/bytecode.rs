@@ -418,6 +418,11 @@ pub const LANE_REDUCE_DESCENDING: u64 = 64;
 pub const LANE_REDUCE_COPY: u64 = 128;
 /// `Opcode::LaneReduce`: the wait for the copy of the token `operand1`, an effect with no result.
 pub const LANE_REDUCE_COPY_WAIT: u64 = 256;
+/// `Opcode::LaneReduce`: `acc = acc + (a as f32) @ (b as f32)` in the code of a subgroup, an
+/// effect with no result. `operand1` is `acc` and `operand2` is `a`. The `Arg` just before is `b`.
+pub const LANE_REDUCE_MATMUL: u64 = 512;
+/// `Opcode::LaneReduce` with `LANE_REDUCE_MATMUL`: the products are added to the old `acc`.
+pub const LANE_REDUCE_ACCUMULATE: u64 = 1024;
 
 /// `Opcode::TensorStore`: the place is `tile[t]` in a lane loop of the code of a block, with `t`
 /// the index of the loop. The loop goes from 0 over all of its lanes, so only lane `t` writes the
