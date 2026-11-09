@@ -23,6 +23,7 @@
 // RUN: env CUDA_VISIBLE_DEVICES= not vxc %t/short_vals.vx --host default --machine fleet/h100-sxm.vx 2>&1 | FileCheck %s --check-prefix=VALS
 // RUN: env CUDA_VISIBLE_DEVICES= not vxc %t/short_out.vx --host default --machine fleet/h100-sxm.vx 2>&1 | FileCheck %s --check-prefix=OUT
 //
+// A machine with the CUDA library but no GPU prints a note between these two lines.
 // FULL: {{^}}held 10{{$}}
 // FULL: bulk_hash_insert_all: the keys do not fit. The table must keep one empty slot
 // FULL-NOT: not printed
