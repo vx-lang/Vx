@@ -30,26 +30,31 @@ fn lower_spawn_region<'c>(
     // A region whose `across` loops run on blocks and lanes. The host computes its launch shape
     // before the region starts.
     let mapped = super::across::mapped_lanes(this);
-    let (shape, block) = match mapped {
+    let (shape, tail, block) = match mapped {
         Some(lanes) => {
             let (shape, block) = super::across::launch_shape(gen, &this.stmts, lanes, block)?;
-            (Some(shape), block)
+            // The count of the passes of a nest of blocks with code after it.
+            let (tail, block) = super::across::lower_count(gen, this, block)?;
+            (Some(shape), tail, block)
         }
-        None => (None, block),
+        None => (None, None, block),
     };
+    let count = tail.as_ref().map(|t| t.count);
     let location = gen.loc();
     let region = melior::ir::Region::new();
     let mut body_block = region.append_block(melior::ir::Block::new(&[]));
-    if let Some(shape) = &shape {
-        super::across::emit_launch_shape(gen, body_block, shape)?;
-    }
     let outer_map = std::mem::replace(
         &mut gen.across_map,
         mapped.map(|lanes| super::across::AcrossMap {
             lanes,
+            tail,
             ..Default::default()
         }),
     );
+    super::across::alloc_flag(gen, body_block)?;
+    if let Some(shape) = &shape {
+        super::across::emit_launch_shape(gen, body_block, shape)?;
+    }
     let prev_in_spawn = gen.in_spawn;
     gen.in_spawn = true;
 
@@ -135,6 +140,10 @@ fn lower_spawn_region<'c>(
         }
     }
     for (i, stmt) in this.stmts.iter().enumerate() {
+        // The last pass of the nest of blocks runs the code after the nest.
+        if super::across::runs_after_the_nest(gen, stmt) {
+            continue;
+        }
         gen.mark_next_for = one_loop.is_some_and(|(loop_at, _)| loop_at == i);
         if let Some(b) = gen.generate_statement(stmt, body_block)? {
             body_block = b;
@@ -291,6 +300,9 @@ fn lower_spawn_region<'c>(
 
     let spawn_op = spawn_builder.build()?;
     let spawn_ref = block.append_operation(spawn_op);
+    if let Some(count) = count {
+        gen.emit_drop(count, None, None, block)?;
+    }
 
     if !needs_yield {
         let mut ret_builder = OperationBuilder::new("func.return", location);
