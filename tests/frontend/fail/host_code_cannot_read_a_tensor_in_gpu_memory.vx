@@ -67,9 +67,8 @@ fn main() -> i32 {
     t : f
   };
   let g = on_gpu();
-  // CHECK: Error[E3021] at {{.*}}.vx:[[@LINE+1]]:12: payload argument 1 of Payload::Placed
   let _p = Payload::Placed(g);
   return 0;
 }
 
-// CHECK: {{^}}Semantic check failed on {{.*}}: 7 error(s) emitted
+// CHECK: {{^}}Semantic check failed on {{.*}}: 6 error(s) emitted

@@ -15,7 +15,9 @@
 // name earlier instructions by index; `type_idx` indexes `local_type_stream`.
 //
 //===----------------------------------------------------------------------===//
-use crate::bytecode::{encode_field_index, TENSOR_DROP_FIELD, TENSOR_DROP_FLAG};
+use crate::bytecode::{
+    encode_field_index, TENSOR_DROP_FIELD, TENSOR_DROP_FLAG, TENSOR_DROP_PLACED_SHIFT,
+};
 use crate::bytecode::{
     EnumPayloadIndex, HirInstruction, Opcode, Register, TypeIdx, IMM_BLOCK_BOUND, IMM_BLOCK_INIT,
     IMM_BLOCK_STEP, IMM_PARALLEL_BOUND, IMM_PARALLEL_INIT, IMM_PARALLEL_STEP, IMM_THREAD_INIT,
@@ -614,6 +616,13 @@ struct Lowerer<'r> {
     tensor_depth: HashMap<u32, usize>,
 }
 
+/// The dispatch id of the device memory that the tensor a drop frees names, if any.
+fn placed_id(d: &crate::syntax::DropStmt) -> Option<u32> {
+    d.placement
+        .as_ref()
+        .map(|p| crate::arch::memory_space_dispatch_id(&p.space) as u32)
+}
+
 /// A tensor drop waiting for a value to be computed: the owner's register, and the name of its
 /// moved flag, read when the drop runs.
 #[derive(Clone)]
@@ -624,6 +633,8 @@ enum PendingDrop {
         reg: Register,
         flag: Option<Symbol>,
         field: bool,
+        /// For a field: the dispatch id of the device memory its type names.
+        placed: Option<u32>,
         owner: Symbol,
     },
     /// The statements that run a drop: a `Drop` impl's `drop`, with cancellation off around
@@ -1176,6 +1187,7 @@ impl<'r> Lowerer<'r> {
                 reg: v.reg,
                 flag: d.flag.clone(),
                 field: true,
+                placed: placed_id(d),
                 owner: d.name.clone(),
             }
         } else {
@@ -1198,6 +1210,7 @@ impl<'r> Lowerer<'r> {
                 reg,
                 flag: d.flag.clone(),
                 field: from_payload,
+                placed: placed_id(d),
                 owner: d.name.clone(),
             }
         };
@@ -1210,10 +1223,14 @@ impl<'r> Lowerer<'r> {
     }
 
     fn emit_drop(&mut self, d: PendingDrop) -> Lowered<()> {
-        let (reg, flag, field) = match d {
+        let (reg, flag, field, placed) = match d {
             PendingDrop::Tensor {
-                reg, flag, field, ..
-            } => (reg, flag, field),
+                reg,
+                flag,
+                field,
+                placed,
+                ..
+            } => (reg, flag, field, placed),
             PendingDrop::LifetimeEnd { slot } => {
                 self.emit_effect(Opcode::LifetimeEnd, slot, Register(0), 0);
                 return Ok(());
@@ -1225,7 +1242,11 @@ impl<'r> Lowerer<'r> {
                 return Ok(());
             }
         };
-        let field_bit = if field { TENSOR_DROP_FIELD } else { 0 };
+        let field_bit = match (field, placed) {
+            (true, Some(id)) => TENSOR_DROP_FIELD | (u64::from(id) << TENSOR_DROP_PLACED_SHIFT),
+            (true, None) => TENSOR_DROP_FIELD,
+            (false, _) => 0,
+        };
         let Some(flag) = flag else {
             self.emit_effect(Opcode::TensorDrop, reg, Register(0), field_bit);
             return Ok(());

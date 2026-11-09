@@ -197,10 +197,11 @@ impl FnEmit<'_> {
         } else {
             String::new()
         };
-        let field = if ins.imm & crate::bytecode::TENSOR_DROP_FIELD != 0 {
-            " {field}"
-        } else {
-            ""
+        let placed = ins.imm >> crate::bytecode::TENSOR_DROP_PLACED_SHIFT;
+        let field = match super::super::placed_device(placed, self.ctx) {
+            _ if ins.imm & crate::bytecode::TENSOR_DROP_FIELD == 0 => String::new(),
+            Some(device) => format!(" {{field, placed = {device} : i32}}"),
+            None => " {field}".to_string(),
         };
         self.body += &format!("  vx.drop {name}{unless}{field} : {ty}\n");
         Ok(())

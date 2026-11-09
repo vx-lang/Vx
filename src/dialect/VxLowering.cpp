@@ -4611,11 +4611,17 @@ static LogicalResult lowerDrops(ModuleOp module) {
   SmallVector<vx::DropOp> drops;
   module.walk([&](vx::DropOp d) { drops.push_back(d); });
   for (vx::DropOp d : drops) {
-    // A struct owns its tensor fields, and every buffer stored into one is on
+    // A struct owns its tensor fields. A field whose type names a device memory
+    // came from that memory's plugin. Every other buffer stored into one is on
     // the heap (see giveMovedResultsHeapSlots).
     std::optional<int32_t> topology;
-    BufferOrigin origin =
-        d.getField() ? BufferOrigin::Heap : originOf(d.getBuffer(), topology);
+    BufferOrigin origin = BufferOrigin::Heap;
+    if (d.getField() && d.getPlaced()) {
+      topology = *d.getPlaced();
+      origin = BufferOrigin::Placed;
+    } else if (!d.getField()) {
+      origin = originOf(d.getBuffer(), topology);
+    }
     if (d.getOwnedOnly() && origin != BufferOrigin::Heap &&
         origin != BufferOrigin::Placed)
       origin = BufferOrigin::NotFreed;

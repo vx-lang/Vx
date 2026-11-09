@@ -476,6 +476,9 @@ pub const TENSOR_PAD_EACH_AXIS: u64 = 1;
 pub const TENSOR_DROP_FLAG: u64 = 1;
 /// `Opcode::TensorDrop`'s `imm`: the tensor is a field of a struct being dropped.
 pub const TENSOR_DROP_FIELD: u64 = 2;
+/// `Opcode::TensorDrop`'s `imm`: the bits from here up hold the dispatch id of the device memory
+/// of a field, or zero.
+pub const TENSOR_DROP_PLACED_SHIFT: u32 = 32;
 
 /// Reverse mode for `Opcode::AutoDiff`: the gradient, through `__enzyme_autodiff_grad_*`.
 pub const AUTODIFF_REVERSE: u64 = 0;

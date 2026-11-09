@@ -141,6 +141,8 @@ pub(crate) struct GluePart {
     /// For an enum: what dropping each variant's payload does, by element. Dropping it
     /// matches on the value.
     payload: Option<EnumGlue>,
+    /// For a tensor: the memory its type names.
+    placement: Option<crate::syntax::Placement>,
 }
 
 #[derive(Clone)]
@@ -363,6 +365,7 @@ fn drop_stmt(name: &str, flag: Option<&str>) -> Statement {
         after_value: false,
         ends_lifetime: false,
         span: Span::default(),
+        placement: None,
     })
 }
 
@@ -379,6 +382,7 @@ fn lifetime_end(name: &str) -> Statement {
         after_value: false,
         ends_lifetime: true,
         span: Span::default(),
+        placement: None,
     })
 }
 
@@ -656,6 +660,7 @@ fn glue_drops_at(
                     after_value: false,
                     ends_lifetime: false,
                     span: Span::default(),
+                    placement: None,
                 });
             }
             // `wait_limit_nanos(&place)`, which the code before the call of `drop` asks. An impl
@@ -704,6 +709,7 @@ fn glue_drops_at(
                 after_value: false,
                 ends_lifetime: false,
                 span: Span::default(),
+                placement: part.placement.clone(),
             })
         })
         .collect()
@@ -762,6 +768,7 @@ impl<'a> TypeChecker<'a> {
                 call: None,
                 limit: None,
                 payload: None,
+                placement: ty.placement().cloned(),
             }],
             // The same value as the type inside, with a proof or a location attached.
             Type::Verified(inner) | Type::Pinned(inner, _) => self.drops_glue_at(inner, depth),
@@ -793,6 +800,7 @@ impl<'a> TypeChecker<'a> {
                         call: Some(call),
                         limit: self.drops_impl_method(ty, "wait_limit_nanos"),
                         payload: None,
+                        placement: None,
                     });
                 }
                 let struct_ty = ty.to_string();
@@ -858,6 +866,7 @@ impl<'a> TypeChecker<'a> {
                 call: Some(call),
                 limit: self.drops_impl_method(ty, "wait_limit_nanos"),
                 payload: None,
+                placement: None,
             });
         }
         if !arms.is_empty() {
@@ -869,6 +878,7 @@ impl<'a> TypeChecker<'a> {
                     name: ty.to_string(),
                     arms,
                 }),
+                placement: None,
             });
         }
         glue
