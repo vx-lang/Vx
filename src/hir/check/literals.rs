@@ -111,19 +111,22 @@ impl<'a> TypeChecker<'a> {
                                         // An untyped literal takes the payload's type:
                                         // `Pair<i32, f64>::Of(1, 2.5)` holds an `f64`.
                                         let expected_ty = exp_types[i].substitute(&mapping);
-                                        let expr_ty = if matches!(
+                                        let generic = matches!(
                                             expected_ty,
                                             Type::Generic(..)
                                                 | Type::Scalar(ElementType::Generic(_))
-                                        ) {
-                                            self.check_expr_type_flag(expr, consume)
-                                        } else {
-                                            self.check_expr_expecting(
-                                                expr,
-                                                Some(expected_ty.clone()),
-                                                consume,
-                                            )
-                                        };
+                                        );
+                                        let expr_ty = self.check_whole_value(expr, |c, e| {
+                                            if generic {
+                                                c.check_expr_type_flag(e, consume)
+                                            } else {
+                                                c.check_expr_expecting(
+                                                    e,
+                                                    Some(expected_ty.clone()),
+                                                    consume,
+                                                )
+                                            }
+                                        });
                                         // A tensor payload has no lowering: the variant's slot is
                                         // built with `llvm.insertvalue`, which takes primitives,
                                         // and the AST path emitted the tag and dropped the tensor
@@ -847,8 +850,9 @@ impl<'a> TypeChecker<'a> {
                         // The field's type is the expected type of what initializes it, so
                         // `Counter { n : 0 }` writes a `u64` zero into a `u64` field rather than
                         // an `i32` one the field then refuses.
-                        let f_type =
-                            self.check_expr_expecting(f_expr, Some(expected_type.clone()), consume);
+                        let f_type = self.check_whole_value(f_expr, |c, e| {
+                            c.check_expr_expecting(e, Some(expected_type.clone()), consume)
+                        });
                         self.check_view_stored(&format!("the field `{f_name}`"), f_expr, &f_type);
                         if let (Expr::Identifier(id), Some(holder)) =
                             (&*f_expr, self.current_assignment_target.clone())

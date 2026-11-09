@@ -548,7 +548,8 @@ pub enum DiagnosticCode {
     /// and the cost of the transfer that would fix it -- so a misplaced handoff (an
     /// un-transferred KV cache in a disaggregated prefill/decode split, say) is a compile
     /// error that carries its own remedy. A `managed: cached` space the topology can reach
-    /// across a declared seam is coherent in hardware and is not reported here.
+    /// across a declared seam is coherent in hardware and is not reported here. A move of a
+    /// tensor reads no element, so a `let`, an argument, a store or a `return` of it is allowed.
     E6003,
     /// Transfer violates the boundary contract at a seam (per-seam local-completeness
     /// / soundness obligation is `sat`; a stale read can violate the contract).

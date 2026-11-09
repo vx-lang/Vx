@@ -692,6 +692,9 @@ pub struct TypeChecker<'a> {
     pub(crate) checking_assign_lhs: bool,
     /// The identifier that `&` or `&mut` takes a reference to, while it is checked.
     pub(crate) borrowed_name: Option<crate::syntax::Span>,
+    /// The identifier whose whole value is moved, while it is checked: a `let` value, an
+    /// argument, a stored or returned value. Such a use copies only the handle of a tensor.
+    pub(crate) whole_value_name: Option<crate::syntax::Span>,
     /// The identifier being checked is the base of a field access, `p` in `p.b`: a move of
     /// another field, `p.a`, does not stop it.
     pub(crate) checking_field_base: bool,
@@ -815,6 +818,7 @@ impl<'a> TypeChecker<'a> {
             let_closure: None,
             checking_assign_lhs: false,
             borrowed_name: None,
+            whole_value_name: None,
             checking_field_base: false,
             next_id: 1,
             current_return_type: None,

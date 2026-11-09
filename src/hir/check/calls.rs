@@ -1009,8 +1009,17 @@ impl<'a> TypeChecker<'a> {
                     self.give_panic_its_place(args, span);
                 }
                 let errors_before_args = self.errors.inner.len();
+                // A function written in Vx gets the handle of a tensor. Its own body is checked
+                // where it runs. A built-in such as `print` reads the elements here.
+                let declared = self.env.functions.contains_key(base_name.as_ref())
+                    || self.env.generic_functions.contains_key(base_name.as_ref());
                 for arg in args.iter_mut() {
-                    arg_types.push(self.check_expr_type_flag(arg, arg_consume));
+                    let ty = if declared {
+                        self.check_whole_value(arg, |c, e| c.check_expr_type_flag(e, arg_consume))
+                    } else {
+                        self.check_expr_type_flag(arg, arg_consume)
+                    };
+                    arg_types.push(ty);
                 }
                 if resolved_name == "Tensor".into() {
                     self.fold_shape_args(args);
@@ -1621,6 +1630,47 @@ impl<'a> TypeChecker<'a> {
                 );
             }
         }
+    }
+
+    /// E6003: a generic parameter that names no memory, `Tensor<T, [4]>`, matches a tensor in
+    /// any memory, and the body then reads it as a tensor here. So it must not take a tensor in
+    /// a memory that the active topology cannot see.
+    fn refuse_an_unseen_tensor(
+        &mut self,
+        callee: &str,
+        i: usize,
+        param_ty: &Type,
+        arg_ty: &Type,
+        span: &crate::syntax::Span,
+    ) {
+        let (param, arg) = match (param_ty, arg_ty) {
+            (Type::Borrow { inner: p, .. }, Type::Borrow { inner: a, .. }) => (&**p, &**a),
+            pair => pair,
+        };
+        let (Type::Tensor(_, _, None), Some(place)) = (param, arg.placement()) else {
+            return;
+        };
+        let here = self.active_topology.clone();
+        if self.speculating
+            || self
+                .transfer_cost_graph
+                .is_type_accessible(&here, &here, arg)
+        {
+            return;
+        }
+        let memory = self.transfer_cost_graph.placement_space(place).name();
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E6003,
+            format!(
+                "argument {} of '{callee}' is a tensor in {memory}, and {} cannot see {memory}. \
+                 The parameter type {param_ty} names no memory, so '{callee}' reads the tensor \
+                 on {}. Transfer the tensor first, or write its memory in the parameter type",
+                i + 1,
+                here.display_name(),
+                here.display_name(),
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
     }
 
     /// Refuse a call whose mapping leaves one of the callee's type parameters unbound (E3016,
@@ -2388,9 +2438,11 @@ impl<'a> TypeChecker<'a> {
                 {
                     *is_mut = false;
                 }
-                if !self.unify_types(param_ty, &arg_ty, &mut mapping)
-                    && !self.accepts_like_a_plain_call(param_ty, &mapping, arg, &arg_ty)
-                {
+                let unified = self.unify_types(param_ty, &arg_ty, &mut mapping);
+                if unified {
+                    self.refuse_an_unseen_tensor(name, i, param_ty, &arg_ty, span);
+                }
+                if !unified && !self.accepts_like_a_plain_call(param_ty, &mapping, arg, &arg_ty) {
                     if !self.speculating {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E3003,
@@ -3513,12 +3565,23 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 let errors_before_args = self.errors.inner.len();
+                let receiver = match &base_ty {
+                    Type::Borrow { inner, .. } => &**inner,
+                    ty => ty,
+                };
+                let of_a_struct = matches!(receiver, Type::Struct(..) | Type::GenericInstance(..));
                 let mut checked_arg_types: Vec<Type> = Vec::with_capacity(args.len());
                 for (i, arg) in args.iter_mut().enumerate() {
                     // Only `reduce`'s start value gets an expected type here; every other
                     // argument keeps the one it inherits.
                     let Some(init_ty) = reduce_init_ty.clone().filter(|_| i == 0) else {
-                        checked_arg_types.push(self.check_expr_type(arg));
+                        // A method of a struct is written in Vx, as a function is.
+                        let ty = if of_a_struct {
+                            self.check_whole_value(arg, |c, e| c.check_expr_type(e))
+                        } else {
+                            self.check_expr_type(arg)
+                        };
+                        checked_arg_types.push(ty);
                         continue;
                     };
                     let prev = self.expected_type.replace(init_ty);
