@@ -149,6 +149,9 @@ pub struct MeliorGenerator<'c> {
     pub(crate) mlir_block_counter: usize,
     pub(crate) has_returned: bool,
     pub(crate) current_filename: String,
+    /// The file of the function being emitted, which each `spawn` of a task in it names. It is
+    /// not `current_filename` for a function from an imported module.
+    pub(crate) function_file: Option<String>,
     pub(crate) di_compile_unit: Option<melior::ir::Attribute<'c>>,
     pub(crate) di_subprogram: Option<melior::ir::Attribute<'c>>,
     pub current_span: syntax::types::Span,
@@ -1093,6 +1096,7 @@ impl<'c> MeliorGenerator<'c> {
             mlir_block_counter: 0,
             has_returned: false,
             current_filename: filename,
+            function_file: None,
             di_compile_unit: None,
             di_subprogram: None,
             current_span: syntax::types::Span {
@@ -1490,6 +1494,7 @@ impl<'c> MeliorGenerator<'c> {
         self.env.clear();
         self.allocs.clear();
         self.started_slots.clear();
+        self.function_file = func.file.as_ref().map(|f| f.to_string());
         self.subspace_offsets.clear(); // per-function sub-space bump allocator (SS2)
         self.pointer_taken = syntax::locals_with_pointer_taken(&func.body);
         self.address_taken = syntax::locals_with_address_taken(&func.body);

@@ -5226,19 +5226,31 @@ static LogicalResult lowerTask(vx::SpawnOp task, Value group, ModuleOp module,
       LLVM::lookupOrCreateFn(b, module, "vx_task_start_at",
                              {ptrTy, ptrTy, ptrTy, ptrTy, i64Ty}, i64Ty);
   assert(succeeded(start) && "the runtime function has one declaration");
-  // Where the `spawn` is, so that an abort in the task can say it: the file
-  // from the module, and the line from the op. A line of 0 is not known.
+  // Where the `spawn` is, so that an abort in the task can say it: the file of
+  // the function from the op, else the file of the module, and the line from
+  // the op. A line of 0 is not known.
   Value file = LLVM::ZeroOp::create(b, loc, ptrTy);
-  if (auto source = module->getAttrOfType<StringAttr>("vx.source")) {
-    StringRef name = "__vx_source_file";
-    if (module.lookupSymbol<LLVM::GlobalOp>(name))
-      file = LLVM::AddressOfOp::create(b, loc, ptrTy, name);
-    else {
-      // A C string: the runtime reads it up to its 0.
-      std::string text = source.getValue().str();
-      text.push_back('\0');
-      file =
-          LLVM::createGlobalString(loc, b, name, text, LLVM::Linkage::Internal);
+  auto source = task->getAttrOfType<StringAttr>("vx.file");
+  if (!source)
+    source = module->getAttrOfType<StringAttr>("vx.source");
+  if (source) {
+    // A C string: the runtime reads it up to its 0. One global for each file.
+    std::string text = source.getValue().str();
+    text.push_back('\0');
+    std::string name;
+    for (unsigned i = 0;; ++i) {
+      name = "__vx_source_file" + (i ? "_" + std::to_string(i) : "");
+      auto global = module.lookupSymbol<LLVM::GlobalOp>(name);
+      if (!global) {
+        file = LLVM::createGlobalString(loc, b, name, text,
+                                        LLVM::Linkage::Internal);
+        break;
+      }
+      auto value = dyn_cast_or_null<StringAttr>(global.getValueOrNull());
+      if (value && value.getValue() == text) {
+        file = LLVM::AddressOfOp::create(b, loc, ptrTy, name);
+        break;
+      }
     }
   }
   int64_t spawnLine = 0;

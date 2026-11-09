@@ -2898,6 +2898,12 @@ fn lower_task_region<'c>(
             Identifier::new(gen.context, "vx.line"),
             IntegerAttribute::new(i64_ty, this.span.line as i64).into(),
         ));
+        if let Some(file) = &gen.function_file {
+            attributes.push((
+                Identifier::new(gen.context, "vx.file"),
+                melior::ir::attribute::StringAttribute::new(gen.context, file).into(),
+            ));
+        }
     }
     let spawn = block.append_operation(
         OperationBuilder::new("vx.spawn", location)
