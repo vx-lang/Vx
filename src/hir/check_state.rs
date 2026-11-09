@@ -840,6 +840,9 @@ pub struct TrafficState {
     /// same expression twice; the first visit's program order wins). Taken, with the
     /// placements, when the function's summary is built.
     pub call_sites: HashMap<String, CallSite>,
+    /// Where the current function calls `channel` for tensors in a memory with a capacity. The
+    /// room of such a channel is counted there.
+    pub channel_rooms: Vec<crate::syntax::Span>,
     /// One finished capacity summary per checked function, in check order -- what the
     /// cross-call fold reads after every body is done.
     pub capacity_summaries: Vec<crate::hir::check::capacity_fold::FnCapacitySummary>,

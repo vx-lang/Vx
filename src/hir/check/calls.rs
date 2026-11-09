@@ -1074,6 +1074,24 @@ impl<'a> TypeChecker<'a> {
                 if resolved_name == "print".into() && args.len() == 1 {
                     Self::prepare_print_operand(&mut args[0], &arg_types[0]);
                 }
+                // `channel<T>(n)` of `std::sync::channel`, which returns its two ends.
+                let makes_a_channel = base_name.as_ref() == "channel"
+                    && self
+                        .env
+                        .generic_functions
+                        .get("channel")
+                        .is_some_and(|(f, _)| {
+                            matches!(&f.return_type, Type::GenericInstance(_, ends)
+                            if ends.len() == 2 && ends.iter().all(Self::is_channel_end_type))
+                        });
+                if let (true, [t], Some(n)) = (
+                    makes_a_channel,
+                    explicit_generic_args.as_slice(),
+                    args.first(),
+                ) {
+                    let (t, n) = (t.clone(), n.clone());
+                    self.count_channel_room(&t, &n, span);
+                }
                 if let Some(intrinsic_ty) = self.resolve_intrinsic_function(
                     &resolved_name,
                     args,

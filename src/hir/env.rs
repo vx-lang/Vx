@@ -2115,6 +2115,7 @@ impl<'a> TypeChecker<'a> {
         // A callee checked from inside a caller's `tasks` block is not in that block.
         let prev_tasks = self.tasks.enter_function();
         let prev_call_sites = std::mem::take(&mut self.traffic.call_sites);
+        let prev_channel_rooms = std::mem::take(&mut self.traffic.channel_rooms);
         let prev_scope_chain = std::mem::take(&mut self.traffic.scope_chain);
         let prev_scope_releases = std::mem::take(&mut self.traffic.scope_releases);
         // The unused-name sets are per-function for the same reason, and used to be cleared
@@ -2341,10 +2342,12 @@ impl<'a> TypeChecker<'a> {
         // The whole function has been checked; verify the working set of each memory space
         // it places tiles into fits (or is `overcommit`). Clears the per-function placement map.
         self.check_cumulative_capacity();
+        self.refuse_a_returned_channel_end(&func.return_type);
 
         self.pop_scope();
         self.traffic.memory_placements = prev_placements;
         self.traffic.call_sites = prev_call_sites;
+        self.traffic.channel_rooms = prev_channel_rooms;
         self.traffic.scope_chain = prev_scope_chain;
         self.traffic.scope_releases = prev_scope_releases;
         self.current_return_type = prev_ret_ty;
