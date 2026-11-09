@@ -25,6 +25,13 @@ and adds one half of it (`book_tasks_split_the_work.vx`):
 
 It prints `total 5050`.
 
+A task must not outlive its block, so the compiler checks two rules:
+
+- A `spawn` outside a `tasks` block gets the error E3056. A `spawn` in a closure, or directly in
+  another task, is outside the block too. Give the inner tasks a `tasks` block of their own.
+- The only use of a task handle is `h.join()`. A program cannot return a handle, store it, or pass
+  it to a function (E3057).
+
 ## A task that fails
 
 A task fails when its value is the `Err` of a `Result`. Then its `join()` leaves the block, and that
@@ -126,6 +133,28 @@ In this program, four tasks send squares, and the code of the block receives the
 
 It prints `got 40 values, sum 20540`.
 
+### Tensors in a channel
+
+A channel can carry tensors, also tensors in the memory of a GPU. A `send` moves only the handle of
+the tensor, and its data stays where it is. Here a task sends six tensors that live in the GPU
+memory `W`, and the code of the block copies each one back to read it
+(`book_channel_of_gpu_tensors.vx`):
+
+```rust
+{{#include ../../../tests/backend/pass/book_channel_of_gpu_tensors.vx:program}}
+```
+
+It prints `got 6 tensors, sum 15`.
+
+The channel can hold 4 tensors at the same time, so the compiler counts 4 tensors in `W` from the
+`channel` call. The check of the memory capacity adds them to the other tensors in `W`. With room
+for 20 tensors, the program does not compile:
+
+```text
+Error[E6009]: the room of this channel, 20 of `Tensor<f32, [1024], Memory::W>`, needs 81920 bytes
+but memory space 'W' has capacity 65536 bytes
+```
+
 ### Cancellation
 
 When the code of a `tasks` block leaves it early, with `return` or `break`, or when a task fails,
@@ -141,7 +170,8 @@ the program with the message `vx: deadlock: ...`, so that it does not hang.
 
 A `drop` runs with cancellation off, so that a cleanup can finish. So a wait in a `drop` should
 have a time limit: `send_for(v, limit)` and `recv_for(limit)` take a `Duration`, and give
-`timed_out` and `TimedOut` after it. The compiler warns about a `send` or `recv` in a `drop` that has no limit (W1036).
+`timed_out` and `TimedOut` after it. The compiler warns about a `send` or `recv` in a `drop` that
+has no limit (W1036).
 
 A `drop` also has a limit of its own. Its type says how long its waits can take, with a method of
 `Drop` that returns 10 seconds unless the type writes its own:
@@ -217,6 +247,22 @@ An `Arc<T>` can move to another task only when `T` is `Send` and `Sync`
 It prints `scale 10, owners 2`, and then `owners 1`. To change a shared value, put a `Mutex` in the
 `Arc`.
 
+## How tasks run
+
+By default, each task runs on an OS thread of its own. With `VX_TASK_RUNTIME=shared`, the program
+runs many tasks on a few OS threads instead. Each task then gets a stack of its own, and a task
+that waits gives its thread to another task. A program needs no change to use the shared runtime.
+Set these variables when the program starts:
+
+- `VX_TASK_WORKERS=n` starts `n` threads. Without it, the runtime starts one thread for each CPU.
+- A task that blocks in a C function, or runs a long loop with no wait, holds its thread. When
+  tasks are ready and each thread is busy, the runtime starts one more thread.
+  `VX_TASK_MAX_WORKERS=n` sets the largest number of threads.
+- `VX_TASK_SEED=n` runs all tasks on one thread, and the seed picks the next task to run. The same
+  seed gives the same order each time, so a bug that depends on the order happens again in the
+  next run. Try other seeds to find such a bug. A seed cannot go with `VX_TASK_WORKERS` or
+  `VX_TASK_MAX_WORKERS`.
+
 ## Finding a data race at run time
 
 The compiler cannot see a race through a raw pointer in `unsafe` code. To find one, run the program
@@ -224,9 +270,9 @@ with `vxc --sanitize=thread program.vx`. LLVM's ThreadSanitizer then checks each
 the program. It prints `WARNING: ThreadSanitizer: data race` for each race, and the program fails.
 
 ThreadSanitizer sees the start and the end of a task, the atomics, and the waits of channels and
-`Mutex`. This is also true for the runtime that runs many tasks on a few OS threads
-(`VX_TASK_RUNTIME=shared`). It finds only the races that happen in that run. The option works only when `vxc` runs the program.
-On Ubuntu, the runtime of ThreadSanitizer is in the package `libclang-rt-22-dev`.
+`Mutex`, with both runtimes. It finds only the races that happen in that run. The option works
+only when `vxc` runs the program. On Ubuntu, the runtime of ThreadSanitizer is in the package
+`libclang-rt-22-dev`.
 
 ## Why Vx has no `async`
 
@@ -239,8 +285,8 @@ calls it. Such a function has a "color", and a program must keep the two colors 
 have that problem. A borrow that lives across a wait is a borrow across a call, so the borrow
 checker needs no new rule.
 
-The runtime runs each task on an OS thread of its own today. A later runtime will run many tasks on
-a few OS threads. The language is the same for both.
+A task that waits holds no OS thread in the shared runtime, so a program can have many waiting
+tasks. The language is the same for both runtimes.
 
 ## Compared with Rust and Go
 
