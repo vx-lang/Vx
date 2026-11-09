@@ -709,20 +709,14 @@ pub fn execute_mlir_streams(
         // happens to define a function named `read` exports that name from the
         // executable, interposes libc's `read` for the whole process, and the
         // initializer then reads with garbage arguments before `main` runs.
-        // Keeping an unused backend out of the link is the backend's job.
-        //
-        // The flag that does it is the linker's, so it differs by platform:
-        // GNU ld and lld take `--as-needed`, and the Apple linker does not
-        // know that name at all -- it fails the whole link with "unknown
-        // options". Mach-O spells the same job `-dead_strip_dylibs`, which
-        // drops a dylib nothing refers to.
-        if cfg!(target_os = "linux") {
-            clang_cmd.args(["-Wl,--as-needed", lib_npu.as_str(), "-Wl,--no-as-needed"]);
-        } else if cfg!(target_os = "macos") {
-            clang_cmd.args(["-Wl,-dead_strip_dylibs", lib_npu.as_str()]);
-        } else {
-            clang_cmd.arg(lib_npu.as_str());
-        }
+        // Keeping an unused backend out of the link is the backend's job, and
+        // the flag that does it is the linker's, so it differs by platform.
+        // `dispatch_backend_link_args` holds that difference where a test can
+        // read it back on a machine that is not the one being linked for.
+        clang_cmd.args(dispatch_backend_link_args(
+            std::env::consts::OS,
+            lib_npu.as_str(),
+        ));
         clang_cmd.arg("-lffi");
 
         // The dispatcher resolves the outlined kernel with
@@ -818,6 +812,24 @@ pub fn execute_mlir_streams(
     })
 }
 
+/// The arguments that put the dispatch backend on the link line.
+///
+/// Only Linux links libsycl, so only Linux needs `--as-needed` to keep an
+/// unused backend's initializer out of a program that defines `read`. macOS
+/// takes no flag: the Apple linker knows no `--as-needed`, and
+/// `-dead_strip_dylibs` would also drop the runner utils the shims call into.
+fn dispatch_backend_link_args(target_os: &str, lib_npu: &str) -> Vec<String> {
+    if target_os == "linux" {
+        vec![
+            "-Wl,--as-needed".to_string(),
+            lib_npu.to_string(),
+            "-Wl,--no-as-needed".to_string(),
+        ]
+    } else {
+        vec![lib_npu.to_string()]
+    }
+}
+
 /// The signal that killed a run, in words, or `None` for an ordinary exit.
 ///
 /// A signal is not an exit code: `ExitStatus::code` answers `None` for one, so
@@ -879,6 +891,33 @@ mod tests {
         if let Err(why) = runtime_library_path() {
             panic!("{why}");
         }
+    }
+
+    /// libsycl is what needs `--as-needed`, and only Linux links it. macOS must get the plain
+    /// path: the Apple linker does not know that flag, and `-dead_strip_dylibs` also drops
+    /// `libmlir_c_runner_utils`, which `libvx_mlir_shims` calls into without listing it as a
+    /// dependency. The fixture that would catch that is
+    /// `tests/backend/pass/tensor_print_narrow.vx`, which aborts in the runner's printer.
+    #[test]
+    fn macos_links_the_dispatch_backend_with_no_linker_flag() {
+        assert_eq!(
+            dispatch_backend_link_args("macos", "/lib/libvx_dispatch.dylib"),
+            ["/lib/libvx_dispatch.dylib"]
+        );
+    }
+
+    /// The other side of the same branch: a change that drops `--as-needed` on Linux is a
+    /// program that defines `read` dying before `main`, because libsycl's initializer calls it.
+    #[test]
+    fn linux_links_the_dispatch_backend_only_as_needed() {
+        assert_eq!(
+            dispatch_backend_link_args("linux", "/lib/libvx_dispatch.so"),
+            [
+                "-Wl,--as-needed",
+                "/lib/libvx_dispatch.so",
+                "-Wl,--no-as-needed"
+            ]
+        );
     }
 
     /// A macOS dylib records the path it expects to be found at, and every program the JIT
