@@ -978,13 +978,6 @@ impl<'a> TypeChecker<'a> {
                     .iter()
                     .any(|root| crate::hir::check::raw::expr_mentions(e, root))
             })
-            .filter(|e| {
-                let mut calls_again = false;
-                crate::syntax::visit_expr(e, &mut |part| {
-                    calls_again |= matches!(part, Expr::FunctionCall(_) | Expr::MethodCall(_));
-                });
-                !calls_again
-            })
             .collect();
         self.consteval.constraints.extend(facts);
     }
