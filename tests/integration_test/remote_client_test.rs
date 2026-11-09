@@ -278,6 +278,113 @@ fn two_hosts_that_use_two_workers_in_opposite_order_both_finish() {
     }
 }
 
+/// One host gets stuck in the middle of a message in `mode`. The worker must
+/// drop it after its time limit of 2 s, and then serve a second host.
+fn a_stuck_host_does_not_stop_the_worker(mode: &str, logged: &str) {
+    let root = repo_root();
+    let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    let cxx = runtime_test_build::cxx();
+
+    let worker_bin = tmp.join(format!("vx-worker-stuck-{mode}"));
+    compile(
+        &cxx,
+        &[
+            root.join("runtime/vx_worker_main.cpp"),
+            root.join("runtime/host_dispatch.cpp"),
+        ],
+        &worker_bin,
+        &ffi_flags(),
+    );
+    let stuck_bin = tmp.join(format!("stuck_host-{mode}"));
+    compile(
+        &cxx,
+        &[root.join("tests/runtime/stuck_host.cpp")],
+        &stuck_bin,
+        &[],
+    );
+    let client_bin = tmp.join(format!("remote_client_after_{mode}"));
+    compile(
+        &cxx,
+        &[root.join("tests/runtime/remote_client_test.cpp")],
+        &client_bin,
+        &[],
+    );
+
+    let offset = if mode == "half" { 6 } else { 7 };
+    let port = 20000 + ((std::process::id() + offset) % 10000) as u16;
+    let mut worker = Worker(
+        Command::new(&worker_bin)
+            .args([
+                "--port",
+                &port.to_string(),
+                "--topology",
+                "0",
+                "--io-timeout",
+                "2",
+            ])
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("failed to start the worker"),
+    );
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    let mut stuck = Worker(
+        Command::new(&stuck_bin)
+            .args(["127.0.0.1", &port.to_string(), mode])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("failed to start the stuck host"),
+    );
+    let mut said = [0u8; 6];
+    stuck
+        .0
+        .stdout
+        .take()
+        .expect("the stuck host has no stdout")
+        .read_exact(&mut said)
+        .expect("the stuck host did not get stuck");
+    assert_eq!(&said, b"stuck\n");
+
+    let run = run_bounded(
+        Command::new(&client_bin).args(["127.0.0.1", &port.to_string()]),
+        20,
+    );
+    assert!(
+        run.status.success(),
+        "the second host did not finish while the first host was stuck:\n{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    drop(stuck);
+    let mut stderr = worker.0.stderr.take().expect("the worker has no stderr");
+    drop(worker);
+    let mut log = String::new();
+    stderr
+        .read_to_string(&mut log)
+        .expect("failed to read the worker's log");
+    assert!(
+        log.contains(logged),
+        "the worker did not drop the stuck host for its time limit:\n{log}"
+    );
+}
+
+#[test]
+fn a_host_that_sends_half_a_request_does_not_stop_the_worker() {
+    a_stuck_host_does_not_stop_the_worker(
+        "half",
+        "the host sent part of a request and then nothing for 2 s; dropping the host",
+    );
+}
+
+#[test]
+fn a_host_that_does_not_read_its_reply_does_not_stop_the_worker() {
+    a_stuck_host_does_not_stop_the_worker(
+        "no-read",
+        "the host did not read its reply for 2 s; dropping the host",
+    );
+}
+
 /// A Vx program placing its data on a worker, computing there, and reading the
 /// answer home -- checked against the same program run with no manifest.
 ///

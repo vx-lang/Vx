@@ -31,7 +31,7 @@
 // outlined kernel.
 //
 // Usage:
-//   vx-worker --port 9001 [--topology 500] [--verbose]
+//   vx-worker --port 9001 [--topology 500] [--io-timeout 30] [--verbose]
 //
 //===----------------------------------------------------------------------===//
 
@@ -43,6 +43,7 @@
 #include "vx_wire.h"
 
 #include <arpa/inet.h>
+#include <cerrno>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -52,6 +53,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -72,6 +74,10 @@ bool g_verbose = [] {
   return v && v[0] != '\0' && strcmp(v, "0") != 0;
 }();
 uint32_t g_worker_id = 1;
+/// The seconds that one read or write on a host connection can wait. The worker
+/// serves its hosts in turn, so a host that sends half a request, or stops
+/// reading a reply, would otherwise stop the worker for every host.
+int g_io_timeout = 30;
 
 /* Sized for a generation rather than a demo. Every dispatch stages its
    activations and frees them after, and `vx_remote_table_free` marks a region
@@ -434,6 +440,29 @@ int serve_dispatch(const vx_wire_dispatch *d, const vx_wire_arg *args,
 
 /// Serves one request of `g_host`. Returns false when the host disconnected or
 /// the connection failed, and the worker must drop the host.
+/// Logs why the worker drops the host after a read or a write failed.
+void log_io_failure(bool reading) {
+  if (errno == EAGAIN || errno == EWOULDBLOCK) {
+    fprintf(stderr,
+            reading ? "[Vx worker] the host sent part of a request and then "
+                      "nothing for %d s; dropping the host\n"
+                    : "[Vx worker] the host did not read its reply for %d s; "
+                      "dropping the host\n",
+            g_io_timeout);
+    return;
+  }
+  fprintf(stderr, "[Vx worker] transport failure; dropping the host\n");
+}
+
+/// Sends a reply to the host. Returns false when the send failed.
+bool reply(uint32_t type, const void *body, uint64_t len) {
+  if (vx_transport_send(g_host->fd, type, body, len) == VX_TRANSPORT_OK) {
+    return true;
+  }
+  log_io_failure(false);
+  return false;
+}
+
 bool serve_one() {
   const int fd = g_host->fd;
   {
@@ -449,11 +478,10 @@ bool serve_one() {
       fprintf(stderr, "[Vx worker] a message exceeded the %zu-byte buffer\n",
               sizeof(g_body));
       /* Drained by the transport, so answering keeps the stream in step. */
-      vx_transport_send(fd, type, nullptr, 0);
-      return true;
+      return reply(type, nullptr, 0);
     }
     if (rc != VX_TRANSPORT_OK) {
-      fprintf(stderr, "[Vx worker] transport failure; dropping the host\n");
+      log_io_failure(true);
       return false;
     }
 
@@ -481,8 +509,7 @@ bool serve_one() {
       vx_wire_writer w;
       vx_wire_writer_init(&w, g_reply, sizeof(g_reply));
       vx_wire_put_u64(&w, handle);
-      if (vx_transport_send(fd, VX_WIRE_TRANSFER, g_reply, w.len) !=
-          VX_TRANSPORT_OK) {
+      if (!reply(VX_WIRE_TRANSFER, g_reply, w.len)) {
         return false;
       }
       break;
@@ -502,8 +529,7 @@ bool serve_one() {
       vx_wire_writer w;
       vx_wire_writer_init(&w, g_reply, sizeof(g_reply));
       vx_wire_put_results(&w, ok ? 0 : -1, results, ok ? num_results : 0);
-      if (vx_transport_send(fd, VX_WIRE_DISPATCH, g_reply, w.len) !=
-          VX_TRANSPORT_OK) {
+      if (!reply(VX_WIRE_DISPATCH, g_reply, w.len)) {
         return false;
       }
       break;
@@ -516,8 +542,7 @@ bool serve_one() {
           nbytes > ref.region->size - ref.offset || nbytes > sizeof(g_reply)) {
         /* Nothing, rather than bytes invented for a handle that named nothing
            or a length that ran past what it named. */
-        if (vx_transport_send(fd, VX_WIRE_FETCH, nullptr, 0) !=
-            VX_TRANSPORT_OK) {
+        if (!reply(VX_WIRE_FETCH, nullptr, 0)) {
           return false;
         }
         break;
@@ -525,8 +550,7 @@ bool serve_one() {
       vx_plugin_transfer_device_to_host((char *)ref.region->remote + ref.offset,
                                         g_reply, (size_t)nbytes,
                                         (uint32_t)g_topology);
-      if (vx_transport_send(fd, VX_WIRE_FETCH, g_reply, nbytes) !=
-          VX_TRANSPORT_OK) {
+      if (!reply(VX_WIRE_FETCH, g_reply, nbytes)) {
         return false;
       }
       break;
@@ -540,7 +564,9 @@ bool serve_one() {
         vx_remote_table_free(&g_host->table, handle);
       }
       log_line("[Vx worker] FREE handle %llx\n", (unsigned long long)handle);
-      vx_transport_send(fd, VX_WIRE_FREE, nullptr, 0);
+      if (!reply(VX_WIRE_FREE, nullptr, 0)) {
+        return false;
+      }
       break;
     }
     default:
@@ -603,17 +629,24 @@ int main(int argc, char **argv) {
       g_topology = (int32_t)atoi(argv[++i]);
     } else if (strcmp(argv[i], "--worker-id") == 0 && i + 1 < argc) {
       g_worker_id = (uint32_t)atoi(argv[++i]);
+    } else if (strcmp(argv[i], "--io-timeout") == 0 && i + 1 < argc) {
+      g_io_timeout = atoi(argv[++i]);
     } else if (strcmp(argv[i], "--verbose") == 0) {
       g_verbose = true;
     } else {
       fprintf(stderr,
-              "usage: %s --port N [--topology T] [--worker-id W] [--verbose]\n",
+              "usage: %s --port N [--topology T] [--worker-id W] "
+              "[--io-timeout S] [--verbose]\n",
               argv[0]);
       return 2;
     }
   }
   if (port <= 0 || port > 65535) {
     fprintf(stderr, "error: --port is required and must be 1..65535\n");
+    return 2;
+  }
+  if (g_io_timeout <= 0) {
+    fprintf(stderr, "error: --io-timeout must be at least 1 second\n");
     return 2;
   }
   if (g_worker_id == 0 || g_worker_id > VX_REMOTE_WORKER_MAX) {
@@ -687,6 +720,9 @@ int main(int argc, char **argv) {
       }
       int one_nd = 1;
       setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one_nd, sizeof(one_nd));
+      timeval limit = {g_io_timeout, 0};
+      setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &limit, sizeof(limit));
+      setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &limit, sizeof(limit));
       if (!add_host(fd)) {
         fprintf(stderr, "[Vx worker] refused a host: %zu hosts are connected\n",
                 kMaxHosts);
