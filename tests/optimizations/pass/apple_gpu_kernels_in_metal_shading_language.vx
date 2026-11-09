@@ -13,6 +13,7 @@
 // CHECK-NEXT: device float *p0 {{\[\[}}buffer(0){{\]\]}},
 // CHECK-NEXT: device const float *p1 {{\[\[}}buffer(1){{\]\]}},
 // CHECK-NEXT: constant uint *vx_w {{\[\[}}buffer(2){{\]\]}},
+// CHECK-NEXT: uint3 vx_tgid
 // CHECK: const int p1_n1 = as_type<int>(vx_w[9]);
 // CHECK-NEXT: const int p1_s1 = 1;
 // CHECK: const int p3 = as_type<int>(vx_w[13]);
@@ -131,6 +132,41 @@ pub fn shift_image(dst : &mut Tensor<f32, [?, ?], Memory::HBM>, src : &Tensor<f3
         let top = mix(pixel(src, y, x, h, w), pixel(src, y, x + 1, h, w), 0.75);
         let bottom = mix(pixel(src, y + 1, x, h, w), pixel(src, y + 1, x + 1, h, w), 0.75);
         dst[y][x] = mix(top, bottom, 0.25);
+      }
+    }
+  }
+  return;
+}
+
+// Metal cannot stop a kernel. So a kernel with asserts takes one more buffer, after the words,
+// and a failed assert stores its number there and ends the thread. A comment line gives each
+// assert's number and message, for the runtime. In the message, a new line is %0A and % is %25.
+// CHECK-LABEL: // vx.kernel double_below m1 i32 i32
+// CHECK-NEXT: // vx.assert double_below 1 a value is not below the limit%0A  at {{.*}}apple_gpu_kernels_in_metal_shading_language.vx:{{[0-9]+}}
+// CHECK-NEXT: // vx.assert double_below 2 a value is 50%25 of the limit%0A  at {{.*}}apple_gpu_kernels_in_metal_shading_language.vx:{{[0-9]+}}
+// CHECK-NEXT: kernel void double_below(
+// CHECK-NEXT: device int *p0 {{\[\[}}buffer(0){{\]\]}},
+// CHECK-NEXT: constant uint *vx_w {{\[\[}}buffer(1){{\]\]}},
+// CHECK-NEXT: device atomic_uint *vx_fail {{\[\[}}buffer(2){{\]\]}},
+// CHECK: bool [[BELOW:v[0-9]+]] = {{v[0-9]+}} < p1;
+// CHECK-NEXT: if (![[BELOW]]) {
+// CHECK-NEXT: atomic_store_explicit(vx_fail, 1u, memory_order_relaxed);
+// CHECK-NEXT: return;
+// CHECK-NEXT: }
+// CHECK: bool [[NOT_EQUAL:v[0-9]+]] = {{v[0-9]+}} != p1;
+// CHECK-NEXT: if (![[NOT_EQUAL]]) {
+// CHECK-NEXT: atomic_store_explicit(vx_fail, 2u, memory_order_relaxed);
+// CHECK-NEXT: return;
+// CHECK-NEXT: }
+pub fn double_below(out : &mut Tensor<i32, [?], Memory::HBM>, limit : i32, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for l in 0..64 across lanes {
+        let v = b * 64 + l;
+        assert(v < limit, "a value is not below the limit");
+        let doubled = v * 2;
+        assert(doubled != limit, "a value is 50% of the limit");
+        out[v] = doubled;
       }
     }
   }
