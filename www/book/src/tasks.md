@@ -137,7 +137,8 @@ cancelled task gives `Cancelled` at once, and such a loop never ends.
 A `join()` and a `lock()` cannot be cancelled.
 
 When each task waits and nothing can wake one, the program has a deadlock. The runtime then stops
-the program with the message `vx: deadlock: ...`, so that it does not hang.
+the program with the message `vx: deadlock: ...`, so that it does not hang. It never reports a
+deadlock for a program that can still continue.
 
 A `drop` runs with cancellation off, so that a cleanup can finish. So a wait in a `drop` should
 have a time limit: `send_for(v, limit)` and `recv_for(limit)` take a `Duration`, and give
@@ -188,6 +189,10 @@ channel that always has a value does not hide the others (`book_select_from_two_
 ```
 
 It prints `from 0: 3 values, from 1: 3 values`.
+
+So for `n` channels, if one channel has a value at each of `n` calls in a row, one of those calls
+takes a value from it. [What Vx guarantees about concurrency](guarantees.md) lists this promise
+and the others about tasks, and says how we check each one.
 
 ## `Mutex`
 
