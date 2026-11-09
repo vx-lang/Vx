@@ -1,0 +1,205 @@
+//===- hash_table.vx - Vx Compiler --------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// std::bulk_hash on the Apple GPU of the M4. hash_table.cpp does the same work on one core, with
+// the same hash and the same linear probing, and with std::unordered_map.
+//
+// A table has 2^20, 2^24, 2^28 or 2^30 slots, and the keys fill half of them or 85% of them. The
+// program times three calls: the insert of the keys, a lookup of the same keys, and a lookup of
+// as many keys that the table does not hold. A call ends when the GPU finishes it. After the
+// clock stops, the program checks each answer of each lookup.
+//
+// The harness compiles this file for the M4, and runs it a second time with VX_METAL=0. That run
+// uses the CPU copy of each kernel, on every core. On a machine with no Apple GPU, both runs
+// use the CPU copy.
+//
+// vx-bench flags: --host default --machine fleet/m4-uma.vx
+// vx-bench env: VX_METAL=0
+import core::convert;
+import std::bulk_hash;
+import std::time;
+
+/// The lookup of the keys of the table reads them in another order than the insert, with this
+/// stride. Else std::unordered_map reads its entries in the order that it made them. The stride is
+/// a prime, and it divides no number of keys here.
+const LOOKUP_STRIDE : i64 = 1000003;
+
+/// The key for the number `x`. The multiply gives each `u32` a different `u32`. Only
+/// x = 4050964655 gives `BULK_HASH_EMPTY`, and every `x` here is below 2^31.
+fn key_of(x : u32) on Topology::Any -> u32
+ensures writes_only()
+{
+  return x * 2654435761u32;
+}
+
+/// Writes the key for the number `first + 2 * j` to `keys[i]`, and the number to `vals[i]`, with
+/// j = i * `stride` % n. When `stride` and n have no common factor, each j comes once.
+fn make_batch(keys : &mut Tensor<u32, [?], Memory::HBM>, vals : &mut Tensor<u32, [?], Memory::HBM>, first : u32, stride : i64) -> void {
+  let n = keys.len();
+  let count = i64::from(n);
+  let nblocks = (n - 1) / 256 + 1;
+  spawn on(Topology::Device) {
+    for b in 0..nblocks across blocks {
+      for l in 0..256 across lanes {
+        let i = b * 256 + l;
+        if i < n {
+          let j = (i64::from(i) * stride % count) as u32;
+          let x = first + 2u32 * j;
+          keys[i] = key_of(x);
+          vals[i] = x;
+        }
+      }
+    }
+  }
+  return;
+}
+
+/// Makes every slot empty.
+fn clear(slots : &mut Tensor<u32, [?], Memory::HBM>) -> void {
+  let n = slots.len();
+  let nblocks = (n - 1) / 256 + 1;
+  spawn on(Topology::Device) {
+    for b in 0..nblocks across blocks {
+      for l in 0..256 across lanes {
+        let i = b * 256 + l;
+        if i < n {
+          slots[i] = BULK_HASH_EMPTY;
+        }
+      }
+    }
+  }
+  return;
+}
+
+/// Waits for the GPU launches that write `t`. The CPU reads `t` in place, with no copy.
+fn wait_for(t : &Tensor<u32, [?], Memory::HBM>) -> u32 {
+  let h = transfer(t, Memory::CPU_DRAM);
+  return h[0];
+}
+
+/// The sum of the values of the slots that hold a key.
+fn sum_held(slots : &Tensor<u32, [?], Memory::HBM>, values : &Tensor<u32, [?], Memory::HBM>) -> i64 {
+  let s = transfer(slots, Memory::CPU_DRAM);
+  let v = transfer(values, Memory::CPU_DRAM);
+  let mut total : i64 = 0;
+  for i in 0..slots.len() {
+    if s[i] != BULK_HASH_EMPTY {
+      total += i64::from(v[i]);
+    }
+  }
+  return total;
+}
+
+/// The sum of `found`, after a check that `found[i]` is the value of key i of
+/// `make_batch(.., first, stride)`.
+fn sum_found(found : &Tensor<u32, [?], Memory::HBM>, first : u32, stride : i64) -> i64 {
+  let h = transfer(found, Memory::CPU_DRAM);
+  let count = i64::from(found.len());
+  let mut total : i64 = 0;
+  for i in 0..found.len() {
+    let j = (i64::from(i) * stride % count) as u32;
+    assert(h[i] == first + 2u32 * j, "hash_table: a lookup gave the wrong value for a key of the table");
+    total += i64::from(h[i]);
+  }
+  return total;
+}
+
+fn count_missing(t : &Tensor<u32, [?], Memory::HBM>) -> i64 {
+  let h = transfer(t, Memory::CPU_DRAM);
+  let mut count : i64 = 0;
+  for i in 0..t.len() {
+    if h[i] == BULK_HASH_EMPTY {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+fn report(name : *const i8, seconds : f32, total : i64) -> void {
+  unsafe {
+    bench_report(name, "seconds", seconds);
+    bench_report(name, "result", total as f32);
+  }
+  return;
+}
+
+/// Times a table of 2^`log_slots` slots, filled to `load_percent`. Each repetition makes new keys.
+/// The answer of the insert and of the first lookup is the sum of the values. The answer of the
+/// second lookup is the number of keys it did not find. A wrong answer stops the program.
+fn run(log_slots : i32, load_percent : i32, reps : i32, insert_name : *const i8, present_name : *const i8, missing_name : *const i8) -> void {
+  let size = 1 << log_slots;
+  let n = (i64::from(size) * i64::from(load_percent) / 100) as i32;
+  let mut slots = transfer(Tensor<u32>([size]), Memory::HBM);
+  let values = transfer(Tensor<u32>([size]), Memory::HBM);
+  let mut keys = transfer(Tensor<u32>([n]), Memory::HBM);
+  // The values to insert, and then the answers of the lookups.
+  let mut vals = transfer(Tensor<u32>([n]), Memory::HBM);
+  let mut insert_best : f32 = 1000000.0;
+  let mut present_best : f32 = 1000000.0;
+  let mut missing_best : f32 = 1000000.0;
+  let mut insert_total : i64 = 0;
+  let mut present_total : i64 = 0;
+  let mut missing_total : i64 = 0;
+  for rep in 0..reps {
+    // The keys of the table are for the odd numbers from 2 * rep + 1, and the missing keys are
+    // for the even numbers from 2 * rep + 2.
+    let first = (2 * rep + 1) as u32;
+    clear(&mut slots);
+    make_batch(&mut keys, &mut vals, first, 1);
+    let _ready = wait_for(&slots) + wait_for(&keys);
+    let t0 = Instant::now();
+    let held = bulk_hash_insert_all(&slots, &values, &keys, &vals, 0);
+    let _inserted = wait_for(&values);
+    let t1 = Instant::now();
+    assert(held == n, "hash_table: the table holds the wrong number of keys");
+    insert_total += sum_held(&slots, &values);
+
+    make_batch(&mut keys, &mut vals, first, LOOKUP_STRIDE);
+    let _shuffled = wait_for(&keys);
+    let t2 = Instant::now();
+    bulk_hash_find_all(&slots, &values, &keys, &mut vals);
+    let _found = wait_for(&vals);
+    let t3 = Instant::now();
+    present_total += sum_found(&vals, first, LOOKUP_STRIDE);
+
+    make_batch(&mut keys, &mut vals, first + 1u32, 1);
+    let _missing = wait_for(&keys);
+    let t4 = Instant::now();
+    bulk_hash_find_all(&slots, &values, &keys, &mut vals);
+    let _not_found = wait_for(&vals);
+    let t5 = Instant::now();
+    let missed = count_missing(&vals);
+    assert(missed == i64::from(n), "hash_table: a lookup found a key that is not in the table");
+    missing_total += missed;
+
+    if (t1 - t0).as_secs_f32() < insert_best {
+      insert_best = (t1 - t0).as_secs_f32();
+    }
+    if (t3 - t2).as_secs_f32() < present_best {
+      present_best = (t3 - t2).as_secs_f32();
+    }
+    if (t5 - t4).as_secs_f32() < missing_best {
+      missing_best = (t5 - t4).as_secs_f32();
+    }
+  }
+  report(insert_name, insert_best, insert_total);
+  report(present_name, present_best, present_total);
+  report(missing_name, missing_best, missing_total);
+  return;
+}
+
+fn main() -> i32 {
+  run(20, 50, 5, "insert_2^20_slots_load_0.5/std_bulk_hash", "find_present_2^20_slots_load_0.5/std_bulk_hash", "find_missing_2^20_slots_load_0.5/std_bulk_hash");
+  run(20, 85, 5, "insert_2^20_slots_load_0.85/std_bulk_hash", "find_present_2^20_slots_load_0.85/std_bulk_hash", "find_missing_2^20_slots_load_0.85/std_bulk_hash");
+  run(24, 50, 5, "insert_2^24_slots_load_0.5/std_bulk_hash", "find_present_2^24_slots_load_0.5/std_bulk_hash", "find_missing_2^24_slots_load_0.5/std_bulk_hash");
+  run(24, 85, 5, "insert_2^24_slots_load_0.85/std_bulk_hash", "find_present_2^24_slots_load_0.85/std_bulk_hash", "find_missing_2^24_slots_load_0.85/std_bulk_hash");
+  run(28, 50, 3, "insert_2^28_slots_load_0.5/std_bulk_hash", "find_present_2^28_slots_load_0.5/std_bulk_hash", "find_missing_2^28_slots_load_0.5/std_bulk_hash");
+  run(28, 85, 3, "insert_2^28_slots_load_0.85/std_bulk_hash", "find_present_2^28_slots_load_0.85/std_bulk_hash", "find_missing_2^28_slots_load_0.85/std_bulk_hash");
+  run(30, 50, 2, "insert_2^30_slots_load_0.5/std_bulk_hash", "find_present_2^30_slots_load_0.5/std_bulk_hash", "find_missing_2^30_slots_load_0.5/std_bulk_hash");
+  run(30, 85, 2, "insert_2^30_slots_load_0.85/std_bulk_hash", "find_present_2^30_slots_load_0.85/std_bulk_hash", "find_missing_2^30_slots_load_0.85/std_bulk_hash");
+  return 0;
+}
