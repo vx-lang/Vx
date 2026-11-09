@@ -1,0 +1,34 @@
+//===- book_gpu_blocks_and_lanes.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on GPU code (www/book/src/gpu.md): each block doubles one row
+// of a tensor in GPU memory and adds the number of the row. 1 * 2 + 0 = 2 and 1 * 2 + 63 = 65.
+//
+// The RUN lines run the CPU copy of the kernel (`CUDA_VISIBLE_DEVICES=`), with both code
+// generators. The last one checks the launch: 64 blocks of 256 lanes.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=LAUNCH
+// CHECK: {{^}}corner 2, last row 65{{$}}
+// LAUNCH: grid=64{{.}}00block=256{{.}}
+
+// ANCHOR: program
+fn main() -> i32 {
+  let mut grid = transfer(Tensor<f32, [64, 300]>::fill(1.0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for y in 0..64 across blocks {
+      for x in 0..300 across lanes(256) {
+        grid[y][x] = grid[y][x] * 2.0 + (y as f32);
+      }
+    }
+  }
+  let back = transfer(grid, Memory::CPU_DRAM);
+  println!("corner {}, last row {}", back[0][0], back[63][299]);
+  return 0;
+}
+// ANCHOR_END: program

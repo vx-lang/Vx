@@ -25,6 +25,7 @@
 # Heterogeneous computing
 
 - [Topologies and memory](heterogeneous.md)
+- [Parallel code on a GPU](gpu.md)
 - [Machine files](machine-files.md)
 - [NUMA and the host's memory domains](numa.md)
 
