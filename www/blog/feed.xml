@@ -5,10 +5,18 @@
   <link href="https://vxlang.org/blog/feed.xml" rel="self"/>
   <link href="https://vxlang.org/blog/"/>
   <id>https://vxlang.org/blog/</id>
-  <updated>2026-11-03T18:00:00Z</updated>
+  <updated>2026-11-09T18:00:00Z</updated>
   <author><name>Aditya Kumar</name></author>
 
   <entry>
+    <title>The promise of Vx</title>
+    <link href="https://vxlang.org/blog/the-promise-of-vx.html"/>
+    <id>https://vxlang.org/blog/the-promise-of-vx.html</id>
+    <updated>2026-11-09T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>The computer on your desk has many cores, memory in banks and a GPU. The apps you download use little of it, because most of them were written for one core, long before LLMs could help anyone write code. The promise of Vx is that you write the small app you need, and the compiler spreads it over the machine you have: its cores, its memories and its GPU. Three small programs show how: two tasks that share the work with no locks, a blur that runs on the Apple GPU through Metal and on an NVIDIA GPU as PTX, and tensors placed on the NUMA node of the cores that read them. A table says what works today: a Mac and Linux with an NVIDIA GPU work, and AMD, Intel and Windows do not yet.</summary>
+  </entry>
+
     <title>Checking the deadlock watcher</title>
     <link href="https://vxlang.org/blog/checking-the-deadlock-watcher.html"/>
     <id>https://vxlang.org/blog/checking-the-deadlock-watcher.html</id>
