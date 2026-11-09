@@ -300,6 +300,10 @@ pub(crate) struct DropFrames {
     /// binds by value, that need dropping. `pending_by` is what gave them.
     pending: Vec<(String, usize, Vec<GluePart>, bool, Type)>,
     pending_by: &'static str,
+    /// A `match` arm takes the value that is moving, and another arm may not. The move is not
+    /// certain, so the owner gets a flag. `pending_sets` set the flags at the start of the arm.
+    arm_takes: bool,
+    pending_sets: Vec<Statement>,
     /// The names moved by the statement being checked. A `return t` moves `t` on its way out.
     moved_now: HashSet<String>,
     /// Makes the names of the locals the rewrite adds unique.
@@ -1011,6 +1015,13 @@ impl<'a> TypeChecker<'a> {
         d.pending_by = "the arm";
     }
 
+    /// A `match` arm takes the value that `take` moves, and another arm may not.
+    pub(crate) fn drops_arm_takes(&mut self, take: impl FnOnce(&mut Self)) {
+        self.borrow.drops.arm_takes = true;
+        take(self);
+        self.borrow.drops.arm_takes = false;
+    }
+
     pub(crate) fn drops_exit_function(&mut self) {
         let d = &mut self.borrow.drops;
         while let Some(f) = d.frames.pop() {
@@ -1072,6 +1083,11 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn drops_enter_block(&mut self, body: &[Statement], value: Option<&Expr>) {
         let d = &mut self.borrow.drops;
         let given_by = d.pending_by;
+        let mut edits: Box<Edits> = Box::default();
+        let sets = std::mem::take(&mut d.pending_sets);
+        if !sets.is_empty() {
+            edits.before.insert(0, sets);
+        }
         let owners = std::mem::take(&mut d.pending)
             .into_iter()
             .map(|(name, scope, glue, drop_reads_borrows, ty)| Owner {
@@ -1099,7 +1115,7 @@ impl<'a> TypeChecker<'a> {
                 .chain(value.map(|v| v.span().line))
                 .collect(),
             stmt: 0,
-            edits: Box::default(),
+            edits,
             value_at: value.map(|_| body.len()),
             hidden: Vec::new(),
         });
@@ -1266,6 +1282,7 @@ impl<'a> TypeChecker<'a> {
             here = outer;
         }
         let rewriting = self.drops_rewriting();
+        let arm = self.borrow.drops.arm_takes;
         if !again && field.is_none() {
             self.borrow.drops.moved_now.insert(name.to_string());
         }
@@ -1294,7 +1311,7 @@ impl<'a> TypeChecker<'a> {
                             } else {
                                 Moved::Maybe
                             }
-                        } else if scope == here {
+                        } else if scope == here && !arm {
                             *moved_at = Some(*stmt);
                             Moved::Yes
                         } else {
@@ -1357,6 +1374,12 @@ impl<'a> TypeChecker<'a> {
                 .expect("the owner's block is below the task"),
             None => top - 1,
         };
+        // The arm takes the value before its first statement, in a block not opened yet.
+        if arm && first_task.is_none() {
+            let set = assign_stmt(&flag, ident("true"));
+            self.borrow.drops.pending_sets.push(set);
+            return;
+        }
         if let Some(FrameKind::Block { stmt, edits, .. }) = self.borrow.drops.frames.get_mut(at) {
             edits
                 .after
