@@ -39,7 +39,7 @@ pub(crate) enum Level {
 
 /// What the lowering of a region with `across` loops knows at a point of the region.
 #[derive(Default)]
-pub(crate) struct AcrossMap {
+pub(crate) struct AcrossMap<'c> {
     /// The lanes of a block.
     pub lanes: u64,
     /// The code of a block or of a subgroup, or `None` in the code of a lane.
@@ -60,6 +60,31 @@ pub(crate) struct AcrossMap {
     /// level. Only lane `t` writes `tile[t]` in the code of a block, or element `t` of the row of
     /// the subgroup.
     pub lane_element: Option<(String, Level)>,
+    /// The code after the nest of blocks, which the last pass to end runs.
+    pub tail: Option<Tail<'c>>,
+    /// The body of the loop of blocks whose passes end with an arrival, by its address.
+    pub arrive_body: Option<usize>,
+}
+
+/// The code after the passes of a nest of blocks, or of a group: each pass of the outer loop is
+/// a group of the passes of the inner one. Each pass adds 1 to the element of its group in
+/// `count` when it ends. The pass that sees the last count runs `stmts` in its block and sets the
+/// element back to 0. `flag`, in shared memory, tells the lanes of the pass whether it was the
+/// last one of its group.
+pub(crate) struct Tail<'c> {
+    pub stmts: Vec<Statement>,
+    /// The addresses of the statements in the region, which the region does not lower itself.
+    pub skip: HashSet<usize>,
+    /// The loop whose passes count, by its address.
+    pub counted: usize,
+    /// The body of the outer loop of a group, which lowers only its inner loop, by its address.
+    pub outer_body: Option<usize>,
+    /// The variable of the outer loop of a group, and its range.
+    pub group: Option<(crate::symbol::Symbol, syntax::RangeExpr)>,
+    /// The range of the loop whose passes count.
+    pub range: syntax::RangeExpr,
+    pub count: Value<'c, 'c>,
+    pub flag: Option<Value<'c, 'c>>,
 }
 
 /// The row of a tile that the code of a subgroup alone writes.
@@ -71,7 +96,7 @@ pub(crate) enum SubgroupRow {
     Whole,
 }
 
-impl AcrossMap {
+impl AcrossMap<'_> {
     /// When `e` is a row of a tile that the code of this subgroup alone writes, the number that
     /// tells it from the other rows of the subgroup: 0 for `t` or `t[w]`, and `c + 1` for
     /// `t[w][c]` with a number `c`.
@@ -179,12 +204,8 @@ pub(crate) fn own_row_attrs<'c>(
     attrs
 }
 
-/// The lanes of a block of `s`, when its `across` loops map to blocks and lanes. A region with
-/// code after its nest of blocks stays on one thread.
+/// The lanes of a block of `s`, when its `across` loops map to blocks and lanes.
 pub(crate) fn mapped_lanes(s: &syntax::SpawnOnExpr) -> Option<u64> {
-    if s.arrivals.is_some() {
-        return None;
-    }
     crate::hir::flatten::across::across_block_lanes(&s.stmts)
 }
 
@@ -439,6 +460,14 @@ pub(crate) fn lower_across_for<'c>(
 ) -> Result<Option<Block<'c>>, LowerError> {
     let map = gen.across_map.as_mut().expect("a mapped region");
     if kind == LevelKind::Blocks {
+        // The passes of this loop count.
+        if map
+            .tail
+            .as_ref()
+            .is_some_and(|t| t.counted == for_loop as *const ForLoopStmt as usize)
+        {
+            map.arrive_body = Some(for_loop.body.as_ptr() as usize);
+        }
         let axis = map.blocks;
         map.blocks += 1;
         let outer = map.level.replace(Level::Block);
@@ -622,6 +651,20 @@ pub(crate) fn lower_level_statements<'c>(
         Some(m) if !m.on_lane0 => m.level,
         _ => None,
     };
+    // The outer loop of a group lowers its inner loop. The code after it runs in the last pass
+    // of each group.
+    let outer_body = gen
+        .across_map
+        .as_ref()
+        .and_then(|m| m.tail.as_ref())
+        .and_then(|t| t.outer_body);
+    let stmts = if outer_body == Some(stmts.as_ptr() as usize) {
+        &stmts[..1]
+    } else {
+        stmts
+    };
+    let arrives = level == Some(Level::Block)
+        && gen.across_map.as_ref().and_then(|m| m.arrive_body) == Some(stmts.as_ptr() as usize);
     let Some(level) = level else {
         for stmt in stmts {
             match gen.generate_statement(stmt, block)? {
@@ -681,6 +724,9 @@ pub(crate) fn lower_level_statements<'c>(
                 None => return Ok(None),
             }
         }
+    }
+    if arrives {
+        return arrive(gen, block);
     }
     Ok(Some(block))
 }
@@ -840,4 +886,319 @@ fn keep_in_a_slot<'c>(
     gen.env.insert(key, (slot, slot_ty));
     gen.allocs.insert(name.to_string());
     Ok(())
+}
+
+/// The count of the passes of the nest of blocks of `s` that ended, made and zeroed in `block`
+/// before the region, in the memory of the region. `None` for a region with no code after its
+/// nest of blocks.
+pub(crate) fn lower_count<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    s: &syntax::SpawnOnExpr,
+    mut block: Block<'c>,
+) -> Result<(Option<Tail<'c>>, Block<'c>), LowerError> {
+    let Some((space, shared)) = &s.arrivals else {
+        return Ok((None, block));
+    };
+    if shared.is_none() {
+        return Err(LowerError::from(
+            "code after a nest of blocks on a topology with no shared memory".to_string(),
+        ));
+    }
+    let plan = crate::hir::flatten::across::arrivals(&s.stmts).ok_or_else(|| {
+        LowerError::from("a region with code after a nest of blocks has no nest".to_string())
+    })?;
+    let range = |f: &ForLoopStmt| match &*f.iterable {
+        Expr::Range(r) => Ok(r.clone()),
+        _ => Err(LowerError::from(
+            "a loop of blocks over something that is not a range".to_string(),
+        )),
+    };
+    let counted = range(plan.counted)?;
+    // An element for each group counts the passes of it that ended.
+    let (groups, group) = match plan.outer {
+        Some(o) => {
+            let r = range(o)?;
+            let (end, _, b) = gen.generate_expr(&r.end, block)?;
+            let (start, _, b) = gen.generate_expr(&r.start, b)?;
+            block = b;
+            let groups = binary(gen, block, "arith.subi", end, start)?;
+            (groups, Some((o.iter.as_str().into(), r)))
+        }
+        None => (constant(gen, block, 1)?, None),
+    };
+    let size: Value = block
+        .append_operation(
+            OperationBuilder::new("arith.index_cast", gen.loc())
+                .add_operands(&[groups])
+                .add_results(&[Type::index(gen.context)])
+                .build()?,
+        )
+        .result(0)?
+        .into();
+    let ty = Type::parse(gen.context, "memref<?xi32>")
+        .ok_or_else(|| LowerError::ParseType("memref<?xi32>".to_string()))?;
+    let host: Value = block
+        .append_operation(
+            OperationBuilder::new("memref.alloc", gen.loc())
+                .add_operands(&[size])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "operandSegmentSizes"),
+                    melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[1, 0]).into(),
+                )])
+                .add_results(&[ty])
+                .build()?,
+        )
+        .result(0)?
+        .into();
+    super::expr::emit_zero_fill(gen, &block, host, "i32")?;
+    // The count moves to the memory of the region as a tensor that a program moves there. The
+    // name has a space, so no name of the program is the same.
+    let name: crate::symbol::Symbol = "vx count".into();
+    let outer = gen.env.insert(name.clone(), (host, ty));
+    let transfer = Expr::Transfer(syntax::TransferExpr {
+        expr: Box::new(Expr::Identifier(syntax::IdentifierExpr::new(
+            name.clone(),
+            s.span,
+        ))),
+        space: space.clone(),
+        cost: None,
+        lowering: None,
+        is_async: false,
+        shared: false,
+        span: s.span,
+    });
+    let lowered = gen.generate_expr(&transfer, block);
+    match outer {
+        Some(entry) => gen.env.insert(name, entry),
+        None => gen.env.remove(&name),
+    };
+    let (count, _, b) = lowered?;
+    block = b;
+    let op = melior::ir::operation::OperationResult::try_from(count)
+        .map_err(|_| LowerError::from("the count is not the result of an op".to_string()))?
+        .owner();
+    if op.name().as_string_ref().as_str() != Ok("vx.transfer") {
+        return Err(LowerError::from(
+            "the count is not the result of a transfer".to_string(),
+        ));
+    }
+    // SAFETY: the op is in `block`, and nothing holds a reference to it while it changes.
+    let mut op = unsafe { melior::ir::operation::OperationRefMut::from_raw(op.to_raw()) };
+    // `--emit-ptx` names the count by its length.
+    op.set_attribute(
+        "vx.arrivals",
+        melior::ir::attribute::StringAttribute::new(gen.context, plan.length).into(),
+    );
+    gen.emit_drop(host, None, None, block)?;
+    let tail = Tail {
+        stmts: plan.after.iter().map(|s| (*s).clone()).collect(),
+        skip: plan
+            .after
+            .iter()
+            .map(|s| *s as *const Statement as usize)
+            .collect(),
+        counted: plan.counted as *const ForLoopStmt as usize,
+        outer_body: plan.outer.map(|o| o.body.as_ptr() as usize),
+        group,
+        range: counted,
+        count,
+        flag: None,
+    };
+    Ok((Some(tail), block))
+}
+
+/// The flag that tells the lanes of a pass whether it was the last, in the shared memory of the
+/// block, at the start of the region.
+pub(crate) fn alloc_flag<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: Block<'c>,
+) -> Result<(), LowerError> {
+    let Some(tail) = gen.across_map.as_ref().and_then(|m| m.tail.as_ref()) else {
+        return Ok(());
+    };
+    debug_assert!(tail.flag.is_none());
+    let ty = Type::parse(gen.context, FLAG_TYPE)
+        .ok_or_else(|| LowerError::ParseType(FLAG_TYPE.to_string()))?;
+    let flag: Value = block
+        .append_operation(
+            OperationBuilder::new("memref.alloca", gen.loc())
+                .add_attributes(&[
+                    (
+                        Identifier::new(gen.context, "operandSegmentSizes"),
+                        melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[0, 0])
+                            .into(),
+                    ),
+                    (
+                        Identifier::new(gen.context, "alignment"),
+                        IntegerAttribute::new(gen.i64_ty, 16).into(),
+                    ),
+                ])
+                .add_results(&[ty])
+                .build()?,
+        )
+        .result(0)?
+        .into();
+    if let Some(tail) = gen.across_map.as_mut().and_then(|m| m.tail.as_mut()) {
+        tail.flag = Some(flag);
+    }
+    Ok(())
+}
+
+/// The type of the flag. Address space 3 is the shared memory of every GPU arch that launches
+/// `across` loops.
+const FLAG_TYPE: &str = "memref<1xi32, 3>";
+
+/// The statements of the region that the last pass runs, and not the region itself.
+pub(crate) fn runs_after_the_nest(gen: &MeliorGenerator<'_>, stmt: &Statement) -> bool {
+    gen.across_map
+        .as_ref()
+        .and_then(|m| m.tail.as_ref())
+        .is_some_and(|t| t.skip.contains(&(stmt as *const Statement as usize)))
+}
+
+/// A call of a function whose body is `body`, an `mlir!` block that the compiler writes, with its
+/// inputs by name, type and value.
+fn call_block<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: Block<'c>,
+    body: &str,
+    inputs: &[(&str, &str, Value<'c, 'c>)],
+    result: Option<Type<'c>>,
+) -> Result<Option<Value<'c, 'c>>, LowerError> {
+    let prefix = crate::codegen::flat::mlir_wrapper_prefix(
+        "vx_macro_mlir_",
+        gen.functions.keys().map(|n| n.as_ref()),
+    );
+    let name = format!("{prefix}arrive_{}", gen.mlir_block_counter);
+    gen.mlir_block_counter += 1;
+    let args = inputs
+        .iter()
+        .map(|(n, t, _)| format!("{n}: {t}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let ret = result.map(|t| format!("-> {t}")).unwrap_or_default();
+    let source = format!(
+        "module {{\n  func.func private @{name}({args}) {ret} {{\n{}\n  }}\n}}",
+        body.replace("macro.yield", "return")
+    );
+    let module = melior::ir::Module::parse(gen.context, &source)
+        .ok_or_else(|| LowerError::from(format!("an arrival does not parse:\n{source}")))?;
+    let func = module
+        .body()
+        .first_operation()
+        .ok_or_else(|| LowerError::from("an arrival has no function".to_string()))?;
+    gen.module.body().append_operation((*func).clone());
+    let operands: Vec<Value> = inputs.iter().map(|(_, _, v)| *v).collect();
+    let call = block.append_operation(
+        OperationBuilder::new("func.call", gen.loc())
+            .add_attributes(&[(
+                Identifier::new(gen.context, "callee"),
+                melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, &name).into(),
+            )])
+            .add_operands(&operands)
+            .add_results(&result.into_iter().collect::<Vec<_>>())
+            .build()?,
+    );
+    Ok(match result {
+        Some(_) => Some(call.result(0)?.into()),
+        None => None,
+    })
+}
+
+/// The end of a pass of the nest of blocks, when code comes after the nest. Lane 0 adds the
+/// pass to the count, and the block of the last pass runs the code. The lane loop or the lane-0
+/// code that ends the pass ends with a barrier, so the writes of every lane come before the add.
+/// Returns the block after the code.
+fn arrive<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    mut block: Block<'c>,
+) -> Result<Option<Block<'c>>, LowerError> {
+    let map = gen.across_map.as_ref().expect("a mapped region");
+    let tail = map
+        .tail
+        .as_ref()
+        .ok_or_else(|| LowerError::from("an arrival with no code after it".to_string()))?;
+    let (group_of, range, count) = (tail.group.clone(), tail.range.clone(), tail.count);
+    let flag = tail
+        .flag
+        .ok_or_else(|| LowerError::from("an arrival with no flag".to_string()))?;
+    let group = match group_of {
+        Some((name, r)) => {
+            let id = Expr::Identifier(syntax::IdentifierExpr::new(name, r.span));
+            let (outer, _, b) = gen.generate_expr(&id, block)?;
+            let (start, _, b) = gen.generate_expr(&r.start, b)?;
+            block = b;
+            binary(gen, block, "arith.subi", outer, start)?
+        }
+        None => constant(gen, block, 0)?,
+    };
+    // The last count of a group: one less than the passes of the counted loop.
+    let (end, _, b) = gen.generate_expr(&range.end, block)?;
+    let (start, _, b) = gen.generate_expr(&range.start, b)?;
+    block = b;
+    let passes = binary(gen, block, "arith.subi", end, start)?;
+    let one = constant(gen, block, 1)?;
+    let last = binary(gen, block, "arith.subi", passes, one)?;
+    let lane = lane_id(gen, block)?;
+    let zero = constant(gen, block, 0)?;
+    let first = compare(
+        gen,
+        block,
+        melior::dialect::arith::CmpiPredicate::Eq,
+        lane,
+        zero,
+    )?;
+    let (then_b, join) = open_guard(gen, block, first)?;
+    call_block(
+        gen,
+        then_b,
+        crate::hir::flatten::across::arrive_block(),
+        &[
+            ("%count", "memref<?xi32>", count),
+            ("%group", "i32", group),
+            ("%last", "i32", last),
+            ("%flag", FLAG_TYPE, flag),
+        ],
+        None,
+    )?;
+    close_guard(gen, Some(then_b), join)?;
+    block = join;
+    barrier(gen, block, Level::Block)?;
+    let is_last = call_block(
+        gen,
+        block,
+        crate::hir::flatten::across::is_last_block(),
+        &[("%flag", FLAG_TYPE, flag)],
+        Some(gen.i32_ty),
+    )?
+    .expect("a result");
+    let cond = compare(
+        gen,
+        block,
+        melior::dialect::arith::CmpiPredicate::Eq,
+        is_last,
+        one,
+    )?;
+    // Every lane of the last pass runs the code, as the body of its block.
+    let (then_b, join) = open_guard(gen, block, cond)?;
+    let stmts = tail_stmts(gen);
+    let map = gen.across_map.as_mut().expect("a mapped region");
+    let blocks = std::mem::replace(&mut map.blocks, 1);
+    let outer = map.level.replace(Level::Block);
+    let depth = gen.open_block();
+    let lowered = lower_level_statements(gen, &stmts, then_b);
+    gen.close_blocks_to(depth);
+    let map = gen.across_map.as_mut().expect("a mapped region");
+    map.level = outer;
+    map.blocks = blocks;
+    close_guard(gen, lowered?, join)?;
+    Ok(Some(join))
+}
+
+fn tail_stmts(gen: &MeliorGenerator<'_>) -> Vec<Statement> {
+    gen.across_map
+        .as_ref()
+        .and_then(|m| m.tail.as_ref())
+        .map(|t| t.stmts.clone())
+        .unwrap_or_default()
 }

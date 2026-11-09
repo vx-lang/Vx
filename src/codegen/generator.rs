@@ -102,7 +102,7 @@ pub struct MeliorGenerator<'c> {
     /// The levels of the `across` loops around the code, for the lane reductions.
     pub(crate) across_kinds: Vec<crate::arch::LevelKind>,
     /// The blocks and lanes of a GPU region whose `across` loops run in parallel.
-    pub(crate) across_map: Option<crate::codegen::lower::across::AcrossMap>,
+    pub(crate) across_map: Option<crate::codegen::lower::across::AcrossMap<'c>>,
     pub in_spawn: bool,
     /// The next `for` loop is the one loop of a `spawn` region that `parallel_outer_for` proved.
     /// It gets marks so that a later pass can run its passes on threads or host workers.
