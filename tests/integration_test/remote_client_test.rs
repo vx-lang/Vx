@@ -706,3 +706,27 @@ fn a_remote_worker_takes_only_a_topology_marked_offload() {
         }
     }
 }
+
+/// A lost machine or link sends no EOF, so a host connection turns on TCP
+/// keepalive with VX_REMOTE_LINK_TIMEOUT as the limit. Losing a link needs
+/// root, so the test checks the options on the socket.
+#[test]
+fn a_host_connection_watches_its_link() {
+    let root = repo_root();
+    let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    let cxx = runtime_test_build::cxx();
+    let bin = tmp.join("link_watch_test");
+    compile(
+        &cxx,
+        &[root.join("tests/runtime/link_watch_test.cpp")],
+        &bin,
+        &[],
+    );
+    let run = run_bounded(&mut Command::new(&bin), 20);
+    assert!(
+        run.status.success(),
+        "the host connection does not watch its link:\n{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
