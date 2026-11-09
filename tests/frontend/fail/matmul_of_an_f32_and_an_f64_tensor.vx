@@ -13,8 +13,8 @@
 fn main() -> i32 {
   let a = Tensor<f32, [2, 2]>::fill(1.0f32);
   let b = Tensor<f64, [2, 2]>::fill(1.0f64);
-  let c = a @ b;
+  let _c = a @ b;
   return 0;
 }
 
-// CHECK: Error[E7002] at {{.*}}matmul_of_an_f32_and_an_f64_tensor.vx:16:13: Tensor multiplication requires matching element types, got f32 and f64
+// CHECK: Error[E7002] at {{.*}}matmul_of_an_f32_and_an_f64_tensor.vx:16:14: Tensor multiplication requires matching element types, got f32 and f64
