@@ -48,6 +48,23 @@ for tests that cannot download a real model.
 | `scripts/compare.py` | Compares the output of the Vx program with the output of `reference.py`. |
 | `scripts/make_tiny_model.py` | Writes a tiny model with random weights. |
 | `scripts/qwen_weights.py` | Reads and writes the weight file. Its first comment describes the format. |
+| `scripts/test_qwen_weights.py` | Tests the f8e4m3 codes, the block scales and the fp8 weight file. |
+
+## fp8 weights
+
+`convert.py --fp8` stores each weight matrix as f8e4m3 codes, one byte for each weight, with one f32
+scale for each block of 128 x 128. A weight is the value of its code times the scale of its block.
+The norms, the biases and the embedding table stay bf16, so a token reads about half the bytes of
+bf16. The Vx program does not read fp8 files yet. Its loader and kernels come next, in
+[#3131](https://github.com/vx-lang/Vx/issues/3131).
+
+`reference.py` widens the codes and scales exactly to float32. With `--perplexity`, it measures
+how well a model predicts a text. On the first 512 tokens of `scripts/tools/gen_error_index.py`:
+
+| Model | bf16 perplexity | fp8 perplexity | Greedy tokens of fp8 |
+| --- | --- | --- | --- |
+| Qwen2.5-Coder-0.5B-Instruct | 20.054 | 20.030 | the same 64 as bf16 |
+| Qwen2.5-Coder-7B-Instruct | 10.072 | 10.085 | the same 64 as bf16 |
 
 ## The Vx code
 

@@ -4,6 +4,7 @@
     python3 apps/qwen/scripts/reference.py qwen-0.5b.vxw --tokens 750,75698,1445,1648 --steps 8
     python3 apps/qwen/scripts/reference.py qwen-0.5b.vxw --tokenizer DIR --prompt "def f(n):"
     python3 apps/qwen/scripts/reference.py qwen-0.5b.vxw --tensors
+    python3 apps/qwen/scripts/reference.py qwen-0.5b.vxw --tokenizer DIR --perplexity FILE
 
 It reads the weight file that `convert.py` writes, so the Vx program and this script use the same
 bytes. Tests of the Vx program compare with the lines it prints:
@@ -36,9 +37,9 @@ class Model:
 
     def weight(self, name):
         if self.cache is None:
-            return qwen_weights.as_f32(self.tensors[name])
+            return qwen_weights.widen(self.tensors, name)
         if name not in self.cache:
-            self.cache[name] = qwen_weights.as_f32(self.tensors[name])
+            self.cache[name] = qwen_weights.widen(self.tensors, name)
         return self.cache[name]
 
 
@@ -123,6 +124,16 @@ def generate(model, prompt, steps):
     return result
 
 
+def perplexity(model, tokens):
+    """exp of the mean negative log-likelihood of each token after the first, given the ones
+    before it."""
+    logits = forward(model, tokens, Cache(model.config)).astype(np.float64)
+    logits -= logits.max(axis=-1, keepdims=True)
+    log_probs = logits - np.log(np.exp(logits).sum(axis=-1, keepdims=True))
+    chosen = log_probs[np.arange(len(tokens) - 1), np.asarray(tokens[1:])]
+    return float(np.exp(-chosen.mean()))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("weights", help="a weight file from convert.py or make_tiny_model.py")
@@ -130,20 +141,31 @@ def main():
     parser.add_argument("--prompt", help="the prompt as text; needs --tokenizer")
     parser.add_argument("--tokenizer", help="a Hugging Face model folder that has tokenizer.json")
     parser.add_argument("--steps", type=int, default=8, help="the number of tokens to generate")
-    parser.add_argument("--tensors", action="store_true", help="print the first bf16 codes and the sum of the codes of each tensor")
+    parser.add_argument("--tensors", action="store_true", help="print the first codes and the sum of the codes of each tensor")
+    parser.add_argument("--perplexity", help="a text file whose perplexity to print; needs --tokenizer")
+    parser.add_argument("--max-tokens", type=int, default=512, help="the number of tokens of --perplexity to use")
     args = parser.parse_args()
     model = Model(args.weights)
 
     if args.tensors:
         # Bits, not decimals, so that a Vx program can print the same line exactly. A code is the
-        # 16 bits of a bf16 value, and the sum adds the codes of the whole tensor.
+        # bits of one value as an unsigned integer: 16 for bf16, 8 for f8e4m3 and 32 for f32. The
+        # sum adds the codes of the whole tensor.
         c = model.config
         print(f"config hidden={c['hidden_size']} layers={c['num_layers']} vocab={c['vocab_size']};")
         for name, (dtype, array) in model.tensors.items():
-            assert dtype == "bf16", f"{name}: only bf16 tensors are printed"
-            codes = array.reshape(-1)
+            codes = array.reshape(-1).view(f"u{array.dtype.itemsize}")
             first = ",".join(str(int(v)) for v in codes[:4])
             print(f"{name} count={codes.size} codes={first} sum={int(codes.sum(dtype=np.uint64))};")
+        return 0
+
+    if args.perplexity is not None:
+        from tokenizers import Tokenizer
+
+        tokenizer = Tokenizer.from_file(f"{args.tokenizer}/tokenizer.json")
+        with open(args.perplexity) as text:
+            tokens = tokenizer.encode(text.read()).ids[: args.max_tokens]
+        print(f"perplexity={perplexity(model, tokens):.4f} tokens={len(tokens)};")
         return 0
 
     if args.prompt is not None:
