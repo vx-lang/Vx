@@ -97,7 +97,7 @@ int vx_cancelled_at(const char *at_file, int at_line) { return 0; }
 void vx_task_failed(void) { assert(0 && "a task failed"); }
 long vx_clock_ns(void) { return 0; }
 void vx_waiting_for(int what, const char *at_file, int at_line,
-                    const char *made_file, int made_line) {}
+                    const char *made_file, int made_line, long *channel) {}
 void vx_waiting_for_lock(const char *at_file, int at_line,
                          const char *made_file, int made_line, long *holder) {}
 // The holder word of a `Mutex` is only for the deadlock report.

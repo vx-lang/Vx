@@ -66,8 +66,10 @@ struct Parked {
 #[derive(Clone)]
 enum What {
     Word,
-    Send,
-    Recv,
+    /// A `send` or a `recv`, with the address of the words of its channel, or 0 when it is not
+    /// known.
+    Send(usize),
+    Recv(usize),
     /// A `lock`, with the address of the holder word of its `Mutex`, or 0 when it is not known.
     Lock(usize),
     Select,
@@ -221,11 +223,13 @@ thread_local! {
 /// Says what the next wait of this thread is for: 1 for a `send`, 2 for a `recv` and 4 for a
 /// `select`. The deadlock report prints it, with the line of the wait at `at_file:at_line`, and
 /// the line that made the channel at `made_file:made_line`. A null file means that the line is
-/// not known. A `lock` uses `vx_waiting_for_lock`.
+/// not known. For a `send` and a `recv`, `channel` is the words of the channel, and the report
+/// counts the ends of the channel there. A `lock` uses `vx_waiting_for_lock`.
 ///
 /// # Safety
 ///
-/// Each file that is not null is a C string that lives as long as the program.
+/// Each file that is not null is a C string that lives as long as the program. A `channel` that
+/// is not null is the words of a channel that lives until the wait ends.
 #[no_mangle]
 pub unsafe extern "C" fn vx_waiting_for(
     what: i32,
@@ -233,10 +237,11 @@ pub unsafe extern "C" fn vx_waiting_for(
     at_line: i32,
     made_file: *const libc::c_char,
     made_line: i32,
+    channel: *mut i64,
 ) {
     let what = match what {
-        1 => What::Send,
-        2 => What::Recv,
+        1 => What::Send(channel as usize),
+        2 => What::Recv(channel as usize),
         4 => What::Select,
         _ => What::Word,
     };
@@ -733,6 +738,10 @@ mod timer {
     }
 }
 
+/// One wait of the report: who waits, its word, what it waits for, its line, and the line that
+/// made its channel or lock.
+type Wait = (Option<Who>, usize, What, Option<Place>, Option<Place>);
+
 /// One line for each waiter in the buckets: what it waits for, and then the lines of the `spawn`
 /// of its task. The main code comes first, then the tasks in the order of their lines. Two
 /// waits on one channel or one lock name the same number. Then each cycle of waits, when each
@@ -784,11 +793,11 @@ fn report() -> String {
             .map(|p| format!(", made at {}", p.text()))
             .unwrap_or_default();
         doing.push(match what {
-            What::Send => format!(
+            What::Send(_) => format!(
                 "waits in `send`{at} on channel {}{made}",
                 number(&mut channels, *word)
             ),
-            What::Recv => format!(
+            What::Recv(_) => format!(
                 "waits in `recv`{at} on channel {}{made}",
                 number(&mut channels, *word)
             ),
@@ -837,7 +846,50 @@ fn report() -> String {
             out += &format!("    {} {}\n", who.text(), doing[i]);
         }
     }
+    if !channels.is_empty() {
+        out += "  the channels of these waits:\n";
+    }
+    for (i, &word) in channels.iter().enumerate() {
+        out += &format!("    channel {}{}\n", i + 1, channel_text(&waits, word));
+    }
     out
+}
+
+/// The index of the count of `Sender`s in the words of a channel, as
+/// stdlib/std/sync/channel.vx lays them out.
+const SENDERS: usize = 2;
+
+/// The waits on the channel whose waits sleep on `word`, and its `Sender`s that are not dropped:
+/// `, made at main.vx:43: 1 wait in `recv` and 0 in `send`. 1 `Sender` is not dropped.` A wait
+/// holds the `Receiver`, or waits only while it is not dropped, so the text does not name it.
+fn channel_text(waits: &[Wait], word: usize) -> String {
+    let on_it = |w: &&Wait| w.1 == word;
+    let recvs = (waits.iter().filter(on_it))
+        .filter(|w| matches!(w.2, What::Recv(_)))
+        .count();
+    let sends = (waits.iter().filter(on_it))
+        .filter(|w| matches!(w.2, What::Send(_)))
+        .count();
+    let (words, made) = (waits.iter().filter(on_it))
+        .find_map(|w| match w.2 {
+            What::Send(words) | What::Recv(words) => Some((words, w.4)),
+            _ => None,
+        })
+        .expect("a channel of the report has a wait on it");
+    let made = made
+        .map(|p| format!(", made at {}", p.text()))
+        .unwrap_or_default();
+    let plural = if recvs == 1 { "wait" } else { "waits" };
+    let mut text = format!("{made}: {recvs} {plural} in `recv` and {sends} in `send`.");
+    if words != 0 {
+        let senders = unsafe { &*(words as *const AtomicI64).add(SENDERS) };
+        text += &match senders.load(Ordering::SeqCst) {
+            0 => " Each `Sender` is dropped.".to_string(),
+            1 => " 1 `Sender` is not dropped.".to_string(),
+            n => format!(" {n} `Sender`s are not dropped."),
+        };
+    }
+    text
 }
 
 /// Each cycle in a graph where node `i` has at most one edge, to `next[i]`. A cycle starts at
@@ -1067,7 +1119,16 @@ mod tests {
         let at = word.as_ptr() as usize;
         let waiter = std::thread::spawn(move || {
             while word.load(Ordering::SeqCst) == 0 {
-                unsafe { vx_waiting_for(2, std::ptr::null(), 0, std::ptr::null(), 0) };
+                unsafe {
+                    vx_waiting_for(
+                        2,
+                        std::ptr::null(),
+                        0,
+                        std::ptr::null(),
+                        0,
+                        std::ptr::null_mut(),
+                    )
+                };
                 unsafe { vx_wait_while(at as *const i64, 0) };
             }
         });
@@ -1078,7 +1139,7 @@ mod tests {
                 .unwrap()
                 .notes
                 .iter()
-                .filter(|n| n.word == at && (!recv_only || matches!(n.what, What::Recv)))
+                .filter(|n| n.word == at && (!recv_only || matches!(n.what, What::Recv(_))))
                 .count()
         };
         while notes_of_the_word(true) == 0 {
@@ -1210,7 +1271,7 @@ mod tests {
         let note = |owner: usize, word: usize| Note {
             owner,
             word,
-            what: What::Recv,
+            what: What::Recv(0),
             at: None,
             made: None,
             who: None,

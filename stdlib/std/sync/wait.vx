@@ -38,7 +38,7 @@ extern {
   /// The Rust core behind the end of `within`.
   fn vx_within_end() -> void;
   /// The Rust core behind `waiting_for`.
-  fn vx_waiting_for(what : i32, at_file : *const i8, at_line : i32, made_file : *const i8, made_line : i32) -> void;
+  fn vx_waiting_for(what : i32, at_file : *const i8, at_line : i32, made_file : *const i8, made_line : i32, channel : *mut AtomicI64) -> void;
   /// The Rust core behind `waiting_for_lock`.
   fn vx_waiting_for_lock(at_file : *const i8, at_line : i32, made_file : *const i8, made_line : i32, holder : *mut i64) -> void;
   /// The Rust core behind `lock_taken`.
@@ -52,12 +52,15 @@ const WAIT_IN_SEND : i32 = 1;
 const WAIT_IN_RECV : i32 = 2;
 const WAIT_IN_SELECT : i32 = 4;
 
-/// Say what the next wait of this task is for, one of the `WAIT_IN_` values. When the program
-/// stops on a deadlock, the report says it for each task, with the line `at` of the wait and the
-/// line `made` that made the channel or the lock.
-fn waiting_for(what : i32, at : Caller, made : Location) -> void {
+/// Say what the next wait of this task is for, `WAIT_IN_SEND` or `WAIT_IN_RECV` on the channel
+/// with the words `channel`. When the program stops on a deadlock, the report says it for each
+/// task, with the line `at` of the wait and the line `made` that made the channel. It also counts
+/// the `Sender`s of the channel that are not dropped.
+fn waiting_for(what : i32, at : Caller, made : Location, channel : *mut AtomicI64) -> void {
   let l = at.location;
-  unsafe { vx_waiting_for(what, l.file, l.line, made.file, made.line); }
+  unsafe {
+    vx_waiting_for(what, l.file, l.line, made.file, made.line, channel);
+  }
 }
 
 /// `waiting_for` a `lock` at the line `at`, on a lock that the line `made` made. `holder` is the
@@ -82,7 +85,9 @@ fn lock_released(holder : &AtomicI64) -> void {
 /// `waiting_for` a `select` at the line `at`. It waits on many channels, so it has no `made`.
 fn waiting_in_select(at : Caller) -> void {
   let l = at.location;
-  unsafe { vx_waiting_for(WAIT_IN_SELECT, l.file, l.line, null<i8>(), 0); }
+  unsafe {
+    vx_waiting_for(WAIT_IN_SELECT, l.file, l.line, null<i8>(), 0, null_mut<AtomicI64>());
+  }
 }
 
 /// Block the thread while `word` holds `value`. It can also return when `word` did not change.

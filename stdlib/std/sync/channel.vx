@@ -197,7 +197,7 @@ fn notify(words : *mut AtomicI64) -> void {
 /// cancel of the `tasks` block and the clock reaching `deadline` also end the sleep.
 fn wait_for_event(words : *mut AtomicI64, seen : i64, deadline : Instant, what : i32, at : Caller, made : Location) -> void {
   word(words, SLEEPERS).fetch_add(1, AtomicOrdering::SeqCst);
-  waiting_for(what, at, made);
+  waiting_for(what, at, made, words);
   wait_while_until(word(words, WAKE), seen, deadline, true);
   word(words, SLEEPERS).fetch_sub(1, AtomicOrdering::SeqCst);
 }
