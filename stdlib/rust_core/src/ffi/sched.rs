@@ -82,6 +82,8 @@ pub(crate) struct Fiber {
     run: VxTaskFn,
     env: *mut u8,
     state: AtomicU8,
+    /// The fiber is on the ready queue. A fiber that is on it twice runs on two workers at once.
+    queued: AtomicBool,
     locals: TaskLocals,
     /// 0 while the task runs, and 1 after it ended. A join waits on this word.
     pub(crate) done: AtomicI64,
@@ -233,6 +235,8 @@ impl Scheduler {
     }
 
     fn push(&self, fiber: FiberRef) {
+        let was_queued = unsafe { (*fiber.0).queued.swap(true, Ordering::SeqCst) };
+        assert!(!was_queued, "a fiber went on the ready queue a second time");
         self.ready.lock().unwrap().push_back(fiber);
         self.has_ready.notify_one();
         // The thread that runs the tasks of a seed can wait on any word.
@@ -251,6 +255,7 @@ impl Scheduler {
                 _ => 0,
             };
             if let Some(fiber) = ready.remove(next) {
+                unsafe { (*fiber.0).queued.store(false, Ordering::SeqCst) };
                 self.switches.fetch_add(1, Ordering::SeqCst);
                 self.running.fetch_add(1, Ordering::SeqCst);
                 return fiber;
@@ -386,6 +391,7 @@ impl Scheduler {
             run,
             env,
             state: AtomicU8::new(RUNNING),
+            queued: AtomicBool::new(false),
             locals: TaskLocals {
                 mark,
                 site,
@@ -564,7 +570,13 @@ pub(crate) fn park() {
 
 /// Marks `fiber` as `PARKING`. Call it under the lock of the bucket whose list gets the fiber.
 pub(crate) fn will_park(fiber: *mut Fiber) {
-    unsafe { (*fiber).state.store(PARKING, Ordering::SeqCst) };
+    unsafe {
+        assert!(
+            !(*fiber).queued.load(Ordering::SeqCst),
+            "a task parked while it was on the ready queue"
+        );
+        (*fiber).state.store(PARKING, Ordering::SeqCst)
+    };
 }
 
 /// Puts a fiber that a bucket held back on the ready queue.
@@ -701,6 +713,35 @@ mod tests {
             crowd.threads.lock().unwrap().len() <= 2,
             "the tasks ran on more than two threads"
         );
+    }
+
+    /// A task that is woken between `will_park` and `park`, as when a wake comes from another
+    /// thread in that gap. Here the task wakes itself, so the wake surely comes in the gap.
+    extern "C" fn wake_itself_while_it_parks(env: *mut u8) {
+        let ran_again = unsafe { &**(env as *const *const AtomicI64) };
+        let me = current_fiber();
+        will_park(me);
+        wake(FiberRef(me));
+        park();
+        ran_again.store(1, Ordering::SeqCst);
+    }
+
+    /// The worker puts the task back on the ready queue once, and the task runs again.
+    #[test]
+    fn a_wake_while_a_task_parks_queues_it_once() {
+        let _watchdog = Watchdog::new("a_wake_while_a_task_parks_queues_it_once");
+        let sched = Scheduler::start(1, 1);
+        let ran_again = AtomicI64::new(0);
+        let group = tasks_begin(Some(sched));
+        unsafe {
+            vx_task_start(
+                group,
+                wake_itself_while_it_parks,
+                env_with(&ran_again as *const AtomicI64),
+            );
+            vx_tasks_end(group);
+        }
+        assert_eq!(ran_again.load(Ordering::SeqCst), 1);
     }
 
     struct Lines {
