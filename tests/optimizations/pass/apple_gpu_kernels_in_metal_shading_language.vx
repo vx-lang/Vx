@@ -173,6 +173,31 @@ pub fn double_below(out : &mut Tensor<i32, [?], Memory::HBM>, limit : i32, n : i
   return;
 }
 
+// reverse_rows writes a row to shared memory in one lane loop of a subgroup, and reads it in the
+// next. Between the two, only the 32 threads of the SIMD-group wait, not the whole block.
+// CHECK-LABEL: // vx.kernel reverse_rows m1 m1r i32
+// CHECK: vx_npu_kernel_{{[0-9]+}}_smem_0[{{.*}}] = {{v[0-9]+}};
+// CHECK-NOT: threadgroup_barrier
+// CHECK: simdgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
+// CHECK-NOT: threadgroup_barrier
+// CHECK: float {{v[0-9]+}} = vx_npu_kernel_{{[0-9]+}}_smem_0[
+pub fn reverse_rows(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for rb in 0..rows / 4 across blocks {
+      let mut row = unsafe { Tensor<f32, [4, 32], Memory::SMEM>::uninit() };
+      for s in 0..4 across subgroups {
+        for l in 0..32 across lanes(32) {
+          row[s][l] = x[(rb * 4 + s) * 32 + l];
+        }
+        for l in 0..32 across lanes(32) {
+          out[(rb * 4 + s) * 32 + l] = row[s][31 - l];
+        }
+      }
+    }
+  }
+  return;
+}
+
 fn main() -> i32 {
   return 0;
 }
