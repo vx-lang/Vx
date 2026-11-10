@@ -1272,12 +1272,8 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     if (op->hasAttr("vx_parallel_coop"))
       launchOp->setAttr("vx_parallel_coop", rewriter.getUnitAttr());
 
-    // The topology's declared name, forwarded from the spawn. Optional by
-    // design: the flat path emits `vx.spawn` from an instruction stream that
-    // carries the dispatch id and not the name, so a launch may legitimately
-    // arrive without one. A plugin then has the id and nothing else, which is
-    // exactly the situation before this existed -- the same way `kind=` and
-    // `roles=` degrade rather than fail (#348).
+    // The topology's name as the program wrote it, forwarded from the spawn.
+    // A launch may have none, such as a task's. A plugin then has only the id.
     if (auto topoName = op->getAttrOfType<StringAttr>("topology_name")) {
       launchOp->setAttr("vx.topology_name", topoName);
     }
@@ -1285,6 +1281,10 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     // built-in has no mark, and the runtime lets a manifest send it anywhere.
     if (auto offload = op->getAttrOfType<BoolAttr>("offload")) {
       launchOp->setAttr("vx.offload", offload);
+    }
+    // The `arch:` of a declared topology. A built-in has none.
+    if (auto arch = op->getAttrOfType<StringAttr>("arch")) {
+      launchOp->setAttr("vx.arch", arch);
     }
 
     if (resultSlot) {
@@ -6750,6 +6750,14 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
     // `managed: cached` host memory with no transfer.
     if (auto offload = op->getAttrOfType<BoolAttr>("vx.offload")) {
       payload += offload.getValue() ? "offload=1" : "offload=0";
+      payload.push_back('\0');
+    }
+
+    // The `arch:` of a declared topology. The runtime counts a topology with
+    // a CPU arch as the host, so `VX_ENABLE_CPU_FALLBACK=0` does not stop it.
+    if (auto arch = op->getAttrOfType<StringAttr>("vx.arch")) {
+      payload += "arch=";
+      payload += arch.getValue().str();
       payload.push_back('\0');
     }
 

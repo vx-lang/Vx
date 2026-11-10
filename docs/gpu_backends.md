@@ -114,7 +114,8 @@ directory. Each other kernel runs on the CPU.
   searched.
 - `VX_ENABLE_CPU_FALLBACK=0` stops the program instead, when a kernel placed on a device runs on
   the CPU. Use it for a test or a benchmark that must use the device. A topology that a machine
-  file declares counts as a device.
+  file declares with `arch: x86_64` or `arch: aarch64` is the CPU. Any other declared topology
+  counts as a device.
 
 **SYCL first.** The first community backend targets Intel GPUs through the
 SYCL runtime. Vx still compiles each kernel itself, to SPIR-V; the dispatch
