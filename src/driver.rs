@@ -2205,7 +2205,7 @@ fn get_optimization_pipeline(
         passes.push("canonicalize".to_string());
         passes.push("cse".to_string());
         passes.push(
-            "func.func(convert-linalg-to-affine-loops,vx-raise-loop-accesses,vx-fuse-and-tile-loops,affine-loop-unroll,affine-scalrep)"
+            "func.func(vx-linalg-to-affine-loops,vx-raise-loop-accesses,vx-fuse-and-tile-loops,affine-loop-unroll,affine-scalrep)"
                 .to_string(),
         );
         passes.push("lower-affine".to_string());

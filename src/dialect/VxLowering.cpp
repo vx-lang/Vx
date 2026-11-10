@@ -22,6 +22,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
@@ -9049,6 +9050,59 @@ struct RaiseLoopAccessesPass
   }
 };
 
+// Upstream's `convert-linalg-to-affine-loops` makes an `affine.for` for each
+// loop of a linalg op, with a size of an operand as its bound. A size that a
+// loop computes, such as that of a tensor made in the loop, is not an affine
+// dimension there, and the `affine.for` does not verify. This pass lowers such
+// an op to `scf.for` loops instead, and every other op as upstream does.
+struct LinalgToAffineLoopsPass
+    : public PassWrapper<LinalgToAffineLoopsPass, OperationPass<func::FuncOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LinalgToAffineLoopsPass)
+
+  llvm::StringRef getArgument() const override {
+    return "vx-linalg-to-affine-loops";
+  }
+
+  llvm::StringRef getDescription() const override {
+    return "Lowers linalg ops to affine loops, or to scf loops where a bound "
+           "is not an affine dimension";
+  }
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<affine::AffineDialect, memref::MemRefDialect,
+                    scf::SCFDialect>();
+  }
+
+  struct Lower : public OpInterfaceRewritePattern<linalg::LinalgOp> {
+    using OpInterfaceRewritePattern::OpInterfaceRewritePattern;
+
+    LogicalResult matchAndRewrite(linalg::LinalgOp op,
+                                  PatternRewriter &rewriter) const override {
+      if (!op.hasPureBufferSemantics())
+        return failure();
+      bool affine = true;
+      for (Range range : op.createLoopRanges(rewriter, op.getLoc()))
+        for (OpFoldResult bound : {range.offset, range.size, range.stride})
+          if (Value value = llvm::dyn_cast_if_present<Value>(bound))
+            affine = affine && affine::isValidDim(value);
+      if (failed(affine ? linalg::linalgOpToAffineLoops(rewriter, op)
+                        : linalg::linalgOpToLoops(rewriter, op)))
+        return failure();
+      rewriter.eraseOp(op);
+      return success();
+    }
+  };
+
+  void runOnOperation() override {
+    MLIRContext *context = &getContext();
+    RewritePatternSet patterns(context);
+    patterns.add<Lower>(context);
+    memref::DimOp::getCanonicalizationPatterns(patterns, context);
+    affine::AffineApplyOp::getCanonicalizationPatterns(patterns, context);
+    (void)applyPatternsGreedily(getOperation(), std::move(patterns));
+  }
+};
+
 // Make a stack buffer behave like the heap buffer it replaced:
 // `malloc`-compatible alignment, and in the entry block.
 //
@@ -9749,6 +9803,9 @@ void registerVxPasses() {
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<RaiseLoopAccessesPass>();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return std::make_unique<LinalgToAffineLoopsPass>();
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<ReorderableReductionsPass>();
