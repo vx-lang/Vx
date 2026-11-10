@@ -1,0 +1,35 @@
+//===- is_ok_and_is_err_on_an_error_that_is_not_copy.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not='Warning[' --implicit-check-not='Error['
+// CHECK: func.func @failed
+//
+// `is_ok` and `is_err` only look at which variant a `Result` holds, through a reference. They
+// must not move the payload out of it, so they work when the `Ok` and `Err` type is not Copy.
+
+import core::result;
+
+enum Failure {
+  Closed,  
+}
+
+fn failed(r : &Result<i64, Failure>) -> bool {
+  return r.is_err();
+}
+
+fn succeeded(r : &Result<Failure, i64>) -> bool {
+  return r.is_ok();
+}
+
+fn main() -> i32 {
+  let a = Result<i64, Failure>::Err(Failure::Closed);
+  let b = Result<Failure, i64>::Ok(Failure::Closed);
+  if failed(&a) && succeeded(&b) {
+    return 0;
+  }
+  return 1;
+}
