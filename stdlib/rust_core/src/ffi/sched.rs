@@ -911,6 +911,95 @@ mod tests {
         assert_eq!(p.turn.load(Ordering::SeqCst), 0);
     }
 
+    /// Two tasks that pass a turn until `stop`, at most `limit` passes each. The first task makes
+    /// the late task ready at its 100th pass.
+    struct Rally {
+        turn: AtomicI64,
+        passes: AtomicUsize,
+        stop: AtomicI64,
+        limit: usize,
+        /// The count of switches to a task when the late task became ready, and when it started.
+        late_ready: AtomicU64,
+        late_start: AtomicU64,
+        late: Mutex<Option<Box<Fiber>>>,
+    }
+
+    fn rally(r: &'static Rally, mine: i64) {
+        for pass in 0..r.limit {
+            while r.turn.load(Ordering::SeqCst) != mine {
+                unsafe { vx_wait_while(r.turn.as_ptr(), 1 - mine) };
+            }
+            r.passes.fetch_add(1, Ordering::SeqCst);
+            if mine == 0 && pass == 100 {
+                let sched = unsafe { (*current_fiber()).sched };
+                r.late_ready
+                    .store(sched.switches.load(Ordering::SeqCst), Ordering::SeqCst);
+                let env = r as *const Rally as *mut u8;
+                *r.late.lock().unwrap() = Some(sched.spawn(start_late, env, None));
+            }
+            r.turn.store(1 - mine, Ordering::SeqCst);
+            unsafe { vx_wake_all(r.turn.as_ptr()) };
+            // Each task passes the turn before it returns, so the other one does not wait.
+            if r.stop.load(Ordering::SeqCst) != 0 {
+                return;
+            }
+        }
+    }
+
+    extern "C" fn rally_first(env: *mut u8) {
+        rally(unsafe { &**(env as *const *const Rally) }, 0);
+    }
+
+    extern "C" fn rally_second(env: *mut u8) {
+        rally(unsafe { &**(env as *const *const Rally) }, 1);
+    }
+
+    extern "C" fn start_late(env: *mut u8) {
+        let r = unsafe { &*(env as *const Rally) };
+        let sched = unsafe { (*current_fiber()).sched };
+        r.late_start
+            .store(sched.switches.load(Ordering::SeqCst), Ordering::SeqCst);
+        r.stop.store(1, Ordering::SeqCst);
+    }
+
+    /// The ready queue is first in, first out. So a task that becomes ready runs within one
+    /// switch for each task, here 3, while two other tasks pass a turn on the one worker. On a
+    /// queue where the last task in runs first, the two tasks take the worker in turn, and the
+    /// late task waits until they end.
+    #[test]
+    fn a_ready_task_runs_while_two_tasks_pass_a_turn() {
+        let _watchdog = Watchdog::new("a_ready_task_runs_while_two_tasks_pass_a_turn");
+        let sched = Scheduler::start(1, 1);
+        let r: &'static Rally = Box::leak(Box::new(Rally {
+            turn: AtomicI64::new(0),
+            passes: AtomicUsize::new(0),
+            stop: AtomicI64::new(0),
+            limit: 100_000,
+            late_ready: AtomicU64::new(0),
+            late_start: AtomicU64::new(0),
+            late: Mutex::new(None),
+        }));
+        let group = tasks_begin(Some(sched));
+        unsafe {
+            vx_task_start(group, rally_first, env_with(r as *const Rally));
+            vx_task_start(group, rally_second, env_with(r as *const Rally));
+            vx_tasks_end(group);
+        }
+        let late = r
+            .late
+            .lock()
+            .unwrap()
+            .take()
+            .expect("the late task was not made");
+        wait_for(&late.done);
+        let waited = r.late_start.load(Ordering::SeqCst) - r.late_ready.load(Ordering::SeqCst);
+        assert!(
+            waited <= 3,
+            "the late task waited {waited} switches, and the two tasks passed {} times",
+            r.passes.load(Ordering::SeqCst)
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn tasks_park_on_two_workers_with_shadow_stacks_on() {
