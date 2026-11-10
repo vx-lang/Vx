@@ -492,11 +492,13 @@ extern "C" void vx_metal_wait_for_memory(const void *start, size_t bytes,
 }
 
 // Maps new pages for `bytes` of GPU memory, and makes their buffer. Returns
-// null when the GPU is off, when `bytes` is less than a page, or when Metal
-// refuses. The caller then uses `malloc`.
+// null when the GPU is off, when `bytes` is 0, or when Metal refuses. The
+// caller then uses `malloc`. A small tensor gets a whole page too: two tensors
+// from `malloc` can share a page, and a batch cannot have two buffers over one
+// page, so the second tensor would end the batch.
 extern "C" void *vx_metal_alloc(size_t bytes) {
   const size_t page = vm_page_size;
-  if (bytes < page || !enabledByEnvironment())
+  if (bytes == 0 || !enabledByEnvironment())
     return nullptr;
   @autoreleasepool {
     id<MTLDevice> device = gpu().device;
