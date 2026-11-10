@@ -111,12 +111,15 @@ class Q4_0(unittest.TestCase):
         matrix[3, :32] = np.float32([-8] + [k + 0.5 for k in range(-8, 7)] * 2 + [7.5])
         # Two weights of the largest size: the first one sets the sign of the scale.
         matrix[4, 64:96] = np.float32([-4, 4] + [1] * 30)
+        # A group of -0.0 gets the scale -0.0, as one of +0.0 does.
+        matrix[5, :32] = np.float32(-0.0)
         packed, scales = q.quantize_q4_0(matrix)
         codes = q.unpack_u4(packed)
         for r in range(len(matrix)):
             expected_codes, expected_scales = q4_0_one_row(matrix[r])
             self.assertEqual(codes[r].tolist(), expected_codes)
-            self.assertEqual(scales[r].tolist(), [float(s) for s in expected_scales])
+            # The bits, so that -0.0 and +0.0 differ.
+            self.assertEqual(scales[r].view(np.uint16).tolist(), [int(s.view(np.uint16)) for s in expected_scales])
         self.assertEqual(codes[1, :32].tolist(), [8] * 32)
 
     def test_codes_fill_each_word_from_its_low_bits(self):

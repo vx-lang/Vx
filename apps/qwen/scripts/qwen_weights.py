@@ -326,6 +326,8 @@ def quantize_q4_0(matrix):
         assert np.all(np.isfinite(chunk)), "only finite values round to Q4_0 here"
         groups = chunk.reshape(len(chunk), -1, Q4_GROUP)
         largest = np.take_along_axis(groups, np.abs(groups).argmax(axis=-1)[..., None], axis=-1)
+        # As in llama.cpp, a group of zeros keeps +0.0 here, also when its weights are -0.0.
+        largest = np.where(largest == 0, np.float32(0), largest)
         d = largest / np.float32(-8)
         inverse = np.divide(np.float32(1), d, out=np.zeros_like(d), where=d != 0)
         # All float32, as in llama.cpp. The sum is at least 0.5, so the floor is its cast to int.
