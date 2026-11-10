@@ -228,12 +228,14 @@ fn load_weights(path : *const i8) -> Weights {
     vocab_size: word(&r, 11) as i32,
     max_positions: word(&r, 12) as i32,
     tied_embeddings: word(&r, 13) != 0,
-    fp8: word(&r, 16) != 0,
+    fp8: word(&r, 16) == 1,
     eos_token_id: word(&r, 15) as i32,
     rope_theta: unsafe { floats[21] },
     rms_norm_eps: unsafe { floats[22] },
   };
   assert(word(&r, 14) != 0, "a model with no bias on Q, K and V is not supported yet");
+  assert(word(&r, 16) <= 1, "a weight file with 4-bit weights is not supported yet");
+  assert(word(&r, 17) == 0, "a mixture-of-experts model is not supported yet");
 
   let hidden = config.hidden_size;
   let q_rows = config.num_q_heads * config.head_dim;

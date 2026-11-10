@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compute the logits and the greedy tokens of a Qwen2 model with NumPy, in float32.
+"""Compute the logits and the greedy tokens of a Qwen2 or Qwen3 MoE model with NumPy, in float32.
 
     python3 apps/qwen/scripts/reference.py qwen-0.5b.vxw --tokens 750,75698,1445,1648 --steps 8
     python3 apps/qwen/scripts/reference.py qwen-0.5b.vxw --tokenizer DIR --prompt "def f(n):"
@@ -32,15 +32,16 @@ CACHE_LIMIT_BYTES = 4 << 30
 class Model:
     def __init__(self, path):
         self.config, self.tensors = qwen_weights.read_weight_file(path)
-        f32_bytes = sum(array.size * 4 for _, array in self.tensors.values())
+        f32_bytes = sum(array.size * (8 if dtype == "u4" else 4) for dtype, array in self.tensors.values())
         self.cache = {} if f32_bytes <= CACHE_LIMIT_BYTES else None
 
-    def weight(self, name):
+    def weight(self, name, rows=None):
+        """The float32 values of a tensor, or of the rows (start, stop) of a matrix."""
         if self.cache is None:
-            return qwen_weights.widen(self.tensors, name)
+            return qwen_weights.widen(self.tensors, name, rows)
         if name not in self.cache:
             self.cache[name] = qwen_weights.widen(self.tensors, name)
-        return self.cache[name]
+        return self.cache[name] if rows is None else self.cache[name][rows[0] : rows[1]]
 
 
 def rms_norm(x, weight, eps):
@@ -59,6 +60,33 @@ def rope(x, positions, theta):
     sin = np.sin(angles).astype(np.float32)[:, None, :]
     first, second = x[..., :half], x[..., half:]
     return np.concatenate([first * cos - second * sin, second * cos + first * sin], axis=-1)
+
+
+def silu(x):
+    return x / (1 + np.exp(-x))
+
+
+def mixture_of_experts(model, prefix, h):
+    """The sum of the experts that the router chooses for each token of h, each times its weight.
+
+    The router keeps the experts_per_token largest of the softmax over all experts, and scales
+    their weights to sum to 1.
+    """
+    c = model.config
+    hidden, inter = c["hidden_size"], c["moe_intermediate_size"]
+    scores = h @ model.weight(prefix + "router").T
+    scores = np.exp(scores - scores.max(axis=-1, keepdims=True))
+    scores = scores / scores.sum(axis=-1, keepdims=True)
+    chosen = np.argsort(-scores, axis=-1, kind="stable")[:, : c["experts_per_token"]]
+    weights = np.take_along_axis(scores, chosen, axis=-1)
+    weights = weights / weights.sum(axis=-1, keepdims=True)
+    out = np.zeros_like(h)
+    for expert in np.unique(chosen):
+        tokens, slots = np.nonzero(chosen == expert)
+        gate_up = h[tokens] @ model.weight(prefix + "experts_gate_up", (expert * 2 * inter, (expert + 1) * 2 * inter)).T
+        down = model.weight(prefix + "experts_down", (expert * hidden, (expert + 1) * hidden))
+        out[tokens] += weights[tokens, slots][:, None] * ((silu(gate_up[:, :inter]) * gate_up[:, inter:]) @ down.T)
+    return out
 
 
 class Cache:
@@ -84,9 +112,15 @@ def forward(model, tokens, cache):
         qkv = h @ model.weight(p + "qkv").T
         if c["qkv_bias"]:
             qkv = qkv + model.weight(p + "qkv_bias")
-        q = rope(qkv[:, : qh * hd].reshape(count, qh, hd), positions, c["rope_theta"])
-        k = rope(qkv[:, qh * hd : (qh + kvh) * hd].reshape(count, kvh, hd), positions, c["rope_theta"])
+        q = qkv[:, : qh * hd].reshape(count, qh, hd)
+        k = qkv[:, qh * hd : (qh + kvh) * hd].reshape(count, kvh, hd)
         v = qkv[:, (qh + kvh) * hd :].reshape(count, kvh, hd)
+        if c["qk_norm"]:
+            # One RMSNorm over each head, with one weight vector for all the heads of q or of k.
+            q = rms_norm(q, model.weight(p + "q_norm"), eps)
+            k = rms_norm(k, model.weight(p + "k_norm"), eps)
+        q = rope(q, positions, c["rope_theta"])
+        k = rope(k, positions, c["rope_theta"])
         if cache.keys[layer] is None:
             cache.keys[layer], cache.values[layer] = k, v
         else:
@@ -103,9 +137,12 @@ def forward(model, tokens, cache):
         attended = np.einsum("gts,sgd->tgd", scores, np.repeat(values, group, axis=1)).reshape(count, qh * hd)
         x = x + attended @ model.weight(p + "attn_out").T
         h = rms_norm(x, model.weight(p + "mlp_norm"), eps)
-        gate_up = h @ model.weight(p + "gate_up").T
-        gate, up = gate_up[:, : c["intermediate_size"]], gate_up[:, c["intermediate_size"] :]
-        x = x + (gate / (1 + np.exp(-gate)) * up) @ model.weight(p + "down").T
+        if c["num_experts"]:
+            x = x + mixture_of_experts(model, p, h)
+        else:
+            gate_up = h @ model.weight(p + "gate_up").T
+            gate, up = gate_up[:, : c["intermediate_size"]], gate_up[:, c["intermediate_size"] :]
+            x = x + (silu(gate) * up) @ model.weight(p + "down").T
     cache.length += count
     x = rms_norm(x, model.weight("final_norm"), eps)
     output = model.weight("embed" if c["tied_embeddings"] else "lm_head")
@@ -149,8 +186,8 @@ def main():
 
     if args.tensors:
         # Bits, not decimals, so that a Vx program can print the same line exactly. A code is the
-        # bits of one value as an unsigned integer: 16 for bf16, 8 for f8e4m3 and 32 for f32. The
-        # sum adds the codes of the whole tensor.
+        # bits of one value as an unsigned integer: 16 for bf16 and f16, 8 for f8e4m3 and 32 for
+        # f32. For u4, it is a byte of two codes. The sum adds the codes of the whole tensor.
         c = model.config
         print(f"config hidden={c['hidden_size']} layers={c['num_layers']} vocab={c['vocab_size']};")
         for name, (dtype, array) in model.tensors.items():
