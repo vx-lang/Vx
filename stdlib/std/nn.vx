@@ -6,9 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 // Kernels for one token of a transformer decoder, such as Llama or Qwen, on `Topology::Device`.
-// Each function is one kernel launch. Weights are bf16 and every other value is f32, and each
-// kernel adds in f32. Put all tensors in one memory that the device can read, such as
-// `Memory::HBM`.
+// Each function is one kernel launch. Weights are bf16, or fp8 for the functions whose name has
+// `_fp8`. Every other value is f32, and each kernel adds in f32. Put all tensors in one memory
+// that the device can read, such as `Memory::HBM`.
 //
 // - A matrix of `rows` x `cols` is a rank-1 tensor, with row r at r * cols. `cols` must be a
 //   multiple of 8, because each lane reads 8 values at a time.
@@ -391,6 +391,364 @@ fn nn_embed<M : Memory>(x : &mut Tensor<f32, [?], Memory::M>, table : &Tensor<bf
       }
     }
   }
+  return;
+}
+
+// fp8 weights. A matrix of rows x cols is f8e4m3 codes (OCP, bias 7, no infinity), 4 in each u32
+// word: byte k of word i is code 4i + k, so a matrix is rows x cols / 4 words. `scales` holds one
+// f32 for each block of 128 x 128, [ceil(rows / 128), cols / 128], with block (i, j) at
+// i * (cols / 128) + j. A weight is the value of its code times the scale of its block. `rows`
+// must be a multiple of 4 and `cols` a multiple of 128. Codes 0x7f and 0xff (NaN) must not occur.
+//
+// Each block of the GPU does 4 rows, so one load of x serves 4 rows. The 256 values of the codes
+// are in shared memory, which is faster here than decoding each code with bit operations.
+
+/// y[r] = (row r of the fp8 matrix w) . x, for r below `rows`.
+fn nn_matvec_fp8<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f32, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
+  nn_check_fp8(w.len(), scales.len(), x.len(), rows, cols);
+  assert(y.len() >= rows, "nn fp8: the output has fewer values than rows");
+  let tiles = cols / 128;
+  let words = cols / 4;
+  spawn on(Topology::Device) {
+    for rb in 0..rows / 4 across blocks {
+      let mut part = unsafe { Tensor<f32, [4, 128], Memory::SMEM>::uninit() };
+      let mut lut = unsafe { Tensor<f32, [256], Memory::SMEM>::uninit() };
+      for l in 0..128 across lanes {
+        // e = 0 gives m * 2^-9. Else the code's bits, with 120 added to the exponent, are the
+        // value in f32. This never makes a subnormal f32, which the GPU would flush to 0.
+        let mag = l as u32;
+        let mut value = f32::from_bits((mag << 20u32) + 1006632960u32);
+        if mag < 8u32 {
+          value = (mag as f32) * 0.001953125;
+        }
+        lut[l] = value;
+        lut[l + 128] = 0.0 - value;
+      }
+      for l in 0..128 across lanes {
+        let mut acc = unsafe { Tensor<f32, [4]>::uninit() };
+        for j in 0..4 {
+          acc[j] = 0.0;
+        }
+        let srow = (rb * 4 / 128) * tiles;
+        let mut c = l * 8;
+        while c < cols {
+          let mut xs = unsafe { Tensor<f32, [8]>::uninit() };
+          for k in 0..8 {
+            xs[k] = x[c + k];
+          }
+          let scale = scales[srow + c / 128];
+          for j in 0..4 {
+            let at = (rb * 4 + j) * words + c / 4;
+            let w0 = w[at];
+            let w1 = w[at + 1];
+            let s = lut[(w0 & 255u32) as i32] * xs[0] + lut[((w0 >> 8u32) & 255u32) as i32] * xs[1] + lut[((w0 >> 16u32) & 255u32) as i32] * xs[2] + lut[(w0 >> 24u32) as i32] * xs[3] + lut[(w1 & 255u32) as i32] * xs[4] + lut[((w1 >> 8u32) & 255u32) as i32] * xs[5] + lut[((w1 >> 16u32) & 255u32) as i32] * xs[6] + lut[(w1 >> 24u32) as i32] * xs[7];
+            acc[j] = acc[j] + s * scale;
+          }
+          c = c + 1024;
+        }
+        part[0][l] = acc[0];
+        part[1][l] = acc[1];
+        part[2][l] = acc[2];
+        part[3][l] = acc[3];
+      }
+      let s0 = lanes::sum(&part[0], 128);
+      let s1 = lanes::sum(&part[1], 128);
+      let s2 = lanes::sum(&part[2], 128);
+      let s3 = lanes::sum(&part[3], 128);
+      y[rb * 4] = s0;
+      y[rb * 4 + 1] = s1;
+      y[rb * 4 + 2] = s2;
+      y[rb * 4 + 3] = s3;
+    }
+  }
+  return;
+}
+
+/// y[r] = y[r] + (row r of the fp8 matrix w) . x: a matrix-vector product and a residual add.
+fn nn_matvec_fp8_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f32, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
+  nn_check_fp8(w.len(), scales.len(), x.len(), rows, cols);
+  assert(y.len() >= rows, "nn fp8: the output has fewer values than rows");
+  let tiles = cols / 128;
+  let words = cols / 4;
+  spawn on(Topology::Device) {
+    for rb in 0..rows / 4 across blocks {
+      let mut part = unsafe { Tensor<f32, [4, 128], Memory::SMEM>::uninit() };
+      let mut lut = unsafe { Tensor<f32, [256], Memory::SMEM>::uninit() };
+      for l in 0..128 across lanes {
+        let mag = l as u32;
+        let mut value = f32::from_bits((mag << 20u32) + 1006632960u32);
+        if mag < 8u32 {
+          value = (mag as f32) * 0.001953125;
+        }
+        lut[l] = value;
+        lut[l + 128] = 0.0 - value;
+      }
+      for l in 0..128 across lanes {
+        let mut acc = unsafe { Tensor<f32, [4]>::uninit() };
+        for j in 0..4 {
+          acc[j] = 0.0;
+        }
+        let srow = (rb * 4 / 128) * tiles;
+        let mut c = l * 8;
+        while c < cols {
+          let mut xs = unsafe { Tensor<f32, [8]>::uninit() };
+          for k in 0..8 {
+            xs[k] = x[c + k];
+          }
+          let scale = scales[srow + c / 128];
+          for j in 0..4 {
+            let at = (rb * 4 + j) * words + c / 4;
+            let w0 = w[at];
+            let w1 = w[at + 1];
+            let s = lut[(w0 & 255u32) as i32] * xs[0] + lut[((w0 >> 8u32) & 255u32) as i32] * xs[1] + lut[((w0 >> 16u32) & 255u32) as i32] * xs[2] + lut[(w0 >> 24u32) as i32] * xs[3] + lut[(w1 & 255u32) as i32] * xs[4] + lut[((w1 >> 8u32) & 255u32) as i32] * xs[5] + lut[((w1 >> 16u32) & 255u32) as i32] * xs[6] + lut[(w1 >> 24u32) as i32] * xs[7];
+            acc[j] = acc[j] + s * scale;
+          }
+          c = c + 1024;
+        }
+        part[0][l] = acc[0];
+        part[1][l] = acc[1];
+        part[2][l] = acc[2];
+        part[3][l] = acc[3];
+      }
+      let s0 = lanes::sum(&part[0], 128);
+      let s1 = lanes::sum(&part[1], 128);
+      let s2 = lanes::sum(&part[2], 128);
+      let s3 = lanes::sum(&part[3], 128);
+      y[rb * 4] = y[rb * 4] + s0;
+      y[rb * 4 + 1] = y[rb * 4 + 1] + s1;
+      y[rb * 4 + 2] = y[rb * 4 + 2] + s2;
+      y[rb * 4 + 3] = y[rb * 4 + 3] + s3;
+    }
+  }
+  return;
+}
+
+/// y[r] = y[r] + (row r of the fp8 matrix w) . x, where x is a tensor of heads, as in
+/// `nn_matvec_heads_add`. This is the output projection of attention, with its residual add.
+fn nn_matvec_fp8_heads_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f32, [?], Memory::M>, x : &Tensor<f32, [?, ?], Memory::M>, rows : i32, heads : i32, head_dim : i32) -> void {
+  let cols = heads * head_dim;
+  nn_check_heads(x.extent(0), x.extent(1), heads, head_dim);
+  nn_check_fp8(w.len(), scales.len(), cols, rows, cols);
+  assert(y.len() >= rows, "nn fp8: the output has fewer values than rows");
+  let tiles = cols / 128;
+  let words = cols / 4;
+  spawn on(Topology::Device) {
+    for rb in 0..rows / 4 across blocks {
+      let mut part = unsafe { Tensor<f32, [4, 128], Memory::SMEM>::uninit() };
+      let mut lut = unsafe { Tensor<f32, [256], Memory::SMEM>::uninit() };
+      for l in 0..128 across lanes {
+        let mag = l as u32;
+        let mut value = f32::from_bits((mag << 20u32) + 1006632960u32);
+        if mag < 8u32 {
+          value = (mag as f32) * 0.001953125;
+        }
+        lut[l] = value;
+        lut[l + 128] = 0.0 - value;
+      }
+      for l in 0..128 across lanes {
+        let mut acc = unsafe { Tensor<f32, [4]>::uninit() };
+        for j in 0..4 {
+          acc[j] = 0.0;
+        }
+        let srow = (rb * 4 / 128) * tiles;
+        let mut c = l * 8;
+        while c < cols {
+          // head_dim is a multiple of 8, so the 8 values from c are in one head.
+          let h = c / head_dim;
+          let d = c - h * head_dim;
+          let mut xs = unsafe { Tensor<f32, [8]>::uninit() };
+          for k in 0..8 {
+            xs[k] = x[h][d + k];
+          }
+          let scale = scales[srow + c / 128];
+          for j in 0..4 {
+            let at = (rb * 4 + j) * words + c / 4;
+            let w0 = w[at];
+            let w1 = w[at + 1];
+            let s = lut[(w0 & 255u32) as i32] * xs[0] + lut[((w0 >> 8u32) & 255u32) as i32] * xs[1] + lut[((w0 >> 16u32) & 255u32) as i32] * xs[2] + lut[(w0 >> 24u32) as i32] * xs[3] + lut[(w1 & 255u32) as i32] * xs[4] + lut[((w1 >> 8u32) & 255u32) as i32] * xs[5] + lut[((w1 >> 16u32) & 255u32) as i32] * xs[6] + lut[(w1 >> 24u32) as i32] * xs[7];
+            acc[j] = acc[j] + s * scale;
+          }
+          c = c + 1024;
+        }
+        part[0][l] = acc[0];
+        part[1][l] = acc[1];
+        part[2][l] = acc[2];
+        part[3][l] = acc[3];
+      }
+      let s0 = lanes::sum(&part[0], 128);
+      let s1 = lanes::sum(&part[1], 128);
+      let s2 = lanes::sum(&part[2], 128);
+      let s3 = lanes::sum(&part[3], 128);
+      y[rb * 4] = y[rb * 4] + s0;
+      y[rb * 4 + 1] = y[rb * 4 + 1] + s1;
+      y[rb * 4 + 2] = y[rb * 4 + 2] + s2;
+      y[rb * 4 + 3] = y[rb * 4 + 3] + s3;
+    }
+  }
+  return;
+}
+
+/// The Q, K and V projections of one token with fp8 weights, and their bias in bf16. The rows are
+/// in the order of `nn_qkv`.
+fn nn_qkv_fp8<M : Memory>(q : &mut Tensor<f32, [?, ?], Memory::M>, k : &mut Tensor<f32, [?, ?], Memory::M>, v : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f32, [?], Memory::M>, b : &Tensor<bf16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, q_heads : i32, kv_heads : i32, head_dim : i32, cols : i32) -> void {
+  let heads = q_heads + 2 * kv_heads;
+  nn_check_heads(q.extent(0), q.extent(1), q_heads, head_dim);
+  nn_check_heads(k.extent(0), k.extent(1), kv_heads, head_dim);
+  nn_check_heads(v.extent(0), v.extent(1), kv_heads, head_dim);
+  nn_check_fp8(w.len(), scales.len(), x.len(), heads * head_dim, cols);
+  assert(b.len() >= heads * head_dim, "nn_qkv_fp8: the bias has fewer values than rows");
+  let tiles = cols / 128;
+  let words = cols / 4;
+  spawn on(Topology::Device) {
+    for h in 0..heads across blocks {
+      for d4 in 0..head_dim / 4 across blocks {
+        let mut part = unsafe {
+          Tensor<f32, [4, 128], Memory::SMEM>::uninit()
+        };
+        let mut lut = unsafe { Tensor<f32, [256], Memory::SMEM>::uninit() };
+        for l in 0..128 across lanes {
+          let mag = l as u32;
+          let mut value = f32::from_bits((mag << 20u32) + 1006632960u32);
+          if mag < 8u32 {
+            value = (mag as f32) * 0.001953125;
+          }
+          lut[l] = value;
+          lut[l + 128] = 0.0 - value;
+        }
+        let first = h * head_dim + d4 * 4;
+        for l in 0..128 across lanes {
+          let mut acc = unsafe { Tensor<f32, [4]>::uninit() };
+          for j in 0..4 {
+            acc[j] = 0.0;
+          }
+          let srow = (first / 128) * tiles;
+          let mut c = l * 8;
+          while c < cols {
+            let mut xs = unsafe { Tensor<f32, [8]>::uninit() };
+            for t in 0..8 {
+              xs[t] = x[c + t];
+            }
+            let scale = scales[srow + c / 128];
+            for j in 0..4 {
+              let at = (first + j) * words + c / 4;
+              let w0 = w[at];
+              let w1 = w[at + 1];
+              let s = lut[(w0 & 255u32) as i32] * xs[0] + lut[((w0 >> 8u32) & 255u32) as i32] * xs[1] + lut[((w0 >> 16u32) & 255u32) as i32] * xs[2] + lut[(w0 >> 24u32) as i32] * xs[3] + lut[(w1 & 255u32) as i32] * xs[4] + lut[((w1 >> 8u32) & 255u32) as i32] * xs[5] + lut[((w1 >> 16u32) & 255u32) as i32] * xs[6] + lut[(w1 >> 24u32) as i32] * xs[7];
+              acc[j] = acc[j] + s * scale;
+            }
+            c = c + 1024;
+          }
+          part[0][l] = acc[0];
+          part[1][l] = acc[1];
+          part[2][l] = acc[2];
+          part[3][l] = acc[3];
+        }
+        let s0 = lanes::sum(&part[0], 128);
+        let s1 = lanes::sum(&part[1], 128);
+        let s2 = lanes::sum(&part[2], 128);
+        let s3 = lanes::sum(&part[3], 128);
+        let r0 = s0 + (b[first] as f32);
+        let r1 = s1 + (b[first + 1] as f32);
+        let r2 = s2 + (b[first + 2] as f32);
+        let r3 = s3 + (b[first + 3] as f32);
+        if h < q_heads {
+          q[h][d4 * 4] = r0;
+          q[h][d4 * 4 + 1] = r1;
+          q[h][d4 * 4 + 2] = r2;
+          q[h][d4 * 4 + 3] = r3;
+        } else if h < q_heads + kv_heads {
+          k[h - q_heads][d4 * 4] = r0;
+          k[h - q_heads][d4 * 4 + 1] = r1;
+          k[h - q_heads][d4 * 4 + 2] = r2;
+          k[h - q_heads][d4 * 4 + 3] = r3;
+        } else {
+          v[h - q_heads - kv_heads][d4 * 4] = r0;
+          v[h - q_heads - kv_heads][d4 * 4 + 1] = r1;
+          v[h - q_heads - kv_heads][d4 * 4 + 2] = r2;
+          v[h - q_heads - kv_heads][d4 * 4 + 3] = r3;
+        }
+      }
+    }
+  }
+  return;
+}
+
+/// The SwiGLU input of the MLP of one token with fp8 weights, as `nn_swiglu`: `w` has the `rows`
+/// rows of the gate projection, and then the `rows` rows of the up projection.
+fn nn_swiglu_fp8<M : Memory>(out : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f32, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
+  nn_check_fp8(w.len(), scales.len(), x.len(), 2 * rows, cols);
+  assert(out.len() >= rows, "nn_swiglu_fp8: the output has fewer values than rows");
+  let tiles = cols / 128;
+  let words = cols / 4;
+  spawn on(Topology::Device) {
+    for rb in 0..rows / 4 across blocks {
+      let mut part = unsafe { Tensor<f32, [8, 128], Memory::SMEM>::uninit() };
+      let mut lut = unsafe { Tensor<f32, [256], Memory::SMEM>::uninit() };
+      for l in 0..128 across lanes {
+        let mag = l as u32;
+        let mut value = f32::from_bits((mag << 20u32) + 1006632960u32);
+        if mag < 8u32 {
+          value = (mag as f32) * 0.001953125;
+        }
+        lut[l] = value;
+        lut[l + 128] = 0.0 - value;
+      }
+      for l in 0..128 across lanes {
+        // acc[0..4] are the gate rows, and acc[4..8] the up rows that pair with them.
+        let mut acc = unsafe { Tensor<f32, [8]>::uninit() };
+        for j in 0..8 {
+          acc[j] = 0.0;
+        }
+        let gate_srow = (rb * 4 / 128) * tiles;
+        let up_srow = ((rows + rb * 4) / 128) * tiles;
+        let mut c = l * 8;
+        while c < cols {
+          let mut xs = unsafe { Tensor<f32, [8]>::uninit() };
+          for t in 0..8 {
+            xs[t] = x[c + t];
+          }
+          for j in 0..8 {
+            let mut row = rb * 4 + j;
+            let mut srow = gate_srow;
+            if j >= 4 {
+              row = rows + rb * 4 + j - 4;
+              srow = up_srow;
+            }
+            let at = row * words + c / 4;
+            let w0 = w[at];
+            let w1 = w[at + 1];
+            let s = lut[(w0 & 255u32) as i32] * xs[0] + lut[((w0 >> 8u32) & 255u32) as i32] * xs[1] + lut[((w0 >> 16u32) & 255u32) as i32] * xs[2] + lut[(w0 >> 24u32) as i32] * xs[3] + lut[(w1 & 255u32) as i32] * xs[4] + lut[((w1 >> 8u32) & 255u32) as i32] * xs[5] + lut[((w1 >> 16u32) & 255u32) as i32] * xs[6] + lut[(w1 >> 24u32) as i32] * xs[7];
+            acc[j] = acc[j] + s * scales[srow + c / 128];
+          }
+          c = c + 1024;
+        }
+        for j in 0..8 {
+          part[j][l] = acc[j];
+        }
+      }
+      let g0 = lanes::sum(&part[0], 128);
+      let g1 = lanes::sum(&part[1], 128);
+      let g2 = lanes::sum(&part[2], 128);
+      let g3 = lanes::sum(&part[3], 128);
+      let u0 = lanes::sum(&part[4], 128);
+      let u1 = lanes::sum(&part[5], 128);
+      let u2 = lanes::sum(&part[6], 128);
+      let u3 = lanes::sum(&part[7], 128);
+      out[rb * 4] = g0 / (1.0 + (0.0 - g0).fast_exp()) * u0;
+      out[rb * 4 + 1] = g1 / (1.0 + (0.0 - g1).fast_exp()) * u1;
+      out[rb * 4 + 2] = g2 / (1.0 + (0.0 - g2).fast_exp()) * u2;
+      out[rb * 4 + 3] = g3 / (1.0 + (0.0 - g3).fast_exp()) * u3;
+    }
+  }
+  return;
+}
+
+/// Asserts that an fp8 matrix of rows x cols, its scales and its input hold the values that a
+/// product reads.
+fn nn_check_fp8(w_len : i32, s_len : i32, x_len : i32, rows : i32, cols : i32) -> void {
+  assert(rows > 0 && rows % 4 == 0 && cols > 0 && cols % 128 == 0, "nn fp8: rows must be a multiple of 4, and cols a multiple of 128");
+  assert(x_len >= cols, "nn fp8: the input has fewer values than cols");
+  assert(rows <= w_len / (cols / 4) && s_len >= ((rows + 127) / 128) * (cols / 128), "nn fp8: the codes or the scales are too few for rows x cols");
   return;
 }
 
