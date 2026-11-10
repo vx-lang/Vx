@@ -831,7 +831,9 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
         // materialization; only the indexed form is a value, so it is one construct here.
         if let syntax::Expr::MemberAccess(ma) = self.base.as_ref() {
             if ma.member.as_ref() == "$extent" {
-                let (t_val, t_ty, block) = gen.generate_expr(&ma.base, block)?;
+                let (t_val, mut t_ty, block) = gen.generate_expr(&ma.base, block)?;
+                // A call that returns `&Tensor` gives the slot that holds the tensor.
+                let t_val = load_tensor_slot(gen, &block, t_val, &mut t_ty)?;
                 if t_ty.to_string().starts_with("memref<") {
                     let (i_val, i_ty, block) = gen.generate_expr(&self.index, block)?;
                     let index_ty = Type::index(gen.context);
@@ -3618,6 +3620,45 @@ fn load_tensor_slot_ty<'c>(
     *ty = Type::parse(gen.context, inner_str)
         .ok_or_else(|| LowerError::ParseType(inner_str.to_string()))?;
     Ok(true)
+}
+
+/// The slot `val` of type `memref<memref<A>>` as type `to`, `memref<memref<B>>`, when `A` and `B`
+/// differ only in their sizes. The two descriptors then have the same layout, so the slot is the
+/// same. A new slot cannot be used here: a function returns the slot, and its stack is gone then.
+pub(super) fn slot_with_other_sizes<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    val: Value<'c, 'c>,
+    from: Type<'c>,
+    to: Type<'c>,
+) -> Result<Option<Value<'c, 'c>>, LowerError> {
+    let inner = |ty: Type<'c>| {
+        let s = ty.to_string();
+        s.strip_prefix("memref<memref<")
+            .map(|_| s["memref<".len()..s.len() - 1].to_string())
+    };
+    let (Some(a), Some(b)) = (inner(from), inner(to)) else {
+        return Ok(None);
+    };
+    use crate::codegen::generator::erase_memref_extents;
+    if erase_memref_extents(&a) != erase_memref_extents(&b) {
+        return Ok(None);
+    }
+    let desc_ty = Type::parse(gen.context, "!llvm.struct<(ptr, ptr, i64)>")
+        .ok_or_else(|| LowerError::from("a rank-0 memref descriptor".to_string()))?;
+    let mut v = val;
+    for ty in [desc_ty, to] {
+        v = block
+            .append_operation(
+                OperationBuilder::new("builtin.unrealized_conversion_cast", gen.loc())
+                    .add_operands(&[v])
+                    .add_results(&[ty])
+                    .build()?,
+            )
+            .result(0)?
+            .into();
+    }
+    Ok(Some(v))
 }
 
 /// A reference to a tensor, `memref<memref<A>>`, passed where `memref<memref<B>>` is expected.
@@ -6592,6 +6633,7 @@ pub(crate) fn tensor_into_field<'c>(
         } else {
             gen.coerce_type(block, val, val_ty, field_ty)?
         };
+        val_ty = field_ty;
     }
     descriptor_of(gen, block, val, val_ty, rank)
 }

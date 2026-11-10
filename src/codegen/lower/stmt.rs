@@ -85,7 +85,11 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
             }
         } else if let Some(ret_ty) = gen.current_return_type {
             if expr_ty != ret_ty {
-                if gen.is_memref(&expr_ty) && gen.is_memref(&ret_ty) {
+                if let Some(slot) =
+                    super::expr::slot_with_other_sizes(gen, &block, val, expr_ty, ret_ty)?
+                {
+                    val = slot;
+                } else if gen.is_memref(&expr_ty) && gen.is_memref(&ret_ty) {
                     let expr_parts = expr_ty.to_string();
                     let ret_parts = ret_ty.to_string();
                     let space_differs =
