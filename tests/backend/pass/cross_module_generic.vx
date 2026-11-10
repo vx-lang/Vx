@@ -10,7 +10,7 @@
 // imported generic free functions were dropped and this failed with "Undefined
 // function 'expect_eq'".
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: %[[V0:.*]] = call @six() : () -> i32
 // CHECK: call @expect_eq$i32(%[[V0]], %{{.*}}, %{{.*}}) : (i32, i32, !llvm.struct<(struct<(ptr, i32, i32)>)>) -> i32

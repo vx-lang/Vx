@@ -9,7 +9,7 @@
 // memory. A SPIR-V image cannot pass a tensor into a call, and the host cannot
 // read that memory either, so the program does not compile.
 //
-// RUN: not vxc %s --action emit-llvm 2>&1 | FileCheck %s
+// RUN: not vxc %s --action emit-llvm 2>&1 | FileCheck %s # flat-codegen
 // CHECK: cannot become a `spirv64` device image: it passes a tensor to `first`
 // CHECK: This region's operands are in 'GPU_HBM', declared `managed: explicit`
 // CHECK: Either every region in the image must be one the target can compile

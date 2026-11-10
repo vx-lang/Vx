@@ -1,4 +1,4 @@
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefixes=WARN,CHECK --implicit-check-not=Error
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefixes=WARN,CHECK --implicit-check-not=Error # flat-codegen
 // WARN: Warning[W1014]
 // WARN-SAME: -1 does not fit in usize, so this cast will stop the program
 

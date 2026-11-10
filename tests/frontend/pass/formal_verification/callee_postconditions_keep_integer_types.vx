@@ -1,4 +1,4 @@
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefixes=WARN,CHECK --implicit-check-not=Error --implicit-check-not=Warning
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefixes=WARN,CHECK --implicit-check-not=Error --implicit-check-not=Warning # flat-codegen
 // WARN: Warning[W1014]
 // WARN-SAME: 255 does not fit in i8
 

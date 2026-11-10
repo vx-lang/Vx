@@ -10,7 +10,7 @@
 // that stay static. This is what `Tensor` -> `DynTensor` did, made
 // per-dimension: `[512, 8]` -> `[?, 8]` forgets one extent, not both.
 //
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // CHECK-COUNT-2: memref.cast %{{.*}} : memref<512x8xf32> to memref<?x8xf32>
 // CHECK-NOT: memref<?x?xf32>
 

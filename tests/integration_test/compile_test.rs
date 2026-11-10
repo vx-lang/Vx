@@ -1094,17 +1094,30 @@ fn run_lit_test(path: &Path) -> Result<(), String> {
                 .replace("%t", t_val.to_str().unwrap())
         })
         .collect();
-    // With VX_LEGACY_PARITY=1, each RUN line that does not name `--legacy-codegen` runs again
-    // with it, after all the RUN lines passed. A file with `// REQUIRES: flat-codegen` uses a
-    // construct that only the flat code generator has, and does not run again.
+    // With VX_LEGACY_PARITY=1, the RUN lines run a second time, in order, after all of them
+    // passed. In the second pass, each `vxc` command gets `--legacy-codegen`. These lines run
+    // again unchanged: a line that already names it, a parallel compile (`-j`, #3139), and a
+    // line that ends with the shell comment `# flat-codegen`. That comment says the line checks
+    // text that only the flat code generator writes, such as its MLIR. A file with
+    // `// REQUIRES: flat-codegen` uses a construct that only the flat code generator has, and
+    // does not run a second time.
     let parity = std::env::var_os("VX_LEGACY_PARITY").is_some()
         && !xfail
         && !source.contains("// REQUIRES: flat-codegen");
+    let parallel = regex::Regex::new(r"\s-j\s*\d").unwrap();
     let again: Vec<String> = if parity {
         commands
             .iter()
-            .filter(|c| !c.contains("--legacy-codegen"))
-            .filter_map(|c| with_legacy_codegen(c))
+            .map(|c| {
+                if c.contains("--legacy-codegen")
+                    || parallel.is_match(c)
+                    || c.trim_end().ends_with("# flat-codegen")
+                {
+                    c.clone()
+                } else {
+                    with_legacy_codegen(c).unwrap_or_else(|| c.clone())
+                }
+            })
             .collect()
     } else {
         Vec::new()

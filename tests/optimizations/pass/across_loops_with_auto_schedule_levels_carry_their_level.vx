@@ -12,8 +12,8 @@
 // program gives the same sum with both code generators and with `-j`. A region with no launch
 // may have a matmul of whole tensors, which a launched region may not.
 //
-// RUN: vxc %s -fauto-schedule-levels --host default --emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR --implicit-check-not=vx.launch_dim --implicit-check-not=vx.across_id
-// RUN: vxc %s -fauto-schedule-levels --host default --emit-llvm 2>&1 | mlir-translate --mlir-to-llvmir | FileCheck %s --check-prefix=IR
+// RUN: vxc %s -fauto-schedule-levels --host default --emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR --implicit-check-not=vx.launch_dim --implicit-check-not=vx.across_id # flat-codegen
+// RUN: vxc %s -fauto-schedule-levels --host default --emit-llvm 2>&1 | mlir-translate --mlir-to-llvmir | FileCheck %s --check-prefix=IR # flat-codegen
 // RUN: vxc %s -fauto-schedule-levels --host default --run 2>&1 | FileCheck %s --check-prefix=OUT
 // RUN: vxc %s -fauto-schedule-levels -j 2 --host default --run 2>&1 | FileCheck %s --check-prefix=OUT
 // RUN: vxc %s -fauto-schedule-levels --legacy-codegen --host default --run 2>&1 | FileCheck %s --check-prefix=OUT

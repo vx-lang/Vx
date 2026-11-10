@@ -9,7 +9,7 @@
 // LLVM that the reference is read-only (`llvm.readonly`). `read` takes a plain `&i32` and keeps
 // the mark.
 //
-// RUN: vxc %s --emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // EXPECT: 43
 
 // CHECK-DAG: func.func @read(%arg0: !llvm.ptr {llvm.readonly}) -> i32 {

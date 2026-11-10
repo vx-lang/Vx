@@ -12,7 +12,7 @@
 //
 // `Device` is a small GPU-like machine declared below, with its own memory `HBM`.
 //
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 
 Memory CPU_DRAM {}
 

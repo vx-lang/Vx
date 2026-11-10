@@ -9,7 +9,7 @@
 // cannot make with a tensor argument. `managed: explicit` says the host cannot
 // read that memory either, so the program does not compile.
 //
-// RUN: not vxc %s --action emit-llvm 2>&1 | FileCheck %s
+// RUN: not vxc %s --action emit-llvm 2>&1 | FileCheck %s # flat-codegen
 // CHECK: the region placed on `Topology::Dev` in `main` (kernel `{{[a-z0-9_]+}}`) cannot become a `spirv64` device image: it passes a tensor to `add_one`
 // CHECK: This region's operands are in 'GPU_HBM', declared `managed: explicit`
 // CHECK: Either every region in the image must be one the target can compile

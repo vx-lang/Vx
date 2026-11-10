@@ -8,7 +8,7 @@
 // A `return` nested inside a loop terminates the current block, so block
 // threading must stop emitting into it (statement lowering returns no
 // continuation block) rather than appending after the terminator.
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // CHECK-DAG: func.func private @print_str(
 // CHECK-DAG: func.func private @print_i32(
 // CHECK-LABEL: func.func @main() -> i32

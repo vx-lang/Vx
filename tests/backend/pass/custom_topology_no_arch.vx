@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // The same program as custom_topology_device_image.vx with the ONE difference
 // that the topology declares no `arch:`. No device image is produced -- the
 // compiler refuses to guess what code to emit for a machine that did not say --
