@@ -889,6 +889,9 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
     }
     // The GPU runs a command buffer only after its commit. So the batch commits
     // after a few launches, and the GPU runs them while the CPU makes the next.
+    // The next command buffer keeps the buffers of the batch, because Metal
+    // orders launches by their buffer objects. With new buffers over the same
+    // memory, a launch in the next command buffer ran too early.
     if (here->open() && ++here->unsent >= 16) {
       if (verbose())
         fprintf(stderr, "[Vx Metal] committed %zu kernels before the wait\n",
