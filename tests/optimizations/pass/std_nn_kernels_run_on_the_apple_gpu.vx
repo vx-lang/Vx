@@ -1,0 +1,65 @@
+// Each kernel of `std::nn` runs on the Apple GPU, and the runtime prints one launch line for each.
+// std_nn_kernels_match_loops_on_the_cpu.vx checks their results.
+//
+// REQUIRES: macos
+// RUN: env VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/m4-uma.vx 2>%t.gpu | FileCheck %s --check-prefix=OUT
+// RUN: FileCheck %s --check-prefix=GPU --input-file=%t.gpu
+//
+// nn_matvec, nn_matvec_add and nn_matvec_heads_add: one block for each of the 8 rows.
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 8 x 1 x 1, block 128
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 8 x 1 x 1, block 128
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 8 x 1 x 1, block 128
+// nn_qkv: one block for each value of each of the 4 heads of Q, K and V.
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 4 x 32 x 1, block 128
+// nn_swiglu, then nn_rms_norm in one block.
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 8 x 1 x 1, block 128
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 1 x 1 x 1, block 1024
+// nn_rope_and_store: one block for each of the 3 heads of Q and K. nn_attention: one for each
+// of the 2 heads of Q.
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 3 x 1 x 1, block 128
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 2 x 1 x 1, block 128
+// nn_argmax in one block, and nn_embed.
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 1 x 1 x 1, block 1024
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 1 x 1 x 1, block 256
+//
+// All inputs are 0, except the logits. So the largest logit picks the token.
+// OUT: {{^}}token 5, x[0] 0{{$}}
+import std::nn;
+
+fn main() -> i32 {
+  let w = transfer(Tensor<bf16>([8192]), Memory::HBM);
+  let x = transfer(Tensor<f32>([64]), Memory::HBM);
+  let mut y = transfer(Tensor<f32>([64]), Memory::HBM);
+  let mut q = transfer(Tensor<f32>([2, 32]), Memory::HBM);
+  let mut k = transfer(Tensor<f32>([1, 32]), Memory::HBM);
+  let mut v = transfer(Tensor<f32>([1, 32]), Memory::HBM);
+  let mut q_out = transfer(Tensor<f32>([2, 32]), Memory::HBM);
+  let mut att = transfer(Tensor<f32>([2, 32]), Memory::HBM);
+  let mut k_cache = transfer(Tensor<f32>([4, 1, 32]), Memory::HBM);
+  let mut v_cache = transfer(Tensor<f32>([4, 1, 32]), Memory::HBM);
+  let mut scores = transfer(Tensor<f32>([2, 4]), Memory::HBM);
+  let cos = transfer(Tensor<f32>([4, 16]), Memory::HBM);
+  let sin = transfer(Tensor<f32>([4, 16]), Memory::HBM);
+  let mut h = Tensor<f32>([10]);
+  for i in 0..10 {
+    h[i] = 0.0;
+  }
+  h[5] = 1.0;
+  let logits = transfer(h, Memory::HBM);
+  let mut token = transfer(Tensor<i32>([1]), Memory::HBM);
+
+  nn_matvec(&mut y, &w, &x, 8, 64);
+  nn_matvec_add(&mut y, &w, &x, 8, 64);
+  nn_matvec_heads_add(&mut y, &w, &q, 8, 2, 32);
+  nn_qkv(&mut q, &mut k, &mut v, &w, &w, &x, 2, 1, 32, 64);
+  nn_swiglu(&mut y, &w, &x, 8, 64);
+  nn_rms_norm(&mut y, &x, &w, 64, 0.000001);
+  nn_rope_and_store(&mut q_out, &mut k_cache, &mut v_cache, &q, &k, &v, &cos, &sin, 1, 2, 1, 32);
+  nn_attention(&mut att, &mut scores, &q_out, &k_cache, &v_cache, 1, 2, 1, 32);
+  nn_argmax(&mut token, &logits, 10);
+  nn_embed(&mut y, &w, &token, 64);
+  let t = transfer(token, Memory::CPU_DRAM);
+  let hy = transfer(y, Memory::CPU_DRAM);
+  println!("token {}, x[0] {}", t[0], hy[0]);
+  return 0;
+}
