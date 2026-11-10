@@ -5,9 +5,9 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// One token of a Qwen2 decoder on the GPU, with the kernels of `std::nn`. `State` holds every
-// tensor that a token writes, and the KV cache. It is made once, before the first token, so the
-// token loop allocates nothing.
+// One token of a Qwen2 or Qwen3 MoE decoder on the GPU, with the kernels of `std::nn`. `State`
+// holds every tensor that a token writes, and the KV cache. It is made once, before the first
+// token, so the token loop allocates nothing.
 import core::convert;
 import core::num;
 import std::nn;
@@ -18,6 +18,16 @@ import qwen::weights;
 struct Cache {
   k : Tensor<f32, [?, ?, ?], Memory::HBM>,
   v : Tensor<f32, [?, ?, ?], Memory::HBM>,
+}
+
+/// The tensors of a mixture-of-experts layer: the router's score of each expert, the chosen
+/// experts and their weights, and the SwiGLU output of each chosen expert, [experts_per_token,
+/// moe_intermediate_size].
+struct Experts {
+  router_logits : Tensor<f32, [?], Memory::HBM>,
+  ids : Tensor<i32, [?], Memory::HBM>,
+  weights : Tensor<f32, [?], Memory::HBM>,
+  mlp : Tensor<f32, [?, ?], Memory::HBM>,
 }
 
 /// The tensors that a token writes, in GPU memory, and one `Cache` for each layer. `cos` and `sin`
@@ -33,6 +43,7 @@ struct State {
   attended : Tensor<f32, [?, ?], Memory::HBM>,
   scores : Tensor<f32, [?, ?], Memory::HBM>,
   mlp : Tensor<f32, [?], Memory::HBM>,
+  experts : Experts,
   logits : Tensor<f32, [?], Memory::HBM>,
   cos : Tensor<f32, [?, ?], Memory::HBM>,
   sin : Tensor<f32, [?, ?], Memory::HBM>,
@@ -53,6 +64,10 @@ fn new_state(c : &Config, max_seq : i32) -> State {
       hsin[p][i] = f64::sin(angle) as f32;
     }
   }
+  // A dense model uses none of the tensors of the experts, so one value each is enough.
+  let experts = i32::max(c.num_experts, 1);
+  let chosen = i32::max(c.experts_per_token, 1);
+  let moe_inter = i32::max(c.moe_intermediate_size, 1);
   let mut caches = Vec<Cache>::new();
   for l in 0..c.num_layers {
     caches.push(Cache {
@@ -71,11 +86,97 @@ fn new_state(c : &Config, max_seq : i32) -> State {
     attended: transfer(Tensor<f32>([c.num_q_heads, c.head_dim]), Memory::HBM),
     scores: transfer(Tensor<f32>([c.num_q_heads, max_seq]), Memory::HBM),
     mlp: transfer(Tensor<f32>([c.intermediate_size]), Memory::HBM),
+    experts: Experts {
+      router_logits: transfer(Tensor<f32>([experts]), Memory::HBM),
+      ids: transfer(Tensor<i32>([chosen]), Memory::HBM),
+      weights: transfer(Tensor<f32>([chosen]), Memory::HBM),
+      mlp: transfer(Tensor<f32>([chosen, moe_inter]), Memory::HBM),
+    },
     logits: transfer(Tensor<f32>([c.vocab_size]), Memory::HBM),
     cos: transfer(hcos, Memory::HBM),
     sin: transfer(hsin, Memory::HBM),
     caches: caches,
   };
+}
+
+/// y = m x, with the kernel for the dtype of `m`, which has `rows` x `cols` weights.
+fn matvec(y : &mut Tensor<f32, [?], Memory::HBM>, m : &WeightMatrix, x : &Tensor<f32, [?], Memory::HBM>, rows : i32, cols : i32) -> void {
+  if m.dtype == U4 {
+    nn_matvec_q4(y, &m.codes, &m.group_scales, x, rows, cols);
+  } else if m.dtype == F8E4M3 {
+    nn_matvec_fp8(y, &m.codes, &m.scales, x, rows, cols);
+  } else {
+    nn_matvec(y, &m.bf16, x, rows, cols);
+  }
+  return;
+}
+
+/// y += m x.
+fn matvec_add(y : &mut Tensor<f32, [?], Memory::HBM>, m : &WeightMatrix, x : &Tensor<f32, [?], Memory::HBM>, rows : i32, cols : i32) -> void {
+  if m.dtype == U4 {
+    nn_matvec_q4_add(y, &m.codes, &m.group_scales, x, rows, cols);
+  } else if m.dtype == F8E4M3 {
+    nn_matvec_fp8_add(y, &m.codes, &m.scales, x, rows, cols);
+  } else {
+    nn_matvec_add(y, &m.bf16, x, rows, cols);
+  }
+  return;
+}
+
+/// y += m x, for x of [heads, head_dim].
+fn matvec_heads_add(y : &mut Tensor<f32, [?], Memory::HBM>, m : &WeightMatrix, x : &Tensor<f32, [?, ?], Memory::HBM>, rows : i32, heads : i32, head_dim : i32) -> void {
+  if m.dtype == U4 {
+    nn_matvec_q4_heads_add(y, &m.codes, &m.group_scales, x, rows, heads, head_dim);
+  } else if m.dtype == F8E4M3 {
+    nn_matvec_fp8_heads_add(y, &m.codes, &m.scales, x, rows, heads, head_dim);
+  } else {
+    nn_matvec_heads_add(y, &m.bf16, x, rows, heads, head_dim);
+  }
+  return;
+}
+
+/// The Q, K and V of x: m x + b, split by heads.
+fn qkv(q : &mut Tensor<f32, [?, ?], Memory::HBM>, k : &mut Tensor<f32, [?, ?], Memory::HBM>, v : &mut Tensor<f32, [?, ?], Memory::HBM>, m : &WeightMatrix, b : &Tensor<bf16, [?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>, c : &Config) -> void {
+  if m.dtype == U4 {
+    nn_qkv_q4(q, k, v, &m.codes, &m.group_scales, b, x, c.num_q_heads, c.num_kv_heads, c.head_dim, c.hidden_size);
+  } else if m.dtype == F8E4M3 {
+    nn_qkv_fp8(q, k, v, &m.codes, &m.scales, b, x, c.num_q_heads, c.num_kv_heads, c.head_dim, c.hidden_size);
+  } else {
+    nn_qkv(q, k, v, &m.bf16, b, x, c.num_q_heads, c.num_kv_heads, c.head_dim, c.hidden_size);
+  }
+  return;
+}
+
+/// The SwiGLU of a dense MLP, for the gate rows and then the up rows of `m`.
+fn swiglu(out : &mut Tensor<f32, [?], Memory::HBM>, m : &WeightMatrix, x : &Tensor<f32, [?], Memory::HBM>, rows : i32, cols : i32) -> void {
+  if m.dtype == U4 {
+    nn_swiglu_q4(out, &m.codes, &m.group_scales, x, rows, cols);
+  } else if m.dtype == F8E4M3 {
+    nn_swiglu_fp8(out, &m.codes, &m.scales, x, rows, cols);
+  } else {
+    nn_swiglu(out, &m.bf16, x, rows, cols);
+  }
+  return;
+}
+
+/// The mixture of experts of a layer: the router chooses experts_per_token experts and their
+/// weights, and x gets the sum of their outputs for xn, each times its weight.
+fn add_experts(e : &mut Experts, x : &mut Tensor<f32, [?], Memory::HBM>, xn : &Tensor<f32, [?], Memory::HBM>, layer : &Layer, c : &Config) -> void {
+  let k = c.experts_per_token;
+  let inter = c.moe_intermediate_size;
+  nn_matvec(&mut e.router_logits, &layer.router, xn, c.num_experts, c.hidden_size);
+  nn_top_k(&mut e.ids, &mut e.weights, &e.router_logits, c.num_experts, k);
+  let gate_up = &layer.gate_up;
+  let down = &layer.down;
+  if gate_up.dtype == U4 {
+    nn_moe_swiglu_q4(&mut e.mlp, &gate_up.codes, &gate_up.group_scales, &e.ids, xn, k, inter, c.hidden_size, c.num_experts);
+    nn_moe_down_q4_add(x, &down.codes, &down.group_scales, &e.ids, &e.weights, &e.mlp, k, c.hidden_size, inter, c.num_experts);
+  } else {
+    assert(gate_up.dtype == BF16, "the experts of a mixture-of-experts model must be bf16 or Q4_0");
+    nn_moe_swiglu(&mut e.mlp, &gate_up.bf16, &e.ids, xn, k, inter, c.hidden_size, c.num_experts);
+    nn_moe_down_add(x, &down.bf16, &e.ids, &e.weights, &e.mlp, k, c.hidden_size, inter, c.num_experts);
+  }
+  return;
 }
 
 /// Runs the token in `token` at position `pos` through every layer. The hidden state of the
@@ -89,25 +190,20 @@ fn run_layers(w : &Weights, s : &mut State, token : &Tensor<i32, [?], Memory::HB
   for cache in s.caches.iter_mut() {
     let layer = &w.layers[l];
     nn_rms_norm(&mut s.xn, &s.x, &layer.attn_norm, c.hidden_size, eps);
-    if c.fp8 {
-      nn_qkv_fp8(&mut s.q, &mut s.k, &mut s.v, &layer.qkv.codes, &layer.qkv.scales, &layer.qkv_bias, &s.xn, c.num_q_heads, c.num_kv_heads, c.head_dim, c.hidden_size);
+    qkv(&mut s.q, &mut s.k, &mut s.v, &layer.qkv, &layer.qkv_bias, &s.xn, c);
+    if c.qk_norm {
+      nn_norm_rope_and_store(&mut s.q_turned, &mut cache.k, &mut cache.v, &s.q, &s.k, &s.v, &layer.q_norm, &layer.k_norm, &s.cos, &s.sin, pos, c.num_q_heads, c.num_kv_heads, c.head_dim, eps);
     } else {
-      nn_qkv(&mut s.q, &mut s.k, &mut s.v, &layer.qkv.bf16, &layer.qkv_bias, &s.xn, c.num_q_heads, c.num_kv_heads, c.head_dim, c.hidden_size);
+      nn_rope_and_store(&mut s.q_turned, &mut cache.k, &mut cache.v, &s.q, &s.k, &s.v, &s.cos, &s.sin, pos, c.num_q_heads, c.num_kv_heads, c.head_dim);
     }
-    nn_rope_and_store(&mut s.q_turned, &mut cache.k, &mut cache.v, &s.q, &s.k, &s.v, &s.cos, &s.sin, pos, c.num_q_heads, c.num_kv_heads, c.head_dim);
     nn_attention(&mut s.attended, &mut s.scores, &s.q_turned, &cache.k, &cache.v, pos, c.num_q_heads, c.num_kv_heads, c.head_dim);
-    if c.fp8 {
-      nn_matvec_fp8_heads_add(&mut s.x, &layer.attn_out.codes, &layer.attn_out.scales, &s.attended, c.hidden_size, c.num_q_heads, c.head_dim);
-    } else {
-      nn_matvec_heads_add(&mut s.x, &layer.attn_out.bf16, &s.attended, c.hidden_size, c.num_q_heads, c.head_dim);
-    }
+    matvec_heads_add(&mut s.x, &layer.attn_out, &s.attended, c.hidden_size, c.num_q_heads, c.head_dim);
     nn_rms_norm(&mut s.xn, &s.x, &layer.mlp_norm, c.hidden_size, eps);
-    if c.fp8 {
-      nn_swiglu_fp8(&mut s.mlp, &layer.gate_up.codes, &layer.gate_up.scales, &s.xn, c.intermediate_size, c.hidden_size);
-      nn_matvec_fp8_add(&mut s.x, &layer.down.codes, &layer.down.scales, &s.mlp, c.hidden_size, c.intermediate_size);
+    if c.num_experts > 0 {
+      add_experts(&mut s.experts, &mut s.x, &s.xn, layer, c);
     } else {
-      nn_swiglu(&mut s.mlp, &layer.gate_up.bf16, &s.xn, c.intermediate_size, c.hidden_size);
-      nn_matvec_add(&mut s.x, &layer.down.bf16, &s.mlp, c.hidden_size, c.intermediate_size);
+      swiglu(&mut s.mlp, &layer.gate_up, &s.xn, c.intermediate_size, c.hidden_size);
+      matvec_add(&mut s.x, &layer.down, &s.mlp, c.hidden_size, c.intermediate_size);
     }
     l = l + 1;
   }
@@ -119,12 +215,10 @@ fn run_layers(w : &Weights, s : &mut State, token : &Tensor<i32, [?], Memory::HB
 fn predict(w : &Weights, s : &mut State, next : &mut Tensor<i32, [?], Memory::HBM>) -> void {
   let c = &w.config;
   nn_rms_norm(&mut s.xn, &s.x, &w.final_norm, c.hidden_size, c.rms_norm_eps as f32);
-  if c.fp8 {
-    nn_matvec_fp8(&mut s.logits, &w.lm_head.codes, &w.lm_head.scales, &s.xn, c.vocab_size, c.hidden_size);
-  } else if c.tied_embeddings {
+  if c.tied_embeddings {
     nn_matvec(&mut s.logits, &w.embed, &s.xn, c.vocab_size, c.hidden_size);
   } else {
-    nn_matvec(&mut s.logits, &w.lm_head.bf16, &s.xn, c.vocab_size, c.hidden_size);
+    matvec(&mut s.logits, &w.lm_head, &s.xn, c.vocab_size, c.hidden_size);
   }
   nn_argmax(next, &s.logits, c.vocab_size);
   return;

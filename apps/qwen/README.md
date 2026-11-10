@@ -3,8 +3,8 @@
 This app runs Qwen coder models with a program written in Vx, on the GPU of an Apple Silicon
 Mac. The plan and its milestones are in [#3094](https://github.com/vx-lang/Vx/issues/3094). The
 mixture-of-experts (MoE) model Qwen3-Coder-30B-A3B is the next milestone,
-[#3151](https://github.com/vx-lang/Vx/issues/3151). So far, the scripts convert it and run it
-with NumPy, and the Vx program does not run it yet.
+[#3151](https://github.com/vx-lang/Vx/issues/3151). The Vx program runs it in Q4_0, as the section
+on the MoE model below shows.
 
 The program generates tokens with greedy decoding, from a prompt given as token ids. A tokenizer
 in Vx comes later, so `reference.py` turns text into token ids for now.
@@ -79,11 +79,41 @@ is about 10.5 and 6.4 tokens per second.
 `convert.py --q4` stores each weight matrix except `lm_head` in the Q4_0 format of llama.cpp. A
 row has one f16 scale for each 32 weights, and each weight is a 4-bit code from 0 to 15. The
 weight is (code - 8) times its scale. The codes round as llama.cpp rounds them, and a test checks
-them against the loop of llama.cpp. `lm_head` is fp8, as llama.cpp also keeps its output matrix
+them against the loop of llama.cpp. For Qwen2.5-Coder-7B-Instruct, the codes and scales of all
+197 Q4_0 tensors were the same bits as in the Q4_0 GGUF file that Qwen publishes. `lm_head` is fp8, as llama.cpp also keeps its output matrix
 above 4 bits.
 
+The Vx program reads a Q4_0 file like the others, and runs the Q4_0 kernels of `std::nn` for it.
 Of four 4-bit formats, Q4_0 was the closest to bf16 on the 7B model. The measurement is in
 [#3151](https://github.com/vx-lang/Vx/issues/3151#issuecomment-6763017034).
+
+## The MoE model
+
+Qwen3-Coder-30B-A3B is 61 GB in bf16, so this Mac runs it in Q4_0, at 17.8 GB:
+
+```sh
+python3 apps/qwen/scripts/convert.py --q4 ~/models/Qwen3-Coder-30B-A3B-Instruct qwen3-30b-q4.vxw
+vxc apps/qwen/src/main.vx --package qwen=apps/qwen/src --host default \
+    --machine fleet/m4-uma.vx -- qwen3-30b-q4.vxw --tokens 750,75698,1445,982,257 --steps 64
+```
+
+The tokens are `def fibonacci(n):` and a new line with 4 spaces. The Vx program wrote a recursive
+and an iterative `fibonacci` in the 64 steps. `reference.py` on the same file chose the same 64
+tokens, with each logit within 5.4e-05.
+
+Both programs measured the perplexity on `src/dialect/MetalImage.cpp` at 7e3cf6a3, as
+`llama-perplexity -c 512 --chunks 8 --no-escape` measures it:
+
+| Weights | Perplexity |
+| --- | --- |
+| bf16, with `reference.py` | 3.6813 |
+| Q4_0 of `convert.py --q4`, with `reference.py` | 3.7290 |
+| Q4_0 of unsloth with an importance matrix, with `llama-perplexity` | 3.7091 |
+
+A token took 28.0 ms in Vx with the cheaper kernel launches of
+[#3152](https://github.com/vx-lang/Vx/pull/3152) and [#3165](https://github.com/vx-lang/Vx/pull/3165),
+and 24.3 ms in llama.cpp. Each token runs about 477 kernels. The details are in
+[#3151](https://github.com/vx-lang/Vx/issues/3151#issuecomment-6768053118).
 
 ## The Vx code
 
@@ -120,11 +150,16 @@ python3 apps/qwen/scripts/reference.py qwen-0.5b.vxw --tensors
 | Model | Largest logit difference |
 | --- | --- |
 | tiny model | 4.7e-05, over 16 steps |
+| tiny model, Q4_0 | 4.8e-05, over 16 steps |
+| tiny MoE model | 4.7e-05, over 16 steps |
+| tiny MoE model, Q4_0 | 5.0e-05, over 16 steps |
 | Qwen2.5-Coder-0.5B-Instruct | 5.3e-05 |
 | Qwen2.5-Coder-7B-Instruct | 6.0e-05 |
 
 The tiny model runs in CI with `tests/generate.vx`. That test fails when RoPE uses another theta,
 when a token runs at the wrong position, and when the two norms of a layer swap their weights.
+For the tiny MoE model, it fails when the router reads the hidden state before its norm, when a
+token uses one expert in place of two, and when the Q and K norms are missing or swapped.
 
 ## The check of the reference
 
