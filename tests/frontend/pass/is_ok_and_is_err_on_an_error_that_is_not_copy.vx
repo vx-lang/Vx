@@ -14,7 +14,7 @@
 import core::result;
 
 enum Failure {
-  Closed,  
+  Closed,
 }
 
 fn failed(r : &Result<i64, Failure>) -> bool {

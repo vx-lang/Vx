@@ -5,15 +5,12 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// A function declared `-> none` returns nothing, as `-> void` does. It can end without a
-// `return`, leave early with `return;`, and run inside a `spawn` region.
+// `is_ok` and `is_err` only look at which variant a `Result` holds, through a reference. They must
+// not move the payload out of it, so `a` and `b` still hold their payloads after the calls.
 //
 // RUN: vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}a failed: closed{{$}}
 // CHECK-NEXT: {{^}}b succeeded: closed{{$}}
-
-// `is_ok` and `is_err` only look at which variant a `Result` holds, through a reference. They must
-// not move the payload out of it. `Ok` and `Err` values is accessible even after the above calls are made.
 
 import core::result;
 
