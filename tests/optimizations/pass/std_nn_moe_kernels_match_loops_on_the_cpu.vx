@@ -1,0 +1,334 @@
+// The kernels of `std::nn` for a mixture-of-experts layer, and the norm of Q and K of Qwen3, on
+// random data against a plain loop on the CPU in f64. A line says `ok` when the largest difference
+// is below 1e-5 of the largest value of the loop. For `nn_top_k`, `ok` also means that the ids
+// are the same as those of the loop. The large shapes come from Qwen3-Coder-30B-A3B.
+//
+// The first run uses the Apple GPU on a Mac, and the CPU copy of each kernel elsewhere. The
+// second run uses the CPU copy everywhere.
+//
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx | FileCheck %s
+// RUN: env VX_METAL=0 vxc %s --host default --machine fleet/m4-uma.vx | FileCheck %s
+//
+// CHECK: {{^}}nn_top_k 8 of 128: ok{{$}}
+// CHECK-NEXT: {{^}}nn_top_k 8 of 128, with equal values: ok{{$}}
+// CHECK-NEXT: {{^}}nn_top_k 8 of 128, all below 0: ok{{$}}
+// CHECK-NEXT: {{^}}nn_top_k 4 of 256: ok{{$}}
+// CHECK-NEXT: {{^}}nn_top_k 5 of 5, with equal values: ok{{$}}
+// CHECK-NEXT: {{^}}nn_norm_rope_and_store q, 32 heads of 128: ok{{$}}
+// CHECK-NEXT: {{^}}nn_norm_rope_and_store k cache, 4 heads of 128: ok{{$}}
+// CHECK-NEXT: {{^}}nn_norm_rope_and_store v cache, 4 heads of 128: ok{{$}}
+// CHECK-NEXT: {{^}}nn_norm_rope_and_store q, 14 heads of 64: ok{{$}}
+// CHECK-NEXT: {{^}}nn_norm_rope_and_store k cache, 2 heads of 64: ok{{$}}
+// CHECK-NEXT: {{^}}nn_norm_rope_and_store v cache, 2 heads of 64: ok{{$}}
+// CHECK-NEXT: {{^}}nn_moe_swiglu 8 of 32 experts, 96 x 512: ok{{$}}
+// CHECK-NEXT: {{^}}nn_moe_down_add 8 of 32 experts, 512 x 96: ok{{$}}
+// CHECK-NEXT: {{^}}nn_moe_swiglu 4 of 8 experts, 1032 x 1040: ok{{$}}
+// CHECK-NEXT: {{^}}nn_moe_down_add 4 of 8 experts, 1040 x 1032: ok{{$}}
+import core::convert;
+import core::num;
+import std::nn;
+
+fn mix(x : u32) on Topology::Any -> u32
+ensures writes_only()
+{
+  let mut h = x * 2654435761u32;
+  h = h ^ (h >> 15u32);
+  h = h * 2246822519u32;
+  h = h ^ (h >> 13u32);
+  return h;
+}
+
+// A value in [-scale, scale) for index i of the random tensor `seed`.
+fn random(seed : u32, i : i32, scale : f32) on Topology::Any -> f32
+ensures writes_only()
+{
+  return (((mix(seed * 7919u32 + (i as u32)) >> 8u32) as f32) * 0.00000011920929 - 1.0) * scale;
+}
+
+fn random_bf16(n : i32, seed : u32, scale : f32) -> Tensor<bf16, [?], Memory::HBM> {
+  let mut t = Tensor<bf16>([n]);
+  for i in 0..n {
+    t[i] = random(seed, i, scale) as bf16;
+  }
+  return transfer(t, Memory::HBM);
+}
+
+fn random_heads(heads : i32, head_dim : i32, seed : u32, scale : f32) -> Tensor<f32, [?, ?]> {
+  let mut t = Tensor<f32>([heads, head_dim]);
+  for h in 0..heads {
+    for d in 0..head_dim {
+      t[h][d] = random(seed, h * head_dim + d, scale);
+    }
+  }
+  return t;
+}
+
+fn random_cache(rows : i32, heads : i32, head_dim : i32, seed : u32, scale : f32) -> Tensor<f32, [?, ?, ?]> {
+  let mut t = Tensor<f32>([rows, heads, head_dim]);
+  for p in 0..rows {
+    for h in 0..heads {
+      for d in 0..head_dim {
+        t[p][h][d] = random(seed, (p * heads + h) * head_dim + d, scale);
+      }
+    }
+  }
+  return t;
+}
+
+// `ok`, or the largest difference between got and want, over the largest |want|.
+fn report(name : *const i8, got : &Tensor<f32, [?]>, want : &Tensor<f64, [?]>, n : i32) -> void {
+  let mut worst : f64 = 0.0;
+  let mut biggest : f64 = 0.0;
+  for i in 0..n {
+    worst = f64::max(worst, f64::abs(f64::from(got[i]) - want[i]));
+    biggest = f64::max(biggest, f64::abs(want[i]));
+  }
+  if worst <= 0.00001 * biggest {
+    println!("{}: ok", name);
+  } else {
+    println!("{}: error {}", name, worst / biggest);
+  }
+  return;
+}
+
+// The logits are random values plus `shift`. With `equal`, they are whole numbers from -8 to 7,
+// so that many of them are equal.
+fn check_top_k(name : *const i8, n : i32, k : i32, seed : u32, equal : bool, shift : f32) -> void {
+  let mut h = Tensor<f32>([n]);
+  for i in 0..n {
+    h[i] = random(seed, i, 4.0) + shift;
+    if equal {
+      h[i] = f32::floor(random(seed, i, 8.0));
+    }
+  }
+  let logits = transfer(h, Memory::HBM);
+  let mut ids = transfer(Tensor<i32>([k]), Memory::HBM);
+  let mut weights = transfer(Tensor<f32>([k]), Memory::HBM);
+  nn_top_k(&mut ids, &mut weights, &logits, n, k);
+  let hl = transfer(&logits, Memory::CPU_DRAM);
+  let hi = transfer(&ids, Memory::CPU_DRAM);
+  let hw = transfer(&weights, Memory::CPU_DRAM);
+  // The loop takes the largest value that it did not take yet, the lowest index first.
+  let mut taken = Tensor<i32>([n]);
+  for i in 0..n {
+    taken[i] = 0;
+  }
+  let mut want_ids = Tensor<i32>([k]);
+  for j in 0..k {
+    let mut best = -1;
+    for i in 0..n {
+      if taken[i] == 0 && (best < 0 || hl[i] > hl[best]) {
+        best = i;
+      }
+    }
+    taken[best] = 1;
+    want_ids[j] = best;
+  }
+  let mut total : f64 = 0.0;
+  for j in 0..k {
+    total = total + f64::exp(f64::from(hl[want_ids[j]]));
+  }
+  let mut want = Tensor<f64>([k]);
+  let mut same = true;
+  for j in 0..k {
+    want[j] = f64::exp(f64::from(hl[want_ids[j]])) / total;
+    if hi[j] != want_ids[j] {
+      same = false;
+    }
+  }
+  if same {
+    report(name, &hw, &want, k);
+  } else {
+    println!("{}: other ids", name);
+  }
+  return;
+}
+
+fn check_norm_rope(q_heads : i32, kv_heads : i32, head_dim : i32, pos : i32, max_seq : i32) -> void {
+  let half = head_dim / 2;
+  let eps : f32 = 0.000001;
+  let mut hcos = Tensor<f32>([max_seq, half]);
+  let mut hsin = Tensor<f32>([max_seq, half]);
+  for p in 0..max_seq {
+    for i in 0..half {
+      let angle = f64::from(p) / f64::powf(10000000.0, f64::from(2 * i) / f64::from(head_dim));
+      hcos[p][i] = f64::cos(angle) as f32;
+      hsin[p][i] = f64::sin(angle) as f32;
+    }
+  }
+  let cos = transfer(hcos, Memory::HBM);
+  let sin = transfer(hsin, Memory::HBM);
+  // The norm weights are near 1, with a different value at each place.
+  let mut hqn = Tensor<bf16>([head_dim]);
+  let mut hkn = Tensor<bf16>([head_dim]);
+  for i in 0..head_dim {
+    hqn[i] = (1.0 + random(61u32, i, 0.5)) as bf16;
+    hkn[i] = (1.0 + random(62u32, i, 0.5)) as bf16;
+  }
+  let q_norm = transfer(hqn, Memory::HBM);
+  let k_norm = transfer(hkn, Memory::HBM);
+  let hq = random_heads(q_heads, head_dim, 51u32, 3.0);
+  let hk = random_heads(kv_heads, head_dim, 52u32, 3.0);
+  let hv = random_heads(kv_heads, head_dim, 53u32, 1.0);
+  let q = transfer(random_heads(q_heads, head_dim, 51u32, 3.0), Memory::HBM);
+  let k = transfer(random_heads(kv_heads, head_dim, 52u32, 3.0), Memory::HBM);
+  let v = transfer(random_heads(kv_heads, head_dim, 53u32, 1.0), Memory::HBM);
+  let mut q_out = transfer(Tensor<f32>([q_heads, head_dim]), Memory::HBM);
+  let mut k_cache = transfer(random_cache(max_seq, kv_heads, head_dim, 54u32, 1.0), Memory::HBM);
+  let mut v_cache = transfer(random_cache(max_seq, kv_heads, head_dim, 55u32, 1.0), Memory::HBM);
+  nn_norm_rope_and_store(&mut q_out, &mut k_cache, &mut v_cache, &q, &k, &v, &q_norm, &k_norm, &cos, &sin, pos, q_heads, kv_heads, head_dim, eps);
+  let hc = transfer(&cos, Memory::CPU_DRAM);
+  let hs = transfer(&sin, Memory::CPU_DRAM);
+  let hqn2 = transfer(&q_norm, Memory::CPU_DRAM);
+  let hkn2 = transfer(&k_norm, Memory::CPU_DRAM);
+  let hqo = transfer(&q_out, Memory::CPU_DRAM);
+  let hkc = transfer(&k_cache, Memory::CPU_DRAM);
+  let hvc = transfer(&v_cache, Memory::CPU_DRAM);
+  let nq = q_heads * head_dim;
+  let mut got_q = Tensor<f32>([nq]);
+  let mut want_q = Tensor<f64>([nq]);
+  for h in 0..q_heads {
+    let mut ss : f64 = 0.0;
+    for i in 0..head_dim {
+      ss = ss + f64::from(hq[h][i]) * f64::from(hq[h][i]);
+    }
+    let inv = 1.0 / f64::sqrt(ss / f64::from(head_dim) + f64::from(eps));
+    for i in 0..half {
+      let c = f64::from(hc[pos][i]);
+      let s = f64::from(hs[pos][i]);
+      let a = f64::from(hq[h][i]) * inv * f64::from(hqn2[i] as f32);
+      let b = f64::from(hq[h][i + half]) * inv * f64::from(hqn2[i + half] as f32);
+      want_q[h * head_dim + i] = a * c - b * s;
+      want_q[h * head_dim + i + half] = b * c + a * s;
+      got_q[h * head_dim + i] = hqo[h][i];
+      got_q[h * head_dim + i + half] = hqo[h][i + half];
+    }
+  }
+  // Row `pos` of the cache gets the new K and V, and every other row keeps its values.
+  let n = max_seq * kv_heads * head_dim;
+  let mut got_k = Tensor<f32>([n]);
+  let mut got_v = Tensor<f32>([n]);
+  let mut want_k = Tensor<f64>([n]);
+  let mut want_v = Tensor<f64>([n]);
+  for p in 0..max_seq {
+    for g in 0..kv_heads {
+      for i in 0..head_dim {
+        let at = (p * kv_heads + g) * head_dim + i;
+        got_k[at] = hkc[p][g][i];
+        got_v[at] = hvc[p][g][i];
+        want_k[at] = f64::from(random(54u32, at, 1.0));
+        want_v[at] = f64::from(random(55u32, at, 1.0));
+      }
+    }
+  }
+  for g in 0..kv_heads {
+    let mut ss : f64 = 0.0;
+    for i in 0..head_dim {
+      ss = ss + f64::from(hk[g][i]) * f64::from(hk[g][i]);
+    }
+    let inv = 1.0 / f64::sqrt(ss / f64::from(head_dim) + f64::from(eps));
+    for i in 0..half {
+      let c = f64::from(hc[pos][i]);
+      let s = f64::from(hs[pos][i]);
+      let a = f64::from(hk[g][i]) * inv * f64::from(hkn2[i] as f32);
+      let b = f64::from(hk[g][i + half]) * inv * f64::from(hkn2[i + half] as f32);
+      let at = (pos * kv_heads + g) * head_dim + i;
+      want_k[at] = a * c - b * s;
+      want_k[at + half] = b * c + a * s;
+      want_v[at] = f64::from(hv[g][i]);
+      want_v[at + half] = f64::from(hv[g][i + half]);
+    }
+  }
+  if head_dim == 128 {
+    report("nn_norm_rope_and_store q, 32 heads of 128", &got_q, &want_q, nq);
+    report("nn_norm_rope_and_store k cache, 4 heads of 128", &got_k, &want_k, n);
+    report("nn_norm_rope_and_store v cache, 4 heads of 128", &got_v, &want_v, n);
+  } else {
+    report("nn_norm_rope_and_store q, 14 heads of 64", &got_q, &want_q, nq);
+    report("nn_norm_rope_and_store k cache, 2 heads of 64", &got_k, &want_k, n);
+    report("nn_norm_rope_and_store v cache, 2 heads of 64", &got_v, &want_v, n);
+  }
+  return;
+}
+
+fn check_moe(experts : i32, k : i32, inter : i32, hidden : i32) -> void {
+  let gate_up = random_bf16(experts * 2 * inter * hidden, 71u32, 1.0);
+  let down = random_bf16(experts * hidden * inter, 72u32, 1.0);
+  // The ids name experts in an order that is not sorted.
+  let mut hid = Tensor<i32>([k]);
+  let mut hwt = Tensor<f32>([k]);
+  for e in 0..k {
+    hid[e] = ((experts - 1 - e * 5) % experts + experts) % experts;
+    hwt[e] = 0.5 + random(73u32, e, 0.4);
+  }
+  let ids = transfer(hid, Memory::HBM);
+  let weights = transfer(hwt, Memory::HBM);
+  let mut hx = Tensor<f32>([hidden]);
+  let mut hy = Tensor<f32>([hidden]);
+  for i in 0..hidden {
+    hx[i] = random(74u32, i, 1.0);
+    hy[i] = random(75u32, i, 1.0);
+  }
+  let x = transfer(hx, Memory::HBM);
+  let mut y = transfer(hy, Memory::HBM);
+  let mut act = transfer(Tensor<f32>([k, inter]), Memory::HBM);
+  nn_moe_swiglu(&mut act, &gate_up, &ids, &x, k, inter, hidden, experts);
+  nn_moe_down_add(&mut y, &down, &ids, &weights, &act, k, hidden, inter, experts);
+  let hgu = transfer(&gate_up, Memory::CPU_DRAM);
+  let hd = transfer(&down, Memory::CPU_DRAM);
+  let hi = transfer(&ids, Memory::CPU_DRAM);
+  let hw = transfer(&weights, Memory::CPU_DRAM);
+  let hx2 = transfer(&x, Memory::CPU_DRAM);
+  let hact = transfer(&act, Memory::CPU_DRAM);
+  let hy2 = transfer(&y, Memory::CPU_DRAM);
+  let mut got_a = Tensor<f32>([k * inter]);
+  let mut want_a = Tensor<f64>([k * inter]);
+  for e in 0..k {
+    let base = hi[e] * 2 * inter;
+    for r in 0..inter {
+      let mut g : f64 = 0.0;
+      let mut u : f64 = 0.0;
+      for c in 0..hidden {
+        g = g + f64::from(hgu[(base + r) * hidden + c] as f32) * f64::from(hx2[c]);
+        u = u + f64::from(hgu[(base + inter + r) * hidden + c] as f32) * f64::from(hx2[c]);
+      }
+      want_a[e * inter + r] = g / (1.0 + f64::exp(0.0 - g)) * u;
+      got_a[e * inter + r] = hact[e][r];
+    }
+  }
+  // The down projection takes the values of the kernel above, so that an error there does not
+  // show up here too.
+  let mut want_y = Tensor<f64>([hidden]);
+  for r in 0..hidden {
+    let mut s = f64::from(random(75u32, r, 1.0));
+    for e in 0..k {
+      let mut a : f64 = 0.0;
+      for c in 0..inter {
+        a = a + f64::from(hd[(hi[e] * hidden + r) * inter + c] as f32) * f64::from(hact[e][c]);
+      }
+      s = s + f64::from(hw[e]) * a;
+    }
+    want_y[r] = s;
+  }
+  if experts == 32 {
+    report("nn_moe_swiglu 8 of 32 experts, 96 x 512", &got_a, &want_a, k * inter);
+    report("nn_moe_down_add 8 of 32 experts, 512 x 96", &hy2, &want_y, hidden);
+  } else {
+    report("nn_moe_swiglu 4 of 8 experts, 1032 x 1040", &got_a, &want_a, k * inter);
+    report("nn_moe_down_add 4 of 8 experts, 1040 x 1032", &hy2, &want_y, hidden);
+  }
+  return;
+}
+
+fn main() -> i32 {
+  check_top_k("nn_top_k 8 of 128", 128, 8, 1u32, false, 0.0);
+  check_top_k("nn_top_k 8 of 128, with equal values", 128, 8, 2u32, true, 0.0);
+  check_top_k("nn_top_k 8 of 128, all below 0", 128, 8, 5u32, false, -5.0);
+  check_top_k("nn_top_k 4 of 256", 256, 4, 3u32, false, 0.0);
+  check_top_k("nn_top_k 5 of 5, with equal values", 5, 5, 4u32, true, 0.0);
+  check_norm_rope(32, 4, 128, 37, 64);
+  check_norm_rope(14, 2, 64, 0, 8);
+  check_moe(32, 8, 96, 512);
+  check_moe(8, 4, 1032, 1040);
+  return 0;
+}

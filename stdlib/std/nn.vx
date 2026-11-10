@@ -278,6 +278,67 @@ fn nn_rope_and_store<M : Memory>(q_out : &mut Tensor<f32, [?, ?], Memory::M>, k_
   return;
 }
 
+/// As `nn_rope_and_store`, after an RMSNorm over each head of q and of k: value i of a head x
+/// becomes x[i] / sqrt(mean(x^2) + eps) * norm[i], where `norm` is `q_norm` for q and `k_norm`
+/// for k. Qwen3 has these norms.
+fn nn_norm_rope_and_store<M : Memory>(q_out : &mut Tensor<f32, [?, ?], Memory::M>, k_cache : &mut Tensor<f32, [?, ?, ?], Memory::M>, v_cache : &mut Tensor<f32, [?, ?, ?], Memory::M>, q : &Tensor<f32, [?, ?], Memory::M>, k : &Tensor<f32, [?, ?], Memory::M>, v : &Tensor<f32, [?, ?], Memory::M>, q_norm : &Tensor<bf16, [?], Memory::M>, k_norm : &Tensor<bf16, [?], Memory::M>, cos : &Tensor<f32, [?, ?], Memory::M>, sin : &Tensor<f32, [?, ?], Memory::M>, pos : i32, q_heads : i32, kv_heads : i32, head_dim : i32, eps : f32) -> void {
+  let half = head_dim / 2;
+  nn_check_heads(q.extent(0), q.extent(1), q_heads, head_dim);
+  nn_check_heads(q_out.extent(0), q_out.extent(1), q_heads, head_dim);
+  nn_check_heads(k.extent(0), k.extent(1), kv_heads, head_dim);
+  nn_check_heads(v.extent(0), v.extent(1), kv_heads, head_dim);
+  nn_check_cache(k_cache.extent(0), k_cache.extent(1), k_cache.extent(2), pos, kv_heads, head_dim);
+  nn_check_cache(v_cache.extent(0), v_cache.extent(1), v_cache.extent(2), pos, kv_heads, head_dim);
+  assert(q_norm.len() >= head_dim && k_norm.len() >= head_dim, "nn_norm_rope_and_store: `q_norm` and `k_norm` need head_dim values");
+  assert(pos < cos.extent(0) && pos < sin.extent(0) && half <= cos.extent(1) && half <= sin.extent(1), "nn_norm_rope_and_store: `cos` and `sin` need a row for `pos` with head_dim / 2 values");
+  spawn on(Topology::Device) {
+    for h in 0..q_heads + kv_heads across blocks {
+      let mut x = unsafe { Tensor<f32, [128], Memory::SMEM>::uninit() };
+      let mut part = unsafe { Tensor<f32, [128], Memory::SMEM>::uninit() };
+      for i in 0..128 across lanes {
+        let mut a : f32 = 0.0;
+        if i < head_dim {
+          if h < q_heads {
+            a = q[h][i];
+          } else {
+            a = k[h - q_heads][i];
+          }
+        }
+        x[i] = a;
+        part[i] = a * a;
+      }
+      let ss = lanes::sum(&part, 128);
+      let inv = 1.0 / (ss / (head_dim as f32) + eps).sqrt();
+      for i in 0..128 across lanes {
+        if i < head_dim {
+          // Value i of the head, its partner, and the angle that they share.
+          let mut j = i;
+          let mut sign : f32 = -1.0;
+          let mut partner = i + half;
+          if i >= half {
+            j = i - half;
+            sign = 1.0;
+            partner = i - half;
+          }
+          let c = cos[pos][j];
+          let s = sin[pos][j];
+          if h < q_heads {
+            let a = x[i] * inv * (q_norm[i] as f32);
+            let b = x[partner] * inv * (q_norm[partner] as f32);
+            q_out[h][i] = a * c + sign * b * s;
+          } else {
+            let a = x[i] * inv * (k_norm[i] as f32);
+            let b = x[partner] * inv * (k_norm[partner] as f32);
+            k_cache[pos][h - q_heads][i] = a * c + sign * b * s;
+            v_cache[pos][h - q_heads][i] = v[h - q_heads][i];
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
 /// Attention of the token at position `pos` over rows 0 to `pos` of the KV cache, with a softmax
 /// of the scores q . k / sqrt(head_dim). `scores` has a row of at least pos + 1 values for each
 /// head of q, which the kernel uses as scratch space.
@@ -374,6 +435,47 @@ fn nn_argmax<M : Memory>(out : &mut Tensor<i32, [?], Memory::M>, logits : &Tenso
   return;
 }
 
+/// The router of a mixture-of-experts layer: the k largest of the first n values of `logits`.
+/// ids[j] is the index of the value of rank j, the largest first. Of two equal values, the one
+/// with the lower index comes first. weights[j] is the softmax of the k values:
+/// e^(logits[ids[j]]) over the sum of e^(logits[ids[i]]) for i below k. This is the softmax of
+/// all n values, with its k largest weights scaled to sum to 1, as in Qwen3. `n` is at most 256.
+fn nn_top_k<M : Memory>(ids : &mut Tensor<i32, [?], Memory::M>, weights : &mut Tensor<f32, [?], Memory::M>, logits : &Tensor<f32, [?], Memory::M>, n : i32, k : i32) -> void {
+  assert(n > 0 && n <= 256 && k > 0 && k <= n, "nn_top_k: n must be 1 to 256, and k must be 1 to n");
+  assert(logits.len() >= n && ids.len() >= k && weights.len() >= k, "nn_top_k: a tensor has too few values");
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      // The key of value i: its bits in an order that keeps the order of the values, then
+      // 255 - i, so that a lower index makes a larger key.
+      let mut keys = unsafe { Tensor<i64, [256], Memory::SMEM>::uninit() };
+      for l in 0..256 across lanes {
+        if l < n {
+          let bits = logits[l].to_bits() as i32;
+          let mut order = bits;
+          if bits < 0 {
+            order = bits ^ 2147483647;
+          }
+          keys[l] = (order as i64) * 4294967296 + ((255 - l) as i64);
+        }
+      }
+      lanes::sort_descending(&mut keys, n);
+      for l in 0..256 across lanes {
+        if l < k {
+          let m = logits[255 - ((keys[0] & 255) as i32)];
+          let mut total : f32 = 0.0;
+          for t in 0..k {
+            total = total + (logits[255 - ((keys[t] & 255) as i32)] - m).fast_exp();
+          }
+          let id = 255 - ((keys[l] & 255) as i32);
+          ids[l] = id;
+          weights[l] = (logits[id] - m).fast_exp() / total;
+        }
+      }
+    }
+  }
+  return;
+}
+
 /// x = row token[0] of `table`, which has `dim` values in each row. The token can come from
 /// `nn_argmax` on the device.
 fn nn_embed<M : Memory>(x : &mut Tensor<f32, [?], Memory::M>, table : &Tensor<bf16, [?], Memory::M>, token : &Tensor<i32, [?], Memory::M>, dim : i32) -> void {
@@ -389,6 +491,101 @@ fn nn_embed<M : Memory>(x : &mut Tensor<f32, [?], Memory::M>, table : &Tensor<bf
           x[i] = table[t * dim + i] as f32;
         }
       }
+    }
+  }
+  return;
+}
+
+// A mixture-of-experts layer. `nn_top_k` picks the experts of a token from the logits of the
+// router. The weights of all the experts of a layer are one tensor, with expert e after expert
+// e - 1, and a kernel reads the rows of the experts that `ids` names.
+
+/// The SwiGLU input of the k experts that a token uses, as `nn_swiglu` for each of them:
+/// out[e][r] = silu(g) * u, where g and u are the products of rows r and rows + r of expert
+/// ids[e] with x. `w` holds the `experts` experts one after another, each with 2 * rows rows of
+/// `cols` values.
+fn nn_moe_swiglu<M : Memory>(out : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<bf16, [?], Memory::M>, ids : &Tensor<i32, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, k : i32, rows : i32, cols : i32, experts : i32) -> void {
+  assert(k > 0 && ids.len() >= k && out.extent(0) >= k && out.extent(1) >= rows, "nn_moe_swiglu: `ids` needs k values, and `out` a row of rows values for each");
+  assert(cols % 8 == 0 && x.len() >= cols && w.len() / 2 / rows / cols >= experts, "nn_moe_swiglu: `w` needs 2 * rows rows of cols values for each expert");
+  spawn on(Topology::Device) {
+    for e in 0..k across blocks {
+      for r in 0..rows across blocks {
+        let mut gpart = unsafe { Tensor<f32, [128], Memory::SMEM>::uninit() };
+        let mut upart = unsafe { Tensor<f32, [128], Memory::SMEM>::uninit() };
+        for l in 0..128 across lanes {
+          let id = ids[e];
+          assert(id >= 0 && id < experts, "nn_moe_swiglu: an id is not the number of an expert");
+          let gate = (id * 2 * rows + r) * cols;
+          let up = gate + rows * cols;
+          let mut g : f32 = 0.0;
+          let mut u : f32 = 0.0;
+          let mut c = l * 8;
+          while c < cols {
+            g = g + (w[gate + c] as f32) * x[c];
+            g = g + (w[gate + c + 1] as f32) * x[c + 1];
+            g = g + (w[gate + c + 2] as f32) * x[c + 2];
+            g = g + (w[gate + c + 3] as f32) * x[c + 3];
+            g = g + (w[gate + c + 4] as f32) * x[c + 4];
+            g = g + (w[gate + c + 5] as f32) * x[c + 5];
+            g = g + (w[gate + c + 6] as f32) * x[c + 6];
+            g = g + (w[gate + c + 7] as f32) * x[c + 7];
+            u = u + (w[up + c] as f32) * x[c];
+            u = u + (w[up + c + 1] as f32) * x[c + 1];
+            u = u + (w[up + c + 2] as f32) * x[c + 2];
+            u = u + (w[up + c + 3] as f32) * x[c + 3];
+            u = u + (w[up + c + 4] as f32) * x[c + 4];
+            u = u + (w[up + c + 5] as f32) * x[c + 5];
+            u = u + (w[up + c + 6] as f32) * x[c + 6];
+            u = u + (w[up + c + 7] as f32) * x[c + 7];
+            c = c + 1024;
+          }
+          gpart[l] = g;
+          upart[l] = u;
+        }
+        let g = lanes::sum(&gpart, 128);
+        let u = lanes::sum(&upart, 128);
+        out[e][r] = g / (1.0 + (0.0 - g).fast_exp()) * u;
+      }
+    }
+  }
+  return;
+}
+
+/// y[r] = y[r] + the sum of weights[e] * ((row r of expert ids[e]) . h[e]) for e below k. This
+/// is the down projection of the k experts that a token uses, weighted by the router, with the
+/// residual add. `w` holds the `experts` experts one after another, each with `rows` rows of
+/// `cols` values.
+fn nn_moe_down_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<bf16, [?], Memory::M>, ids : &Tensor<i32, [?], Memory::M>, weights : &Tensor<f32, [?], Memory::M>, h : &Tensor<f32, [?, ?], Memory::M>, k : i32, rows : i32, cols : i32, experts : i32) -> void {
+  assert(k > 0 && ids.len() >= k && weights.len() >= k && h.extent(0) >= k && h.extent(1) >= cols, "nn_moe_down_add: `ids` and `weights` need k values, and `h` a row of cols values for each");
+  assert(cols % 8 == 0 && y.len() >= rows && w.len() / rows / cols >= experts, "nn_moe_down_add: `w` needs rows rows of cols values for each expert");
+  spawn on(Topology::Device) {
+    for r in 0..rows across blocks {
+      let mut part = unsafe { Tensor<f32, [128], Memory::SMEM>::uninit() };
+      for l in 0..128 across lanes {
+        let mut acc : f32 = 0.0;
+        for e in 0..k {
+          let id = ids[e];
+          assert(id >= 0 && id < experts, "nn_moe_down_add: an id is not the number of an expert");
+          let base = (id * rows + r) * cols;
+          let mut a : f32 = 0.0;
+          let mut c = l * 8;
+          while c < cols {
+            a = a + (w[base + c] as f32) * h[e][c];
+            a = a + (w[base + c + 1] as f32) * h[e][c + 1];
+            a = a + (w[base + c + 2] as f32) * h[e][c + 2];
+            a = a + (w[base + c + 3] as f32) * h[e][c + 3];
+            a = a + (w[base + c + 4] as f32) * h[e][c + 4];
+            a = a + (w[base + c + 5] as f32) * h[e][c + 5];
+            a = a + (w[base + c + 6] as f32) * h[e][c + 6];
+            a = a + (w[base + c + 7] as f32) * h[e][c + 7];
+            c = c + 1024;
+          }
+          acc = acc + weights[e] * a;
+        }
+        part[l] = acc;
+      }
+      let s = lanes::sum(&part, 128);
+      y[r] = y[r] + s;
     }
   }
   return;
