@@ -13,8 +13,9 @@
 // gets a buffer at each batch, because the program can free it without telling
 // this file.
 //
-// The launches of each host thread share one command buffer, and the GPU runs
-// them only at a wait. A wait commits a command buffer and waits for the GPU.
+// The launches of each host thread make one batch until a wait. The batch
+// commits its command buffer after every few launches, so the GPU runs them
+// while the CPU makes the next. A wait commits the rest and waits for the GPU.
 // The Mac dispatcher waits before anything that can touch the memory of a
 // kernel, but only for the launches that use that memory. A `pub fn` waits
 // before it returns to C. A failed assert in a kernel stops the program at the
@@ -173,9 +174,14 @@ struct Check {
 // that batch finishes. So two batches use the same memory only to read it.
 struct Batch {
   std::thread::id owner;
+  // The command buffer that takes the next launch, and the ones that the batch
+  // committed before it.
   id<MTLCommandBuffer> commands;
+  std::vector<id<MTLCommandBuffer>> sent;
   // Nil after the commit.
   id<MTLComputeCommandEncoder> encoder;
+  // The launches in `commands`.
+  size_t unsent = 0;
   std::vector<std::string> kernels;
   std::vector<Region> regions;
   std::vector<Access> accesses;
@@ -272,21 +278,26 @@ void report(const Batch &b) {
           assertMessage(c.image, c.kernel.c_str(), number).c_str());
   }
   const size_t count = b.kernels.size();
-  if (b.commands.status != MTLCommandBufferStatusCompleted) {
-    std::string names;
-    for (const std::string &k : b.kernels)
-      names += (names.empty() ? "" : ", ") + k;
-    fprintf(stderr, "[Vx Metal] FATAL: the GPU did not finish %s: %s\n",
-            names.c_str(), b.commands.error.localizedDescription.UTF8String);
-    if (count > 1)
-      fprintf(stderr, "           Set VX_METAL_SYNC=1 to name the kernel that "
-                      "failed.\n");
-    abort();
+  std::vector<id<MTLCommandBuffer>> all = b.sent;
+  all.push_back(b.commands);
+  double seconds = 0;
+  for (id<MTLCommandBuffer> commands : all) {
+    if (commands.status != MTLCommandBufferStatusCompleted) {
+      std::string names;
+      for (const std::string &k : b.kernels)
+        names += (names.empty() ? "" : ", ") + k;
+      fprintf(stderr, "[Vx Metal] FATAL: the GPU did not finish %s: %s\n",
+              names.c_str(), commands.error.localizedDescription.UTF8String);
+      if (count > 1)
+        fprintf(stderr, "           Set VX_METAL_SYNC=1 to name the kernel "
+                        "that failed.\n");
+      abort();
+    }
+    seconds += commands.GPUEndTime - commands.GPUStartTime;
   }
   if (verbose())
     fprintf(stderr, "[Vx Metal] waited for %zu kernel%s, %.3f ms on the GPU\n",
-            count, count == 1 ? "" : "s",
-            (b.commands.GPUEndTime - b.commands.GPUStartTime) * 1e3);
+            count, count == 1 ? "" : "s", seconds * 1e3);
 }
 
 // Commits each batch in `chosen` that is open, and waits until the GPU
@@ -303,8 +314,11 @@ void finish(const std::vector<std::shared_ptr<Batch>> &chosen,
       [b->commands commit];
     }
   hold.unlock();
-  for (const std::shared_ptr<Batch> &b : chosen)
+  for (const std::shared_ptr<Batch> &b : chosen) {
+    for (id<MTLCommandBuffer> commands : b->sent)
+      [commands waitUntilCompleted];
     [b->commands waitUntilCompleted];
+  }
   hold.lock();
   std::vector<std::shared_ptr<Batch>> &all = batches();
   for (const std::shared_ptr<Batch> &b : chosen) {
@@ -870,6 +884,19 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
         if (b.copied && b.written)
           memcpy(reinterpret_cast<void *>(b.first),
                  b.copied + (b.first - b.start), b.last - b.first);
+    }
+    // The GPU runs a command buffer only after its commit. So the batch commits
+    // after a few launches, and the GPU runs them while the CPU makes the next.
+    if (here->open() && ++here->unsent >= 16) {
+      if (verbose())
+        fprintf(stderr, "[Vx Metal] committed %zu kernels before the wait\n",
+                here->unsent);
+      [here->encoder endEncoding];
+      [here->commands commit];
+      here->sent.push_back(here->commands);
+      here->commands = [gpu().queue commandBuffer];
+      here->encoder = [here->commands computeCommandEncoder];
+      here->unsent = 0;
     }
   }
   return 1;
