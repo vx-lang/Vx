@@ -509,13 +509,21 @@ pub fn memory_space_dispatch_id(mem: &MemorySpace) -> i32 {
 /// fleet/h100-sxm.vx is a GPU, and it allocated that memory on the host. The program sends
 /// these pairs to the backend at startup (`VX_CTRL_LOCAL_DEVICE`). Every declared GPU is GPU 0
 /// for now; a name the fleet manifest lists is still sent to its remote machine.
+///
+/// A topology counts as a GPU when its `arch:` names a target whose memory is the device's own,
+/// which is [`DeviceTarget::has_device_memory`]: `spirv64` is the Intel Arc's machine file, and
+/// leaving it out sent the Arc's device tensors to the host allocator.
 pub fn local_device_aliases<'a>(
     decls: impl Iterator<Item = (&'a crate::symbol::Symbol, &'a TopologyDescriptor)>,
 ) -> Vec<(i32, i32)> {
     let gpu0 = topology_dispatch_id(&Topology::gpu(0));
     let mut out = Vec::new();
     for (name, desc) in decls {
-        if desc.arch.as_ref().map(|a| a.as_ref()) != Some("nvptx64") {
+        let arch = desc
+            .arch
+            .as_ref()
+            .and_then(|a| DeviceTarget::from_arch(a.as_ref()));
+        if !arch.is_some_and(DeviceTarget::has_device_memory) {
             continue;
         }
         out.push((topology_dispatch_id(&Topology::Custom(name.clone())), gpu0));
@@ -616,6 +624,18 @@ pub enum DeviceTarget {
 }
 
 impl DeviceTarget {
+    /// Whether memory placed on a topology with this arch is the device's own, which is what
+    /// makes the declared topology a local device a program has to name to its backend.
+    ///
+    /// `nvptx64` and `spirv64` are separate memory with a device on the far side of a transfer,
+    /// so the backend has to allocate it: `spirv64` is the Intel Arc's machine file. `applegpu`
+    /// is not one of them -- an Apple GPU shares the host's memory (`managed: cached` in
+    /// fleet/m4-uma.vx), so its tensors need no alias to be allocated somewhere else. Neither
+    /// is a target with no device-image pipeline, whose kernels run on the host.
+    pub fn has_device_memory(self) -> bool {
+        matches!(self, DeviceTarget::Nvptx64 | DeviceTarget::Spirv64)
+    }
+
     /// The target an `arch:` declaration names, `None` for a name no target has: this compiler
     /// has no address-space numbering for such a name, and [`address_space_for_arch`] refuses
     /// it rather than answering with NVPTX's.

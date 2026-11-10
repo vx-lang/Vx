@@ -30,6 +30,11 @@
 // runs here when its payload names the GPU band, or when it carries a
 // `format=spirv` image, which only this backend can load.
 //
+// A topology a machine file declares has an id that is a hash of its name, so
+// the program sends the id it stands for at the start of `main`
+// (`VX_CTRL_LOCAL_DEVICE`). Without that alias a program naming this GPU
+// through a machine file would have its device tensors allocated on the host.
+//
 // What it refuses. A kernel whose `format=` is not `spirv`, or whose image is
 // missing, is not launched here: it runs its host copy, which is the road a
 // kernel with no image takes anyway. A payload `abi=` this build does not know
@@ -277,6 +282,36 @@ struct LaunchQueue {
   ze_command_queue_handle_t queue = nullptr;
   ze_command_list_handle_t list = nullptr;
 };
+
+/// Declared topology ids the program said are this machine's GPU, each with the
+/// built-in id it stands for (`VX_CTRL_LOCAL_DEVICE`).
+///
+/// A declared id is a hash of a name, so it is not in the GPU band and nothing
+/// about it says "GPU". A program that names the Arc through a machine file
+/// sends the pair at the start of `main`, and without it every transfer to that
+/// topology would land in host memory -- memory the device cannot be launched
+/// at.
+struct LocalDevice {
+  int32_t declared;
+  int32_t builtin;
+};
+
+constexpr size_t kMaxLocalDevices = 64;
+LocalDevice local_devices[kMaxLocalDevices];
+size_t local_device_count = 0;
+std::mutex local_devices_mutex;
+
+/// The built-in topology id `topology_id` stands for: the id a declared
+/// topology was aliased to, or the id itself.
+int32_t builtin_topology(int32_t topology_id) {
+  std::lock_guard<std::mutex> lock(local_devices_mutex);
+  for (size_t i = 0; i < local_device_count; ++i) {
+    if (local_devices[i].declared == topology_id) {
+      return local_devices[i].builtin;
+    }
+  }
+  return topology_id;
+}
 
 LaunchQueue &launch_queue() {
   static LaunchQueue *lq = [] {
@@ -892,12 +927,16 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
 
   /* Which memory this is. This library serves the GPU band: the built-in GPU is
      id 500, and a `Memory::GPU_HBM` transfer carries it, so a placed program's
-     device memory lands here. Every other id -- the host, another
-     accelerator's band, a NUMA node -- names memory this backend did not
-     allocate and must not claim. */
+     device memory lands here. A declared topology's id is a hash of its name,
+     and the program aliased it to the band at startup, so the alias is applied
+     first -- otherwise a program that names this GPU through a machine file
+     would have its device tensors allocated on the host. Every other id -- the
+     host, another accelerator's band, a NUMA node -- names memory this backend
+     did not allocate and must not claim. */
   int gpu_index =
       xpu_available()
-          ? vx_topology_device_index((int32_t)topology_id, VX_TOPO_GPU_BASE)
+          ? vx_topology_device_index(builtin_topology((int32_t)topology_id),
+                                     VX_TOPO_GPU_BASE)
           : -1;
   if (gpu_index > 0) {
     fprintf(stderr,
@@ -974,7 +1013,8 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
      is. */
   int32_t topo = vx_payload_topology(binary_payload, payload_size);
   bool for_this_device =
-      topo < 0 || vx_topology_device_index(topo, VX_TOPO_GPU_BASE) >= 0;
+      topo < 0 ||
+      vx_topology_device_index(builtin_topology(topo), VX_TOPO_GPU_BASE) >= 0;
 
   vx_gemm_plan plan;
   if (for_this_device &&
@@ -1068,7 +1108,8 @@ void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
      this can name is the first one. */
   const bool to_device =
       xpu_available() &&
-      vx_topology_device_index((int32_t)dst_topology_id, VX_TOPO_GPU_BASE) >= 0;
+      vx_topology_device_index(builtin_topology((int32_t)dst_topology_id),
+                               VX_TOPO_GPU_BASE) >= 0;
   void *dst =
       to_device ? device_alloc(bytes, /*host_visible=*/true) : malloc(bytes);
   if (dst && src_device_ptr) {
@@ -1153,12 +1194,33 @@ void vx_plugin_arrivals_give(const void *site, void *count, size_t bytes,
 }
 
 int32_t vx_plugin_control(uint32_t opcode, void *payload) {
-  (void)payload;
   switch (opcode) {
   case VX_CTRL_GET_DEVICE_COUNT:
     return xpu_available() ? 1 : 0;
   case VX_CTRL_INIT_DEVICE:
     return xpu_available() ? 1 : 0;
+  case VX_CTRL_LOCAL_DEVICE: {
+    /* The pair a program sends for a topology its machine file declares: the
+       declared id, then the built-in id it stands for. Kept, so that a
+       transfer to the declared id allocates the GPU's memory. A program sends
+       the same pairs again from each `pub fn`, so an id already known is a
+       success rather than a second entry. */
+    const int32_t *pair = static_cast<const int32_t *>(payload);
+    if (!pair) {
+      return 0;
+    }
+    std::lock_guard<std::mutex> lock(local_devices_mutex);
+    for (size_t i = 0; i < local_device_count; ++i) {
+      if (local_devices[i].declared == pair[0]) {
+        return 1;
+      }
+    }
+    if (local_device_count == kMaxLocalDevices) {
+      return 0;
+    }
+    local_devices[local_device_count++] = {pair[0], pair[1]};
+    return 1;
+  }
   case VX_CTRL_SHUTDOWN:
     return 1;
   default:
