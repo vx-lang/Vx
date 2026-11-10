@@ -304,3 +304,118 @@ fn main() -> i32 {
         );
     }
 }
+
+/// `VX_ENABLE_CPU_FALLBACK=0` does not stop a region on a topology that a machine
+/// file declares with a CPU arch. It stops a region on a topology with another
+/// arch, or with no arch.
+///
+/// Each region writes its own number, and the program prints it after the
+/// region. The third region is on `Accelerator` (`arch: amdgcn`) in one run, and
+/// on `Unknown` (no `arch:`) in another.
+#[cfg(target_os = "macos")]
+#[test]
+fn the_fallback_switch_does_not_stop_a_declared_cpu_topology() {
+    const PROGRAM: &str = r#"
+Topology HostCores {
+  arch: aarch64,
+  memory: Memory::CPU_DRAM,
+  visible: [Memory::CPU_DRAM]
+}
+
+Topology OtherCores {
+  arch: x86_64,
+  memory: Memory::CPU_DRAM,
+  visible: [Memory::CPU_DRAM]
+}
+
+Topology Accelerator {
+  arch: amdgcn,
+  memory: Memory::CPU_DRAM,
+  visible: [Memory::CPU_DRAM]
+}
+
+Topology Unknown {
+  memory: Memory::CPU_DRAM,
+  visible: [Memory::CPU_DRAM]
+}
+
+fn main() -> i32 {
+  let mut d = Tensor<f32, [4]>::new();
+  spawn on(Topology::HostCores) {
+    for i in 0..4 {
+      d[i] = 1.5;
+    }
+  }
+  print(d[0]);
+  print(" ");
+  spawn on(Topology::OtherCores) {
+    for i in 0..4 {
+      d[i] = 2.5;
+    }
+  }
+  print(d[0]);
+  print(" ");
+  spawn on(Topology::THIRD) {
+    for i in 0..4 {
+      d[i] = 3.5;
+    }
+  }
+  print(d[0]);
+  return 0;
+}
+"#;
+    let vxc = PathBuf::from(env!("CARGO_BIN_EXE_vxc"));
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("a_declared_cpu_topology");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("failed to make the test directory");
+
+    // Runs `program` with the fallback switch at `fallback`, and gives whether it
+    // succeeded, its stdout and its stderr.
+    let run = |program: &PathBuf, codegen: Option<&str>, fallback: &str| {
+        let mut cmd = Command::new(&vxc);
+        cmd.arg(program)
+            .env_remove("VX_DISPATCH_VERBOSE")
+            .env("VX_ENABLE_CPU_FALLBACK", fallback);
+        if let Some(flag) = codegen {
+            cmd.arg(flag);
+        }
+        let out = cmd.output().expect("failed to run vxc");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+
+    for (third, arch) in [("Accelerator", "arch: amdgcn"), ("Unknown", "no arch")] {
+        let program = dir.join(format!("third_on_{third}.vx"));
+        std::fs::write(&program, PROGRAM.replace("THIRD", third))
+            .expect("failed to write the program");
+
+        let (ok, stdout, stderr) = run(&program, None, "1");
+        assert!(
+            ok && stdout.contains("1.5 2.5 3.5"),
+            "with the fallback on, each region must run:\n{stdout}{stderr}"
+        );
+
+        for codegen in [None, Some("--legacy-codegen")] {
+            let how = codegen.unwrap_or("the flat code generator");
+            let (ok, stdout, stderr) = run(&program, codegen, "0");
+            assert!(
+                stdout.contains("1.5 "),
+                "{how}: the switch stopped the region on HostCores (arch: aarch64):\n{stdout}{stderr}"
+            );
+            assert!(
+                stdout.contains("1.5 2.5 "),
+                "{how}: the switch stopped the region on OtherCores (arch: x86_64):\n{stdout}{stderr}"
+            );
+            assert!(
+                !ok && !stdout.contains("3.5")
+                    && stderr.contains(&format!(
+                        " on Topology::{third}, but only the CPU can run it here"
+                    )),
+                "{how}: the switch did not stop the region on {third} ({arch}):\n{stdout}{stderr}"
+            );
+        }
+    }
+}

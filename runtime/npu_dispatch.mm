@@ -640,8 +640,12 @@ static void vx_note_cpu_fallback(const void *payload, size_t size,
   const int32_t topo = vx_payload_topology(payload, size);
   const std::string where =
       vx_placement_name(topo, vx_payload_field(payload, size, "toponame="));
-  const bool on_host = topo == VX_TOPO_CPU || topo == VX_TOPO_AMX ||
-                       topo == VX_TOPO_CPU_AVX512 || topo == VX_TOPO_CPU_NEON;
+  // A declared topology gives its `arch:`. A built-in one gives only its id.
+  const char *arch = vx_payload_field(payload, size, "arch=");
+  const bool on_host =
+      topo == VX_TOPO_CPU || topo == VX_TOPO_AMX ||
+      topo == VX_TOPO_CPU_AVX512 || topo == VX_TOPO_CPU_NEON ||
+      (arch && (strcmp(arch, "x86_64") == 0 || strcmp(arch, "aarch64") == 0));
   if (!on_host && !vx_cpu_fallback_enabled()) {
     fprintf(stderr,
             "[Vx Dispatcher] FATAL: the program places %s on %s, but only the "
