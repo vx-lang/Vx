@@ -421,6 +421,7 @@ pub unsafe extern "C" fn vx_task_start_at(
             swap_site(&mut site);
             run(task_env.0);
             lines::task_ended();
+            crate::ffi::wait::task_ended();
             // The wake comes before the count of threads goes down. So the joining thread
             // never counts as waiting for a thread that the count no longer has.
             done.store(1, Ordering::SeqCst);

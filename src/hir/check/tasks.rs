@@ -850,7 +850,10 @@ impl TypeChecker<'_> {
         let outer_ensures = std::mem::take(&mut self.consteval.current_ensures);
         self.drops_enter_task();
         let mut ty = self.check_task_body(expr, consume, |_| {});
-        self.drops_exit_task();
+        let holds = self.drops_exit_task();
+        if let Expr::TaskBlock(tb) = &mut *expr {
+            tb.stmts.splice(0..0, holds);
+        }
         let returned = std::mem::replace(&mut self.current_return_type, outer_ret);
         self.consteval.current_ensures = outer_ensures;
         self.pop_scope();
