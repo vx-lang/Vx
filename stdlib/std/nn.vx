@@ -944,16 +944,17 @@ fn nn_swiglu_fp8<M : Memory>(out : &mut Tensor<f32, [?], Memory::M>, w : &Tensor
 // matrix of rows x cols has cols / 8 u32 words for each row: bits 4t to 4t + 3 of word i of a row
 // hold the code of weight 8i + t. `scales` has an f16 for each 32 weights of a row, cols / 32 for
 // each row. `cols` must be a multiple of 32. `rows` must be a multiple of 8 for a product, and of
-// 4 for a SwiGLU input and for `nn_moe_down_q4_add`.
+// 4 for a SwiGLU input.
 //
 // Each block of the GPU has 64 lanes and does 8 rows: 8 rows of a product, or 4 rows of gate and
 // the 4 rows of up that pair with them. So one load of x serves 8 rows. A lane takes 32 weights of
 // a row at a time, which have one scale.
 //
-// `nn_moe_down_q4_add` adds k experts for each row, so its block has 128 lanes and does 4 rows, one
-// word of each row at a time. It takes code t of a word with a mask and no shift, which gives the
-// code times 16^t, and divides x by 16^t to match. The 8 of each code comes off once for each
-// word, as 8 times the sum of its 8 values of x.
+// `nn_moe_down_q4_add` adds k experts for each row. Its block has 128 lanes in 4 groups of 32, and
+// does 8 rows. Group g takes experts g, g + 4 and so on, and a lane takes one word of each row at a
+// time. So a row of 768 weights, 96 words, keeps all 32 lanes of a group busy. It takes code t of a
+// word with a mask and no shift, which gives the code times 16^t, and divides x by 16^t to match.
+// The 8 of each code comes off once for each word, as 8 times the sum of its 8 values of x.
 
 /// y[r] = (row r of the Q4_0 matrix w) . x, for r below `rows`.
 fn nn_matvec_q4<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
@@ -1395,23 +1396,24 @@ fn nn_moe_swiglu_q4<M : Memory>(out : &mut Tensor<f32, [?, ?], Memory::M>, w : &
 fn nn_moe_down_q4_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, ids : &Tensor<i32, [?], Memory::M>, weights : &Tensor<f32, [?], Memory::M>, h : &Tensor<f32, [?, ?], Memory::M>, k : i32, rows : i32, cols : i32, experts : i32) -> void {
   assert(k > 0 && ids.len() >= k && weights.len() >= k && h.extent(0) >= k && h.extent(1) >= cols, "nn_moe_down_q4_add: `ids` and `weights` need k values, and `h` a row of cols values for each");
   nn_check_q4(w.len(), scales.len(), cols, experts * rows, cols);
-  assert(y.len() >= rows, "nn q4: the output has fewer values than rows");
+  assert(rows % 8 == 0 && y.len() >= rows, "nn q4: rows must be a multiple of 8, and the output needs rows values");
   let words = cols / 8;
   let groups = cols / 32;
   spawn on(Topology::Device) {
-    for rb in 0..rows / 4 across blocks {
-      let mut part = unsafe { Tensor<f32, [4, 128], Memory::SMEM>::uninit() };
+    for rb in 0..rows / 8 across blocks {
+      let mut part = unsafe { Tensor<f32, [8, 128], Memory::SMEM>::uninit() };
       for l in 0..128 across lanes {
-        let mut acc = unsafe { Tensor<f32, [4]>::uninit() };
-        for j in 0..4 {
+        let mut acc = unsafe { Tensor<f32, [8]>::uninit() };
+        for j in 0..8 {
           acc[j] = 0.0;
         }
-        for e in 0..k {
+        let mut e = l / 32;
+        while e < k {
           let id = ids[e];
           assert(id >= 0 && id < experts, "nn_moe_down_q4_add: an id is not the number of an expert");
-          let first = id * rows + rb * 4;
+          let first = id * rows + rb * 8;
           let we = weights[e];
-          let mut i = l;
+          let mut i = l % 32;
           while i < words {
             let c = i * 8;
             let mut xp = unsafe { Tensor<f32, [8]>::uninit() };
@@ -1426,28 +1428,41 @@ fn nn_moe_down_q4_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Ten
             xp[5] = xp[5] * 0.00000095367431640625;
             xp[6] = xp[6] * 0.000000059604644775390625;
             xp[7] = xp[7] * 0.0000000037252902984619140625;
-            for j in 0..4 {
+            for j in 0..8 {
               let row = first + j;
               let code = w[row * words + i];
               let dot = ((code & 15u32) as f32) * xp[0] + ((code & 240u32) as f32) * xp[1] + ((code & 3840u32) as f32) * xp[2] + ((code & 61440u32) as f32) * xp[3] + ((code & 983040u32) as f32) * xp[4] + ((code & 15728640u32) as f32) * xp[5] + ((code & 251658240u32) as f32) * xp[6] + ((code & 4026531840u32) as f32) * xp[7];
               acc[j] = acc[j] + we * (dot - sum8) * (scales[row * groups + i / 4] as f32);
             }
-            i = i + 128;
+            i = i + 32;
           }
+          e = e + 4;
         }
         part[0][l] = acc[0];
         part[1][l] = acc[1];
         part[2][l] = acc[2];
         part[3][l] = acc[3];
+        part[4][l] = acc[4];
+        part[5][l] = acc[5];
+        part[6][l] = acc[6];
+        part[7][l] = acc[7];
       }
       let s0 = lanes::sum(&part[0], 128);
       let s1 = lanes::sum(&part[1], 128);
       let s2 = lanes::sum(&part[2], 128);
       let s3 = lanes::sum(&part[3], 128);
-      y[rb * 4] = y[rb * 4] + s0;
-      y[rb * 4 + 1] = y[rb * 4 + 1] + s1;
-      y[rb * 4 + 2] = y[rb * 4 + 2] + s2;
-      y[rb * 4 + 3] = y[rb * 4 + 3] + s3;
+      let s4 = lanes::sum(&part[4], 128);
+      let s5 = lanes::sum(&part[5], 128);
+      let s6 = lanes::sum(&part[6], 128);
+      let s7 = lanes::sum(&part[7], 128);
+      y[rb * 8] = y[rb * 8] + s0;
+      y[rb * 8 + 1] = y[rb * 8 + 1] + s1;
+      y[rb * 8 + 2] = y[rb * 8 + 2] + s2;
+      y[rb * 8 + 3] = y[rb * 8 + 3] + s3;
+      y[rb * 8 + 4] = y[rb * 8 + 4] + s4;
+      y[rb * 8 + 5] = y[rb * 8 + 5] + s5;
+      y[rb * 8 + 6] = y[rb * 8 + 6] + s6;
+      y[rb * 8 + 7] = y[rb * 8 + 7] + s7;
     }
   }
   return;

@@ -1,7 +1,7 @@
 // The Q4_0 kernels of `std::nn` on random codes and scales, against plain loops in f64. A line
 // says `ok` when the largest difference is below 1e-5 of the largest value of the loop. The loop
-// finds each weight from the definition of Q4_0. Each kernel gets a shape with rows of more than
-// 2048 weights, so that a lane takes more than one step.
+// finds each weight from the definition of Q4_0. Each kernel gets a shape with rows long enough
+// that a lane takes more than one step.
 //
 // The first run uses the Apple GPU on a Mac, and the CPU copy of each kernel elsewhere. The
 // second run uses the CPU copy everywhere.
