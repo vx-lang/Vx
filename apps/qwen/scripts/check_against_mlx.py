@@ -31,11 +31,20 @@ def main():
     args = parser.parse_args()
 
     import mlx.core as mx
-    from mlx.utils import tree_map
+    import mlx.nn as nn
     from mlx_lm import load
 
+    # Keep the weights in bf16, and widen each one to float32 only inside its product, as
+    # reference.py does. Widening every weight first would need 30 GB for the 7B model.
+    def linear(self, x):
+        y = x.astype(mx.float32) @ self["weight"].astype(mx.float32).T
+        return y + self["bias"].astype(mx.float32) if "bias" in self else y
+
+    nn.Linear.__call__ = linear
+    nn.Embedding.__call__ = lambda self, x: self["weight"][x].astype(mx.float32)
+    nn.Embedding.as_linear = lambda self, x: x.astype(mx.float32) @ self["weight"].astype(mx.float32).T
+
     mlx_model, tokenizer = load(args.model_dir)
-    mlx_model.update(tree_map(lambda p: p.astype(mx.float32), mlx_model.parameters()))
     prompt = tokenizer.encode(PROMPT)
 
     def mlx_logits(tokens):
