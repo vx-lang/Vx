@@ -1,0 +1,111 @@
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// Four structs are each the error of a `Result`. Each one holds an enum next to another field.
+// The program reads every field back. Each value prints as a different number.
+// EXPECT: -9000000000 77 3 -7 42 99 -5
+
+import core::option;
+import core::result;
+
+enum Amount {
+  Value(i64),
+  Unknown
+}
+
+// A field that is an enum with data.
+struct AmountError {
+  amount: Amount
+}
+
+struct Code {
+  value: Option<i32>
+}
+
+// A struct inside a struct. Only the inner struct has the `Option` field.
+struct NestedError {
+  tag: u8,
+  code: Code
+}
+
+fn add_one(x: i32) -> i32 {
+  return x + 1;
+}
+
+// A function pointer next to an `Option` field.
+struct CallbackError {
+  code: Option<i32>,
+  retry: fn(i32) -> i32
+}
+
+struct Empty {}
+
+// An empty struct next to an `Option` field.
+struct MarkedError {
+  marker: Empty,
+  code: Option<i32>
+}
+
+fn amount_error(a: Amount) -> Result<u64, AmountError> {
+  return Result<u64, AmountError>::Err(AmountError {
+    amount: a
+  });
+}
+
+fn amount_of(a: Amount) -> i64 {
+  match a {
+    Amount::Value(v) => {
+      return v;
+    }
+    Amount::Unknown => {
+      return 77i64;
+    }
+  }
+}
+
+fn nested_error() -> Result<u64, NestedError> {
+  return Result<u64, NestedError>::Err(NestedError {
+    tag: 3u8,
+    code: Code {
+      value: Option<i32>::Some(-7)
+    }
+  });
+}
+
+fn callback_error() -> Result<u64, CallbackError> {
+  return Result<u64, CallbackError>::Err(CallbackError {
+    code: Option<i32>::None(),
+    retry: add_one
+  });
+}
+
+fn marked_error() -> Result<u64, MarkedError> {
+  return Result<u64, MarkedError>::Err(MarkedError {
+    marker: Empty {},
+    code: Option<i32>::Some(-5)
+  });
+}
+
+fn main() -> i32 {
+  print(amount_of(amount_error(Amount::Value(-9000000000)).unwrap_err().amount));
+  print!(" ");
+  print(amount_of(amount_error(Amount::Unknown).unwrap_err().amount));
+  print!(" ");
+
+  let nested = nested_error().unwrap_err();
+  print(nested.tag);
+  print!(" ");
+  print(nested.code.value.unwrap_or(99));
+  print!(" ");
+
+  let callback = callback_error().unwrap_err();
+  let retry = callback.retry;
+  print(retry(41));
+  print!(" ");
+  print(callback.code.unwrap_or(99));
+  print!(" ");
+
+  print(marked_error().unwrap_err().code.unwrap_or(99));
+  return 0;
+}

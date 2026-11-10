@@ -1578,6 +1578,50 @@ fn result_holds_an_error_with_an_optional_code(#[case] jobs: Option<usize>) {
 #[rstest::rstest]
 #[case::normal(None)]
 #[case::parallel(Some(2))]
+fn result_holds_structs_with_different_enum_fields(#[case] jobs: Option<usize>) {
+    assert_generated_aggregate_runs(
+        "result_holds_structs_with_different_enum_fields.vx",
+        &["-9000000000", "77", "3", "-7", "42", "99", "-5"],
+        jobs,
+    );
+}
+
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn struct_with_an_option_field_in_different_enums(#[case] jobs: Option<usize>) {
+    assert_generated_aggregate_runs(
+        "struct_with_an_option_field_in_different_enums.vx",
+        &[
+            "55",
+            "-7",
+            "4294967301",
+            "99",
+            "41",
+            "7",
+            "2",
+            "-9000000000",
+            "1",
+            "-3",
+        ],
+        jobs,
+    );
+}
+
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn result_holds_an_error_from_another_module(#[case] jobs: Option<usize>) {
+    assert_generated_aggregate_runs(
+        "result_holds_an_error_from_another_module.vx",
+        &["4294967301", "2", "-9000000000"],
+        jobs,
+    );
+}
+
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
 fn enum_payload_with_empty_fields_runs(
     #[case] jobs: Option<usize>,
     #[values(0, 2)] optimization: u8,
