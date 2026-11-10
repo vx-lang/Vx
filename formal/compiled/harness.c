@@ -98,6 +98,11 @@ void vx_task_failed(void) { assert(0 && "a task failed"); }
 long vx_clock_ns(void) { return 0; }
 void vx_waiting_for(int what, const char *at_file, int at_line,
                     const char *made_file, int made_line) {}
+void vx_waiting_for_lock(const char *at_file, int at_line,
+                         const char *made_file, int made_line, long *holder) {}
+// The holder word of a `Mutex` is only for the deadlock report.
+void vx_lock_taken(long *holder) {}
+void vx_lock_released(long *holder) {}
 
 // The wait and the wake, as the Rust runtime does them: a lock and a condition
 // variable. Here the condition variable is a count of wakes. A wait reads the

@@ -39,12 +39,17 @@ extern {
   fn vx_within_end() -> void;
   /// The Rust core behind `waiting_for`.
   fn vx_waiting_for(what : i32, at_file : *const i8, at_line : i32, made_file : *const i8, made_line : i32) -> void;
+  /// The Rust core behind `waiting_for_lock`.
+  fn vx_waiting_for_lock(at_file : *const i8, at_line : i32, made_file : *const i8, made_line : i32, holder : *mut i64) -> void;
+  /// The Rust core behind `lock_taken`.
+  fn vx_lock_taken(holder : *mut i64) -> void;
+  /// The Rust core behind `lock_released`.
+  fn vx_lock_released(holder : *mut i64) -> void;
 }
 
 /// What a wait is for, for `waiting_for`.
 const WAIT_IN_SEND : i32 = 1;
 const WAIT_IN_RECV : i32 = 2;
-const WAIT_IN_LOCK : i32 = 3;
 const WAIT_IN_SELECT : i32 = 4;
 
 /// Say what the next wait of this task is for, one of the `WAIT_IN_` values. When the program
@@ -53,6 +58,25 @@ const WAIT_IN_SELECT : i32 = 4;
 fn waiting_for(what : i32, at : Caller, made : Location) -> void {
   let l = at.location;
   unsafe { vx_waiting_for(what, l.file, l.line, made.file, made.line); }
+}
+
+/// `waiting_for` a `lock` at the line `at`, on a lock that the line `made` made. `holder` is the
+/// word where `lock_taken` keeps who holds the lock, so the report can name it.
+fn waiting_for_lock(at : Caller, made : Location, holder : &AtomicI64) -> void {
+  let l = at.location;
+  unsafe {
+    vx_waiting_for_lock(l.file, l.line, made.file, made.line, holder.as_ptr());
+  }
+}
+
+/// Keep in `holder` who runs here, the code that now holds a lock, for the deadlock report.
+fn lock_taken(holder : &AtomicI64) -> void {
+  unsafe { vx_lock_taken(holder.as_ptr()); }
+}
+
+/// The lock with the word `holder` is free. Only the code that took it calls this.
+fn lock_released(holder : &AtomicI64) -> void {
+  unsafe { vx_lock_released(holder.as_ptr()); }
 }
 
 /// `waiting_for` a `select` at the line `at`. It waits on many channels, so it has no `made`.

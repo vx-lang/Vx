@@ -34,8 +34,9 @@ struct Mutex<T> {
   // The threads that sleep on `serving`, so that an unlock with no sleeper costs no call.
   sleepers : AtomicI64,
   value : SharedCell<T>,
-  // The line that made the `Mutex`, for the deadlock report.
+  // The line that made the `Mutex`, and who holds its lock, for the deadlock report.
   made : Location,
+  holder : AtomicI64,
 }
 
 // Only the task that holds the lock reaches the value. So tasks can share a `Mutex` when its
@@ -51,6 +52,7 @@ impl<T> HostOnly for MutexGuard<T> {}
 struct MutexGuard<T> {
   serving : &AtomicI64,
   sleepers : &AtomicI64,
+  holder : &AtomicI64,
   value : *mut T,
 }
 
@@ -64,6 +66,7 @@ Mutex<T> {
       sleepers : AtomicI64::new(0),
       value : SharedCell<T>::new(v),
       made : at.location,
+      holder : AtomicI64::new(0),
     };
   }
 
@@ -73,13 +76,14 @@ Mutex<T> {
     let mut now = self.serving.load(AtomicOrdering::Acquire);
     while now != ticket {
       self.sleepers.fetch_add(1, AtomicOrdering::SeqCst);
-      waiting_for(WAIT_IN_LOCK, at, self.made);
+      waiting_for_lock(at, self.made, &self.holder);
       wait_while(&self.serving, now);
       self.sleepers.fetch_sub(1, AtomicOrdering::SeqCst);
       now = self.serving.load(AtomicOrdering::Acquire);
     }
+    lock_taken(&self.holder);
     return MutexGuard<T> {
-      serving : &self.serving, sleepers : &self.sleepers, value : self.value.get()
+      serving : &self.serving, sleepers : &self.sleepers, holder : &self.holder, value : self.value.get()
     };
   }
 
@@ -100,6 +104,7 @@ MutexGuard<T> {
 
 impl<T> Drop for MutexGuard<T> {
   fn drop(self : &mut MutexGuard<T>) -> void {
+    lock_released(self.holder);
     self.serving.fetch_add(1, AtomicOrdering::SeqCst);
     if self.sleepers.load(AtomicOrdering::SeqCst) > 0 {
       wake_all(self.serving);

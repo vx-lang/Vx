@@ -68,7 +68,8 @@ enum What {
     Word,
     Send,
     Recv,
-    Lock,
+    /// A `lock`, with the address of the holder word of its `Mutex`, or 0 when it is not known.
+    Lock(usize),
     Select,
     /// The join of the task with this site, or of a task with no site.
     Join(Option<crate::ffi::tasks::Site>),
@@ -121,8 +122,95 @@ struct Note {
     what: What,
     at: Option<Place>,
     made: Option<Place>,
-    /// Where the waiting task started, or `None` for the main code.
-    site: Option<crate::ffi::tasks::Site>,
+    /// Who waits, or `None` for a task with no site.
+    who: Option<Who>,
+}
+
+/// The code that waits, or that holds a lock, for the cycle of waits in the deadlock report.
+#[derive(Clone)]
+enum Who {
+    Main,
+    Task(crate::ffi::tasks::Site),
+}
+
+impl Who {
+    /// Who runs here. `None` for a task with no site, which the report cannot tell apart from
+    /// another task.
+    fn here() -> Option<Who> {
+        match crate::ffi::tasks::current_site() {
+            Some(site) => Some(Who::Task(site)),
+            None if sched::current_fiber().is_null() && on_the_main_thread() => Some(Who::Main),
+            None => None,
+        }
+    }
+
+    /// Each task has its own site, so the address of the site names the task.
+    fn key(&self) -> usize {
+        match self {
+            Who::Main => HELD_BY_THE_MAIN_CODE as usize,
+            Who::Task(site) => std::sync::Arc::as_ptr(site) as *const u8 as usize,
+        }
+    }
+
+    fn text(&self) -> String {
+        match self {
+            Who::Main => "the main code".to_string(),
+            Who::Task(site) => format!(
+                "the task from the `spawn` at {}",
+                crate::ffi::tasks::spawn_line(site)
+            ),
+        }
+    }
+}
+
+fn on_the_main_thread() -> bool {
+    #[cfg(target_os = "linux")]
+    return unsafe { libc::gettid() == libc::getpid() };
+    #[cfg(target_vendor = "apple")]
+    return unsafe { libc::pthread_main_np() != 0 };
+    #[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
+    return false;
+}
+
+/// The holder word of a `Mutex` holds 0 when no code holds the lock, or when the report cannot
+/// name the holder. It holds 1 for the main code. For a task, it holds the address of the site of
+/// the task, and it keeps one count of the site, so that the address stays the task's.
+const HELD_BY_THE_MAIN_CODE: i64 = 1;
+
+/// `lock` took the lock of the `Mutex` with the holder word `holder`.
+///
+/// # Safety
+///
+/// `holder` is the holder word of a live `Mutex`.
+#[no_mangle]
+pub unsafe extern "C" fn vx_lock_taken(holder: *mut i64) {
+    let held = match Who::here() {
+        Some(Who::Main) => HELD_BY_THE_MAIN_CODE,
+        Some(Who::Task(site)) => std::sync::Arc::into_raw(site) as *const u8 as i64,
+        None => 0,
+    };
+    unsafe { &*(holder as *const AtomicI64) }.store(held, Ordering::SeqCst);
+}
+
+/// The drop of a guard unlocks the `Mutex` with the holder word `holder`. A guard is not `Send`,
+/// so the task that took the lock unlocks it.
+///
+/// # Safety
+///
+/// `holder` is the holder word of a live `Mutex`.
+#[no_mangle]
+pub unsafe extern "C" fn vx_lock_released(holder: *mut i64) {
+    let held = unsafe { &*(holder as *const AtomicI64) }.swap(0, Ordering::SeqCst);
+    if held > HELD_BY_THE_MAIN_CODE {
+        let site = crate::ffi::tasks::current_site();
+        let site = site.expect("only the task that holds a lock unlocks it");
+        let ptr = std::sync::Arc::as_ptr(&site);
+        assert_eq!(
+            ptr as *const u8 as i64, held,
+            "only the task that holds a lock unlocks it"
+        );
+        unsafe { std::sync::Arc::decrement_strong_count(ptr) };
+    }
 }
 
 thread_local! {
@@ -130,10 +218,10 @@ thread_local! {
     static WHAT: std::cell::RefCell<Waiting> = const { std::cell::RefCell::new(NOT_SAID) };
 }
 
-/// Says what the next wait of this thread is for: 1 for a `send`, 2 for a `recv`, 3 for a
-/// `lock` and 4 for a `select`. The deadlock report prints it, with the line of the wait at
-/// `at_file:at_line`, and the line that made the channel or the lock at `made_file:made_line`.
-/// A null file means that the line is not known.
+/// Says what the next wait of this thread is for: 1 for a `send`, 2 for a `recv` and 4 for a
+/// `select`. The deadlock report prints it, with the line of the wait at `at_file:at_line`, and
+/// the line that made the channel at `made_file:made_line`. A null file means that the line is
+/// not known. A `lock` uses `vx_waiting_for_lock`.
 ///
 /// # Safety
 ///
@@ -149,12 +237,33 @@ pub unsafe extern "C" fn vx_waiting_for(
     let what = match what {
         1 => What::Send,
         2 => What::Recv,
-        3 => What::Lock,
         4 => What::Select,
         _ => What::Word,
     };
     let waiting = Waiting {
         what,
+        at: Place::new(at_file, at_line),
+        made: Place::new(made_file, made_line),
+    };
+    WHAT.with(|w| *w.borrow_mut() = waiting);
+}
+
+/// As `vx_waiting_for` a `lock`, on the `Mutex` with the holder word `holder`.
+///
+/// # Safety
+///
+/// As for `vx_waiting_for`, and `holder` is the holder word of a `Mutex` that lives until the
+/// wait ends.
+#[no_mangle]
+pub unsafe extern "C" fn vx_waiting_for_lock(
+    at_file: *const libc::c_char,
+    at_line: i32,
+    made_file: *const libc::c_char,
+    made_line: i32,
+    holder: *mut i64,
+) {
+    let waiting = Waiting {
+        what: What::Lock(holder as usize),
         at: Place::new(at_file, at_line),
         made: Place::new(made_file, made_line),
     };
@@ -307,7 +416,7 @@ unsafe fn wait(word: *const i64, value: i64, or_cancel: bool, deadline_ns: Optio
         what,
         at,
         made,
-        site: crate::ffi::tasks::current_site(),
+        who: Who::here(),
     };
     if fiber.is_null() {
         // With a seed, this thread runs the ready tasks. The check is under the lock of the
@@ -626,16 +735,39 @@ mod timer {
 
 /// One line for each waiter in the buckets: what it waits for, and then the lines of the `spawn`
 /// of its task. The main code comes first, then the tasks in the order of their lines. Two
-/// waits on one channel or one lock name the same number.
+/// waits on one channel or one lock name the same number. Then each cycle of waits, when each
+/// wait in it is a join or a `lock` whose holder is known.
 fn report() -> String {
     let mut waits = Vec::new();
     for b in &TABLE {
         let w = Held::new(b);
         for n in &w.notes {
-            waits.push((n.site.clone(), n.word, n.what.clone(), n.at, n.made));
+            waits.push((n.who.clone(), n.word, n.what.clone(), n.at, n.made));
         }
     }
-    waits.sort_by_key(|w| w.0.as_ref().map(crate::ffi::tasks::site_key));
+    let site_of = |who: &Option<Who>| match who {
+        Some(Who::Task(site)) => Some(site.clone()),
+        _ => None,
+    };
+    waits.sort_by_key(|w| site_of(&w.0).as_ref().map(crate::ffi::tasks::site_key));
+    // The waiter with the key `key`.
+    let waiter = |key: usize| {
+        waits
+            .iter()
+            .position(|w| w.0.as_ref().is_some_and(|who| who.key() == key))
+    };
+    // The waiter that each waiter waits for, when the report knows it.
+    let waits_for: Vec<Option<usize>> = waits
+        .iter()
+        .map(|w| match &w.2 {
+            What::Lock(holder) if *holder != 0 => {
+                let held = unsafe { &*(*holder as *const AtomicI64) }.load(Ordering::SeqCst);
+                waiter(held as usize).filter(|_| held != 0)
+            }
+            What::Join(Some(site)) => waiter(std::sync::Arc::as_ptr(site) as *const u8 as usize),
+            _ => None,
+        })
+        .collect();
     let (mut channels, mut locks) = (Vec::new(), Vec::new());
     let number = |list: &mut Vec<usize>, word: usize| match list.iter().position(|&w| w == word) {
         Some(i) => i + 1,
@@ -644,41 +776,49 @@ fn report() -> String {
             list.len()
         }
     };
-    let mut out = String::new();
-    for (site, word, what, at, made) in waits {
+    let mut doing = Vec::new();
+    for (i, (_, word, what, at, made)) in waits.iter().enumerate() {
         // ` at main.vx:15` and `, made at main.vx:11`, or nothing when the line is not known.
         let at = at.map(|p| format!(" at {}", p.text())).unwrap_or_default();
         let made = made
             .map(|p| format!(", made at {}", p.text()))
             .unwrap_or_default();
-        let doing = match what {
+        doing.push(match what {
             What::Send => format!(
                 "waits in `send`{at} on channel {}{made}",
-                number(&mut channels, word)
+                number(&mut channels, *word)
             ),
             What::Recv => format!(
                 "waits in `recv`{at} on channel {}{made}",
-                number(&mut channels, word)
+                number(&mut channels, *word)
             ),
-            What::Lock => format!(
-                "waits in `lock`{at} on lock {}{made}",
-                number(&mut locks, word)
-            ),
+            What::Lock(_) => {
+                let held = waits_for[i]
+                    .and_then(|h| waits[h].0.as_ref())
+                    .map(|who| format!(", held by {}", who.text()))
+                    .unwrap_or_default();
+                format!(
+                    "waits in `lock`{at} on lock {}{made}{held}",
+                    number(&mut locks, *word)
+                )
+            }
             What::Select => format!("waits in `select`{at}"),
             What::Join(Some(task)) => format!(
                 "waits for the end of the task from the `spawn` at {}",
-                crate::ffi::tasks::spawn_line(&task)
+                crate::ffi::tasks::spawn_line(task)
             ),
             What::Join(None) => "waits for the end of a task".to_string(),
             What::Word => "waits on an atomic word".to_string(),
-        };
-        let who = if site.is_some() {
-            "a task"
-        } else {
-            "the main code"
+        });
+    }
+    let mut out = String::new();
+    for (w, doing) in waits.iter().zip(&doing) {
+        let who = match &w.0 {
+            Some(Who::Main) => "the main code",
+            _ => "a task",
         };
         out += &format!("  {who} {doing}\n");
-        for line in site
+        for line in site_of(&w.0)
             .as_deref()
             .map(String::from_utf8_lossy)
             .unwrap_or_default()
@@ -687,7 +827,53 @@ fn report() -> String {
             out += &format!("  {line}\n");
         }
     }
+    for cycle in cycles(&waits_for) {
+        out += "  the waits form a cycle:\n";
+        for i in cycle {
+            let who = waits[i]
+                .0
+                .as_ref()
+                .expect("a wait in a cycle has a known waiter");
+            out += &format!("    {} {}\n", who.text(), doing[i]);
+        }
+    }
     out
+}
+
+/// Each cycle in a graph where node `i` has at most one edge, to `next[i]`. A cycle starts at
+/// its lowest node.
+fn cycles(next: &[Option<usize>]) -> Vec<Vec<usize>> {
+    const NEW: u8 = 0;
+    const ON_THE_PATH: u8 = 1;
+    const DONE: u8 = 2;
+    let mut state = vec![NEW; next.len()];
+    let mut found = Vec::new();
+    for start in 0..next.len() {
+        let mut path = Vec::new();
+        let mut i = Some(start);
+        while let Some(at) = i {
+            match state[at] {
+                NEW => {
+                    state[at] = ON_THE_PATH;
+                    path.push(at);
+                    i = next[at];
+                }
+                ON_THE_PATH => {
+                    let first = path.iter().position(|&p| p == at).expect("on the path");
+                    let mut cycle = path[first..].to_vec();
+                    let lowest = (0..cycle.len()).min_by_key(|&k| cycle[k]).expect("a cycle");
+                    cycle.rotate_left(lowest);
+                    found.push(cycle);
+                    break;
+                }
+                _ => break,
+            }
+        }
+        for p in path {
+            state[p] = DONE;
+        }
+    }
+    found
 }
 
 /// The deadlock report (F9 in docs/discussions/waiting_tasks_channels_and_task_errors.md). A
@@ -1007,6 +1193,14 @@ mod tests {
         );
     }
 
+    /// Waiter 0 waits for the cycle 1, 2, 3 and is not in it. Waiter 4 waits for itself, and
+    /// waiter 5 waits for nothing.
+    #[test]
+    fn each_cycle_of_waits_is_found_once_from_its_lowest_waiter() {
+        let next = [Some(2), Some(2), Some(3), Some(1), Some(4), None];
+        assert_eq!(cycles(&next), vec![vec![1, 2, 3], vec![4]]);
+    }
+
     /// A fiber that a wake leaves parked keeps its note for the deadlock report. The waiters
     /// that the wake took lose theirs. The fibers here never run.
     #[test]
@@ -1019,7 +1213,7 @@ mod tests {
             what: What::Recv,
             at: None,
             made: None,
-            site: None,
+            who: None,
         };
         let mut waiters = Waiters {
             fibers: vec![

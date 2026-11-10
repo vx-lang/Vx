@@ -9,7 +9,7 @@
 // a third task each send two values on a channel that holds one and that nothing reads. The task
 // sends first, so the main code waits on its first `send` and the task on its second. Two waits
 // on the same channel name the same number. Each wait has its line, and the line that made its
-// channel or lock.
+// channel or lock, and a `lock` names the task that holds the lock.
 //
 // RUN: not vxc %s --run 2>&1 | FileCheck %s
 // RUN: not vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
@@ -17,7 +17,7 @@
 
 // CHECK: vx: deadlock: each task of the program waits, and nothing can wake one. The program stops.
 // CHECK-NEXT: {{^}}  the main code waits in `send` at {{.*}}.vx:49 on channel 1, made at {{.*}}.vx:77{{$}}
-// CHECK-NEXT: {{^}}  a task waits in `lock` at {{.*}}.vx:44 on lock 1, made at {{.*}}.vx:73{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `lock` at {{.*}}.vx:44 on lock 1, made at {{.*}}.vx:73, held by the task from the `spawn` at {{.*}}.vx:83{{$}}
 // CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:80{{$}}
 // CHECK-NEXT: {{^}}  a task waits in `recv` at {{.*}}.vx:34 on channel 2, made at {{.*}}.vx:76{{$}}
 // CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:83{{$}}
