@@ -20,6 +20,7 @@
 
 #include <cstdio>
 #include <set>
+#include <sys/stat.h>
 #include <thread>
 
 namespace {
@@ -151,6 +152,30 @@ void test_an_old_id_file_is_refused() {
         "rank 0 refuses an id file that is already there");
 }
 
+// A rank that waits takes the id file as soon as it is there. So rank 0 makes
+// the file only with a rename of a full file. To show this, the test blocks the
+// name of the other file with a directory. Then the write must fail and leave
+// no id file.
+void test_rank_0_writes_the_id_with_one_rename() {
+  vx::NcclUniqueId id;
+  memset(&id, 'v', sizeof id);
+  const std::string blocked = dir + "/blocked";
+  mkdir((blocked + ".partial").c_str(), 0700);
+  check(!vx::write_unique_id(blocked.c_str(), id).empty(),
+        "rank 0 stops when it cannot write the other file");
+  check(access(blocked.c_str(), F_OK) != 0,
+        "rank 0 makes no id file when it cannot write the other file");
+
+  const std::string file = dir + "/renamed";
+  vx::NcclUniqueId read;
+  check(vx::write_unique_id(file.c_str(), id).empty() &&
+            vx::read_unique_id(file.c_str(), &read, no_wait).empty() &&
+            memcmp(&read, &id, sizeof id) == 0,
+        "the id file holds the id after the rename");
+  check(access((file + ".partial").c_str(), F_OK) != 0,
+        "the rename leaves no other file");
+}
+
 void test_a_rank_that_waits_too_long_stops() {
   vx::NcclCollective c(test_device());
   std::string file = dir + "/never";
@@ -270,6 +295,7 @@ int main(int argc, char **argv) {
   test_two_ranks_need_the_id_file();
   test_both_ranks_join_with_the_id_of_rank_0();
   test_an_old_id_file_is_refused();
+  test_rank_0_writes_the_id_with_one_rename();
   test_a_rank_that_waits_too_long_stops();
   test_an_all_reduce_goes_on_the_stream_with_its_arguments();
   test_bad_arguments_are_refused();
