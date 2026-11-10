@@ -1,0 +1,323 @@
+// The Q4_0 kernels of `std::nn` on random codes and scales, against plain loops in f64. A line
+// says `ok` when the largest difference is below 1e-5 of the largest value of the loop. The loop
+// finds each weight from the definition of Q4_0. Each kernel gets a shape with rows of more than
+// 2048 weights, so that a lane takes more than one step.
+//
+// The first run uses the Apple GPU on a Mac, and the CPU copy of each kernel elsewhere. The
+// second run uses the CPU copy everywhere.
+//
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx | FileCheck %s
+// RUN: env VX_METAL=0 vxc %s --host default --machine fleet/m4-uma.vx | FileCheck %s
+//
+// CHECK: {{^}}nn_matvec_q4 296 x 896: ok{{$}}
+// CHECK-NEXT: {{^}}nn_matvec_q4_add 296 x 896: ok{{$}}
+// CHECK-NEXT: {{^}}nn_matvec_q4 64 x 4864: ok{{$}}
+// CHECK-NEXT: {{^}}nn_matvec_q4_add 64 x 4864: ok{{$}}
+// CHECK-NEXT: {{^}}nn_matvec_q4_heads_add 200 x 4096: ok{{$}}
+// CHECK-NEXT: {{^}}nn_qkv_q4 q: ok{{$}}
+// CHECK-NEXT: {{^}}nn_qkv_q4 k: ok{{$}}
+// CHECK-NEXT: {{^}}nn_qkv_q4 v: ok{{$}}
+// CHECK-NEXT: {{^}}nn_swiglu_q4 200 x 4864: ok{{$}}
+// CHECK-NEXT: {{^}}nn_moe_swiglu_q4 8 of 32 experts, 96 x 512: ok{{$}}
+// CHECK-NEXT: {{^}}nn_moe_down_q4_add 8 of 32 experts, 512 x 96: ok{{$}}
+// CHECK-NEXT: {{^}}nn_moe_swiglu_q4 4 of 8 experts, 1056 x 2080: ok{{$}}
+// CHECK-NEXT: {{^}}nn_moe_down_q4_add 4 of 8 experts, 2080 x 1056: ok{{$}}
+import core::convert;
+import core::num;
+import std::nn;
+
+fn mix(x : u32) on Topology::Any -> u32
+ensures writes_only()
+{
+  let mut h = x * 2654435761u32;
+  h = h ^ (h >> 15u32);
+  h = h * 2246822519u32;
+  h = h ^ (h >> 13u32);
+  return h;
+}
+
+// A value in [-scale, scale) for index i of the random tensor `seed`.
+fn random(seed : u32, i : i32, scale : f32) on Topology::Any -> f32
+ensures writes_only()
+{
+  return (((mix(seed * 7919u32 + (i as u32)) >> 8u32) as f32) * 0.00000011920929 - 1.0) * scale;
+}
+
+fn random_bf16(n : i32, seed : u32, scale : f32) -> Tensor<bf16, [?], Memory::HBM> {
+  let mut t = Tensor<bf16>([n]);
+  for i in 0..n {
+    t[i] = random(seed, i, scale) as bf16;
+  }
+  return transfer(t, Memory::HBM);
+}
+
+fn random_heads(heads : i32, head_dim : i32, seed : u32, scale : f32) -> Tensor<f32, [?, ?]> {
+  let mut t = Tensor<f32>([heads, head_dim]);
+  for h in 0..heads {
+    for d in 0..head_dim {
+      t[h][d] = random(seed, h * head_dim + d, scale);
+    }
+  }
+  return t;
+}
+
+fn random_cache(rows : i32, heads : i32, head_dim : i32, seed : u32, scale : f32) -> Tensor<f32, [?, ?, ?]> {
+  let mut t = Tensor<f32>([rows, heads, head_dim]);
+  for p in 0..rows {
+    for h in 0..heads {
+      for d in 0..head_dim {
+        t[p][h][d] = random(seed, (p * heads + h) * head_dim + d, scale);
+      }
+    }
+  }
+  return t;
+}
+
+// `ok`, or the largest difference between got and want, over the largest |want|.
+fn report(name : *const i8, got : &Tensor<f32, [?]>, want : &Tensor<f64, [?]>, n : i32) -> void {
+  let mut worst : f64 = 0.0;
+  let mut biggest : f64 = 0.0;
+  for i in 0..n {
+    worst = f64::max(worst, f64::abs(f64::from(got[i]) - want[i]));
+    biggest = f64::max(biggest, f64::abs(want[i]));
+  }
+  if worst <= 0.00001 * biggest {
+    println!("{}: ok", name);
+  } else {
+    println!("{}: error {}", name, worst / biggest);
+  }
+  return;
+}
+
+
+fn random_codes(rows : i32, cols : i32, seed : u32) -> Tensor<u32, [?], Memory::HBM> {
+  let n = rows * (cols / 8);
+  let mut t = Tensor<u32>([n]);
+  for i in 0..n {
+    t[i] = mix(seed * 7919u32 + (i as u32));
+  }
+  return transfer(t, Memory::HBM);
+}
+
+// The scales are 0.002 to 0.004, and differ for each 32 weights.
+fn random_scales(rows : i32, cols : i32, seed : u32) -> Tensor<f16, [?], Memory::HBM> {
+  let n = rows * (cols / 32);
+  let mut t = Tensor<f16>([n]);
+  for i in 0..n {
+    t[i] = (0.003 + random(seed, i, 0.001)) as f16;
+  }
+  return transfer(t, Memory::HBM);
+}
+
+fn random_f32(n : i32, seed : u32, scale : f32) -> Tensor<f32, [?], Memory::HBM> {
+  let mut t = Tensor<f32>([n]);
+  for i in 0..n {
+    t[i] = random(seed, i, scale);
+  }
+  return transfer(t, Memory::HBM);
+}
+
+// Weight c of row r, from its code and its scale, by the definition of Q4_0.
+fn weight(w : &Tensor<u32, [?]>, s : &Tensor<f16, [?]>, r : i32, c : i32, cols : i32) -> f64 {
+  let word = w[r * (cols / 8) + c / 8];
+  let code = ((word >> ((4 * (c % 8)) as u32)) & 15u32) as i32;
+  return f64::from(code - 8) * f64::from(s[r * (cols / 32) + c / 32] as f32);
+}
+
+fn dot(w : &Tensor<u32, [?]>, s : &Tensor<f16, [?]>, r : i32, x : &Tensor<f32, [?]>, cols : i32) -> f64 {
+  let mut t : f64 = 0.0;
+  for c in 0..cols {
+    t = t + weight(w, s, r, c, cols) * f64::from(x[c]);
+  }
+  return t;
+}
+
+fn check_matvec(rows : i32, cols : i32) -> void {
+  let w = random_codes(rows, cols, 1u32);
+  let s = random_scales(rows, cols, 2u32);
+  let x = random_f32(cols, 3u32, 1.0);
+  let mut y = transfer(Tensor<f32>([rows]), Memory::HBM);
+  let mut ya = random_f32(rows, 4u32, 1.0);
+  nn_matvec_q4(&mut y, &w, &s, &x, rows, cols);
+  nn_matvec_q4_add(&mut ya, &w, &s, &x, rows, cols);
+  let hw = transfer(&w, Memory::CPU_DRAM);
+  let hs = transfer(&s, Memory::CPU_DRAM);
+  let hx = transfer(&x, Memory::CPU_DRAM);
+  let hy = transfer(&y, Memory::CPU_DRAM);
+  let hya = transfer(&ya, Memory::CPU_DRAM);
+  let mut want = Tensor<f64>([rows]);
+  let mut want_add = Tensor<f64>([rows]);
+  for r in 0..rows {
+    want[r] = dot(&hw, &hs, r, &hx, cols);
+    want_add[r] = f64::from(random(4u32, r, 1.0)) + want[r];
+  }
+  if rows == 296 {
+    report("nn_matvec_q4 296 x 896", &hy, &want, rows);
+    report("nn_matvec_q4_add 296 x 896", &hya, &want_add, rows);
+  } else {
+    report("nn_matvec_q4 64 x 4864", &hy, &want, rows);
+    report("nn_matvec_q4_add 64 x 4864", &hya, &want_add, rows);
+  }
+  return;
+}
+
+fn check_heads_add(rows : i32, heads : i32, head_dim : i32) -> void {
+  let cols = heads * head_dim;
+  let w = random_codes(rows, cols, 21u32);
+  let s = random_scales(rows, cols, 22u32);
+  let x = transfer(random_heads(heads, head_dim, 23u32, 1.0), Memory::HBM);
+  let mut y = random_f32(rows, 24u32, 1.0);
+  nn_matvec_q4_heads_add(&mut y, &w, &s, &x, rows, heads, head_dim);
+  let hw = transfer(&w, Memory::CPU_DRAM);
+  let hs = transfer(&s, Memory::CPU_DRAM);
+  let hy = transfer(&y, Memory::CPU_DRAM);
+  let mut flat = Tensor<f32>([cols]);
+  for c in 0..cols {
+    flat[c] = random(23u32, c, 1.0);
+  }
+  let mut want = Tensor<f64>([rows]);
+  for r in 0..rows {
+    want[r] = f64::from(random(24u32, r, 1.0)) + dot(&hw, &hs, r, &flat, cols);
+  }
+  report("nn_matvec_q4_heads_add 200 x 4096", &hy, &want, rows);
+  return;
+}
+
+fn check_qkv(q_heads : i32, kv_heads : i32, head_dim : i32, cols : i32) -> void {
+  let rows = (q_heads + 2 * kv_heads) * head_dim;
+  let w = random_codes(rows, cols, 31u32);
+  let s = random_scales(rows, cols, 32u32);
+  let b = random_bf16(rows, 33u32, 4.0);
+  let x = random_f32(cols, 34u32, 1.0);
+  let mut q = transfer(Tensor<f32>([q_heads, head_dim]), Memory::HBM);
+  let mut k = transfer(Tensor<f32>([kv_heads, head_dim]), Memory::HBM);
+  let mut v = transfer(Tensor<f32>([kv_heads, head_dim]), Memory::HBM);
+  nn_qkv_q4(&mut q, &mut k, &mut v, &w, &s, &b, &x, q_heads, kv_heads, head_dim, cols);
+  let hw = transfer(&w, Memory::CPU_DRAM);
+  let hs = transfer(&s, Memory::CPU_DRAM);
+  let hb = transfer(&b, Memory::CPU_DRAM);
+  let hx = transfer(&x, Memory::CPU_DRAM);
+  let hq = transfer(&q, Memory::CPU_DRAM);
+  let hk = transfer(&k, Memory::CPU_DRAM);
+  let hv = transfer(&v, Memory::CPU_DRAM);
+  let nq = q_heads * head_dim;
+  let nkv = kv_heads * head_dim;
+  let mut got_q = Tensor<f32>([nq]);
+  let mut want_q = Tensor<f64>([nq]);
+  let mut got_k = Tensor<f32>([nkv]);
+  let mut want_k = Tensor<f64>([nkv]);
+  let mut got_v = Tensor<f32>([nkv]);
+  let mut want_v = Tensor<f64>([nkv]);
+  for r in 0..rows {
+    let want = dot(&hw, &hs, r, &hx, cols) + f64::from(hb[r] as f32);
+    let h = r / head_dim;
+    let d = r % head_dim;
+    if h < q_heads {
+      got_q[r] = hq[h][d];
+      want_q[r] = want;
+    } else if h < q_heads + kv_heads {
+      got_k[r - nq] = hk[h - q_heads][d];
+      want_k[r - nq] = want;
+    } else {
+      got_v[r - nq - nkv] = hv[h - q_heads - kv_heads][d];
+      want_v[r - nq - nkv] = want;
+    }
+  }
+  report("nn_qkv_q4 q", &got_q, &want_q, nq);
+  report("nn_qkv_q4 k", &got_k, &want_k, nkv);
+  report("nn_qkv_q4 v", &got_v, &want_v, nkv);
+  return;
+}
+
+fn check_swiglu(rows : i32, cols : i32) -> void {
+  let w = random_codes(2 * rows, cols, 41u32);
+  let s = random_scales(2 * rows, cols, 42u32);
+  let x = random_f32(cols, 43u32, 1.0);
+  let mut out = transfer(Tensor<f32>([rows]), Memory::HBM);
+  nn_swiglu_q4(&mut out, &w, &s, &x, rows, cols);
+  let hw = transfer(&w, Memory::CPU_DRAM);
+  let hs = transfer(&s, Memory::CPU_DRAM);
+  let hx = transfer(&x, Memory::CPU_DRAM);
+  let ho = transfer(&out, Memory::CPU_DRAM);
+  let mut want = Tensor<f64>([rows]);
+  for r in 0..rows {
+    let g = dot(&hw, &hs, r, &hx, cols);
+    let u = dot(&hw, &hs, rows + r, &hx, cols);
+    want[r] = g / (1.0 + f64::exp(0.0 - g)) * u;
+  }
+  report("nn_swiglu_q4 200 x 4864", &ho, &want, rows);
+  return;
+}
+
+fn check_moe(experts : i32, k : i32, inter : i32, hidden : i32) -> void {
+  let gate_up = random_codes(experts * 2 * inter, hidden, 71u32);
+  let gate_up_s = random_scales(experts * 2 * inter, hidden, 72u32);
+  let down = random_codes(experts * hidden, inter, 73u32);
+  let down_s = random_scales(experts * hidden, inter, 74u32);
+  let mut hid = Tensor<i32>([k]);
+  let mut hwt = Tensor<f32>([k]);
+  for e in 0..k {
+    hid[e] = ((experts - 1 - e * 5) % experts + experts) % experts;
+    hwt[e] = 0.5 + random(75u32, e, 0.4);
+  }
+  let ids = transfer(hid, Memory::HBM);
+  let weights = transfer(hwt, Memory::HBM);
+  let x = random_f32(hidden, 76u32, 1.0);
+  let mut y = random_f32(hidden, 77u32, 1.0);
+  let mut act = transfer(Tensor<f32>([k, inter]), Memory::HBM);
+  nn_moe_swiglu_q4(&mut act, &gate_up, &gate_up_s, &ids, &x, k, inter, hidden, experts);
+  nn_moe_down_q4_add(&mut y, &down, &down_s, &ids, &weights, &act, k, hidden, inter, experts);
+  let hgu = transfer(&gate_up, Memory::CPU_DRAM);
+  let hgus = transfer(&gate_up_s, Memory::CPU_DRAM);
+  let hd = transfer(&down, Memory::CPU_DRAM);
+  let hds = transfer(&down_s, Memory::CPU_DRAM);
+  let hi = transfer(&ids, Memory::CPU_DRAM);
+  let hw = transfer(&weights, Memory::CPU_DRAM);
+  let hx = transfer(&x, Memory::CPU_DRAM);
+  let hact = transfer(&act, Memory::CPU_DRAM);
+  let hy = transfer(&y, Memory::CPU_DRAM);
+  let mut got_a = Tensor<f32>([k * inter]);
+  let mut want_a = Tensor<f64>([k * inter]);
+  for e in 0..k {
+    let base = hi[e] * 2 * inter;
+    for r in 0..inter {
+      let g = dot(&hgu, &hgus, base + r, &hx, hidden);
+      let u = dot(&hgu, &hgus, base + inter + r, &hx, hidden);
+      want_a[e * inter + r] = g / (1.0 + f64::exp(0.0 - g)) * u;
+      got_a[e * inter + r] = hact[e][r];
+    }
+  }
+  // The down projection takes the values of the kernel above, so that an error there does not
+  // show up here too.
+  let mut want_y = Tensor<f64>([hidden]);
+  for r in 0..hidden {
+    let mut t = f64::from(random(77u32, r, 1.0));
+    for e in 0..k {
+      let mut a : f64 = 0.0;
+      for c in 0..inter {
+        a = a + weight(&hd, &hds, hi[e] * hidden + r, c, inter) * f64::from(hact[e][c]);
+      }
+      t = t + f64::from(hw[e]) * a;
+    }
+    want_y[r] = t;
+  }
+  if experts == 32 {
+    report("nn_moe_swiglu_q4 8 of 32 experts, 96 x 512", &got_a, &want_a, k * inter);
+    report("nn_moe_down_q4_add 8 of 32 experts, 512 x 96", &hy, &want_y, hidden);
+  } else {
+    report("nn_moe_swiglu_q4 4 of 8 experts, 1056 x 2080", &got_a, &want_a, k * inter);
+    report("nn_moe_down_q4_add 4 of 8 experts, 2080 x 1056", &hy, &want_y, hidden);
+  }
+  return;
+}
+
+fn main() -> i32 {
+  check_matvec(296, 896);
+  check_matvec(64, 4864);
+  check_heads_add(200, 32, 128);
+  check_qkv(14, 2, 64, 2560);
+  check_swiglu(200, 4864);
+  check_moe(32, 8, 96, 512);
+  check_moe(8, 4, 1056, 2080);
+  return 0;
+}

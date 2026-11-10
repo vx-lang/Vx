@@ -6,9 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 // Kernels for one token of a transformer decoder, such as Llama or Qwen, on `Topology::Device`.
-// Each function is one kernel launch. Weights are bf16, or fp8 for the functions whose name has
-// `_fp8`. Every other value is f32, and each kernel adds in f32. Put all tensors in one memory
-// that the device can read, such as `Memory::HBM`.
+// Each function is one kernel launch. Weights are bf16, fp8 for the functions whose name has
+// `_fp8`, or Q4_0 for those whose name has `_q4`. Every other value is f32, and each kernel adds
+// in f32. Put all tensors in one memory that the device can read, such as `Memory::HBM`.
 //
 // - A matrix of `rows` x `cols` is a rank-1 tensor, with row r at r * cols. `cols` must be a
 //   multiple of 8, because each lane reads 8 values at a time.
@@ -937,6 +937,528 @@ fn nn_swiglu_fp8<M : Memory>(out : &mut Tensor<f32, [?], Memory::M>, w : &Tensor
       out[rb * 4 + 3] = g3 / (1.0 + (0.0 - g3).fast_exp()) * u3;
     }
   }
+  return;
+}
+
+// Q4_0 weights, as in llama.cpp. A weight is (code - 8) * scale, where the code is 0 to 15. A
+// matrix of rows x cols has cols / 8 u32 words for each row: bits 4t to 4t + 3 of word i of a row
+// hold the code of weight 8i + t. `scales` has an f16 for each 32 weights of a row, cols / 32 for
+// each row. `cols` must be a multiple of 32. `rows` must be a multiple of 8 for a product, and of
+// 4 for a SwiGLU input and for `nn_moe_down_q4_add`.
+//
+// Each block of the GPU has 64 lanes and does 8 rows: 8 rows of a product, or 4 rows of gate and
+// the 4 rows of up that pair with them. So one load of x serves 8 rows. A lane takes 32 weights of
+// a row at a time, which have one scale.
+//
+// `nn_moe_down_q4_add` adds k experts for each row, so its block has 128 lanes and does 4 rows, one
+// word of each row at a time. It takes code t of a word with a mask and no shift, which gives the
+// code times 16^t, and divides x by 16^t to match. The 8 of each code comes off once for each
+// word, as 8 times the sum of its 8 values of x.
+
+/// y[r] = (row r of the Q4_0 matrix w) . x, for r below `rows`.
+fn nn_matvec_q4<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
+  nn_check_q4(w.len(), scales.len(), x.len(), rows, cols);
+  assert(rows % 8 == 0 && y.len() >= rows, "nn q4: rows must be a multiple of 8, and the output needs rows values");
+  let words = cols / 8;
+  let groups = cols / 32;
+  spawn on(Topology::Device) {
+    for rb in 0..rows / 8 across blocks {
+      let mut part = unsafe { Tensor<f32, [8, 64], Memory::SMEM>::uninit() };
+      for l in 0..64 across lanes {
+        let mut acc = unsafe { Tensor<f32, [8]>::uninit() };
+        for j in 0..8 {
+          acc[j] = 0.0;
+        }
+        let mut i = l * 4;
+        while i < words {
+          let c = i * 8;
+          let mut xs = unsafe { Tensor<f32, [32]>::uninit() };
+          for t in 0..32 {
+            xs[t] = x[c + t];
+          }
+          for j in 0..8 {
+            let row = rb * 8 + j;
+            let at = row * words + i;
+            let w0 = w[at + 0];
+            let w1 = w[at + 1];
+            let w2 = w[at + 2];
+            let w3 = w[at + 3];
+            let dot = ((((w0 >> 0u32) & 15u32) as f32) - 8.0) * xs[0] + ((((w0 >> 4u32) & 15u32) as f32) - 8.0) * xs[1] + ((((w0 >> 8u32) & 15u32) as f32) - 8.0) * xs[2] + ((((w0 >> 12u32) & 15u32) as f32) - 8.0) * xs[3] + ((((w0 >> 16u32) & 15u32) as f32) - 8.0) * xs[4] + ((((w0 >> 20u32) & 15u32) as f32) - 8.0) * xs[5] + ((((w0 >> 24u32) & 15u32) as f32) - 8.0) * xs[6] + ((((w0 >> 28u32) & 15u32) as f32) - 8.0) * xs[7] + ((((w1 >> 0u32) & 15u32) as f32) - 8.0) * xs[8] + ((((w1 >> 4u32) & 15u32) as f32) - 8.0) * xs[9] + ((((w1 >> 8u32) & 15u32) as f32) - 8.0) * xs[10] + ((((w1 >> 12u32) & 15u32) as f32) - 8.0) * xs[11] + ((((w1 >> 16u32) & 15u32) as f32) - 8.0) * xs[12] + ((((w1 >> 20u32) & 15u32) as f32) - 8.0) * xs[13] + ((((w1 >> 24u32) & 15u32) as f32) - 8.0) * xs[14] + ((((w1 >> 28u32) & 15u32) as f32) - 8.0) * xs[15] + ((((w2 >> 0u32) & 15u32) as f32) - 8.0) * xs[16] + ((((w2 >> 4u32) & 15u32) as f32) - 8.0) * xs[17] + ((((w2 >> 8u32) & 15u32) as f32) - 8.0) * xs[18] + ((((w2 >> 12u32) & 15u32) as f32) - 8.0) * xs[19] + ((((w2 >> 16u32) & 15u32) as f32) - 8.0) * xs[20] + ((((w2 >> 20u32) & 15u32) as f32) - 8.0) * xs[21] + ((((w2 >> 24u32) & 15u32) as f32) - 8.0) * xs[22] + ((((w2 >> 28u32) & 15u32) as f32) - 8.0) * xs[23] + ((((w3 >> 0u32) & 15u32) as f32) - 8.0) * xs[24] + ((((w3 >> 4u32) & 15u32) as f32) - 8.0) * xs[25] + ((((w3 >> 8u32) & 15u32) as f32) - 8.0) * xs[26] + ((((w3 >> 12u32) & 15u32) as f32) - 8.0) * xs[27] + ((((w3 >> 16u32) & 15u32) as f32) - 8.0) * xs[28] + ((((w3 >> 20u32) & 15u32) as f32) - 8.0) * xs[29] + ((((w3 >> 24u32) & 15u32) as f32) - 8.0) * xs[30] + ((((w3 >> 28u32) & 15u32) as f32) - 8.0) * xs[31];
+            acc[j] = acc[j] + dot * (scales[row * groups + i / 4] as f32);
+          }
+          i = i + 256;
+        }
+        part[0][l] = acc[0];
+        part[1][l] = acc[1];
+        part[2][l] = acc[2];
+        part[3][l] = acc[3];
+        part[4][l] = acc[4];
+        part[5][l] = acc[5];
+        part[6][l] = acc[6];
+        part[7][l] = acc[7];
+      }
+      let s0 = lanes::sum(&part[0], 64);
+      let s1 = lanes::sum(&part[1], 64);
+      let s2 = lanes::sum(&part[2], 64);
+      let s3 = lanes::sum(&part[3], 64);
+      let s4 = lanes::sum(&part[4], 64);
+      let s5 = lanes::sum(&part[5], 64);
+      let s6 = lanes::sum(&part[6], 64);
+      let s7 = lanes::sum(&part[7], 64);
+      y[rb * 8] = s0;
+      y[rb * 8 + 1] = s1;
+      y[rb * 8 + 2] = s2;
+      y[rb * 8 + 3] = s3;
+      y[rb * 8 + 4] = s4;
+      y[rb * 8 + 5] = s5;
+      y[rb * 8 + 6] = s6;
+      y[rb * 8 + 7] = s7;
+    }
+  }
+  return;
+}
+
+/// y[r] = y[r] + (row r of the Q4_0 matrix w) . x: a matrix-vector product and a residual add.
+fn nn_matvec_q4_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
+  nn_check_q4(w.len(), scales.len(), x.len(), rows, cols);
+  assert(rows % 8 == 0 && y.len() >= rows, "nn q4: rows must be a multiple of 8, and the output needs rows values");
+  let words = cols / 8;
+  let groups = cols / 32;
+  spawn on(Topology::Device) {
+    for rb in 0..rows / 8 across blocks {
+      let mut part = unsafe { Tensor<f32, [8, 64], Memory::SMEM>::uninit() };
+      for l in 0..64 across lanes {
+        let mut acc = unsafe { Tensor<f32, [8]>::uninit() };
+        for j in 0..8 {
+          acc[j] = 0.0;
+        }
+        let mut i = l * 4;
+        while i < words {
+          let c = i * 8;
+          let mut xs = unsafe { Tensor<f32, [32]>::uninit() };
+          for t in 0..32 {
+            xs[t] = x[c + t];
+          }
+          for j in 0..8 {
+            let row = rb * 8 + j;
+            let at = row * words + i;
+            let w0 = w[at + 0];
+            let w1 = w[at + 1];
+            let w2 = w[at + 2];
+            let w3 = w[at + 3];
+            let dot = ((((w0 >> 0u32) & 15u32) as f32) - 8.0) * xs[0] + ((((w0 >> 4u32) & 15u32) as f32) - 8.0) * xs[1] + ((((w0 >> 8u32) & 15u32) as f32) - 8.0) * xs[2] + ((((w0 >> 12u32) & 15u32) as f32) - 8.0) * xs[3] + ((((w0 >> 16u32) & 15u32) as f32) - 8.0) * xs[4] + ((((w0 >> 20u32) & 15u32) as f32) - 8.0) * xs[5] + ((((w0 >> 24u32) & 15u32) as f32) - 8.0) * xs[6] + ((((w0 >> 28u32) & 15u32) as f32) - 8.0) * xs[7] + ((((w1 >> 0u32) & 15u32) as f32) - 8.0) * xs[8] + ((((w1 >> 4u32) & 15u32) as f32) - 8.0) * xs[9] + ((((w1 >> 8u32) & 15u32) as f32) - 8.0) * xs[10] + ((((w1 >> 12u32) & 15u32) as f32) - 8.0) * xs[11] + ((((w1 >> 16u32) & 15u32) as f32) - 8.0) * xs[12] + ((((w1 >> 20u32) & 15u32) as f32) - 8.0) * xs[13] + ((((w1 >> 24u32) & 15u32) as f32) - 8.0) * xs[14] + ((((w1 >> 28u32) & 15u32) as f32) - 8.0) * xs[15] + ((((w2 >> 0u32) & 15u32) as f32) - 8.0) * xs[16] + ((((w2 >> 4u32) & 15u32) as f32) - 8.0) * xs[17] + ((((w2 >> 8u32) & 15u32) as f32) - 8.0) * xs[18] + ((((w2 >> 12u32) & 15u32) as f32) - 8.0) * xs[19] + ((((w2 >> 16u32) & 15u32) as f32) - 8.0) * xs[20] + ((((w2 >> 20u32) & 15u32) as f32) - 8.0) * xs[21] + ((((w2 >> 24u32) & 15u32) as f32) - 8.0) * xs[22] + ((((w2 >> 28u32) & 15u32) as f32) - 8.0) * xs[23] + ((((w3 >> 0u32) & 15u32) as f32) - 8.0) * xs[24] + ((((w3 >> 4u32) & 15u32) as f32) - 8.0) * xs[25] + ((((w3 >> 8u32) & 15u32) as f32) - 8.0) * xs[26] + ((((w3 >> 12u32) & 15u32) as f32) - 8.0) * xs[27] + ((((w3 >> 16u32) & 15u32) as f32) - 8.0) * xs[28] + ((((w3 >> 20u32) & 15u32) as f32) - 8.0) * xs[29] + ((((w3 >> 24u32) & 15u32) as f32) - 8.0) * xs[30] + ((((w3 >> 28u32) & 15u32) as f32) - 8.0) * xs[31];
+            acc[j] = acc[j] + dot * (scales[row * groups + i / 4] as f32);
+          }
+          i = i + 256;
+        }
+        part[0][l] = acc[0];
+        part[1][l] = acc[1];
+        part[2][l] = acc[2];
+        part[3][l] = acc[3];
+        part[4][l] = acc[4];
+        part[5][l] = acc[5];
+        part[6][l] = acc[6];
+        part[7][l] = acc[7];
+      }
+      let s0 = lanes::sum(&part[0], 64);
+      let s1 = lanes::sum(&part[1], 64);
+      let s2 = lanes::sum(&part[2], 64);
+      let s3 = lanes::sum(&part[3], 64);
+      let s4 = lanes::sum(&part[4], 64);
+      let s5 = lanes::sum(&part[5], 64);
+      let s6 = lanes::sum(&part[6], 64);
+      let s7 = lanes::sum(&part[7], 64);
+      y[rb * 8] = y[rb * 8] + s0;
+      y[rb * 8 + 1] = y[rb * 8 + 1] + s1;
+      y[rb * 8 + 2] = y[rb * 8 + 2] + s2;
+      y[rb * 8 + 3] = y[rb * 8 + 3] + s3;
+      y[rb * 8 + 4] = y[rb * 8 + 4] + s4;
+      y[rb * 8 + 5] = y[rb * 8 + 5] + s5;
+      y[rb * 8 + 6] = y[rb * 8 + 6] + s6;
+      y[rb * 8 + 7] = y[rb * 8 + 7] + s7;
+    }
+  }
+  return;
+}
+
+/// y[r] = y[r] + (row r of the Q4_0 matrix w) . x, where x is a tensor of heads, as in
+/// `nn_matvec_heads_add`. This is the output projection of attention, with its residual add.
+fn nn_matvec_q4_heads_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, x : &Tensor<f32, [?, ?], Memory::M>, rows : i32, heads : i32, head_dim : i32) -> void {
+  let cols = heads * head_dim;
+  nn_check_heads(x.extent(0), x.extent(1), heads, head_dim);
+  nn_check_q4(w.len(), scales.len(), cols, rows, cols);
+  assert(rows % 8 == 0 && y.len() >= rows, "nn q4: rows must be a multiple of 8, and the output needs rows values");
+  let words = cols / 8;
+  let groups = cols / 32;
+  spawn on(Topology::Device) {
+    for rb in 0..rows / 8 across blocks {
+      let mut part = unsafe { Tensor<f32, [8, 64], Memory::SMEM>::uninit() };
+      for l in 0..64 across lanes {
+        let mut acc = unsafe { Tensor<f32, [8]>::uninit() };
+        for j in 0..8 {
+          acc[j] = 0.0;
+        }
+        let mut i = l * 4;
+        while i < words {
+          let c = i * 8;
+          let mut xs = unsafe { Tensor<f32, [32]>::uninit() };
+          // head_dim is a multiple of 8, so each run of 8 values is in one head.
+          let h0 = (c + 0) / head_dim;
+          let d0 = c + 0 - h0 * head_dim;
+          for t in 0..8 {
+            xs[0 + t] = x[h0][d0 + t];
+          }
+          let h1 = (c + 8) / head_dim;
+          let d1 = c + 8 - h1 * head_dim;
+          for t in 0..8 {
+            xs[8 + t] = x[h1][d1 + t];
+          }
+          let h2 = (c + 16) / head_dim;
+          let d2 = c + 16 - h2 * head_dim;
+          for t in 0..8 {
+            xs[16 + t] = x[h2][d2 + t];
+          }
+          let h3 = (c + 24) / head_dim;
+          let d3 = c + 24 - h3 * head_dim;
+          for t in 0..8 {
+            xs[24 + t] = x[h3][d3 + t];
+          }
+          for j in 0..8 {
+            let row = rb * 8 + j;
+            let at = row * words + i;
+            let w0 = w[at + 0];
+            let w1 = w[at + 1];
+            let w2 = w[at + 2];
+            let w3 = w[at + 3];
+            let dot = ((((w0 >> 0u32) & 15u32) as f32) - 8.0) * xs[0] + ((((w0 >> 4u32) & 15u32) as f32) - 8.0) * xs[1] + ((((w0 >> 8u32) & 15u32) as f32) - 8.0) * xs[2] + ((((w0 >> 12u32) & 15u32) as f32) - 8.0) * xs[3] + ((((w0 >> 16u32) & 15u32) as f32) - 8.0) * xs[4] + ((((w0 >> 20u32) & 15u32) as f32) - 8.0) * xs[5] + ((((w0 >> 24u32) & 15u32) as f32) - 8.0) * xs[6] + ((((w0 >> 28u32) & 15u32) as f32) - 8.0) * xs[7] + ((((w1 >> 0u32) & 15u32) as f32) - 8.0) * xs[8] + ((((w1 >> 4u32) & 15u32) as f32) - 8.0) * xs[9] + ((((w1 >> 8u32) & 15u32) as f32) - 8.0) * xs[10] + ((((w1 >> 12u32) & 15u32) as f32) - 8.0) * xs[11] + ((((w1 >> 16u32) & 15u32) as f32) - 8.0) * xs[12] + ((((w1 >> 20u32) & 15u32) as f32) - 8.0) * xs[13] + ((((w1 >> 24u32) & 15u32) as f32) - 8.0) * xs[14] + ((((w1 >> 28u32) & 15u32) as f32) - 8.0) * xs[15] + ((((w2 >> 0u32) & 15u32) as f32) - 8.0) * xs[16] + ((((w2 >> 4u32) & 15u32) as f32) - 8.0) * xs[17] + ((((w2 >> 8u32) & 15u32) as f32) - 8.0) * xs[18] + ((((w2 >> 12u32) & 15u32) as f32) - 8.0) * xs[19] + ((((w2 >> 16u32) & 15u32) as f32) - 8.0) * xs[20] + ((((w2 >> 20u32) & 15u32) as f32) - 8.0) * xs[21] + ((((w2 >> 24u32) & 15u32) as f32) - 8.0) * xs[22] + ((((w2 >> 28u32) & 15u32) as f32) - 8.0) * xs[23] + ((((w3 >> 0u32) & 15u32) as f32) - 8.0) * xs[24] + ((((w3 >> 4u32) & 15u32) as f32) - 8.0) * xs[25] + ((((w3 >> 8u32) & 15u32) as f32) - 8.0) * xs[26] + ((((w3 >> 12u32) & 15u32) as f32) - 8.0) * xs[27] + ((((w3 >> 16u32) & 15u32) as f32) - 8.0) * xs[28] + ((((w3 >> 20u32) & 15u32) as f32) - 8.0) * xs[29] + ((((w3 >> 24u32) & 15u32) as f32) - 8.0) * xs[30] + ((((w3 >> 28u32) & 15u32) as f32) - 8.0) * xs[31];
+            acc[j] = acc[j] + dot * (scales[row * groups + i / 4] as f32);
+          }
+          i = i + 256;
+        }
+        part[0][l] = acc[0];
+        part[1][l] = acc[1];
+        part[2][l] = acc[2];
+        part[3][l] = acc[3];
+        part[4][l] = acc[4];
+        part[5][l] = acc[5];
+        part[6][l] = acc[6];
+        part[7][l] = acc[7];
+      }
+      let s0 = lanes::sum(&part[0], 64);
+      let s1 = lanes::sum(&part[1], 64);
+      let s2 = lanes::sum(&part[2], 64);
+      let s3 = lanes::sum(&part[3], 64);
+      let s4 = lanes::sum(&part[4], 64);
+      let s5 = lanes::sum(&part[5], 64);
+      let s6 = lanes::sum(&part[6], 64);
+      let s7 = lanes::sum(&part[7], 64);
+      y[rb * 8] = y[rb * 8] + s0;
+      y[rb * 8 + 1] = y[rb * 8 + 1] + s1;
+      y[rb * 8 + 2] = y[rb * 8 + 2] + s2;
+      y[rb * 8 + 3] = y[rb * 8 + 3] + s3;
+      y[rb * 8 + 4] = y[rb * 8 + 4] + s4;
+      y[rb * 8 + 5] = y[rb * 8 + 5] + s5;
+      y[rb * 8 + 6] = y[rb * 8 + 6] + s6;
+      y[rb * 8 + 7] = y[rb * 8 + 7] + s7;
+    }
+  }
+  return;
+}
+
+/// The Q, K and V projections of one token with Q4_0 weights, and their bias in bf16. The rows
+/// are in the order of `nn_qkv`. A model with no bias, such as Qwen3, passes a bias of zeros.
+fn nn_qkv_q4<M : Memory>(q : &mut Tensor<f32, [?, ?], Memory::M>, k : &mut Tensor<f32, [?, ?], Memory::M>, v : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, b : &Tensor<bf16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, q_heads : i32, kv_heads : i32, head_dim : i32, cols : i32) -> void {
+  let heads = q_heads + 2 * kv_heads;
+  nn_check_heads(q.extent(0), q.extent(1), q_heads, head_dim);
+  nn_check_heads(k.extent(0), k.extent(1), kv_heads, head_dim);
+  nn_check_heads(v.extent(0), v.extent(1), kv_heads, head_dim);
+  nn_check_q4(w.len(), scales.len(), x.len(), heads * head_dim, cols);
+  assert(b.len() >= heads * head_dim, "nn_qkv_q4: the bias has fewer values than rows");
+  let words = cols / 8;
+  let groups = cols / 32;
+  spawn on(Topology::Device) {
+    for h in 0..heads across blocks {
+      for d8 in 0..head_dim / 8 across blocks {
+        let mut part = unsafe { Tensor<f32, [8, 64], Memory::SMEM>::uninit() };
+        let first = h * head_dim + d8 * 8;
+        for l in 0..64 across lanes {
+          let mut acc = unsafe { Tensor<f32, [8]>::uninit() };
+          for j in 0..8 {
+            acc[j] = 0.0;
+          }
+          let mut i = l * 4;
+          while i < words {
+            let c = i * 8;
+            let mut xs = unsafe { Tensor<f32, [32]>::uninit() };
+            for t in 0..32 {
+              xs[t] = x[c + t];
+            }
+            for j in 0..8 {
+              let row = first + j;
+              let at = row * words + i;
+              let w0 = w[at + 0];
+              let w1 = w[at + 1];
+              let w2 = w[at + 2];
+              let w3 = w[at + 3];
+              let dot = ((((w0 >> 0u32) & 15u32) as f32) - 8.0) * xs[0] + ((((w0 >> 4u32) & 15u32) as f32) - 8.0) * xs[1] + ((((w0 >> 8u32) & 15u32) as f32) - 8.0) * xs[2] + ((((w0 >> 12u32) & 15u32) as f32) - 8.0) * xs[3] + ((((w0 >> 16u32) & 15u32) as f32) - 8.0) * xs[4] + ((((w0 >> 20u32) & 15u32) as f32) - 8.0) * xs[5] + ((((w0 >> 24u32) & 15u32) as f32) - 8.0) * xs[6] + ((((w0 >> 28u32) & 15u32) as f32) - 8.0) * xs[7] + ((((w1 >> 0u32) & 15u32) as f32) - 8.0) * xs[8] + ((((w1 >> 4u32) & 15u32) as f32) - 8.0) * xs[9] + ((((w1 >> 8u32) & 15u32) as f32) - 8.0) * xs[10] + ((((w1 >> 12u32) & 15u32) as f32) - 8.0) * xs[11] + ((((w1 >> 16u32) & 15u32) as f32) - 8.0) * xs[12] + ((((w1 >> 20u32) & 15u32) as f32) - 8.0) * xs[13] + ((((w1 >> 24u32) & 15u32) as f32) - 8.0) * xs[14] + ((((w1 >> 28u32) & 15u32) as f32) - 8.0) * xs[15] + ((((w2 >> 0u32) & 15u32) as f32) - 8.0) * xs[16] + ((((w2 >> 4u32) & 15u32) as f32) - 8.0) * xs[17] + ((((w2 >> 8u32) & 15u32) as f32) - 8.0) * xs[18] + ((((w2 >> 12u32) & 15u32) as f32) - 8.0) * xs[19] + ((((w2 >> 16u32) & 15u32) as f32) - 8.0) * xs[20] + ((((w2 >> 20u32) & 15u32) as f32) - 8.0) * xs[21] + ((((w2 >> 24u32) & 15u32) as f32) - 8.0) * xs[22] + ((((w2 >> 28u32) & 15u32) as f32) - 8.0) * xs[23] + ((((w3 >> 0u32) & 15u32) as f32) - 8.0) * xs[24] + ((((w3 >> 4u32) & 15u32) as f32) - 8.0) * xs[25] + ((((w3 >> 8u32) & 15u32) as f32) - 8.0) * xs[26] + ((((w3 >> 12u32) & 15u32) as f32) - 8.0) * xs[27] + ((((w3 >> 16u32) & 15u32) as f32) - 8.0) * xs[28] + ((((w3 >> 20u32) & 15u32) as f32) - 8.0) * xs[29] + ((((w3 >> 24u32) & 15u32) as f32) - 8.0) * xs[30] + ((((w3 >> 28u32) & 15u32) as f32) - 8.0) * xs[31];
+              acc[j] = acc[j] + dot * (scales[row * groups + i / 4] as f32);
+            }
+            i = i + 256;
+          }
+          part[0][l] = acc[0];
+          part[1][l] = acc[1];
+          part[2][l] = acc[2];
+          part[3][l] = acc[3];
+          part[4][l] = acc[4];
+          part[5][l] = acc[5];
+          part[6][l] = acc[6];
+          part[7][l] = acc[7];
+        }
+        let s0 = lanes::sum(&part[0], 64);
+        let s1 = lanes::sum(&part[1], 64);
+        let s2 = lanes::sum(&part[2], 64);
+        let s3 = lanes::sum(&part[3], 64);
+        let s4 = lanes::sum(&part[4], 64);
+        let s5 = lanes::sum(&part[5], 64);
+        let s6 = lanes::sum(&part[6], 64);
+        let s7 = lanes::sum(&part[7], 64);
+        let r0 = s0 + (b[first] as f32);
+        let r1 = s1 + (b[first + 1] as f32);
+        let r2 = s2 + (b[first + 2] as f32);
+        let r3 = s3 + (b[first + 3] as f32);
+        let r4 = s4 + (b[first + 4] as f32);
+        let r5 = s5 + (b[first + 5] as f32);
+        let r6 = s6 + (b[first + 6] as f32);
+        let r7 = s7 + (b[first + 7] as f32);
+        if h < q_heads {
+          q[h][d8 * 8] = r0;
+          q[h][d8 * 8 + 1] = r1;
+          q[h][d8 * 8 + 2] = r2;
+          q[h][d8 * 8 + 3] = r3;
+          q[h][d8 * 8 + 4] = r4;
+          q[h][d8 * 8 + 5] = r5;
+          q[h][d8 * 8 + 6] = r6;
+          q[h][d8 * 8 + 7] = r7;
+        } else if h < q_heads + kv_heads {
+          k[h - q_heads][d8 * 8] = r0;
+          k[h - q_heads][d8 * 8 + 1] = r1;
+          k[h - q_heads][d8 * 8 + 2] = r2;
+          k[h - q_heads][d8 * 8 + 3] = r3;
+          k[h - q_heads][d8 * 8 + 4] = r4;
+          k[h - q_heads][d8 * 8 + 5] = r5;
+          k[h - q_heads][d8 * 8 + 6] = r6;
+          k[h - q_heads][d8 * 8 + 7] = r7;
+        } else {
+          v[h - q_heads - kv_heads][d8 * 8] = r0;
+          v[h - q_heads - kv_heads][d8 * 8 + 1] = r1;
+          v[h - q_heads - kv_heads][d8 * 8 + 2] = r2;
+          v[h - q_heads - kv_heads][d8 * 8 + 3] = r3;
+          v[h - q_heads - kv_heads][d8 * 8 + 4] = r4;
+          v[h - q_heads - kv_heads][d8 * 8 + 5] = r5;
+          v[h - q_heads - kv_heads][d8 * 8 + 6] = r6;
+          v[h - q_heads - kv_heads][d8 * 8 + 7] = r7;
+        }
+      }
+    }
+  }
+  return;
+}
+
+/// The SwiGLU input of the MLP of one token with Q4_0 weights, as `nn_swiglu`: `w` has the
+/// `rows` rows of the gate projection, and then the `rows` rows of the up projection.
+fn nn_swiglu_q4<M : Memory>(out : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
+  nn_check_q4(w.len(), scales.len(), x.len(), 2 * rows, cols);
+  assert(out.len() >= rows, "nn_swiglu_q4: the output has fewer values than rows");
+  let words = cols / 8;
+  let groups = cols / 32;
+  spawn on(Topology::Device) {
+    for rb in 0..rows / 4 across blocks {
+      let mut part = unsafe { Tensor<f32, [8, 64], Memory::SMEM>::uninit() };
+      for l in 0..64 across lanes {
+        // acc[0..4] are the gate rows, and acc[4..8] the up rows that pair with them.
+        let mut acc = unsafe { Tensor<f32, [8]>::uninit() };
+        for j in 0..8 {
+          acc[j] = 0.0;
+        }
+        let mut i = l * 4;
+        while i < words {
+          let c = i * 8;
+          let mut xs = unsafe { Tensor<f32, [32]>::uninit() };
+          for t in 0..32 {
+            xs[t] = x[c + t];
+          }
+          for j in 0..8 {
+            let row = rb * 4 + j % 4 + (j / 4) * rows;
+            let at = row * words + i;
+            let w0 = w[at + 0];
+            let w1 = w[at + 1];
+            let w2 = w[at + 2];
+            let w3 = w[at + 3];
+            let dot = ((((w0 >> 0u32) & 15u32) as f32) - 8.0) * xs[0] + ((((w0 >> 4u32) & 15u32) as f32) - 8.0) * xs[1] + ((((w0 >> 8u32) & 15u32) as f32) - 8.0) * xs[2] + ((((w0 >> 12u32) & 15u32) as f32) - 8.0) * xs[3] + ((((w0 >> 16u32) & 15u32) as f32) - 8.0) * xs[4] + ((((w0 >> 20u32) & 15u32) as f32) - 8.0) * xs[5] + ((((w0 >> 24u32) & 15u32) as f32) - 8.0) * xs[6] + ((((w0 >> 28u32) & 15u32) as f32) - 8.0) * xs[7] + ((((w1 >> 0u32) & 15u32) as f32) - 8.0) * xs[8] + ((((w1 >> 4u32) & 15u32) as f32) - 8.0) * xs[9] + ((((w1 >> 8u32) & 15u32) as f32) - 8.0) * xs[10] + ((((w1 >> 12u32) & 15u32) as f32) - 8.0) * xs[11] + ((((w1 >> 16u32) & 15u32) as f32) - 8.0) * xs[12] + ((((w1 >> 20u32) & 15u32) as f32) - 8.0) * xs[13] + ((((w1 >> 24u32) & 15u32) as f32) - 8.0) * xs[14] + ((((w1 >> 28u32) & 15u32) as f32) - 8.0) * xs[15] + ((((w2 >> 0u32) & 15u32) as f32) - 8.0) * xs[16] + ((((w2 >> 4u32) & 15u32) as f32) - 8.0) * xs[17] + ((((w2 >> 8u32) & 15u32) as f32) - 8.0) * xs[18] + ((((w2 >> 12u32) & 15u32) as f32) - 8.0) * xs[19] + ((((w2 >> 16u32) & 15u32) as f32) - 8.0) * xs[20] + ((((w2 >> 20u32) & 15u32) as f32) - 8.0) * xs[21] + ((((w2 >> 24u32) & 15u32) as f32) - 8.0) * xs[22] + ((((w2 >> 28u32) & 15u32) as f32) - 8.0) * xs[23] + ((((w3 >> 0u32) & 15u32) as f32) - 8.0) * xs[24] + ((((w3 >> 4u32) & 15u32) as f32) - 8.0) * xs[25] + ((((w3 >> 8u32) & 15u32) as f32) - 8.0) * xs[26] + ((((w3 >> 12u32) & 15u32) as f32) - 8.0) * xs[27] + ((((w3 >> 16u32) & 15u32) as f32) - 8.0) * xs[28] + ((((w3 >> 20u32) & 15u32) as f32) - 8.0) * xs[29] + ((((w3 >> 24u32) & 15u32) as f32) - 8.0) * xs[30] + ((((w3 >> 28u32) & 15u32) as f32) - 8.0) * xs[31];
+            acc[j] = acc[j] + dot * (scales[row * groups + i / 4] as f32);
+          }
+          i = i + 256;
+        }
+        part[0][l] = acc[0];
+        part[1][l] = acc[1];
+        part[2][l] = acc[2];
+        part[3][l] = acc[3];
+        part[4][l] = acc[4];
+        part[5][l] = acc[5];
+        part[6][l] = acc[6];
+        part[7][l] = acc[7];
+      }
+      let s0 = lanes::sum(&part[0], 64);
+      let s1 = lanes::sum(&part[1], 64);
+      let s2 = lanes::sum(&part[2], 64);
+      let s3 = lanes::sum(&part[3], 64);
+      let s4 = lanes::sum(&part[4], 64);
+      let s5 = lanes::sum(&part[5], 64);
+      let s6 = lanes::sum(&part[6], 64);
+      let s7 = lanes::sum(&part[7], 64);
+      out[rb * 4] = s0 / (1.0 + (0.0 - s0).fast_exp()) * s4;
+      out[rb * 4 + 1] = s1 / (1.0 + (0.0 - s1).fast_exp()) * s5;
+      out[rb * 4 + 2] = s2 / (1.0 + (0.0 - s2).fast_exp()) * s6;
+      out[rb * 4 + 3] = s3 / (1.0 + (0.0 - s3).fast_exp()) * s7;
+    }
+  }
+  return;
+}
+
+/// The SwiGLU input of the k experts that a token uses, with Q4_0 weights, as `nn_moe_swiglu`.
+fn nn_moe_swiglu_q4<M : Memory>(out : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, ids : &Tensor<i32, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, k : i32, rows : i32, cols : i32, experts : i32) -> void {
+  assert(k > 0 && ids.len() >= k && out.extent(0) >= k && out.extent(1) >= rows, "nn_moe_swiglu_q4: `ids` needs k values, and `out` a row of rows values for each");
+  nn_check_q4(w.len(), scales.len(), x.len(), experts * 2 * rows, cols);
+  let words = cols / 8;
+  let groups = cols / 32;
+  spawn on(Topology::Device) {
+    for e in 0..k across blocks {
+      for rb in 0..rows / 4 across blocks {
+        let mut part = unsafe { Tensor<f32, [8, 64], Memory::SMEM>::uninit() };
+        for l in 0..64 across lanes {
+          // acc[0..4] are the gate rows, and acc[4..8] the up rows that pair with them.
+          let mut acc = unsafe { Tensor<f32, [8]>::uninit() };
+          for j in 0..8 {
+            acc[j] = 0.0;
+          }
+          let id = ids[e];
+          assert(id >= 0 && id < experts, "nn_moe_swiglu_q4: an id is not the number of an expert");
+          let first = id * 2 * rows + rb * 4;
+          let mut i = l * 4;
+          while i < words {
+            let c = i * 8;
+            let mut xs = unsafe { Tensor<f32, [32]>::uninit() };
+            for t in 0..32 {
+              xs[t] = x[c + t];
+            }
+            for j in 0..8 {
+              let row = first + j % 4 + (j / 4) * rows;
+              let at = row * words + i;
+              let w0 = w[at + 0];
+              let w1 = w[at + 1];
+              let w2 = w[at + 2];
+              let w3 = w[at + 3];
+              let dot = ((((w0 >> 0u32) & 15u32) as f32) - 8.0) * xs[0] + ((((w0 >> 4u32) & 15u32) as f32) - 8.0) * xs[1] + ((((w0 >> 8u32) & 15u32) as f32) - 8.0) * xs[2] + ((((w0 >> 12u32) & 15u32) as f32) - 8.0) * xs[3] + ((((w0 >> 16u32) & 15u32) as f32) - 8.0) * xs[4] + ((((w0 >> 20u32) & 15u32) as f32) - 8.0) * xs[5] + ((((w0 >> 24u32) & 15u32) as f32) - 8.0) * xs[6] + ((((w0 >> 28u32) & 15u32) as f32) - 8.0) * xs[7] + ((((w1 >> 0u32) & 15u32) as f32) - 8.0) * xs[8] + ((((w1 >> 4u32) & 15u32) as f32) - 8.0) * xs[9] + ((((w1 >> 8u32) & 15u32) as f32) - 8.0) * xs[10] + ((((w1 >> 12u32) & 15u32) as f32) - 8.0) * xs[11] + ((((w1 >> 16u32) & 15u32) as f32) - 8.0) * xs[12] + ((((w1 >> 20u32) & 15u32) as f32) - 8.0) * xs[13] + ((((w1 >> 24u32) & 15u32) as f32) - 8.0) * xs[14] + ((((w1 >> 28u32) & 15u32) as f32) - 8.0) * xs[15] + ((((w2 >> 0u32) & 15u32) as f32) - 8.0) * xs[16] + ((((w2 >> 4u32) & 15u32) as f32) - 8.0) * xs[17] + ((((w2 >> 8u32) & 15u32) as f32) - 8.0) * xs[18] + ((((w2 >> 12u32) & 15u32) as f32) - 8.0) * xs[19] + ((((w2 >> 16u32) & 15u32) as f32) - 8.0) * xs[20] + ((((w2 >> 20u32) & 15u32) as f32) - 8.0) * xs[21] + ((((w2 >> 24u32) & 15u32) as f32) - 8.0) * xs[22] + ((((w2 >> 28u32) & 15u32) as f32) - 8.0) * xs[23] + ((((w3 >> 0u32) & 15u32) as f32) - 8.0) * xs[24] + ((((w3 >> 4u32) & 15u32) as f32) - 8.0) * xs[25] + ((((w3 >> 8u32) & 15u32) as f32) - 8.0) * xs[26] + ((((w3 >> 12u32) & 15u32) as f32) - 8.0) * xs[27] + ((((w3 >> 16u32) & 15u32) as f32) - 8.0) * xs[28] + ((((w3 >> 20u32) & 15u32) as f32) - 8.0) * xs[29] + ((((w3 >> 24u32) & 15u32) as f32) - 8.0) * xs[30] + ((((w3 >> 28u32) & 15u32) as f32) - 8.0) * xs[31];
+              acc[j] = acc[j] + dot * (scales[row * groups + i / 4] as f32);
+            }
+            i = i + 256;
+          }
+          part[0][l] = acc[0];
+          part[1][l] = acc[1];
+          part[2][l] = acc[2];
+          part[3][l] = acc[3];
+          part[4][l] = acc[4];
+          part[5][l] = acc[5];
+          part[6][l] = acc[6];
+          part[7][l] = acc[7];
+        }
+        let s0 = lanes::sum(&part[0], 64);
+        let s1 = lanes::sum(&part[1], 64);
+        let s2 = lanes::sum(&part[2], 64);
+        let s3 = lanes::sum(&part[3], 64);
+        let s4 = lanes::sum(&part[4], 64);
+        let s5 = lanes::sum(&part[5], 64);
+        let s6 = lanes::sum(&part[6], 64);
+        let s7 = lanes::sum(&part[7], 64);
+        out[e][rb * 4] = s0 / (1.0 + (0.0 - s0).fast_exp()) * s4;
+        out[e][rb * 4 + 1] = s1 / (1.0 + (0.0 - s1).fast_exp()) * s5;
+        out[e][rb * 4 + 2] = s2 / (1.0 + (0.0 - s2).fast_exp()) * s6;
+        out[e][rb * 4 + 3] = s3 / (1.0 + (0.0 - s3).fast_exp()) * s7;
+      }
+    }
+  }
+  return;
+}
+
+/// The down projection of the k experts that a token uses, with Q4_0 weights, weighted by the
+/// router and with the residual add, as `nn_moe_down_add`.
+fn nn_moe_down_q4_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, ids : &Tensor<i32, [?], Memory::M>, weights : &Tensor<f32, [?], Memory::M>, h : &Tensor<f32, [?, ?], Memory::M>, k : i32, rows : i32, cols : i32, experts : i32) -> void {
+  assert(k > 0 && ids.len() >= k && weights.len() >= k && h.extent(0) >= k && h.extent(1) >= cols, "nn_moe_down_q4_add: `ids` and `weights` need k values, and `h` a row of cols values for each");
+  nn_check_q4(w.len(), scales.len(), cols, experts * rows, cols);
+  assert(y.len() >= rows, "nn q4: the output has fewer values than rows");
+  let words = cols / 8;
+  let groups = cols / 32;
+  spawn on(Topology::Device) {
+    for rb in 0..rows / 4 across blocks {
+      let mut part = unsafe { Tensor<f32, [4, 128], Memory::SMEM>::uninit() };
+      for l in 0..128 across lanes {
+        let mut acc = unsafe { Tensor<f32, [4]>::uninit() };
+        for j in 0..4 {
+          acc[j] = 0.0;
+        }
+        for e in 0..k {
+          let id = ids[e];
+          assert(id >= 0 && id < experts, "nn_moe_down_q4_add: an id is not the number of an expert");
+          let first = id * rows + rb * 4;
+          let we = weights[e];
+          let mut i = l;
+          while i < words {
+            let c = i * 8;
+            let mut xp = unsafe { Tensor<f32, [8]>::uninit() };
+            for t in 0..8 {
+              xp[t] = h[e][c + t];
+            }
+            let sum8 = 8.0 * (xp[0] + xp[1] + xp[2] + xp[3] + xp[4] + xp[5] + xp[6] + xp[7]);
+            xp[1] = xp[1] * 0.0625;
+            xp[2] = xp[2] * 0.00390625;
+            xp[3] = xp[3] * 0.000244140625;
+            xp[4] = xp[4] * 0.0000152587890625;
+            xp[5] = xp[5] * 0.00000095367431640625;
+            xp[6] = xp[6] * 0.000000059604644775390625;
+            xp[7] = xp[7] * 0.0000000037252902984619140625;
+            for j in 0..4 {
+              let row = first + j;
+              let code = w[row * words + i];
+              let dot = ((code & 15u32) as f32) * xp[0] + ((code & 240u32) as f32) * xp[1] + ((code & 3840u32) as f32) * xp[2] + ((code & 61440u32) as f32) * xp[3] + ((code & 983040u32) as f32) * xp[4] + ((code & 15728640u32) as f32) * xp[5] + ((code & 251658240u32) as f32) * xp[6] + ((code & 4026531840u32) as f32) * xp[7];
+              acc[j] = acc[j] + we * (dot - sum8) * (scales[row * groups + i / 4] as f32);
+            }
+            i = i + 128;
+          }
+        }
+        part[0][l] = acc[0];
+        part[1][l] = acc[1];
+        part[2][l] = acc[2];
+        part[3][l] = acc[3];
+      }
+      let s0 = lanes::sum(&part[0], 128);
+      let s1 = lanes::sum(&part[1], 128);
+      let s2 = lanes::sum(&part[2], 128);
+      let s3 = lanes::sum(&part[3], 128);
+      y[rb * 4] = y[rb * 4] + s0;
+      y[rb * 4 + 1] = y[rb * 4 + 1] + s1;
+      y[rb * 4 + 2] = y[rb * 4 + 2] + s2;
+      y[rb * 4 + 3] = y[rb * 4 + 3] + s3;
+    }
+  }
+  return;
+}
+
+/// Asserts that a Q4_0 matrix of rows x cols, its scales and its input hold the values that a
+/// product reads.
+fn nn_check_q4(w_len : i32, s_len : i32, x_len : i32, rows : i32, cols : i32) -> void {
+  assert(rows > 0 && rows % 4 == 0 && cols > 0 && cols % 32 == 0, "nn q4: rows must be a multiple of 4, and cols a multiple of 32");
+  assert(x_len >= cols, "nn q4: the input has fewer values than cols");
+  assert(rows <= w_len / (cols / 8) && rows <= s_len / (cols / 32), "nn q4: the codes or the scales are too few for rows x cols");
   return;
 }
 
