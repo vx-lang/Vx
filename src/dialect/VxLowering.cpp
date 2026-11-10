@@ -1754,6 +1754,19 @@ useThatNeedsTheCopy(Value copy, SmallVectorImpl<vx::DropOp> &drops) {
   return {nullptr, nullptr};
 }
 
+// Whether the callee of `call` only reads the buffer of operand `n`: its
+// parameter is `llvm.readonly`, or a slot with `vx.tensor_access = "readonly"`.
+static bool calleeOnlyReads(func::CallOp call, unsigned n) {
+  auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+      call, call.getCalleeAttr());
+  if (!callee || callee.isExternal())
+    return false;
+  if (callee.getArgAttr(n, "llvm.readonly"))
+    return true;
+  auto access = callee.getArgAttrOfType<StringAttr>(n, "vx.tensor_access");
+  return access && access.getValue() == "readonly";
+}
+
 // Whether code can write the memory of `arg` through it: an element store, an
 // atomic, an `mlir!` block, or a call whose parameter is not `llvm.readonly`.
 // A load, a shape read, a view and a `let` slot that holds it only read it.
@@ -1786,16 +1799,18 @@ static bool mayWriteThrough(Value arg) {
         if (store.getValueToStore() != value ||
             !slot.getDefiningOp<memref::AllocaOp>())
           return true;
-        for (Operation *u : slot.getUsers())
-          if (auto load = dyn_cast<memref::LoadOp>(u))
+        for (OpOperand &u : slot.getUses()) {
+          if (auto load = dyn_cast<memref::LoadOp>(u.getOwner()))
             work.push_back(load.getResult());
+          // The AST code generator passes a `&` tensor to a call in a slot.
+          else if (auto call = dyn_cast<func::CallOp>(u.getOwner());
+                   call && !calleeOnlyReads(call, u.getOperandNumber()))
+            return true;
+        }
         continue;
       }
       if (auto call = dyn_cast<func::CallOp>(user)) {
-        auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
-            call, call.getCalleeAttr());
-        if (callee && !callee.isExternal() &&
-            callee.getArgAttr(use.getOperandNumber(), "llvm.readonly"))
+        if (calleeOnlyReads(call, use.getOperandNumber()))
           continue;
         return true;
       }
@@ -1814,23 +1829,49 @@ static bool mayWriteThrough(Value arg) {
   return false;
 }
 
+// Whether code can write the tensor that the slot parameter `slot` holds. The
+// AST code generator passes a `&` tensor as a slot.
+static bool mayWriteThroughSlot(Value slot) {
+  for (OpOperand &use : slot.getUses()) {
+    Operation *user = use.getOwner();
+    if (auto load = dyn_cast<memref::LoadOp>(user)) {
+      if (mayWriteThrough(load.getResult()))
+        return true;
+      continue;
+    }
+    if (auto call = dyn_cast<func::CallOp>(user);
+        call && calleeOnlyReads(call, use.getOperandNumber()))
+      continue;
+    return true;
+  }
+  return false;
+}
+
 // A `&` parameter is `llvm.readonly`, as Rust marks a `&T`. But the element
 // atomics of `core::sync::atomic` change a tensor through a `&`, and so does a
 // function that passes one on to them. Drops the mark from each parameter that
 // code can write through, until no mark changes: a call keeps a mark only when
-// the callee's parameter has it.
+// the callee's parameter has it. A slot parameter has the mark as
+// `vx.tensor_access = "readonly"`.
 static void dropReadonlyOfWrittenParameters(ModuleOp module) {
   for (bool changed = true; changed;) {
     changed = false;
     module.walk([&](func::FuncOp f) {
       if (f.isExternal())
         return;
-      for (unsigned i = 0; i < f.getNumArguments(); ++i)
+      for (unsigned i = 0; i < f.getNumArguments(); ++i) {
         if (f.getArgAttr(i, "llvm.readonly") &&
             mayWriteThrough(f.getArgument(i))) {
           f.removeArgAttr(i, "llvm.readonly");
           changed = true;
         }
+        auto access = f.getArgAttrOfType<StringAttr>(i, "vx.tensor_access");
+        if (access && access.getValue() == "readonly" &&
+            mayWriteThroughSlot(f.getArgument(i))) {
+          f.removeArgAttr(i, "vx.tensor_access");
+          changed = true;
+        }
+      }
     });
   }
 }

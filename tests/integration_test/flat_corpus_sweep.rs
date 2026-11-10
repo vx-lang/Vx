@@ -247,6 +247,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/std_nn_q4_kernels_match_loops_on_the_cpu.vx", // needs --machine
             // needs --machine
             "optimizations/pass/methods_that_return_a_reference_to_a_tensor_field.vx",
+            // needs --machine
+            "optimizations/pass/a_tensor_that_a_called_function_writes_is_not_const_on_the_apple_gpu.vx",
         ];
         if NOT_STANDALONE.contains(&name.as_str()) {
             continue;
