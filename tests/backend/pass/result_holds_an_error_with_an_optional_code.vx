@@ -1,0 +1,119 @@
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// A `Result` whose error is a struct with two enum fields and an `Option` field.
+// Each `Result` goes through a helper in another module and comes back unchanged.
+// The program returns the whole `Result`, the `Error` inside it and the `Option<i32>` inside that.
+// It reads one field through a borrow. Each value prints as a different number.
+// EXPECT: 4294967301 22 33 -7 11 44 99
+
+import core::option;
+import core::result;
+import tests::modules::pass_a_result_through;
+
+enum Kind {
+  Other,
+  InvalidInput
+}
+
+enum Operation {
+  Read,
+  Write
+}
+
+struct Error {
+  kind: Kind,
+  operation: Operation,
+  native_code: Option<i32>
+}
+
+fn success() -> Result<u64, Error> {
+  return Result<u64, Error>::Ok(4294967301u64);
+}
+
+fn bad_read() -> Result<u64, Error> {
+  return Result<u64, Error>::Err(Error {
+    kind: Kind::InvalidInput,
+    operation: Operation::Read,
+    native_code: Option<i32>::Some(-7)
+  });
+}
+
+fn other_write() -> Result<u64, Error> {
+  return Result<u64, Error>::Err(Error {
+    kind: Kind::Other,
+    operation: Operation::Write,
+    native_code: Option<i32>::None()
+  });
+}
+
+fn value_of(r: Result<u64, Error>) -> u64 {
+  match r {
+    Result<u64, Error>::Ok(v) => {
+      return v;
+    }
+    Result<u64, Error>::Err(e) => {
+      return 0u64;
+    }
+  }
+}
+
+fn error_of(r: Result<u64, Error>) -> Error {
+  match r {
+    Result<u64, Error>::Ok(v) => {
+      return Error {
+        kind: Kind::Other,
+        operation: Operation::Read,
+        native_code: Option<i32>::Some(0)
+      };
+    }
+    Result<u64, Error>::Err(e) => {
+      return e;
+    }
+  }
+}
+
+fn code_of(e: Error) -> Option<i32> {
+  return e.native_code;
+}
+
+fn kind_number(e: &Error) -> i32 {
+  match e.kind {
+    Kind::Other => {
+      return 11;
+    }
+    Kind::InvalidInput => {
+      return 22;
+    }
+  }
+}
+
+fn operation_number(op: Operation) -> i32 {
+  match op {
+    Operation::Read => {
+      return 33;
+    }
+    Operation::Write => {
+      return 44;
+    }
+  }
+}
+
+fn print_error(r: Result<u64, Error>) -> void {
+  let e = error_of(r);
+  print(kind_number(&e));
+  print!(" ");
+  print(operation_number(e.operation));
+  print!(" ");
+  print(code_of(e).unwrap_or(99));
+}
+
+fn main() -> i32 {
+  print(value_of(pass_through(success())));
+  print!(" ");
+  print_error(pass_through(bad_read()));
+  print!(" ");
+  print_error(pass_through(other_write()));
+  return 0;
+}

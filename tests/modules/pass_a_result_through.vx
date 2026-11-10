@@ -1,0 +1,12 @@
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// A generic helper in another module. A test passes a `Result` through it and checks that
+// the value comes back unchanged.
+
+import core::result;
+
+fn pass_through<T, E>(r : Result<T, E>) -> Result<T, E> {
+  return r;
+}

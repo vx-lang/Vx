@@ -187,6 +187,46 @@ fn struct_layout_reuses_generated_and_registry_layouts() {
 }
 
 #[test]
+fn struct_with_option_field_is_an_enum_payload() {
+    let registry = optional_code_registry();
+    let id = registry.resolve_unique_nominal(&"Error".into()).unwrap();
+    let mut lowerer = Lowerer::new(&registry);
+    let payload = lowerer
+        .payload_field(&Type::Struct("Error".into(), Some(id)))
+        .expect("a struct with an option field can be an enum payload");
+    let layout = lowerer
+        .generated_layout(id)
+        .expect("the payload uses the layout of this worker");
+    assert_eq!(
+        payload,
+        (
+            layout.size_bytes,
+            layout.align_bytes,
+            crate::codegen::flat::generated_storage_type(layout)
+        ),
+        "the payload has the size, alignment and type of the struct layout"
+    );
+}
+
+#[test]
+fn struct_with_unsupported_field_is_not_an_enum_payload() {
+    let mut registry = optional_code_registry();
+    let id = registry.resolve_unique_nominal(&"Error".into()).unwrap();
+    registry
+        .structs
+        .get_mut(&id)
+        .unwrap()
+        .fields
+        .push(("unsupported".into(), Type::Generic("Missing".into(), None)));
+    let mut lowerer = Lowerer::new(&registry);
+    assert_eq!(
+        lowerer.payload_field(&Type::Struct("Error".into(), Some(id))),
+        None,
+        "a struct with an unsupported field has no payload layout"
+    );
+}
+
+#[test]
 fn struct_with_unsupported_field_has_no_completed_layout() {
     let mut registry = optional_code_registry();
     let id = registry.resolve_unique_nominal(&"Error".into()).unwrap();
@@ -710,6 +750,12 @@ fn nominal_lookup_resolves_declarations_before_storage(
     let mut lowerer = Lowerer::new(&registry);
     let ty = Type::Struct(name.into(), attached.map(id));
     let expected_storage = storage.map(id);
+    // A payload without registry storage gets a layout from the declared fields. Here there are none.
+    let expected_payload = match (storage, declaration) {
+        (Some(n), _) => Some(if n == 1 { (4, 4) } else { (8, 8) }),
+        (None, Some(_)) => Some((0, 1)),
+        (None, None) => None,
+    };
     assert_eq!(
         (
             registry.nominal_layout_id(&ty),
@@ -728,7 +774,7 @@ fn nominal_lookup_resolves_declarations_before_storage(
             expected_storage.map(Some),
             expected_storage,
             declaration.map(id),
-            storage.map(|n| if n == 1 { (4, 4) } else { (8, 8) }),
+            expected_payload,
         ),
         "all typed lookups must use the same declaration before requiring storage"
     );

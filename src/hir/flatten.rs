@@ -5361,12 +5361,21 @@ impl<'r> Lowerer<'r> {
         }
         match ty {
             Type::Struct(..) => {
-                let gid = self.nominal_struct_gid(ty)?;
-                let def = self.registry.layouts.get(&gid)?;
-                let mlir =
-                    crate::codegen::flat::agg_struct_ty_of(gid, self.registry, &mut Vec::new())
-                        .ok()?;
-                Some((def.size_bytes as u64, def.align_bytes as u64, mlir))
+                if let Some(gid) = self.nominal_struct_gid(ty) {
+                    let def = self.registry.layouts.get(&gid)?;
+                    let mlir =
+                        crate::codegen::flat::agg_struct_ty_of(gid, self.registry, &mut Vec::new())
+                            .ok()?;
+                    return Some((def.size_bytes as u64, def.align_bytes as u64, mlir));
+                }
+                // The registry leaves a struct with an enum field incomplete. This worker completes it.
+                let gid = self.struct_instance_layout_of(ty, &[])?;
+                let layout = self.generated_layout(gid)?;
+                Some((
+                    layout.size_bytes,
+                    layout.align_bytes,
+                    crate::codegen::flat::generated_storage_type(layout),
+                ))
             }
             Type::GenericInstance(base, args) => {
                 let Type::Struct(..) = base.as_ref() else {
