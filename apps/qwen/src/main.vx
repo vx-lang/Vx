@@ -105,16 +105,21 @@ fn main(argc : i32, argv : *mut *mut i8) -> i32 {
     run_layers(&w, &mut s, &prompt_tokens[i].t, i);
   }
   predict(&w, &mut s, &mut next);
+  // The first token waits for the whole prompt, so the clock starts after it, and the time
+  // covers only the steps - 1 tokens that the loop decodes.
+  let mut token = read_token(&next);
   let start = Instant::now();
   for step in 0..steps {
-    let token = read_token(&next);
     println!("step={} token={} logit={};", step, token, read_logit(&s.logits, token));
     if step + 1 < steps {
       run_layers(&w, &mut s, &next, count + step);
       predict(&w, &mut s, &mut next);
+      token = read_token(&next);
     }
   }
-  let ms = f64::from(start.elapsed().as_secs_f32()) * 1000.0 / f64::from(steps);
-  println!("time ms_per_token={};", ms);
+  if steps > 1 {
+    let ms = f64::from(start.elapsed().as_secs_f32()) * 1000.0 / f64::from(steps - 1);
+    println!("time ms_per_token={};", ms);
+  }
   return 0;
 }
