@@ -183,7 +183,7 @@ pub struct MeliorGenerator<'c> {
 ///
 /// Anything carrying a layout or memory space is returned unchanged: there is no shape to erase
 /// there without losing the rest of the type with it.
-fn erase_memref_extents(s: &str) -> String {
+pub(crate) fn erase_memref_extents(s: &str) -> String {
     let Some(inner) = s.strip_prefix("memref<").and_then(|t| t.strip_suffix('>')) else {
         return s.to_string();
     };
