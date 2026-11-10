@@ -1,0 +1,116 @@
+//===- model.vx - Qwen app --------------------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// One token of a Qwen2 decoder on the GPU, with the kernels of `std::nn`. `State` holds every
+// tensor that a token writes, and the KV cache. It is made once, before the first token, so the
+// token loop allocates nothing.
+import core::convert;
+import core::num;
+import std::nn;
+import std::vec;
+import qwen::weights;
+
+/// The keys and the values of every position so far, for one layer: [max_seq, kv_heads, head_dim].
+struct Cache {
+  k : Tensor<f32, [?, ?, ?], Memory::HBM>,
+  v : Tensor<f32, [?, ?, ?], Memory::HBM>,
+}
+
+/// The tensors that a token writes, in GPU memory, and one `Cache` for each layer. `cos` and `sin`
+/// are [max_seq, head_dim / 2].
+struct State {
+  max_seq : i32,
+  x : Tensor<f32, [?], Memory::HBM>,
+  xn : Tensor<f32, [?], Memory::HBM>,
+  q : Tensor<f32, [?, ?], Memory::HBM>,
+  k : Tensor<f32, [?, ?], Memory::HBM>,
+  v : Tensor<f32, [?, ?], Memory::HBM>,
+  q_turned : Tensor<f32, [?, ?], Memory::HBM>,
+  attended : Tensor<f32, [?, ?], Memory::HBM>,
+  scores : Tensor<f32, [?, ?], Memory::HBM>,
+  mlp : Tensor<f32, [?], Memory::HBM>,
+  logits : Tensor<f32, [?], Memory::HBM>,
+  cos : Tensor<f32, [?, ?], Memory::HBM>,
+  sin : Tensor<f32, [?, ?], Memory::HBM>,
+  caches : Vec<Cache>,
+}
+
+/// The state for up to `max_seq` positions. The angles of RoPE are computed in f64, as in
+/// `reference.py`, and rounded to f32 once.
+fn new_state(c : &Config, max_seq : i32) -> State {
+  assert(max_seq > 0 && max_seq <= c.max_positions, "max_seq must be between 1 and the max_positions of the model");
+  let half = c.head_dim / 2;
+  let mut hcos = Tensor<f32>([max_seq, half]);
+  let mut hsin = Tensor<f32>([max_seq, half]);
+  for p in 0..max_seq {
+    for i in 0..half {
+      let angle = f64::from(p) / f64::powf(c.rope_theta, f64::from(2 * i) / f64::from(c.head_dim));
+      hcos[p][i] = f64::cos(angle) as f32;
+      hsin[p][i] = f64::sin(angle) as f32;
+    }
+  }
+  let mut caches = Vec<Cache>::new();
+  for l in 0..c.num_layers {
+    caches.push(Cache {
+      k: transfer(Tensor<f32>([max_seq, c.num_kv_heads, c.head_dim]), Memory::HBM),
+      v: transfer(Tensor<f32>([max_seq, c.num_kv_heads, c.head_dim]), Memory::HBM),
+    });
+  }
+  return State {
+    max_seq: max_seq,
+    x: transfer(Tensor<f32>([c.hidden_size]), Memory::HBM),
+    xn: transfer(Tensor<f32>([c.hidden_size]), Memory::HBM),
+    q: transfer(Tensor<f32>([c.num_q_heads, c.head_dim]), Memory::HBM),
+    k: transfer(Tensor<f32>([c.num_kv_heads, c.head_dim]), Memory::HBM),
+    v: transfer(Tensor<f32>([c.num_kv_heads, c.head_dim]), Memory::HBM),
+    q_turned: transfer(Tensor<f32>([c.num_q_heads, c.head_dim]), Memory::HBM),
+    attended: transfer(Tensor<f32>([c.num_q_heads, c.head_dim]), Memory::HBM),
+    scores: transfer(Tensor<f32>([c.num_q_heads, max_seq]), Memory::HBM),
+    mlp: transfer(Tensor<f32>([c.intermediate_size]), Memory::HBM),
+    logits: transfer(Tensor<f32>([c.vocab_size]), Memory::HBM),
+    cos: transfer(hcos, Memory::HBM),
+    sin: transfer(hsin, Memory::HBM),
+    caches: caches,
+  };
+}
+
+/// Runs the token in `token` at position `pos` through every layer. The hidden state of the
+/// token is then in `s.x`, and its keys and values are in the caches.
+fn run_layers(w : &Weights, s : &mut State, token : &Tensor<i32, [?], Memory::HBM>, pos : i32) -> void {
+  let c = &w.config;
+  let eps = c.rms_norm_eps as f32;
+  assert(pos >= 0 && pos < s.max_seq, "the position is past the end of the KV cache");
+  nn_embed(&mut s.x, &w.embed, token, c.hidden_size);
+  let mut l = 0;
+  for cache in s.caches.iter_mut() {
+    let layer = &w.layers[l];
+    nn_rms_norm(&mut s.xn, &s.x, &layer.attn_norm, c.hidden_size, eps);
+    nn_qkv(&mut s.q, &mut s.k, &mut s.v, &layer.qkv, &layer.qkv_bias, &s.xn, c.num_q_heads, c.num_kv_heads, c.head_dim, c.hidden_size);
+    nn_rope_and_store(&mut s.q_turned, &mut cache.k, &mut cache.v, &s.q, &s.k, &s.v, &s.cos, &s.sin, pos, c.num_q_heads, c.num_kv_heads, c.head_dim);
+    nn_attention(&mut s.attended, &mut s.scores, &s.q_turned, &cache.k, &cache.v, pos, c.num_q_heads, c.num_kv_heads, c.head_dim);
+    nn_matvec_heads_add(&mut s.x, &layer.attn_out, &s.attended, c.hidden_size, c.num_q_heads, c.head_dim);
+    nn_rms_norm(&mut s.xn, &s.x, &layer.mlp_norm, c.hidden_size, eps);
+    nn_swiglu(&mut s.mlp, &layer.gate_up, &s.xn, c.intermediate_size, c.hidden_size);
+    nn_matvec_add(&mut s.x, &layer.down, &s.mlp, c.hidden_size, c.intermediate_size);
+    l = l + 1;
+  }
+  return;
+}
+
+/// The logits of the token whose hidden state is in `s.x`, and in `next` the index of the largest
+/// one. Both stay in GPU memory.
+fn predict(w : &Weights, s : &mut State, next : &mut Tensor<i32, [?], Memory::HBM>) -> void {
+  let c = &w.config;
+  nn_rms_norm(&mut s.xn, &s.x, &w.final_norm, c.hidden_size, c.rms_norm_eps as f32);
+  if c.tied_embeddings {
+    nn_matvec(&mut s.logits, &w.embed, &s.xn, c.vocab_size, c.hidden_size);
+  } else {
+    nn_matvec(&mut s.logits, &w.lm_head, &s.xn, c.vocab_size, c.hidden_size);
+  }
+  nn_argmax(next, &s.logits, c.vocab_size);
+  return;
+}

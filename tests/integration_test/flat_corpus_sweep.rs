@@ -243,6 +243,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/book_gpu_row_sums_in_shared_memory.vx", // needs --machine
             "optimizations/pass/std_nn_kernels_match_loops_on_the_cpu.vx", // needs --machine
             "optimizations/pass/std_nn_fp8_kernels_match_loops_on_the_cpu.vx", // needs --machine
+            // needs --machine
+            "optimizations/pass/methods_that_return_a_reference_to_a_tensor_field.vx",
         ];
         if NOT_STANDALONE.contains(&name.as_str()) {
             continue;

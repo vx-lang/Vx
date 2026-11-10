@@ -2,6 +2,7 @@
 """Write a tiny Qwen2 model with random weights, for tests that cannot download a real model.
 
     python3 apps/qwen/scripts/make_tiny_model.py tiny.vxw
+    python3 apps/qwen/scripts/make_tiny_model.py --fp8 tiny-fp8.vxw
 
 The model has the layers of Qwen2.5-Coder at a small size: hidden size 128, 2 layers, 2 query
 heads that share 1 key-value head of 64 values, and a vocabulary of 256 tokens. Its weights come
@@ -32,6 +33,7 @@ CONFIG = {
     "tied_embeddings": 1,
     "qkv_bias": 1,
     "eos_token_id": 255,
+    "fp8": 0,
     "rope_theta": 10000.0,
     "rms_norm_eps": 1e-6,
 }
@@ -75,8 +77,12 @@ def tiny_model():
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("output", help="the weight file to write")
+    parser.add_argument("--fp8", action="store_true", help="store the weight matrices as f8e4m3 codes")
     args = parser.parse_args()
-    qwen_weights.write_weight_file(args.output, CONFIG, tiny_model())
+    config, tensors = CONFIG, tiny_model()
+    if args.fp8:
+        config, tensors = qwen_weights.to_fp8(config, tensors)
+    qwen_weights.write_weight_file(args.output, config, tensors)
     print(f"wrote {args.output}")
     return 0
 

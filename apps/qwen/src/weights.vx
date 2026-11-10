@@ -1,0 +1,198 @@
+//===- weights.vx - Qwen app ------------------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Loads the weight file that `apps/qwen/scripts/convert.py` writes, and puts each tensor in GPU
+// memory once. `apps/qwen/scripts/qwen_weights.py` describes the format. A matrix of rows x cols
+// is a rank-1 tensor with row r at r * cols, as the kernels of `std::nn` read it.
+import std::libc;
+import std::mmap;
+import std::vec;
+import core::ptr;
+
+extern {
+  fn memcpy(dst : *mut i8, src : *const i8, n : i64) -> *mut i8;
+  fn strlen(s : *const i8) -> i64;
+  fn strcmp(a : *const i8, b : *const i8) -> i32;
+}
+
+/// The bytes "VXQWEN01" at the start of the file, read as one little-endian i64.
+const MAGIC : i64 = 3544418966465239126;
+const VERSION : i64 = 1;
+const ENTRY_WORDS : i64 = 16;
+const BF16 : i64 = 1;
+
+/// The model's sizes and constants, from the header of the weight file.
+struct Config {
+  hidden_size : i32,
+  intermediate_size : i32,
+  num_layers : i32,
+  num_q_heads : i32,
+  num_kv_heads : i32,
+  head_dim : i32,
+  vocab_size : i32,
+  max_positions : i32,
+  tied_embeddings : bool,
+  eos_token_id : i32,
+  rope_theta : f64,
+  rms_norm_eps : f64,
+}
+
+/// The weights of one decoder layer, in GPU memory. `qkv` has the Q rows, then the K rows,
+/// then the V rows, and `gate_up` has the gate rows, then the up rows.
+struct Layer {
+  attn_norm : Tensor<bf16, [?], Memory::HBM>,
+  qkv : Tensor<bf16, [?], Memory::HBM>,
+  qkv_bias : Tensor<bf16, [?], Memory::HBM>,
+  attn_out : Tensor<bf16, [?], Memory::HBM>,
+  mlp_norm : Tensor<bf16, [?], Memory::HBM>,
+  gate_up : Tensor<bf16, [?], Memory::HBM>,
+  down : Tensor<bf16, [?], Memory::HBM>,
+}
+
+/// All the weights of a model, in GPU memory. A model with tied embeddings uses `embed` as its
+/// output projection, and its `lm_head` holds only one row of zeros.
+struct Weights {
+  config : Config,
+  embed : Tensor<bf16, [?], Memory::HBM>,
+  layers : Vec<Layer>,
+  final_norm : Tensor<bf16, [?], Memory::HBM>,
+  lm_head : Tensor<bf16, [?], Memory::HBM>,
+}
+
+/// A weight file mapped into memory, and the position of the next tensor to load.
+struct Reader {
+  base : *mut i8,
+  size : i64,
+  table : i64,
+  count : i64,
+  next : i64,
+}
+
+/// The i64 word at `index` of the file.
+fn word(r : &Reader, index : i64) -> i64 {
+  let words : *mut i64 = r.base;
+  return unsafe { words[index] };
+}
+
+/// Copies the next tensor into GPU memory. Asserts that its name ends with `kind`, and that its
+/// shape is `rows` x `cols`, or [rows] when `cols` is 0.
+fn load_next(r : &mut Reader, kind : *const i8, rows : i32, cols : i32) -> Tensor<bf16, [?], Memory::HBM> {
+  assert(r.next < r.count, "the weight file has fewer tensors than the config needs");
+  let entry = r.table / 8 + r.next * ENTRY_WORDS;
+  let name : *mut i8 = offset_mut(r.base, entry * 8);
+  let length = unsafe { strlen(name) };
+  let kind_length = unsafe { strlen(kind) };
+  assert(length >= kind_length, "a tensor of the weight file is not the one the config needs next");
+  let tail : *mut i8 = offset_mut(name, length - kind_length);
+  assert(unsafe { strcmp(tail, kind) } == 0, "a tensor of the weight file is not the one the config needs next");
+
+  let rank : i64 = if cols == 0 {
+    1
+  } else {
+    2
+  };
+  assert(word(r, entry + 8) == BF16, "a tensor of the weight file is not bf16");
+  assert(word(r, entry + 9) == rank, "a tensor of the weight file has the wrong rank");
+  assert(word(r, entry + 10) == rows as i64, "a tensor of the weight file has the wrong number of rows");
+  assert(rank == 1 || word(r, entry + 11) == cols as i64, "a tensor of the weight file has the wrong number of columns");
+  let count : i64 = if cols == 0 {
+    rows as i64
+  } else {
+    (rows as i64) * (cols as i64)
+  };
+  let offset = word(r, entry + 14);
+  let bytes = word(r, entry + 15);
+  assert(bytes == count * 2 && offset >= 0 && offset + bytes <= r.size, "a tensor of the weight file is outside the file");
+  assert(count < 2147483648, "a tensor of the weight file has 2^31 values or more");
+
+  let mut host = Tensor<bf16>([count as i32]);
+  let dst : *mut i8 = host.as_mut_ptr();
+  unsafe { memcpy(dst, offset_mut(r.base, offset), bytes); }
+  r.next = r.next + 1;
+  return transfer(host, Memory::HBM);
+}
+
+/// One row of zeros in GPU memory, for a tensor that a model does not have.
+fn zeros(n : i32) -> Tensor<bf16, [?], Memory::HBM> {
+  return transfer(Tensor<bf16>([n]), Memory::HBM);
+}
+
+/// Whether `p` is MAP_FAILED, the address -1 that mmap gives when it fails.
+fn map_failed(p : *mut i8) -> bool {
+  let failed : *mut i8 = offset_mut(unsafe { 0 as *mut i8 }, -1);
+  return eq(p as *const i8, failed as *const i8);
+}
+
+/// Loads the weight file at `path` into GPU memory.
+fn load_weights(path : *const i8) -> Weights {
+  let fd : i32 = unsafe { open(path, 0) };
+  assert(fd >= 0, "cannot open the weight file");
+  let size : i64 = unsafe { lseek(fd, 0, 2) };
+  assert(size > 0, "cannot read the size of the weight file");
+  let base : *mut i8 = unsafe { mmap(0 as *mut i8, size, 1, 1, fd, 0) };
+  assert(!map_failed(base), "cannot map the weight file into memory");
+  let mut r = Reader {
+    base: base, size: size, table: 0, count: 0, next: 0
+  };
+  assert(size >= 4096 && word(&r, 0) == MAGIC, "this is not a weight file of the Qwen app");
+  assert(word(&r, 1) == VERSION, "the weight file has another format version");
+  r.count = word(&r, 2);
+  r.table = word(&r, 4);
+
+  let floats : *mut f64 = base;
+  let config = Config {
+    hidden_size: word(&r, 5) as i32,
+    intermediate_size: word(&r, 6) as i32,
+    num_layers: word(&r, 7) as i32,
+    num_q_heads: word(&r, 8) as i32,
+    num_kv_heads: word(&r, 9) as i32,
+    head_dim: word(&r, 10) as i32,
+    vocab_size: word(&r, 11) as i32,
+    max_positions: word(&r, 12) as i32,
+    tied_embeddings: word(&r, 13) != 0,
+    eos_token_id: word(&r, 15) as i32,
+    rope_theta: unsafe { floats[21] },
+    rms_norm_eps: unsafe { floats[22] },
+  };
+  assert(word(&r, 14) != 0, "a model with no bias on Q, K and V is not supported yet");
+
+  let hidden = config.hidden_size;
+  let q_rows = config.num_q_heads * config.head_dim;
+  let qkv_rows = q_rows + 2 * config.num_kv_heads * config.head_dim;
+  let inter = config.intermediate_size;
+  let embed = load_next(&mut r, "embed", config.vocab_size, hidden);
+  let mut layers = Vec<Layer>::new();
+  for l in 0..config.num_layers {
+    let attn_norm = load_next(&mut r, ".attn_norm", hidden, 0);
+    let qkv = load_next(&mut r, ".qkv", qkv_rows, hidden);
+    let qkv_bias = load_next(&mut r, ".qkv_bias", qkv_rows, 0);
+    let attn_out = load_next(&mut r, ".attn_out", hidden, q_rows);
+    let mlp_norm = load_next(&mut r, ".mlp_norm", hidden, 0);
+    let gate_up = load_next(&mut r, ".gate_up", 2 * inter, hidden);
+    let down = load_next(&mut r, ".down", hidden, inter);
+    layers.push(Layer {
+      attn_norm: attn_norm,
+      qkv: qkv,
+      qkv_bias: qkv_bias,
+      attn_out: attn_out,
+      mlp_norm: mlp_norm,
+      gate_up: gate_up,
+      down: down,
+    });
+  }
+  let final_norm = load_next(&mut r, "final_norm", hidden, 0);
+  let lm_head = if config.tied_embeddings {
+    zeros(8)
+  } else {
+    load_next(&mut r, "lm_head", config.vocab_size, hidden)
+  };
+  assert(r.next == r.count, "the weight file has more tensors than the config needs");
+  unsafe { munmap(base, size); close(fd); }
+  return Weights {
+    config: config, embed: embed, layers: layers, final_norm: final_norm, lm_head: lm_head
+  };
+}

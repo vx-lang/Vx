@@ -6598,7 +6598,9 @@ impl<'r> Lowerer<'r> {
             type_idx,
             fc.args.len() as u64,
         ));
-        if matches!(ret_ty, LoweredTy::Tensor { .. }) {
+        // A returned reference names a tensor that the caller does not own.
+        if matches!(ret_ty, LoweredTy::Tensor { .. }) && !matches!(sig.ret_ty, Type::Borrow { .. })
+        {
             self.note_temp(reg);
         }
         Ok(Val { reg, ty: ret_ty })

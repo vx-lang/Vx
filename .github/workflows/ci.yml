@@ -161,6 +161,15 @@ jobs:
       - name: Check documentation examples compile
         run: python3 scripts/tools/check_doc_examples.py
 
+      # The Qwen app keeps its tests in apps/qwen/tests, so that they move with it to its own
+      # repository later. Its scripts need NumPy, and ml_dtypes checks its fp8 codes. The system
+      # Python of the runner takes no packages, so they go in a venv of their own.
+      - name: Qwen app tests
+        run: |
+          python3 -m venv "$RUNNER_TEMP/qwen-venv"
+          "$RUNNER_TEMP/qwen-venv/bin/pip" install --quiet numpy ml_dtypes
+          PATH="$RUNNER_TEMP/qwen-venv/bin:$PWD/target/release:$PATH" apps/qwen/tests/run.sh
+
       # The diagnostic reference is generated from the source it describes. Regenerating and
       # diffing catches the case where someone adds a diagnostic and the published reference
       # silently stops being complete. mdformat is already on PATH from the markdown-formatting

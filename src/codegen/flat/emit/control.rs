@@ -174,10 +174,15 @@ impl FnEmit<'_> {
                         self.body += "  func.return\n";
                     }
                     None => {
+                        let reference = borrowed_tensor_memref(&self.func.return_type);
                         let declared = tensor_memref_of_type(&self.func.return_type)
+                            .or_else(|| reference.clone())
                             .ok_or(crate::emitter_gap!())?;
                         if declared == memty {
                             self.body += &format!("  func.return {a} : {memty}\n");
+                        } else if reference.is_some() {
+                            // A reference names the tensor it was given, so it is never a copy.
+                            return Err(crate::emitter_gap!());
                         } else {
                             // A row is a strided view, and a `?`-shaped result is a buffer of
                             // its own: return a copy.

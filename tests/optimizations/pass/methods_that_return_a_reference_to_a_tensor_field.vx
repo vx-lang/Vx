@@ -1,0 +1,85 @@
+// A method can return a reference to a tensor field. The reference names the tensor in the
+// struct, so the function does not copy it, and the caller does not free it. `pick` returns
+// `&self.a` or `&self.b`. `pick_mut` returns `&mut self.b`, and a write through it changes
+// `p.b`. `output` returns a tensor in GPU memory.
+//
+// VX_NO_AST_FALLBACK=1 makes the compile fail if the default code generator cannot compile a
+// function.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: pick 1.5 2.5
+// CHECK-NEXT: pick_mut 1 7.5
+// CHECK-NEXT: output 4
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR
+// MLIR: func.func @FixedPair$pick_mut({{.*}}) -> (memref<4xf32> {vx.reference})
+
+struct Pair {
+  a : Tensor<f32, [?]>,
+  b : Tensor<f32, [?]>,
+}
+
+impl Pair {
+  fn pick(self : &Pair, first : bool) -> &Tensor<f32, [?]> {
+    if first {
+      return &self.a;
+    }
+    return &self.b;
+  }
+}
+
+struct FixedPair {
+  a : Tensor<f32, [4]>,
+  b : Tensor<f32, [4]>,
+}
+
+impl FixedPair {
+  fn pick_mut(self : &mut FixedPair, first : bool) -> &mut Tensor<f32, [4]> {
+    if first {
+      return &mut self.a;
+    }
+    return &mut self.b;
+  }
+}
+
+struct Weights {
+  embed : Tensor<f32, [?], Memory::HBM>,
+  head : Tensor<f32, [?], Memory::HBM>,
+  tied : bool,
+}
+
+impl Weights {
+  fn output(self : &Weights) -> &Tensor<f32, [?], Memory::HBM> {
+    if self.tied {
+      return &self.embed;
+    }
+    return &self.head;
+  }
+}
+
+fn first_value(t : &Tensor<f32, [?]>) -> f32 {
+  return t[0];
+}
+
+fn main() -> i32 {
+  let mut a = Tensor<f32>([4]);
+  a[0] = 1.5;
+  let mut b = Tensor<f32>([4]);
+  b[0] = 2.5;
+  let p = Pair {
+    a: a, b: b
+  };
+  println!("pick {} {}", first_value(p.pick(true)), first_value(p.pick(false)));
+
+  let mut q = FixedPair {
+    a: Tensor<f32, [4]>::fill(1.0), b: Tensor<f32, [4]>::fill(2.0)
+  };
+  let t = q.pick_mut(false);
+  t[3] = 7.5;
+  println!("pick_mut {} {}", q.a[3], q.b[3]);
+
+  let w = Weights {
+    embed: transfer(Tensor<f32>([4]), Memory::HBM), head: transfer(Tensor<f32>([4]), Memory::HBM), tied: false
+  };
+  println!("output {}", w.output().len());
+  return 0;
+}

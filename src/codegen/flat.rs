@@ -276,6 +276,15 @@ fn tensor_memref_of_type(ty: &Type) -> Option<String> {
     }
 }
 
+/// The memref of the tensor that a `&Tensor` or `&mut Tensor` names. A function that returns
+/// such a reference returns the memref, as a parameter of that type is the memref.
+pub(crate) fn borrowed_tensor_memref(ty: &Type) -> Option<String> {
+    match peel_wrappers(ty) {
+        Type::Borrow { inner, .. } => tensor_memref_of_type(inner),
+        _ => None,
+    }
+}
+
 /// The memref spelling of a return type that travels through a caller-allocated slot: a tensor
 /// whose extents are all known at compile time.
 ///
@@ -670,6 +679,9 @@ pub struct Callee {
     /// Whether the returned tensor is placed in another memory. Such a result is handed back
     /// as a buffer, never through a slot on the caller's stack.
     pub ret_placed: bool,
+    /// The callee returns a reference to a tensor. The call returns the memref of a tensor that
+    /// already exists, so the caller makes no slot for it.
+    pub ret_reference: bool,
     /// The memref spelling of each tensor parameter, by value or by reference; `None` for any
     /// other parameter. A row passed in is a strided view, and is cast to this at the call.
     pub param_tensors: Vec<Option<String>>,
@@ -801,7 +813,7 @@ pub fn build_callee_map(
                     agg_names,
                     registry.aggregate_identities(),
                 ),
-                ret_ptr: is_ptr_ty(&sig.ret_ty),
+                ret_ptr: is_ptr_ty(&sig.ret_ty) && borrowed_tensor_memref(&sig.ret_ty).is_none(),
                 ret_pointee: match peel_wrappers(&sig.ret_ty) {
                     Type::Borrow { inner, .. } | Type::Pointer(inner, ..) => {
                         resolve_agg_gid(inner, aggs, agg_names, registry.aggregate_identities())
@@ -809,12 +821,14 @@ pub fn build_callee_map(
                     _ => None,
                 },
                 ret_void: is_void_ty(&sig.ret_ty),
-                ret_tensor: tensor_memref_of_type(&sig.ret_ty),
+                ret_tensor: tensor_memref_of_type(&sig.ret_ty)
+                    .or_else(|| borrowed_tensor_memref(&sig.ret_ty)),
                 ret_vec: match peel_wrappers(&sig.ret_ty) {
                     Type::Simd(e, lanes) => mlir_vector(e, *lanes),
                     _ => None,
                 },
                 ret_placed: crate::codegen::generator::written_placement(&sig.ret_ty).is_some(),
+                ret_reference: borrowed_tensor_memref(&sig.ret_ty).is_some(),
                 param_tensors: sig
                     .params
                     .iter()
@@ -2778,6 +2792,8 @@ pub fn emit_function_mlir(
         Some(mlir_scalar(e).ok_or(crate::emitter_gap!())?.to_string())
     } else if let Some(et) = enum_scalar(&func.return_type, ctx) {
         Some(et.to_string())
+    } else if let Some(mt) = borrowed_tensor_memref(&func.return_type) {
+        Some(mt)
     } else if is_ptr_ty(&func.return_type) {
         Some("!llvm.ptr".to_string()) // a pointer-returning function (#235)
     } else if let Some(gid) = ctx.agg_gid(&func.return_type) {
@@ -2911,6 +2927,8 @@ pub fn emit_function_mlir(
         Some(Some(p)) if returns_through_slot(&func.return_type).is_none() => {
             format!(" {}", placed_attr(&p, ctx))
         }
+        // A returned reference names a tensor that the caller does not own, so it is not freed.
+        _ if borrowed_tensor_memref(&func.return_type).is_some() => " {vx.reference}".to_string(),
         _ => String::new(),
     };
     let mut ret_sig = match &ret_mlir {

@@ -15,6 +15,11 @@ The tensor table has one entry of 16 words (128 bytes) per tensor: the name in w
 padded with zero bytes), the dtype code, the rank, four dimensions (unused ones are 0), the byte
 offset of the data and its size in bytes. The tensors come in the order of `tensor_names`.
 
+In a file whose config has fp8 = 1, each weight matrix of MATRICES is f8e4m3 codes, one byte for
+each weight. The tensor after it, `<name>.scale`, has one f32 scale for each block of 128 x 128
+weights. A weight is the value of its code times the scale of its block. Such a file always has
+`lm_head`, also for a model whose output projection is its embedding table.
+
 Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 See LICENSE for license information.
 SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
@@ -45,13 +50,19 @@ CONFIG_INTS = [
     "tied_embeddings",
     "qkv_bias",
     "eos_token_id",
+    "fp8",
 ]
 # The header has room for 16 integers. The unused ones are 0, for fields that later models add.
 CONFIG_INT_SLOTS = 16
 
-DTYPE_CODES = {"f32": 0, "bf16": 1}
+DTYPE_CODES = {"f32": 0, "bf16": 1, "f8e4m3": 2}
 DTYPE_NAMES = {code: name for name, code in DTYPE_CODES.items()}
-DTYPE_BYTES = {"f32": 4, "bf16": 2}
+DTYPE_BYTES = {"f32": 4, "bf16": 2, "f8e4m3": 1}
+STORAGE = {"f32": np.float32, "bf16": np.uint16, "f8e4m3": np.uint8}
+
+# The weight matrices that an fp8 file stores as f8e4m3 codes. The kinds of a layer end the name.
+MATRICES = ("qkv", "attn_out", "gate_up", "down", "lm_head")
+BLOCK = 128
 
 
 def bf16_to_f32(bits):
@@ -68,8 +79,14 @@ def f32_to_bf16(values):
     return ((bits + rounding) >> 16).astype(np.uint16)
 
 
+def is_matrix(name):
+    """Whether an fp8 file stores the tensor `name` as f8e4m3 codes with block scales."""
+    return name.rsplit(".", 1)[-1] in MATRICES
+
+
 def tensor_names(config):
     """The names of the tensors in the weight file, in file order."""
+    assert not (config["fp8"] and config["tied_embeddings"]), "an fp8 file has its own lm_head"
     names = ["embed"]
     for layer in range(config["num_layers"]):
         prefix = f"layers.{layer}."
@@ -80,6 +97,8 @@ def tensor_names(config):
     names.append("final_norm")
     if not config["tied_embeddings"]:
         names.append("lm_head")
+    if config["fp8"]:
+        names = [n for name in names for n in ([name, name + ".scale"] if is_matrix(name) else [name])]
     return names
 
 
@@ -103,6 +122,10 @@ def tensor_shapes(config):
         shapes[prefix + "mlp_norm"] = (hidden,)
         shapes[prefix + "gate_up"] = (2 * inter, hidden)
         shapes[prefix + "down"] = (hidden, inter)
+    if config["fp8"]:
+        for name in [n for n in shapes if is_matrix(n)]:
+            rows, cols = shapes[name]
+            shapes[name + ".scale"] = (-(-rows // BLOCK), -(-cols // BLOCK))
     return shapes
 
 
@@ -126,7 +149,7 @@ def write_weight_file(path, config, tensors):
     for index, name in enumerate(names):
         dtype, array = tensors[name]
         assert tuple(array.shape) == shapes[name], f"{name}: shape {array.shape}, expected {shapes[name]}"
-        assert array.dtype == (np.uint16 if dtype == "bf16" else np.float32), f"{name}: storage {array.dtype}"
+        assert array.dtype == STORAGE[dtype], f"{name}: storage {array.dtype} for {dtype}"
         nbytes = array.size * DTYPE_BYTES[dtype]
         dims = list(array.shape) + [0] * (4 - array.ndim)
         entry = name.encode("ascii").ljust(64, b"\0")
@@ -164,7 +187,7 @@ def read_weight_file(path):
         dims, offset, nbytes = rest[:4], rest[4], rest[5]
         assert offset % alignment == 0, f"{name}: offset {offset} is not aligned"
         shape = tuple(dims[:rank])
-        storage = np.uint16 if DTYPE_NAMES[dtype] == "bf16" else np.float32
+        storage = STORAGE[DTYPE_NAMES[dtype]]
         raw = np.frombuffer(data, dtype=storage, count=nbytes // np.dtype(storage).itemsize, offset=offset)
         tensors[name] = (DTYPE_NAMES[dtype], raw.reshape(shape))
     assert list(tensors) == tensor_names(config), f"{path}: the tensors are not in file order"
@@ -172,9 +195,81 @@ def read_weight_file(path):
 
 
 def as_f32(entry):
-    """The float32 values of a (dtype name, array) entry of `read_weight_file`."""
+    """The float32 values of a bf16 or f32 (dtype name, array) entry of `read_weight_file`."""
     dtype, array = entry
+    assert dtype in ("bf16", "f32"), f"use widen() for {dtype}"
     return bf16_to_f32(array) if dtype == "bf16" else np.asarray(array, dtype=np.float32)
+
+
+def _e4m3_values():
+    """The value of each of the 256 f8e4m3 codes: OCP e4m3, bias 7, no infinity, NaN at 0x7F."""
+    codes = np.arange(256)
+    exponent, mantissa = (codes >> 3) & 15, codes & 7
+    values = np.where(exponent == 0, mantissa / 8 * 2.0**-6, (1 + mantissa / 8) * 2.0 ** (exponent - 7))
+    values = np.where(codes & 0x80, -values, values)
+    values[(codes & 0x7F) == 0x7F] = np.nan
+    return values.astype(np.float32)
+
+
+E4M3 = _e4m3_values()
+E4M3_MAX = 448.0
+
+
+def f32_to_e4m3(values):
+    """Round float32 values to f8e4m3 codes, to nearest with ties to even. Values above 448 in
+    size become 448."""
+    values = np.asarray(values, dtype=np.float32)
+    assert np.all(np.isfinite(values)), "only finite values round to f8e4m3 here"
+    positive = E4M3[:0x7F]  # codes 0 to 126, in increasing order
+    size = np.minimum(np.abs(values), E4M3_MAX)
+    high = np.minimum(np.searchsorted(positive, size), 0x7E)
+    low = np.maximum(high - 1, 0)
+    up, down = positive[high] - size, size - positive[low]
+    code = np.where((up < down) | ((up == down) & (high % 2 == 0)), high, low).astype(np.uint8)
+    return code | np.where(np.signbit(values), 0x80, 0).astype(np.uint8)
+
+
+def quantize_fp8(matrix):
+    """f8e4m3 codes and f32 block scales for a float32 matrix. The scale of a block of 128 x 128
+    is the largest size in it divided by 448, so that block's largest weight becomes 448."""
+    rows, cols = matrix.shape
+    scales = np.ones((-(-rows // BLOCK), -(-cols // BLOCK)), dtype=np.float32)
+    codes = np.empty((rows, cols), dtype=np.uint8)
+    for i in range(scales.shape[0]):
+        band = np.asarray(matrix[i * BLOCK : (i + 1) * BLOCK], dtype=np.float32)
+        for j in range(scales.shape[1]):
+            block = band[:, j * BLOCK : (j + 1) * BLOCK]
+            largest = np.float32(np.abs(block).max())
+            if largest > 0:
+                scales[i, j] = largest / np.float32(E4M3_MAX)
+            codes[i * BLOCK : (i + 1) * BLOCK, j * BLOCK : (j + 1) * BLOCK] = f32_to_e4m3(block / scales[i, j])
+    return codes, scales
+
+
+def widen(tensors, name):
+    """The float32 values of the tensor `name` of `read_weight_file`, also an fp8 matrix."""
+    dtype, array = tensors[name]
+    if dtype != "f8e4m3":
+        return as_f32((dtype, array))
+    scales = tensors[name + ".scale"][1]
+    rows, cols = array.shape
+    blocks = np.repeat(np.repeat(scales, BLOCK, axis=0), BLOCK, axis=1)[:rows, :cols]
+    return E4M3[array] * blocks
+
+
+def to_fp8(config, tensors):
+    """The config and tensors of the fp8 file for a bf16 model. A model with tied embeddings gets
+    an fp8 copy of its embedding table as `lm_head`."""
+    assert not config["fp8"], "the model is fp8 already"
+    tensors = dict(tensors)
+    if config["tied_embeddings"]:
+        tensors["lm_head"] = tensors["embed"]
+    config = dict(config, fp8=1, tied_embeddings=0)
+    for name in [n for n in tensors if is_matrix(n)]:
+        codes, scales = quantize_fp8(as_f32(tensors[name]))
+        tensors[name] = ("f8e4m3", codes)
+        tensors[name + ".scale"] = ("f32", scales)
+    return config, tensors
 
 
 def read_safetensors(model_dir):
@@ -221,6 +316,7 @@ def config_from_hugging_face(model_dir):
         "tied_embeddings": int(hf.get("tie_word_embeddings", False)),
         "qkv_bias": 1,
         "eos_token_id": eos[0] if isinstance(eos, list) else eos,
+        "fp8": 0,
         "rope_theta": float(hf["rope_theta"]),
         "rms_norm_eps": float(hf["rms_norm_eps"]),
     }
