@@ -55,8 +55,8 @@ for tests that cannot download a real model.
 `convert.py --fp8` stores each weight matrix as f8e4m3 codes, one byte for each weight, with one f32
 scale for each block of 128 x 128. A weight is the value of its code times the scale of its block.
 The norms, the biases and the embedding table stay bf16, so a token reads about half the bytes of
-bf16. The Vx program does not read fp8 files yet. Its loader and kernels come next, in
-[#3131](https://github.com/vx-lang/Vx/issues/3131).
+bf16. The Vx program reads an fp8 file like a bf16 file, and runs the fp8 kernels of `std::nn` for
+it.
 
 `reference.py` widens the codes and scales exactly to float32. With `--perplexity`, it measures
 how well a model predicts a text. On the first 512 tokens of `scripts/tools/gen_error_index.py`:
@@ -65,6 +65,10 @@ how well a model predicts a text. On the first 512 tokens of `scripts/tools/gen_
 | --- | --- | --- | --- |
 | Qwen2.5-Coder-0.5B-Instruct | 20.054 | 20.030 | the same 64 as bf16 |
 | Qwen2.5-Coder-7B-Instruct | 10.072 | 10.085 | the same 64 as bf16 |
+
+On the fp8 file, the Vx program chose the same 64 greedy tokens as `reference.py`, with each logit
+within 6e-05. One token of the 7B model took 95 ms in fp8 and 156 ms in bf16 on a quiet M4, which
+is about 10.5 and 6.4 tokens per second.
 
 ## The Vx code
 

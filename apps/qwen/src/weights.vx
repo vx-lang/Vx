@@ -23,7 +23,11 @@ extern {
 const MAGIC : i64 = 3544418966465239126;
 const VERSION : i64 = 1;
 const ENTRY_WORDS : i64 = 16;
+const F32 : i64 = 0;
 const BF16 : i64 = 1;
+const F8E4M3 : i64 = 2;
+/// An fp8 file has one f32 scale for each block of BLOCK x BLOCK weights.
+const BLOCK : i32 = 128;
 
 /// The model's sizes and constants, from the header of the weight file.
 struct Config {
@@ -36,31 +40,42 @@ struct Config {
   vocab_size : i32,
   max_positions : i32,
   tied_embeddings : bool,
+  fp8 : bool,
   eos_token_id : i32,
   rope_theta : f64,
   rms_norm_eps : f64,
+}
+
+/// A weight matrix in GPU memory, in one of two forms. A bf16 file fills `bf16`. An fp8 file
+/// fills `codes`, with 4 f8e4m3 codes in each u32 word, and `scales`, with one f32 for each block
+/// of 128 x 128. The form that the file does not have holds one row of zeros.
+struct WeightMatrix {
+  bf16 : Tensor<bf16, [?], Memory::HBM>,
+  codes : Tensor<u32, [?], Memory::HBM>,
+  scales : Tensor<f32, [?], Memory::HBM>,
 }
 
 /// The weights of one decoder layer, in GPU memory. `qkv` has the Q rows, then the K rows,
 /// then the V rows, and `gate_up` has the gate rows, then the up rows.
 struct Layer {
   attn_norm : Tensor<bf16, [?], Memory::HBM>,
-  qkv : Tensor<bf16, [?], Memory::HBM>,
+  qkv : WeightMatrix,
   qkv_bias : Tensor<bf16, [?], Memory::HBM>,
-  attn_out : Tensor<bf16, [?], Memory::HBM>,
+  attn_out : WeightMatrix,
   mlp_norm : Tensor<bf16, [?], Memory::HBM>,
-  gate_up : Tensor<bf16, [?], Memory::HBM>,
-  down : Tensor<bf16, [?], Memory::HBM>,
+  gate_up : WeightMatrix,
+  down : WeightMatrix,
 }
 
 /// All the weights of a model, in GPU memory. A model with tied embeddings uses `embed` as its
-/// output projection, and its `lm_head` holds only one row of zeros.
+/// output projection, and its `lm_head` holds only rows of zeros. An fp8 file has its own
+/// `lm_head`, also for such a model.
 struct Weights {
   config : Config,
   embed : Tensor<bf16, [?], Memory::HBM>,
   layers : Vec<Layer>,
   final_norm : Tensor<bf16, [?], Memory::HBM>,
-  lm_head : Tensor<bf16, [?], Memory::HBM>,
+  lm_head : WeightMatrix,
 }
 
 /// A weight file mapped into memory, and the position of the next tensor to load.
@@ -78,9 +93,10 @@ fn word(r : &Reader, index : i64) -> i64 {
   return unsafe { words[index] };
 }
 
-/// Copies the next tensor into GPU memory. Asserts that its name ends with `kind`, and that its
-/// shape is `rows` x `cols`, or [rows] when `cols` is 0.
-fn load_next(r : &mut Reader, kind : *const i8, rows : i32, cols : i32) -> Tensor<bf16, [?], Memory::HBM> {
+/// Checks the next tensor and moves past it. Asserts that its name ends with `kind`, that it is
+/// of `dtype` with `size` bytes for each value, and that its shape is `rows` x `cols`, or [rows]
+/// when `cols` is 0. Returns the byte offset of its data in the file.
+fn next_tensor(r : &mut Reader, kind : *const i8, dtype : i64, size : i64, rows : i32, cols : i32) -> i64 {
   assert(r.next < r.count, "the weight file has fewer tensors than the config needs");
   let entry = r.table / 8 + r.next * ENTRY_WORDS;
   let name : *mut i8 = offset_mut(r.base, entry * 8);
@@ -95,30 +111,88 @@ fn load_next(r : &mut Reader, kind : *const i8, rows : i32, cols : i32) -> Tenso
   } else {
     2
   };
-  assert(word(r, entry + 8) == BF16, "a tensor of the weight file is not bf16");
+  assert(word(r, entry + 8) == dtype, "a tensor of the weight file has another dtype than the config needs");
   assert(word(r, entry + 9) == rank, "a tensor of the weight file has the wrong rank");
   assert(word(r, entry + 10) == rows as i64, "a tensor of the weight file has the wrong number of rows");
   assert(rank == 1 || word(r, entry + 11) == cols as i64, "a tensor of the weight file has the wrong number of columns");
-  let count : i64 = if cols == 0 {
-    rows as i64
-  } else {
-    (rows as i64) * (cols as i64)
-  };
+  let count = values(rows, cols);
   let offset = word(r, entry + 14);
   let bytes = word(r, entry + 15);
-  assert(bytes == count * 2 && offset >= 0 && offset + bytes <= r.size, "a tensor of the weight file is outside the file");
+  assert(bytes == count * size && offset >= 0 && offset + bytes <= r.size, "a tensor of the weight file is outside the file");
   assert(count < 2147483648, "a tensor of the weight file has 2^31 values or more");
+  r.next = r.next + 1;
+  return offset;
+}
 
+/// The number of values of a tensor of `rows` x `cols`, or of [rows] when `cols` is 0.
+fn values(rows : i32, cols : i32) -> i64 {
+  if cols == 0 {
+    return rows as i64;
+  }
+  return (rows as i64) * (cols as i64);
+}
+
+/// Copies the next tensor, of bf16 values, into GPU memory.
+fn load_next(r : &mut Reader, kind : *const i8, rows : i32, cols : i32) -> Tensor<bf16, [?], Memory::HBM> {
+  let offset = next_tensor(r, kind, BF16, 2, rows, cols);
+  let count = values(rows, cols);
   let mut host = Tensor<bf16>([count as i32]);
   let dst : *mut i8 = host.as_mut_ptr();
-  unsafe { memcpy(dst, offset_mut(r.base, offset), bytes); }
-  r.next = r.next + 1;
+  unsafe { memcpy(dst, offset_mut(r.base, offset), count * 2); }
   return transfer(host, Memory::HBM);
+}
+
+/// Copies the next tensor, of f8e4m3 codes, into GPU memory as u32 words: byte k of word i is
+/// code 4 * i + k.
+fn load_codes(r : &mut Reader, kind : *const i8, rows : i32, cols : i32) -> Tensor<u32, [?], Memory::HBM> {
+  let offset = next_tensor(r, kind, F8E4M3, 1, rows, cols);
+  let count = values(rows, cols);
+  assert(count % 4 == 0, "a matrix of f8e4m3 codes is not a whole number of u32 words");
+  let mut host = Tensor<u32>([(count / 4) as i32]);
+  let dst : *mut i8 = host.as_mut_ptr();
+  unsafe { memcpy(dst, offset_mut(r.base, offset), count); }
+  return transfer(host, Memory::HBM);
+}
+
+/// Copies the next tensor, of f32 values, into GPU memory.
+fn load_scales(r : &mut Reader, kind : *const i8, rows : i32, cols : i32) -> Tensor<f32, [?], Memory::HBM> {
+  let offset = next_tensor(r, kind, F32, 4, rows, cols);
+  let count = values(rows, cols);
+  let mut host = Tensor<f32>([count as i32]);
+  let dst : *mut i8 = host.as_mut_ptr();
+  unsafe { memcpy(dst, offset_mut(r.base, offset), count * 4); }
+  return transfer(host, Memory::HBM);
+}
+
+/// Loads the next weight matrix of `rows` x `cols`: bf16 values, or in an fp8 file, f8e4m3 codes
+/// and then the tensor `scale_kind` of block scales.
+fn load_matrix(r : &mut Reader, fp8 : bool, kind : *const i8, scale_kind : *const i8, rows : i32, cols : i32) -> WeightMatrix {
+  if fp8 {
+    let codes = load_codes(r, kind, rows, cols);
+    let scales = load_scales(r, scale_kind, (rows + BLOCK - 1) / BLOCK, (cols + BLOCK - 1) / BLOCK);
+    return WeightMatrix {
+      bf16: zeros(8), codes: codes, scales: scales
+    };
+  }
+  let values = load_next(r, kind, rows, cols);
+  return WeightMatrix {
+    bf16: values, codes: zero_words(8), scales: zero_scales(8)
+  };
 }
 
 /// One row of zeros in GPU memory, for a tensor that a model does not have.
 fn zeros(n : i32) -> Tensor<bf16, [?], Memory::HBM> {
   return transfer(Tensor<bf16>([n]), Memory::HBM);
+}
+
+/// `zeros` for f8e4m3 codes.
+fn zero_words(n : i32) -> Tensor<u32, [?], Memory::HBM> {
+  return transfer(Tensor<u32>([n]), Memory::HBM);
+}
+
+/// `zeros` for scales.
+fn zero_scales(n : i32) -> Tensor<f32, [?], Memory::HBM> {
+  return transfer(Tensor<f32>([n]), Memory::HBM);
 }
 
 /// Whether `p` is MAP_FAILED, the address -1 that mmap gives when it fails.
@@ -154,6 +228,7 @@ fn load_weights(path : *const i8) -> Weights {
     vocab_size: word(&r, 11) as i32,
     max_positions: word(&r, 12) as i32,
     tied_embeddings: word(&r, 13) != 0,
+    fp8: word(&r, 16) != 0,
     eos_token_id: word(&r, 15) as i32,
     rope_theta: unsafe { floats[21] },
     rms_norm_eps: unsafe { floats[22] },
@@ -168,12 +243,12 @@ fn load_weights(path : *const i8) -> Weights {
   let mut layers = Vec<Layer>::new();
   for l in 0..config.num_layers {
     let attn_norm = load_next(&mut r, ".attn_norm", hidden, 0);
-    let qkv = load_next(&mut r, ".qkv", qkv_rows, hidden);
+    let qkv = load_matrix(&mut r, config.fp8, ".qkv", ".qkv.scale", qkv_rows, hidden);
     let qkv_bias = load_next(&mut r, ".qkv_bias", qkv_rows, 0);
-    let attn_out = load_next(&mut r, ".attn_out", hidden, q_rows);
+    let attn_out = load_matrix(&mut r, config.fp8, ".attn_out", ".attn_out.scale", hidden, q_rows);
     let mlp_norm = load_next(&mut r, ".mlp_norm", hidden, 0);
-    let gate_up = load_next(&mut r, ".gate_up", 2 * inter, hidden);
-    let down = load_next(&mut r, ".down", hidden, inter);
+    let gate_up = load_matrix(&mut r, config.fp8, ".gate_up", ".gate_up.scale", 2 * inter, hidden);
+    let down = load_matrix(&mut r, config.fp8, ".down", ".down.scale", hidden, inter);
     layers.push(Layer {
       attn_norm: attn_norm,
       qkv: qkv,
@@ -185,10 +260,13 @@ fn load_weights(path : *const i8) -> Weights {
     });
   }
   let final_norm = load_next(&mut r, "final_norm", hidden, 0);
+  assert(!(config.fp8 && config.tied_embeddings), "an fp8 weight file must have its own lm_head");
   let lm_head = if config.tied_embeddings {
-    zeros(8)
+    WeightMatrix {
+      bf16: zeros(8), codes: zero_words(8), scales: zero_scales(8)
+    }
   } else {
-    load_next(&mut r, "lm_head", config.vocab_size, hidden)
+    load_matrix(&mut r, config.fp8, "lm_head", "lm_head.scale", config.vocab_size, hidden)
   };
   assert(r.next == r.count, "the weight file has more tensors than the config needs");
   unsafe { munmap(base, size); close(fd); }
