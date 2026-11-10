@@ -162,12 +162,12 @@ jobs:
         run: python3 scripts/tools/check_doc_examples.py
 
       # The Qwen app keeps its tests in apps/qwen/tests, so that they move with it to its own
-      # repository later. Its tiny test model comes from a script that needs NumPy, and the system
-      # Python of the runner takes no packages, so NumPy goes in a venv of its own.
+      # repository later. Its scripts need NumPy, and ml_dtypes checks its fp8 codes. The system
+      # Python of the runner takes no packages, so they go in a venv of their own.
       - name: Qwen app tests
         run: |
           python3 -m venv "$RUNNER_TEMP/qwen-venv"
-          "$RUNNER_TEMP/qwen-venv/bin/pip" install --quiet numpy
+          "$RUNNER_TEMP/qwen-venv/bin/pip" install --quiet numpy ml_dtypes
           PATH="$RUNNER_TEMP/qwen-venv/bin:$PWD/target/release:$PATH" apps/qwen/tests/run.sh
 
       # The diagnostic reference is generated from the source it describes. Regenerating and
