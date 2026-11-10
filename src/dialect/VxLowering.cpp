@@ -4607,14 +4607,19 @@ static LogicalResult checkMovedArguments(ModuleOp module) {
 
 // A function returns a `?`-shaped tensor by handing back a buffer, which its
 // caller then owns and frees. One that returns a view, or a parameter it only
-// borrows, returns a copy instead.
+// borrows, returns a copy instead. A `vx.reference` result is a reference to a
+// tensor, and is returned as it is.
 static LogicalResult returnOwnedBuffers(ModuleOp module) {
   LogicalResult result = success();
   module.walk([&](func::ReturnOp ret) {
+    auto func = ret->getParentOfType<func::FuncOp>();
     for (OpOperand &operand : ret->getOpOperands()) {
       auto type = dyn_cast<MemRefType>(operand.get().getType());
       // A tensor placed in another memory is left as it was.
       if (!type || type.getMemorySpace())
+        continue;
+      if (func &&
+          func.getResultAttr(operand.getOperandNumber(), "vx.reference"))
         continue;
       BufferOrigin origin = originOf(operand.get());
       // A placed buffer goes to the caller, which frees it on its device.
@@ -4709,10 +4714,17 @@ static void freeTemporaries(ModuleOp module) {
     if (!op->getParentOfType<func::FuncOp>() ||
         op->getParentOfType<vx::SpawnOp>())
       return;
+    // A `vx.reference` result names a tensor that the caller does not own.
+    auto call = dyn_cast<func::CallOp>(op);
+    auto callee =
+        call ? module.lookupSymbol<func::FuncOp>(call.getCallee()) : nullptr;
     if (isa<memref::AllocOp, vx::AllocOp, func::CallOp>(op))
       for (Value r : op->getResults())
         if (auto type = dyn_cast<MemRefType>(r.getType());
-            type && !type.getMemorySpace())
+            type && !type.getMemorySpace() &&
+            !(callee &&
+              callee.getResultAttr(cast<OpResult>(r).getResultNumber(),
+                                   "vx.reference")))
           fresh.push_back(r);
   });
   for (Value buffer : fresh) {
