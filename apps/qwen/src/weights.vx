@@ -63,16 +63,6 @@ struct Weights {
   lm_head : Tensor<bf16, [?], Memory::HBM>,
 }
 
-impl Weights {
-  /// The matrix that turns the last hidden state into logits.
-  fn output(self : &Weights) -> &Tensor<bf16, [?], Memory::HBM> {
-    if self.config.tied_embeddings {
-      return &self.embed;
-    }
-    return &self.lm_head;
-  }
-}
-
 /// A weight file mapped into memory, and the position of the next tensor to load.
 struct Reader {
   base : *mut i8,
