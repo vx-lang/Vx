@@ -1,0 +1,9 @@
+// Generates 16 tokens of the tiny model on the GPU with `src/main.vx`, and compares them with
+// `reference.py`. The tokens must be equal, and each logit within 0.001 of the reference.
+//
+// RUN: python3 %S/../scripts/make_tiny_model.py %t.vxw > /dev/null
+// RUN: python3 %S/../scripts/reference.py %t.vxw --tokens 1,2,3,4 --steps 16 > %t.reference
+// RUN: vxc %S/../src/main.vx --package qwen=%S/../src --host default --machine fleet/m4-uma.vx -- %t.vxw --tokens 1,2,3,4 --steps 16 > %t.vx
+// RUN: python3 %S/../scripts/compare.py %t.reference %t.vx --tolerance 0.001 | FileCheck %s
+//
+// CHECK: {{^}}16 steps, same tokens, logits within 0.001{{$}}
