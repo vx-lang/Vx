@@ -769,13 +769,20 @@ mod deadlock {
             && !crate::ffi::io::pending()
     }
 
+    /// One look of the watcher. `seen` is the progress count of the last look, if that look found
+    /// the program stuck. Returns the value of `seen` for the next look, and true to report.
+    fn look(seen: Option<u64>, stuck: bool, progress: u64) -> (Option<u64>, bool) {
+        let now = stuck.then_some(progress);
+        (now, now.is_some() && now == seen)
+    }
+
     fn run() {
         let mut seen = None;
         loop {
             std::thread::sleep(TICK);
             let progress = PROGRESS.load(Ordering::SeqCst);
-            let now = stuck().then_some(progress);
-            if now.is_some() && now == seen {
+            let (now, report) = look(seen, stuck(), progress);
+            if report {
                 eprint!(
                     "vx: deadlock: each task of the program waits, and nothing can wake one. \
                      The program stops.\n{}",
@@ -784,6 +791,53 @@ mod deadlock {
                 std::process::abort();
             }
             seen = now;
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::look;
+
+        /// Runs the looks of the watcher in order, each a pair (stuck, progress). Returns the
+        /// number of the look that reports, if one does.
+        fn report_at(looks: &[(bool, u64)]) -> Option<usize> {
+            let mut seen = None;
+            for (i, &(stuck, progress)) in looks.iter().enumerate() {
+                let (now, report) = look(seen, stuck, progress);
+                if report {
+                    return Some(i);
+                }
+                seen = now;
+            }
+            None
+        }
+
+        #[test]
+        fn one_stuck_look_does_not_report() {
+            assert_eq!(report_at(&[(true, 5)]), None);
+        }
+
+        #[test]
+        fn two_stuck_looks_with_no_progress_report_at_the_second() {
+            assert_eq!(report_at(&[(false, 1), (true, 5), (true, 5)]), Some(2));
+        }
+
+        /// The timer thread or the io thread woke a task between the two looks. The task can
+        /// go on, so no report.
+        #[test]
+        fn a_wake_between_two_stuck_looks_stops_the_report() {
+            assert_eq!(report_at(&[(true, 5), (true, 6)]), None);
+        }
+
+        /// A look that is not stuck starts the count again, even with no progress. For example,
+        /// a deadline of the timer was still to come at the middle look.
+        #[test]
+        fn a_look_that_is_not_stuck_starts_the_count_again() {
+            assert_eq!(report_at(&[(true, 5), (false, 5), (true, 5)]), None);
+            assert_eq!(
+                report_at(&[(true, 5), (false, 5), (true, 5), (true, 5)]),
+                Some(3)
+            );
         }
     }
 }
