@@ -131,12 +131,20 @@ fn zeros(n : i32) -> Tensor<bf16, [?], Memory::HBM> {
   return transfer(Tensor<bf16>([n]), Memory::HBM);
 }
 
+/// Whether `p` is MAP_FAILED, the address -1 that mmap gives when it fails.
+fn map_failed(p : *mut i8) -> bool {
+  let failed : *mut i8 = offset_mut(unsafe { 0 as *mut i8 }, -1);
+  return eq(p as *const i8, failed as *const i8);
+}
+
 /// Loads the weight file at `path` into GPU memory.
 fn load_weights(path : *const i8) -> Weights {
   let fd : i32 = unsafe { open(path, 0) };
   assert(fd >= 0, "cannot open the weight file");
   let size : i64 = unsafe { lseek(fd, 0, 2) };
+  assert(size > 0, "cannot read the size of the weight file");
   let base : *mut i8 = unsafe { mmap(0 as *mut i8, size, 1, 1, fd, 0) };
+  assert(!map_failed(base), "cannot map the weight file into memory");
   let mut r = Reader {
     base: base, size: size, table: 0, count: 0, next: 0
   };
