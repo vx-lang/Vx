@@ -3634,6 +3634,18 @@ fn retype_tensor_reference<'c>(
 ) -> Result<Value<'c, 'c>, LowerError> {
     let mut src_ty = from;
     let desc = load_tensor_slot(gen, block, val, &mut src_ty)?;
+    tensor_in_a_slot(gen, block, desc, src_ty, to)
+}
+
+/// A new slot of type `to`, `memref<memref<B>>`, that holds the tensor `desc` of type `src_ty`.
+/// A kernel takes the tensors of its function's references, and passes one to a call in a slot.
+fn tensor_in_a_slot<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    desc: Value<'c, 'c>,
+    src_ty: Type<'c>,
+    to: Type<'c>,
+) -> Result<Value<'c, 'c>, LowerError> {
     let to_str = to.to_string();
     let dst_str = &to_str["memref<".len()..to_str.len() - 1];
     let dst_ty =
@@ -4517,6 +4529,10 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                     {
                         arg_val =
                             retype_tensor_reference(gen, &current_b, arg_val, expr_ty, field_ty)?;
+                    } else if field_ty.to_string().starts_with("memref<memref<")
+                        && gen.is_memref(&expr_ty)
+                    {
+                        arg_val = tensor_in_a_slot(gen, &current_b, arg_val, expr_ty, field_ty)?;
                     } else if gen.is_memref(&expr_ty) && gen.is_memref(&field_ty) {
                         arg_val = crate::codegen::lower::cast_memref(
                             gen, &current_b, arg_val, expr_ty, field_ty,

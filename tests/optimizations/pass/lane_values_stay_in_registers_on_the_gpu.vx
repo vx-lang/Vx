@@ -12,6 +12,8 @@
 //
 // RUN: vxc %s --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ptx
 // RUN: FileCheck %s < %t.ptx
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ast.ptx
+// RUN: FileCheck %s < %t.ast.ptx
 
 // The larger value of 256 elements: a multiple of 32, so no lane needs the first element.
 // CHECK-LABEL: .entry max_of_256(

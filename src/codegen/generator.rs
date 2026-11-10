@@ -1659,7 +1659,7 @@ impl<'c> MeliorGenerator<'c> {
         per_arg.extend(func.params.iter().map(|(_, ty)| match owned_tensor(ty) {
             Some(None) => "{vx.owned}".to_string(),
             Some(Some(p)) => self.placed_attr(&p),
-            None => "{}".to_string(),
+            None => self.borrowed_tensor_attr(ty),
         }));
         let text = format!("[{}]", per_arg.join(", "));
         let attr = melior::ir::Attribute::parse(self.context, &text)
@@ -2424,6 +2424,27 @@ impl<'c> MeliorGenerator<'c> {
             Some(topology) => format!("{{vx.placed = {topology} : i32}}"),
             None => "{vx.placed}".to_string(),
         }
+    }
+
+    /// The marks of a `&Tensor` or `&mut Tensor` parameter, which is a slot that holds the tensor.
+    /// The marks describe the tensor, so they cannot use the `llvm.` names that describe the
+    /// slot. `vx.tensor_access` is "readonly" for `&` and "noalias" for `&mut`. `vx.align` is the
+    /// `alignment:` of the tensor's memory space. A GPU kernel that reads the tensor uses both.
+    fn borrowed_tensor_attr(&self, ty: &syntax::Type) -> String {
+        let syntax::Type::Borrow { is_mut, inner, .. } = ty else {
+            return "{}".to_string();
+        };
+        let syntax::Type::Tensor(_, _, placement) = inner.as_ref() else {
+            return "{}".to_string();
+        };
+        let access = if *is_mut { "noalias" } else { "readonly" };
+        let align = placement
+            .as_ref()
+            .and_then(|p| self.memories.get(&p.space))
+            .and_then(|m| m.alignment.as_ref())
+            .map(|a| format!(", vx.align = {} : i64", a.0))
+            .unwrap_or_default();
+        format!("{{vx.tensor_access = \"{access}\"{align}}}")
     }
 
     /// The topology a placed tensor's memory belongs to, which frees it; `None` for on-chip
