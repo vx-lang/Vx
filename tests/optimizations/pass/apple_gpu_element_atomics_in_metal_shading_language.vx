@@ -1,12 +1,15 @@
 // The MSL that vxc writes for the 32-bit element atomics of `core::sync::atomic` on the Apple GPU
 // (`fleet/m4-uma.vx`). Metal atomics take only `memory_order_relaxed`. Vx makes each Relaxed read
 // an Acquire read (docs/lang/semantics.md, section 2.5), so an acquire fence follows each atomic
-// that reads. With `-fweak-relaxed-atomics`, no fence follows. The test needs no GPU.
+// that reads. With `-fweak-relaxed-atomics`, no fence follows. The CHECK lines hold for both code
+// generators. The test needs no GPU.
 //
 // RUN: vxc %s --host default --machine fleet/m4-uma.vx --emit-msl -o %t.metal
 // RUN: FileCheck %s --input-file=%t.metal
 // RUN: vxc %s -fweak-relaxed-atomics --host default --machine fleet/m4-uma.vx --emit-msl -o %t.weak.metal
 // RUN: FileCheck %s --check-prefix=WEAK --input-file=%t.weak.metal --implicit-check-not=atomic_thread_fence
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/m4-uma.vx --emit-msl -o %t.ast.metal
+// RUN: FileCheck %s --input-file=%t.ast.metal
 import core::sync::atomic;
 
 // `insert_all` takes the table as a `&`, but a compare-and-swap writes it. So the table is not
