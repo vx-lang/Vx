@@ -66,12 +66,30 @@ def tiny_model():
         shape = shapes[name]
         count = int(np.prod(shape))
         if name.endswith("norm"):
-            values = rng.uniform(count, 0.9, 1.1)
+            values = rng.uniform(count, 0.9, 1.1).reshape(shape)
         else:
             # About 1 / sqrt(hidden size), so the values in each layer keep a similar size.
-            values = rng.uniform(count, -0.15, 0.15)
-        tensors[name] = ("bf16", qwen_weights.f32_to_bf16(values).reshape(shape))
+            values = rng.uniform(count, -0.15, 0.15).reshape(shape)
+        if len(shape) == 2:
+            values = values * block_sizes(name, shape)
+        tensors[name] = ("bf16", qwen_weights.f32_to_bf16(values))
     return tensors
+
+
+# Each kind of matrix, and each block of 128 x 128 in it, gets another size. Then the fp8 scales
+# of the blocks differ, and a kernel that uses the scales of the wrong block or matrix gives other
+# logits. With one size everywhere, all scales are almost equal and such a mistake is not seen.
+KIND_SIZES = {"embed": 1.0, "qkv": 1.0, "attn_out": 0.7, "gate_up": 1.2, "down": 0.5}
+BLOCK_SIZES = (1.0, 0.3, 1.8, 0.6)
+
+
+def block_sizes(name, shape):
+    """The factor of each weight of the matrix `name`, by its kind and its block of 128 x 128."""
+    rows, cols = shape
+    row_block = np.arange(rows)[:, None] // 128
+    col_block = np.arange(cols)[None, :] // 128
+    block = np.asarray(BLOCK_SIZES, dtype=np.float32)[(row_block * 3 + col_block) % len(BLOCK_SIZES)]
+    return np.float32(KIND_SIZES[name.rsplit(".", 1)[-1]]) * block
 
 
 def main():

@@ -89,13 +89,26 @@ fn run_layers(w : &Weights, s : &mut State, token : &Tensor<i32, [?], Memory::HB
   for cache in s.caches.iter_mut() {
     let layer = &w.layers[l];
     nn_rms_norm(&mut s.xn, &s.x, &layer.attn_norm, c.hidden_size, eps);
-    nn_qkv(&mut s.q, &mut s.k, &mut s.v, &layer.qkv, &layer.qkv_bias, &s.xn, c.num_q_heads, c.num_kv_heads, c.head_dim, c.hidden_size);
+    if c.fp8 {
+      nn_qkv_fp8(&mut s.q, &mut s.k, &mut s.v, &layer.qkv.codes, &layer.qkv.scales, &layer.qkv_bias, &s.xn, c.num_q_heads, c.num_kv_heads, c.head_dim, c.hidden_size);
+    } else {
+      nn_qkv(&mut s.q, &mut s.k, &mut s.v, &layer.qkv.bf16, &layer.qkv_bias, &s.xn, c.num_q_heads, c.num_kv_heads, c.head_dim, c.hidden_size);
+    }
     nn_rope_and_store(&mut s.q_turned, &mut cache.k, &mut cache.v, &s.q, &s.k, &s.v, &s.cos, &s.sin, pos, c.num_q_heads, c.num_kv_heads, c.head_dim);
     nn_attention(&mut s.attended, &mut s.scores, &s.q_turned, &cache.k, &cache.v, pos, c.num_q_heads, c.num_kv_heads, c.head_dim);
-    nn_matvec_heads_add(&mut s.x, &layer.attn_out, &s.attended, c.hidden_size, c.num_q_heads, c.head_dim);
+    if c.fp8 {
+      nn_matvec_fp8_heads_add(&mut s.x, &layer.attn_out.codes, &layer.attn_out.scales, &s.attended, c.hidden_size, c.num_q_heads, c.head_dim);
+    } else {
+      nn_matvec_heads_add(&mut s.x, &layer.attn_out.bf16, &s.attended, c.hidden_size, c.num_q_heads, c.head_dim);
+    }
     nn_rms_norm(&mut s.xn, &s.x, &layer.mlp_norm, c.hidden_size, eps);
-    nn_swiglu(&mut s.mlp, &layer.gate_up, &s.xn, c.intermediate_size, c.hidden_size);
-    nn_matvec_add(&mut s.x, &layer.down, &s.mlp, c.hidden_size, c.intermediate_size);
+    if c.fp8 {
+      nn_swiglu_fp8(&mut s.mlp, &layer.gate_up.codes, &layer.gate_up.scales, &s.xn, c.intermediate_size, c.hidden_size);
+      nn_matvec_fp8_add(&mut s.x, &layer.down.codes, &layer.down.scales, &s.mlp, c.hidden_size, c.intermediate_size);
+    } else {
+      nn_swiglu(&mut s.mlp, &layer.gate_up.bf16, &s.xn, c.intermediate_size, c.hidden_size);
+      nn_matvec_add(&mut s.x, &layer.down.bf16, &s.mlp, c.hidden_size, c.intermediate_size);
+    }
     l = l + 1;
   }
   return;
@@ -106,10 +119,12 @@ fn run_layers(w : &Weights, s : &mut State, token : &Tensor<i32, [?], Memory::HB
 fn predict(w : &Weights, s : &mut State, next : &mut Tensor<i32, [?], Memory::HBM>) -> void {
   let c = &w.config;
   nn_rms_norm(&mut s.xn, &s.x, &w.final_norm, c.hidden_size, c.rms_norm_eps as f32);
-  if c.tied_embeddings {
+  if c.fp8 {
+    nn_matvec_fp8(&mut s.logits, &w.lm_head.codes, &w.lm_head.scales, &s.xn, c.vocab_size, c.hidden_size);
+  } else if c.tied_embeddings {
     nn_matvec(&mut s.logits, &w.embed, &s.xn, c.vocab_size, c.hidden_size);
   } else {
-    nn_matvec(&mut s.logits, &w.lm_head, &s.xn, c.vocab_size, c.hidden_size);
+    nn_matvec(&mut s.logits, &w.lm_head.bf16, &s.xn, c.vocab_size, c.hidden_size);
   }
   nn_argmax(next, &s.logits, c.vocab_size);
   return;
