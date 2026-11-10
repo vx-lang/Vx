@@ -39,10 +39,11 @@
 // GPU-NOT: buffer
 // GPU: [Vx Metal] waited for 1 kernel,
 //
-// `row` (4000 bytes) gets a new buffer for each of its two batches.
-// GPU: [Vx Metal] made a buffer of 16384 bytes for a batch
+// `row` (4000 bytes) gets a new buffer for each of its two batches. `malloc` can put it over the
+// end of a page, and then its buffer covers two pages.
+// GPU: [Vx Metal] made a buffer of {{16384|32768}} bytes for a batch
 // GPU: [Vx Metal] waited for 1 kernel,
-// GPU: [Vx Metal] made a buffer of 16384 bytes for a batch
+// GPU: [Vx Metal] made a buffer of {{16384|32768}} bytes for a batch
 
 import core::convert;
 
