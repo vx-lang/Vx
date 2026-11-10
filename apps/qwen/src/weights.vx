@@ -169,7 +169,7 @@ fn load_scales(r : &mut Reader, kind : *const i8, rows : i32, cols : i32) -> Ten
 fn load_matrix(r : &mut Reader, fp8 : bool, kind : *const i8, scale_kind : *const i8, rows : i32, cols : i32) -> WeightMatrix {
   if fp8 {
     let codes = load_codes(r, kind, rows, cols);
-    let scales = load_scales(r, scale_kind, rows / BLOCK, cols / BLOCK);
+    let scales = load_scales(r, scale_kind, (rows + BLOCK - 1) / BLOCK, (cols + BLOCK - 1) / BLOCK);
     return WeightMatrix {
       bf16: zeros(8), codes: codes, scales: scales
     };
