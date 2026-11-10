@@ -154,13 +154,17 @@ Region keptHolding(uintptr_t start, uintptr_t end) {
   return end <= at->second.end ? at->second : Region{};
 }
 
-// A launch of a kernel with asserts, and the word where a failed assert
-// stores its number.
+// A launch of a kernel with asserts, and the word `at` of `words` where a
+// failed assert stores its number.
 struct Check {
   std::string kernel;
   const char *image;
-  id<MTLBuffer> word;
+  id<MTLBuffer> words;
+  size_t at;
 };
+
+// The number of words in a buffer for the asserts of a batch.
+constexpr size_t assertWords = 1024;
 
 // The launches of one host thread that the GPU did not finish, in one command
 // buffer. A wait for some memory finishes only the batches that use it, so a
@@ -186,6 +190,10 @@ struct Batch {
   std::vector<Region> regions;
   std::vector<Access> accesses;
   std::vector<Check> checks;
+  // The buffer that gives the next launch with asserts its word, and the words
+  // it gave.
+  id<MTLBuffer> assertBuffer;
+  size_t assertsGiven = 0;
 
   bool open() const { return encoder != nil; }
 
@@ -272,7 +280,7 @@ void report(const Batch &b) {
   // A failed assert can also stop the GPU, so it is reported first.
   for (const Check &c : b.checks) {
     const uint32_t number =
-        *static_cast<const volatile uint32_t *>(c.word.contents);
+        static_cast<const volatile uint32_t *>(c.words.contents)[c.at];
     if (number != 0)
       die(c.kernel.c_str(), "%s",
           assertMessage(c.image, c.kernel.c_str(), number).c_str());
@@ -347,10 +355,13 @@ std::mutex cacheLock;
 std::unordered_map<const char *, id<MTLLibrary>> libraries;
 std::unordered_map<std::string, id<MTLComputePipelineState>> pipelines;
 
+std::string keyOf(const char *image, const char *kernel) {
+  return std::to_string(reinterpret_cast<uintptr_t>(image)) + "/" + kernel;
+}
+
 id<MTLComputePipelineState> pipelineFor(const char *image, const char *kernel) {
   std::lock_guard<std::mutex> hold(cacheLock);
-  std::string key =
-      std::to_string(reinterpret_cast<uintptr_t>(image)) + "/" + kernel;
+  std::string key = keyOf(image, kernel);
   auto found = pipelines.find(key);
   if (found != pipelines.end())
     return found->second;
@@ -406,6 +417,25 @@ std::vector<std::string> parametersOf(const char *image, const char *kernel) {
     return out;
   }
   die(kernel, "the image has no `// vx.kernel` line for this kernel");
+}
+
+// What the image says about a kernel. A search of the image took longer than
+// the rest of a launch, so each kernel is searched for once.
+struct Kernel {
+  std::vector<std::string> params;
+  bool asserts = false;
+};
+std::unordered_map<std::string, Kernel> kernels;
+
+const Kernel &kernelOf(const char *image, const char *kernel) {
+  std::lock_guard<std::mutex> hold(cacheLock);
+  std::string key = keyOf(image, kernel);
+  auto found = kernels.find(key);
+  if (found != kernels.end())
+    return found->second;
+  Kernel k{parametersOf(image, kernel),
+           assertLine(image, kernel, 1) != nullptr};
+  return kernels.emplace(key, std::move(k)).first->second;
 }
 
 // The bytes that a tensor can reach. A kernel reads a stride or an offset that
@@ -605,8 +635,8 @@ extern "C" void vx_metal_wait_for_launch(const void *payload,
     if (!image)
       die(static_cast<const char *>(payload),
           "the payload says `format=msl` and has no image");
-    std::vector<std::string> params =
-        parametersOf(image, static_cast<const char *>(payload));
+    const std::vector<std::string> &params =
+        kernelOf(image, static_cast<const char *>(payload)).params;
     size_t k = 0;
     for (int64_t i = 0; i < num_args && i < (int64_t)params.size(); ++i)
       if (VX_ABI_KIND(arg_tags[i]) == VX_ABI_KIND_MEMREF)
@@ -628,7 +658,8 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
     die(kernel, "the payload says `format=msl` and has no image");
 
   @autoreleasepool {
-    std::vector<std::string> params = parametersOf(image, kernel);
+    const Kernel &info = kernelOf(image, kernel);
+    const std::vector<std::string> &params = info.params;
     if ((int64_t)params.size() != num_args)
       die(kernel, "the kernel has %zu parameters, and the launch passes %lld",
           params.size(), (long long)num_args);
@@ -862,14 +893,20 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
                                        options:MTLResourceStorageModeShared]
              offset:0
             atIndex:bound.size()];
-    if (assertLine(image, kernel, 1)) {
-      Check c{kernel, image,
-              [device newBufferWithLength:sizeof(uint32_t)
-                                  options:MTLResourceStorageModeShared]};
-      if (!c.word)
-        die(kernel, "Metal could not make the buffer for its asserts");
-      memset(c.word.contents, 0, sizeof(uint32_t));
-      [encoder setBuffer:c.word offset:0 atIndex:bound.size() + 1];
+    if (info.asserts) {
+      if (!here->assertBuffer || here->assertsGiven == assertWords) {
+        here->assertBuffer =
+            [device newBufferWithLength:assertWords * sizeof(uint32_t)
+                                options:MTLResourceStorageModeShared];
+        if (!here->assertBuffer)
+          die(kernel, "Metal could not make the buffer for its asserts");
+        memset(here->assertBuffer.contents, 0, assertWords * sizeof(uint32_t));
+        here->assertsGiven = 0;
+      }
+      Check c{kernel, image, here->assertBuffer, here->assertsGiven++};
+      [encoder setBuffer:c.words
+                  offset:c.at * sizeof(uint32_t)
+                 atIndex:bound.size() + 1];
       here->checks.push_back(c);
     }
     [encoder dispatchThreadgroups:MTLSizeMake(grid[0], grid[1], grid[2])
