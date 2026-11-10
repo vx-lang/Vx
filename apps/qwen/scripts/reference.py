@@ -130,14 +130,20 @@ def main():
     parser.add_argument("--prompt", help="the prompt as text; needs --tokenizer")
     parser.add_argument("--tokenizer", help="a Hugging Face model folder that has tokenizer.json")
     parser.add_argument("--steps", type=int, default=8, help="the number of tokens to generate")
-    parser.add_argument("--tensors", action="store_true", help="print the shape and first values of each tensor")
+    parser.add_argument("--tensors", action="store_true", help="print the first bf16 codes and the sum of the codes of each tensor")
     args = parser.parse_args()
     model = Model(args.weights)
 
     if args.tensors:
-        for name, entry in model.tensors.items():
-            first = ", ".join(f"{v:.6g}" for v in qwen_weights.as_f32(entry).reshape(-1)[:4])
-            print(f"{name} {entry[0]} {list(entry[1].shape)} [{first}]")
+        # Bits, not decimals, so that a Vx program can print the same line exactly. A code is the
+        # 16 bits of a bf16 value, and the sum adds the codes of the whole tensor.
+        c = model.config
+        print(f"config hidden={c['hidden_size']} layers={c['num_layers']} vocab={c['vocab_size']};")
+        for name, (dtype, array) in model.tensors.items():
+            assert dtype == "bf16", f"{name}: only bf16 tensors are printed"
+            codes = array.reshape(-1)
+            first = ",".join(str(int(v)) for v in codes[:4])
+            print(f"{name} count={codes.size} codes={first} sum={int(codes.sum(dtype=np.uint64))};")
         return 0
 
     if args.prompt is not None:

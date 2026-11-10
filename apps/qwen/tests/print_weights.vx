@@ -1,0 +1,72 @@
+// Loads a weight file into GPU memory, copies each tensor back, and prints its first bf16 codes
+// and the sum of all its codes. `reference.py --tensors` prints the same lines from the file, so
+// equal lines mean that each tensor reached GPU memory whole and in the right place.
+//
+// RUN: python3 %S/../scripts/make_tiny_model.py %t.vxw > /dev/null
+// RUN: vxc %s --package qwen=%S/../src --host default --machine fleet/m4-uma.vx -- %t.vxw | FileCheck %s
+//
+// CHECK: {{^}}config hidden=128 layers=2 vocab=256;{{$}}
+// CHECK-NEXT: {{^}}embed count=32768 codes=47665,15857,48564,48396 sum=1054011312;{{$}}
+// CHECK-NEXT: {{^}}layers.0.attn_norm count=128 codes=16263,16240,16254,16257 sum=2080250;{{$}}
+// CHECK-NEXT: {{^}}layers.0.qkv count=32768 codes=15547,48549,48414,15868 sum=1053406842;{{$}}
+// CHECK-NEXT: {{^}}layers.0.qkv_bias count=256 codes=15886,48570,15847,48540 sum=8085547;{{$}}
+// CHECK-NEXT: {{^}}layers.0.attn_out count=16384 codes=48580,48649,48606,15492 sum=524703406;{{$}}
+// CHECK-NEXT: {{^}}layers.0.mlp_norm count=128 codes=16239,16265,16264,16249 sum=2080436;{{$}}
+// CHECK-NEXT: {{^}}layers.0.gate_up count=65536 codes=48663,48468,48570,15667 sum=2109312076;{{$}}
+// CHECK-NEXT: {{^}}layers.0.down count=32768 codes=48529,48635,48333,47986 sum=1053515491;{{$}}
+// CHECK-NEXT: {{^}}layers.1.attn_norm count=128 codes=16260,16254,16267,16243 sum=2080374;{{$}}
+// CHECK-NEXT: {{^}}layers.1.qkv count=32768 codes=15856,48201,48647,48476 sum=1045946013;{{$}}
+// CHECK-NEXT: {{^}}layers.1.qkv_bias count=256 codes=15769,15713,15666,48146 sum=8345995;{{$}}
+// CHECK-NEXT: {{^}}layers.1.attn_out count=16384 codes=48220,15548,48473,15241 sum=525443457;{{$}}
+// CHECK-NEXT: {{^}}layers.1.mlp_norm count=128 codes=16258,16233,16261,16245 sum=2080374;{{$}}
+// CHECK-NEXT: {{^}}layers.1.gate_up count=65536 codes=48412,48653,48532,15245 sum=2100625731;{{$}}
+// CHECK-NEXT: {{^}}layers.1.down count=32768 codes=15774,48586,15486,48577 sum=1049158558;{{$}}
+// CHECK-NEXT: {{^}}final_norm count=128 codes=16262,16238,16239,16258 sum=2080474;{{$}}
+
+import qwen::weights;
+import core::num;
+import core::convert;
+
+/// The 16 bits of a bf16 value.
+fn code(v : bf16) -> u32 {
+  return (v as f32).to_bits() >> 16;
+}
+
+/// Prints `name count=N codes=a,b,c,d sum=S;` for a tensor in GPU memory.
+fn report(name : *const i8, layer : i32, t : &Tensor<bf16, [?], Memory::HBM>) -> void {
+  let h = transfer(t, Memory::CPU_DRAM);
+  let n = h.len();
+  let mut sum : u64 = 0;
+  for i in 0..n {
+    sum = sum + u64::from(code(h[i]));
+  }
+  if layer < 0 {
+    println!("{} count={} codes={},{},{},{} sum={};", name, n, code(h[0]), code(h[1]), code(h[2]), code(h[3]), sum);
+  } else {
+    println!("layers.{}.{} count={} codes={},{},{},{} sum={};", layer, name, n, code(h[0]), code(h[1]), code(h[2]), code(h[3]), sum);
+  }
+  return;
+}
+
+fn main(argc : i32, argv : *mut *mut i8) -> i32 {
+  assert(argc == 2, "give the weight file as the only argument");
+  let w = load_weights(unsafe { argv[1] });
+  let c = &w.config;
+  println!("config hidden={} layers={} vocab={};", c.hidden_size, c.num_layers, c.vocab_size);
+  report("embed", -1, &w.embed);
+  for l in 0..c.num_layers {
+    let layer = &w.layers[l];
+    report("attn_norm", l, &layer.attn_norm);
+    report("qkv", l, &layer.qkv);
+    report("qkv_bias", l, &layer.qkv_bias);
+    report("attn_out", l, &layer.attn_out);
+    report("mlp_norm", l, &layer.mlp_norm);
+    report("gate_up", l, &layer.gate_up);
+    report("down", l, &layer.down);
+  }
+  report("final_norm", -1, &w.final_norm);
+  if !c.tied_embeddings {
+    report("lm_head", -1, &w.lm_head);
+  }
+  return 0;
+}

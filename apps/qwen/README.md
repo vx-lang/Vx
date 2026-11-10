@@ -3,8 +3,9 @@
 This app runs Qwen coder models with a program written in Vx, on the GPU of an Apple Silicon
 Mac. The plan and its milestones are in [#3094](https://github.com/vx-lang/Vx/issues/3094).
 
-The Vx program does not exist yet. This folder now has the Python tools that prepare the weights
-and compute the values that the Vx program must match.
+The Vx program does not generate text yet. This folder now has the Python tools that prepare the
+weights and compute the values that the Vx program must match, and the Vx module that loads the
+weights into GPU memory.
 
 ## Prepare a model
 
@@ -40,6 +41,27 @@ for tests that cannot download a real model.
 | `scripts/check_against_mlx.py` | Compares `reference.py` with MLX on the same model. |
 | `scripts/make_tiny_model.py` | Writes a tiny model with random weights. |
 | `scripts/qwen_weights.py` | Reads and writes the weight file. Its first comment describes the format. |
+
+## The Vx code
+
+`src/weights.vx` loads a weight file into GPU memory, for the kernels of `std::nn`. A program
+imports it as `qwen::weights`, with `vxc --package qwen=apps/qwen/src`.
+
+The tests are in `tests/`. Run them from the root of the Vx repository, with `vxc`, `FileCheck`
+and a Python 3 that has NumPy on `PATH`:
+
+```sh
+apps/qwen/tests/run.sh
+```
+
+`tests/print_weights.vx` also checks a real model. Its lines must equal those of
+`reference.py --tensors`:
+
+```sh
+vxc apps/qwen/tests/print_weights.vx --package qwen=apps/qwen/src --host default \
+    --machine fleet/m4-uma.vx -- qwen-0.5b.vxw
+python3 apps/qwen/scripts/reference.py qwen-0.5b.vxw --tensors
+```
 
 ## The check of the reference
 
