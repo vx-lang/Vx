@@ -112,9 +112,12 @@ impl<'c> LowerToMelior<'c> for IfExpr {
             ));
         }
 
-        let (cond_val, _, block) = gen.generate_expr(cond, block)?;
-
-        let expected = gen.expected_type;
+        // A condition is a `bool`, also when the `if` itself gives no value. An `if` as the
+        // condition then gives its value, not its own condition.
+        let expected = gen.expected_type.replace(gen.i1_ty);
+        let cond = gen.generate_expr(cond, block);
+        gen.expected_type = expected;
+        let (cond_val, _, block) = cond?;
         let has_ret = expected.is_none_or(|t| {
             let t = t.to_string();
             t != "none" && t != "void"
