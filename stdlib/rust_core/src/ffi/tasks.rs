@@ -136,6 +136,19 @@ pub(crate) fn drop_deadline() -> Option<i64> {
     PUT_ASIDE.with(|p| p.borrow().last().map(|d| d.at))
 }
 
+/// The deadlines that a new task starts with: the earliest deadline of the code that spawns it.
+/// So a task in a `drop` or in a call of `within` gives up at the same time as that code.
+pub(crate) fn deadlines_for_a_task() -> PutAside {
+    let at = drop_deadline();
+    at.map(|at| Deadline {
+        mark: None,
+        at,
+        drop: false,
+    })
+    .into_iter()
+    .collect()
+}
+
 /// Starts a scope with a deadline `limit_ns` from now. It keeps the deadline of the scope
 /// around it when that is earlier.
 fn push_deadline(mark: Option<Arc<CancelMark>>, limit_ns: i64, drop: bool) {
@@ -409,6 +422,7 @@ pub unsafe extern "C" fn vx_task_start_at(
     }
     let task_env = Env(env);
     let own_site = site.clone();
+    let put_aside = deadlines_for_a_task();
     let thread_done = Arc::new(AtomicI64::new(0));
     let done = thread_done.clone();
     crate::ffi::wait::thread_started();
@@ -418,6 +432,7 @@ pub unsafe extern "C" fn vx_task_start_at(
             let task_env = task_env;
             let mut site = site;
             CURRENT.with(|c| *c.borrow_mut() = Some(mark));
+            PUT_ASIDE.with(|p| *p.borrow_mut() = put_aside);
             swap_site(&mut site);
             run(task_env.0);
             lines::task_ended();
