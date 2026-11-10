@@ -12,7 +12,7 @@
 // The reference is passed as the tensor's buffer. The call site and the function use the
 // same static shape, so no cast is needed.
 //
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: %[[A:.*]] = memref.alloc() : memref<2x2xf32>
 // CHECK: call @fill(%[[A]], %{{.*}})

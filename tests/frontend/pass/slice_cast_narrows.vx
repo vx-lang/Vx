@@ -34,7 +34,7 @@
 // The RUN line checks the MLIR of the default code generator.
 // a_cast_over_a_half_slice.vx checks the values on both code generators.
 //
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 
 fn main() -> i32 {
   let mut h = Tensor<f16, [ 2, 4 ]>::new();

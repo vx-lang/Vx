@@ -11,7 +11,7 @@
 // `dtypes:`. The region check that refuses f64 (see
 // fail/f64_built_inside_a_device_region.vx) has to leave it alone.
 //
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 
 Memory CPU_DRAM {}
 Memory HBM {

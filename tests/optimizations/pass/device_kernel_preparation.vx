@@ -33,7 +33,7 @@
 // The pass pipeline is pinned to the vx lowering alone, since that is the pass
 // that prepares the kernel.
 //
-// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s # flat-codegen
 
 
 // The launch carries the one buffer the region touches and nothing else. The

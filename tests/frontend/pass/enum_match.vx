@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 // Test enum definitions, variant construction, and pattern matching.
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // `Result` is a data-carrying enum with no generics: a `{ tag, payload }` value, constructed
 // in place, returned by value, and matched by tag. The program compiles on the flat path; the
 // AST path still fails on the payload extraction (Vx#398).
