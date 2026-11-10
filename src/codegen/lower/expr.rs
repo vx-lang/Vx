@@ -4099,6 +4099,34 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             let tensor_ty = Type::parse(gen.context, &tensor_ty_str).ok_or_else(|| {
                 crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
             })?;
+            // In a spawn region, a tensor whose sizes are all numbers gets a buffer of a fixed
+            // size, as the flat code generator gives it. A kernel can keep such a buffer on its
+            // stack, and not in memory from device `malloc`.
+            let size_exprs: &[Expr] = match args {
+                [Expr::Array(arr)] => &arr.elements,
+                _ => args,
+            };
+            let fixed: Option<Vec<i64>> = size_exprs
+                .iter()
+                .map(|e| match e {
+                    Expr::Number(n) => n.value.parse::<i64>().ok().filter(|v| *v >= 0),
+                    _ => None,
+                })
+                .collect();
+            let fixed_ty = match fixed {
+                Some(dims) if !dims.is_empty() && !gen.spawn_arches.is_empty() => {
+                    let text = format!(
+                        "memref<{}x{}>",
+                        dims.iter()
+                            .map(|d| d.to_string())
+                            .collect::<Vec<_>>()
+                            .join("x"),
+                        mlir_ty_str
+                    );
+                    Some(Type::parse(gen.context, &text).ok_or(LowerError::ParseType(text))?)
+                }
+                _ => None,
+            };
 
             // A tensor placed in a device's memory. `uninit()` is allocated there; one that is
             // filled is filled on the host and copied there, since the host cannot write it.
@@ -4123,22 +4151,39 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                         .add_results(&[tensor_ty])
                         .build()?
                 }
-                _ => OperationBuilder::new("memref.alloc", gen.loc())
-                    .add_operands(&dynamic_sizes)
-                    .add_attributes(&[(
-                        Identifier::new(gen.context, "operandSegmentSizes"),
-                        DenseI32ArrayAttribute::new(gen.context, &[dynamic_sizes.len() as i32, 0])
-                            .into(),
-                    )])
-                    .add_results(&[tensor_ty])
-                    .build()?,
+                _ => {
+                    let (sizes, ty) = match (device, fixed_ty) {
+                        (None, Some(t)) => (&[][..], t),
+                        _ => (&dynamic_sizes[..], tensor_ty),
+                    };
+                    OperationBuilder::new("memref.alloc", gen.loc())
+                        .add_operands(sizes)
+                        .add_attributes(&[(
+                            Identifier::new(gen.context, "operandSegmentSizes"),
+                            DenseI32ArrayAttribute::new(gen.context, &[sizes.len() as i32, 0])
+                                .into(),
+                        )])
+                        .add_results(&[ty])
+                        .build()?
+                }
             };
             let copy_to_device = device.filter(|_| !name.as_ref().ends_with("::uninit"));
             // A size can end the block it started in (`[if c { 3 } else { 2 }]` lands in the
             // `if`'s merge block), so what follows goes where the sizes left off.
             let block = current_b;
             let alloc_ref = block.append_operation(alloc_op);
-            let alloc_val: Value = alloc_ref.result(0)?.into();
+            let mut alloc_val: Value = alloc_ref.result(0)?.into();
+            if alloc_val.r#type() != tensor_ty {
+                alloc_val = block
+                    .append_operation(
+                        OperationBuilder::new("memref.cast", gen.loc())
+                            .add_operands(&[alloc_val])
+                            .add_results(&[tensor_ty])
+                            .build()?,
+                    )
+                    .result(0)?
+                    .into();
+            }
             // `::new()` zeroes what `::uninit()` leaves as it was found, and so does the older
             // `Tensor<T>([..])`: only `::uninit()`, which belongs inside `unsafe`, skips the fill.
             // The same fill a matmul emits before it accumulates, so there is one answer to what
