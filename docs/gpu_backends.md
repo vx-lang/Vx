@@ -85,7 +85,9 @@ copy. `--emit-msl` writes the MSL and the same manifest as `--emit-ptx`.
   runtime waits before the CPU reads or frees memory that a kernel can use, and before a launch
   that runs on the CPU. It waits only for the kernels that write memory the CPU reads, or that
   use memory the CPU writes. A `pub fn` of a library waits before it returns to C, for the
-  kernels of its thread and for the kernels that write its tensor parameters. `VX_METAL_SYNC=1`
+  kernels of its thread and for the kernels that write its tensor parameters. A call to a C
+  function with a pointer into GPU memory waits for every kernel, because the pointer gives no
+  size. `VX_METAL_SYNC=1`
   waits after each launch, so a GPU fault names its kernel. `VX_DISPATCH_VERBOSE=1` prints each launch, and
   at each wait the number of kernels and their time on the GPU.
 - Metal cannot stop a kernel. So a failed `assert` in a kernel stores the number of the assert in
