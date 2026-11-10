@@ -8040,10 +8040,17 @@ static void waitBeforeReturningToC(ModuleOp module,
     Value slot = b.create<LLVM::AllocaOp>(f.getLoc(), ptrType, i32Type, one);
     SmallVector<func::ReturnOp> returns;
     f.walk([&](func::ReturnOp r) { returns.push_back(r); });
-    SmallVector<Value> params;
-    for (BlockArgument arg : f.getArguments())
+    // The AST code generator gives a reference to a tensor as a slot that
+    // holds the tensor. The wait reads the tensor from the slot.
+    SmallVector<Value> params, slotParams;
+    for (BlockArgument arg : f.getArguments()) {
+      auto slot = dyn_cast<MemRefType>(arg.getType());
       if (isTensorToWaitFor(arg.getType()))
         params.push_back(arg);
+      else if (slot && slot.getRank() == 0 &&
+               isTensorToWaitFor(slot.getElementType()))
+        slotParams.push_back(arg);
+    }
     for (func::ReturnOp r : returns) {
       b.setInsertionPoint(r);
       auto opcode = [&](int32_t code) -> Value {
@@ -8056,6 +8063,8 @@ static void waitBeforeReturningToC(ModuleOp module,
                                ValueRange{code, payload});
       };
       SmallVector<Value> tensors = params;
+      for (Value slot : slotParams)
+        tensors.push_back(b.create<memref::LoadOp>(r.getLoc(), slot));
       for (Value v : r.getOperands())
         if (isTensorToWaitFor(v.getType()))
           tensors.push_back(v);
