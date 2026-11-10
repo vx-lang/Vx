@@ -590,6 +590,17 @@ bool Printer::op(Operation *o) {
     return llvmOp(o);
   if (ns == "math")
     return mathOp(o);
+  if (o->getName().getStringRef() == "nvvm.bar.warp.sync") {
+    // The end of a lane loop in a subgroup loop. A subgroup is a SIMD-group
+    // of 32 threads, and all of them wait, as with the mask of all lanes.
+    IntegerAttr mask;
+    if (!matchPattern(o->getOperand(0), m_Constant(&mask)) ||
+        mask.getInt() != -1)
+      return fail(o, "a barrier for only some lanes of a subgroup");
+    line() << "simdgroup_barrier(mem_flags::mem_device | "
+              "mem_flags::mem_threadgroup);\n";
+    return true;
+  }
   return fail(o, "the Metal code generator cannot print this op");
 }
 
