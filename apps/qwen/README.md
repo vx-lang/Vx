@@ -3,8 +3,8 @@
 This app runs Qwen coder models with a program written in Vx, on the GPU of an Apple Silicon
 Mac. The plan and its milestones are in [#3094](https://github.com/vx-lang/Vx/issues/3094). The
 mixture-of-experts (MoE) model Qwen3-Coder-30B-A3B is the next milestone,
-[#3151](https://github.com/vx-lang/Vx/issues/3151). The Vx program runs MoE files in bf16 and in
-Q4_0, so far checked on the tiny MoE model.
+[#3151](https://github.com/vx-lang/Vx/issues/3151). The Vx program runs it in Q4_0, as the section
+on the MoE model below shows.
 
 The program generates tokens with greedy decoding, from a prompt given as token ids. A tokenizer
 in Vx comes later, so `reference.py` turns text into token ids for now.
@@ -86,6 +86,34 @@ above 4 bits.
 The Vx program reads a Q4_0 file like the others, and runs the Q4_0 kernels of `std::nn` for it.
 Of four 4-bit formats, Q4_0 was the closest to bf16 on the 7B model. The measurement is in
 [#3151](https://github.com/vx-lang/Vx/issues/3151#issuecomment-6763017034).
+
+## The MoE model
+
+Qwen3-Coder-30B-A3B is 61 GB in bf16, so this Mac runs it in Q4_0, at 17.8 GB:
+
+```sh
+python3 apps/qwen/scripts/convert.py --q4 ~/models/Qwen3-Coder-30B-A3B-Instruct qwen3-30b-q4.vxw
+vxc apps/qwen/src/main.vx --package qwen=apps/qwen/src --host default \
+    --machine fleet/m4-uma.vx -- qwen3-30b-q4.vxw --tokens 750,75698,1445,982,257 --steps 64
+```
+
+The tokens are `def fibonacci(n):` and a new line with 4 spaces. The Vx program wrote a recursive
+and an iterative `fibonacci` in the 64 steps. `reference.py` on the same file chose the same 64
+tokens, with each logit within 5.4e-05.
+
+Both programs measured the perplexity on `src/dialect/MetalImage.cpp` at 7e3cf6a3, as
+`llama-perplexity -c 512 --chunks 8 --no-escape` measures it:
+
+| Weights | Perplexity |
+| --- | --- |
+| bf16, with `reference.py` | 3.6813 |
+| Q4_0 of `convert.py --q4`, with `reference.py` | 3.7290 |
+| Q4_0 of unsloth with an importance matrix, with `llama-perplexity` | 3.7091 |
+
+A token took 28.0 ms in Vx with the cheaper kernel launches of
+[#3152](https://github.com/vx-lang/Vx/pull/3152) and [#3165](https://github.com/vx-lang/Vx/pull/3165),
+and 24.3 ms in llama.cpp. Each token runs about 477 kernels. The details are in
+[#3151](https://github.com/vx-lang/Vx/issues/3151#issuecomment-6768053118).
 
 ## The Vx code
 
