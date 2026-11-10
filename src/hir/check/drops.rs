@@ -178,6 +178,8 @@ struct TempScan {
     upto: Option<usize>,
     /// Each call moved out: its local, type, value and drops.
     found: Vec<(String, Type, Expr, Vec<GluePart>)>,
+    /// A `&&` or `||` became an `if`, so that a side drops its temporaries when it ends.
+    short_circuit_rewritten: bool,
 }
 
 impl TempScan {
@@ -188,6 +190,7 @@ impl TempScan {
             last_temp: None,
             upto,
             found: Vec::new(),
+            short_circuit_rewritten: false,
         }
     }
 }
@@ -1979,10 +1982,10 @@ impl<'a> TypeChecker<'a> {
     /// moved into a `let` of its own just before the statement, and dropped after it. So the
     /// order things happen in does not change, every call the statement makes before it moves
     /// out too, in order, into a `let` that is dropped after the statement only when its
-    /// value was just read. Nothing moves out of a branch, a loop or the right of `&&` or `||`,
-    /// and a temporary after one, or after a call whose type is not known, stays where it is
-    /// and is not dropped. The condition of an `if` and the value of a `match` run before the
-    /// branch, so their temporaries move out too.
+    /// value was just read. Nothing moves out of a branch or a loop, and a temporary after one,
+    /// or after a call whose type is not known, stays where it is and is not dropped. The
+    /// condition of an `if` and the value of a `match` run before the branch, so their
+    /// temporaries move out too. A `&&` or `||` whose sides make temporaries becomes an `if`.
     fn drops_hoist_temporaries(
         &mut self,
         body: &mut [Statement],
@@ -2021,6 +2024,10 @@ impl<'a> TypeChecker<'a> {
             let mut copy = stmt.clone();
             self.drops_scan_stmt(&mut copy, taken, &mut probe);
             let Some(last_temp) = probe.last_temp else {
+                // Only the right side of a `&&` or `||` made a temporary, and its `if` drops it.
+                if probe.short_circuit_rewritten {
+                    *stmt = copy;
+                }
                 continue;
             };
             let mut scan = TempScan::new(Some(last_temp));
@@ -2119,8 +2126,59 @@ impl<'a> TypeChecker<'a> {
                 scan.blocked = true;
                 return;
             }
-            // A branch, a loop or a short-circuit runs its parts only sometimes, and a
-            // closure later: nothing at or after it moves out.
+            // Each side of `&&` or `||` drops its temporaries when it ends, as in Rust. The right
+            // side runs only sometimes, so the expression becomes an `if` that holds the drops:
+            // `if a { b } else { false }`, or `if a { true } else { b }`.
+            Expr::LogicalOp(l) => {
+                let first = scan.found.len();
+                self.drops_scan_temps(&mut l.lhs, false, scan);
+                let mut drops = Vec::new();
+                for (name, _, _, glue) in &mut scan.found[first..] {
+                    drops.extend(glue_drops(name, &std::mem::take(glue), None));
+                }
+                let rhs = std::mem::replace(&mut *l.rhs, ident("false"));
+                let mut rhs = vec![Statement::ExprStmt(ExprStmtStmt::new(
+                    rhs,
+                    false,
+                    Span::default(),
+                ))];
+                let mut edits = Edits::default();
+                self.drops_hoist_temporaries(&mut rhs, &mut edits, true);
+                self.drops_apply(&mut rhs, edits);
+                if drops.is_empty() && rhs.len() == 1 {
+                    let Some(Statement::ExprStmt(s)) = rhs.pop() else {
+                        unreachable!("the right side is one expression")
+                    };
+                    *l.rhs = s.expr;
+                } else {
+                    let constant = |value: &str| {
+                        vec![Statement::ExprStmt(ExprStmtStmt::new(
+                            ident(value),
+                            false,
+                            Span::default(),
+                        ))]
+                    };
+                    let (mut then_block, mut else_block) = match l.op {
+                        LogicalOp::And => (rhs, constant("false")),
+                        LogicalOp::Or => (constant("true"), rhs),
+                    };
+                    then_block.splice(0..0, drops.clone());
+                    else_block.splice(0..0, drops);
+                    let lhs = std::mem::replace(&mut *l.lhs, ident("false"));
+                    *e = Expr::If(IfExpr::new(
+                        false,
+                        Box::new(lhs),
+                        then_block,
+                        Some(else_block),
+                        l.span,
+                    ));
+                    scan.short_circuit_rewritten = true;
+                }
+                scan.blocked = true;
+                return;
+            }
+            // A branch or a loop runs its parts only sometimes, and a closure later: nothing at
+            // or after it moves out.
             _ => {
                 scan.blocked = true;
                 return;
