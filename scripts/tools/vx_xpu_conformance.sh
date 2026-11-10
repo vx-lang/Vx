@@ -28,11 +28,26 @@
 #                element by element (relative tolerance, the two sum in
 #                different orders) and at 8192 for throughput.
 #
+# Two more cases check the library's own state rather than one kernel's
+# arithmetic, because neither fault shows up as a number that looks wrong:
+#
+#   same name    reduce and transpose each call their one kernel
+#                `vx_npu_kernel_0`, and the two images are different kernels
+#                with the same parameter count. Both are dispatched in one
+#                process, A then B then A, and each answer has to be its own.
+#                A cache keyed by the name alone serves the first library's
+#                kernel to the second and reports 1520 of 1536 wrong.
+#   host memory  every operand is left in this program's own buffer, which the
+#                device cannot address. The backend has to refuse the launch
+#                ("argument 0 is at an address the device cannot reach") and run
+#                the kernel's host copy instead, with the CPU backend's answer.
+#
 # A kernel the device cannot run is reported, not skipped: the compiler's
 # refusal or the host fallback is the result for that case.
 #
-# Each comparison is shown able to fail: five sabotage steps perturb an input,
-# loosen or tighten a tolerance, mispair a region with an element type, and
+# Each comparison is shown able to fail: seven sabotage steps perturb an input,
+# loosen or tighten a tolerance, mispair a region with an element type, key the
+# kernel cache by the name alone, drop the address check before a launch, and
 # change a printed line, and each must turn the run red.
 #
 # Memory: the largest program holds three 8192x8192 fp32 tensors (805 MiB),
@@ -169,6 +184,29 @@ kernel_at() {
   awk -v want="$1" '$1 == want { print $2 }' "$OUT/$2/order.txt"
 }
 
+# Wrap a payload in a shared object that exports it.
+#
+# A program's payload lives in the library it was compiled into, and the XPU
+# backend names that library in its kernel cache key because two libraries can
+# use one kernel name. A payload in a heap buffer has no library, so this is how
+# the same-name check hands the backend two payloads that differ in that one
+# respect.
+payload_library() {
+  local payload="$1" out="$2"
+  python3 - "$payload" "$out.c" <<'PY'
+import sys
+
+data = open(sys.argv[1], "rb").read()
+with open(sys.argv[2], "w") as f:
+    f.write("#include <stddef.h>\n")
+    f.write("const unsigned char vx_test_payload[] = {")
+    f.write(", ".join(str(b) for b in data) or "0")
+    f.write("};\n")
+    f.write("const size_t vx_test_payload_size = %d;\n" % len(data))
+PY
+  "${CC:-cc}" -shared -fPIC -o "$out" "$out.c"
+}
+
 # Dispatch one case on one backend: `on_cpu` or `on_arc`, then the arguments of
 # `vx_xpu_conformance run`.
 dispatch_case() {
@@ -272,6 +310,163 @@ dispatch_case cpu transpose transpose f32 48 32 1 20 "$kernel" 3
 require_cpu_reference transpose "$kernel"
 dispatch_case arc transpose transpose f32 48 32 1 20 "$kernel" 3
 compare_sides transpose f32 1536 0 "$kernel"
+
+echo "==> two libraries that both call their kernel vx_npu_kernel_0"
+# reduce.vx and transpose.vx each hold one placed region, so each program names
+# its kernel `vx_npu_kernel_0` and the two images are different kernels with the
+# same parameter count. Dispatched in one process, a cache keyed by the name
+# alone runs the first library's kernel for the second one's call, and the count
+# check before the launch agrees because the counts are equal.
+#
+# The cache key names the library that holds a payload, so each payload has to
+# be in a library for this to mean anything.
+reduce_kernel="$(kernel_at 0 reduce)"
+transpose_kernel="$(kernel_at 0 transpose)"
+if [ "$reduce_kernel" != "$transpose_kernel" ]; then
+  echo "error: reduce is $reduce_kernel and transpose is $transpose_kernel," >&2
+  echo "       and this check needs them to share a name." >&2
+  exit 1
+fi
+payload_library "$OUT/reduce/$reduce_kernel.payload" "$OUT/reduce/libpayload.so"
+payload_library "$OUT/transpose/$transpose_kernel.payload" \
+  "$OUT/transpose/libpayload.so"
+if ! VX_DISPATCH_VERBOSE=1 timeout 600 "$OUT/reduce/on_arc" same_name f32 reduce 64 32 1 \
+  "$OUT/reduce/libpayload.so" transpose 48 32 1 \
+  "$OUT/transpose/libpayload.so" >"$OUT/same_name.txt" 2>&1; then
+  grep -h "same name:\|  A\|  B\|result:" "$OUT/same_name.txt" | sed 's/^/    /' >&2
+  echo "error: a kernel was served from the other library's cache" >&2
+  exit 1
+fi
+grep -h "same name:\|  A:\|  B:\|result:\|footprint:" "$OUT/same_name.txt" |
+  sed 's/^/    /'
+if ! grep -q "result: equal (0 of 3 dispatches differ)" "$OUT/same_name.txt"; then
+  echo "error: the second library's call did not run its own kernel" >&2
+  exit 1
+fi
+# Both payloads ran from their own image, so a host copy did not stand in for
+# one of them and make the comparison say nothing.
+if [ "$(grep -c "ran from its own image" "$OUT/same_name.txt")" != 2 ]; then
+  echo "error: one of the two payloads did not launch its own image" >&2
+  grep -h "ran from its own image\|not launching" "$OUT/same_name.txt" >&2
+  exit 1
+fi
+echo "    each library ran its own kernel, and the first one still does"
+
+echo "==> a launch whose operands are the program's own memory"
+# A memref argument can point anywhere, and the driver does not refuse a host
+# address: the kernel reads memory the GPU does not know, the process dies of a
+# page fault, and nothing says which launch did it. The backend checks every
+# memref's data pointer before it launches, so this case has to be refused and
+# has to run its host copy instead -- with the same answer as the CPU backend.
+hp_kernel="$(kernel_at 0 elementwise)"
+VX_CONFORMANCE_HOST_POINTER=1 VX_CONFORMANCE_WARMUP=0 VX_DISPATCH_VERBOSE=1 \
+  timeout 600 "$OUT/elementwise/on_arc" run ew f32 32 32 1 1 \
+  "$OUT/elementwise/$hp_kernel.payload" "$hp_kernel" \
+  "$OUT/elementwise/$hp_kernel.arc.host_pointer.bin" \
+  >"$OUT/elementwise/$hp_kernel.arc.host_pointer.txt" 2>&1
+grep -h "host pointer:\|cannot reach\|against reference:" \
+  "$OUT/elementwise/$hp_kernel.arc.host_pointer.txt" | sed 's/^/    /'
+if ! grep -q "argument 0 is at an address the device cannot reach; not launching" \
+  "$OUT/elementwise/$hp_kernel.arc.host_pointer.txt"; then
+  echo "error: the launch at a host address was not refused. Either the check" >&2
+  echo "       before a launch is gone, or it no longer names the argument." >&2
+  exit 1
+fi
+if grep -q "ran from its own image" \
+  "$OUT/elementwise/$hp_kernel.arc.host_pointer.txt"; then
+  echo "error: the device image was launched at a host address anyway" >&2
+  exit 1
+fi
+"$OUT/elementwise/on_cpu" compare f32 1024 0 \
+  "$OUT/elementwise/$hp_kernel.cpu.bin" \
+  "$OUT/elementwise/$hp_kernel.arc.host_pointer.bin" | sed 's/^/    /'
+
+echo "==> eight threads dispatching at once, under ThreadSanitizer"
+# The backend keeps one kernel handle and one command list for the whole
+# process, so two threads that dispatch at once write the same arguments and
+# append to the same list. Level Zero allows neither, and without the lock the
+# result is a wrong answer or a crash rather than an error, so a plain
+# assertion on it is a coin flip. ThreadSanitizer is what turns the missing lock
+# into a report that names the map, so the library and this harness are built
+# again with it.
+#
+# The build mirrors build.rs's XPU command line, which is the only other place
+# these flags are written down.
+tsan_dir="$OUT/tsan"
+mkdir -p "$tsan_dir"
+tsan_cxx="${XPU_CXX:-/opt/intel/oneapi/compiler/latest/bin/icpx}"
+if [ ! -x "$tsan_cxx" ]; then
+  echo "error: no $tsan_cxx, so the lock cannot be checked" >&2
+  exit 1
+fi
+tsan_compiler_dir="$(dirname "$(dirname "$tsan_cxx")")"
+tsan_mkl_dir="/opt/intel/oneapi/mkl/latest"
+"$tsan_cxx" -shared -fPIC -O2 -g -fsanitize=thread \
+  "$ROOT/runtime/xpu_dispatch.cpp" -lffi \
+  -o "$tsan_dir/libvx_xpu_dispatch_tsan.so" -fsycl -lze_loader \
+  -I"$tsan_compiler_dir/include" -I"$tsan_mkl_dir/include" -I"$ROOT/include" \
+  -I"$ROOT/runtime" -L"$tsan_compiler_dir/lib" -L"$tsan_mkl_dir/lib" \
+  -Wl,-rpath,"$tsan_compiler_dir/lib" -Wl,-rpath,"$tsan_mkl_dir/lib" \
+  -lmkl_sycl_blas -lmkl_intel_ilp64 -lmkl_sequential -lmkl_core -lsycl \
+  -lOpenCL -lpthread -lm -ldl
+"${CXX:-g++}" -std=c++17 -O1 -g -fsanitize=thread -rdynamic \
+  -I"$HERE" -I"$ROOT/include" "$HERE/vx_xpu_conformance.cpp" \
+  "$OUT/elementwise/kernels.o" -lffi -ldl \
+  -L"$(dirname "$STD_CORE")" -Wl,-rpath,"$(dirname "$STD_CORE")" \
+  -lvx_std_core -L"$tsan_dir" -lvx_xpu_dispatch_tsan \
+  -Wl,-rpath,"$tsan_dir" -lze_loader -o "$OUT/elementwise/on_arc_tsan"
+# Two of ThreadSanitizer's reports are not about this library, and the run is
+# not allowed to fail on them:
+#
+#   detect_deadlocks=0        the Level Zero driver takes its own locks, and
+#                             one of them is read as this library's, so the
+#                             reported lock order cannot happen: the second
+#                             stack is inside the driver and names no frame of
+#                             ours.
+#   exitcode=0                the driver delivers signals, and a `malloc` this
+#                             library makes afterwards is reported as
+#                             "signal-unsafe call inside of a signal". That is
+#                             a warning about the state a signal left behind,
+#                             not a race.
+#
+# What is asserted is a data race or a lock order that involves this library,
+# which is the shape the missing lock takes.
+tsan_kernel="$(kernel_at 0 elementwise)"
+tsan_log="$OUT/elementwise.threads.tsan.txt"
+tsan_status=0
+VX_CONFORMANCE_THREADS=8 VX_CONFORMANCE_WARMUP=0 VX_DISPATCH_VERBOSE=1 \
+  TSAN_OPTIONS="detect_deadlocks=0:exitcode=0" timeout 900 \
+  "$OUT/elementwise/on_arc_tsan" run ew f32 32 32 1 20 \
+  "$OUT/elementwise/$tsan_kernel.payload" "$tsan_kernel" \
+  "$OUT/elementwise/$tsan_kernel.threads.bin" >"$tsan_log" 2>&1 || tsan_status=$?
+grep -h "threads:\|against reference:\|result:\|ran from its own image" \
+  "$tsan_log" | sed 's/^/    /'
+if grep -qE "WARNING: ThreadSanitizer: (data race|lock-order-inversion)" \
+  "$tsan_log"; then
+  grep -A 6 "WARNING: ThreadSanitizer" "$tsan_log" | head -20 >&2
+  echo "error: ThreadSanitizer reported a data race, so the launch is not" >&2
+  echo "       serialised. The report above names where." >&2
+  exit 1
+fi
+if [ "$tsan_status" != 0 ]; then
+  tail -20 "$tsan_log" >&2
+  echo "error: the threaded run failed with status $tsan_status" >&2
+  exit 1
+fi
+if ! grep -q "threads: 8 threads, 20 dispatches each, all returned" "$tsan_log"; then
+  echo "error: the threaded run did not dispatch from eight threads" >&2
+  exit 1
+fi
+if ! grep -q "result: equal (0 of 8 threads differ)" "$tsan_log"; then
+  echo "error: a thread's answer was not the reference's" >&2
+  exit 1
+fi
+if ! grep -q "ran from its own image" "$tsan_log"; then
+  echo "error: no thread launched the image, so this says nothing about the" >&2
+  echo "       lock around a launch" >&2
+  exit 1
+fi
+echo "    no data race, and all eight threads' answers are the reference's"
 
 echo "==> building the 1024x1024 matrix multiply"
 build_program matmul

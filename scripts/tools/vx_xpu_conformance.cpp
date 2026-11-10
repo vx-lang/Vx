@@ -25,6 +25,8 @@
 //
 //   vx_xpu_conformance run <op> <dtype> <M> <N> <K> <reps> <payload>
 //                        <kernel> <out.bin>
+//   vx_xpu_conformance same_name <dtype> <opA> <MA> <NA> <KA> <libraryA>
+//                               <opB> <MB> <NB> <KB> <libraryB>
 //   vx_xpu_conformance compare <dtype> <count> <tolerance> <a.bin> <b.bin>
 //
 // `op` is one of ew, reduce, transpose, matmul; `dtype` is one of f32, f16,
@@ -34,12 +36,26 @@
 // it also prints the best dispatch time and, when the work is small enough,
 // how far the result is from an independent reference.
 //
+// `same_name` dispatches two payloads that call their kernels by the same name
+// -- A, then B, then A again -- and compares each answer with its own
+// reference. Each payload is given as a shared object that exports it, because
+// the backend's kernel cache is keyed on the library a payload is in.
+//
 // `compare` reads two result files and prints how many elements differ beyond
 // `tolerance`. A tolerance of 0 means "must be equal", which is the rule for
 // every kernel whose values are exact integers in its element type.
 //
 // Set VX_CONFORMANCE_PERTURB=1 to change one input element before dispatching.
 // That is how the check in `compare` is shown able to fail.
+//
+// Set VX_CONFORMANCE_HOST_POINTER=1 to leave every operand in this program's
+// own buffer rather than the backend's memory. The device cannot address such a
+// buffer, so the backend must refuse to launch at it.
+//
+// Set VX_CONFORMANCE_THREADS=<n> to dispatch `run` from `n` threads at once,
+// each with its own operands, and compare every thread's answer. Build this
+// program and the backend with -fsanitize=thread and that is the check that the
+// backend's launch lock is there.
 //
 // Memory: the footprint is the tensors the kernel's arguments describe, checked
 // against the shared ceiling before anything is allocated (vram_ceiling.h).
@@ -57,8 +73,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <dlfcn.h>
 #include <functional>
 #include <string>
+#include <thread>
 #include <vector>
 
 // The GPU band's topology id (src/arch.rs): what a `transfer(t,
@@ -560,6 +578,211 @@ static std::vector<char> referenceOf(Op op, const DType &dt, int64_t M,
   return out;
 }
 
+/// Put one operand's bytes where the device can read them.
+static void *stageOperand(const std::vector<char> &host) {
+  return vx_plugin_alloc_and_transfer(host.size(), (void *)host.data(),
+                                      kGpuTopology,
+                                      VX_SPACE_ACCESS_HOST_READABLE);
+}
+
+/// A payload that lives in a loaded shared object.
+///
+/// Where the bytes are matters. The backend keys its kernel cache on the
+/// library that holds a payload -- `dladdr` of the payload's address -- because
+/// two libraries can name their kernels alike. A payload in a heap buffer has
+/// no library, so two of them look like one source and cannot test that.
+struct LoadedPayload {
+  void *handle = nullptr;
+  const char *bytes = nullptr;
+  size_t size = 0;
+};
+
+static LoadedPayload loadPayloadFrom(const char *path) {
+  LoadedPayload out;
+  out.handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+  if (!out.handle) {
+    std::fprintf(stderr, "cannot load %s: %s\n", path, dlerror());
+    std::exit(2);
+  }
+  out.bytes = (const char *)dlsym(out.handle, "vx_test_payload");
+  const size_t *size =
+      (const size_t *)dlsym(out.handle, "vx_test_payload_size");
+  if (!out.bytes || !size) {
+    std::fprintf(stderr, "%s does not export a payload\n", path);
+    std::exit(2);
+  }
+  out.size = *size;
+  return out;
+}
+
+/// Two payloads that name the same kernel, dispatched one process.
+///
+/// The compiler numbers its outlined kernels per program, so two programs that
+/// each hold one region both call theirs `vx_npu_kernel_0`, and their images
+/// are different kernels with the same parameter count. A cache keyed by the
+/// name alone runs the first library's kernel for the second one's call, and
+/// the parameter check before the launch agrees because the counts are equal.
+///
+/// Each payload is given as a shared object that exports it, because the key
+/// the backend builds names the library the payload's address is in.
+static int runSameName(const DType &dt, Op opA, int64_t Ma, int64_t Na,
+                       int64_t Ka, const char *libraryA, Op opB, int64_t Mb,
+                       int64_t Nb, int64_t Kb, const char *libraryB) {
+  LoadedPayload payloadA = loadPayloadFrom(libraryA);
+  LoadedPayload payloadB = loadPayloadFrom(libraryB);
+  if (payloadA.size == 0 || payloadB.size == 0) {
+    std::fprintf(stderr, "a payload is empty\n");
+    return 2;
+  }
+  if (std::strcmp(payloadA.bytes, payloadB.bytes) != 0) {
+    std::fprintf(stderr,
+                 "the payloads name %s and %s, and this needs one name\n",
+                 payloadA.bytes, payloadB.bytes);
+    return 2;
+  }
+  std::printf("same name: both payloads call their kernel %s\n",
+              payloadA.bytes);
+
+  struct Side {
+    Op op;
+    int64_t M, N, K;
+    LoadedPayload payload;
+    Call call;
+    std::vector<char> reference;
+  };
+  Side sides[2] = {{opA, Ma, Na, Ka, payloadA, {}, {}},
+                   {opB, Mb, Nb, Kb, payloadB, {}, {}}};
+  uint64_t footprint = 0;
+  for (Side &side : sides) {
+    const std::vector<char> bytes(side.payload.bytes,
+                                  side.payload.bytes + side.payload.size);
+    side.call = buildCall(side.op, dt, side.M, side.N, side.K, bytes);
+    for (const Operand &operand : side.call.operands)
+      footprint += operand.host.size();
+    side.reference = referenceOf(side.op, dt, side.M, side.N, side.K);
+  }
+  requireWithinCeiling("vx_xpu_conformance (same name)", footprint,
+                       vramCeiling());
+  std::printf("footprint: %llu bytes of memory (%zu tensors)\n",
+              (unsigned long long)footprint,
+              sides[0].call.operands.size() + sides[1].call.operands.size());
+
+  for (Side &side : sides) {
+    for (size_t i = 0; i < side.call.operands.size(); ++i) {
+      side.call.operands[i].device = stageOperand(side.call.operands[i].host);
+      side.call.descriptors[i].allocated = side.call.operands[i].device;
+      side.call.descriptors[i].aligned = side.call.operands[i].device;
+    }
+  }
+
+  // A, then B, then A again: the third dispatch is the one that would run B's
+  // kernel for A's call if the cache had been overwritten.
+  uint64_t bad = 0;
+  const char *order[3] = {"A", "B", "A again"};
+  const int which[3] = {0, 1, 0};
+  for (int step = 0; step < 3; ++step) {
+    Side &side = sides[which[step]];
+    vx_plugin_dispatch_async(side.payload.bytes, side.payload.size,
+                             side.call.deviceArgs.data(), side.call.tags.data(),
+                             (int64_t)side.call.operands.size());
+    const Operand &result = side.call.operands[side.call.outIndex];
+    std::vector<char> got(result.host.size(), 0);
+    vx_plugin_transfer_device_to_host(result.device, got.data(), got.size(),
+                                      kGpuTopology);
+    const uint64_t wrong =
+        countDifferent(got, side.reference, dt, got.size() / dt.bytes, 0.0);
+    std::printf("  %s: %llu of %zu elements differ\n", order[step],
+                (unsigned long long)wrong, got.size() / dt.bytes);
+    if (wrong != 0)
+      ++bad;
+  }
+
+  for (Side &side : sides)
+    for (Operand &operand : side.call.operands)
+      vx_plugin_free(operand.device, kGpuTopology);
+
+  std::printf("result: %s (%llu of 3 dispatches differ)\n",
+              bad ? "DIFFERENT" : "equal", (unsigned long long)bad);
+  return bad ? 1 : 0;
+}
+
+/// One dispatch per thread, all at the same time, then each thread's answer.
+///
+/// The backend keeps one kernel handle and one command list for the whole
+/// process, so two threads that dispatch at once write the same arguments and
+/// append to the same list. Level Zero allows neither, and what happens without
+/// a lock is a wrong answer or a crash rather than an error. This is therefore
+/// the driver ThreadSanitizer runs: it gives the backend several threads in the
+/// same place, and the sanitizer is what turns "the lock is missing" into a
+/// report that names the map.
+static int runThreads(Op op, const DType &dt, int64_t M, int64_t N, int64_t K,
+                      int reps, const std::vector<char> &payload,
+                      const char *outPath, int threads) {
+  std::vector<Call> calls((size_t)threads);
+  for (Call &call : calls)
+    call = buildCall(op, dt, M, N, K, payload);
+
+  uint64_t footprint = 0;
+  for (const Call &call : calls)
+    for (const Operand &operand : call.operands)
+      footprint += operand.host.size();
+  requireWithinCeiling("vx_xpu_conformance (threads)", footprint,
+                       vramCeiling());
+  std::printf("footprint: %llu bytes of memory (%d threads x %zu tensors)\n",
+              (unsigned long long)footprint, threads, calls[0].operands.size());
+
+  for (Call &call : calls) {
+    for (size_t i = 0; i < call.operands.size(); ++i) {
+      call.operands[i].device = stageOperand(call.operands[i].host);
+      call.descriptors[i].allocated = call.operands[i].device;
+      call.descriptors[i].aligned = call.operands[i].device;
+    }
+  }
+
+  std::vector<std::thread> workers;
+  for (int t = 0; t < threads; ++t) {
+    workers.emplace_back([&calls, &payload, t, reps]() {
+      Call &call = calls[(size_t)t];
+      for (int r = 0; r < reps; ++r)
+        vx_plugin_dispatch_async(payload.data(), payload.size(),
+                                 call.deviceArgs.data(), call.tags.data(),
+                                 (int64_t)call.operands.size());
+    });
+  }
+  for (std::thread &worker : workers)
+    worker.join();
+  std::printf("threads: %d threads, %d dispatches each, all returned\n",
+              threads, reps);
+
+  const std::vector<char> reference = referenceOf(op, dt, M, N, K);
+  std::vector<char> first;
+  uint64_t bad = 0;
+  for (int t = 0; t < threads; ++t) {
+    const Call &call = calls[(size_t)t];
+    const Operand &result = call.operands[call.outIndex];
+    std::vector<char> got(result.host.size(), 0);
+    vx_plugin_transfer_device_to_host(result.device, got.data(), got.size(),
+                                      kGpuTopology);
+    if (t == 0)
+      first = got;
+    const uint64_t wrong =
+        countDifferent(got, reference, dt, got.size() / dt.bytes, 0.0);
+    if (wrong != 0) {
+      std::printf("  thread %d: %llu of %zu elements differ\n", t,
+                  (unsigned long long)wrong, got.size() / dt.bytes);
+      ++bad;
+    }
+  }
+  writeFile(outPath, first);
+  std::printf("result: %s (%llu of %d threads differ)\n",
+              bad ? "DIFFERENT" : "equal", (unsigned long long)bad, threads);
+
+  for (Call &call : calls)
+    for (Operand &operand : call.operands)
+      vx_plugin_free(operand.device, kGpuTopology);
+  return bad ? 1 : 0;
+}
+
 static int runCase(Op op, const DType &dt, int64_t M, int64_t N, int64_t K,
                    int reps, const char *payloadPath, const char *kernel,
                    const char *outPath) {
@@ -604,11 +827,17 @@ static int runCase(Op op, const DType &dt, int64_t M, int64_t N, int64_t K,
               (unsigned long long)footprint, call.operands.size());
 
   // Stage every operand through the backend's allocator, which is the call a
-  // compiled program makes.
+  // compiled program makes. `VX_CONFORMANCE_HOST_POINTER` leaves each operand
+  // in the harness's own buffer instead: a host address the device cannot
+  // reach, which is the case the backend's check before a launch refuses.
+  const bool host_pointer =
+      std::getenv("VX_CONFORMANCE_HOST_POINTER") != nullptr;
+  if (host_pointer) {
+    std::printf("host pointer: every operand is the program's own memory\n");
+  }
   for (Operand &operand : call.operands)
-    operand.device = vx_plugin_alloc_and_transfer(
-        operand.host.size(), operand.host.data(), kGpuTopology,
-        VX_SPACE_ACCESS_HOST_READABLE);
+    operand.device =
+        host_pointer ? (void *)operand.host.data() : stageOperand(operand.host);
 
   const bool perturb = std::getenv("VX_CONFORMANCE_PERTURB") != nullptr;
   if (perturb) {
@@ -713,12 +942,39 @@ static int runCase(Op op, const DType &dt, int64_t M, int64_t N, int64_t K,
                 total, expected, relative);
   }
 
-  for (Operand &operand : call.operands)
-    vx_plugin_free(operand.device, kGpuTopology);
+  // A host-pointer operand is a `std::vector`'s buffer, which `vx_plugin_free`
+  // must not see: the backend frees what it allocated, and this is the
+  // harness's memory.
+  if (!host_pointer) {
+    for (Operand &operand : call.operands)
+      vx_plugin_free(operand.device, kGpuTopology);
+  }
   return 0;
 }
 
 int main(int argc, char **argv) {
+  if (argc >= 2 && std::strcmp(argv[1], "same_name") == 0) {
+    // same_name <dtype> <opA> <MA> <NA> <KA> <libraryA> <opB> <MB> <NB> <KB>
+    //           <libraryB>
+    if (argc != 13) {
+      std::fprintf(stderr,
+                   "usage: %s same_name <dtype> <opA> <MA> <NA> <KA> "
+                   "<libraryA> <opB> <MB> <NB> <KB> <libraryB>\n",
+                   argv[0]);
+      return 2;
+    }
+    const DType &dt = dtypeOf(argv[2]);
+    const Op opA = opOf(argv[3]);
+    const int64_t Ma = (int64_t)parseSize("MA", argv[4]);
+    const int64_t Na = (int64_t)parseSize("NA", argv[5]);
+    const int64_t Ka = (int64_t)parseSize("KA", argv[6]);
+    const Op opB = opOf(argv[8]);
+    const int64_t Mb = (int64_t)parseSize("MB", argv[9]);
+    const int64_t Nb = (int64_t)parseSize("NB", argv[10]);
+    const int64_t Kb = (int64_t)parseSize("KB", argv[11]);
+    return runSameName(dt, opA, Ma, Na, Ka, argv[7], opB, Mb, Nb, Kb, argv[12]);
+  }
+
   if (argc >= 2 && std::strcmp(argv[1], "compare") == 0) {
     // compare <dtype> <count> <tolerance> <a.bin> <b.bin>
     if (argc != 7) {
@@ -752,5 +1008,14 @@ int main(int argc, char **argv) {
   const int64_t N = (int64_t)parseSize("N", argv[5]);
   const int64_t K = (int64_t)parseSize("K", argv[6]);
   const int reps = (int)parseSize("reps", argv[7]);
+  if (const char *env = std::getenv("VX_CONFORMANCE_THREADS")) {
+    const int threads = (int)parseSize("VX_CONFORMANCE_THREADS", env);
+    const std::vector<char> payload = readFile(argv[8]);
+    if (payload.empty() || std::strcmp(payload.data(), argv[9]) != 0) {
+      std::fprintf(stderr, "%s is not the payload for %s\n", argv[8], argv[9]);
+      return 2;
+    }
+    return runThreads(op, dt, M, N, K, reps, payload, argv[10], threads);
+  }
   return runCase(op, dt, M, N, K, reps, argv[8], argv[9], argv[10]);
 }
