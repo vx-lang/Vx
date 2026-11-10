@@ -37,16 +37,16 @@
 // GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 1 x 1 x 1, block 256
 // GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 2 x 8 x 1, block 128
 // GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 8 x 1 x 1, block 128
-// nn_matvec_q4, nn_matvec_q4_add and nn_matvec_q4_heads_add: one block for each 4 of the 8 rows.
-// nn_qkv_q4: one block for each 4 values of each of the 4 heads. nn_swiglu_q4: one block for each
-// 4 of the 8 rows. nn_moe_swiglu_q4: one for each 4 of the 8 rows of each of the 2 experts.
-// nn_moe_down_q4_add: one for each 4 of the 8 rows.
-// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 2 x 1 x 1, block 128
-// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 2 x 1 x 1, block 128
-// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 2 x 1 x 1, block 128
-// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 4 x 8 x 1, block 128
-// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 2 x 1 x 1, block 128
-// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 2 x 2 x 1, block 128
+// nn_matvec_q4, nn_matvec_q4_add and nn_matvec_q4_heads_add: one block of 64 lanes for the 8
+// rows. nn_qkv_q4: one block for each 8 values of each of the 4 heads. nn_swiglu_q4: one block
+// for each 4 of the 8 rows. nn_moe_swiglu_q4: one for each 4 of the 8 rows of each of the 2
+// experts. nn_moe_down_q4_add: one block of 128 lanes for each 4 of the 8 rows.
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 1 x 1 x 1, block 64
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 1 x 1 x 1, block 64
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 1 x 1 x 1, block 64
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 4 x 4 x 1, block 64
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 2 x 1 x 1, block 64
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 2 x 2 x 1, block 64
 // GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 2 x 1 x 1, block 128
 //
 // All inputs are 0, except the logits. So the largest logit picks the token.

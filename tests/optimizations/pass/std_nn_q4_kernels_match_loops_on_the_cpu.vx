@@ -1,6 +1,7 @@
 // The Q4_0 kernels of `std::nn` on random codes and scales, against plain loops in f64. A line
 // says `ok` when the largest difference is below 1e-5 of the largest value of the loop. The loop
-// finds each weight from the definition of Q4_0.
+// finds each weight from the definition of Q4_0. Each kernel gets a shape with rows of more than
+// 2048 weights, so that a lane takes more than one step.
 //
 // The first run uses the Apple GPU on a Mac, and the CPU copy of each kernel elsewhere. The
 // second run uses the CPU copy everywhere.
@@ -12,15 +13,15 @@
 // CHECK-NEXT: {{^}}nn_matvec_q4_add 296 x 896: ok{{$}}
 // CHECK-NEXT: {{^}}nn_matvec_q4 64 x 4864: ok{{$}}
 // CHECK-NEXT: {{^}}nn_matvec_q4_add 64 x 4864: ok{{$}}
-// CHECK-NEXT: {{^}}nn_matvec_q4_heads_add 200 x 896: ok{{$}}
+// CHECK-NEXT: {{^}}nn_matvec_q4_heads_add 200 x 4096: ok{{$}}
 // CHECK-NEXT: {{^}}nn_qkv_q4 q: ok{{$}}
 // CHECK-NEXT: {{^}}nn_qkv_q4 k: ok{{$}}
 // CHECK-NEXT: {{^}}nn_qkv_q4 v: ok{{$}}
-// CHECK-NEXT: {{^}}nn_swiglu_q4 200 x 896: ok{{$}}
+// CHECK-NEXT: {{^}}nn_swiglu_q4 200 x 4864: ok{{$}}
 // CHECK-NEXT: {{^}}nn_moe_swiglu_q4 8 of 32 experts, 96 x 512: ok{{$}}
 // CHECK-NEXT: {{^}}nn_moe_down_q4_add 8 of 32 experts, 512 x 96: ok{{$}}
-// CHECK-NEXT: {{^}}nn_moe_swiglu_q4 4 of 8 experts, 1056 x 1088: ok{{$}}
-// CHECK-NEXT: {{^}}nn_moe_down_q4_add 4 of 8 experts, 1088 x 1056: ok{{$}}
+// CHECK-NEXT: {{^}}nn_moe_swiglu_q4 4 of 8 experts, 1056 x 2080: ok{{$}}
+// CHECK-NEXT: {{^}}nn_moe_down_q4_add 4 of 8 experts, 2080 x 1056: ok{{$}}
 import core::convert;
 import core::num;
 import std::nn;
@@ -178,7 +179,7 @@ fn check_heads_add(rows : i32, heads : i32, head_dim : i32) -> void {
   for r in 0..rows {
     want[r] = f64::from(random(24u32, r, 1.0)) + dot(&hw, &hs, r, &flat, cols);
   }
-  report("nn_matvec_q4_heads_add 200 x 896", &hy, &want, rows);
+  report("nn_matvec_q4_heads_add 200 x 4096", &hy, &want, rows);
   return;
 }
 
@@ -244,7 +245,7 @@ fn check_swiglu(rows : i32, cols : i32) -> void {
     let u = dot(&hw, &hs, rows + r, &hx, cols);
     want[r] = g / (1.0 + f64::exp(0.0 - g)) * u;
   }
-  report("nn_swiglu_q4 200 x 896", &ho, &want, rows);
+  report("nn_swiglu_q4 200 x 4864", &ho, &want, rows);
   return;
 }
 
@@ -304,8 +305,8 @@ fn check_moe(experts : i32, k : i32, inter : i32, hidden : i32) -> void {
     report("nn_moe_swiglu_q4 8 of 32 experts, 96 x 512", &got_a, &want_a, k * inter);
     report("nn_moe_down_q4_add 8 of 32 experts, 512 x 96", &hy, &want_y, hidden);
   } else {
-    report("nn_moe_swiglu_q4 4 of 8 experts, 1056 x 1088", &got_a, &want_a, k * inter);
-    report("nn_moe_down_q4_add 4 of 8 experts, 1088 x 1056", &hy, &want_y, hidden);
+    report("nn_moe_swiglu_q4 4 of 8 experts, 1056 x 2080", &got_a, &want_a, k * inter);
+    report("nn_moe_down_q4_add 4 of 8 experts, 2080 x 1056", &hy, &want_y, hidden);
   }
   return;
 }
@@ -313,10 +314,10 @@ fn check_moe(experts : i32, k : i32, inter : i32, hidden : i32) -> void {
 fn main() -> i32 {
   check_matvec(296, 896);
   check_matvec(64, 4864);
-  check_heads_add(200, 14, 64);
-  check_qkv(14, 2, 64, 896);
-  check_swiglu(200, 896);
+  check_heads_add(200, 32, 128);
+  check_qkv(14, 2, 64, 2560);
+  check_swiglu(200, 4864);
   check_moe(32, 8, 96, 512);
-  check_moe(8, 4, 1056, 1088);
+  check_moe(8, 4, 1056, 2080);
   return 0;
 }
