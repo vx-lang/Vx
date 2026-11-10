@@ -1071,18 +1071,23 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     // `&mut`). The borrow checker proved that nothing else writes such a
     // buffer while the kernel runs. `vx.align` is the `alignment:` of the
     // buffer's memory space, 0 for none. A device kernel puts these on its
-    // parameter.
+    // parameter. A tensor read from a slot parameter has `vx.tensor_access`
+    // on the slot in place of the `llvm.` marks.
     {
       SmallVector<Attribute> access;
       SmallVector<int64_t> align;
       for (Value v : captures) {
-        auto arg = dyn_cast<BlockArgument>(v);
+        auto arg = parameterOf(v);
         StringRef kind;
         int64_t bytes = 0;
         if (parentFunc && arg &&
             arg.getOwner() == &parentFunc.getBody().front()) {
           unsigned i = arg.getArgNumber();
-          if (parentFunc.getArgAttr(i, "llvm.readonly"))
+          if (Value(arg) != v) {
+            if (auto a = parentFunc.getArgAttrOfType<StringAttr>(
+                    i, "vx.tensor_access"))
+              kind = a.getValue();
+          } else if (parentFunc.getArgAttr(i, "llvm.readonly"))
             kind = "readonly";
           else if (parentFunc.getArgAttr(i, "llvm.noalias"))
             kind = "noalias";

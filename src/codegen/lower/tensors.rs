@@ -106,12 +106,12 @@ fn lower_spawn_region<'c>(
     gen.spawn_arches.push(arch);
     // A `&mut Tensor` parameter is a slot that holds the tensor. A SPIR-V kernel cannot take a
     // memref of memrefs or a memref with a memory space. So the region reads the tensor, loaded
-    // here, before the region, with no memory space, as the flat code generator gives it. A kernel
-    // that `--emit-ptx` or `--emit-msl` writes also takes the tensor, so that its manifest
+    // here, before the region, with no memory space, as the flat code generator gives it. Every
+    // device kernel takes the tensor, so that it gets the marks of the tensor and its manifest
     // describes the tensor and not the slot.
     let spirv = gen.in_spirv_region();
     let mut outer_slots = Vec::new();
-    if spirv || (gen.describe_params && is_device) {
+    if spirv || is_device {
         let params: Vec<_> = gen
             .env
             .iter()
