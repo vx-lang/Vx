@@ -1,7 +1,10 @@
 # Qwen coder models in Vx
 
 This app runs Qwen coder models with a program written in Vx, on the GPU of an Apple Silicon
-Mac. The plan and its milestones are in [#3094](https://github.com/vx-lang/Vx/issues/3094).
+Mac. The plan and its milestones are in [#3094](https://github.com/vx-lang/Vx/issues/3094). The
+mixture-of-experts (MoE) model Qwen3-Coder-30B-A3B is the next milestone,
+[#3151](https://github.com/vx-lang/Vx/issues/3151). So far, the scripts convert it and run it
+with NumPy, and the Vx program does not run it yet.
 
 The program generates tokens with greedy decoding, from a prompt given as token ids. A tokenizer
 in Vx comes later, so `reference.py` turns text into token ids for now.
@@ -36,19 +39,20 @@ The scripts need Python 3 with NumPy. `--prompt` also needs the `tokenizers` pac
    ```
 
 `make_tiny_model.py` writes a model with the same layers and random weights. It is small enough
-for tests that cannot download a real model.
+for tests that cannot download a real model. With `--moe`, it writes a tiny model with the layers
+of Qwen3-Coder-30B-A3B.
 
 ## The scripts
 
 | Script | What it does |
 | --- | --- |
-| `scripts/convert.py` | Converts a Hugging Face Qwen2 folder into a weight file. |
+| `scripts/convert.py` | Converts a Hugging Face Qwen2 or Qwen3 MoE folder into a weight file. |
 | `scripts/reference.py` | Computes the logits and the greedy tokens with NumPy, in float32. |
 | `scripts/check_against_mlx.py` | Compares `reference.py` with MLX on the same model. |
 | `scripts/compare.py` | Compares the output of the Vx program with the output of `reference.py`. |
 | `scripts/make_tiny_model.py` | Writes a tiny model with random weights. |
 | `scripts/qwen_weights.py` | Reads and writes the weight file. Its first comment describes the format. |
-| `scripts/test_qwen_weights.py` | Tests the f8e4m3 codes, the block scales and the fp8 weight file. |
+| `scripts/test_qwen_weights.py` | Tests the f8e4m3 and Q4_0 codes, their scales and the quantized weight files. |
 
 ## fp8 weights
 
@@ -69,6 +73,17 @@ how well a model predicts a text. On the first 512 tokens of `scripts/tools/gen_
 On the fp8 file, the Vx program chose the same 64 greedy tokens as `reference.py`, with each logit
 within 6e-05. One token of the 7B model took 95 ms in fp8 and 156 ms in bf16 on a quiet M4, which
 is about 10.5 and 6.4 tokens per second.
+
+## Q4_0 weights
+
+`convert.py --q4` stores each weight matrix except `lm_head` in the Q4_0 format of llama.cpp. A
+row has one f16 scale for each 32 weights, and each weight is a 4-bit code from 0 to 15. The
+weight is (code - 8) times its scale. The codes round as llama.cpp rounds them, and a test checks
+them against the loop of llama.cpp. `lm_head` is fp8, as llama.cpp also keeps its output matrix
+above 4 bits.
+
+Of four 4-bit formats, Q4_0 was the closest to bf16 on the 7B model. The measurement is in
+[#3151](https://github.com/vx-lang/Vx/issues/3151#issuecomment-6763017034).
 
 ## The Vx code
 
@@ -124,3 +139,17 @@ greedy steps. Both chose the same tokens.
 The check fails, as it should, when RoPE uses another theta, when the causal mask lets a token
 see the next one, when the program does not add the Q, K and V bias, and when the converter swaps
 K and V.
+
+For the tiny MoE model, `make_tiny_model.py --moe --hugging-face DIR` also writes the model as a
+Hugging Face folder, which MLX reads:
+
+```sh
+python3 apps/qwen/scripts/make_tiny_model.py --moe --hugging-face tiny-moe tiny-moe.vxw
+python3 apps/qwen/scripts/check_against_mlx.py --tokens 17,200,3,95,41 tiny-moe tiny-moe.vxw
+```
+
+Over 32 greedy steps, both chose the same tokens, and the largest logit difference was 8.7e-06.
+The check fails when the router chooses the smallest experts or one expert too few, or when it
+does not scale the weights of the chosen experts to sum to 1. It also fails when an expert uses
+the down matrix of the next expert, when the converter puts the up rows before the gate rows, or
+when the Q and K norms are missing, swapped or after RoPE.

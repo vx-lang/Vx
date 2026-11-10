@@ -2,10 +2,12 @@
 """Check reference.py against MLX, an independent implementation of the same model.
 
     python3 apps/qwen/scripts/check_against_mlx.py ~/models/Qwen2.5-Coder-0.5B-Instruct qwen-0.5b.vxw
+    python3 apps/qwen/scripts/check_against_mlx.py --tokens 1,2,3 TINY_MOE_DIR tiny-moe.vxw
 
 MLX reads the Hugging Face folder and runs in float32. reference.py reads the converted weight
 file. So agreement also checks the converter. The script prints the largest difference of the
-logits and fails when the greedy tokens differ. It needs the `mlx-lm` package.
+logits and fails when the greedy tokens differ. It needs the `mlx-lm` package. A folder with no
+tokenizer, such as the one of `make_tiny_model.py --moe --hugging-face`, needs --tokens.
 
 Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 See LICENSE for license information.
@@ -28,11 +30,16 @@ def main():
     parser.add_argument("weights", help="the weight file that convert.py wrote from that folder")
     parser.add_argument("--steps", type=int, default=32, help="the number of greedy tokens to compare")
     parser.add_argument("--tolerance", type=float, default=1e-2, help="the largest allowed logit difference")
+    parser.add_argument("--tokens", help="the prompt as token ids, for a folder with no tokenizer")
     args = parser.parse_args()
+
+    from pathlib import Path
 
     import mlx.core as mx
     import mlx.nn as nn
     from mlx_lm import load
+    from mlx_lm.models.switch_layers import SwitchLinear
+    from mlx_lm.utils import load_model
 
     # Keep the weights in bf16, and widen each one to float32 only inside its product, as
     # reference.py does. Widening every weight first would need 30 GB for the 7B model.
@@ -40,12 +47,23 @@ def main():
         y = x.astype(mx.float32) @ self["weight"].astype(mx.float32).T
         return y + self["bias"].astype(mx.float32) if "bias" in self else y
 
+    # The same for the matrices of the experts, which MLX multiplies with gather_mm.
+    def switch_linear(self, x, indices, sorted_indices=False):
+        assert "bias" not in self, "the experts of Qwen3 have no bias"
+        weight = self["weight"].astype(mx.float32).swapaxes(-1, -2)
+        return mx.gather_mm(x.astype(mx.float32), weight, rhs_indices=indices, sorted_indices=sorted_indices)
+
     nn.Linear.__call__ = linear
+    SwitchLinear.__call__ = switch_linear
     nn.Embedding.__call__ = lambda self, x: self["weight"][x].astype(mx.float32)
     nn.Embedding.as_linear = lambda self, x: x.astype(mx.float32) @ self["weight"].astype(mx.float32).T
 
-    mlx_model, tokenizer = load(args.model_dir)
-    prompt = tokenizer.encode(PROMPT)
+    if args.tokens:
+        mlx_model, tokenizer = load_model(Path(args.model_dir))[0], None
+        prompt = [int(t) for t in args.tokens.split(",")]
+    else:
+        mlx_model, tokenizer = load(args.model_dir)
+        prompt = tokenizer.encode(PROMPT)
 
     def mlx_logits(tokens):
         out = mlx_model(mx.array([tokens]))
@@ -68,7 +86,10 @@ def main():
             break
         tokens.append(token)
     print(f"{args.steps} greedy steps, largest logit difference {worst:.2e}")
-    print("text: " + repr(tokenizer.decode(tokens[len(prompt) :])))
+    if tokenizer is not None:
+        print("text: " + repr(tokenizer.decode(tokens[len(prompt) :])))
+    else:
+        print("tokens: " + ",".join(map(str, tokens[len(prompt) :])))
     if worst > args.tolerance:
         print(f"the largest difference is above the tolerance {args.tolerance}")
         failed = True

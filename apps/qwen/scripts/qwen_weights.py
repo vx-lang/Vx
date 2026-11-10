@@ -15,10 +15,25 @@ The tensor table has one entry of 16 words (128 bytes) per tensor: the name in w
 padded with zero bytes), the dtype code, the rank, four dimensions (unused ones are 0), the byte
 offset of the data and its size in bytes. The tensors come in the order of `tensor_names`.
 
-In a file whose config has fp8 = 1, each weight matrix of MATRICES is f8e4m3 codes, one byte for
-each weight. The tensor after it, `<name>.scale`, has one f32 scale for each block of 128 x 128
-weights. A weight is the value of its code times the scale of its block. Such a file always has
-`lm_head`, also for a model whose output projection is its embedding table.
+`weight_format` says how the file stores the weight matrices of MATRICES. Each other tensor is
+bf16 in every format.
+
+    0, bf16    each weight matrix is bf16.
+    1, fp8     each weight matrix is f8e4m3 codes, one byte for each weight. The tensor after it,
+               `<name>.scale`, has one f32 scale for each block of 128 x 128 weights. A weight is
+               the value of its code times the scale of its block.
+    2, q4_0    each weight matrix except lm_head is u4 codes, two in each byte, the first weight
+               in the low 4 bits. Its `<name>.scale` has one f16 scale for each 32 weights of a
+               row. A weight is (code - 8) times its scale, as in the Q4_0 of llama.cpp. lm_head
+               is f8e4m3, as in an fp8 file.
+
+A file in fp8 or q4_0 always has `lm_head`, also for a model whose output projection is its
+embedding table.
+
+A mixture-of-experts (MoE) model has num_experts > 0. Each of its layers has a `router` with one
+row for each expert, and the matrices `experts_gate_up` and `experts_down` in place of `gate_up`
+and `down`. These hold expert e after expert e - 1. An expert has 2 * moe_intermediate_size rows
+in `experts_gate_up`, its gate rows and then its up rows, and hidden_size rows in `experts_down`.
 
 Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 See LICENSE for license information.
@@ -50,19 +65,27 @@ CONFIG_INTS = [
     "tied_embeddings",
     "qkv_bias",
     "eos_token_id",
-    "fp8",
+    "weight_format",
+    "num_experts",
+    "experts_per_token",
+    "moe_intermediate_size",
+    "qk_norm",
 ]
-# The header has room for 16 integers. The unused ones are 0, for fields that later models add.
+# The header has room for 16 integers.
 CONFIG_INT_SLOTS = 16
+assert len(CONFIG_INTS) <= CONFIG_INT_SLOTS
+WEIGHT_FORMATS = {"bf16": 0, "fp8": 1, "q4_0": 2}
 
-DTYPE_CODES = {"f32": 0, "bf16": 1, "f8e4m3": 2}
+DTYPE_CODES = {"f32": 0, "bf16": 1, "f8e4m3": 2, "f16": 3, "u4": 4}
 DTYPE_NAMES = {code: name for name, code in DTYPE_CODES.items()}
-DTYPE_BYTES = {"f32": 4, "bf16": 2, "f8e4m3": 1}
-STORAGE = {"f32": np.float32, "bf16": np.uint16, "f8e4m3": np.uint8}
+DTYPE_BITS = {"f32": 32, "bf16": 16, "f8e4m3": 8, "f16": 16, "u4": 4}
+# The NumPy array of a u4 tensor holds two codes in each uint8, so its last axis is half as long.
+STORAGE = {"f32": np.float32, "bf16": np.uint16, "f8e4m3": np.uint8, "f16": np.float16, "u4": np.uint8}
 
-# The weight matrices that an fp8 file stores as f8e4m3 codes. The kinds of a layer end the name.
-MATRICES = ("qkv", "attn_out", "gate_up", "down", "lm_head")
+# The weight matrices that an fp8 or q4_0 file quantizes. The kinds of a layer end the name.
+MATRICES = ("qkv", "attn_out", "gate_up", "down", "experts_gate_up", "experts_down", "lm_head")
 BLOCK = 128
+Q4_GROUP = 32
 
 
 def bf16_to_f32(bits):
@@ -80,24 +103,39 @@ def f32_to_bf16(values):
 
 
 def is_matrix(name):
-    """Whether an fp8 file stores the tensor `name` as f8e4m3 codes with block scales."""
+    """Whether an fp8 or q4_0 file quantizes the tensor `name`, and has a `<name>.scale`."""
     return name.rsplit(".", 1)[-1] in MATRICES
+
+
+def matrix_dtype(config, name):
+    """The dtype of the weight matrix `name` in a file with this config."""
+    weight_format = config["weight_format"]
+    if weight_format == WEIGHT_FORMATS["q4_0"] and name != "lm_head":
+        return "u4"
+    return "f8e4m3" if weight_format else "bf16"
 
 
 def tensor_names(config):
     """The names of the tensors in the weight file, in file order."""
-    assert not (config["fp8"] and config["tied_embeddings"]), "an fp8 file has its own lm_head"
+    assert config["weight_format"] in WEIGHT_FORMATS.values(), f"weight format {config['weight_format']}"
+    assert not (config["weight_format"] and config["tied_embeddings"]), "a quantized file has its own lm_head"
     names = ["embed"]
     for layer in range(config["num_layers"]):
         prefix = f"layers.{layer}."
         names += [prefix + "attn_norm", prefix + "qkv"]
         if config["qkv_bias"]:
             names.append(prefix + "qkv_bias")
-        names += [prefix + "attn_out", prefix + "mlp_norm", prefix + "gate_up", prefix + "down"]
+        if config["qk_norm"]:
+            names += [prefix + "q_norm", prefix + "k_norm"]
+        names += [prefix + "attn_out", prefix + "mlp_norm"]
+        if config["num_experts"]:
+            names += [prefix + "router", prefix + "experts_gate_up", prefix + "experts_down"]
+        else:
+            names += [prefix + "gate_up", prefix + "down"]
     names.append("final_norm")
     if not config["tied_embeddings"]:
         names.append("lm_head")
-    if config["fp8"]:
+    if config["weight_format"]:
         names = [n for name in names for n in ([name, name + ".scale"] if is_matrix(name) else [name])]
     return names
 
@@ -109,6 +147,7 @@ def tensor_shapes(config):
     q_rows = config["num_q_heads"] * head_dim
     qkv_rows = q_rows + 2 * config["num_kv_heads"] * head_dim
     inter = config["intermediate_size"]
+    experts, moe_inter = config["num_experts"], config["moe_intermediate_size"]
     shapes = {"embed": (config["vocab_size"], hidden), "final_norm": (hidden,)}
     if not config["tied_embeddings"]:
         shapes["lm_head"] = (config["vocab_size"], hidden)
@@ -118,19 +157,47 @@ def tensor_shapes(config):
         shapes[prefix + "qkv"] = (qkv_rows, hidden)
         if config["qkv_bias"]:
             shapes[prefix + "qkv_bias"] = (qkv_rows,)
+        if config["qk_norm"]:
+            shapes[prefix + "q_norm"] = (head_dim,)
+            shapes[prefix + "k_norm"] = (head_dim,)
         shapes[prefix + "attn_out"] = (hidden, q_rows)
         shapes[prefix + "mlp_norm"] = (hidden,)
-        shapes[prefix + "gate_up"] = (2 * inter, hidden)
-        shapes[prefix + "down"] = (hidden, inter)
-    if config["fp8"]:
+        if experts:
+            shapes[prefix + "router"] = (experts, hidden)
+            shapes[prefix + "experts_gate_up"] = (experts * 2 * moe_inter, hidden)
+            shapes[prefix + "experts_down"] = (experts * hidden, moe_inter)
+        else:
+            shapes[prefix + "gate_up"] = (2 * inter, hidden)
+            shapes[prefix + "down"] = (hidden, inter)
+    if config["weight_format"]:
         for name in [n for n in shapes if is_matrix(n)]:
             rows, cols = shapes[name]
-            shapes[name + ".scale"] = (-(-rows // BLOCK), -(-cols // BLOCK))
+            if matrix_dtype(config, name) == "u4":
+                assert cols % Q4_GROUP == 0, f"{name}: {cols} columns are not groups of {Q4_GROUP}"
+                shapes[name + ".scale"] = (rows, cols // Q4_GROUP)
+            else:
+                shapes[name + ".scale"] = (-(-rows // BLOCK), -(-cols // BLOCK))
     return shapes
 
 
+def storage_shape(dtype, shape):
+    """The shape of the NumPy array that holds a tensor of this dtype and shape."""
+    if dtype != "u4":
+        return tuple(shape)
+    assert shape[-1] % 2 == 0, f"u4 rows of {shape[-1]} codes do not fill whole bytes"
+    return (*shape[:-1], shape[-1] // 2)
+
+
+def resolve(entry):
+    """A (dtype name, array) pair of a tensors dict, whose value can also be a function that
+    returns the pair."""
+    return entry() if callable(entry) else entry
+
+
 def write_weight_file(path, config, tensors):
-    """Write `tensors`, a dict from name to (dtype name, numpy array), in file order."""
+    """Write `tensors`, a dict from name to (dtype name, numpy array), in file order. A value can
+    also be a function that returns the pair. The file then gets each tensor when it is written,
+    so that only one is in memory at a time."""
     names = tensor_names(config)
     shapes = tensor_shapes(config)
     assert sorted(names) == sorted(tensors), "the tensors do not match the names of the config"
@@ -145,26 +212,24 @@ def write_weight_file(path, config, tensors):
     struct.pack_into("<2d", header, 8 * (5 + CONFIG_INT_SLOTS), config["rope_theta"], config["rms_norm_eps"])
 
     offset = data_start
-    entries = []
-    for index, name in enumerate(names):
-        dtype, array = tensors[name]
-        assert tuple(array.shape) == shapes[name], f"{name}: shape {array.shape}, expected {shapes[name]}"
-        assert array.dtype == STORAGE[dtype], f"{name}: storage {array.dtype} for {dtype}"
-        nbytes = array.size * DTYPE_BYTES[dtype]
-        dims = list(array.shape) + [0] * (4 - array.ndim)
-        entry = name.encode("ascii").ljust(64, b"\0")
-        assert len(entry) == 64, f"{name}: the name is longer than 64 bytes"
-        entry += struct.pack("<8q", DTYPE_CODES[dtype], array.ndim, *dims, offset, nbytes)
-        header[TABLE_OFFSET + index * ENTRY_BYTES : TABLE_OFFSET + (index + 1) * ENTRY_BYTES] = entry
-        entries.append((offset, array))
-        offset += -(-nbytes // ALIGNMENT) * ALIGNMENT
-
     with open(path, "wb") as out:
-        out.write(header)
-        for start, array in entries:
-            out.seek(start)
-            out.write(np.ascontiguousarray(array).tobytes())
+        for index, name in enumerate(names):
+            dtype, array = resolve(tensors[name])
+            shape = shapes[name]
+            assert tuple(array.shape) == storage_shape(dtype, shape), f"{name}: shape {array.shape} for {shape}"
+            assert array.dtype == STORAGE[dtype], f"{name}: storage {array.dtype} for {dtype}"
+            nbytes = int(np.prod(shape)) * DTYPE_BITS[dtype] // 8
+            dims = list(shape) + [0] * (4 - len(shape))
+            entry = name.encode("ascii").ljust(64, b"\0")
+            assert len(entry) == 64, f"{name}: the name is longer than 64 bytes"
+            entry += struct.pack("<8q", DTYPE_CODES[dtype], len(shape), *dims, offset, nbytes)
+            header[TABLE_OFFSET + index * ENTRY_BYTES : TABLE_OFFSET + (index + 1) * ENTRY_BYTES] = entry
+            out.seek(offset)
+            out.write(np.ascontiguousarray(array).data)
+            offset += -(-nbytes // ALIGNMENT) * ALIGNMENT
         out.truncate(offset)
+        out.seek(0)
+        out.write(header)
 
 
 def read_weight_file(path):
@@ -186,10 +251,10 @@ def read_weight_file(path):
         dtype, rank, *rest = struct.unpack_from("<8q", data, start + 64)
         dims, offset, nbytes = rest[:4], rest[4], rest[5]
         assert offset % alignment == 0, f"{name}: offset {offset} is not aligned"
-        shape = tuple(dims[:rank])
-        storage = STORAGE[DTYPE_NAMES[dtype]]
+        dtype = DTYPE_NAMES[dtype]
+        storage = STORAGE[dtype]
         raw = np.frombuffer(data, dtype=storage, count=nbytes // np.dtype(storage).itemsize, offset=offset)
-        tensors[name] = (DTYPE_NAMES[dtype], raw.reshape(shape))
+        tensors[name] = (dtype, raw.reshape(storage_shape(dtype, dims[:rank])))
     assert list(tensors) == tensor_names(config), f"{path}: the tensors are not in file order"
     return config, tensors
 
@@ -246,29 +311,89 @@ def quantize_fp8(matrix):
     return codes, scales
 
 
-def widen(tensors, name):
-    """The float32 values of the tensor `name` of `read_weight_file`, also an fp8 matrix."""
+def quantize_q4_0(matrix):
+    """u4 codes, two in each byte, and f16 scales for a float32 matrix, rounded as the Q4_0 of
+    llama.cpp rounds them (`quantize_row_q4_0_ref`). In each group of 32 weights of a row, the
+    weight of the largest size gets code 0, so the scale is that weight divided by -8."""
+    rows, cols = matrix.shape
+    assert cols % Q4_GROUP == 0, f"{cols} columns are not groups of {Q4_GROUP}"
+    codes = np.empty((rows, cols // 2), dtype=np.uint8)
+    scales = np.empty((rows, cols // Q4_GROUP), dtype=np.float16)
+    # About 16M weights at a time, so that a large matrix needs little memory.
+    step = max(1, (1 << 24) // cols)
+    for start in range(0, rows, step):
+        chunk = np.asarray(matrix[start : start + step], dtype=np.float32)
+        assert np.all(np.isfinite(chunk)), "only finite values round to Q4_0 here"
+        groups = chunk.reshape(len(chunk), -1, Q4_GROUP)
+        largest = np.take_along_axis(groups, np.abs(groups).argmax(axis=-1)[..., None], axis=-1)
+        d = largest / np.float32(-8)
+        inverse = np.divide(np.float32(1), d, out=np.zeros_like(d), where=d != 0)
+        # All float32, as in llama.cpp. The sum is at least 0.5, so the floor is its cast to int.
+        q = np.minimum(np.float32(15), np.floor(groups * inverse + np.float32(8.5))).astype(np.uint8)
+        q = q.reshape(len(chunk), cols)
+        codes[start : start + step] = q[:, 0::2] | (q[:, 1::2] << 4)
+        scales[start : start + step] = d.reshape(len(chunk), -1).astype(np.float16)
+    return codes, scales
+
+
+def unpack_u4(packed):
+    """The codes of a u4 array, one in each uint8: the low 4 bits of a byte, then the high 4."""
+    return np.stack([packed & 15, packed >> 4], axis=-1).reshape(*packed.shape[:-1], -1)
+
+
+def widen(tensors, name, rows=None):
+    """The float32 values of the tensor `name` of `read_weight_file`, also of a quantized matrix.
+    `rows`, a (start, stop) pair, widens only those rows of a matrix."""
     dtype, array = tensors[name]
-    if dtype != "f8e4m3":
+    start, stop = rows if rows is not None else (0, len(array))
+    array = array[start:stop]
+    if dtype in ("bf16", "f32"):
         return as_f32((dtype, array))
     scales = tensors[name + ".scale"][1]
-    rows, cols = array.shape
-    blocks = np.repeat(np.repeat(scales, BLOCK, axis=0), BLOCK, axis=1)[:rows, :cols]
+    if dtype == "u4":
+        group_scales = np.repeat(scales[start:stop].astype(np.float32), Q4_GROUP, axis=1)
+        return (unpack_u4(array).astype(np.float32) - 8) * group_scales
+    assert dtype == "f8e4m3", f"{name}: cannot widen {dtype}"
+    blocks = np.repeat(scales[np.arange(start, stop) // BLOCK], BLOCK, axis=1)[:, : array.shape[1]]
     return E4M3[array] * blocks
 
 
-def to_fp8(config, tensors):
-    """The config and tensors of the fp8 file for a bf16 model. A model with tied embeddings gets
-    an fp8 copy of its embedding table as `lm_head`."""
-    assert not config["fp8"], "the model is fp8 already"
+def _lazy_pair(compute):
+    """Two functions that return the two parts of `compute()`. It runs once for both, and its
+    result is freed when both functions have returned their part."""
+    result, taken = [], set()
+
+    def part(index):
+        def get():
+            if not result:
+                result.append(compute())
+            value = result[0][index]
+            taken.add(index)
+            if len(taken) == 2:
+                result.clear()
+                taken.clear()
+            return value
+
+        return get
+
+    return part(0), part(1)
+
+
+def quantize(config, tensors, weight_format):
+    """The config and tensors of the fp8 or q4_0 file for a bf16 model. A model with tied
+    embeddings gets a copy of its embedding table as `lm_head`. Each quantized matrix and its
+    scales are functions, which quantize it when `write_weight_file` gets to it."""
+    assert config["weight_format"] == WEIGHT_FORMATS["bf16"], "the model is quantized already"
     tensors = dict(tensors)
     if config["tied_embeddings"]:
         tensors["lm_head"] = tensors["embed"]
-    config = dict(config, fp8=1, tied_embeddings=0)
+    config = dict(config, weight_format=WEIGHT_FORMATS[weight_format], tied_embeddings=0)
     for name in [n for n in tensors if is_matrix(n)]:
-        codes, scales = quantize_fp8(as_f32(tensors[name]))
-        tensors[name] = ("f8e4m3", codes)
-        tensors[name + ".scale"] = ("f32", scales)
+        dtype = matrix_dtype(config, name)
+        quantizer, scale_dtype = (quantize_q4_0, "f16") if dtype == "u4" else (quantize_fp8, "f32")
+        codes, scales = _lazy_pair(lambda entry=tensors[name], quantizer=quantizer: quantizer(as_f32(resolve(entry))))
+        tensors[name] = lambda codes=codes, dtype=dtype: (dtype, codes())
+        tensors[name + ".scale"] = lambda scales=scales, scale_dtype=scale_dtype: (scale_dtype, scales())
     return config, tensors
 
 
@@ -300,9 +425,19 @@ def read_safetensors(model_dir):
 
 
 def config_from_hugging_face(model_dir):
-    """The config of the weight file, from the `config.json` of a Qwen2 model folder."""
-    hf = json.loads((Path(model_dir) / "config.json").read_text())
-    assert hf["model_type"] == "qwen2", f"model_type {hf['model_type']} is not supported yet"
+    """The config of the weight file, from the `config.json` of a model folder."""
+    return config_from_json(json.loads((Path(model_dir) / "config.json").read_text()))
+
+
+def config_from_json(hf):
+    """The config of the weight file, from the `config.json` of a Qwen2 or a Qwen3 MoE model."""
+    assert hf["model_type"] in ("qwen2", "qwen3_moe"), f"model_type {hf['model_type']} is not supported yet"
+    moe = hf["model_type"] == "qwen3_moe"
+    if moe:
+        assert hf["decoder_sparse_step"] == 1 and not hf["mlp_only_layers"], "each layer must have experts"
+        assert hf["norm_topk_prob"], "the weights of the chosen experts must be scaled to sum to 1"
+        assert not hf.get("attention_bias", False), "Q, K and V of a Qwen3 MoE model have no bias"
+    assert hf.get("rope_scaling") is None, "RoPE scaling is not supported yet"
     eos = hf.get("eos_token_id")
     return {
         "hidden_size": hf["hidden_size"],
@@ -314,9 +449,13 @@ def config_from_hugging_face(model_dir):
         "vocab_size": hf["vocab_size"],
         "max_positions": hf["max_position_embeddings"],
         "tied_embeddings": int(hf.get("tie_word_embeddings", False)),
-        "qkv_bias": 1,
+        "qkv_bias": int(not moe),
         "eos_token_id": eos[0] if isinstance(eos, list) else eos,
-        "fp8": 0,
+        "weight_format": WEIGHT_FORMATS["bf16"],
+        "num_experts": hf["num_experts"] if moe else 0,
+        "experts_per_token": hf["num_experts_per_tok"] if moe else 0,
+        "moe_intermediate_size": hf["moe_intermediate_size"] if moe else 0,
+        "qk_norm": int(moe),
         "rope_theta": float(hf["rope_theta"]),
         "rms_norm_eps": float(hf["rms_norm_eps"]),
     }
