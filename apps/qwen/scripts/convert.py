@@ -2,10 +2,12 @@
 """Convert a Qwen2 model folder from Hugging Face into the weight file of the Qwen app.
 
     python3 apps/qwen/scripts/convert.py ~/models/Qwen2.5-Coder-0.5B-Instruct qwen-0.5b.vxw
+    python3 apps/qwen/scripts/convert.py --fp8 ~/models/Qwen2.5-Coder-0.5B-Instruct qwen-0.5b-fp8.vxw
 
 The file keeps the bf16 values exactly. Q, K and V of a layer become one matrix with one bias
 vector, Q rows first, and gate and up become one matrix, gate rows first, so that one kernel
-reads each of them. `qwen_weights.py` describes the file.
+reads each of them. With --fp8, the weight matrices become f8e4m3 codes with a scale for each
+block of 128 x 128. `qwen_weights.py` describes the file.
 
 Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 See LICENSE for license information.
@@ -51,8 +53,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("model_dir", help="a Hugging Face model folder with config.json and safetensors files")
     parser.add_argument("output", help="the weight file to write")
+    parser.add_argument("--fp8", action="store_true", help="store the weight matrices as f8e4m3 codes")
     args = parser.parse_args()
     config, tensors = convert(args.model_dir)
+    if args.fp8:
+        config, tensors = qwen_weights.to_fp8(config, tensors)
     qwen_weights.write_weight_file(args.output, config, tensors)
     print(f"wrote {args.output}: {len(tensors)} tensors, {config['num_layers']} layers")
 
