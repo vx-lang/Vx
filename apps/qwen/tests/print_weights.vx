@@ -1,27 +1,59 @@
-// Loads a weight file into GPU memory, copies each tensor back, and prints its first bf16 codes
-// and the sum of all its codes. `reference.py --tensors` prints the same lines from the file, so
-// equal lines mean that each tensor reached GPU memory whole and in the right place.
+// Loads a weight file into GPU memory, copies each tensor back, and prints its first codes and
+// the sum of all its codes. A code is the bits of one value: 16 for bf16, 8 for an f8e4m3 code,
+// and 32 for an f32 scale. `reference.py --tensors` prints the same lines from the file, so equal
+// lines mean that each tensor reached GPU memory whole and in the right place. The second pair of
+// RUN lines does the same for the fp8 file of the tiny model.
 //
 // RUN: python3 %S/../scripts/make_tiny_model.py %t.vxw > /dev/null
 // RUN: vxc %s --package qwen=%S/../src --host default --machine fleet/m4-uma.vx -- %t.vxw | FileCheck %s
+// RUN: python3 %S/../scripts/make_tiny_model.py --fp8 %t-fp8.vxw > /dev/null
+// RUN: vxc %s --package qwen=%S/../src --host default --machine fleet/m4-uma.vx -- %t-fp8.vxw | FileCheck %s --check-prefix=FP8
 //
 // CHECK: {{^}}config hidden=128 layers=2 vocab=256;{{$}}
-// CHECK-NEXT: {{^}}embed count=32768 codes=47665,15857,48564,48396 sum=1054011312;{{$}}
+// CHECK-NEXT: {{^}}embed count=32768 codes=47665,15857,48564,48396 sum=1052457310;{{$}}
 // CHECK-NEXT: {{^}}layers.0.attn_norm count=128 codes=16263,16240,16254,16257 sum=2080250;{{$}}
-// CHECK-NEXT: {{^}}layers.0.qkv count=32768 codes=15547,48549,48414,15868 sum=1053406842;{{$}}
+// CHECK-NEXT: {{^}}layers.0.qkv count=32768 codes=15547,48549,48414,15868 sum=1051852570;{{$}}
 // CHECK-NEXT: {{^}}layers.0.qkv_bias count=256 codes=15886,48570,15847,48540 sum=8085547;{{$}}
-// CHECK-NEXT: {{^}}layers.0.attn_out count=16384 codes=48580,48649,48606,15492 sum=524703406;{{$}}
+// CHECK-NEXT: {{^}}layers.0.attn_out count=16384 codes=48521,48576,48539,15416 sum=523608423;{{$}}
 // CHECK-NEXT: {{^}}layers.0.mlp_norm count=128 codes=16239,16265,16264,16249 sum=2080436;{{$}}
-// CHECK-NEXT: {{^}}layers.0.gate_up count=65536 codes=48663,48468,48570,15667 sum=2109312076;{{$}}
-// CHECK-NEXT: {{^}}layers.0.down count=32768 codes=48529,48635,48333,47986 sum=1053515491;{{$}}
+// CHECK-NEXT: {{^}}layers.0.gate_up count=65536 codes=48693,48510,48608,15703 sum=2108067209;{{$}}
+// CHECK-NEXT: {{^}}layers.0.down count=32768 codes=48401,48507,48205,47858 sum=1045669326;{{$}}
 // CHECK-NEXT: {{^}}layers.1.attn_norm count=128 codes=16260,16254,16267,16243 sum=2080374;{{$}}
-// CHECK-NEXT: {{^}}layers.1.qkv count=32768 codes=15856,48201,48647,48476 sum=1045946013;{{$}}
+// CHECK-NEXT: {{^}}layers.1.qkv count=32768 codes=15856,48201,48647,48476 sum=1044391932;{{$}}
 // CHECK-NEXT: {{^}}layers.1.qkv_bias count=256 codes=15769,15713,15666,48146 sum=8345995;{{$}}
-// CHECK-NEXT: {{^}}layers.1.attn_out count=16384 codes=48220,15548,48473,15241 sum=525443457;{{$}}
+// CHECK-NEXT: {{^}}layers.1.attn_out count=16384 codes=48154,15492,48408,15168 sum=524347805;{{$}}
 // CHECK-NEXT: {{^}}layers.1.mlp_norm count=128 codes=16258,16233,16261,16245 sum=2080374;{{$}}
-// CHECK-NEXT: {{^}}layers.1.gate_up count=65536 codes=48412,48653,48532,15245 sum=2100625731;{{$}}
-// CHECK-NEXT: {{^}}layers.1.down count=32768 codes=15774,48586,15486,48577 sum=1049158558;{{$}}
+// CHECK-NEXT: {{^}}layers.1.gate_up count=65536 codes=48443,48682,48562,15273 sum=2099380470;{{$}}
+// CHECK-NEXT: {{^}}layers.1.down count=32768 codes=15646,48458,15358,48449 sum=1041312438;{{$}}
 // CHECK-NEXT: {{^}}final_norm count=128 codes=16262,16238,16239,16258 sum=2080474;{{$}}
+//
+// FP8: {{^}}config hidden=128 layers=2 vocab=256;{{$}}
+// FP8-NEXT: {{^}}embed count=32768 codes=47665,15857,48564,48396 sum=1052457310;{{$}}
+// FP8-NEXT: {{^}}layers.0.attn_norm count=128 codes=16263,16240,16254,16257 sum=2080250;{{$}}
+// FP8-NEXT: {{^}}layers.0.qkv count=32768 codes=104,247,238,123 sum=5853434;{{$}}
+// FP8-NEXT: {{^}}layers.0.qkv.scale count=2 codes=967835648,961693989 sum=1929529637;{{$}}
+// FP8-NEXT: {{^}}layers.0.qkv_bias count=256 codes=15886,48570,15847,48540 sum=8085547;{{$}}
+// FP8-NEXT: {{^}}layers.0.attn_out count=16384 codes=249,253,250,100 sum=2918058;{{$}}
+// FP8-NEXT: {{^}}layers.0.attn_out.scale count=1 codes=964015835 sum=964015835;{{$}}
+// FP8-NEXT: {{^}}layers.0.mlp_norm count=128 codes=16239,16265,16264,16249 sum=2080436;{{$}}
+// FP8-NEXT: {{^}}layers.0.gate_up count=65536 codes=254,242,249,112 sum=11719771;{{$}}
+// FP8-NEXT: {{^}}layers.0.gate_up.scale count=4 codes=970082597,964465225,977123035,956076617 sum=3867747474;{{$}}
+// FP8-NEXT: {{^}}layers.0.down count=32768 codes=245,251,233,211 sum=5852312;{{$}}
+// FP8-NEXT: {{^}}layers.0.down.scale count=2 codes=959447040,944916773 sum=1904363813;{{$}}
+// FP8-NEXT: {{^}}layers.1.attn_norm count=128 codes=16260,16254,16267,16243 sum=2080374;{{$}}
+// FP8-NEXT: {{^}}layers.1.qkv count=32768 codes=123,225,252,242 sum=5822651;{{$}}
+// FP8-NEXT: {{^}}layers.1.qkv.scale count=2 codes=967835648,961693989 sum=1929529637;{{$}}
+// FP8-NEXT: {{^}}layers.1.qkv_bias count=256 codes=15769,15713,15666,48146 sum=8345995;{{$}}
+// FP8-NEXT: {{^}}layers.1.attn_out count=16384 codes=226,105,242,85 sum=2921997;{{$}}
+// FP8-NEXT: {{^}}layers.1.attn_out.scale count=1 codes=964015835 sum=964015835;{{$}}
+// FP8-NEXT: {{^}}layers.1.mlp_norm count=128 codes=16258,16233,16261,16245 sum=2080374;{{$}}
+// FP8-NEXT: {{^}}layers.1.gate_up count=65536 codes=238,253,246,85 sum=11685616;{{$}}
+// FP8-NEXT: {{^}}layers.1.gate_up.scale count=4 codes=970082597,964465225,977123035,956076617 sum=3867747474;{{$}}
+// FP8-NEXT: {{^}}layers.1.down count=32768 codes=118,249,100,249 sum=5837281;{{$}}
+// FP8-NEXT: {{^}}layers.1.down.scale count=2 codes=959447040,944916773 sum=1904363813;{{$}}
+// FP8-NEXT: {{^}}final_norm count=128 codes=16262,16238,16239,16258 sum=2080474;{{$}}
+// FP8-NEXT: {{^}}lm_head count=32768 codes=192,123,248,237 sum=5856622;{{$}}
+// FP8-NEXT: {{^}}lm_head.scale count=2 codes=967835648,961693989 sum=1929529637;{{$}}
 
 import qwen::weights;
 import core::num;
@@ -32,18 +64,79 @@ fn code(v : bf16) -> u32 {
   return (v as f32).to_bits() >> 16;
 }
 
-/// Prints `name count=N codes=a,b,c,d sum=S;` for a tensor in GPU memory.
+/// Prints `name count=N codes=a,b,c,d sum=S;`, with the first `shown` codes of `first`.
+fn print_line(name : *const i8, layer : i32, count : i64, first : &Tensor<u32, [?]>, shown : i32, sum : u64) -> void {
+  if layer >= 0 {
+    print!("layers.{}.", layer);
+  }
+  print!("{} count={} codes=", name, count);
+  for i in 0..shown {
+    if i > 0 {
+      print!(",");
+    }
+    print!("{}", first[i]);
+  }
+  println!(" sum={};", sum);
+  return;
+}
+
+/// The line of a tensor of bf16 values in GPU memory. A code is the 16 bits of a value.
 fn report(name : *const i8, layer : i32, t : &Tensor<bf16, [?], Memory::HBM>) -> void {
   let h = transfer(t, Memory::CPU_DRAM);
   let n = h.len();
+  let mut first = Tensor<u32>([4]);
   let mut sum : u64 = 0;
   for i in 0..n {
+    if i < 4 {
+      first[i] = code(h[i]);
+    }
     sum = sum + u64::from(code(h[i]));
   }
-  if layer < 0 {
-    println!("{} count={} codes={},{},{},{} sum={};", name, n, code(h[0]), code(h[1]), code(h[2]), code(h[3]), sum);
+  print_line(name, layer, i64::from(n), &first, i32::min(n, 4), sum);
+  return;
+}
+
+/// The line of a matrix of f8e4m3 codes in GPU memory, 4 codes in each u32 word. A code is one
+/// byte.
+fn report_codes(name : *const i8, layer : i32, t : &Tensor<u32, [?], Memory::HBM>) -> void {
+  let h = transfer(t, Memory::CPU_DRAM);
+  let n = h.len();
+  let mut first = Tensor<u32>([4]);
+  for k in 0..4 {
+    first[k] = (h[0] >> ((8 * k) as u32)) & 255u32;
+  }
+  let mut sum : u64 = 0;
+  for i in 0..n {
+    let w = h[i];
+    sum = sum + u64::from((w & 255u32) + ((w >> 8u32) & 255u32) + ((w >> 16u32) & 255u32) + (w >> 24u32));
+  }
+  print_line(name, layer, 4 * i64::from(n), &first, 4, sum);
+  return;
+}
+
+/// The line of a tensor of f32 scales in GPU memory. A code is the 32 bits of a value.
+fn report_scales(name : *const i8, layer : i32, t : &Tensor<f32, [?], Memory::HBM>) -> void {
+  let h = transfer(t, Memory::CPU_DRAM);
+  let n = h.len();
+  let mut first = Tensor<u32>([4]);
+  let mut sum : u64 = 0;
+  for i in 0..n {
+    if i < 4 {
+      first[i] = h[i].to_bits();
+    }
+    sum = sum + u64::from(h[i].to_bits());
+  }
+  print_line(name, layer, i64::from(n), &first, i32::min(n, 4), sum);
+  return;
+}
+
+/// The lines of a weight matrix: its bf16 values, or its codes and then its scales.
+fn report_matrix(name : *const i8, scale_name : *const i8, layer : i32, m : &WeightMatrix, fp8 : bool) -> void {
+  if fp8 {
+    report_codes(name, layer, &m.codes);
+    report_scales(scale_name, layer, &m.scales);
   } else {
-    println!("layers.{}.{} count={} codes={},{},{},{} sum={};", layer, name, n, code(h[0]), code(h[1]), code(h[2]), code(h[3]), sum);
+    report(name, layer, &m.bf16);
   }
   return;
 }
@@ -57,16 +150,16 @@ fn main(argc : i32, argv : *mut *mut i8) -> i32 {
   for l in 0..c.num_layers {
     let layer = &w.layers[l];
     report("attn_norm", l, &layer.attn_norm);
-    report("qkv", l, &layer.qkv);
+    report_matrix("qkv", "qkv.scale", l, &layer.qkv, c.fp8);
     report("qkv_bias", l, &layer.qkv_bias);
-    report("attn_out", l, &layer.attn_out);
+    report_matrix("attn_out", "attn_out.scale", l, &layer.attn_out, c.fp8);
     report("mlp_norm", l, &layer.mlp_norm);
-    report("gate_up", l, &layer.gate_up);
-    report("down", l, &layer.down);
+    report_matrix("gate_up", "gate_up.scale", l, &layer.gate_up, c.fp8);
+    report_matrix("down", "down.scale", l, &layer.down, c.fp8);
   }
   report("final_norm", -1, &w.final_norm);
   if !c.tied_embeddings {
-    report("lm_head", -1, &w.lm_head);
+    report_matrix("lm_head", "lm_head.scale", -1, &w.lm_head, c.fp8);
   }
   return 0;
 }

@@ -1,9 +1,16 @@
 // Generates 16 tokens of the tiny model on the GPU with `src/main.vx`, and compares them with
-// `reference.py`. The tokens must be equal, and each logit within 0.001 of the reference.
+// `reference.py`. The tokens must be equal, and each logit within 0.001 of the reference. The
+// second group of RUN lines does the same for the fp8 file of the tiny model, which runs the fp8
+// kernels of `std::nn`.
 //
 // RUN: python3 %S/../scripts/make_tiny_model.py %t.vxw > /dev/null
 // RUN: python3 %S/../scripts/reference.py %t.vxw --tokens 1,2,3,4 --steps 16 > %t.reference
 // RUN: vxc %S/../src/main.vx --package qwen=%S/../src --host default --machine fleet/m4-uma.vx -- %t.vxw --tokens 1,2,3,4 --steps 16 > %t.vx
 // RUN: python3 %S/../scripts/compare.py %t.reference %t.vx --tolerance 0.001 | FileCheck %s
+// RUN: python3 %S/../scripts/make_tiny_model.py --fp8 %t-fp8.vxw > /dev/null
+// RUN: python3 %S/../scripts/reference.py %t-fp8.vxw --tokens 1,2,3,4 --steps 16 > %t-fp8.reference
+// RUN: vxc %S/../src/main.vx --package qwen=%S/../src --host default --machine fleet/m4-uma.vx -- %t-fp8.vxw --tokens 1,2,3,4 --steps 16 > %t-fp8.vx
+// RUN: python3 %S/../scripts/compare.py %t-fp8.reference %t-fp8.vx --tolerance 0.001 | FileCheck %s --check-prefix=FP8
 //
 // CHECK: {{^}}16 steps, same tokens, logits within 0.001{{$}}
+// FP8: {{^}}16 steps, same tokens, logits within 0.001{{$}}
