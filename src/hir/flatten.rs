@@ -7496,8 +7496,7 @@ impl<'r> Lowerer<'r> {
                 }
                 self.lower_assign(&a.lhs, &a.rhs)
             }
-            // Compound assignment `lhs op= rhs` desugars to `lhs = (lhs op rhs)`: read the current
-            // value of the place, combine it with the right side, and store back.
+            // Read the place, combine its value with the right side, and store the result back.
             Statement::CompoundAssign(a) => {
                 // `p.x += n` and `*r += n` are `p.x = p.x + n` and `*r = *r + n`, which
                 // `lower_assign` already handles. The place is named twice, so only a variable
@@ -7514,7 +7513,24 @@ impl<'r> Lowerer<'r> {
                     });
                     return self.lower_assign(&a.lhs, &value);
                 }
-                let cur = self.lower_expr(&a.lhs)?;
+                // Save the base and index registers so the read and write share one evaluation.
+                let indexed_place = if matches!(&a.lhs, Expr::IndexAccess(_)) {
+                    Some(self.lower_place(&a.lhs)?)
+                } else {
+                    None
+                };
+                let cur = if let Some(place) = &indexed_place {
+                    let index = &self.code[place.reg.0 as usize];
+                    self.emit_typed(
+                        index.opcode,
+                        index.operand1,
+                        index.operand2,
+                        place.ty.clone(),
+                        0,
+                    )
+                } else {
+                    self.lower_expr(&a.lhs)?
+                };
                 let rhs = self.lower_expr(&a.rhs)?;
                 let op = binop_opcode(&a.op).ok_or(Decline::Unsupported {
                     what: "this compound-assignment operator",
@@ -7529,15 +7545,12 @@ impl<'r> Lowerer<'r> {
                 // Both scalar operands already share a type (`x += 1` types `1` to `x`'s type; a
                 // genuine mismatch is rejected, #240), so they combine directly.
                 let combined = self.emit_typed(op, cur.reg, rhs.reg, result_ty, 0);
-                if matches!(&a.lhs, Expr::IndexAccess(_)) {
-                    let place = self.lower_place(&a.lhs)?;
-                    // `p[i] += v` through a raw pointer stores through the element pointer.
-                    let store =
-                        if matches!(self.code[place.reg.0 as usize].opcode, Opcode::PtrIndex) {
-                            Opcode::PtrStore
-                        } else {
-                            Opcode::TensorStore
-                        };
+                if let Some(place) = indexed_place {
+                    let store = match self.code[place.reg.0 as usize].opcode {
+                        Opcode::PtrIndex => Opcode::PtrStore,
+                        Opcode::TensorIndex => Opcode::TensorStore,
+                        _ => unreachable!("an indexed place comes from a tensor or pointer index"),
+                    };
                     self.emit_effect(store, place.reg, combined.reg, 0);
                     Ok(())
                 } else {
