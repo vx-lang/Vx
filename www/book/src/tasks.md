@@ -262,6 +262,8 @@ runs many tasks on a few OS threads instead. Each task then gets a stack of its 
 that waits gives its thread to another task. A program needs no change to use the shared runtime.
 Set these variables when the program starts:
 
+- `VX_TASK_RUNTIME=threads` gives the default: one OS thread for each task. A value other than
+  `shared` or `threads` stops the program with a message.
 - `VX_TASK_WORKERS=n` starts `n` threads. Without it, the runtime starts one thread for each CPU.
 - A task that blocks in a C function, or runs a long loop with no wait, holds its thread. When
   tasks are ready and each thread is busy, the runtime starts one more thread.
