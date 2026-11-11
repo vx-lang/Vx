@@ -33,6 +33,13 @@ pub fn parse_type_text(text: &str) -> Option<Type> {
     parser.check(&TokenType::Eof).then_some(ty)
 }
 
+/// Whether `name` is a built-in type: `void`, a scalar, or a name `parse_named_type` reads as
+/// built in. A struct, enum or trait with such a name could never be used.
+pub(crate) fn is_builtin_type_name(name: &str) -> bool {
+    matches!(name, "void" | "Tensor" | "DynTensor" | "Matrix")
+        || name.parse::<ElementType>().is_ok()
+}
+
 impl<'a> Parser<'a> {
     pub(crate) fn parse_topology(&mut self) -> ParseResult<'a, Topology> {
         let topology = self.parse_topology_or_any()?;
@@ -471,6 +478,7 @@ impl<'a> Parser<'a> {
             return Ok(base_type);
         }
 
+        // A new built-in name here also goes in `is_builtin_type_name`.
         match ident.as_ref() {
             "Tensor" => {
                 if !matches!(&self.peek().kind, TokenType::LeftAngle) {
