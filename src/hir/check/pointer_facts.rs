@@ -902,7 +902,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 _ => true,
             },
-            Type::Tensor(..) | Type::Matrix | Type::Module(..) => true,
+            Type::Tensor(..) | Type::Module(..) => true,
         }
     }
 

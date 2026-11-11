@@ -202,7 +202,7 @@ impl Type {
                 ret_ty.resolve_names(scope);
             }
             Type::Const(_) => {}
-            Type::Matrix | Type::Scalar(_) | Type::Simd(_, _) => {}
+            Type::Scalar(_) | Type::Simd(_, _) => {}
             Type::Unknown => {}
         }
     }

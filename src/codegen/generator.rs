@@ -2539,11 +2539,6 @@ impl<'c> MeliorGenerator<'c> {
                     LowerError::from(format!("failed to parse MLIR element type `{name}`"))
                 });
             }
-            syntax::Type::Matrix => {
-                return Err(LowerError::from(
-                    "codegen does not support the `Matrix` type".to_string(),
-                ))
-            }
             syntax::Type::Ref(inner, _mem) => {
                 return self.lower_type(inner);
             }

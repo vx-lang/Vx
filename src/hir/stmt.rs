@@ -4178,7 +4178,6 @@ impl MutReferenceTypes<'_> {
                 }
                 Type::Unknown => true,
                 Type::Tensor(..)
-                | Type::Matrix
                 | Type::Scalar(..)
                 | Type::Generic(..)
                 | Type::Module(..)

@@ -211,7 +211,6 @@ type ::=
 // written (see types.md).
 named_type ::= 
     | "Tensor" "<" element_type "," "[" ( shape_dim ","? )* "]" ( "," placement )? ">"
-    | "Matrix"
     | element_type
     | identifier ( "<" type ( "," type )* ">" )?
 
