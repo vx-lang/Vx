@@ -14,6 +14,29 @@ npm run package
 code --install-extension vx-*.vsix
 ```
 
+## Emacs
+
+The major mode `vx-mode` lives in `emacs-vx/` in the repository. It highlights keywords, types,
+numbers, strings and macro calls. It indents 2 spaces for each open `{`, as `vx-format` does. It
+also gives `imenu` a list of the functions, types and macros of the file.
+
+To install it, add these lines to your Emacs init file:
+
+```elisp
+(add-to-list 'load-path "/path/to/Vx/emacs-vx")
+(require 'vx-mode)
+```
+
+Emacs then opens each `.vx` file in `vx-mode`. To change the indent width, set `vx-indent-offset`.
+
+`vx-mode` does not start the language server. To use `vx-analyzer` with Eglot, the LSP client of
+Emacs, add this line too:
+
+```elisp
+(with-eval-after-load 'eglot
+  (add-to-list 'eglot-server-programs '(vx-mode "vx-analyzer")))
+```
+
 ## The language server
 
 `vx-analyzer` speaks the Language Server Protocol, so any LSP-capable editor can use it. It ships
