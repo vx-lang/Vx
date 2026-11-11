@@ -385,6 +385,203 @@ fn a_host_that_does_not_read_its_reply_does_not_stop_the_worker() {
     );
 }
 
+/// The worker process dies while a host waits for its reply. The operating
+/// system closes the connection, so the host must stop at once, with an error.
+/// The link check is set to 120 s, so only the closed connection can end the
+/// wait in the 10 s that the test gives.
+#[test]
+fn a_host_stops_with_an_error_when_its_worker_dies() {
+    use std::io::{BufRead, Write};
+    let root = repo_root();
+    let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    let cxx = runtime_test_build::cxx();
+
+    let worker_bin = tmp.join("vx-worker-that-dies");
+    compile(
+        &cxx,
+        &[
+            root.join("runtime/vx_worker_main.cpp"),
+            root.join("runtime/host_dispatch.cpp"),
+        ],
+        &worker_bin,
+        &ffi_flags(),
+    );
+    let client_bin = tmp.join("worker_dies_client");
+    compile(
+        &cxx,
+        &[root.join("tests/runtime/worker_dies_client.cpp")],
+        &client_bin,
+        &[],
+    );
+
+    let port = 20000 + ((std::process::id() + 8) % 10000) as u16;
+    let mut worker = Worker(
+        Command::new(&worker_bin)
+            .args(["--port", &port.to_string(), "--topology", "0"])
+            .spawn()
+            .expect("failed to start the worker"),
+    );
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    let mut host = Worker(
+        Command::new(&client_bin)
+            .args(["127.0.0.1", &port.to_string()])
+            .env("VX_REMOTE_LINK_TIMEOUT", "120")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("failed to start the host"),
+    );
+    let mut said = String::new();
+    std::io::BufReader::new(host.0.stdout.take().expect("the host has no stdout"))
+        .read_line(&mut said)
+        .expect("the host did not connect");
+    assert_eq!(said, "connected\n");
+
+    // Stop the worker, so that the host surely waits when the worker dies.
+    let pid = worker.0.id().to_string();
+    let stopped = Command::new("kill").args(["-STOP", &pid]).status();
+    assert!(stopped.is_ok_and(|s| s.success()), "cannot stop the worker");
+    host.0
+        .stdin
+        .take()
+        .expect("the host has no stdin")
+        .write_all(b"go\n")
+        .expect("cannot tell the host to send");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    worker.0.kill().expect("cannot kill the worker");
+    let _ = worker.0.wait();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let status = loop {
+        if let Some(s) = host.0.try_wait().expect("failed to poll the host") {
+            break s;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the host still waits 10 s after its worker died"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let mut log = String::new();
+    host.0
+        .stderr
+        .take()
+        .expect("the host has no stderr")
+        .read_to_string(&mut log)
+        .expect("failed to read the host's log");
+    assert_eq!(
+        status.code(),
+        Some(3),
+        "the TRANSFER to a dead worker did not fail:\n{log}"
+    );
+}
+
+/// Two hosts use one worker at the same time. Each host has its own table of
+/// buffers on the worker. So when host A leaves, the worker frees only the
+/// buffers of A, and host B can still read its own.
+#[test]
+fn two_hosts_on_one_worker_each_get_their_own_buffers() {
+    use std::io::{BufRead, Write};
+    let root = repo_root();
+    let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    let cxx = runtime_test_build::cxx();
+
+    let worker_bin = tmp.join("vx-worker-two-hosts-one-worker");
+    compile(
+        &cxx,
+        &[
+            root.join("runtime/vx_worker_main.cpp"),
+            root.join("runtime/host_dispatch.cpp"),
+        ],
+        &worker_bin,
+        &ffi_flags(),
+    );
+    let client_bin = tmp.join("two_hosts_one_worker_client");
+    compile(
+        &cxx,
+        &[root.join("tests/runtime/two_hosts_one_worker_client.cpp")],
+        &client_bin,
+        &[],
+    );
+
+    let port = 20000 + ((std::process::id() + 9) % 10000) as u16;
+    let mut worker = Worker(
+        Command::new(&worker_bin)
+            .args(["--port", &port.to_string(), "--topology", "0"])
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("failed to start the worker"),
+    );
+    // Send each line of the worker's log to the test.
+    let worker_log = std::io::BufReader::new(worker.0.stderr.take().expect("no worker stderr"));
+    let (log_tx, log_rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for line in worker_log.lines().map_while(Result::ok) {
+            if log_tx.send(line).is_err() {
+                return;
+            }
+        }
+    });
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    let mut host = Worker(
+        Command::new(&client_bin)
+            .args(["127.0.0.1", &port.to_string()])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("failed to start the hosts"),
+    );
+    let mut said = String::new();
+    std::io::BufReader::new(host.0.stdout.take().expect("the hosts have no stdout"))
+        .read_line(&mut said)
+        .expect("host A did not leave");
+    assert_eq!(said, "A left\n");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut seen = Vec::new();
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        match log_rx.recv_timeout(left) {
+            Ok(line) if line.contains("that the host left") => break,
+            Ok(line) => seen.push(line),
+            Err(_) => panic!(
+                "the worker did not free the buffers of host A in 10 s:\n{}",
+                seen.join("\n")
+            ),
+        }
+    }
+    host.0
+        .stdin
+        .take()
+        .expect("the hosts have no stdin")
+        .write_all(b"go\n")
+        .expect("cannot tell host B to read");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let status = loop {
+        if let Some(s) = host.0.try_wait().expect("failed to poll the hosts") {
+            break s;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "host B did not finish in 10 s"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let mut log = String::new();
+    host.0
+        .stderr
+        .take()
+        .expect("the hosts have no stderr")
+        .read_to_string(&mut log)
+        .expect("failed to read the log of the hosts");
+    assert!(status.success(), "two hosts on one worker failed:\n{log}");
+}
+
 /// A Vx program placing its data on a worker, computing there, and reading the
 /// answer home -- checked against the same program run with no manifest.
 ///
