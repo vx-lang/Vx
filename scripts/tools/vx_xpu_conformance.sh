@@ -41,6 +41,12 @@
 #                device cannot address. The backend has to refuse the launch
 #                ("argument 0 is at an address the device cannot reach") and run
 #                the kernel's host copy instead, with the CPU backend's answer.
+#   declared     a tensor transferred into a declared space that is not the
+#   space        topology's `memory:`. The compiler sends no alias for it and
+#                the space says the host cannot read it, so host memory is not
+#                an answer. The backend has to refuse and name the space id;
+#                before it did, the region quietly ran on the host and the run
+#                printed numbers.
 #
 # A kernel the device cannot run is reported, not skipped: the compiler's
 # refusal or the host fallback is the result for that case.
@@ -596,6 +602,44 @@ refuse() {
   head -1 "$err" | sed 's/^/      /'
 }
 refuse f64_on_the_arc "E6026"
+
+# A tensor transferred into a declared space that is not the topology's
+# `memory:`. The compiler sends no alias for it, the runtime has only a hash,
+# and the space is `managed: explicit`, so host memory cannot stand in for it.
+# The backend must refuse and name the space: before it did, the run printed the
+# host fallback's numbers and looked successful. 1855308478 is the id
+# src/arch.rs gives `fnv("HBM")`, which is the number the message has to name.
+echo "==> a transfer into a declared space this backend cannot place"
+declared_space_id=1855308478
+declared_stdout="$OUT/declared_space.out"
+declared_stderr="$OUT/declared_space.err"
+declared_status=0
+VX_DISPATCH_VERBOSE=1 timeout 600 "$VXC" \
+  "$PROGRAMS/a_declared_space_the_backend_cannot_place.vx" --run \
+  >"$declared_stdout" 2>"$declared_stderr" || declared_status=$?
+if [ "$declared_status" = 0 ]; then
+  echo "error: a transfer into a declared space the backend cannot place" >&2
+  echo "       answered with memory instead of refusing. The run printed:" >&2
+  sed 's/^/         /' "$declared_stdout" >&2
+  echo "       those are the host fallback's numbers." >&2
+  exit 1
+fi
+grep -h "asks for memory space\|Spell the space" "$declared_stderr" |
+  sed 's/^/    /'
+if ! grep -q "asks for memory space $declared_space_id" "$declared_stderr"; then
+  echo "error: the refusal does not name the space id $declared_space_id," >&2
+  echo "       so a reader cannot tell which memory was refused" >&2
+  head -8 "$declared_stderr" >&2
+  exit 1
+fi
+if ! grep -q "managed: explicit" "$declared_stderr" ||
+  ! grep -q "Spell the space \`Memory::GPU_HBM\`" "$declared_stderr"; then
+  echo "error: the refusal does not say why host memory is wrong or what to" >&2
+  echo "       change" >&2
+  head -8 "$declared_stderr" >&2
+  exit 1
+fi
+echo "    refused by name, and the program printed no numbers"
 
 # An elementwise loop on the machine file's own topology, whose memory the host
 # cannot read. The compiler used to refuse it -- only a matmul got a device

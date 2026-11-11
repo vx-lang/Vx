@@ -20,9 +20,13 @@
 // then share one context and one device. A second context would make each
 // side's pointers unusable by the other.
 //
-// Allocation. Every space gets shared USM, which the device can address and the
-// host can read, so no program is wrong on it. Device-only memory is faster for
-// a large staged tensor and is not used yet -- the reason is at the allocation.
+// Allocation. Every space this library serves gets shared USM, which the device
+// can address and the host can read, so no program is wrong on it. Device-only
+// memory is faster for a large staged tensor and is not used yet -- the reason
+// is at the allocation. A declared space the program did not alias to this
+// device is refused when the program declared a local device and the space says
+// the host cannot read it, because host memory there is memory a kernel would
+// read as the device's.
 //
 // Routing. This library serves one device, the Intel GPU of the GPU band (id
 // 500), and a `Memory::GPU_HBM` transfer carries that id, so a placed program's
@@ -311,6 +315,18 @@ int32_t builtin_topology(int32_t topology_id) {
     }
   }
   return topology_id;
+}
+
+/// Whether the program declared any topology as a local device, aliased or not.
+///
+/// This separates a program that means a device from one that only wrote a
+/// `Memory` block: a declared topology with no `arch:` sends no pair, its
+/// kernels run on the host, and its memories are a model of a machine rather
+/// than this card's (`a_shared_edge_lets_the_cpu_read_a_borrowed_gpu_tensor` in
+/// tests/optimizations is that shape).
+bool any_local_device_declared() {
+  std::lock_guard<std::mutex> lock(local_devices_mutex);
+  return local_device_count != 0;
 }
 
 LaunchQueue &launch_queue() {
@@ -910,10 +926,10 @@ extern "C" {
 /// Allocate in this backend's memory and copy into it.
 ///
 /// `space_access` is the model's claim about whether the host may read the
-/// result. It is ignored today: every allocation in the GPU band is shared USM,
+/// result. In the GPU band it is ignored: every allocation there is shared USM,
 /// which the device can address and the host can read, so no program is wrong
-/// on it. The reason device-only memory is not used yet is at the allocation
-/// below.
+/// on it. Outside the band it decides whether host memory can answer a request
+/// at all -- see the refusal below.
 void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
                                    uint32_t topology_id,
                                    uint32_t space_access) {
@@ -933,11 +949,11 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
      would have its device tensors allocated on the host. Every other id -- the
      host, another accelerator's band, a NUMA node -- names memory this backend
      did not allocate and must not claim. */
-  int gpu_index =
-      xpu_available()
-          ? vx_topology_device_index(builtin_topology((int32_t)topology_id),
-                                     VX_TOPO_GPU_BASE)
-          : -1;
+  const int32_t requested = (int32_t)topology_id;
+  const int32_t builtin = builtin_topology(requested);
+  int gpu_index = xpu_available()
+                      ? vx_topology_device_index(builtin, VX_TOPO_GPU_BASE)
+                      : -1;
   if (gpu_index > 0) {
     fprintf(stderr,
             "[Vx XPU] FATAL: a transfer targets GPU %d, but this machine has "
@@ -948,6 +964,46 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
   bool on_device = gpu_index >= 0;
 
   if (!on_device) {
+    /* A declared space the program did not alias. Its id is a hash, so this
+       library cannot tell whether it names the device or the host, and that is
+       the one fact host memory turns on: the program declared it `managed:
+       explicit`, which says a kernel reads it as device memory. Handing back a
+       `malloc` buffer makes the region run on the host or read bytes the device
+       never wrote, and before the launch check existed it made the device read
+       zeros. Refuse by name instead of guessing, because the table that would
+       map the hash lives in the compiler.
+
+       Only when the program declared a local device. A program that declared
+       none is modelling a machine with no accelerator on this side: its
+       kernels run on the host and its memories are a description, so host
+       memory answers it correctly. That is also the shape of a program written
+       for another backend's device, which sends no pair here.
+
+       CUDA reports the mirror case -- device memory where the model promised
+       the host could read -- the same way: the topology, the bytes, what the
+       program declared, and what to change. Here the answer would be host
+       memory the program cannot use, so it is fatal rather than a warning. */
+    const bool declared = requested >= VX_TOPO_NAMED_BASE;
+    if (xpu_available() && declared && builtin == requested &&
+        any_local_device_declared() &&
+        space_access == VX_SPACE_ACCESS_EXPLICIT) {
+      fprintf(
+          stderr,
+          "[Vx XPU] FATAL: a transfer of %zu bytes asks for memory space "
+          "%d (its topology), and this backend cannot place that space on "
+          "the GPU.\n"
+          "          The id is a hash of a declared space's name, and the "
+          "program did not tell this library which device it stands for: "
+          "no VX_CTRL_LOCAL_DEVICE pair named it.\n"
+          "          The space is declared `managed: explicit`, so a kernel "
+          "reads it as device memory. Host memory here would run the "
+          "region on the host, or let the device read bytes nothing "
+          "wrote.\n"
+          "          Spell the space `Memory::GPU_HBM`, or make it the "
+          "topology's `memory:`, so the compiler sends the pair.\n",
+          bytes, requested);
+      abort();
+    }
     void *ptr = malloc(bytes);
     if (ptr && host_ptr) {
       memcpy(ptr, host_ptr, bytes);

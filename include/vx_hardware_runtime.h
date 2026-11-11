@@ -567,12 +567,13 @@ static inline int64_t vx_payload_section(const void *payload,
 // other (#348).
 #define VX_TOPO_NIC_BASE 800
 #define VX_TOPO_REMOTE_BASE 900
-// Names declared in a machine file (`Topology DecodeWorker { .. }`) hash into
-// 1000..1999, and topology slices into 2000..2999. A name is the identity; the
-// hash is a shortcut, which is why `toponame=` in the payload is what a plugin
-// resolving a worker to an endpoint should key on.
-#define VX_TOPO_NAMED_BASE 1000
+// Topology slices hash into 2000..2999 and names declared in a machine file
+// (`Topology DecodeWorker { .. }`) hash into 3000..INT32_MAX, mirroring
+// `topology_dispatch_id` and `CUSTOM_DISPATCH_ID_BASE` in src/arch.rs. A name
+// is the identity; the hash is a shortcut, which is why `toponame=` in the
+// payload is what a plugin resolving a worker to an endpoint should key on.
 #define VX_TOPO_SLICE_BASE 2000
+#define VX_TOPO_NAMED_BASE 3000
 #define VX_TOPO_BAND 100
 
 /// The device ordinal within `base`'s band, or -1 when the id is not in it.
