@@ -4502,6 +4502,9 @@ static BufferOrigin originOf(Value v, llvm::SmallPtrSetImpl<void *> &seen,
     return BufferOrigin::Borrowed;
   }
   Operation *def = v.getDefiningOp();
+  // In a task, a heap buffer of the function that started it.
+  if (def && def->hasAttr("vx.task_takes"))
+    return BufferOrigin::Heap;
   // A spawn region's value: a buffer made outside the region and handed out.
   if (auto spawn = dyn_cast_or_null<vx::SpawnOp>(def)) {
     unsigned i = cast<OpResult>(v).getResultNumber();
@@ -4572,6 +4575,19 @@ static BufferOrigin originOf(Value v) {
   return originOf(v, topology);
 }
 
+// The call that fills `slot`, the stack slot of a statically shaped result: the
+// one that takes it first. Null for a stack buffer that no call fills, which is
+// not a result.
+static func::CallOp resultSlotFill(memref::AllocaOp slot) {
+  func::CallOp fill;
+  for (Operation *user : slot->getUsers())
+    if (auto c = dyn_cast<func::CallOp>(user); c && c.getNumOperands() > 0 &&
+                                               c.getOperand(0) == slot &&
+                                               c.getNumResults() == 0)
+      fill = c;
+  return fill;
+}
+
 // A statically shaped result comes back in a stack slot the caller allocates
 // once, in its entry block. A function that takes it by value frees it, so a
 // result that is passed by value gets a heap buffer instead, allocated where
@@ -4610,15 +4626,9 @@ static LogicalResult giveMovedResultsHeapSlots(ModuleOp module) {
     }
   });
   for (memref::AllocaOp slot : slots) {
-    // The call that fills the slot is the one that takes it first. A stack
-    // buffer no call fills is not a result: checkMovedArguments reports one
+    // checkMovedArguments reports a stack buffer that is not a result and is
     // passed by value.
-    func::CallOp fill;
-    for (Operation *user : slot->getUsers())
-      if (auto c = dyn_cast<func::CallOp>(user); c && c.getNumOperands() > 0 &&
-                                                 c.getOperand(0) == slot &&
-                                                 c.getNumResults() == 0)
-        fill = c;
+    func::CallOp fill = resultSlotFill(slot);
     if (!fill)
       continue;
     DominanceInfo dominance(fill->getParentOfType<func::FuncOp>());
@@ -5234,8 +5244,18 @@ static LogicalResult lowerTask(vx::SpawnOp task, Value group, ModuleOp module,
     Value v =
         LLVM::LoadOp::create(b, loc, fieldTypes[2 + i], field(b, env, 2 + i));
     Type type = copied[i] ? copied[i] : capture.getType();
-    if (v.getType() != type)
-      v = UnrealizedConversionCastOp::create(b, loc, type, v).getResult(0);
+    if (v.getType() != type) {
+      auto cast = UnrealizedConversionCastOp::create(b, loc, type, v);
+      // A heap buffer of the function, or a result slot, which moves to the
+      // heap because the task gets it. A task that takes it, as `let b = b;`
+      // does, frees it or passes it on by value.
+      auto slot = castSource(capture).getDefiningOp<memref::AllocaOp>();
+      if (!copied[i] && isa<MemRefType>(type) &&
+          (originOf(capture) == BufferOrigin::Heap ||
+           (slot && resultSlotFill(slot))))
+        cast->setAttr("vx.task_takes", UnitAttr::get(ctx));
+      v = cast.getResult(0);
+    }
     inTask.push_back(v);
   }
   Block *first = &body.front();
