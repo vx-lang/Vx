@@ -41,6 +41,9 @@
 #                device cannot address. The backend has to refuse the launch
 #                ("argument 0 is at an address the device cannot reach") and run
 #                the kernel's host copy instead, with the CPU backend's answer.
+#   machine      a program that declares nothing and uses the machine file's
+#   file         own `Memory::HBM` and `Topology::Device`. The hash must be
+#                aliased to the GPU band and the region must run from its image;
 #   declared     a tensor transferred into a declared space that is not the
 #   space        topology's `memory:`. The compiler sends no alias for it and
 #                the space says the host cannot read it, so host memory is not
@@ -602,6 +605,68 @@ refuse() {
   head -1 "$err" | sed 's/^/      /'
 }
 refuse f64_on_the_arc "E6026"
+
+# The other half of the declared-space case below. The space the machine file
+# itself names has to reach the card: the program declares nothing and reads
+# `Memory::HBM` and `Topology::Device` from fleet/arc-a770.vx through
+# `--machine`. The ids are hashes, so the transfer is only device memory if
+# `Topology Device { memory: Memory::HBM }` sent the pair (fnv("HBM"), 500) and
+# the library maps the hash to the GPU band. The staged topology id, the
+# `vx.local_devices` pair and the image launch are all named, so a spelling that
+# silently lands on the host cannot pass.
+echo "==> the machine file's own space reaches the card"
+machine_spelling="$PROGRAMS/the_machine_files_hbm_is_the_cards_memory.vx"
+machine_spelling_mlir="$OUT/machine_spelling.mlir"
+if ! "$VXC" --machine "$ROOT/fleet/arc-a770.vx" --host default \
+  "$machine_spelling" --emit-mlir 2>/dev/null >"$machine_spelling_mlir"; then
+  echo "error: the machine-file conformance program did not compile" >&2
+  exit 1
+fi
+machine_spelling_status=0
+VX_DISPATCH_VERBOSE=1 timeout 600 "$VXC" \
+  --machine "$ROOT/fleet/arc-a770.vx" --host default "$machine_spelling" --run \
+  >"$OUT/machine_spelling.out" 2>"$OUT/machine_spelling.err" ||
+  machine_spelling_status=$?
+if [ "$machine_spelling_status" != 0 ]; then
+  echo "error: the machine-file run failed" >&2
+  tail -8 "$OUT/machine_spelling.err" >&2
+  exit 1
+fi
+machine_spelling_id="$(awk '
+  match($0, /staged [0-9]+ bytes on topology [0-9]+/) {
+    id = substr($0, RSTART, RLENGTH)
+    sub(/.*topology /, "", id)
+    print id
+    exit
+  }' "$OUT/machine_spelling.err")"
+if [ -z "$machine_spelling_id" ] || [ "$machine_spelling_id" = 500 ]; then
+  echo "error: the transfer was not staged on a declared topology id;" >&2
+  echo "       got '${machine_spelling_id:-none}'" >&2
+  head -8 "$OUT/machine_spelling.err" >&2
+  exit 1
+fi
+if ! grep -q "vx.local_devices = array<i32: .*$machine_spelling_id, 500" \
+  "$machine_spelling_mlir"; then
+  echo "error: the staged topology $machine_spelling_id has no alias to the GPU" >&2
+  echo "       band 500 in vx.local_devices, so this says nothing about the" >&2
+  echo "       machine file's spelling" >&2
+  grep -h "vx.local_devices" "$machine_spelling_mlir" >&2
+  exit 1
+fi
+if ! grep -q "ran from its own image" "$OUT/machine_spelling.err"; then
+  echo "error: the region on the machine file's topology did not run from its" >&2
+  echo "       own image" >&2
+  tail -8 "$OUT/machine_spelling.err" >&2
+  exit 1
+fi
+machine_spelling_answer="$(tail -n 1 "$OUT/machine_spelling.out")"
+if [ "$machine_spelling_answer" != 4 ]; then
+  echo "error: the region printed '$machine_spelling_answer', not 4" >&2
+  exit 1
+fi
+grep -h "staged .* on topology $machine_spelling_id\|ran from its own image" \
+  "$OUT/machine_spelling.err" | sed 's/^/    /'
+echo "    topology $machine_spelling_id is aliased to 500 and the region ran on the card"
 
 # A tensor transferred into a declared space that is not the topology's
 # `memory:`. The compiler sends no alias for it, the runtime has only a hash,

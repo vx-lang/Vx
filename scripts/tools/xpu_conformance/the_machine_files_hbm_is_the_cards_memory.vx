@@ -1,0 +1,38 @@
+//===- the_machine_files_hbm_is_the_cards_memory.vx ---------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program that declares no memory and no topology of its own. It places a
+// region on `Topology::Device` and transfers its operands into `Memory::HBM`,
+// both read from fleet/arc-a770.vx through `--machine`. That is the spelling
+// the machine file documents, and it has to reach the card: the declared ids
+// are hashes, so the topology's `memory: Memory::HBM` is what sends the pair
+// that maps the hash to the GPU band.
+//
+// This is the other half of the declared-space refusal beside it. Here the
+// space the alias covers is used, and it must be device memory, the region must
+// run from its own image, and the host must read back the region's answer.
+//
+// The runner compiles with `--machine fleet/arc-a770.vx --host default`, checks
+// that the staged topology id is paired with 500 in `vx.local_devices`, runs
+// the program on the Arc, and requires `ran from its own image` and the
+// printed 4.
+
+fn main() -> i32 {
+  let a = Tensor<f32, [8]>::fill(2.0);
+  let o = Tensor<f32, [8]>::fill(0.0);
+  let ad = transfer(a, Memory::HBM);
+  let mut od = transfer(o, Memory::HBM);
+  spawn on(Topology::Device) {
+    for i in 0..8 {
+      od[i] = ad[i] * 2.0;
+    }
+  }
+  let home = transfer(od, Memory::CPU_DRAM);
+  print(home[0]);
+  return 0;
+}
