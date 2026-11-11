@@ -64,7 +64,7 @@ compile error rather than a bad read at run time:
 
 ```rust
 let a : Tensor<i64, [3]> = [ 3i64, 1i64, 2i64 ];
-let x = a[5];   // error[E8003]: index 5 is out of range: this array has 3 elements
+let x = a[5];   // error[E8003]: index 5 is out of range: this dimension has 3 elements
 ```
 
 An index the compiler cannot work out, such as the result of a call, leaves it unable to follow

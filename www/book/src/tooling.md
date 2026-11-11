@@ -6,7 +6,7 @@
 
 | Flag | What it does |
 | --- | --- |
-| `--run` | Compile and execute immediately, propagating the program's exit code |
+| `--run` | Compile and execute immediately. A program that returns a value other than 0 makes `vxc` exit with status 1 |
 | `-c` | Compile to an object file |
 | `--emit-mlir` | Emit the MLIR representation |
 | `--emit-llvm` | Emit LLVM IR |
@@ -108,16 +108,20 @@ vx-format src/*.vx
 
 ## The standard library
 
-21 modules, imported as `std::<name>`. Every type and function is listed in the
+The library has two parts. `core::<name>` holds the language's basic types and traits, and needs no
+operating system. `std::<name>` holds the rest. Every type and function is listed in the
 [standard library reference](stdlib-reference.md), generated from the sources.
 
 | | |
 | --- | --- |
-| **Core** | `option`, `result`, `box`, `alloc`, `closure`, `iter` |
-| **Collections** | `vec`, `hash_map`, `hash_set`, `string` |
-| **Numerics** | `math`, `simd`, `tensor` |
-| **System** | `io`, `fs`, `net`, `mmap`, `time`, `libc` |
-| **Testing** | `googletest` |
+| **core** | `option`, `result`, `iter`, `ops`, `cmp`, `clone`, `convert`, `default`, `hash`, `marker`, `mem`, `fmt`, `num`, `cell`, `ptr`, `tuple`, `time` |
+| **Collections** | `std::vec`, `std::string`, `std::box`, `std::alloc` |
+| **Numerics** | `std::tensor`, `std::simd`, `std::rand`, `std::nn` |
+| **Tasks** | `std::sync::channel`, `std::sync::mutex`, `std::sync::arc`, `std::sync::wait`, `std::collective` |
+| **System** | `std::io`, `std::fs`, `std::net`, `std::mmap`, `std::time`, `std::libc` |
+| **Testing** | `std::googletest` |
+
+`std::hash_map` and `std::hash_set` have only C functions for `i32` keys, with no `HashMap` type yet.
 
 Beyond `std` the toolchain ships `graph`, imported as `graph::traversal` and friends.
 

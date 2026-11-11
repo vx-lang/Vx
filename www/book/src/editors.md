@@ -10,8 +10,9 @@ Until it is published to the marketplace, install it from source:
 ```bash
 cd vscode-vx
 npm install
-npm run package
-code --install-extension vx-*.vsix
+npm install -g @vscode/vsce
+vsce package
+code --install-extension vx-lang-*.vsix
 ```
 
 ## The language server
