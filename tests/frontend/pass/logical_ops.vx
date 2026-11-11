@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // `&&` and `||` short-circuit, so they are control flow and not arith.andi/ori: each becomes a
 // branch on the left operand over a result slot, and only the taken arm stores the right one.
 // `!` is the one that stays arithmetic -- a xor against true.

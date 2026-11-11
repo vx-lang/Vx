@@ -12,8 +12,8 @@
 // RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ptx
 // RUN: FileCheck %s < %t.ptx
 // CHECK: .entry reverse_after_the_blocks(
-// CHECK: .shared .align 16 .b8 [[TILE:[a-z_0-9]+]][1024];
-// CHECK: .shared .align 16 .u32 [[FLAG:[a-z_0-9$]+]];
+// CHECK-DAG: .shared .align 16 .b8 [[TILE:[a-z_0-9]+]][1024];
+// CHECK-DAG: .shared .align 16 .u32 [[FLAG:[a-z_0-9$]+]];
 // Each pass adds 1 to the count. Then the lanes read the flag, and only the last pass goes on.
 // CHECK: atom.global.add.u32
 // CHECK: ld.shared.b32 [[LAST:%r[0-9]+]], {{\[}}[[FLAG]]{{\]}};

@@ -11,7 +11,7 @@
 // see the atomics. A function that passes its `&` on to an atomic changes it too, and so does a
 // function that passes it to that one.
 //
-// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s # flat-codegen
 
 import core::sync::atomic;
 

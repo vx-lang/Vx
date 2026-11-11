@@ -974,6 +974,36 @@ fn run_optimization_test(path: &Path) -> Result<(), String> {
 ///
 /// A RUN line runs exactly the command it names. It uses the AST code generator only when
 /// it says `--legacy-codegen`.
+/// `cmd` with `--legacy-codegen` after each `vxc` that starts a command: at the start, after
+/// `|`, `;` or `&`, or after `env` with its settings, or `not`. `None` when no command is `vxc`.
+fn with_legacy_codegen(cmd: &str) -> Option<String> {
+    let start =
+        regex::Regex::new(r"(^|[|;&]\s*|\benv\s+(?:-u\s+\S+\s+|\S+=\S*\s+)*|\bnot\s+)vxc\b")
+            .unwrap();
+    start
+        .is_match(cmd)
+        .then(|| start.replace_all(cmd, "${0} --legacy-codegen").into_owned())
+}
+
+#[test]
+fn legacy_codegen_goes_after_each_vxc_command() {
+    let added = |c: &str| with_legacy_codegen(c);
+    assert_eq!(
+        added("vxc f.vx --run | FileCheck f.vx").as_deref(),
+        Some("vxc --legacy-codegen f.vx --run | FileCheck f.vx")
+    );
+    assert_eq!(
+        added("env VX_METAL=0 A= vxc f.vx").as_deref(),
+        Some("env VX_METAL=0 A= vxc --legacy-codegen f.vx")
+    );
+    assert_eq!(
+        added("not vxc a.vx; vxc b.vx").as_deref(),
+        Some("not vxc --legacy-codegen a.vx; vxc --legacy-codegen b.vx")
+    );
+    assert_eq!(added("FileCheck f.vx < t.vxc.out"), None);
+    assert_eq!(added("grep vxc t.log"), None);
+}
+
 fn run_lit_test(path: &Path) -> Result<(), String> {
     let source = fs::read_to_string(path).expect("Failed to read test file");
 
@@ -1051,16 +1081,49 @@ fn run_lit_test(path: &Path) -> Result<(), String> {
         hash
     ));
 
-    for run_line in run_lines {
-        let cmd = run_line
-            .split_once("RUN:")
-            .unwrap()
-            .1
-            .trim()
-            .replace("%arch", std::env::consts::ARCH)
-            .replace("%s", path.to_str().unwrap())
-            .replace("%t", t_val.to_str().unwrap());
-
+    let commands: Vec<String> = run_lines
+        .iter()
+        .map(|run_line| {
+            run_line
+                .split_once("RUN:")
+                .unwrap()
+                .1
+                .trim()
+                .replace("%arch", std::env::consts::ARCH)
+                .replace("%s", path.to_str().unwrap())
+                .replace("%t", t_val.to_str().unwrap())
+        })
+        .collect();
+    // With VX_LEGACY_PARITY=1, the RUN lines run a second time, in order, after all of them
+    // passed. In the second pass, each `vxc` command gets `--legacy-codegen`. These lines run
+    // again unchanged: a line that already names it, a parallel compile (`-j`, #3139), and a
+    // line that ends with the shell comment `# flat-codegen`. That comment says the line checks
+    // text that only the flat code generator writes, such as its MLIR. A file with
+    // `// REQUIRES: flat-codegen` uses a construct that only the flat code generator has, and
+    // does not run a second time.
+    let parity = std::env::var_os("VX_LEGACY_PARITY").is_some()
+        && !xfail
+        && !source.contains("// REQUIRES: flat-codegen");
+    let parallel = regex::Regex::new(r"\s-j\s*\d").unwrap();
+    let again: Vec<String> = if parity {
+        commands
+            .iter()
+            .map(|c| {
+                if c.contains("--legacy-codegen")
+                    || parallel.is_match(c)
+                    || c.trim_end().ends_with("# flat-codegen")
+                {
+                    c.clone()
+                } else {
+                    with_legacy_codegen(c).unwrap_or_else(|| c.clone())
+                }
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let parity_start = commands.len();
+    for (k, cmd) in commands.into_iter().chain(again).enumerate() {
         // pipefail, because a RUN line fails if any stage fails. A shell reports only the
         // last stage, so a compiler that crashed would still pass whenever its stderr
         // happened to satisfy the CHECK lines.
@@ -1100,8 +1163,13 @@ fn run_lit_test(path: &Path) -> Result<(), String> {
             ));
         }
         if !output.status.success() {
+            let only = if k >= parity_start {
+                " only on the AST code generator (VX_LEGACY_PARITY)"
+            } else {
+                ""
+            };
             return Err(format!(
-                "RUN line failed for {:?}:\n  {}\nStdout:\n{}\nStderr:\n{}",
+                "RUN line failed{only} for {:?}:\n  {}\nStdout:\n{}\nStderr:\n{}",
                 path,
                 cmd.trim(),
                 String::from_utf8_lossy(&output.stdout),

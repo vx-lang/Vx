@@ -14,8 +14,10 @@
 // once.
 //
 // RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: env CUDA_VISIBLE_DEVICES= vxc %s -j 2 --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o - 2>&1 | FileCheck %s --check-prefix=IR
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --action emit-llvm -o - 2>&1 | FileCheck %s --check-prefix=IR
 // CHECK: heads 2 merged 896 8896 0 runs 1 1 0 0
 // CHECK-NEXT: heads 4 merged 896 8896 25144 runs 1 1 1 1
 // CHECK-NEXT: heads 4 merged 896 8896 25144 runs 1 1 1 1

@@ -93,8 +93,8 @@ kernel expands it, and the argmax shuffles a value and an index at each step:
   `c`, and each row gets its own register. A row whose `c` is not a number keeps `part`. The larger value in the code of a block also needs a count that is
   a multiple of 32, because its pad is the element of lane 0.
 - **CPU:** loops that compute the same tree. The CPU copy of a kernel and
-  `-fauto-schedule-levels` use them. So does the AST code generator (`--legacy-codegen`), which
-  runs a kernel on one lane.
+  `-fauto-schedule-levels` use them. So does the AST code generator (`--legacy-codegen`) for a
+  kernel with code after its nest of blocks, which it still runs on one lane.
 
 ## Sorts
 

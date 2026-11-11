@@ -870,7 +870,7 @@ mod tests {
         assert_eq!(p.turn.load(Ordering::SeqCst), 0);
     }
 
-    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    #[cfg(target_os = "linux")]
     #[test]
     fn tasks_park_on_two_workers_with_shadow_stacks_on() {
         const NO_SHADOW_STACKS: i32 = 77;

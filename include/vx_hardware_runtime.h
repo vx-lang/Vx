@@ -393,7 +393,8 @@ static inline size_t vx_payload_text_end(const void *payload,
 /// computes, "matmul", so a plugin can route it to a vendor library instead of
 /// guessing from buffer shapes -- which cannot be done for square operands,
 /// where every operand assignment conforms), `roles=`, `outkind=`, `topo=` (the
-/// dispatch id, decoded by vx_payload_topology), `toponame=`, `grid=`, `block=`
+/// dispatch id, decoded by vx_payload_topology), `toponame=`, `offload=`,
+/// `arch=` (the `arch:` of a declared topology), `grid=`, `block=`
 /// and `grid_loops=` (the launch shape of an `across` kernel, vx_launch_shape),
 /// `host_blocks=` (the host copy shares the blocks of axis x among the host's
 /// workers, vx_host_worker_count_for), `launch=`, `coop=`, `format=` (what the
@@ -560,6 +561,8 @@ static inline int64_t vx_payload_section(const void *payload,
 #define VX_TOPO_AMX 300
 #define VX_TOPO_ANE 400
 #define VX_TOPO_GPU_BASE 500
+#define VX_TOPO_CPU_AVX512 600
+#define VX_TOPO_CPU_NEON 700
 // Network memory, as a `vx.transfer` target. Distinct bands rather than the
 // shared 300 they used to answer, which was `VX_TOPO_AMX` -- a transfer into a
 // peer's memory arrived indistinguishable from a request for Apple's matrix

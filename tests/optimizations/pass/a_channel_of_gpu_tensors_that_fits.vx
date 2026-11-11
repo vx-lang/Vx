@@ -13,10 +13,8 @@
 //   a warning.
 // - `on_the_host`: host memory has no capacity, so a room of 1000 tensors is not counted.
 //
-// The old code generator cannot put a tensor in an enum, such as the `Result` of `recv`, so this
-// test runs only the default one.
-//
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 //===----------------------------------------------------------------------===//
 
 import std::sync::channel;

@@ -93,6 +93,7 @@ void vx_tasks_end(struct group *g) {
 
 // No block is cancelled, no task fails, and the clock never moves.
 int vx_cancelled(void) { return 0; }
+int vx_cancelled_at(const char *at_file, int at_line) { return 0; }
 void vx_task_failed(void) { assert(0 && "a task failed"); }
 long vx_clock_ns(void) { return 0; }
 void vx_waiting_for(int what, const char *at_file, int at_line,

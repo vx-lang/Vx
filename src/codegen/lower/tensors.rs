@@ -27,9 +27,35 @@ fn lower_spawn_region<'c>(
     gen: &mut MeliorGenerator<'c>,
     block: melior::ir::BlockRef<'c, 'c>,
 ) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    // A region whose `across` loops run on blocks and lanes. The host computes its launch shape
+    // before the region starts.
+    gen.spawns += 1;
+    let mapped = super::across::mapped_lanes(this);
+    let (shape, tail, block) = match mapped {
+        Some(lanes) => {
+            let (shape, block) = super::across::launch_shape(gen, &this.stmts, lanes, block)?;
+            // The count of the passes of a nest of blocks with code after it.
+            let (tail, block) = super::across::lower_count(gen, this, block)?;
+            (Some(shape), tail, block)
+        }
+        None => (None, None, block),
+    };
+    let count = tail.as_ref().map(|t| t.count);
     let location = gen.loc();
     let region = melior::ir::Region::new();
     let mut body_block = region.append_block(melior::ir::Block::new(&[]));
+    let outer_map = std::mem::replace(
+        &mut gen.across_map,
+        mapped.map(|lanes| super::across::AcrossMap {
+            lanes,
+            tail,
+            ..Default::default()
+        }),
+    );
+    super::across::alloc_flag(gen, body_block)?;
+    if let Some(shape) = &shape {
+        super::across::emit_launch_shape(gen, body_block, shape)?;
+    }
     let prev_in_spawn = gen.in_spawn;
     gen.in_spawn = true;
 
@@ -80,9 +106,12 @@ fn lower_spawn_region<'c>(
     gen.spawn_arches.push(arch);
     // A `&mut Tensor` parameter is a slot that holds the tensor. A SPIR-V kernel cannot take a
     // memref of memrefs or a memref with a memory space. So the region reads the tensor, loaded
-    // here, before the region, with no memory space, as the flat code generator gives it.
+    // here, before the region, with no memory space, as the flat code generator gives it. Every
+    // device kernel takes the tensor, so that it gets the marks of the tensor and its manifest
+    // describes the tensor and not the slot.
+    let spirv = gen.in_spirv_region();
     let mut outer_slots = Vec::new();
-    if gen.in_spirv_region() {
+    if spirv || is_device {
         let params: Vec<_> = gen
             .env
             .iter()
@@ -109,12 +138,20 @@ fn lower_spawn_region<'c>(
                 .ok_or_else(|| LowerError::from(format!("not a memref: {inner}")))?;
             let plain = Type::parse(gen.context, &plain_str)
                 .ok_or_else(|| LowerError::ParseType(plain_str.clone()))?;
-            let loaded = cast_memref(gen, &block, loaded, inner, plain)?;
-            gen.env.insert(name.clone(), (loaded, plain));
+            let (loaded, ty) = if spirv {
+                (cast_memref(gen, &block, loaded, inner, plain)?, plain)
+            } else {
+                (loaded, inner)
+            };
+            gen.env.insert(name.clone(), (loaded, ty));
             outer_slots.push((name, (slot, slot_ty)));
         }
     }
     for (i, stmt) in this.stmts.iter().enumerate() {
+        // The last pass of the nest of blocks runs the code after the nest.
+        if super::across::runs_after_the_nest(gen, stmt) {
+            continue;
+        }
         gen.mark_next_for = one_loop.is_some_and(|(loop_at, _)| loop_at == i);
         if let Some(b) = gen.generate_statement(stmt, body_block)? {
             body_block = b;
@@ -162,6 +199,7 @@ fn lower_spawn_region<'c>(
 
     gen.in_spawn = prev_in_spawn;
     gen.spawn_arches.pop();
+    gen.across_map = outer_map;
     for (name, entry) in outer_slots {
         gen.env.insert(name, entry);
     }
@@ -194,6 +232,10 @@ fn lower_spawn_region<'c>(
     // What the proofs found, as the flat code generator writes it: the trip of the loop, and for
     // a loop of blocks, the widest loop of threads and whether a barrier is in a thread loop.
     let unit = melior::ir::Attribute::unit(gen.context);
+    if shape.is_some() {
+        spawn_builder =
+            spawn_builder.add_attributes(&[(Identifier::new(gen.context, "vx.across"), unit)]);
+    }
     let trip_attr = |n: u64| IntegerAttribute::new(gen.i64_ty, n as i64).into();
     if let Some((_, trip)) = one_loop {
         spawn_builder = spawn_builder.add_attributes(&[(
@@ -266,6 +308,9 @@ fn lower_spawn_region<'c>(
 
     let spawn_op = spawn_builder.build()?;
     let spawn_ref = block.append_operation(spawn_op);
+    if let Some(count) = count {
+        gen.emit_drop(count, None, None, block)?;
+    }
 
     if !needs_yield {
         let mut ret_builder = OperationBuilder::new("func.return", location);

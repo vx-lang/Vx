@@ -831,7 +831,9 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
         // materialization; only the indexed form is a value, so it is one construct here.
         if let syntax::Expr::MemberAccess(ma) = self.base.as_ref() {
             if ma.member.as_ref() == "$extent" {
-                let (t_val, t_ty, block) = gen.generate_expr(&ma.base, block)?;
+                let (t_val, mut t_ty, block) = gen.generate_expr(&ma.base, block)?;
+                // A call that returns `&Tensor` gives the slot that holds the tensor.
+                let t_val = load_tensor_slot(gen, &block, t_val, &mut t_ty)?;
                 if t_ty.to_string().starts_with("memref<") {
                     let (i_val, i_ty, block) = gen.generate_expr(&self.index, block)?;
                     let index_ty = Type::index(gen.context);
@@ -868,9 +870,18 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
 
         if is_ptr {
             let mut inferred_el_ty_str = None;
+            // A buffer of tensors holds the descriptor of each one.
+            let mut tensor = None;
             if let Some(syntax::Type::Pointer(inner, _, _)) = gen.infer_ast_type(self.base.as_ref())
             {
-                inferred_el_ty_str = Some(gen.lower_type_str(&inner)?);
+                let el = gen.lower_type_str(&inner)?;
+                if let syntax::Type::Tensor(_, dims, _) = &*inner {
+                    tensor = Some(el.clone());
+                    inferred_el_ty_str =
+                        Some(crate::codegen::generator::tensor_descriptor_str(dims.len()));
+                } else {
+                    inferred_el_ty_str = Some(el);
+                }
             }
 
             let inner_ty_str = if base_ty_str.contains("<") {
@@ -921,7 +932,13 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
                 .build()?;
 
             let load_ref = block.append_operation(load_op);
-            Ok((load_ref.result(0)?.into(), inner_ty, block))
+            let loaded: Value = load_ref.result(0)?.into();
+            if let Some(text) = tensor {
+                let memref =
+                    Type::parse(gen.context, &text).ok_or(LowerError::ParseType(text.clone()))?;
+                return Ok((memref_of(gen, &block, loaded, memref)?, memref, block));
+            }
+            Ok((loaded, inner_ty, block))
         } else {
             let inner_ty_str = if base_ty_str.starts_with("memref<") {
                 let inner = base_ty_str.replace("memref<", "").replace('>', "");
@@ -2883,6 +2900,12 @@ fn lower_task_region<'c>(
             Identifier::new(gen.context, "vx.line"),
             IntegerAttribute::new(i64_ty, this.span.line as i64).into(),
         ));
+        if let Some(file) = &gen.function_file {
+            attributes.push((
+                Identifier::new(gen.context, "vx.file"),
+                melior::ir::attribute::StringAttribute::new(gen.context, file).into(),
+            ));
+        }
     }
     let spawn = block.append_operation(
         OperationBuilder::new("vx.spawn", location)
@@ -3004,7 +3027,15 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
             struct_name,
             span: _,
         } = self;
-        let (base_val, base_ty, block) = gen.generate_expr(base, block)?;
+        // The field of a reference is in the value that it points to. As a place, a `let mut`
+        // reference would give its own stack slot, so its value is lowered instead.
+        let prev_lvalue = gen.is_lvalue_context;
+        if matches!(&**base, Expr::Identifier(id) if holds_a_reference(gen, &id.name)) {
+            gen.is_lvalue_context = false;
+        }
+        let lowered = gen.generate_expr(base, block);
+        gen.is_lvalue_context = prev_lvalue;
+        let (base_val, base_ty, block) = lowered?;
         let base_ty_str = base_ty.to_string();
 
         let mut struct_name_opt = struct_name.clone();
@@ -3591,6 +3622,45 @@ fn load_tensor_slot_ty<'c>(
     Ok(true)
 }
 
+/// The slot `val` of type `memref<memref<A>>` as type `to`, `memref<memref<B>>`, when `A` and `B`
+/// differ only in their sizes. The two descriptors then have the same layout, so the slot is the
+/// same. A new slot cannot be used here: a function returns the slot, and its stack is gone then.
+pub(super) fn slot_with_other_sizes<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    val: Value<'c, 'c>,
+    from: Type<'c>,
+    to: Type<'c>,
+) -> Result<Option<Value<'c, 'c>>, LowerError> {
+    let inner = |ty: Type<'c>| {
+        let s = ty.to_string();
+        s.strip_prefix("memref<memref<")
+            .map(|_| s["memref<".len()..s.len() - 1].to_string())
+    };
+    let (Some(a), Some(b)) = (inner(from), inner(to)) else {
+        return Ok(None);
+    };
+    use crate::codegen::generator::erase_memref_extents;
+    if erase_memref_extents(&a) != erase_memref_extents(&b) {
+        return Ok(None);
+    }
+    let desc_ty = Type::parse(gen.context, "!llvm.struct<(ptr, ptr, i64)>")
+        .ok_or_else(|| LowerError::from("a rank-0 memref descriptor".to_string()))?;
+    let mut v = val;
+    for ty in [desc_ty, to] {
+        v = block
+            .append_operation(
+                OperationBuilder::new("builtin.unrealized_conversion_cast", gen.loc())
+                    .add_operands(&[v])
+                    .add_results(&[ty])
+                    .build()?,
+            )
+            .result(0)?
+            .into();
+    }
+    Ok(Some(v))
+}
+
 /// A reference to a tensor, `memref<memref<A>>`, passed where `memref<memref<B>>` is expected.
 ///
 /// A `memref.cast` cannot change what a memref holds, so the descriptor is loaded, given type
@@ -3605,6 +3675,18 @@ fn retype_tensor_reference<'c>(
 ) -> Result<Value<'c, 'c>, LowerError> {
     let mut src_ty = from;
     let desc = load_tensor_slot(gen, block, val, &mut src_ty)?;
+    tensor_in_a_slot(gen, block, desc, src_ty, to)
+}
+
+/// A new slot of type `to`, `memref<memref<B>>`, that holds the tensor `desc` of type `src_ty`.
+/// A kernel takes the tensors of its function's references, and passes one to a call in a slot.
+fn tensor_in_a_slot<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    desc: Value<'c, 'c>,
+    src_ty: Type<'c>,
+    to: Type<'c>,
+) -> Result<Value<'c, 'c>, LowerError> {
     let to_str = to.to_string();
     let dst_str = &to_str["memref<".len()..to_str.len() - 1];
     let dst_ty =
@@ -4058,6 +4140,34 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             let tensor_ty = Type::parse(gen.context, &tensor_ty_str).ok_or_else(|| {
                 crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
             })?;
+            // In a spawn region, a tensor whose sizes are all numbers gets a buffer of a fixed
+            // size, as the flat code generator gives it. A kernel can keep such a buffer on its
+            // stack, and not in memory from device `malloc`.
+            let size_exprs: &[Expr] = match args {
+                [Expr::Array(arr)] => &arr.elements,
+                _ => args,
+            };
+            let fixed: Option<Vec<i64>> = size_exprs
+                .iter()
+                .map(|e| match e {
+                    Expr::Number(n) => n.value.parse::<i64>().ok().filter(|v| *v >= 0),
+                    _ => None,
+                })
+                .collect();
+            let fixed_ty = match fixed {
+                Some(dims) if !dims.is_empty() && !gen.spawn_arches.is_empty() => {
+                    let text = format!(
+                        "memref<{}x{}>",
+                        dims.iter()
+                            .map(|d| d.to_string())
+                            .collect::<Vec<_>>()
+                            .join("x"),
+                        mlir_ty_str
+                    );
+                    Some(Type::parse(gen.context, &text).ok_or(LowerError::ParseType(text))?)
+                }
+                _ => None,
+            };
 
             // A tensor placed in a device's memory. `uninit()` is allocated there; one that is
             // filled is filled on the host and copied there, since the host cannot write it.
@@ -4082,22 +4192,39 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                         .add_results(&[tensor_ty])
                         .build()?
                 }
-                _ => OperationBuilder::new("memref.alloc", gen.loc())
-                    .add_operands(&dynamic_sizes)
-                    .add_attributes(&[(
-                        Identifier::new(gen.context, "operandSegmentSizes"),
-                        DenseI32ArrayAttribute::new(gen.context, &[dynamic_sizes.len() as i32, 0])
-                            .into(),
-                    )])
-                    .add_results(&[tensor_ty])
-                    .build()?,
+                _ => {
+                    let (sizes, ty) = match (device, fixed_ty) {
+                        (None, Some(t)) => (&[][..], t),
+                        _ => (&dynamic_sizes[..], tensor_ty),
+                    };
+                    OperationBuilder::new("memref.alloc", gen.loc())
+                        .add_operands(sizes)
+                        .add_attributes(&[(
+                            Identifier::new(gen.context, "operandSegmentSizes"),
+                            DenseI32ArrayAttribute::new(gen.context, &[sizes.len() as i32, 0])
+                                .into(),
+                        )])
+                        .add_results(&[ty])
+                        .build()?
+                }
             };
             let copy_to_device = device.filter(|_| !name.as_ref().ends_with("::uninit"));
             // A size can end the block it started in (`[if c { 3 } else { 2 }]` lands in the
             // `if`'s merge block), so what follows goes where the sizes left off.
             let block = current_b;
             let alloc_ref = block.append_operation(alloc_op);
-            let alloc_val: Value = alloc_ref.result(0)?.into();
+            let mut alloc_val: Value = alloc_ref.result(0)?.into();
+            if alloc_val.r#type() != tensor_ty {
+                alloc_val = block
+                    .append_operation(
+                        OperationBuilder::new("memref.cast", gen.loc())
+                            .add_operands(&[alloc_val])
+                            .add_results(&[tensor_ty])
+                            .build()?,
+                    )
+                    .result(0)?
+                    .into();
+            }
             // `::new()` zeroes what `::uninit()` leaves as it was found, and so does the older
             // `Tensor<T>([..])`: only `::uninit()`, which belongs inside `unsafe`, skips the fill.
             // The same fill a matmul emits before it accumulates, so there is one answer to what
@@ -4488,6 +4615,10 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                     {
                         arg_val =
                             retype_tensor_reference(gen, &current_b, arg_val, expr_ty, field_ty)?;
+                    } else if field_ty.to_string().starts_with("memref<memref<")
+                        && gen.is_memref(&expr_ty)
+                    {
+                        arg_val = tensor_in_a_slot(gen, &current_b, arg_val, expr_ty, field_ty)?;
                     } else if gen.is_memref(&expr_ty) && gen.is_memref(&field_ty) {
                         arg_val = crate::codegen::lower::cast_memref(
                             gen, &current_b, arg_val, expr_ty, field_ty,
@@ -5575,17 +5706,25 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
             // Each element of the payload goes in the slot for its position.
             let slots = enum_payload_slot_texts(&struct_ty.to_string());
             for (i, payload_expr) in payload_exprs.iter().enumerate() {
-                if matches!(
-                    gen.infer_ast_type(payload_expr),
-                    Some(syntax::Type::Tensor(..))
-                ) {
-                    return Err(LowerError::from(format!(
-                        "the legacy code generator cannot put a tensor in an enum payload, as \
-                         in {enum_name}::{variant_name}"
-                    )));
-                }
-                let (payload_val, payload_val_ty, next) = gen.generate_expr(payload_expr, block)?;
+                let rank = match gen.infer_ast_type(payload_expr) {
+                    Some(syntax::Type::Tensor(_, dims, _)) => Some(dims.len()),
+                    _ => None,
+                };
+                let (mut payload_val, mut payload_val_ty, next) =
+                    gen.generate_expr(payload_expr, block)?;
                 block = next;
+                // A tensor goes in as its descriptor.
+                if let Some(rank) = rank {
+                    payload_val = tensor_into_field(
+                        gen,
+                        &block,
+                        payload_val,
+                        payload_val_ty,
+                        payload_val_ty,
+                        rank,
+                    )?;
+                    payload_val_ty = payload_val.r#type();
+                }
                 let slot = slots.get(i).ok_or_else(|| {
                     crate::codegen::lower::LowerError::from(format!(
                         "enum variant {enum_name}::{variant_name} has more payload values than \
@@ -6555,19 +6694,137 @@ pub(crate) fn tensor_into_field<'c>(
         } else {
             gen.coerce_type(block, val, val_ty, field_ty)?
         };
+        val_ty = field_ty;
     }
-    let desc = crate::codegen::generator::tensor_descriptor_str(rank);
-    let desc_ty = Type::parse(gen.context, &desc).ok_or(LowerError::ParseType(desc))?;
+    descriptor_of(gen, block, val, val_ty, rank)
+}
+
+/// The memory space number of a memref type, `1` in `memref<4xf32, 1>`. 0 when it has none.
+fn memref_space(ty: &str) -> u32 {
+    ty.strip_suffix('>')
+        .and_then(|t| t.rsplit(", ").next())
+        .and_then(|last| last.parse().ok())
+        .unwrap_or(0)
+}
+
+/// The descriptor of a memref in memory space `space`, whose two pointers are in that space.
+fn spaced_descriptor_str(rank: usize, space: u32) -> String {
+    let plain = crate::codegen::generator::tensor_descriptor_str(rank);
+    if space == 0 {
+        return plain;
+    }
+    plain.replacen("(ptr, ptr", &format!("(ptr<{space}>, ptr<{space}>"), 1)
+}
+
+/// The descriptor `from`, of a tensor of `rank`, with its two pointers cast from address space
+/// `from_space` to `to_space`. A slot, such as a struct field, holds the descriptor with plain
+/// pointers, in any memory.
+fn recast_descriptor<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    from: Value<'c, 'c>,
+    rank: usize,
+    from_space: u32,
+    to_space: u32,
+) -> Result<Value<'c, 'c>, LowerError> {
+    let parse = |gen: &MeliorGenerator<'c>, text: String| {
+        Type::parse(gen.context, &text).ok_or(LowerError::ParseType(text))
+    };
+    let to = parse(gen, spaced_descriptor_str(rank, to_space))?;
+    let pointer = |space: u32| match space {
+        0 => "!llvm.ptr".to_string(),
+        n => format!("!llvm.ptr<{n}>"),
+    };
+    let from_ptr = parse(gen, pointer(from_space))?;
+    let to_ptr = parse(gen, pointer(to_space))?;
+    let mut fields = vec![from_ptr, from_ptr, gen.i64_ty];
+    if rank > 0 {
+        let array = parse(gen, format!("!llvm.array<{rank} x i64>"))?;
+        fields.extend([array, array]);
+    }
+    let undef = OperationBuilder::new("llvm.mlir.undef", gen.loc())
+        .add_results(&[to])
+        .build()?;
+    let mut out: Value = block.append_operation(undef).result(0)?.into();
+    for (i, field_ty) in fields.into_iter().enumerate() {
+        let position = (
+            Identifier::new(gen.context, "position"),
+            DenseI64ArrayAttribute::new(gen.context, &[i as i64]).into(),
+        );
+        let extract = OperationBuilder::new("llvm.extractvalue", gen.loc())
+            .add_operands(&[from])
+            .add_results(&[field_ty])
+            .add_attributes(&[position])
+            .build()?;
+        let mut v: Value = block.append_operation(extract).result(0)?.into();
+        if i < 2 {
+            let cast = OperationBuilder::new("llvm.addrspacecast", gen.loc())
+                .add_operands(&[v])
+                .add_results(&[to_ptr])
+                .build()?;
+            v = block.append_operation(cast).result(0)?.into();
+        }
+        let position = (
+            Identifier::new(gen.context, "position"),
+            DenseI64ArrayAttribute::new(gen.context, &[i as i64]).into(),
+        );
+        let insert = OperationBuilder::new("llvm.insertvalue", gen.loc())
+            .add_operands(&[out, v])
+            .add_results(&[to])
+            .add_attributes(&[position])
+            .build()?;
+        out = block.append_operation(insert).result(0)?.into();
+    }
+    Ok(out)
+}
+
+/// A tensor as the descriptor that a slot holds: two plain pointers, an offset, and the sizes
+/// and strides.
+pub(crate) fn descriptor_of<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    val: Value<'c, 'c>,
+    memref: Type<'c>,
+    rank: usize,
+) -> Result<Value<'c, 'c>, LowerError> {
+    let space = memref_space(&memref.to_string());
+    let own = spaced_descriptor_str(rank, space);
+    let own_ty = Type::parse(gen.context, &own).ok_or(LowerError::ParseType(own))?;
     let cast = OperationBuilder::new("builtin.unrealized_conversion_cast", gen.loc())
         .add_operands(&[val])
-        .add_results(&[desc_ty])
+        .add_results(&[own_ty])
+        .build()?;
+    let own_val: Value = block.append_operation(cast).result(0)?.into();
+    if space == 0 {
+        return Ok(own_val);
+    }
+    recast_descriptor(gen, block, own_val, rank, space, 0)
+}
+
+/// The tensor of type `memref` that the descriptor `desc` of a slot holds.
+pub(crate) fn memref_of<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    desc: Value<'c, 'c>,
+    memref: Type<'c>,
+) -> Result<Value<'c, 'c>, LowerError> {
+    let text = memref.to_string();
+    let space = memref_space(&text);
+    let mut val = desc;
+    if space != 0 {
+        let rank = buffer_rank(gen, memref).ok_or_else(|| LowerError::from(text.clone()))?;
+        val = recast_descriptor(gen, block, desc, rank, 0, space)?;
+    }
+    let cast = OperationBuilder::new("builtin.unrealized_conversion_cast", gen.loc())
+        .add_operands(&[val])
+        .add_results(&[memref])
         .build()?;
     Ok(block.append_operation(cast).result(0)?.into())
 }
 
 /// The rank of `ty` when it is a buffer, `memref<4x?xf32>`, which a slot keeps as its
 /// descriptor.
-fn buffer_rank(gen: &MeliorGenerator, ty: Type) -> Option<usize> {
+pub(crate) fn buffer_rank(gen: &MeliorGenerator, ty: Type) -> Option<usize> {
     if !gen.is_memref(&ty) {
         return None;
     }
@@ -6591,11 +6848,7 @@ fn tensor_from_field<'c>(
     // cell that a reference is.
     let mut tensor_ty = field_ty;
     load_tensor_slot_ty(gen, &mut tensor_ty)?;
-    let cast = OperationBuilder::new("builtin.unrealized_conversion_cast", gen.loc())
-        .add_operands(&[val])
-        .add_results(&[tensor_ty])
-        .build()?;
-    Ok((block.append_operation(cast).result(0)?.into(), tensor_ty))
+    Ok((memref_of(gen, block, val, tensor_ty)?, tensor_ty))
 }
 
 /// The memref type `ty` with no `strided<..>` layout: the type of a new buffer of the same
@@ -6837,8 +7090,32 @@ fn lane_tensor_operand<'c>(
     Ok((t, block))
 }
 
+/// How a lane routine runs: `serial` in a region whose `across` loops run on one lane, and
+/// otherwise on the lanes of the block, or of the subgroup in the code of a subgroup. The
+/// attributes, and the lanes that the routine shares its work among.
+fn lane_routine_attrs<'c>(
+    gen: &MeliorGenerator<'c>,
+) -> Result<(Vec<(Identifier<'c>, melior::ir::Attribute<'c>)>, u64), LowerError> {
+    let unit = melior::ir::attribute::Attribute::unit(gen.context);
+    let subgroup = gen.across_kinds.last() == Some(&crate::arch::LevelKind::Subgroups);
+    let mut attrs = Vec::new();
+    let lanes = match &gen.across_map {
+        None => {
+            attrs.push((Identifier::new(gen.context, "serial"), unit));
+            1
+        }
+        Some(_) if subgroup => super::across::subgroup_lanes(gen)?,
+        Some(m) => m.lanes,
+    };
+    if subgroup {
+        attrs.push((Identifier::new(gen.context, "subgroup"), unit));
+    }
+    Ok((attrs, lanes))
+}
+
 /// `lanes::copy_async(&mut tile, &x, [i, j, ..])` as `vx.lane_copy_async`, and the wait of its
-/// token as `vx.lane_copy_wait`. Both are `serial`, so the copy ends where it starts.
+/// token as `vx.lane_copy_wait`. In a region on one lane, both are `serial`, so the copy ends
+/// where it starts.
 fn lower_lane_copy<'c>(
     gen: &mut MeliorGenerator<'c>,
     block: melior::ir::BlockRef<'c, 'c>,
@@ -6852,8 +7129,7 @@ fn lower_lane_copy<'c>(
     ),
     LowerError,
 > {
-    let unit = melior::ir::attribute::Attribute::unit(gen.context);
-    let mut attrs = vec![(Identifier::new(gen.context, "serial"), unit)];
+    let (mut attrs, lanes) = lane_routine_attrs(gen)?;
     if op == crate::hir::check::lanes::LaneOp::CopyWait {
         let [token] = args else {
             return Err(LowerError::ParseType(
@@ -6886,7 +7162,7 @@ fn lower_lane_copy<'c>(
     let i64_ty = melior::ir::r#type::IntegerType::new(gen.context, 64).into();
     attrs.push((
         Identifier::new(gen.context, "lanes"),
-        IntegerAttribute::new(i64_ty, 1).into(),
+        IntegerAttribute::new(i64_ty, lanes as i64).into(),
     ));
     let copy = OperationBuilder::new("vx.lane_copy_async", gen.loc())
         .add_operands(&operands)
@@ -6920,8 +7196,8 @@ fn cancel_call_value<'c>(
     Ok((v, gen.i32_ty, block))
 }
 
-/// `lanes::sum(&t, n)` and the other lane reductions, as `vx.lane_reduce` or `vx.lane_argmax`. This code generator
-/// runs `across` loops as plain loops, on one lane, so the op is `serial`: both copies of the
+/// `lanes::sum(&t, n)` and the other lane reductions, as `vx.lane_reduce` or `vx.lane_argmax`.
+/// In a region whose `across` loops run on one lane, the op is `serial`: both copies of the
 /// kernel expand it into the loops of the CPU.
 fn lower_lane_reduce<'c>(
     gen: &mut MeliorGenerator<'c>,
@@ -6960,13 +7236,13 @@ fn lower_lane_reduce<'c>(
     let (count, count_ty, block) = gen.generate_expr(n, block)?;
     operands.push(gen.coerce_type(&block, count, count_ty, gen.i32_ty)?);
     let unit = melior::ir::attribute::Attribute::unit(gen.context);
-    let mut attrs = vec![(Identifier::new(gen.context, "serial"), unit)];
+    let (mut attrs, lanes) = lane_routine_attrs(gen)?;
     if sort {
         // `vx.lane_sort`, whose `lanes` only the GPU expansion reads.
         let i64_ty = melior::ir::r#type::IntegerType::new(gen.context, 64).into();
         attrs.push((
             Identifier::new(gen.context, "lanes"),
-            IntegerAttribute::new(i64_ty, 1).into(),
+            IntegerAttribute::new(i64_ty, lanes as i64).into(),
         ));
         if op == crate::hir::check::lanes::LaneOp::SortDescending {
             attrs.push((Identifier::new(gen.context, "descending"), unit));
@@ -6992,9 +7268,7 @@ fn lower_lane_reduce<'c>(
     if ordered {
         attrs.push((Identifier::new(gen.context, "ordered"), unit));
     }
-    if gen.across_kinds.last() == Some(&crate::arch::LevelKind::Subgroups) {
-        attrs.push((Identifier::new(gen.context, "subgroup"), unit));
-    }
+    attrs.extend(super::across::own_row_attrs(gen, tensors));
     let (name, ty) = if argmax {
         ("vx.lane_argmax", gen.i32_ty)
     } else {

@@ -20,7 +20,7 @@ the test suite has one, a program that triggers it.
 - [Type Errors](#type-errors) — `E3001`–`E3064` (63 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4016` (16 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
-- [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6041` (40 codes)
+- [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6041` (41 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
 - [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8014` (14 codes)
 
@@ -142,7 +142,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3043`](/errors/E3043/) | A `for` loop over a reference to a type with no method to iterate it by. The loop calls `iter()` for `for x in &c` and `iter_mut()` for `for x in &mut c`, as Rust's collections do, so the type needs the one the loop asks for. |
 | [`E3044`](/errors/E3044/) | A top-level `const` whose value is not known while compiling, or does not fit its declared type. A `const` holds a number or a `bool`: a literal, or arithmetic on literals and other `const`s. A `const` table holds a list of number literals, and is read one number at a time, as `TABLE[i]`. |
 | [`E3045`](/errors/E3045/) | An integer literal that does not fit its type, such as `300` for a `u8`. A `usize` holds 0 up to the largest `i64`. |
-| [`E3046`](/errors/E3046/) | A `for` loop over a tensor that is not a variable or a flat array literal, such as one a function call returns, or a nested array literal. The loop reads the tensor by index, so it needs a name: bind the tensor with `let` first. |
+| [`E3046`](/errors/E3046/) | A `for` loop over a tensor that is not a variable or a flat array literal, such as one a function call returns, or a nested array literal. The loop reads the tensor by index, so it needs a name: bind the tensor with `let` first. Also a loop over `&mut t`: the loop gives copies of the elements, so it cannot change them. |
 | [`E3047`](/errors/E3047/) | A `reshape` call the compiler cannot check: the new shape has a different number of elements than the tensor (without `PadMode::Pad` or `PadMode::Trim`), a size is not known while compiling, or the arguments are not a shape such as `[4, 4]` and an optional `PadMode`. |
 | [`E3048`](/errors/E3048/) | An `if` with no `else` whose value is used, as in `let u = if c { .. };`. When the condition is false there is no branch to give a value. Add an `else`, or use the `if` as a statement. |
 | [`E3049`](/errors/E3049/) | Two impls of the same trait for the same type: `impl Describe for Point` written twice, in one module or in two. A type has one impl of a trait, so a call could not choose between them. Remove one. |
@@ -237,6 +237,7 @@ Raised by the placement and capacity rules — the checks that make Vx different
 | [`E6035`](/errors/E6035/) | A `Memory` declaration's `within:` names a space that is not built in, and that the program and its machine files do not declare. A typo in the name is the usual cause. |
 | [`E6036`](/errors/E6036/) | A token of `transfer_async` that the program drops with no `.wait()`: at the end of its scope, or when an assignment gives its variable a new value. The copy may not be done then, so its target may not hold the data. Call `.wait()`, which gives the placed tensor. |
 | [`E6037`](/errors/E6037/) | A placement whose memory is not built in and has no `scope:`. Such a memory has no address space on the target. Declare the memory with `scope: device`, `sm`, `cta` or `thread`. |
+| [`E6038`](/errors/E6038/) | A `spawn on` body for a device that uses a channel end, a lock, or a value that holds one. The standard library marks these types with the trait `HostOnly`. A wait on the device for the host can wait forever, because a GPU does not promise that its threads make progress. Send or receive before the `spawn on`, or after it. A `spawn on(Topology::CPU)` body runs on the host, so it can use them. |
 | [`E6039`](/errors/E6039/) | A `spawn` in a loop of its `tasks` block, with a count of passes that is not known at compile time, and tasks that use a memory with a capacity. Each pass starts a task, and the tasks run at the same time, so their working set has no bound. Use a `for` loop over a constant range, or join each task in its pass. Downgraded to W1028 when the space is declared `overcommit`. |
 | [`E6040`](/errors/E6040/) | A channel of tensors in a memory with a capacity, with a room that is not known at compile time. The channel can hold that many tensors at once, so the working set has no bound. Downgraded to W1028 when the space is declared `overcommit`. |
 | [`E6041`](/errors/E6041/) | A function that makes a channel of tensors in a memory with a capacity, and returns an end of that channel. The room of the channel is counted in the function that calls `channel`, only until that function returns. |
@@ -275,4 +276,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-186 diagnostics.
+187 diagnostics.

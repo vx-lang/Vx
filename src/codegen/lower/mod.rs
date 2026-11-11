@@ -21,6 +21,7 @@ use melior::ir::{
 };
 
 use crate::syntax;
+pub(crate) mod across;
 mod control_flow;
 pub(crate) mod expr;
 mod seam_cert;
@@ -792,6 +793,7 @@ pub fn generate_match_chain<'c>(
 
     // Each name in the pattern is bound to the payload value at its position, read from that
     // position's slot. `_` binds nothing.
+    let mut payload_tensors = Vec::new();
     if let Pattern::EnumVariant(en, vn, Some(payloads)) = &arm.pattern {
         let opt_ty_str = _match_ty.to_string();
         let slots = crate::codegen::lower::expr::enum_payload_slot_texts(&opt_ty_str);
@@ -838,6 +840,28 @@ pub fn generate_match_chain<'c>(
                     declared_payload_ty(gen, en.as_ref(), vn.as_ref(), position, &opt_ty_str)
                 })
             };
+            // A tensor payload is its descriptor, which becomes the memref again.
+            let tensor = gen
+                .enum_tensor_payloads
+                .borrow()
+                .get(struct_name)
+                .and_then(|m| m.get(&(vn.to_string(), position)))
+                .cloned();
+            let as_tensor = |gen: &mut MeliorGenerator<'c>,
+                             val: melior::ir::Value<'c, 'c>,
+                             ty: melior::ir::Type<'c>|
+             -> Result<
+                (melior::ir::Value<'c, 'c>, melior::ir::Type<'c>),
+                LowerError,
+            > {
+                let Some(text) = &tensor else {
+                    return Ok((val, ty));
+                };
+                let memref = melior::ir::Type::parse(gen.context, text)
+                    .ok_or_else(|| LowerError::ParseType(text.clone()))?;
+                let val = crate::codegen::lower::expr::memref_of(gen, &then_block, val, memref)?;
+                Ok((val, memref))
+            };
 
             // A byte slot holds payloads of different kinds. Read it back as this variant's.
             if payload_ty_str.starts_with("!llvm.array<") {
@@ -856,6 +880,10 @@ pub fn generate_match_chain<'c>(
                     ty,
                     payload_ty,
                 )?;
+                let (val, ty) = as_tensor(gen, val, ty)?;
+                if tensor.is_some() {
+                    payload_tensors.push(name.clone());
+                }
                 gen.note_shadow(name.as_ref());
                 gen.env.insert(name.to_string().into(), (val, ty));
                 continue;
@@ -908,13 +936,20 @@ pub fn generate_match_chain<'c>(
                 }
                 None => (payload_val, payload_ty),
             };
+            let (payload_val, payload_ty) = as_tensor(gen, payload_val, payload_ty)?;
+            if tensor.is_some() {
+                payload_tensors.push(name.clone());
+            }
             gen.note_shadow(name.as_ref());
             gen.env
                 .insert(name.to_string().into(), (payload_val, payload_ty));
         }
     }
 
+    let outer = gen.payload_tensors.clone();
+    gen.payload_tensors.extend(payload_tensors);
     lower_match_arm_body(gen, &arm.body, then_block, merge_block, value_ty)?;
+    gen.payload_tensors = outer;
     gen.close_blocks_to(depth);
 
     generate_match_chain(

@@ -126,6 +126,76 @@ const IS_LAST: &str = r#"%vx_at = arith.constant 0 : index
 %vx_last = memref.load %flag[%vx_at] : memref<1xi32, 3>
 macro.yield %vx_last : i32"#;
 
+/// Where the code after a nest of blocks is, in a region with such code.
+pub(crate) struct Arrivals<'a> {
+    /// The loop whose passes count.
+    pub counted: &'a crate::syntax::ForLoopStmt,
+    /// The statements that the last pass runs.
+    pub after: Vec<&'a Statement>,
+    /// The outer loop of a group, when the code is the code of a group.
+    pub outer: Option<&'a crate::syntax::ForLoopStmt>,
+    /// The length of the count, which `--emit-ptx` uses in its name: "one" for a whole nest,
+    /// "axis0" when the outer loop of a group goes over all of the first axis, and "" otherwise.
+    pub length: &'static str,
+}
+
+/// The loops and the statements of the code after the nest of blocks in `stmts`, or of the code
+/// of a group: each pass of the outer loop is a group of the passes of the inner one.
+pub(crate) fn arrivals(stmts: &[Statement]) -> Option<Arrivals<'_>> {
+    let at = stmts
+        .iter()
+        .position(|s| matches!(s, Statement::ForLoop(f) if f.across.is_some()))?;
+    let Statement::ForLoop(nest) = &stmts[at] else {
+        return None;
+    };
+    let grouped = nest.body.len() > 1 && crate::hir::check::across::same_level(&nest.body[0], nest);
+    if grouped {
+        let Statement::ForLoop(inner) = &nest.body[0] else {
+            return None;
+        };
+        let whole_axis = nest.across.as_ref().is_some_and(|a| a.share.is_none())
+            && matches!(&*nest.iterable, Expr::Range(r)
+                if matches!(&*r.start, Expr::Number(n) if n.value.as_ref() == "0"));
+        return Some(Arrivals {
+            counted: inner,
+            after: nest.body[1..].iter().collect(),
+            outer: Some(nest),
+            length: if whole_axis { "axis0" } else { "" },
+        });
+    }
+    let rest = &stmts[at + 1..];
+    // The code after the nest drops the names it declares. A drop of a name from before the nest
+    // stays in the body that every block runs.
+    let declared: Vec<_> = rest
+        .iter()
+        .filter_map(|s| match s {
+            Statement::LetDecl(l) => Some(&l.name),
+            _ => None,
+        })
+        .collect();
+    let after = rest
+        .iter()
+        .filter(|s| !matches!(s, Statement::Drop(d) if !declared.contains(&&d.name)))
+        .filter(|s| !crate::hir::check::across::same_level(s, nest))
+        .collect();
+    Some(Arrivals {
+        counted: nest,
+        after,
+        outer: None,
+        length: "one",
+    })
+}
+
+/// The ops that end one pass of a nest of blocks, on lane 0, as an `mlir!` block.
+pub(crate) fn arrive_block() -> &'static str {
+    ARRIVE
+}
+
+/// The ops that read whether this pass was the last, as an `mlir!` block.
+pub(crate) fn is_last_block() -> &'static str {
+    IS_LAST
+}
+
 /// The lanes of a block of a region with `across` loops: the most that a lane loop or a subgroup
 /// loop asks for, and 1 with none. `None` for a region with no loop of blocks.
 pub(crate) fn across_block_lanes(stmts: &[Statement]) -> Option<u64> {
@@ -149,7 +219,7 @@ pub(crate) fn across_block_lanes(stmts: &[Statement]) -> Option<u64> {
 
 /// The loop of blocks in `stmts`, when the checker found one that the GPU launches. A loop that
 /// `-fauto-schedule-levels` made a plain loop is not one.
-pub(super) fn blocks_loop(stmts: &[Statement]) -> Option<&crate::syntax::ForLoopStmt> {
+pub(crate) fn blocks_loop(stmts: &[Statement]) -> Option<&crate::syntax::ForLoopStmt> {
     stmts.iter().find_map(|s| match s {
         Statement::ForLoop(f)
             if f.across
@@ -164,7 +234,7 @@ pub(super) fn blocks_loop(stmts: &[Statement]) -> Option<&crate::syntax::ForLoop
 
 /// The lanes that a lane loop or a subgroup loop shares its passes among: `n` of
 /// `across lanes(n)`, or else its trip. The checker made sure that it is a number.
-fn across_width(f: &crate::syntax::ForLoopStmt) -> Option<u64> {
+pub(crate) fn across_width(f: &crate::syntax::ForLoopStmt) -> Option<u64> {
     let number = |e: &Expr| match e {
         Expr::Number(n) => n.value.parse::<u64>().ok(),
         _ => None,
@@ -179,7 +249,9 @@ fn across_width(f: &crate::syntax::ForLoopStmt) -> Option<u64> {
 }
 
 /// The lane loop that is the whole body of the lane loop `f`, if there is one.
-fn inner_lane_loop(f: &crate::syntax::ForLoopStmt) -> Option<&crate::syntax::ForLoopStmt> {
+pub(crate) fn inner_lane_loop(
+    f: &crate::syntax::ForLoopStmt,
+) -> Option<&crate::syntax::ForLoopStmt> {
     let mut body = f.body.iter().filter(|s| !matches!(s, Statement::Drop(_)));
     match (body.next(), body.next()) {
         (Some(Statement::ForLoop(g)), None)
@@ -192,7 +264,7 @@ fn inner_lane_loop(f: &crate::syntax::ForLoopStmt) -> Option<&crate::syntax::For
 }
 
 /// The lanes of the lane loops inside the lane loop `f`, each the whole body of the one around it.
-fn inner_lanes(f: &crate::syntax::ForLoopStmt) -> u64 {
+pub(crate) fn inner_lanes(f: &crate::syntax::ForLoopStmt) -> u64 {
     match inner_lane_loop(f) {
         Some(g) => across_width(g).unwrap_or(1) * inner_lanes(g),
         None => 1,

@@ -2892,11 +2892,17 @@ impl<'r> Lowerer<'r> {
                 crate::syntax::Pattern::Wildcard | crate::syntax::Pattern::Identifier(_)
             )
         });
-        if !binds_only && !matches!(subj.ty, LoweredTy::Scalar(ElementType::I32)) {
-            return Err(Decline::Unsupported {
-                what: "a match subject that is not represented as an i32",
-            });
-        }
+        // The arms compare the subject with `==`: an enum tag, an integer of any width, or a
+        // `bool`.
+        let subj_elem = match &subj.ty {
+            LoweredTy::Scalar(e) if e.int_bits().is_some() || *e == ElementType::Bool => e.clone(),
+            _ if binds_only => ElementType::I32,
+            _ => {
+                return Err(Decline::Unsupported {
+                    what: "a match subject that is not an integer or a bool",
+                })
+            }
+        };
         let merge = self.new_block();
         // Each arm is a block: its pattern's names and its `let`s end with it.
         let depth = self.block_frames.len();
@@ -2939,11 +2945,26 @@ impl<'r> Lowerer<'r> {
                 }
                 // A literal arm (`0 => ..`): the same chain, with the literal as the tag.
                 crate::syntax::Pattern::Literal(lit) => {
-                    let lit_v = self.lower_expr(lit)?;
-                    if !matches!(lit_v.ty, LoweredTy::Scalar(ElementType::I32)) {
-                        return Err(Decline::TypeNotModelled {
-                            what: "a literal match pattern that is not an i32",
-                        });
+                    let mut lit_v = self.lower_expr(lit)?;
+                    match &lit_v.ty {
+                        LoweredTy::Scalar(e) if *e == subj_elem => {}
+                        // A literal with no suffix, at the width of the subject.
+                        LoweredTy::Scalar(e)
+                            if e.int_bits().is_some() && subj_elem.int_bits().is_some() =>
+                        {
+                            lit_v = self.emit_value(
+                                Opcode::Cast,
+                                lit_v.reg,
+                                Register(0),
+                                subj_elem.clone(),
+                                0,
+                            );
+                        }
+                        _ => {
+                            return Err(Decline::TypeNotModelled {
+                                what: "a literal match pattern of another type than the subject",
+                            })
+                        }
                     }
                     let cond = self.emit_value(
                         Opcode::Cmp,
@@ -3969,44 +3990,12 @@ impl<'r> Lowerer<'r> {
         space: &crate::syntax::MemorySpace,
         shared: &crate::syntax::MemorySpace,
     ) -> Lowered<across::Tail> {
-        let at = stmts
-            .iter()
-            .position(|s| matches!(s, Statement::ForLoop(f) if f.across.is_some()))
-            .ok_or(crate::emitter_gap!())?;
-        let Statement::ForLoop(nest) = &stmts[at] else {
-            return Err(crate::emitter_gap!());
-        };
-        let grouped =
-            nest.body.len() > 1 && crate::hir::check::across::same_level(&nest.body[0], nest);
-        // The loop whose passes count, the statements that run after them, and the outer loop
-        // of a group.
-        let (counted, after, outer): (
-            &crate::syntax::ForLoopStmt,
-            Vec<&Statement>,
-            Option<&crate::syntax::ForLoopStmt>,
-        ) = if grouped {
-            let Statement::ForLoop(inner) = &nest.body[0] else {
-                return Err(crate::emitter_gap!());
-            };
-            (inner, nest.body[1..].iter().collect(), Some(nest))
-        } else {
-            let rest = &stmts[at + 1..];
-            // The code after the nest drops the names it declares. A drop of a name from
-            // before the nest stays in the body that every block runs.
-            let declared: Vec<_> = rest
-                .iter()
-                .filter_map(|s| match s {
-                    Statement::LetDecl(l) => Some(&l.name),
-                    _ => None,
-                })
-                .collect();
-            let after = rest
-                .iter()
-                .filter(|s| !matches!(s, Statement::Drop(d) if !declared.contains(&&d.name)))
-                .filter(|s| !crate::hir::check::across::same_level(s, nest))
-                .collect();
-            (nest, after, None)
-        };
+        let across::Arrivals {
+            counted,
+            after,
+            outer,
+            length,
+        } = across::arrivals(stmts).ok_or(crate::emitter_gap!())?;
         let range = |f: &crate::syntax::ForLoopStmt| match &*f.iterable {
             Expr::Range(r) => Ok(r.clone()),
             _ => Err(crate::emitter_gap!()),
@@ -4030,18 +4019,7 @@ impl<'r> Lowerer<'r> {
         let host = self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty.clone(), 0);
         self.emit_effect(Opcode::TensorZero, host.reg, Register(0), 0);
         let mem_id = crate::arch::memory_space_dispatch_id(space) as u32 as u64;
-        // `--emit-ptx` names the count by its length: one for a whole nest, or the size of the
-        // first axis of blocks when the outer loop of a group goes over all of it.
-        let whole_axis = outer.is_some_and(|o| {
-            o.across.as_ref().is_some_and(|a| a.share.is_none())
-                && matches!(&*o.iterable, Expr::Range(r)
-                    if matches!(&*r.start, Expr::Number(n) if n.value.as_ref() == "0"))
-        });
-        let length = match outer {
-            None => "one",
-            Some(_) if whole_axis => "axis0",
-            Some(_) => "",
-        };
+        // `--emit-ptx` names the count by its length.
         self.strings.push(length.to_string());
         let length = Register(self.strings.len() as u32);
         let count = self.emit_typed(Opcode::Transfer, host.reg, length, ty, mem_id);
@@ -6620,7 +6598,9 @@ impl<'r> Lowerer<'r> {
             type_idx,
             fc.args.len() as u64,
         ));
-        if matches!(ret_ty, LoweredTy::Tensor { .. }) {
+        // A returned reference names a tensor that the caller does not own.
+        if matches!(ret_ty, LoweredTy::Tensor { .. }) && !matches!(sig.ret_ty, Type::Borrow { .. })
+        {
             self.note_temp(reg);
         }
         Ok(Val { reg, ty: ret_ty })
@@ -7744,6 +7724,13 @@ impl<'r> Lowerer<'r> {
 /// `local_hir_stream` is only ever a complete, correct lowering or empty (keep-green). `Ok(())`
 /// when the full body lowered; otherwise the reason the flat path gave up.
 pub fn lower_function_to_hir(func: &Function, worker: &mut LocalWorkerState) -> Lowered<()> {
+    // For the tests of the fallback to the AST code generator, which need a function that the
+    // flat code generator does not take.
+    if std::env::var("VX_FLAT_DECLINE").is_ok_and(|name| func.name.as_ref() == name.as_str()) {
+        return Err(Decline::Unsupported {
+            what: "the function that VX_FLAT_DECLINE names",
+        });
+    }
     // Cheap `Arc` clone so the borrow of the registry doesn't collide with the later `&mut worker`
     // in `commit`; the frozen registry is immutable, so this is a pure reference bump.
     let registry = worker.global.registry.clone();
@@ -8144,7 +8131,7 @@ fn overlap_clauses(func: &Function, mutated: &HashSet<Symbol>) -> Vec<(Symbol, S
 }
 
 /// Whether `stmts` bind `name` anywhere: with `let`, as a `for` variable, or in a `match` pattern.
-fn binds_name(stmts: &[Statement], name: &Symbol) -> bool {
+pub(crate) fn binds_name(stmts: &[Statement], name: &Symbol) -> bool {
     fn in_pattern(p: &crate::syntax::Pattern, name: &Symbol) -> bool {
         match p {
             crate::syntax::Pattern::Identifier(n) => n == name,

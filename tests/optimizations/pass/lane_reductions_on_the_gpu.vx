@@ -11,14 +11,12 @@
 // result with no broadcast. In the code of a subgroup, one warp does 5 shuffles, with no barrier,
 // and the argmax shuffles a value and an index. The scratch is `.shared` storage, not a stack
 // slot. Each lane keeps its element of `part` in a register, so `part` takes no shared memory.
-// The AST code generator (`--legacy-codegen`) runs a kernel on one lane, so its kernels have
-// loops and no shuffles.
+// Both code generators give the same PTX.
 //
 // RUN: vxc %s --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ptx
 // RUN: FileCheck %s < %t.ptx --implicit-check-not=local_depot
-// RUN: vxc %s --legacy-codegen --host default --machine fleet/a100-80.vx --emit-llvm 2>&1 | FileCheck %s --check-prefix=AST --implicit-check-not=shfl
-// AST: .entry vx_npu_kernel_0
-// AST: .entry vx_npu_kernel_1
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ast.ptx
+// RUN: FileCheck %s < %t.ast.ptx --implicit-check-not=local_depot
 
 // CHECK-LABEL: .entry block_sum(
 // CHECK-NOT: .shared .align 16 .b8 {{.*}}[1024];

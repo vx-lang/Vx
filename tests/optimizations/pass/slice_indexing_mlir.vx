@@ -11,7 +11,7 @@
 // post-codegen MLIR; regenerate with:
 //   cargo run --bin update_mlir_test_checks -- tests/optimizations/pass/slice_indexing_mlir.vx
 //
-// RUN: vxc %s --emit-mlir -O0 2>&1 | FileCheck %s
+// RUN: vxc %s --emit-mlir -O0 2>&1 | FileCheck %s # flat-codegen
 
 fn slice_index(q : Tensor<f32, [2, 4]>) -> f32 {
   let r : Tensor<f32, [4]> = q[1];

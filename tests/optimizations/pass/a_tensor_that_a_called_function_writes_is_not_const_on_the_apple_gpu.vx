@@ -1,0 +1,46 @@
+// `copy_then_count` takes `hits` as a `&`, and its own kernel only reads `hits`. But it gives
+// `hits` to `count_keys`, and an atomic in `count_keys` writes it. So `hits` is not `const` in
+// either kernel, and the line that the runtime reads has no `r` for it. Both code generators
+// write the MSL. The test needs no GPU.
+//
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx --emit-msl -o %t.metal
+// RUN: FileCheck %s --input-file=%t.metal
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/m4-uma.vx --emit-msl -o %t.ast.metal
+// RUN: FileCheck %s --input-file=%t.ast.metal
+import core::sync::atomic;
+
+// CHECK-LABEL: // vx.kernel count_keys m1 m1r i32
+// CHECK: kernel void count_keys(
+// CHECK-NEXT: device int *p0 {{\[\[}}buffer(0){{\]\]}},
+// CHECK-NEXT: device const int *p1 {{\[\[}}buffer(1){{\]\]}},
+pub fn count_keys(hits : &Tensor<u32, [?], Memory::HBM>, keys : &Tensor<u32, [?], Memory::HBM>, nblocks : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..nblocks across blocks {
+      for l in 0..64 across lanes {
+        let k = keys[b * 64 + l];
+        let _old = atomic_fetch_add_u32(hits, (k & 15u32) as i32, 1u32, AtomicOrdering::Relaxed);
+      }
+    }
+  }
+  return;
+}
+
+// CHECK-LABEL: // vx.kernel copy_then_count m1 m1
+// CHECK-NEXT: kernel void copy_then_count(
+// CHECK-NEXT: device int *p0 {{\[\[}}buffer(0){{\]\]}},
+// CHECK-NEXT: device int *p1 {{\[\[}}buffer(1){{\]\]}},
+pub fn copy_then_count(copy : &mut Tensor<u32, [?], Memory::HBM>, hits : &Tensor<u32, [?], Memory::HBM>, keys : &Tensor<u32, [?], Memory::HBM>, nblocks : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..16 across lanes {
+        copy[l] = hits[l];
+      }
+    }
+  }
+  count_keys(hits, keys, nblocks);
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

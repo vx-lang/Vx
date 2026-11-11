@@ -676,6 +676,16 @@ static void useStackScratchIn(Region &kernel, PatternRewriter &rewriter) {
   }
 }
 
+/// The block argument that `v` is, or that `v` reads. The AST code generator
+/// keeps a reference to a tensor in a slot, and a region reads the tensor from
+/// the slot before it starts.
+static BlockArgument parameterOf(Value v) {
+  if (auto load = v.getDefiningOp<memref::LoadOp>();
+      load && load.getIndices().empty() && isa<MemRefType>(v.getType()))
+    v = load.getMemRef();
+  return dyn_cast<BlockArgument>(v);
+}
+
 /// A launch size as source text, from the parameters of `func` and numbers,
 /// for the `--emit-ptx` manifest: `(rows + 3) / 4`. Empty when the size comes
 /// from anything else.
@@ -1007,7 +1017,7 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     auto parentFunc = op->getParentOfType<func::FuncOp>();
     {
       auto paramIndex = [&](Value v) -> unsigned {
-        auto arg = dyn_cast<BlockArgument>(v);
+        auto arg = parameterOf(v);
         if (parentFunc && arg &&
             arg.getOwner() == &parentFunc.getBody().front())
           return arg.getArgNumber();
@@ -1061,18 +1071,23 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     // `&mut`). The borrow checker proved that nothing else writes such a
     // buffer while the kernel runs. `vx.align` is the `alignment:` of the
     // buffer's memory space, 0 for none. A device kernel puts these on its
-    // parameter.
+    // parameter. A tensor read from a slot parameter has `vx.tensor_access`
+    // on the slot in place of the `llvm.` marks.
     {
       SmallVector<Attribute> access;
       SmallVector<int64_t> align;
       for (Value v : captures) {
-        auto arg = dyn_cast<BlockArgument>(v);
+        auto arg = parameterOf(v);
         StringRef kind;
         int64_t bytes = 0;
         if (parentFunc && arg &&
             arg.getOwner() == &parentFunc.getBody().front()) {
           unsigned i = arg.getArgNumber();
-          if (parentFunc.getArgAttr(i, "llvm.readonly"))
+          if (Value(arg) != v) {
+            if (auto a = parentFunc.getArgAttrOfType<StringAttr>(
+                    i, "vx.tensor_access"))
+              kind = a.getValue();
+          } else if (parentFunc.getArgAttr(i, "llvm.readonly"))
             kind = "readonly";
           else if (parentFunc.getArgAttr(i, "llvm.noalias"))
             kind = "noalias";
@@ -1108,7 +1123,7 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       // the kernel gives.
       SmallVector<int64_t> paramOf;
       for (Value cap : captures) {
-        auto arg = dyn_cast<BlockArgument>(cap);
+        auto arg = parameterOf(cap);
         auto count = cap.getDefiningOp<vx::TransferOp>();
         if (count && count->hasAttr("vx.arrivals")) {
           kernelOp->setAttr("vx.arrivals", count->getAttr("vx.arrivals"));
@@ -1262,12 +1277,8 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     if (op->hasAttr("vx_parallel_coop"))
       launchOp->setAttr("vx_parallel_coop", rewriter.getUnitAttr());
 
-    // The topology's declared name, forwarded from the spawn. Optional by
-    // design: the flat path emits `vx.spawn` from an instruction stream that
-    // carries the dispatch id and not the name, so a launch may legitimately
-    // arrive without one. A plugin then has the id and nothing else, which is
-    // exactly the situation before this existed -- the same way `kind=` and
-    // `roles=` degrade rather than fail (#348).
+    // The topology's name as the program wrote it, forwarded from the spawn.
+    // A launch may have none, such as a task's. A plugin then has only the id.
     if (auto topoName = op->getAttrOfType<StringAttr>("topology_name")) {
       launchOp->setAttr("vx.topology_name", topoName);
     }
@@ -1275,6 +1286,10 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     // built-in has no mark, and the runtime lets a manifest send it anywhere.
     if (auto offload = op->getAttrOfType<BoolAttr>("offload")) {
       launchOp->setAttr("vx.offload", offload);
+    }
+    // The `arch:` of a declared topology. A built-in has none.
+    if (auto arch = op->getAttrOfType<StringAttr>("arch")) {
+      launchOp->setAttr("vx.arch", arch);
     }
 
     if (resultSlot) {
@@ -1739,6 +1754,19 @@ useThatNeedsTheCopy(Value copy, SmallVectorImpl<vx::DropOp> &drops) {
   return {nullptr, nullptr};
 }
 
+// Whether the callee of `call` only reads the buffer of operand `n`: its
+// parameter is `llvm.readonly`, or a slot with `vx.tensor_access = "readonly"`.
+static bool calleeOnlyReads(func::CallOp call, unsigned n) {
+  auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+      call, call.getCalleeAttr());
+  if (!callee || callee.isExternal())
+    return false;
+  if (callee.getArgAttr(n, "llvm.readonly"))
+    return true;
+  auto access = callee.getArgAttrOfType<StringAttr>(n, "vx.tensor_access");
+  return access && access.getValue() == "readonly";
+}
+
 // Whether code can write the memory of `arg` through it: an element store, an
 // atomic, an `mlir!` block, or a call whose parameter is not `llvm.readonly`.
 // A load, a shape read, a view and a `let` slot that holds it only read it.
@@ -1771,16 +1799,18 @@ static bool mayWriteThrough(Value arg) {
         if (store.getValueToStore() != value ||
             !slot.getDefiningOp<memref::AllocaOp>())
           return true;
-        for (Operation *u : slot.getUsers())
-          if (auto load = dyn_cast<memref::LoadOp>(u))
+        for (OpOperand &u : slot.getUses()) {
+          if (auto load = dyn_cast<memref::LoadOp>(u.getOwner()))
             work.push_back(load.getResult());
+          // The AST code generator passes a `&` tensor to a call in a slot.
+          else if (auto call = dyn_cast<func::CallOp>(u.getOwner());
+                   call && !calleeOnlyReads(call, u.getOperandNumber()))
+            return true;
+        }
         continue;
       }
       if (auto call = dyn_cast<func::CallOp>(user)) {
-        auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
-            call, call.getCalleeAttr());
-        if (callee && !callee.isExternal() &&
-            callee.getArgAttr(use.getOperandNumber(), "llvm.readonly"))
+        if (calleeOnlyReads(call, use.getOperandNumber()))
           continue;
         return true;
       }
@@ -1799,23 +1829,49 @@ static bool mayWriteThrough(Value arg) {
   return false;
 }
 
+// Whether code can write the tensor that the slot parameter `slot` holds. The
+// AST code generator passes a `&` tensor as a slot.
+static bool mayWriteThroughSlot(Value slot) {
+  for (OpOperand &use : slot.getUses()) {
+    Operation *user = use.getOwner();
+    if (auto load = dyn_cast<memref::LoadOp>(user)) {
+      if (mayWriteThrough(load.getResult()))
+        return true;
+      continue;
+    }
+    if (auto call = dyn_cast<func::CallOp>(user);
+        call && calleeOnlyReads(call, use.getOperandNumber()))
+      continue;
+    return true;
+  }
+  return false;
+}
+
 // A `&` parameter is `llvm.readonly`, as Rust marks a `&T`. But the element
 // atomics of `core::sync::atomic` change a tensor through a `&`, and so does a
 // function that passes one on to them. Drops the mark from each parameter that
 // code can write through, until no mark changes: a call keeps a mark only when
-// the callee's parameter has it.
+// the callee's parameter has it. A slot parameter has the mark as
+// `vx.tensor_access = "readonly"`.
 static void dropReadonlyOfWrittenParameters(ModuleOp module) {
   for (bool changed = true; changed;) {
     changed = false;
     module.walk([&](func::FuncOp f) {
       if (f.isExternal())
         return;
-      for (unsigned i = 0; i < f.getNumArguments(); ++i)
+      for (unsigned i = 0; i < f.getNumArguments(); ++i) {
         if (f.getArgAttr(i, "llvm.readonly") &&
             mayWriteThrough(f.getArgument(i))) {
           f.removeArgAttr(i, "llvm.readonly");
           changed = true;
         }
+        auto access = f.getArgAttrOfType<StringAttr>(i, "vx.tensor_access");
+        if (access && access.getValue() == "readonly" &&
+            mayWriteThroughSlot(f.getArgument(i))) {
+          f.removeArgAttr(i, "vx.tensor_access");
+          changed = true;
+        }
+      }
     });
   }
 }
@@ -4597,14 +4653,19 @@ static LogicalResult checkMovedArguments(ModuleOp module) {
 
 // A function returns a `?`-shaped tensor by handing back a buffer, which its
 // caller then owns and frees. One that returns a view, or a parameter it only
-// borrows, returns a copy instead.
+// borrows, returns a copy instead. A `vx.reference` result is a reference to a
+// tensor, and is returned as it is.
 static LogicalResult returnOwnedBuffers(ModuleOp module) {
   LogicalResult result = success();
   module.walk([&](func::ReturnOp ret) {
+    auto func = ret->getParentOfType<func::FuncOp>();
     for (OpOperand &operand : ret->getOpOperands()) {
       auto type = dyn_cast<MemRefType>(operand.get().getType());
       // A tensor placed in another memory is left as it was.
       if (!type || type.getMemorySpace())
+        continue;
+      if (func &&
+          func.getResultAttr(operand.getOperandNumber(), "vx.reference"))
         continue;
       BufferOrigin origin = originOf(operand.get());
       // A placed buffer goes to the caller, which frees it on its device.
@@ -4699,10 +4760,17 @@ static void freeTemporaries(ModuleOp module) {
     if (!op->getParentOfType<func::FuncOp>() ||
         op->getParentOfType<vx::SpawnOp>())
       return;
+    // A `vx.reference` result names a tensor that the caller does not own.
+    auto call = dyn_cast<func::CallOp>(op);
+    auto callee =
+        call ? module.lookupSymbol<func::FuncOp>(call.getCallee()) : nullptr;
     if (isa<memref::AllocOp, vx::AllocOp, func::CallOp>(op))
       for (Value r : op->getResults())
         if (auto type = dyn_cast<MemRefType>(r.getType());
-            type && !type.getMemorySpace())
+            type && !type.getMemorySpace() &&
+            !(callee &&
+              callee.getResultAttr(cast<OpResult>(r).getResultNumber(),
+                                   "vx.reference")))
           fresh.push_back(r);
   });
   for (Value buffer : fresh) {
@@ -5226,19 +5294,31 @@ static LogicalResult lowerTask(vx::SpawnOp task, Value group, ModuleOp module,
       LLVM::lookupOrCreateFn(b, module, "vx_task_start_at",
                              {ptrTy, ptrTy, ptrTy, ptrTy, i64Ty}, i64Ty);
   assert(succeeded(start) && "the runtime function has one declaration");
-  // Where the `spawn` is, so that an abort in the task can say it: the file
-  // from the module, and the line from the op. A line of 0 is not known.
+  // Where the `spawn` is, so that an abort in the task can say it: the file of
+  // the function from the op, else the file of the module, and the line from
+  // the op. A line of 0 is not known.
   Value file = LLVM::ZeroOp::create(b, loc, ptrTy);
-  if (auto source = module->getAttrOfType<StringAttr>("vx.source")) {
-    StringRef name = "__vx_source_file";
-    if (module.lookupSymbol<LLVM::GlobalOp>(name))
-      file = LLVM::AddressOfOp::create(b, loc, ptrTy, name);
-    else {
-      // A C string: the runtime reads it up to its 0.
-      std::string text = source.getValue().str();
-      text.push_back('\0');
-      file =
-          LLVM::createGlobalString(loc, b, name, text, LLVM::Linkage::Internal);
+  auto source = task->getAttrOfType<StringAttr>("vx.file");
+  if (!source)
+    source = module->getAttrOfType<StringAttr>("vx.source");
+  if (source) {
+    // A C string: the runtime reads it up to its 0. One global for each file.
+    std::string text = source.getValue().str();
+    text.push_back('\0');
+    std::string name;
+    for (unsigned i = 0;; ++i) {
+      name = "__vx_source_file" + (i ? "_" + std::to_string(i) : "");
+      auto global = module.lookupSymbol<LLVM::GlobalOp>(name);
+      if (!global) {
+        file = LLVM::createGlobalString(loc, b, name, text,
+                                        LLVM::Linkage::Internal);
+        break;
+      }
+      auto value = dyn_cast_or_null<StringAttr>(global.getValueOrNull());
+      if (value && value.getValue() == text) {
+        file = LLVM::AddressOfOp::create(b, loc, ptrTy, name);
+        break;
+      }
     }
   }
   int64_t spawnLine = 0;
@@ -6731,6 +6811,14 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
       payload.push_back('\0');
     }
 
+    // The `arch:` of a declared topology. The runtime counts a topology with
+    // a CPU arch as the host, so `VX_ENABLE_CPU_FALLBACK=0` does not stop it.
+    if (auto arch = op->getAttrOfType<StringAttr>("vx.arch")) {
+      payload += "arch=";
+      payload += arch.getValue().str();
+      payload.push_back('\0');
+    }
+
     // How many iterations the kernel's grid-strided loop covers, when the
     // frontend proved it stridable (#251). The runtime sizes the launch from
     // this; absent, the kernel is serial and gets the 1x1x1 launch it needs.
@@ -8001,10 +8089,17 @@ static void waitBeforeReturningToC(ModuleOp module,
     Value slot = b.create<LLVM::AllocaOp>(f.getLoc(), ptrType, i32Type, one);
     SmallVector<func::ReturnOp> returns;
     f.walk([&](func::ReturnOp r) { returns.push_back(r); });
-    SmallVector<Value> params;
-    for (BlockArgument arg : f.getArguments())
+    // The AST code generator gives a reference to a tensor as a slot that
+    // holds the tensor. The wait reads the tensor from the slot.
+    SmallVector<Value> params, slotParams;
+    for (BlockArgument arg : f.getArguments()) {
+      auto slot = dyn_cast<MemRefType>(arg.getType());
       if (isTensorToWaitFor(arg.getType()))
         params.push_back(arg);
+      else if (slot && slot.getRank() == 0 &&
+               isTensorToWaitFor(slot.getElementType()))
+        slotParams.push_back(arg);
+    }
     for (func::ReturnOp r : returns) {
       b.setInsertionPoint(r);
       auto opcode = [&](int32_t code) -> Value {
@@ -8017,6 +8112,8 @@ static void waitBeforeReturningToC(ModuleOp module,
                                ValueRange{code, payload});
       };
       SmallVector<Value> tensors = params;
+      for (Value slot : slotParams)
+        tensors.push_back(b.create<memref::LoadOp>(r.getLoc(), slot));
       for (Value v : r.getOperands())
         if (isTensorToWaitFor(v.getType()))
           tensors.push_back(v);
@@ -8070,8 +8167,7 @@ nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule,
     if (!paramOf || !names || !types) {
       f.emitError() << flag
                     << " cannot name this GPU kernel, because the code "
-                       "generator did not record the function that holds it. "
-                       "Only the flat code generator records it";
+                       "generator did not record the function that holds it";
       return failure();
     }
     assert(paramOf.size() == static_cast<int64_t>(f.getNumArguments()) &&

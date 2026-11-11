@@ -2,11 +2,14 @@
 // Each tensor is one buffer, and its sizes and strides come from a buffer of 32-bit words.
 // A stride that the tensor's type fixes is a number, as on the CPU. The test needs no GPU.
 //
-// RUN: vxc %s --host default --machine fleet/m4-uma.vx --emit-msl -o %t.metal
-// RUN: FileCheck %s --input-file=%t.metal
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx --emit-msl -o %t.metal # flat-codegen
+// RUN: FileCheck %s --check-prefixes=CHECK,FLAT --input-file=%t.metal
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/m4-uma.vx --emit-msl -o %t.ast.metal
+// RUN: FileCheck %s --check-prefixes=CHECK,AST --input-file=%t.ast.metal
 
-// blur_rows writes `dst` and only reads `src`, so `src` is `const`. Row y of `src` starts at
-// y * (size of axis 1), and the last stride of a contiguous tensor is 1.
+// blur_rows writes `dst` and only reads `src`, so `src` is `const`. The last stride of a
+// contiguous tensor is 1. The flat code generator reads `src[y][xx]` from row y, which starts at
+// y * (size of axis 1). The AST code generator (`--legacy-codegen`) uses the stride of each axis.
 // CHECK: #include <metal_stdlib>
 // CHECK-LABEL: // vx.kernel blur_rows m2 m2r i32 i32
 // CHECK-NEXT: kernel void blur_rows(
@@ -17,10 +20,12 @@
 // CHECK: const int p1_n1 = as_type<int>(vx_w[9]);
 // CHECK-NEXT: const int p1_s1 = 1;
 // CHECK: const int p3 = as_type<int>(vx_w[13]);
-// CHECK: const int [[ROW:o[0-9]+]] = p1_b + {{v[0-9]+}};
-// CHECK-NEXT: int [[X:v[0-9]+]] = (int){{v[0-9]+}};
-// CHECK-NEXT: float {{v[0-9]+}} = p1{{\[}}[[ROW]] + [[X]] * 1];
-// CHECK: p0[{{o[0-9]+}} + {{v[0-9]+}} * 1] = {{v[0-9]+}};
+// FLAT: const int [[ROW:o[0-9]+]] = p1_b + {{v[0-9]+}};
+// FLAT-NEXT: int [[X:v[0-9]+]] = (int){{v[0-9]+}};
+// FLAT-NEXT: float {{v[0-9]+}} = p1{{\[}}[[ROW]] + [[X]] * 1];
+// FLAT: p0[{{o[0-9]+}} + {{v[0-9]+}} * 1] = {{v[0-9]+}};
+// AST: float {{v[0-9]+}} = p1[p1_o + {{v[0-9]+}} * p1_s0 + {{v[0-9]+}} * p1_s1];
+// AST: p0[p0_o + {{v[0-9]+}} * p0_s0 + {{v[0-9]+}} * p0_s1] = {{v[0-9]+}};
 pub fn blur_rows(dst : &mut Tensor<f32, [?, ?], Memory::HBM>, src : &Tensor<f32, [?, ?], Memory::HBM>, h : i32, w : i32) -> void {
   spawn on(Topology::Device) {
     for y in 0..h across blocks {
@@ -167,6 +172,31 @@ pub fn double_below(out : &mut Tensor<i32, [?], Memory::HBM>, limit : i32, n : i
         let doubled = v * 2;
         assert(doubled != limit, "a value is 50% of the limit");
         out[v] = doubled;
+      }
+    }
+  }
+  return;
+}
+
+// reverse_rows writes a row to shared memory in one lane loop of a subgroup, and reads it in the
+// next. Between the two, only the 32 threads of the SIMD-group wait, not the whole block.
+// CHECK-LABEL: // vx.kernel reverse_rows m1 m1r i32
+// CHECK: vx_npu_kernel_{{[0-9]+}}_smem_0[{{.*}}] = {{v[0-9]+}};
+// CHECK-NOT: threadgroup_barrier
+// CHECK: simdgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
+// CHECK-NOT: threadgroup_barrier
+// CHECK: float {{v[0-9]+}} = vx_npu_kernel_{{[0-9]+}}_smem_0[
+pub fn reverse_rows(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for rb in 0..rows / 4 across blocks {
+      let mut row = unsafe { Tensor<f32, [4, 32], Memory::SMEM>::uninit() };
+      for s in 0..4 across subgroups {
+        for l in 0..32 across lanes(32) {
+          row[s][l] = x[(rb * 4 + s) * 32 + l];
+        }
+        for l in 0..32 across lanes(32) {
+          out[(rb * 4 + s) * 32 + l] = row[s][31 - l];
+        }
       }
     }
   }

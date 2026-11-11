@@ -10,7 +10,7 @@
 // loop. Regenerate with:
 //   cargo run --bin update_mlir_test_checks -- tests/optimizations/pass/tensor_initializer_mlir.vx
 //
-// RUN: vxc %s --emit-mlir -O0 2>&1 | FileCheck %s
+// RUN: vxc %s --emit-mlir -O0 2>&1 | FileCheck %s # flat-codegen
 
 fn init() -> i32 {
   let m = Tensor<f32>([[1.0, 2.0],

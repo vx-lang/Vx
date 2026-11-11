@@ -9,6 +9,8 @@
 //
 // RUN: vxc %s --host default --machine fleet/m4-uma.vx --action emit-llvm -o - 2>/dev/null | FileCheck %s --check-prefix=APPLE
 // RUN: vxc %s --host default --machine fleet/a100-80.vx --action emit-llvm -o - 2>/dev/null | FileCheck %s --check-prefix=CUDA
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/m4-uma.vx --action emit-llvm -o - 2>/dev/null | FileCheck %s --check-prefix=APPLE
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/a100-80.vx --action emit-llvm -o - 2>/dev/null | FileCheck %s --check-prefix=CUDA
 //
 // APPLE-LABEL: llvm.func @add_one(
 // APPLE-DAG: [[THREAD:%[0-9]+]] = llvm.mlir.constant(7 : i32) : i32

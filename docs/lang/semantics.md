@@ -139,8 +139,9 @@ When its owner goes away, a value is *dropped*: the drop releases what the value
 
 **A pattern that takes a value owns all of it.** At the end of its scope, the pattern drops the names that it binds. Then it drops the parts that it does not name, such as a `_` part.
 
-- A `match` arm takes the value when its pattern moves a part out of it. `match t { Two::Pair(a, _) => .. }` moves all of `t` into the arm, so code after the `match` cannot use `t`. At its end, the arm drops `a` and then the `_` part.
-- A `match` in which no arm moves a part, such as `match t { Two::Pair(_, _) => .. }`, leaves `t` as it is. Then `t` drops at the end of its block.
+- A `match` arm takes the value when its pattern moves a part out of it. `match t { Two::Pair(a, _) => .. }` moves all of `t` into the arm. At its end, the arm drops `a` and then the `_` part.
+- An arm that moves no part, such as `Two::Pair(_, _) => ..` or `Two::Nothing => ..`, leaves `t` as it is. When such an arm runs, `t` drops at the end of its block.
+- Code after the `match` cannot use `t` when an arm can move it, as after an `if` that moves `t` in one branch.
 - Each arm of a `match` on a value with no name, such as `match make() { .. }`, takes the value.
 - In a `let`, `_` is a name like any other, and its scope is the rest of the block. `let _ = e;` drops the value at the same point as `let _x = e;`. `let _ = a;` moves `a`.
 

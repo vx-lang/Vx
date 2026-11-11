@@ -178,6 +178,8 @@ struct TempScan {
     upto: Option<usize>,
     /// Each call moved out: its local, type, value and drops.
     found: Vec<(String, Type, Expr, Vec<GluePart>)>,
+    /// A `&&` or `||` became an `if`, so that a side drops its temporaries when it ends.
+    short_circuit_rewritten: bool,
 }
 
 impl TempScan {
@@ -188,6 +190,7 @@ impl TempScan {
             last_temp: None,
             upto,
             found: Vec::new(),
+            short_circuit_rewritten: false,
         }
     }
 }
@@ -300,6 +303,10 @@ pub(crate) struct DropFrames {
     /// binds by value, that need dropping. `pending_by` is what gave them.
     pending: Vec<(String, usize, Vec<GluePart>, bool, Type)>,
     pending_by: &'static str,
+    /// A `match` arm takes the value that is moving, and another arm may not. The move is not
+    /// certain, so the owner gets a flag. `pending_sets` set the flags at the start of the arm.
+    arm_takes: bool,
+    pending_sets: Vec<Statement>,
     /// The names moved by the statement being checked. A `return t` moves `t` on its way out.
     moved_now: HashSet<String>,
     /// Makes the names of the locals the rewrite adds unique.
@@ -772,20 +779,18 @@ impl<'a> TypeChecker<'a> {
             }],
             // The same value as the type inside, with a proof attached.
             Type::Verified(inner) => self.drops_glue_at(inner, depth),
-            // A pinned tensor is in the memory of the topology the pin names, so its drop
-            // frees through that memory's plugin. The type is all the drop has to go on once
-            // the descriptor sits in a struct: a field is not a transfer's result, so nothing
-            // else remembers where its memory came from.
-            Type::Pinned(inner, topology) => self
-                .drops_glue_at(inner, depth)
-                .into_iter()
-                .map(|mut part| {
+            // A tensor pinned to a device is in that device's memory, so its plugin frees it.
+            // A struct field is not a transfer's result, so the pin on its type is all the drop
+            // has to go on. A part with a `call` frees through its own `Drop` impl instead.
+            Type::Pinned(inner, topology) => {
+                let mut glue = self.drops_glue_at(inner, depth);
+                for part in glue.iter_mut().filter(|p| p.call.is_none()) {
                     if part.placement.is_none() {
                         part.placement = Some(crate::syntax::Placement::on(topology.clone()));
                     }
-                    part
-                })
-                .collect(),
+                }
+                glue
+            }
             // A type is often written as a struct before anything knows it names an enum, so
             // the declarations decide.
             _ if self.drops_enum_decl(ty).is_some() => self.drops_enum_glue(ty, depth),
@@ -1025,6 +1030,13 @@ impl<'a> TypeChecker<'a> {
         d.pending_by = "the arm";
     }
 
+    /// A `match` arm takes the value that `take` moves, and another arm may not.
+    pub(crate) fn drops_arm_takes(&mut self, take: impl FnOnce(&mut Self)) {
+        self.borrow.drops.arm_takes = true;
+        take(self);
+        self.borrow.drops.arm_takes = false;
+    }
+
     pub(crate) fn drops_exit_function(&mut self) {
         let d = &mut self.borrow.drops;
         while let Some(f) = d.frames.pop() {
@@ -1086,6 +1098,11 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn drops_enter_block(&mut self, body: &[Statement], value: Option<&Expr>) {
         let d = &mut self.borrow.drops;
         let given_by = d.pending_by;
+        let mut edits: Box<Edits> = Box::default();
+        let sets = std::mem::take(&mut d.pending_sets);
+        if !sets.is_empty() {
+            edits.before.insert(0, sets);
+        }
         let owners = std::mem::take(&mut d.pending)
             .into_iter()
             .map(|(name, scope, glue, drop_reads_borrows, ty)| Owner {
@@ -1113,7 +1130,7 @@ impl<'a> TypeChecker<'a> {
                 .chain(value.map(|v| v.span().line))
                 .collect(),
             stmt: 0,
-            edits: Box::default(),
+            edits,
             value_at: value.map(|_| body.len()),
             hidden: Vec::new(),
         });
@@ -1280,6 +1297,7 @@ impl<'a> TypeChecker<'a> {
             here = outer;
         }
         let rewriting = self.drops_rewriting();
+        let arm = self.borrow.drops.arm_takes;
         if !again && field.is_none() {
             self.borrow.drops.moved_now.insert(name.to_string());
         }
@@ -1308,7 +1326,7 @@ impl<'a> TypeChecker<'a> {
                             } else {
                                 Moved::Maybe
                             }
-                        } else if scope == here {
+                        } else if scope == here && !arm {
                             *moved_at = Some(*stmt);
                             Moved::Yes
                         } else {
@@ -1371,6 +1389,12 @@ impl<'a> TypeChecker<'a> {
                 .expect("the owner's block is below the task"),
             None => top - 1,
         };
+        // The arm takes the value before its first statement, in a block not opened yet.
+        if arm && first_task.is_none() {
+            let set = assign_stmt(&flag, ident("true"));
+            self.borrow.drops.pending_sets.push(set);
+            return;
+        }
         if let Some(FrameKind::Block { stmt, edits, .. }) = self.borrow.drops.frames.get_mut(at) {
             edits
                 .after
@@ -1960,10 +1984,10 @@ impl<'a> TypeChecker<'a> {
     /// moved into a `let` of its own just before the statement, and dropped after it. So the
     /// order things happen in does not change, every call the statement makes before it moves
     /// out too, in order, into a `let` that is dropped after the statement only when its
-    /// value was just read. Nothing moves out of a branch, a loop or the right of `&&` or `||`,
-    /// and a temporary after one, or after a call whose type is not known, stays where it is
-    /// and is not dropped. The condition of an `if` and the value of a `match` run before the
-    /// branch, so their temporaries move out too.
+    /// value was just read. Nothing moves out of a branch or a loop, and a temporary after one,
+    /// or after a call whose type is not known, stays where it is and is not dropped. The
+    /// condition of an `if` and the value of a `match` run before the branch, so their
+    /// temporaries move out too. A `&&` or `||` whose sides make temporaries becomes an `if`.
     fn drops_hoist_temporaries(
         &mut self,
         body: &mut [Statement],
@@ -2002,6 +2026,10 @@ impl<'a> TypeChecker<'a> {
             let mut copy = stmt.clone();
             self.drops_scan_stmt(&mut copy, taken, &mut probe);
             let Some(last_temp) = probe.last_temp else {
+                // Only the right side of a `&&` or `||` made a temporary, and its `if` drops it.
+                if probe.short_circuit_rewritten {
+                    *stmt = copy;
+                }
                 continue;
             };
             let mut scan = TempScan::new(Some(last_temp));
@@ -2100,8 +2128,59 @@ impl<'a> TypeChecker<'a> {
                 scan.blocked = true;
                 return;
             }
-            // A branch, a loop or a short-circuit runs its parts only sometimes, and a
-            // closure later: nothing at or after it moves out.
+            // Each side of `&&` or `||` drops its temporaries when it ends, as in Rust. The right
+            // side runs only sometimes, so the expression becomes an `if` that holds the drops:
+            // `if a { b } else { false }`, or `if a { true } else { b }`.
+            Expr::LogicalOp(l) => {
+                let first = scan.found.len();
+                self.drops_scan_temps(&mut l.lhs, false, scan);
+                let mut drops = Vec::new();
+                for (name, _, _, glue) in &mut scan.found[first..] {
+                    drops.extend(glue_drops(name, &std::mem::take(glue), None));
+                }
+                let rhs = std::mem::replace(&mut *l.rhs, ident("false"));
+                let mut rhs = vec![Statement::ExprStmt(ExprStmtStmt::new(
+                    rhs,
+                    false,
+                    Span::default(),
+                ))];
+                let mut edits = Edits::default();
+                self.drops_hoist_temporaries(&mut rhs, &mut edits, true);
+                self.drops_apply(&mut rhs, edits);
+                if drops.is_empty() && rhs.len() == 1 {
+                    let Some(Statement::ExprStmt(s)) = rhs.pop() else {
+                        unreachable!("the right side is one expression")
+                    };
+                    *l.rhs = s.expr;
+                } else {
+                    let constant = |value: &str| {
+                        vec![Statement::ExprStmt(ExprStmtStmt::new(
+                            ident(value),
+                            false,
+                            Span::default(),
+                        ))]
+                    };
+                    let (mut then_block, mut else_block) = match l.op {
+                        LogicalOp::And => (rhs, constant("false")),
+                        LogicalOp::Or => (constant("true"), rhs),
+                    };
+                    then_block.splice(0..0, drops.clone());
+                    else_block.splice(0..0, drops);
+                    let lhs = std::mem::replace(&mut *l.lhs, ident("false"));
+                    *e = Expr::If(IfExpr::new(
+                        false,
+                        Box::new(lhs),
+                        then_block,
+                        Some(else_block),
+                        l.span,
+                    ));
+                    scan.short_circuit_rewritten = true;
+                }
+                scan.blocked = true;
+                return;
+            }
+            // A branch or a loop runs its parts only sometimes, and a closure later: nothing at
+            // or after it moves out.
             _ => {
                 scan.blocked = true;
                 return;

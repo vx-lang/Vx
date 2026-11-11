@@ -219,6 +219,11 @@ fn main() -> i32 {
 }
 ```
 
+A vector that a function makes with `Vec<i64>::new()` owns only new memory. So a `push` on it, or
+its drop, keeps the facts about a pointer parameter. That stops at a pointer or a reference into
+the vector, and at a loop or a closure that uses it. It also stops at a call that can put memory of
+the caller into the vector.
+
 From a `spawn` until its `join()` or the end of its `tasks` block, the task can free memory, so
 no fact about other memory starts in that time.
 

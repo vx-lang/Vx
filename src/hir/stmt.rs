@@ -602,6 +602,18 @@ impl<'a> TypeChecker<'a> {
         consume: bool,
     ) {
         let prev_statement_span = std::mem::replace(&mut self.current_statement_span, stmt.span());
+        let value = match &*stmt {
+            Statement::LetDecl(d) => Some(&d.expr),
+            Statement::Assign(a) => Some(&a.rhs),
+            Statement::Return(r) => r.expr.as_ref(),
+            _ => None,
+        };
+        if let Some(Expr::Range(_)) = value {
+            self.errors.push(
+                "a range (`a..b`) cannot be a value. Use it as the bound of a `for` loop"
+                    .to_string(),
+            );
+        }
         match stmt {
             Statement::LetDecl(decl) if crate::hir::check::tasks::is_spawn(&decl.expr) => {
                 self.check_spawn_let(decl, consume)
@@ -702,7 +714,17 @@ impl<'a> TypeChecker<'a> {
             Statement::Drop(_) | Statement::Error(_) => {}
         }
         self.check_frame_escape(stmt);
+        self.end_moved_tiles();
         self.current_statement_span = prev_statement_span;
+    }
+
+    /// The tiles of the value of `let name`. A tensor that the initializer moved, as in
+    /// `let b = id(a)`, is gone before them.
+    fn place_for_let(&mut self, name: &str, ty: &Type, context: &str, span: &Span) {
+        self.end_moved_tiles();
+        let prev = self.traffic.tile_holder.replace(name.to_string());
+        self.check_type_placement(ty, context, span);
+        self.traffic.tile_holder = prev;
     }
 
     /// Check a `let` binding: type the initializer, bind the name (annotation wins), record the
@@ -738,7 +760,12 @@ impl<'a> TypeChecker<'a> {
         let prev_expected = self.expected_type.take();
         self.expected_type = ty_ann.clone();
         self.let_closure = matches!(&*expr, Expr::Closure(_)).then_some(*span);
+        let prev_holder = self.traffic.tile_holder.take();
+        if matches!(&*expr, Expr::Transfer(_)) {
+            self.traffic.tile_holder = Some(name.to_string());
+        }
         let ty = self.check_whole_value(expr, |c, e| c.check_expr_type_flag(e, consume));
+        self.traffic.tile_holder = prev_holder;
         self.let_closure = None;
         let ty = crate::hir::check::operators::round_narrow_arithmetic(expr, ty, ty_ann.as_ref());
         self.expected_type = prev_expected;
@@ -795,7 +822,7 @@ impl<'a> TypeChecker<'a> {
             }
             // Capacity: a placed tensor annotation must fit its memory space.
             if !memory_already_recorded {
-                self.check_type_placement(ann, &context, span);
+                self.place_for_let(name, ann, &context, span);
             }
             self.shadow_borrows(name);
             self.insert(name.to_string(), ann.clone());
@@ -806,7 +833,7 @@ impl<'a> TypeChecker<'a> {
             // only in the initializer -- the ordinary spelling -- escaped capacity admission,
             // element-type admission, and the working set.
             if !memory_already_recorded {
-                self.check_type_placement(&ty, &context, span);
+                self.place_for_let(name, &ty, &context, span);
             }
             self.shadow_borrows(name);
             self.insert(name.to_string(), ty.clone());
@@ -892,6 +919,7 @@ impl<'a> TypeChecker<'a> {
         self.pointer_facts.forget(name.as_ref());
         self.note_pointer_value(name.as_ref(), pointer);
         self.pointer_facts_name_the_result(name.as_ref(), expr);
+        self.pointer_facts_note_an_owner(name.as_ref(), expr);
         // `raw::extent(t)` folds to its literal element count first: the prover cannot
         // lower a function call, so `let n = raw::extent(src)` would otherwise record
         // an unlowerable fact and every bound written against `n` would be unprovable
@@ -902,19 +930,84 @@ impl<'a> TypeChecker<'a> {
         // must be one that the prover can model, so that no new program warns.
         let recorded = !*_is_mut || crate::hir::prover::is_modelled(&value);
         if recorded && !crate::hir::check::raw::expr_mentions(&value, name.as_ref()) {
-            let id_expr = Expr::Identifier(IdentifierExpr {
+            // A call can change its arguments. Re-evaluating it in a later proof would use
+            // their new values, not the values from when the result was returned.
+            let changes_an_argument = matches!(&value, Expr::FunctionCall(c)
+                if c.args.iter().any(|a| self.call_may_change_argument(a)));
+            if !changes_an_argument {
+                let id_expr = Expr::Identifier(IdentifierExpr {
+                    name: name.clone(),
+                    span: Span::default(),
+                });
+                let eq_expr = Expr::RelationalOp(RelationalOpExpr {
+                    lhs: Box::new(id_expr),
+                    op: RelationalOp::Eq,
+                    rhs: Box::new(value),
+                    span: Span::default(),
+                    operand_ty: None,
+                });
+                self.consteval.constraints.push(eq_expr);
+            }
+            self.keep_call_result_ensures(name, expr);
+        }
+    }
+
+    /// Whether a call can change the value behind the argument `arg`: a `&mut` or a pointer.
+    fn call_may_change_argument(&self, arg: &Expr) -> bool {
+        matches!(arg, Expr::Borrow(b) if b.is_mut)
+            || matches!(
+                self.check_expr_type_probe(arg),
+                Type::Borrow { is_mut: true, .. } | Type::Pointer(..) | Type::Ref(..)
+            )
+    }
+
+    /// A returned number keeps its postconditions even when a later call changes an input
+    /// buffer. The equation `name == call(args)` does not: a later proof evaluates the call
+    /// again with the new buffer.
+    fn keep_call_result_ensures(&mut self, name: &crate::symbol::Symbol, value: &Expr) {
+        let Expr::FunctionCall(call) = crate::syntax::bare_unsafe_value(value) else {
+            return;
+        };
+        let Some((params, return_type, ensures)) = self.declared_callee(&call.name) else {
+            return;
+        };
+        let changed: Vec<_> = call
+            .args
+            .iter()
+            .filter(|arg| self.call_may_change_argument(arg))
+            .filter_map(|arg| Self::arg_reborrow_base(arg).map(|(root, _)| root))
+            .collect();
+        let mut names: HashMap<_, _> = params
+            .iter()
+            .map(|(p, _)| p.clone())
+            .zip(
+                call.args
+                    .iter()
+                    .map(|a| crate::hir::prover::without_borrow(a).clone()),
+            )
+            .collect();
+        names.insert(
+            "return".into(),
+            Expr::Identifier(IdentifierExpr {
                 name: name.clone(),
                 span: Span::default(),
-            });
-            let eq_expr = Expr::RelationalOp(RelationalOpExpr {
-                lhs: Box::new(id_expr),
-                op: RelationalOp::Eq,
-                rhs: Box::new(value),
-                span: Span::default(),
-                operand_ty: None,
-            });
-            self.consteval.constraints.push(eq_expr);
-        }
+            }),
+        );
+        let facts: Vec<_> = ensures
+            .iter()
+            .filter(|e| crate::hir::check::atomic_contracts::is_prover_clause(e))
+            .map(|e| {
+                let typed = self.typed_callee_contract(e, params, return_type);
+                hir::prover::substitute_names(&typed, &names)
+            })
+            .filter(hir::prover::is_modelled)
+            .filter(|e| {
+                !changed
+                    .iter()
+                    .any(|root| crate::hir::check::raw::expr_mentions(e, root))
+            })
+            .collect();
+        self.consteval.constraints.extend(facts);
     }
 
     /// Check a `for` loop: type the iterable, bind the induction variable's element type, prove
@@ -975,6 +1068,15 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Whether `e` is a tensor, or a reference to one, that a `for` loop reads by index.
+    fn is_tensor_or_reference_to_one(&mut self, e: &Expr) -> bool {
+        let mut ty = self.check_expr_type_probe(e);
+        while let Type::Borrow { inner, .. } | Type::Ref(inner, _) = ty {
+            ty = *inner;
+        }
+        matches!(ty, Type::Tensor(..))
+    }
+
     fn check_for_loop_stmt(&mut self, floop: &mut ForLoopStmt, consume: bool, return_type: &Type) {
         let ForLoopStmt {
             iter,
@@ -1004,10 +1106,30 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
+        // `for x in &t` reads the tensor as `for x in t` does: neither moves it. An `across` loop
+        // goes over a range, and the check of `across` refuses a tensor.
+        let over_tensor = across.is_none();
+        if let (Expr::Borrow(b), true) = (&**iterable, over_tensor) {
+            if self.is_tensor_or_reference_to_one(&b.expr) {
+                if b.is_mut && !self.speculating {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3046,
+                        "a `for` loop over a tensor gives copies of its elements, so it cannot \
+                         change them; write `for i in 0..t.len() { t[i] = ..; }`"
+                            .to_string(),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(
+                            &iterable.span(),
+                        )),
+                    );
+                }
+                **iterable = (*b.expr).clone();
+            }
+        }
         // `for x in t` over a tensor reads it by index: `for $i in 0..t.len() { let x = t[$i]; .. }`.
-        // A tensor of rank 2 or more gives its rows.
-        if matches!(&**iterable, Expr::Array(_))
-            || matches!(self.check_expr_type_probe(iterable), Type::Tensor(..))
+        // A tensor of rank 2 or more gives its rows. `t` can also be a reference to a tensor.
+        if over_tensor
+            && (matches!(&**iterable, Expr::Array(_))
+                || self.is_tensor_or_reference_to_one(iterable))
         {
             if let Expr::Identifier(id) = &**iterable {
                 let index = format!("$for_index_{}_{}", loop_span.line, loop_span.column);

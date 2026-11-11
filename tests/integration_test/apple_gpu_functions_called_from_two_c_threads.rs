@@ -152,7 +152,8 @@ fn run(cmd: &mut Command) -> (String, String) {
     )
 }
 
-// The `[Vx Metal]` lines of a part of the log, with each kernel name and time left out.
+// The `[Vx Metal]` lines of a part of the log about launches and waits, with each kernel name and
+// time left out.
 fn metal_lines(log: &str, part: &str) -> Vec<String> {
     let after = log.split(part).nth(1).unwrap_or("");
     let section = after.split("\npart ").next().unwrap_or("");
@@ -160,6 +161,9 @@ fn metal_lines(log: &str, part: &str) -> Vec<String> {
         .lines()
         .filter_map(|l| {
             let l = l.strip_prefix("[Vx Metal] ")?;
+            if l.starts_with("made a buffer") || l.starts_with("freed ") {
+                return None;
+            }
             Some(if l.contains(": grid ") {
                 "grid".to_string()
             } else {

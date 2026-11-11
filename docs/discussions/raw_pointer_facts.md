@@ -178,6 +178,27 @@ whose type does not show what it captures, such as `||->i32`, is an argument tha
 `Closure1` and the other closure structs of `core::ops` keep their captured values behind the raw
 pointer `env`, so they are such arguments already.
 
+**A call through an owner ends no fact.** An *owner* is a local variable that owns only memory that
+the body made, and that no pointer points into. A call that can free memory only through owners,
+and the drop of an owner, free no memory that a fact is about. A local variable `v` is an owner
+when:
+
+- The body declares `v` once, with `let v = f(..)`, and no argument of `f` can free memory, as in
+  `Vec<i64>::new()`. A call reaches the memory of its caller only through its arguments, so the
+  value owns only new memory. A raw pointer, a reference and a closure are no owners.
+- The body names `v` only as the receiver of a method call, as an argument of a call, as `&v` or
+  `&mut v` there, or as the value that the function returns. No closure, task, `spawn on` region
+  or `mlir!` block names it. So only a call can make a pointer into its memory.
+
+`v` stops being an owner at these points:
+
+- A call that gets `v` and another argument that can free memory, such as `v.push(b)` with a `Box`
+  of the caller. The call can put memory or a pointer from outside into `v`.
+- A call that gets `v` and gives a value that can point into memory, such as `v.as_mut_ptr()`.
+- The start of a loop whose body names `v`. The checker checks the body once, and a later statement
+  can put memory from outside into `v` before the next pass.
+- The end of an `if` or a `match` with a branch that ended it.
+
 The pointer functions of `core::ptr` are no event: `offset`, `add`, `sub`, their `_mut` forms,
 `eq`, `is_null` and `null`. They only compute an address. The checker trusts their `mlir!` bodies,
 as it trusts the rest of the standard library.
@@ -706,8 +727,10 @@ needs a fact there. Open question 6 asks about a warning for it.
 - A loop that moves a pointer, as in `p = offset(p, 1i64)`, drops the entry of `p` at the start of
   the body. A loop that indexes, as in `p[i]`, keeps it. A loop invariant that is a pointer clause
   about `p` gives `p` its facts again in each pass (`raw_pointer_facts_in_loops.md`).
-- A fact about other memory ends at each event that can free memory. That includes memory that the
-  pointer cannot point into, such as a vector that the body made itself.
+- A fact about other memory ends at each event that can free memory, except at a call through an
+  owner (section 5). So a vector that the body made keeps the facts only while it is an owner. A
+  loop whose body names it ends that, and so does a reference to it in a variable. A vector of the
+  caller keeps no fact. A clause `requires !points_into(p, *v)` can fix that (#3042).
 - At most two facts prove a clause. The checker merges `Init` facts that touch, but a chain of
   three `Valid` facts does not join.
 - A write through a pointer makes an `Init` fact for its one element only. So a loop that fills a

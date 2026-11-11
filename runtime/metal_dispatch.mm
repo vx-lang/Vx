@@ -8,8 +8,14 @@
 // the tensor's first element from the words. Metal compiles the MSL with safe
 // math, so a kernel gives the same bits as its host copy.
 //
-// The launches of each host thread share one command buffer, and the GPU runs
-// them only at a wait. A wait commits a command buffer and waits for the GPU.
+// Metal maps every page of a buffer when it makes the buffer. So GPU memory
+// from vx_metal_alloc gets one buffer over all of its pages, once. Other memory
+// gets a buffer at each batch, because the program can free it without telling
+// this file.
+//
+// The launches of each host thread make one batch until a wait. The batch
+// commits its command buffer after every few launches, so the GPU runs them
+// while the CPU makes the next. A wait commits the rest and waits for the GPU.
 // The Mac dispatcher waits before anything that can touch the memory of a
 // kernel, but only for the launches that use that memory. A `pub fn` waits
 // before it returns to C. A failed assert in a kernel stops the program at the
@@ -23,6 +29,7 @@
 #include "vx_kernel_launch.h"
 
 #include <mach/vm_page_size.h>
+#include <sys/mman.h>
 
 #include <algorithm>
 #include <cctype>
@@ -31,6 +38,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -71,12 +79,16 @@ bool syncEachLaunch() {
 // for every thread. vx_metal_set_enabled changes it for the calling thread.
 thread_local int enabledHere = -1;
 
-bool enabled() {
-  static const bool byEnvironment = [] {
+bool enabledByEnvironment() {
+  static const bool on = [] {
     const char *v = getenv("VX_METAL");
     return !(v && strcmp(v, "0") == 0);
   }();
-  return enabledHere < 0 ? byEnvironment : enabledHere == 1;
+  return on;
+}
+
+bool enabled() {
+  return enabledHere < 0 ? enabledByEnvironment() : enabledHere == 1;
 }
 
 struct Gpu {
@@ -122,13 +134,37 @@ const Region *holding(const std::vector<Region> &regions, uintptr_t start,
   return nullptr;
 }
 
-// A launch of a kernel with asserts, and the word where a failed assert
-// stores its number.
+// The GPU memory from vx_metal_alloc, by its first byte. Its pages hold
+// nothing else, so each launch uses the same buffer for a tensor in it.
+std::mutex keptLock;
+
+std::map<uintptr_t, Region> &kept() {
+  static auto *all = new std::map<uintptr_t, Region>;
+  return *all;
+}
+
+// The region of GPU memory that holds the bytes from `start` to before `end`,
+// or a region with no buffer.
+Region keptHolding(uintptr_t start, uintptr_t end) {
+  std::lock_guard<std::mutex> hold(keptLock);
+  auto at = kept().upper_bound(start);
+  if (at == kept().begin())
+    return {};
+  --at;
+  return end <= at->second.end ? at->second : Region{};
+}
+
+// A launch of a kernel with asserts, and the word `at` of `words` where a
+// failed assert stores its number.
 struct Check {
   std::string kernel;
   const char *image;
-  id<MTLBuffer> word;
+  id<MTLBuffer> words;
+  size_t at;
 };
+
+// The number of words in a buffer for the asserts of a batch.
+constexpr size_t assertWords = 1024;
 
 // The launches of one host thread that the GPU did not finish, in one command
 // buffer. A wait for some memory finishes only the batches that use it, so a
@@ -142,13 +178,22 @@ struct Check {
 // that batch finishes. So two batches use the same memory only to read it.
 struct Batch {
   std::thread::id owner;
+  // The command buffer that takes the next launch, and the ones that the batch
+  // committed before it.
   id<MTLCommandBuffer> commands;
+  std::vector<id<MTLCommandBuffer>> sent;
   // Nil after the commit.
   id<MTLComputeCommandEncoder> encoder;
+  // The launches in `commands`.
+  size_t unsent = 0;
   std::vector<std::string> kernels;
   std::vector<Region> regions;
   std::vector<Access> accesses;
   std::vector<Check> checks;
+  // The buffer that gives the next launch with asserts its word, and the words
+  // it gave.
+  id<MTLBuffer> assertBuffer;
+  size_t assertsGiven = 0;
 
   bool open() const { return encoder != nil; }
 
@@ -235,27 +280,32 @@ void report(const Batch &b) {
   // A failed assert can also stop the GPU, so it is reported first.
   for (const Check &c : b.checks) {
     const uint32_t number =
-        *static_cast<const volatile uint32_t *>(c.word.contents);
+        static_cast<const volatile uint32_t *>(c.words.contents)[c.at];
     if (number != 0)
       die(c.kernel.c_str(), "%s",
           assertMessage(c.image, c.kernel.c_str(), number).c_str());
   }
   const size_t count = b.kernels.size();
-  if (b.commands.status != MTLCommandBufferStatusCompleted) {
-    std::string names;
-    for (const std::string &k : b.kernels)
-      names += (names.empty() ? "" : ", ") + k;
-    fprintf(stderr, "[Vx Metal] FATAL: the GPU did not finish %s: %s\n",
-            names.c_str(), b.commands.error.localizedDescription.UTF8String);
-    if (count > 1)
-      fprintf(stderr, "           Set VX_METAL_SYNC=1 to name the kernel that "
-                      "failed.\n");
-    abort();
+  std::vector<id<MTLCommandBuffer>> all = b.sent;
+  all.push_back(b.commands);
+  double seconds = 0;
+  for (id<MTLCommandBuffer> commands : all) {
+    if (commands.status != MTLCommandBufferStatusCompleted) {
+      std::string names;
+      for (const std::string &k : b.kernels)
+        names += (names.empty() ? "" : ", ") + k;
+      fprintf(stderr, "[Vx Metal] FATAL: the GPU did not finish %s: %s\n",
+              names.c_str(), commands.error.localizedDescription.UTF8String);
+      if (count > 1)
+        fprintf(stderr, "           Set VX_METAL_SYNC=1 to name the kernel "
+                        "that failed.\n");
+      abort();
+    }
+    seconds += commands.GPUEndTime - commands.GPUStartTime;
   }
   if (verbose())
     fprintf(stderr, "[Vx Metal] waited for %zu kernel%s, %.3f ms on the GPU\n",
-            count, count == 1 ? "" : "s",
-            (b.commands.GPUEndTime - b.commands.GPUStartTime) * 1e3);
+            count, count == 1 ? "" : "s", seconds * 1e3);
 }
 
 // Commits each batch in `chosen` that is open, and waits until the GPU
@@ -272,8 +322,11 @@ void finish(const std::vector<std::shared_ptr<Batch>> &chosen,
       [b->commands commit];
     }
   hold.unlock();
-  for (const std::shared_ptr<Batch> &b : chosen)
+  for (const std::shared_ptr<Batch> &b : chosen) {
+    for (id<MTLCommandBuffer> commands : b->sent)
+      [commands waitUntilCompleted];
     [b->commands waitUntilCompleted];
+  }
   hold.lock();
   std::vector<std::shared_ptr<Batch>> &all = batches();
   for (const std::shared_ptr<Batch> &b : chosen) {
@@ -302,10 +355,13 @@ std::mutex cacheLock;
 std::unordered_map<const char *, id<MTLLibrary>> libraries;
 std::unordered_map<std::string, id<MTLComputePipelineState>> pipelines;
 
+std::string keyOf(const char *image, const char *kernel) {
+  return std::to_string(reinterpret_cast<uintptr_t>(image)) + "/" + kernel;
+}
+
 id<MTLComputePipelineState> pipelineFor(const char *image, const char *kernel) {
   std::lock_guard<std::mutex> hold(cacheLock);
-  std::string key =
-      std::to_string(reinterpret_cast<uintptr_t>(image)) + "/" + kernel;
+  std::string key = keyOf(image, kernel);
   auto found = pipelines.find(key);
   if (found != pipelines.end())
     return found->second;
@@ -361,6 +417,25 @@ std::vector<std::string> parametersOf(const char *image, const char *kernel) {
     return out;
   }
   die(kernel, "the image has no `// vx.kernel` line for this kernel");
+}
+
+// What the image says about a kernel. A search of the image took longer than
+// the rest of a launch, so each kernel is searched for once.
+struct Kernel {
+  std::vector<std::string> params;
+  bool asserts = false;
+};
+std::unordered_map<std::string, Kernel> kernels;
+
+const Kernel &kernelOf(const char *image, const char *kernel) {
+  std::lock_guard<std::mutex> hold(cacheLock);
+  std::string key = keyOf(image, kernel);
+  auto found = kernels.find(key);
+  if (found != kernels.end())
+    return found->second;
+  Kernel k{parametersOf(image, kernel),
+           assertLine(image, kernel, 1) != nullptr};
+  return kernels.emplace(key, std::move(k)).first->second;
 }
 
 // The bytes that a tensor can reach. A kernel reads a stride or an offset that
@@ -460,6 +535,72 @@ extern "C" void vx_metal_wait_for_memory(const void *start, size_t bytes,
   finishEach([&](const Batch &b) { return b.mustPrecede(a); });
 }
 
+// Maps new pages for `bytes` of GPU memory, and makes their buffer. Returns
+// null when the GPU is off, when `bytes` is 0, or when Metal refuses. The
+// caller then uses `malloc`. A small tensor gets a whole page too: two tensors
+// from `malloc` can share a page, and a batch cannot have two buffers over one
+// page, so the second tensor would end the batch.
+extern "C" void *vx_metal_alloc(size_t bytes) {
+  const size_t page = vm_page_size;
+  if (bytes == 0 || !enabledByEnvironment())
+    return nullptr;
+  @autoreleasepool {
+    id<MTLDevice> device = gpu().device;
+    const size_t length = (bytes + page - 1) & ~(page - 1);
+    if (!device || length > device.maxBufferLength)
+      return nullptr;
+    void *memory = mmap(nullptr, length, PROT_READ | PROT_WRITE,
+                        MAP_ANON | MAP_PRIVATE, -1, 0);
+    if (memory == MAP_FAILED)
+      return nullptr;
+    // A batch can hold the buffer after vx_metal_free, so the pages go when
+    // Metal releases the buffer.
+    Region r;
+    r.start = reinterpret_cast<uintptr_t>(memory);
+    r.end = r.start + length;
+    r.buffer = [device newBufferWithBytesNoCopy:memory
+                                         length:length
+                                        options:MTLResourceStorageModeShared
+                                    deallocator:^(void *pointer, NSUInteger n) {
+                                      munmap(pointer, n);
+                                    }];
+    if (!r.buffer) {
+      munmap(memory, length);
+      return nullptr;
+    }
+    {
+      std::lock_guard<std::mutex> hold(keptLock);
+      kept()[r.start] = r;
+    }
+    if (verbose())
+      fprintf(stderr, "[Vx Metal] made a buffer of %zu bytes of GPU memory\n",
+              length);
+    return memory;
+  }
+}
+
+// Frees memory from vx_metal_alloc, after the launches that use it. Returns 0
+// when `memory` did not come from vx_metal_alloc.
+extern "C" int vx_metal_free(void *memory) {
+  const uintptr_t at = reinterpret_cast<uintptr_t>(memory);
+  size_t length = 0;
+  {
+    std::lock_guard<std::mutex> hold(keptLock);
+    auto found = kept().find(at);
+    if (found == kept().end())
+      return 0;
+    length = found->second.end - at;
+  }
+  vx_metal_wait_for_memory(memory, length, 1);
+  {
+    std::lock_guard<std::mutex> hold(keptLock);
+    kept().erase(at);
+  }
+  if (verbose())
+    fprintf(stderr, "[Vx Metal] freed %zu bytes of GPU memory\n", length);
+  return 1;
+}
+
 // Waits for each launch that writes the memory of one of these tensors, before
 // the CPU reads them.
 extern "C" void vx_metal_wait_for_tensors(void **args, const int32_t *tags,
@@ -494,8 +635,8 @@ extern "C" void vx_metal_wait_for_launch(const void *payload,
     if (!image)
       die(static_cast<const char *>(payload),
           "the payload says `format=msl` and has no image");
-    std::vector<std::string> params =
-        parametersOf(image, static_cast<const char *>(payload));
+    const std::vector<std::string> &params =
+        kernelOf(image, static_cast<const char *>(payload)).params;
     size_t k = 0;
     for (int64_t i = 0; i < num_args && i < (int64_t)params.size(); ++i)
       if (VX_ABI_KIND(arg_tags[i]) == VX_ABI_KIND_MEMREF)
@@ -517,7 +658,8 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
     die(kernel, "the payload says `format=msl` and has no image");
 
   @autoreleasepool {
-    std::vector<std::string> params = parametersOf(image, kernel);
+    const Kernel &info = kernelOf(image, kernel);
+    const std::vector<std::string> &params = info.params;
     if ((int64_t)params.size() != num_args)
       die(kernel, "the kernel has %zu parameters, and the launch passes %lld",
           params.size(), (long long)num_args);
@@ -664,16 +806,22 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
     std::shared_ptr<Batch> here = openBatchHere();
     std::vector<Region> made;
     for (const auto &span : joined) {
-      if (here && here->holding(span.first, span.second))
+      if ((here && here->holding(span.first, span.second)) ||
+          holding(made, span.first, span.second))
         continue;
-      Region r;
-      r.start = span.first;
-      r.end = span.second;
-      r.buffer =
-          [device newBufferWithBytesNoCopy:reinterpret_cast<void *>(r.start)
-                                    length:r.end - r.start
-                                   options:MTLResourceStorageModeShared
-                               deallocator:nil];
+      Region r = keptHolding(span.first, span.second);
+      if (!r.buffer) {
+        r.start = span.first;
+        r.end = span.second;
+        r.buffer =
+            [device newBufferWithBytesNoCopy:reinterpret_cast<void *>(r.start)
+                                      length:r.end - r.start
+                                     options:MTLResourceStorageModeShared
+                                 deallocator:nil];
+        if (r.buffer && verbose())
+          fprintf(stderr, "[Vx Metal] made a buffer of %zu bytes for a batch\n",
+                  (size_t)(r.end - r.start));
+      }
       // When Metal refuses this memory, its tensors run on a copy below.
       if (r.buffer)
         made.push_back(r);
@@ -745,14 +893,20 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
                                        options:MTLResourceStorageModeShared]
              offset:0
             atIndex:bound.size()];
-    if (assertLine(image, kernel, 1)) {
-      Check c{kernel, image,
-              [device newBufferWithLength:sizeof(uint32_t)
-                                  options:MTLResourceStorageModeShared]};
-      if (!c.word)
-        die(kernel, "Metal could not make the buffer for its asserts");
-      memset(c.word.contents, 0, sizeof(uint32_t));
-      [encoder setBuffer:c.word offset:0 atIndex:bound.size() + 1];
+    if (info.asserts) {
+      if (!here->assertBuffer || here->assertsGiven == assertWords) {
+        here->assertBuffer =
+            [device newBufferWithLength:assertWords * sizeof(uint32_t)
+                                options:MTLResourceStorageModeShared];
+        if (!here->assertBuffer)
+          die(kernel, "Metal could not make the buffer for its asserts");
+        memset(here->assertBuffer.contents, 0, assertWords * sizeof(uint32_t));
+        here->assertsGiven = 0;
+      }
+      Check c{kernel, image, here->assertBuffer, here->assertsGiven++};
+      [encoder setBuffer:c.words
+                  offset:c.at * sizeof(uint32_t)
+                 atIndex:bound.size() + 1];
       here->checks.push_back(c);
     }
     [encoder dispatchThreadgroups:MTLSizeMake(grid[0], grid[1], grid[2])
@@ -769,6 +923,19 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
         if (b.copied && b.written)
           memcpy(reinterpret_cast<void *>(b.first),
                  b.copied + (b.first - b.start), b.last - b.first);
+    }
+    // The GPU runs a command buffer only after its commit. So the batch commits
+    // after a few launches, and the GPU runs them while the CPU makes the next.
+    if (here->open() && ++here->unsent >= 16) {
+      if (verbose())
+        fprintf(stderr, "[Vx Metal] committed %zu kernels before the wait\n",
+                here->unsent);
+      [here->encoder endEncoding];
+      [here->commands commit];
+      here->sent.push_back(here->commands);
+      here->commands = [gpu().queue commandBuffer];
+      here->encoder = [here->commands computeCommandEncoder];
+      here->unsent = 0;
     }
   }
   return 1;

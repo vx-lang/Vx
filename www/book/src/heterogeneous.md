@@ -88,9 +88,21 @@ Error[E6001]: Function 'f' requires topology 'CPU', but is called from 'ANE'
 That is the address-space rule doing its job. Code meant for a device is written in the region, or
 in a function declared for that topology.
 
-> **Not implemented yet.** `spawn on` is a statement. The design intends it to become an expression
-> yielding a `Future`, so a host thread could fan work across several accelerators and join later.
-> There is no future type and no `await` in the language today.
+`spawn on` is a statement. To start a copy and do other work before it ends, use
+`transfer_async(x, M)`. It gives a token, and `.wait()` on the token gives the placed tensor:
+
+```rust
+let first = transfer_async(next_tile, Memory::W);
+// Other work here.
+let tile = first.wait();
+```
+
+A program must wait for each token. A token that the program drops with no `.wait()` gets the
+error E6036. Today the copy ends before `transfer_async` returns, so `.wait()` only gives the
+tensor. A later runtime will run the copy in the background, and the program will not change.
+
+A `spawn on` can also be in a task. So a `tasks` block can give work to several devices, one task
+for each device (see [Tasks and channels](tasks.md)).
 
 ## What gets rejected
 

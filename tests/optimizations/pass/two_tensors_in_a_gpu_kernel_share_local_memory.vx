@@ -18,6 +18,10 @@
 // RUN: FileCheck %s --input-file=%t.ptx --implicit-check-not=malloc
 // RUN: vxc %s -O2 --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.O2.ptx
 // RUN: FileCheck %s --input-file=%t.O2.ptx --implicit-check-not=malloc
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ast.ptx
+// RUN: FileCheck %s --input-file=%t.ast.ptx --implicit-check-not=malloc
+// RUN: vxc %s --legacy-codegen -O2 --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ast.O2.ptx
+// RUN: FileCheck %s --input-file=%t.ast.O2.ptx --implicit-check-not=malloc
 //
 // CHECK-LABEL: .entry one_tensor(
 // CHECK: .local .align {{[0-9]+}} .b8 __local_depot{{[0-9]+}}{{\[}}[[SLOT:40[0-9][0-9]]]{{\]}};
