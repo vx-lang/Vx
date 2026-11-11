@@ -1,0 +1,79 @@
+//===- two_tasks_that_fail_at_once_give_one_failure_and_drop_the_other.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Two tasks of a `tasks` block fail at the same time, in each of 500 rounds. The block gives
+// the first failure, and drops the other one. So each round gives one `Err`, and each error is
+// dropped exactly once: once by the block, and once after the code reads the error of the block.
+// The `drop` of a `Failure` counts the drops.
+//
+// The shared runtime has two worker threads here, so the two tasks can fail at the same time.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=2 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}500 rounds failed, with 0 other values{{$}}
+// CHECK-NEXT: {{^}}errors dropped: 1000{{$}}
+
+import core::result;
+import core::sync::atomic;
+import std::sync::arc;
+
+struct Failure {
+  id : i64,
+  drops : Arc<AtomicI64>,
+}
+
+impl Drop for Failure {
+  fn drop(self : &mut Failure) -> void {
+    self.drops.get().fetch_add(1, AtomicOrdering::SeqCst);
+  }
+}
+
+fn fail_now(id : i64, drops : Arc<AtomicI64>) -> Result<i64, Failure> {
+  return Result<i64, Failure>::Err(Failure {
+    id : id, drops : drops
+  });
+}
+
+fn round(drops : &Arc<AtomicI64>) -> Result<i64, Failure> {
+  let one = drops.clone();
+  let two = drops.clone();
+  return tasks {
+    let a = spawn {
+      fail_now(1, one)
+    };
+    let b = spawn {
+      fail_now(2, two)
+    };
+    let x = a.join();
+    let y = b.join();
+    Result<i64, Failure>::Ok(x + y)
+  };
+}
+
+fn main() -> i32 {
+  let drops = Arc<AtomicI64>::new(AtomicI64::new(0));
+  let mut failed : i64 = 0;
+  let mut other : i64 = 0;
+  for _i in 0..500 {
+    match round(&drops) {
+      Result<i64, Failure>::Ok(_v) => {
+        other = other + 1;
+      }
+      Result<i64, Failure>::Err(f) => {
+        if f.id == 1 || f.id == 2 {
+          failed = failed + 1;
+        } else {
+          other = other + 1;
+        }
+      }
+    }
+  }
+  println!("{} rounds failed, with {} other values", failed, other);
+  println!("errors dropped: {}", drops.get().load(AtomicOrdering::SeqCst));
+  return 0;
+}
