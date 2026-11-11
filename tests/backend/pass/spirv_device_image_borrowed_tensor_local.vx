@@ -5,16 +5,18 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: VX_FLAT_DBG=1 vxc %s --action emit-mlir 2>&1 | FileCheck %s
 //
 // A tensor local that is given a new value in a function with a branch is kept
 // in a stack slot that holds its memref. `&mut t` still means the tensor, so a
 // call can pass it and the kernel it reaches still gets a SPIR-V image.
 //
-// The flat emitter used to have no type for that slot as a call argument, so it
-// declined the whole program and the AST code generator compiled the module
-// instead. On the branch this was found in, the AST path then imaged no kernel.
+// The checks show that the flat code generator built this module and that the
+// spawn region targets a `spirv64` device. Whether that region really becomes a
+// SPIR-V image is what the device-image test checks, in
+// `a_borrowed_tensor_local_does_not_cost_the_module_its_device_images`.
 //
+// CHECK: emitted module via the flat path
 // CHECK: vx.spawn topology({{[0-9]+}}) {
 // CHECK: } {arch = "spirv64"
 // EXPECT: 2

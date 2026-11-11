@@ -1,0 +1,78 @@
+//===- spirv_device_image_borrowed_tensor_from_enum_payload.vx - Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: VX_FLAT_DBG=1 vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// A tensor that a `match` takes out of an enum's payload is kept in a stack
+// slot, the same way as any other tensor local. `&x` still means the tensor, so
+// a call can pass it and the kernel it reaches still gets a SPIR-V image.
+//
+// The checks show that the flat code generator built this module and that the
+// spawn region targets a `spirv64` device. Whether that region really becomes a
+// SPIR-V image is what the device-image test checks, in
+// `a_borrowed_enum_payload_tensor_does_not_cost_the_module_its_device_images`.
+//
+// CHECK: emitted module via the flat path
+// CHECK: vx.spawn topology({{[0-9]+}}) {
+// CHECK: } {arch = "spirv64"
+// EXPECT: 2
+// EXPECT: 4
+// EXPECT: 6
+// EXPECT: 8
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+}
+
+/// Either a `[n, 1]` tensor on the card, or nothing.
+enum Holder {
+  Full(Tensor<i32, [?, ?], Memory::GPU_HBM>),
+  Empty,
+}
+
+/// A `[n, 1]` tensor on the card, with `2 * i` at row `i`.
+fn fresh(n : i32) -> Tensor<i32, [?, ?], Memory::GPU_HBM> {
+  let mut host = unsafe { Tensor<i32, [?, ?]>::uninit([n, 1]) };
+  for i in 0..n {
+    host[i][0] = i * 2;
+  }
+  return transfer(host, Memory::GPU_HBM);
+}
+
+/// `out[i][0] = t[i][0] + 2`, on the card.
+fn add_two(t : &Tensor<i32, [?, ?], Memory::GPU_HBM>, out : &mut Tensor<i32, [?, ?], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::Dev) {
+    for i in 0..4 {
+      out[i][0] = t[i][0] + 2;
+    }
+  }
+}
+
+fn main() -> i32 {
+  let h = Holder::Full(fresh(4));
+  // The payload binding is a tensor local in a slot, and `&x` means the tensor
+  // in it.
+  match h {
+    Holder::Full(x) => {
+      let mut out = fresh(4);
+      add_two(&x, &mut out);
+      let host = transfer(out, Memory::CPU_DRAM);
+      for i in 0..4 {
+        println!(host[i][0]);
+      }
+    },
+    Holder::Empty => {},
+  }
+  return 0;
+}

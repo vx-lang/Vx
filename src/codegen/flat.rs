@@ -2906,10 +2906,10 @@ pub fn emit_function_mlir(
     em.entry += &valid_pointer_assumes(func, &valid, arg_offset);
 
     for (idx, ins) in hir.iter().enumerate() {
-        // A gap names what the program's author wrote and where, not only the emitter line that
-        // bailed: the site alone sends the reader into the compiler.
+        // A gap names the emitter line that bailed and the function the program's author wrote:
+        // the site alone sends the reader into the compiler.
         em.step(idx, ins)
-            .map_err(|why| why.in_instruction(ins.opcode, func.name.as_ref()))?;
+            .map_err(|why| why.in_function(func.name.as_ref()))?;
     }
 
     // Every block must end in a terminator. A void function falls through to a bare `return`.
@@ -3216,6 +3216,43 @@ mod tests {
             "emitted MLIR failed to verify:\n{mlir}"
         );
         mlir
+    }
+
+    /// A gap found while walking a function's instructions names the function it was found in.
+    ///
+    /// No corpus program reaches a gap: one that did would be an emitter bug, and the corpus
+    /// sweep fails if the flat path declines anything. So the only way to check the walk is to
+    /// hand it a stream it cannot carry. The stream is a field store whose slot nothing
+    /// allocated, which the emitter bails on at its first instruction.
+    #[test]
+    fn a_gap_names_the_function_it_was_found_in() {
+        use crate::bytecode::{Register, TypeIdx};
+        let f = parse_fn("fn check_token() -> i32 { return 0; }");
+        let code = [
+            HirInstruction::new(Opcode::FieldStore, Register(0), Register(0), TypeIdx(0), 0),
+            HirInstruction::new(Opcode::Ret, Register(0), Register(0), TypeIdx(0), 0),
+        ];
+        let types = [scalar_gid(&ElementType::I32)];
+        let decline = emit_function_mlir(
+            &f,
+            &code,
+            &types,
+            &EmitCtx::default(),
+            &mut Vec::new(),
+            0,
+            &[],
+            0,
+            &[],
+            &[],
+            &mut 1,
+        )
+        .expect_err("a field store into a slot nothing allocated has no lowering");
+        let message = decline.to_string();
+        assert!(
+            message.ends_with("in function 'check_token'"),
+            "the gap must name the function the program has, not only the emitter's line: \
+             {message}"
+        );
     }
 
     fn emit_module_with_layouts(

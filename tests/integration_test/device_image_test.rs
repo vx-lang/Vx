@@ -685,17 +685,30 @@ fn a_kernel_with_a_struct_local_gets_a_spirv_module() {
 /// happened as well as that the image exists.
 #[test]
 fn a_borrowed_tensor_local_does_not_cost_the_module_its_device_images() {
+    borrowed_tensor_keeps_its_device_image("spirv_device_image_borrowed_tensor_local.vx");
+}
+
+/// The same, for a tensor that a `match` takes out of an enum's payload. That
+/// binding is a tensor local in a slot too.
+#[test]
+fn a_borrowed_enum_payload_tensor_does_not_cost_the_module_its_device_images() {
+    borrowed_tensor_keeps_its_device_image(
+        "spirv_device_image_borrowed_tensor_from_enum_payload.vx",
+    );
+}
+
+fn borrowed_tensor_keeps_its_device_image(fixture: &str) {
     let out = Command::new(env!("CARGO_BIN_EXE_vxc"))
-        .arg(corpus("spirv_device_image_borrowed_tensor_local.vx"))
+        .arg(corpus(fixture))
         .arg("--emit-llvm")
         .output()
         .unwrap_or_else(|e| panic!("could not run vxc: {e}"));
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "vxc failed:\n{stderr}");
+    assert!(out.status.success(), "vxc failed on {fixture}:\n{stderr}");
     assert!(
         !stderr.contains("emit declined") && !stderr.contains("program outside the flat subset"),
-        "borrowing a tensor local took the whole module off the flat code generator; stderr \
-         was:\n{stderr}"
+        "borrowing a tensor in {fixture} took the whole module off the flat code generator; \
+         stderr was:\n{stderr}"
     );
 
     let ir = String::from_utf8_lossy(&out.stdout);

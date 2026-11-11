@@ -19,8 +19,6 @@
 
 use std::fmt;
 
-use crate::bytecode::Opcode;
-
 /// Why one function did not lower through the flat path.
 ///
 /// Every variant names something the flat path does not do *yet*. None of them is an error: a
@@ -56,20 +54,19 @@ pub enum Decline {
     Unsupported { what: &'static str },
 
     /// A gap in the flat *emitter* that has not been given a phrase of its own yet, naming the
-    /// source line that produced it and, once `in_instruction` has filled them in, the
-    /// instruction and function it was found in.
+    /// source line that produced it and, once `in_function` has filled it in, the function it was
+    /// found in.
     ///
     /// The emitter bails from roughly 190 places, most of which no corpus program has ever
     /// reached. Writing a description for each up front would be 190 guesses about which ones
     /// matter. Carrying the site instead means the histogram names the exact line to describe,
     /// and only the lines something actually reaches get the work. The site alone is not enough
-    /// to act on: it names a line of the emitter, not anything the program's author wrote, so the
-    /// instruction and the function are carried too.
+    /// to act on: it names a line of the emitter, so the function the program's author wrote is
+    /// carried too.
     EmitterGap {
         site: &'static str,
-        /// The instruction being emitted, and the function it is in. Filled in by the emitter's
-        /// walk over a function's stream; `None` for a gap outside that walk.
-        instruction: Option<Opcode>,
+        /// The function being emitted, filled in by the emitter's walk over its instruction
+        /// stream. `None` for a gap outside that walk.
         function: Option<String>,
     },
 }
@@ -91,17 +88,15 @@ impl Decline {
         }
     }
 
-    /// Fill in the instruction and function a gap was found in. A decline that already names its
-    /// construct is returned unchanged: only a gap has nothing to say until someone tells it.
-    pub fn in_instruction(self, opcode: Opcode, function: &str) -> Decline {
+    /// Fill in the function a gap was found in. A decline that already names its construct is
+    /// returned unchanged: only a gap has nothing to say until someone tells it.
+    pub fn in_function(self, function: &str) -> Decline {
         match self {
             Decline::EmitterGap {
                 site,
-                instruction: None,
                 function: None,
             } => Decline::EmitterGap {
                 site,
-                instruction: Some(opcode),
                 function: Some(function.to_string()),
             },
             other => other,
@@ -119,12 +114,7 @@ impl Decline {
             Decline::TypeNotModelled { what } => format!("type-not-modelled({what})"),
             Decline::NeedsMemoryMode { construct } => format!("needs-memory-mode({construct})"),
             Decline::Unsupported { what } => format!("unsupported({what})"),
-            Decline::EmitterGap {
-                site, instruction, ..
-            } => match instruction {
-                Some(op) => format!("emitter-gap({site}, {op:?})"),
-                None => format!("emitter-gap({site})"),
-            },
+            Decline::EmitterGap { site, .. } => format!("emitter-gap({site})"),
         }
     }
 }
@@ -143,15 +133,8 @@ impl fmt::Display for Decline {
                 write!(f, "{construct} lowers only in memory mode")
             }
             Decline::Unsupported { what } => write!(f, "no flat lowering for {what}"),
-            Decline::EmitterGap {
-                site,
-                instruction,
-                function,
-            } => {
+            Decline::EmitterGap { site, function } => {
                 write!(f, "an emitter gap at {site}")?;
-                if let Some(op) = instruction {
-                    write!(f, " while emitting the {op:?} instruction")?;
-                }
                 if let Some(name) = function {
                     write!(f, " in function '{name}'")?;
                 }
@@ -172,7 +155,6 @@ macro_rules! emitter_gap {
     () => {
         $crate::decline::Decline::EmitterGap {
             site: concat!(file!(), ":", line!()),
-            instruction: None,
             function: None,
         }
     };
@@ -188,41 +170,36 @@ mod tests {
     fn a_gap_says_where_it_bailed_before_it_knows_more() {
         let gap = Decline::EmitterGap {
             site: "src/example.rs:1",
-            instruction: None,
             function: None,
         };
         assert_eq!(gap.to_string(), "an emitter gap at src/example.rs:1");
         assert_eq!(gap.detail_key(), "emitter-gap(src/example.rs:1)");
     }
 
-    /// Once the emitter knows which instruction it was walking, the message names the construct
-    /// the program's author wrote and the function it is in.
+    /// Once the emitter knows which function it was walking, the message names the function the
+    /// program's author wrote. It names no instruction: an opcode is a compiler instruction, and
+    /// the author never wrote one.
     #[test]
-    fn a_gap_names_the_instruction_and_the_function_that_reached_it() {
+    fn a_gap_names_the_function_that_reached_it() {
         let named = Decline::EmitterGap {
             site: "src/example.rs:1",
-            instruction: None,
             function: None,
         }
-        .in_instruction(Opcode::Call, "check_token");
+        .in_function("check_token");
         assert_eq!(
             named.to_string(),
-            "an emitter gap at src/example.rs:1 while emitting the Call instruction in function \
-             'check_token'"
+            "an emitter gap at src/example.rs:1 in function 'check_token'"
         );
-        assert_eq!(named.detail_key(), "emitter-gap(src/example.rs:1, Call)");
+        assert_eq!(named.detail_key(), "emitter-gap(src/example.rs:1)");
     }
 
-    /// Every other decline already carries the construct it names, so filling in an instruction
+    /// Every other decline already carries the construct it names, so filling in a function
     /// must leave it alone.
     #[test]
     fn a_decline_that_names_its_own_construct_is_left_alone() {
         let typed = Decline::TypeNotModelled {
             what: "a call argument with no type",
         };
-        assert_eq!(
-            typed.clone().in_instruction(Opcode::Call, "check_token"),
-            typed
-        );
+        assert_eq!(typed.clone().in_function("check_token"), typed);
     }
 }
