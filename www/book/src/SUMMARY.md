@@ -18,6 +18,8 @@
 - [Tasks and channels](tasks.md)
 - [What Vx guarantees about concurrency](guarantees.md)
 - [Generics and traits](generics.md)
+- [Closures and function values](closures.md)
+- [Operators and standard traits](operators-and-traits.md)
 - [Compile-time evaluation](comptime.md)
 - [Contracts and verification](contracts.md)
 - [Unsafe and FFI](unsafe-and-ffi.md)
