@@ -106,7 +106,7 @@ The last line should read:
 ## Installing a specific version
 
 ```bash
-curl -fsSL https://vxlang.org/install.sh | VX_VERSION=v0.0.3 sh
+curl -fsSL https://vxlang.org/install.sh | VX_VERSION=v0.0.4 sh
 ```
 
 `VX_VERSION` goes after the `|`, so that it is set for the `sh` that runs the installer.
