@@ -1,0 +1,55 @@
+//===- book_errors_take_and_replace.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on errors (www/book/src/errors.md): `take` and `replace` move
+// a value out of an `Option` field and leave another value in its place.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}replaced nothing{{$}}
+// CHECK-NEXT: {{^}}replaced ticket 1{{$}}
+// CHECK-NEXT: {{^}}took ticket 2{{$}}
+// CHECK-NEXT: {{^}}empty true{{$}}
+
+// ANCHOR: program
+import core::option;
+
+// A struct with no `Copy` impl. A move of a ticket leaves nothing behind.
+struct Ticket {
+  id : i64,
+}
+
+struct Desk {
+  waiting : Option<Ticket>,
+}
+
+fn show(what : *const i8, o : Option<Ticket>) -> void {
+  match o {
+    Option<Ticket>::Some(t) => {
+      println!("{} ticket {}", what, t.id);
+    }
+    Option<Ticket>::None() => {
+      println!("{} nothing", what);
+    }
+  }
+}
+
+fn main() -> i32 {
+  let mut desk = Desk {
+    waiting: Option<Ticket>::None()
+  };
+  show("replaced", desk.waiting.replace(Ticket {
+    id: 1
+  }));
+  show("replaced", desk.waiting.replace(Ticket {
+    id: 2
+  }));
+  show("took", desk.waiting.take());
+  println!("empty {}", desk.waiting.is_none());
+  return 0;
+}
+// ANCHOR_END: program

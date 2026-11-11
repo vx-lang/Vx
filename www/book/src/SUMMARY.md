@@ -13,6 +13,7 @@
 - [A tour of Vx](tour.md)
 - [Vx for Rust programmers](for-rust-programmers.md)
 - [Control flow](control-flow.md)
+- [Errors, Option and Result](errors.md)
 - [Ownership and borrowing](ownership.md)
 - [Tasks and channels](tasks.md)
 - [What Vx guarantees about concurrency](guarantees.md)
