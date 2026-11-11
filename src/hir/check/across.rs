@@ -498,12 +498,35 @@ impl Walk<'_> {
             ctx.region.clone(),
             ctx.axes.last(),
         ) {
+            let args: Vec<&Expr> = fc.args.iter().collect();
+            self.reads_lane0(fc.name.as_ref(), &args, ctx);
             self.lane_calls.push(LaneCall {
                 at: fc.span,
                 name: fc.name.as_ref().to_string(),
                 scope: axis.kind,
                 region,
             });
+        }
+    }
+
+    /// L5: every lane runs a lane routine or a matmul of tiles, so `args` may not read a value
+    /// that only lane 0 has.
+    fn reads_lane0(&mut self, name: &str, args: &[&Expr], ctx: &Ctx) {
+        let read = args
+            .iter()
+            .find_map(|e| across_lanes::expr_reads_any(e, &ctx.lane0));
+        if let Some((value, at)) = read {
+            let shown = lanes::shown_name(name);
+            self.error(
+                format!(
+                    "{shown} reads `{value}`, which only lane 0 has: lane 0 alone runs the code \
+                     that sets it. That code writes memory, or it changes a variable from outside \
+                     it. Every lane runs {shown}, so the other lanes would read an old value. \
+                     Pass the value through memory, such as an element of a tensor in shared \
+                     memory"
+                ),
+                at,
+            );
         }
     }
 
@@ -519,6 +542,7 @@ impl Walk<'_> {
             if axis.kind != LevelKind::Subgroups {
                 return;
             }
+            self.reads_lane0(lanes::MATMUL, &[m.acc, m.lhs, m.rhs], ctx);
             self.lane_matmuls.insert(m.at);
             self.needs_subgroups_of_32(&LaneCall {
                 at: m.at,
