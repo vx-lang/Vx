@@ -40,7 +40,9 @@ See LICENSE for license information.
 SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 """
 
+import concurrent.futures
 import json
+import os
 import struct
 from pathlib import Path
 
@@ -311,31 +313,94 @@ def quantize_fp8(matrix):
     return codes, scales
 
 
-def quantize_q4_0(matrix):
-    """u4 codes, two in each byte, and f16 scales for a float32 matrix, rounded as the Q4_0 of
-    llama.cpp rounds them (`quantize_row_q4_0_ref`). In each group of 32 weights of a row, the
-    weight of the largest size gets code 0, so the scale is that weight divided by -8."""
+def quantize_q4_0(matrix, importance=None):
+    """u4 codes, two in each byte, and f16 scales for a float32 matrix, in the Q4_0 of llama.cpp.
+
+    Without `importance`, the codes round as `quantize_row_q4_0_ref` of llama.cpp rounds them. In
+    each group of 32 weights of a row, the weight of the largest size gets code 0, so the scale is
+    that weight divided by -8.
+
+    `importance` comes from importance.py. It has one row of column weights for each block of
+    rows, so its shape is [blocks, columns]. Each group then gets the codes and the scale that
+    `quantize_row_q4_0_impl` of llama.cpp chooses with an importance matrix. See `_q4_0_search`."""
     rows, cols = matrix.shape
     assert cols % Q4_GROUP == 0, f"{cols} columns are not groups of {Q4_GROUP}"
+    if importance is not None:
+        assert importance.shape[1] == cols and rows % len(importance) == 0, f"importance {importance.shape} for {matrix.shape}"
     codes = np.empty((rows, cols // 2), dtype=np.uint8)
     scales = np.empty((rows, cols // Q4_GROUP), dtype=np.float16)
-    # About 16M weights at a time, so that a large matrix needs little memory.
-    step = max(1, (1 << 24) // cols)
-    for start in range(0, rows, step):
+    # About 16M weights at a time, so that a large matrix needs little memory. The search does
+    # about 20 times more work, so it takes 1M at a time on each of several threads.
+    step = max(1, (1 << (24 if importance is None else 20)) // cols)
+
+    def rows_from(start):
         chunk = np.asarray(matrix[start : start + step], dtype=np.float32)
         assert np.all(np.isfinite(chunk)), "only finite values round to Q4_0 here"
         groups = chunk.reshape(len(chunk), -1, Q4_GROUP)
-        largest = np.take_along_axis(groups, np.abs(groups).argmax(axis=-1)[..., None], axis=-1)
-        # As in llama.cpp, a group of zeros keeps +0.0 here, also when its weights are -0.0.
-        largest = np.where(largest == 0, np.float32(0), largest)
-        d = largest / np.float32(-8)
-        inverse = np.divide(np.float32(1), d, out=np.zeros_like(d), where=d != 0)
-        # All float32, as in llama.cpp. The sum is at least 0.5, so the floor is its cast to int.
-        q = np.minimum(np.float32(15), np.floor(groups * inverse + np.float32(8.5))).astype(np.uint8)
+        if importance is None:
+            q, d = _q4_0_ref(groups)
+        else:
+            block = importance[np.arange(start, start + len(chunk)) // (rows // len(importance))]
+            q, d = _q4_0_search(chunk, groups, block.reshape(groups.shape))
         q = q.reshape(len(chunk), cols)
         codes[start : start + step] = q[:, 0::2] | (q[:, 1::2] << 4)
         scales[start : start + step] = d.reshape(len(chunk), -1).astype(np.float16)
+
+    starts = range(0, rows, step)
+    if importance is None:
+        for start in starts:
+            rows_from(start)
+    else:
+        # NumPy lets other threads run while it computes on large arrays.
+        with concurrent.futures.ThreadPoolExecutor(max(1, (os.cpu_count() or 1) - 2)) as pool:
+            list(pool.map(rows_from, starts))
     return codes, scales
+
+
+def _q4_0_ref(groups):
+    """The codes and float32 scales of `quantize_row_q4_0_ref`, for groups of shape [rows, n, 32]."""
+    largest = np.take_along_axis(groups, np.abs(groups).argmax(axis=-1)[..., None], axis=-1)
+    # As in llama.cpp, a group of zeros keeps +0.0 here, also when its weights are -0.0.
+    largest = np.where(largest == 0, np.float32(0), largest)
+    d = largest / np.float32(-8)
+    inverse = np.divide(np.float32(1), d, out=np.zeros_like(d), where=d != 0)
+    # All float32, as in llama.cpp. The sum is at least 0.5, so the floor is its cast to int.
+    return np.minimum(np.float32(15), np.floor(groups * inverse + np.float32(8.5))).astype(np.uint8), d
+
+
+# The sizes in steps that the search tries for the largest weight of a group: 8 first, then 7.1 to
+# 8.9 in tenths, as `make_qx_quants` of llama.cpp tries them, in float32.
+Q4_TRIES = [np.float32(8)] + [np.float32(8) + np.float32(0.1) * np.float32(i) for i in range(-9, 10) if i != 0]
+
+
+def _q4_0_search(rows, groups, importance):
+    """The codes and float32 scales of `quantize_row_q4_0_impl` of llama.cpp, for groups of shape
+    [rows, n, 32], and the importance of each of their weights.
+
+    The error of weight x counts importance * sqrt(sigma2 + x * x) times, where sigma2 is the mean
+    square of its row. For each size of `Q4_TRIES`, the largest weight of the group sets the step,
+    each weight rounds to a code, and the codes get the scale of the smallest weighted square error.
+    The group keeps the try of the smallest error."""
+    sigma2 = np.mean(rows * rows, axis=-1)[:, None, None]
+    weight = importance * np.sqrt(sigma2 + groups * groups)
+    largest = np.take_along_axis(groups, np.abs(groups).argmax(axis=-1)[..., None], axis=-1)[..., 0]
+    zero = largest == 0
+    largest = np.where(zero, np.float32(1), largest)
+    best = np.zeros(largest.shape, dtype=np.float32)
+    scale = np.zeros(largest.shape, dtype=np.float32)
+    codes = np.zeros(groups.shape, dtype=np.float32)
+    for index, size in enumerate(Q4_TRIES):
+        q = np.clip(np.rint(groups * (-size / largest)[..., None]), -8, 7)
+        sumlx = (weight * groups * q).sum(axis=-1)
+        suml2 = (weight * q * q).sum(axis=-1)
+        d = np.divide(sumlx, suml2, out=np.zeros_like(sumlx), where=suml2 > 0)
+        # The error is the sum of weight * x * x minus d * sumlx, so a larger d * sumlx is better.
+        better = ((suml2 > 0) & (sumlx * sumlx > best * suml2)) | (index == 0)
+        best = np.where(better, d * sumlx, best)
+        scale = np.where(better, d, scale)
+        codes = np.where(better[..., None], q, codes)
+    codes = np.where(zero[..., None], 0, codes)
+    return (codes + 8).astype(np.uint8), np.where(zero, np.float32(0), scale)
 
 
 def unpack_u4(packed):
@@ -381,10 +446,11 @@ def _lazy_pair(compute):
     return part(0), part(1)
 
 
-def quantize(config, tensors, weight_format):
+def quantize(config, tensors, weight_format, importance=None):
     """The config and tensors of the fp8 or q4_0 file for a bf16 model. A model with tied
     embeddings gets a copy of its embedding table as `lm_head`. Each quantized matrix and its
-    scales are functions, which quantize it when `write_weight_file` gets to it."""
+    scales are functions, which quantize it when `write_weight_file` gets to it. `importance`, a
+    dict from matrix name to the array of importance.py, guides the rounding of each Q4_0 matrix."""
     assert config["weight_format"] == WEIGHT_FORMATS["bf16"], "the model is quantized already"
     tensors = dict(tensors)
     if config["tied_embeddings"]:
@@ -392,7 +458,12 @@ def quantize(config, tensors, weight_format):
     config = dict(config, weight_format=WEIGHT_FORMATS[weight_format], tied_embeddings=0)
     for name in [n for n in tensors if is_matrix(n)]:
         dtype = matrix_dtype(config, name)
-        quantizer, scale_dtype = (quantize_q4_0, "f16") if dtype == "u4" else (quantize_fp8, "f32")
+        if dtype == "u4":
+            assert importance is None or name in importance, f"the importance file has no {name}"
+            weights = None if importance is None else importance[name]
+            quantizer, scale_dtype = (lambda matrix, weights=weights: quantize_q4_0(matrix, weights)), "f16"
+        else:
+            quantizer, scale_dtype = quantize_fp8, "f32"
         codes, scales = _lazy_pair(lambda entry=tensors[name], quantizer=quantizer: quantizer(as_f32(resolve(entry))))
         tensors[name] = lambda codes=codes, dtype=dtype: (dtype, codes())
         tensors[name + ".scale"] = lambda scales=scales, scale_dtype=scale_dtype: (scale_dtype, scales())

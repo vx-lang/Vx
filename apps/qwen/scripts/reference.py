@@ -34,6 +34,8 @@ class Model:
         self.config, self.tensors = qwen_weights.read_weight_file(path)
         f32_bytes = sum(array.size * (8 if dtype == "u4" else 4) for dtype, array in self.tensors.values())
         self.cache = {} if f32_bytes <= CACHE_LIMIT_BYTES else None
+        # A function that gets each input of `product`, as importance.py uses it, or None.
+        self.see_input = None
 
     def weight(self, name, rows=None):
         """The float32 values of a tensor, or of the rows (start, stop) of a matrix."""
@@ -42,6 +44,13 @@ class Model:
         if name not in self.cache:
             self.cache[name] = qwen_weights.widen(self.tensors, name)
         return self.cache[name] if rows is None else self.cache[name][rows[0] : rows[1]]
+
+
+def product(model, x, name, rows=None):
+    """x times the transpose of the matrix `name`, or of its rows (start, stop)."""
+    if model.see_input is not None:
+        model.see_input(name, rows, x)
+    return x @ model.weight(name, rows).T
 
 
 def rms_norm(x, weight, eps):
@@ -83,9 +92,10 @@ def mixture_of_experts(model, prefix, h):
     out = np.zeros_like(h)
     for expert in np.unique(chosen):
         tokens, slots = np.nonzero(chosen == expert)
-        gate_up = h[tokens] @ model.weight(prefix + "experts_gate_up", (expert * 2 * inter, (expert + 1) * 2 * inter)).T
-        down = model.weight(prefix + "experts_down", (expert * hidden, (expert + 1) * hidden))
-        out[tokens] += weights[tokens, slots][:, None] * ((silu(gate_up[:, :inter]) * gate_up[:, inter:]) @ down.T)
+        gate_up = product(model, h[tokens], prefix + "experts_gate_up", (expert * 2 * inter, (expert + 1) * 2 * inter))
+        act = silu(gate_up[:, :inter]) * gate_up[:, inter:]
+        down = product(model, act, prefix + "experts_down", (expert * hidden, (expert + 1) * hidden))
+        out[tokens] += weights[tokens, slots][:, None] * down
     return out
 
 
@@ -109,7 +119,7 @@ def forward(model, tokens, cache):
     for layer in range(c["num_layers"]):
         p = f"layers.{layer}."
         h = rms_norm(x, model.weight(p + "attn_norm"), eps)
-        qkv = h @ model.weight(p + "qkv").T
+        qkv = product(model, h, p + "qkv")
         if c["qkv_bias"]:
             qkv = qkv + model.weight(p + "qkv_bias")
         q = qkv[:, : qh * hd].reshape(count, qh, hd)
@@ -135,18 +145,17 @@ def forward(model, tokens, cache):
         scores = np.exp(scores - scores.max(axis=-1, keepdims=True))
         scores = scores / scores.sum(axis=-1, keepdims=True)
         attended = np.einsum("gts,sgd->tgd", scores, np.repeat(values, group, axis=1)).reshape(count, qh * hd)
-        x = x + attended @ model.weight(p + "attn_out").T
+        x = x + product(model, attended, p + "attn_out")
         h = rms_norm(x, model.weight(p + "mlp_norm"), eps)
         if c["num_experts"]:
             x = x + mixture_of_experts(model, p, h)
         else:
-            gate_up = h @ model.weight(p + "gate_up").T
+            gate_up = product(model, h, p + "gate_up")
             gate, up = gate_up[:, : c["intermediate_size"]], gate_up[:, c["intermediate_size"] :]
-            x = x + (silu(gate) * up) @ model.weight(p + "down").T
+            x = x + product(model, silu(gate) * up, p + "down")
     cache.length += count
     x = rms_norm(x, model.weight("final_norm"), eps)
-    output = model.weight("embed" if c["tied_embeddings"] else "lm_head")
-    return (x @ output.T).astype(np.float32)
+    return product(model, x, "embed" if c["tied_embeddings"] else "lm_head").astype(np.float32)
 
 
 def generate(model, prompt, steps):

@@ -101,6 +101,50 @@ def q4_0_one_row(row):
     return codes, scales
 
 
+def q4_0_one_row_with_importance(row, importance):
+    """The Q4_0 codes and scales of one row, with the loops of quantize_row_q4_0_impl and
+    make_qx_quants of llama.cpp, in float32 scalars. A group of zeros gets code 8, as above."""
+    f = np.float32
+    sum_x2 = f(0)
+    for v in row:
+        sum_x2 = f(sum_x2 + f(v * v))
+    sigma2 = f(sum_x2 / f(len(row)))
+    codes, scales = [], []
+    for start in range(0, len(row), 32):
+        x = row[start : start + 32]
+        w = [f(importance[start + j] * np.sqrt(f(sigma2 + f(x[j] * x[j])))) for j in range(32)]
+        largest, extreme = f(0), f(0)
+        for v in x:
+            if largest < abs(v):
+                largest, extreme = abs(v), v
+        if largest == 0:
+            codes += [8] * 32
+            scales.append(np.float16(0))
+            continue
+
+        def round_all(iscale):
+            sumlx, suml2, levels = f(0), f(0), []
+            for j in range(32):
+                # nearest_int of llama.cpp rounds a value halfway between two integers to the even one.
+                level = max(-8, min(7, int(np.rint(f(iscale * x[j])))))
+                levels.append(level + 8)
+                sumlx = f(sumlx + f(f(w[j] * x[j]) * f(level)))
+                suml2 = f(suml2 + f(f(w[j] * f(level)) * f(level)))
+            return sumlx, suml2, levels
+
+        sumlx, suml2, chosen = round_all(f(f(-8) / extreme))
+        scale = f(sumlx / suml2) if suml2 else f(0)
+        best = f(scale * sumlx)
+        for i in [i for i in range(-9, 10) if i != 0]:
+            sumlx, suml2, levels = round_all(f(-f(f(8) + f(f(0.1) * f(i))) / extreme))
+            if suml2 > 0 and f(sumlx * sumlx) > f(best * suml2):
+                chosen, scale = levels, f(sumlx / suml2)
+                best = f(scale * sumlx)
+        codes += chosen
+        scales.append(np.float16(scale))
+    return codes, scales
+
+
 class Q4_0(unittest.TestCase):
     def test_codes_and_scales_equal_those_of_the_llama_cpp_loop(self):
         rng = np.random.default_rng(3)
@@ -147,6 +191,36 @@ class Q4_0(unittest.TestCase):
         widened_largest = np.abs(widened).reshape(300, -1, 32).max(axis=-1)
         np.testing.assert_allclose(widened_largest, largest, rtol=2.0**-11)
 
+    def test_with_importance_codes_and_scales_equal_those_of_the_llama_cpp_loops(self):
+        rng = np.random.default_rng(5)
+        matrix = (rng.standard_normal((6, 256)) * rng.uniform(0.001, 3, (6, 1))).astype(np.float32)
+        matrix[1, :32] = 0  # a group of zeros gets scale 0 and code 8
+        # There is no group of one value. All the tries of such a group have the same error, and
+        # the order of the float sums, which differs from llama.cpp in NumPy, chooses one.
+        # Two rows share each row of importance, as the rows of one expert do.
+        importance = rng.uniform(0, 4, (3, 256)).astype(np.float32)
+        importance[0, 64:96] = 0  # a group whose errors do not count gets scale 0
+        packed, scales = q.quantize_q4_0(matrix, importance)
+        codes = q.unpack_u4(packed)
+        for r in range(len(matrix)):
+            expected_codes, expected_scales = q4_0_one_row_with_importance(matrix[r], importance[r // 2])
+            self.assertEqual(codes[r].tolist(), expected_codes, f"row {r}")
+            self.assertEqual(scales[r].view(np.uint16).tolist(), [int(s.view(np.uint16)) for s in expected_scales], f"row {r}")
+        self.assertEqual(float(scales[0, 2]), 0.0)
+
+    def test_importance_lowers_the_error_that_it_weights(self):
+        rng = np.random.default_rng(6)
+        matrix = rng.standard_normal((64, 512)).astype(np.float32)
+        importance = rng.lognormal(0, 1.5, (1, 512)).astype(np.float32)
+
+        def error(packed, scales):
+            widened = q.widen({"m": ("u4", packed), "m.scale": ("f16", scales)}, "m")
+            return float((importance * (widened - matrix) ** 2).sum())
+
+        weighted = error(*q.quantize_q4_0(matrix, importance))
+        self.assertLess(weighted, 0.9 * error(*q.quantize_q4_0(matrix, np.ones_like(importance))))
+        self.assertLess(weighted, 0.9 * error(*q.quantize_q4_0(matrix)))
+
 
 class QuantizedFiles(unittest.TestCase):
     def test_the_tiny_model_in_fp8_reads_back(self):
@@ -191,6 +265,23 @@ class QuantizedFiles(unittest.TestCase):
         codes, scales = q.quantize_q4_0(expected)
         widened = q.widen(read, "layers.1.experts_gate_up", rows=(3 * 512, 4 * 512))
         np.testing.assert_array_equal(widened, q.widen({"m": ("u4", codes), "m.scale": ("f16", scales)}, "m"))
+
+    def test_each_expert_of_the_tiny_moe_model_gets_its_own_importance(self):
+        hf = make_tiny_model.tiny_moe_model()
+        config, tensors = convert.convert_tensors(q.config_from_json(make_tiny_model.MOE_CONFIG), hf)
+        rng = np.random.default_rng(7)
+        shapes = q.tensor_shapes(dict(config, weight_format=q.WEIGHT_FORMATS["q4_0"], tied_embeddings=0))
+        importance = {}
+        for name in [n for n in shapes if q.is_matrix(n) and n != "lm_head"]:
+            groups = config["num_experts"] if "experts_" in name else 1
+            importance[name] = rng.uniform(0.1, 4, (groups, shapes[name][1])).astype(np.float32)
+        config, tensors = q.quantize(config, tensors, "q4_0", importance)
+        # Expert 3 of layer 1, with row 3 of the importance of its matrix.
+        p = "model.layers.1.mlp.experts.3."
+        expected = np.concatenate([q.as_f32(hf[p + "gate_proj.weight"]), q.as_f32(hf[p + "up_proj.weight"])])
+        codes, scales = q.quantize_q4_0(expected, importance["layers.1.experts_gate_up"][3:4])
+        np.testing.assert_array_equal(q.resolve(tensors["layers.1.experts_gate_up"])[1][3 * 512 : 4 * 512], codes)
+        np.testing.assert_array_equal(q.resolve(tensors["layers.1.experts_gate_up.scale"])[1][3 * 512 : 4 * 512], scales)
 
 
 if __name__ == "__main__":

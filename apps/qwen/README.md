@@ -53,6 +53,8 @@ of Qwen3-Coder-30B-A3B.
 | `scripts/make_tiny_model.py` | Writes a tiny model with random weights. |
 | `scripts/qwen_weights.py` | Reads and writes the weight file. Its first comment describes the format. |
 | `scripts/test_qwen_weights.py` | Tests the f8e4m3 and Q4_0 codes, their scales and the quantized weight files. |
+| `scripts/importance.py` | Measures the importance matrix of a bf16 model, for `convert.py --importance`. |
+| `scripts/test_importance.py` | Tests `importance.py`. |
 
 ## fp8 weights
 
@@ -83,6 +85,12 @@ them against the loop of llama.cpp. For Qwen2.5-Coder-7B-Instruct, the codes and
 197 Q4_0 tensors were the same bits as in the Q4_0 GGUF file that Qwen publishes. `lm_head` is fp8, as llama.cpp also keeps its output matrix
 above 4 bits.
 
+`convert.py --q4 --importance FILE` rounds each group of 32 weights with an importance matrix, as
+llama.cpp does with one. `importance.py` measures it: the mean square of each input of each
+matrix over a sample text, for each expert on its own tokens. The converter then tries 19 scales
+for each group, and keeps the one with the smallest error, where the error of a weight counts as
+much as its input matters. A test checks the codes and scales against the loops of llama.cpp.
+
 The Vx program reads a Q4_0 file like the others, and runs the Q4_0 kernels of `std::nn` for it.
 Of four 4-bit formats, Q4_0 was the closest to bf16 on the 7B model. The measurement is in
 [#3151](https://github.com/vx-lang/Vx/issues/3151#issuecomment-6763017034).
@@ -101,14 +109,49 @@ The tokens are `def fibonacci(n):` and a new line with 4 spaces. The Vx program 
 and an iterative `fibonacci` in the 64 steps. `reference.py` on the same file chose the same 64
 tokens, with each logit within 5.4e-05.
 
-Both programs measured the perplexity on `src/dialect/MetalImage.cpp` at 7e3cf6a3, as
-`llama-perplexity -c 512 --chunks 8 --no-escape` measures it:
+An importance matrix makes the Q4_0 file closer to bf16. `importance.py` needs the bf16 file, and
+took 110 minutes for 150 chunks of 512 tokens on an M4 with 32 GB:
 
-| Weights | Perplexity |
-| --- | --- |
-| bf16, with `reference.py` | 3.6813 |
-| Q4_0 of `convert.py --q4`, with `reference.py` | 3.7290 |
-| Q4_0 of unsloth with an importance matrix, with `llama-perplexity` | 3.7091 |
+```sh
+python3 apps/qwen/scripts/convert.py ~/models/Qwen3-Coder-30B-A3B-Instruct qwen3-30b.vxw
+python3 apps/qwen/scripts/importance.py qwen3-30b.vxw --tokenizer ~/models/Qwen3-Coder-30B-A3B-Instruct \
+    --out importance.npz --chunks-per-text 8 TEXT...
+python3 apps/qwen/scripts/convert.py --q4 --importance importance.npz \
+    ~/models/Qwen3-Coder-30B-A3B-Instruct qwen3-30b-q4.vxw
+```
+
+The sample text below was the first 8 chunks of each of 19 files:
+
+- `SmallVector.h` and `DenseMap.h` of LLVM 22.
+- `argparse.py`, `subprocess.py`, `asyncio/base_events.py`, `http/client.py` and
+  `pydoc_data/topics.py` of Python 3.13.
+- `src/ahocorasick.rs` of aho-corasick 1.1.4, `src/map.rs` of indexmap 2.14.0, `src/expr.rs` of
+  syn 2.0.118, and `src/parser/parser.rs` of clap_builder 4.6.0.
+- `src/runtime/scheduler/multi_thread/worker.rs` and `CHANGELOG.md` of tokio 1.52.3.
+- `lib/compress/zstd_compress.c` of zstd 1.5.7, and `lib/commands/ls.js` and
+  `lib/utils/display.js` of npm 11.16.0.
+- `stdlib/std/nn.vx`, `www/book/src/tasks.md` and `www/book/src/ownership.md` of this repository.
+
+Both programs measured the perplexity as `llama-perplexity -c 512 --chunks 8 --no-escape`
+measures it, on three files of this repository that are not in the sample:
+`src/dialect/MetalImage.cpp` at 7e3cf6a3, `src/hir/check/calls.rs` at 4df81bf6, and
+`docs/parallel_compiler_architecture.md` at f2415488.
+
+| Weights | Program | MetalImage.cpp | calls.rs | architecture.md |
+| --- | --- | --- | --- | --- |
+| bf16 | `reference.py` | 3.6813 | 5.9254 | 5.6790 |
+| Q4_0 of `convert.py --q4` | `reference.py` | 3.7290 | 6.0010 | 5.7670 |
+| Q4_0 of `convert.py --q4 --importance` | `reference.py` | 3.6881 | 5.9664 | 5.7472 |
+| The Q4_0 codes of unsloth in a file of `convert.py --q4` | `reference.py` | 3.6918 | 5.9535 | 5.7516 |
+| Q4_0 of unsloth with an importance matrix | `llama-perplexity` | 3.7091 | not measured | not measured |
+
+The importance matrix removed 86% of the gap to bf16 on `MetalImage.cpp`, 46% on `calls.rs` and
+23% on the architecture document.
+
+The fourth file has the codes and scales of the unsloth file for each matrix that is Q4_0 there.
+The `experts_down` of the first 6 layers are Q4_1 there, so they stay ours. The unsloth file also
+has `lm_head` in Q6_K and the embedding table in Q4_0. So 3.7091 and 3.6918 differ in the program
+and in some weights. Compare files with the same program.
 
 A token took 28.0 ms in Vx with the cheaper kernel launches of
 [#3152](https://github.com/vx-lang/Vx/pull/3152) and [#3165](https://github.com/vx-lang/Vx/pull/3165),
