@@ -119,11 +119,11 @@ seq_len : i32, vocab_size : i32) -> TransformerWeights {
     TransformerWeights {
       token_embedding_table:
       p0, rms_att_weight : p1,
+      rms_ffn_weight : p6,
       wq : p2,
       wk : p3,
       wv : p4,
       wo : p5,
-      rms_ffn_weight : p6,
       w1 : p7,
       w2 : p8,
       w3
@@ -485,7 +485,7 @@ fn main() -> i32 {
     let mut pos : i32 = 0;
 
     // We'll generate 1000 tokens and print the time taken for every 100 tokens
-    let mut start_time : f32 = now();
+    let mut start_time = Instant::now();
     let max_tokens : i32 = 1000;
 
     for step in 0..max_tokens {
@@ -514,8 +514,8 @@ fn main() -> i32 {
       let mul : i32 = div * 100;
       let remainder : i32 = pos - mul;
       if remainder == 0 {
-        let curr_time : f32 = now();
-        let elapsed : f32 = curr_time - start_time;
+        let curr_time = Instant::now();
+        let elapsed : f32 = (curr_time - start_time).as_secs_f32();
         unsafe {
           print!("
 [");

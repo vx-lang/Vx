@@ -1,0 +1,32 @@
+//===- a_macro_writes_an_impl.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Declares a function `double`, and a macro that writes an `impl` with a method `double`.
+
+trait Double {
+  fn double(self : Self) -> Self;
+}
+
+macro_rules stamp_double {
+  ($t : ident) => {
+    impl Double for $t {
+      fn double(self : $t) -> $t {
+        return self + self;
+      }
+    }
+  };
+}
+
+stamp_double!(i64);
+
+fn double(x : i64) -> i64 {
+  return x * 2;
+}
+
+fn library_double(x : i64) -> i64 {
+  return double(x);
+}

@@ -1,0 +1,48 @@
+//===- tasks_that_end_early_in_a_wrong_way.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `return` in a task gives the value of the task, so it must have the type of the last value
+// of the task. A `?` in a task makes a task that can fail, so the task needs a handle.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+import core::result;
+
+fn plus(n : i32) -> Result<i32, i32> {
+  return Result<i32, i32>::Ok(n + 1);
+}
+
+// CHECK-DAG: Error[E3002] at {{.*}}.vx:[[@LINE+3]]:13: a `return` in this task gives 'i32', so the last value of the task must have that type. It gives 'bool'
+fn return_of_another_type(c : bool) -> bool {
+  let r = tasks {
+    let h = spawn {
+      if c {
+        return 1;
+      }
+      true
+    };
+    h.join()
+  };
+  return r;
+}
+
+// CHECK-DAG: Error[E3060] at {{.*}}.vx:[[@LINE+3]]:5: this task can fail with 'i32', so it needs a handle that the `tasks` block joins: `let h = spawn { .. };` and then `h.join()`
+fn question_mark_in_a_task_with_no_handle(n : i32) -> void {
+  tasks {
+    spawn {
+      plus(n)?;
+    };
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// The 2 errors above are the only ones. `--implicit-check-not` does not look past the first
+// `CHECK-DAG` match, so this line counts them.
+// CHECK: {{^}}Semantic check failed on {{.*}}: 2 error(s) emitted

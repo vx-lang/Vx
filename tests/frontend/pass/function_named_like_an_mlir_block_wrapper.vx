@@ -1,0 +1,35 @@
+//===- function_named_like_an_mlir_block_wrapper.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The compiler puts each `mlir!` block in a function of its own. Two functions here have the
+// names that the two code generators give that function. The second name holds the line and
+// column of the block. Each generator must choose another name.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s
+// CHECK-NOT: Error
+// CHECK: 2008
+
+fn vx_flat_mlir_0(x : i32) -> i32 {
+  return x + 1000;
+}
+
+fn vx_macro_mlir_L26_C16_0(x : i32) -> i32 {
+  return x + 1000;
+}
+
+fn count_ones(x : i32) -> i32 {
+  return mlir!(inputs : (%a = x : i32), returns : i32, dialects : ["math"]) {
+    %r = math.ctpop %a : i32
+    macro.yield %r : i32
+  };
+}
+
+fn main() -> i32 {
+  print(count_ones(255) + vx_flat_mlir_0(0) + vx_macro_mlir_L26_C16_0(0));
+  return 0;
+}

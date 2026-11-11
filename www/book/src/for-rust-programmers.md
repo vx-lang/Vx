@@ -18,6 +18,11 @@ lists what to change. Each item shows the Rust form and the Vx form.
 - **`self` has a type.** `fn get(&self)` is `fn get(self : &Self)`, `&mut self` is
   `self : &mut Self`, and `self` is `self : Self`. The type's own name works too:
   `self : &Point`.
+- **`#[track_caller]` is a parameter.** End the parameters with `at : Caller`
+  (`import core::panic;`). A call that leaves the argument out passes its own place, in
+  `at.location`: a `Location` with `file`, `line` and `column`. To report the place of your own
+  caller, give your `at` to the call. `Location::here()` is Rust's `Location::caller()` and
+  `file!()`, `line!()` and `column!()` in one.
 - **Closure parameters have types.** `|x| x + 1` is `| x : i64 | x + 1`.
 - **No `impl Trait` parameters.** `fn show(g : &impl Area)` is `fn show<T : Area>(g : &T)`.
 
@@ -30,6 +35,10 @@ lists what to change. Each item shows the Rust form and the Vx form.
   `i64` when `i64`s are added to it later. Vx does not, so write `let mut total : i64 = 0;`.
 - **Arrays are tensors.** `[i32; 4]` is `Tensor<i32, [4]>`. The shape is part of the type, and a
   `?` marks a size known only at run time: `Tensor<f32, [?, ?]>`.
+- **The atomic orders are `AtomicOrdering`**, because `Ordering` is the result of a comparison.
+  A `Relaxed` read is compiled as an `Acquire` read, so no value comes out of thin air.
+  `-fweak-relaxed-atomics` gives Rust's `Relaxed`. See
+  [Memory orders](tasks.md#memory-orders).
 - **Uninitialized storage is `unsafe`.** `MaybeUninit` has no equivalent. Write
   `unsafe { Tensor<f32, [4]>::uninit() }` and set every element before reading it, or use
   `Tensor<f32, [4]>::new()`, which is zeroed.
@@ -38,7 +47,11 @@ lists what to change. Each item shows the Rust form and the Vx form.
 
 - **A `match` arm's body is a block.** `0 => 7,` is `0 => { 7 },`.
 - **No `if let` or `while let`.** Use `match`.
-- **No `?` operator.** Use `match` and return early.
+- **`?` does not convert the error.** `x?` passes the `Err` up unchanged, so its type must be
+  the error type of the function. Use `.map_err(..)` to convert it. `?` takes only a `Result`.
+- **`?` in a `tasks` block fails the block**, not the function. The block gives that `Err`, and it
+  cancels its tasks. In a task, `?` ends the task, and the task fails. In a closure, `?` needs
+  the closure's type written: `|x : i32| -> Result<i32, E> { .. }`.
 
 ## Printing
 

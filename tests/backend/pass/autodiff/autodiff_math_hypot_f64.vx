@@ -9,7 +9,7 @@
 // differentiate the core::libm function itself, which reads the float's bits, so it is marked to
 // be differentiated as the C `hypot`.
 //
-// CHECK-DAG: llvm.func {{(hidden )?}}@libm_hypot({{.*}}passthrough = {{\[\[}}"enzyme_math", "hypot"{{\]\]}}
+// CHECK-DAG: llvm.func {{(hidden )?}}@libm_hypot({{.*}}passthrough = {{\[\[}}"enzyme_math", "hypot"{{(\], \["probe-stack", "inline-asm")?}}{{\]\]}}
 // EXPECT: 600000
 import core::num;
 

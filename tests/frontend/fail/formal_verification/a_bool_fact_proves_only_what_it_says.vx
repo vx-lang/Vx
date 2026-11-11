@@ -1,0 +1,22 @@
+//===- a_bool_fact_proves_only_what_it_says.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// With `c` true, `x` can be negative, so the `ensures` cannot be proved. The call passes `true`
+// for `c`, so it meets the `requires`, and that is the only error.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: Error[E8001] {{.*}} Function 'positive_when_c' cannot prove postcondition
+
+fn positive_when_c(c: bool, x: i64) -> i64
+requires c || x > 10
+ensures return > 0 {
+  return x;
+}
+
+fn main() -> i32 {
+  return positive_when_c(true, 1) as i32;
+}

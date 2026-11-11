@@ -103,15 +103,15 @@ def Vx_HeapFreeOp : Vx_Op<"heap_free"> {
 // convert-vx-to-standard frees the buffer when it is a heap buffer this
 // function owns, and erases the drop otherwise. With `unless`,
 // nothing is freed when the flag is true: the tensor was moved. With
-// `field`, the buffer is a tensor field of a struct being dropped, which owned it.
-// With `owned_only`, a buffer this function does not own is left alone rather than
-// reported as an error.
+// `field`, the buffer is a tensor field of a struct being dropped, which owned
+// it. With `owned_only`, a buffer this function does not own is left alone
+// rather than reported as an error. With `placed`, the field is a tensor in a
+// device memory, and the plugin of that topology frees it.
 def Vx_DropOp : Vx_Op<"drop"> {
     let summary = "Frees a tensor whose owner gives it up.";
     let arguments = (ins Arg<AnyType, "the buffer to free", [MemFree]>:$buffer,
-                         Optional<I1>:$moved,
-                         UnitAttr:$owned_only,
-                         UnitAttr:$field);
+        Optional<I1>:$moved, UnitAttr:$owned_only, UnitAttr:$field,
+        OptionalAttr<I32Attr>:$placed);
     let assemblyFormat = "$buffer (`unless` $moved^)? attr-dict `:` type($buffer)";
 }
 
@@ -120,6 +120,28 @@ def Vx_YieldOp : Vx_Op<"yield", [Pure, Terminator, ReturnLike]> {
     let summary = "Terminates a vx.spawn region.";
     let arguments = (ins Variadic<AnyType>:$results);
     let assemblyFormat = "($results^ `:` type($results))? attr-dict";
+}
+
+// In a `tasks` block, before a `return`, `break` or `continue` leaves it: waits
+// until each task of the block ends, so that the drops before the exit run with
+// no task running. It reads and writes memory, so nothing moves across it. With
+// `join`, it is at the end of the block's body, before the drops of what the
+// tasks use: it joins the tasks as the end of the block does, and cancels none
+// of them.
+def Vx_TasksWaitOp : Vx_Op<"tasks_wait", [MemoryEffects<[MemRead, MemWrite]>]> {
+    let summary = "Waits for the tasks of the enclosing tasks block.";
+    let arguments = (ins UnitAttr:$join);
+    let assemblyFormat = "attr-dict";
+}
+
+// `h.join()`: a use of the value of the task of `h`, or of the slot that holds it.
+// The lowering of the task waits for the task before each use of its value, so the
+// code after the join runs after the task. It reads and writes memory, so nothing
+// moves across it. The lowering erases it.
+def Vx_TaskJoinOp : Vx_Op<"task_join", [MemoryEffects<[MemRead, MemWrite]>]> {
+    let summary = "Waits for a task at its join.";
+    let arguments = (ins AnyType:$handle);
+    let assemblyFormat = "$handle attr-dict `:` type($handle)";
 }
 
 // A dispatch operation to execute an outlined kernel
@@ -195,13 +217,15 @@ def Vx_BarrierOp : Vx_Op<"barrier", [MemoryEffects<[MemRead, MemWrite]>]> {
 // elements of `input`. With `ordered`, the order is the one that
 // docs/lane_reductions.md gives. The device clone expands it into shuffles and
 // barriers, and the host lowering into loops. With `serial`, the kernel runs on
-// one lane, and the device clone also gets the loops. It reads and writes memory so
-// that nothing moves it past a write of `input` or into a branch.
+// one lane, and the device clone also gets the loops. With `own_row`, in the code of
+// a subgroup, `input` is the row of the tile that the `vx.lane_element` stores of the
+// subgroup write. It reads and writes memory so that nothing moves it past a write
+// of `input` or into a branch.
 def Vx_LaneReduceOp : Vx_Op<"lane_reduce", [MemoryEffects<[MemRead, MemWrite]>]> {
     let summary = "Combine the first elements of a tensor over the lanes.";
     let arguments = (ins AnyMemRef:$input, I32:$count, StrAttr:$kind,
                      UnitAttr:$ordered, UnitAttr:$subgroup,
-                     UnitAttr:$serial);
+                     UnitAttr:$serial, UnitAttr:$own_row);
     let results = (outs F32:$result);
 }
 
@@ -212,8 +236,64 @@ def Vx_LaneReduceOp : Vx_Op<"lane_reduce", [MemoryEffects<[MemRead, MemWrite]>]>
 def Vx_LaneArgmaxOp : Vx_Op<"lane_argmax", [MemoryEffects<[MemRead, MemWrite]>]> {
     let summary = "The index of the larger value over the lanes.";
     let arguments = (ins AnyMemRef:$values, AnyMemRef:$indices, I32:$count,
-                     UnitAttr:$ordered, UnitAttr:$subgroup, UnitAttr:$serial);
+                     UnitAttr:$ordered, UnitAttr:$subgroup, UnitAttr:$serial,
+                     UnitAttr:$own_row);
     let results = (outs I32:$result);
+}
+
+// `lanes::sort` and `lanes::sort_descending`: the first `count` elements of
+// `input`, an `i64` tensor whose size is a power of two, in order. The other
+// elements do not change. `lanes` is the number of lanes of the block, or 32 in
+// the code of a subgroup. The device clone expands it into a sorting network in
+// registers, and the host lowering and `serial` into loops. It reads and writes
+// memory so that nothing moves it past a use of `input` or into a branch.
+def Vx_LaneSortOp : Vx_Op<"lane_sort", [MemoryEffects<[MemRead, MemWrite]>]> {
+    let summary = "Sort the first elements of a tensor with the lanes.";
+    let arguments = (ins AnyMemRef:$input, I32:$count, I64Attr:$lanes,
+                     UnitAttr:$descending, UnitAttr:$subgroup,
+                     UnitAttr:$serial);
+}
+
+// `acc = acc + (lhs as f32) @ (rhs as f32)` in the code of a subgroup, or with
+// no `acc +` when `accumulate` is not set. `acc` is an `f32` matrix, and `lhs`
+// and `rhs` are matrices of `f32`, `bf16` or `f16`. Each element of `acc` gets
+// the sum of its products from 0, in the order of `k`, and then its old value.
+// The device clone gives the elements to the lanes of the subgroup, and the host
+// lowering and `serial` compute them in loops.
+def Vx_LaneMatmulOp : Vx_Op<"lane_matmul", [MemoryEffects<[MemRead, MemWrite]>]> {
+    let summary = "A matmul of tiles with the lanes of a subgroup.";
+    let arguments = (ins AnyMemRef:$acc, AnyMemRef:$lhs, AnyMemRef:$rhs,
+                     UnitAttr:$accumulate, UnitAttr:$subgroup,
+                     UnitAttr:$serial);
+}
+
+// `lanes::copy_async`: the lanes of a block copy the tile of `source` at `place`
+// into `tile`, in the background. An element past the end of `source` copies as
+// zero. The result is a token for `vx.lane_copy_wait`.
+def Vx_LaneCopyAsyncOp : Vx_Op<"lane_copy_async", [MemoryEffects<[MemRead, MemWrite]>]> {
+    let summary = "Start a copy of a tile into shared memory.";
+    let arguments = (ins AnyMemRef:$tile, AnyMemRef:$source,
+                     Variadic<AnySignlessInteger>:$place, I64Attr:$lanes,
+                     UnitAttr:$serial, UnitAttr:$subgroup);
+    let results = (outs I32:$token);
+}
+
+// `vx.lane_copy_async` with `map`, the address of a tensor map of `source` in
+// device memory, or 0. The host makes the map before the launch. The GPU
+// copies the tile with TMA when the map is not 0.
+def Vx_LaneCopyAsyncMapOp : Vx_Op<"lane_copy_async_map", [MemoryEffects<[MemRead, MemWrite]>]> {
+    let summary = "Start a copy of a tile into shared memory, with a tensor map.";
+    let arguments = (ins AnyMemRef:$tile, AnyMemRef:$source, I64:$map,
+                     Variadic<AnySignlessInteger>:$place, I64Attr:$lanes,
+                     UnitAttr:$serial, UnitAttr:$subgroup);
+    let results = (outs I32:$token);
+}
+
+// Waits until the copy of `token` ends, and then for every lane of the block,
+// or of the subgroup with `subgroup`.
+def Vx_LaneCopyWaitOp : Vx_Op<"lane_copy_wait", [MemoryEffects<[MemRead, MemWrite]>]> {
+    let summary = "Wait for a copy of a tile into shared memory.";
+    let arguments = (ins I32:$token, UnitAttr:$serial, UnitAttr:$subgroup);
 }
 
 // The launch shape of a `vx.spawn` region with `across` loops (#252): the

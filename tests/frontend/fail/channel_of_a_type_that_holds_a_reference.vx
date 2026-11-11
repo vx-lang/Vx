@@ -1,0 +1,50 @@
+//===- channel_of_a_type_that_holds_a_reference.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// A channel takes only values that hold no reference (`Owned`), because a value can outlive the
+// task that sent it. The error names the field or the variant that holds the reference. A raw
+// pointer is `Owned`, so a channel of channel ends compiles.
+//
+// CHECK-DAG: Error in {{.*}}: Type '&i64' does not implement trait 'Owned' required by parameter 'T': '&i64' is a reference, which is not `Owned`
+// CHECK-DAG: Error in {{.*}}: Type 'Holder' does not implement trait 'Owned' required by parameter 'T': field 'r' of 'Holder' has type '&i64', and '&i64' is a reference, which is not `Owned`
+// CHECK-DAG: Error in {{.*}}: Type 'Slot' does not implement trait 'Owned' required by parameter 'T': variant 'Full' of 'Slot' has type '&i64', and '&i64' is a reference, which is not `Owned`
+// CHECK: Semantic check failed on '{{.*}}': 3 error(s) emitted
+
+import std::sync::channel;
+
+struct Holder {
+  n : i64,
+  r : &i64,
+}
+
+enum Slot {
+  Full(&i64),
+  Empty,
+}
+
+fn plain() -> void {
+  let ends = channel<&i64>(1);
+}
+
+fn in_a_field() -> void {
+  let ends = channel<Holder>(1);
+}
+
+fn in_an_enum_payload() -> void {
+  let ends = channel<Slot>(1);
+}
+
+fn values_and_channel_ends() -> void {
+  let numbers = channel<i64>(1);
+  let ends = channel<Sender<i64>>(1);
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -15,7 +15,7 @@
 
 use crate::{instantiate_file_ffi, instantiate_stdio_ffi};
 
-instantiate_file_ffi!();
+instantiate_file_ffi!(crate::ffi::io::off_the_worker);
 instantiate_stdio_ffi!();
 
 /// While a task runs, each thread keeps what it prints until a newline, and then writes the
@@ -37,6 +37,19 @@ pub(crate) mod lines {
 
     pub(crate) fn set_stderr(on: bool) {
         TO_STDERR.with(|flag| flag.set(on));
+    }
+
+    /// Swaps the line and the stderr flag of this thread with these. The shared runtime gives
+    /// each fiber its own, so that the lines of two fibers on one thread do not mix.
+    pub(crate) fn swap_with_thread(line: &mut Vec<u8>, to_stderr: &mut bool) {
+        LINE.with(|l| std::mem::swap(&mut *l.borrow_mut(), line));
+        TO_STDERR.with(|flag| *to_stderr = flag.replace(*to_stderr));
+    }
+
+    /// Takes what this thread keeps of its line.
+    #[cfg(test)]
+    pub(crate) fn take_line() -> Vec<u8> {
+        LINE.with(|l| std::mem::take(&mut *l.borrow_mut()))
     }
 
     pub(crate) fn task_started() {

@@ -198,18 +198,32 @@ spawn on(Topology::Gpu) {
 - Each loop of blocks is a grid axis, and the lane and subgroup loops give the lanes of a
   block. The host computes each bound before the region. The levels come from the topology's
   `levels:` in the fleet file, and the NVIDIA files give `blocks`, `subgroups` and `lanes`.
-- Only `nvptx64` launches the levels. On another arch, `-fauto-schedule-levels` runs each
-  `across` loop as a plain `for` that carries its level as metadata (`fleet/README.md`).
+- `nvptx64` and `applegpu` launch the levels. On another arch, `-fauto-schedule-levels` runs
+  each `across` loop as a plain `for` that carries its level as metadata (`fleet/README.md`).
 - E6032 checks the place and the size of each `across` loop. It also checks that no pass
   touches what another pass writes (L4), and that every lane reaches the end of each lane loop
   (L5, L8, L10).
+- An index of a loop whose size is not a number can wrap. In `for b in 0..n across blocks`,
+  `b * 256 + l` is an `i32`, and blocks `b` and `b + 2^24` write the same element. So the host
+  checks `n <= 8388608` before the launch, and the program stops when `n` is larger. The proof
+  bounds the end of the loop by its type, so `0..(n + 255) / 256` needs no check. An index from
+  `i64` arithmetic needs no check either.
 - An atomic operation races with no other one. It is a call to a function that says
   `ensures atomic(t)`, or an `mlir!` block with `ensures : [atomic(t)]`. Every access to `t` in
   the loop must then be atomic (#2139, `discussions/mlir_declared_writes_in_across.md`).
   `core::sync::atomic` has these functions for an integer or float element of a tensor in any
   memory, such as `atomic_fetch_add_u32(&counts, i, 1u32, AtomicOrdering::Relaxed)`.
+- A write at a slot from a counter races with no other write at such a slot.
+  `let at = atomic_fetch_add_u32(&count, i, k, ..)`, with a number `k` above 0, gives each call
+  the slots `at` to `at + k - 1`. Then `out[at + c]` with `c` below `k` is a place that no other
+  call gets. That holds when `i` is the same in every pass, and only such calls change `count` in
+  the loop.
 - A call to a function that says `ensures writes_only()` accesses no memory, so it races with
   nothing. `scoped_fence(order, FenceScope::Device)` is one.
+- A call to a function that says `ensures reads_only(t)`, or an `mlir!` block with
+  `ensures : [reads_only(t)]`, reads all of `t` and writes none of it. It races with no other
+  read. The function may only read elements of `t`, ask for its length, or pass it to code that
+  says `reads_only` for it.
 - Each lane loop ends with a barrier. Lane 0 runs the code between lane loops that writes
   memory.
 - A condition or a bound around a lane loop may read an element of a `&` tensor parameter. Only
@@ -228,8 +242,10 @@ spawn on(Topology::Gpu) {
   group sets its count back to 0. So the program makes the count at the first launch and keeps
   it for the later launches of that `spawn` on the same stream (`lang/abi.md` §3.6). A kernel
   that `--emit-ptx` writes gets the count as its last parameter (`lang/abi.md` §3.5).
-- Delete each `across` and the program means the same. The CPU copy of the region runs one
-  block of one lane, and a loop steps over the passes of the others.
+- Delete each `across` and the program means the same. The CPU copy of the region runs each
+  block with one lane, and a loop steps over the passes of the other lanes. The host's workers
+  share the blocks of the first axis: worker w of W runs blocks w, w + W, and so on. A block
+  runs on one worker, so its lane loops still run in order. `VX_HOST_THREADS` sets W.
 - A size is not a kernel argument. The launch passes each size that is not a number after the
   kernel's arguments, and the payload names the sizes in `grid=` and `block=`.
 - `--emit-ptx` gives the shape in its `.json` file (`lang/abi.md` §3.5).

@@ -1,0 +1,60 @@
+//===- a_cast_of_a_whole_tensor.vx - Vx Compiler -----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `t as f32` casts each element of a float tensor, and gives a new tensor of the same shape.
+// The cast only reads `t`, so `t` stays usable. Each element has its own value, so a wrong
+// element order shows in the output. Both code generators run it.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}bf16 to f32: 0.5 1.5 2.5 3.5 4.5 5.5{{$}}
+// CHECK: {{^}}the source after the cast: 5.5{{$}}
+// The nearest bf16 to 1 + 3/256 is 1 + 4/256: a cast rounds to the nearest value, with ties to even.
+// CHECK: {{^}}f32 to bf16: 1 1.015625{{$}}
+// CHECK: {{^}}f16 to bf16: 0.25 -3{{$}}
+// CHECK: {{^}}a parameter with a size that is not known: 4.5 13.5{{$}}
+// CHECK: {{^}}rank 1: 2.5, rank 3: 7{{$}}
+
+fn row_sum(a : &Tensor<bf16, [?, 3]>, i : i32) -> f32 {
+  let w = a as f32;
+  return w[i][0] + w[i][1] + w[i][2];
+}
+
+fn main() -> i32 {
+  let mut a = Tensor<bf16, [2, 3]>::new();
+  for i in 0..2 {
+    for j in 0..3 {
+      a[i][j] = 0.5 + ((3 * i + j) as bf16);
+    }
+  }
+  let b = a as f32;
+  println!("bf16 to f32: {} {} {} {} {} {}", b[0][0], b[0][1], b[0][2], b[1][0], b[1][1], b[1][2]);
+  println!("the source after the cast: {}", a[1][2]);
+
+  let mut f = Tensor<f32, [2]>::new();
+  f[0] = 1.00390625;
+  f[1] = 1.01171875;
+  let r = f as bf16;
+  println!("f32 to bf16: {} {}", r[0], r[1]);
+
+  let mut h = Tensor<f16, [1, 2]>::new();
+  h[0][0] = 0.25;
+  h[0][1] = -3.0;
+  let hb = h as bf16;
+  println!("f16 to bf16: {} {}", hb[0][0], hb[0][1]);
+
+  println!("a parameter with a size that is not known: {} {}", row_sum(&a, 0), row_sum(&a, 1));
+
+  let mut one = Tensor<f16, [3]>::new();
+  one[2] = 2.5;
+  let mut three = Tensor<bf16, [2, 2, 2]>::new();
+  three[1][0][1] = 7.0;
+  let o = one as f32;
+  let t = three as f32;
+  println!("rank 1: {}, rank 3: {}", o[2], t[1][0][1]);
+  return 0;
+}

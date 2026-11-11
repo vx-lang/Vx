@@ -8,10 +8,12 @@
 // An extern function can take a memory parameter, as in `<M : Memory>`. Then one C function
 // takes a pointer into any memory, because the memory never reaches C. Each call binds `M`
 // to the memory of its pointer arguments. Here `copy` is called with host pointers and with
-// pointers into GPU memory, and both calls go to the one C declaration.
+// pointers into GPU memory, and both calls go to the one C declaration. The declaration gets
+// `vx.gets_device_pointer`, because a call can bind `M` to GPU memory. On an Apple GPU, each call
+// to it then waits for the GPU first.
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK-COUNT-1: func.func private @vendor_copy(!llvm.ptr, !llvm.ptr, i64)
+// CHECK-COUNT-1: func.func private @vendor_copy(!llvm.ptr, !llvm.ptr, i64) attributes {vx.gets_device_pointer}{{$}}
 // CHECK-NOT: func.func private @vendor_copy
 // CHECK-COUNT-2: call @vendor_copy({{.*}}) : (!llvm.ptr, !llvm.ptr, i64) -> ()
 

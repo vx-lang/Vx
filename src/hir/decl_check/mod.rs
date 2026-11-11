@@ -37,6 +37,12 @@ impl TypeChecker<'_> {
     pub fn check_whole_program_declarations(&mut self) {
         // A name declared by two inputs (e.g. a `--machine` file and the program) is ambiguous.
         self.check_declaration_conflicts();
+        // A safe method of a trait impl with a pointer clause, or one that adds a `!frees`.
+        self.check_trait_impl_pointer_clauses();
+        // An `invariant` of a struct that names something other than `self` and its fields.
+        self.check_type_invariants_are_well_formed();
+        // The `ensures` of an `extern` function.
+        self.check_extern_clauses();
         // `impl Copy for X` where one of X's fields moves rather than copies.
         self.check_copy_impls();
         // `impl Send for X` with no `unsafe`, and `unsafe impl` of another trait.
@@ -44,6 +50,8 @@ impl TypeChecker<'_> {
         // An impl binds every associated type its trait declares. Nothing downstream can catch
         // this: the binding is substituted into the signatures before name resolution runs.
         self.check_associated_type_bindings();
+        // An impl writes every method its trait gives no default body.
+        self.check_impls_write_required_methods();
         self.check_no_projections_in_fields();
         // `T : NoSuchTrait` on any declaration, called or not.
         self.check_bounds_name_a_trait();

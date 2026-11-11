@@ -28,6 +28,7 @@
 // syntax for one yet.
 
 import core::marker;
+import core::panic;
 import core::ops;
 
 enum Option<T> {
@@ -91,25 +92,25 @@ impl<T> Option<T> {
 
   /// The value, or a stop. Reach for `unwrap_or` where there is a sensible answer for
   /// the absent case; this one ends the program.
-  fn unwrap(self : Option<T>) -> T {
+  fn unwrap(self : Option<T>, at : Caller) -> T {
     match self {
       Option<T>::Some(v) => {
         return v;
       }
       Option<T>::None() => {
-        panic("unwrap called on None");
+        panic("unwrap called on None", at);
       }
     }
   }
 
   /// The value, or a stop with the message `msg`. `unwrap` with a message of the caller's.
-  fn expect(self : Option<T>, msg : *const i8) -> T {
+  fn expect(self : Option<T>, msg : *const i8, at : Caller) -> T {
     match self {
       Option<T>::Some(v) => {
         return v;
       }
       Option<T>::None() => {
-        panic(msg);
+        panic(msg, at);
       }
     }
   }
@@ -304,15 +305,24 @@ impl<T> Option<T> {
 
   /// The value, leaving nothing behind.
   fn take(self : &mut Option<T>) -> Option<T> {
-    let old = *self;
-    *self = Option<T>::None();
-    return old;
+    return unsafe {
+      Option<T>::swap_in(self as *mut Option<T>, Option<T>::None())
+    };
   }
 
   /// The value, leaving `v` behind.
   fn replace(self : &mut Option<T>, v : T) -> Option<T> {
-    let old = *self;
-    *self = Option<T>::Some(v);
+    return unsafe {
+      Option<T>::swap_in(self as *mut Option<T>, Option<T>::Some(v))
+    };
+  }
+
+  /// The option at `p`, with `new` put in its place. Only an `unsafe fn` may move a value out
+  /// through a raw pointer, as `core::ptr::read` does. This file does not import `core::ptr`, so
+  /// that its names, such as `add`, stay out of every module that imports this one.
+  unsafe fn swap_in(p : *mut Option<T>, new : Option<T>) -> Option<T> {
+    let old = unsafe { *p };
+    unsafe { *p = new; }
     return old;
   }
 }

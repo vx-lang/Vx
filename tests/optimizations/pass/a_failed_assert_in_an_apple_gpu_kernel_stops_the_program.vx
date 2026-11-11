@@ -1,0 +1,47 @@
+// A kernel on the Apple GPU checks each value with `assert`. Metal cannot stop a kernel, so a
+// thread whose assert fails stores the number of the assert and ends. When the runtime waits for
+// the kernel, it prints the message of that assert and stops the program.
+//
+// The first call passes every assert. In the second call, the values from 100 fail. Some threads
+// of block 1 end early, and the others then wait at the barrier at the end of the lane loop. The
+// GPU must still finish. VX_METAL=0 runs the CPU copy, which stops at the same assert.
+//
+// REQUIRES: macos
+// RUN: not vxc %s --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s --check-prefixes=CHECK,GPU
+// RUN: env VX_METAL=0 not vxc %s --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s --check-prefixes=CHECK,CPU
+//
+// CHECK: sum 65280
+// GPU-NEXT: [Vx Metal] FATAL: kernel {{vx_npu_kernel_[0-9]+}}: a value is not below the limit
+// CPU-NEXT: {{^}}a value is not below the limit
+// CHECK-NEXT: at {{.*}}a_failed_assert_in_an_apple_gpu_kernel_stops_the_program.vx:{{[0-9]+}}
+// CHECK-NOT: not printed
+
+pub fn double_below(out : &mut Tensor<i32, [?], Memory::HBM>, limit : i32, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for l in 0..64 across lanes {
+        let v = b * 64 + l;
+        assert(v < limit, "a value is not below the limit");
+        out[v] = v * 2;
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut out = transfer(Tensor<i32, [256]>::fill(0), Memory::HBM);
+  double_below(&mut out, 256, 4);
+  let o = transfer(out, Memory::CPU_DRAM);
+  let mut sum = 0;
+  for i in 0..256 {
+    sum = sum + o[i];
+  }
+  println!("sum {}", sum);
+
+  let mut out2 = transfer(Tensor<i32, [256]>::fill(0), Memory::HBM);
+  double_below(&mut out2, 100, 4);
+  let o2 = transfer(out2, Memory::CPU_DRAM);
+  println!("not printed {}", o2[0]);
+  return 0;
+}

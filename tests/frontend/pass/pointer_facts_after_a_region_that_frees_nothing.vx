@@ -1,0 +1,58 @@
+//===- pointer_facts_after_a_region_that_frees_nothing.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not='Warning[' --implicit-check-not='Error['
+// CHECK: func.func @main
+//
+// A `spawn on` region ends the facts about other memory only when it uses a variable from
+// outside it that can free memory. These regions use only numbers, or a pointer of their own.
+
+fn first(p : *const i64) -> i64
+requires valid(p, 1i64)
+requires initialized(p, 1i64)
+{
+  return unsafe { p[0] };
+}
+
+fn after_a_region(p : *const i64, n : i64) -> i64
+requires valid(p, 1i64)
+requires initialized(p, 1i64)
+{
+  spawn on(Topology::CpuAvx512) {
+    let _twice = n * 2i64;
+  }
+  return first(p);
+}
+
+fn after_a_loop_with_a_region(p : *const i64, n : i64) -> i64
+requires valid(p, 1i64)
+requires initialized(p, 1i64)
+{
+  for _i in 0i64..3i64 {
+    spawn on(Topology::CpuAvx512) {
+      let _twice = n * 2i64;
+    }
+  }
+  return first(p);
+}
+
+fn after_a_region_with_its_own_pointer(p : *const i64) -> i64
+requires valid(p, 1i64)
+requires initialized(p, 1i64)
+{
+  spawn on(Topology::CpuAvx512) {
+    let q = unsafe { 0 as *const i64 };
+    let _same = q;
+  }
+  return first(p);
+}
+
+fn main() -> i32 {
+  let x = 7i64;
+  let p : *const i64 = &x;
+  return (after_a_region(p, 3i64) + after_a_loop_with_a_region(p, 3i64) + after_a_region_with_its_own_pointer(p) - 21i64) as i32;
+}

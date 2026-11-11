@@ -49,7 +49,9 @@ fn exprs_stay_in(stmts: &[Statement], in_loop: bool) -> bool {
                     && i.else_block.as_ref().is_none_or(|b| stays_in(b, in_loop))
             }
             Expr::Match(m) => m.arms.iter().all(|a| stays_in(&a.body, in_loop)),
-            Expr::UnsafeBlock(b) => stays_in(&b.stmts, in_loop),
+            // The checker makes a `tasks` block and a task body an `UnsafeBlock` with a `task`
+            // mark, and the lowering of a task splits its block.
+            Expr::UnsafeBlock(b) => b.task.is_none() && stays_in(&b.stmts, in_loop),
             Expr::ComptimeBlock(b) => stays_in(&b.stmts, in_loop),
             Expr::SpawnOn(_)
             | Expr::TaskBlock(_)
@@ -121,7 +123,7 @@ impl Lowerer<'_> {
         let open = self.code.len();
         let i = self.emit_value(Opcode::AffineFor, start.reg, end.reg, elem, 0);
         self.affine_open.push(open);
-        self.bind_local(f.iter.as_str().into(), i);
+        self.bind_local(f.iter.as_str().into(), i, false);
         let lowered = self.lower_block(&f.body);
         self.affine_open.pop();
         lowered?;

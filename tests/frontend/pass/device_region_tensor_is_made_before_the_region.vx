@@ -8,24 +8,27 @@
 // RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
 //
 // A GPU region that creates a tensor and hands it out has the tensor created before the
-// region instead, in GPU memory (topology 500), so the function owns it and frees it there:
+// region instead, in GPU memory (topology 500), so the function owns it and frees it there.
+// The region's value is that tensor, so the kernel gives nothing back:
 //
 // - `made`: `x` is copied to the GPU before the launch, its host copy is freed, and the
-//   kernel writes into it; `t` is freed on the GPU, and the kernel allocates nothing;
-// - `given`: `a`, GPU memory made before the region, is handed out as the same buffer, so
-//   `t` frees it on the GPU.
+//   kernel writes into it. `t` is `x`, so the copy home reads `x`, and `x` is freed on the
+//   GPU. The kernel allocates nothing.
+// - `given`: `a`, GPU memory made before the region, is handed out as the same buffer. So the
+//   kernel takes no arguments, the copy home reads `a`, and `a` is freed on the GPU.
 
 // CHECK-LABEL: func.func @made
 // CHECK: %[[X:.*]] = "vx.transfer"(%[[HOST:[a-z_0-9]+]]){{.*}}target_topology = 500
 // CHECK-NEXT: memref.dealloc %[[HOST]]
-// CHECK: vx.launch @[[MADE:[a-z_0-9]+]](%[[X]],
-// CHECK: %[[T:.*]] = memref.load
-// CHECK: vx.free %[[T]] {topology = 500 : i32}
+// CHECK: vx.launch @[[MADE:[a-z_0-9]+]](%[[X]]) {
+// CHECK: "vx.transfer"(%[[X]]) <{target_topology = 0 : i32}>
+// CHECK-NEXT: vx.free %[[X]] {topology = 500 : i32}
 
 // CHECK-LABEL: func.func @given
-// CHECK: vx.launch
-// CHECK: %[[T:.*]] = memref.load
-// CHECK: vx.free %[[T]] {topology = 500 : i32}
+// CHECK: %[[A:.*]] = "vx.transfer"({{.*}}target_topology = 500
+// CHECK: vx.launch @{{[a-z_0-9]+}}() {
+// CHECK: "vx.transfer"(%[[A]]) <{target_topology = 0 : i32}>
+// CHECK-NEXT: vx.free %[[A]] {topology = 500 : i32}
 
 // CHECK: vx.kernel @[[MADE]](
 // CHECK-NOT: memref.alloc(

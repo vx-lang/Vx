@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>  /* vx_memref_view_bytes: fprintf */
 #include <stdlib.h> /* vx_payload_topology: strtol */
 #include <string.h> /* vx_payload_field: strlen, memcmp, memchr */
 
@@ -122,6 +123,11 @@ enum {
   VX_DTYPE_BF16 = 9
 };
 
+/// The largest value vx_dtype_bytes returns. vx_remote_stage_empty sends one
+/// zero element of this size for an empty view, so raise this when you add a
+/// larger element type.
+#define VX_DTYPE_MAX_BYTES 8
+
 static inline size_t vx_dtype_bytes(int32_t code) {
   switch (code) {
   case VX_DTYPE_I1:
@@ -197,6 +203,106 @@ static inline int64_t vx_memref_offset(const void *desc) {
 static inline void *vx_memref_data(const void *desc, int32_t dtype) {
   return (char *)vx_memref_aligned(desc) +
          vx_memref_offset(desc) * (int64_t)vx_dtype_bytes(dtype);
+}
+
+/// Why vx_memref_view_span could not give the bytes of a view.
+enum {
+  VX_VIEW_OK = 0,
+  VX_VIEW_UNKNOWN_ELEMENT,   /* the element type code has no size */
+  VX_VIEW_NEGATIVE,          /* a size or a stride is negative */
+  VX_VIEW_TOO_MANY_ELEMENTS, /* the span is 2^64 elements or more */
+  VX_VIEW_TOO_MANY_BYTES     /* the span is 2^64 bytes or more */
+};
+
+/// Set `*bytes` to the bytes from a view's first element to one past the last
+/// element it can reach: `(1 + sum((sizes[d] - 1) * strides[d])) * element
+/// size`. That is 0 for an empty view.
+///
+/// Returns VX_VIEW_OK, or the reason the view has no such size. For
+/// VX_VIEW_NEGATIVE, `*dim` is the dimension. Prints nothing, so a worker can
+/// refuse a descriptor that came over the wire.
+static inline int vx_memref_view_span(const int64_t *sizes,
+                                      const int64_t *strides, int32_t rank,
+                                      int32_t elem, uint64_t *bytes,
+                                      int32_t *dim) {
+  uint64_t last = 0; /* the index of the last element the view reaches */
+  uint64_t count;
+  int empty = 0;
+  if (vx_dtype_bytes(elem) == 0) {
+    return VX_VIEW_UNKNOWN_ELEMENT;
+  }
+  for (int32_t d = 0; d < rank; ++d) {
+    if (sizes[d] < 0 || strides[d] < 0) {
+      *dim = d;
+      return VX_VIEW_NEGATIVE;
+    }
+    empty |= sizes[d] == 0;
+  }
+  if (empty) {
+    *bytes = 0;
+    return VX_VIEW_OK;
+  }
+  for (int32_t d = 0; d < rank; ++d) {
+    uint64_t step;
+    if (__builtin_mul_overflow((uint64_t)(sizes[d] - 1), (uint64_t)strides[d],
+                               &step) ||
+        __builtin_add_overflow(last, step, &last)) {
+      return VX_VIEW_TOO_MANY_ELEMENTS;
+    }
+  }
+  if (__builtin_add_overflow(last, (uint64_t)1, &count)) {
+    return VX_VIEW_TOO_MANY_ELEMENTS;
+  }
+  if (__builtin_mul_overflow(count, (uint64_t)vx_dtype_bytes(elem), bytes)) {
+    return VX_VIEW_TOO_MANY_BYTES;
+  }
+  return VX_VIEW_OK;
+}
+
+/// The bytes from a view's first element to one past the last element it can
+/// reach, as vx_memref_view_span gives them. Returns 0 for an empty view.
+///
+/// Use this to copy a view, not `sizes[0] * strides[0]`. That product is
+/// correct only for a dense row-major view. A transposed view reaches more
+/// elements, and a view with padded rows reaches fewer.
+///
+/// Stops the program for an element type that the runtime cannot copy. The
+/// compiler writes code 0 for `index`, pointers and other types that it does
+/// not list, so a valid program can get this.
+///
+/// Also stops the program for a negative size, a negative stride or a span that
+/// does not fit in 64 bits. The compiler makes none of these, so the descriptor
+/// is broken.
+static inline uint64_t vx_memref_view_bytes(const int64_t *sizes,
+                                            const int64_t *strides,
+                                            int32_t rank, int32_t elem) {
+  uint64_t bytes = 0;
+  int32_t d = 0;
+  switch (vx_memref_view_span(sizes, strides, rank, elem, &bytes, &d)) {
+  case VX_VIEW_OK:
+    return bytes;
+  case VX_VIEW_UNKNOWN_ELEMENT:
+    fprintf(stderr,
+            "[Vx] FATAL: the runtime cannot copy a tensor with the element "
+            "type code %d, because it does not know the size of the element. "
+            "The compiler writes code 0 for index and pointer elements\n",
+            elem);
+    break;
+  case VX_VIEW_NEGATIVE:
+    fprintf(stderr,
+            "[Vx] FATAL: dimension %d of a tensor view has the negative "
+            "%s %lld\n",
+            d, sizes[d] < 0 ? "size" : "stride",
+            (long long)(sizes[d] < 0 ? sizes[d] : strides[d]));
+    break;
+  case VX_VIEW_TOO_MANY_ELEMENTS:
+    fprintf(stderr, "[Vx] FATAL: a tensor view spans 2^64 elements or more\n");
+    break;
+  default:
+    fprintf(stderr, "[Vx] FATAL: a tensor view spans 2^64 bytes or more\n");
+    break;
+  }
+  abort();
 }
 
 /// Write a contiguous row-major descriptor for `data` into `desc`.
@@ -287,19 +393,24 @@ static inline size_t vx_payload_text_end(const void *payload,
 /// computes, "matmul", so a plugin can route it to a vendor library instead of
 /// guessing from buffer shapes -- which cannot be done for square operands,
 /// where every operand assignment conforms), `roles=`, `outkind=`, `topo=` (the
-/// dispatch id, decoded by vx_payload_topology), `toponame=`, `launch=`,
-/// `coop=`, `format=` (`ptx`, what the image is), and `image=` (a device image
-/// that is text, which today means PTX).
+/// dispatch id, decoded by vx_payload_topology), `toponame=`, `offload=`,
+/// `arch=` (the `arch:` of a declared topology), `grid=`, `block=`
+/// and `grid_loops=` (the launch shape of an `across` kernel, vx_launch_shape),
+/// `host_blocks=` (the host copy shares the blocks of axis x among the host's
+/// workers, vx_host_worker_count_for), `launch=`, `coop=`, `format=` (what the
+/// image is: `ptx`, `spirv`, or `msl` for the Apple GPU), and `image=` (a
+/// device image that is text, which means PTX or MSL).
 ///
 /// Every entry is optional to a reader, and that is what let each of them land
 /// without breaking a consumer that predates it. `kind=` absent means
-/// unclassified, which is not an error: the kernel takes the ordinary path.
+/// unclassified, which is not an error: the kernel takes the ordinary path. A
+/// `format=` entry with no `image=` says the image is in the section.
 ///
 /// A payload may also carry a binary device image in a section after the
-/// entries, which vx_payload_section reads. Nothing writes one yet: the
-/// compiler writes the text `image=` entry only, and the section is there for
-/// the image a text entry cannot carry. The empty entry just before the section
-/// ends this walk, so a lookup never reads an image byte as the start of a key.
+/// entries, which vx_payload_section reads. That is where a SPIR-V image goes:
+/// its first word holds NUL bytes, which would end an `image=` entry early. The
+/// empty entry just before the section ends this walk, so a lookup never reads
+/// an image byte as the start of a key.
 ///
 /// One more key is read but not written yet: `chip=`, the PTX target, which
 /// cuda_dispatch.cpp takes `sm_80` for when it is absent.
@@ -311,6 +422,10 @@ vx_payload_field(const void *payload, size_t payload_size, const char *key) {
 
   const char *base = (const char *)payload;
   size_t key_len = strlen(key);
+  /* When the last byte is NUL, a NUL ends each entry inside the blob. Then a
+     match can return before the walk finds the end of its entry, and finding
+     `image=` does not read the whole image. */
+  const int terminated = base[payload_size - 1] == '\0';
 
   /* Skip the kernel name, then walk the remaining NUL-terminated entries. memchr rather
      than a byte loop: an `image=` entry holds a whole module's PTX, and looking up a field
@@ -324,6 +439,9 @@ vx_payload_field(const void *payload, size_t payload_size, const char *key) {
   while (pos < payload_size) {
     const char *entry = base + pos;
     size_t remaining = payload_size - pos;
+    if (terminated && remaining > key_len && memcmp(entry, key, key_len) == 0) {
+      return entry + key_len;
+    }
     const char *end = (const char *)memchr(entry, '\0', remaining);
     if (!end) {
       /* Unterminated: refuse rather than read past the blob. */
@@ -450,6 +568,8 @@ static inline int64_t vx_payload_section(const void *payload,
 #define VX_TOPO_AMX 300
 #define VX_TOPO_ANE 400
 #define VX_TOPO_GPU_BASE 500
+#define VX_TOPO_CPU_AVX512 600
+#define VX_TOPO_CPU_NEON 700
 // Network memory, as a `vx.transfer` target. Distinct bands rather than the
 // shared 300 they used to answer, which was `VX_TOPO_AMX` -- a transfer into a
 // peer's memory arrived indistinguishable from a request for Apple's matrix
@@ -562,7 +682,32 @@ int32_t vx_plugin_control(uint32_t opcode, void *payload);
 // start of `main`. A name the fleet manifest lists is still remote. Returns 1
 // if kept.
 #define VX_CTRL_LOCAL_DEVICE 0x04
+// Wait until every launch on a topology has finished. `payload` points to the
+// int32_t topology id. A backend may wait for more than that topology. A
+// backend whose launches finish before they return ignores it, and the same
+// goes for the two opcodes after it. An object from an older vxc sends it where
+// vxc now sends VX_CTRL_WAIT_FOR_TENSORS or VX_CTRL_WAIT_FOR_THREAD.
+#define VX_CTRL_WAIT 0x05
+// Wait for each launch on a topology that writes the memory of some tensors.
+// `payload` points to a `vx_wait_for_tensors`. A backend may wait for more, as
+// for VX_CTRL_WAIT. A transfer over a `: shared` edge sends it before the CPU
+// reads a tensor in place. A `pub fn` of a library for the Apple GPU sends it
+// with its tensor parameters before it returns.
+#define VX_CTRL_WAIT_FOR_TENSORS 0x06
+// Wait for each launch on a topology that the calling thread made. `payload`
+// points to the int32_t topology id. A backend may wait for more. A `pub fn`
+// of a library for the Apple GPU sends it before it returns.
+#define VX_CTRL_WAIT_FOR_THREAD 0x07
 #define VX_CTRL_VENDOR_BASE 0x1000 // Vendors start their custom opcodes here
+
+// The tensors of VX_CTRL_WAIT_FOR_TENSORS. `args` and `tags` hold `count`
+// tensors, as `device_args` and `arg_tags` of vx_plugin_dispatch_async do.
+typedef struct vx_wait_for_tensors {
+  int32_t topology;
+  int32_t count;
+  void **args;
+  const int32_t *tags;
+} vx_wait_for_tensors;
 
 #ifdef __cplusplus
 }

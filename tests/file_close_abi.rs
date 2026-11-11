@@ -4,7 +4,12 @@
 // The Vx declaration of file close, which dropping a `File` calls, must agree with the Rust
 // function's C ABI.
 include!("../stdlib/rust_core/src/ffi/macros.rs");
-instantiate_file_ffi!();
+// These tests run no tasks, so a call runs where it is.
+fn run_here<T>(call: impl FnOnce() -> T) -> T {
+    call()
+}
+
+instantiate_file_ffi!(run_here);
 
 #[test]
 fn file_close_has_no_return_value_on_both_sides_of_the_ffi() -> Result<(), String> {

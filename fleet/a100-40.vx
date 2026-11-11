@@ -17,7 +17,8 @@
 // spec: NVIDIA A100 Tensor Core GPU Datasheet (verified 2026-08-03) -- 40 GB
 // HBM2 at 1,555 GB/s. Note HBM2, not HBM2e: the 80 GB part moved to HBM2e.
 Memory HBM {
-  capacity: 40 GiB, bandwidth: 1555 GB/s, managed: explicit, scope: device
+  // alignment: cudaMalloc gives 256 B. A view at an offset keeps 16, which ld.global.v4 needs.
+  capacity: 40 GiB, bandwidth: 1555 GB/s, managed: explicit, alignment: 16 B, scope: device
 }
 
 // spec: NVIDIA Ampere Architecture Whitepaper -- 40 MB L2 cache.

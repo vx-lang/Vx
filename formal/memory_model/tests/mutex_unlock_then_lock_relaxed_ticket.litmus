@@ -1,0 +1,14 @@
+LISA mutex_unlock_then_lock_relaxed_ticket
+(* A `Mutex` is a ticket lock. P0 holds ticket 0. It writes the value and unlocks: an sc add to
+   serving. P1 takes ticket 1 with a relaxed add to next. It reads serving with acquire, and
+   reads the value when serving is its ticket. Expect: sometimes, no data race. *)
+{ next = 1; serving = 0; value = 0; }
+ P0                              | P1                             ;
+ w[plain] value 1                | rmw[rlx] r1 (add r1 1) next    ;
+ rmw[sc] r0 (add r0 1) serving   | r[acq] r2 serving              ;
+                                 | mov r3 (neq r2 r1)             ;
+                                 | b[] r3 LC01                    ;
+                                 | r[plain] r4 value              ;
+                                 | LC01:                          ;
+scopes: (system P0 P1)
+exists (1:r2 = 1)

@@ -1,0 +1,120 @@
+//===- pointer_ensures_that_a_body_breaks.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each function here has a pointer `ensures` that its body does not prove, so it gets E8012. The
+// body proves the clause at each `return`, at a last value, and at the end of a body that returns
+// nothing. At that point the storage of each local variable ends, and the program drops each
+// value with a drop. So a function cannot promise a pointer to its own local variable. A caller
+// knows only the value that it gives for each parameter, so the body must not change a parameter
+// that a pointer `ensures` names.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+import core::ptr;
+import std::vec;
+
+// CHECK: E8012] at {{.*}}pointer_ensures_that_a_body_breaks.vx:[[@LINE+5]]:3: `returns_another_pointer` says `valid(return, n)`, but the compiler cannot prove it at this `return`
+fn returns_another_pointer(p : *const i64, n : i64) -> *const i64
+requires valid(p, n)
+ensures valid(return, n)
+{
+  return offset(p, 1i64);
+}
+
+// CHECK: E8012] at {{.*}}pointer_ensures_that_a_body_breaks.vx:[[@LINE+5]]:3: `has_a_last_value_with_no_fact` says `initialized(return, n)`, but the compiler cannot prove it at this `return`
+fn has_a_last_value_with_no_fact(p : *const i64, n : i64) -> *const i64
+requires valid(p, n)
+ensures initialized(return, n)
+{
+  p
+}
+
+// CHECK: E8012] at {{.*}}pointer_ensures_that_a_body_breaks.vx:[[@LINE+6]]:5: `returns_early` says `initialized(p, n)`, but the compiler cannot prove it at this `return`
+fn returns_early(p : *mut i64, n : i64) -> void
+requires valid(p, n)
+ensures initialized(p, n)
+{
+  if n > 2i64 {
+    return;
+  }
+  unsafe { assume initialized(p, n); }
+}
+
+// CHECK: E8012] at {{.*}}pointer_ensures_that_a_body_breaks.vx:[[@LINE+1]]:4: `reaches_its_end` says `initialized(p, n)`, but the compiler cannot prove it at the end of the body
+fn reaches_its_end(p : *mut i64, n : i64) -> void
+requires valid(p, n)
+ensures initialized(p, n)
+{
+  for i in 0i64..n {
+    unsafe { p[i] = 0i64; }
+  }
+}
+
+// CHECK: E8012] at {{.*}}pointer_ensures_that_a_body_breaks.vx:[[@LINE+7]]:3: `points_at_a_local` says `valid(return, 1)`, but the compiler cannot prove it at this `return`
+// CHECK-NEXT: note: a fact that proves it ended at the end of the scope of `x` (at [[@LINE+6]]:3)
+fn points_at_a_local() -> *const i64
+ensures valid(return, 1i64)
+{
+  let x = 5i64;
+  let p : *const i64 = &x;
+  return p;
+}
+
+// `v` holds a vector of the caller, so its drop can free the memory of `p`.
+// CHECK: E8012] at {{.*}}pointer_ensures_that_a_body_breaks.vx:[[@LINE+7]]:3: `drops_a_vector` says `valid(return, n)`, but the compiler cannot prove it at this `return`
+// CHECK-NEXT: note: a fact that proves it ended at the end of the scope of `v`, which drops its value (at [[@LINE+6]]:3)
+fn drops_a_vector(p : *const i64, n : i64, w : Vec<i64>) -> *const i64
+requires valid(p, n)
+ensures valid(return, n)
+{
+  let v = w;
+  return p;
+}
+
+// CHECK: E8012] at {{.*}}pointer_ensures_that_a_body_breaks.vx:[[@LINE+7]]:3: `assigns_a_parameter` says `valid(return, n)`, but the compiler cannot prove it at this `return`
+// CHECK: E8012] at {{.*}}pointer_ensures_that_a_body_breaks.vx:[[@LINE+5]]:3: `assigns_a_parameter` has a pointer `ensures` that names `n`, so its body must not change `n`: a caller knows only the value that it gives
+fn assigns_a_parameter(p : *const i64, mut n : i64) -> *const i64
+requires valid(p, n)
+ensures valid(return, n)
+{
+  n = n + 1i64;
+  return p;
+}
+
+// CHECK: E8012] at {{.*}}pointer_ensures_that_a_body_breaks.vx:[[@LINE+7]]:3: `hides_a_parameter` says `valid(return, n)`, but the compiler cannot prove it at this `return`
+// CHECK: E8012] at {{.*}}pointer_ensures_that_a_body_breaks.vx:[[@LINE+5]]:3: `hides_a_parameter` has a pointer `ensures` that names `n`, so its body must not change `n`: a caller knows only the value that it gives
+fn hides_a_parameter(p : *const i64, n : i64) -> *const i64
+requires valid(p, n)
+ensures valid(return, n)
+{
+  let n = 1i64;
+  return p;
+}
+
+fn as_pointer(r : &i64) -> *const i64
+ensures valid(return, 1i64)
+{
+  let p : *const i64 = r;
+  unsafe { assume valid(p, 1i64); }
+  return p;
+}
+
+// The result of `as_pointer` can point into `x`.
+// CHECK: E8012] at {{.*}}pointer_ensures_that_a_body_breaks.vx:[[@LINE+6]]:3: `returns_a_pointer_that_a_call_made_from_a_local` says `valid(return, 1)`, but the compiler cannot prove it at this `return`
+// CHECK-NEXT: note: a fact that proves it ended at the end of the scope of `x` (at [[@LINE+5]]:3)
+fn returns_a_pointer_that_a_call_made_from_a_local() -> *const i64
+ensures valid(return, 1i64)
+{
+  let x = 5i64;
+  return as_pointer(&x);
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: 11 error(s) emitted

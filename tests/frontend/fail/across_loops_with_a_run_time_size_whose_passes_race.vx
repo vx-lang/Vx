@@ -1,0 +1,42 @@
+//===- across_loops_with_a_run_time_size_whose_passes_race.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each `n` here is a loop size that the program sets at run time. These passes race for every
+// `n` above 1, so the compile fails with E6032. A check of `n` before the launch, as for an index
+// that wraps, does not make them correct.
+//
+// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6032
+
+// Block `b` and lane `l` write the element that block `b + 1` and lane `l - 1` also write.
+pub fn blocks_that_overlap(o : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for l in 0..256 across lanes {
+        // CHECK: Error[E6032] at {{.*}}:[[#@LINE+1]]:{{[0-9]+}}: two passes of this block loop may write the same element of `o`: an index of the write must fix `b`
+        o[b + l] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+// Every block writes the same 256 elements.
+pub fn every_block_writes_one_row(o : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for l in 0..256 across lanes {
+        // CHECK: Error[E6032] at {{.*}}:[[#@LINE+1]]:{{[0-9]+}}: two passes of this block loop may write the same element of `o`: an index of the write must fix `b`
+        o[l] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

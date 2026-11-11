@@ -1,0 +1,37 @@
+//===- failed_trait_bound_keeps_the_declared_return_type.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// Each call to `takes` below fails its trait bound, because no type here implements `Named`.
+// The call still returns an `i32`, as `takes` declares, so returning its value is not an
+// error. The compiler used to give the call no type, and then reported E4005: "this returns
+// a value that points into this function's stack frame".
+
+trait Named {
+  fn id(self : &Self) -> i32;
+}
+
+fn takes<T : Named>(_x : &T) -> i32 {
+  return 1;
+}
+
+fn with_closure(g : |i32| -> i32) -> i32 {
+  // CHECK: Error in {{.*}}: Type '|i32| -> i32' does not implement trait 'Named' required by parameter 'T'
+  let n = takes(&g);
+  return n;
+}
+
+fn with_number(k : i64) -> i32 {
+  // CHECK: Error in {{.*}}: Type 'i64' does not implement trait 'Named' required by parameter 'T'
+  let n = takes(&k);
+  return n;
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -178,6 +178,8 @@ pub enum CostSource {
     LinkRate,
     /// The roofline derived from the endpoints' own `bandwidth:` figures along the `within:` tree.
     Containment,
+    /// A `: shared` edge. Both sides address one memory, so the cost is 0 bytes copied.
+    Shared,
 }
 
 impl CostSource {
@@ -185,6 +187,7 @@ impl CostSource {
         match self {
             CostSource::LinkRate => "link_rate",
             CostSource::Containment => "containment",
+            CostSource::Shared => "shared",
         }
     }
 }

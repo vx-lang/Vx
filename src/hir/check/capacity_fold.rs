@@ -35,6 +35,20 @@ pub struct CallEdge {
     /// Bytes still resident in each space when control transfers, granule-rounded.
     pub live: BTreeMap<String, u64>,
     pub span: crate::syntax::Span,
+    /// The groups of tasks that can run at the same time as this call.
+    pub others: Vec<TaskGroup>,
+}
+
+/// Tasks that run at the same time as a call: one task, the code of a `tasks` block, or the other
+/// tasks of a `spawn` in a loop.
+#[derive(Debug, Clone)]
+pub struct TaskGroup {
+    /// How many of these tasks run at once. `None` when it is not known at compile time.
+    pub copies: Option<u64>,
+    pub spawn: Option<crate::syntax::Span>,
+    /// The calls of the group, one list for each place in the nested `tasks` blocks. The calls of
+    /// one place run one after the other, so each place adds the peak of its largest call.
+    pub parts: Vec<Vec<usize>>,
 }
 
 /// A function's capacity footprint: its own per-space peak and the calls it
@@ -111,6 +125,7 @@ fn fold_with_budgets(
 
     // Each report below names its own function's file. Put back the caller's file after.
     let caller_file = errors.file.clone();
+    let mut not_known_reported = std::collections::HashSet::new();
 
     // Tarjan emits SCCs in reverse topological order: every callee's component
     // before its callers'. Fold in that order, so `total` of a callee is final
@@ -147,7 +162,14 @@ fn fold_with_budgets(
                     continue;
                 };
                 let held = call.live.get(space).copied().unwrap_or(0);
-                let reach = held + total[callee].get(space).copied().unwrap_or(0);
+                let (others, not_known) = at_the_same_time(nodes[n], call, space, &index, &total);
+                if let Some(spawn) = not_known {
+                    if not_known_reported.insert((spawn.line, spawn.column, space.to_string())) {
+                        errors.file = nodes[n].file.clone();
+                        report_task_count_not_known(errors, space, budget.overcommit, &spawn);
+                    }
+                }
+                let reach = held + total[callee].get(space).copied().unwrap_or(0) + others;
                 if reach > best {
                     best = reach;
                     best_edge = Some(ei);
@@ -164,6 +186,7 @@ fn fold_with_budgets(
                 budget,
                 &nodes,
                 &index,
+                &total,
                 &peak_edge,
                 &mut reported,
                 errors,
@@ -171,6 +194,65 @@ fn fold_with_budgets(
         }
     }
     errors.file = caller_file;
+}
+
+/// What the other tasks that run at the same time as `call` hold in `space`, and a `spawn` whose
+/// count of tasks is not known, if one of them holds bytes there. A callee in the same cycle has no
+/// total yet, and counts as 0.
+fn at_the_same_time(
+    node: &FnCapacitySummary,
+    call: &CallEdge,
+    space: &str,
+    index: &HashMap<&str, usize>,
+    total: &[BTreeMap<String, u64>],
+) -> (u64, Option<crate::syntax::Span>) {
+    let mut bytes = 0u64;
+    let mut not_known = None;
+    for g in &call.others {
+        let one: u64 = g
+            .parts
+            .iter()
+            .map(|part| {
+                part.iter()
+                    .filter_map(|&j| index.get(node.calls[j].callee.as_str()))
+                    .map(|&callee| total[callee].get(space).copied().unwrap_or(0))
+                    .max()
+                    .unwrap_or(0)
+            })
+            .sum();
+        match g.copies {
+            Some(n) => bytes = bytes.saturating_add(one.saturating_mul(n)),
+            None if one > 0 => not_known = not_known.or(g.spawn),
+            None => {}
+        }
+    }
+    (bytes, not_known)
+}
+
+/// A `spawn` in a loop whose count of passes is not known, and whose tasks place memory in `space`.
+/// Each pass starts a task, so the compiler cannot bound what the tasks hold at the same time.
+pub(crate) fn report_task_count_not_known(
+    errors: &mut crate::diagnostic::DiagnosticsVec,
+    space: &str,
+    overcommit: bool,
+    spawn: &crate::syntax::Span,
+) {
+    let msg = format!(
+        "this `spawn` is in a loop with a count of passes that is not known at compile time, and \
+         its tasks use memory space '{space}'. The tasks of all the passes run at the same time, \
+         so their working set has no bound. Use a `for` loop over a constant range, or join each \
+         task in its pass"
+    );
+    let span = Some(crate::diagnostic::SourceSpan::from_ast_span(spawn));
+    if overcommit {
+        errors.warn(
+            crate::diagnostic::DiagnosticCode::W1028,
+            format!("{msg}. This is allowed because '{space}' is `overcommit`"),
+            span,
+        );
+    } else {
+        errors.error_with_code(crate::diagnostic::DiagnosticCode::E6039, msg, span);
+    }
 }
 
 /// Refuse a call path whose folded peak exceeds a space's capacity, unless the
@@ -183,6 +265,7 @@ fn report_overflow(
     budget: &SpaceBudget,
     nodes: &[&FnCapacitySummary],
     index: &HashMap<&str, usize>,
+    total: &[BTreeMap<String, u64>],
     peak_edge: &[BTreeMap<String, usize>],
     reported: &mut [BTreeMap<String, bool>],
     errors: &mut crate::diagnostic::DiagnosticsVec,
@@ -199,7 +282,8 @@ fn report_overflow(
     // Walk the peak path; a flagged node below means this is the same overflow
     // seen from one caller further up.
     let mut path: Vec<usize> = vec![n];
-    let mut hops: Vec<(usize, u64)> = Vec::new(); // (node, bytes held across its call)
+    // (node, bytes held across its call, bytes that other tasks hold at the same time)
+    let mut hops: Vec<(usize, u64, u64)> = Vec::new();
     let mut cur = n;
     while let Some(&ei) = peak_edge[cur].get(space) {
         let call = &nodes[cur].calls[ei];
@@ -210,7 +294,11 @@ fn report_overflow(
             reported[n].insert(space.to_string(), true);
             return;
         }
-        hops.push((cur, call.live.get(space).copied().unwrap_or(0)));
+        hops.push((
+            cur,
+            call.live.get(space).copied().unwrap_or(0),
+            at_the_same_time(nodes[cur], call, space, index, total).0,
+        ));
         path.push(next);
         cur = next;
     }
@@ -218,11 +306,21 @@ fn report_overflow(
 
     let names: Vec<&str> = path.iter().map(|&i| nodes[i].name.as_str()).collect();
     let terminal = *path.last().unwrap();
-    let mut held: Vec<String> = hops
-        .iter()
-        .filter(|(_, bytes)| *bytes > 0)
-        .map(|(i, bytes)| format!("'{}' holds {} bytes across its call", nodes[*i].name, bytes))
-        .collect();
+    let mut held: Vec<String> = Vec::new();
+    for &(i, bytes, tasks) in &hops {
+        if bytes > 0 {
+            held.push(format!(
+                "'{}' holds {} bytes across its call",
+                nodes[i].name, bytes
+            ));
+        }
+        if tasks > 0 {
+            held.push(format!(
+                "the other tasks of '{}' that run at the same time as its call hold {} bytes",
+                nodes[i].name, tasks
+            ));
+        }
+    }
     held.push(format!(
         "'{}' itself peaks at {} bytes",
         nodes[terminal].name,
@@ -300,7 +398,9 @@ fn fold_cycle(
                     continue;
                 };
                 let held = call.live.get(space).copied().unwrap_or(0);
-                let reach = held + total[callee].get(space).copied().unwrap_or(0);
+                let reach = held
+                    + total[callee].get(space).copied().unwrap_or(0)
+                    + at_the_same_time(nodes[i], call, space, index, total).0;
                 if reach > best {
                     best = reach;
                     peak_edge[i].insert(space.to_string(), ei);
@@ -435,6 +535,7 @@ mod tests {
                     callee: callee.to_string(),
                     live: live.iter().map(|(s, b)| (s.to_string(), *b)).collect(),
                     span: crate::syntax::Span::default(),
+                    others: Vec::new(),
                 })
                 .collect(),
         }

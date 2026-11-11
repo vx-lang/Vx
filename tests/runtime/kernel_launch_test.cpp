@@ -242,6 +242,44 @@ void entry_parameter_counting() {
   check(vx_launch_entry_param_count(nullptr, "x") == -1, "no PTX, no count");
 }
 
+/* A buffer whose space has `alignment: 16 B` has `.align 16` on its aligned
+   pointer, the second field. A pointer that is not a multiple of 16 is found
+   before the launch, by its parameter. */
+void aligned_parameters() {
+  static const char kPtx[] = ".visible .entry sum4(\n"
+                             "\t.param .u64 .ptr .align 1 sum4_param_0,\n"
+                             "\t.param .u64 .ptr .align 16 sum4_param_1,\n"
+                             "\t.param .u64 sum4_param_2,\n"
+                             "\t.param .u64 sum4_param_3,\n"
+                             "\t.param .u64 sum4_param_4,\n"
+                             "\t.param .u32 sum4_param_5\n"
+                             ")\n{\n\tld.param.b64 %rd1, [sum4_param_1];\n}\n";
+  long align[6];
+  check(vx_launch_param_aligns(kPtx, "sum4", align, 6) == 1,
+        "the entry is found");
+  check(align[0] == 1 && align[1] == 16 && align[2] == 0 && align[5] == 0,
+        "each parameter has the alignment of its `.ptr .align`, or 0");
+
+  alignas(16) static float data[8];
+  Descriptor<1> d{};
+  d.allocated = data;
+  d.aligned = data;
+  d.sizes[0] = 8;
+  d.strides[0] = 1;
+  void *desc = &d;
+  int32_t n = 8;
+  void *args[2] = {&desc, &n};
+  const int32_t tags[2] = {VX_ABI_MEMREF_TAG(VX_DTYPE_F32, 1), VX_ABI_KIND_I32};
+  vx_launch_params params;
+  check(vx_launch_build_params(args, tags, 2, &params) == 1,
+        "the arguments are marshalled");
+  check(vx_launch_misaligned(&params, align, 6) == -1,
+        "a pointer at a multiple of 16 is aligned");
+  d.aligned = data + 1;
+  check(vx_launch_misaligned(&params, align, 6) == 1,
+        "a pointer 4 bytes past it is not, and its parameter is found");
+}
+
 } // namespace
 
 /// The launch shape of a region with `across` loops (#252): the payload names
@@ -329,6 +367,7 @@ int main() {
   scalars_pass_by_address();
   refusals();
   entry_parameter_counting();
+  aligned_parameters();
   launch_shapes();
   caller_streams();
 

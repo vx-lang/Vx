@@ -168,6 +168,9 @@ elaboration", done once, ahead of both code generators.
   keeps this simple.
 - **`spawn` regions**: a captured owner stays owned by the enclosing function; a tensor allocated
   inside a region is dropped at the end of the region like any block.
+- **Tasks**: a task borrows each owner that it uses until its join, or until the end of its
+  `tasks` block. So the owner is dropped after that join, or after the block joins its tasks at
+  the end of its body. A task that moves an owner takes it, and then drops it or passes it on.
 
 ## 3. Phases
 

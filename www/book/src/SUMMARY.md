@@ -14,6 +14,8 @@
 - [Vx for Rust programmers](for-rust-programmers.md)
 - [Control flow](control-flow.md)
 - [Ownership and borrowing](ownership.md)
+- [Tasks and channels](tasks.md)
+- [What Vx guarantees about concurrency](guarantees.md)
 - [Generics and traits](generics.md)
 - [Compile-time evaluation](comptime.md)
 - [Contracts and verification](contracts.md)
@@ -24,6 +26,7 @@
 # Heterogeneous computing
 
 - [Topologies and memory](heterogeneous.md)
+- [Parallel code on a GPU](gpu.md)
 - [Machine files](machine-files.md)
 - [NUMA and the host's memory domains](numa.md)
 

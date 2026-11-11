@@ -16,14 +16,18 @@ use crate::syntax::stmt::Statement;
 use crate::syntax::{Expr, Span};
 use std::collections::HashSet;
 
-/// Whether `s` holds an `across` loop or a lane reduction at any depth. Every lane of the block
-/// or the subgroup must get to each of them.
+/// Whether `s` holds an `across` loop, a lane reduction or a lane matmul at any depth. Every lane
+/// of the block or the subgroup must get to each of them.
 pub(crate) fn holds_across(s: &Statement) -> bool {
     let mut found = false;
     visit_stmts(std::slice::from_ref(s), &mut |s| {
         found |= match s {
             Statement::ForLoop(f) => f.across.is_some(),
             Statement::LetDecl(l) => crate::hir::check::lanes::bare_lanes_call(&l.expr).is_some(),
+            Statement::ExprStmt(e) => {
+                crate::hir::check::lanes::bare_lane_statement(&e.expr).is_some()
+            }
+            Statement::Assign(a) => crate::hir::check::lanes::lane_matmul(a).is_some(),
             _ => false,
         };
     });

@@ -295,6 +295,11 @@ pub enum MemoryCoherenceIssue {
         child_scope: Scope,
         parent_scope: Scope,
     },
+    /// `within:` names a space that is not built in, and that no declaration declares.
+    UndeclaredParent {
+        child: MemorySpace,
+        parent: MemorySpace,
+    },
 }
 
 impl<'a> MemoryHierarchy<'a> {
@@ -619,6 +624,15 @@ impl<'a> MemoryHierarchy<'a> {
     pub fn coherence_issues(&self) -> Vec<MemoryCoherenceIssue> {
         let mut issues = Vec::new();
         for (space, decl) in &self.spaces {
+            // A built-in space exists without a declaration.
+            if let Some(parent @ MemorySpace::Custom(_)) = &decl.parent {
+                if !self.spaces.contains_key(parent) {
+                    issues.push(MemoryCoherenceIssue::UndeclaredParent {
+                        child: space.clone(),
+                        parent: parent.clone(),
+                    });
+                }
+            }
             let cyclic = self.in_cycle(space);
             if cyclic {
                 issues.push(MemoryCoherenceIssue::Cycle {
@@ -729,6 +743,23 @@ mod tests {
         assert!(h.contains(&space("SMEM"), &space("TMEM")));
         assert!(!h.contains(&space("TMEM"), &space("HBM")));
         assert!(!h.contains(&space("HBM"), &space("HBM"))); // not self
+    }
+
+    #[test]
+    fn within_an_undeclared_space_is_an_issue() {
+        // Nothing declares `NOPE`. `SMEM` is declared, and `GPU_HBM` is built in.
+        let decls = vec![
+            mem("L2", Some("NOPE"), Some(64)),
+            mem("SMEM", Some("GPU_HBM"), Some(64)),
+            mem("TILE", Some("SMEM"), Some(32)),
+        ];
+        assert_eq!(
+            MemoryHierarchy::build(&decls).coherence_issues(),
+            vec![MemoryCoherenceIssue::UndeclaredParent {
+                child: space("L2"),
+                parent: space("NOPE"),
+            }]
+        );
     }
 
     #[test]

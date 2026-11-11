@@ -58,6 +58,15 @@ impl TypeChecker<'_> {
                     None,
                 );
             }
+            if decl.name.as_ref() == crate::syntax::ANY_TOPOLOGY {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E6016,
+                    "a topology cannot be called `Any`: `on Topology::Any` means that a \
+                     function runs where it is called -- rename it"
+                        .to_string(),
+                    None,
+                );
+            }
         }
         // Dispatch-id collision: the id is a hash of the name, so two names can share one id.
         // Everything keyed by the id -- spawn dispatch,

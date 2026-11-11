@@ -70,11 +70,13 @@ Memory SMEM {
 // expectation this dry run is testing.
 Topology Device {
   // The Apple GPU. Named, and deliberately not an LLVM target triple: there is
-  // no upstream backend for this ISA, and Vx does not emit code for it -- the
-  // part is reached through CoreML behind the plugin ABI (runtime/npu_dispatch.mm).
-  // So a triple derived from this must be refused rather than guessed at, which is
-  // the honest answer for a machine that is dispatched to rather than compiled for.
+  // no upstream LLVM backend for this ISA. Vx writes Metal Shading Language for a
+  // kernel here, and Metal compiles it when the program runs
+  // (runtime/metal_dispatch.mm). So a triple derived from this must be refused.
   arch: applegpu,
+  // spec: Metal Feature Set Tables: at most 1024 threads in a threadgroup, and a
+  // SIMD-group of 32 threads on Apple GPUs.
+  levels: [blocks(max_lanes: 1024, memory: cta), subgroups(lanes: 32), lanes(memory: thread)],
   memory: Memory::HBM,
   visible: [Memory::HBM, Memory::L2, Memory::SMEM],
   // spec: Apple, Metal Shading Language Specification, "Scalar Data Types" (Table 2.1):
@@ -84,9 +86,10 @@ Topology Device {
   // 3.1 and later. No fp8 or fp4 type exists in the language.
   dtypes: [f32, bf16, f16, i8, u8, i16, u16, i32, u32, i64, u64, bool],
   transfer Memory::CPU_DRAM -> Memory::HBM : 120 GB/s,
-  // The same memcpy in the other direction, declared at the same peak and UNVERIFIED for
-  // the reason above. Reading a placed tensor back is how a program says it still holds it.
-  transfer Memory::HBM -> Memory::CPU_DRAM : 120 GB/s,
+  // The CPU reads the GPU's memory directly. A transfer of a `&` tensor back to the CPU is
+  // still a copy for the type system, but when the program only reads the copy, the CPU
+  // waits for the GPU and reads the tensor in place. An owned tensor is still copied.
+  transfer Memory::HBM -> Memory::CPU_DRAM : shared,
   transfer Memory::HBM -> Memory::L2,
   transfer Memory::L2 -> Memory::SMEM
 }

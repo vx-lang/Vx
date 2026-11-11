@@ -1,6 +1,6 @@
 # Tasks that wait, channels, and errors from tasks
 
-Status: agreed, except decisions 8 (`select`) and 9 (who owns a task's error, #1937). Issues:
+Status: agreed. Issues:
 #1865, #1864, #1893. Tracking: #1870.
 Builds on `cpu_tasks_send_sync_and_shared_atomics.md` (T1 to T8, S1 to S6) and the memory model
 (C0 to C7).
@@ -181,7 +181,17 @@ So a sender to a dropped receiver does not wait forever, and the join at the end
 ends. In the example, a task whose receiver is gone fails, and so does the block (F1). That is the
 right result: no code reads the values.
 
-**M3. `select`.** `select` waits on several operations, and runs the arm of the first one that can
+**M3. `select`.** Decision 8 chose a library function, not the block expression below (#2384):
+`Selector::new(rs : Vec<Receiver<T>>)` makes a selector, and its `select()` gives the first value
+from any channel in the list, with the index of its channel, or `Closed` when each channel is closed
+and empty. The selector keeps the index of its last choice, and the next search starts after it
+(round robin). So a channel with a value gives it within `n` calls (#2548). It waits on `recv` only,
+and the channels have one element type. A program that waits on channels of different types sends
+an enum of its own. A `select` sleeps on one word of the runtime, which each event on any channel
+changes. The rest of this section is the design of the block expression, which can still come later
+for `send` and `sleep` arms.
+
+The block expression waits on several operations, and runs the arm of the first one that can
 continue. It is a block expression, as `tasks` is, not a library type.
 
 <!-- vx-doctest: skip (proposed syntax) -->
@@ -300,8 +310,10 @@ never continues. So `lock` parks the task (W4), and the lock belongs to a task, 
 (W9). `lock` cannot be cancelled (F4). It has the same model check as the channel.
 
 **M8. `Arc`.** #1864 also asks for `Arc`. A task borrows the locals of its parent (T5), so most
-programs need no reference count. `Arc` waits until a program needs data that lives longer than
-its `tasks` block.
+programs need no reference count. `std::sync::arc` has one for data that lives longer than its
+`tasks` block. It follows Rust's `Arc`: a clone adds 1 with `Relaxed`, a drop takes 1 away with
+`Release`, and the last drop runs an `Acquire` fence before it drops the value.
+`formal/memory_model/tests/arc_last_drop_*.litmus` check that order.
 
 ## 4. Errors from tasks (#1893)
 
@@ -315,7 +327,7 @@ requests that worked, or to try another source after a failure, the task returns
 The compiler knows `Result` by name, as it knows `SharedCell`. `panic` still stops the program
 (T6), so Vx needs no unwinding.
 
-**F2. `?`.** Vx has no `?` today. This design adds one:
+**F2. `?`.**
 
 - `x?` returns the `Err` of `x` unchanged. The type of the error must be the `E` of the target. It
   does not convert the error, because Vx has no implicit conversions. `.map_err(..)` converts it.
@@ -325,6 +337,8 @@ The compiler knows `Result` by name, as it knows `SharedCell`. `panic` still sto
   task is (F3). An `Err` that is the last value of the block is also a failure.
 - In a `spawn` body, `return` leaves the task. A `break` or `continue` that targets a loop outside
   the body is a compile error.
+- Done for a function, the code of a `tasks` block, a `spawn` body and a closure (E3063). In a
+  closure, `?` needs the type that the closure returns: `|x| -> Result<T, E> { .. }`.
 
 So passing `Cancelled` up costs more in Vx than in Rust: Rust's `?` converts it with `From`. A
 function with its own error enum needs a `Cancelled` case in it, or a `.map_err(..)` at each wait.
@@ -361,11 +375,13 @@ could drop it, and the block would then have no first failure to return (#1937).
 look at the error of one task makes that task return its own enum, as data.
 
 **F4. Which waits can be cancelled.** `send`, `recv`, `sleep` and I/O can be cancelled. They
-return their error with a `Cancelled` case. A `select` runs its `cancelled` arm (M3). `join()`,
+return their error with a `Cancelled` case. A cancelled `send` that already has its place in the
+ring of the channel puts the number of that place in a skip set of the runtime. The `recv` of that
+place passes it, so the place does not stop the later ones (#2417). A `select` runs its `cancelled` arm (M3). `join()`,
 `lock` and the waits for a device cannot be cancelled. A cancelled parent must join its children
 anyway (T3), so a cancelled `join` gives nothing. A wait for a device holds a token that must be
 used once (#244), and an error would lose it. A loop with no wait point does not see the cancel.
-`tasks::cancelled()` lets it check.
+`cancelled()`, from `std::sync::wait`, lets it check.
 
 **What a cancel promises.** In a cancelled task, the next wait that can be cancelled returns `Err`.
 The task stops only if each function between that wait and the task body passes the error up.
@@ -376,8 +392,11 @@ each wait fails at once, and the loop never ends. Dropping a `Cancelled` is not 
 
 - The program must use the `Result` of each wait that can be cancelled.
 - The compiler warns when an arm that matches `Cancelled` can reach the same wait again without
-  leaving the loop. An arm matches `Cancelled` by name, by `_`, or by `Err(_)`. It is a warning,
-  not an error, because the check cannot follow every call.
+  leaving the loop (W1035). An arm matches `Cancelled` by `_`, by `Err(_)`, or by a name that
+  starts with `_`. An arm that gives the error a used name can check it. An arm that changes the
+  condition of its `while` can end the loop. A `while` whose body changes its condition in a
+  statement of its own ends after some passes, and so does a `for` loop. It is a warning, not an
+  error, because the check cannot follow every call.
 - F9 reports the exact case at run time.
 
 **F5. I/O that still owns a buffer.** A cancelled I/O wait does not return until the kernel
@@ -392,9 +411,84 @@ For example, a slot of a KV cache must go back to its pool when a task is cancel
 `pool_tx.send(slot)` gets `Cancelled`, and the slot is lost. The same `send` in the `drop` of a
 guard for the slot works.
 
-- A wait in a `drop` must have a time limit. Cancellation cannot stop it, so a wait for a peer
-  that is gone would never end.
+- A wait in a `drop` has a time limit. Cancellation cannot stop it, so a wait for a peer that is
+  gone would never end. F6a says where the limit comes from. After it, each wait in the `drop`
+  that can be cancelled gives up, as in a cancelled block, and `cancelled()` answers true until
+  the end of the scope whose limit passed. A task of the shared runtime parks for such a
+  wait, and a timer thread wakes it at the limit.
+- The compiler warns about a `send` or `recv` in a `drop` that has no limit of its own and is not
+  in a `within` block (W1036). It does not look into the functions that the `drop` calls.
 - A `tasks` block inside a `drop` does not get the cancel of the task outside it.
+
+**F6a. Where a time limit comes from.** The program states it, at the place that knows how long
+the cleanup takes. The deadline of a wait is the earliest of these:
+
+1. **The deadline of each `drop` around it**: the time the `drop` started, plus the limit of its
+   type. A `drop` that runs inside another, such as the `drop` of a field, keeps the earlier
+   deadline, so it cannot take more time than the outer one has left.
+1. **The deadline of each `within` block that runs when it waits**, in a `drop` or anywhere else.
+   The deadline is on the task, not in the text of the block, so it also covers the functions that
+   the block calls and the `drop`s that run in it.
+1. **The wait's own limit**: `send_for`, `recv_for`, and `wait_while_until`, the wait under them.
+
+So a narrower scope can only shorten the time, never lengthen it.
+
+**The limit of a type.** The author of a `Drop` knows how long its cleanup can take, so `Drop` has
+a method for it, with a default:
+
+```vx
+trait Drop {
+  fn drop(self : &mut Self) -> void;
+  /// How long the waits in `drop` can take, in seconds.
+  fn wait_limit(self : &Self) -> f64 {
+    return 10.0;
+  }
+}
+```
+
+The code before a `drop` calls `wait_limit` and gives the result to `vx_cancel_off`, which sets
+the deadline of the `drop`. `wait_limit` runs before cancellation is off, so it is meant to return
+a number and not to wait. W1036 warns about a `send` or `recv` in it too. It becomes a constant
+when traits have constants.
+
+The default is a constant, 10 seconds, and not a setting of the program. `Drop` is in `core::ops`,
+which cannot call `std` or the runtime, and a setting would be state that every `drop` reads. A
+program that wants shorter limits everywhere puts its code in a `within` block. A type whose
+cleanup needs longer says so with `wait_limit`.
+
+**A `within` block** gives the waits in it one budget:
+
+```vx
+impl Drop for SlotGuard {
+  fn drop(self : &mut SlotGuard) -> void {
+    within(Duration::from_millis(50), || -> void {
+      match self.pool_tx.send(self.slot) {
+        Result<void, SendError<Slot>>::Ok(_) => {}
+        Result<void, SendError<Slot>>::Err(_e) => { count_lost_slot(); }
+      }
+    });
+  }
+}
+```
+
+- Its deadline starts when the block starts and ends when the block ends. A flush, a close and a
+  send in one block share the 50 ms, where `send_for` and `recv_for` give each wait the whole
+  time again.
+- Outside a `drop`, the block is a timeout for its waits. It does not shield them from a cancel:
+  only a `drop` runs with cancellation off (decision 6).
+- After the block, `cancelled()` says whether the task itself was cancelled, so the code can tell
+  a cancel from a timeout.
+- This note first made `within` a block, because a closure then captured its locals by value
+  and could not change `self`. `docs/discussions/closures_that_change_captured_locals.md` changed
+  that, so `within` is now a library function that takes a closure.
+- `within:` already names the parent of a `Memory` in a machine file. The two do not meet: that
+  one is a key before `:`, and this one starts a statement and comes before `(`.
+
+**`VX_DROP_WAIT_SECONDS`** stays only as a cap for tests and debugging, for example to make a test
+fast or to find a `drop` that hangs. It shortens the deadline of each `drop`, whatever its type
+says, and never lengthens one. It does not touch a `within` block outside a `drop`. The runtime
+reads it when the program starts, so a value that is not a number stops the program before it
+runs, and not at its first `drop`.
 
 **F7. Leaving a `tasks` block early.** `return` or `break` out of the code of a `tasks` block
 cancels the tasks of the block and then joins them (T3). Then the exit happens. `?` is a failure
@@ -404,20 +498,34 @@ of the block (F2). A `join()` of a task that failed leaves the block the same wa
 
 - A race: the two tasks, the variable, and the line of each access, and the `join` where the
   first access ends.
+  Done for a task that holds the variable: the error names the line of its `spawn`, the line
+  where it uses the variable, and the `join()` to call before the line of the error.
 - A value that is not `Send`: the field path that makes it so, for example "`Job` is not `Send`
   because `Job.cache.buf` is a `*mut u8`". Rust gives a chain of future types here.
 - A `Task<T>` that leaves its `tasks` block (T3): the line where it leaves.
 - A host wait in a device body, such as `recv` (W5, M6): the call, and the `spawn on` that puts the
   body on the device.
+  Done for a channel end and a lock: E6038 names the variable, the field that holds one, and the
+  line of the `spawn on`. A call of a host function, such as `sleep`, gets E6001.
 
 **F9. Run-time reports.**
 
 - A panic in a task gives the line of its `spawn`, and the `spawn` lines of each parent task.
+  Done: the handler of an abort prints them, so a failed check in a task prints them too. The
+  file is always the file given to `vxc`, so the file of a `spawn` in an imported module is wrong.
 - A deadlock: the runtime stops the program when every task waits, and nothing can wake one. A
   task in a foreign call (W8), work on a device, a timer, or I/O in progress can wake one. Go
   already lists each goroutine, what it waits for and where, and the line that started it. Vx
   also names the channel or lock, with the line that made it, and prints the cycle of waits.
+  Done in `wait.rs`: a watcher thread stops the program. The report lists each wait: `send`,
+  `recv`, `lock`, `select`, or the join of a task, with the `spawn` lines of the task that waits.
+  Two waits on one channel or one lock get the same number. Each wait has its line, and the line
+  that made its channel or lock. The library gets them from a last parameter `at : Caller`, which
+  the compiler fills with the place of each call (#2569). Not done: the cycle of waits.
 - A task that gets `Cancelled` from many waits in a row: the line of the wait (F4).
+  Done in part: at the 1000th time that a task sees the cancel of its block, the runtime warns
+  once, with the `spawn` lines of the task. Not done: the line of the wait. A task checks the
+  cancel at many places, and the warning does not know which wait it came from.
 
 ## 5. Admission
 
@@ -432,6 +540,16 @@ tasks makes that real. So:
 - When `n` or the count is known only at run time, the verdict is "unknown". That is the true
   answer. The program gets a verdict with an `invariant` clause on the `for` loop that bounds the
   count. `hir/memory.rs` already reads these clauses.
+
+Done: the tasks of one block add up. A call in a task adds the largest callee peak of each other
+task, and the tiles of each other task, in `capacity_fold.rs`. A join that always runs ends its
+task, so the code after it and a task that starts after it do not add the task's memory.
+
+Done: a `spawn` in a loop of its block. A `for` loop over a constant range multiplies the tasks
+by its count of passes. A join in the same pass keeps one task at a time. Another loop gives
+E6039, and an `invariant` that bounds the count does not help yet. Not done: the values in a
+channel, which waits for #2970, and the stack of each task. The check does not count host memory
+yet.
 
 ## 6. The runtime work
 
@@ -522,10 +640,10 @@ says the same thing.
 
 | Rule | This design |
 | --- | --- |
-| A signature is the whole contract | No colors and no `async fn` (W1). A mark in a signature does not spread to callers (W5). The analysis of W3 only changes generated code. |
+| A signature is the whole contract | No colors and no `async fn` (W1). A mark in a signature does not spread to callers (W5). The analysis of W3 only changes generated code. The time limit of a `drop` belongs to its type's `Drop` (F6a), not to the environment. |
 | Every layout is known at the freeze | `Sender<T>` and `Receiver<T>` are library structs. The checks of M5 and M6 use the frozen layout. |
 | A generic closes at its definition | `T : Send` is a bound. |
-| A body declares nothing global | `select` is an expression, as `tasks` is, and `tasks::cancelled()` is a call. K1 and K2 read only the body of the task. |
+| A body declares nothing global | `tasks` is an expression. `select` (decision 8) and `cancelled()` are library functions. K1 and K2 read only the body of the task. |
 | No implicit conversions | `?` does not convert the error (F2). |
 
 ## Decisions
@@ -545,19 +663,22 @@ We chose these on 2026-10-19, from the recommendations of a review.
 1. **A dropped `Cancelled`.** Chosen: the warning of F4 for an arm that can reach the same wait
    again, and the run-time report of F9.
 1. **Code that must finish.** Only `drop` runs with cancellation off (F6), or also a block that the
-   program marks. Chosen: `drop` only, with a time limit on each wait in it.
+   program marks. Chosen: `drop` only, with a time limit on each wait in it. Proposed on
+   2026-11-04, for #1893: the code states the limit (F6a), through the `drop` around a wait, the
+   type's `wait_limit` (10 seconds by default), `within` blocks, and the wait's own limit.
+   `VX_DROP_WAIT_SECONDS` only caps it.
 1. **How a task takes a local.** The use decides, and K2 moves a local that ends first, or a new
    `spawn move`. Chosen: K1 to K3, with no new syntax.
 1. **`select`.** A block expression (M3), or a library type. A library type needs written lifetimes
-   and dynamic dispatch, and Vx has neither. The spelling of an arm and the guard are part of this
-   decision. Open. The recommendation is the block expression, for the reason that made `tasks`
-   syntax.
+   and dynamic dispatch, and Vx has neither. Chosen on 2026-10-31: a library function over a list
+   of receivers of one type (#2384). It needs neither feature, because the list owns the
+   `Receiver`s and they all have one type. It has no `send`, `sleep` or `cancelled` arm yet.
 1. **Who owns a task's error (#1937).** `join()` returns `T` and leaves the block on a failure,
    and the block owns its first failure (F1, F3a). One other choice: `join()` gives a
    `Result<T, &E>`. The code can read it but not pass it up with `?`, so each join needs a `match`.
    Another: `join()` gives the `Err` by value, and the code must pass it up on every path. That
-   needs a flow check, and it can give the block a second error that is not the first. Open. The
-   recommendation is the first.
+   needs a flow check, and it can give the block a second error that is not the first. Chosen:
+   the first (#2105).
 
 The review also settled two earlier questions: `select` starts its search round robin (M3), and
 the memory-space type decides what can go between targets (M6).
@@ -568,7 +689,8 @@ the memory-space type decides what can go between targets (M6).
    `spawn`, K1 to K3, F1 with the first-failure rule of F3, and `?` (F2).
 1. Channels, `select` and `Mutex` (M1 to M3, M7). A wait blocks the thread of the task. The Lean
    edges (M4) and the model check of the library code.
-1. Cancellation (F3 to F7) and the run-time reports (F9).
+1. Cancellation (F3 to F7) and the run-time reports (F9). The limits of F6a: `wait_limit` on
+   `Drop`, `within`, and `VX_DROP_WAIT_SECONDS` as a cap read at the start of the program.
 1. The second runtime, as one unit: the stack pool and the switch, the monitor (W8), W9, and the
    test mode.
 1. The I/O event loop, and `std/net.vx` on it.

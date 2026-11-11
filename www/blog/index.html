@@ -43,6 +43,44 @@
 
   <ul class="posts">
     <li>
+      <a href="/blog/the-promise-of-vx.html">The promise of Vx</a>
+      <time datetime="2026-11-09">9 November 2026</time>
+      <p>Your desktop has many cores, memory in banks and a GPU, and the apps you download use
+      little of it. Vx lets you write the app you need and use all of it. What works today, and
+      what is still a promise.</p>
+    </li>
+    <li>
+      <a href="/blog/checking-the-deadlock-watcher.html">Checking the deadlock watcher</a>
+      <time datetime="2026-11-03">3 November 2026</time>
+      <p>The Vx runtime stops a program when each task waits and nothing can wake one. A TLA+ model
+      of that watcher found a gap of three lines in the timer, where a busy machine could make the
+      watcher report a deadlock that did not exist.</p>
+    </li>
+    <li>
+      <a href="/blog/two-tensors-one-stack-slot.html">Stack coloring enabled by lifetime markers</a>
+      <time datetime="2026-11-02">2 November 2026</time>
+      <p>LLVM gives two local arrays one stack slot when lifetime markers show that they are not in
+      use at the same time. Clang and rustc end each lifetime at the end of a scope. Vx ends it after
+      the last use of a tensor, so the same function uses 4 KB of stack in Vx and 8 KB in C++ and
+      Rust.</p>
+    </li>
+    <li>
+      <a href="/blog/design-visibility-builds-and-versions-together.html">Design visibility, builds and versions together</a>
+      <time datetime="2026-10-27">27 October 2026</time>
+      <p>Visibility rules, the build system and the package manager all depend on the public
+      interface of a package. In C++, Rust and Swift they disagree, and programmers pay for it. In
+      Vx, one visibility keyword will answer three questions: who can call this, what rebuilds when
+      it changes, and which version bump the change needs.</p>
+    </li>
+    <li>
+      <a href="/blog/two-bugs-the-h100-did-not-show.html">Two bugs the H100 did not show</a>
+      <time datetime="2026-10-27">27 October 2026</time>
+      <p>Five litmus tests of Vx's memory model ran on an H100 for over a million rounds each, and
+      printed 0. So did the controls, so the runs showed nothing. Reading the PTX found two bugs: a
+      relaxed load that the GPU may move after a later store, and LLVM 22 dropping the order of
+      every read-modify-write, such as <code>fetch_add</code>, in a kernel.</p>
+    </li>
+    <li>
       <a href="/blog/glm-on-an-a100.html">GLM on an A100, in Vx</a>
       <time datetime="2026-10-20">20 October 2026</time>
       <p>GLM-5's decoder, with its sparse attention and 256-expert layers, runs on an A100 through

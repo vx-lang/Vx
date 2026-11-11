@@ -1,0 +1,88 @@
+//===- a_question_mark_in_a_tasks_block_fails_the_block.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// In the code of a `tasks` block, `x?` passes an `Err` to the block, not to the function. The
+// block then gives that `Err`, and it cancels its tasks. The code after the block still runs. Here a task waits in `recv`, and only
+// the cancel ends that wait: the `?` leaves before the code drops the `Sender`.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen --run 2>&1 | FileCheck %s --implicit-check-not=Error
+
+import std::sync::channel;
+
+fn check(n : i64) -> Result<i64, i64> {
+  if n > 2 {
+    return Result<i64, i64>::Err(n);
+  }
+  return Result<i64, i64>::Ok(n);
+}
+
+fn say(e : RecvError) -> void {
+  match e {
+    RecvError::Closed => {
+      println!("the recv gave Closed");
+    }
+    RecvError::Cancelled => {
+      println!("the recv gave Cancelled");
+    }
+    RecvError::TimedOut => {
+      println!("the recv gave TimedOut");
+    }
+  }
+}
+
+fn wait_for_one(rx : Receiver<i64>) -> void {
+  match rx.recv() {
+    Result<i64, RecvError>::Ok(v) => {
+      println!("the recv gave {}", v);
+    }
+    Result<i64, RecvError>::Err(e) => {
+      say(e);
+    }
+  }
+}
+
+fn run(limit : i64) -> Result<i64, i64> {
+  let (tx, rx) = channel<i64>(1);
+  let r = tasks {
+    spawn {
+      wait_for_one(rx);
+    };
+    let mut total : i64 = 0;
+    for i in 0..limit {
+      total = total + check(i)?;
+    }
+    drop(tx);
+    Result<i64, i64>::Ok(total)
+  };
+  println!("after the block");
+  return r;
+}
+
+fn show(r : Result<i64, i64>) -> void {
+  match r {
+    Result<i64, i64>::Ok(v) => {
+      println!("ok {}", v);
+    }
+    Result<i64, i64>::Err(e) => {
+      println!("err {}", e);
+    }
+  }
+}
+
+// CHECK: {{^}}the recv gave Closed{{$}}
+// CHECK-NEXT: {{^}}after the block{{$}}
+// CHECK-NEXT: {{^}}ok 3{{$}}
+// CHECK-NEXT: {{^}}the recv gave Cancelled{{$}}
+// CHECK-NEXT: {{^}}after the block{{$}}
+// CHECK-NEXT: {{^}}err 3{{$}}
+fn main() -> i32 {
+  show(run(3));
+  show(run(5));
+  return 0;
+}

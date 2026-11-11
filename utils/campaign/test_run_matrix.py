@@ -19,6 +19,10 @@ sys.path.insert(0, str(HERE))
 from run_matrix import classify_outcome, run_engine  # noqa: E402
 
 STARTED = "GPU KV cache size: 104624 tokens"
+SERVED = '"POST /v1/completions HTTP/1.1" 200 OK'
+# The first line of vLLM's stop, and the error it can print during the stop.
+SHUTDOWN = "[core.py:1409] [shutdown] EngineCore: trigger received signal=SIGINT"
+ENGINE_DEAD = "vllm.v1.engine.exceptions.EngineDeadError: EngineCore encountered an issue."
 
 
 class ClassifyOutcome(unittest.TestCase):
@@ -55,6 +59,22 @@ class ClassifyOutcome(unittest.TestCase):
     def test_out_of_memory_after_startup_is_not_a_load_failure(self):
         # The order decides: after "GPU KV cache size", the engine's death is at prefill.
         log = STARTED + "\ntorch.OutOfMemoryError: CUDA out of memory\nEngineDeadError\n"
+        self.check(log, "OOM_AT_PREFILL", "EngineDeadError", served=False)
+
+    def test_engine_dead_error_while_vllm_stops_after_a_served_request_is_boot_ok_serve_ok(self):
+        # Qwen2.5-32B, a 32k prompt, on an A100 80GB: the request came back, and vLLM printed
+        # the error only after the harness stopped it.
+        log = "\n".join([STARTED, SERVED, SHUTDOWN, ENGINE_DEAD]) + "\n"
+        self.check(log, "BOOT_OK_SERVE_OK", "GPU KV cache size:", served=True)
+
+    def test_engine_dead_error_before_vllm_stops_is_oom_at_prefill(self):
+        log = "\n".join([STARTED, ENGINE_DEAD, SHUTDOWN]) + "\n"
+        self.check(log, "OOM_AT_PREFILL", "EngineDeadError", served=True)
+
+    def test_engine_dead_error_while_vllm_stops_after_a_failed_request_is_oom_at_prefill(self):
+        # vLLM also prints [shutdown] lines when it stops after its own failure. So when the
+        # request failed, an error after them still counts.
+        log = "\n".join([STARTED, SHUTDOWN, ENGINE_DEAD]) + "\n"
         self.check(log, "OOM_AT_PREFILL", "EngineDeadError", served=False)
 
     def test_no_nvcc_is_a_setup_fault(self):

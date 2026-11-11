@@ -10,9 +10,9 @@
 // themselves, which read the float's bits, so each is marked to be differentiated as its C
 // function.
 //
-// CHECK-DAG: llvm.func {{(hidden )?}}@libm_asinh({{.*}}passthrough = {{\[\[}}"enzyme_math", "asinh"{{\]\]}}
-// CHECK-DAG: llvm.func {{(hidden )?}}@libm_acosh({{.*}}passthrough = {{\[\[}}"enzyme_math", "acosh"{{\]\]}}
-// CHECK-DAG: llvm.func {{(hidden )?}}@libm_atanh({{.*}}passthrough = {{\[\[}}"enzyme_math", "atanh"{{\]\]}}
+// CHECK-DAG: llvm.func {{(hidden )?}}@libm_asinh({{.*}}passthrough = {{\[\[}}"enzyme_math", "asinh"{{(\], \["probe-stack", "inline-asm")?}}{{\]\]}}
+// CHECK-DAG: llvm.func {{(hidden )?}}@libm_acosh({{.*}}passthrough = {{\[\[}}"enzyme_math", "acosh"{{(\], \["probe-stack", "inline-asm")?}}{{\]\]}}
+// CHECK-DAG: llvm.func {{(hidden )?}}@libm_atanh({{.*}}passthrough = {{\[\[}}"enzyme_math", "atanh"{{(\], \["probe-stack", "inline-asm")?}}{{\]\]}}
 // EXPECT: 894427 577350 1333333
 import core::num;
 

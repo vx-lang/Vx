@@ -1,0 +1,78 @@
+//===- frees_clause_that_is_written_wrong.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `frees` clause is an `ensures` of its own: `ensures frees(p)` or `ensures !frees(p)`, for
+// one parameter `p`. Each clause here breaks that rule and gets E8011. An `extern` function
+// can have only `frees` clauses and pointer clauses, because the compiler trusts them. An impl of a trait method
+// cannot add a `!frees` that the trait method does not have, because a call through the trait
+// reads only the clauses of the trait. The compiler checks the impls and the `extern`
+// functions before the functions, so they come first here.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+trait Looks {
+  fn look_at(self : &Self, p : *const i64) -> i64;
+}
+
+struct Adds {
+  k : i64,
+}
+
+// CHECK: E8011] at {{.*}}frees_clause_that_is_written_wrong.vx:[[@LINE+3]]:12: `look_at` is a method of an impl of `Looks`, so it cannot add `!frees(p)`: a call through the trait reads only the clauses of the trait
+impl Looks for Adds {
+  fn look_at(self : &Adds, p : *const i64) -> i64
+  ensures !frees(p)
+  {
+    return self.k;
+  }
+}
+
+// CHECK: E8011] at {{.*}}frees_clause_that_is_written_wrong.vx:[[@LINE+4]]:12: `t` is not a parameter of `puts`
+// CHECK: E8011] at {{.*}}frees_clause_that_is_written_wrong.vx:[[@LINE+5]]:13: an `extern` function can have only a `frees` clause, a pointer clause or a clause about numbers in its `ensures`, as in `ensures 0i64 <= return`
+extern "C" {
+  safe fn puts(s : *const i8) -> i32
+  ensures !frees(t);
+  safe fn strlen(s : *const i8) -> i64
+  ensures s != 0;
+}
+
+// CHECK: E8011] at {{.*}}frees_clause_that_is_written_wrong.vx:[[@LINE+2]]:10: `frees` says what a call does, so write it as an `ensures`, as in `ensures !frees(p)`
+fn in_a_requires(p : *const i64) -> void
+requires frees(p)
+{
+}
+
+// CHECK: E8011] at {{.*}}frees_clause_that_is_written_wrong.vx:[[@LINE+2]]:10: `q` is not a parameter of `not_a_parameter`
+fn not_a_parameter(p : *const i64) -> void
+ensures !frees(q)
+{
+}
+
+// CHECK: E8011] at {{.*}}frees_clause_that_is_written_wrong.vx:[[@LINE+2]]:10: write each `frees` clause as an `ensures` of its own, with one parameter, as in `ensures !frees(p)`
+fn two_arguments(p : *const i64, n : i64) -> void
+ensures !frees(p, n)
+{
+}
+
+// CHECK: E8011] at {{.*}}frees_clause_that_is_written_wrong.vx:[[@LINE+2]]:10: write each `frees` clause as an `ensures` of its own, with one parameter, as in `ensures !frees(p)`
+fn in_a_larger_clause(p : *const i64, n : i64) -> void
+ensures !frees(p) && n > 0i64
+{
+}
+
+// CHECK: E8011] at {{.*}}frees_clause_that_is_written_wrong.vx:[[@LINE+3]]:10: `frees(p)` and `!frees(p)` cannot both hold
+fn both_forms(p : *const i64) -> void
+ensures frees(p)
+ensures !frees(p)
+{
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: 8 error(s) emitted

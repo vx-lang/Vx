@@ -20,12 +20,12 @@ fn test_unified_host_access() -> i32 {
 
   spawn on(Topology::GPU) {
     // CHECK-NOT: error
-    let valid_gpu = t_gpu;
+    let valid_gpu = t_gpu.clone();
   }
 
   spawn on(Topology::ANE) {
     // CHECK-NOT: error
-    let valid_ane = t_host2;
+    let valid_ane = t_host2.clone();
   }
 
   return 0;
@@ -37,7 +37,7 @@ fn test_spawn_amx() -> i32 {
 
   spawn on(Topology::AMX) {
     // CHECK-NOT: error
-    let valid_amx = t_host;
+    let valid_amx = t_host.clone();
   }
 
   return 0;
@@ -65,7 +65,7 @@ fn test_nested_spawn() -> i32 {
 
   spawn on(Topology::NPU[0]) {
     // CHECK-NOT: error
-    let local = t_npu;
+    let local = t_npu.clone();
 
     spawn on(Topology::CPU) {
       let cpu_val : i32 = 42;

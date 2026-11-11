@@ -1,0 +1,36 @@
+//===- an_across_loop_whose_index_wraps_stops_at_the_launch.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `b * 256 + l` is an `i32`. When `n` is above 2^23, blocks `b` and `b + 2^24` write the same
+// element, because the index wraps. So before the launch the program checks that `n` is at most
+// 2^23 (8388608), and stops when it is larger. The regions run on the CPU here.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= not vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s
+// RUN: env CUDA_VISIBLE_DEVICES= not vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s
+// CHECK: two blocks ran
+// CHECK: the end of the `across` loop at line [[#@LINE+5]] is larger than 8388608, so an index of the loop wraps. Compute the index with a wider type, such as `i64`
+// CHECK-NOT: too many blocks ran
+
+fn fill(o : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for l in 0..256 across lanes {
+        o[b * 256 + l] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut o = transfer(Tensor<f32, [512]>::fill(0.0), Memory::HBM);
+  fill(&mut o, 2);
+  println!("two blocks ran");
+  fill(&mut o, 8388609);
+  println!("too many blocks ran");
+  return 0;
+}

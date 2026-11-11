@@ -55,6 +55,9 @@ pub struct FnSig {
     /// function unsafe states a contract rather than changing what the function is -- the same
     /// reason `ret_prov` lives here.
     pub is_unsafe: bool,
+    /// The length of an `ensures valid(return, n)`, when it is a parameter or a number. The code
+    /// generator tells LLVM after each call that the result points at `n` elements.
+    pub ret_valid: Option<crate::hir::check::pointer_clauses::Length>,
 }
 
 /// The generic field-type information the flat path needs to resolve a member access *through a
@@ -133,6 +136,9 @@ pub struct ImmutableGlobalRegistry {
     /// name through `struct_fields_of` / `resolve_unique_nominal`. Populated by
     /// `build_frozen_registry` and when deserialized from a `.vxlib` (#219/#242).
     pub structs: FxHashMap<TypeId, StructFields>,
+    /// The structs of `structs` that have an invariant. An interface cannot carry the invariant
+    /// yet, so it leaves these structs out.
+    pub structs_with_invariants: FxHashSet<TypeId>,
     /// Data-carrying (tagged-union) enum declarations keyed by name, carrying each variant's *declared*
     /// (possibly generic) payload types + the enum's generic parameters. A monomorphized instance
     /// (`Option<i32>`) has an instance-dependent layout (`{ i32 tag, i32 payload }`) that the frozen
@@ -487,6 +493,7 @@ impl ImmutableGlobalRegistry {
             bodies: FxHashMap::default(),
             enum_variants: FxHashMap::default(),
             structs: FxHashMap::default(),
+            structs_with_invariants: Default::default(),
             enum_data: FxHashMap::default(),
             merge_state: MergeState::default(),
             const_tables: Vec::new(),
@@ -1039,6 +1046,7 @@ mod tests {
             ret_ty: crate::syntax::Type::Scalar(crate::syntax::types::ElementType::I32),
             ret_prov: 0,
             is_unsafe: false,
+            ret_valid: None,
         }
     }
 

@@ -1,0 +1,29 @@
+//===- a_method_called_through_a_reference_is_checked.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `p.get_ref(0)` with `p : &mut Vec<i64>` borrows `*p`, and the checker records that borrow on
+// `p`. So the checker refuses a later `p.push(..)` while the element is in use, as it refuses
+// `a.push(..)`. Before, it did not check a method called through a reference variable at all,
+// and `push` could move the buffer that `s` points into.
+import std::vec;
+
+fn push_through_a_reference_while_an_element_is_used() -> i64 {
+  let mut a = Vec<i64>::new();
+  a.push(1i64);
+  let p = &mut a;
+  let s = p.get_ref(0);
+  // CHECK: Error[E4003] at {{.*}}.vx:[[@LINE+1]]:{{.*}}Cannot borrow 'p' as mutable because it is also borrowed as immutable.
+  p.push(10i64);
+  return *s;
+}
+
+fn main() -> i32 {
+  return push_through_a_reference_while_an_element_is_used() as i32;
+}
+// CHECK: 1 error(s) emitted

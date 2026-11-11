@@ -35,6 +35,10 @@ Two kinds, matching the two kinds of reference:
 Unlike `&T` and `&mut T`, raw pointers are not tracked by the borrow checker. Nothing stops two
 `*mut T` pointing at the same value. That is exactly why dereferencing one needs `unsafe`.
 
+A raw pointer can name a memory, as in `*mut f32 in Memory::GPU_HBM`. The functions of `core::ptr`
+that move a pointer keep its memory: `offset`, `add` and `sub` and their `_mut` forms take a pointer
+in any memory `M` and give a pointer in `M`. `read` and `write` take only a host pointer.
+
 ## unsafe functions
 
 A function whose *body* is not the dangerous part — but whose *contract* is — should be marked
@@ -56,6 +60,188 @@ is expected, so the obligation cannot be lost by storing the function in a varia
 The rule for when to mark a function `unsafe`: if a caller can make it misbehave by passing
 something the compiler cannot check — a dangling pointer, a wrong length — it is `unsafe`. If the
 function checks everything itself, it is not, even if its body uses `unsafe` internally.
+
+## Pointer clauses
+
+An `unsafe fn` can state what its caller must give it as `requires` clauses about its raw
+pointers:
+
+```rust
+unsafe fn sum(p : *mut i64, n : i64) -> i64
+    requires valid(p, n)
+    requires initialized(p, n)
+{
+    let mut total = 0i64;
+    let mut i = 0i64;
+    while i < n {
+        total = total + unsafe { p[i] };
+        i = i + 1i64;
+    }
+    return total;
+}
+
+fn main() -> i32 {
+    return 0;
+}
+```
+
+- `valid(p, n)`: `p` is not null, is aligned, and points at `n` elements of one live allocation.
+  The elements do not have to hold values yet.
+- `initialized(p, n)`: each of the first `n` elements at `p` holds a value.
+- `!overlaps(p, q, n)`: the first `n` elements at `p` and at `q` share no byte.
+
+At a call in safe code, the compiler proves each clause from what it knows there: the clauses
+of the caller, a pointer made from `&x` for a local variable `x`, and the pointer functions
+`offset`, `add` and `sub`. A write `p[k] = x` or `*p = x` in `unsafe` code gives that one element
+a value, so after `p[0] = 7i64` the compiler knows `initialized(p, 1i64)`. Two facts whose ranges
+touch prove a clause together, so after `p[0] = 7i64; p[1] = 8i64;` it knows
+`initialized(p, 2i64)`. A call that gets a raw pointer can free its memory, so after the call
+the compiler knows nothing about memory that the caller does not own. When such code ended a
+fact that the call needs, the error has a note with its line. In a loop, such code anywhere in
+the body ends the facts at the start of the body, because an earlier pass can run it. A call in
+`unsafe` code needs no proof: its author keeps the promise. A safe function with a pointer
+clause cannot be a function value yet, because a call through the value would not prove the
+clause.
+
+`ensures !frees(p)` says that a call frees no memory that it reaches through `p`. Then a call
+keeps the facts about the memory of its argument, and the compiler checks the body against the
+clause. The compiler also finds `!frees(p)` itself when the body only reads and writes through
+`p`, moves `p` with `offset`, compares it, and gives it only to functions with `!frees`. So
+`split` compiles:
+
+```rust
+import core::ptr;
+
+fn sum(p : *const i64, n : i64) -> i64
+    requires valid(p, n)
+    requires initialized(p, n)
+{
+    let mut total = 0i64;
+    for i in 0i64..n {
+        total = total + unsafe { p[i] };
+    }
+    return total;
+}
+
+fn split(p : *const i64, n : i64, k : i64) -> i64
+    requires valid(p, n)
+    requires initialized(p, n)
+    requires 0i64 <= k
+    requires k <= n
+{
+    return sum(p, k) + sum(offset(p, k), n - k);
+}
+
+fn main() -> i32 {
+    return 0;
+}
+```
+
+`ensures frees(p)` says that the call can free that memory, so the compiler does not find
+`!frees(p)` for it. An `extern` function can say `!frees(p)` after its return type, and the
+compiler trusts it. It can also say a clause about numbers, such as `ensures 0i64 <= return`.
+Each call then knows the clause, and `vxc --audit` lists it.
+
+A function can also promise a pointer clause in an `ensures`, where `return` is the result. A
+caller gets each such clause as a fact when the call returns. The body proves each one at each
+`return` and at its end, after the storage of its local variables ends. So a function cannot
+promise a pointer to one of its local variables. In an `unsafe` block, `assume e;` adds the fact
+`e` without a proof, and it generates no code. Use it for a fact that the compiler cannot see,
+such as the size of the memory that `alloc` gives. A wrong `assume` is undefined behavior.
+
+```rust
+import core::ptr;
+import std::alloc;
+
+fn alloc_i64(n : i64) -> *mut i64
+    requires n > 0i64
+    ensures valid(return, n)
+{
+    let p : *mut i64 = alloc(n * 8i64, 16i64);
+    if is_null_mut(p) {
+        panic("out of memory");
+    }
+    unsafe {
+        assume valid(p, n);
+    }
+    return p;
+}
+
+fn first(p : *const i64) -> i64
+    requires valid(p, 1i64)
+    requires initialized(p, 1i64)
+{
+    return unsafe { p[0] };
+}
+
+fn main() -> i32 {
+    let p = alloc_i64(1i64);
+    unsafe {
+        p[0] = 7i64;
+    }
+    let x = first(p as *const i64);
+    let bytes : *mut i8 = p;
+    dealloc(bytes, 16i64);
+    return (x - 7i64) as i32;
+}
+```
+
+The methods of `Vec` state such clauses. `as_mut_ptr` ensures `valid` and `initialized` for the
+`len` elements of the vector, and `len` ensures that it returns that count. The methods that only
+read the vector have `!frees(self)`. So safe code can give the pointer to `sum`. A `push` can move
+the buffer, so after a `push` the pointer has no facts.
+
+```rust
+import core::ptr;
+import std::vec;
+
+fn sum(p : *const i64, n : i64) -> i64
+    requires valid(p, n)
+    requires initialized(p, n)
+{
+    let mut total = 0i64;
+    for i in 0i64..n {
+        total = total + unsafe { p[i] };
+    }
+    return total;
+}
+
+fn total(v : &Vec<i64>) -> i64 {
+    let p = v.as_mut_ptr();
+    return sum(p as *const i64, v.len() as i64);
+}
+
+fn main() -> i32 {
+    let mut v = Vec<i64>::new();
+    v.push(2i64);
+    v.push(3i64);
+    return (total(&v) - 5i64) as i32;
+}
+```
+
+A vector that a function makes with `Vec<i64>::new()` owns only new memory. So a `push` on it, or
+its drop, keeps the facts about a pointer parameter. That stops at a pointer or a reference into
+the vector, and at a loop or a closure that uses it. It also stops at a call that can put memory of
+the caller into the vector.
+
+From a `spawn` until its `join()` or the end of its `tasks` block, the task can free memory, so
+no fact about other memory starts in that time.
+
+For `requires valid(p, n)`, the compiler tells LLVM that `p` is not null and aligned, and that
+`n` elements at `p` can be read. For `requires !overlaps(p, q, n)`, it tells LLVM that an access
+`p[i]` does not alias an access `q[i]`, where `i` is the variable of a `for i in 0..n` loop. After
+each call of a function with `ensures valid(return, n)`, it tells LLVM that `n` elements at the
+result can be read. A clause that does not hold is undefined behavior, as a wrong `*p` is.
+
+`vxc --audit program.vx` prints each fact that the compiler trusts without a proof, one line each:
+
+- each `assume`
+- each pointer clause that a call in `unsafe` code trusts, because the compiler cannot prove it
+- each `ensures` of an `extern` function
+- each pointer `requires` of a `pub fn`, because a call from C proves nothing
+
+Each line starts with the file, the line and the column, and the lines are in that order. So a
+review can compare the audit of two versions of a program.
 
 ## Calling C
 

@@ -1,0 +1,56 @@
+//===- a_deadlock_stops_the_program_with_a_report.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each of the two tasks waits in `recv` for a value that only the other task sends after its
+// own `recv`. The code of the block waits in the join of the first task. So nothing can go on,
+// and the runtime stops the program with a report, in place of a hang.
+//
+// The second RUN line runs the tasks on one worker thread of the shared runtime. The third runs
+// them on one thread in the order of a seed (`VX_TASK_SEED`).
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 not vxc %s 2>&1 | FileCheck %s
+// RUN: env VX_TASK_SEED=1 not vxc %s 2>&1 | FileCheck %s
+// CHECK: {{^}}before the block{{$}}
+// CHECK-NOT: after the block
+// CHECK: vx: deadlock: each task of the program waits, and nothing can wake one. The program stops.
+// CHECK: Program was killed by signal 6 (SIGABRT
+
+import std::sync::channel;
+
+fn send_on(to : &Sender<i64>, v : i64) -> void {
+  match to.send(v) {
+    Result<void, SendError<i64>>::Ok() => {}
+    Result<void, SendError<i64>>::Err(_e) => {}
+  }
+}
+
+fn pass_on(from : Receiver<i64>, to : Sender<i64>) -> void {
+  match from.recv() {
+    Result<i64, RecvError>::Ok(v) => {
+      send_on(&to, v);
+    }
+    Result<i64, RecvError>::Err(_e) => {}
+  }
+}
+
+fn main() -> i32 {
+  let (to_a, a_in) = channel<i64>(1);
+  let (to_b, b_in) = channel<i64>(1);
+  println!("before the block");
+  tasks {
+    let a = spawn {
+      pass_on(a_in, to_b);
+    };
+    spawn {
+      pass_on(b_in, to_a);
+    };
+    a.join();
+  };
+  println!("after the block");
+  return 0;
+}

@@ -1,0 +1,58 @@
+//===- a_type_says_how_long_its_drop_waits.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A type says how long the waits in its `drop` can take with `Drop::wait_limit`. The `drop` of
+// a `Quick` waits in `recv` for a value that never comes, and its `wait_limit` is 0.2 seconds,
+// so the `recv` gives up soon, and not after the 10 seconds of the default.
+//
+// `VX_DROP_WAIT_SECONDS` can only make a limit shorter. With 30 seconds in it, the second RUN
+// line still gives up after 0.2 seconds.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_DROP_WAIT_SECONDS=30 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}the drop gave up, cancelled true{{$}}
+// CHECK-NEXT: {{^}}the drop took less than 5 seconds: true{{$}}
+// CHECK-NEXT: {{^}}after the drop, cancelled false{{$}}
+
+import core::time;
+import std::sync::channel;
+import std::sync::wait;
+import std::time;
+
+struct Quick {
+  rx : Receiver<i64>,
+}
+
+impl Drop for Quick {
+  fn drop(self : &mut Quick) -> void {
+    match self.rx.recv() {
+      Result<i64, RecvError>::Ok(v) => {
+        println!("the drop got {}", v);
+      }
+      Result<i64, RecvError>::Err(_e) => {
+        println!("the drop gave up, cancelled {}", cancelled());
+      }
+    }
+  }
+
+  fn wait_limit(self : &Quick) -> Duration {
+    return Duration::from_millis(200);
+  }
+}
+
+fn main() -> i32 {
+  let (tx, rx) = channel<i64>(1);
+  let q = Quick {
+    rx : rx
+  };
+  let start = Instant::now();
+  drop(q);
+  println!("the drop took less than 5 seconds: {}", start.elapsed() < Duration::from_secs(5));
+  println!("after the drop, cancelled {}", cancelled());
+  drop(tx);
+  return 0;
+}

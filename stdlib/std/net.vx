@@ -5,34 +5,90 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+// TCP and UDP sockets. Each call that can fail gives a `Result` with a `NetError`.
+//
+// The Rust core gives a status for each call: 0 when it worked, a number below 0 for each error
+// that `NetError` names, and else the error number of the system. A call that worked writes its
+// value through its last pointer.
+//===----------------------------------------------------------------------===//
 import core::ops;
+import core::result;
 
 extern {
-  /// The Rust core behind `TcpStream::connect`. Null when the connection fails.
-  fn vx_tcp_stream_connect(c_addr : *const i8) -> *mut i8;
+  /// The Rust core behind `TcpStream::connect`.
+  fn vx_tcp_stream_connect(c_addr : *const i8, out : *mut *mut i8) -> i32;
   /// The Rust core behind `TcpStream::read`.
-  fn vx_tcp_stream_read(ptr : *mut i8, buffer : *mut u8, len : u64) -> u64;
+  fn vx_tcp_stream_read(ptr : *mut i8, buffer : *mut u8, len : u64, out : *mut u64) -> i32;
   /// The Rust core behind `TcpStream::write`.
-  fn vx_tcp_stream_write(ptr : *mut i8, buffer : *const u8, len : u64) -> u64;
+  fn vx_tcp_stream_write(ptr : *mut i8, buffer : *const u8, len : u64, out : *mut u64) -> i32;
   /// The Rust core behind dropping a `TcpStream`.
   fn vx_tcp_stream_drop(ptr : *mut i8) -> i32;
 
-  /// The Rust core behind `UdpSocket::bind`. Null when the bind fails.
-  fn vx_udp_socket_bind(c_addr : *const i8) -> *mut i8;
+  /// The Rust core behind `UdpSocket::bind`.
+  fn vx_udp_socket_bind(c_addr : *const i8, out : *mut *mut i8) -> i32;
   /// The Rust core behind `UdpSocket::recv`.
-  fn vx_udp_socket_recv(ptr : *mut i8, buffer : *mut u8, len : u64) -> u64;
+  fn vx_udp_socket_recv(ptr : *mut i8, buffer : *mut u8, len : u64, out : *mut u64) -> i32;
   /// The Rust core behind `UdpSocket::send_to`.
   fn vx_udp_socket_send_to(ptr : *mut i8, buffer : *const u8, len : u64,
-  c_addr : *const i8) -> u64;
+  c_addr : *const i8, out : *mut u64) -> i32;
   /// The Rust core behind dropping a `UdpSocket`.
   fn vx_udp_socket_drop(ptr : *mut i8) -> i32;
 
-  /// The Rust core behind `TcpListener::bind`. Null when the bind fails.
-  fn vx_tcp_listener_bind(c_addr : *const i8) -> *mut i8;
-  /// The Rust core behind `TcpListener::accept`. Blocks until a connection arrives.
-  fn vx_tcp_listener_accept(ptr : *mut i8) -> *mut i8;
+  /// The Rust core behind `TcpListener::bind`.
+  fn vx_tcp_listener_bind(c_addr : *const i8, out : *mut *mut i8) -> i32;
+  /// The Rust core behind `TcpListener::accept`. Waits until a connection arrives.
+  fn vx_tcp_listener_accept(ptr : *mut i8, out : *mut *mut i8) -> i32;
   /// The Rust core behind dropping a `TcpListener`.
   fn vx_tcp_listener_drop(ptr : *mut i8) -> i32;
+}
+
+/// Why a network call did not work.
+enum NetError {
+  // The `tasks` block of this task was cancelled while the call waited.
+  Cancelled,
+  // The address is not `host:port`, or the host has no address.
+  BadAddress,
+  // Nothing listens at the address.
+  Refused,
+  // The peer closed or reset the connection.
+  Reset,
+  // Another socket uses the address already.
+  InUse,
+  // Another failure, with the error number of the system, or 0 when it gave none.
+  Os(i32),
+}
+
+impl Copy for NetError {}
+
+/// The `NetError` of a status that is not 0.
+fn net_error(status : i32) -> NetError {
+  if status == -1 {
+    return NetError::Cancelled;
+  }
+  if status == -2 {
+    return NetError::BadAddress;
+  }
+  if status == -3 {
+    return NetError::Refused;
+  }
+  if status == -4 {
+    return NetError::Reset;
+  }
+  if status == -5 {
+    return NetError::InUse;
+  }
+  if status < 0 {
+    return NetError::Os(0);
+  }
+  return NetError::Os(status);
+}
+
+/// A count of bytes, or the error of the call that gave its status.
+fn count_or_error(status : i32, count : u64) -> Result<u64, NetError> {
+  if status == 0 {
+    return Result<u64, NetError>::Ok(count);
+  }
+  return Result<u64, NetError>::Err(net_error(status));
 }
 
 /// A connected TCP socket, held by the Rust core behind an opaque pointer.
@@ -47,37 +103,46 @@ struct TcpStream {
 unsafe impl Send for TcpStream {}
 
 impl TcpStream {
-  /// Connect to `addr`, written as `host:port`.  ///
-  /// **A failure cannot be detected.** The value handed back holds a null pointer, and Vx
-  /// cannot compare a raw pointer against null (Vx#714), so a refused connection looks like a
-  /// working one until every later call answers 0.
+  /// Connect to `addr`, written as `host:port`. A task of the shared runtime parks while it
+  /// waits.
   ///
   /// Unsafe because nothing checks that `addr` points at a NUL-terminated string.
-  unsafe fn connect(addr : *const i8) -> TcpStream {
-    let ptr = unsafe { vx_tcp_stream_connect(addr) };
-    TcpStream {
-      ptr:
-      ptr
+  unsafe fn connect(addr : *const i8) -> Result<TcpStream, NetError> {
+    let mut ptr : *mut i8 = unsafe { 0 as *mut i8 };
+    let status = unsafe {
+      vx_tcp_stream_connect(addr, (&mut ptr) as *mut *mut i8)
+    };
+    if status != 0 {
+      return Result<TcpStream, NetError>::Err(net_error(status));
     }
+    return Result<TcpStream, NetError>::Ok(TcpStream {
+      ptr : ptr
+    });
   }
 
-  /// Read up to `len` bytes into `buffer` and answer how many arrived.
-  ///
-  /// Zero means the peer closed, a null socket, or a read error. A short read is normal: TCP
-  /// is a stream and a message may arrive in pieces, so a caller wanting a whole one loops.
+  /// Read up to `len` bytes into `buffer` and give how many arrived. 0 means that the peer
+  /// closed the connection. A short read is normal: TCP is a stream, and a message can arrive
+  /// in pieces, so a caller that wants a whole one loops.
   ///
   /// Unsafe because `buffer` must have room for `len` bytes.
   unsafe fn read(self : *mut TcpStream, buffer : *mut u8, len : u64)
-  -> u64 {
-    unsafe { vx_tcp_stream_read(self.ptr, buffer, len) }
+  -> Result<u64, NetError> {
+    let mut count : u64 = 0;
+    let status = unsafe {
+      vx_tcp_stream_read(self.ptr, buffer, len, (&mut count) as *mut u64)
+    };
+    return count_or_error(status, count);
   }
 
-  /// Write up to `len` bytes from `buffer` and answer how many were taken.
-  ///
-  /// A short write is normal and the remainder is not retried here.
+  /// Write up to `len` bytes from `buffer` and give how many were taken. A short write is
+  /// normal, and the rest is not tried again here.
   unsafe fn write(self : *mut TcpStream, buffer : *const u8, len : u64)
-  ->u64 {
-    unsafe { vx_tcp_stream_write(self.ptr, buffer, len) }
+  -> Result<u64, NetError> {
+    let mut count : u64 = 0;
+    let status = unsafe {
+      vx_tcp_stream_write(self.ptr, buffer, len, (&mut count) as *mut u64)
+    };
+    return count_or_error(status, count);
   }
 }
 
@@ -98,34 +163,45 @@ struct UdpSocket {
 unsafe impl Send for UdpSocket {}
 
 impl UdpSocket {
-  /// Bind to `addr`, written as `host:port`.  ///
-  /// **A failure cannot be detected.** The value handed back holds a null pointer, and Vx
-  /// cannot compare a raw pointer against null (Vx#714), so a refused connection looks like a
-  /// working one until every later call answers 0.
-  unsafe fn bind(addr : *const i8) -> UdpSocket {
-    let ptr = unsafe { vx_udp_socket_bind(addr) };
-    UdpSocket {
-      ptr:
-      ptr
+  /// Bind to `addr`, written as `host:port`.
+  ///
+  /// Unsafe because nothing checks that `addr` points at a NUL-terminated string.
+  unsafe fn bind(addr : *const i8) -> Result<UdpSocket, NetError> {
+    let mut ptr : *mut i8 = unsafe { 0 as *mut i8 };
+    let status = unsafe {
+      vx_udp_socket_bind(addr, (&mut ptr) as *mut *mut i8)
+    };
+    if status != 0 {
+      return Result<UdpSocket, NetError>::Err(net_error(status));
     }
+    return Result<UdpSocket, NetError>::Ok(UdpSocket {
+      ptr : ptr
+    });
   }
 
-  /// Receive one datagram into `buffer` and answer its length.
+  /// Receive one datagram into `buffer` and give its length. A datagram longer than `len` is
+  /// cut, and the rest is lost: UDP works that way. The address of the sender is not given.
   ///
-  /// A datagram longer than `len` is truncated and the rest is lost, which is UDP's behaviour
-  /// and not an error here. The sender's address is not reported.
+  /// Unsafe because `buffer` must have room for `len` bytes.
   unsafe fn recv(self : *mut UdpSocket, buffer : *mut u8, len : u64)
-  -> u64 {
-    unsafe { vx_udp_socket_recv(self.ptr, buffer, len) }
+  -> Result<u64, NetError> {
+    let mut count : u64 = 0;
+    let status = unsafe {
+      vx_udp_socket_recv(self.ptr, buffer, len, (&mut count) as *mut u64)
+    };
+    return count_or_error(status, count);
   }
 
-  /// Send one datagram of `len` bytes to `addr`, answering how many were sent.
-  ///
-  /// Nothing guarantees it arrives, or arrives once, or arrives in order.
+  /// Send one datagram of `len` bytes to `addr`, and give how many were sent. Nothing makes
+  /// sure that it arrives, or arrives once, or arrives in order.
   unsafe fn send_to(self : *mut UdpSocket, buffer : *const u8, len : u64,
   addr : *const i8)
-  ->u64 {
-    unsafe { vx_udp_socket_send_to(self.ptr, buffer, len, addr) }
+  -> Result<u64, NetError> {
+    let mut count : u64 = 0;
+    let status = unsafe {
+      vx_udp_socket_send_to(self.ptr, buffer, len, addr, (&mut count) as *mut u64)
+    };
+    return count_or_error(status, count);
   }
 }
 
@@ -148,25 +224,33 @@ unsafe impl Send for TcpListener {}
 impl TcpListener {
   /// Listen on `addr`, written as `host:port`.
   ///
-  /// **A failure cannot be detected**, for the reason `TcpStream::connect` gives (Vx#714).
-  unsafe fn bind(addr : *const i8) -> TcpListener {
-    let ptr = unsafe { vx_tcp_listener_bind(addr) };
-    TcpListener {
-      ptr:
-      ptr
+  /// Unsafe because nothing checks that `addr` points at a NUL-terminated string.
+  unsafe fn bind(addr : *const i8) -> Result<TcpListener, NetError> {
+    let mut ptr : *mut i8 = unsafe { 0 as *mut i8 };
+    let status = unsafe {
+      vx_tcp_listener_bind(addr, (&mut ptr) as *mut *mut i8)
+    };
+    if status != 0 {
+      return Result<TcpListener, NetError>::Err(net_error(status));
     }
+    return Result<TcpListener, NetError>::Ok(TcpListener {
+      ptr : ptr
+    });
   }
 
-  /// Wait for a connection and answer with it.
-  ///
-  /// Blocks until one arrives. The stream handed back holds a null pointer when the accept
-  /// failed, which cannot be told from a working one either.
-  fn accept(self : *mut TcpListener) -> TcpStream {
-    let stream_ptr = unsafe { vx_tcp_listener_accept(self.ptr) };
-    TcpStream {
-      ptr:
-      stream_ptr
+  /// Wait for a connection and give it. A task of the shared runtime parks while it waits, so
+  /// its OS thread can run other tasks.
+  fn accept(self : *mut TcpListener) -> Result<TcpStream, NetError> {
+    let mut ptr : *mut i8 = unsafe { 0 as *mut i8 };
+    let status = unsafe {
+      vx_tcp_listener_accept(self.ptr, (&mut ptr) as *mut *mut i8)
+    };
+    if status != 0 {
+      return Result<TcpStream, NetError>::Err(net_error(status));
     }
+    return Result<TcpStream, NetError>::Ok(TcpStream {
+      ptr : ptr
+    });
   }
 }
 

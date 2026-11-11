@@ -16,14 +16,14 @@ import std::time;
 fn main() -> i32 {
   let N : i32 = 100000;
 
-  let start : f32 = now();
+  let start = Instant::now();
   for i in 0..N {
     spawn on(Topology::CPU) {
       let x = 1;
     }
   }
-  let end : f32 = now();
-  let elapsed : f32 = end - start;
+  let end = Instant::now();
+  let elapsed : f32 = (end - start).as_secs_f32();
   // `bench_report` takes C strings, so the call vouches for them; a literal always satisfies it.
   unsafe { bench_report("spawn_dispatch", "seconds", elapsed); }
   return 0;

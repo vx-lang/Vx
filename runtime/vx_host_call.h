@@ -23,6 +23,7 @@
 #define VX_HOST_CALL_H
 
 #include "../include/vx_hardware_runtime.h"
+#include "vx_kernel_launch.h" /* vx_host_worker_count_for: vx_launch_shape */
 
 #include <stdio.h>
 #include <stdlib.h> /* vx_host_refuse_coop: abort */
@@ -40,9 +41,14 @@
 #include <sched.h> /* vx_host_worker_count_for: sched_getaffinity */
 #endif
 
+#if defined(__x86_64__)
+#include <xmmintrin.h> /* vx_host_ffi_call: _mm_getcsr */
+#endif
+
 // Homebrew's libffi is not on the default include path on macOS, where the SDK
 // instead provides the header under a directory of its own.
 #if defined(__APPLE__)
+#include <dispatch/dispatch.h>
 #include <ffi/ffi.h>
 #else
 #include <ffi.h>
@@ -161,17 +167,40 @@ extern "C" int64_t vx_host_worker_count(void) { return vx_host_worker_total; }
 ///
 /// `launch=` is emitted for exactly the regions `parallel_outer_for` proved, so
 /// its presence IS the proof travelling to the runtime. The comma form is the
-/// two-level one (`launch=B,T`, Vx#379), whose host clone is not split -- what a
-/// host worker should own across a block/thread mapping is a separate question
-/// -- so it is declined here rather than half-driven.
+/// two-level one (`launch=B,T`, Vx#379), whose host clone is not split --
+/// what a host worker should own across a block/thread mapping is a separate
+/// question -- so it is declined here rather than half-driven.
+///
+/// `host_blocks=1` marks an `across` kernel whose host clone reads the block id
+/// and the grid size of axis x from `vx_host_worker_id` and
+/// `vx_host_worker_count`. Its loop of blocks starts at the one and steps by
+/// the other, so each worker runs its own blocks, and the lanes of each block
+/// in order. The race checker proved that no two blocks write the same place,
+/// which a launch on a GPU needs too. There are at most as many workers as
+/// blocks on axis x.
 static inline int vx_host_worker_count_for(const void *payload,
-                                           size_t payload_size) {
-  const char *launch = vx_payload_field(payload, payload_size, "launch=");
-  if (!launch) {
+                                           size_t payload_size,
+                                           void *const *device_args,
+                                           const int32_t *arg_tags,
+                                           int64_t num_args) {
+  long trip;
+  if (const char *launch = vx_payload_field(payload, payload_size, "launch=")) {
+    if (strchr(launch, ',')) {
+      return 1;
+    }
+    trip = strtol(launch, nullptr, 10);
+  } else if (vx_payload_field(payload, payload_size, "host_blocks=")) {
+    unsigned grid[3], block;
+    char why[256];
+    if (vx_launch_shape(payload, payload_size, device_args, arg_tags, num_args,
+                        grid, &block, why, sizeof(why)) != 1) {
+      return 1;
+    }
+    trip = grid[0];
+  } else {
     return 1;
   }
-  long trip = strtol(launch, nullptr, 10);
-  if (trip <= 1 || strchr(launch, ',')) {
+  if (trip <= 1) {
     return 1;
   }
 
@@ -207,6 +236,42 @@ static inline int vx_host_worker_count_for(const void *payload,
   return (int)(cpus < trip ? cpus : trip);
 }
 
+/// Whether the payload holds a kernel for the Apple GPU (`format=msl`). The GPU
+/// flushes a subnormal f32 to 0, so the CPU copy of such a kernel must too.
+static inline bool vx_host_flushes_subnormals(const void *payload,
+                                              size_t payload_size) {
+  const char *format = vx_payload_field(payload, payload_size, "format=");
+  return format && strcmp(format, "msl") == 0;
+}
+
+/// Calls the kernel once. With `flush`, a subnormal float that the call reads
+/// or makes is 0: FPCR.FZ on arm64, and FTZ and DAZ in MXCSR on x86-64. The
+/// thread gets its old mode back after the call.
+static inline void vx_host_ffi_call(ffi_cif *cif, void *kernel, void **args,
+                                    bool flush) {
+  void (*fn)(void) = reinterpret_cast<void (*)(void)>(kernel);
+  if (!flush) {
+    ffi_call(cif, fn, nullptr, args);
+    return;
+  }
+#if defined(__aarch64__)
+  uint64_t fpcr;
+  __asm__ volatile("mrs %0, fpcr" : "=r"(fpcr));
+  __asm__ volatile("msr fpcr, %0" : : "r"(fpcr | (1ull << 24)) : "memory");
+  ffi_call(cif, fn, nullptr, args);
+  __asm__ volatile("msr fpcr, %0" : : "r"(fpcr) : "memory");
+#elif defined(__x86_64__)
+  unsigned csr = _mm_getcsr();
+  _mm_setcsr(csr | 0x8040);
+  ffi_call(cif, fn, nullptr, args);
+  _mm_setcsr(csr);
+#else
+  fprintf(stderr, "[Vx] FATAL: the CPU copy of an Apple GPU kernel must flush "
+                  "subnormal floats to 0, and Vx cannot do that on this CPU\n");
+  abort();
+#endif
+}
+
 /// One worker's call.
 struct vx_host_worker_job {
   ffi_cif *cif;
@@ -214,16 +279,26 @@ struct vx_host_worker_job {
   void **args;
   int64_t index;
   int64_t total;
+  bool flush;
 };
 
 static void *vx_host_worker_main(void *p) {
   vx_host_worker_job *job = static_cast<vx_host_worker_job *>(p);
   vx_host_worker_index = job->index;
   vx_host_worker_total = job->total;
-  ffi_call(job->cif, reinterpret_cast<void (*)(void)>(job->kernel), nullptr,
-           job->args);
+  vx_host_ffi_call(job->cif, job->kernel, job->args, job->flush);
   return nullptr;
 }
+
+#if defined(__APPLE__)
+/// Worker `w` of `jobs`, on a thread of Grand Central Dispatch. The thread goes
+/// back to the pool as a single worker.
+static void vx_host_worker_apply(void *jobs, size_t w) {
+  vx_host_worker_main(static_cast<vx_host_worker_job *>(jobs) + w);
+  vx_host_worker_index = 0;
+  vx_host_worker_total = 1;
+}
+#endif
 
 /// Call the kernel with the platform's calling convention reconstructed from
 /// the tags. The C-interface returns void; results flow through the memref
@@ -231,7 +306,8 @@ static void *vx_host_worker_main(void *p) {
 ///
 /// `workers` is how many disjoint slices to run at once, from
 /// `vx_host_worker_count_for`. At 1 this is one `ffi_call` on the calling
-/// thread, which is what this function has always been.
+/// thread, which is what this function has always been. `flush_subnormals`
+/// comes from `vx_host_flushes_subnormals`, and each worker applies it.
 ///
 /// Threads are created per dispatch rather than kept in a standing pool. That
 /// costs roughly 20us per worker, which is nothing against a kernel that reads
@@ -239,9 +315,14 @@ static void *vx_host_worker_main(void *p) {
 /// standing pool is the answer when a measurement says so; it is not the answer
 /// before one, because it buys latency with a set of live threads, a shutdown
 /// path, and a story about fork.
+///
+/// On macOS the pool of Grand Central Dispatch runs the workers. On an M4, a
+/// launch of a kernel of 16 rows took 16us on one thread, 52us with 8 new
+/// threads, and 17us with 8 workers from the pool.
 static inline bool vx_host_call_kernel(void *kernel, void **device_args,
                                        const int32_t *arg_tags,
-                                       int64_t num_args, int workers = 1) {
+                                       int64_t num_args, int workers,
+                                       bool flush_subnormals) {
   std::vector<ffi_type *> types(num_args > 0 ? (size_t)num_args : 1);
   for (int64_t i = 0; i < num_args; ++i) {
     types[i] = vx_abi_ffi_type(arg_tags[i]);
@@ -254,8 +335,7 @@ static inline bool vx_host_call_kernel(void *kernel, void **device_args,
   }
 
   if (workers <= 1) {
-    ffi_call(&cif, reinterpret_cast<void (*)(void)>(kernel), nullptr,
-             device_args);
+    vx_host_ffi_call(&cif, kernel, device_args, flush_subnormals);
     return true;
   }
 
@@ -263,11 +343,16 @@ static inline bool vx_host_call_kernel(void *kernel, void **device_args,
   // serves every worker. Only `ffi_prep_cif` above is unsafe to share, and it
   // has already run.
   std::vector<vx_host_worker_job> jobs((size_t)workers);
+  for (int w = 0; w < workers; ++w) {
+    jobs[(size_t)w] = {&cif, kernel, device_args, w, workers, flush_subnormals};
+  }
+#if defined(__APPLE__)
+  dispatch_apply_f((size_t)workers, DISPATCH_APPLY_AUTO, jobs.data(),
+                   vx_host_worker_apply);
+  return true;
+#else
   std::vector<pthread_t> threads((size_t)workers);
   std::vector<bool> started((size_t)workers, false);
-  for (int w = 0; w < workers; ++w) {
-    jobs[(size_t)w] = {&cif, kernel, device_args, w, workers};
-  }
 
   // Worker 0 runs here, so the calling thread is not idle and keeps whatever
   // placement it was given.
@@ -293,6 +378,7 @@ static inline bool vx_host_call_kernel(void *kernel, void **device_args,
   vx_host_worker_index = 0;
   vx_host_worker_total = 1;
   return true;
+#endif
 }
 
 #endif /* VX_HOST_CALL_H */

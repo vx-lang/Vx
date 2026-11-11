@@ -142,6 +142,22 @@ fn run_on<D: Topology>(x: Pinned<i32, Topology::D>) -> i32 {
 where its caller runs. Host code and a `spawn on(Topology::Device)` region can both call a library
 function written this way, and each one gets its own copy.
 
+`on Topology::Any` is short for that form, with a `D` that no parameter names. These two
+functions differ only in their names:
+
+```rust
+fn add_one<D: Topology>(x: i32) on Topology::D -> i32 {
+    return x + 1;
+}
+
+fn add_one_any(x: i32) on Topology::Any -> i32 {
+    return x + 1;
+}
+```
+
+`Topology::Any` can follow only `on` in a function signature, and no topology can be called
+`Any` (E6016).
+
 **Memory parameters.** A function can also be generic over the memory of a tensor, with an
 `M: Memory` bound. Each call binds `M` to the memory of its tensor argument, and two arguments
 that name `Memory::M` must be in the same memory. A program with no memory called `M` can still
@@ -312,6 +328,29 @@ that is what keeps "which space did this touch" and "was it in bounds" checkable
 body must guarantee, and what the compiler reads off it rather than trusting, is
 [`custom_transfer_contract.md`](../custom_transfer_contract.md).
 
+### A copy that does not wait: `transfer_async`
+
+`transfer_async(x, M)` starts the copy of `x` to `M`, and gives a token, `Token<T>`, where `T` is
+the placed tensor. `t.wait()` takes the token and gives the placed tensor. So the program can
+start the next copy before it uses the last one:
+
+```rust
+let mut inflight = transfer_async(tiles[0], Memory::VMEM);
+for i in 1..n {
+    let next = transfer_async(tiles[i], Memory::VMEM);   // starts before the wait below
+    let cur = inflight.wait();
+    compute(cur);
+    inflight = next;
+}
+compute(inflight.wait());
+```
+
+- A token is not a tensor, so the program cannot read the data before the wait.
+- A token must be waited. A token that its scope drops, or that an assignment replaces, with no
+  `.wait()` is E6036. A function that takes a token must wait for it.
+- On the CPU the copy is done when it starts, so the wait only gives the tensor. A copy that runs
+  while the program works comes with the GPU and TPU lowering (#244).
+
 ## 6. Control Flow
 
 Standard Rust-like control flow is supported: `if`, `else`, `match`, `for`, `while`, `loop`, `break`, `continue`.
@@ -445,14 +484,49 @@ o[0] = [1.0, 2.0, 3.0, 4.0];   // writes row 0
 
 ## 12. Closures
 
-A closure literal `|params| expr` captures the locals it names by value, at the point it is written:
+A closure literal `|params| expr` uses the locals it names. What the body does with a local
+decides how the closure takes it, as for a task:
+
+- A local that the body changes is borrowed `&mut` until the closure's last use, so the change is
+  to the local itself. A change is an assignment, a `&mut` of it, or a call of a `&mut self`
+  method.
+- A struct that the body only reads is borrowed `&` until the closure's last use.
+- A struct that the body moves is moved into the closure.
+- A number or another `Copy` value that the body only reads is copied when the closure is
+  written.
 
 ```rust
 let x = 10;
-let add = |y: i32| x + y;   // captures x = 10
+let add = |y: i32| x + y;   // copies x = 10
 let r = add(5);             // 15
+
+let mut count = 0;
+let tick = || { count += 1; };
+tick();
+tick();                     // count is 2
 ```
 
+Until the last use of the closure, the code around it must not use a borrowed local in a way
+that the borrow does not allow.
+
+A closure body can also be a block, `|params| { ..; v }`. A `return` in it ends the call of the closure, and the first `return` gives the type that the closure returns. `|params| -> T { .. }` writes that type, and a `?` in the body needs it: `?` passes an `Err` up to the caller of the closure. The block is a plain block, so it does not allow what needs `unsafe`.
+
 A call through the closure's own name is a direct call. A closure can also be cast to its closure type (`add as |i32|->i32`, or `f as ||->i32` for one without parameters): a fat pointer pairing the closure's environment with its code, which a callee taking that type can be handed any closure of that signature.
+
+A closure literal written as an argument needs no `as`. It takes the closure type of its
+parameter, as a number literal takes its type from the place that uses it. In a generic function,
+`T` in `f : || -> T` comes from the type that the literal returns. The callee cannot keep the
+closure, so the literal's borrows end when the call ends:
+
+```rust
+fn twice(f : || -> i64) -> i64 { return f() + f(); }
+
+fn main() -> i32 {
+  let mut count : i64 = 0;
+  let n = twice(|| -> i64 { count += 1; count });   // 1 + 2
+  count = 10;                                      // the call ended, so count is free
+  return 0;
+}
+```
 
 **Lifetime.** A closure that uses a variable of the function that made it points into that function's stack frame, exactly as `&local` does. Neither may outlive the function: returning one, on its own or inside a struct, storing it through a reference, or passing it to a call together with a reference the call could store it through, is an error (E4005). Passing it down, to a callee that returns before the frame does, is fine, and so is a closure that uses no variable at all. A function cannot yet return a closure it creates by value (#847); pass the closure in from the caller instead. The same rule applies to a block inside a function: a variable declared outside an `if` or loop body cannot be given a reference to, or a closure that uses, a variable declared inside it.

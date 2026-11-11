@@ -9,7 +9,7 @@
 // (2^3 ln 2), printed times 10^6. Enzyme cannot differentiate the core::libm function itself,
 // which reads the float's bits, so it is marked to be differentiated as the C `pow`.
 //
-// CHECK-DAG: llvm.func {{(hidden )?}}@libm_pow({{.*}}passthrough = {{\[\[}}"enzyme_math", "pow"{{\]\]}}
+// CHECK-DAG: llvm.func {{(hidden )?}}@libm_pow({{.*}}passthrough = {{\[\[}}"enzyme_math", "pow"{{(\], \["probe-stack", "inline-asm")?}}{{\]\]}}
 // EXPECT: 12000000 5545177
 import core::num;
 

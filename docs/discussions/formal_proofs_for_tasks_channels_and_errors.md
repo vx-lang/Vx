@@ -141,6 +141,11 @@ acquire. Each such access then needs its own edge proof and a litmus test.
 
 ### Step 5: cancellation, safety only (`Cancel.lean`, F3)
 
+This step models the design of #1893: the first failure in time wins, and the other tasks are
+cancelled. The compiler does not do this yet. Since #2380, a `tasks` block gives the failure of the
+first join that its code runs, and it cancels no task. A model of that rule is simpler: a join
+reads the result of its task after the done flag of the task.
+
 The model:
 
 - A failure slot. A failure writes it by a CAS from 0.
@@ -221,7 +226,7 @@ for each pass (`Runs.loop_pass`). In `Footprint.lean` the loop can also run code
 task before and after the block (#2241). Two tasks that one `spawn` of the block starts need not
 be apart, because one pass starts at most one of them (#2242). The ninth part lets the code of a
 block in `Footprint.lean` hold other blocks (#2285). The tasks of an inner block count as tasks of
-the outer block. `ChanFootprint.lean` and `LockFootprint.lean` do not allow this yet (#2286).
+the outer block. `ChanFootprint.lean` and `LockFootprint.lean` allow it too (#2286).
 
 ## Later
 

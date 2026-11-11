@@ -17,6 +17,8 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use crate::integration_test::runtime_test_build;
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -26,10 +28,9 @@ fn dispatch_decodes_to_the_gemm_the_compiler_described() {
     let root = repo_root();
     let source = root.join("tests/runtime/gemm_plan_test.cpp");
     let binary = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gemm_plan_test");
-    let cxx = std::env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
+    let cxx = runtime_test_build::cxx();
 
-    let build = Command::new(&cxx)
-        .args(["-std=c++17", "-O1", "-Wall", "-Werror"])
+    let build = runtime_test_build::command(&cxx, "c++17")
         .arg(&source)
         .arg("-o")
         .arg(&binary)

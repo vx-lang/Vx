@@ -28,17 +28,19 @@ theorem Stmt.Accesses.and {p q : Kind → Order → Nat → Prop} {s : Stmt} (hp
   | loop _ _ ih | tasksBlock _ ih => exact ih hp hq
   | _ => trivial
 
-/-- `lower` keeps the accesses of code with no `tasks` block, and adds accesses to the flags. -/
+/-- `lower` keeps the accesses of the code, and adds accesses to the flags. -/
 theorem TaskProg.lower_keeps {P : TaskProg} {q : Kind → Order → Nat → Prop} {s : Stmt}
-    (hn : s.NoBlocks) (hb : s.Below P.flags P.count) (hq : s.Accesses q)
+    (hb : s.Below P.flags P.count) (hq : s.Accesses q)
     (hf : ∀ k o x, P.flags ≤ x → q k o x) : (P.lower s).Accesses q := by
   induction s with
   | spawnAt =>
     exact ⟨trivial, fun j _ => hf _ _ _ (by simp only [start]; omega)⟩
   | joinAt => exact fun j _ => hf _ _ _ (by simp only [done]; omega)
-  | tasksBlock => exact hn.elim
-  | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 => exact ⟨ih1 hn.1 hb.1 hq.1, ih2 hn.2 hb.2 hq.2⟩
-  | loop _ _ ih => exact ih hn hb hq
+  | tasksBlock _ ih =>
+    exact ⟨P.clearMarks_accesses _ _, ih hb hq,
+      P.joinMarked_accesses fun _ _ => hf _ _ _ (by simp only [done]; omega)⟩
+  | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 => exact ⟨ih1 hb.1 hq.1, ih2 hb.2 hq.2⟩
+  | loop _ _ ih => exact ih hb hq
   | _ => exact hq
 
 namespace ChanProg
@@ -64,7 +66,7 @@ theorem unguarded_of {k o x} (hx : P.places ≤ x) : Unguarded g m k o x :=
 /-- Lowered code follows `HClean` with `Unguarded`, when its accesses to the places of `m` are
 in blocks of `m`. -/
 theorem hclean_guarded {s : CStmt} {held : List Nat} (hmh : m ∉ held) (hs : P.StmtOk s)
-    (hb : ∀ b, s.Bases b → b.NoBlocks) (hgd : s.Guarded g held) :
+    (hgd : s.Guarded g held) :
     P.HClean m (Unguarded g m) (P.toTaskProg.lower (P.lowerC s)) := by
   have ug : ∀ {k o x}, P.places ≤ x → Unguarded g m k o x := fun h => unguarded_of hg h
   have hpt : P.places ≤ P.toTaskProg.flags := by simp only [toTaskProg, flag, slot, top]; omega
@@ -79,7 +81,7 @@ theorem hclean_guarded {s : CStmt} {held : List Nat} (hmh : m ∉ held) (hs : P.
   induction s generalizing held with
   | base s =>
     have hb' : s.Below P.toTaskProg.flags P.toTaskProg.count := Stmt.Below.mono hs hpt
-    refine .other ((lower_notLock hm hs nofun).and (TaskProg.lower_keeps (hb s rfl) hb'
+    refine .other ((lower_notLock hm hs nofun).and (TaskProg.lower_keeps hb'
       (hgd.mono fun _ _ _ h => ?_) fun _ _ x hx => ug (Nat.le_trans hpt hx)))
     rcases h with h | h
     · exact Or.inl h
@@ -96,32 +98,28 @@ theorem hclean_guarded {s : CStmt} {held : List Nat} (hmh : m ∉ held) (hs : P.
       have hv : ∀ {k o}, P.NotLock m k o (P.cnt .serving m') :=
         notLock_cnt (q := .serving) hm hs.1 fun _ => hne
       exact .seq (.other ⟨⟨⟨hn, ug h1⟩, hn, ug h1⟩, ⟨hv, ug h2⟩, hv, ug h2⟩)
-        (.seq (ih (fun h => (List.mem_cons.1 h).elim (fun h => hne h.symm) hmh) hs.2.2 hb hgd)
+        (.seq (ih (fun h => (List.mem_cons.1 h).elim (fun h => hne h.symm) hmh) hs.2.2 hgd)
           (.other ⟨⟨hv, ug h2⟩, hv, ug h2⟩))
   | seq _ _ ih1 ih2 =>
-    exact .seq (ih1 hmh hs.1 (fun b h => hb b (Or.inl h)) hgd.1)
-      (ih2 hmh hs.2 (fun b h => hb b (Or.inr h)) hgd.2)
-  | ite _ _ _ ih1 ih2 =>
-    exact .ite (ih1 hmh hs.1 (fun b h => hb b (Or.inl h)) hgd.1)
-      (ih2 hmh hs.2 (fun b h => hb b (Or.inr h)) hgd.2)
-  | loop _ _ ih => exact .loop (ih hmh hs hb hgd)
+    exact .seq (ih1 hmh hs.1 hgd.1) (ih2 hmh hs.2 hgd.2)
+  | ite _ _ _ ih1 ih2 => exact .ite (ih1 hmh hs.1 hgd.1) (ih2 hmh hs.2 hgd.2)
+  | loop _ _ ih => exact .loop (ih hmh hs hgd)
   | tasksBlock _ ih =>
     exact .seq (.other (P.toTaskProg.clearMarks_accesses _ _))
-      (.seq (ih hmh hs hb hgd) (.other (P.toTaskProg.joinMarked_accesses fun u _ =>
+      (.seq (ih hmh hs hgd) (.other (P.toTaskProg.joinMarked_accesses fun u _ =>
         ⟨Avoid.notLock hm (Or.inr (Or.inr (by simp only [TaskProg.done, toTaskProg, flag, slot, top]; omega))),
           ug (by simp only [TaskProg.done, toTaskProg, flag, slot, top]; omega)⟩)))
   | fail | checkCancel | result => exact chan hs nofun trivial trivial
 
 /-- The lowered code of a task follows `HClean` with `Unguarded`. -/
-theorem hclean_task_body (hP : P.Ok) (hbt : ∀ t b, (P.task t).Bases b → b.NoBlocks)
-    (hgt : ∀ t, (P.task t).Guarded g []) (t : Nat) :
+theorem hclean_task_body (hP : P.Ok) (hgt : ∀ t, (P.task t).Guarded g []) (t : Nat) :
     P.HClean m (Unguarded g m) (P.body (t + 1)) := by
   have ug : ∀ {k o x}, P.places ≤ x → Unguarded g m k o x := fun h => unguarded_of hg h
   show P.HClean m (Unguarded g m) (P.toTaskProg.taskCode t)
   unfold TaskProg.taskCode
   split
   · refine .seq (.other ⟨Avoid.notLock hm (Or.inr (Or.inr ?_)), ug ?_⟩)
-      (.seq (hclean_guarded hm hg (by simp) (hP.task t) (hbt t) (hgt t))
+      (.seq (hclean_guarded hm hg (by simp) (hP.task t) (hgt t))
         (.other ⟨Avoid.notLock hm (Or.inr (Or.inr ?_)), ug ?_⟩))
     all_goals simp only [TaskProg.start, TaskProg.done, toTaskProg, flag, slot, top]; omega
   · exact .other trivial
@@ -234,35 +232,6 @@ theorem initList_ge (hP : P.Ok) {i : Nat} {p : Nat × Int} (h : P.initList[i]? =
     simp only [flag]
     omega
 
-/-- The bases of the code have no `tasks` block. -/
-theorem CStmt.NoBlocks.bases {s : CStmt} (h : s.NoBlocks) : ∀ b, s.Bases b → b.NoBlocks := by
-  induction s with
-  | base => intro b hb; exact hb ▸ h
-  | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 => exact fun b hb => hb.elim (ih1 h.1 b) (ih2 h.2 b)
-  | loop _ _ ih | locked _ _ ih => exact ih h
-  | tasksBlock => exact h.elim
-  | _ => exact fun _ => nofun
-
-theorem Stmt.NoTasks.noBlocks {s : Stmt} (h : s.NoTasks) : s.NoBlocks := by
-  induction s with
-  | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 => exact ⟨ih1 h.1, ih2 h.2⟩
-  | loop _ _ ih => exact ih h
-  | tasksBlock => exact h.elim
-  | _ => trivial
-
-theorem CStmt.NoTasks.bases {s : CStmt} (h : s.NoTasks) : ∀ b, s.Bases b → b.NoBlocks := by
-  induction s with
-  | base => intro b hb; exact hb ▸ Stmt.NoTasks.noBlocks h
-  | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 => exact fun b hb => hb.elim (ih1 h.1 b) (ih2 h.2 b)
-  | loop _ _ ih | locked _ _ ih => exact ih h
-  | tasksBlock => exact h.elim
-  | _ => exact fun _ => nofun
-
-/-- Each phase in `ps` follows its rule. -/
-theorem phase_ok_of_mem : ∀ {ps : List CPhase}, P.CPhasesOk g tps ps → ∀ {p}, p ∈ ps → p.Ok P g tps
-  | _ :: _, ⟨hp, _, hrest⟩, _, hm => (List.mem_cons.1 hm).elim (fun h => h ▸ hp)
-    (phase_ok_of_mem hrest)
-
 theorem stmtOk_of_mem : ∀ {ps : List CPhase}, P.StmtOk (cseqAll ps) →
     ∀ {B rep}, CPhase.block B rep ∈ ps → P.StmtOk B
   | p :: _, ⟨hs, hrest⟩, _, rep, hm => by
@@ -285,19 +254,6 @@ theorem block_of_mem {s : Stmt} {ps : List CPhase} {B : Stmt} {rep : Option Task
       simp only [CPhase.lower, TaskProg.Phase.block.injEq] at he
       obtain ⟨rfl, -⟩ := he
       exact ⟨B0, _, hp, rfl⟩
-
-theorem cseqAll_bases : ∀ {ps : List CPhase}, P.CPhasesOk g tps ps →
-    ∀ b, (cseqAll ps).Bases b → b.NoBlocks
-  | [], _, b, hb => by cases hb; trivial
-  | .code _ :: _, ⟨hp, _, hrest⟩, b, hb => hb.elim (CStmt.NoTasks.bases hp b) (cseqAll_bases hrest b)
-  | .block _ none :: _, ⟨hp, _, hrest⟩, b, hb =>
-    hb.elim (CStmt.NoBlocks.bases hp.1 b) (cseqAll_bases hrest b)
-  | .block _ (some _) :: _, ⟨hp, _, hrest⟩, b, hb => by
-    rcases hb with (rfl | hb | rfl) | hb
-    · trivial
-    · exact CStmt.NoBlocks.bases hp.1 b hb
-    · trivial
-    · exact cseqAll_bases hrest b hb
 
 variable {ps : List CPhase} {X : Execution} (run : P.toTaskProg.toProg.Run X)
 include run
@@ -359,8 +315,7 @@ theorem guard_access (hF : P.CFootprints g tps ps) (hm : m < P.locks) {d : X.E}
     (.clean (by
       rw [ht0]
       exact hclean_task_body hm hg hF.ok
-        (fun t => (hF.tasks t).elim (fun h => h ▸ cseqAll_bases (hF.task_phases t))
-          fun h => CStmt.NoTasks.bases h.1) hF.guarded_task t0))
+        hF.guarded_task t0))
   have hget := view_get run (e := d) rfl (Nat.le_refl _) (by omega)
   rcases hacc.guard_hist hm (fun x h => hg x m h) hget hk hd with h | hh
   · exact h.elim
@@ -379,7 +334,6 @@ theorem guard_block (hF : P.CFootprints g tps ps) (hm : m < P.locks) {d : X.E}
   have hg : ∀ x m', g x = some m' → x < P.places := fun x m' h => (hF.guard x m' h).1
   have hok := stmtOk_of_mem (hF.main ▸ hF.ok.main) hB0
   have hacc := Runs.haccepts hs (.clean (hclean_guarded (s := .tasksBlock B0) hm hg (by simp) hok
-    (fun b h => CStmt.NoBlocks.bases (phase_ok_of_mem hF.phases hB0).1 b h)
     (hF.guarded_blocks B0 rep hB0)))
   have hget : L[run.idx d - n]? = some ⟨X.kind d, X.order d, X.loc d, run.val d, run.isRmw d⟩ := by
     rw [List.getElem?_eq_getElem (by omega), ← hL _ (by omega), Nat.add_sub_cancel' h1,

@@ -1,0 +1,11 @@
+LISA release_sequence_continued_by_an_add_of_device_scope
+(* As release_sequence_broken_by_an_add_of_block_scope.litmus, but the add has device scope. It
+   continues the release sequence of the flag, so the read of data sees the write.
+   Expect: never, no data race. *)
+{ data = 0; flag = 0; }
+ P0                   | P1                                 | P2                    ;
+ w[plain] data 1      | rmw[rlx,device] r0 (add r0 1) flag | r[acq,device] r0 flag ;
+ w[rel,device] flag 1 |                                    | r[plain] r1 data      ;
+scopes: (device (block P0) (block P1 P2))
+filter (1:r0 = 1 /\ 2:r0 = 2)
+exists (2:r1 = 0)

@@ -17,7 +17,7 @@ fn main() -> i32 {
   spawn on(Topology::GPU) {
     // Pinned<Tensor, NPU> — GPU cannot access NPU_HBM
     // CHECK: E6003{{.*}}'t_npu' lives in NPU_HBM but GPU[0] sees only [GPU_HBM]
-    let invalid = t_npu;
+    let invalid = t_npu.clone();
   }
 
   return 0;

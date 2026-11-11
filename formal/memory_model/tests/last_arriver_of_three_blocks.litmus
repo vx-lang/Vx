@@ -1,0 +1,15 @@
+LISA last_arriver_of_three_blocks
+(* As last_arriver_of_device_scope.litmus, with three blocks. The block whose add reads 2 is the
+   last. It reads the partials of the other two blocks, and sees both writes.
+   Expect: never, no data race. *)
+{ count = 0; part0 = 0; part1 = 0; part2 = 0; }
+ P0                                  | P1                                  | P2                                  ;
+ w[plain] part0 1                    | w[plain] part1 1                    | w[plain] part2 1                    ;
+ f[rel,device]                       | f[rel,device]                       | f[rel,device]                       ;
+ rmw[rlx,device] r0 (add r0 1) count | rmw[rlx,device] r0 (add r0 1) count | rmw[rlx,device] r0 (add r0 1) count ;
+                                     |                                     | f[acq,device]                       ;
+                                     |                                     | r[plain] r1 part0                   ;
+                                     |                                     | r[plain] r2 part1                   ;
+scopes: (device (block P0) (block P1) (block P2))
+filter (2:r0 = 2)
+exists (2:r1 = 0 \/ 2:r2 = 0)

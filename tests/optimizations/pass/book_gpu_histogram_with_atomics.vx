@@ -1,0 +1,42 @@
+//===- book_gpu_histogram_with_atomics.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on GPU code (www/book/src/gpu.md): 1024 lanes add 1 to the bin
+// of their value with an atomic add. The values (7 * i) % 8 put 128 in each of the 8 bins.
+//
+// The RUN lines run the CPU copy of the kernel (`CUDA_VISIBLE_DEVICES=`), with both code
+// generators. The last one checks the PTX of the kernel.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=PTX
+// CHECK: {{^}}bin 0: 128, bin 7: 128{{$}}
+// PTX: atom.global.add.u32
+
+// ANCHOR: program
+import core::sync::atomic;
+
+fn main() -> i32 {
+  let mut v = Tensor<i32, [1024]>::fill(0);
+  for i in 0..1024 {
+    v[i] = (i * 7) % 8;
+  }
+  let values = transfer(v, Memory::HBM);
+  let bins = transfer(Tensor<u32, [8]>::fill(0u32), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      for l in 0..256 across lanes {
+        let x = values[b * 256 + l];
+        let _old = atomic_fetch_add_u32(&bins, x, 1u32, AtomicOrdering::Relaxed);
+      }
+    }
+  }
+  let back = transfer(bins, Memory::CPU_DRAM);
+  println!("bin 0: {}, bin 7: {}", back[0], back[7]);
+  return 0;
+}
+// ANCHOR_END: program

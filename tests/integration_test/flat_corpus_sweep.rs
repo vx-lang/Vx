@@ -13,187 +13,12 @@
 //===----------------------------------------------------------------------===//
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// Programs the flat path declines today, relative to `tests/backend/pass/`.
 /// A worklist, not an exemption list: shrinking it is Vx#383.
 const KNOWN_DECLINES: &[&str] = &[
-    // A `match` through a reference to an enum, one of them with a payload: the flat path does
-    // not lower a match over a borrowed enum or an enum that carries a payload.
-    "backend/pass/match_on_a_reference_to_an_enum.vx",
-    // `c as ||->i32`: the flat path declines a cast to the built-in closure type ("a cast to a
-    // non-scalar"); the AST path compiles it.
-    "backend/pass/returning_a_closure_that_uses_nothing.vx",
-    // A user `impl Transfer` lowering: the flat path declines its body, which the AST path
-    // copies into the caller.
-    "backend/pass/custom_topology_user_lowering.vx",
-    "frontend/pass/assert_in_a_transfer_lowering_stays_in_it.vx",
-    // `c = a @ b` where `c` may be read by an operand (the same name, or a view through its
-    // pointer): the flat path only fills the destination in place, and declines the rest.
-    "backend/pass/matmul_assign_alias.vx",
-    "backend/pass/matmul_into_a_tensor_read_through_a_view.vx",
-    // The tuple's enum subject has no concrete type recorded for the flat match path.
-    "backend/pass/tuple_match_with_enum_variants_as_a_value.vx",
-    // A row chosen by an `if` used as a value: the flat path has no slot for a tensor view
-    // ("an aggregate slot with no struct type").
-    "backend/pass/tensor_views_end_at_their_last_use.vx",
-    // `let u = if c { ..; };`: the flat path declines a `let` of a `void` value, with or
-    // without `: void` ("a let with no type annotation"). The file is about the AST path.
-    "backend/pass/if_else_with_no_value_bound_by_let.vx",
-    // A struct passed to `grad`: the flat path declines it ("an autodiff argument that is not a
-    // scalar"). The file is about the AST path.
-    "backend/pass/autodiff/autodiff_for_variable_argument.vx",
-    // `&mut arr[0]`: the flat path declines any borrow of a tensor element ("a borrow of
-    // something that is not a tensor").
-    "frontend/pass/two_mutable_borrows_one_after_the_other.vx",
-    // A function returning `Result<void, E>`: the flat path has no layout for a payload of type
-    // `void` ("a callee return type").
-    "backend/pass/result_with_a_void_success_type.vx",
-    // `Result<void, i32>`: the flat path has no layout for a `void` payload ("an enum payload
-    // type that is not modelled").
-    "backend/pass/result_of_void.vx",
-    // `t = pass(t)` inside an `if`: on the flat path a tensor local is one register, so the
-    // new value cannot leave the branch. The flat path used to read the wrong tensor after it.
-    "frontend/pass/tensor_drops_written_into_the_program.vx",
-    "backend/pass/tensor_given_a_new_value_on_one_path.vx",
-    // "A borrow of something that is not a tensor": the flat path borrows tensors only.
-    "backend/pass/borrow_of_a_value.vx",
-    "backend/pass/cast_a_borrow_to_a_raw_pointer.vx",
-    "backend/pass/write_through_a_borrow_of_a_tensor_element.vx",
-    "backend/pass/borrow_element_through_pointer.vx",
-    // A raw pointer held in a `let` ("a place-bound reference in value position"): the flat
-    // path has no pointer values yet.
-    "backend/pass/raw_pointers_compare_by_address.vx",
-    // "A store to a nested nominal field": `self.inner = x` puts a struct into a struct's
-    // field, which the flat path does not model. The file is about the AST path anyway.
-    "backend/pass/assign_field_of_struct_local.vx",
-    // Reading a closure back out of a struct field: the flat path loads only plain numbers
-    // there ("an emitter gap" in memory.rs).
-    "backend/pass/closure_literal_as_closure_value.vx",
-    // "A store to a nested nominal field": `out.f = f` puts a closure into a struct's field.
-    "backend/pass/closure_using_a_local_stays_in_its_function.vx",
-    // "A store to a nested nominal field": `r[0].name = x` puts a struct into a struct's field.
-    "backend/pass/assign_to_a_field_through_index_mut_drops_the_old_field.vx",
-    // `Option::take` writes through `&mut Option<T>`, which the flat path declines as "a
-    // pointer element type that is not modelled". The answers come from the AST path.
-    "backend/pass/core_option.vx",
-    // An `Option` of an `Option` and of a pair: the flat path declines `main` as "an enum
-    // with no modelled instance layout". The answers come from the AST path.
-    "backend/pass/core_option_flatten_unzip.vx",
-    // `fetch_update` calls a closure that answers an `Option`, which the flat path declines
-    // as "an indirect callee returning a non-scalar". The answers come from the AST path.
-    "backend/pass/core_sync_atomic_fetch_update.vx",
-    // The flat path declines `main` here as "a callee return type": the adaptors it
-    // builds answer with a generic struct. Its answers come from the AST path.
-    "backend/pass/core_iter.vx",
-    // Same decline as `core_iter.vx`, one adaptor deeper: the answers come from the AST path.
-    "backend/pass/iter_adaptors_chain.vx",
-    // Same decline as `core_iter.vx`: `main` builds adaptors before consuming them.
-    "backend/pass/core_iter_fold_sum_collect.vx",
-    // Same decline again, for the same reason.
-    "backend/pass/core_iter_consumers.vx",
-    "backend/pass/core_iter_adapters.vx",
-    "backend/pass/core_iter_stateful_adapters.vx",
-    "backend/pass/core_iter_rev.vx",
-    // Same decline as `core_iter.vx`: `map` answers with a generic adaptor struct.
-    "backend/pass/closure_literal_in_a_for_header.vx",
-    // `Vec::iter()` hands out `&T`: the flat path has no layout for `Option<&T>` and cannot
-    // read through a `for` variable that is a reference (#889).
-    "backend/pass/closure_map.vx",
-    "backend/pass/vec_iter_is_core_iterator.vx",
-    "backend/pass/vec_leaves_iter_names_free.vx",
-    "backend/pass/vec_iter_hands_out_references.vx",
-    "backend/pass/write_through_a_mutable_reference.vx",
-    "backend/pass/for_loop_over_a_reference_to_a_vec.vx",
-    // "A borrow of something that is not a tensor": the flat path does not model `&(&a)`.
-    "backend/pass/borrow_of_a_borrow.vx",
-    "backend/pass/core_iter_zip.vx",
-    "backend/pass/core_iter_extend.vx",
-    "backend/pass/core_iter_exact_size.vx",
-    "backend/pass/core_iter_compare.vx",
-    "backend/pass/core_iter_try_fold.vx",
-    "backend/pass/core_iter_cycle.vx",
-    // A user iterator over a struct, which `main` builds and consumes: "a callee return type".
-    "backend/pass/iterator_over_structs.vx",
-    // Generic functions answering generic instances: "a callee return type", as above.
-    "backend/pass/bounds_with_type_arguments.vx",
-    // A closure passed to a generic function: the flat emitter has no path for the call yet.
-    "warnings/pass/w1001_a_called_local_is_used.vx",
-    // "An enum with no modelled instance layout": `Option` of a tuple.
-    "backend/pass/tuple_in_an_option.vx",
-    // Same decline again: two chains whose `Map`s differ, for a name clash in the AST path.
-    "backend/pass/generic_struct_instances_nested.vx",
-    // A generic struct, `Cap<Count>`, which the flat path declines as "a struct with no GID".
-    // The projections are resolved by the checker, before either code generator runs.
-    "backend/pass/associated_type_projection.vx",
-    // The flat path declines `main` as "a callee return type", since `wrap` and `some_pair`
-    // answer with a generic struct and a generic enum. The answers come from the AST path.
-    "backend/pass/nested_generic_names_in_generic_fns.vx",
-    // `and_then` calls a closure that answers a `Result`, which the flat path declines as "an
-    // indirect callee returning a non-scalar". The answers come from the AST path.
-    "backend/pass/core_result.vx",
-    // `partial_cmp` answers with an `Option<Ordering>`, and `then_with` and `max_by` take
-    // closures that answer with an `Ordering`. The flat path declines the first as "a
-    // callee return type" and the others as "an indirect callee returning a non-scalar".
-    // These live apart from `core_cmp.vx` so that file keeps compiling through the flat
-    // path; putting them together would have moved it here instead.
-    "backend/pass/core_cmp_partial.vx",
-    // A generic struct, which the flat path declines as "a struct with no GID". The file
-    // exists to pin that `>>` still closes two generics now that it is also the right
-    // shift, and that question is settled in the parser, so the decline costs it nothing.
-    // It states no directive about emitted IR, precisely because it is on the AST path.
-    "backend/pass/user_lowering_name_collisions.vx",
-    "backend/pass/user_lowering_uncountable.vx",
-    "backend/pass/user_lowering_waste.vx",
-    // `min_by` over a struct: the flat path declines it as "an indirect callee returning a
-    // non-scalar". The answers come from the AST path.
-    "backend/pass/core_cmp_ties_and_keys.vx",
-    // `total_cmp` takes a reference to a number, which the flat path declines as "a borrow of
-    // something that is not a tensor". The answers come from the AST path.
-    "backend/pass/core_num_float_total_cmp.vx",
-    // `map_inplace` calls the closure it is given, reading the function and its environment
-    // out of the closure value, which the flat path does not load. The answers come from the
-    // AST path.
-    "backend/pass/std_tensor_map_inplace.vx",
-    "frontend/pass/closure_fat_ptr.vx",
-    "frontend/pass/control_flow_rigorous.vx",
-    // `c = c @ b`: the flat path writes a product into its destination, which here is also an
-    // operand ("a matmul assignment whose destination may be one of its operands").
-    "frontend/pass/tensor_drop_points_reassigned.vx",
-    // The `vxc -j` fallback fixture: a program the flat path declines, chosen so the parallel
-    // frontend has something to hand back to the sequential driver. It declines "a match in
-    // value position".
-    "frontend/pass/jobs_falls_back_outside_the_flat_subset.vx",
-    // The same shape again, with a warning added: it states that a program checked by both
-    // frontends has its warnings reported once, which needs a program that declines.
-    "frontend/pass/jobs_warns_once_when_it_falls_back.vx",
-    "frontend/pass/trait_topologies.vx",
-    // A `for` loop over `v.iter()`: the flat path declines `Vec` iteration by reference.
-    "frontend/pass/vec_iterator_borrow_ends_at_last_use.vx",
-    // `&&x` borrows a borrow, and the flat path declines a borrow of anything but a tensor.
-    "frontend/pass/warning_for_a_borrow_of_a_borrow.vx",
-    // A parameter with run-time extents (Vx#409). It used to compile through the flat path
-    // while the dims-less spelling let it read as rank-0: `topology.vx` got a `memref<f32>`
-    // signature where the AST oracle gives `memref<?x?xf32>`, two ABIs for one function, plus
-    // a dropped vx.transfer. Declining is the honest answer until the flat lowerer carries
-    // run-time extents.
-    "warnings/pass/lowering_declined_for_dynamic_tile.vx",
-    // A row chosen by an `if` used as a value: the flat path has no slot for a tensor view
-    // ("an aggregate slot with no struct type").
-    "backend/pass/let_if_tensor_inside_an_if.vx",
-    // A call through a pointer to a `void` function: the flat path declines it ("an indirect
-    // callee returning a non-scalar").
-    "backend/pass/generic_call_of_a_void_function.vx",
-    // `a && b` in a `print!` argument: the flat path declines it ("a logical operator lowers only
-    // in memory mode"). The file is about the AST path.
-    "frontend/pass/print_argument_with_and_or.vx",
-    // `p.v = o` stores a `Vec` into a struct field: the flat path declines "a store to a nested
-    // nominal field".
-    "frontend/pass/moved_variable_given_a_new_value.vx",
-    // `c = a.clone()` inside a `spawn`: the flat path declines it ("a tensor given a new value
-    // inside a branch or loop"). The kernel has to write `c` for `c` to be passed as a slot,
-    // which is what the file checks.
-    "optimizations/pass/dispatch_abi_tags.vx",
+    // Empty: the flat path takes every program in the corpus. The tests of the fallback set
+    // VX_FLAT_DECLINE in their RUN lines to make it decline a function.
 ];
 
 /// Every `.vx` file under `dir`, recursively, sorted for a stable report.
@@ -220,9 +45,7 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
 /// Programs where the flat path declines AND the AST fallback then fails to compile --
 /// invalid MLIR or a panic on the default `--action emit-mlir` (Vx#398). Each is a real
 /// compiler defect; the list exists so the set can only shrink, never silently grow.
-const KNOWN_BROKEN: &[&str] = &[
-    "frontend/pass/control_flow_rigorous.vx", // multi-payload variant binding (Vx#233)
-];
+const KNOWN_BROKEN: &[&str] = &[];
 
 /// Which codegen path the compiler took for one program, and -- when it fell back -- the reasons
 /// the flat path gave.
@@ -265,7 +88,7 @@ fn tests_package() -> [String; 2] {
 /// The line that says the flat path ran is printed only when `VX_FLAT_DBG` is set,
 /// so this sets it. A normal compile stays quiet.
 fn path_taken(program: &Path) -> Result<CodegenPath, String> {
-    let output = Command::new(env!("CARGO_BIN_EXE_vxc"))
+    let output = super::time_limit::vxc()
         .arg(program)
         .args(tests_package())
         .args(["--action", "emit-mlir"])
@@ -342,7 +165,6 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         // flat path's business. Each names why; shrinking this list is separate work.
         const NOT_STANDALONE: &[&str] = &[
             "optimizations/pass/array_literal_nested.vx", // expects failure by design (RUN: not vxc)
-            "optimizations/pass/codegen_error_diagnostics.vx", // expects failure by design (RUN: not vxc)
             "optimizations/pass/host_flag_scope.vx",           // needs --host
             "optimizations/pass/device_transfer_plugin.vx",    // needs --machine and a plugin
             "optimizations/pass/numa_peer_node_is_priced.vx",  // needs --host and --machine
@@ -355,9 +177,11 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/across_loops_run_in_order_on_the_cpu.vx",         // needs --machine
             "optimizations/pass/atomic_adds_in_across_loops.vx",                  // needs --machine
             "optimizations/pass/functions_generic_over_memory.vx",                // needs --machine
+            "optimizations/pass/functions_that_run_where_they_are_called.vx",     // needs --machine
             "optimizations/pass/element_atomics_in_across_loops.vx",              // needs --machine
             "optimizations/pass/float_atomics_in_across_loops.vx",                // needs --machine
             "optimizations/pass/scoped_fences_in_across_loops.vx",                // needs --machine
+            "optimizations/pass/reads_only_calls_in_across_loops.vx",             // needs --machine
             "optimizations/pass/code_after_the_blocks_runs_in_the_last_pass.vx",  // needs --machine
             "optimizations/pass/gpu_image_keeps_only_the_kernels.vx",             // needs --machine
             "optimizations/pass/across_kernels_that_pass_the_checks.vx",          // needs --machine
@@ -365,6 +189,17 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/across_kernels_from_polybench_and_rodinia.vx",    // needs --machine
             "optimizations/pass/lane_reductions_on_the_cpu.vx",                   // needs --machine
             "optimizations/pass/lane_reductions_on_the_gpu.vx",                   // needs --machine
+            "optimizations/pass/lane_values_stay_in_registers_on_the_gpu.vx",     // needs --machine
+            "optimizations/pass/across_loops_run_in_parallel_on_both_code_generators.vx", // needs --machine
+            "optimizations/pass/lane_routines_run_in_parallel_on_both_code_generators.vx", // needs --machine
+            "optimizations/pass/lane_sorts_on_the_cpu.vx",                        // needs --machine
+            "optimizations/pass/lane_sorts_on_the_gpu.vx",                        // needs --machine
+            "optimizations/pass/lane_matmuls_on_the_cpu.vx",                      // needs --machine
+            "optimizations/pass/lane_matmuls_on_the_gpu.vx",                      // needs --machine
+            "optimizations/pass/lane_matmuls_on_tensor_cores.vx",                 // needs --machine
+            "optimizations/pass/lane_copies_on_the_cpu.vx",                       // needs --machine
+            "optimizations/pass/lane_copies_on_the_gpu.vx",                       // needs --machine
+            "optimizations/pass/lane_copies_with_tma.vx",                         // needs --machine
             "optimizations/pass/lane_argmax_on_the_cpu.vx",                       // needs --machine
             "optimizations/pass/if_values_that_read_a_tensor.vx",                 // needs --machine
             "optimizations/pass/code_after_the_blocks_runs_on_the_lanes_of_one_block.vx", // needs --machine
@@ -374,9 +209,46 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/splits_read_from_gpu_memory.vx",           // needs --machine
             "optimizations/pass/a_kernel_tells_ptxas_its_block_size.vx",   // needs --machine
             "optimizations/pass/atomic_orders_and_fence_scopes_in_ptx.vx", // needs --machine
+            "optimizations/pass/a_tensor_that_atomics_change_is_not_readonly.vx", // needs --machine
+            "optimizations/pass/writes_at_slots_from_an_atomic_counter.vx", // needs --machine
+            "optimizations/pass/atomics_on_a_mut_tensor.vx",               // needs --machine
             "optimizations/pass/code_after_the_blocks_in_a_kernel_for_emit_ptx.vx", // needs --machine
+            "optimizations/pass/a_shared_tile_in_the_code_after_the_blocks.vx", // needs --machine
+            "optimizations/pass/a_tensor_in_gpu_memory_in_a_struct_or_enum_is_freed_by_its_plugin.vx", // split-file
+            "optimizations/pass/gpu_region_that_ends_in_a_value_runs_on_the_gpu.vx", // needs --machine
             "optimizations/pass/across_loops_with_auto_schedule_levels_carry_their_level.vx", // needs -f
             "frontend/pass/packages/import_from_a_package.vx", // needs --package
+            // needs --machine
+            "optimizations/pass/across_loops_get_a_launch_check_only_when_an_index_may_wrap.vx",
+            // needs --machine
+            "optimizations/pass/an_across_loop_whose_index_wraps_stops_at_the_launch.vx",
+            // needs --machine
+            "optimizations/pass/two_tensors_in_a_gpu_kernel_share_local_memory.vx",
+            // needs --machine
+            "optimizations/pass/apple_gpu_kernels_in_metal_shading_language.vx",
+            // needs --machine
+            "optimizations/pass/apple_gpu_element_atomics_in_metal_shading_language.vx",
+            // needs --machine
+            "optimizations/pass/a_bulk_hash_table_search_wraps_around_the_end_of_the_table.vx",
+            // needs --machine
+            "optimizations/pass/the_cpu_workers_share_the_blocks_of_an_across_loop.vx",
+            // needs --machine
+            "optimizations/pass/the_cpu_copy_of_an_apple_gpu_kernel_flushes_subnormals.vx",
+            // needs --machine
+            "optimizations/pass/a_library_for_the_apple_gpu_waits_before_it_returns.vx",
+            // needs --machine
+            "optimizations/pass/pub_fns_in_a_program_for_the_apple_gpu_return_without_a_wait.vx",
+            "optimizations/pass/book_gpu_blocks_and_lanes.vx", // needs --machine
+            "optimizations/pass/book_gpu_histogram_with_atomics.vx", // needs --machine
+            "optimizations/pass/book_gpu_row_sums_in_shared_memory.vx", // needs --machine
+            "optimizations/pass/std_nn_kernels_match_loops_on_the_cpu.vx", // needs --machine
+            "optimizations/pass/std_nn_fp8_kernels_match_loops_on_the_cpu.vx", // needs --machine
+            "optimizations/pass/std_nn_moe_kernels_match_loops_on_the_cpu.vx", // needs --machine
+            "optimizations/pass/std_nn_q4_kernels_match_loops_on_the_cpu.vx", // needs --machine
+            // needs --machine
+            "optimizations/pass/methods_that_return_a_reference_to_a_tensor_field.vx",
+            // needs --machine
+            "optimizations/pass/a_tensor_that_a_called_function_writes_is_not_const_on_the_apple_gpu.vx",
         ];
         if NOT_STANDALONE.contains(&name.as_str()) {
             continue;
@@ -586,7 +458,7 @@ fn flat_path_answers_match_the_backend_expectations() {
             continue;
         }
 
-        let output = match Command::new(env!("CARGO_BIN_EXE_vxc"))
+        let output = match super::time_limit::vxc()
             .arg(&program)
             .args(tests_package())
             .env("PATH", &path_var)

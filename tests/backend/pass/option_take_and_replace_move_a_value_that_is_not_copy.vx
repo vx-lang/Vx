@@ -1,0 +1,74 @@
+//===- option_take_and_replace_move_a_value_that_is_not_copy.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Option::take` and `Option::replace` work on a value that is not `Copy`. Both read the value
+// with `*self`, and the checker refused that (E4008), since `self` is only a reference. Each
+// `drop` prints `d` and its number. Each value drops once.
+//
+// EXPECT: n t1 d1 | r2 d2 s3 d3 | end
+
+import core::option;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print!("d{} ", self.id);
+  }
+}
+
+fn take_it() -> void {
+  let mut o = Option<Noisy>::Some(Noisy {
+    id: 1
+  });
+  let t = o.take();
+  match o {
+    Option<Noisy>::Some(_) => {
+      print!("s ");
+    }
+    Option<Noisy>::None => {
+      print!("n ");
+    }
+  }
+  match t {
+    Option<Noisy>::Some(v) => {
+      print!("t{} ", v.id);
+    }
+    Option<Noisy>::None => {}
+  }
+}
+
+fn replace_it() -> void {
+  let mut o = Option<Noisy>::Some(Noisy {
+    id: 2
+  });
+  let old = o.replace(Noisy {
+    id: 3
+  });
+  match old {
+    Option<Noisy>::Some(v) => {
+      print!("r{} ", v.id);
+    }
+    Option<Noisy>::None => {}
+  }
+  match o {
+    Option<Noisy>::Some(v) => {
+      print!("s{} ", v.id);
+    }
+    Option<Noisy>::None => {}
+  }
+}
+
+fn main() -> i32 {
+  take_it();
+  print!("| ");
+  replace_it();
+  print!("| end\n");
+  return 0;
+}

@@ -20,6 +20,7 @@ pub mod decl_check;
 pub mod env;
 pub mod expr;
 pub mod flatten;
+pub mod frees;
 pub mod memory;
 pub mod places;
 pub mod provenance;
@@ -180,7 +181,7 @@ fn distributed_matmul(a: Tensor<f32, [?, ?]>, b: Tensor<f32, [?, ?]>) -> Tensor<
     let local_a = transfer(a, Memory::NPU_HBM);
     let local_b = transfer(b, Memory::NPU_HBM);
     spawn on(Topology::NPU[0]) {
-        let result = local_a; 
+        let result = &local_a; 
         // In a real kernel, we would have explicit NPU intrinsics here.
         // For this test, we verify the spawn and transfer syntax parses.
     }
@@ -250,7 +251,7 @@ fn bad_matmul() -> Tensor<f32, [?, ?]> {
         fn test_pointers(c: &mut Config) -> bool {
             unsafe {
                 let ptr: *mut Config = c;
-                let val = *ptr;
+                let val = &*ptr;
             }
             return c.value < 20.0f32;
         }

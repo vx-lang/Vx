@@ -12,7 +12,9 @@ import std::net;
 
 fn main() -> i32 {
   unsafe {
-    let mut socket = UdpSocket::bind("127.0.0.1:0");
+    let mut socket = UdpSocket {
+      ptr: 0 as *mut i8
+    };
     let length : i64 = 1;
     let _count = socket.recv(0 as *mut u8, length);
   }

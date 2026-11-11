@@ -1,0 +1,84 @@
+//===- match_or_if_value_ends_in_break_or_continue.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `match` or an `if` used as a value can have a branch that ends in `break` or
+// `continue`. That branch gives no value. It leaves the loop or goes to the next turn.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+//
+// CHECK: until_none 30
+// CHECK-NEXT: skip_none 70
+// CHECK-NEXT: skip_two 8
+
+import core::option;
+
+fn pick(n : i32) -> Option<i32> {
+  if n == 3 {
+    return Option<i32>::None;
+  }
+  return Option<i32>::Some(n * 10);
+}
+
+// 0 + 10 + 20, then `pick(3)` is `None` and the loop stops.
+fn until_none() -> i32 {
+  let mut total = 0;
+  for i in 0..5 {
+    total = total + match pick(i) {
+      Option<i32>::Some(v) => {
+        v
+      }
+      Option<i32>::None => {
+        break;
+      }
+    };
+  }
+  return total;
+}
+
+// 0 + 10 + 20 + 40: only `pick(3)` is skipped.
+fn skip_none() -> i32 {
+  let mut total = 0;
+  for i in 0..5 {
+    total = total + match pick(i) {
+      Option<i32>::Some(v) => {
+        v
+      }
+      Option<i32>::None => {
+        continue;
+      }
+    };
+  }
+  return total;
+}
+
+// 0 + 2 + 6: the `if` skips 2.
+fn skip_two() -> i32 {
+  let mut total = 0;
+  for i in 0..4 {
+    let twice = if i == 2 {
+      continue;
+    } else {
+      i * 2
+    };
+    total = total + twice;
+  }
+  return total;
+}
+
+fn main() -> i32 {
+  print!("until_none ");
+  print(until_none());
+  println!("");
+  print!("skip_none ");
+  print(skip_none());
+  println!("");
+  print!("skip_two ");
+  print(skip_two());
+  println!("");
+  return 0;
+}

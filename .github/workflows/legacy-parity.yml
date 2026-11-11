@@ -1,0 +1,61 @@
+name: AST code generator parity
+
+# Runs each RUN line of the tests a second time with `--legacy-codegen`, so that the AST code
+# generator keeps parity with the flat code generator. compile_test.rs says which lines it skips.
+# It runs twice a week, not on each pull request.
+on:
+  schedule:
+    # Monday and Thursday at 12:00 UTC, 4am Pacific Standard Time. Cron times are in UTC.
+    - cron: '0 12 * * 1,4'
+  workflow_dispatch:
+
+jobs:
+  llvm:
+    name: Build LLVM
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    outputs:
+      key: ${{ steps.llvm.outputs.key }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build LLVM if the cache does not have it
+        id: llvm
+        uses: ./.github/actions/build-own-llvm
+        with:
+          restore: 'false'
+
+  parity:
+    name: Tests on both code generators
+    needs: llvm
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ needs.llvm.outputs.key }}
+
+      - name: Use our own LLVM
+        uses: ./.github/actions/use-own-llvm
+        with:
+          key: ${{ needs.llvm.outputs.key }}
+
+      - name: Build
+        run: cargo build --release --workspace
+
+      - name: Run the tests on both code generators
+        env:
+          VX_LEGACY_PARITY: 1
+        run: cargo test --release --test integration_test compile_test

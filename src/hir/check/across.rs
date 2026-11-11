@@ -16,7 +16,7 @@
 use crate::arch::{Level, LevelKind};
 use crate::hir::check::{across_lanes, lanes};
 use crate::syntax::stmt::{ForLoopStmt, Statement};
-use crate::syntax::{Expr, Span};
+use crate::syntax::{ElementType, Expr, RelationalOp, Span};
 use std::collections::{HashMap, HashSet};
 
 /// The `spawn on` region that a statement is in.
@@ -74,6 +74,9 @@ struct Walk<'g> {
     /// The level of each `across` loop, by the position of its clause, with the lanes of a
     /// subgroup of its topology, and whether `-fauto-schedule-levels` makes it a plain `for`.
     found: HashMap<Span, (LevelKind, Option<u64>, bool)>,
+    /// The largest end of each `across` loop whose index wraps for a large size, with the type of
+    /// the index, by the position of its clause.
+    largest_ends: HashMap<Span, (i128, ElementType)>,
     /// `-fauto-schedule-levels`.
     auto_schedule: bool,
     /// The memories with `scope: cta` or `scope: sm`, whose tensors the lanes of a block share.
@@ -84,6 +87,8 @@ struct Walk<'g> {
     lane_sizes: HashMap<Span, u64>,
     /// The lane reductions in a place that allows them.
     lane_calls: Vec<LaneCall>,
+    /// The `@` of each lane matmul in the code of a subgroup.
+    lane_matmuls: HashSet<Span>,
     /// The parameters of the function that are `&` tensors, not `&mut`.
     read_only: HashSet<String>,
 }
@@ -103,7 +108,7 @@ impl crate::hir::TypeChecker<'_> {
     pub(crate) fn check_across_loops(
         &mut self,
         params: &[(crate::symbol::Symbol, crate::syntax::Type)],
-        body: &mut [Statement],
+        body: &mut Vec<Statement>,
     ) {
         let read_only = params
             .iter()
@@ -129,15 +134,18 @@ impl crate::hir::TypeChecker<'_> {
             graph: self.transfer_cost_graph,
             errors: Vec::new(),
             found: HashMap::new(),
+            largest_ends: HashMap::new(),
             auto_schedule: self.worker.global.auto_schedule_levels,
             shared,
             contracts: self.atomic_contracts(),
             lane_sizes: self.lane_reductions.clone(),
             lane_calls: Vec::new(),
+            lane_matmuls: HashSet::new(),
             read_only,
         };
         walk.stmts(body, &Ctx::default());
         mark_stmts(body, &walk.found);
+        check_sizes_at_launch(body, &walk.largest_ends, !walk.errors.is_empty());
         walk.lane_reductions(body);
         // The proof of an outer loop also walks the inner loops, so one place can come twice.
         let mut seen = HashSet::new();
@@ -293,24 +301,28 @@ impl Walk<'_> {
         after
     }
 
-    /// A matmul of whole tensors in a region with `across` loops. The code generator sends a
-    /// whole matmul to cuBLAS, which a kernel cannot call, so the region would get no GPU kernel.
-    /// Its loops ask for a launch, so that is an error here, with a position, and not a region
-    /// that runs on the CPU in silence.
+    /// A matmul of whole tensors in a region with `across` loops, other than a lane matmul in the
+    /// code of a subgroup. The code generator sends such a matmul to cuBLAS, which a kernel cannot
+    /// call, so the region would get no GPU kernel. Its loops ask for a launch, so that is an error
+    /// here, with a position, and not a region that runs on the CPU in silence.
     fn whole_matmuls(&mut self, stmts: &[Statement]) {
         let mut found = Vec::new();
         crate::syntax::visit_exprs(stmts, &mut |e| {
             if let Expr::BinaryOp(b) = e {
-                if matches!(b.op, crate::syntax::BinaryOp::MatMul) {
+                if matches!(b.op, crate::syntax::BinaryOp::MatMul)
+                    && !self.lane_matmuls.contains(&b.span)
+                {
                     found.push(b.span);
                 }
             }
         });
         for at in found {
             self.error(
-                "a region with `across` loops may not have a matmul of whole tensors: the code \
-                 generator sends it to cuBLAS, which a GPU kernel cannot call. Write its loops in \
-                 the region, or do the matmul before the region"
+                "a region with `across` loops may have a matmul of whole tensors only as a \
+                 statement `c = c + a @ b` or `c = a @ b` in the code of a subgroup loop, outside \
+                 its lane loops. The code generator sends any other matmul to cuBLAS, which a GPU \
+                 kernel cannot call. Write its loops in the region, or do the matmul before the \
+                 region"
                     .to_string(),
                 at,
             );
@@ -443,24 +455,29 @@ impl Walk<'_> {
                     self.block_tensor(l, ctx);
                 }
                 if let Some(fc) = lanes::bare_lanes_call(&l.expr) {
-                    if let (true, false, Some(region), Some(axis)) = (
-                        Self::stretch_level(ctx),
-                        ctx.in_closure,
-                        ctx.region.clone(),
-                        ctx.axes.last(),
-                    ) {
-                        self.lane_calls.push(LaneCall {
-                            at: fc.span,
-                            name: fc.name.as_ref().to_string(),
-                            scope: axis.kind,
-                            region,
-                        });
+                    if lanes::bare_lane_statement(&l.expr).is_none() {
+                        self.lane_call(fc, ctx);
                     }
                 }
                 self.expr(&l.expr, ctx)
             }
-            Statement::ExprStmt(e) => self.expr(&e.expr, ctx),
+            Statement::ExprStmt(e) => {
+                if let Some(fc) = lanes::bare_lane_statement(&e.expr) {
+                    self.lane_call(fc, ctx);
+                }
+                self.expr(&e.expr, ctx)
+            }
             Statement::Assign(a) => {
+                if let Some(m) = lanes::lane_matmul(a) {
+                    self.lane_matmul(&m, ctx);
+                }
+                // `t = lanes::copy_async(..)` gives a token variable its next copy, as a
+                // pipeline does when it starts the next copy before it waits for this one.
+                if let (Expr::Identifier(_), Some(fc)) = (&a.lhs, lanes::bare_lanes_call(&a.rhs)) {
+                    if lanes::calls_routine(&a.rhs, lanes::LaneOp::CopyAsync) {
+                        self.lane_call(fc, ctx);
+                    }
+                }
                 self.expr(&a.lhs, ctx);
                 self.expr(&a.rhs, ctx);
             }
@@ -474,6 +491,45 @@ impl Walk<'_> {
             | Statement::MacroCall(_)
             | Statement::Drop(_)
             | Statement::Error(_) => {}
+        }
+    }
+
+    /// A call to a lane routine in a place that allows it, when it is in the code of a level.
+    fn lane_call(&mut self, fc: &crate::syntax::expr::FunctionCallExpr, ctx: &Ctx) {
+        if let (true, false, Some(region), Some(axis)) = (
+            Self::stretch_level(ctx),
+            ctx.in_closure,
+            ctx.region.clone(),
+            ctx.axes.last(),
+        ) {
+            self.lane_calls.push(LaneCall {
+                at: fc.span,
+                name: fc.name.as_ref().to_string(),
+                scope: axis.kind,
+                region,
+            });
+        }
+    }
+
+    /// A lane matmul in the code of a subgroup. The subgroups of a region that launches have 32
+    /// lanes.
+    fn lane_matmul(&mut self, m: &lanes::LaneMatmul, ctx: &Ctx) {
+        if let (true, false, Some(region), Some(axis)) = (
+            Self::stretch_level(ctx),
+            ctx.in_closure,
+            ctx.region.clone(),
+            ctx.axes.last(),
+        ) {
+            if axis.kind != LevelKind::Subgroups {
+                return;
+            }
+            self.lane_matmuls.insert(m.at);
+            self.needs_subgroups_of_32(&LaneCall {
+                at: m.at,
+                name: lanes::MATMUL.to_string(),
+                scope: axis.kind,
+                region,
+            });
         }
     }
 
@@ -497,17 +553,6 @@ impl Walk<'_> {
                     ..Ctx::default()
                 };
                 self.region_nests(&sp.stmts, &region);
-                // A region that `-fauto-schedule-levels` runs as plain loops has no launch, so its
-                // matmul goes to cuBLAS as in any other region.
-                let launches = region.region.as_ref().is_some_and(|r| r.launches);
-                if launches
-                    && sp
-                        .stmts
-                        .iter()
-                        .any(|s| matches!(s, Statement::ForLoop(f) if f.across.is_some()))
-                {
-                    self.whole_matmuls(&sp.stmts);
-                }
                 // The code after the nest runs in the last pass to end, as the body of one block.
                 let nest = sp
                     .stmts
@@ -524,6 +569,13 @@ impl Walk<'_> {
                 self.stmts(&sp.stmts[after..], &last_pass);
                 if let Some(r) = &sp.ret {
                     self.expr(r, &Self::inner(&region));
+                }
+                // A region that `-fauto-schedule-levels` runs as plain loops has no launch, so its
+                // matmul goes to cuBLAS as in any other region. The walk above found the lane
+                // matmuls.
+                let launches = region.region.as_ref().is_some_and(|r| r.launches);
+                if launches && nest.is_some() {
+                    self.whole_matmuls(&sp.stmts);
                 }
             }
             // A task runs on a CPU thread of its own, not in the region around it.
@@ -628,20 +680,41 @@ impl Walk<'_> {
             }
         });
         for (name, at) in elsewhere {
+            let place = if lanes::lane_routine(&name).is_some_and(|(op, _)| op.is_statement()) {
+                "a statement of its own"
+            } else {
+                "the whole value of a `let`"
+            };
             self.error(
                 format!(
-                    "`{name}` must be the whole value of a `let` in the code of a loop of blocks \
-                     or subgroups, outside its lane loops. Every lane of the block or the \
-                     subgroup must get to it"
+                    "{} must be {place} in the code of a loop of blocks or subgroups, outside \
+                     its lane loops. Every lane of the block or the subgroup must get to it",
+                    lanes::shown_name(&name)
                 ),
                 at,
             );
         }
         let calls = std::mem::take(&mut self.lane_calls);
         for c in &calls {
+            let copy = lanes::lane_routine(&c.name).is_some_and(|(op, _)| {
+                matches!(op, lanes::LaneOp::CopyAsync | lanes::LaneOp::CopyWait)
+            });
+            if copy {
+                // The copy reports the size, so its wait does not report it again.
+                let start = lanes::lane_routine(&c.name)
+                    .is_some_and(|(op, _)| op == lanes::LaneOp::CopyAsync);
+                if start && c.scope == LevelKind::Subgroups {
+                    self.needs_subgroups_of_32(c);
+                }
+                continue;
+            }
             let Some(&n) = self.lane_sizes.get(&c.at) else {
                 continue;
             };
+            if lanes::lane_routine(&c.name).is_some_and(|(op, _)| op.is_sort()) {
+                self.lane_sort_sizes(c, n, &block_lanes);
+                continue;
+            }
             let (most, scope) = match c.scope {
                 LevelKind::Subgroups => (32, "subgroup"),
                 _ => (lanes::MAX_BLOCK_ELEMENTS, "block"),
@@ -662,25 +735,7 @@ impl Walk<'_> {
             }
             match c.scope {
                 LevelKind::Subgroups => {
-                    let sub = c
-                        .region
-                        .levels
-                        .iter()
-                        .flatten()
-                        .find(|l| l.kind == LevelKind::Subgroups)
-                        .and_then(|l| l.lanes);
-                    if sub != Some(32) {
-                        self.error(
-                            format!(
-                                "`{}` in the code of a subgroup needs subgroups of 32 lanes, but \
-                                 the topology `{}` gives {}",
-                                c.name,
-                                c.region.name,
-                                sub.map_or("no size".to_string(), |s| s.to_string())
-                            ),
-                            c.at,
-                        );
-                    }
+                    self.needs_subgroups_of_32(c);
                 }
                 _ => {
                     let lanes = block_lanes
@@ -701,6 +756,78 @@ impl Walk<'_> {
                     }
                 }
             }
+        }
+    }
+
+    /// A lane routine in the code of a subgroup of a region that launches needs subgroups of 32
+    /// lanes. Gives whether it has them, and reports an error if not.
+    fn needs_subgroups_of_32(&mut self, c: &LaneCall) -> bool {
+        let sub = c
+            .region
+            .levels
+            .iter()
+            .flatten()
+            .find(|l| l.kind == LevelKind::Subgroups)
+            .and_then(|l| l.lanes);
+        if !c.region.launches || sub == Some(32) {
+            return true;
+        }
+        self.error(
+            format!(
+                "{} in the code of a subgroup needs subgroups of 32 lanes, but the topology `{}` \
+                 gives {}",
+                lanes::shown_name(&c.name),
+                c.region.name,
+                sub.map_or("no size".to_string(), |s| s.to_string())
+            ),
+            c.at,
+        );
+        false
+    }
+
+    /// The checks of a lane sort of `n` elements. Each lane holds at most
+    /// `MAX_SORT_ELEMENTS_A_LANE` of them. A block needs a number of lanes that is a power of two
+    /// and at least 32, and a subgroup 32 lanes.
+    fn lane_sort_sizes(&mut self, c: &LaneCall, n: u64, block_lanes: &HashMap<Span, Option<u64>>) {
+        let lanes = match c.scope {
+            LevelKind::Subgroups => {
+                if !self.needs_subgroups_of_32(c) {
+                    return;
+                }
+                32
+            }
+            _ => {
+                let lanes = block_lanes
+                    .get(&c.region.span)
+                    .copied()
+                    .flatten()
+                    .unwrap_or(1);
+                if c.region.launches && (lanes < 32 || !lanes.is_power_of_two()) {
+                    self.error(
+                        format!(
+                            "`{}` in the code of a block needs a block whose lanes are a power of \
+                             two and at least 32, but the lane loops of this region give {lanes} \
+                             lanes",
+                            c.name
+                        ),
+                        c.at,
+                    );
+                    return;
+                }
+                lanes
+            }
+        };
+        let most = lanes * lanes::MAX_SORT_ELEMENTS_A_LANE;
+        if c.region.launches && n > most {
+            self.error(
+                format!(
+                    "`{}` sorts at most {} elements for each of the {lanes} lanes, so at most \
+                     {most}, but its tensor has {n}",
+                    c.name,
+                    lanes::MAX_SORT_ELEMENTS_A_LANE
+                ),
+                c.at,
+            );
         }
     }
 
@@ -1119,12 +1246,18 @@ impl Walk<'_> {
             }
         }
         // L4: no pass may touch a place that another pass writes.
-        if let Some((why, at)) = crate::hir::check::across_proof::across_loop_race(
+        match crate::hir::check::across_proof::across_loop_race(
             f,
             kind_word(level.kind),
             &self.contracts,
         ) {
-            self.error(why, at);
+            Err((why, at)) => self.error(why, at),
+            Ok(ends) => {
+                for (at, end, ty) in ends {
+                    let e = self.largest_ends.entry(at).or_insert((end, ty));
+                    e.0 = e.0.min(end);
+                }
+            }
         }
         // L5: a lane loop may not read what only lane 0 has.
         if level.kind != LevelKind::Blocks {
@@ -1154,6 +1287,122 @@ impl Walk<'_> {
         }
         self.stmts(&f.body, &body);
     }
+}
+
+/// Puts an `assert` before each `spawn on` statement for each loop in its region that `ends`
+/// names. The `assert` stops the program when the end of the loop is larger than the end in
+/// `ends`. The host computes it, so the end may only read values from outside the region.
+fn check_sizes_at_launch(
+    stmts: &mut Vec<Statement>,
+    ends: &HashMap<Span, (i128, ElementType)>,
+    has_errors: bool,
+) {
+    if ends.is_empty() {
+        return;
+    }
+    let mut i = 0;
+    while i < stmts.len() {
+        let mut checks = Vec::new();
+        match &mut stmts[i] {
+            Statement::ForLoop(f) => check_sizes_at_launch(&mut f.body, ends, has_errors),
+            Statement::Loop(l) => check_sizes_at_launch(&mut l.body, ends, has_errors),
+            Statement::LetDecl(crate::syntax::stmt::LetDeclStmt { expr, .. })
+            | Statement::ExprStmt(crate::syntax::stmt::ExprStmtStmt { expr, .. }) => match expr {
+                Expr::SpawnOn(sp) => checks = launch_checks(&sp.stmts, ends, has_errors),
+                Expr::If(c) => {
+                    check_sizes_at_launch(&mut c.then_block, ends, has_errors);
+                    if let Some(b) = c.else_block.as_mut() {
+                        check_sizes_at_launch(b, ends, has_errors);
+                    }
+                }
+                Expr::UnsafeBlock(b) => check_sizes_at_launch(&mut b.stmts, ends, has_errors),
+                _ => {}
+            },
+            Statement::Return(crate::syntax::stmt::ReturnStmt {
+                expr: Some(Expr::SpawnOn(sp)),
+                ..
+            }) => checks = launch_checks(&sp.stmts, ends, has_errors),
+            _ => {}
+        }
+        // The checker can walk a function twice, so the checks can be there already.
+        checks.retain(|c| !stmts[..i].contains(c));
+        let n = checks.len();
+        stmts.splice(i..i, checks);
+        i += n + 1;
+    }
+}
+
+/// The `assert`s for the loops of a region, as `check_sizes_at_launch` describes them.
+fn launch_checks(
+    region: &[Statement],
+    ends: &HashMap<Span, (i128, ElementType)>,
+    has_errors: bool,
+) -> Vec<Statement> {
+    let mut inside = HashSet::new();
+    across_lanes::visit_stmts(region, &mut |s| match s {
+        Statement::LetDecl(l) => {
+            inside.insert(l.name.as_ref().to_string());
+        }
+        Statement::ForLoop(f) => {
+            inside.insert(f.iter.clone());
+        }
+        _ => {}
+    });
+    let mut checks = Vec::new();
+    across_lanes::visit_stmts(region, &mut |s| {
+        let Statement::ForLoop(f) = s else {
+            return;
+        };
+        let (Some(a), Expr::Range(r)) = (&f.across, &*f.iterable) else {
+            return;
+        };
+        let Some((end, ty)) = ends.get(&a.span) else {
+            return;
+        };
+        let max = crate::hir::comptime_interpreter::ComptimeInterpreter::integer_range(ty)
+            .map_or(i128::MAX, |(_, hi)| hi);
+        // An end of the type is never larger.
+        if *end > max {
+            return;
+        }
+        // Only a loop of blocks has an end that is not a number, and the checker refuses one
+        // that reads a value of the region.
+        let mut reads_inside = false;
+        crate::syntax::visit_expr(&r.end, &mut |e| {
+            if let Expr::Identifier(id) = e {
+                reads_inside |= inside.contains(id.name.as_ref());
+            }
+        });
+        if reads_inside {
+            assert!(
+                has_errors,
+                "the end of the `across` loop at line {} reads a value of its region",
+                a.span.line
+            );
+            return;
+        }
+        let mut cond = crate::syntax::RelationalOpExpr::new(
+            r.end.clone(),
+            RelationalOp::Le,
+            Box::new(Expr::Number(crate::syntax::NumberExpr::new(
+                end.to_string(),
+                Some(ty.clone()),
+                a.span,
+            ))),
+            a.span,
+        );
+        cond.operand_ty = Some(ty.clone());
+        checks.push(Statement::Assert(crate::syntax::stmt::AssertStmt::new(
+            Box::new(Expr::RelationalOp(cond)),
+            Some(format!(
+                "the end of the `across` loop at line {} is larger than {end}, so an index of \
+                 the loop wraps. Compute the index with a wider type, such as `i64`",
+                a.span.line
+            )),
+            a.span,
+        )));
+    });
+    checks
 }
 
 /// Gives each `across` loop in `stmts` the level that the walk found for it. A loop in a place

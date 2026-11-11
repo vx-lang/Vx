@@ -119,6 +119,84 @@ fn host_target_triple() -> Result<String, String> {
     Ok(triple)
 }
 
+/// The oldest macOS that an object needs, as `LC_BUILD_VERSION` writes it: the major version in
+/// the high 16 bits, then the minor and the patch in 8 bits each. It is `MACOSX_DEPLOYMENT_TARGET`,
+/// as for clang, or else the major and minor version of the running macOS, which clang links for.
+fn macos_minimum_version() -> Option<u32> {
+    let text = match std::env::var("MACOSX_DEPLOYMENT_TARGET") {
+        Ok(v) if !v.is_empty() => v,
+        _ => {
+            let out = Command::new("sw_vers")
+                .arg("-productVersion")
+                .output()
+                .ok()?;
+            let full = String::from_utf8(out.stdout).ok()?;
+            full.trim().split('.').take(2).collect::<Vec<_>>().join(".")
+        }
+    };
+    let mut parts = text.split('.');
+    let mut next = || -> Option<u32> { parts.next().map_or(Some(0), |p| p.parse().ok()) };
+    let (major, minor, patch) = (next()?, next()?, next()?);
+    (major <= 0xffff && minor <= 0xff && patch <= 0xff)
+        .then_some((major << 16) | (minor << 8) | patch)
+}
+
+/// Sets the oldest macOS that the 64-bit Mach-O object in `bytes` needs, in each macOS
+/// `LC_BUILD_VERSION`. Returns whether it found one.
+fn set_build_version(bytes: &mut [u8], version: u32) -> bool {
+    const MH_MAGIC_64: u32 = 0xfeed_facf;
+    const LC_BUILD_VERSION: u32 = 0x32;
+    const PLATFORM_MACOS: u32 = 1;
+    let word = |b: &[u8], at: usize| {
+        b.get(at..at + 4)
+            .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
+    };
+    if word(bytes, 0) != Some(MH_MAGIC_64) {
+        return false;
+    }
+    let Some(count) = word(bytes, 16) else {
+        return false;
+    };
+    let mut at = 32;
+    let mut set = false;
+    for _ in 0..count {
+        let (Some(cmd), Some(size)) = (word(bytes, at), word(bytes, at + 4)) else {
+            break;
+        };
+        if cmd == LC_BUILD_VERSION
+            && word(bytes, at + 8) == Some(PLATFORM_MACOS)
+            && bytes.len() >= at + 16
+        {
+            bytes[at + 12..at + 16].copy_from_slice(&version.to_le_bytes());
+            set = true;
+        }
+        if size < 8 {
+            break;
+        }
+        at += size as usize;
+    }
+    set
+}
+
+/// Sets the oldest macOS that the object at `path` needs. LLVM takes that version from the
+/// kernel's, and on macOS 27 its `darwin27` gave macOS 28. Each link then warned that the object
+/// was built for a newer macOS. Nothing changes on another host.
+pub fn set_macos_minimum_version(path: &str) -> Result<(), String> {
+    if !cfg!(target_os = "macos") {
+        return Ok(());
+    }
+    let Some(version) = macos_minimum_version() else {
+        return Ok(());
+    };
+    let mut bytes =
+        std::fs::read(path).map_err(|e| format!("could not read the object '{path}': {e}"))?;
+    if set_build_version(&mut bytes, version) {
+        std::fs::write(path, bytes)
+            .map_err(|e| format!("could not write the object '{path}': {e}"))?;
+    }
+    Ok(())
+}
+
 /// The `-mattr` that leaves off the x86 features with which LLVM converts to bf16 through
 /// `vcvtneps2bf16`. That instruction reads a subnormal input as zero and flushes a subnormal
 /// result to zero, and LLVM uses it even where a bf16 is only passed to a function. Without
@@ -383,18 +461,39 @@ pub fn execute_mlir(
         program_args,
         opt_level,
         disable_llvm_optimizations,
+        false,
     )?;
     Ok(format!("{}{}", out.stdout, out.stderr))
 }
 
+/// The LLVM IR with each defined function marked `sanitize_thread`. The ThreadSanitizer pass
+/// checks only the functions that carry the mark, and the code generators set no marks.
+fn mark_for_thread_sanitizer(llvmir: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(llvmir);
+    let mut out = String::with_capacity(text.len() + 1024);
+    for line in text.lines() {
+        match line.strip_suffix(" {") {
+            Some(head) if line.starts_with("define ") => {
+                out.push_str(head);
+                out.push_str(" sanitize_thread {");
+            }
+            _ => out.push_str(line),
+        }
+        out.push('\n');
+    }
+    out.into_bytes()
+}
+
 /// Compile MLIR text to a native object file in `temp_dir`, the way `run-jit` builds a program:
 /// `mlir-translate`, then `opt` (with the Enzyme plugin when the program calls `grad`, `vjp`
-/// or `jvp`), then `llc`. Answers the object's path.
+/// or `jvp`), then `llc`. Answers the object's path. With `thread_sanitizer`, `opt` also adds
+/// the checks of ThreadSanitizer, and the program must be linked with `-fsanitize=thread`.
 pub fn compile_mlir_to_object(
     mlir_src: &str,
     temp_dir: &std::path::Path,
     opt_level: u8,
     disable_llvm_optimizations: bool,
+    thread_sanitizer: bool,
 ) -> Result<String, String> {
     let temp_mlir = temp_dir.join("input.mlir").to_string_lossy().into_owned();
     let temp_ll = temp_dir.join("input.ll").to_string_lossy().into_owned();
@@ -414,10 +513,12 @@ pub fn compile_mlir_to_object(
     mlir_translate_cmd.args(["--mlir-to-llvmir", &temp_mlir]);
     let mlir_translate_out = run_cmd(mlir_translate_cmd, "mlir-translate")?;
 
+    let mut llvmir = mlir_translate_out.stdout;
+    if thread_sanitizer {
+        llvmir = mark_for_thread_sanitizer(&llvmir);
+    }
     let mut llvmir_file = File::create(&temp_ll).map_err(|e| e.to_string())?;
-    llvmir_file
-        .write_all(&mlir_translate_out.stdout)
-        .map_err(|e| e.to_string())?;
+    llvmir_file.write_all(&llvmir).map_err(|e| e.to_string())?;
 
     let temp_opt_ll = temp_dir.join("opt.ll").to_string_lossy().into_owned();
     let mut opt_args = vec![];
@@ -437,13 +538,14 @@ pub fn compile_mlir_to_object(
 
     let mut passes = format!("default<O{}>", actual_opt_level);
 
-    if let Some(enzyme_lib) =
-        enzyme_plugin_for(&mlir_translate_out.stdout, std::env::var("ENZYME_LIB").ok())?
-    {
+    if let Some(enzyme_lib) = enzyme_plugin_for(&llvmir, std::env::var("ENZYME_LIB").ok())? {
         opt_args.push(format!("-load-pass-plugin={}", enzyme_lib));
         passes.push_str(",enzyme");
     }
 
+    if thread_sanitizer {
+        passes.push_str(",tsan-module,function(tsan)");
+    }
     opt_args.push(format!("-passes={}", passes));
     opt_args.push("-S".to_string());
     opt_args.push(temp_ll.clone());
@@ -483,6 +585,7 @@ pub fn execute_mlir_streams(
     program_args: Vec<String>,
     opt_level: u8,
     disable_llvm_optimizations: bool,
+    thread_sanitizer: bool,
 ) -> Result<ProgramOutput, String> {
     let temp_dir = tempfile::tempdir().map_err(|e| e.to_string())?;
 
@@ -491,6 +594,7 @@ pub fn execute_mlir_streams(
         temp_dir.path(),
         opt_level,
         disable_llvm_optimizations,
+        thread_sanitizer,
     )?;
 
     let lib_npu = dispatch_library_path();
@@ -624,6 +728,9 @@ pub fn execute_mlir_streams(
     }
 
     clang_cmd.arg("-lm");
+    if thread_sanitizer {
+        clang_cmd.arg("-fsanitize=thread");
+    }
 
     run_cmd(clang_cmd, "clang")?;
 
@@ -632,6 +739,16 @@ pub fn execute_mlir_streams(
     exe_cmd.args(program_args);
     if std::env::var("RUST_BACKTRACE").is_err() {
         exe_cmd.env("RUST_BACKTRACE", "1");
+    }
+    if thread_sanitizer {
+        // The Rust runtime has no checks of ThreadSanitizer, and orders its own memory with locks
+        // that ThreadSanitizer does not see. So its `memcpy` and `malloc` calls report races in
+        // the runtime, not in the program. The user's own TSAN_OPTIONS come after, and win.
+        let user = std::env::var("TSAN_OPTIONS").unwrap_or_default();
+        exe_cmd.env(
+            "TSAN_OPTIONS",
+            format!("ignore_noninstrumented_modules=1 {user}"),
+        );
     }
 
     let exe_out = exe_cmd.output().map_err(|e| e.to_string())?;

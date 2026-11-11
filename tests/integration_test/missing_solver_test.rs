@@ -307,3 +307,23 @@ fn a_contract_without_z3_does_not_advertise_the_transfer_opt_out() {
         "with z3 there must be no missing-solver warning:\n{stdout}"
     );
 }
+
+/// A program that uses `Vec::len` and `Vec::as_mut_ptr`, and has no contract of its own.
+const VEC_WITHOUT_CONTRACTS: &str = "tests/frontend/pass/method_call_borrow_ends_at_last_use.vx";
+
+#[test]
+fn a_program_that_uses_vec_needs_no_solver() {
+    // The checker proves the `ensures` of the `Vec` methods in each program that calls them.
+    // They hold by their form, so the proof needs no solver, and the program builds without z3.
+    let none = compile_file(VEC_WITHOUT_CONTRACTS, &[], false, false);
+    assert!(
+        none.ok,
+        "without z3, a program with no contract of its own must build:\n{}",
+        none.stdout
+    );
+    assert!(
+        !none.stdout.contains("no SMT solver available"),
+        "the proofs of `Vec` must not need the solver:\n{}",
+        none.stdout
+    );
+}

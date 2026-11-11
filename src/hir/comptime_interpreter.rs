@@ -489,6 +489,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                     self.context.note_check(
                         ComptimeCheck::Assert(assert.msg.clone()),
                         condition,
+                        outcome.value.facts.out_of_range,
                         assert.span,
                     );
                 }
@@ -1179,8 +1180,12 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                 rhs.value.concrete.as_ref(),
                 range,
             );
-            self.context
-                .note_check(ComptimeCheck::Division, passes, span);
+            self.context.note_check(
+                ComptimeCheck::Division,
+                passes,
+                lhs.value.facts.out_of_range || rhs.value.facts.out_of_range,
+                span,
+            );
         }
         let concrete = match (&lhs.value.concrete, &rhs.value.concrete) {
             (Some(Value::Int(a)), Some(Value::Int(b))) => {
@@ -1199,9 +1204,21 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             .map(Value::Number),
             _ => None,
         };
+        // These operations on two known integers have no value only when the result is outside
+        // the type.
+        let out_of_range = concrete.is_none()
+            && matches!(
+                op,
+                BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Shl | BinaryOp::Shr
+            )
+            && matches!(
+                (&lhs.value.concrete, &rhs.value.concrete),
+                (Some(Value::Int(_)), Some(Value::Int(_)))
+            );
         let mut outcome = self.unknown_after([lhs, rhs]);
         outcome.value.concrete = concrete;
         outcome.value.ty = ty;
+        outcome.value.facts.out_of_range |= out_of_range;
         outcome
     }
 
@@ -1239,7 +1256,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
 
     /// `a op b` for integers of the type whose values are `min..=max`. A result outside the
     /// type has no value: the program wraps it, and a wrapped value folded into the program
-    /// would look like something the compiler worked out.
+    /// would look like something the compiler worked out. So has a `<<` that loses bits.
     pub(crate) fn integer_op(
         a: i64,
         b: i64,
@@ -1247,12 +1264,21 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         (min, max): (i128, i128),
     ) -> Option<i64> {
         let (a, b) = (i128::from(a), i128::from(b));
+        let bits = 128 - i128::from(max.leading_zeros()) + i128::from(min < 0);
         let result = match op {
             BinaryOp::Add => a + b,
             BinaryOp::Sub => a - b,
             BinaryOp::Mul => a * b,
             BinaryOp::Div => a.checked_div(b)?,
             BinaryOp::Rem => a.checked_rem(b)?,
+            BinaryOp::BitAnd => a & b,
+            BinaryOp::BitOr => a | b,
+            BinaryOp::BitXor => a ^ b,
+            // A shift by the type's width or more has no value in the program. `a` fits in an
+            // `i64`, so a shift below 64 cannot overflow the `i128`. `>>` keeps a negative
+            // value's sign, as the program does for a signed type.
+            BinaryOp::Shl if (0..bits.min(64)).contains(&b) => a << b,
+            BinaryOp::Shr if (0..bits).contains(&b) => a >> b,
             _ => return None,
         };
         if result < min || result > max {
@@ -1988,9 +2014,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
     fn number_literal(number: &NumberExpr) -> Option<Value> {
         let is_float = number.ty.as_ref().is_some_and(ElementType::is_float)
             || (number.ty.is_none()
-                && (number.value.contains('.')
-                    || number.value.contains('e')
-                    || number.value.contains('E')));
+                && crate::parser::expr::is_float_literal_spelling(&number.value));
         if is_float {
             let value = number.value.parse::<f64>().ok()?;
             Self::round_float(value, number.ty.as_ref()).map(Value::Number)
@@ -2517,6 +2541,9 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                 };
                 if matches!(op.op, UnaryOp::Neg) {
                     outcome.value.ty = inner.value.ty.clone();
+                    // `-x` of the minimum value of a signed type.
+                    outcome.value.facts.out_of_range |= outcome.value.concrete.is_none()
+                        && matches!(inner.value.concrete, Some(Value::Int(_)));
                 }
                 outcome
             }
@@ -2564,7 +2591,15 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                 let fields = init
                     .fields
                     .iter()
-                    .map(|(name, value)| (name.clone(), self.expr(value), self.place_facts(value)))
+                    .map(|(name, value)| {
+                        // A closure holds a local that it changes or borrows as `&x`, and the
+                        // place it captured is `x`.
+                        let place = match value {
+                            Expr::Borrow(b) if init.name.starts_with("Closure_") => &*b.expr,
+                            value => value,
+                        };
+                        (name.clone(), self.expr(value), self.place_facts(place))
+                    })
                     .collect::<Vec<_>>();
                 let mut outcome = self.unknown_after(
                     fields
@@ -2680,7 +2715,13 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             Expr::Closure(_) => ComptimeEvalOutcome::refusal(),
             Expr::AsCast(cast) => {
                 let value = self.expr(&cast.expr);
-                let concrete = match (&cast.source_ty, &cast.target_ty) {
+                // A body the checker has not typed has no source type. The operand's own type
+                // stands in for it.
+                let source_ty = cast
+                    .source_ty
+                    .clone()
+                    .or_else(|| value.value.ty.clone().map(Type::Scalar));
+                let concrete = match (&source_ty, &cast.target_ty) {
                     // `*const i8` to `*mut i8` and back: the same buffer. Only a pointer is a
                     // `Ptr`, so this holds in a body the checker has not seen yet too.
                     (_, Type::Pointer(..)) => value
@@ -3008,5 +3049,36 @@ mod tests {
         interpreter.note_opaque_callable(&facts, &[]);
 
         assert_eq!(interpreter.context.escaping_write(), Some(&outside));
+    }
+
+    /// A shift that the program cannot do, or that loses bits, has no value at compile time.
+    #[test]
+    fn a_shift_out_of_the_type_has_no_value() {
+        let range = |ty| ComptimeInterpreter::integer_range(&ty).unwrap();
+        let op = ComptimeInterpreter::integer_op;
+        // The top bit of a u32 is a value bit, and the top bit of an i32 is the sign.
+        assert_eq!(
+            op(1, 31, &BinaryOp::Shl, range(ElementType::U32)),
+            Some(1 << 31)
+        );
+        assert_eq!(op(1, 31, &BinaryOp::Shl, range(ElementType::I32)), None);
+        // A shift by the width or more, or by a negative amount. A shift by one less is a
+        // value, and the sign bit counts in the width.
+        assert_eq!(op(1, 32, &BinaryOp::Shl, range(ElementType::U32)), None);
+        assert_eq!(op(0, 32, &BinaryOp::Shl, range(ElementType::U32)), None);
+        assert_eq!(
+            op(-1, 31, &BinaryOp::Shr, range(ElementType::I32)),
+            Some(-1)
+        );
+        assert_eq!(op(8, 32, &BinaryOp::Shr, range(ElementType::U32)), None);
+        assert_eq!(op(8, -1, &BinaryOp::Shr, range(ElementType::I32)), None);
+        // A usize holds 63 bits, and the program stops on a `<<` past them.
+        assert_eq!(
+            op(1, 62, &BinaryOp::Shl, range(ElementType::USize)),
+            Some(1 << 62)
+        );
+        assert_eq!(op(1, 63, &BinaryOp::Shl, range(ElementType::USize)), None);
+        // `>>` keeps the sign of a negative value.
+        assert_eq!(op(-7, 1, &BinaryOp::Shr, range(ElementType::I32)), Some(-4));
     }
 }

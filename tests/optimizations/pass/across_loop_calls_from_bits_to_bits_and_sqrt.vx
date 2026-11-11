@@ -1,0 +1,63 @@
+//===- across_loop_calls_from_bits_to_bits_and_sqrt.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Three `across` loops call a float function that writes nothing: `f32::from_bits`,
+// `to_bits` written as a method, and `f32::sqrt` written with the type's path. The race
+// check must accept each call, and each loop must become a GPU kernel.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK-COUNT-3: toponame=Device
+
+import core::num;
+
+// A bf16 value is the top 16 bits of an f32.
+pub fn bf16_to_f32(y : &mut Tensor<f32, [?], Memory::HBM>, w : &Tensor<u16, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..(n + 255) / 256 across blocks {
+      for l in 0..256 across lanes {
+        let i = b * 256 + l;
+        if i < n {
+          y[i] = f32::from_bits((w[i] as u32) << 16u32);
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn bits_of(z : &mut Tensor<u32, [?], Memory::HBM>, y : &Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..(n + 255) / 256 across blocks {
+      for l in 0..256 across lanes {
+        let i = b * 256 + l;
+        if i < n {
+          z[i] = y[i].to_bits();
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn square_roots(y : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..(n + 255) / 256 across blocks {
+      for l in 0..256 across lanes {
+        let i = b * 256 + l;
+        if i < n {
+          y[i] = f32::sqrt(y[i]);
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

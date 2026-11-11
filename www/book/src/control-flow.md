@@ -70,6 +70,10 @@ fn main() -> i32 {
 }
 ```
 
+A `break` or `continue` must be inside a loop of its own function or closure (`E3064`). A closure
+body is not inside a loop around the closure, because a call of the closure can run after the
+loop ends.
+
 ### Loop invariants
 
 A `loop` can carry an `invariant`: a condition that must hold on every turn. The prover checks it.

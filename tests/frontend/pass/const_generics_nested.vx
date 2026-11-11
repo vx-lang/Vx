@@ -1,4 +1,4 @@
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 
 // N reaches both the outer struct and the Array it wraps, and stays available as a value
 // inside the body. On the flat path each instance's layout is synthesized, the inner one

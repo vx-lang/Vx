@@ -14,12 +14,11 @@
 //===----------------------------------------------------------------------===//
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// What a run printed, without the JIT's progress lines, its errors, and how vxc ended; and
 /// whether the program compiled.
 fn run(root: &Path, program: &Path) -> (String, bool) {
-    let out = Command::new(env!("CARGO_BIN_EXE_vxc"))
+    let out = super::time_limit::vxc()
         .current_dir(root)
         .arg(program)
         .output()

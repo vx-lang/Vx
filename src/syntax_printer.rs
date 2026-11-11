@@ -152,15 +152,21 @@ impl AstPrinter {
                     name,
                     path,
                     call,
+                    limit: _,
+                    placement: _,
                     expr,
                     flag,
                     after_value,
+                    ends_lifetime,
                     span: _,
                 }) => {
                     indent.print(w)?;
                     write!(w, "{}Drop {}", prefix, name)?;
                     for field in path {
                         write!(w, ".{}", field)?;
+                    }
+                    if *ends_lifetime {
+                        write!(w, " by ending its lifetime")?;
                     }
                     if let Some(f) = call {
                         write!(w, " by calling {}", f)?;

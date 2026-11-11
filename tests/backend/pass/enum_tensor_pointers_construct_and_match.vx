@@ -6,8 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 // Construct and match enums containing host and GPU tensor pointers.
-// The program does not dereference the pointers.
-// REQUIRES: flat-codegen
+// The program does not dereference the pointers. Both code generators run it.
 // EXPECT: 5 7 3 3
 
 enum Opt<T> {

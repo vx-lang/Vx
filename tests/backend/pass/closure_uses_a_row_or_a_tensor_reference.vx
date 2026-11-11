@@ -16,11 +16,8 @@
 //
 // `sum_with` also passes `&q` to another function while the row closure is in
 // use, in one expression, which used to fail MLIR verification.
+// The test runs on both code generators.
 //
-// Default code generator only: the legacy one cannot put a tensor in a struct
-// field at all, and a closure's variables are a struct.
-//
-// REQUIRES: flat-codegen
 // EXPECT: 4 3 9
 fn first(v : &Tensor<f32, [4]>) -> f32 {
   return v[0];

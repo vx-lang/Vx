@@ -10,10 +10,10 @@
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 
-// CHECK: Error[E3044] at [[@LINE+1]]:1: const 'D' has a value that does not fit its declared type
+// CHECK: Error[E3044] at {{.*}}const_overflow_literal.vx:[[@LINE+1]]:1: const 'D' has a value that does not fit its declared type
 const D : u8 = 300;
 
-// CHECK: Error[E3044] at [[@LINE+1]]:1: const 'H' has a value that does not fit its declared type
+// CHECK: Error[E3044] at {{.*}}const_overflow_literal.vx:[[@LINE+1]]:1: const 'H' has a value that does not fit its declared type
 const H : i8 = -129;
 
 fn main() -> i32 {

@@ -29,6 +29,13 @@ pub struct Placement {
     /// Position in program order, used to tell a tile placed before a sibling block from one
     /// placed after it has closed.
     pub order: usize,
+    /// The `tasks` blocks and tasks that the tile is placed in (`TaskCx::task_chain`).
+    pub(crate) tasks: Vec<crate::hir::check::tasks::TaskLevel>,
+    /// The variable that a `let` binds the tile to.
+    pub holder: Option<String>,
+    /// The first position in program order where the tile is gone, because a statement moved
+    /// it out of its variable.
+    pub end: Option<usize>,
 }
 
 pub struct ConstEvalState {
@@ -94,6 +101,9 @@ pub(crate) struct ComptimeValueFacts {
     pub captured_writes: HashSet<Symbol>,
     /// The callable's body is unavailable, so a call through it must be conservative.
     pub unknown_callable: bool,
+    /// An integer operation on known values gave this value a result outside its type, such
+    /// as an overflow. So it is unknown, though no value from the running program went in.
+    pub out_of_range: bool,
 }
 
 impl ComptimeValueFacts {
@@ -115,6 +125,7 @@ impl ComptimeValueFacts {
         self.captured_writes
             .extend(other.captured_writes.iter().cloned());
         self.unknown_callable |= other.unknown_callable;
+        self.out_of_range |= other.out_of_range;
     }
 }
 
@@ -338,6 +349,9 @@ pub(crate) enum ComptimeCheckProblemKind {
     MayFail,
     /// The check depends on a value known only when the program runs.
     Undecided,
+    /// The check has no value, because an integer operation on known values gives a result
+    /// outside its type.
+    OutOfRange,
 }
 
 /// Per-`comptime`-block state for the unified concrete/abstract interpreter.
@@ -397,11 +411,19 @@ impl ComptimeEvalContext {
     }
 
     /// Records a check that passes when `passes` is `Some(true)`, and nothing in that case.
-    pub(crate) fn note_check(&mut self, check: ComptimeCheck, passes: Option<bool>, span: Span) {
+    /// `out_of_range` says that the check has no value because of an operation on known values.
+    pub(crate) fn note_check(
+        &mut self,
+        check: ComptimeCheck,
+        passes: Option<bool>,
+        out_of_range: bool,
+        span: Span,
+    ) {
         let kind = match (passes, self.on_uncertain_path) {
             (Some(true), _) => return,
             (Some(false), false) => ComptimeCheckProblemKind::Fails,
             (Some(false), true) => ComptimeCheckProblemKind::MayFail,
+            (None, _) if out_of_range => ComptimeCheckProblemKind::OutOfRange,
             (None, _) => ComptimeCheckProblemKind::Undecided,
         };
         self.add_check_problem(ComptimeCheckProblem { span, check, kind });
@@ -690,6 +712,11 @@ pub struct MonoState {
     pub closure_depths: Vec<usize>,
     /// Variables each open closure literal captured, innermost last.
     pub closure_captures_stack: Vec<HashMap<Symbol, Type>>,
+    /// Each use, in the body of each open closure literal, of a variable that the closure
+    /// captured: its name and its span. Innermost last.
+    pub closure_capture_uses: Vec<Vec<(Symbol, crate::syntax::Span)>>,
+    /// The borrows of each closure literal that is not the value of a `let`, by its struct name.
+    pub closure_literal_borrows: HashMap<Symbol, Vec<(Symbol, bool)>>,
     /// How many generic instantiations are open around the call being checked.
     ///
     /// `f<N - 1>()` whose base case is never reached instantiates a new `f` every time
@@ -700,10 +727,20 @@ pub struct MonoState {
     /// only after its body is checked, so a method that calls itself looks here to avoid
     /// checking its own body again, without end.
     pub being_checked: HashSet<Symbol>,
+    /// Instances that a `Type::method(..)` call made, such as `f32::from_bits`.
+    pub static_method_instances: HashSet<Symbol>,
     /// The warnings already given in each generic function's body, keyed by
     /// `TypeChecker::generic_body_key`. Every instance checks the same body, so a later
     /// instance's copy of a warning is dropped.
     pub warnings_given: HashMap<String, HashSet<crate::diagnostic::WarningKey>>,
+    /// The return-provenance summary of each checked instance, by its name. In a checked body a
+    /// method call is a call by name, so the summary can follow it.
+    pub return_provenances: HashMap<Symbol, crate::hir::provenance::ReturnProvenance>,
+    /// The parameters that each checked instance says `!keeps` for, as bits, by its name.
+    pub not_kept: HashMap<Symbol, u32>,
+    /// The parameters that each checked instance says `!frees` for, or that the walk of its
+    /// body proves, as bits, by its name.
+    pub not_freed: HashMap<Symbol, u32>,
 }
 
 /// How deep a chain of generic instantiations the checker will follow before giving up.
@@ -808,6 +845,14 @@ pub struct TrafficState {
     /// same expression twice; the first visit's program order wins). Taken, with the
     /// placements, when the function's summary is built.
     pub call_sites: HashMap<String, CallSite>,
+    /// Where the current function calls `channel` for tensors in a memory with a capacity. The
+    /// room of such a channel is counted there.
+    pub channel_rooms: Vec<crate::syntax::Span>,
+    /// The variable of the `let` being checked, which the tiles placed for it go to.
+    pub tile_holder: Option<String>,
+    /// The variables that the current statement moved out of, with the blocks and tasks open at
+    /// the move. A tile of one of them ends after the statement.
+    pub(crate) moved_out: Vec<(String, Vec<u32>, Vec<crate::hir::check::tasks::TaskLevel>)>,
     /// One finished capacity summary per checked function, in check order -- what the
     /// cross-call fold reads after every body is done.
     pub capacity_summaries: Vec<crate::hir::check::capacity_fold::FnCapacitySummary>,
@@ -822,4 +867,6 @@ pub struct CallSite {
     pub span: crate::syntax::Span,
     /// Made from a closure body, which may run anywhere in the function.
     pub in_closure: bool,
+    /// The `tasks` blocks and tasks that the call is in (`TaskCx::task_chain`).
+    pub(crate) tasks: Vec<crate::hir::check::tasks::TaskLevel>,
 }

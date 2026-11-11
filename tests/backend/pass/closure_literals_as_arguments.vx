@@ -1,0 +1,93 @@
+//===- closure_literals_as_arguments.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A closure literal written as an argument takes the closure type of its parameter, with no
+// `as`. A generic function gets its type parameter from the type that the literal returns. The
+// literal's borrows end when the call ends, so the code after the call can use the locals again.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s -j 2 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}twice 3 count 10{{$}}
+// CHECK: {{^}}run 7{{$}}
+// CHECK: {{^}}apply 15{{$}}
+// CHECK: {{^}}sum 30 log 5{{$}}
+// CHECK: {{^}}nested 10 count 4{{$}}
+// CHECK: {{^}}method 8 count 1{{$}}
+
+struct Log {
+  count : i64,
+}
+
+impl Log {
+  fn plus(self : &Log, f : || -> i64) -> i64 {
+    return self.count + f();
+  }
+}
+
+fn twice(f : || -> i64) -> i64 {
+  let a = f();
+  return a + f();
+}
+
+fn run<T>(f : || -> T) -> T {
+  return f();
+}
+
+fn apply<T>(x : T, f : |T| -> T) -> T {
+  return f(x);
+}
+
+fn main() -> i32 {
+  // The literal changes `count`, and the code after the call writes it again.
+  let mut count : i64 = 0;
+  let n = twice(|| -> i64 {
+    count += 1;
+    count
+  });
+  count = 10;
+  println!("twice {} count {}", n, count);
+
+  // `T` comes from the type that the literal returns, or from its parameter.
+  println!("run {}", run(|| -> i64 {
+    7
+  }));
+  let five : i64 = 5;
+  println!("apply {}", apply(five, |v : i64| -> i64 {
+    v * 3
+  }));
+
+  // The literal borrows `log` for reading, and the code after the call writes it.
+  let mut log = Log {
+    count: 15
+  };
+  let sum = twice(|| -> i64 {
+    log.count
+  });
+  log.count = 5;
+  println!("sum {} log {}", sum, log.count);
+
+  // A literal inside a literal: each call ends the borrows of its own argument.
+  count = 0;
+  let nested = twice(|| -> i64 {
+    twice(|| -> i64 {
+      count += 1;
+      count
+    })
+  });
+  println!("nested {} count {}", nested, count);
+
+  // A literal as the argument of a method call.
+  count = 0;
+  let m = log.plus(|| -> i64 {
+    count += 3;
+    count
+  });
+  count = 1;
+  println!("method {} count {}", m, count);
+  return 0;
+}

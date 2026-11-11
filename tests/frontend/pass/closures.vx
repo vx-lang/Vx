@@ -1,4 +1,4 @@
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // CHECK-DAG: func.func private @print_i32(
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: call @Closure_1_call(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
@@ -86,6 +86,9 @@ fn apply_lambda<F>(f : F, val : i32) -> i32 {
 struct Captures {
   i : i32,
 }
+
+// A closure copies a `Copy` struct that it reads, so `Closure_9` keeps a slot for the copy.
+impl Copy for Captures {}
 
 fn main() -> i32 {
   // closure_basic

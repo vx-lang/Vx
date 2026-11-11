@@ -13,6 +13,7 @@
 // lines come in any order.
 //
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: the task runs on another thread
 // CHECK: two tasks run on two threads
 // CHECK-DAG: {{^}}copy 0{{$}}
@@ -64,3 +65,7 @@ fn main() -> i32 {
   }
   return 0;
 }
+
+// `--implicit-check-not` does not look past the first `CHECK-DAG` match, so these lines
+// check the end of the output.
+// CHECK-NOT: Error

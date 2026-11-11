@@ -19,7 +19,8 @@
 // 4.8 TB/s. The odd capacity is the vendor figure (six stacks of 24 GB HBM3e
 // less reserved), not a typo for 144.
 Memory HBM {
-  capacity: 141 GiB, bandwidth: 4.8 TB/s, managed: explicit, scope: device
+  // alignment: cudaMalloc gives 256 B. A view at an offset keeps 16, which ld.global.v4 needs.
+  capacity: 141 GiB, bandwidth: 4.8 TB/s, managed: explicit, alignment: 16 B, scope: device
 }
 
 // spec: NVIDIA Hopper Architecture Whitepaper -- 50 MB L2 cache.

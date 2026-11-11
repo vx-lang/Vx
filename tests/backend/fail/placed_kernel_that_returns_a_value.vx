@@ -8,10 +8,11 @@
 // A `spawn` that gives back a value gets no PTX kernel: the value goes through a
 // slot on the host stack, which a GPU cannot write. So the region runs on the
 // host, and it reads `d`, which is in HBM, declared `managed: explicit`. The
-// host cannot read that memory, so the compiler refuses the program.
+// host cannot read that memory, so the compiler refuses the program. The error
+// names the topology as the program wrote it.
 //
 // RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s
-// CHECK: cannot emit a device kernel for it and its operands are in 'HBM'
+// CHECK: this region is placed on `Topology::Device`, but the compiler cannot emit a device kernel for it and its operands are in 'HBM'
 
 fn main() -> i32 {
   let h = Tensor<f32, [4]>::fill(2.0);

@@ -1,0 +1,36 @@
+//===- book_tasks_share_an_atomic.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on tasks (www/book/src/tasks.md): four tasks add to one atomic
+// counter that they borrow from `main`.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}count 40000{{$}}
+
+// ANCHOR: program
+import core::sync::atomic;
+
+fn add_ones(counter : &AtomicI64, n : i32) -> void {
+  for _i in 0..n {
+    counter.fetch_add(1, AtomicOrdering::Relaxed);
+  }
+}
+
+fn main() -> i32 {
+  let counter = AtomicI64::new(0);
+  tasks {
+    for _t in 0..4 {
+      spawn {
+        add_ones(&counter, 10000);
+      };
+    }
+  };
+  println!("count {}", counter.load(AtomicOrdering::SeqCst));
+  return 0;
+}
+// ANCHOR_END: program

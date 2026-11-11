@@ -16,7 +16,7 @@ fn main() -> i32 {
     let p2 : *mut f32 = Vec<f32>::with_capacity(N).leak();
     let p3 : *mut f32 = Vec<f32>::with_capacity(N).leak();
 
-    let start : f32 = now();
+    let start = Instant::now();
 
     let mut i : i32 = 0;
     for j in 0..N {
@@ -30,8 +30,8 @@ fn main() -> i32 {
       *ptr3 = v3;
     }
 
-    let end : f32 = now();
-    let elapsed : f32 = end - start;
+    let end = Instant::now();
+    let elapsed : f32 = (end - start).as_secs_f32();
     bench_report("scalar_axpy_1m", "seconds", elapsed);
   }
   return 0;

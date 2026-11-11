@@ -6,7 +6,6 @@
 //
 //===----------------------------------------------------------------------===//
 // Read both payload fields from integer and pointer variants, and match an empty variant.
-// REQUIRES: flat-codegen
 // EXPECT: 5 17 7 25 -1
 
 struct Node {

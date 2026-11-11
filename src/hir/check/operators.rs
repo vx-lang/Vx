@@ -198,7 +198,19 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub(crate) fn check_ascast_expr(&mut self, expr: &mut AsCastExpr, consume: bool) -> Type {
+        // The type that the context expects is the cast's, not the operand's. An integer
+        // literal keeps its own type: `255 as i8` casts the `i32` 255, and is -1. A float
+        // literal takes the float type the cast names: `0.1 as f64` is the `f64` 0.1.
+        let operand_expected = match &expr.target_ty {
+            Type::Scalar(e) if e.is_float() => Some(expr.target_ty.clone()),
+            _ => None,
+        };
+        let expected = std::mem::replace(&mut self.expected_type, operand_expected);
+        // A cast to a number only reads its operand: a tensor cast makes a new tensor, and the
+        // operand stays usable.
+        let consume = consume && !matches!(expr.target_ty, Type::Scalar(_));
         let source_ty = self.check_expr_type_flag(&mut expr.expr, consume);
+        self.expected_type = expected;
         let target_ty = expr.target_ty.clone();
         expr.source_ty = Some(source_ty.clone());
 
@@ -254,14 +266,21 @@ impl<'a> TypeChecker<'a> {
                     return Type::Unknown;
                 }
             }
-            // `slice as f16`: an elementwise cast over a rank-1 float slice, yielding a
-            // slice of the target element type. This is the spelling that narrows a
-            // widened slice back into half storage, which the assignment rules require
-            // rather than performing silently.
+            // `t as f32`: a cast of each element of a float tensor, to a tensor of the same
+            // shape. On a slice, it narrows a widened slice back into half storage, which the
+            // assignment rules require rather than performing silently.
             (Type::Tensor(src_el, dims, top), Type::Scalar(dst_el))
-                if dims.len() == 1 && src_el.is_float() && dst_el.is_float() =>
+                if src_el.is_float() && dst_el.is_float() =>
             {
                 return Type::Tensor(dst_el.clone(), dims.clone(), top.clone());
+            }
+            // A borrowed tensor, such as a parameter `a : &Tensor<bf16, ..>`.
+            (Type::Borrow { inner, .. }, Type::Scalar(dst_el)) if dst_el.is_float() => {
+                if let Type::Tensor(src_el, dims, top) = &**inner {
+                    if src_el.is_float() {
+                        return Type::Tensor(dst_el.clone(), dims.clone(), top.clone());
+                    }
+                }
             }
             (Type::Scalar(src), Type::Scalar(dst)) => {
                 // A literal is left alone, since a cast is one way to give a number its type.
@@ -298,7 +317,13 @@ impl<'a> TypeChecker<'a> {
                     {
                         self.errors.warn(
                             crate::diagnostic::DiagnosticCode::W1014,
-                            format!("{v} does not fit in {dst}, so `as` changes its value"),
+                            if *dst == ElementType::USize {
+                                format!(
+                                    "{v} does not fit in usize, so this cast will stop the program"
+                                )
+                            } else {
+                                format!("{v} does not fit in {dst}, so `as` changes its value")
+                            },
                             Some(crate::diagnostic::SourceSpan::from_ast_span(&expr.span)),
                         );
                     }
@@ -332,8 +357,7 @@ impl<'a> TypeChecker<'a> {
         }
 
         self.errors.push(format!(
-            "Unsupported cast: cannot cast from {:?} to {:?}",
-            source_ty, target_ty
+            "Unsupported cast: cannot cast from `{source_ty}` to `{target_ty}`"
         ));
         Type::Unknown
     }
@@ -941,6 +965,51 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// `s == "hello"` as `c_str_equals(s, "hello", 6)`, and `!=` as its `!`. The bound is the
+    /// literal's length and its NUL. When both sides are literals, the call is in a `comptime`
+    /// block, so the comparison becomes `true` or `false` while compiling.
+    fn text_compare(expr: &Expr) -> Option<Expr> {
+        let Expr::RelationalOp(RelationalOpExpr {
+            lhs, op, rhs, span, ..
+        }) = expr
+        else {
+            return None;
+        };
+        let literal = match (&**lhs, &**rhs) {
+            (Expr::StringLiteral(l), _) | (_, Expr::StringLiteral(l)) => l,
+            _ => return None,
+        };
+        if !matches!(op, RelationalOp::Eq | RelationalOp::NotEq) {
+            return None;
+        }
+        let bound = Expr::Number(crate::syntax::NumberExpr::new(
+            (literal.value.as_ref().len() + 1).to_string(),
+            Some(ElementType::I64),
+            *span,
+        ));
+        let mut compare = Expr::FunctionCall(crate::syntax::FunctionCallExpr::new(
+            "c_str_equals".into(),
+            None,
+            vec![(**lhs).clone(), (**rhs).clone(), bound],
+            *span,
+        ));
+        if matches!(op, RelationalOp::NotEq) {
+            compare = Expr::UnaryOp(crate::syntax::UnaryOpExpr::new(
+                crate::syntax::UnaryOp::Not,
+                Box::new(compare),
+                *span,
+            ));
+        }
+        if matches!(**lhs, Expr::StringLiteral(_)) && matches!(**rhs, Expr::StringLiteral(_)) {
+            compare = Expr::ComptimeBlock(crate::syntax::ComptimeBlockExpr::new(
+                Vec::new(),
+                Some(Box::new(compare)),
+                *span,
+            ));
+        }
+        Some(compare)
+    }
+
     pub(crate) fn check_relationalop_expr(&mut self, expr: &mut Expr) -> Type {
         // A placement query compares at check time: `x.topology()` is a fact of `x`'s type,
         // and nothing at run time holds one. The comparison becomes its answer.
@@ -956,6 +1025,12 @@ impl<'a> TypeChecker<'a> {
                 ));
                 return Type::Scalar(ElementType::Bool);
             }
+        }
+        // `==` or `!=` with a string literal compares the text: it is a call of `core::c_str`'s
+        // `c_str_equals`, which the parser imports for such a program.
+        if let Some(call) = Self::text_compare(expr) {
+            *expr = call;
+            return self.check_expr_type_flag(expr, false);
         }
         // `a == b` on a struct or an enum is `a.eq(&b)`, through `PartialEq`, and `a < b` is
         // `a.lt(&b)`, through `Ord`.
@@ -1121,6 +1196,7 @@ impl<'a> TypeChecker<'a> {
             let method = match op {
                 UnaryOp::Neg => "neg",
                 UnaryOp::Not => "not",
+                UnaryOp::Try => return self.check_try(expr),
             };
             let span = *span;
             if let Some(mut call) = self.operator_method_call(inner, method, None, span) {
@@ -1183,6 +1259,7 @@ impl<'a> TypeChecker<'a> {
                     "`!` does not apply to a `usize`: it would set the top bit, which a \
                      `usize` never has"
                 }
+                UnaryOp::Try => unreachable!("check_try handles `?`"),
             };
             self.errors.error_with_code(
                 crate::diagnostic::DiagnosticCode::E3030,
@@ -1194,6 +1271,7 @@ impl<'a> TypeChecker<'a> {
         let symbol = match op {
             UnaryOp::Neg => "-",
             UnaryOp::Not => "!",
+            UnaryOp::Try => unreachable!("check_try handles `?`"),
         };
         if *op == UnaryOp::Neg
             && matches!(&inner_ty, Type::Scalar(e) if e.is_narrow_float())
@@ -1225,6 +1303,7 @@ impl<'a> TypeChecker<'a> {
                 },
             },
             UnaryOp::Neg => inner_ty,
+            UnaryOp::Try => unreachable!("check_try handles `?`"),
         }
     }
 }

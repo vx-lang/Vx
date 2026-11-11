@@ -1,0 +1,35 @@
+//===- a_pinned_tensor_in_a_struct_field.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A struct field of type `Pinned<Tensor<..>, ..>` holds the tensor. The program copies the
+// field back to CPU memory and reads two elements. Both code generators run it.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}corner 2 last 5{{$}}
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s
+}
+
+struct Holder {
+  t : Pinned<Tensor<f32, [2, 2]>, Topology::GPU[0]>,
+}
+
+fn main() -> i32 {
+  let mut b = Tensor<f32>([2, 2]);
+  b[0][0] = 2.0;
+  b[1][1] = 5.0;
+  let p = transfer(b, Memory::GPU_HBM);
+  let h = Holder {
+    t : p
+  };
+  let back = transfer(h.t, Memory::CPU_DRAM);
+  println!("corner {} last {}", back[0][0], back[1][1]);
+  return 0;
+}

@@ -276,6 +276,15 @@ fn tensor_memref_of_type(ty: &Type) -> Option<String> {
     }
 }
 
+/// The memref of the tensor that a `&Tensor` or `&mut Tensor` names. A function that returns
+/// such a reference returns the memref, as a parameter of that type is the memref.
+pub(crate) fn borrowed_tensor_memref(ty: &Type) -> Option<String> {
+    match peel_wrappers(ty) {
+        Type::Borrow { inner, .. } => tensor_memref_of_type(inner),
+        _ => None,
+    }
+}
+
 /// The memref spelling of a return type that travels through a caller-allocated slot: a tensor
 /// whose extents are all known at compile time.
 ///
@@ -325,7 +334,7 @@ fn nrvo_candidate(hir: &[HirInstruction]) -> Option<usize> {
 fn is_ptr_ty(ty: &Type) -> bool {
     matches!(
         ty,
-        Type::Pointer(..) | Type::Borrow { .. } | Type::Function(..) | Type::Closure(..)
+        Type::Pointer(..) | Type::Borrow { .. } | Type::Function(..)
     )
 }
 
@@ -373,7 +382,105 @@ pub(crate) fn placed_device(id: u64, ctx: &EmitCtx) -> Option<i32> {
     Some(id as i32)
 }
 
+/// The size and alignment in bytes of a scalar element, for the facts `valid(p, n)` gives LLVM.
+fn scalar_bytes(ty: &Type) -> Option<u64> {
+    match ty {
+        Type::Scalar(e) => match e {
+            ElementType::I8 | ElementType::U8 | ElementType::Bool => Some(1),
+            ElementType::I16 | ElementType::U16 | ElementType::F16 | ElementType::BF16 => Some(2),
+            ElementType::I32 | ElementType::U32 | ElementType::F32 => Some(4),
+            ElementType::I64 | ElementType::U64 | ElementType::USize | ElementType::F64 => Some(8),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The attributes of a raw pointer parameter that `requires valid(p, n)` names: it is not null,
+/// and aligned for its element.
+fn valid_pointer_attrs(ty: &Type) -> String {
+    match ty {
+        Type::Pointer(inner, ..) => match scalar_bytes(inner) {
+            Some(align) => format!(" {{llvm.nonnull, llvm.align = {align} : i64}}"),
+            None => " {llvm.nonnull}".to_string(),
+        },
+        _ => String::new(),
+    }
+}
+
+/// An `llvm.intr.assume` for each `valid(p, n)` of `func`, at the start of its body: `p` points at
+/// `n` elements. A length that is not a parameter or a number gives none.
+fn valid_pointer_assumes(
+    func: &Function,
+    valid: &[(usize, crate::hir::check::pointer_clauses::Length)],
+    arg_offset: u32,
+) -> String {
+    use crate::hir::check::pointer_clauses::Length;
+    let mut out = String::new();
+    for (k, (p, len)) in valid.iter().enumerate() {
+        let Type::Pointer(inner, ..) = &func.params[*p].1 else {
+            continue;
+        };
+        let Some(size) = scalar_bytes(inner) else {
+            continue;
+        };
+        let count = match len {
+            Length::Constant(c) => {
+                out += &format!("  %vx_valid{k}_n = arith.constant {c} : i64\n");
+                format!("%vx_valid{k}_n")
+            }
+            Length::Param(j) => {
+                let arg = format!("%arg{}", *j as u32 + arg_offset);
+                match &func.params[*j].1 {
+                    Type::Scalar(ElementType::I64 | ElementType::U64 | ElementType::USize) => arg,
+                    Type::Scalar(e @ (ElementType::I32 | ElementType::I16 | ElementType::I8)) => {
+                        let from = mlir_scalar(e).unwrap_or("i32");
+                        out += &format!("  %vx_valid{k}_n = arith.extsi {arg} : {from} to i64\n");
+                        format!("%vx_valid{k}_n")
+                    }
+                    Type::Scalar(e @ (ElementType::U32 | ElementType::U16 | ElementType::U8)) => {
+                        let from = mlir_scalar(e).unwrap_or("i32");
+                        out += &format!("  %vx_valid{k}_n = arith.extui {arg} : {from} to i64\n");
+                        format!("%vx_valid{k}_n")
+                    }
+                    _ => continue,
+                }
+            }
+            Length::Other => continue,
+        };
+        let ptr = format!("%arg{}", *p as u32 + arg_offset);
+        out += &format!(
+            "  %vx_valid{k}_t = arith.constant true\n  \
+             %vx_valid{k}_s = arith.constant {size} : i64\n  \
+             %vx_valid{k}_b = arith.muli {count}, %vx_valid{k}_s : i64\n  \
+             llvm.intr.assume %vx_valid{k}_t [\"dereferenceable\"({ptr}, %vx_valid{k}_b : \
+             !llvm.ptr, i64)] : i1\n"
+        );
+    }
+    out
+}
+
 fn param_alias_attrs(ty: &Type, ctx: &EmitCtx) -> String {
+    let alias = borrow_alias_attr(ty, ctx);
+    // A borrowed tensor has the `alignment:` of its space. A GPU kernel puts it on the pointer.
+    let align = match ty {
+        Type::Borrow { inner, .. } => match inner.as_ref() {
+            Type::Tensor(_, _, Some(p)) => ctx
+                .subspaces
+                .get(&(crate::arch::memory_space_dispatch_id(&p.space) as u64))
+                .and_then(|s| s.alignment),
+            _ => None,
+        },
+        _ => None,
+    };
+    match (alias.as_str(), align) {
+        (_, None) => alias,
+        ("", Some(n)) => format!(" {{vx.align = {n} : i64}}"),
+        (a, Some(n)) => format!("{}, vx.align = {n} : i64}}", a.trim_end_matches('}')),
+    }
+}
+
+fn borrow_alias_attr(ty: &Type, ctx: &EmitCtx) -> String {
     match ty {
         Type::Borrow { is_mut: true, .. } => " {llvm.noalias}".to_string(),
         // A `SharedCell` in the value lets code write through the `&`.
@@ -567,12 +674,20 @@ pub struct Callee {
     /// The memref spelling when the callee returns a statically shaped tensor (wrappers peeled) --
     /// the call's result is then a memref value tracked in `mem_of`.
     pub ret_tensor: Option<String>,
+    /// The `vector<NxT>` a callee returning `<N x T>` gives back.
+    pub ret_vec: Option<String>,
     /// Whether the returned tensor is placed in another memory. Such a result is handed back
     /// as a buffer, never through a slot on the caller's stack.
     pub ret_placed: bool,
+    /// The callee returns a reference to a tensor. The call returns the memref of a tensor that
+    /// already exists, so the caller makes no slot for it.
+    pub ret_reference: bool,
     /// The memref spelling of each tensor parameter, by value or by reference; `None` for any
     /// other parameter. A row passed in is a strided view, and is cast to this at the call.
     pub param_tensors: Vec<Option<String>>,
+    /// For `ensures valid(return, n)`: the length `n` and the size of an element in bytes. After
+    /// the call, an `llvm.intr.assume` says that `n` elements at the result can be read.
+    pub ret_valid: Option<(crate::hir::check::pointer_clauses::Length, u64)>,
 }
 
 /// GID → callee: the reverse of the registry's name-keyed `fn_sigs`. A `Call`'s `type_idx` resolves
@@ -580,23 +695,29 @@ pub struct Callee {
 /// (for the call's result type) without a name→AST walk.
 pub type CalleeMap = HashMap<TypeId, Callee>;
 
-/// Resolve a nominal type to a *modelled* aggregate layout GID: the attached GID when name resolution
-/// set it (present in `aggs`), else the base name's GID (`agg_names`) — a monomorphized cross-module
-/// signature carries an unresolved base (`GenericInstance(Struct("Vec", None), ..)` / `Struct("Vec",
-/// None)`), so the layout must be recovered by name. Resolves a generic instance through its base.
-/// (#242)
+/// Resolve an aggregate layout by declaration identity.
+/// Complete generic declarations share storage. Other generic instances use generated layout IDs.
+/// A missing attached ID permits an unambiguous name lookup. An unknown attached ID does not.
 fn resolve_agg_gid(
     ty: &Type,
     aggs: &AggMap,
     agg_names: &HashMap<String, TypeId>,
     identities: &crate::layout::identity::AggregateIdentities,
 ) -> Option<TypeId> {
-    // A data-carrying enum instance (`Option<i32>`) has a *synthesized* per-instance layout keyed by
-    // `enum_instance_gid` (the lowerer recorded it in the side table now folded into `aggs`); try that
-    // first. Its `gid` is distinct from any registry layout, so a struct instance (`Vec<i32>`) misses
-    // here and falls through to the nominal resolution below. (#242)
+    // A closure value (`||->i32`) is the `{ env, func }` pair that the lowerer made.
+    if matches!(ty, Type::Closure(..)) {
+        let gid = crate::hir::flatten::closure_pair_gid();
+        return aggs.contains_key(&gid).then_some(gid);
+    }
+    // Prefer the lowerer's complete declaration layout, then try generated instance layouts.
     if let Type::GenericInstance(base, args) = ty {
         if matches!(base.as_ref(), Type::Enum(..) | Type::Struct(..)) {
+            // Use the same complete declaration layout that the lowerer uses.
+            // Generic structs with argument-dependent storage have no complete declaration layout.
+            let (_, declaration) = identities.resolve_base(base.as_ref().into())?;
+            if aggs.contains_key(&declaration) {
+                return Some(declaration);
+            }
             let gid = crate::hir::flatten::enum_instance_gid(base.as_ref(), args, identities)?;
             if aggs.contains_key(&gid) {
                 return Some(gid);
@@ -619,8 +740,10 @@ fn resolve_agg_gid(
             if aggs.contains_key(&bare) {
                 return Some(bare);
             }
-            id.filter(|g| aggs.contains_key(g))
-                .or_else(|| agg_names.get(name.as_ref()).copied())
+            match id {
+                Some(id) => aggs.contains_key(id).then_some(*id),
+                None => agg_names.get(name.as_ref()).copied(),
+            }
         }
         _ => None,
     }
@@ -690,7 +813,7 @@ pub fn build_callee_map(
                     agg_names,
                     registry.aggregate_identities(),
                 ),
-                ret_ptr: is_ptr_ty(&sig.ret_ty),
+                ret_ptr: is_ptr_ty(&sig.ret_ty) && borrowed_tensor_memref(&sig.ret_ty).is_none(),
                 ret_pointee: match peel_wrappers(&sig.ret_ty) {
                     Type::Borrow { inner, .. } | Type::Pointer(inner, ..) => {
                         resolve_agg_gid(inner, aggs, agg_names, registry.aggregate_identities())
@@ -698,8 +821,14 @@ pub fn build_callee_map(
                     _ => None,
                 },
                 ret_void: is_void_ty(&sig.ret_ty),
-                ret_tensor: tensor_memref_of_type(&sig.ret_ty),
+                ret_tensor: tensor_memref_of_type(&sig.ret_ty)
+                    .or_else(|| borrowed_tensor_memref(&sig.ret_ty)),
+                ret_vec: match peel_wrappers(&sig.ret_ty) {
+                    Type::Simd(e, lanes) => mlir_vector(e, *lanes),
+                    _ => None,
+                },
                 ret_placed: crate::codegen::generator::written_placement(&sig.ret_ty).is_some(),
+                ret_reference: borrowed_tensor_memref(&sig.ret_ty).is_some(),
                 param_tensors: sig
                     .params
                     .iter()
@@ -708,6 +837,10 @@ pub fn build_callee_map(
                         other => tensor_memref_of_type(other),
                     })
                     .collect(),
+                ret_valid: match &sig.ret_ty {
+                    Type::Pointer(inner, ..) => sig.ret_valid.clone().zip(scalar_bytes(inner)),
+                    _ => None,
+                },
             },
         )
     };
@@ -719,15 +852,12 @@ pub fn build_callee_map(
 }
 
 /// The MLIR shape of an aggregate (struct) whose fields are all scalar or pointer: the
-/// `!llvm.struct<(...)>` type (for the slot `llvm.alloca` and field `getelementptr`), each field's
-/// byte offset in declaration order — so a `FieldLoad`/`FieldStore`, which carries a byte offset,
-/// recovers the GEP field index by `offsets.position(|o| o == offset)` — and each field's MLIR type
-/// string, so a field op prints the right load/store type (a scalar's element or `!llvm.ptr`).
+/// `!llvm.struct<(...)>` type and each field's MLIR type in declaration order.
+/// Field instructions select fields by index.
 pub struct AggLayout {
     pub struct_ty: String,
-    pub offsets: Vec<u64>,
     /// Each field's MLIR type (`"i32"`, `"!llvm.ptr"`, …) in declaration order, index-aligned with
-    /// `offsets`. A field op loads/stores at `field_tys[field_idx]`.
+    /// the other field metadata. A field op uses `field_tys[field_idx]`.
     pub field_tys: Vec<String>,
     /// For each pointer field, the layout GID of the aggregate it points *to*, when that pointee's
     /// layout is instance-independent (`VecIter`'s `vec : *const Vec<T>` -> the `Vec` layout GID, the
@@ -751,15 +881,21 @@ pub(crate) fn generated_storage_type(layout: &crate::layout::GeneratedAggregateL
 }
 
 impl AggLayout {
+    /// Select a physical field by its encoded index.
+    fn field_index(&self, imm: u64) -> Lowered<usize> {
+        let index = crate::bytecode::decode_field_index(imm);
+        if index >= self.field_tys.len() {
+            return Err(Decline::TypeNotModelled {
+                what: "a field index outside the aggregate layout",
+            });
+        }
+        Ok(index)
+    }
+
     /// Derive the emitter's storage view from the shared generated layout.
     fn from_generated(layout: &crate::layout::GeneratedAggregateLayout) -> Self {
         Self {
             struct_ty: generated_storage_type(layout),
-            offsets: layout
-                .fields
-                .iter()
-                .map(|f| f.layout.offset as u64)
-                .collect(),
             field_tys: layout.fields.iter().map(|f| f.mlir_type.clone()).collect(),
             field_pointee: layout.fields.iter().map(|f| f.pointer_target_id).collect(),
             field_agg: layout.fields.iter().map(|f| f.aggregate_id).collect(),
@@ -780,18 +916,8 @@ pub type AggMap = HashMap<TypeId, AggLayout>;
 /// field is modelled as `!llvm.ptr`.
 pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::Schedule) -> AggMap {
     use crate::layout::FieldTy;
-    // Name -> layout GID for every modelled nominal, to resolve a pointer field's pointee aggregate
-    // (its layout is instance-independent when the field is behind a pointer, so the base name suffices
-    // — `VecIter`'s `vec : *const Vec<T>` resolves to the `Vec` layout GID for any `T`).
-    let name_to_gid: HashMap<&str, TypeId> = registry
-        .layouts
-        .iter()
-        .filter(|(_, d)| d.align_bytes != 0 && !d.fields.is_empty())
-        .map(|(g, d)| (d.name.as_str(), *g))
-        .collect();
-    // Each layout's entry depends only on the registry and `name_to_gid`, and the key is the layout's
-    // own GID, so the map is the same whatever order the entries are produced in. (See
-    // `build_callee_map` for why this is worth parallelising.)
+    // Pointer targets retain declaration IDs. Names alone cannot distinguish modules.
+    let identities = registry.aggregate_identities();
     let layout_of = |(gid, def): (&TypeId, &crate::registry::TypeDefinition)| {
         if def.align_bytes == 0 {
             return None; // an unmodelled stub
@@ -807,7 +933,6 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
                 *gid,
                 AggLayout {
                     struct_ty: "!llvm.struct<()>".to_string(),
-                    offsets: Vec::new(),
                     field_tys: Vec::new(),
                     field_pointee: Vec::new(),
                     field_agg: Vec::new(),
@@ -820,7 +945,6 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
         // the definition's own GID is the key.
         let decl_fields = registry.structs.get(gid);
         let mut field_tys = Vec::with_capacity(def.fields.len());
-        let mut offsets = Vec::with_capacity(def.fields.len());
         let mut field_pointee = Vec::with_capacity(def.fields.len());
         let mut field_agg: Vec<Option<TypeId>> = Vec::with_capacity(def.fields.len());
         let mut modelled = true;
@@ -855,8 +979,7 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
                     field_tys.push("!llvm.ptr".to_string());
                     let pointee = decl_fields
                         .and_then(|sf| sf.fields.get(fi))
-                        .and_then(|(_, ft)| pointer_pointee_name(ft))
-                        .and_then(|n| name_to_gid.get(n.as_str()).copied());
+                        .and_then(|(_, ft)| pointer_pointee_layout(ft, registry, identities));
                     field_pointee.push(pointee);
                     field_agg.push(None);
                 }
@@ -889,7 +1012,6 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
                     }
                 }
             }
-            offsets.push(f.offset as u64);
         }
         if !modelled {
             return None;
@@ -898,7 +1020,6 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
             *gid,
             AggLayout {
                 struct_ty: format!("!llvm.struct<({})>", field_tys.join(", ")),
-                offsets,
                 field_tys,
                 field_pointee,
                 field_agg,
@@ -965,23 +1086,44 @@ pub(crate) fn registry_field_storage_type(
     })
 }
 
-/// The base nominal name a pointer/borrow points *to* (`*const Vec<T>` -> `"Vec"`), for resolving a
-/// pointer field's pointee aggregate. `None` for a pointer to a non-nominal (a scalar, `*mut T`). (#242)
-fn pointer_pointee_name(ty: &Type) -> Option<String> {
+/// Resolve a pointer target by declaration identity, including concrete generic arguments.
+fn pointer_pointee_layout(
+    ty: &Type,
+    registry: &ImmutableGlobalRegistry,
+    identities: &crate::layout::identity::AggregateIdentities,
+) -> Option<TypeId> {
     let inner = match ty {
         Type::Pointer(inner, ..) | Type::Borrow { inner, .. } | Type::Ref(inner, ..) => {
             inner.as_ref()
         }
         _ => return None,
     };
-    match inner {
-        Type::GenericInstance(base, _) => match base.as_ref() {
-            Type::Struct(n, _) | Type::Enum(n, _) => Some(n.as_ref().to_string()),
-            _ => None,
-        },
-        Type::Struct(n, _) | Type::Enum(n, _) => Some(n.as_ref().to_string()),
-        _ => None,
+    let (base, args) = match inner {
+        Type::GenericInstance(base, args) => (base.as_ref(), args.as_slice()),
+        other => (other, &[][..]),
+    };
+    let (_, declaration) = identities.resolve_base(base.into())?;
+    if args.is_empty() {
+        return registry
+            .layouts
+            .get(&declaration)
+            .filter(|def| def.align_bytes != 0)
+            .map(|_| declaration);
     }
+    let instance = crate::hir::flatten::struct_instance_gid(declaration, args, identities)?;
+    if registry
+        .layouts
+        .get(&instance)
+        .is_some_and(|def| def.align_bytes != 0)
+    {
+        return Some(instance);
+    }
+    // A generic declaration's complete storage can be shared when its fields do not depend on its arguments.
+    registry
+        .layouts
+        .get(&declaration)
+        .filter(|def| def.align_bytes != 0)
+        .map(|_| declaration)
 }
 
 /// A tensor type recovered by GID: its element and shape (dim expressions, numeric or symbolic).
@@ -1031,6 +1173,21 @@ pub struct EmitCtx {
     /// The mangled types, among those that a parameter's `&` points to, that hold a
     /// `SharedCell`. A `&` to one of them is not `llvm.readonly`.
     pub shared_cell_types: std::collections::HashSet<String>,
+    /// The start of the name of each function that holds an `mlir!` block.
+    pub mlir_wrapper_prefix: String,
+}
+
+/// `base`, with `_` added until no name in `names` starts with it. The functions that hold
+/// `mlir!` blocks are named from it, so no function of the program can have their names.
+pub(crate) fn mlir_wrapper_prefix<'a>(
+    base: &str,
+    names: impl Iterator<Item = &'a str> + Clone,
+) -> String {
+    let mut prefix = base.to_string();
+    while names.clone().any(|n| n.starts_with(prefix.as_str())) {
+        prefix.push('_');
+    }
+    prefix
 }
 
 /// The declared properties of a memory sub-space the flat emitter re-attaches to a `vx.transfer`,
@@ -1066,7 +1223,7 @@ pub struct SubspaceInfo {
 /// `func.func private` declaration prepended. Order is load-bearing — the emit records which of
 /// these a function called as a bitmask over this array's indices, so inserting in the middle
 /// renumbers existing entries.
-const RUNTIME_HELPERS: [(&str, &str); 23] = [
+const RUNTIME_HELPERS: [(&str, &str); 26] = [
     ("printMemrefF32", "(memref<*xf32>)"),
     ("printMemrefF64", "(memref<*xf64>)"),
     ("printMemrefI32", "(memref<*xi32>)"),
@@ -1090,6 +1247,9 @@ const RUNTIME_HELPERS: [(&str, &str); 23] = [
     ("printMemrefI16", "(memref<*xi16>)"),
     ("printMemrefU8", "(memref<*xi8>)"),
     ("printMemrefU16", "(memref<*xi16>)"),
+    ("vx_task_failed", "()"),
+    ("vx_cancel_off", "(i64)"),
+    ("vx_cancel_on", "()"),
 ];
 
 // The helper mask is a `u64`, so the table must not grow past 64 entries.
@@ -1121,11 +1281,12 @@ pub fn local_devices_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i32, i32)>
     crate::arch::local_device_aliases(env.topologies.values().map(|d| (&d.name, &d.descriptor)))
 }
 
-/// A declared topology's `arch:`, and its `chip:` when it gives one.
+/// A declared topology's `arch:`, its `chip:` when it gives one, and its `offload:`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DeclaredArch {
     pub arch: String,
     pub chip: Option<String>,
+    pub offload: bool,
 }
 
 /// The declared-arch table for `EmitCtx::topo_archs`, from the per-compilation env: one entry per
@@ -1148,6 +1309,7 @@ pub fn topo_archs_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i64, Declared
                     .chip
                     .as_ref()
                     .map(|c| c.as_ref().to_string()),
+                offload: decl.descriptor.offload,
             };
             Some((id as i64, declared))
         })
@@ -1331,6 +1493,10 @@ impl EmitCtx {
                 .collect(),
             shared_cell_types: std::collections::HashSet::new(),
             describe_params: false,
+            mlir_wrapper_prefix: mlir_wrapper_prefix(
+                "vx_flat_mlir_",
+                registry.fn_sigs.keys().map(|n| n.as_ref()),
+            ),
         }
     }
 
@@ -1378,6 +1544,13 @@ fn static_tile_bytes(elem: &ElementType, shape: &[String]) -> Option<u64> {
 /// The single source of truth shared by the `func.func` header and a `FuncConst`'s `func.constant`
 /// signature, so a materialized function pointer's type matches its callee's header exactly. (#242)
 pub(crate) fn ty_mlir(ty: &Type, ctx: &EmitCtx) -> Lowered<String> {
+    // A token of `transfer_async` is spelled as its tensor, and a token of a lane copy as `i32`.
+    if crate::syntax::types::is_copy_token(ty) {
+        return Ok("i32".to_string());
+    }
+    if let Some(inner) = crate::syntax::types::transfer_token_inner(ty) {
+        return ty_mlir(inner, ctx);
+    }
     let ty = peel_wrappers(ty); // Verified/Ref/Pinned spell as their runtime inner type
                                 // A borrowed tensor is spelled as the tensor. A memref is already a reference, and a call
                                 // site hands over the memref itself; `!llvm.ptr` gave the signature a type nothing passes
@@ -1767,8 +1940,18 @@ pub fn emit_module_mlir(
         } else {
             format!(" -> {ret}")
         };
+        let mark = match registry.fn_sigs.get(name.as_str()) {
+            Some(sig)
+                if crate::codegen::generator::gets_device_pointer(
+                    sig.params.iter().map(peel_wrappers),
+                ) =>
+            {
+                " attributes {vx.gets_device_pointer}"
+            }
+            _ => "",
+        };
         decls += &format!(
-            "  func.func private {}({}){ret_sig}\n",
+            "  func.func private {}({}){ret_sig}{mark}\n",
             sym_ref(name),
             arg_types.join(", ")
         );
@@ -1869,7 +2052,7 @@ fn memref_elem(memty: &str) -> Option<&str> {
 
 /// The dims prefix (`2x4x`) and element (`f32`) of a memref type string. `memref<2x4xf32> ->
 /// ("2x4x", "f32")`; a layout suffix (`, strided<…>`) is dropped.
-fn memref_lead_dims_and_elem(memty: &str) -> Option<(&str, &str)> {
+pub(crate) fn memref_lead_dims_and_elem(memty: &str) -> Option<(&str, &str)> {
     let inner = memty.strip_prefix("memref<")?;
     let inner = inner.split(',').next()?.trim_end_matches('>');
     let elem_start = inner.rfind('x').map(|i| i + 1).unwrap_or(0);
@@ -2091,6 +2274,8 @@ pub(crate) struct FnEmit<'a> {
     /// `StringConst` reach their bytes through a module-level global; `Abort` needs the text
     /// itself, because `cf.assert` carries its message as an inline attribute.
     pub(crate) strings: &'a [String],
+    /// The file the function is written in, which each `spawn` of a task in it names.
+    pub(crate) file: Option<&'a str>,
     /// This function's inline `mlir!` blocks and the base their wrappers are numbered from.
     pub(crate) inline_base: usize,
     pub(crate) inline_blocks: &'a [crate::hir::flatten::InlineBlock],
@@ -2142,7 +2327,7 @@ pub(crate) struct FnEmit<'a> {
     pub(crate) etypes: Vec<Option<ElementType>>,
     /// The aggregate GID for each register that is a struct-slot pointer (from an aggregate
     /// `Alloca`), so a `FieldLoad`/`FieldStore` on that slot recovers the struct's `!llvm.struct`
-    /// type + field offsets. The aggregate analogue of `etypes` (kept separate: struct slots are
+    /// type and field indices. The aggregate analogue of `etypes` (kept separate: struct slots are
     /// pointers, not scalar values).
     pub(crate) agg_of: Vec<Option<TypeId>>,
     /// The aggregate GID for each register that holds a struct *value* (not a slot pointer): an
@@ -2179,6 +2364,9 @@ pub(crate) struct FnEmit<'a> {
     /// of the element type rather than the rank-0 `memref` a never-borrowed scalar local uses. The
     /// scalar analogue of `pslot_of`, carrying the element so the load/store types match.
     pub(crate) sslot_of: Vec<Option<ElementType>>,
+    /// The memref type a *tensor slot* holds (a `memref<memref<..>>` alloca), for a tensor local
+    /// given a new value in a branch.
+    pub(crate) tslot_of: Vec<Option<String>>,
     /// The function body's MLIR text, appended to as the walk proceeds.
     /// The function's entry block, for allocations that must happen once.
     ///
@@ -2364,15 +2552,28 @@ impl<'a> FnEmit<'a> {
             // the scalar return type. Reconstruct the function type `(arg types)->ret` from the actual
             // args, cast the pointer to it, and `func.call_indirect`. (#242)
             Opcode::CallIndirect => self.op_call_indirect(idx, ins),
+            Opcode::TensorElementAddress => self.op_tensor_element_address(idx, ins),
             Opcode::AutoDiff => self.op_autodiff(idx, ins),
             Opcode::TensorLoad => self.op_tensor_load(idx, ins),
             Opcode::TensorDim => self.op_tensor_dim(idx, ins),
-            // Store a scalar into a struct field (no result). `operand1` is the struct slot pointer,
-            // `operand2` the value, `imm` the field's byte offset. GEP to the field, then `llvm.store`;
-            // the field index comes from matching the offset against the layout, the value type from
-            // the stored register's tracked type.
+            Opcode::CheckAggregate => {
+                let expected = self.types.get(ins.type_idx.0 as usize).copied();
+                let actual = self.agg_of.get(ins.operand1.0 as usize).copied().flatten();
+                if expected.is_none() || actual != expected {
+                    if std::env::var_os("VX_FLAT_DBG").is_some() {
+                        eprintln!(
+                            "[flat-dbg] aggregate check expected {expected:?}, actual {actual:?}"
+                        );
+                    }
+                    return Err(Decline::TypeNotModelled {
+                        what: "an aggregate base whose layout does not match its declared type",
+                    });
+                }
+                Ok(())
+            }
+            // Store a field by explicit index, with the stored value in operand2.
             Opcode::FieldStore => self.op_field_store(idx, ins),
-            // Load a field by byte offset, or an enum payload by its variant and field indices.
+            // Load a field by index, or an enum payload by variant and payload position.
             Opcode::FieldLoad | Opcode::EnumPayloadLoad => self.op_field_load(idx, ins),
             // The address of a by-value nested-aggregate field (`&outer.inner`): GEP to the field and
             // yield the pointer, tracked as an aggregate slot (its layout GID from `type_idx`), so a
@@ -2393,6 +2594,7 @@ impl<'a> FnEmit<'a> {
             Opcode::TensorTranspose => self.op_tensor_transpose(idx, ins),
             Opcode::TensorPad => self.op_tensor_pad(idx, ins),
             Opcode::TensorMap => self.op_tensor_map(idx, ins),
+            Opcode::TensorCast => self.op_tensor_cast(idx, ins),
             Opcode::TensorReduce => self.op_tensor_reduce(idx, ins),
             Opcode::TensorClone => self.op_tensor_clone(idx, ins),
             Opcode::TensorDataPtr => self.op_tensor_data_ptr(idx, ins),
@@ -2440,6 +2642,48 @@ impl<'a> FnEmit<'a> {
             // terminator already ended it), stamp the `topology` attribute, and resume emitting into
             // the enclosing block (which the spawn op did not terminate).
             Opcode::SpawnEnd => self.op_spawn_end(idx, ins),
+            Opcode::TasksWait => {
+                let join = if ins.imm == 1 { " {join}" } else { "" };
+                self.body += &format!("  \"vx.tasks_wait\"(){join} : () -> ()\n");
+                Ok(())
+            }
+            Opcode::TaskFailed => {
+                self.body += "  func.call @vx_task_failed() : () -> ()\n";
+                Ok(())
+            }
+            Opcode::CancelOff => {
+                let limit = self
+                    .names
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
+                self.body += &format!("  func.call @vx_cancel_off({limit}) : (i64) -> ()\n");
+                Ok(())
+            }
+            Opcode::CancelOn => {
+                self.body += "  func.call @vx_cancel_on() : () -> ()\n";
+                Ok(())
+            }
+            // `VxLowering` waits for the task before this use of its value, and erases it.
+            Opcode::TaskJoin => {
+                let r = ins.operand1.0 as usize;
+                let v = self.names.get(r).ok_or(crate::emitter_gap!())?.clone();
+                let ty = self.value_mlir_ty(r)?;
+                self.body += &format!("  \"vx.task_join\"({v}) : ({ty}) -> ()\n");
+                Ok(())
+            }
+            // A way out of the region before its end. `VxLowering` sends each `vx.yield` of a
+            // `tasks` block to the code after the block. An exit from a task gives the value of
+            // the task, and the task stores it and ends.
+            Opcode::RegionExit => {
+                if self.types.get(ins.type_idx.0 as usize).is_some() {
+                    self.yield_value(idx, ins.operand1.0 as usize)?;
+                } else {
+                    self.body += "  \"vx.yield\"() : () -> ()\n";
+                }
+                self.terminated = true;
+                Ok(())
+            }
             // Print a string literal (no result): take the address of the module-level global emitted
             // for this string (`@".str.<n>"`, `n = str_base + imm`) and call the `@print_str` runtime
             // helper. `emit_module_mlir` emits the global's bytes and the helper's `private` decl.
@@ -2458,6 +2702,8 @@ impl<'a> FnEmit<'a> {
             Opcode::AcrossId => self.op_across_id(idx, ins),
             Opcode::AcrossRegion => self.op_across_region(idx, ins),
             Opcode::TensorDrop => self.op_tensor_drop(idx, ins),
+            Opcode::LifetimeStart => self.op_lifetime(ins, "start"),
+            Opcode::LifetimeEnd => self.op_lifetime(ins, "end"),
             Opcode::Abort => self.op_abort(idx, ins),
             Opcode::PrintStr => self.op_print_str(idx, ins),
             Opcode::PrintStream => self.op_print_stream(idx, ins),
@@ -2523,12 +2769,20 @@ pub fn emit_function_mlir(
     if let Some((slot, memty)) = &ret_slot {
         params.push(format!("{slot}: {memty}"));
     }
+    // `requires valid(p, n)`: a call in safe code proves it, and the author of `unsafe` code keeps
+    // the promise.
+    let valid = crate::hir::check::pointer_clauses::valid_params(func);
     for (i, (_, ty)) in func.params.iter().enumerate() {
         // Signature-position MLIR type: scalar, payload-free enum `i32`, `!llvm.ptr` (pointer /
         // fn-pointer), tensor memref, or by-value aggregate `!llvm.struct`; else the function declines.
         let pty = ty_mlir(ty, ctx)?;
         let n = i as u32 + arg_offset;
-        params.push(format!("%arg{n}: {pty}{}", param_alias_attrs(ty, ctx)));
+        let attrs = if valid.iter().any(|(p, _)| *p == i) {
+            valid_pointer_attrs(ty)
+        } else {
+            param_alias_attrs(ty, ctx)
+        };
+        params.push(format!("%arg{n}: {pty}{attrs}"));
     }
     // A `Pinned<i32, ..>` return is the scalar it wraps, as at a call site.
     let ret_elem = match peel_wrappers(&func.return_type) {
@@ -2549,6 +2803,8 @@ pub fn emit_function_mlir(
         Some(mlir_scalar(e).ok_or(crate::emitter_gap!())?.to_string())
     } else if let Some(et) = enum_scalar(&func.return_type, ctx) {
         Some(et.to_string())
+    } else if let Some(mt) = borrowed_tensor_memref(&func.return_type) {
+        Some(mt)
     } else if is_ptr_ty(&func.return_type) {
         Some("!llvm.ptr".to_string()) // a pointer-returning function (#235)
     } else if let Some(gid) = ctx.agg_gid(&func.return_type) {
@@ -2611,6 +2867,7 @@ pub fn emit_function_mlir(
         ctx,
         str_base,
         strings,
+        file: func.file.as_deref(),
         inline_base,
         inline_blocks,
         wrappers: String::new(),
@@ -2631,6 +2888,7 @@ pub fn emit_function_mlir(
         ptr_of: vec![false; hir.len()],
         pslot_of: vec![false; hir.len()],
         sslot_of: vec![None; hir.len()],
+        tslot_of: vec![None; hir.len()],
         entry: String::new(),
         body: String::new(),
         terminated: false,
@@ -2656,6 +2914,7 @@ pub fn emit_function_mlir(
     if func.name.as_ref() == "main" {
         em.entry += "  func.call @vx_init_signals() : () -> ()\n";
     }
+    em.entry += &valid_pointer_assumes(func, &valid, arg_offset);
 
     for (idx, ins) in hir.iter().enumerate() {
         em.step(idx, ins)?;
@@ -2679,6 +2938,8 @@ pub fn emit_function_mlir(
         Some(Some(p)) if returns_through_slot(&func.return_type).is_none() => {
             format!(" {}", placed_attr(&p, ctx))
         }
+        // A returned reference names a tensor that the caller does not own, so it is not freed.
+        _ if borrowed_tensor_memref(&func.return_type).is_some() => " {vx.reference}".to_string(),
         _ => String::new(),
     };
     let mut ret_sig = match &ret_mlir {
@@ -2734,6 +2995,18 @@ mod tests {
     use crate::hir::flatten::lower_function_to_hir;
     use crate::session::{GlobalSession, LocalWorkerState};
     use std::sync::Arc;
+
+    /// The prefix for an `mlir!` block's function grows until no function starts with it.
+    #[test]
+    fn mlir_wrapper_prefix_avoids_every_function_name() {
+        let base = "vx_flat_mlir_";
+        assert_eq!(mlir_wrapper_prefix(base, ["main"].into_iter()), base);
+        let names = ["main", "vx_flat_mlir_0", "vx_flat_mlir__wrap"];
+        assert_eq!(
+            mlir_wrapper_prefix(base, names.into_iter()),
+            "vx_flat_mlir___"
+        );
+    }
 
     // These LLVM target-layout functions are not included in mlir-sys's generated bindings.
     unsafe extern "C" {
@@ -2957,6 +3230,14 @@ mod tests {
         src: &str,
         change_layouts: impl FnOnce(&mut Vec<crate::layout::GeneratedAggregateLayout>),
     ) -> Result<String, ModuleEmitError> {
+        emit_module_with_field_instructions(src, change_layouts, |_, _| {})
+    }
+
+    fn emit_module_with_field_instructions(
+        src: &str,
+        change_layouts: impl FnOnce(&mut Vec<crate::layout::GeneratedAggregateLayout>),
+        change_instruction: impl Fn(&mut HirInstruction, &ImmutableGlobalRegistry),
+    ) -> Result<String, ModuleEmitError> {
         let mut lexer = crate::lexer::Lexer::new(src);
         let tokens = lexer.tokenize();
         let mut parser = crate::parser::Parser::new(&tokens, src);
@@ -2986,6 +3267,9 @@ mod tests {
             let mut w = LocalWorkerState::new(session.clone());
             let result = lower_function_to_hir(f, &mut w);
             assert!(result.is_ok(), "function {} lowers: {result:?}", f.name);
+            for instruction in &mut w.local_hir_stream {
+                change_instruction(instruction, &session.registry);
+            }
             lowered.push(w);
         }
         let funcs: Vec<(&Function, &[HirInstruction], &[TypeId])> = mods[0]
@@ -3035,6 +3319,317 @@ mod tests {
             crate::config::Schedule::Parallel,
             false,
         )
+    }
+
+    #[rstest::rstest]
+    #[case::load("fn inspect(a: &First, b: &Second) -> i32 { return b.value; }")]
+    #[case::store("fn inspect(a: &First, b: &mut Second) -> void { b.value = 7; }")]
+    #[case::address("fn inspect(a: &First, b: &Second) -> &i32 { return &b.value; }")]
+    fn field_access_rejects_a_different_aggregate_with_an_in_bounds_index(#[case] function: &str) {
+        let source =
+            format!("struct First {{ value: i32 }} struct Second {{ value: i32 }} {function}");
+        let result = emit_module_with_field_instructions(
+            &source,
+            |_| {},
+            |instruction, _| {
+                if instruction.opcode == Opcode::CheckAggregate {
+                    // Register zero is the first parameter, but the access expects Second.
+                    instruction.operand1 = crate::bytecode::Register(0);
+                }
+            },
+        );
+        assert!(
+            matches!(
+                result,
+                Err(ModuleEmitError::Declined(Decline::TypeNotModelled {
+                    what: "an aggregate base whose layout does not match its declared type",
+                }))
+            ),
+            "a different aggregate must decline before field access: {result:?}"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::normal(crate::config::Schedule::Sequential)]
+    #[case::parallel(crate::config::Schedule::Parallel)]
+    fn pointer_fields_keep_same_named_declarations_separate(
+        #[case] schedule: crate::config::Schedule,
+    ) {
+        let mut modules = Vec::new();
+        for (name, source) in [
+            (
+                "crate::left",
+                "struct Node { count: i32, value: i64 } struct Left { node: *const Node }",
+            ),
+            (
+                "crate::right",
+                "struct Node { count: i32, value: i32 } struct Right { node: *const Node }",
+            ),
+        ] {
+            let mut lexer = crate::lexer::Lexer::new(source);
+            let tokens = lexer.tokenize();
+            let mut parser = crate::parser::Parser::new(&tokens, source);
+            let mut module = parser.parse().unwrap();
+            module.module_path = name.into();
+            modules.push(module);
+        }
+        let symbols = crate::resolver::build_symbol_map(&modules);
+        for module in &mut modules {
+            module.resolve_names(&symbols, &[]);
+        }
+        let registry = crate::pipeline::build_frozen_registry(&modules).unwrap();
+        let aggs = build_agg_map(&registry, schedule);
+        for module in &modules {
+            let node = symbols[&module.module_path][&crate::symbol::Symbol::from("Node")];
+            let holder = module
+                .structs
+                .iter()
+                .find(|decl| decl.name.as_ref() != "Node")
+                .unwrap();
+            let holder_id = symbols[&module.module_path][&holder.name];
+            assert_eq!(
+                aggs[&holder_id].field_pointee[0],
+                Some(node),
+                "a pointer must use its own module's Node layout"
+            );
+        }
+        let bare = Type::Pointer(Box::new(Type::Struct("Node".into(), None)), None, false);
+        assert_eq!(
+            pointer_pointee_layout(&bare, &registry, registry.aggregate_identities()),
+            None,
+            "an ambiguous name must not select either Node"
+        );
+        let missing = Type::Pointer(
+            Box::new(Type::Struct("Left".into(), Some(TypeId::new(99, 1, 0, 0)))),
+            None,
+            false,
+        );
+        assert_eq!(
+            pointer_pointee_layout(&missing, &registry, registry.aggregate_identities()),
+            None,
+            "an unknown attached ID must not fall back to a known name"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "a field instruction must carry FIELD_INDEX_FLAG")]
+    fn a_raw_field_index_is_a_compiler_error() {
+        fields_with_empty_values_and_padding()
+            .field_index(0)
+            .unwrap();
+    }
+
+    fn fields_with_empty_values_and_padding() -> AggLayout {
+        AggLayout {
+            struct_ty:
+                "!llvm.struct<(!llvm.struct<()>, !llvm.struct<()>, i8, !llvm.array<7 x i8>, i64)>"
+                    .into(),
+            field_tys: vec![
+                "!llvm.struct<()>".into(),
+                "!llvm.struct<()>".into(),
+                "i8".into(),
+                "!llvm.array<7 x i8>".into(),
+                "i64".into(),
+            ],
+            field_pointee: vec![None; 5],
+            field_agg: vec![None; 5],
+            variant_payloads: vec![],
+        }
+    }
+
+    #[test]
+    fn field_indices_distinguish_empty_fields_and_explicit_padding() {
+        let layout = fields_with_empty_values_and_padding();
+        for index in 0..5 {
+            assert_eq!(
+                layout.field_index(crate::bytecode::encode_field_index(index)),
+                Ok(index),
+                "physical field {index} retains its identity"
+            );
+        }
+        assert!(
+            layout
+                .field_index(crate::bytecode::encode_field_index(5))
+                .is_err(),
+            "an index outside the layout must decline"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::load(
+        Opcode::FieldLoad,
+        "fn read(fields: &Fields) -> i64 { return fields.number; }"
+    )]
+    #[case::store(
+        Opcode::FieldStore,
+        "fn write(fields: &mut Fields) -> void { fields.number = 7; }"
+    )]
+    #[case::address(
+        Opcode::FieldAddr,
+        "fn address(fields: &Fields) -> &i64 { return &fields.number; }"
+    )]
+    fn direct_field_operations_use_indices_after_explicit_padding(
+        #[case] opcode: Opcode,
+        #[case] source: &str,
+    ) {
+        use crate::bytecode::{encode_field_index, Register, TypeIdx};
+        let gid = TypeId::new(1, 1, 0, 0);
+        let mut function = parse_fn(source);
+        if let Type::Borrow { inner, .. } = &mut function.params[0].1 {
+            **inner = Type::Struct("Fields".into(), Some(gid));
+        }
+        let mut context = EmitCtx {
+            identities: Arc::new(crate::layout::identity::AggregateIdentities::new([(
+                gid,
+                "Fields".into(),
+            )])),
+            ..EmitCtx::default()
+        };
+        context.agg_names.insert("Fields".into(), gid);
+        context
+            .aggs
+            .insert(gid, fields_with_empty_values_and_padding());
+        let types = [ptr_gid(), scalar_gid(&ElementType::I64)];
+        let mut code = vec![HirInstruction::new(
+            Opcode::Load,
+            Register(0),
+            Register(0),
+            TypeIdx(0),
+            0,
+        )];
+        if opcode == Opcode::FieldStore {
+            code.push(HirInstruction::new(
+                Opcode::Const,
+                Register(0),
+                Register(0),
+                TypeIdx(1),
+                7,
+            ));
+        }
+        let result = Register(code.len() as u32);
+        code.push(HirInstruction::new(
+            opcode,
+            Register(0),
+            if opcode == Opcode::FieldStore {
+                Register(1)
+            } else {
+                Register(0)
+            },
+            TypeIdx(1),
+            encode_field_index(4),
+        ));
+        code.push(HirInstruction::new(
+            Opcode::Ret,
+            result,
+            Register(0),
+            TypeIdx(match opcode {
+                Opcode::FieldStore => u32::MAX,
+                Opcode::FieldAddr => 0,
+                _ => 1,
+            }),
+            0,
+        ));
+        let mlir = emit_function_mlir(
+            &function,
+            &code,
+            &types,
+            &context,
+            &mut Vec::new(),
+            0,
+            &[],
+            0,
+            &[],
+            &[],
+            &mut 1,
+        )
+        .expect("direct field operation emits MLIR");
+        assert!(
+            mlir.lines()
+                .any(|line| line.contains("llvm.getelementptr") && line.contains("[0, 4]")),
+            "the number follows explicit padding at physical field 4: {mlir}"
+        );
+        use melior::ir::operation::OperationLike;
+        let dialects = melior::dialect::DialectRegistry::new();
+        melior::utility::register_all_dialects(&dialects);
+        let mlir_context = melior::Context::new();
+        mlir_context.append_dialect_registry(&dialects);
+        mlir_context.load_all_available_dialects();
+        let module = melior::ir::Module::parse(&mlir_context, &mlir)
+            .unwrap_or_else(|| panic!("padded field access parses: {mlir}"));
+        assert!(
+            module.as_operation().verify(),
+            "padded field access verifies: {mlir}"
+        );
+    }
+
+    // Empty fields share the number's offset. Nonempty fields provide a control with distinct offsets.
+    #[rstest::rstest]
+    #[case::load("fn read(fields: &Fields) -> i32 { return fields.number; }")]
+    #[case::store("fn write(fields: &mut Fields) -> void { fields.number = 7; }")]
+    #[case::address("fn address(fields: &Fields) -> &i32 { return &fields.number; }")]
+    fn field_access_after_empty_fields_keeps_its_field_index(
+        #[case] function: &str,
+        #[values("Empty", "i8")] preceding_type: &str,
+    ) {
+        let source = format!(
+            "struct Empty {{}}\nstruct Fields {{ first: {preceding_type}, second: {preceding_type}, number: i32 }}\n{function}"
+        );
+        let mlir = emit_module_with_layouts(&source, |_| {}).expect("field access emits MLIR");
+        let accesses: Vec<_> = mlir
+            .lines()
+            .filter(|line| line.contains("llvm.getelementptr"))
+            .collect();
+        assert_eq!(accesses.len(), 1, "the function accesses exactly one field");
+        assert!(
+            accesses[0].contains("[0, 2]"),
+            "access to number must select field 2, even when empty fields share its offset:\n{mlir}"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::load("fn read(fields: &Fields) -> *const i32 { return fields.pointer; }")]
+    fn pointer_field_after_empty_fields_lowers(
+        #[case] function: &str,
+        #[values("Empty", "i8")] preceding_type: &str,
+    ) {
+        let source = format!(
+            "struct Empty {{}}\nstruct Fields {{ first: {preceding_type}, second: {preceding_type}, pointer: *const i32 }}\n{function}"
+        );
+        emit_module_and_verify(&source);
+    }
+
+    #[rstest::rstest]
+    #[case::load("fn read(fields: &Fields) -> Second { return fields.second; }")]
+    #[case::store("fn write(fields: &mut Fields) -> void { fields.second = Second {}; }")]
+    #[case::address("fn address(fields: &Fields) -> &Second { return &fields.second; }")]
+    fn second_empty_field_keeps_its_identity(#[case] function: &str) {
+        let source = format!("struct First {{}}\nstruct Second {{}}\nstruct Fields {{ first: First, second: Second, number: i32 }}\n{function}");
+        let mlir = emit_module_with_layouts_and_verify(&source, |_| {});
+        let accesses: Vec<_> = mlir
+            .lines()
+            .filter(|line| line.contains("llvm.getelementptr"))
+            .collect();
+        assert_eq!(accesses.len(), 1, "one empty field is accessed");
+        assert!(
+            accesses[0].contains("[0, 1]"),
+            "the second empty field must retain index 1: {mlir}"
+        );
+    }
+
+    #[test]
+    fn enum_payload_with_an_empty_field_before_a_pointer_lowers() {
+        emit_module_and_verify(
+            "struct Empty {}\n\
+             struct Fields { marker: Empty, pointer: *const i32 }\n\
+             enum Value { Wrapped(Fields), Direct(*const i32) }\n\
+             fn read(value: Value, fallback: *const i32) -> *const i32 {\n\
+               match value {\n\
+                 Value::Wrapped(fields) => { return fields.pointer; },\n\
+                 Value::Direct(pointer) => { return pointer; }\n\
+               }\n\
+               return fallback;\n\
+             }",
+        );
     }
 
     #[test]
@@ -3296,7 +3891,6 @@ mod tests {
                             *id,
                             (
                                 record.struct_ty.clone(),
-                                record.offsets.clone(),
                                 record.field_tys.clone(),
                                 record.field_agg.clone(),
                                 record.field_pointee.clone(),

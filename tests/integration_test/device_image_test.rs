@@ -14,11 +14,11 @@
 //
 // The negative is as load-bearing as the positive. A classified matmul is left
 // at `linalg` level on purpose so the plugin can route it to cuBLAS, which
-// beats anything we would emit; giving it a device twin would be both wasted
-// compile time and a worse kernel. That case broke six backend tests when the
-// image compile first landed, because the `gpu.func` for it was never
+// beats anything we would emit, and giving it a device copy would be both
+// wasted compile time and a worse kernel. That case broke six backend tests
+// when the image compile first landed, because the `gpu.func` for it was never
 // compilable and dropping it unexamined had hidden that. `test_backend` in
-// compile_test.rs is what covers the whole corpus for that regression; these
+// compile_test.rs is what covers the whole corpus for that regression. These
 // two cover the mechanism.
 //
 // Through the binary rather than the library, because the two codegen paths do
@@ -207,7 +207,7 @@ fn a_custom_topology_with_a_declared_arch_gets_a_device_image() {
     );
     // The visibility barrier, closed in #353: the builtin copy publishes the tile to every
     // lane before any lane reads it. Exactly one -- the count is what separates the
-    // builtin from a user lowering (see the user-lowering test below, which pins two).
+    // builtin from a user lowering (see the user-lowering test below, which checks two).
     assert_eq!(
         image.matches("bar.sync").count(),
         1,
@@ -350,4 +350,530 @@ fn two_kernels_on_one_architecture_share_one_image() {
         2,
         "the one image must hold both kernels as entry points:\n{image}"
     );
+}
+
+/// The dispatch payload global's bytes, decoded from the emitted LLVM IR.
+///
+/// The payload is one string constant, printed escaped: `\XX` for a byte that
+/// is not printable, and `\\` for a backslash, which would otherwise end the
+/// literal. A quote inside is printed `\22`, so the literal's own closing quote
+/// is the first `"` after it. What is under test is the payload's own format,
+/// not MLIR's escaping, so decode it back to bytes rather than match on the
+/// text.
+fn payload_bytes(ir: &str, kernel: &str) -> Vec<u8> {
+    let marker = format!("@{kernel}_str(\"");
+    let start = ir
+        .find(&marker)
+        .unwrap_or_else(|| panic!("no dispatch payload global for {kernel}"))
+        + marker.len();
+    let rest = &ir[start..];
+    let end = rest
+        .find('"')
+        .expect("the payload global is not terminated");
+    let escaped = &rest.as_bytes()[..end];
+
+    let mut bytes = Vec::new();
+    let mut i = 0;
+    while i < escaped.len() {
+        if escaped[i] == b'\\' {
+            match &escaped[i + 1..] {
+                [b'\\', ..] => {
+                    bytes.push(b'\\');
+                    i += 2;
+                    continue;
+                }
+                [a, b, ..] => {
+                    let digits = [*a, *b];
+                    let hex = std::str::from_utf8(&digits).unwrap_or("");
+                    if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                        bytes.push(byte);
+                        i += 3;
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+        }
+        bytes.push(escaped[i]);
+        i += 1;
+    }
+    bytes
+}
+
+/// The payload's section, walked the way a dispatch library walks it
+/// (`vx_payload_text_end` and `vx_payload_section` in
+/// include/vx_hardware_runtime.h): the text part is the kernel name and the
+/// `key=value` entries, an empty entry ends it, and the section is a
+/// little-endian 64-bit length followed by that many bytes.
+///
+/// Written out here rather than shared with the runtime, so that the two are
+/// two statements of the same format rather than one.
+fn payload_section(payload: &[u8]) -> &[u8] {
+    let mut pos = payload
+        .iter()
+        .position(|&b| b == 0)
+        .expect("the payload's kernel name is unterminated")
+        + 1;
+    loop {
+        let len = payload[pos..]
+            .iter()
+            .position(|&b| b == 0)
+            .expect("the payload's entries are unterminated");
+        if len == 0 {
+            break; // the empty entry: the section starts after it
+        }
+        pos += len + 1;
+    }
+    let start = pos + 1;
+
+    let length = u64::from_le_bytes(
+        payload[start..start + 8]
+            .try_into()
+            .expect("the payload is too short to hold the section's length"),
+    ) as usize;
+    assert_eq!(
+        length,
+        payload.len() - start - 8,
+        "the section's length does not account for the rest of the payload"
+    );
+    &payload[start + 8..]
+}
+
+/// Ask `spirv-val` about a module, or `None` when this machine has no
+/// `spirv-val` to ask.
+///
+/// The module goes in on standard input rather than through a file: the SPIR-V
+/// tests run in parallel, and one shared file name would let either overwrite
+/// the other's module between the write and the check.
+fn spirv_val(module: &[u8]) -> Option<Result<(), String>> {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut child = Command::new("spirv-val")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+    // Taking the handle and letting it drop closes the pipe, so the validator
+    // sees the end of the module rather than waiting for more.
+    child
+        .stdin
+        .take()
+        .expect("spirv-val's stdin was piped")
+        .write_all(module)
+        .ok()?;
+    let out = child.wait_with_output().ok()?;
+    if out.status.success() {
+        Some(Ok(()))
+    } else {
+        Some(Err(String::from_utf8_lossy(&out.stderr).into_owned()))
+    }
+}
+
+/// A topology whose machine model declares `arch: spirv64` gets a SPIR-V
+/// module, and it is carried in the payload's section rather than in an
+/// `image=` entry (#1137).
+///
+/// The assertions are on the module's *content*, because a section that held
+/// four right bytes and then nothing, or a module that never named the kernel
+/// it is entered through, would satisfy "a section exists" and then fail at a
+/// loader in another process. SPIR-V's own validator is the strongest claim
+/// available here -- not "these bytes look like SPIR-V" but "this is a
+/// module", which is the thing the memref-carried form of this kernel failed.
+///
+/// The section is the only shape that can carry the image: its first word is
+/// `0x07230203`, which holds NUL bytes, so an `image=` entry would end at the
+/// module's first word.
+#[test]
+fn a_spirv_topology_gets_a_spirv_module_in_the_payload_section() {
+    let ir = emit_llvm("spirv_device_image.vx");
+    let kernel = "vx_npu_kernel_0";
+    let payload = payload_bytes(&ir, kernel);
+
+    // The text part: the kernel name first, then the entries.
+    assert!(
+        payload.starts_with(format!("{kernel}\0").as_bytes()),
+        "the payload does not lead with the kernel name, which is what selects \
+         an entry point out of a loaded module"
+    );
+    let has = |needle: &[u8]| payload.windows(needle.len()).any(|w| w == needle);
+    assert!(
+        has(b"format=spirv\0"),
+        "the payload does not say the image is SPIR-V, so a dispatch library \
+         has to guess"
+    );
+    assert!(
+        !has(b"image="),
+        "the image is in a NUL-terminated `image=` entry, where its own first \
+         word would end it"
+    );
+
+    let section = payload_section(&payload);
+    assert_eq!(
+        &section[..4],
+        &[0x03, 0x02, 0x23, 0x07],
+        "the section does not start with SPIR-V's magic number 0x07230203"
+    );
+    assert!(
+        section
+            .windows(kernel.len())
+            .any(|w| w == kernel.as_bytes()),
+        "the module does not name `{kernel}`, so a loader would load it and then \
+         ask for a function that is not in it"
+    );
+
+    match spirv_val(section) {
+        Some(Ok(())) => {}
+        Some(Err(report)) => {
+            panic!("spirv-val rejected the module the compiler emitted:\n{report}")
+        }
+        None => println!("spirv-val is not installed, so the module was not validated"),
+    }
+}
+
+/// The shape a real placed kernel has -- four rank-2 operands, a loop nest, and
+/// each row read through a view -- also reaches the payload's section as a
+/// SPIR-V module the validator accepts (#1137).
+///
+/// `spirv_device_image.vx` proves the mechanism on two 2x2 tensors. This is the
+/// corpus shape `placed_kernel_four_operands.vx` has: four rank-2 operands, 28
+/// flat parameters once expanded, so the rewrite has to keep four expansions
+/// and the accesses into each apart. The loops' counters start in
+/// `memref<i32>` slots (`{vx.parallel_init}` / `{vx.parallel_bound}`, which
+/// `mem2reg` has to promote before SPIR-V sees them), and every row is read
+/// through a `memref.reinterpret_cast` whose offset has to reach the address
+/// arithmetic the flat arguments are addressed through.
+#[test]
+fn a_loop_and_views_kernel_gets_a_spirv_module_in_the_payload_section() {
+    let ir = emit_llvm("spirv_device_image_loop_kernel.vx");
+    let kernel = "vx_npu_kernel_0";
+    let payload = payload_bytes(&ir, kernel);
+
+    let has = |needle: &[u8]| payload.windows(needle.len()).any(|w| w == needle);
+    assert!(
+        has(b"format=spirv\0"),
+        "the payload does not say the image is SPIR-V, so a dispatch library \
+         has to guess"
+    );
+    assert!(
+        !has(b"image="),
+        "the image is in a NUL-terminated `image=` entry, where its own first \
+         word would end it"
+    );
+
+    let section = payload_section(&payload);
+    assert_eq!(
+        &section[..4],
+        &[0x03, 0x02, 0x23, 0x07],
+        "the section does not start with SPIR-V's magic number 0x07230203"
+    );
+    assert!(
+        section
+            .windows(kernel.len())
+            .any(|w| w == kernel.as_bytes()),
+        "the module does not name `{kernel}`, so a loader would load it and then \
+         ask for a function that is not in it"
+    );
+
+    match spirv_val(section) {
+        Some(Ok(())) => {}
+        Some(Err(report)) => {
+            panic!("spirv-val rejected the module the compiler emitted:\n{report}")
+        }
+        None => println!("spirv-val is not installed, so the module was not validated"),
+    }
+}
+
+/// A kernel that reads a view of a view -- a strided row -- or a row of a
+/// run-time-shaped tensor also reaches the payload's section as a SPIR-V module
+/// the validator accepts (#1137).
+///
+/// These are the shapes the flat emitter builds with
+/// `memref.extract_strided_metadata` and `memref.dim`, neither of which the
+/// SPIR-V argument flattening knew how to rewrite. It refused them, and the
+/// refusal was fatal: the whole compile failed rather than the region taking
+/// the host path. The fix teaches the flattening both ops, so the kernel stays
+/// on the device and the image has to be a real one.
+#[test]
+fn a_strided_and_dynamic_row_kernel_gets_a_spirv_module_in_the_payload_section() {
+    let ir = emit_llvm("spirv_device_image_strided_row.vx");
+    let kernel = "vx_npu_kernel_0";
+    let payload = payload_bytes(&ir, kernel);
+
+    let has = |needle: &[u8]| payload.windows(needle.len()).any(|w| w == needle);
+    assert!(
+        has(b"format=spirv\0"),
+        "the payload does not say the image is SPIR-V, so a dispatch library \
+         has to guess"
+    );
+    assert!(
+        !has(b"image="),
+        "the image is in a NUL-terminated `image=` entry, where its own first \
+         word would end it"
+    );
+
+    let section = payload_section(&payload);
+    assert_eq!(
+        &section[..4],
+        &[0x03, 0x02, 0x23, 0x07],
+        "the section does not start with SPIR-V's magic number 0x07230203"
+    );
+    assert!(
+        section
+            .windows(kernel.len())
+            .any(|w| w == kernel.as_bytes()),
+        "the module does not name `{kernel}`, so a loader would load it and then \
+         ask for a function that is not in it"
+    );
+
+    match spirv_val(section) {
+        Some(Ok(())) => {}
+        Some(Err(report)) => {
+            panic!("spirv-val rejected the module the compiler emitted:\n{report}")
+        }
+        None => println!("spirv-val is not installed, so the module was not validated"),
+    }
+}
+
+/// A placed `spirv64` region whose body holds a struct-valued local still gets
+/// a SPIR-V image, and the validator accepts it (#1137).
+///
+/// The flat emitter gives such a local an `llvm.alloca` slot and reads it with
+/// `llvm.getelementptr`/`llvm.load`/`llvm.store`. The device pipeline takes
+/// those ops: a stack slot in address space 0 becomes SPIR-V `Function`
+/// storage, and the accesses around it lower through the flattening like any
+/// other address arithmetic. This test checks that, because the same fixture was
+/// written when the gate refused every `llvm` op and kept such a region at
+/// home.
+#[test]
+fn a_kernel_with_a_struct_local_gets_a_spirv_module() {
+    let ir = emit_llvm("spirv_device_image_struct_local.vx");
+    let kernel = "vx_npu_kernel_0";
+    let payload = payload_bytes(&ir, kernel);
+
+    let has = |needle: &[u8]| payload.windows(needle.len()).any(|w| w == needle);
+    assert!(
+        has(b"format=spirv\0"),
+        "a struct-valued local no longer keeps the region at home, so the \
+         payload must say the image is SPIR-V"
+    );
+    let section = payload_section(&payload);
+    assert_eq!(
+        &section[..4],
+        &[0x03, 0x02, 0x23, 0x07],
+        "the section does not start with SPIR-V's magic number 0x07230203"
+    );
+    match spirv_val(section) {
+        Some(Ok(())) => {}
+        Some(Err(report)) => {
+            panic!("spirv-val rejected the module the compiler emitted:\n{report}")
+        }
+        None => println!("spirv-val is not installed, so the module was not validated"),
+    }
+}
+
+/// A placed region that calls the runtime -- `print` inside the region -- also
+/// reaches no device image, and now says so, naming the callee it could not
+/// bring along (#1137).
+///
+/// A device kernel can call only what the device can run, and the runtime is
+/// not that, so the region keeps the host path. The message names the callee
+/// rather than the call, because that is the thing the author wrote.
+#[test]
+fn a_kernel_that_calls_the_runtime_says_it_runs_on_the_host() {
+    let path = corpus("spirv_device_image_runtime_call.vx");
+    let out = Command::new(env!("CARGO_BIN_EXE_vxc"))
+        .arg(&path)
+        .arg("--emit-llvm")
+        .output()
+        .unwrap_or_else(|e| panic!("could not run vxc: {e}"));
+    assert!(
+        out.status.success(),
+        "the flat path failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let ir = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !ir.contains("format=spirv"),
+        "a kernel that calls the runtime must have no SPIR-V image rather than \
+         one that is wrong"
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("the call to 'print_f32'") && stderr.contains("runs on the CPU"),
+        "the compiler dropped this kernel's device copy without naming the \
+         callee that kept it at home; stderr was:\n{stderr}"
+    );
+}
+
+/// A `spirv64` region that yields a value gets no `format=spirv` image, and
+/// says why: the value is handed back through a host stack slot, which a device
+/// cannot address (#1137).
+///
+/// The legacy path's refusal has a test of its own. This is its sibling on the
+/// flat path, and it is the one the compiler has to make for a value-yielding
+/// kernel rather than a loop the AST code generator wrote. The message names
+/// the host stack slot so the author can tell this refusal from the others.
+#[test]
+fn a_yielding_spirv_region_says_it_runs_on_the_host() {
+    let path = corpus("spirv_device_image_result_slot.vx");
+    let out = Command::new(env!("CARGO_BIN_EXE_vxc"))
+        .arg(&path)
+        .arg("--emit-llvm")
+        .output()
+        .unwrap_or_else(|e| panic!("could not run vxc: {e}"));
+    assert!(
+        out.status.success(),
+        "the flat path failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let ir = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !ir.contains("format=spirv"),
+        "a kernel that yields a host-stack value must have no SPIR-V image \
+         rather than one that is wrong"
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("host stack slot") && stderr.contains("run on the host"),
+        "the compiler dropped this kernel's device copy without saying why, so \
+         the author believes it runs on the card; stderr was:\n{stderr}"
+    );
+}
+
+/// A `spirv64` kernel that keeps a scratch array or a shared tile of its own
+/// gets no image, and the compile still succeeds: the region runs on the host.
+///
+/// Both of these used to stop the compile with "cannot compile this device
+/// kernel", which turned programs that run on the host into programs that do
+/// not build. Their fixtures check the warning and the result. This is the
+/// other half, that no image was written for either of them.
+#[test]
+fn a_kernel_the_spirv_path_cannot_image_still_compiles() {
+    for (name, reason) in [
+        (
+            "spirv_device_image_local_array.vx",
+            "it keeps a scratch buffer of its own",
+        ),
+        (
+            "spirv_device_image_shared_tile.vx",
+            "it keeps a tile in shared memory",
+        ),
+    ] {
+        let path = corpus(name);
+        let out = Command::new(env!("CARGO_BIN_EXE_vxc"))
+            .arg(&path)
+            .arg("--emit-llvm")
+            .output()
+            .unwrap_or_else(|e| panic!("could not run vxc: {e}"));
+        assert!(
+            out.status.success(),
+            "vxc failed on {name}, which runs on the host:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let ir = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !ir.contains("format=spirv"),
+            "{name} must have no SPIR-V image rather than one that is wrong"
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains(reason) && stderr.contains("It will run on the host instead"),
+            "the warning for {name} does not say why the region stays at \
+             home; stderr was:\n{stderr}"
+        );
+    }
+}
+
+/// The host-stack-slot warning belongs to the SPIR-V path alone.
+///
+/// A `spirv64` machine file is where an author expects a device image, so a
+/// kernel that cannot have one is news. The NVPTX path has never imaged a
+/// kernel that yields a value and has never said so, and one pipeline's
+/// warning must not arrive for the other pipeline's kernels.
+#[test]
+fn the_host_stack_slot_warning_is_spirv_only() {
+    let stderr_of = |name: &str| {
+        let path = corpus(name);
+        let out = Command::new(env!("CARGO_BIN_EXE_vxc"))
+            .arg(&path)
+            .arg("--emit-llvm")
+            .output()
+            .unwrap_or_else(|e| panic!("could not run vxc: {e}"));
+        assert!(
+            out.status.success(),
+            "vxc failed on {name}:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+    let spirv = stderr_of("spirv_device_image_result_slot.vx");
+    assert!(
+        spirv.contains("host stack slot"),
+        "a `spirv64` region that yields a value must say why it stays at \
+         home; stderr was:\n{spirv}"
+    );
+
+    let nvptx = stderr_of("nvptx_device_image_result_slot.vx");
+    assert!(
+        !nvptx.contains("host stack slot"),
+        "a `nvptx64` region was told about a SPIR-V refusal; stderr was:\n{nvptx}"
+    );
+}
+
+/// A `--legacy-codegen` compile of the same `spirv64` topology still gets no
+/// image, and now says so out loud.
+///
+/// On the AST code generator, a loop in a `spirv64` region keeps its counter in a
+/// stack slot, as on the flat code generator. The SPIR-V conversion cannot take a
+/// branch that carries an `index` value, so before this the kernel ran on the host.
+/// The kernels that get an image on the flat path get one here too. A `&mut Tensor`
+/// parameter reaches the kernel as the tensor it holds, with no memory space.
+#[test]
+fn a_legacy_compiled_spirv_kernel_gets_a_spirv_module() {
+    let kernel = "vx_npu_kernel_0";
+    for name in [
+        "spirv_device_image.vx",
+        "spirv_device_image_loop_kernel.vx",
+        "spirv_device_image_strided_row.vx",
+        "spirv_device_image_struct_local.vx",
+        "spirv_device_image_tensor_reference.vx",
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_vxc"))
+            .arg(corpus(name))
+            .arg("--legacy-codegen")
+            .arg("--emit-llvm")
+            .output()
+            .unwrap_or_else(|e| panic!("could not run vxc: {e}"));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "{name}: the AST path failed:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("cannot become a `spirv64` device image"),
+            "{name}: the kernel runs on the host; stderr was:\n{stderr}"
+        );
+        let ir = String::from_utf8_lossy(&out.stdout);
+        let payload = payload_bytes(&ir, kernel);
+        let has = |needle: &[u8]| payload.windows(needle.len()).any(|w| w == needle);
+        assert!(
+            has(b"format=spirv\0"),
+            "{name}: the payload has no SPIR-V image"
+        );
+        let section = payload_section(&payload);
+        assert_eq!(
+            &section[..4],
+            &[0x03, 0x02, 0x23, 0x07],
+            "{name}: the section does not start with SPIR-V's magic number"
+        );
+        match spirv_val(section) {
+            Some(Ok(())) => {}
+            Some(Err(report)) => panic!("{name}: spirv-val rejected the module:\n{report}"),
+            None => println!("spirv-val is not installed, so the module was not validated"),
+        }
+    }
 }

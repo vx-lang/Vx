@@ -1,0 +1,60 @@
+//===- a_join_waits_for_its_task.vx - Vx Compiler -----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each task sleeps for 0.2 seconds, and then adds 1 to `x`. After the join of the task, the code
+// of the block adds 10 to `x`, which the join allows. So the join must wait for the task: else
+// the code of the block reads `x` before the task wrote it, and prints 10.
+//
+// - `join_as_a_statement`: `h.join();` uses no value of the task.
+// - `join_into_a_variable`: `let w = h.join();` reads `w` only after the change to `x`.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}after a join as a statement, x is 11{{$}}
+// CHECK-NEXT: {{^}}after a join into a variable, x is 11{{$}}
+// CHECK-NEXT: {{^}}w is 5{{$}}
+
+import core::time;
+import std::time;
+
+fn sleep_then_add_one(x : &mut i64) -> void {
+  sleep(Duration::from_millis(200));
+  *x = *x + 1;
+}
+
+fn join_as_a_statement() -> void {
+  let mut x : i64 = 0;
+  tasks {
+    let h = spawn {
+      sleep_then_add_one(&mut x);
+    };
+    h.join();
+    x = x + 10;
+    println!("after a join as a statement, x is {}", x);
+  }
+}
+
+fn join_into_a_variable() -> void {
+  let mut x : i64 = 0;
+  tasks {
+    let h = spawn {
+      sleep_then_add_one(&mut x);
+      5
+    };
+    let w = h.join();
+    x = x + 10;
+    println!("after a join into a variable, x is {}", x);
+    println!("w is {}", w);
+  }
+}
+
+fn main() -> i32 {
+  join_as_a_statement();
+  join_into_a_variable();
+  return 0;
+}

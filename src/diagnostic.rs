@@ -77,7 +77,8 @@ pub enum DiagnosticCode {
     /// An `as` cast to the type the value already has, such as `x as i32` when `x` is an `i32`.
     W1013,
     /// An `as` cast of a number known while compiling that does not fit the target type, such
-    /// as `100000 as i8`, which gives -96.
+    /// as `100000 as i8`, which gives -96. For a cast to `usize`, such as `(-1i64) as usize`, the
+    /// program stops at that cast.
     W1014,
     /// `*&x`, a borrow that is dereferenced at once. It is the same as `x`.
     W1020,
@@ -136,6 +137,15 @@ pub enum DiagnosticCode {
     /// write. The closure keeps the value that it copied, so it does not see the write. A later
     /// release makes this an error (K4).
     W1034,
+    /// A `match` arm in a `loop` or `while` can take `Cancelled` from a wait and stays in the
+    /// loop. In a cancelled task each wait gives `Cancelled` at once, so the loop never ends (F4).
+    W1035,
+    /// A `drop` calls `send` or `recv`, which wait with no time limit of their own, outside the
+    /// body of a call of `within`. A drop runs with cancellation off, so when the other end never acts, the
+    /// wait holds up the drop until the limit of the drop: its type's `wait_limit`, 10 seconds by
+    /// default. Then the wait gives up, as in a cancelled block. A `wait_limit` that calls them
+    /// gets the warning too, because it runs before the drop and should only return a time.
+    W1036,
 
     // --- Parser Errors (E1xxx) ---
     /// Unexpected token
@@ -254,13 +264,12 @@ pub enum DiagnosticCode {
     /// in value position, where the fall-through edge would otherwise have no value to carry --
     /// codegen used to paper over that by evaluating the whole match to a constant zero.
     E3020,
-    /// An enum variant whose payload is a tensor.
+    /// An enum variant whose payload is a `Pinned` or `Ref` tensor.
     ///
-    /// A payload is stored into the variant's tagged-union slot with `llvm.insertvalue`, which
-    /// takes primitive operands, and a tensor is a memref descriptor. The AST path dropped such a
-    /// payload silently: the construction emitted the tag and nothing else, so a program carrying
-    /// a tensor through an enum compiled, ran, and lost it with no diagnostic. A struct field
-    /// holding a tensor is the same representational gap in another position.
+    /// A payload tensor is stored as its memref descriptor. Its drop frees a tensor in a memory
+    /// space through the plugin that the memory's type names. `Pinned` and `Ref` give the
+    /// location outside the tensor type, so the drop does not know it, and such a payload is
+    /// refused.
     E3021,
     /// An `extern` function whose signature mentions a tensor.
     ///
@@ -352,11 +361,13 @@ pub enum DiagnosticCode {
     /// literals and other `const`s. A `const` table holds a list of number literals, and is
     /// read one number at a time, as `TABLE[i]`.
     E3044,
-    /// A number literal that does not fit `usize`, which holds 0 up to the largest `i64`.
+    /// An integer literal that does not fit its type, such as `300` for a `u8`. A `usize`
+    /// holds 0 up to the largest `i64`.
     E3045,
     /// A `for` loop over a tensor that is not a variable or a flat array literal, such as one a
     /// function call returns, or a nested array literal. The loop reads the tensor by index, so
-    /// it needs a name: bind the tensor with `let` first.
+    /// it needs a name: bind the tensor with `let` first. Also a loop over `&mut t`: the loop
+    /// gives copies of the elements, so it cannot change them.
     E3046,
     /// A `reshape` call the compiler cannot check: the new shape has a different number of
     /// elements than the tensor (without `PadMode::Pad` or `PadMode::Trim`), a size is not known
@@ -389,8 +400,8 @@ pub enum DiagnosticCode {
     /// that holds a raw pointer, and the compiler cannot check the claim. Write
     /// `unsafe impl Send for Handle {}`.
     E3053,
-    /// `unsafe impl` of a trait other than `Send` or `Sync`, or of no trait at all. Only those two
-    /// traits make a claim that the compiler cannot check. Remove `unsafe`.
+    /// `unsafe impl` of a trait other than `Send`, `Sync` or `Owned`, or of no trait at all. Only
+    /// those three traits make a claim that the compiler cannot check. Remove `unsafe`.
     E3054,
     /// A task takes a value that is not `Send`, or reads a variable whose type is not `Sync`.
     /// A task that moves a value, copies it or writes it needs `Send`. A task that reads a
@@ -406,15 +417,41 @@ pub enum DiagnosticCode {
     /// cannot return a handle, store it, or pass it to a function. Write
     /// `let h = spawn { .. };` and later `h.join()`.
     E3057,
-    /// A `return`, `break` or `continue` that leaves a task, or a task that joins another task.
-    /// The last expression of a task body is its result. A task cannot join another task yet.
-    /// Join both tasks in the `tasks` block.
+    /// A `break` or `continue` that leaves a task, a `return` with a value in a task that has no
+    /// handle, or a task that joins another task. A `return` in a task ends the task, and its
+    /// value is the result of the task. A task cannot join another task yet. Join both tasks in
+    /// the `tasks` block.
     E3058,
     /// An `extern` declaration of `malloc`, `calloc`, `realloc`, `aligned_alloc` or `free` whose
     /// type is not C's. The compiler calls these functions too, and it can share only a
     /// declaration of C's type. A size is a 64-bit integer: `usize`, `i64` or `u64`. A pointer is
     /// a raw pointer to host memory. `free` returns nothing.
     E3059,
+    /// A task that can fail, used in a way that could lose its failure. A task whose body gives
+    /// `Result<T, E>` can fail, and its `join()` gives the `T`. When the task failed, the join
+    /// leaves the `tasks` block, and the block gives the `Err`. So the task needs a handle,
+    /// `let h = spawn { .. };`, and a join in its own block that always runs after the `spawn`.
+    /// The block must give a `Result<U, E>` with the same `E`.
+    E3060,
+    /// An impl of a trait does not write a method that the trait requires: one the trait
+    /// declares with no default body. A call to that method would otherwise fail where it is
+    /// called, with "method not found", though the fault is in the impl.
+    E3061,
+    /// A struct literal that writes its fields in an order other than the struct's declaration.
+    /// The fields run in the order the source writes them, so `P { y : f(), x : g() }` would run
+    /// `f` before `g` and store `y` before `x`. Write the fields in the order the struct declares
+    /// them.
+    E3062,
+    /// A `?` that cannot pass its error up. `x?` takes a `Result<T, E>`. It gives the `T` of an
+    /// `Ok`, and it passes an `Err` up unchanged: to the function, which must return a
+    /// `Result<_, E>` with the same `E`, to its closure, which must return one, or to its task or
+    /// `tasks` block, which must give one. A `?` in a closure needs the closure's type written,
+    /// `|x| -> Result<T, E> { .. }`. `?` does not convert the error. `.map_err(..)` converts it.
+    E3063,
+    /// A `break` or `continue` with no loop around it in its own function or closure. A closure
+    /// body is not inside a loop around the closure, because the closure can run after the loop
+    /// ends.
+    E3064,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable
@@ -432,7 +469,8 @@ pub enum DiagnosticCode {
     /// for a block: a variable declared outside a block cannot be given a value that points
     /// at a variable declared inside it. Nor can a variable keep a reference into a value with
     /// no name, such as `make_vec()` in `let r = &make_vec();`, when that value is dropped at
-    /// the end of its statement.
+    /// the end of its statement. A closure cannot return a reference to its own parameter, or to
+    /// the copy it keeps of a variable it uses (`|| &x`): each call has its own frame.
     E4005,
     /// An assignment through a shared reference: `*r = v`, `r.f = v` or `r[i] = v` where
     /// `r` is a `&T`. A shared reference only reads; writing needs a `&mut T`.
@@ -442,7 +480,11 @@ pub enum DiagnosticCode {
     E4007,
     /// A value moved out from behind a reference: `let b = *r;` where `r` is a reference to a
     /// type that is not `Copy`. The reference does not own the value, so it cannot give it
-    /// away; copy or clone it instead.
+    /// away. Copy or clone it instead. A `match` on a reference names parts of the value behind
+    /// it, so `match r { Holder::Full(n) => n }` cannot move `n` either. Through a raw pointer,
+    /// `let b = *p;` and `let b = p[i];` are refused when the value has something to drop,
+    /// since its owner drops it too. Only an `unsafe fn` such as `core::ptr::read(p)` may take
+    /// it out.
     E4008,
     /// An assignment to a variable, or a field or element of it, while a `&` borrow of it is
     /// still used afterwards: `let r = &x; x = 2;` and then a use of `r`. The borrow would see
@@ -471,8 +513,22 @@ pub enum DiagnosticCode {
     /// that the same pass does not join runs at the same time as the next pass, so it must not
     /// write a variable from outside the loop, or read one that the loop writes. A task must not
     /// use a variable that ends before its `tasks` block, such as one of the loop body. Join the
-    /// task in the same block: `let h = spawn { .. };` and then `h.join();`.
+    /// task in the same block: `let h = spawn { .. };` and then `h.join();`. A `return`, `break`
+    /// or `continue` that leaves two `tasks` blocks waits only for the tasks of the inner one, so
+    /// it cannot drop a value from outside the inner block yet.
     E4014,
+    /// A `spawn` region that moves a value from the code around it: `let x = t;` or `f(t)`
+    /// with a parameter that takes `t` by value, where `t` is declared before the region. The
+    /// region only borrows what it uses, and the function drops `t` after the region. Borrow it
+    /// (`&t`), or clone it (`t.clone()`).
+    E4015,
+    /// A borrow clause that is not well formed, or one that the body does not keep. In
+    /// `ensures !points_into(return, *p)` the result cannot point into the memory under `*p`, and
+    /// in `ensures !reaches(return, *p)` it also cannot point where a reference in `*p` points. In
+    /// `ensures !keeps(p)` the body stores `p`, or a reference read through it, nowhere that
+    /// outlives the call. `p` is a reference parameter. Each borrow clause is an `ensures` of its
+    /// own.
+    E4016,
 
     // --- Safety Errors (E5xxx) ---
     /// Unsafe function call outside unsafe block. `Tensor<..>::uninit()` is one: its elements
@@ -492,7 +548,8 @@ pub enum DiagnosticCode {
     /// and the cost of the transfer that would fix it -- so a misplaced handoff (an
     /// un-transferred KV cache in a disaggregated prefill/decode split, say) is a compile
     /// error that carries its own remedy. A `managed: cached` space the topology can reach
-    /// across a declared seam is coherent in hardware and is not reported here.
+    /// across a declared seam is coherent in hardware and is not reported here. A move of a
+    /// tensor reads no element, so a `let`, an argument, a store or a `return` of it is allowed.
     E6003,
     /// Transfer violates the boundary contract at a seam (per-seam local-completeness
     /// / soundness obligation is `sat`; a stale read can violate the contract).
@@ -642,6 +699,36 @@ pub enum DiagnosticCode {
     /// storage the compiler lays out (`scope: sm`, `cta` or `thread`), or N is less than the
     /// `alignment:` of the space, which every tensor there has.
     E6034,
+    /// A `Memory` declaration's `within:` names a space that is not built in, and that the
+    /// program and its machine files do not declare. A typo in the name is the usual cause.
+    E6035,
+    /// A token of `transfer_async` that the program drops with no `.wait()`: at the end of its
+    /// scope, or when an assignment gives its variable a new value. The copy may not be done
+    /// then, so its target may not hold the data. Call `.wait()`, which gives the placed tensor.
+    E6036,
+    /// A placement whose memory is not built in and has no `scope:`. Such a memory has no
+    /// address space on the target. Declare the memory with `scope: device`, `sm`, `cta` or
+    /// `thread`.
+    E6037,
+    /// A `spawn on` body for a device that uses a channel end, a lock, or a value that holds one.
+    /// The standard library marks these types with the trait `HostOnly`. A wait on the device for
+    /// the host can wait forever, because a GPU does not promise that its threads make progress.
+    /// Send or receive before the `spawn on`, or after it. A `spawn on(Topology::CPU)` body runs on
+    /// the host, so it can use them.
+    E6038,
+    /// A `spawn` in a loop of its `tasks` block, with a count of passes that is not known at compile
+    /// time, and tasks that use a memory with a capacity. Each pass starts a task, and the tasks run
+    /// at the same time, so their working set has no bound. Use a `for` loop over a constant range,
+    /// or join each task in its pass. Downgraded to W1028 when the space is declared `overcommit`.
+    E6039,
+    /// A channel of tensors in a memory with a capacity, with a room that is not known at compile
+    /// time. The channel can hold that many tensors at once, so the working set has no bound.
+    /// Downgraded to W1028 when the space is declared `overcommit`.
+    E6040,
+    /// A function that makes a channel of tensors in a memory with a capacity, and returns an end
+    /// of that channel. The room of the channel is counted in the function that calls `channel`,
+    /// only until that function returns.
+    E6041,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch
@@ -668,8 +755,45 @@ pub enum DiagnosticCode {
     /// A call does not meet the called function's precondition (`requires`)
     E8006,
     /// An access clause that does not hold: an `atomic(t)` whose body uses `t` without an atomic
-    /// operation, or a `writes_only()` whose body may write memory
+    /// operation, a `reads_only(t)` whose body may write `t`, or a `writes_only()` whose body may
+    /// write memory
     E8007,
+    /// A loop invariant that the prover cannot show to hold when the loop starts
+    E8008,
+    /// A loop invariant that the prover cannot show to hold in the next pass, after the loop
+    /// body or after a `continue`
+    E8009,
+    /// An `mlir!` block whose `dialects` list does not match its body: the body uses an
+    /// operation of a dialect that the list does not name, or the list names something that
+    /// is not a dialect. The list is what the block says it uses, so it must be right.
+    E8010,
+    /// A pointer clause that is not well formed: `valid(p, n)`, `initialized(p, n)` or
+    /// `!overlaps(p, q, n)`, where `p` and `q` are raw pointer parameters, and each clause is a
+    /// `requires` or an `ensures` of its own. In an `ensures`, `return` can be the pointer. The
+    /// fact of an `assume` is one such clause. A call through a function value or a trait would
+    /// not prove a `requires`, so a safe function with one cannot be a function value, and a safe
+    /// method of a trait impl cannot have one. A `frees` clause is an `ensures` of its
+    /// own, `ensures frees(p)` or `ensures !frees(p)` for a parameter `p`, and a method of a trait
+    /// impl cannot add a `!frees` that the trait method does not have. An `extern` function can
+    /// also ensure a clause about numbers that names only its integer parameters and `return`.
+    E8011,
+    /// A body that breaks a pointer `ensures` of its function. The facts at a `return`, or at the
+    /// end of the body, do not prove a clause such as `ensures valid(return, n)`. Or the body
+    /// changes a parameter that such a clause names. Or the function says `ensures !frees(p)`,
+    /// and its body gives `p`, or a value that it gets from `p`, to code that can free memory,
+    /// such as a call without `!frees` for that parameter, a store or an `mlir!` block.
+    E8012,
+    /// A type invariant that is not well formed. An `invariant` of a struct can use `self`, the
+    /// fields of `self` at any depth, numbers, operators and the pointer clauses `valid`,
+    /// `initialized` and `overlaps`. It calls no other function.
+    E8013,
+    /// Code outside the module of a type with an invariant changes a field of the type. Only
+    /// the module (the `.vx` file) that declares the type can write a field, take a `&mut` to a
+    /// field, call a method that takes `&mut self` on a field, move a field out of the value, or
+    /// build the type with a struct literal. Other code calls a function of the module to change
+    /// a value of the type. Then
+    /// the invariant holds for each value of the type outside its module.
+    E8014,
 }
 
 impl std::fmt::Display for DiagnosticCode {
@@ -1025,6 +1149,38 @@ impl DiagnosticsVec {
                 self.inner.remove(i);
             }
         }
+    }
+
+    /// Drops each diagnostic that repeats an earlier one. The checker checks some bodies twice,
+    /// such as a method that a call checks again, and each problem is reported once.
+    pub fn drop_repeats(&mut self) {
+        let mut seen = std::collections::HashSet::new();
+        self.inner
+            .retain(|d| d.repeat_key().is_none_or(|key| seen.insert(key)));
+    }
+}
+
+/// What makes two diagnostics one report: level, code, file, position and message.
+pub type RepeatKey = (
+    bool,
+    Option<DiagnosticCode>,
+    Option<crate::symbol::Symbol>,
+    (usize, usize, usize),
+    String,
+);
+
+impl Diagnostic {
+    /// `None` for a diagnostic with no position: two of them with one message can be about two
+    /// places, such as two casts that each need `unsafe`.
+    pub fn repeat_key(&self) -> Option<RepeatKey> {
+        let at = self.source_span.as_ref().filter(|s| s.line > 0)?;
+        Some((
+            self.level == DiagnosticLevel::Error,
+            self.code,
+            self.file.clone(),
+            (at.line, at.column, at.length),
+            self.message.to_string(),
+        ))
     }
 }
 

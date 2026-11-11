@@ -67,7 +67,8 @@
 //   GB200 NVL part". That was tidier than the evidence supports: NVIDIA's own
 //   DGX B200 aggregate implies 8 TB/s for this 180 GB part too.)
 Memory HBM {
-  capacity: 183359 MiB, bandwidth: 7.7 TB/s, managed: explicit, scope: device
+  // alignment: cudaMalloc gives 256 B. A view at an offset keeps 16, which ld.global.v4 needs.
+  capacity: 183359 MiB, bandwidth: 7.7 TB/s, managed: explicit, alignment: 16 B, scope: device
 }
 
 // spec: NVIDIA Blackwell Architecture Technical Brief -- 126 MB L2 (two dies).

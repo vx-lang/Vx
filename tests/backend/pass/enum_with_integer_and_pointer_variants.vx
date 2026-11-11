@@ -6,7 +6,6 @@
 //
 //===----------------------------------------------------------------------===//
 // Store and read both an integer and a pointer in the same enum.
-// REQUIRES: flat-codegen
 // EXPECT: 5 7
 
 struct Node {

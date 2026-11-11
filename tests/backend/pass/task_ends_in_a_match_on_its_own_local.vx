@@ -1,0 +1,41 @@
+//===- task_ends_in_a_match_on_its_own_local.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A task moves `b` into its own local `t`, and its last expression is a `match` on a call that
+// takes `t`. The compiler looks at the type of that last expression before it checks the task
+// body, and then `t` does not exist yet. That look must not report `t` as undefined.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}ok 5{{$}}
+
+import core::result;
+
+struct Holder {
+  v : i64,
+}
+
+fn check(h : Holder) -> Result<i64, i32> {
+  return Result<i64, i32>::Ok(h.v);
+}
+
+fn main() -> i32 {
+  let b = Holder {
+    v : 5
+  };
+  tasks {
+    spawn {
+      let t = b;
+      match check(t) {
+        Result<i64, i32>::Ok(v) => {
+          println!("ok {}", v);
+        }
+        Result<i64, i32>::Err(_e) => {}
+      }
+    };
+  };
+  return 0;
+}

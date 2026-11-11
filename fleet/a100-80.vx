@@ -19,7 +19,8 @@
 // spec: NVIDIA A100 product page, 80GB SXM column (verified 2026-08-03) --
 // GPU Memory "80GB HBM2e", GPU Memory Bandwidth "2,039 GB/s".
 Memory HBM {
-  capacity: 80 GiB, bandwidth: 2039 GB/s, managed: explicit, scope: device
+  // alignment: cudaMalloc gives 256 B. A view at an offset keeps 16, which ld.global.v4 needs.
+  capacity: 80 GiB, bandwidth: 2039 GB/s, managed: explicit, alignment: 16 B, scope: device
 }
 
 // spec: NVIDIA Ampere Architecture Whitepaper -- 40 MB L2 cache.

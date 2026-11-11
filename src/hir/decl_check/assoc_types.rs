@@ -75,6 +75,41 @@ impl TypeChecker<'_> {
         }
     }
 
+    /// Every impl of a trait writes each method that the trait declares with no default body.
+    /// Without this check, the impl compiles, and a call to the missing method fails at the
+    /// call with "method not found".
+    pub fn check_impls_write_required_methods(&mut self) {
+        let mut missing: Vec<(crate::symbol::Symbol, String, crate::symbol::Symbol)> = Vec::new();
+        for (trait_name, blocks) in &self.env.impls {
+            let Some(decl) = self.env.traits.get(trait_name) else {
+                continue;
+            };
+            for block in blocks {
+                for required in decl.methods.iter().filter(|m| m.default_body.is_none()) {
+                    if !block.methods.iter().any(|m| m.name == required.name) {
+                        missing.push((
+                            trait_name.clone(),
+                            block.target_type.to_string(),
+                            required.name.clone(),
+                        ));
+                    }
+                }
+            }
+        }
+        // `env.impls` is a hash map: sort, so that the errors come in the same order every run.
+        missing.sort();
+        for (trait_name, target, method) in missing {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3061,
+                format!(
+                    "`impl {trait_name} for {target}` does not write the method '{method}' that \
+                     trait {trait_name} requires. Write `fn {method}(..)` in the impl"
+                ),
+                None,
+            );
+        }
+    }
+
     /// No struct field names `I::Item`. A field's type is read from the struct's own parameters
     /// wherever a value is laid out, which is in both code generators as well as here, and none
     /// of them selects an impl. Rust's `Map<I, F>` takes the closure as a parameter for the

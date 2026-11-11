@@ -1,0 +1,242 @@
+//===- pointer_facts_from_an_ensures.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A pointer `ensures` gives the caller a fact when the call returns. In it, `return` is the
+// result, and each parameter stands for its argument. The body proves each pointer `ensures` at
+// each `return` and at its end. In an `unsafe` block, `assume` adds a fact that the compiler does
+// not prove, and it generates no code. A write through a pointer keeps its facts. A task that a
+// `spawn` starts can free memory only until its `join()`, so a fact can start again after it.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: total=6 read=2 zeros=32 joined=0 assume=3
+
+import core::ptr;
+import std::alloc;
+
+fn sum(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  let mut total = 0i64;
+  for i in 0i64..n {
+    total = total + unsafe { p[i] };
+  }
+  return total;
+}
+
+fn zeros(p : *const i8, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  let mut total = 0i64;
+  for i in 0i64..n {
+    if unsafe { p[i] } == 0i8 {
+      total = total + 1i64;
+    }
+  }
+  return total;
+}
+
+// The result is the parameter, so the facts of the `requires` prove the `ensures`.
+fn same(p : *const i64, n : i64) -> *const i64
+requires valid(p, n)
+requires initialized(p, n)
+ensures valid(return, n)
+ensures initialized(return, n)
+{
+  return p;
+}
+
+fn through_a_call(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  let q = same(p, n);
+  return sum(q, n) + sum(same(p, n), n);
+}
+
+// `alloc` gives `8 * n` bytes at an alignment of 16. The author says so with `assume`.
+fn alloc_i64(n : i64) -> *mut i64
+requires n > 0i64
+ensures valid(return, n)
+{
+  let p : *mut i64 = alloc(n * 8i64, 16i64);
+  if is_null_mut(p) {
+    panic("out of memory");
+  }
+  unsafe { assume valid(p, n); }
+  return p;
+}
+
+// A write gives no fact, so the author says that each element holds a value.
+fn fill_zero(p : *mut i64, n : i64) -> void
+requires valid(p, n)
+ensures initialized(p, n)
+{
+  for i in 0i64..n {
+    unsafe { p[i] = 0i64; }
+  }
+  unsafe { assume initialized(p, n); }
+}
+
+fn alloc_and_fill(n : i64) -> i64
+requires n > 0i64
+{
+  let p = alloc_i64(n);
+  fill_zero(p, n);
+  let s = sum(p as *const i64, n);
+  let bytes : *mut i8 = p;
+  dealloc(bytes, 16i64);
+  return s;
+}
+
+// A write through the pointer changes the memory, not the pointer, so its facts stay.
+fn after_a_write(p : *mut i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+requires n > 0i64
+{
+  unsafe { p[0] = 5i64; }
+  return sum(p as *const i64, n);
+}
+
+// The result says how many elements hold a value. A `let` of the result gives the fact its name.
+fn read_some(buf : *mut i64, cap : i64) -> i64
+requires valid(buf, cap)
+requires cap >= 2i64
+ensures 0i64 <= return && return <= cap
+ensures initialized(buf, return)
+{
+  unsafe { buf[0] = 1i64; buf[1] = 1i64; assume initialized(buf, 2i64); }
+  return 2i64;
+}
+
+fn after_a_read(buf : *mut i64, cap : i64) -> i64
+requires valid(buf, cap)
+requires cap >= 2i64
+{
+  let got = read_some(buf, cap);
+  return sum(buf as *const i64, got);
+}
+
+// The compiler trusts the `ensures` of a C function.
+extern "C" {
+  safe fn memset(p : *mut i8, c : i32, n : i64) -> *mut i8
+  ensures initialized(p, n)
+  ensures !frees(p);
+}
+
+fn after_a_memset(p : *mut i8, n : i64) -> i64
+requires valid(p, n)
+{
+  memset(p, 0, n);
+  return zeros(p as *const i8, n);
+}
+
+fn after_a_join(n : i64) -> i64
+requires n > 0i64
+{
+  let mut t = 0i64;
+  tasks {
+    let h = spawn {
+      0i64
+    };
+    t = h.join();
+    let p = alloc_i64(n);
+    fill_zero(p, n);
+    t = t + sum(p as *const i64, n);
+    let bytes : *mut i8 = p;
+    dealloc(bytes, 16i64);
+  }
+  return t;
+}
+
+// The fact of an `assume` runs no code, so it is no event in a loop.
+fn in_a_loop(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  let mut t = 0i64;
+  for i in 0i64..2i64 {
+    unsafe { assume valid(p, n); }
+    t = t + sum(p, n);
+  }
+  return t;
+}
+
+// A task with no handle ends at the end of its `tasks` block.
+fn after_a_tasks_block(n : i64) -> i64
+requires n > 0i64
+{
+  let mut t = 0i64;
+  tasks {
+    spawn {
+      t = 0i64;
+    };
+  }
+  let p = alloc_i64(n);
+  fill_zero(p, n);
+  t = sum(p as *const i64, n);
+  let bytes : *mut i8 = p;
+  dealloc(bytes, 16i64);
+  return t;
+}
+
+// The fact of an `assume` can be a `bool` for the prover.
+fn after_an_assume_of_a_number(n : i64) -> i64 {
+  unsafe { assume n > 0i64; }
+  let p = alloc_i64(n);
+  let bytes : *mut i8 = p;
+  dealloc(bytes, 16i64);
+  return 0i64;
+}
+
+// A reference parameter points into the memory of the caller, so the result of `as_pointer` keeps
+// its fact in this body.
+fn as_pointer(r : &i64) -> *const i64
+ensures valid(return, 1i64)
+ensures initialized(return, 1i64)
+{
+  let p : *const i64 = r;
+  unsafe { assume valid(p, 1i64); assume initialized(p, 1i64); }
+  return p;
+}
+
+fn through_a_reference(r : &i64) -> i64 {
+  let p = as_pointer(r);
+  return sum(p, 1i64);
+}
+
+// `assume` is a word of its own only before a name or a `!`, so this function can have its name.
+fn assume(x : i64) -> i64 {
+  return x;
+}
+
+fn main() -> i32 {
+  let xs = alloc_i64(3i64);
+  unsafe {
+    xs[0] = 1i64;
+    xs[1] = 2i64;
+    xs[2] = 3i64;
+    assume initialized(xs, 3i64);
+  }
+  let total = through_a_call(xs as *const i64, 3i64) / 2i64 + after_a_write(xs, 3i64) - 10i64;
+  let xs_bytes : *mut i8 = xs;
+  dealloc(xs_bytes, 16i64);
+  let buf = alloc_i64(4i64);
+  let read = after_a_read(buf, 4i64);
+  // A cast to another element type makes a pointer with no facts.
+  let bytes : *mut i8 = buf;
+  unsafe { assume valid(bytes, 32i64); }
+  let filled = after_a_memset(bytes, 32i64);
+  dealloc(bytes, 16i64);
+  let one = 1i64;
+  let s = alloc_and_fill(3i64) + after_a_join(2i64) + after_a_tasks_block(2i64)
+  + after_an_assume_of_a_number(2i64) + through_a_reference(&one) - 1i64;
+  println!("total={} read={} zeros={} joined={} assume={}", total, read, filled, s, assume(3i64));
+  return 0;
+}

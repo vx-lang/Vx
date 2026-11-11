@@ -1,0 +1,83 @@
+//===- a_method_that_takes_self_cannot_move_some_fields.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `o.b.take()`, where `take` takes `self` by value, moves the field `o.b` out of `o`. So the
+// rules for a moved field hold: it cannot move through a reference, out of a type with its own
+// `Drop`, or out of a value with no name, and it cannot move twice.
+
+struct Noisy {
+  id : i64,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    println!("dropped {}", self.id);
+  }
+}
+
+struct Inner {
+  v : Noisy,
+}
+
+impl Inner {
+  fn take(self : Inner) -> Noisy {
+    return self.v;
+  }
+}
+
+struct Outer {
+  b : Inner,
+  n : i64,
+}
+
+struct Guarded {
+  b : Inner,
+}
+
+impl Drop for Guarded {
+  fn drop(self : &mut Guarded) -> void {}
+}
+
+fn make() -> Outer {
+  return Outer {
+    b : Inner {
+      v : Noisy {
+        id : 1
+      }
+    },
+    n : 0
+  };
+}
+
+fn through_a_reference(o : &Outer) -> Noisy {
+  // CHECK-DAG: Error[E4008] at {{.*}}.vx:[[@LINE+1]]:12: `o.b` cannot be moved out: `o` is a reference and does not own it
+  return o.b.take();
+}
+
+fn out_of_a_type_with_a_drop(g : Guarded) -> Noisy {
+  // CHECK-DAG: Error[E4013] at {{.*}}.vx:[[@LINE+1]]:12: `g.b` cannot be moved out: `Guarded` implements `Drop`
+  return g.b.take();
+}
+
+fn out_of_a_value_with_no_name() -> Noisy {
+  // CHECK-DAG: Error[E4013] at {{.*}}.vx:[[@LINE+1]]:17: this field cannot be moved out of a value with no name
+  return make().b.take();
+}
+
+fn twice(o : Outer) -> Noisy {
+  let _first = o.b.take();
+  // CHECK-DAG: Error[E4001] at {{.*}}.vx:[[@LINE+1]]:12: `o.b` was moved out of `o` and has no value
+  return o.b.take();
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: 4 error(s) emitted

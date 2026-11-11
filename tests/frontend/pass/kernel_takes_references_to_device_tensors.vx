@@ -12,7 +12,13 @@
 //
 // `Device` is a small GPU-like machine declared below, with its own memory `HBM`.
 //
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
+
+Memory CPU_DRAM {}
+
+Memory HBM {
+  scope: device, managed: explicit
+}
 
 Topology Device {
   memory: Memory::HBM,
@@ -50,10 +56,10 @@ fn main() -> i32 {
 // CHECK:   func.func @main() -> i32 {
 // CHECK:     call @vx_init_signals() : () -> ()
 // CHECK:     %alloc = memref.alloc() : memref<1024x1xf32>
-// CHECK:     %0 = "vx.transfer"(%alloc) <{target_topology = 1855308478 : i32}> : (memref<1024x1xf32>) -> memref<1024x1xf32>
+// CHECK:     %0 = "vx.transfer"(%alloc) <{target_topology = 1855308478 : i32}> {managed = "explicit", scope = "device", space = "HBM"} : (memref<1024x1xf32>) -> memref<1024x1xf32>
 // CHECK:     vx.drop %alloc : memref<1024x1xf32>
 // CHECK:     %alloc_0 = memref.alloc() : memref<1024x1xf32>
-// CHECK:     %1 = "vx.transfer"(%alloc_0) <{target_topology = 1855308478 : i32}> : (memref<1024x1xf32>) -> memref<1024x1xf32>
+// CHECK:     %1 = "vx.transfer"(%alloc_0) <{target_topology = 1855308478 : i32}> {managed = "explicit", scope = "device", space = "HBM"} : (memref<1024x1xf32>) -> memref<1024x1xf32>
 // CHECK:     vx.drop %alloc_0 : memref<1024x1xf32>
 // CHECK:     call @scale_twice(%1, %0) : (memref<1024x1xf32>, memref<1024x1xf32>) -> ()
 // CHECK:     vx.drop %1 : memref<1024x1xf32>

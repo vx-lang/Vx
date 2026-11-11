@@ -1,0 +1,116 @@
+//===- tensor_drop_points_after_a_call.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: env VX_PRINT_DROPS=1 vxc %s --action print-ast 2>&1 >/dev/null | FileCheck %s --implicit-check-not="drop in"
+//
+// Where the compiler drops a tensor that a call borrows. A call that returns a number keeps no
+// borrow, so the compiler drops the tensor right after the call. A value that holds a reference to
+// the tensor keeps it until the last use of the value. The compiler only prints the points.
+
+struct ReferenceFirst {
+  r : &Tensor<i64, [4]>,
+  n : i64,
+}
+
+struct NumberFirst {
+  n : i64,
+  r : &Tensor<i64, [4]>,
+}
+
+struct View {
+  r : &Tensor<i64, [4]>,
+}
+
+fn first_and_last(t : &Tensor<i64, [4]>) -> i64 {
+  return t[0] + t[3];
+}
+
+fn view_of(t : &Tensor<i64, [4]>) -> View {
+  return View {
+    r : t
+  };
+}
+
+fn keep(p : *mut i64) -> *mut i64 {
+  return p;
+}
+
+fn left(a : &Tensor<i64, [4]>, b : &Tensor<i64, [4]>) -> View {
+  println!("{}", b[0]);
+  return View {
+    r : a
+  };
+}
+
+fn a_number() -> i64 {
+  let t : Tensor<i64, [4]> = Tensor<i64, [4]>::fill(5i64);
+  // CHECK: drop in a_number: t, after the statement on line [[@LINE+1]]
+  let s = first_and_last(&t);
+  println!("{}", s);
+  return s;
+}
+
+// `p` borrowed `t` before the call, and the call does not end that.
+fn reference_first() -> i64 {
+  let t : Tensor<i64, [4]> = Tensor<i64, [4]>::fill(5i64);
+  let p = ReferenceFirst {
+    r : &t, n : first_and_last(&t)
+  };
+  println!("{}", p.n);
+  // CHECK: drop in reference_first: t, after the statement on line [[@LINE+1]]
+  let v = p.r[1] + p.n;
+  return v;
+}
+
+fn number_first() -> i64 {
+  let t : Tensor<i64, [4]> = Tensor<i64, [4]>::fill(5i64);
+  let p = NumberFirst {
+    n : first_and_last(&t), r : &t
+  };
+  println!("{}", p.n);
+  // CHECK: drop in number_first: t, after the statement on line [[@LINE+1]]
+  let v = p.r[1] + p.n;
+  return v;
+}
+
+fn a_value_that_holds_a_reference() -> i64 {
+  let t : Tensor<i64, [4]> = Tensor<i64, [4]>::fill(5i64);
+  let v = view_of(&t);
+  println!("view");
+  // CHECK: drop in a_value_that_holds_a_reference: t, after the statement on line [[@LINE+1]]
+  let x = v.r[0];
+  return x;
+}
+
+// The result holds a reference, so the compiler keeps `t` until the last use of `r` too, though
+// `left` returns a view of `a`.
+fn a_reference_from_another_argument() -> i64 {
+  let a : Tensor<i64, [4]> = Tensor<i64, [4]>::fill(5i64);
+  let t : Tensor<i64, [4]> = Tensor<i64, [4]>::fill(6i64);
+  let r = left(&a, &t);
+  println!("left");
+  // CHECK: drop in a_reference_from_another_argument: t, after the statement on line [[@LINE+2]]
+  // CHECK: drop in a_reference_from_another_argument: a, after the statement on line [[@LINE+1]]
+  let v = r.r[1];
+  return v;
+}
+
+fn a_raw_pointer() -> i64 {
+  let mut t : Tensor<i64, [4]> = Tensor<i64, [4]>::fill(5i64);
+  let p = keep((&mut t[0]) as *mut i64);
+  println!("pointer");
+  // CHECK: drop in a_raw_pointer: t, after the statement on line [[@LINE+1]]
+  let v = unsafe { p[1] };
+  return v;
+}
+
+fn main() -> i32 {
+  let n = a_number() + reference_first() + number_first() + a_value_that_holds_a_reference()
+  + a_reference_from_another_argument() + a_raw_pointer();
+  print(n as i32);
+  return 0;
+}

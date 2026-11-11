@@ -161,24 +161,23 @@ static inline int vx_launch_build_params(void *const *device_args,
 /// `.param` in the file also counts each `ld.param` and every extern's return
 /// slot, which turned 28 into 36 when the emitted PTX was first
 /// tried it.
-static inline int vx_launch_entry_param_count(const char *ptx,
-                                              const char *entry) {
+/// The signature of an entry point in this PTX: `*open` at its `(` and
+/// `*close` at its `)`. Returns 0 when the entry is not found.
+static inline int vx_launch_entry_signature(const char *ptx, const char *entry,
+                                            const char **open,
+                                            const char **close) {
   const char *p = ptx;
   size_t entry_len;
 
   if (!ptx || !entry) {
-    return -1;
+    return 0;
   }
   entry_len = strlen(entry);
 
   for (;;) {
-    const char *open;
-    const char *close;
-    int count;
-
     p = strstr(p, ".entry ");
     if (!p) {
-      return -1;
+      return 0;
     }
     p += 7;
     while (*p == ' ' || *p == '\t') {
@@ -195,23 +194,91 @@ static inline int vx_launch_entry_param_count(const char *ptx,
       continue;
     }
 
-    open = strchr(p, '(');
-    if (!open) {
-      return -1;
+    *open = strchr(p, '(');
+    if (!*open) {
+      return 0;
     }
-    close = strchr(open, ')');
-    if (!close) {
-      return -1;
-    }
-
-    count = 0;
-    for (p = open; p < close; ++p) {
-      if (strncmp(p, ".param", 6) == 0) {
-        ++count;
-      }
-    }
-    return count;
+    *close = strchr(*open, ')');
+    return *close != NULL;
   }
+}
+
+static inline int vx_launch_entry_param_count(const char *ptx,
+                                              const char *entry) {
+  const char *open;
+  const char *close;
+  const char *p;
+  int count = 0;
+
+  if (!vx_launch_entry_signature(ptx, entry, &open, &close)) {
+    return -1;
+  }
+  for (p = open; p < close; ++p) {
+    if (strncmp(p, ".param", 6) == 0) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+/// The alignment that each parameter of an entry point says it has, from its
+/// `.ptr .align N`, into `align[0..max)`: 0 for a parameter that is not such a
+/// pointer. Returns 0 when the entry is not found.
+///
+/// The compiler puts `.align N` on the pointer of a buffer whose memory space
+/// has `alignment: N` in the machine file. The kernel can load it with vector
+/// loads of that width, and a pointer with less alignment faults there.
+static inline int vx_launch_param_aligns(const char *ptx, const char *entry,
+                                         long *align, int max) {
+  const char *open;
+  const char *close;
+  const char *p;
+  int k = -1;
+
+  if (!align || !vx_launch_entry_signature(ptx, entry, &open, &close)) {
+    return 0;
+  }
+  for (p = open; p < close; ++p) {
+    const char *end;
+    const char *at;
+    const char *ptr;
+    if (strncmp(p, ".param", 6) != 0) {
+      continue;
+    }
+    if (++k >= max) {
+      break;
+    }
+    align[k] = 0;
+    end = strchr(p + 6, ',');
+    if (!end || end > close) {
+      end = close;
+    }
+    ptr = strstr(p, ".ptr");
+    at = strstr(p, ".align ");
+    if (ptr && ptr < end && at && at < end) {
+      align[k] = strtol(at + 7, NULL, 10);
+    }
+  }
+  return 1;
+}
+
+/// The first parameter whose pointer has less alignment than `align` says, or
+/// -1 when there is none. A view over memory from elsewhere can start at any
+/// address, so this is checked before each launch.
+static inline int vx_launch_misaligned(const vx_launch_params *params,
+                                       const long *align, int count) {
+  int k;
+  for (k = 0; k < count && k < params->count; ++k) {
+    uintptr_t v;
+    if (align[k] <= 1) {
+      continue;
+    }
+    memcpy(&v, params->params[k], sizeof v);
+    if (v % (uintptr_t)align[k] != 0) {
+      return k;
+    }
+  }
+  return -1;
 }
 
 /* One size of a launch shape, from `text`: `$j` is the `i32` launch value j,

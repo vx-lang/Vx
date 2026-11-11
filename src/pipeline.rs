@@ -153,9 +153,10 @@ fn run_frontend_on(
         macro_expansion_phase(&mut modules, sched)
     })?;
     // Every function names its file, so a diagnostic found while checking it names the file
-    // too, wherever the check runs from. After expansion, which adds functions.
+    // too, wherever the check runs from. A struct names its file, because only that file can
+    // change the fields of a type with an invariant. After expansion, which adds functions.
     for m in &mut modules {
-        m.name_file_on_functions();
+        m.name_file_on_items();
     }
     // `name_resolution_phase` hands back the symbol map so the freeze point can reuse it instead of
     // rebuilding it (c4c35e31); the timing wrapper carries the value through.
@@ -993,6 +994,9 @@ pub fn build_frozen_registry_with(
                     fields: s.fields.clone(),
                 },
             );
+            if !s.invariants.is_empty() {
+                registry.structs_with_invariants.insert(gid);
+            }
         }
         // Data-carrying enum decls, so the flat path can synthesize a monomorphized instance's
         // `{ tag, payload }` layout by substituting its type args into the variant payload types
@@ -1064,6 +1068,11 @@ pub fn build_frozen_registry_with(
                                 &crate::hir::provenance::ReturnProvenance::AnyParam,
                             ),
                             is_unsafe: !ext.is_safe,
+                            ret_valid: crate::hir::check::pointer_clauses::valid_result_length(
+                                &ext.params,
+                                &ext.return_type,
+                                &ext.ensures,
+                            ),
                         },
                     );
                 }
@@ -1118,6 +1127,11 @@ pub fn build_frozen_registry_with(
                                     &crate::hir::provenance::compute_return_provenance(m),
                                 ),
                                 is_unsafe: m.is_unsafe,
+                                ret_valid: crate::hir::check::pointer_clauses::valid_result_length(
+                                    &m.params,
+                                    &m.return_type,
+                                    &m.ensures,
+                                ),
                             },
                         );
                     }
@@ -1152,6 +1166,11 @@ pub fn fn_sig_of(module_hash: u64, f: &syntax::Function) -> crate::registry::FnS
             &crate::hir::provenance::compute_return_provenance(f),
         ),
         is_unsafe: f.is_unsafe,
+        ret_valid: crate::hir::check::pointer_clauses::valid_result_length(
+            &f.params,
+            &f.return_type,
+            &f.ensures,
+        ),
     }
 }
 
@@ -1582,6 +1601,12 @@ fn type_check_phase(
         })
         .flat_map(|c| c.diagnostics.iter())
         .chain(imported_errors.iter())
+        .collect();
+    // Two checks can read one body, such as a method that a call checks again.
+    let mut seen = std::collections::HashSet::new();
+    let reported: Vec<&crate::diagnostic::Diagnostic> = reported
+        .into_iter()
+        .filter(|d| d.repeat_key().is_none_or(|key| seen.insert(key)))
         .collect();
     let mut warnings: Vec<crate::diagnostic::Diagnostic> = reported
         .iter()

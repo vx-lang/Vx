@@ -1,0 +1,31 @@
+//===- float_exponent_literal.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action run-jit 2>&1 | FileCheck %s
+
+import std::io;
+
+fn main() -> i32 {
+  let a : f64 = 1.0e-15;
+  let b : f64 = 1e3;
+  let c : f32 = 1.5E+2f32;
+  let d : f64 = 2.0E3;
+  print!(a);
+  print!(" ");
+  print!(b);
+  print!(" ");
+  print!(c);
+  print!(" ");
+  print!(d);
+  print!("\n");
+  return 0;
+}
+
+// CHECK: 0.000000000000001
+// CHECK-SAME: 1000
+// CHECK-SAME: 150
+// CHECK-SAME: 2000

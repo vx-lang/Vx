@@ -1,4 +1,4 @@
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // The flat path compiles this: the instance `Array<f32, 10>` has a layout synthesized from
 // the declaration with `N` bound, the construction stores into it, and the value is returned
 // whole. The const argument reaches the emitted symbol, which carries it by value.

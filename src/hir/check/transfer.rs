@@ -18,6 +18,8 @@
 //===----------------------------------------------------------------------===//
 
 use super::super::*;
+use crate::hir::check::tasks::{TaskLevel, TaskRun};
+use crate::syntax::types::transfer_token_inner as token_inner;
 
 /// What resolving a transfer's edge produced: where the value is, where it is going, the route
 /// the hardware takes between them, and what that route costs. Every later phase reads it.
@@ -578,7 +580,114 @@ impl<'a> TypeChecker<'a> {
         context: &str,
         span: &Span,
     ) {
-        self.check_capacity_of(elem, dims, space, context, span, true)
+        self.check_capacity_of(elem, dims, space, context, span, true, 1)
+    }
+
+    /// A channel of tensors in a memory with a capacity holds up to `n` of them, from the
+    /// `channel(n)` call until both of its ends drop. The check cannot bound how many are in the
+    /// channel at a time, so it counts all `n` at the call, as a tile of the caller.
+    pub(crate) fn count_channel_room(&mut self, t: &Type, n: &Expr, span: &Span) {
+        let h = crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
+        let bounded: Vec<_> = self
+            .placed_tensors(t)
+            .into_iter()
+            .filter(|(_, _, space)| h.descriptor(space).is_some_and(|d| d.capacity.is_some()))
+            .collect();
+        if bounded.is_empty() {
+            return;
+        }
+        if !self.traffic.channel_rooms.contains(span) {
+            self.traffic.channel_rooms.push(*span);
+        }
+        let room = match n {
+            Expr::Number(num) => num.value.parse::<i64>().ok(),
+            e => self.extent_value(e),
+        };
+        for (elem, dims, space) in bounded {
+            match room {
+                Some(room) if room >= 1 => {
+                    let context = format!("the room of this channel, {room} of `{t}`,");
+                    self.check_capacity_of(&elem, &dims, &space, &context, span, true, room as u64);
+                }
+                _ => self.report_channel_room_not_known(&space, t, span),
+            }
+        }
+    }
+
+    /// E6040: the room of a channel of tensors in `space` is not known at compile time.
+    fn report_channel_room_not_known(&mut self, space: &MemorySpace, t: &Type, span: &Span) {
+        if self.speculating {
+            return;
+        }
+        let overcommit = self.env.memories.values().any(|m| {
+            m.overcommit && crate::syntax::MemorySpace::from_name(m.name.as_ref()) == *space
+        });
+        let msg = format!(
+            "this channel holds `{t}`, which lives in memory space '{}', and its room is not \
+             known at compile time. The channel can hold that many tensors at once, so the \
+             working set of '{}' has no bound. Give `channel` a constant room",
+            space.name(),
+            space.name()
+        );
+        let at = Some(crate::diagnostic::SourceSpan::from_ast_span(span));
+        if overcommit {
+            self.errors.warn(
+                crate::diagnostic::DiagnosticCode::W1028,
+                format!(
+                    "{msg}. This is allowed because '{}' is `overcommit`",
+                    space.name()
+                ),
+                at,
+            );
+        } else {
+            self.errors
+                .error_with_code(crate::diagnostic::DiagnosticCode::E6040, msg, at);
+        }
+    }
+
+    /// E6041: the room of a channel is counted in the function that calls `channel`, until that
+    /// function returns. So such a function cannot give an end of the channel to its caller.
+    pub(crate) fn refuse_a_returned_channel_end(&mut self, return_type: &Type) {
+        let rooms = std::mem::take(&mut self.traffic.channel_rooms);
+        if rooms.is_empty() || self.speculating || !Self::holds_a_channel_end(return_type) {
+            return;
+        }
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E6041,
+            format!(
+                "'{}' makes a channel of tensors in a memory with a capacity, and returns an \
+                 end of a channel. The room of the channel is counted in the function that calls \
+                 `channel`, only until it returns. Make the channel in the function that uses \
+                 its ends",
+                self.current_function
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(&rooms[0])),
+        );
+    }
+
+    /// Whether `ty` holds a `Sender` or a `Receiver`.
+    fn holds_a_channel_end(ty: &Type) -> bool {
+        match ty {
+            Type::GenericInstance(base, args) => {
+                Self::is_channel_end(base) || args.iter().any(Self::holds_a_channel_end)
+            }
+            Type::Struct(..) => Self::is_channel_end(ty),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn is_channel_end_type(ty: &Type) -> bool {
+        match ty {
+            Type::GenericInstance(base, _) => Self::is_channel_end(base),
+            other => Self::is_channel_end(other),
+        }
+    }
+
+    /// `Sender<T>` or `Receiver<T>` of `std::sync::channel`. Each holds a pointer to the room of
+    /// its channel, which `channel` counts, and no `T` of its own.
+    fn is_channel_end(ty: &Type) -> bool {
+        matches!(ty, Type::Struct(n, _)
+            if matches!(n.split('<').next(), Some("Sender" | "Receiver")))
     }
 
     /// E6031: a static shape that folds to a negative extent, or to more bytes than 64 bits hold.
@@ -622,6 +731,7 @@ impl<'a> TypeChecker<'a> {
         true
     }
 
+    /// `copies`: how many tensors of this shape the placement holds.
     #[allow(clippy::too_many_arguments)]
     fn check_capacity_of(
         &mut self,
@@ -631,6 +741,7 @@ impl<'a> TypeChecker<'a> {
         context: &str,
         span: &Span,
         record: bool,
+        copies: u64,
     ) {
         if self.refuse_unrepresentable_shape(elem, dims, span) {
             return;
@@ -678,7 +789,8 @@ impl<'a> TypeChecker<'a> {
                     });
                 return;
             };
-            let rounded = crate::hir::memory::granule_round(raw, decl.granule.map(|g| g.0));
+            let rounded = crate::hir::memory::granule_round(raw, decl.granule.map(|g| g.0))
+                .saturating_mul(copies);
             (rounded, cap)
         };
         let (rounded, cap) = sized;
@@ -691,7 +803,8 @@ impl<'a> TypeChecker<'a> {
                         "{context} needs {rounded} bytes but memory space '{}' has capacity {cap} bytes",
                         space.name()
                     ),
-                    None,
+                    // The room of a channel is at the `channel` call.
+                    (copies > 1).then(|| crate::diagnostic::SourceSpan::from_ast_span(span)),
                 )
                 // Machine-readable form of the same verdict, for `--diagnostics-json` (#282).
                 .facts = Some(crate::diagnostic::DiagnosticFacts::Capacity {
@@ -757,11 +870,11 @@ impl<'a> TypeChecker<'a> {
             .memory_placements
             .entry(space.clone())
             .or_default();
-        let order = match tiles.get(&key) {
-            Some(existing) => existing.order,
+        let (order, end) = match tiles.get(&key) {
+            Some(existing) => (existing.order, existing.end),
             None => {
                 self.traffic.placement_order += 1;
-                self.traffic.placement_order
+                (self.traffic.placement_order, None)
             }
         };
         tiles.insert(
@@ -770,8 +883,32 @@ impl<'a> TypeChecker<'a> {
                 bytes: rounded,
                 scope,
                 order,
+                tasks: self.tasks.task_chain(),
+                holder: self.traffic.tile_holder.clone(),
+                end,
             },
         );
+    }
+
+    /// A statement that moves a tensor out of its variable ends the tile of the variable after
+    /// the statement. Only a move in the block of the tile ends it: a move in one arm of an `if`
+    /// leaves the tensor in place on the other arm.
+    pub(crate) fn end_moved_tiles(&mut self) {
+        let moved = std::mem::take(&mut self.traffic.moved_out);
+        let end = self.traffic.placement_order + 1;
+        for (name, scope, tasks) in moved {
+            for tiles in self.traffic.memory_placements.values_mut() {
+                let latest = tiles
+                    .values_mut()
+                    .filter(|p| p.holder.as_deref() == Some(name.as_str()))
+                    .max_by_key(|p| p.order);
+                if let Some(p) = latest {
+                    if p.end.is_none() && p.scope == scope && p.tasks == tasks {
+                        p.end = Some(end);
+                    }
+                }
+            }
+        }
     }
 
     /// Record a resolved call for the cross-call capacity fold: which function, from inside
@@ -795,6 +932,7 @@ impl<'a> TypeChecker<'a> {
                 order: self.traffic.placement_order,
                 span: *span,
                 in_closure: self.traffic.closure_depth > 0,
+                tasks: self.tasks.task_chain(),
             },
         );
     }
@@ -825,9 +963,53 @@ impl<'a> TypeChecker<'a> {
                     callee: c.callee.clone(),
                     live: std::collections::BTreeMap::new(),
                     span: c.span,
+                    others: Vec::new(),
                 })
                 .collect(),
         };
+        let ended = self.ended_tasks().clone();
+        // The calls of the other tasks that run at the same time as each call, by group of tasks.
+        // In a group, the calls in one place of the nested `tasks` blocks run one after the other.
+        for (k, c) in calls.iter().enumerate() {
+            type Place = Vec<(usize, Option<usize>)>;
+            type Group = (
+                crate::hir::check::capacity_fold::TaskGroup,
+                std::collections::BTreeMap<Place, Vec<usize>>,
+            );
+            let mut groups: std::collections::BTreeMap<(usize, Option<usize>, bool), Group> =
+                Default::default();
+            for (j, other) in calls.iter().enumerate() {
+                for o in at_the_same_time(&c.tasks, c.order, &other.tasks, other.order, &ended) {
+                    let place: Place = other.tasks[o.level + 1..]
+                        .iter()
+                        .map(|l| (l.block, l.run.map(|r| r.task)))
+                        .collect();
+                    groups
+                        .entry((o.level, o.task, o.other_copies))
+                        .or_insert_with(|| {
+                            (
+                                crate::hir::check::capacity_fold::TaskGroup {
+                                    copies: o.copies,
+                                    spawn: o.spawn,
+                                    parts: Vec::new(),
+                                },
+                                Default::default(),
+                            )
+                        })
+                        .1
+                        .entry(place)
+                        .or_default()
+                        .push(j);
+                }
+            }
+            summary.calls[k].others = groups
+                .into_values()
+                .map(|(mut g, parts)| {
+                    g.parts = parts.into_values().collect();
+                    g
+                })
+                .collect();
+        }
         let h = crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
         // (space, total, cap, tile_count, overcommit, granule)
         let mut violations: Vec<(MemorySpace, u64, u64, usize, bool, Option<u64>)> = Vec::new();
@@ -867,26 +1049,67 @@ impl<'a> TypeChecker<'a> {
                     )
                 })
                 .collect();
+            let tile_tasks: std::collections::HashMap<usize, &Vec<TaskLevel>> =
+                tiles.values().map(|p| (p.order, &p.tasks)).collect();
+            // Whether the tile placed at `placed` is still there at `at`.
+            let ends: std::collections::HashMap<usize, usize> = tiles
+                .values()
+                .filter_map(|p| p.end.map(|e| (p.order, e)))
+                .collect();
+            let not_ended = |placed: usize, at: usize| ends.get(&placed).is_none_or(|&e| at < e);
             placed.sort_by_key(|&(_, _, order)| order);
+            // The bytes of the tiles of other tasks that run at the same time as code at `order`
+            // in `chain` and `scope`, and how many tiles that is. Each tile counts once for each
+            // copy of its task, also when its task places it after another one in the same task
+            // ends. The prefix test of the caller already counts one copy of some of them.
+            let mut not_known: Option<crate::syntax::Span> = None;
+            let mut of_other_tasks = |chain: &[TaskLevel], scope: &Vec<u32>, order: usize| {
+                let (mut bytes, mut count) = (0u64, 0usize);
+                for &(b, sc, ord) in &placed {
+                    let in_scope = ord <= order && sc.len() <= scope.len() && scope.starts_with(sc);
+                    for o in at_the_same_time(chain, order, tile_tasks[&ord], ord, &ended) {
+                        match o.copies {
+                            Some(n) => {
+                                let n = if in_scope && !o.other_copies {
+                                    n.saturating_sub(1)
+                                } else {
+                                    n
+                                };
+                                bytes = bytes.saturating_add(b.saturating_mul(n));
+                                count += n as usize;
+                            }
+                            None => not_known = not_known.or(o.spawn),
+                        }
+                    }
+                }
+                (bytes, count)
+            };
             let mut total: u64 = 0;
             let mut peak_tiles = 0usize;
-            for (i, (_, scope, _)) in placed.iter().enumerate() {
-                let live: u64 = placed[..=i]
-                    .iter()
-                    .filter(|(_, earlier, _)| {
-                        earlier.len() <= scope.len() && scope.starts_with(earlier)
-                    })
-                    .map(|&(b, _, _)| b)
-                    .sum();
+            let mut held_at_calls: Vec<u64> = Vec::new();
+            for (i, &(_, scope, ord)) in placed.iter().enumerate() {
+                let in_scope = placed[..=i].iter().filter(|(_, earlier, e_ord)| {
+                    earlier.len() <= scope.len()
+                        && scope.starts_with(earlier)
+                        && not_ended(*e_ord, ord)
+                });
+                let (others, other_count) = of_other_tasks(tile_tasks[&ord], scope, ord);
+                let live: u64 = in_scope.clone().map(|&(b, _, _)| b).sum::<u64>() + others;
                 if live > total {
                     total = live;
-                    peak_tiles = placed[..=i]
-                        .iter()
-                        .filter(|(_, earlier, _)| {
-                            earlier.len() <= scope.len() && scope.starts_with(earlier)
-                        })
-                        .count();
+                    peak_tiles = in_scope.count() + other_count;
                 }
+            }
+            for c in &calls {
+                held_at_calls.push(of_other_tasks(&c.tasks, &c.scope, c.order).0);
+            }
+            if let Some(spawn) = not_known {
+                crate::hir::check::capacity_fold::report_task_count_not_known(
+                    &mut self.errors,
+                    &space.name(),
+                    decl.overcommit,
+                    &spawn,
+                );
             }
             let tile_count = peak_tiles.max(1);
             if total > 0 {
@@ -904,13 +1127,19 @@ impl<'a> TypeChecker<'a> {
                     }
                     continue;
                 }
+                // A tile of another task that runs at the same time is resident too, also when
+                // the task places it later in program order.
                 let held: u64 = placed
                     .iter()
                     .filter(|(_, sc, ord)| {
-                        *ord < c.order && sc.len() <= c.scope.len() && c.scope.starts_with(sc)
+                        *ord < c.order
+                            && sc.len() <= c.scope.len()
+                            && c.scope.starts_with(sc)
+                            && not_ended(*ord, c.order)
                     })
                     .map(|&(b, _, _)| b)
-                    .sum();
+                    .sum::<u64>()
+                    + held_at_calls[k];
                 if held > 0 {
                     summary.calls[k].live.insert(space.name(), held);
                 }
@@ -987,6 +1216,24 @@ impl<'a> TypeChecker<'a> {
     /// Whether a memory space is declared `managed: cached` (hardware-coherent), so an implicit
     /// cross-space use of a value there — or a relaxed transfer into it — is safe. Undeclared
     /// spaces are treated as `explicit` (the strict default), preserving the older behavior.
+    /// Whether the fleet may run `top` on a worker of another node (`offload: true`). Such a
+    /// worker does not share this node's memory, so `managed: cached` does not reach it. A
+    /// built-in device has no declaration to mark, and a manifest can send it anywhere, so it
+    /// counts as one. The host does not.
+    pub(crate) fn topology_offloads(&self, top: &Topology) -> bool {
+        match top {
+            Topology::Custom(name) => self
+                .env
+                .topologies
+                .get(name)
+                .is_none_or(|d| d.descriptor.offload),
+            Topology::Slice(inner, ..) => self.topology_offloads(inner),
+            // The host runs the program itself, so its own code reads its own memory.
+            Topology::CPU | Topology::CpuAvx512 | Topology::CpuNeon => false,
+            _ => true,
+        }
+    }
+
     pub(crate) fn space_is_cached(&self, space: &MemorySpace) -> bool {
         self.env.memories.values().any(|d| {
             d.managed == crate::syntax::Management::Cached
@@ -1058,6 +1305,8 @@ impl<'a> TypeChecker<'a> {
             | Type::Pointer(inner, _, _)
             | Type::Verified(inner)
             | Type::Pinned(inner, _) => self.collect_placed_tensors(inner, out),
+            // A channel end holds no tensor: `channel` counts the room of the channel.
+            Type::GenericInstance(base, _) if Self::is_channel_end(base) => return,
             Type::GenericInstance(base, args) => {
                 self.collect_placed_tensors(base, out);
                 for a in args {
@@ -1180,10 +1429,12 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn check_placement_of_type(&mut self, ty: &Type, context: &str, span: &Span, record: bool) {
+        // A raw pointer, such as the room of a channel, points at tensors that it does not hold.
+        let record = record && !matches!(ty, Type::Pointer(..));
         self.report_unheld_placements(ty, context);
         self.check_alignments_in(ty, context, span);
         for (e, d, space) in self.placed_tensors(ty) {
-            self.check_capacity_of(&e, &d, &space, context, span, record);
+            self.check_capacity_of(&e, &d, &space, context, span, record, 1);
             self.check_element_type(
                 &e,
                 &space,
@@ -1323,6 +1574,13 @@ impl<'a> TypeChecker<'a> {
         let inner_ty = self.check_expr_type_flag(&mut t.expr, false);
         self.traffic.consumed_by_transfer = prev_consumed;
         self.allow_cross_topology = prev;
+        // A transfer of a borrowed tensor copies the tensor it points to, and the owner keeps it.
+        let shared_borrow = matches!(&inner_ty, Type::Borrow { inner, is_mut: false, .. }
+            if matches!(**inner, Type::Tensor(..)));
+        let inner_ty = match inner_ty {
+            Type::Borrow { inner, .. } if matches!(*inner, Type::Tensor(..)) => *inner,
+            other => other,
+        };
 
         // Extract source memory space, preferring exact space from an inner transfer if present
         let source_mem = if let Expr::Transfer(inner_t) = &*t.expr {
@@ -1356,6 +1614,10 @@ impl<'a> TypeChecker<'a> {
             }
         };
         let target_mem = t.space.clone();
+        t.shared = shared_borrow
+            && self
+                .transfer_cost_graph
+                .is_shared_edge(&source_mem, &target_mem);
 
         // Capacity: a statically-shaped tensor transferred into a declared space must fit.
         if let Some((e, d)) = Self::tensor_of(&inner_ty) {
@@ -1389,10 +1651,19 @@ impl<'a> TypeChecker<'a> {
         let moved_bytes: Option<u64> = Self::tensor_of(&inner_ty)
             .and_then(|(e, d)| crate::hir::memory::static_tensor_bytes(e, d));
 
-        // Which of the two cost sources applied. They are mutually exclusive by construction
-        // (E6013), so this names the one that fired rather than a precedence winner.
+        // Which cost source applied. They are mutually exclusive by construction (E6013), so this
+        // names the one that fired rather than a precedence winner.
         let link_bw = self.transfer_cost_graph.link_rate(&source_mem, &target_mem);
+        let shared = self
+            .transfer_cost_graph
+            .is_shared_edge(&source_mem, &target_mem);
         let derived: Option<crate::hir::memory::DerivedCost> = moved_bytes.and_then(|bytes| {
+            if shared {
+                return Some(crate::hir::memory::DerivedCost {
+                    value: 0,
+                    per: crate::syntax::RatePer::Second,
+                });
+            }
             link_bw
                 .and_then(|bw| {
                     crate::hir::memory::hop_cost(bytes, bw)
@@ -1406,7 +1677,9 @@ impl<'a> TypeChecker<'a> {
         let derived_cost = derived.map(|d| d.value);
         let derived_unit = derived.map(|d| d.per);
         let cost_source = derived.map(|_| {
-            if link_bw.is_some() {
+            if shared {
+                crate::report::CostSource::Shared
+            } else if link_bw.is_some() {
                 crate::report::CostSource::LinkRate
             } else {
                 crate::report::CostSource::Containment
@@ -2035,14 +2308,19 @@ impl<'a> TypeChecker<'a> {
                 space: intermediate_space,
                 cost: None,
                 lowering: None,
+                is_async: false,
+                shared: false,
                 span: t.span,
             });
         }
+        // Only the last hop gives the token of `transfer_async`.
         *expr = Expr::Transfer(TransferExpr {
             expr: Box::new(current_expr),
             space: target_mem,
             cost: None,
             lowering: None,
+            is_async: t.is_async,
+            shared: false,
             span: t.span,
         });
         // Propagate the relaxed marker so each rewritten single-hop transfer is checked with the
@@ -2388,6 +2666,10 @@ impl<'a> TypeChecker<'a> {
 
                 let prev_top = self.active_topology.clone();
                 let prev_mem = self.active_memory.clone();
+                let prev_device_spawn = self.device_spawn;
+                if self.runs_on_a_device(&actual_top) {
+                    self.device_spawn = Some(spawn_span);
+                }
                 self.active_topology = actual_top.clone();
                 let region_mem = self.transfer_cost_graph.default_memory_for(&actual_top);
                 self.set_active_memory(region_mem);
@@ -2434,7 +2716,16 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 self.drops_enter_spawn();
+                if let Some(v) =
+                    self.region_frees_through(stmts, ret.as_deref(), &Default::default())
+                {
+                    self.pointer_facts_event(*span, |_| {
+                        crate::hir::check::pointer_facts::region_event(&v)
+                    });
+                }
+                let outer_pointers = self.pointer_facts_enter_body();
                 self.check_expr_block(stmts, ret.as_deref(), consume);
+                self.pointer_facts_leave_body(outer_pointers);
                 // Checked once the region's own frame is closed, so a variable from outside that
                 // the region hands out moves in the enclosing function.
                 self.drops_exit_spawn();
@@ -2520,6 +2811,7 @@ impl<'a> TypeChecker<'a> {
 
                 self.active_topology = prev_top;
                 self.set_active_memory(prev_mem);
+                self.device_spawn = prev_device_spawn;
 
                 // The result of a device kernel is located ON that device: return
                 // `Pinned<ret_ty, d>` so reading it on another topology re-triggers the USE
@@ -2540,4 +2832,208 @@ impl<'a> TypeChecker<'a> {
             _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
     }
+}
+
+/// The type of `transfer_async(x, M)`: a token of the placed tensor `placed`.
+pub(crate) fn token_of(placed: Type) -> Type {
+    if placed == Type::Unknown {
+        return Type::Unknown;
+    }
+    Type::GenericInstance(Box::new(Type::Struct("Token".into(), None)), vec![placed])
+}
+
+impl TypeChecker<'_> {
+    /// `t.wait()` on a token of `transfer_async`: it takes the token, and its value is the placed
+    /// tensor. The code generators copy at the `transfer_async`, so the wait is the value.
+    pub(crate) fn check_token_wait(&mut self, expr: &mut Expr) -> Option<Type> {
+        let Expr::MethodCall(m) = &*expr else {
+            return None;
+        };
+        if m.method_name.as_ref() != "wait" || !m.args.is_empty() {
+            return None;
+        }
+        let probe = self.check_expr_type_probe(&m.base);
+        let probe = match &*m.base {
+            Expr::Transfer(t) if t.is_async => Type::GenericInstance(
+                Box::new(Type::Struct("Token".into(), None)),
+                vec![Type::Unknown],
+            ),
+            _ => probe,
+        };
+        token_inner(&probe)?;
+        let copy = crate::syntax::types::is_copy_token(&probe);
+        let Expr::MethodCall(m) = std::mem::replace(
+            expr,
+            Expr::Number(crate::syntax::NumberExpr::new(
+                "0".to_string(),
+                None,
+                Span::default(),
+            )),
+        ) else {
+            unreachable!("matched above")
+        };
+        // The token of a lane copy waits at `lanes::copy_wait`, where the copy ends on a GPU.
+        if copy {
+            *expr = Expr::FunctionCall(crate::syntax::expr::FunctionCallExpr::new(
+                "lanes::copy_wait".into(),
+                None,
+                vec![*m.base],
+                m.span,
+            ));
+            return Some(self.check_expr_type_flag(expr, true));
+        }
+        let mut base = *m.base;
+        let ty = self.check_expr_type_flag(&mut base, true);
+        if let Expr::Identifier(id) = &base {
+            self.consume(id.name.as_ref());
+        }
+        *expr = base;
+        Some(token_inner(&ty).cloned().unwrap_or(Type::Unknown))
+    }
+
+    /// A `let` of `name` that holds a token: it must be waited before its scope ends.
+    pub(crate) fn note_token_let(&mut self, name: &crate::symbol::Symbol, span: Span) {
+        if self.speculating {
+            return;
+        }
+        let is_token = self
+            .lookup(name.as_ref())
+            .is_some_and(|(ty, _)| token_inner(ty).is_some());
+        if is_token {
+            self.tokens.push((name.clone(), span, self.scopes.len()));
+        }
+    }
+
+    /// The scope that ends now: each token of it that no `.wait()` took is E6036.
+    pub(crate) fn check_tokens_waited(&mut self) {
+        let depth = self.scopes.len();
+        let ending: Vec<_> = self
+            .tokens
+            .iter()
+            .filter(|(_, _, d)| *d == depth)
+            .cloned()
+            .collect();
+        self.tokens.retain(|(_, _, d)| *d != depth);
+        for (name, span, _) in ending {
+            if !self.is_moved(name.as_ref()) {
+                self.report_dropped_token(&name, &span, "its scope ends");
+            }
+        }
+    }
+
+    /// `name = ..` gives a token variable a new value: the old token must be waited first.
+    pub(crate) fn check_token_overwrite(&mut self, lhs: &Expr, span: &Span) {
+        let Expr::Identifier(id) = lhs else {
+            return;
+        };
+        let is_token = self
+            .lookup(id.name.as_ref())
+            .is_some_and(|(ty, _)| token_inner(ty).is_some());
+        if is_token && !self.is_moved(id.name.as_ref()) {
+            self.report_dropped_token(&id.name, span, "this assignment gives it a new value");
+        }
+    }
+
+    fn report_dropped_token(&mut self, name: &crate::symbol::Symbol, span: &Span, when: &str) {
+        if self.speculating {
+            return;
+        }
+        let copy = self
+            .lookup(name.as_ref())
+            .is_some_and(|(ty, _)| crate::syntax::types::is_copy_token(ty));
+        let message = if copy {
+            format!(
+                "the copy token '{name}' is dropped with no `.wait()` when {when}, so the copy \
+                 may not be done. Call `{name}.wait()`"
+            )
+        } else {
+            format!(
+                "the transfer token '{name}' is dropped with no `.wait()` when {when}, so the copy \
+                 may not be done. Call `{name}.wait()`, which gives the placed tensor"
+            )
+        };
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E6036,
+            message,
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+    }
+}
+
+/// Code at position `b_order` in the `tasks` blocks and tasks `b` that can run at the same time
+/// as code at `a_order` in `a`. Each item is one group of tasks that `b` is in, with its count of
+/// copies. Two tasks of one block run at the same time. The code of a block runs at the same time
+/// as each task that it started before. The other tasks of a `spawn` in a loop run at the same
+/// time as each other. A join that always runs ends its task.
+fn at_the_same_time(
+    a: &[TaskLevel],
+    a_order: usize,
+    b: &[TaskLevel],
+    b_order: usize,
+    ended: &std::collections::HashMap<usize, usize>,
+) -> Vec<Overlap> {
+    let started = |x: &TaskRun, order: usize| order.min(x.start);
+    // Code at `order` runs while the task `x` runs: after the task starts, and before a join ends
+    // it.
+    let during = |x: &TaskRun, x_order: usize, order: usize| {
+        started(x, x_order) < order && ended.get(&x.task).is_none_or(|&end| order < end)
+    };
+    let one_ends_first = |p: &TaskRun, q: &TaskRun| {
+        let ends_before =
+            |x: &TaskRun, y: &TaskRun| ended.get(&x.task).is_some_and(|&e| e <= y.start);
+        ends_before(p, q) || ends_before(q, p)
+    };
+    let mut found = Vec::new();
+    for (level, (x, y)) in a.iter().zip(b).enumerate() {
+        if x.block != y.block {
+            break;
+        }
+        let group = |run: Option<TaskRun>, copies: Option<u64>, other_copies: bool| Overlap {
+            level,
+            task: run.map(|r| r.task),
+            other_copies,
+            copies,
+            spawn: run.map(|r| r.spawn),
+        };
+        match (x.run, y.run) {
+            (Some(p), Some(q)) if p.task != q.task => {
+                if !one_ends_first(&p, &q) {
+                    found.push(group(Some(q), q.copies, false));
+                }
+                break;
+            }
+            (Some(p), Some(_)) => {
+                if p.copies != Some(1) {
+                    found.push(group(Some(p), p.copies.map(|n| n.saturating_sub(1)), true));
+                }
+            }
+            (None, Some(q)) => {
+                if during(&q, b_order, a_order) {
+                    found.push(group(Some(q), q.copies, false));
+                }
+                break;
+            }
+            (Some(p), None) => {
+                if during(&p, a_order, b_order) {
+                    found.push(group(None, Some(1), false));
+                }
+                break;
+            }
+            (None, None) => {}
+        }
+    }
+    found
+}
+
+/// A group of tasks that [`at_the_same_time`] found.
+struct Overlap {
+    /// The index of the shared `tasks` block in the chain.
+    level: usize,
+    /// `None` is the code of the block.
+    task: Option<usize>,
+    /// The other tasks of the same `spawn` in a loop, not a sibling task.
+    other_copies: bool,
+    /// How many of the group run at once. `None` when it is not known at compile time.
+    copies: Option<u64>,
+    spawn: Option<crate::syntax::Span>,
 }

@@ -1,0 +1,106 @@
+//===- enum_inside_an_enum_payload.vx - Vx Compiler ---------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An enum variant can carry another enum with data, alone, after another payload, or as the
+// type argument of a generic enum. Each value comes back out, including the largest and the
+// smallest `i64`. A struct field after a nested enum keeps its value, so the store of the
+// nested enum stays inside its own storage.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}9223372036854775807 7 -1{{$}}
+// CHECK: {{^}}-9223372036854775802 10{{$}}
+// CHECK: {{^}}canary 1234567890123 value -1{{$}}
+// CHECK: {{^}}42 9{{$}}
+
+enum Inner {
+  Value(i64),
+  Empty,
+}
+
+enum Outer {
+  Number(i32),
+  Nested(Inner),
+}
+
+struct Guarded {
+  o : Outer,
+  canary : i64,
+}
+
+enum Mixed {
+  Numbers(i32, i32),
+  Nested(i32, Inner),
+}
+
+fn inner_value(i : Inner) -> i64 {
+  match i {
+    Inner::Value(v) => {
+      return v;
+    }
+    Inner::Empty => {
+      return -1;
+    }
+  }
+}
+
+fn outer_value(o : Outer) -> i64 {
+  match o {
+    Outer::Number(n) => {
+      return n as i64;
+    }
+    Outer::Nested(i) => {
+      return inner_value(i);
+    }
+  }
+}
+
+fn mixed_value(m : Mixed) -> i64 {
+  match m {
+    Mixed::Numbers(a, b) => {
+      return (a + b) as i64;
+    }
+    Mixed::Nested(a, i) => {
+      return a as i64 + inner_value(i);
+    }
+  }
+}
+
+enum Wrap<T> {
+  Number(i32),
+  Nested(T),
+}
+
+fn wrap_value(w : Wrap<Inner>) -> i64 {
+  match w {
+    Wrap<Inner>::Number(n) => {
+      return n as i64;
+    }
+    Wrap<Inner>::Nested(i) => {
+      return inner_value(i);
+    }
+  }
+}
+
+fn main() -> i32 {
+  let a = Outer::Nested(Inner::Value(9223372036854775807i64));
+  let b = Outer::Number(7);
+  let c = Outer::Nested(Inner::Empty);
+  println!("{} {} {}", outer_value(a), outer_value(b), outer_value(c));
+  let d = Mixed::Nested(5, Inner::Value(-9223372036854775807i64));
+  let e = Mixed::Numbers(3, 7);
+  println!("{} {}", mixed_value(d), mixed_value(e));
+  let mut guarded = Guarded {
+    o : Outer::Number(1), canary : 1234567890123i64
+  };
+  guarded.o = Outer::Nested(Inner::Value(-1i64));
+  println!("canary {} value {}", guarded.canary, outer_value(guarded.o));
+  let f = Wrap<Inner>::Nested(Inner::Value(42i64));
+  let g = Wrap<Inner>::Number(9);
+  println!("{} {}", wrap_value(f), wrap_value(g));
+  return 0;
+}

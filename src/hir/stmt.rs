@@ -37,6 +37,91 @@ pub(crate) struct LoopHeader<'e> {
     pub(crate) evaluates: Option<&'e Expr>,
 }
 
+/// A loop that the checker is in. Each invariant must hold at the start of each pass, so the
+/// checker proves it for the next pass at the end of the body and at each `continue`.
+pub(crate) struct InvariantLoop {
+    invariants: Vec<Expr>,
+    /// The first scope of the loop. It and the scopes above it hold the variables of the body.
+    scope: usize,
+    /// The variable of a `for` loop, and its value in the next pass when the checker knows it.
+    next: Option<(crate::symbol::Symbol, Option<Expr>)>,
+    /// Whether the body declares a variable with the name of the loop variable.
+    hides_the_variable: bool,
+    /// Each pointer that a pointer clause of an invariant names and the body assigns, with the
+    /// base that it gets at the start of a pass.
+    pass_bases: Vec<(String, usize)>,
+    /// The facts that can hold where the loop ends: each invariant that the prover models, and
+    /// `!c` for a `while c` loop.
+    exit_facts: Vec<Expr>,
+    /// For each fact of `exit_facts`, the first `break` of the loop where it may not hold.
+    lost_at: Vec<Option<Span>>,
+    /// Whether a `break` ends the loop.
+    breaks: bool,
+}
+
+/// Whether the loop invariant `inv` is a pointer clause, which the raw-pointer facts prove.
+fn is_pointer_clause(inv: &Expr) -> bool {
+    crate::hir::check::pointer_facts::read_clause(inv).is_some()
+}
+
+/// The name of a marker in the prover's facts. It holds a loop invariant that a `break` lost, for
+/// the note of a later error. The prover skips it.
+const LOST_INVARIANT: &str = "$lost_invariant";
+
+/// The marker for the invariant `inv`, whose fact after the loop is `fact`, and which may not
+/// hold at the `break` at `at_break`.
+fn lost_invariant_marker(fact: Expr, inv: &Expr, at_break: Span) -> Expr {
+    let at = |span| Expr::Number(syntax::expr::NumberExpr::new("0".to_string(), None, span));
+    let args = vec![fact, at(inv.span()), at(at_break)];
+    Expr::FunctionCall(syntax::expr::FunctionCallExpr::new(
+        LOST_INVARIANT.into(),
+        None,
+        args,
+        Span::default(),
+    ))
+}
+
+/// The fact of a marker, the line of its invariant and the place of its `break`.
+pub(crate) fn read_lost_invariant(e: &Expr) -> Option<(&Expr, usize, Span)> {
+    match e {
+        Expr::FunctionCall(fc) if fc.name.as_ref() == LOST_INVARIANT => {
+            Some((&fc.args[0], fc.args[1].span().line, fc.args[2].span()))
+        }
+        _ => None,
+    }
+}
+
+/// The facts that can hold where the loop `body` ends: the invariants that the prover models,
+/// and `!c` when the body is the `if c { .. } else { break; }` of `while c`.
+fn exit_facts_of_a_loop(invariants: &[Expr], body: &[Statement]) -> Vec<Expr> {
+    let mut facts: Vec<Expr> = invariants
+        .iter()
+        .filter(|inv| !is_pointer_clause(inv))
+        .cloned()
+        .collect();
+    if let [Statement::ExprStmt(s)] = body {
+        if let Expr::If(i) = &s.expr {
+            let ends = matches!(i.else_block.as_deref(), Some([Statement::Break(b)]) if b.tasks_value.is_none());
+            if ends && crate::hir::prover::is_modelled(&i.cond) {
+                facts.push(crate::hir::prover::negate(&i.cond));
+            }
+        }
+    }
+    facts
+}
+
+/// Where the checker proves a loop invariant, for its error.
+#[derive(Clone, Copy)]
+enum InvariantProof<'a> {
+    Start,
+    /// For the next pass: at the end of the body, or at the `continue` at the span. `var` is
+    /// the variable of a `for` loop when the invariant names it.
+    Next {
+        at_continue: Option<Span>,
+        var: Option<&'a str>,
+    },
+}
+
 /// What running a statement did to the block it sits in.
 ///
 /// The evaluator used to answer `Option<Value>`, which said "a return produced this" and
@@ -190,6 +275,12 @@ impl<'a> TypeChecker<'a> {
         }
 
         self.borrow.enter_block(uses);
+        // A loop body may start with borrows that its previous pass left.
+        let carried_root = (!is_function_body).then(|| self.borrow.block_count() - 1);
+        if let Some(root) = carried_root {
+            let seeds = self.carried_borrow_seeds(body, root);
+            self.borrow.seed_carried(seeds);
+        }
         self.drops_enter_block(body, None);
 
         // A block is always checked for real, never speculatively. Force `speculating` off for the
@@ -224,6 +315,9 @@ impl<'a> TypeChecker<'a> {
 
             self.warn_if_declared_twice(&body[i], &mut declared);
             self.check_statement(&mut body[i], return_type, true);
+            if is_function_body {
+                self.borrow.clear_stored();
+            }
             match &body[i] {
                 Statement::Return(_) | Statement::Break(_) | Statement::Continue(_)
                     if !terminated =>
@@ -238,9 +332,110 @@ impl<'a> TypeChecker<'a> {
         if let Some(state) = state_at_end {
             self.restore_flow_state(state);
         }
+        if let Some(root) = carried_root {
+            self.borrow.forget_carried(root);
+        }
         self.drops_exit_block(body, terminated_at, false);
         self.speculating = saved_speculating;
         self.borrow.exit_block();
+    }
+
+    /// The borrows that one pass of a loop body may leave for the next: `r = &x` or
+    /// `r = x.get_ref(i)` anywhere in the body, where `r` and `x` are declared before the loop.
+    /// A body that ends in `break` or `return` has no next pass.
+    fn carried_borrow_seeds(
+        &mut self,
+        body: &[Statement],
+        root: usize,
+    ) -> Vec<(crate::symbol::Symbol, crate::hir::env::BorrowRecord)> {
+        if matches!(
+            body.last(),
+            Some(Statement::Break(_) | Statement::Return(_))
+        ) {
+            return Vec::new();
+        }
+        let mut assignments = Vec::new();
+        Self::each_assignment(body, &mut |lhs, rhs| {
+            assignments.push((lhs.clone(), rhs.clone()))
+        });
+        let mut seeds = Vec::new();
+        for (lhs, rhs) in assignments {
+            let Some((holder, _)) = Self::extract_base_and_path(&lhs) else {
+                continue;
+            };
+            let holder_ty = match self.lookup(&holder).map(|(t, _)| t.clone()) {
+                Some(ty) if self.type_can_hold_reference(&ty) => ty,
+                _ => continue,
+            };
+            let depth = self.scope_depth_of(&holder);
+            let mut borrowed = Vec::new();
+            crate::syntax::visit_expr(&rhs, &mut |e| {
+                if let Expr::Borrow(b) = e {
+                    borrowed.push(((*b.expr).clone(), b.is_mut));
+                }
+            });
+            // A method's result may point into its receiver, as a call's may point into a
+            // reference argument. The method may not be instantiated yet, so this does not ask it.
+            if let Expr::MethodCall(m) = &rhs {
+                let is_mut = matches!(holder_ty, Type::Borrow { is_mut: true, .. });
+                borrowed.push(((*m.base).clone(), is_mut));
+            }
+            for (place, is_mut) in borrowed {
+                let Some((base, path)) = Self::extract_base_and_path(&place) else {
+                    continue;
+                };
+                let owned = matches!(
+                    self.lookup(&base).map(|(t, _)| t),
+                    Some(t) if !matches!(t, Type::Borrow { .. } | Type::Pointer(..) | Type::Ref(..))
+                );
+                if base == holder || !owned {
+                    continue;
+                }
+                let seed = (
+                    base.into(),
+                    crate::hir::env::BorrowRecord {
+                        is_mut,
+                        scope_depth: depth,
+                        borrower_name: Some(holder.clone()),
+                        path,
+                        carried_from: Some(root),
+                    },
+                );
+                if !seeds.contains(&seed) {
+                    seeds.push(seed);
+                }
+            }
+        }
+        seeds
+    }
+
+    /// Calls `f` on each `lhs = rhs` in `stmts`, inside nested blocks and loops too.
+    fn each_assignment(stmts: &[Statement], f: &mut dyn FnMut(&Expr, &Expr)) {
+        for stmt in stmts {
+            match stmt {
+                Statement::Assign(a) => f(&a.lhs, &a.rhs),
+                Statement::ForLoop(l) => Self::each_assignment(&l.body, f),
+                Statement::Loop(l) => Self::each_assignment(&l.body, f),
+                _ => {}
+            }
+        }
+        // `visit_exprs` reaches the blocks of every depth, so only their own statements here.
+        crate::syntax::visit_exprs(stmts, &mut |e| {
+            let blocks: Vec<&[Statement]> = match e {
+                Expr::If(i) => std::iter::once(i.then_block.as_slice())
+                    .chain(i.else_block.as_deref())
+                    .collect(),
+                Expr::Match(m) => m.arms.iter().map(|a| a.body.as_slice()).collect(),
+                Expr::UnsafeBlock(u) => vec![u.stmts.as_slice()],
+                Expr::TaskBlock(t) => vec![t.stmts.as_slice()],
+                _ => Vec::new(),
+            };
+            for s in blocks.into_iter().flatten() {
+                if let Statement::Assign(a) = s {
+                    f(&a.lhs, &a.rhs);
+                }
+            }
+        });
     }
 
     /// What the checks after a `return`, `break` or `continue` change, but code that runs
@@ -323,11 +518,48 @@ impl<'a> TypeChecker<'a> {
                 _ => None,
             })
             .collect();
+        let (mut reads, mut assigns): (Vec<_>, Vec<_>) =
+            body.iter().map(Self::reads_and_assigns).unzip();
+        if let Some(tail) = tail {
+            let mut names = HashSet::new();
+            Self::extract_uses_expr(tail, &mut names);
+            reads.push(names.into_iter().map(Into::into).collect());
+            assigns.push(None);
+        }
         BlockUses {
             last_use,
             declared,
             is_loop: false,
+            reads,
+            assigns,
         }
+    }
+
+    /// What `stmt` reads, and the variable it gives a new value without reading it first.
+    fn reads_and_assigns(
+        stmt: &Statement,
+    ) -> (
+        HashSet<crate::symbol::Symbol>,
+        Option<crate::symbol::Symbol>,
+    ) {
+        let (target, value) = match stmt {
+            Statement::Assign(a) => match &a.lhs {
+                Expr::Identifier(id) => (Some(id.name.clone()), Some(&a.rhs)),
+                _ => (None, None),
+            },
+            Statement::LetDecl(l) => (Some(l.name.clone()), Some(&l.expr)),
+            _ => (None, None),
+        };
+        let mut names = HashSet::new();
+        match value {
+            Some(value) => Self::extract_uses_expr(value, &mut names),
+            None => Self::extract_uses_stmt(stmt, &mut names),
+        }
+        let target = target.filter(|t| !names.contains(t.as_ref()));
+        if target.is_none() {
+            Self::extract_uses_stmt(stmt, &mut names);
+        }
+        (names.into_iter().map(Into::into).collect(), target)
     }
 
     pub(crate) fn compute_block_liveness(
@@ -344,6 +576,25 @@ impl<'a> TypeChecker<'a> {
         last_use
     }
 
+    /// A `break` or `continue` with no loop around it in its own function or closure (E3064).
+    /// It returns whether it reported the error.
+    fn report_exit_outside_a_loop(&mut self, what: &str, span: Span) -> bool {
+        let loops_outside = self.borrow.loops_outside_the_closure;
+        if self.borrow.loop_exits.len() > loops_outside {
+            return false;
+        }
+        let mut message = format!("a `{what}` must be inside a loop");
+        if loops_outside > 0 {
+            message.push_str(". A closure body is not inside the loop around the closure");
+        }
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E3064,
+            message,
+            Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+        );
+        true
+    }
+
     pub(crate) fn check_statement(
         &mut self,
         stmt: &mut Statement,
@@ -351,23 +602,55 @@ impl<'a> TypeChecker<'a> {
         consume: bool,
     ) {
         let prev_statement_span = std::mem::replace(&mut self.current_statement_span, stmt.span());
+        let value = match &*stmt {
+            Statement::LetDecl(d) => Some(&d.expr),
+            Statement::Assign(a) => Some(&a.rhs),
+            Statement::Return(r) => r.expr.as_ref(),
+            _ => None,
+        };
+        if let Some(Expr::Range(_)) = value {
+            self.errors.push(
+                "a range (`a..b`) cannot be a value. Use it as the bound of a `for` loop"
+                    .to_string(),
+            );
+        }
         match stmt {
             Statement::LetDecl(decl) if crate::hir::check::tasks::is_spawn(&decl.expr) => {
                 self.check_spawn_let(decl, consume)
             }
-            Statement::LetDecl(decl) => self.check_let_decl_stmt(decl, consume),
+            Statement::LetDecl(decl) => {
+                self.check_let_decl_stmt(decl, consume);
+                self.note_token_let(&decl.name, decl.span);
+            }
             Statement::ForLoop(floop) => self.check_for_loop_stmt(floop, consume, return_type),
             Statement::Loop(lp) => self.check_loop_stmt(lp, return_type),
+            // The `Err` arm of the join of a task that failed: it leaves the `tasks` block,
+            // and the error moves into the value of the block.
+            Statement::Break(b) if b.tasks_value.is_some() => {
+                let value = b.tasks_value.as_mut().expect("matched above");
+                self.check_expr_type_flag(value, true);
+                self.drops_exit(
+                    "join",
+                    &b.span,
+                    crate::hir::check::drops::ExitTo::TasksBlock,
+                )
+            }
+            Statement::Break(b) if self.report_exit_outside_a_loop("break", b.span) => {}
+            Statement::Continue(c) if self.report_exit_outside_a_loop("continue", c.span) => {}
             Statement::Break(b) => {
                 self.check_task_exit(&Statement::Break(b.clone()));
-                self.drops_exit("break", b.span.line, true)
+                self.note_exit_facts_at_break(b.span);
+                self.pointer_facts_at_break();
+                self.drops_exit("break", &b.span, crate::hir::check::drops::ExitTo::Loop)
             }
             Statement::Continue(c) => {
                 self.check_task_exit(&Statement::Continue(c.clone()));
-                self.drops_exit("continue", c.span.line, true)
+                self.prove_invariants_for_the_next_pass(Some(c.span));
+                self.drops_exit("continue", &c.span, crate::hir::check::drops::ExitTo::Loop)
             }
             Statement::Assign(AssignStmt { lhs, rhs, span }) => {
                 let span = *span;
+                self.check_token_overwrite(lhs, &span);
                 if let Some(call) = self.container_store(lhs, None, rhs, span) {
                     *stmt = Statement::ExprStmt(ExprStmtStmt::new(call, true, span));
                     self.check_statement(stmt, return_type, consume);
@@ -415,7 +698,7 @@ impl<'a> TypeChecker<'a> {
                 // call against.
                 let before = self.consteval_snapshot();
                 let scopes = self.consteval_scopes();
-                let saved_borrows = self.borrow.snapshot();
+                let saved_borrows = self.borrows_before_statement();
                 self.value_unused = true;
                 // `v;` reads `v`: it does not move it.
                 let consume = consume && !matches!(expr, Expr::Identifier(_));
@@ -431,7 +714,17 @@ impl<'a> TypeChecker<'a> {
             Statement::Drop(_) | Statement::Error(_) => {}
         }
         self.check_frame_escape(stmt);
+        self.end_moved_tiles();
         self.current_statement_span = prev_statement_span;
+    }
+
+    /// The tiles of the value of `let name`. A tensor that the initializer moved, as in
+    /// `let b = id(a)`, is gone before them.
+    fn place_for_let(&mut self, name: &str, ty: &Type, context: &str, span: &Span) {
+        self.end_moved_tiles();
+        let prev = self.traffic.tile_holder.replace(name.to_string());
+        self.check_type_placement(ty, context, span);
+        self.traffic.tile_holder = prev;
     }
 
     /// Check a `let` binding: type the initializer, bind the name (annotation wins), record the
@@ -451,6 +744,9 @@ impl<'a> TypeChecker<'a> {
         }
 
         self.current_assignment_target = Some(name.to_string());
+        // The variable is declared into the innermost scope, so it holds its borrows there.
+        self.pending_lets
+            .push((name.to_string(), self.scopes.len()));
         // Forward the annotation as an expected-type hint so a generic call can
         // deduce a return-only topology/type variable from it.
         if let Some(ann) = ty_ann.as_mut() {
@@ -464,11 +760,17 @@ impl<'a> TypeChecker<'a> {
         let prev_expected = self.expected_type.take();
         self.expected_type = ty_ann.clone();
         self.let_closure = matches!(&*expr, Expr::Closure(_)).then_some(*span);
-        let ty = self.check_expr_type_flag(expr, consume);
+        let prev_holder = self.traffic.tile_holder.take();
+        if matches!(&*expr, Expr::Transfer(_)) {
+            self.traffic.tile_holder = Some(name.to_string());
+        }
+        let ty = self.check_whole_value(expr, |c, e| c.check_expr_type_flag(e, consume));
+        self.traffic.tile_holder = prev_holder;
         self.let_closure = None;
         let ty = crate::hir::check::operators::round_narrow_arithmetic(expr, ty, ty_ann.as_ref());
         self.expected_type = prev_expected;
         self.current_assignment_target = None;
+        self.pending_lets.pop();
 
         let mut tmp_env = HashMap::new();
         for env in &self.consteval.env {
@@ -520,7 +822,7 @@ impl<'a> TypeChecker<'a> {
             }
             // Capacity: a placed tensor annotation must fit its memory space.
             if !memory_already_recorded {
-                self.check_type_placement(ann, &context, span);
+                self.place_for_let(name, ann, &context, span);
             }
             self.shadow_borrows(name);
             self.insert(name.to_string(), ann.clone());
@@ -531,7 +833,7 @@ impl<'a> TypeChecker<'a> {
             // only in the initializer -- the ordinary spelling -- escaped capacity admission,
             // element-type admission, and the working set.
             if !memory_already_recorded {
-                self.check_type_placement(&ty, &context, span);
+                self.place_for_let(name, &ty, &context, span);
             }
             self.shadow_borrows(name);
             self.insert(name.to_string(), ty.clone());
@@ -552,6 +854,9 @@ impl<'a> TypeChecker<'a> {
         }
 
         self.bind_view(name.as_ref(), *_is_mut, expr, &binding_ty, span);
+        if !self.borrow.views.contains_key(name.as_ref()) {
+            self.check_spawn_capture_moved(expr);
+        }
         if !self.speculating && !Self::views_foreign_memory(expr) {
             self.drops_note_owner(name.as_ref(), &binding_ty);
         }
@@ -607,28 +912,102 @@ impl<'a> TypeChecker<'a> {
 
         // Shadowing: this binding hides any earlier one with the same name, so earlier
         // facts about the name are now about a dead binding and must not participate in
-        // proofs (a stale `i == 1` beside a new `i == 9` proves anything). Neutralized
-        // for mutable bindings too -- they record no new fact, but they still shadow.
+        // proofs (a stale `i == 1` beside a new `i == 9` proves anything). `insert` ended
+        // the prover facts, and the pointer facts end here, after the value read them.
         self.set_mutable(name.as_ref(), *_is_mut);
-        self.neutralize_facts_mentioning(name.as_ref());
-        if !*_is_mut {
-            let id_expr = Expr::Identifier(IdentifierExpr {
+        let pointer = self.pointer_value_for(name.as_ref(), expr);
+        self.pointer_facts.forget(name.as_ref());
+        self.note_pointer_value(name.as_ref(), pointer);
+        self.pointer_facts_name_the_result(name.as_ref(), expr);
+        self.pointer_facts_note_an_owner(name.as_ref(), expr);
+        // `raw::extent(t)` folds to its literal element count first: the prover cannot
+        // lower a function call, so `let n = raw::extent(src)` would otherwise record
+        // an unlowerable fact and every bound written against `n` would be unprovable
+        // (Vx#353). An `unsafe` block holding only a value is that value.
+        let value = self.fold_raw_extent(crate::syntax::bare_unsafe_value(expr));
+        // In `let y = y + 1`, the `y` on the right is the old variable, and the fact
+        // `y == y + 1` would be false. Each change of a `let mut` ends its facts. Its fact
+        // must be one that the prover can model, so that no new program warns.
+        let recorded = !*_is_mut || crate::hir::prover::is_modelled(&value);
+        if recorded && !crate::hir::check::raw::expr_mentions(&value, name.as_ref()) {
+            // A call can change its arguments. Re-evaluating it in a later proof would use
+            // their new values, not the values from when the result was returned.
+            let changes_an_argument = matches!(&value, Expr::FunctionCall(c)
+                if c.args.iter().any(|a| self.call_may_change_argument(a)));
+            if !changes_an_argument {
+                let id_expr = Expr::Identifier(IdentifierExpr {
+                    name: name.clone(),
+                    span: Span::default(),
+                });
+                let eq_expr = Expr::RelationalOp(RelationalOpExpr {
+                    lhs: Box::new(id_expr),
+                    op: RelationalOp::Eq,
+                    rhs: Box::new(value),
+                    span: Span::default(),
+                    operand_ty: None,
+                });
+                self.consteval.constraints.push(eq_expr);
+            }
+            self.keep_call_result_ensures(name, expr);
+        }
+    }
+
+    /// Whether a call can change the value behind the argument `arg`: a `&mut` or a pointer.
+    fn call_may_change_argument(&self, arg: &Expr) -> bool {
+        matches!(arg, Expr::Borrow(b) if b.is_mut)
+            || matches!(
+                self.check_expr_type_probe(arg),
+                Type::Borrow { is_mut: true, .. } | Type::Pointer(..) | Type::Ref(..)
+            )
+    }
+
+    /// A returned number keeps its postconditions even when a later call changes an input
+    /// buffer. The equation `name == call(args)` does not: a later proof evaluates the call
+    /// again with the new buffer.
+    fn keep_call_result_ensures(&mut self, name: &crate::symbol::Symbol, value: &Expr) {
+        let Expr::FunctionCall(call) = crate::syntax::bare_unsafe_value(value) else {
+            return;
+        };
+        let Some((params, return_type, ensures)) = self.declared_callee(&call.name) else {
+            return;
+        };
+        let changed: Vec<_> = call
+            .args
+            .iter()
+            .filter(|arg| self.call_may_change_argument(arg))
+            .filter_map(|arg| Self::arg_reborrow_base(arg).map(|(root, _)| root))
+            .collect();
+        let mut names: HashMap<_, _> = params
+            .iter()
+            .map(|(p, _)| p.clone())
+            .zip(
+                call.args
+                    .iter()
+                    .map(|a| crate::hir::prover::without_borrow(a).clone()),
+            )
+            .collect();
+        names.insert(
+            "return".into(),
+            Expr::Identifier(IdentifierExpr {
                 name: name.clone(),
                 span: Span::default(),
-            });
-            // `raw::extent(t)` folds to its literal element count first: the prover cannot
-            // lower a function call, so `let n = raw::extent(src)` would otherwise record
-            // an unlowerable fact and every bound written against `n` would be unprovable
-            // (Vx#353). An `unsafe` block holding only a value is that value.
-            let eq_expr = Expr::RelationalOp(RelationalOpExpr {
-                lhs: Box::new(id_expr),
-                op: RelationalOp::Eq,
-                rhs: Box::new(self.fold_raw_extent(crate::syntax::bare_unsafe_value(expr))),
-                span: Span::default(),
-                operand_ty: None,
-            });
-            self.consteval.constraints.push(eq_expr);
-        }
+            }),
+        );
+        let facts: Vec<_> = ensures
+            .iter()
+            .filter(|e| crate::hir::check::atomic_contracts::is_prover_clause(e))
+            .map(|e| {
+                let typed = self.typed_callee_contract(e, params, return_type);
+                hir::prover::substitute_names(&typed, &names)
+            })
+            .filter(hir::prover::is_modelled)
+            .filter(|e| {
+                !changed
+                    .iter()
+                    .any(|root| crate::hir::check::raw::expr_mentions(e, root))
+            })
+            .collect();
+        self.consteval.constraints.extend(facts);
     }
 
     /// Check a `for` loop: type the iterable, bind the induction variable's element type, prove
@@ -689,6 +1068,15 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Whether `e` is a tensor, or a reference to one, that a `for` loop reads by index.
+    fn is_tensor_or_reference_to_one(&mut self, e: &Expr) -> bool {
+        let mut ty = self.check_expr_type_probe(e);
+        while let Type::Borrow { inner, .. } | Type::Ref(inner, _) = ty {
+            ty = *inner;
+        }
+        matches!(ty, Type::Tensor(..))
+    }
+
     fn check_for_loop_stmt(&mut self, floop: &mut ForLoopStmt, consume: bool, return_type: &Type) {
         let ForLoopStmt {
             iter,
@@ -718,10 +1106,30 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
+        // `for x in &t` reads the tensor as `for x in t` does: neither moves it. An `across` loop
+        // goes over a range, and the check of `across` refuses a tensor.
+        let over_tensor = across.is_none();
+        if let (Expr::Borrow(b), true) = (&**iterable, over_tensor) {
+            if self.is_tensor_or_reference_to_one(&b.expr) {
+                if b.is_mut && !self.speculating {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3046,
+                        "a `for` loop over a tensor gives copies of its elements, so it cannot \
+                         change them; write `for i in 0..t.len() { t[i] = ..; }`"
+                            .to_string(),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(
+                            &iterable.span(),
+                        )),
+                    );
+                }
+                **iterable = (*b.expr).clone();
+            }
+        }
         // `for x in t` over a tensor reads it by index: `for $i in 0..t.len() { let x = t[$i]; .. }`.
-        // A tensor of rank 2 or more gives its rows.
-        if matches!(&**iterable, Expr::Array(_))
-            || matches!(self.check_expr_type_probe(iterable), Type::Tensor(..))
+        // A tensor of rank 2 or more gives its rows. `t` can also be a reference to a tensor.
+        if over_tensor
+            && (matches!(&**iterable, Expr::Array(_))
+                || self.is_tensor_or_reference_to_one(iterable))
         {
             if let Expr::Identifier(id) = &**iterable {
                 let index = format!("$for_index_{}_{}", loop_span.line, loop_span.column);
@@ -940,22 +1348,70 @@ impl<'a> TypeChecker<'a> {
         // variable: the checker does not version mutated symbols, so a stale fact would
         // prove false things. The facts sit above `prev_constraints_len`, so the
         // truncation below drops them at loop exit with the invariants.
-        // The induction variable shadows any outer binding of the same name; earlier
-        // facts about that name are about the dead binding now (see
-        // neutralize_facts_mentioning -- a stale outer `i < 2` under an inner
-        // `for i in 0..8` forged an out-of-bounds proof in review).
-        self.neutralize_facts_mentioning(iter);
-        if let Expr::Range(r) = &**iterable {
-            if !crate::hir::check::raw::body_reassigns(body, iter) {
-                let iter_expr = Expr::Identifier(syntax::expr::IdentifierExpr {
-                    name: iter.clone().into(),
+        // The induction variable shadows any outer binding of the same name, so `insert`
+        // ended the prover facts about it (a stale outer `i < 2` under an inner
+        // `for i in 0..8` forged an out-of-bounds proof in review), and its pointer facts end here.
+        self.pointer_facts.forget(iter);
+        // Only facts the prover can lower are recorded; an unlowerable bound
+        // (a call) would make every later proof in the function warn. In
+        // `for i in 0..i`, the bound names the outer `i`, so it gives no fact.
+        let usable = |bound: &Expr| {
+            crate::hir::check::raw::prover_expressible(bound)
+                && !crate::hir::check::raw::expr_mentions(bound, iter)
+        };
+        let iter_expr = Expr::Identifier(syntax::expr::IdentifierExpr {
+            name: iter.clone().into(),
+            span: Span::default(),
+        });
+        // `for i in a..b` runs as `let mut i = a; while i < b { ..; i = i + 1; }`, so each
+        // invariant holds for `i == a` when the loop starts, and for `i + 1` after a pass.
+        let range = match &**iterable {
+            Expr::Range(r) => Some((self.fold_raw_extent(&r.start), self.fold_raw_extent(&r.end))),
+            _ => None,
+        };
+        let mut first = Vec::new();
+        if let Some((lo, hi)) = range.as_ref().filter(|(lo, _)| usable(lo)) {
+            first.push(Expr::RelationalOp(RelationalOpExpr {
+                lhs: Box::new(iter_expr.clone()),
+                op: RelationalOp::Eq,
+                rhs: Box::new(lo.clone()),
+                span: Span::default(),
+                operand_ty: None,
+            }));
+            // The body runs only when `a < b`, and when `a > b` nothing uses this proof. So it
+            // can assume `a <= b`, and `invariant i <= n` needs no `requires 0 <= n`.
+            if usable(hi) {
+                first.push(Expr::RelationalOp(RelationalOpExpr {
+                    lhs: Box::new(lo.clone()),
+                    op: RelationalOp::Le,
+                    rhs: Box::new(hi.clone()),
                     span: Span::default(),
-                });
-                let lo = self.fold_raw_extent(&r.start);
-                let hi = self.fold_raw_extent(&r.end);
-                // Only facts the prover can lower are recorded; an unlowerable bound
-                // (a call) would make every later proof in the function warn.
-                if crate::hir::check::raw::prover_expressible(&lo) {
+                    operand_ty: None,
+                }));
+            }
+        }
+        // The proof when the loop starts assumes `a <= b`. So the invariants give facts after the
+        // loop only when the prover proves `a <= b` here.
+        let ordered =
+            !invariants.is_empty() && first.get(1).is_some_and(|a_le_b| self.prove_expr(a_le_b));
+        let exit_range = range.clone().filter(|_| ordered);
+        self.prove_invariants_at_the_start(invariants, first);
+        let next = range.as_ref().map(|_| {
+            Expr::BinaryOp(syntax::expr::BinaryOpExpr {
+                lhs: Box::new(iter_expr.clone()),
+                op: syntax::expr::BinaryOp::Add,
+                rhs: Box::new(Expr::Number(syntax::expr::NumberExpr::new(
+                    "1".to_string(),
+                    None,
+                    Span::default(),
+                ))),
+                span: Span::default(),
+                operand_ty: None,
+            })
+        });
+        if let Some((lo, hi)) = range {
+            if !crate::hir::check::raw::body_reassigns(body, iter) {
+                if usable(&lo) {
                     self.consteval
                         .constraints
                         .push(Expr::RelationalOp(RelationalOpExpr {
@@ -966,7 +1422,7 @@ impl<'a> TypeChecker<'a> {
                             operand_ty: None,
                         }));
                 }
-                if crate::hir::check::raw::prover_expressible(&hi) {
+                if usable(&hi) {
                     self.consteval
                         .constraints
                         .push(Expr::RelationalOp(RelationalOpExpr {
@@ -979,13 +1435,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
-        for inv in invariants.iter() {
-            if !self.prove_expr(inv) {
-                self.errors
-                    .push("Loop invariant cannot be proven on entry".to_string());
-            }
-            self.consteval.constraints.push(inv.clone());
-        }
+        let (pass_bases, without_clauses) = self.assume_loop_invariants(invariants, body);
 
         // What is known before the body is walked, and where each name lives. Both are
         // needed after: the walk folds one iteration's worth of assignments into the
@@ -994,10 +1444,13 @@ impl<'a> TypeChecker<'a> {
         let scopes = self.consteval_scopes();
 
         let marks_before = self.moved_snapshot();
+        let passes = self.pass_count(iterable);
         self.borrow
             .loop_exits
             .push(crate::hir::borrow_cx::LoopExits {
                 changed_before: std::mem::take(&mut self.changed_vars),
+                passes,
+                order: self.traffic.placement_order,
                 ..Default::default()
             });
         self.drops_enter_loop();
@@ -1023,20 +1476,41 @@ impl<'a> TypeChecker<'a> {
                 bounds,
                 used: false,
             });
+        let pointers_at_head = match ordered {
+            true => self.pointer_facts.clone(),
+            false => without_clauses,
+        };
+        self.pointer_facts_enter_loop();
+        let next = next.filter(|_| !crate::hir::check::raw::body_reassigns(body, iter));
+        // A `for` loop also ends at its head, where `!c` is not known.
+        let exit_facts = exit_facts_of_a_loop(invariants, &[]);
+        self.invariant_loops.push(InvariantLoop {
+            invariants: invariants.clone(),
+            scope: self.scopes.len() - 1,
+            next: Some((iter.as_str().into(), next)),
+            hides_the_variable: crate::hir::check::pointer_facts::body_declares(body, iter),
+            pass_bases,
+            lost_at: vec![None; exit_facts.len()],
+            exit_facts,
+            breaks: false,
+        });
         self.check_loop_body(body, return_type, header);
+        let at_the_end = self.pointer_facts.clone();
+        // The value of `i` where the loop ends gets a new name, so that a fact about it stays
+        // after the end of the scope of `i`.
+        let exit = self.exit_value_of(iter);
+        let renamed = exit.as_ref().map(|e| (iter.as_str(), e));
+        self.pointer_facts_after_a_loop(Some(pointers_at_head), renamed);
         if let Some(c) = self.unroll_candidates.pop().filter(|c| c.used) {
             *unroll = c.bounds;
         }
         self.drops_exit_loop();
         self.settle_loop_moves(marks_before, outer_depth, body, &loop_span);
 
-        // Check invariants hold after the loop iteration (we don't strictly prove induction here, just checking at end of block)
-        for inv in invariants.iter() {
-            if !self.prove_expr(inv) {
-                self.errors
-                    .push("Loop invariant cannot be proven to hold across iterations".to_string());
-            }
+        if !self.branch_ends_early(body) {
+            self.prove_invariants_at_the_end_of_the_body(at_the_end);
         }
+        let lp = self.invariant_loops.pop().expect("pushed above");
 
         let mut after = before.clone();
         let ran = self.run_loop_for_consteval(&mut after, |checker, env| {
@@ -1048,6 +1522,9 @@ impl<'a> TypeChecker<'a> {
         self.consteval.constraints.truncate(prev_constraints_len);
         self.pop_scope();
         self.borrow.forget(&iterable_borrows);
+        if let (true, Some(exit), Some((lo, hi))) = (ordered, exit, exit_range) {
+            self.add_facts_after_a_for_loop(&lp, iter, exit, lo, hi);
+        }
     }
 
     /// Check an infinite `loop`: prove invariants on entry, check the body, then re-prove them
@@ -1100,6 +1577,191 @@ impl<'a> TypeChecker<'a> {
         self.restore_moved(after);
     }
 
+    /// E8008 or E8009: a loop invariant that the prover cannot show to hold when the loop
+    /// starts, or in the next pass. `ended` is the event that ended a fact that would prove it.
+    fn report_unproven_invariant(
+        &mut self,
+        inv: &Expr,
+        proof: InvariantProof,
+        ended: Option<(Span, String)>,
+    ) {
+        let condition = crate::hir::prover::to_source(inv)
+            .or_else(|| {
+                is_pointer_clause(inv).then(|| crate::hir::check::pointer_facts::clause_source(inv))
+            })
+            .map(|c| format!(" `{c}`"))
+            .unwrap_or_default();
+        let (code, when, where_known) = match proof {
+            InvariantProof::Start => (
+                crate::diagnostic::DiagnosticCode::E8008,
+                "when the loop starts".to_string(),
+                "before the loop",
+            ),
+            InvariantProof::Next { at_continue, var } => {
+                let next = var
+                    .map(|v| format!("for the next `{v}` "))
+                    .unwrap_or_default();
+                match at_continue {
+                    Some(at) => (
+                        crate::diagnostic::DiagnosticCode::E8009,
+                        format!("{next}after the `continue` at line {}", at.line),
+                        "there",
+                    ),
+                    None => (
+                        crate::diagnostic::DiagnosticCode::E8009,
+                        format!("{next}after a pass through the loop body"),
+                        "at the end of the body",
+                    ),
+                }
+            }
+        };
+        let error = self.errors.error_with_code(
+            code,
+            format!(
+                "this loop invariant{condition} may not hold {when}: the compiler cannot prove \
+                 it from what it knows {where_known}"
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(&inv.span())),
+        );
+        if let Some((at, why)) = ended {
+            error.notes.push(crate::diagnostic::Note {
+                message: format!("a fact that proves it ended at {why}").into(),
+                span: Some(crate::diagnostic::SourceSpan::from_ast_span(&at)),
+            });
+        }
+    }
+
+    /// Proves each invariant on entry to a loop, from the facts before it. `first` holds facts
+    /// about the range of a `for` loop in the first pass. An invariant can use the invariants
+    /// before it. The raw-pointer facts prove a pointer clause, as at a call.
+    fn prove_invariants_at_the_start(&mut self, invariants: &[Expr], first: Vec<Expr>) {
+        let facts_before = self.consteval.constraints.len();
+        self.consteval.constraints.extend(first);
+        for inv in invariants {
+            if is_pointer_clause(inv) {
+                if let Err(ended) = self.prove_pointer_clause_here(inv) {
+                    self.report_unproven_invariant(inv, InvariantProof::Start, ended);
+                }
+                continue;
+            }
+            if !self.prove_expr(inv) {
+                self.report_unproven_invariant(inv, InvariantProof::Start, None);
+            }
+            self.consteval.constraints.push(inv.clone());
+        }
+        self.consteval.constraints.truncate(facts_before);
+    }
+
+    /// Proves each invariant of the innermost loop for its next pass, from the facts here: at
+    /// the end of the body, or at the `continue` at `at_continue`. As at an assignment, each
+    /// variable of the body and the variable of a `for` loop get a new name in the facts. So a
+    /// `let` that hides a variable of an invariant cannot prove it.
+    pub(crate) fn prove_invariants_for_the_next_pass(&mut self, at_continue: Option<Span>) {
+        let Some(lp) = self.invariant_loops.last() else {
+            return;
+        };
+        if lp.invariants.is_empty() {
+            return;
+        }
+        let invariants = lp.invariants.clone();
+        let pass_bases = lp.pass_bases.clone();
+        // The new names live only in this proof, so no fact outside it can meet them.
+        let mut renamed = HashMap::new();
+        for scope in &self.scopes[lp.scope..] {
+            for name in scope.keys() {
+                let new_name = format!("$body_{}", renamed.len()).into();
+                renamed.insert(
+                    name.clone(),
+                    Expr::Identifier(syntax::expr::IdentifierExpr {
+                        name: new_name,
+                        span: Span::default(),
+                    }),
+                );
+            }
+        }
+        // In the next pass, the variable of `for i in a..b` is `i + 1`.
+        let next_fact = match &lp.next {
+            Some((var, Some(next))) if !lp.hides_the_variable => {
+                Some(Expr::RelationalOp(RelationalOpExpr {
+                    lhs: Box::new(Expr::Identifier(syntax::expr::IdentifierExpr {
+                        name: var.clone(),
+                        span: Span::default(),
+                    })),
+                    op: RelationalOp::Eq,
+                    rhs: Box::new(crate::hir::prover::substitute_names(next, &renamed)),
+                    span: Span::default(),
+                    operand_ty: None,
+                }))
+            }
+            _ => None,
+        };
+        let var = lp.next.as_ref().map(|(var, _)| var.to_string());
+        let facts = self.consteval.constraints.clone();
+        let mentions_renamed = |c: &Expr| {
+            renamed
+                .keys()
+                .any(|n| crate::hir::check::raw::expr_mentions(c, n.as_ref()))
+        };
+        for c in self.consteval.constraints.iter_mut() {
+            if mentions_renamed(c) {
+                *c = crate::hir::prover::substitute_names(c, &renamed);
+                if mentions_renamed(c) {
+                    *c = crate::hir::check::raw::no_fact();
+                }
+            }
+        }
+        self.consteval.constraints.extend(next_fact);
+        for inv in &invariants {
+            let holds = match is_pointer_clause(inv) {
+                true => self.pointer_clause_holds_in_the_next_pass(inv, &renamed, &pass_bases),
+                false => self.prove_expr(inv),
+            };
+            if !holds {
+                let mut names = HashSet::new();
+                Self::extract_uses_expr(inv, &mut names);
+                let var = var.as_deref().filter(|v| names.contains(*v));
+                let proof = InvariantProof::Next { at_continue, var };
+                self.report_unproven_invariant(inv, proof, None);
+            }
+        }
+        self.consteval.constraints = facts;
+    }
+
+    /// Proves each invariant of the innermost loop at the end of its body. `at_the_end` holds the
+    /// raw-pointer facts there, because the facts after the loop have taken their place.
+    fn prove_invariants_at_the_end_of_the_body(
+        &mut self,
+        at_the_end: crate::hir::check::pointer_facts::PointerFacts,
+    ) {
+        let after_the_loop = std::mem::replace(&mut self.pointer_facts, at_the_end);
+        self.prove_invariants_for_the_next_pass(None);
+        self.pointer_facts = after_the_loop;
+    }
+
+    /// The body of a loop starts from the facts that its writes cannot make false, and the
+    /// invariants. The raw-pointer facts get the pointer clauses. Returns each pointer that the
+    /// body assigns with its base in a pass, and the raw-pointer facts without the clauses.
+    fn assume_loop_invariants(
+        &mut self,
+        invariants: &[Expr],
+        body: &[Statement],
+    ) -> (
+        Vec<(String, usize)>,
+        crate::hir::check::pointer_facts::PointerFacts,
+    ) {
+        let (clauses, others): (Vec<Expr>, Vec<Expr>) =
+            invariants.iter().cloned().partition(is_pointer_clause);
+        let pointers = self.invariant_pointers(&clauses);
+        self.pointer_facts_events_then_changes(
+            |this| this.end_pointer_facts_a_loop_can_end(body),
+            |this| this.neutralize_facts_a_loop_writes(body),
+        );
+        let without_clauses = self.pointer_facts.clone();
+        self.consteval.constraints.extend(others);
+        let pass_bases = self.pointer_facts_assume_invariants(&clauses, &pointers);
+        (pass_bases, without_clauses)
+    }
+
     fn check_loop_stmt(&mut self, lp: &mut LoopStmt, return_type: &Type) {
         let LoopStmt {
             body,
@@ -1112,13 +1774,8 @@ impl<'a> TypeChecker<'a> {
         self.push_releasing_scope();
 
         let prev_constraints_len = self.consteval.constraints.len();
-        for inv in invariants.iter() {
-            if !self.prove_expr(inv) {
-                self.errors
-                    .push("Loop invariant cannot be proven on entry".to_string());
-            }
-            self.consteval.constraints.push(inv.clone());
-        }
+        self.prove_invariants_at_the_start(invariants, Vec::new());
+        let (pass_bases, _) = self.assume_loop_invariants(invariants, body);
 
         // See `check_for_loop_stmt`: the single pass the checker makes over the body is not
         // what the program does, so what it folded is settled up once the loop has been run.
@@ -1130,6 +1787,7 @@ impl<'a> TypeChecker<'a> {
             .loop_exits
             .push(crate::hir::borrow_cx::LoopExits {
                 changed_before: std::mem::take(&mut self.changed_vars),
+                order: self.traffic.placement_order,
                 ..Default::default()
             });
         self.drops_enter_loop();
@@ -1137,16 +1795,31 @@ impl<'a> TypeChecker<'a> {
             binds: None,
             evaluates: None,
         };
+        self.cancel_loops
+            .push(crate::hir::check::cancel_loops::loop_exits(body));
+        self.pointer_facts_enter_loop();
+        let exit_facts = exit_facts_of_a_loop(invariants, body);
+        self.invariant_loops.push(InvariantLoop {
+            invariants: invariants.clone(),
+            scope: self.scopes.len() - 1,
+            next: None,
+            hides_the_variable: false,
+            pass_bases,
+            lost_at: vec![None; exit_facts.len()],
+            exit_facts,
+            breaks: false,
+        });
         self.check_loop_body(body, return_type, header);
+        let at_the_end = self.pointer_facts.clone();
+        self.pointer_facts_after_a_loop(None, None);
+        self.cancel_loops.pop();
         self.drops_exit_loop();
         self.settle_loop_moves(marks_before, outer_depth, body, &loop_span);
 
-        for inv in invariants.iter() {
-            if !self.prove_expr(inv) {
-                self.errors
-                    .push("Loop invariant cannot be proven to hold across iterations".to_string());
-            }
+        if !self.branch_ends_early(body) {
+            self.prove_invariants_at_the_end_of_the_body(at_the_end);
         }
+        let lp = self.invariant_loops.pop().expect("pushed above");
 
         let mut after = before.clone();
         let ran =
@@ -1156,6 +1829,138 @@ impl<'a> TypeChecker<'a> {
 
         self.consteval.constraints.truncate(prev_constraints_len);
         self.pop_scope();
+        // A loop with no `break` never ends, so no code after it runs.
+        if lp.breaks {
+            self.add_facts_after_a_loop(&lp, &HashMap::new());
+        }
+    }
+
+    /// A `break` ends the innermost loop. A fact of the loop that may not hold here gives no fact
+    /// after the loop. This is not an error, because no pass starts after the `break`.
+    fn note_exit_facts_at_break(&mut self, at: Span) {
+        if self.speculating {
+            return;
+        }
+        let Some(lp) = self.invariant_loops.last() else {
+            return;
+        };
+        let open: Vec<(usize, Expr)> = lp
+            .exit_facts
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| lp.lost_at[*k].is_none())
+            .map(|(k, f)| (k, f.clone()))
+            .collect();
+        let lost: Vec<usize> = open
+            .into_iter()
+            .filter(|(_, fact)| !self.prove_expr(fact))
+            .map(|(k, _)| k)
+            .collect();
+        let lp = self.invariant_loops.last_mut().expect("checked above");
+        lp.breaks = true;
+        for k in lost {
+            lp.lost_at[k] = Some(at);
+        }
+    }
+
+    /// After a loop: each fact of the loop that holds at each place where it ends. `names` gives
+    /// the variable of a `for` loop its value there. A fact that a `break` lost gives a marker
+    /// instead, for the note of a later error.
+    fn add_facts_after_a_loop(
+        &mut self,
+        lp: &InvariantLoop,
+        names: &HashMap<crate::symbol::Symbol, Expr>,
+    ) {
+        for (fact, lost) in lp.exit_facts.iter().zip(&lp.lost_at) {
+            let after = crate::hir::prover::substitute_names(fact, names);
+            match lost {
+                None => self.consteval.constraints.push(after),
+                // The `!c` of a `while c` loop is no invariant, so its note would mislead.
+                Some(at) if lp.invariants.contains(fact) => {
+                    let marker = lost_invariant_marker(after, fact, *at);
+                    self.consteval.constraints.push(marker);
+                }
+                Some(_) => {}
+            }
+        }
+    }
+
+    /// After `for i in a..b`, when the prover proves `a <= b`: `exit` names the value of `i` where
+    /// the loop ended. Each invariant gives its fact with `exit` in place of `i`, and the prover
+    /// knows `a <= exit <= b`. Without a `break`, the loop ends at the head, where `exit == b`.
+    fn add_facts_after_a_for_loop(
+        &mut self,
+        lp: &InvariantLoop,
+        iter: &str,
+        exit: Expr,
+        lo: Expr,
+        hi: Expr,
+    ) {
+        self.add_facts_after_a_loop(
+            lp,
+            &HashMap::from([(crate::symbol::Symbol::from(iter), exit.clone())]),
+        );
+        let relation = |lhs: &Expr, op, rhs: &Expr| {
+            Expr::RelationalOp(RelationalOpExpr {
+                lhs: Box::new(lhs.clone()),
+                op,
+                rhs: Box::new(rhs.clone()),
+                span: Span::default(),
+                operand_ty: None,
+            })
+        };
+        let constraints = &mut self.consteval.constraints;
+        constraints.push(relation(&lo, RelationalOp::Le, &exit));
+        constraints.push(relation(&exit, RelationalOp::Le, &hi));
+        if !lp.breaks {
+            constraints.push(relation(&exit, RelationalOp::Eq, &hi));
+        }
+    }
+
+    /// A new name for the value of the integer variable `var` where its loop ends.
+    fn exit_value_of(&mut self, var: &str) -> Option<Expr> {
+        let int = match self.lookup(var)?.0.clone() {
+            Type::Scalar(e) if e.int_bits().is_some() && e != ElementType::Bool => e,
+            _ => return None,
+        };
+        let name = format!("$exit_{}", self.exit_values.len());
+        self.exit_values.push(int);
+        Some(Expr::Identifier(syntax::expr::IdentifierExpr {
+            name: name.into(),
+            span: Span::default(),
+        }))
+    }
+
+    /// The note for a goal that a loop invariant that a `break` lost would prove: the last such
+    /// invariant with which `proves` succeeds.
+    pub(crate) fn note_of_a_lost_invariant(
+        &mut self,
+        mut proves: impl FnMut(&mut Self) -> bool,
+    ) -> Option<crate::diagnostic::Note> {
+        let lost: Vec<(Expr, usize, Span)> = self
+            .consteval
+            .constraints
+            .iter()
+            .filter_map(read_lost_invariant)
+            .map(|(fact, line, at)| (fact.clone(), line, at))
+            .collect();
+        for (fact, line, at_break) in lost.into_iter().rev() {
+            self.consteval.constraints.push(fact);
+            let proven = proves(self);
+            self.consteval.constraints.pop();
+            if proven {
+                return Some(crate::diagnostic::Note {
+                    message: format!(
+                        "the invariant at line {line} would prove this, but it may not hold at \
+                         the `break` at line {}",
+                        at_break.line
+                    )
+                    .into(),
+                    span: Some(crate::diagnostic::SourceSpan::from_ast_span(&at_break)),
+                });
+            }
+        }
+        None
     }
 
     /// Check an assignment / compound assignment: type the LHS, then the RHS expecting the LHS
@@ -1213,9 +2018,8 @@ impl<'a> TypeChecker<'a> {
         let Some((root, path)) = direct.or_else(|| self.reborrow_base_and_path(lhs)) else {
             return;
         };
-        let shared = self
-            .borrow
-            .live_borrows(&root)
+        let live = self.borrow.live_borrows(&root).to_vec();
+        let shared = live
             .iter()
             // A borrow with no borrower is a temporary, `f(&x)`, over by the end of its statement.
             .find(|b| {
@@ -1227,7 +2031,7 @@ impl<'a> TypeChecker<'a> {
                     })
                     && crate::hir::places::paths_may_alias(&path, &b.path)
             })
-            .map(crate::hir::check::tasks::held_by_task_note);
+            .map(|b| self.held_by_note(b, root.as_ref()));
         if let Some(note) = shared {
             let mut place = crate::hir::places::display_place(&root, &path);
             if through_deref {
@@ -1287,12 +2091,18 @@ impl<'a> TypeChecker<'a> {
         // The check is what turns `v[i]` into that call, so the place is looked at after it.
         let before_lhs = self.borrow.snapshot();
         self.checking_assign_lhs = true;
-        let lhs_ty = self.check_expr_type_flag(lhs, false);
+        // `b = a` replaces the whole of `b`, and `b += a` reads it.
+        let lhs_ty = if op.is_none() {
+            self.check_whole_value(lhs, |c, e| c.check_expr_type_flag(e, false))
+        } else {
+            self.check_expr_type_flag(lhs, false)
+        };
         self.checking_assign_lhs = false;
+        self.check_field_change(lhs, "this assignment changes");
         let temporary_place = matches!(lhs, Expr::Dereference(d)
             if matches!(*d.expr, Expr::FunctionCall(_) | Expr::MethodCall(_)));
-        // Rust evaluates the value before the place it goes into, so the place's mutable borrow is
-        // only reserved while the right-hand side is checked: `v[i] = v[i] + 1` reads `v` there.
+        // The place runs before the value, so its mutable borrow is only reserved while the
+        // right-hand side is checked: `v[i] = v[i] + 1` reads `v` there.
         let lhs_borrows = temporary_place.then(|| {
             let added = self.borrow.added_since(&before_lhs);
             self.borrow.reserve(&added)
@@ -1368,10 +2178,21 @@ impl<'a> TypeChecker<'a> {
                 self.borrow.forget(&held);
             }
         }
-        let mut rhs_ty =
-            self.check_expr_expecting(rhs, Some(lhs_ty.clone()), consume && !copies_into_tensor);
+        let before_rhs = self.borrow.snapshot();
+        let mut rhs_ty = self.check_whole_value(rhs, |c, e| {
+            c.check_expr_expecting(e, Some(lhs_ty.clone()), consume && !copies_into_tensor)
+        });
         rhs_ty = crate::hir::check::operators::round_narrow_arithmetic(rhs, rhs_ty, Some(&lhs_ty));
-        self.current_assignment_target = None;
+        // What the value left in the target is stored there, not borrowed only for a call.
+        if let Some(target) = self.current_assignment_target.take() {
+            let stored: Vec<_> = self
+                .borrow
+                .added_copies_since(&before_rhs)
+                .into_iter()
+                .filter(|(_, r)| r.borrower_name.as_deref() == Some(target.as_str()))
+                .collect();
+            self.borrow.note_stored(stored);
+        }
         // `*r = &mut y`, with `r` bound to `&mut x`: `r` reaches the borrows `x` now holds.
         if let (Some(var), Expr::Dereference(d)) = (self.store_target_var_of(lhs), &*lhs) {
             if let Expr::Identifier(r) = &*d.expr {
@@ -1462,7 +2283,9 @@ impl<'a> TypeChecker<'a> {
             } else {
                 match self.literal_default_note(lhs, &lhs_ty, &rhs_ty) {
                     Some(note) => {
-                        format!("Type mismatch in assignment: cannot assign {rhs_ty} to {lhs_ty}; {note}")
+                        format!(
+                            "Type mismatch in assignment: cannot assign {rhs_ty} to {lhs_ty}; {note}"
+                        )
                     }
                     None => format!(
                         "Type mismatch in assignment: cannot assign {} to {}; write an explicit \
@@ -1478,23 +2301,6 @@ impl<'a> TypeChecker<'a> {
             );
         }
 
-        // A fact the prover holds about the assigned variable stops being true here. A write to
-        // a field, an element or through a pointer drops every fact about the variable.
-        fn assigned_root(place: &Expr) -> Option<&crate::symbol::Symbol> {
-            match place {
-                Expr::Identifier(id) => Some(&id.name),
-                Expr::IndexAccess(access) => assigned_root(&access.base),
-                Expr::MemberAccess(access) => assigned_root(&access.base),
-                Expr::Dereference(deref) => assigned_root(&deref.expr),
-                _ => None,
-            }
-        }
-        if let Some(root) = assigned_root(lhs) {
-            self.neutralize_facts_mentioning(root.as_ref());
-        }
-        // Keep the compile-time value of the assigned variable in step with the assignment.
-        // An assignment the evaluator cannot compute makes the variable unknown rather than
-        // leaving the previous value behind, which later reads would report as a certainty.
         // `x op= v` gives `x` the value of `x op v`.
         let assigned = match op {
             Some(op) => Expr::BinaryOp(BinaryOpExpr {
@@ -1509,6 +2315,52 @@ impl<'a> TypeChecker<'a> {
             }),
             None => rhs.clone(),
         };
+        let renamed = self.name_the_old_value(lhs, &lhs_ty);
+        let new_fact = renamed
+            .as_ref()
+            .and_then(|names| Self::fact_of_an_assignment(lhs, &assigned, names));
+
+        // A fact the prover holds about the assigned variable stops being true here. A write to
+        // a field, an element or through a pointer drops every fact about the variable.
+        fn assigned_root(place: &Expr) -> Option<&crate::symbol::Symbol> {
+            match place {
+                Expr::Identifier(id) => Some(&id.name),
+                Expr::IndexAccess(access) => assigned_root(&access.base),
+                Expr::MemberAccess(access) => assigned_root(&access.base),
+                Expr::Dereference(deref) => assigned_root(&deref.expr),
+                _ => None,
+            }
+        }
+        let pointer = match lhs {
+            Expr::Identifier(id) => self.pointer_value_for(id.name.as_ref(), rhs),
+            _ => None,
+        };
+        if let Some(root) = assigned_root(lhs) {
+            // A write through a raw pointer changes the memory, but the pointer keeps its value.
+            let through_a_pointer = !matches!(lhs, Expr::Identifier(_))
+                && matches!(self.lookup(root.as_ref()), Some((Type::Pointer(..), _)));
+            if through_a_pointer {
+                self.note_a_change_behind(root.to_string());
+            } else if let Some(names) = &renamed {
+                self.pointer_facts_name_the_old_value(root.as_ref(), names);
+            } else {
+                self.note_a_change_to_variable(root.to_string());
+            }
+        }
+        self.consteval.constraints.extend(new_fact);
+        if let Expr::Identifier(id) = lhs {
+            self.note_pointer_value(id.name.as_ref(), pointer);
+        }
+        // The old value of a type with a drop is dropped, which can free memory.
+        if !self.drops_glue(&lhs_ty).is_empty() {
+            let at = self.current_statement_span;
+            self.pointer_facts_event(at, |_| "an assignment that drops the old value".to_string());
+        }
+        // After the event, so that the event does not end the new fact.
+        self.pointer_facts_note_a_write(lhs);
+        // Keep the compile-time value of the assigned variable in step with the assignment.
+        // An assignment the evaluator cannot compute makes the variable unknown rather than
+        // leaving the previous value behind, which later reads would report as a certainty.
         match lhs {
             Expr::Identifier(IdentifierExpr { name, span: _ }) => {
                 let tmp_env = self.consteval_snapshot();
@@ -1757,25 +2609,30 @@ impl<'a> TypeChecker<'a> {
         // `return;` -- valid only where there is no value to return. Everything below types a
         // returned expression, so there is nothing left to do once the function type is checked.
         let Some(expr) = expr else {
-            if !crate::syntax::is_void_ty(return_type) {
+            // The first `return` of a closure or a task gives the type of the others.
+            if self.current_return_type == Some(Type::Unknown) {
+                self.current_return_type = Some(Type::Struct("void".into(), None));
+            } else if !crate::syntax::is_void_ty(return_type) {
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E3002,
                     format!("this function returns {return_type}, so `return` needs a value"),
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                 );
             }
-            self.drops_exit("return", span.line, false);
+            self.prove_pointer_ensures(None, *span, "at this `return`");
+            self.drops_exit("return", span, crate::hir::check::drops::ExitTo::Function);
             return false;
         };
 
         let prev_expected = self.expected_type.take();
         self.expected_type = Some(return_type.clone());
         self.consteval.comptime_return_is_value = matches!(&*expr, Expr::ComptimeBlock(_));
-        let ty = self.check_expr_type_flag(expr, consume);
+        let ty = self.check_whole_value(expr, |c, e| c.check_expr_type_flag(e, consume));
         self.consteval.comptime_return_is_value = false;
         let ty = crate::hir::check::operators::round_narrow_arithmetic(expr, ty, Some(return_type));
         self.expected_type = prev_expected;
-        self.drops_exit("return", span.line, false);
+        self.prove_pointer_ensures(Some(expr), *span, "at this `return`");
+        self.drops_exit("return", span, crate::hir::check::drops::ExitTo::Function);
 
         let mut expected_ty = return_type.clone();
         if let Some(Type::Unknown) = self.current_return_type {
@@ -1805,17 +2662,22 @@ impl<'a> TypeChecker<'a> {
         // Any value that can hold a reference is asked, not only a bare one: a `&local`
         // returned inside a struct, or a closure that uses a local, dangles the same way.
         self.check_view_return(expr, &ty, span);
+        // A `return` in a closure ends only the closure's call, not the function around it.
+        let closure_depth = self.mono.closure_depths.last().copied();
         if !self.speculating
             && self.type_can_hold_reference(&ty)
             && matches!(
                 self.ref_provenance_of(expr),
-                Some(crate::hir::env::RefProvenance::Local(_))
+                Some(crate::hir::env::RefProvenance::Local(d)) if closure_depth.is_none_or(|c| d >= c)
             )
         {
             self.report_frame_escape(
                 "this returns a value that points into this function's stack frame",
                 span,
             );
+        }
+        if !self.speculating && self.type_can_hold_reference(&ty) {
+            self.check_return_of_a_mut_held_by_a_dropped_value(expr, span);
         }
 
         // Each `ensures` must hold here, from what is known on this path, with `return` standing
@@ -1831,9 +2693,27 @@ impl<'a> TypeChecker<'a> {
             span: *span,
             operand_ty: None,
         });
+        // A `match` or an `if` whose branches all return makes no value. The parser writes a
+        // `match` at the end of a body as such a `return`.
+        let makes_no_value = crate::syntax::is_never_ty(&ty)
+            || match expr {
+                Expr::Match(m) => {
+                    !m.arms.is_empty() && m.arms.iter().all(|a| self.branch_ends_early(&a.body))
+                }
+                Expr::If(i) => {
+                    self.branch_ends_early(&i.then_block)
+                        && i.else_block
+                            .as_ref()
+                            .is_some_and(|b| self.branch_ends_early(b))
+                }
+                _ => false,
+            };
         let ensures = self.consteval.current_ensures.clone();
         if !ensures.is_empty() && !self.speculating {
-            self.consteval.constraints.push(return_eq);
+            let facts = self.consteval.constraints.len();
+            if !makes_no_value {
+                self.consteval.constraints.push(return_eq);
+            }
             for ens in &ensures {
                 if !self.prove_expr(ens) {
                     self.errors.error_with_code(
@@ -1846,7 +2726,7 @@ impl<'a> TypeChecker<'a> {
                     );
                 }
             }
-            self.consteval.constraints.pop();
+            self.consteval.constraints.truncate(facts);
         }
         crate::syntax::is_never_ty(&ty)
     }
@@ -1854,7 +2734,13 @@ impl<'a> TypeChecker<'a> {
     /// Check an `assert`: require a boolean condition, evaluate it at comptime when possible, and
     /// either flag a failure or fold it into the SMT constraints (Verified<T> discharge).
     fn check_assert_stmt(&mut self, assert: &mut AssertStmt, consume: bool, return_type: &Type) {
-        let AssertStmt { expr, msg, span } = assert;
+        let AssertStmt {
+            expr,
+            msg,
+            span,
+            at,
+        } = assert;
+        *at = Some(format!("{}:{}", self.file_name(), span.line));
         let ty = self.check_expr_type_flag(expr, consume);
         if ty != Type::Scalar(ElementType::Bool) {
             self.errors
@@ -1873,9 +2759,12 @@ impl<'a> TypeChecker<'a> {
                 tmp_env.insert(k.clone(), v.clone());
             }
         }
+        // Each assert has its own loop budget.
+        let outer_steps = self.consteval.loop_steps.replace(0);
         let eval_res = self.eval_expr(expr, &tmp_env);
         self.report_depth_exceeded(span);
         self.report_steps_exceeded(span);
+        self.consteval.loop_steps.set(outer_steps);
 
         if let Some(Value::Bool(b)) = eval_res {
             if !b {
@@ -1908,31 +2797,70 @@ impl<'a> TypeChecker<'a> {
 
     /// `e` with each call replaced by a fresh name, `$call_N`. For a callee that declares
     /// `ensures`, each one is pushed onto `facts` with the call's arguments in place of the
-    /// parameters and the fresh name in place of `return`.
+    /// parameters and the fresh name in place of `return`. A method call is a call of its
+    /// instance by then, with the receiver as the first argument.
     fn abstract_calls(&self, e: &Expr, calls: &mut usize, facts: &mut Vec<Expr>) -> Expr {
-        let mut sub = |x: &Expr| Box::new(self.abstract_calls(x, calls, facts));
+        let typed = hir::prover::with_integer_types(e, &|e| self.prover_int_type(e));
+        self.abstract_typed_calls(&typed, calls, facts)
+    }
+
+    fn abstract_typed_calls(&self, e: &Expr, calls: &mut usize, facts: &mut Vec<Expr>) -> Expr {
+        let mut sub = |x: &Expr| Box::new(self.abstract_typed_calls(x, calls, facts));
         match e {
             Expr::FunctionCall(c) => {
-                let args: Vec<Expr> = c.args.iter().map(|a| *sub(a)).collect();
                 let result = Expr::Identifier(IdentifierExpr {
                     name: format!("$call_{}", *calls).into(),
                     span: c.span,
                 });
                 *calls += 1;
-                if let Some(func) = self.env.syntax_functions.get(c.name.as_ref()) {
-                    let mut names: HashMap<crate::symbol::Symbol, Expr> = func
-                        .params
-                        .iter()
-                        .map(|(p, _)| p.clone())
-                        .zip(args)
-                        .collect();
-                    names.insert("return".into(), result.clone());
-                    for ens in func
-                        .ensures
-                        .iter()
-                        .filter(|e| !crate::hir::check::atomic_contracts::is_access_clause(e))
+                let callee = self.declared_callee(&c.name);
+                // Keep the declared scalar type after replacing a call with a fresh name.
+                let result = match callee.map(|(_, ret, _)| ret) {
+                    Some(Type::Scalar(ty))
+                        if ty.int_bits().is_some() && *ty != ElementType::Bool =>
                     {
-                        facts.push(hir::prover::substitute_names(ens, &names));
+                        Expr::AsCast(AsCastExpr {
+                            expr: Box::new(result),
+                            target_ty: Type::Scalar(ty.clone()),
+                            source_ty: Some(Type::Scalar(ty.clone())),
+                            span: c.span,
+                        })
+                    }
+                    _ => result,
+                };
+                let args: Vec<Expr> =
+                    c.args
+                        .iter()
+                        .enumerate()
+                        .map(|(i, arg)| {
+                            let expected = callee
+                                .and_then(|(params, _, _)| params.get(i))
+                                .and_then(|(_, ty)| match ty {
+                                    Type::Scalar(e)
+                                        if e.int_bits().is_some() && *e != ElementType::Bool =>
+                                    {
+                                        Some(e.clone())
+                                    }
+                                    _ => None,
+                                });
+                            let arg = hir::prover::with_integer_context(
+                                hir::prover::without_borrow(arg),
+                                expected,
+                                &|e| self.prover_int_type(e),
+                            );
+                            self.abstract_typed_calls(&arg, calls, facts)
+                        })
+                        .collect();
+                if let Some((params, return_type, ensures)) = callee {
+                    let mut names: HashMap<crate::symbol::Symbol, Expr> =
+                        params.iter().map(|(p, _)| p.clone()).zip(args).collect();
+                    names.insert("return".into(), result.clone());
+                    for ens in ensures
+                        .iter()
+                        .filter(|e| crate::hir::check::atomic_contracts::is_prover_clause(e))
+                    {
+                        let typed = self.typed_callee_contract(ens, params, return_type);
+                        facts.push(hir::prover::substitute_names(&typed, &names));
                     }
                 }
                 result
@@ -1960,7 +2888,145 @@ impl<'a> TypeChecker<'a> {
                 u.expr = sub(&u.expr);
                 Expr::UnaryOp(u)
             }
+            Expr::AsCast(c) => {
+                let mut c = c.clone();
+                c.expr = sub(&c.expr);
+                Expr::AsCast(c)
+            }
             _ => e.clone(),
+        }
+    }
+
+    /// The parameters, return type and `ensures` that the declaration of `name` states.
+    #[allow(clippy::type_complexity)]
+    fn declared_callee(
+        &self,
+        name: &crate::symbol::Symbol,
+    ) -> Option<(&[(crate::symbol::Symbol, Type)], &Type, &[Expr])> {
+        self.env
+            .syntax_functions
+            .get(name.as_ref())
+            .copied()
+            .or_else(|| {
+                self.mono
+                    .functions
+                    .iter()
+                    .find(|(f, _)| f.name == *name)
+                    .map(|(f, _)| f)
+            })
+            .map(|f| (&f.params[..], &f.return_type, &f.ensures[..]))
+            // The compiler trusts the `ensures` of an `extern` function.
+            .or_else(|| {
+                let ext = self.env.externs.iter().find(|x| x.name == *name)?;
+                Some((&ext.params[..], &ext.return_type, &ext.ensures[..]))
+            })
+    }
+
+    /// Resolve clauses in the callee's scope before replacing its names.
+    pub(crate) fn typed_callee_contract(
+        &self,
+        expr: &Expr,
+        params: &[(crate::symbol::Symbol, Type)],
+        return_type: &Type,
+    ) -> Expr {
+        fn declared_type(
+            checker: &TypeChecker<'_>,
+            expr: &Expr,
+            params: &[(crate::symbol::Symbol, Type)],
+            return_type: &Type,
+        ) -> Option<Type> {
+            match expr {
+                Expr::Identifier(id) if id.name.as_ref() == "return" => Some(return_type.clone()),
+                Expr::Identifier(id) => params
+                    .iter()
+                    .find(|(name, _)| *name == id.name)
+                    .map(|(_, ty)| ty.clone()),
+                Expr::MemberAccess(m) => {
+                    let mut base = declared_type(checker, &m.base, params, return_type)?;
+                    while let Type::Borrow { inner, .. }
+                    | Type::Pointer(inner, ..)
+                    | Type::Ref(inner, _) = base
+                    {
+                        base = *inner;
+                    }
+                    match base {
+                        Type::Struct(name, _) => checker.struct_field_type(&name, &[], &m.member),
+                        Type::GenericInstance(base, args) => match *base {
+                            Type::Struct(name, _) => {
+                                checker.struct_field_type(&name, &args, &m.member)
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    }
+                }
+                // The declared return type, not a type found in the caller's scope: a caller
+                // name can hide a callee parameter of another type.
+                Expr::FunctionCall(c) => Some(checker.declared_callee(&c.name)?.1.clone()),
+                _ => None,
+            }
+        }
+        hir::prover::with_integer_types(expr, &|e| match declared_type(
+            self,
+            e,
+            params,
+            return_type,
+        )? {
+            Type::Scalar(ty) if ty.int_bits().is_some() && ty != ElementType::Bool => {
+                Some((ty, false))
+            }
+            _ => None,
+        })
+    }
+
+    /// The integer type of an expression. Parameters and saved old values have range facts.
+    /// Other names can hide an earlier binding, so their ranges cannot be assumed.
+    /// A range from the wrong binding could contradict valid facts and prove anything.
+    /// The return value is bounded by its operands.
+    fn prover_int_type(&self, expr: &Expr) -> Option<(ElementType, bool)> {
+        let Expr::Identifier(id) = expr else {
+            return match self.check_expr_type_probe(expr) {
+                Type::Scalar(e) if e.int_bits().is_some() && e != ElementType::Bool => {
+                    Some((e, false))
+                }
+                _ => None,
+            };
+        };
+        let n = id.name.as_ref();
+        // An old value has the type of its variable, and no `let` can hide its name.
+        if let Some(old) = n.strip_prefix("$old_") {
+            let int = old
+                .parse::<usize>()
+                .ok()
+                .and_then(|i| self.old_values.get(i));
+            return Some((int.expect("each `$old_N` has a type").clone(), true));
+        }
+        // The same for the value of the variable of a `for` loop where the loop ends.
+        if let Some(exit) = n.strip_prefix("$exit_") {
+            let int = exit
+                .parse::<usize>()
+                .ok()
+                .and_then(|i| self.exit_values.get(i));
+            return Some((int.expect("each `$exit_N` has a type").clone(), true));
+        }
+        let (ty, ranged) = if n == "return" {
+            (self.current_return_type.clone()?, false)
+        } else {
+            let ty = self.lookup(n)?.0.clone();
+            let param = self
+                .borrow
+                .current_params
+                .iter()
+                .find(|(p, _)| p.as_ref() == n);
+            let hidden = self.declared_vars.iter().any(|(v, _)| v.as_ref() == n);
+            let ranged = param.is_some_and(|(_, p)| *p == ty) && !hidden;
+            (ty, ranged)
+        };
+        match ty {
+            Type::Scalar(e) if e.int_bits().is_some() && e != ElementType::Bool => {
+                Some((e, ranged))
+            }
+            _ => None,
         }
     }
 
@@ -1973,16 +3039,24 @@ impl<'a> TypeChecker<'a> {
             .consteval
             .constraints
             .iter()
+            .filter(|c| read_lost_invariant(c).is_none())
             .map(|c| self.abstract_calls(c, &mut calls, &mut facts))
             .collect();
         let goal = self.abstract_calls(expr, &mut calls, &mut facts);
         // A fact the prover cannot express is left out, so it knows less and proves less. Say so,
         // or a later "cannot prove" has no visible cause.
         for constraint in constraints.iter().chain(&facts) {
-            if let Err(what) = prover.add_constraint(constraint) {
+            if let Err(what) = prover.add_constraint(constraint, &|n| self.prover_int_type(n)) {
                 self.errors.push_warning(format!(
                     "the prover ignores a condition here: it cannot reason about {what}"
                 ));
+            }
+        }
+
+        // A goal that is one of the facts needs no solver.
+        if let Ok(smt) = prover.lower_term(&goal, &|n| self.prover_int_type(n)) {
+            if prover.has_fact(&smt) {
+                return true;
             }
         }
 
@@ -1992,7 +3066,10 @@ impl<'a> TypeChecker<'a> {
             expr: Box::new(goal),
             span: Span::default(),
         });
-        if prover.add_constraint(&negated_expr).is_err() {
+        if prover
+            .add_constraint(&negated_expr, &|n| self.prover_int_type(n))
+            .is_err()
+        {
             return false;
         }
 
@@ -2001,6 +3078,103 @@ impl<'a> TypeChecker<'a> {
             Err(e) => {
                 self.errors.push_warning(format!("SMT solver error: {}", e));
                 false
+            }
+        }
+    }
+
+    /// Whether the facts prove `goal`, whose sums and comparisons are of exact integers. A
+    /// fact that the prover cannot express is left out, and `prove_expr` warns about it.
+    pub(crate) fn prove_exact(&mut self, goal: &crate::hir::check::pointer_facts::Exact) -> bool {
+        let mut prover = hir::prover::SmtProver::new();
+        let mut calls = 0;
+        let mut facts = Vec::new();
+        let constraints: Vec<Expr> = self
+            .consteval
+            .constraints
+            .iter()
+            .filter(|c| read_lost_invariant(c).is_none())
+            .map(|c| self.abstract_calls(c, &mut calls, &mut facts))
+            .collect();
+        let smt = self.lower_exact(goal, &mut prover, &mut calls, &mut facts);
+        for constraint in constraints.iter().chain(&facts) {
+            let _ = prover.add_constraint(constraint, &|n| self.prover_int_type(n));
+        }
+        let Some(smt) = smt else {
+            return false;
+        };
+        if self.holds_by_form(goal, &mut prover, &mut calls, &mut facts) {
+            return true;
+        }
+        prover.add_smt(format!("(not {smt})"));
+        matches!(prover.prove(), Ok(false))
+    }
+
+    /// Whether `goal` holds by its form, with no solver: each part of an `and`, or one part of an
+    /// `or`, holds. A comparison `a <= b` holds when `a` and `b` are the same term, or `a` is `0`
+    /// and a fact says that `b` is not negative. The pointer `ensures` of `Vec` hold in this way, so
+    /// a program that uses `Vec` needs no solver.
+    fn holds_by_form(
+        &self,
+        goal: &crate::hir::check::pointer_facts::Exact,
+        prover: &mut hir::prover::SmtProver,
+        calls: &mut usize,
+        facts: &mut Vec<Expr>,
+    ) -> bool {
+        use crate::hir::check::pointer_facts::Exact;
+        match goal {
+            Exact::And(gs) => gs
+                .iter()
+                .all(|g| self.holds_by_form(g, prover, calls, facts)),
+            Exact::Or(gs) => gs
+                .iter()
+                .any(|g| self.holds_by_form(g, prover, calls, facts)),
+            Exact::Le(a, b) => {
+                let a = self.lower_exact(a, prover, calls, facts);
+                let b = self.lower_exact(b, prover, calls, facts);
+                let (Some(a), Some(b)) = (a, b) else {
+                    return false;
+                };
+                a == b
+                    || a == "0"
+                        && (prover.has_fact(&format!("(>= {b} 0)"))
+                            || prover.has_fact(&format!("(<= 0 {b})")))
+            }
+            Exact::Term(_) | Exact::Sum(_) => false,
+        }
+    }
+
+    fn lower_exact(
+        &self,
+        goal: &crate::hir::check::pointer_facts::Exact,
+        prover: &mut hir::prover::SmtProver,
+        calls: &mut usize,
+        facts: &mut Vec<Expr>,
+    ) -> Option<String> {
+        use crate::hir::check::pointer_facts::Exact;
+        let mut all = |gs: &[Exact], op: &str, empty: &str| -> Option<String> {
+            let parts: Option<Vec<String>> = gs
+                .iter()
+                .map(|g| self.lower_exact(g, prover, calls, facts))
+                .collect();
+            let parts = parts?;
+            Some(if parts.is_empty() {
+                empty.to_string()
+            } else {
+                format!("({op} {})", parts.join(" "))
+            })
+        };
+        match goal {
+            Exact::Term(e) => {
+                let e = self.abstract_calls(e, calls, facts);
+                prover.lower_term(&e, &|n| self.prover_int_type(n)).ok()
+            }
+            Exact::Sum(ts) => all(ts, "+ 0", "0"),
+            Exact::And(gs) => all(gs, "and", "true"),
+            Exact::Or(gs) => all(gs, "or", "false"),
+            Exact::Le(a, b) => {
+                let a = self.lower_exact(a, prover, calls, facts)?;
+                let b = self.lower_exact(b, prover, calls, facts)?;
+                Some(format!("(<= {a} {b})"))
             }
         }
     }
@@ -2021,7 +3195,7 @@ impl<'a> TypeChecker<'a> {
                 // point is an integer everywhere else in the language.
                 let is_float = match ty {
                     Some(t) => t.is_float(),
-                    None => n_str.contains('.') || n_str.contains('e') || n_str.contains('E'),
+                    None => crate::parser::expr::is_float_literal_spelling(n_str),
                 };
                 // An integer too big for an i64 has no value. Read as a float it would lose its
                 // low digits: `u64::MAX` was worked out as 18446744073709551616.

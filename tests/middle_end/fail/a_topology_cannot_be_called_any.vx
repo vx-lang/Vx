@@ -1,0 +1,17 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// `on Topology::Any` means that a function runs where it is called, so no topology can have
+// the name `Any`.
+// CHECK: E6016
+// CHECK: a topology cannot be called `Any`
+Memory CPU_DRAM {}
+Memory WIDE {
+  capacity: 1 GiB, managed: explicit, scope: device
+}
+Topology Any {
+  memory: Memory::WIDE,
+  transfer Memory::CPU_DRAM -> Memory::WIDE : 64 GB/s
+}
+
+fn main() -> i32 {
+  return 0;
+}

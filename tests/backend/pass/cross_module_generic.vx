@@ -10,16 +10,16 @@
 // imported generic free functions were dropped and this failed with "Undefined
 // function 'expect_eq'".
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: %[[V0:.*]] = call @six() : () -> i32
-// CHECK: call @expect_eq$i32(%[[V0]], %{{.*}}) : (i32, i32) -> i32
+// CHECK: call @expect_eq$i32(%[[V0]], %{{.*}}, %{{.*}}) : (i32, i32, !llvm.struct<(struct<(ptr, i32, i32)>)>) -> i32
 // CHECK-LABEL: func.func @six() -> i32
 // CHECK: %[[V0:.*]] = arith.constant 6 : i32
 // CHECK: return %[[V0]] : i32
-// CHECK-LABEL: func.func @expect_eq$i32(%arg0: i32, %arg1: i32) -> i32
-// CHECK: call @i32$expect_eq(%{{.*}}, %{{.*}}) : (i32, i32) -> i32
-// CHECK-LABEL: func.func @i32$expect_eq(%arg0: i32, %arg1: i32) -> i32
+// CHECK-LABEL: func.func @expect_eq$i32(%arg0: i32, %arg1: i32, %arg2: !llvm.struct<(struct<(ptr, i32, i32)>)>) -> i32
+// CHECK: call @i32$expect_eq(%{{.*}}, %{{.*}}, %{{.*}}) : (i32, i32, !llvm.struct<(struct<(ptr, i32, i32)>)>) -> i32
+// CHECK-LABEL: func.func @i32$expect_eq(%arg0: i32, %arg1: i32, %arg2: !llvm.struct<(struct<(ptr, i32, i32)>)>) -> i32
 // CHECK: arith.cmpi ne, %arg0, %arg1 : i32
 import std::googletest;
 

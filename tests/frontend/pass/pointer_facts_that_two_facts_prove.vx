@@ -1,0 +1,98 @@
+//===- pointer_facts_that_two_facts_prove.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each call below needs a range of elements that no single fact covers when the code makes it.
+// Writes next to each other give one fact. Two facts whose ranges touch prove `initialized`. Two
+// `valid` facts prove `valid` when their ranges share an element. `initialized(p, 0)` needs no
+// fact.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-NOT: E8006
+// CHECK: func.func @main
+
+import core::ptr;
+
+fn sum(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  let mut total = 0i64;
+  for i in 0i64..n {
+    total = total + unsafe { p[i] };
+  }
+  return total;
+}
+
+fn write_three(p : *mut i64) -> i64
+requires valid(p, 3i64)
+{
+  unsafe { p[0] = 1i64; p[1] = 2i64; p[2] = 3i64; }
+  return sum(p as *const i64, 3i64);
+}
+
+fn write_three_backward(p : *mut i64) -> i64
+requires valid(p, 3i64)
+{
+  unsafe { p[2] = 3i64; p[1] = 2i64; p[0] = 1i64; }
+  return sum(p as *const i64, 3i64);
+}
+
+// The write is next to the elements that the `requires` names.
+fn write_after_the_initialized_part(p : *mut i64, n : i64) -> i64
+requires valid(p, n + 1i64)
+requires initialized(p, n)
+requires 0i64 <= n
+{
+  unsafe { p[n] = 1i64; }
+  return sum(p as *const i64, n + 1i64);
+}
+
+// At the write, the compiler does not know where `k` is. Inside the `if`, it knows that the two
+// facts touch.
+fn facts_that_touch_later(p : *mut i64, n : i64, k : i64) -> i64
+requires valid(p, n + 1i64)
+requires initialized(p, n)
+requires 0i64 <= n
+{
+  unsafe { p[k] = 1i64; }
+  if k == n {
+    return sum(p as *const i64, n + 1i64);
+  }
+  return 0i64;
+}
+
+// `valid(p, 3)` and `valid(q, 3)` share the element `p[2]`.
+fn valid_facts_that_share_an_element(p : *const i64) -> i64
+requires valid(p, 3i64)
+requires initialized(p, 5i64)
+{
+  let q = offset(p, 2i64);
+  unsafe { assume valid(q, 3i64); }
+  return sum(p, 5i64);
+}
+
+fn no_elements(p : *const i64) -> i64
+requires valid(p, 0i64)
+{
+  return sum(p, 0i64);
+}
+
+// A write inside a branch keeps the facts from before the `if`, because the other branch has them.
+fn write_in_a_branch(p : *mut i64, n : i64, c : bool) -> i64
+requires valid(p, n + 1i64)
+requires initialized(p, n)
+requires 1i64 <= n
+{
+  if c {
+    unsafe { p[0] = 5i64; p[n] = 6i64; }
+  }
+  return sum(p as *const i64, n);
+}
+
+fn main() -> i32 {
+  return 0;
+}

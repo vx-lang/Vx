@@ -31,11 +31,12 @@ fn vec_align() -> i64 {
   return 16;
 }
 
-/// A buffer for `cap` elements of `elem_size` bytes, or null when that is zero bytes.
+/// A buffer for `cap` elements of `elem_size` bytes. For zero bytes it allocates nothing and
+/// gives the address `vec_align()`, which is aligned and not null.
 fn vec_alloc(elem_size : i64, cap : i64) -> *mut i8 {
   let bytes = vec_bytes(cap, elem_size);
   if bytes == 0 {
-    return null_mut<i8>();
+    return unsafe { vec_align() as *mut i8 };
   }
   let p = alloc(bytes, vec_align());
   if is_null_mut(p) {
@@ -44,14 +45,18 @@ fn vec_alloc(elem_size : i64, cap : i64) -> *mut i8 {
   return p;
 }
 
-/// The buffer of `old_cap` elements resized to `new_cap`, keeping its contents. A null `ptr`
-/// makes a new buffer. `ptr` is invalid afterwards.
+/// The buffer of `old_cap` elements resized to `new_cap`, keeping its contents. A buffer of zero
+/// bytes is not allocated, so it gets a new one. `ptr` is invalid afterwards.
 fn vec_grow(ptr : *mut i8, old_cap : i64, new_cap : i64, elem_size : i64) -> *mut i8 {
   let bytes = vec_bytes(new_cap, elem_size);
   if bytes == 0 {
     return ptr;
   }
-  let p = grow(ptr, vec_bytes(old_cap, elem_size), bytes, vec_align());
+  let old_bytes = vec_bytes(old_cap, elem_size);
+  if old_bytes == 0 {
+    return vec_alloc(elem_size, new_cap);
+  }
+  let p = grow(ptr, old_bytes, bytes, vec_align());
   if is_null_mut(p) {
     panic("Vec: out of memory");
   }
@@ -67,11 +72,24 @@ fn vec_check_index(index : i64, len : i64) -> i32 {
   return 0;
 }
 
+/// Moves the element at `index` out of the buffer. The caller makes sure the buffer does not
+/// drop it again.
+unsafe fn vec_take<T>(data : *mut T, index : i32) -> T {
+  return unsafe { data[index] };
+}
+
 /// A growable array of `T`.
 ///
 /// It holds a buffer from `std::alloc` and does its own element loads and stores. The buffer is
 /// released when the vector is dropped.
-struct Vec<T> {
+///
+/// Only the functions of this file can change the fields, so the invariant holds in each other
+/// file.
+struct Vec<T>
+invariant 0i32 <= self.len && self.len <= self.capacity
+invariant valid(self.data, self.capacity as i64)
+invariant initialized(self.data, self.len as i64)
+{
   data : *mut T,
   len : i32,
   capacity : i32,
@@ -96,9 +114,18 @@ Vec<T> {
     };
   }
 
-  /// A raw pointer to the first element. Invalidated by anything that grows the vector.
-  fn as_mut_ptr(self : &Vec<T>) -> *mut T {
-    return self.data;
+  /// A raw pointer to the first element. Invalidated by anything that grows the vector, so a
+  /// call that can free memory through the vector ends the facts of its `ensures`.
+  fn as_mut_ptr(self : &Vec<T>) -> *mut T
+  ensures valid(return, self.len)
+  ensures initialized(return, self.len)
+  ensures !frees(self)
+  {
+    let p = self.data;
+    // The first `len` elements of the buffer hold values, and an empty buffer has an aligned
+    // address that is not null.
+    unsafe { assume valid(p, self.len); assume initialized(p, self.len); }
+    return p;
   }
 
   /// A mutable reference to the first element.
@@ -106,7 +133,9 @@ Vec<T> {
   /// Named for what it will return once slices exist (Vx#534); today it hands back the first
   /// element rather than a `(pointer, length)` pair, so the length has to be carried
   /// separately by whoever reads it.
-  fn as_mut_slice(self : &mut Vec<T>) -> &mut T {
+  fn as_mut_slice(self : &mut Vec<T>) -> &mut T
+  ensures !frees(self)
+  {
     let ptr : *mut T = self.data;
     return unsafe { &mut *ptr };
   }
@@ -120,7 +149,9 @@ Vec<T> {
   }
 
   /// A reference to the first element, with the caveat `as_mut_slice` describes.
-  fn as_slice(self : &Vec<T>) -> &T {
+  fn as_slice(self : &Vec<T>) -> &T
+  ensures !frees(self)
+  {
     let ptr : *mut T = self.data;
     return unsafe { &*ptr };
   }
@@ -153,7 +184,9 @@ Vec<T> {
   ///
   /// When `index` is negative or not below `len`. It prints the index and the length, and stops
   /// the program.
-  fn get_ref(self : &Vec<T>, index: i32) -> &T {
+  fn get_ref(self : &Vec<T>, index: i32) -> &T
+  ensures !frees(self)
+  {
     vec_check_index(index as i64, self.len as i64);
     return unsafe { &self.data[index] };
   }
@@ -166,19 +199,24 @@ Vec<T> {
   /// vector; `push` is what grows it.
   fn set(self : &mut Vec<T>, index: i32, val: T) -> i32 {
     vec_check_index(index as i64, self.len as i64);
-    let old : T = unsafe { self.data[index] };
+    let old : T = unsafe { vec_take(self.data, index) };
     drop(old);
     unsafe { self.data[index] = val; }
     return 0;
   }
 
   /// How many elements are in the vector, which is not its capacity.
-  fn len(self : &Vec<T>) -> i32 {
+  fn len(self : &Vec<T>) -> i32
+  ensures return == self.len
+  ensures !frees(self)
+  {
     return self.len;
   }
 
   /// Whether the vector has no elements.
-  fn is_empty(self : &Vec<T>) -> bool {
+  fn is_empty(self : &Vec<T>) -> bool
+  ensures !frees(self)
+  {
     return self.len == 0;
   }
 
@@ -189,7 +227,7 @@ Vec<T> {
       return Option<T>::None();
     }
     self.len = self.len - 1;
-    return Option<T>::Some(unsafe { self.data[self.len] });
+    return Option<T>::Some(unsafe { vec_take(self.data, self.len) });
   }
 
   /// An iterator over references to the elements, borrowing the vector rather than
@@ -217,7 +255,9 @@ impl<T : Copy> Vec<T> {
   /// # Panics
   ///
   /// As `get_ref` does.
-  fn get(self : &Vec<T>, index: i32) -> T {
+  fn get(self : &Vec<T>, index: i32) -> T
+  ensures !frees(self)
+  {
     vec_check_index(index as i64, self.len as i64);
     return unsafe { self.data[index] };
   }
@@ -228,12 +268,15 @@ impl<T> Drop for Vec<T> {
   fn drop(self : &mut Vec<T>) -> void {
     if needs_drop<T>() {
       for i in 0..self.len {
-        let element : T = unsafe { self.data[i] };
+        let element : T = unsafe { vec_take(self.data, i) };
         drop(element);
       }
     }
-    let ptr_i8 : *mut i8 = self.data;
-    dealloc(ptr_i8, vec_align());
+    // A buffer of zero bytes was not allocated.
+    if self.capacity > 0 && sizeof<T>() > 0 {
+      let ptr_i8 : *mut i8 = self.data;
+      dealloc(ptr_i8, vec_align());
+    }
   }
 }
 
@@ -321,7 +364,7 @@ impl<T> Drop for VecIntoIter<T> {
   fn drop(self : &mut VecIntoIter<T>) -> void {
     if needs_drop<T>() {
       for i in self.current..self.back {
-        let element : T = unsafe { self.vec.data[i] };
+        let element : T = unsafe { vec_take(self.vec.data, i) };
         drop(element);
       }
     }
@@ -337,7 +380,7 @@ impl<T> Iterator for VecIntoIter<T> {
   fn next(self : &mut VecIntoIter<T>) -> Option<T> {
     let mut ret = Option<T>::None();
     if self.current < self.back {
-      let val : T = unsafe { self.vec.data[self.current] };
+      let val : T = unsafe { vec_take(self.vec.data, self.current) };
       self.current = self.current + 1;
       ret = Option<T>::Some(val);
     }
@@ -352,7 +395,7 @@ impl<T> DoubleEndedIterator for VecIntoIter<T> {
       return Option<T>::None();
     }
     self.back = self.back - 1;
-    let val : T = unsafe { self.vec.data[self.back] };
+    let val : T = unsafe { vec_take(self.vec.data, self.back) };
     return Option<T>::Some(val);
   }
 }

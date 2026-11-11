@@ -12,6 +12,7 @@
 // Bytes go in little-endian order.
 import core::marker;
 import core::num;
+import core::time;
 
 trait Hasher {
   fn write_u8(self : &mut Self, b : u8) -> i32;
@@ -250,5 +251,14 @@ impl Hasher for SipHasher13 {
     let a4 : SipState = sip_round(a3);
     let a5 : SipState = sip_round(a4);
     return a5.v0 ^ a5.v1 ^ a5.v2 ^ a5.v3;
+  }
+}
+
+/// Hashes the seconds and then the nanoseconds. It is here and not in `core::time`, so that
+/// `core::ops`, which imports `core::time` for `Drop::wait_limit`, does not load `core::num`.
+impl Hash for Duration {
+  fn hash<H : Hasher>(self : &Duration, state : &mut H) -> i32 {
+    let _secs = state.write_u64(self.secs);
+    return state.write_u32(self.nanos);
   }
 }

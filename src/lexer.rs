@@ -33,6 +33,7 @@ pub enum TokenTypeBase<S, C> {
     On,
     Where,
     Transfer,
+    TransferAsync,
     Unroll,
     Across,
     Match,
@@ -150,6 +151,7 @@ impl<S: std::fmt::Display, C: std::fmt::Display> std::fmt::Display for TokenType
             TokenTypeBase::On => write!(f, "on"),
             TokenTypeBase::Where => write!(f, "where"),
             TokenTypeBase::Transfer => write!(f, "transfer"),
+            TokenTypeBase::TransferAsync => write!(f, "transfer_async"),
             TokenTypeBase::Unroll => write!(f, "unroll"),
             TokenTypeBase::Across => write!(f, "across"),
             TokenTypeBase::Match => write!(f, "match"),
@@ -263,6 +265,7 @@ impl<S, C> TokenTypeBase<S, C> {
                 | TokenTypeBase::On
                 | TokenTypeBase::Where
                 | TokenTypeBase::Transfer
+                | TokenTypeBase::TransferAsync
                 | TokenTypeBase::Unroll
                 | TokenTypeBase::Across
                 | TokenTypeBase::Match
@@ -333,6 +336,7 @@ static KEYWORDS: Lazy<
     m.insert("on", TokenTypeBase::On);
     m.insert("where", TokenTypeBase::Where);
     m.insert("transfer", TokenTypeBase::Transfer);
+    m.insert("transfer_async", TokenTypeBase::TransferAsync);
     m.insert("unroll", TokenTypeBase::Unroll);
     m.insert("across", TokenTypeBase::Across);
     m.insert("match", TokenTypeBase::Match);
@@ -494,6 +498,20 @@ impl<'a> Lexer<'a> {
                     break;
                 }
                 self.advance();
+            } else if c == '+' || c == '-' {
+                // Sign of a scientific exponent (`1e-15`, `2.5E+3`). Only after `e`/`E`,
+                // and only when a digit follows, so `42-1` stays two tokens.
+                let so_far = &self.source[start_byte..self.current_byte_offset()];
+                let after_exp = so_far.ends_with('e') || so_far.ends_with('E');
+                if after_exp {
+                    let offset = self.current_byte_offset();
+                    let mut chars = self.source[offset + c.len_utf8()..].chars();
+                    if chars.next().is_some_and(|d| d.is_ascii_digit()) {
+                        self.advance();
+                        continue;
+                    }
+                }
+                break;
             } else {
                 break;
             }
@@ -909,6 +927,7 @@ impl<'a> Token<'a> {
             TokenTypeBase::On => TokenTypeBase::On,
             TokenTypeBase::Where => TokenTypeBase::Where,
             TokenTypeBase::Transfer => TokenTypeBase::Transfer,
+            TokenTypeBase::TransferAsync => TokenTypeBase::TransferAsync,
             TokenTypeBase::Unroll => TokenTypeBase::Unroll,
             TokenTypeBase::Across => TokenTypeBase::Across,
             TokenTypeBase::Match => TokenTypeBase::Match,
@@ -1026,6 +1045,7 @@ impl OwnedToken {
             TokenTypeBase::On => TokenTypeBase::On,
             TokenTypeBase::Where => TokenTypeBase::Where,
             TokenTypeBase::Transfer => TokenTypeBase::Transfer,
+            TokenTypeBase::TransferAsync => TokenTypeBase::TransferAsync,
             TokenTypeBase::Unroll => TokenTypeBase::Unroll,
             TokenTypeBase::Across => TokenTypeBase::Across,
             TokenTypeBase::Match => TokenTypeBase::Match,
@@ -1219,6 +1239,19 @@ mod tests {
     #[test]
     fn test_lex_number_with_suffix() {
         assert_eq!(lex_first("42i64"), TokenTypeBase::Number("42i64"));
+    }
+
+    #[test]
+    fn a_scientific_float_is_one_token() {
+        assert_eq!(lex_first("1e10"), TokenTypeBase::Number("1e10"));
+        assert_eq!(lex_first("1.0e-15"), TokenTypeBase::Number("1.0e-15"));
+        assert_eq!(lex_first("1.5E+3"), TokenTypeBase::Number("1.5E+3"));
+        assert_eq!(lex_first("1e-15f64"), TokenTypeBase::Number("1e-15f64"));
+        // The sign is only part of the number after e/E, so subtraction stays two tokens.
+        let tokens = Lexer::new("42-1").tokenize();
+        assert_eq!(tokens[0].kind, TokenTypeBase::Number("42"));
+        assert_eq!(tokens[1].kind, TokenTypeBase::Minus);
+        assert_eq!(tokens[2].kind, TokenTypeBase::Number("1"));
     }
 
     #[test]

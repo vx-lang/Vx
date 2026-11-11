@@ -235,6 +235,7 @@ impl<'a> TypeChecker<'a> {
             self.borrow.record(
                 owner,
                 BorrowRecord {
+                    carried_from: None,
                     is_mut,
                     scope_depth: self.scopes.len(),
                     borrower_name: Some(borrower.to_string()),
@@ -302,6 +303,7 @@ impl<'a> TypeChecker<'a> {
             return;
         }
         let Some(view) = self.view_of(value, ty) else {
+            self.check_spawn_capture_moved(value);
             return;
         };
         self.errors.error_with_code(
@@ -329,6 +331,9 @@ impl<'a> TypeChecker<'a> {
         }
         for (param, arg) in params.iter().zip(args) {
             let Some(view) = self.view_of(arg, param) else {
+                if !matches!(param, Type::Borrow { .. } | Type::Ref(..)) {
+                    self.check_spawn_capture_moved(arg);
+                }
                 continue;
             };
             self.errors.error_with_code(

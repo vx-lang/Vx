@@ -421,6 +421,12 @@ impl MemorySpace {
     }
 }
 
+/// `on Topology::Any` says that a function runs where it is called. The parser writes it as a
+/// generic topology parameter named `ANY_TOPOLOGY_PARAM`. No program can write that name, so no
+/// parameter type can bind it.
+pub const ANY_TOPOLOGY: &str = "Any";
+pub const ANY_TOPOLOGY_PARAM: &str = "$Any";
+
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum TopologyKind {
     CPU,
@@ -729,9 +735,10 @@ pub fn substitute_type_name(
     name: &str,
     mapping: &std::collections::HashMap<Symbol, Type>,
 ) -> String {
-    // `&T` and `&mut T`: the reference stays, what it refers to is substituted.
+    // `&T`, `&mut T`, `*mut T` and `*const T`: the reference or pointer stays, what it refers
+    // to is substituted.
     let trimmed = name.trim();
-    for prefix in ["&mut ", "&"] {
+    for prefix in ["&mut ", "&", "*mut ", "*const "] {
         if let Some(rest) = trimmed.strip_prefix(prefix) {
             return format!("{prefix}{}", substitute_type_name(rest, mapping));
         }
@@ -783,7 +790,7 @@ pub fn memory_variable(p: &Placement) -> Option<&Symbol> {
 }
 
 /// `place`, with a memory variable replaced by the memory that `mapping` binds it to.
-fn substitute_memory(
+pub(crate) fn substitute_memory(
     place: &Option<Placement>,
     mapping: &std::collections::HashMap<Symbol, Type>,
 ) -> Option<Placement> {
@@ -945,9 +952,11 @@ impl Type {
                 is_mut: *is_mut,
                 region_id: *region_id,
             },
-            Type::Pointer(inner, mem, is_mut) => {
-                Type::Pointer(Box::new(inner.substitute(mapping)), mem.clone(), *is_mut)
-            }
+            Type::Pointer(inner, mem, is_mut) => Type::Pointer(
+                Box::new(inner.substitute(mapping)),
+                substitute_memory(mem, mapping),
+                *is_mut,
+            ),
             Type::Tensor(el_ty, dims, top) => {
                 let new_el_ty = if let ElementType::Generic(ref name) = el_ty {
                     if let Some(Type::Scalar(concrete_el)) = mapping.get(name) {
@@ -1303,7 +1312,7 @@ impl ElementType {
     /// with a fractional part -- those are type errors reported elsewhere, and answering
     /// "out of range" for them would name the wrong defect).
     pub fn accepts_integer_literal(&self, text: &str) -> Option<bool> {
-        if text.contains('.') {
+        if is_float_literal_spelling(text) {
             return None;
         }
         if *self == ElementType::USize {
@@ -1371,6 +1380,12 @@ impl std::fmt::Display for ElementType {
             ElementType::Generic(g) => write!(f, "{}", g),
         }
     }
+}
+
+/// Whether a numeric spelling denotes a float: a decimal point, or a scientific exponent
+/// (`1e-15` has no `.` but is still a float).
+pub fn is_float_literal_spelling(s: &str) -> bool {
+    s.contains('.') || s.contains('e') || s.contains('E')
 }
 
 impl std::str::FromStr for ElementType {
@@ -1600,6 +1615,24 @@ impl Mangle for ElementType {
             _ => write!(w, "{}", self),
         }
     }
+}
+
+/// The placed tensor of the type of `transfer_async(x, M)`, `T` in `Token<T>`. A type that the
+/// program declares has a declaration, so a `struct Token` of the program is not a token. The
+/// code generators lower a token as its tensor.
+pub fn transfer_token_inner(ty: &Type) -> Option<&Type> {
+    match ty {
+        Type::GenericInstance(base, args) if args.len() == 1 => match base.as_ref() {
+            Type::Struct(name, None) if name.as_ref() == "Token" => args.first(),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether `ty` is the token of a `lanes::copy_async`, `Token<void>`.
+pub fn is_copy_token(ty: &Type) -> bool {
+    matches!(transfer_token_inner(ty), Some(Type::Struct(name, None)) if name.as_ref() == "void")
 }
 
 #[cfg(test)]

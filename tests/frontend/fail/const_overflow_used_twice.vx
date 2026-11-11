@@ -10,7 +10,7 @@
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 
-// CHECK: Error[E3044] at [[@LINE+1]]:1: const 'A' has a value that does not fit its declared type
+// CHECK: Error[E3044] at {{.*}}const_overflow_used_twice.vx:[[@LINE+1]]:1: const 'A' has a value that does not fit its declared type
 const A : i32 = 2147483647 + 1;
 
 fn main() -> i32 {

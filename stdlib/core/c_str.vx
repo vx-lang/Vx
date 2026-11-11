@@ -1,0 +1,31 @@
+//===- c_str.vx - Vx Standard Library -----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// C strings: text that ends with a NUL byte, such as a string literal.
+//
+// `==` and `!=` with a string literal are calls of `c_str_equals`. A program that compares
+// with a string literal gets this module without an `import`.
+
+/// Whether `a` and `b` hold the same text. It reads at most `bound` bytes of each, and stops
+/// at the first NUL. For `s == "hello"` the bound is 6: the five letters and the NUL, so
+/// "hello!" is not equal to "hello". When both sides are literals, the call runs while
+/// compiling and the comparison becomes `true` or `false`.
+fn c_str_equals(a : *const i8, b : *const i8, bound : i64) -> bool {
+  let mut i = 0i64;
+  while i < bound {
+    let x = unsafe { a[i] };
+    let y = unsafe { b[i] };
+    if x != y {
+      return false;
+    }
+    if x == 0i8 {
+      return true;
+    }
+    i = i + 1i64;
+  }
+  return true;
+}

@@ -110,10 +110,52 @@ impl TypeChecker<'_> {
                 }
             }
         });
+        let named_no_place = !bad.is_empty();
         for (written, why) in bad {
             self.errors.error_with_code(
                 crate::diagnostic::DiagnosticCode::E6025,
                 format!("`{written}` in {context} names no location: {why}"),
+                None,
+            );
+        }
+        if !named_no_place {
+            self.report_placements_with_no_address_space(ty, context);
+        }
+    }
+
+    /// Report every placement inside `ty` whose memory has no `scope:` and is not built in.
+    /// Such a memory has no address space on the target, and a default could put the data
+    /// somewhere the program did not ask for.
+    fn report_placements_with_no_address_space(&mut self, ty: &crate::syntax::Type, context: &str) {
+        use crate::syntax::Written;
+        let mut bad = Vec::new();
+        ty.for_each_placement(&mut |p| {
+            let space = match p.written() {
+                Written::Device if matches!(p.topology, crate::syntax::Topology::Current) => return,
+                Written::Device => match self.transfer_cost_graph.descriptor(&p.topology.kind()) {
+                    Some(d) => d.default_space.clone(),
+                    None => return,
+                },
+                Written::Space => p.space.clone(),
+            };
+            let decl = self
+                .env
+                .memories
+                .values()
+                .find(|d| crate::syntax::MemorySpace::from_name(d.name.as_ref()) == space)
+                .copied();
+            if crate::arch::declared_address_space(&space, decl).is_none() {
+                bad.push((p.as_written(), space.name()));
+            }
+        });
+        for (written, space) in bad {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E6037,
+                format!(
+                    "`{written}` in {context} has no address space on the target: \
+                     `Memory::{space}` has no `scope:`. Declare its memory with a `scope:` \
+                     (device, sm, cta or thread)"
+                ),
                 None,
             );
         }

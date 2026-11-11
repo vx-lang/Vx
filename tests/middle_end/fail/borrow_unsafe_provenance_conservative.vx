@@ -1,19 +1,21 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // CHECK: E4003
-// Soundness (#243, E2): a function whose body contains an `unsafe` block could stash a
-// parameter-derived pointer where a structural provenance walk cannot follow it, so its summary
-// falls back to the conservative `AnyParam`. The result is then treated as aliasing *every*
-// reference argument — mutating `x` while `r` is live must be rejected even though the visible
-// `return &b.slot` only names `b`. Conservative-on-unknown is the load-bearing soundness property.
+// `pick_unsafe` stores a pointer to `a.slot` in `c` inside an `unsafe` block, and returns what
+// `c` points at. The return-provenance summary does not follow a store through a pointer, so the
+// result may point into any argument, and the checker must refuse a change to `x` while `r` is
+// in use.
 struct Map {
   slot : i32, present : i32
+}
+struct Cell {
+  p : *const i32
 }
 fn insert(m : &mut Map, v : i32) -> void {
   m.slot = v; m.present = 1;
 }
-fn pick_unsafe(a : &Map, b : &Map) -> &i32 {
-  unsafe { let _p = 0; }
-  return &b.slot;
+fn pick_unsafe(a : &Map, b : &Map, c : &mut Cell) -> &i32 {
+  unsafe { c.p = (&a.slot) as *const i32; }
+  return unsafe { &*c.p };
 }
 fn bad() -> i32 {
   let mut x = Map {
@@ -22,8 +24,11 @@ fn bad() -> i32 {
   let mut y = Map {
     slot : 2, present : 1
   };
-  let r = pick_unsafe(&x, &y);
-  insert(&mut x, 9);   // conservative: r may alias x — must reject
+  let mut c = Cell {
+    p : (&y.slot) as *const i32
+  };
+  let r = pick_unsafe(&x, &y, &mut c);
+  insert(&mut x, 9);   // `r` points at `x.slot`
   return *r;
 }
 fn main() -> i32 {

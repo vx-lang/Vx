@@ -16,8 +16,22 @@
 
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use clap::Parser;
+
+#[derive(Parser)]
+#[command(
+    name = "update_mlir_test_checks",
+    version,
+    about = "Rewrite FileCheck lines in Vx MLIR tests from live vxc output"
+)]
+struct Cli {
+    /// Test files whose CHECK lines should be refreshed
+    #[arg(required = true)]
+    files: Vec<PathBuf>,
+}
 
 fn build_vxc() -> std::path::PathBuf {
     println!("Building vxc...");
@@ -156,21 +170,16 @@ fn extract_llvm_checks(stdout: &str, prefix: &str) -> Vec<String> {
     checks
 }
 
-fn process_test_file(file_path: &str, vxc_bin: &Path) {
-    println!("Updating {}...", file_path);
+fn process_test_file(file_path: &Path, vxc_bin: &Path) -> Result<(), String> {
+    let display = file_path.display().to_string();
+    println!("Updating {}...", display);
 
-    let original_content = match fs::read_to_string(file_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Warning: Failed to read {}: {}", file_path, e);
-            return;
-        }
-    };
+    let original_content =
+        fs::read_to_string(file_path).map_err(|e| format!("Failed to read {}: {}", display, e))?;
 
-    let (runs, prefixes) = parse_run_lines(&original_content, file_path);
+    let (runs, prefixes) = parse_run_lines(&original_content, &display);
     if runs.is_empty() {
-        eprintln!("Warning: No RUN lines found in {}", file_path);
-        return;
+        return Err(format!("No RUN lines found in {}", display));
     }
 
     let mut new_lines = filter_existing_checks(&original_content, &prefixes);
@@ -180,8 +189,10 @@ fn process_test_file(file_path: &str, vxc_bin: &Path) {
 
         let exec_name = args.remove(0);
         if exec_name != "vxc" && exec_name != "vx-opt" {
-            eprintln!("Unknown executable in RUN line: {}", exec_name);
-            continue;
+            return Err(format!(
+                "Unknown executable in RUN line: {} (in {})",
+                exec_name, display
+            ));
         }
 
         let output = Command::new(vxc_bin)
@@ -205,26 +216,41 @@ fn process_test_file(file_path: &str, vxc_bin: &Path) {
 
     let new_content = new_lines.join("\n");
     if new_content != original_content {
-        if let Err(e) = fs::write(file_path, new_content) {
-            eprintln!("Error writing {}: {}", file_path, e);
-        } else {
-            println!("  Updated.");
-        }
+        fs::write(file_path, new_content)
+            .map_err(|e| format!("Error writing {}: {}", display, e))?;
+        println!("  Updated.");
     } else {
         println!("  Unchanged.");
     }
+    Ok(())
 }
 
 fn main() {
-    let args: Vec<String> = env::args().skip(1).collect();
-    if args.is_empty() {
-        eprintln!("Usage: update_mlir_test_checks <test_files...>");
+    let cli = Cli::parse();
+
+    let mut missing = Vec::new();
+    for path in &cli.files {
+        if !path.exists() {
+            missing.push(path.display().to_string());
+        }
+    }
+    if !missing.is_empty() {
+        for path in &missing {
+            eprintln!("error: file not found: {}", path);
+        }
         std::process::exit(1);
     }
 
     let vxc_bin = build_vxc();
 
-    for file_path in args {
-        process_test_file(&file_path, &vxc_bin);
+    let mut failed = false;
+    for file_path in &cli.files {
+        if let Err(e) = process_test_file(file_path, &vxc_bin) {
+            eprintln!("error: {}", e);
+            failed = true;
+        }
+    }
+    if failed {
+        std::process::exit(1);
     }
 }

@@ -1,0 +1,30 @@
+//===- a_panic_in_a_task_from_a_module_names_the_file_of_its_spawn.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A panic in a task names the file of each `spawn`: the module for the task that the module
+// starts, and this file for the task around it.
+//
+// RUN: not vxc --package tests=tests %s --run 2>&1 | FileCheck %s
+// RUN: not vxc --package tests=tests %s --run --legacy-codegen 2>&1 | FileCheck %s
+// RUN: env VX_TASK_RUNTIME=shared not vxc --package tests=tests %s --run 2>&1 | FileCheck %s
+
+import tests::modules::starts_a_task_that_panics;
+
+// CHECK: panic: too big in the module
+// CHECK-NEXT: {{^}}  at {{.*}}starts_a_task_that_panics.vx:15{{$}}
+// CHECK-NEXT: {{^}}  in the task from the `spawn` at {{.*}}starts_a_task_that_panics.vx:13{{$}}
+// CHECK-NEXT: {{^}}  in the task from the `spawn` at {{.*}}a_panic_in_a_task_from_a_module_names_the_file_of_its_spawn.vx:24{{$}}
+// CHECK-NOT: in the task
+fn main() -> i32 {
+  let r = tasks {
+    let a = spawn {
+      start_a_task_that_panics(2)
+    };
+    a.join()
+  };
+  return r;
+}

@@ -10,10 +10,10 @@
 // functions themselves, which read the float's bits, so each is marked to be differentiated
 // as its C function.
 //
-// CHECK-DAG: llvm.func {{(hidden )?}}@libm_log({{.*}}passthrough = {{\[\[}}"enzyme_math", "log"{{\]\]}}
-// CHECK-DAG: llvm.func {{(hidden )?}}@libm_log2({{.*}}passthrough = {{\[\[}}"enzyme_math", "log2"{{\]\]}}
-// CHECK-DAG: llvm.func {{(hidden )?}}@libm_log10({{.*}}passthrough = {{\[\[}}"enzyme_math", "log10"{{\]\]}}
-// CHECK-DAG: llvm.func {{(hidden )?}}@libm_log1p({{.*}}passthrough = {{\[\[}}"enzyme_math", "log1p"{{\]\]}}
+// CHECK-DAG: llvm.func {{(hidden )?}}@libm_log({{.*}}passthrough = {{\[\[}}"enzyme_math", "log"{{(\], \["probe-stack", "inline-asm")?}}{{\]\]}}
+// CHECK-DAG: llvm.func {{(hidden )?}}@libm_log2({{.*}}passthrough = {{\[\[}}"enzyme_math", "log2"{{(\], \["probe-stack", "inline-asm")?}}{{\]\]}}
+// CHECK-DAG: llvm.func {{(hidden )?}}@libm_log10({{.*}}passthrough = {{\[\[}}"enzyme_math", "log10"{{(\], \["probe-stack", "inline-asm")?}}{{\]\]}}
+// CHECK-DAG: llvm.func {{(hidden )?}}@libm_log1p({{.*}}passthrough = {{\[\[}}"enzyme_math", "log1p"{{(\], \["probe-stack", "inline-asm")?}}{{\]\]}}
 // EXPECT: 500000 721347 217147 333333
 import core::num;
 

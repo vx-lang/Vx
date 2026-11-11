@@ -5,17 +5,19 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// Calls through each public std::net byte-count method retain u64 at the FFI boundary.
-// CHECK-DAG: func.func private @vx_tcp_stream_read(!llvm.ptr, !llvm.ptr, i64) -> i64
-// CHECK-DAG: func.func private @vx_tcp_stream_write(!llvm.ptr, !llvm.ptr, i64) -> i64
-// CHECK-DAG: func.func private @vx_udp_socket_recv(!llvm.ptr, !llvm.ptr, i64) -> i64
-// CHECK-DAG: func.func private @vx_udp_socket_send_to(!llvm.ptr, !llvm.ptr, i64, !llvm.ptr) -> i64
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
+// Calls through each public std::net byte-count method keep u64 at the FFI boundary. Each
+// call gives a status, and its count through the last pointer. Each method gives a `Result`.
+// CHECK-DAG: func.func private @vx_tcp_stream_read(!llvm.ptr, !llvm.ptr, i64, !llvm.ptr) -> i32
+// CHECK-DAG: func.func private @vx_tcp_stream_write(!llvm.ptr, !llvm.ptr, i64, !llvm.ptr) -> i32
+// CHECK-DAG: func.func private @vx_udp_socket_recv(!llvm.ptr, !llvm.ptr, i64, !llvm.ptr) -> i32
+// CHECK-DAG: func.func private @vx_udp_socket_send_to(!llvm.ptr, !llvm.ptr, i64, !llvm.ptr, !llvm.ptr) -> i32
 // CHECK-LABEL: func.func @main() -> i32
-// CHECK: call @TcpStream$read(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, i64) -> i64
-// CHECK: call @TcpStream$write(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, i64) -> i64
-// CHECK: call @UdpSocket$recv(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, i64) -> i64
-// CHECK: call @UdpSocket$send_to(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, i64, !llvm.ptr) -> i64
+// CHECK: call @TcpStream$read(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, i64) -> !llvm.struct<(i32, i64)>
+// CHECK: call @TcpStream$write(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, i64) -> !llvm.struct<(i32, i64)>
+// CHECK: call @UdpSocket$recv(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, i64) -> !llvm.struct<(i32, i64)>
+// CHECK: call @UdpSocket$send_to(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, i64, !llvm.ptr) -> !llvm.struct<(i32, i64)>
+import core::result;
 import std::net;
 
 fn main() -> i32 {
@@ -30,11 +32,12 @@ fn main() -> i32 {
     };
     let mut byte : u8 = 0;
     let length : u64 = 1;
-    let read_count = stream.read((&mut byte) as *mut u8, length);
-    let write_count = stream.write((&byte) as *const u8, length);
-    let recv_count = socket.recv((&mut byte) as *mut u8, length);
-    let send_count = socket.send_to((&byte) as *const u8, length, "127.0.0.1:0");
-    if read_count != 0 || write_count != 0 || recv_count != 0 || send_count != 0 {
+    // A null handle is refused, so each call gives an error.
+    let read = stream.read((&mut byte) as *mut u8, length);
+    let write = stream.write((&byte) as *const u8, length);
+    let recv = socket.recv((&mut byte) as *mut u8, length);
+    let send = socket.send_to((&byte) as *const u8, length, "127.0.0.1:0");
+    if !read.is_err() || !write.is_err() || !recv.is_err() || !send.is_err() {
       return 1;
     }
     print!("Net lengths: ");

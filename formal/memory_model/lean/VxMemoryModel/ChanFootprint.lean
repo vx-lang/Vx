@@ -18,6 +18,9 @@ atomic (`fail_atomic`). The flags of the tasks come last, and they have only `sc
 The rule can give a place of the code a lock. The code then accesses that place only in
 `locked` blocks of the lock, and two tasks of a block can share it. `LockFootprint.lean` shows
 that such places never race.
+
+The code of a block can hold other blocks, as in `Footprint.lean` (`NestOk`). The tasks of an
+inner block count as tasks of the outer block (`allIds`).
 -/
 
 namespace Vx
@@ -118,14 +121,15 @@ def lowerPhases (t : Nat) : List TaskProg.Phase := (tps t).map (CPhase.lower P)
 
 /-- The rule for one phase, at the places that `g` gives no lock. The code of a block and each
 task of the block are apart, and two tasks of the block are apart. The descendants of a task
-count as the task. The code of a block uses only the registers below `tmp + 3`, since the block
-keeps its marks from there. -/
+count as the task. The code of a block can hold other blocks (`NestOk`), and their tasks count as
+tasks of the block (`allIds`). The code of a block uses only the registers below `tmp + 3`, since
+the block keeps its marks from there. -/
 def CPhase.Ok : CPhase → Prop
   | .code s => s.NoTasks
-  | .block s _ => s.NoBlocks ∧ s.RegsBelow (P.tmp + 3) ∧
-      (∀ u ∈ (P.lowerC s).spawnIds, ∀ w, TaskProg.Desc (P.lowerPhases tps) u w →
+  | .block s _ => (P.lowerC s).NestOk (P.lowerC s).spawnIds ∧ s.RegsBelow (P.tmp + 3) ∧
+      (∀ u ∈ (P.lowerC s).allIds, ∀ w, TaskProg.Desc (P.lowerPhases tps) u w →
         s.Apart g (P.task w)) ∧
-      ∀ u ∈ (P.lowerC s).spawnIds, ∀ v ∈ (P.lowerC s).spawnIds, u ≠ v → ∀ w w',
+      ∀ u ∈ (P.lowerC s).allIds, ∀ v ∈ (P.lowerC s).allIds, u ≠ v → ∀ w w',
         TaskProg.Desc (P.lowerPhases tps) u w → TaskProg.Desc (P.lowerPhases tps) v w' →
           (P.task w).Apart g (P.task w')
 
@@ -341,11 +345,9 @@ theorem cphase_ok (htask : ∀ t, P.StmtOk (P.task t)) {p : CPhase}
       cases rep with
       | none => exact hs
       | some _ => exact hs.2.1
-    have hall := Stmt.allIds_of_noBlocks (lowerC_noBlocks (P := P) hn)
-    exact ⟨.of_noBlocks (lowerC_noBlocks hn), lowerC_regsBelow hr,
-      fun u hu w hw => apart_lower hs (htask w) (hap u (hall ▸ hu) w hw),
+    exact ⟨hn, lowerC_regsBelow hr, fun u hu w hw => apart_lower hs (htask w) (hap u hu w hw),
       fun u hu v hv huv _ w w' hw hw' =>
-        apart_lower (htask w) (htask w') (hpair u (hall ▸ hu) v (hall ▸ hv) huv w w' hw hw')⟩
+        apart_lower (htask w) (htask w') (hpair u hu v hv huv w w' hw hw')⟩
 
 theorem cphasesOk_lower (htask : ∀ t, P.StmtOk (P.task t)) :
     ∀ {ps : List CPhase}, P.CPhasesOk g tps ps → P.StmtOk (cseqAll ps) →

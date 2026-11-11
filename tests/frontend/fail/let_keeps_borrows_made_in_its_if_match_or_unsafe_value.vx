@@ -1,0 +1,121 @@
+//===- let_keeps_borrows_made_in_its_if_match_or_unsafe_value.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// The value of a `let` can be an `if`, a `match` or an `unsafe` block. A borrow made in that
+// block belongs to the new variable, as `let r = &mut x;` does. So `x` cannot change while `r`
+// is still used.
+import std::vec;
+
+fn keep(r : &mut i64) -> &mut i64 {
+  return r;
+}
+
+fn borrow_in_each_arm_of_an_if(c : bool) -> i64 {
+  let mut x : i64 = 5;
+  let mut y : i64 = 7;
+  let r = if c {
+    &mut x
+  } else {
+    &mut y
+  };
+  // CHECK-DAG: Error[E4002] at {{.*}}.vx:[[@LINE+1]]:3: Cannot access 'x' because it is mutably borrowed.
+  x = 6;
+  return *r;
+}
+
+fn call_in_each_arm_of_an_if(c : bool) -> i64 {
+  let mut x : i64 = 5;
+  let mut y : i64 = 7;
+  let r = if c {
+    keep(&mut x)
+  } else {
+    keep(&mut y)
+  };
+  // CHECK-DAG: Error[E4002] at {{.*}}.vx:[[@LINE+1]]:3: Cannot access 'x' because it is mutably borrowed.
+  x = 6;
+  return *r;
+}
+
+fn call_in_a_match_arm(n : i32) -> i64 {
+  let mut x : i64 = 5;
+  let r = match n {
+    _ => {
+      keep(&mut x)
+    }
+  };
+  // CHECK-DAG: Error[E4002] at {{.*}}.vx:[[@LINE+1]]:3: Cannot access 'x' because it is mutably borrowed.
+  x = 6;
+  return *r;
+}
+
+fn borrow_in_an_unsafe_block() -> i64 {
+  let mut x : i64 = 5;
+  let r = unsafe { &mut x };
+  // CHECK-DAG: Error[E4002] at {{.*}}.vx:[[@LINE+1]]:3: Cannot access 'x' because it is mutably borrowed.
+  x = 6;
+  return *r;
+}
+
+fn call_in_an_unsafe_block() -> i64 {
+  let mut x : i64 = 5;
+  let r = unsafe { keep(&mut x) };
+  // CHECK-DAG: Error[E4002] at {{.*}}.vx:[[@LINE+1]]:3: Cannot access 'x' because it is mutably borrowed.
+  x = 6;
+  return *r;
+}
+
+// The `let` inside the arm does not take the borrow of `x` from `r`.
+fn arm_with_its_own_let(c : bool) -> i64 {
+  let mut x : i64 = 5;
+  let mut y : i64 = 7;
+  let r = if c {
+    let t : i64 = 1;
+    &mut x
+  } else {
+    &mut y
+  };
+  // CHECK-DAG: Error[E4002] at {{.*}}.vx:[[@LINE+1]]:3: Cannot access 'x' because it is mutably borrowed.
+  x = 6;
+  return *r;
+}
+
+fn if_given_straight_to_a_call(c : bool) -> i64 {
+  let mut x : i64 = 5;
+  let mut y : i64 = 7;
+  let r = keep(if c {
+    &mut x
+  } else {
+    &mut y
+  });
+  // CHECK-DAG: Error[E4002] at {{.*}}.vx:[[@LINE+1]]:3: Cannot access 'x' because it is mutably borrowed.
+  x = 6;
+  return *r;
+}
+
+// The pushes can move the elements of `v` to a new buffer and free the old one, which `r`
+// points into.
+fn reference_into_a_vec_from_an_if() -> i64 {
+  let mut v = Vec<i64>::with_capacity(1);
+  v.push(41);
+  let c = v.len() > 0;
+  let r = if c {
+    v.get_ref(0)
+  } else {
+    v.get_ref(0)
+  };
+  // CHECK-DAG: Error[E4003] at {{.*}}.vx:[[@LINE+1]]:5: Cannot borrow 'v' as mutable because it is also borrowed as immutable.
+  v.push(1);
+  return *r;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: 8 error(s) emitted

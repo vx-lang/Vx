@@ -1,0 +1,118 @@
+//===- pointer_clause_that_is_written_wrong.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A pointer clause is a `requires` or an `ensures` of its own: `valid(p, n)`, `initialized(p, n)`
+// or `!overlaps(p, q, n)`, where `p` and `q` are raw pointer parameters. In an `ensures`, `return`
+// can be one too, when the function returns a raw pointer. A safe function with a pointer
+// `requires` cannot be a function value, and a safe method of a trait impl cannot have one,
+// because a call through the value or the trait would not prove the clause.
+
+// The checks of the whole program come before the checks of the bodies.
+trait Fills {
+  fn fill(self : &Self, p : *mut i64, n : i64) -> void;
+}
+
+struct Filler {
+  k : i64,
+}
+
+impl Fills for Filler {
+  // CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:12: `fill` is a method of an impl of `Fills`, so it must be an `unsafe fn` to have a pointer clause: a call through the trait would not prove the clause
+  fn fill(self : &Filler, p : *mut i64, n : i64) -> void
+  requires valid(p, n)
+  {
+    return;
+  }
+}
+
+extern "C" {
+  // CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:11: `valid` needs a raw pointer, but `return` is `i32`
+  safe fn c_count(p : *const i64) -> i32
+  ensures valid(return, 1);
+}
+
+// CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:9: `valid` needs a raw pointer, but `return` is `i64`
+unsafe fn in_ensures(p : *mut i64) -> i64
+ensures valid(return, 1)
+{
+  return 0i64;
+}
+
+// CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:10: `!valid` says nothing that a caller can use
+unsafe fn not_valid_in_ensures(p : *mut i64) -> *mut i64
+ensures !valid(return, 1)
+{
+  return p;
+}
+
+// CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:10: write each pointer clause as a `requires` of its own, as in `requires valid(p, n)`
+unsafe fn inside_another_clause(p : *mut i64, n : i64) -> void
+requires valid(p, n) && n > 0
+{
+  return;
+}
+
+// CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:10: `valid` takes a raw pointer parameter and a length, as in `valid(p, n)`
+unsafe fn no_length(p : *mut i64) -> void
+requires valid(p)
+{
+  return;
+}
+
+// CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:10: only `!overlaps(p, q, n)` says something that the body can use
+unsafe fn overlaps_without_not(p : *mut i64, q : *mut i64) -> void
+requires overlaps(p, q, 4)
+{
+  return;
+}
+
+// CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:11: `!valid` says nothing that the body can use
+unsafe fn not_valid(p : *mut i64) -> void
+requires !valid(p, 4)
+{
+  return;
+}
+
+// CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:10: `z` is not a parameter of `no_such_parameter`
+unsafe fn no_such_parameter(_p : *mut i64) -> void
+requires valid(z, 4)
+{
+  return;
+}
+
+// CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:10: `valid` needs a raw pointer, but `r` is `&i64`
+unsafe fn not_a_raw_pointer(r : &i64) -> void
+requires valid(r, 1)
+{
+  return;
+}
+
+// CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:11: `overlaps` needs two different pointers, but both are `p`
+unsafe fn one_pointer_twice(p : *mut i64) -> void
+requires !overlaps(p, p, 4)
+{
+  return;
+}
+
+fn safe_with_a_clause(p : *mut i64, n : i64) -> void
+requires valid(p, n)
+{
+  return;
+}
+
+// CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:12: `safe_with_a_clause` has a pointer `requires`, so it cannot be a function value yet: a call through the value would not prove the clause
+fn as_a_function_value() -> void {
+  let _f = safe_with_a_clause;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: 12 error(s) emitted

@@ -1,0 +1,37 @@
+//===- cast_in_a_called_function.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An `as` cast inside a function that a `comptime` block calls. The checker has not typed that
+// function's body when the block runs, so the cast does not record the type it casts from.
+
+fn as_float(k : i64) -> f64 {
+  return k as f64;
+}
+
+fn to_byte(k : i32) -> u8 {
+  return k as u8;
+}
+
+fn widen(k : u8) -> i64 {
+  return k as i64;
+}
+
+fn main() -> i32 {
+  let a : f64 = comptime {
+    as_float(3)
+  };
+  println!("{}", a);
+  let b : u8 = comptime {
+    to_byte(200)
+  };
+  println!("{}", b);
+  let c : i64 = comptime {
+    widen(250u8)
+  };
+  println!("{}", c);
+  return 0;
+}

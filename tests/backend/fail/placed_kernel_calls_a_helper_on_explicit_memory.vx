@@ -1,0 +1,53 @@
+//===- placed_kernel_calls_a_helper_on_explicit_memory.vx ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A placed kernel calls a helper that takes a tensor in `managed: explicit`
+// memory. A SPIR-V image cannot pass a tensor into a call, and the host cannot
+// read that memory either, so the program does not compile.
+//
+// RUN: not vxc %s --action emit-llvm 2>&1 | FileCheck %s # flat-codegen
+// CHECK: cannot become a `spirv64` device image: it passes a tensor to `first`
+// CHECK: This region's operands are in 'GPU_HBM', declared `managed: explicit`
+// CHECK: Either every region in the image must be one the target can compile
+// CHECK-NOT: will run on the host instead
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: explicit
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+}
+
+// `on Topology::Dev` is what lets the kernel call it at all.
+fn first(a: &Tensor<f32, [4], Memory::GPU_HBM>) on Topology::Dev -> f32 {
+  return a[0];
+}
+
+fn main() -> i32 {
+  let mut h = unsafe { Tensor<f32, [4]>::uninit() };
+  let mut o_h = unsafe { Tensor<f32, [4]>::uninit() };
+  for i in 0..4 {
+    h[i] = i as f32;
+    o_h[i] = 0.0;
+  }
+  let d = transfer(h, Memory::GPU_HBM);
+  let mut o = transfer(o_h, Memory::GPU_HBM);
+
+  spawn on(Topology::Dev) {
+    for i in 0..4 {
+      o[i] = first(&d) + 1.0;
+    }
+  }
+
+  let back = transfer(o, Memory::CPU_DRAM);
+  print(back);
+  return 0;
+}

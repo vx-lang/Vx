@@ -1,0 +1,60 @@
+//===- box_of_a_generic_struct.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `Box` of a generic struct that holds its type parameter by value: `Pair<i8>`, `Pair<i64>`
+// and `Mutex<i64>`. The size of such a struct depends on the type argument, so `sizeof` and the
+// copy through the pointer must use the size of the instance. The default code generator compiles
+// this program, and the AST code generator gives the same output.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}sizes 16 16 56{{$}}
+// CHECK: {{^}}small 3 -4{{$}}
+// CHECK: {{^}}large 5 6000000000{{$}}
+// CHECK: {{^}}mutex 42{{$}}
+
+import std::box;
+import std::sync::mutex;
+
+struct Pair<T> {
+  a : i64,
+  b : T,
+}
+
+fn pair_of_box<T>(b : Box<Pair<T>>) -> Pair<T> {
+  let p = b.ptr;
+  let value : Pair<T> = unsafe { read(p as *const Pair<T>) };
+  forget(b);
+  return value;
+}
+
+fn add_one(m : &Mutex<i64>) -> void {
+  let mut g = m.lock();
+  let v = g.get();
+  *v = *v + 1;
+}
+
+fn main() -> i32 {
+  println!("sizes {} {} {}", sizeof<Pair<i8>>(), sizeof<Pair<i64>>(), sizeof<Mutex<i64>>());
+
+  let small = pair_of_box(Box<Pair<i8>>::new(Pair<i8> {
+    a : 3, b : -4
+  }));
+  println!("small {} {}", small.a, small.b);
+  let large = pair_of_box(Box<Pair<i64>>::new(Pair<i64> {
+    a : 5, b : 6000000000
+  }));
+  println!("large {} {}", large.a, large.b);
+
+  let m = Box<Mutex<i64>>::new(Mutex<i64>::new(41));
+  let p = m.ptr;
+  let guarded : &Mutex<i64> = unsafe { &*p };
+  add_one(guarded);
+  let mut g = guarded.lock();
+  println!("mutex {}", *g.get());
+  return 0;
+}

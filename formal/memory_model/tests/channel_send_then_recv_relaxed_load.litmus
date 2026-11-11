@@ -1,0 +1,11 @@
+LISA channel_send_then_recv_relaxed_load
+(* As channel_send_then_recv_release_acquire, but the recv reads the slot with a relaxed load.
+   Then nothing orders the write of the value before its read, and the two race.
+   Expect: sometimes, a data race. *)
+{ slot = 0; value = 0; }
+ P0                  | P1                   ;
+ w[plain] value 1    | r[rlx] r0 slot       ;
+ w[rel] slot 1       | r[plain] r1 value    ;
+scopes: (system P0 P1)
+filter (1:r0 = 1)
+exists (1:r1 = 0)

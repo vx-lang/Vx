@@ -18,7 +18,12 @@ In `nestChanFoot`, the main code starts task 0 in a block, and task 0 starts tas
 own block. Task 1 sends 7 on channel 0, and task 2 receives it and writes it to the place 0.
 After their blocks, task 0 and then the main code read the place 0.
 
-The rule holds for the four programs, so no execution of them has a data race.
+In `innerLockFoot`, the code of a block starts task 0, then runs an inner block of tasks 1 and 2,
+then adds 1 to the place 0 under lock 0. Task 1 writes the place 1 and sends 7 on channel 0. Task
+2 receives it and writes it to the place 0 under lock 0. Task 0 adds 1 to the place 0 under lock
+0. After the block, the main code reads both places without the lock.
+
+The rule holds for the five programs, so no execution of them has a data race.
 -/
 
 namespace Vx
@@ -54,7 +59,7 @@ theorem chanFoot_footprints : chanFoot.CFootprints (fun _ => none) (fun _ => [])
   main := rfl
   phases := by
     simp [CPhasesOk, chanPhases, CPhase.Ok, CPhase.lower, TaskProg.Phase.ids, CStmt.NoTasks,
-      CStmt.NoBlocks, CStmt.RegsBelow, Stmt.NoTasks, Stmt.NoBlocks, Stmt.RegsBelow,
+      Stmt.NestOk, CStmt.RegsBelow, Stmt.NoTasks, Stmt.RegsBelow,
       Expr.RegsBelow, lowerC, Stmt.spawnIds, Stmt.allIds, CStmt.Apart, CStmt.Accesses, Stmt.Accesses, Compat,
       chanFoot]
   tasks
@@ -109,7 +114,7 @@ theorem lockFoot_footprints : lockFoot.CFootprints lockGuard (fun _ => []) lockP
   main := rfl
   phases := by
     simp [CPhasesOk, lockPhases, CPhase.Ok, CPhase.lower, TaskProg.Phase.ids, CStmt.NoTasks,
-      CStmt.NoBlocks, CStmt.RegsBelow, Stmt.NoTasks, Stmt.NoBlocks, Stmt.RegsBelow,
+      Stmt.NestOk, CStmt.RegsBelow, Stmt.NoTasks, Stmt.RegsBelow,
       Expr.RegsBelow, lowerC, Stmt.spawnIds, Stmt.allIds, CStmt.Apart, CStmt.Accesses, Stmt.Accesses, Compat,
       lockFoot, addOne, lockGuard]
   tasks
@@ -162,7 +167,7 @@ theorem failFoot_footprints : failFoot.CFootprints (fun _ => none) (fun _ => [])
   main := rfl
   phases := by
     simp [CPhasesOk, failPhases, CPhase.Ok, CPhase.lower, TaskProg.Phase.ids, CStmt.NoTasks,
-      CStmt.NoBlocks, CStmt.RegsBelow, Stmt.NoTasks, Stmt.NoBlocks, Stmt.RegsBelow,
+      Stmt.NestOk, CStmt.RegsBelow, Stmt.NoTasks, Stmt.RegsBelow,
       Expr.RegsBelow, lowerC, Stmt.spawnIds, Stmt.allIds, CStmt.Apart, CStmt.Accesses, Stmt.Accesses, Compat,
       failFoot]
   tasks
@@ -257,7 +262,7 @@ theorem nestChanFoot_footprints :
   phases := by
     simp only [CPhasesOk, nestChanMain, CPhase.Ok, CPhase.lower, TaskProg.Phase.ids, lowerC,
       Stmt.spawnIds, Stmt.allIds]
-    refine ⟨⟨by simp [CStmt.NoBlocks, Stmt.NoBlocks],
+    refine ⟨⟨by simp [Stmt.NestOk],
       by simp [CStmt.RegsBelow, Stmt.RegsBelow, Expr.RegsBelow, nestChanFoot],
       fun u hu w hw => ?_, by simp⟩, by simp, by simp [CStmt.NoTasks, Stmt.NoTasks], by simp,
       trivial⟩
@@ -273,7 +278,7 @@ theorem nestChanFoot_footprints :
     | 0 => by
       simp only [CPhasesOk, nestChanPhases, nestChanTask0, CPhase.Ok, CPhase.lower,
         TaskProg.Phase.ids, lowerC, Stmt.spawnIds, Stmt.allIds]
-      refine ⟨⟨by simp [CStmt.NoBlocks, Stmt.NoBlocks],
+      refine ⟨⟨by simp [Stmt.NestOk],
         by simp [CStmt.RegsBelow, Stmt.RegsBelow, Expr.RegsBelow],
         fun u _ w _ => by simp [CStmt.Apart, CStmt.Accesses, Stmt.Accesses],
         fun u hu v hv huv w w' hw hw' => ?_⟩, by simp, by simp [CStmt.NoTasks, Stmt.NoTasks],
@@ -302,5 +307,84 @@ theorem nestChanFoot_footprints :
 theorem nestChanFoot_raceFree {X : Execution} (hX : nestChanFoot.toTaskProg.toProg.Execs X)
     (wf : X.WellFormed) (hc : X.Consistent) (ho : X.CoOrder) (hfin : X.Finite) : X.RaceFree :=
   raceFree nestChanFoot_footprints hX wf hc ho hfin
+
+/-- The code of the outer block: it starts task 0, runs an inner block of tasks 1 and 2, and then
+adds 1 to the place 0 under lock 0. -/
+def innerLockBlock : CStmt :=
+  .seq (.base (.spawn 0)) (.seq (.tasksBlock (.seq (.base (.spawn 1)) (.base (.spawn 2)))) addOne)
+
+def innerLockPhases : List CPhase :=
+  [.block innerLockBlock none, .code (.seq (.base (.load 4 0 .plain)) (.base (.load 4 1 .plain)))]
+
+def innerLockFoot : ChanProg where
+  main := cseqAll innerLockPhases
+  task
+    | 0 => addOne
+    | 1 => .seq (.base (.store 1 (.const 3) .plain)) (.send 0 (.const 7))
+    | 2 => .seq (.recv 4 5 0) (.locked 0 (.base (.store 0 (.reg 4) .plain)))
+    | _ => .base .skip
+  count := 3
+  places := 2
+  chans := 1
+  locks := 1
+  cap _ := 1
+  senders _ := 1
+  msgs := 1
+  tmp := 6
+
+theorem innerLockFoot_footprints :
+    innerLockFoot.CFootprints lockGuard (fun _ => []) innerLockPhases where
+  ok :=
+    { main := by
+        simp [innerLockFoot, innerLockPhases, innerLockBlock, addOne, cseqAll, CPhase.stmt,
+          StmtOk, Stmt.Below, CStmt.Locks]
+      task
+        | 0 => by simp [innerLockFoot, addOne, StmtOk, Stmt.Below, CStmt.Locks]
+        | 1 => by simp [innerLockFoot, StmtOk, Stmt.Below]
+        | 2 => by simp [innerLockFoot, StmtOk, Stmt.Below, CStmt.Locks]
+        | _ + 3 => by simp [innerLockFoot, StmtOk, Stmt.Below]
+      cap _ _ := by simp [innerLockFoot] }
+  main := rfl
+  phases := by
+    simp only [CPhasesOk, innerLockPhases, CPhase.Ok, CPhase.lower, TaskProg.Phase.ids]
+    refine ⟨⟨by simp [innerLockBlock, addOne, lowerC, Stmt.NestOk, Stmt.spawnIds],
+      by simp [innerLockBlock, addOne, CStmt.RegsBelow, Stmt.RegsBelow, Expr.RegsBelow,
+        innerLockFoot],
+      fun u hu w hw => ?_, fun u hu v hv huv w w' hw hw' => ?_⟩, by simp,
+      by simp [CStmt.NoTasks, Stmt.NoTasks], by simp, trivial⟩
+    · simp [innerLockBlock, addOne, lowerC, Stmt.allIds] at hu
+      rw [lowerPhases_nil, TaskProg.desc_nil] at hw
+      subst w
+      rcases hu with rfl | rfl | rfl <;>
+        simp [innerLockBlock, addOne, CStmt.Apart, CStmt.Accesses, Stmt.Accesses, Compat,
+          innerLockFoot, lockGuard]
+    · simp [innerLockBlock, addOne, lowerC, Stmt.allIds] at hu hv
+      rw [lowerPhases_nil, TaskProg.desc_nil] at hw hw'
+      subst w w'
+      rcases hu with rfl | rfl | rfl <;> rcases hv with rfl | rfl | rfl <;> simp at huv <;>
+        simp [CStmt.Apart, CStmt.Accesses, Stmt.Accesses, Compat, innerLockFoot, addOne,
+          lockGuard]
+  tasks
+    | 0 | 1 | 2 | _ + 3 =>
+      Or.inr ⟨by simp [innerLockFoot, addOne, CStmt.NoTasks, Stmt.NoTasks], rfl⟩
+  task_phases _ := trivial
+  one_parent := one_parent_nil _
+  order _ _ := nofun
+  guard x m h := by
+    by_cases hx : x = 0 <;> simp [lockGuard, hx] at h
+    subst hx h
+    simp [innerLockFoot]
+  guarded_blocks B rep hB := by
+    simp only [innerLockPhases, List.mem_cons, CPhase.block.injEq, reduceCtorEq,
+      List.not_mem_nil, or_false] at hB
+    obtain ⟨rfl, rfl⟩ := hB
+    simp [innerLockBlock, addOne, CStmt.Guarded, Stmt.Accesses, lockGuard]
+  guarded_task
+    | 0 => by simp [innerLockFoot, addOne, CStmt.Guarded, Stmt.Accesses, lockGuard]
+    | 1 | 2 | _ + 3 => by simp [innerLockFoot, CStmt.Guarded, Stmt.Accesses, lockGuard]
+
+theorem innerLockFoot_raceFree {X : Execution} (hX : innerLockFoot.toTaskProg.toProg.Execs X)
+    (wf : X.WellFormed) (hc : X.Consistent) (ho : X.CoOrder) (hfin : X.Finite) : X.RaceFree :=
+  raceFree innerLockFoot_footprints hX wf hc ho hfin
 
 end Vx

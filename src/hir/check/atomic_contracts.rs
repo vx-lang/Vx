@@ -9,7 +9,9 @@
 // Atomic contracts: `ensures atomic(t)` on a function and `ensures : [atomic(t)]` on an `mlir!`
 // block. Each one says that every access to the elements of the tensor `t` is an atomic
 // operation. The race proof of an `across` loop reads the contract in place of the body: two
-// atomic accesses never race. docs/discussions/mlir_declared_writes_in_across.md has the design.
+// atomic accesses never race. `reads_only(t)` says that the code reads `t` and writes none of
+// it. The proof reads it as a read of all of `t`.
+// docs/discussions/mlir_declared_writes_in_across.md has the design.
 //
 //===----------------------------------------------------------------------===//
 
@@ -20,10 +22,54 @@ use crate::syntax::stmt::Statement;
 use crate::syntax::{ElementType, Expr, Span, Type};
 use std::collections::{HashMap, HashSet};
 
-/// Whether `e` is a clause about memory access, `atomic(t)` or `writes_only()`, well formed or
-/// not. The prover does not read these.
+/// Whether `e` is a clause about memory access, `atomic(t)`, `reads_only(t)` or
+/// `writes_only()`, well formed or not. The prover does not read these.
 pub(crate) fn is_access_clause(e: &Expr) -> bool {
-    matches!(e, Expr::FunctionCall(fc) if matches!(fc.name.as_ref(), "atomic" | "writes_only"))
+    matches!(e, Expr::FunctionCall(fc)
+        if matches!(fc.name.as_ref(), "atomic" | "reads_only" | "writes_only"))
+}
+
+/// Whether the prover reads the clause `e`: one that is not an access clause and uses no borrow
+/// function, no pointer function and no `frees`.
+pub(crate) fn is_prover_clause(e: &Expr) -> bool {
+    !is_access_clause(e)
+        && !super::borrow_clauses::mentions_borrow_function(e)
+        && super::pointer_clauses::first_pointer_call(e).is_none()
+        && super::pointer_clauses::first_frees_call(e).is_none()
+}
+
+/// Whether `e` is a `reads_only` clause, well formed or not.
+fn is_reads_only(e: &Expr) -> bool {
+    matches!(e, Expr::FunctionCall(fc) if fc.name.as_ref() == "reads_only")
+}
+
+/// The name in `reads_only(t)`.
+fn reads_only_name(e: &Expr) -> Option<&str> {
+    match e {
+        Expr::FunctionCall(fc) if fc.name.as_ref() == "reads_only" && fc.args.len() == 1 => {
+            match &fc.args[0] {
+                Expr::Identifier(id) => Some(id.name.as_ref()),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// The parameters of `f` that a `reads_only` clause names, by position.
+fn reads_only_params(f: &Function) -> Vec<usize> {
+    let names: HashSet<&str> = f.ensures.iter().filter_map(reads_only_name).collect();
+    f.params
+        .iter()
+        .enumerate()
+        .filter(|(_, (p, _))| names.contains(p.as_ref()))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Whether `ty` is a `&` tensor.
+fn shared_tensor(ty: &Type) -> bool {
+    matches!(ty, Type::Borrow { inner, is_mut: false, .. } if matches!(inner.as_ref(), Type::Tensor(..)))
 }
 
 /// Whether `e` is a `writes_only` clause, with or without arguments.
@@ -191,10 +237,12 @@ impl crate::hir::TypeChecker<'_> {
                 );
             }
         }
+        self.check_reads_only_contract(f, shown);
+        self.check_unnamed_tensors(f, shown);
         let clauses: Vec<&Expr> = f
             .ensures
             .iter()
-            .filter(|e| is_access_clause(e) && !is_writes_only(e))
+            .filter(|e| is_access_clause(e) && !is_writes_only(e) && !is_reads_only(e))
             .collect();
         if clauses.is_empty() {
             return;
@@ -254,7 +302,39 @@ impl crate::hir::TypeChecker<'_> {
             return;
         }
         let mut named = HashSet::new();
+        let mut read_only = HashSet::new();
         for clause in &m.ensures {
+            if is_reads_only(clause) {
+                let input = reads_only_name(clause).and_then(|name| {
+                    m.inputs
+                        .iter()
+                        .find(|(_, e, ty)| {
+                            passed_tensor(e) == Some(name) && ty.starts_with("memref")
+                        })
+                        .map(|(sym, _, _)| (name, sym.as_ref().to_string()))
+                });
+                let Some((name, sym)) = input else {
+                    self.atomic_error(
+                        "a `reads_only` clause of an `mlir!` block names one of its inputs, a \
+                         tensor passed by name, such as `reads_only(t)` for \
+                         `%t = t : memref<?xi32>`"
+                            .to_string(),
+                        clause.span(),
+                    );
+                    continue;
+                };
+                if let Some(line) = m.block_str.lines().find(|l| line_uses(l, WRITES, &sym)) {
+                    self.atomic_error(
+                        format!(
+                            "the block says `reads_only({name})`, but `{}` writes `{sym}`",
+                            line.trim()
+                        ),
+                        m.span,
+                    );
+                }
+                read_only.insert(sym);
+                continue;
+            }
             if is_writes_only(clause) {
                 let memory = m
                     .inputs
@@ -312,7 +392,7 @@ impl crate::hir::TypeChecker<'_> {
         }
         for (sym, _, ty) in &m.inputs {
             let sym = sym.as_ref();
-            if !ty.starts_with("memref") || named.contains(sym) {
+            if !ty.starts_with("memref") || named.contains(sym) || read_only.contains(sym) {
                 continue;
             }
             if let Some(line) = m.block_str.lines().find(|l| line_uses(l, WRITES, sym)) {
@@ -330,12 +410,13 @@ impl crate::hir::TypeChecker<'_> {
     /// The parameters with an atomic clause, for each function that has one. A call to a generic
     /// function names the template before its body is checked and the instance after, so both
     /// are here.
-    /// A function that says `writes_only()` is here too, with no parameters.
+    /// A function that says `writes_only()` or `reads_only(t)` is here too. The proof reads
+    /// each argument that is not atomic as a read.
     pub(crate) fn atomic_contracts(&self) -> HashMap<String, Vec<usize>> {
         self.known_functions()
             .filter_map(|(name, f)| {
                 let params = atomic_params(f);
-                (!params.is_empty() || writes_nothing(f))
+                (!params.is_empty() || writes_nothing(f) || f.ensures.iter().any(is_reads_only))
                     .then(|| (name.as_ref().to_string(), params))
             })
             .collect()
@@ -348,6 +429,139 @@ impl crate::hir::TypeChecker<'_> {
         let templates = self.env.generic_functions.iter().map(|(n, (f, _))| (n, *f));
         let instances = self.mono.functions.iter().map(|(f, _)| (&f.name, f));
         syntax.chain(templates).chain(instances)
+    }
+
+    /// E8007 for the `reads_only` clauses of `f`. Each one names a `&` tensor parameter. The
+    /// body only reads an element or a field of it, asks for its size, or passes it to an
+    /// `mlir!` block or a function that says `reads_only` for it.
+    fn check_reads_only_contract(&mut self, f: &Function, shown: &str) {
+        let mut names = HashSet::new();
+        for clause in f.ensures.iter().filter(|e| is_reads_only(e)) {
+            let Some(name) = reads_only_name(clause) else {
+                self.atomic_error(
+                    format!(
+                        "`reads_only` takes one parameter of `{shown}`: a tensor that it reads \
+                         and does not write"
+                    ),
+                    clause.span(),
+                );
+                continue;
+            };
+            match f.params.iter().find(|(p, _)| p.as_ref() == name) {
+                None => self.atomic_error(
+                    format!("`reads_only({name})` names no parameter of `{shown}`"),
+                    clause.span(),
+                ),
+                Some((_, ty)) if !shared_tensor(ty) => self.atomic_error(
+                    format!("`reads_only({name})` must name a `&` tensor, but `{name}` is `{ty}`"),
+                    clause.span(),
+                ),
+                Some(_) => {
+                    names.insert(name.to_string());
+                }
+            }
+        }
+        if names.is_empty() {
+            return;
+        }
+        for (name, at) in self.uses_that_may_write(f, &names) {
+            self.atomic_error(
+                format!(
+                    "`{shown}` says `reads_only({name})`, so it may only read an element or a \
+                     field of `{name}`, or pass it to an `mlir!` block with \
+                     `ensures : [reads_only({name})]`, or to a function that says `reads_only` \
+                     for that argument"
+                ),
+                at,
+            );
+        }
+    }
+
+    /// E8007 for a function with access clauses that may write a `&` tensor parameter that no
+    /// clause names. The race proof reads such an argument as a read, so the body may only
+    /// read it, as for `reads_only`.
+    fn check_unnamed_tensors(&mut self, f: &Function, shown: &str) {
+        let named: HashSet<&str> = f
+            .ensures
+            .iter()
+            .filter_map(|e| atomic_name(e).or_else(|| reads_only_name(e)))
+            .collect();
+        let names: HashSet<String> = f
+            .params
+            .iter()
+            .filter(|(p, ty)| shared_tensor(ty) && !named.contains(p.as_ref()))
+            .map(|(p, _)| p.as_ref().to_string())
+            .collect();
+        if names.is_empty() {
+            return;
+        }
+        for (name, at) in self.uses_that_may_write(f, &names) {
+            self.atomic_error(
+                format!(
+                    "no clause of `{shown}` names `{name}`, so it may only read an element or a \
+                     field of `{name}`, or pass it to an `mlir!` block with \
+                     `ensures : [reads_only({name})]`, or to a function that says `reads_only` \
+                     for that argument"
+                ),
+                at,
+            );
+        }
+    }
+
+    /// Each use of a name in `names` in the body of `f` that may write it. A use that only
+    /// reads is an element or a field of it, its length, or an argument of an `mlir!` block or
+    /// a function that says `reads_only` for it.
+    fn uses_that_may_write(&self, f: &Function, names: &HashSet<String>) -> Vec<(String, Span)> {
+        let readers: HashMap<String, Vec<usize>> = self
+            .known_functions()
+            .map(|(n, g)| (n.as_ref().to_string(), reads_only_params(g)))
+            .filter(|(_, params)| !params.is_empty())
+            .collect();
+        // The identifiers in a place that only reads, by address in the tree.
+        let mut reads: HashSet<*const Expr> = HashSet::new();
+        let mark = |e: &Expr, reads: &mut HashSet<*const Expr>| match e {
+            Expr::Identifier(_) => {
+                reads.insert(e as *const Expr);
+            }
+            Expr::Borrow(b) if !b.is_mut => {
+                reads.insert(&*b.expr as *const Expr);
+            }
+            _ => {}
+        };
+        crate::syntax::visit_exprs(&f.body, &mut |e| match e {
+            Expr::IndexAccess(a) => mark(&a.base, &mut reads),
+            Expr::MemberAccess(a) => mark(&a.base, &mut reads),
+            Expr::MethodCall(c) if matches!(c.method_name.as_ref(), "len" | "extent") => {
+                mark(&c.base, &mut reads)
+            }
+            Expr::InlineMlir(m) => {
+                let clauses: HashSet<&str> = m.ensures.iter().filter_map(reads_only_name).collect();
+                for (_, input, _) in &m.inputs {
+                    if passed_tensor(input).is_some_and(|n| clauses.contains(n)) {
+                        mark(input, &mut reads);
+                    }
+                }
+            }
+            Expr::FunctionCall(fc) => {
+                if let Some(params) = readers.get(fc.name.as_ref()) {
+                    for &i in params {
+                        if let Some(arg) = fc.args.get(i) {
+                            mark(arg, &mut reads);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        });
+        let mut bad = Vec::new();
+        crate::syntax::visit_exprs(&f.body, &mut |e| {
+            if let Expr::Identifier(id) = e {
+                if names.contains(id.name.as_ref()) && !reads.contains(&(e as *const Expr)) {
+                    bad.push((id.name.as_ref().to_string(), id.span));
+                }
+            }
+        });
+        bad
     }
 
     /// E8007 for a function `f` that says `writes_only()`. It takes nothing that reaches the

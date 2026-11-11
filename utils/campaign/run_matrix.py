@@ -204,6 +204,9 @@ MODEL_LOADING_TOOK = "Model loading took"
 TORCH_OOM = "torch.OutOfMemoryError: CUDA out of memory"
 # Out of memory on the first full-length prompt, after startup passed.
 PREFILL_FAILURES = ("cudaErrorMemoryAllocation", "EngineDeadError")
+# vLLM prints this on each line of its stop after SIGINT. It can print EngineDeadError during the
+# stop, after every request came back.
+SHUTDOWN = "[shutdown]"
 # Two crashes of the image, not of memory: no CUDA compiler, and no C compiler.
 SETUP_FAULTS = (
     "Could not find nvcc and default cuda_home='/usr/local/cuda' doesn't exist",
@@ -243,6 +246,9 @@ def classify_outcome(log: str, served: bool | None = None) -> Outcome:
         return Outcome("OOM_AT_LOAD", TORCH_OOM)
     if started != -1:
         after = log[started:]
+        # When the requests came back, an error during the stop is not a prefill failure.
+        if served and SHUTDOWN in after:
+            after = after[:after.find(SHUTDOWN)]
         for failure in PREFILL_FAILURES:
             if failure in after:
                 return Outcome("OOM_AT_PREFILL", failure)

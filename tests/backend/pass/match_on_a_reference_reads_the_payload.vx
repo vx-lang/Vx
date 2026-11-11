@@ -1,0 +1,115 @@
+//===- match_on_a_reference_reads_the_payload.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `match` on a reference can read the payload, and it moves nothing. So a function can match
+// the same reference twice, and the owner of each value drops it once, at the end of `main`.
+//
+// EXPECT: 14, 5, 3, 8, end, drop 8, drop 5, drop 7
+
+import core::ops;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print!(", drop ");
+    print(self.id);
+  }
+}
+
+enum Holder {
+  Full(Noisy),
+  Empty,
+}
+
+enum Maybe<T> {
+  Some(T),
+  Nothing,
+}
+
+enum Num {
+  Val(i32),
+  Zero,
+}
+
+fn read_twice(h : &Holder) -> i32 {
+  let mut sum = 0;
+  match h {
+    Holder::Full(n) => {
+      sum = sum + n.id;
+    }
+    Holder::Empty => {}
+  }
+  match h {
+    Holder::Full(n) => {
+      sum = sum + n.id;
+    }
+    Holder::Empty => {}
+  }
+  return sum;
+}
+
+fn read_generic(m : &Maybe<Noisy>) -> i32 {
+  match m {
+    Maybe<Noisy>::Some(n) => {
+      return n.id;
+    }
+    Maybe<Noisy>::Nothing => {
+      return 0;
+    }
+  }
+}
+
+fn copy_out(v : &Num) -> i32 {
+  match v {
+    Num::Val(x) => {
+      return x;
+    }
+    Num::Zero => {
+      return 0;
+    }
+  }
+}
+
+// A new variable of the same name owns its value, so it can move.
+fn next(h : &Holder) -> Noisy {
+  match h {
+    Holder::Full(n) => {
+      let n = Noisy {
+        id : n.id + 1
+      };
+      return n;
+    }
+    Holder::Empty => {
+      return Noisy {
+        id : 0
+      };
+    }
+  }
+}
+
+fn main() -> i32 {
+  let h = Holder::Full(Noisy {
+    id : 7
+  });
+  print(read_twice(&h));
+  let m = Maybe<Noisy>::Some(Noisy {
+    id : 5
+  });
+  print!(", ");
+  print(read_generic(&m));
+  let v = Num::Val(3);
+  print!(", ");
+  print(copy_out(&v));
+  let n = next(&h);
+  print!(", ");
+  print(n.id);
+  print!(", end");
+  return 0;
+}

@@ -14,10 +14,10 @@ it expects.
 | `sequential.cat` | Sequential consistency with barriers: every run is one interleaving. |
 | `vx.bell` | The tags that a test can put on an access or a fence. |
 | `run_litmus.py` | Runs every test and compares each result with its `Expect:` line. |
-| `run_lean.py` | Checks that the Lean model and `vx.cat` agree on the tests for CPUs. |
+| `run_lean.py` | Checks that the Lean model and `vx.cat` agree on the tests without branches. |
 | `tests/` | One test for each case of the rules. |
 | `memalloy/` | The CPU part of the model, compared with RC11 and with AArch64 by memalloy. |
-| `lean/` | The CPU part of the model in Lean 4, with proofs for executions of any size. |
+| `lean/` | The model in Lean 4, with proofs for executions of any size. |
 
 ## Running the tests
 
@@ -138,10 +138,16 @@ then, so the spawns and the joins order its accesses with each task (`main_task`
 The code can also fail. Each access to the failure slot and the cancel flag is atomic
 (`fail_atomic`), so these places never race. `drf_sc_of_footprints` still needs code with no
 failures: `cancel_flag_read_before_the_failure.litmus` has a result that no interleaving gives.
-A task can also start tasks, with the same tree of tasks as in `Footprint.lean`.
+A task can also start tasks, with the same tree of tasks as in `Footprint.lean`. The code of a
+block can hold other blocks, with `NestOk` and `allIds` as in `Footprint.lean`. The lock proof
+needs no change for this: a lowered inner block only clears registers and reads the `done` flags
+(`lower_keeps`).
 `ChanFootprintExample.lean` has a block where one task sends a value to the other, a block
 where two tasks add 1 to one place under a lock, and a block where a task fails. In
-`nestChanFoot`, a task starts two tasks, and one sends a value to the other. The edges of
+`nestChanFoot`, a task starts two tasks, and one sends a value to the other. In
+`innerLockFoot`, the code of a block starts task 0, then runs an inner block of tasks 1 and 2,
+then adds 1 to a place under a lock. Task 1 sends a value to task 2, and tasks 0 and 2 write that
+place under the lock. The edges of
 channels need a finite execution whose `co` orders the writes to each place. So these theorems use `drf_sc_co`, which gives the race-freedom hypothesis
 only such executions.
 
@@ -218,12 +224,19 @@ and adds 1 to `serving`. `unlock_hb_lock` gives the edge from each `unlock` to e
 also by `Counter.hb_of_lt`. `Lock.lean` shows that the `unlock` of the ticket `k` reads `serving`
 as `k` (`unlock_ticket`). So `lock_excl` shows that two tasks never hold a lock at the same time:
 each event of the block of ticket `k` happens before each event of the block of a later ticket.
+`MutexOrders.lean` shows the same for the orders of `Mutex` in the library, on executions. A
+`lock` takes its ticket with a relaxed read-modify-write, and reads `serving` with acquire.
+`lock_unlock_hb_lock` gives the edge from an unlock to a later `lock`, through a release sequence
+of the unlocks between them. `mutex_excl` shows that two `lock`s never hold the lock at the same
+time.
 `Fifo.lean` shows that each `recv` gets the value of one `send`, in order (`ring_fifo`). The
 `recv` with the number `k` reads element `k` of the values, and only the `send` with the number
 `k` writes it. By `ring_once`, two reads of the same write belong to the same `recv`, so no value
 arrives twice. `ring_move_once` shows that each operation accesses its element once. Right after
 the access, the operation sets its flag, and its number is used only once.
-`Cancel.lean` gives a program a failure slot and a cancel flag. `fail v` writes the error `v` to
+`Cancel.lean` models the design of #1893, which the compiler does not have yet. Today a `tasks`
+block gives the failure of the first join that its code runs, and it cancels no task.
+In the model, a program has a failure slot and a cancel flag. `fail v` writes the error `v` to
 the slot with a CAS from 0. If the CAS wrote the slot, it sets the flag with a release write.
 `checkCancel` reads the flag with acquire, and fails with `cancelled` if the flag is set.
 `one_failure_wins` shows that at most one CAS writes the slot. `block_value_is_failure` shows
@@ -232,13 +245,93 @@ that a read of the slot that the winning CAS happens before gets its value.
 shows that the error of at most one failure moves into the slot. The CAS of each other failure
 does not write, so that failure drops its error. A task with no `result` never reads the slot, so
 `join` gives no error to its caller.
+`Arc.lean` checks the orders of `stdlib/std/sync/arc.vx`. A clone adds 1 to the count with a
+relaxed read-modify-write, and a drop takes 1 away with a release one. The drop that reads 1 runs
+an acquire fence and frees the value. `arc_last_drop_hb_free` shows that each event before another
+drop happens before each event after that fence. The clones and drops between the two drops form a
+release sequence. `arc_last_drop_release_sequence.litmus` checks this with three tasks.
+`ChannelOrders.lean` checks the slots of `stdlib/std/sync/channel.vx`. A `send` and a `recv` hand
+a slot over with a release store and an acquire load. No two writes to a slot write the same
+number, so the load reads that store. `slot_send_hb_recv` and `slot_recv_hb_send` give the edges.
+`ReleaseSequence.lean` has the lemmas that these three files share.
+
+`Scopes.lean` adds the scopes and the barriers of `vx.cat` as a separate layer. Each event has a
+scope, and each thread has a subgroup, a block and a device. `Reaches`, `Strong`, `rs`, `sw`,
+`bar`, `hb` and `DataRace` follow `vx.cat`. With every scope `system`, they equal the definitions
+of `Rc11.lean` (`rs_eq`, `sw_eq`, `hb_eq`, `consistent_iff`, `dataRace_iff`), so the CPU proofs
+still hold.
+`LastArriver.lean` proves the last-arriver pattern of #2139. Each block writes its partial
+result, runs a release fence and adds 1 to a counter. The block whose add reads `n - 1` runs an
+acquire fence and reads the partials. `last_block_reads_every_partial` shows that each partial
+write happens before that read, when the fences and the adds have device scope.
+`LastArriverExample.lean` shows a run of two blocks where, with adds of block scope, the read of
+a partial races with its write. `last_arriver_*.litmus` check the same cases in herd7.
+
 `ChannelExample.lean` builds a run where the main code sends 7 and drops its sender, and a task
 makes two `recv`s. The first gets 7, and the second finds the channel closed. `check` finds that
 the model allows this run with no data race. `MutexExample.lean` builds a run where a lock orders
 a plain write of the main code before a plain read of a task.
 
+`Machine.lean` starts the progress model of #2360. A fleet is a set of nodes that share no memory
+and pass messages. A node is opaque: the fleet sees only its steps and its messages, and a node can
+always take a message. A run is an infinite sequence of configurations, and a fair run is weakly
+fair to each step of a node and to each delivery. `Interleave.lean` makes a CPU node: one memory,
+in which one thread moves at each step, and a read-modify-write is one step.
+`Cpu.Reach.execs` shows that the accesses of each finite run are an execution of the program, and
+that in it the accesses happen one at a time. `InterleaveComplete.lean` proves the converse,
+`Cpu.complete`: each finite execution in which the accesses happen one at a time comes from a run.
+The run adds an event when each event before it is in the run. The read and the write of a
+read-modify-write go in together. `Cpu.complete_of_raceFree` adds DRF-SC: for a program with no
+data race, each finite execution that the model allows comes from a run. `MachineExample.lean`
+runs message passing on a CPU node. A run that ends is fair, and a run in which no node moves is
+not fair.
+
+`Progress.lean` has the WF1 rule of TLA. Assume that an action `A` can happen while `P` holds, and
+that `P` holds until `A` happens. Then in a fair run, `A` happens after each point where `P` holds
+(`wf1_taken`). `wf1` gives the usual form, "`P` leads to `Q`". `delivers` shows that in a fair run,
+the fleet delivers each message in flight. In `ProgressExample.lean`, node 0 sends one message to
+node 1. `ping_arrives` uses WF1 twice to show that in each fair run, node 1 gets the message.
+
+`Deadlock.lean` has F9 for a fleet. A node is quiet when each of its tasks is done or waits. A
+quiet node sends nothing and stays quiet until a message comes. The fleet is deadlocked when each
+node is quiet and no message is in flight, and then it stays deadlocked (`Deadlocked.forever`).
+`snapshot` shows that a snapshot in the style of Chandy and Lamport is sound. Each node records
+its state at its own point. If each node records that it is quiet and no message crosses the cut,
+the fleet is deadlocked when the last node records. `CpuDeadlock.lean` defines "waits" for a CPU
+node: the next step of the thread reads a flag that holds 0 or has no value. `Cpu.stops` is W6:
+if no step of a CPU node changes it, each thread waits or has no step. `Cpu.frozen` shows that a
+deadlocked fleet of CPU nodes never changes again. In `DeadlockExample.lean`, two threads wait for
+the flags of each other and never move. A second example shows that the snapshot needs its
+hypothesis on the cut.
+
+`Finish.lean` has W7 for a thread of a CPU node (`Cpu.finishes`). In a fair run, a thread with no
+loop finishes, if three things hold. It is never stuck, except at a wait. Each of its waits can
+continue at some point. A wait that can continue stays so until the thread moves. A weight of the
+code goes down at each step of the thread, except at a spin of a wait. A wait across nodes has a
+timeout, which is an error in the task. In `TimeoutExample.lean`, `wait_ends` shows that in each
+fair run, such a wait ends, whatever the other nodes do. `no_timeout_hangs` shows a fair run in
+which a wait with no timeout never ends.
+
+`Scheduler.lean` models the ready queue of the shared runtime (`sched.rs`). A worker takes the
+fiber at the front, and a wake or a spawn puts a fiber at the back. `queue_bound` shows that the
+workers take a fiber at the position `p` within `(p + 1) * B` points, if they take some fiber
+within `B` points while the queue is not empty. `fifo_fair` turns this into the fairness that `Cpu.finishes`
+needs: the run is weakly fair to a thread while it does not wait. A fiber that waits is parked and
+does not spin, and `Cpu.finishes` does not need its spin. `Cpu.finishes_fifo` is W7 on this
+scheduler, with no fairness hypothesis on the threads. `lifo_starves` shows that a queue with a
+push to the front can keep a fiber from running forever.
+
+`Select.lean` has M3, the bound of `Selector::select` in `channel.vx`. A call tries the `n`
+receivers in a round from a start index, and takes the first one that has a value. `within_n`
+shows that if a receiver is ready at each of `n` calls in a row, one of them chooses it. It holds
+when the next start moves past the last choice, but not past the ready receiver.
+`after_last_within_n` is the rule of the code: the next call starts after the last choice.
+`count_within_n` is the rule that `select` used before: the start is the count of channel events
+modulo `n`. It gives the bound only when no other event comes between two calls. `count_starves`
+shows that other events can keep a ready receiver waiting forever.
+
 The definitions in `lean/VxMemoryModel/Rc11.lean` follow `memalloy/vx_cpu.cat` line by line.
-`run_lean.py` checks that Lean and `vx.cat` agree on the 13 tests without scopes and barriers:
+`run_lean.py` checks that Lean and `vx.cat` agree on each test without a branch:
 
 ```bash
 python3 formal/memory_model/run_lean.py    # needs lake and herd7
@@ -246,8 +339,14 @@ python3 formal/memory_model/run_lean.py    # needs lake and herd7
 
 For each test, the script lists every candidate execution, and Lean decides which ones the
 model allows and which have a data race. `lean/VxMemoryModel/Check.lean` decides the
-definitions themselves, so a wrong answer cannot come from a second copy of the model. The
-final states, the observation and the race flag must be the same as those of herd7.
+definitions themselves, and `ScopedCheck.lean` decides those of `Scopes.lean`. A test with a
+scope or a barrier goes through `ScopedCheck.lean`, and a test for CPUs through both. So a wrong
+answer cannot come from a second copy of the model. The final states, the observation and the
+race flag must be the same as those of herd7.
+
+The script runs `check` as a compiled program, `vxcheck` (`lean/CheckMain.lean`), that reads one
+execution on each line. This is about 70 times faster than `#eval`, so a test with three blocks
+takes less than a minute (`last_arriver_of_three_blocks.litmus`).
 
 ## Reading a test
 
@@ -265,7 +364,9 @@ exists (1:r1 = 0)
 - `w[rel] flag 1` writes 1 to `flag` with release order. `r[acq] r0 flag` reads `flag` into
   `r0` with acquire order. `plain` is an access that is not atomic. The orders are `plain`,
   `rlx`, `acq`, `rel`, `acq_rel` and `sc`.
-- `r[acq,block] r0 flag` is an atomic of block scope. An atomic without a scope has system scope.
+- `r[acq,block] r0 flag` is an atomic of block scope, and `f[rel,device]` is a fence of device
+  scope. An atomic or a fence without a scope has system scope.
+- `rmw[rlx,device] r0 (add r0 1) count` adds 1 to `count` and reads the old value into `r0`.
 - `f[barrier,block]` is a barrier of block scope. The scopes are `subgroup`, `block`, `device`
   and `system`.
 - `scopes:` puts the threads in subgroups, blocks and devices. A CPU test writes
@@ -277,7 +378,7 @@ exists (1:r1 = 0)
 
 A fork or a join is a release write and an acquire read of a flag, as in the example.
 
-## Two choices in the model
+## Three choices in the model
 
 - **No value comes out of thin air.** The model keeps the rule of RC11: no cycle of program order
   and reads, also for relaxed atomics. PTX and AArch64 allow such a cycle, so vxc makes each
@@ -287,19 +388,29 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
   `load_buffering_relaxed.litmus`.
 - **Two atomics race unless each one reaches the thread of the other.** This follows the PTX
   model. `atomic_of_block_scope_across_blocks.litmus` shows the case.
+- **A release and an acquire synchronize only when they reach each other**, and so do the write
+  and the read that link them. With fences, these are two pairs, as in PTX.
+  `last_arriver_with_fences_of_block_scope.litmus` shows the case.
+- **A read-modify-write continues a release sequence only when it and the write it reads reach
+  each other.** This is the "observation order" of the PTX model.
+  `release_sequence_broken_by_an_add_of_block_scope.litmus` shows the case.
 
 ## Limits
 
-- A test may have at most one barrier in each thread. The model matches barriers by scope, not
-  by count.
+- The model matches barriers by scope, not by count. So a thread may run two barriers of one
+  scope only when no other thread is in its group of that scope
+  (`two_barriers_in_a_block_of_one_thread.litmus`). A test with two such barriers in two threads
+  can get a wrong answer.
+- A barrier of system scope has no effect (`barrier_of_system_scope_orders_nothing.litmus`).
 - The rule for sequentially consistent atomics ignores scopes.
 - herd7 checks each test completely, but only the tests. memalloy checks every execution up to 5
   or 6 events.
 - The core language has no functions and no references.
-- The rule of `Footprint.lean` compares each task of an inner block with all the code of the outer
-  block, also the code after the inner block joined it. The rules for channels and locks need a
-  block whose body holds no other `tasks` block (#2286).
-- The Lean model has no scopes and no barriers.
+- The rules compare each task of an inner block with all the code of the outer block, also the
+  code after the inner block joined it.
+- `run_lean.py` skips the tests with a branch.
+- `vxcheck` copies each execution into arrays before `check` (`fastData`). No theorem shows that
+  the copy equals `Data.ofLists`. On the tests, its answers are those of `#eval`.
 - The model covers only C0 to C7. The rules for sequential code, E1 to E7 and A1 to A6, are not in
   it.
 - `Consistent` does not ask that `co` orders the writes to each place. A theorem that needs it
@@ -314,6 +425,8 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
 - `lock_excl` speaks of the reads of `serving` that let a later ticket in. That the `lock` of a
   ticket ends with such a read follows from `Hold` in `Lock.lean`. No theorem states it on its
   own.
+- `Cancel.lean` models #1893, not the rule of the compiler today, where the first failed join in
+  the code wins. No file models that rule yet.
 - A program has one failure slot, so only one `tasks` block can fail. A task that sees the cancel
   flag does not stop: the model shows only that its CAS fails. `ChanProg.drf_sc` needs code with
   no failures, because the flag uses release and acquire. A program with failures has no data
@@ -330,3 +443,18 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
   `spawn` starts both (`OneSite`). The rule is stricter than needed: two blocks that run one after
   the other can share places, but two tasks from two `spawn`s of one block cannot.
 - In both rules, one thread starts each task, and a task starts only tasks with larger ids.
+- A CPU node sends and takes no messages yet. A read of a place that no write wrote has no step.
+- An execution can end between the read and the write of a read-modify-write, and a run of the
+  CPU node cannot. So in `Cpu.complete`, the run can lack the last read of a thread.
+- `Cpu.complete` needs code with no `rmwStore` in it (`Stmt.NoRmw`). Only a `fetchAdd` or a
+  `cas` makes one. Without the rule, `load` and then `rmwStore` give an execution that no run
+  makes.
+- `snapshot` assumes a cut that no message crosses. The marker protocol that gives such a cut is
+  not modeled. A thread that a failed bounds check stopped has no step, and `Cpu.stops` does not
+  tell it from a thread that is done.
+- `Cpu.finishes` takes its three conditions as hypotheses on the run. The proofs that the waits of
+  `tasks` and of channels meet them are not done yet. A thread with a `loop` is not covered.
+- `fifo_fair` takes three facts of the runtime as hypotheses. The workers take a fiber within `B`
+  points. A wake puts a fiber that can continue on the queue. A fiber that a worker takes makes a
+  step. No proof covers them. `formal/runtime/WaitWake.tla` checks the second one at a small
+  size, with TLC.

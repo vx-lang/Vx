@@ -1,0 +1,45 @@
+//===- an_enum_variant_cannot_carry_a_pinned_tensor.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An enum variant can carry a tensor, also one in a memory space such as `W`. Its drop frees
+// the tensor through the plugin of `W`. A `Pinned` tensor gives its place outside the tensor
+// type, so the drop does not know it, and the variant cannot carry one yet.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 4 MiB, managed: explicit, scope: device
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10,
+  transfer Memory::W -> Memory::CPU_DRAM : 10
+}
+
+enum Payload {
+  Placed(Tensor<f32, [2, 2], Memory::W>),
+  Host(Tensor<f32, [2, 2]>),
+  Kept(Pinned<Tensor<f32, [2, 2]>, Topology::Dev>),
+  Val(i32),
+}
+
+fn keep(t : Pinned<Tensor<f32, [2, 2]>, Topology::Dev>) -> Payload {
+  // CHECK: Error[E3021] at {{.*}}.vx:[[@LINE+1]]:10: payload argument 1 of Payload::Kept is {{.*}}. An enum variant cannot carry a `Pinned` or `Ref` tensor yet
+  return Payload::Kept(t);
+}
+
+fn main() -> i32 {
+  let _ok = Payload::Val(7);
+  let _host = Payload::Host(Tensor<f32, [2, 2]>::fill(1.0));
+  let _placed = Payload::Placed(transfer(Tensor<f32, [2, 2]>::fill(1.0), Memory::W));
+  return 0;
+}
+
+// CHECK: {{^}}Semantic check failed on {{.*}}: 1 error(s) emitted

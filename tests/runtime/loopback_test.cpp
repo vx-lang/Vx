@@ -336,12 +336,76 @@ void test_unresolvable_handle_is_refused() {
         "a dispatch whose offset left its region is refused");
 }
 
+// A handle names only a view's first element. A dispatch whose view reaches
+// past the end of its region must be refused, so that a kernel cannot read or
+// write past the region.
+void test_a_view_larger_than_its_region_is_refused() {
+  worker_reset();
+
+  // A region of 4 f32 values, 16 bytes.
+  const int64_t four[1] = {4};
+  uint64_t handle;
+  {
+    vx_wire_writer w;
+    vx_wire_reader r;
+    vx_wire_transfer t;
+    vx_wire_writer_init(&w, wire, sizeof(wire));
+    vx_wire_put_transfer(&w, VX_DTYPE_F32, 1, four, kA, sizeof(kA));
+    vx_wire_reader_init(&r, wire, w.len);
+    vx_wire_get_transfer(&r, &t);
+    handle = worker_transfer(&t);
+  }
+  check(handle != 0, "the 16-byte region was placed on the worker");
+
+  vx_agent_args storage;
+  void *device_args[1];
+  void *desc_ptrs[1];
+  int32_t arg_tags[1];
+  uint8_t descriptors[128];
+  storage.device_args = device_args;
+  storage.desc_ptrs = desc_ptrs;
+  storage.arg_tags = arg_tags;
+  storage.descriptors = descriptors;
+  storage.descriptors_capacity = sizeof(descriptors);
+
+  vx_wire_arg arg;
+  memset(&arg, 0, sizeof(arg));
+  arg.tag = VX_ABI_MEMREF_TAG(VX_DTYPE_F32, 1);
+  arg.handle = handle;
+  arg.rank = 1;
+  arg.sizes[0] = 4;
+  arg.strides[0] = 1;
+  check(vx_agent_rebuild_args(&worker_table, &arg, 1, &storage),
+        "a view of 4 f32 values in the 16-byte region is accepted");
+
+  arg.sizes[0] = 1000;
+  check(!vx_agent_rebuild_args(&worker_table, &arg, 1, &storage),
+        "a view of 1000 f32 values in the 16-byte region is refused");
+
+  // 2 values with stride 2 reach elements 0 and 2, which fit from element 1.
+  arg.sizes[0] = 2;
+  arg.strides[0] = 2;
+  arg.handle = handle + sizeof(float);
+  check(vx_agent_rebuild_args(&worker_table, &arg, 1, &storage),
+        "a view of elements 1 and 3 is accepted");
+  // From element 2 they reach element 4, one past the end.
+  arg.handle = handle + 2 * sizeof(float);
+  check(!vx_agent_rebuild_args(&worker_table, &arg, 1, &storage),
+        "a view of elements 2 and 4 is refused");
+
+  // The same check holds for a slot that holds a buffer.
+  arg.tag = VX_ABI_SLOT_TAG(VX_DTYPE_F32, 1);
+  check(!vx_agent_rebuild_args(&worker_table, &arg, 1, &storage),
+        "a slot that holds a view of elements 2 and 4 is refused");
+}
+
 } // namespace
 
 int main() {
   test_dispatch_round_trip_produces_the_right_numbers();
   test_buffer_result_round_trip();
   test_unresolvable_handle_is_refused();
+  test_a_view_larger_than_its_region_is_refused();
 
   if (failures) {
     fprintf(stderr, "%d check(s) failed\n", failures);

@@ -1,0 +1,178 @@
+//===- return_break_or_continue_leaves_a_tasks_block.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `return`, `break` or `continue` inside a `tasks` block leaves the block. It first
+// waits for the tasks of the block, and then drops the values it leaves.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    println!("dropped {}", self.id);
+  }
+}
+
+fn work(n : i32) -> i32 {
+  return n * 10;
+}
+
+// A slow task, so that the drop would come first if the `return` did not wait.
+fn slow_read(n : &Noisy) -> void {
+  let mut count = 0;
+  for i in 0..50000000 {
+    count = count + i % 3;
+  }
+  if count > 0 {
+    println!("task read {}", n.id);
+  }
+}
+
+// The value of the `return` comes out of the block.
+// CHECK: first 30
+// CHECK-NEXT: first -1
+fn first(stop : bool) -> i32 {
+  let mut total = 0;
+  tasks {
+    let a = spawn {
+      work(1)
+    };
+    let b = spawn {
+      work(2)
+    };
+    total = a.join();
+    if stop {
+      return 0 - 1;
+    }
+    total = total + b.join();
+  }
+  return total;
+}
+
+// The task still reads `n` when the `return` runs. The `return` waits for it, and then
+// drops `n`.
+// CHECK-NEXT: task read 7
+// CHECK-NEXT: dropped 7
+// CHECK-NEXT: wait_then_drop 1
+fn wait_then_drop() -> i32 {
+  let n = Noisy {
+    id: 7
+  };
+  tasks {
+    spawn {
+      slow_read(&n);
+    };
+    return 1;
+  }
+}
+
+// 0 + 10, then the `break` at `i == 1` leaves the block and the loop.
+// CHECK-NEXT: until_one 10
+fn until_one() -> i32 {
+  let mut total = 0;
+  for i in 0..3 {
+    tasks {
+      let a = spawn {
+        work(i)
+      };
+      total = total + a.join();
+      if i == 1 {
+        break;
+      }
+    }
+  }
+  return total;
+}
+
+// 0 + 20: the `continue` at `i == 1` skips the rest of that pass.
+// CHECK-NEXT: skip_one 20
+fn skip_one() -> i32 {
+  let mut total = 0;
+  for i in 0..3 {
+    tasks {
+      let a = spawn {
+        work(i)
+      };
+      if i == 1 {
+        continue;
+      }
+      total = total + a.join();
+    }
+  }
+  return total;
+}
+
+// A `break` of a loop inside the block stays inside it.
+// CHECK-NEXT: inner_break 3
+fn inner_break() -> i32 {
+  let mut count = 0;
+  tasks {
+    let a = spawn {
+      work(1)
+    };
+    for i in 0..10 {
+      if i == 3 {
+        break;
+      }
+      count = count + 1;
+    }
+    a.join();
+  }
+  return count;
+}
+
+// A `return` in a branch of an `if` that gives a value.
+// CHECK-NEXT: in_a_value 3
+// CHECK-NEXT: in_a_value 5
+fn in_a_value(stop : bool) -> i32 {
+  let mut total = 0;
+  tasks {
+    let a = spawn {
+      work(1)
+    };
+    total = if stop {
+      return 5;
+    } else {
+      3
+    };
+    a.join();
+  }
+  return total;
+}
+
+// A `return` that leaves two `tasks` blocks.
+// CHECK-NEXT: nested 2
+fn nested() -> i32 {
+  tasks {
+    tasks {
+      let a = spawn {
+        work(1)
+      };
+      a.join();
+      return 2;
+    }
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  println!("first {}", first(false));
+  println!("first {}", first(true));
+  let waited = wait_then_drop();
+  println!("wait_then_drop {}", waited);
+  println!("until_one {}", until_one());
+  println!("skip_one {}", skip_one());
+  println!("inner_break {}", inner_break());
+  println!("in_a_value {}", in_a_value(false));
+  println!("in_a_value {}", in_a_value(true));
+  println!("nested {}", nested());
+  return 0;
+}

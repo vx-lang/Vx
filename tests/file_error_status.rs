@@ -2,7 +2,12 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 include!("../stdlib/rust_core/src/ffi/macros.rs");
-instantiate_file_ffi!();
+// These tests run no tasks, so a call runs where it is.
+fn run_here<T>(call: impl FnOnce() -> T) -> T {
+    call()
+}
+
+instantiate_file_ffi!(run_here);
 
 // vx_file_open stores a boxed Rust File behind its opaque pointer.
 fn into_ffi_file(file: std::fs::File) -> *mut std::ffi::c_void {

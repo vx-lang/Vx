@@ -41,10 +41,11 @@ pub extern "C" fn vx_sigsegv_handler(sig: libc::c_int) {
 
 /// A failed check prints its message with `puts` and then calls `abort`. Standard output is
 /// buffered when it is a pipe, and `abort` does not flush it, so the message was lost. Flush,
-/// then let the abort go on.
+/// then say which task stopped, then let the abort go on.
 extern "C" fn vx_sigabrt_handler(_sig: libc::c_int) {
     unsafe {
         libc::fflush(ptr::null_mut());
+        crate::ffi::tasks::write_site();
         libc::signal(libc::SIGABRT, libc::SIG_DFL);
         libc::raise(libc::SIGABRT);
     }
@@ -52,6 +53,8 @@ extern "C" fn vx_sigabrt_handler(_sig: libc::c_int) {
 
 #[no_mangle]
 pub extern "C" fn vx_init_signals() {
+    // A bad value stops the program now, and not at its first `drop`.
+    crate::ffi::tasks::drop_wait_cap_ns();
     unsafe {
         libc::signal(
             libc::SIGABRT,
@@ -73,7 +76,6 @@ pub extern "C" fn vx_init_signals() {
 // ============================================================================
 
 static mut BENCHMARK_START: Option<Instant> = None;
-static mut GLOBAL_START: Option<Instant> = None;
 
 #[no_mangle]
 pub extern "C" fn start_benchmark() -> f32 {
@@ -118,20 +120,10 @@ pub extern "C" fn vx_bench_report(name: *const c_char, unit: *const c_char, valu
     0
 }
 
+/// Sleeps for `ns` nanoseconds, or not at all when `ns` is not positive.
 #[no_mangle]
-#[allow(static_mut_refs)]
-pub extern "C" fn vx_get_time() -> f32 {
-    unsafe {
-        if GLOBAL_START.is_none() {
-            GLOBAL_START = Some(Instant::now());
-        }
-        GLOBAL_START.unwrap().elapsed().as_secs_f32()
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn vx_sleep(seconds: f32) -> i32 {
-    thread::sleep(Duration::from_secs_f32(seconds));
+pub extern "C" fn vx_sleep(ns: i64) -> i32 {
+    thread::sleep(Duration::from_nanos(ns.max(0) as u64));
     0
 }
 

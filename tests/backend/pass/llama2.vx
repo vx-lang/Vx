@@ -188,11 +188,11 @@ seq_len : i32, vocab_size : i32, topology_id : i32) -> TransformerWeights {
     TransformerWeights {
       token_embedding_table:
       p0, rms_att_weight : p1,
+      rms_ffn_weight : p6,
       wq : d_wq,
       wk : d_wk,
       wv : d_wv,
       wo : d_wo,
-      rms_ffn_weight : p6,
       w1 : d_w1,
       w2 : d_w2,
       w3

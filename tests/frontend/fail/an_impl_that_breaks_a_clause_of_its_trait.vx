@@ -1,0 +1,70 @@
+//===- an_impl_that_breaks_a_clause_of_its_trait.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// Each impl of a trait method must keep the borrow clauses of the trait. The error names the impl
+// and points at the clause in the trait. An impl that names a parameter differently gets the
+// clause with its own name. A default body that an impl gets must keep the clause too.
+
+trait Source {
+  fn first(self : &Self, key : &i64) -> &i64
+  // CHECK: Error[E4016] at {{.*}}.vx:[[@LINE+2]]:11: `Wrong::first` says `!reaches(return, *key)`, but the result can point into `*key`
+  // CHECK: Error[E4016] at {{.*}}.vx:[[@LINE+1]]:11: `Renamed::first` says `!reaches(return, *k)`, but the result can point into `*k`
+  ensures !reaches(return, *key);
+}
+
+struct Wrong {
+  n : i64,
+}
+
+impl Source for Wrong {
+  fn first(self : &Wrong, key : &i64) -> &i64 {
+    return key;
+  }
+}
+
+struct Renamed {
+  n : i64,
+}
+
+impl Source for Renamed {
+  fn first(self : &Renamed, k : &i64) -> &i64 {
+    return k;
+  }
+}
+
+trait Pick {
+  fn pick(self : &Self, key : &i64) -> &i64
+  // CHECK: Error[E4016] at {{.*}}.vx:[[@LINE+1]]:11: `Plain::pick` says `!reaches(return, *key)`, but the result can point into `*key`
+  ensures !reaches(return, *key)
+  {
+    return key;
+  }
+}
+
+struct Plain {
+  n : i64,
+}
+
+impl Pick for Plain {}
+
+fn main() -> i32 {
+  let w = Wrong {
+    n : 1i64
+  };
+  let r = Renamed {
+    n : 2i64
+  };
+  let p = Plain {
+    n : 3i64
+  };
+  let x = 3i64;
+  return (*w.first(&x) + *r.first(&x) + *p.pick(&x)) as i32;
+}
+
+// CHECK: 3 error(s) emitted

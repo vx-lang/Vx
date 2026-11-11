@@ -22,7 +22,7 @@
 //! directly into the final application.
 
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Where a usable CUDA toolkit lives, as (root, library directory), or `None`
@@ -163,11 +163,22 @@ fn main() {
     // Check if we're on macOS
     if cfg!(target_os = "macos") {
         println!("cargo:rerun-if-changed=runtime/npu_dispatch.mm");
+        println!("cargo:rerun-if-changed=runtime/metal_dispatch.mm");
         println!("cargo:rerun-if-changed=runtime/npu_dispatch.h");
         println!("cargo:rerun-if-changed=scripts/tools/generate_ane_primitives.py");
+        // A new interpreter or a recreated venv can build models that the old one could not.
+        // Cargo reruns this script on every build for a watched file that is missing, so
+        // watch only the venvs that exist.
+        println!("cargo:rerun-if-env-changed=VX_PYTHON");
+        for cfg in ["venv-ane/pyvenv.cfg", "venv/pyvenv.cfg"] {
+            if Path::new(cfg).exists() {
+                println!("cargo:rerun-if-changed={cfg}");
+            }
+        }
 
         let out_dir = env::var("OUT_DIR").unwrap();
         let obj_path = PathBuf::from(&out_dir).join("npu_dispatch.o");
+        let metal_obj_path = PathBuf::from(&out_dir).join("metal_dispatch.o");
         let lib_path = PathBuf::from(&out_dir).join("libnpu_dispatch.a");
 
         // Square f16 matmul sizes to build Neural Engine primitives for.
@@ -221,9 +232,10 @@ fn main() {
             Some(p) => eprintln!("ANE models: generating with {p}"),
             None => println!(
                 "cargo:warning=No interpreter can build the ANE models: none of $VX_PYTHON, \
-                 venv/bin/python3, python3, python3.13, python3.12 or python3.11 has a working \
-                 coremltools (the compiled half, libmilstoragepython, is what is checked). \
-                 Dispatch will use the CPU shim. Set VX_PYTHON to one that does."
+                 venv-ane/bin/python3, venv/bin/python3, python3, python3.13, python3.12 or \
+                 python3.11 has a working coremltools (the compiled half, libmilstoragepython, \
+                 is what is checked). Dispatch will use the CPU shim. Set VX_PYTHON to one that \
+                 does."
             ),
         }
 
@@ -245,10 +257,10 @@ fn main() {
             if status.success() {
                 // Compile the .mlpackage into .mlmodelc
                 // The fp16 512x512 is the one the Neural Engine will actually take:
-                // CoreML prefers the CPU for every fp32 matmul at every size, and
-                // for fp16 below 512. The 4x4 pair stays because the dispatcher's
-                // fp32 matmul and affine routes are written against it; no test
-                // covers the affine route.
+                // CoreML prefers the CPU or the GPU for every fp32 matmul, never
+                // the Neural Engine, and the CPU for fp16 below 512. The 4x4 pair
+                // stays because the dispatcher's fp32 matmul and affine routes are
+                // written against it; no test covers the affine route.
                 for model_name in &[
                     "matmul_4x4",
                     "affine_4",
@@ -335,11 +347,7 @@ fn main() {
         let cxx = env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
         let cxxflags_env =
             env::var("CXXFLAGS").unwrap_or_else(|_| "-O3 -Wno-deprecated-declarations".to_string());
-        let mut cxxflags: Vec<&str> = cxxflags_env.split_whitespace().collect();
-        // Fall back to running the outlined kernel on the CPU (via libffi) when the ANE/CoreML
-        // path is unavailable -- no accelerator, or the CoreML models were not built (no
-        // coremltools/coremlc). Without this the dispatcher aborts on any unhandled kernel.
-        cxxflags.push("-DVX_ENABLE_CPU_FALLBACK");
+        let cxxflags: Vec<&str> = cxxflags_env.split_whitespace().collect();
 
         // Compile the Objective-C++ runtime file for AOT (Static Archive)
         let mut clang_cmd = Command::new(&cxx);
@@ -358,6 +366,24 @@ fn main() {
 
         assert!(status.success(), "clang++ compilation failed");
 
+        // The Apple GPU half of the same library.
+        let mut metal_cmd = Command::new(&cxx);
+        metal_cmd.args([
+            "-c",
+            "runtime/metal_dispatch.mm",
+            "-o",
+            metal_obj_path.to_str().unwrap(),
+            "-fobjc-arc",
+        ]);
+        metal_cmd.args(&cxxflags);
+        let status = metal_cmd
+            .status()
+            .unwrap_or_else(|_| panic!("Failed to execute {}", cxx));
+        assert!(
+            status.success(),
+            "clang++ compilation failed for metal_dispatch"
+        );
+
         // Determine archiver and flags
         let ar = env::var("AR").unwrap_or_else(|_| "ar".to_string());
         let arflags_env = env::var("ARFLAGS").unwrap_or_else(|_| "rcs".to_string());
@@ -366,7 +392,11 @@ fn main() {
         // Create the static archive
         let mut ar_cmd = Command::new(&ar);
         ar_cmd.args(&arflags);
-        ar_cmd.args([lib_path.to_str().unwrap(), obj_path.to_str().unwrap()]);
+        ar_cmd.args([
+            lib_path.to_str().unwrap(),
+            obj_path.to_str().unwrap(),
+            metal_obj_path.to_str().unwrap(),
+        ]);
 
         let status = ar_cmd
             .status()
@@ -383,6 +413,7 @@ fn main() {
             "-fPIC",
             "-fobjc-arc",
             "runtime/npu_dispatch.mm",
+            "runtime/metal_dispatch.mm",
             "-framework",
             "Accelerate",
             "-framework",
@@ -653,14 +684,19 @@ fn main() {
         .expect("Failed to run mlir-tblgen for op defs");
     assert!(status.success(), "mlir-tblgen failed");
     println!("cargo:rerun-if-changed=src/dialect/VxLowering.cpp");
+    println!("cargo:rerun-if-changed=src/dialect/SpirvKernelArgs.cpp");
+    println!("cargo:rerun-if-changed=src/dialect/SpirvKernelArgs.h");
     println!("cargo:rerun-if-changed=src/dialect/vx-opt.cpp");
     println!("cargo:rerun-if-changed=src/dialect/NarrowFloats.cpp");
+    println!("cargo:rerun-if-changed=src/dialect/MetalImage.cpp");
 
     // Compile the dialect
     let dialect_obj_path = PathBuf::from(&out_dir).join("VxDialect.o");
     let lowering_obj_path = PathBuf::from(&out_dir).join("VxLowering.o");
+    let spirv_args_obj_path = PathBuf::from(&out_dir).join("SpirvKernelArgs.o");
     let vx_opt_obj_path = PathBuf::from(&out_dir).join("vx-opt.o");
     let narrow_floats_obj_path = PathBuf::from(&out_dir).join("NarrowFloats.o");
+    let metal_image_obj_path = PathBuf::from(&out_dir).join("MetalImage.o");
     let dialect_lib_path = PathBuf::from(&out_dir).join("libvx_dialect.a");
 
     let mut dialect_cmd = Command::new(&cxx);
@@ -679,6 +715,18 @@ fn main() {
         .expect("Failed to execute cxx for VxDialect");
     assert!(status.success(), "clang++ compilation failed for VxDialect");
 
+    // The SPIR-V device image is written by LLVM's SPIR-V code generator, and the functions
+    // that register it exist only in an LLVM built with that target. The LLVM that
+    // scripts/provision/build_llvm.sh builds has it, and an LLVM from elsewhere may not, so the
+    // calls need to be behind this define or the file does not compile there. `llvm-config` is
+    // how the build script already asks LLVM about itself.
+    let llvm_targets_built = Command::new("llvm-config")
+        .arg("--targets-built")
+        .output()
+        .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+        .unwrap_or_default();
+    let llvm_has_spirv_target = llvm_targets_built.split_whitespace().any(|t| t == "SPIRV");
+
     let mut lowering_cmd = Command::new(&cxx);
     lowering_cmd.args([
         "-c",
@@ -689,6 +737,9 @@ fn main() {
         &format!("-I{}", out_dir), // to find the generated .inc files
         "-Iinclude",               // to find VxDialect.h
     ]);
+    if llvm_has_spirv_target {
+        lowering_cmd.arg("-DVX_LLVM_HAS_SPIRV_TARGET");
+    }
     lowering_cmd.args(&llvm_cxxflags_vec);
     let status = lowering_cmd
         .status()
@@ -696,6 +747,26 @@ fn main() {
     assert!(
         status.success(),
         "clang++ compilation failed for VxLowering"
+    );
+
+    let mut spirv_args_cmd = Command::new(&cxx);
+    spirv_args_cmd.args([
+        "-c",
+        "src/dialect/SpirvKernelArgs.cpp",
+        "-o",
+        spirv_args_obj_path.to_str().unwrap(),
+        "-std=c++17",
+        &format!("-I{}", out_dir), // to find the generated .inc files
+        "-Iinclude",               // to find vx_hardware_runtime.h
+        "-Isrc/dialect",           // to find SpirvKernelArgs.h
+    ]);
+    spirv_args_cmd.args(&llvm_cxxflags_vec);
+    let status = spirv_args_cmd
+        .status()
+        .expect("Failed to execute cxx for SpirvKernelArgs");
+    assert!(
+        status.success(),
+        "clang++ compilation failed for SpirvKernelArgs"
     );
 
     let mut vxopt_cmd = Command::new(&cxx);
@@ -731,14 +802,33 @@ fn main() {
         "clang++ compilation failed for NarrowFloats"
     );
 
+    let mut metal_image_cmd = Command::new(&cxx);
+    metal_image_cmd.args([
+        "-c",
+        "src/dialect/MetalImage.cpp",
+        "-o",
+        metal_image_obj_path.to_str().unwrap(),
+        "-std=c++17",
+    ]);
+    metal_image_cmd.args(&llvm_cxxflags_vec);
+    let status = metal_image_cmd
+        .status()
+        .expect("Failed to execute cxx for MetalImage");
+    assert!(
+        status.success(),
+        "clang++ compilation failed for MetalImage"
+    );
+
     let mut ar_cmd = Command::new(&ar);
     ar_cmd.args(&arflags);
     ar_cmd.args([
         dialect_lib_path.to_str().unwrap(),
         dialect_obj_path.to_str().unwrap(),
         lowering_obj_path.to_str().unwrap(),
+        spirv_args_obj_path.to_str().unwrap(),
         vx_opt_obj_path.to_str().unwrap(),
         narrow_floats_obj_path.to_str().unwrap(),
+        metal_image_obj_path.to_str().unwrap(),
     ]);
     let status = ar_cmd.status().expect("Failed to archive libvx_dialect.a");
     assert!(status.success(), "ar failed for libvx_dialect");

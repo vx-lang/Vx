@@ -17,7 +17,7 @@ fn on_gpu() -> i32 {
   let t : Tensor<f32, []> = 1.0;
   let td = transfer(t, Memory::GPU_HBM);
   spawn on(Topology::GPU) {
-    let x = td;
+    let x = td.clone();
   }
   return 0;
 }
@@ -26,15 +26,15 @@ fn on_npu() -> i32 {
   let t : Tensor<f32, []> = 1.0;
   let td = transfer(t, Memory::NPU_HBM);
   spawn on(Topology::NPU[0]) {
-    let x = td;
+    let x = td.clone();
   }
   return 0;
 }
 
-// CHECK: func.func @on_gpu
-// CHECK: vx.spawn topology(500)
-// CHECK: vx.yield
 // CHECK: func.func @on_npu
 // CHECK: "vx.transfer"{{.*}}: (memref<f32>) -> memref<f32>
 // CHECK: vx.spawn topology(100)
+// CHECK: vx.yield
+// CHECK: func.func @on_gpu
+// CHECK: vx.spawn topology(500)
 // CHECK: vx.yield
