@@ -2153,13 +2153,17 @@ impl<'c> MeliorGenerator<'c> {
             }
             // A `tasks` block that runs its tasks one after another needs no wait: at an exit,
             // each task has ended. A block that runs them on threads waits for them. The value is
-            // never read.
-            e if syntax::is_tasks_wait(e) => {
+            // never read. The join at the end of the body cancels no task.
+            e if syntax::is_tasks_wait(e) || syntax::is_tasks_join(e) => {
                 if !self.tasks_inline {
-                    block.append_operation(
-                        melior::ir::operation::OperationBuilder::new("vx.tasks_wait", self.loc())
-                            .build()?,
-                    );
+                    let mut wait =
+                        melior::ir::operation::OperationBuilder::new("vx.tasks_wait", self.loc());
+                    if syntax::is_tasks_join(e) {
+                        let join = melior::ir::Identifier::new(self.context, "join");
+                        wait = wait
+                            .add_attributes(&[(join, melior::ir::Attribute::unit(self.context))]);
+                    }
+                    block.append_operation(wait.build()?);
                 }
                 let zero =
                     melior::ir::operation::OperationBuilder::new("arith.constant", self.loc())

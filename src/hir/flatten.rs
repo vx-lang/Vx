@@ -7620,6 +7620,10 @@ impl<'r> Lowerer<'r> {
                     self.emit_effect(Opcode::TasksWait, Register(0), Register(0), 0);
                     Ok(())
                 }
+                expr if crate::syntax::is_tasks_join(expr) => {
+                    self.emit_effect(Opcode::TasksWait, Register(0), Register(0), 1);
+                    Ok(())
+                }
                 Expr::FunctionCall(fc) if crate::syntax::is_abort_or_panic(fc) => {
                     let mut abort_msg = "abort() called";
                     if fc.name.as_ref() == "panic" {

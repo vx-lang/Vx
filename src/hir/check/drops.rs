@@ -311,6 +311,9 @@ pub(crate) struct DropFrames {
     moved_now: HashSet<String>,
     /// Makes the names of the locals the rewrite adds unique.
     counter: usize,
+    /// For each open `tasks` block, the statement of its body that joins its tasks before the
+    /// drops of what they use, if it has one.
+    tasks_joins: Vec<Option<usize>>,
 }
 
 impl DropFrames {
@@ -1075,14 +1078,21 @@ impl<'a> TypeChecker<'a> {
 
     pub(crate) fn drops_enter_tasks(&mut self) {
         self.borrow.drops.frames.push(FrameKind::Tasks);
+        self.borrow.drops.tasks_joins.push(None);
     }
 
-    pub(crate) fn drops_exit_tasks(&mut self) {
+    /// Returns the statement of the block's body that joins its tasks, if it has one.
+    pub(crate) fn drops_exit_tasks(&mut self) -> Option<usize> {
         let popped = self.borrow.drops.frames.pop();
         assert!(
             matches!(popped, Some(FrameKind::Tasks)),
             "a tasks frame closes a tasks block"
         );
+        self.borrow
+            .drops
+            .tasks_joins
+            .pop()
+            .expect("each tasks block has an entry")
     }
 
     pub(crate) fn drops_exit_loop(&mut self) {
@@ -1820,12 +1830,15 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// `name` and everything that borrows it, or borrows something that does.
+    /// `name` and everything that borrows it, or borrows something that does. A task holds its
+    /// borrows until its join, so the handle of a task counts as well.
     fn drops_users(&self, name: &str) -> Vec<String> {
         let mut seen = vec![name.to_string()];
         let mut i = 0;
         while i < seen.len() {
-            for b in self.borrow.borrowers_of(&seen[i]) {
+            let mut next = self.borrow.borrowers_of(&seen[i]);
+            next.extend(self.tasks.handles_of(&seen[i]));
+            for b in next {
                 if !seen.contains(&b) {
                     seen.push(b);
                 }
@@ -1833,6 +1846,13 @@ impl<'a> TypeChecker<'a> {
             i += 1;
         }
         seen
+    }
+
+    /// Whether a task that is still running borrows `owner`, or something that borrows it.
+    fn drops_held_by_running_task(&self, owner: &Owner) -> bool {
+        self.drops_users(&owner.name)
+            .iter()
+            .any(|u| self.borrow.is_running_task(u))
     }
 
     /// The last statement of a block that uses `owner` or what borrows it. A later `let` of
@@ -1904,8 +1924,20 @@ impl<'a> TypeChecker<'a> {
             lets.splice(0..0, moves);
         }
         let raw_pointers = self.borrow.drops.uses_raw_pointers();
+        // The body of a `tasks` block: a task that runs until the block ends can use its owners.
+        let tasks_body = matches!(self.borrow.drops.frames.last(), Some(FrameKind::Tasks));
+        let mut after_tasks = Vec::new();
         for owner in owners.iter().rev() {
             if owner.moved == Moved::Yes {
+                continue;
+            }
+            if tasks_body && self.drops_held_by_running_task(owner) {
+                // An exit waited for the tasks and then dropped it.
+                if terminated_at.is_some() {
+                    continue;
+                }
+                self.drops_print(owner, "once the tasks of its `tasks` block end".to_string());
+                after_tasks.extend(owner_drop(owner, raw_pointers));
                 continue;
             }
             let at = if waits_for_block_end(owner, raw_pointers) {
@@ -1973,6 +2005,21 @@ impl<'a> TypeChecker<'a> {
                 after_the_value.extend(edits.after.remove(&v).unwrap_or_default());
             }
             self.drops_apply(body, *edits);
+            if !after_tasks.is_empty() {
+                let span = body.last().map_or_else(Span::default, |s| s.span());
+                *self
+                    .borrow
+                    .drops
+                    .tasks_joins
+                    .last_mut()
+                    .expect("a tasks block is open") = Some(body.len());
+                body.push(crate::syntax::tasks_join_stmt(span));
+                if value_at.is_some() {
+                    after_the_value.extend(after_tasks);
+                } else {
+                    body.extend(after_tasks);
+                }
+            }
             body.extend(after_the_value.into_iter().map(after_value));
         }
     }
@@ -2343,6 +2390,7 @@ impl<'a> TypeChecker<'a> {
                         }
                         // Not used from this statement on, or never: dropped already.
                         if !waits_for_block_end(owner, raw_pointers)
+                            && !self.drops_held_by_running_task(owner)
                             && self.drops_last_use(owner, uses).is_none_or(|i| i < *stmt)
                         {
                             continue;

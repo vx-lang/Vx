@@ -777,6 +777,30 @@ pub fn tasks_wait_stmt(span: Span) -> super::Statement {
     })
 }
 
+/// The callee of the statement the checker puts at the end of the body of a `tasks` block, before
+/// the drops of what its tasks use. No program can name it. It joins each task of the block that
+/// is not joined yet, as the end of the block does, and cancels none of them.
+pub const TASKS_JOIN: &str = "$tasks_join";
+
+/// `$tasks_join();`, at the end of a body whose last statement is at `span`.
+pub fn tasks_join_stmt(span: Span) -> super::Statement {
+    super::Statement::ExprStmt(super::ExprStmtStmt {
+        expr: Expr::FunctionCall(FunctionCallExpr::new(
+            TASKS_JOIN.into(),
+            None,
+            Vec::new(),
+            span,
+        )),
+        has_semi: true,
+        span,
+    })
+}
+
+/// Whether `e` is the call of [`tasks_join_stmt`].
+pub fn is_tasks_join(e: &Expr) -> bool {
+    matches!(e, Expr::FunctionCall(c) if c.name.as_ref() == TASKS_JOIN)
+}
+
 /// The callee that `h.join()` becomes, with `h` as its argument. No program can name it. The
 /// code generators wait for the task of `h` at the call, and its value is the value of `h`.
 pub const TASK_JOIN: &str = "$task_join";

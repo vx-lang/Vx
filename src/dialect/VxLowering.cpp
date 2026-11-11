@@ -5426,15 +5426,16 @@ static LogicalResult lowerTasksBlock(vx::SpawnOp block, ModuleOp module) {
       waits.push_back(wait);
     return WalkResult::advance();
   });
-  if (!waits.empty()) {
-    auto waitFn = LLVM::lookupOrCreateFn(b, module, "vx_tasks_wait", {ptrTy},
+  for (vx::TasksWaitOp wait : waits) {
+    // An exit cancels the tasks before it joins them. The join at the end of
+    // the body cancels none.
+    StringRef name = wait.getJoin() ? "vx_tasks_join" : "vx_tasks_wait";
+    auto waitFn = LLVM::lookupOrCreateFn(b, module, name, {ptrTy},
                                          LLVM::LLVMVoidType::get(ctx));
     assert(succeeded(waitFn) && "the runtime function has one declaration");
-    for (vx::TasksWaitOp wait : waits) {
-      OpBuilder wb(wait);
-      LLVM::CallOp::create(wb, loc, *waitFn, ValueRange{group});
-      wait.erase();
-    }
+    OpBuilder wb(wait);
+    LLVM::CallOp::create(wb, loc, *waitFn, ValueRange{group});
+    wait.erase();
   }
   SmallVector<TaskSlot> slots;
   for (vx::SpawnOp task : tasks)

@@ -2633,7 +2633,8 @@ impl<'a> FnEmit<'a> {
             // the enclosing block (which the spawn op did not terminate).
             Opcode::SpawnEnd => self.op_spawn_end(idx, ins),
             Opcode::TasksWait => {
-                self.body += "  \"vx.tasks_wait\"() : () -> ()\n";
+                let join = if ins.imm == 1 { " {join}" } else { "" };
+                self.body += &format!("  \"vx.tasks_wait\"(){join} : () -> ()\n");
                 Ok(())
             }
             Opcode::TaskFailed => {
