@@ -17,8 +17,10 @@
 // leaves that are still alive. An owner moved at its own level is not dropped; one moved
 // inside a nested block may or may not have been, so its drop is under a flag. An owner a
 // raw pointer was taken from (`t.as_ptr()`) waits for the end of its block: no borrow
-// checker sees what a raw pointer is used for. Assigning a new tensor to an owner drops the
-// old one first, unless it was moved, or `c = a @ b` writes the product into `c`'s buffer.
+// checker sees what a raw pointer is used for. An owner that a task of its `tasks` block uses
+// also waits for the end of its block, and its drop first waits for the tasks. Assigning a new
+// tensor to an owner drops the old one first, unless it was moved, or `c = a @ b` writes the
+// product into `c`'s buffer.
 // A tensor operator moves its operands, as in Rust, so it drops them once it has its result.
 //
 // Written into the program, a drop never frees what is still to be read. A drop placed before
@@ -250,7 +252,38 @@ enum FrameKind {
         value_at: Option<usize>,
         /// The owners that a later `let` of the block hid, now under a name of their own.
         hidden: Vec<Hidden>,
+        /// The names that a `spawn` in the block uses. A task can still use such an owner at
+        /// the end of the block, so its drop first waits for the tasks.
+        task_uses: Box<[String]>,
     },
+}
+
+/// Whether a block inside `frames` is in a `tasks` block of the same function or task, with only
+/// blocks and loops between them.
+fn in_tasks_block(frames: &[FrameKind]) -> bool {
+    for f in frames.iter().rev() {
+        match f {
+            FrameKind::Block { .. } | FrameKind::Loop => {}
+            FrameKind::Tasks => return true,
+            FrameKind::Function { .. } | FrameKind::Spawn | FrameKind::Task => return false,
+        }
+    }
+    false
+}
+
+/// The names that a `spawn` in `body` or in `value` uses.
+fn task_uses(body: &[Statement], value: Option<&Expr>) -> HashSet<String> {
+    let mut used = HashSet::new();
+    let mut note = |e: &Expr| {
+        if matches!(e, Expr::TaskBlock(b) if b.kind == crate::syntax::TaskBlockKind::Spawn) {
+            TypeChecker::extract_uses_expr(e, &mut used);
+        }
+    };
+    crate::syntax::visit_exprs(body, &mut note);
+    if let Some(v) = value {
+        crate::syntax::visit_expr(v, &mut note);
+    }
+    used
 }
 
 /// What each statement of a block uses, nested uses included, and where each name has a
@@ -1131,6 +1164,7 @@ impl<'a> TypeChecker<'a> {
             edits,
             value_at: value.map(|_| body.len()),
             hidden: Vec::new(),
+            task_uses: task_uses(body, value).into_iter().collect(),
         });
     }
 
@@ -1849,6 +1883,16 @@ impl<'a> TypeChecker<'a> {
             .find(|&i| users.iter().any(|n| uses.used[i].contains(n)))
     }
 
+    /// Whether a `spawn` of the block uses `owner` or what borrows it, and the owner has
+    /// something to drop.
+    fn drops_used_by_task(&self, owner: &Owner, task_uses: &[String]) -> bool {
+        !owner.only_ends_lifetime()
+            && self
+                .drops_users(&owner.name)
+                .iter()
+                .any(|n| task_uses.contains(n))
+    }
+
     /// Prints the drops that free something or run a `Drop` impl.
     fn drops_print(&self, owner: &Owner, at: String) {
         if !self.printing() || owner.only_ends_lifetime() {
@@ -1883,6 +1927,7 @@ impl<'a> TypeChecker<'a> {
             mut edits,
             value_at,
             hidden,
+            task_uses,
             ..
         }) = self.borrow.drops.frames.pop()
         else {
@@ -1904,11 +1949,24 @@ impl<'a> TypeChecker<'a> {
             lets.splice(0..0, moves);
         }
         let raw_pointers = self.borrow.drops.uses_raw_pointers();
+        let mut waits_for_tasks = false;
+        let in_tasks = in_tasks_block(&self.borrow.drops.frames);
         for owner in owners.iter().rev() {
             if owner.moved == Moved::Yes {
                 continue;
             }
-            let at = if waits_for_block_end(owner, raw_pointers) {
+            let used_by_task = in_tasks && self.drops_used_by_task(owner, &task_uses);
+            let at = if used_by_task {
+                if terminated_at.is_some() {
+                    continue;
+                }
+                self.drops_print(
+                    owner,
+                    "at the end of its block, once its tasks end".to_string(),
+                );
+                waits_for_tasks = true;
+                Some(uses.used.len() - 1)
+            } else if waits_for_block_end(owner, raw_pointers) {
                 if terminated_at.is_some() {
                     continue;
                 }
@@ -1963,6 +2021,12 @@ impl<'a> TypeChecker<'a> {
                 Some(i) => edits.after.entry(i).or_default().extend(stmts),
                 None => edits.before.entry(0).or_default().extend(stmts),
             }
+        }
+        if waits_for_tasks {
+            let end = uses.used.len() - 1;
+            let span = body.get(end).map(Statement::span).unwrap_or_default();
+            let drops = edits.after.entry(end).or_default();
+            drops.insert(0, crate::syntax::tasks_wait_stmt(span));
         }
         if rewriting {
             // The block's separate value comes after its statements, so what waits for it goes
@@ -2323,7 +2387,7 @@ impl<'a> TypeChecker<'a> {
         let mut lifetime_ends = Vec::new();
         let d = &self.borrow.drops;
         let raw_pointers = d.uses_raw_pointers();
-        'frames: for f in d.frames.iter().rev() {
+        'frames: for (k, f) in d.frames.iter().enumerate().rev() {
             match f {
                 // A `return` inside a region leaves the region, not the function.
                 FrameKind::Function { .. } | FrameKind::Spawn | FrameKind::Task => break 'frames,
@@ -2335,14 +2399,21 @@ impl<'a> TypeChecker<'a> {
                 }
                 FrameKind::Tasks => tasks_blocks += 1,
                 FrameKind::Block {
-                    owners, uses, stmt, ..
+                    owners,
+                    uses,
+                    stmt,
+                    task_uses,
+                    ..
                 } => {
                     for owner in owners.iter().rev() {
                         if owner.moved == Moved::Yes || d.moved_now.contains(&owner.name) {
                             continue;
                         }
+                        let used_by_task = in_tasks_block(&d.frames[..k])
+                            && self.drops_used_by_task(owner, task_uses);
                         // Not used from this statement on, or never: dropped already.
-                        if !waits_for_block_end(owner, raw_pointers)
+                        if !used_by_task
+                            && !waits_for_block_end(owner, raw_pointers)
                             && self.drops_last_use(owner, uses).is_none_or(|i| i < *stmt)
                         {
                             continue;

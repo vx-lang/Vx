@@ -4507,6 +4507,9 @@ static BufferOrigin originOf(Value v, llvm::SmallPtrSetImpl<void *> &seen,
     return BufferOrigin::Borrowed;
   }
   Operation *def = v.getDefiningOp();
+  // A heap buffer that a task reads from its environment.
+  if (def && def->hasAttr("vx.task_takes"))
+    return BufferOrigin::Heap;
   // A spawn region's value: a buffer made outside the region and handed out.
   if (auto spawn = dyn_cast_or_null<vx::SpawnOp>(def)) {
     unsigned i = cast<OpResult>(v).getResultNumber();
@@ -5247,6 +5250,18 @@ static LogicalResult lowerTask(vx::SpawnOp task, Value group, ModuleOp module,
   fn.getBody().getBlocks().splice(fn.getBody().end(), body.getBlocks());
   cf::BranchOp::create(b, loc, first);
   for (auto [i, capture] : llvm::enumerate(captures)) {
+    // A heap buffer stays a heap buffer in the task. The frontend drops it in
+    // the task only when the task takes it.
+    Value outside = capture;
+    if (copied[i]) {
+      SmallVector<Operation *> loads = loadsIn(capture, fn);
+      outside = loads.empty() || !isa<memref::LoadOp>(loads.front())
+                    ? Value()
+                    : loads.front()->getResult(0);
+    }
+    if (outside && isa<MemRefType>(outside.getType()) &&
+        originOf(outside) == BufferOrigin::Heap)
+      inTask[i].getDefiningOp()->setAttr("vx.task_takes", UnitAttr::get(ctx));
     if (copied[i]) {
       for (Operation *load : loadsIn(capture, fn)) {
         load->getResult(0).replaceAllUsesWith(inTask[i]);

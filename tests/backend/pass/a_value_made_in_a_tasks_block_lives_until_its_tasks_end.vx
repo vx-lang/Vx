@@ -1,0 +1,92 @@
+//===- a_value_made_in_a_tasks_block_lives_until_its_tasks_end.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A value made inside a `tasks` block, that a task of the block uses, is dropped only after
+// the tasks end. A task in a loop takes the tensor of its pass, and drops it itself.
+//
+// RUN: env VX_PRINT_DROPS=1 vxc %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s --check-prefix=DROPS
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+
+import core::ops;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    println!("drop {}", self.id);
+  }
+}
+
+// DROPS: drop in read_a_tensor: b, at the end of its block, once its tasks end
+fn read_a_tensor() -> void {
+  tasks {
+    let b = Tensor<f32, [4]>::fill(2.0);
+    spawn {
+      println!("task sees {}", b[0]);
+    };
+  };
+}
+
+// DROPS: drop in read_a_struct: n, at the end of its block, once its tasks end
+fn read_a_struct() -> void {
+  tasks {
+    let n = Noisy {
+      id: 7
+    };
+    spawn {
+      println!("task reads {}", n.id);
+    };
+  };
+}
+
+fn a_tensor_in_each_pass() -> void {
+  tasks {
+    for i in 0..3 {
+      let b = Tensor<f32, [4]>::fill(i as f32);
+      spawn {
+        println!("pass sees {}", b[0]);
+      };
+    }
+  };
+}
+
+// DROPS: drop in return_after_a_task: b, before the return on line [[@LINE+10]]
+// DROPS: drop in return_after_a_task: b, at the end of its block, once its tasks end
+// A `return` that leaves the block waits for the task, and then drops `b`.
+fn return_after_a_task(leave : bool) -> i32 {
+  tasks {
+    let b = Tensor<f32, [4]>::fill(5.0);
+    spawn {
+      println!("task before the return sees {}", b[0]);
+    };
+    if leave {
+      return 1;
+    }
+    println!("the task stays");
+  };
+  return 0;
+}
+
+fn main() -> i32 {
+  // CHECK: {{^}}task sees 2{{$}}
+  read_a_tensor();
+  // CHECK-NEXT: {{^}}task reads 7{{$}}
+  // CHECK-NEXT: {{^}}drop 7{{$}}
+  read_a_struct();
+  // CHECK-DAG: {{^}}pass sees 0{{$}}
+  // CHECK-DAG: {{^}}pass sees 1{{$}}
+  // CHECK-DAG: {{^}}pass sees 2{{$}}
+  a_tensor_in_each_pass();
+  // CHECK: {{^}}task before the return sees 5{{$}}
+  // CHECK-NEXT: {{^}}left 1{{$}}
+  let left = return_after_a_task(true);
+  println!("left {}", left);
+  return 0;
+}
