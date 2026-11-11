@@ -108,6 +108,15 @@ pub fn bare_lane_statement(e: &Expr) -> Option<&FunctionCallExpr> {
     bare_lanes_call(e).filter(|fc| lane_routine(&fc.name).is_some_and(|(op, _)| op.is_statement()))
 }
 
+/// The call of `t = lanes::copy_async(..)`, which gives the token variable `t` its next copy, as a
+/// pipeline does when it starts the next copy before it waits for this one.
+pub fn next_copy(a: &crate::syntax::AssignStmt) -> Option<&FunctionCallExpr> {
+    match &a.lhs {
+        Expr::Identifier(_) if calls_routine(&a.rhs, LaneOp::CopyAsync) => bare_lanes_call(&a.rhs),
+        _ => None,
+    }
+}
+
 /// Whether `op` is a lane routine that `e` calls.
 pub fn calls_routine(e: &Expr, op: LaneOp) -> bool {
     bare_lanes_call(e).is_some_and(|fc| lane_routine(&fc.name).is_some_and(|(o, _)| o == op))

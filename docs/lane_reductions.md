@@ -45,7 +45,7 @@ for row in 0..rows across blocks {
 A call is the whole value of a `let` in the code of a level: the code of a body of
 `across blocks` or `across subgroups`, outside its lane loops. That is where a lane loop can be,
 and every lane must get to the call, as to a lane loop (L5, L8, L10). E6032 refuses a call in
-any other place.
+any other place. As in a lane loop, the arguments may not read a value that only lane 0 has.
 
 - In the code of a block, `N` is at most 1024. To launch, the lanes of the block are a multiple
   of 32, and at least `N`.
