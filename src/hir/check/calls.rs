@@ -3864,10 +3864,15 @@ impl<'a> TypeChecker<'a> {
                         && base_ty.is_linear()
                         && !self.is_copy(&base_ty)
                     {
-                        if let Expr::Identifier(id) = &**obj {
-                            if !self.refuse_move_behind_ref(&id.name, &id.name, &id.span) {
-                                self.consume(&id.name);
+                        match &**obj {
+                            Expr::Identifier(id) => {
+                                if !self.refuse_move_behind_ref(&id.name, &id.name, &id.span) {
+                                    self.consume(&id.name);
+                                }
                             }
+                            // `p.a.take()` moves `p.a` out of `p`, as `take(p.a)` does.
+                            Expr::MemberAccess(_) => self.move_field_out(obj, &base_ty),
+                            _ => {}
                         }
                     }
                     let method_params = generic_method.params.clone();

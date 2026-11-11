@@ -1,0 +1,75 @@
+//===- a_mutex_drops_its_value_once.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `Mutex` holds a value whose type has a `drop`, and each value is dropped exactly once. The
+// `drop` of a `Counted` adds 1 to a shared count.
+//
+// - Four tasks each lock the `Mutex` and put a new value in it. Each assignment drops the old
+//   value, so 4 values are dropped.
+// - The drop of the `Mutex` drops the value in it: 5.
+// - `into_inner` moves the value out, so nothing is dropped until its new owner drops it.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=2 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}after the tasks, dropped 4{{$}}
+// CHECK-NEXT: {{^}}after the drop of the Mutex, dropped 5{{$}}
+// CHECK-NEXT: {{^}}after into_inner, dropped 5, and the value is 9{{$}}
+// CHECK-NEXT: {{^}}after the drop of the value, dropped 6{{$}}
+
+import core::sync::atomic;
+import std::sync::arc;
+import std::sync::mutex;
+
+struct Counted {
+  id : i64,
+  drops : Arc<AtomicI64>,
+}
+
+impl Drop for Counted {
+  fn drop(self : &mut Counted) -> void {
+    self.drops.get().fetch_add(1, AtomicOrdering::SeqCst);
+  }
+}
+
+fn replace(m : &Mutex<Counted>, id : i64, drops : Arc<AtomicI64>) -> void {
+  let mut g = m.lock();
+  *g.get() = Counted {
+    id : id, drops : drops
+  };
+}
+
+fn count(drops : &Arc<AtomicI64>) -> i64 {
+  return drops.get().load(AtomicOrdering::SeqCst);
+}
+
+fn main() -> i32 {
+  let drops = Arc<AtomicI64>::new(AtomicI64::new(0));
+  let m = Mutex<Counted>::new(Counted {
+    id : 0, drops : drops.clone()
+  });
+  tasks {
+    for t in 1..5 {
+      let d = drops.clone();
+      spawn {
+        replace(&m, t as i64, d);
+      };
+    }
+  };
+  println!("after the tasks, dropped {}", count(&drops));
+  drop(m);
+  println!("after the drop of the Mutex, dropped {}", count(&drops));
+
+  let m2 = Mutex<Counted>::new(Counted {
+    id : 9, drops : drops.clone()
+  });
+  let v = m2.into_inner();
+  println!("after into_inner, dropped {}, and the value is {}", count(&drops), v.id);
+  drop(v);
+  println!("after the drop of the value, dropped {}", count(&drops));
+  return 0;
+}
