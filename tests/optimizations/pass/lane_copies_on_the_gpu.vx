@@ -237,16 +237,19 @@ pub fn narrow_tile(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?
 }
 
 // A pipeline: the next copy starts before the wait for this one, so while the lanes add one tile,
-// the copy of the other one runs. The token of `even` gets a new copy in each pass. The wait comes
-// after the commit of the next copy, and the lanes read `tiles[1]` (1024 bytes on) after its wait.
+// the copy of the other one runs. The token of `even` gets a new copy in each pass. Every lane
+// runs that copy and copies its own part of the tile, at an address from its lane. Lane 0 alone
+// would copy at the fixed addresses of lane 0, such as `smem_0+128`. The wait comes right after
+// the commit of the next copy, and the lanes read `tiles[1]` (1024 bytes on) after its wait.
 // CHECK-LABEL: .entry pipeline(
 // CHECK: cp.async.commit_group;
 // CHECK: cp.async.commit_group;
-// CHECK: cp.async.wait_group 1;
+// CHECK-NEXT: cp.async.wait_group 1;
 // CHECK: bar.sync 0;
 // CHECK: ld.shared.b32
+// CHECK-NOT: smem_{{[0-9]+}}+128]
 // CHECK: cp.async.commit_group;
-// CHECK: cp.async.wait_group 1;
+// CHECK-NEXT: cp.async.wait_group 1;
 // CHECK: bar.sync 0;
 // CHECK: ld.shared.b32 %r{{[0-9]+}}, [%rd{{[0-9]+}}+1024];
 pub fn pipeline(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>, steps : i32) -> void {
