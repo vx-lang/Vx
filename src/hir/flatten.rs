@@ -6988,8 +6988,13 @@ impl<'r> Lowerer<'r> {
         let outer = std::mem::replace(&mut self.value_drops, mine);
         let outer_temps = std::mem::take(&mut self.temps);
         let lowered = self.lower_stmt_inner(s);
-        let left = std::mem::replace(&mut self.value_drops, outer);
+        let mut left = std::mem::replace(&mut self.value_drops, outer);
         lowered?;
+        // `return <block>` whose every path returns, as in the call function of a closure: each
+        // inner `return` left the function. The end of a slot's lifetime adds nothing then.
+        if self.block_terminated() {
+            left.retain(|d| !matches!(d, PendingDrop::LifetimeEnd { .. }));
+        }
         if !left.is_empty() {
             assert!(
                 !self.block_terminated(),
