@@ -15,6 +15,7 @@
 - [Control flow](control-flow.md)
 - [Errors, Option and Result](errors.md)
 - [Ownership and borrowing](ownership.md)
+- [Files, input and time](files-input-time.md)
 - [Tasks and channels](tasks.md)
 - [What Vx guarantees about concurrency](guarantees.md)
 - [Generics and traits](generics.md)
