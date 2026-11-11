@@ -1010,8 +1010,14 @@ mod tests {
         );
     }
 
+    // Under qemu-aarch64, QEMU itself sometimes aborts in this test, with an assert in its
+    // plugin code. `cargo test -- --ignored` still runs it.
     #[cfg(target_os = "linux")]
     #[test]
+    #[cfg_attr(
+        target_arch = "aarch64",
+        ignore = "QEMU sometimes aborts in this test on aarch64"
+    )]
     fn tasks_park_on_two_workers_with_shadow_stacks_on() {
         const NO_SHADOW_STACKS: i32 = 77;
         // As in the stack tests: the child turns shadow stacks on, and ends with `_exit`. Its
