@@ -82,6 +82,8 @@ pub(crate) struct Fiber {
     run: VxTaskFn,
     env: *mut u8,
     state: AtomicU8,
+    /// The fiber is on the ready queue. A fiber that is on it twice runs on two workers at once.
+    queued: AtomicBool,
     locals: TaskLocals,
     /// 0 while the task runs, and 1 after it ended. A join waits on this word.
     pub(crate) done: AtomicI64,
@@ -233,6 +235,8 @@ impl Scheduler {
     }
 
     fn push(&self, fiber: FiberRef) {
+        let was_queued = unsafe { (*fiber.0).queued.swap(true, Ordering::SeqCst) };
+        assert!(!was_queued, "a fiber went on the ready queue a second time");
         self.ready.lock().unwrap().push_back(fiber);
         self.has_ready.notify_one();
         // The thread that runs the tasks of a seed can wait on any word.
@@ -251,6 +255,7 @@ impl Scheduler {
                 _ => 0,
             };
             if let Some(fiber) = ready.remove(next) {
+                unsafe { (*fiber.0).queued.store(false, Ordering::SeqCst) };
                 self.switches.fetch_add(1, Ordering::SeqCst);
                 self.running.fetch_add(1, Ordering::SeqCst);
                 return fiber;
@@ -386,8 +391,10 @@ impl Scheduler {
             run,
             env,
             state: AtomicU8::new(RUNNING),
+            queued: AtomicBool::new(false),
             locals: TaskLocals {
                 mark,
+                put_aside: crate::ffi::tasks::deadlines_for_a_task(),
                 site,
                 ..Default::default()
             },
@@ -435,12 +442,21 @@ const MAX_WORKERS: usize = 256;
 pub(crate) fn program_scheduler() -> Option<&'static Scheduler> {
     static SCHED: OnceLock<Option<&'static Scheduler>> = OnceLock::new();
     *SCHED.get_or_init(|| {
+        let shared = match std::env::var("VX_TASK_RUNTIME") {
+            Ok(v) if v == "shared" => true,
+            Ok(v) if v == "threads" => false,
+            Ok(v) => {
+                eprintln!("vx: VX_TASK_RUNTIME must be shared or threads, not '{v}'");
+                std::process::abort();
+            }
+            Err(_) => false,
+        };
         if let Ok(seed) = std::env::var("VX_TASK_SEED") {
             let Ok(seed) = seed.parse::<u64>() else {
                 eprintln!("vx: VX_TASK_SEED must be a number, not '{seed}'");
                 std::process::abort();
             };
-            if std::env::var("VX_TASK_RUNTIME").is_ok_and(|v| v != "shared") {
+            if std::env::var("VX_TASK_RUNTIME").is_ok() && !shared {
                 eprintln!("vx: VX_TASK_SEED needs VX_TASK_RUNTIME=shared, or no VX_TASK_RUNTIME");
                 std::process::abort();
             }
@@ -454,7 +470,6 @@ pub(crate) fn program_scheduler() -> Option<&'static Scheduler> {
             }
             return Some(Scheduler::start_with_seed(seed));
         }
-        let shared = std::env::var("VX_TASK_RUNTIME").is_ok_and(|v| v == "shared");
         shared.then(|| {
             let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
             let workers = count_setting("VX_TASK_WORKERS", cpus);
@@ -475,6 +490,7 @@ unsafe extern "C" fn fiber_entry(arg: *mut u8) -> ! {
     let fiber = arg as *mut Fiber;
     ((*fiber).run)((*fiber).env);
     lines::task_ended();
+    crate::ffi::wait::task_ended();
     // The task happens before the end of its join, which acquires `done`.
     tsan::release(&(*fiber).done);
     to_worker(Why::Ended);
@@ -564,7 +580,13 @@ pub(crate) fn park() {
 
 /// Marks `fiber` as `PARKING`. Call it under the lock of the bucket whose list gets the fiber.
 pub(crate) fn will_park(fiber: *mut Fiber) {
-    unsafe { (*fiber).state.store(PARKING, Ordering::SeqCst) };
+    unsafe {
+        assert!(
+            !(*fiber).queued.load(Ordering::SeqCst),
+            "a task parked while it was on the ready queue"
+        );
+        (*fiber).state.store(PARKING, Ordering::SeqCst)
+    };
 }
 
 /// Puts a fiber that a bucket held back on the ready queue.
@@ -701,6 +723,35 @@ mod tests {
             crowd.threads.lock().unwrap().len() <= 2,
             "the tasks ran on more than two threads"
         );
+    }
+
+    /// A task that is woken between `will_park` and `park`, as when a wake comes from another
+    /// thread in that gap. Here the task wakes itself, so the wake surely comes in the gap.
+    extern "C" fn wake_itself_while_it_parks(env: *mut u8) {
+        let ran_again = unsafe { &**(env as *const *const AtomicI64) };
+        let me = current_fiber();
+        will_park(me);
+        wake(FiberRef(me));
+        park();
+        ran_again.store(1, Ordering::SeqCst);
+    }
+
+    /// The worker puts the task back on the ready queue once, and the task runs again.
+    #[test]
+    fn a_wake_while_a_task_parks_queues_it_once() {
+        let _watchdog = Watchdog::new("a_wake_while_a_task_parks_queues_it_once");
+        let sched = Scheduler::start(1, 1);
+        let ran_again = AtomicI64::new(0);
+        let group = tasks_begin(Some(sched));
+        unsafe {
+            vx_task_start(
+                group,
+                wake_itself_while_it_parks,
+                env_with(&ran_again as *const AtomicI64),
+            );
+            vx_tasks_end(group);
+        }
+        assert_eq!(ran_again.load(Ordering::SeqCst), 1);
     }
 
     struct Lines {
@@ -868,6 +919,95 @@ mod tests {
             vx_tasks_end(group);
         }
         assert_eq!(p.turn.load(Ordering::SeqCst), 0);
+    }
+
+    /// Two tasks that pass a turn until `stop`, at most `limit` passes each. The first task makes
+    /// the late task ready at its 100th pass.
+    struct Rally {
+        turn: AtomicI64,
+        passes: AtomicUsize,
+        stop: AtomicI64,
+        limit: usize,
+        /// The count of switches to a task when the late task became ready, and when it started.
+        late_ready: AtomicU64,
+        late_start: AtomicU64,
+        late: Mutex<Option<Box<Fiber>>>,
+    }
+
+    fn rally(r: &'static Rally, mine: i64) {
+        for pass in 0..r.limit {
+            while r.turn.load(Ordering::SeqCst) != mine {
+                unsafe { vx_wait_while(r.turn.as_ptr(), 1 - mine) };
+            }
+            r.passes.fetch_add(1, Ordering::SeqCst);
+            if mine == 0 && pass == 100 {
+                let sched = unsafe { (*current_fiber()).sched };
+                r.late_ready
+                    .store(sched.switches.load(Ordering::SeqCst), Ordering::SeqCst);
+                let env = r as *const Rally as *mut u8;
+                *r.late.lock().unwrap() = Some(sched.spawn(start_late, env, None));
+            }
+            r.turn.store(1 - mine, Ordering::SeqCst);
+            unsafe { vx_wake_all(r.turn.as_ptr()) };
+            // Each task passes the turn before it returns, so the other one does not wait.
+            if r.stop.load(Ordering::SeqCst) != 0 {
+                return;
+            }
+        }
+    }
+
+    extern "C" fn rally_first(env: *mut u8) {
+        rally(unsafe { &**(env as *const *const Rally) }, 0);
+    }
+
+    extern "C" fn rally_second(env: *mut u8) {
+        rally(unsafe { &**(env as *const *const Rally) }, 1);
+    }
+
+    extern "C" fn start_late(env: *mut u8) {
+        let r = unsafe { &*(env as *const Rally) };
+        let sched = unsafe { (*current_fiber()).sched };
+        r.late_start
+            .store(sched.switches.load(Ordering::SeqCst), Ordering::SeqCst);
+        r.stop.store(1, Ordering::SeqCst);
+    }
+
+    /// The ready queue is first in, first out. So a task that becomes ready runs within one
+    /// switch for each task, here 3, while two other tasks pass a turn on the one worker. On a
+    /// queue where the last task in runs first, the two tasks take the worker in turn, and the
+    /// late task waits until they end.
+    #[test]
+    fn a_ready_task_runs_while_two_tasks_pass_a_turn() {
+        let _watchdog = Watchdog::new("a_ready_task_runs_while_two_tasks_pass_a_turn");
+        let sched = Scheduler::start(1, 1);
+        let r: &'static Rally = Box::leak(Box::new(Rally {
+            turn: AtomicI64::new(0),
+            passes: AtomicUsize::new(0),
+            stop: AtomicI64::new(0),
+            limit: 100_000,
+            late_ready: AtomicU64::new(0),
+            late_start: AtomicU64::new(0),
+            late: Mutex::new(None),
+        }));
+        let group = tasks_begin(Some(sched));
+        unsafe {
+            vx_task_start(group, rally_first, env_with(r as *const Rally));
+            vx_task_start(group, rally_second, env_with(r as *const Rally));
+            vx_tasks_end(group);
+        }
+        let late = r
+            .late
+            .lock()
+            .unwrap()
+            .take()
+            .expect("the late task was not made");
+        wait_for(&late.done);
+        let waited = r.late_start.load(Ordering::SeqCst) - r.late_ready.load(Ordering::SeqCst);
+        assert!(
+            waited <= 3,
+            "the late task waited {waited} switches, and the two tasks passed {} times",
+            r.passes.load(Ordering::SeqCst)
+        );
     }
 
     #[cfg(target_os = "linux")]

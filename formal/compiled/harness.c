@@ -84,6 +84,8 @@ void vx_tasks_wait(struct group *g) {
     vx_task_join(g, i);
 }
 
+void vx_tasks_join(struct group *g) { vx_tasks_wait(g); }
+
 void vx_tasks_end(struct group *g) {
   vx_tasks_wait(g);
   for (int i = 0; i < g->count; i++)
@@ -97,7 +99,14 @@ int vx_cancelled_at(const char *at_file, int at_line) { return 0; }
 void vx_task_failed(void) { assert(0 && "a task failed"); }
 long vx_clock_ns(void) { return 0; }
 void vx_waiting_for(int what, const char *at_file, int at_line,
-                    const char *made_file, int made_line) {}
+                    const char *made_file, int made_line, long *channel) {}
+void vx_waiting_for_lock(const char *at_file, int at_line,
+                         const char *made_file, int made_line, long *holder) {}
+// The holder word of a `Mutex` is only for the deadlock report.
+void vx_lock_taken(long *holder) {}
+void vx_lock_released(long *holder) {}
+// Which task holds which channel end is only for the deadlock report too.
+void vx_task_holds_an_end(long *words, int sender) {}
 
 // The wait and the wake, as the Rust runtime does them: a lock and a condition
 // variable. Here the condition variable is a count of wakes. A wait reads the

@@ -22,6 +22,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
@@ -1652,8 +1653,9 @@ static LLVM::LLVMFuncOp getOrDeclareRuntimeFn(OpBuilder &builder,
                                               StringRef name, Type result,
                                               ArrayRef<Type> params);
 
-// `VX_CTRL_WAIT_FOR_TENSORS` and `VX_CTRL_WAIT_FOR_THREAD` in
+// `VX_CTRL_WAIT`, `VX_CTRL_WAIT_FOR_TENSORS` and `VX_CTRL_WAIT_FOR_THREAD` in
 // include/vx_hardware_runtime.h.
+constexpr int32_t kCtrlWait = 0x05;
 constexpr int32_t kCtrlWaitForTensors = 0x06;
 constexpr int32_t kCtrlWaitForThread = 0x07;
 
@@ -4467,6 +4469,9 @@ static BufferOrigin originOf(Value v, llvm::SmallPtrSetImpl<void *> &seen,
           if (operand.get() == cell &&
               takesOwnership(call, operand.getOperandNumber()))
             return BufferOrigin::Unknown;
+      } else if (user->hasAttr("vx.task_borrows")) {
+        // Handed to a task, which borrows it as a call does.
+        continue;
       } else if (!isa<memref::LoadOp>(user)) {
         return BufferOrigin::Unknown; // the cell itself escapes
       }
@@ -4502,6 +4507,9 @@ static BufferOrigin originOf(Value v, llvm::SmallPtrSetImpl<void *> &seen,
     return BufferOrigin::Borrowed;
   }
   Operation *def = v.getDefiningOp();
+  // In a task, a heap buffer of the function that started it.
+  if (def && def->hasAttr("vx.task_takes"))
+    return BufferOrigin::Heap;
   // A spawn region's value: a buffer made outside the region and handed out.
   if (auto spawn = dyn_cast_or_null<vx::SpawnOp>(def)) {
     unsigned i = cast<OpResult>(v).getResultNumber();
@@ -4572,6 +4580,19 @@ static BufferOrigin originOf(Value v) {
   return originOf(v, topology);
 }
 
+// The call that fills `slot`, the stack slot of a statically shaped result: the
+// one that takes it first. Null for a stack buffer that no call fills, which is
+// not a result.
+static func::CallOp resultSlotFill(memref::AllocaOp slot) {
+  func::CallOp fill;
+  for (Operation *user : slot->getUsers())
+    if (auto c = dyn_cast<func::CallOp>(user); c && c.getNumOperands() > 0 &&
+                                               c.getOperand(0) == slot &&
+                                               c.getNumResults() == 0)
+      fill = c;
+  return fill;
+}
+
 // A statically shaped result comes back in a stack slot the caller allocates
 // once, in its entry block. A function that takes it by value frees it, so a
 // result that is passed by value gets a heap buffer instead, allocated where
@@ -4601,8 +4622,8 @@ static LogicalResult giveMovedResultsHeapSlots(ModuleOp module) {
             slots.insert(slot);
     } else if (auto cast = dyn_cast<UnrealizedConversionCastOp>(op)) {
       // Into a struct field's descriptor: the struct frees it when it is
-      // dropped.
-      if (cast->getNumOperands() == 1 &&
+      // dropped. A task that borrows a cell does not free it.
+      if (cast->getNumOperands() == 1 && !cast->hasAttr("vx.task_borrows") &&
           isa<MemRefType>(cast->getOperand(0).getType()) &&
           !isa<MemRefType>(cast->getResult(0).getType()))
         if (auto slot = slotOf(cast->getOperand(0)))
@@ -4610,15 +4631,9 @@ static LogicalResult giveMovedResultsHeapSlots(ModuleOp module) {
     }
   });
   for (memref::AllocaOp slot : slots) {
-    // The call that fills the slot is the one that takes it first. A stack
-    // buffer no call fills is not a result: checkMovedArguments reports one
+    // checkMovedArguments reports a stack buffer that is not a result and is
     // passed by value.
-    func::CallOp fill;
-    for (Operation *user : slot->getUsers())
-      if (auto c = dyn_cast<func::CallOp>(user); c && c.getNumOperands() > 0 &&
-                                                 c.getOperand(0) == slot &&
-                                                 c.getNumResults() == 0)
-        fill = c;
+    func::CallOp fill = resultSlotFill(slot);
     if (!fill)
       continue;
     DominanceInfo dominance(fill->getParentOfType<func::FuncOp>());
@@ -5234,8 +5249,18 @@ static LogicalResult lowerTask(vx::SpawnOp task, Value group, ModuleOp module,
     Value v =
         LLVM::LoadOp::create(b, loc, fieldTypes[2 + i], field(b, env, 2 + i));
     Type type = copied[i] ? copied[i] : capture.getType();
-    if (v.getType() != type)
-      v = UnrealizedConversionCastOp::create(b, loc, type, v).getResult(0);
+    if (v.getType() != type) {
+      auto cast = UnrealizedConversionCastOp::create(b, loc, type, v);
+      // A heap buffer of the function, or a result slot, which moves to the
+      // heap because the task gets it. A task that takes it, as `let b = b;`
+      // does, frees it or passes it on by value.
+      auto slot = castSource(capture).getDefiningOp<memref::AllocaOp>();
+      if (!copied[i] && isa<MemRefType>(type) &&
+          (originOf(capture) == BufferOrigin::Heap ||
+           (slot && resultSlotFill(slot))))
+        cast->setAttr("vx.task_takes", UnitAttr::get(ctx));
+      v = cast.getResult(0);
+    }
     inTask.push_back(v);
   }
   Block *first = &body.front();
@@ -5342,9 +5367,17 @@ static LogicalResult lowerTask(vx::SpawnOp task, Value group, ModuleOp module,
       v = memref::LoadOp::create(b, loc, capture);
     else if (copied[i])
       v = LLVM::LoadOp::create(b, loc, copied[i], capture);
-    if (v.getType() != fieldTypes[2 + i])
-      v = UnrealizedConversionCastOp::create(b, loc, fieldTypes[2 + i], v)
-              .getResult(0);
+    if (v.getType() != fieldTypes[2 + i]) {
+      auto cast =
+          UnrealizedConversionCastOp::create(b, loc, fieldTypes[2 + i], v);
+      // The cell of a `let mut` tensor, which the task reads or passes on as
+      // `&mut`: the task borrows it until the `tasks` block ends, as a call
+      // would.
+      auto cell = dyn_cast<MemRefType>(v.getType());
+      if (cell && cell.getRank() == 0 && isa<MemRefType>(cell.getElementType()))
+        cast->setAttr("vx.task_borrows", UnitAttr::get(ctx));
+      v = cast.getResult(0);
+    }
     LLVM::StoreOp::create(b, loc, v, field(b, newEnv, 2 + i));
   }
   Value fnRef = func::ConstantOp::create(b, loc, fn.getFunctionType(),
@@ -5426,15 +5459,16 @@ static LogicalResult lowerTasksBlock(vx::SpawnOp block, ModuleOp module) {
       waits.push_back(wait);
     return WalkResult::advance();
   });
-  if (!waits.empty()) {
-    auto waitFn = LLVM::lookupOrCreateFn(b, module, "vx_tasks_wait", {ptrTy},
+  for (vx::TasksWaitOp wait : waits) {
+    // An exit cancels the tasks before it joins them. The join at the end of
+    // the body cancels none.
+    StringRef name = wait.getJoin() ? "vx_tasks_join" : "vx_tasks_wait";
+    auto waitFn = LLVM::lookupOrCreateFn(b, module, name, {ptrTy},
                                          LLVM::LLVMVoidType::get(ctx));
     assert(succeeded(waitFn) && "the runtime function has one declaration");
-    for (vx::TasksWaitOp wait : waits) {
-      OpBuilder wb(wait);
-      LLVM::CallOp::create(wb, loc, *waitFn, ValueRange{group});
-      wait.erase();
-    }
+    OpBuilder wb(wait);
+    LLVM::CallOp::create(wb, loc, *waitFn, ValueRange{group});
+    wait.erase();
   }
   SmallVector<TaskSlot> slots;
   for (vx::SpawnOp task : tasks)
@@ -8133,6 +8167,56 @@ static void waitBeforeReturningToC(ModuleOp module,
   }
 }
 
+// A C function that gets a pointer into GPU memory can read that memory at
+// once, before the GPU ran the kernels that write it. The code generators mark
+// such a function with `vx.gets_device_pointer`. On an Apple GPU, each call to
+// it waits first, through `VX_CTRL_WAIT`. The pointer gives no size, so the
+// call waits for every launch.
+static void waitBeforeCGetsADevicePointer(ModuleOp module,
+                                          ArrayRef<int32_t> topologies) {
+  MLIRContext *ctx = module.getContext();
+  SmallVector<func::CallOp> calls;
+  module.walk([&](func::CallOp call) {
+    auto callee = module.lookupSymbol<func::FuncOp>(call.getCalleeAttr());
+    if (callee && callee->hasAttr("vx.gets_device_pointer"))
+      calls.push_back(call);
+  });
+  for (auto f : module.getOps<func::FuncOp>())
+    if (f->removeAttr("vx.gets_device_pointer"))
+      assert(f.isExternal() && "only a declaration gets vx.gets_device_pointer");
+  if (topologies.empty() || calls.empty())
+    return;
+  OpBuilder b(ctx);
+  auto i32Type = b.getI32Type();
+  auto ptrType = LLVM::LLVMPointerType::get(ctx);
+  getOrDeclareRuntimeFn(b, module, UnknownLoc::get(ctx), "vx_plugin_control",
+                        i32Type, {i32Type, ptrType});
+  for (func::CallOp call : calls) {
+    Location loc = call.getLoc();
+    Value slot;
+    {
+      OpBuilder::InsertionGuard guard(b);
+      b.setInsertionPointToStart(
+          &call->getParentOfType<func::FuncOp>().getBody().front());
+      Value one = b.create<LLVM::ConstantOp>(loc, b.getI64Type(),
+                                             b.getI64IntegerAttr(1));
+      slot = b.create<LLVM::AllocaOp>(loc, ptrType, i32Type, one);
+    }
+    b.setInsertionPoint(call);
+    Value opcode = b.create<LLVM::ConstantOp>(loc, i32Type,
+                                              b.getI32IntegerAttr(kCtrlWait));
+    for (int32_t topology : topologies) {
+      b.create<LLVM::StoreOp>(loc,
+                              b.create<LLVM::ConstantOp>(
+                                  loc, i32Type, b.getI32IntegerAttr(topology)),
+                              slot);
+      b.create<LLVM::CallOp>(loc, TypeRange{i32Type},
+                             SymbolRefAttr::get(ctx, "vx_plugin_control"),
+                             ValueRange{opcode, slot});
+    }
+  }
+}
+
 /// For `--emit-ptx` and `--emit-msl`: gives each kernel in `gpuModule` the
 /// name of the function that holds its region, and describes its parameters
 /// for a program that launches the kernel. Section 3.5 of `docs/lang/abi.md`
@@ -8867,6 +8951,8 @@ struct ConvertVxToLLVMPass
     }
     declareLocalDevices(getOperation());
     waitBeforeReturningToC(getOperation(), appleGpuTopologies.getArrayRef());
+    waitBeforeCGetsADevicePointer(getOperation(),
+                                  appleGpuTopologies.getArrayRef());
     checkPackedTensorArguments(getOperation());
   }
 };
@@ -9112,6 +9198,59 @@ struct RaiseLoopAccessesPass
   }
 };
 
+// Upstream's `convert-linalg-to-affine-loops` makes an `affine.for` for each
+// loop of a linalg op, with a size of an operand as its bound. A size that a
+// loop computes, such as that of a tensor made in the loop, is not an affine
+// dimension there, and the `affine.for` does not verify. This pass lowers such
+// an op to `scf.for` loops instead, and every other op as upstream does.
+struct LinalgToAffineLoopsPass
+    : public PassWrapper<LinalgToAffineLoopsPass, OperationPass<func::FuncOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LinalgToAffineLoopsPass)
+
+  llvm::StringRef getArgument() const override {
+    return "vx-linalg-to-affine-loops";
+  }
+
+  llvm::StringRef getDescription() const override {
+    return "Lowers linalg ops to affine loops, or to scf loops where a bound "
+           "is not an affine dimension";
+  }
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<affine::AffineDialect, memref::MemRefDialect,
+                    scf::SCFDialect>();
+  }
+
+  struct Lower : public OpInterfaceRewritePattern<linalg::LinalgOp> {
+    using OpInterfaceRewritePattern::OpInterfaceRewritePattern;
+
+    LogicalResult matchAndRewrite(linalg::LinalgOp op,
+                                  PatternRewriter &rewriter) const override {
+      if (!op.hasPureBufferSemantics())
+        return failure();
+      bool affine = true;
+      for (Range range : op.createLoopRanges(rewriter, op.getLoc()))
+        for (OpFoldResult bound : {range.offset, range.size, range.stride})
+          if (Value value = llvm::dyn_cast_if_present<Value>(bound))
+            affine = affine && affine::isValidDim(value);
+      if (failed(affine ? linalg::linalgOpToAffineLoops(rewriter, op)
+                        : linalg::linalgOpToLoops(rewriter, op)))
+        return failure();
+      rewriter.eraseOp(op);
+      return success();
+    }
+  };
+
+  void runOnOperation() override {
+    MLIRContext *context = &getContext();
+    RewritePatternSet patterns(context);
+    patterns.add<Lower>(context);
+    memref::DimOp::getCanonicalizationPatterns(patterns, context);
+    affine::AffineApplyOp::getCanonicalizationPatterns(patterns, context);
+    (void)applyPatternsGreedily(getOperation(), std::move(patterns));
+  }
+};
+
 // Make a stack buffer behave like the heap buffer it replaced:
 // `malloc`-compatible alignment, and in the entry block.
 //
@@ -9310,7 +9449,10 @@ struct CheckIntegerDivisionPass
       if (isSigned && ty.getWidth() > 1 && (!constant || divisor.isAllOnes())) {
         Value min = b.create<arith::ConstantOp>(
             loc, b.getIntegerAttr(ty, APInt::getSignedMinValue(ty.getWidth())));
-        Value minusOne = b.create<arith::ConstantIntOp>(loc, ty, -1);
+        // A -1 from ConstantIntOp has only 64 one bits. An i128 needs 128, or
+        // MIN / -1 misses the check.
+        Value minusOne = b.create<arith::ConstantOp>(
+            loc, b.getIntegerAttr(ty, APInt::getAllOnes(ty.getWidth())));
         Value isMin =
             b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, lhs, min);
         Value isMinusOne = b.create<arith::CmpIOp>(
@@ -9812,6 +9954,9 @@ void registerVxPasses() {
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<RaiseLoopAccessesPass>();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return std::make_unique<LinalgToAffineLoopsPass>();
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<ReorderableReductionsPass>();

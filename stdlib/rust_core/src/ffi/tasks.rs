@@ -136,6 +136,19 @@ pub(crate) fn drop_deadline() -> Option<i64> {
     PUT_ASIDE.with(|p| p.borrow().last().map(|d| d.at))
 }
 
+/// The deadlines that a new task starts with: the earliest deadline of the code that spawns it.
+/// So a task in a `drop` or in a call of `within` gives up at the same time as that code.
+pub(crate) fn deadlines_for_a_task() -> PutAside {
+    let at = drop_deadline();
+    at.map(|at| Deadline {
+        mark: None,
+        at,
+        drop: false,
+    })
+    .into_iter()
+    .collect()
+}
+
 /// Starts a scope with a deadline `limit_ns` from now. It keeps the deadline of the scope
 /// around it when that is earlier.
 fn push_deadline(mark: Option<Arc<CancelMark>>, limit_ns: i64, drop: bool) {
@@ -409,6 +422,7 @@ pub unsafe extern "C" fn vx_task_start_at(
     }
     let task_env = Env(env);
     let own_site = site.clone();
+    let put_aside = deadlines_for_a_task();
     let thread_done = Arc::new(AtomicI64::new(0));
     let done = thread_done.clone();
     crate::ffi::wait::thread_started();
@@ -418,9 +432,11 @@ pub unsafe extern "C" fn vx_task_start_at(
             let task_env = task_env;
             let mut site = site;
             CURRENT.with(|c| *c.borrow_mut() = Some(mark));
+            PUT_ASIDE.with(|p| *p.borrow_mut() = put_aside);
             swap_site(&mut site);
             run(task_env.0);
             lines::task_ended();
+            crate::ffi::wait::task_ended();
             // The wake comes before the count of threads goes down. So the joining thread
             // never counts as waiting for a thread that the count no longer has.
             done.store(1, Ordering::SeqCst);
@@ -476,6 +492,20 @@ pub unsafe extern "C" fn vx_tasks_wait(group: *mut VxTaskGroup) {
     let group = &mut *group;
     // Leaving the block early cancels its tasks, and then joins them (F7).
     group.mark.cancel();
+    for task in &mut group.tasks {
+        wait(task);
+    }
+}
+
+/// The end of the body of a `tasks` block, before the drops of what its tasks use: joins each
+/// task that is not joined yet, as `vx_tasks_end` does. It cancels none of them. `vx_tasks_end`
+/// still ends the block.
+///
+/// # Safety
+/// `group` comes from `vx_tasks_begin`, and its block did not end.
+#[no_mangle]
+pub unsafe extern "C" fn vx_tasks_join(group: *mut VxTaskGroup) {
+    let group = &mut *group;
     for task in &mut group.tasks {
         wait(task);
     }

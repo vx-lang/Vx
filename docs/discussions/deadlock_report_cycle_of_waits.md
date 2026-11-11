@@ -91,3 +91,13 @@ same report, if real programs move ends after a `spawn` often.
 - Two tasks that each hold one lock and wait for the other: the report prints the cycle (A).
 - A `Sender` sent through a channel to a task: the report prints the counts of D for that channel,
   and no cycle.
+
+## What the code does now
+
+The code has A, D and B. B places an end only when the `spawn` body moves the variable that
+holds it, as a whole. A task that only borrows a `Sender` can share it with the code around the
+block, so it places nothing, and its channel keeps the line of D.
+
+B has one gap, which the count does not close. A task moves a `Sender`, sends it on through a
+channel, and then waits. The count still matches, so the report names the first task as the one
+that can send. Option C would close it.

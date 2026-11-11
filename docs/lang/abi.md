@@ -405,7 +405,9 @@ run on the Apple GPU through Metal (`runtime/metal_dispatch.mm`).
   ready when the call returns. Before it returns, the function waits for the kernels of the
   calling thread, and for the kernels of other threads that write one of its tensor
   parameters. So a call on one thread does not wait for the kernels of another thread on other
-  memory.
+  memory. In the other direction, a Vx function can give a C function a pointer into GPU
+  memory, as in `fn f(p : *const f32 in Memory::HBM)`. The C function can read that memory at
+  once, so the call waits for every kernel first.
 - **CPU or GPU.** `void vx_metal_set_enabled(int on)` sets the device for the calling thread.
   With 0, each launch runs the CPU copy of its kernel on the same memory, with the blocks
   shared among the CPU's cores (`docs/spawn_on.md`). `VX_METAL=0` turns the GPU off for every
@@ -425,7 +427,8 @@ message, `%`, `\` and each control character are `%` and two hex digits, so a ne
 
 ## 4. Symbol names
 
-- A function the program defines keeps its name, and is `hidden` and `dso_local`.
+- A function the program defines keeps its name, unless a C function has it (see
+  below). It is `hidden` and `dso_local`.
   The executable does not export it, so a program's `fn write` does not replace
   libc's `write` for the runtime library.
 - A `pub fn` keeps its name and is exported, so a shared library built from the
@@ -435,6 +438,10 @@ message, `%`, `\` and each control character are `%` and two hex digits, so a ne
   `_vx_`. The kernel entry
   points `_vx_ciface_<kernel>` are the only ones today. The dispatch runtime
   finds them with `dlsym`.
+- A function with the name of a C function gets the name `<file>__<name>`, so that
+  each call of the C function still reaches it. The C functions are the ones that an
+  `extern` block declares, and `malloc`, `realloc`, `aligned_alloc` and `free`, which
+  the compiler calls. A `pub fn` with such a name is an error.
 - `main` keeps its C name, because the C runtime calls it.
 - A function in an `extern` block keeps its C name and C linkage.
 

@@ -9,10 +9,12 @@
 // own `recv`. The code of the block waits in the join of the first task. So nothing can go on,
 // and the runtime stops the program with a report, in place of a hang.
 //
-// The second RUN line runs the tasks on one worker thread of the shared runtime.
+// The second RUN line runs the tasks on one worker thread of the shared runtime. The third runs
+// them on one thread in the order of a seed (`VX_TASK_SEED`).
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 not vxc %s 2>&1 | FileCheck %s
+// RUN: env VX_TASK_SEED=1 not vxc %s 2>&1 | FileCheck %s
 // CHECK: {{^}}before the block{{$}}
 // CHECK-NOT: after the block
 // CHECK: vx: deadlock: each task of the program waits, and nothing can wake one. The program stops.

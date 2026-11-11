@@ -1,0 +1,64 @@
+//===- a_task_that_waits_for_input_is_not_a_deadlock.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A task that waits for a file is not a deadlock, even when all the other code waits. A task
+// reads a FIFO (a named pipe), and the RUN line writes 10 lines to it, 0.3 seconds apart. The
+// main code waits in `recv` for the count of bytes. On the shared runtime, a helper thread runs
+// each read, and wakes the task at its end. The deadlock watcher looks every 0.1 seconds, so it
+// sees each read wait. It must not report a deadlock while a read waits, or while its wake runs.
+//
+// The writer opens the FIFO only when the program opens it, so each line comes while the
+// program runs. Each RUN line has its own FIFO, so a writer that a failed run left behind does
+// not write to the next one. The test runner gives a program no input of its own, so this one runs only from
+// the RUN lines.
+//
+// NO_EXEC
+// RUN: rm -f %t.shared %t.threads && mkfifo %t.shared %t.threads
+// RUN: (for i in $(seq 10); do sleep 0.3; echo line; done > %t.shared 2>/dev/null &) ; env INPUT=%t.shared VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=deadlock
+// RUN: (for i in $(seq 10); do sleep 0.3; echo line; done > %t.threads 2>/dev/null &) ; env INPUT=%t.threads vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=deadlock
+// RUN: rm -f %t.shared %t.threads
+// CHECK: {{^}}the task read 50 bytes{{$}}
+
+import std::fs;
+import std::sync::channel;
+
+extern {
+  fn getenv(name : *const i8) -> *const i8;
+}
+
+// Reads the input to its end, and sends the count of bytes.
+fn count_the_input(tx : Sender<i64>) -> void {
+  let mut input = unsafe { File::open(getenv("INPUT"), OpenMode::Read()) };
+  let mut byte : u8 = 0;
+  let mut count : i64 = 0;
+  loop {
+    let n = unsafe { input.read((&mut byte) as *mut u8, 1) };
+    if n == 0 {
+      break;
+    }
+    count = count + (n as i64);
+  }
+  tx.send(count);
+}
+
+fn main() -> i32 {
+  let (tx, rx) = channel<i64>(1);
+  tasks {
+    spawn {
+      count_the_input(tx);
+    };
+    match rx.recv() {
+      Result<i64, RecvError>::Ok(n) => {
+        println!("the task read {} bytes", n);
+      }
+      Result<i64, RecvError>::Err(_e) => {
+        println!("the recv failed");
+      }
+    }
+  };
+  return 0;
+}

@@ -1940,8 +1940,18 @@ pub fn emit_module_mlir(
         } else {
             format!(" -> {ret}")
         };
+        let mark = match registry.fn_sigs.get(name.as_str()) {
+            Some(sig)
+                if crate::codegen::generator::gets_device_pointer(
+                    sig.params.iter().map(peel_wrappers),
+                ) =>
+            {
+                " attributes {vx.gets_device_pointer}"
+            }
+            _ => "",
+        };
         decls += &format!(
-            "  func.func private {}({}){ret_sig}\n",
+            "  func.func private {}({}){ret_sig}{mark}\n",
             sym_ref(name),
             arg_types.join(", ")
         );
@@ -2633,7 +2643,8 @@ impl<'a> FnEmit<'a> {
             // the enclosing block (which the spawn op did not terminate).
             Opcode::SpawnEnd => self.op_spawn_end(idx, ins),
             Opcode::TasksWait => {
-                self.body += "  \"vx.tasks_wait\"() : () -> ()\n";
+                let join = if ins.imm == 1 { " {join}" } else { "" };
+                self.body += &format!("  \"vx.tasks_wait\"(){join} : () -> ()\n");
                 Ok(())
             }
             Opcode::TaskFailed => {
