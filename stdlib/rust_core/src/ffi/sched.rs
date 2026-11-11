@@ -482,6 +482,7 @@ unsafe extern "C" fn fiber_entry(arg: *mut u8) -> ! {
     let fiber = arg as *mut Fiber;
     ((*fiber).run)((*fiber).env);
     lines::task_ended();
+    crate::ffi::wait::task_ended();
     // The task happens before the end of its join, which acquires `done`.
     tsan::release(&(*fiber).done);
     to_worker(Why::Ended);

@@ -103,6 +103,8 @@ void vx_waiting_for_lock(const char *at_file, int at_line,
 // The holder word of a `Mutex` is only for the deadlock report.
 void vx_lock_taken(long *holder) {}
 void vx_lock_released(long *holder) {}
+// Which task holds which channel end is only for the deadlock report too.
+void vx_task_holds_an_end(long *words, int sender) {}
 
 // The wait and the wake, as the Rust runtime does them: a lock and a condition
 // variable. Here the condition variable is a count of wakes. A wait reads the

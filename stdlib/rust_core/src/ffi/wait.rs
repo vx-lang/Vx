@@ -174,6 +174,62 @@ fn on_the_main_thread() -> bool {
     return false;
 }
 
+/// The channel ends that each task moved at its `spawn`: the words of the channel, whether the
+/// end is a `Sender`, and the task. The entries of a task go at its end.
+static ENDS: Mutex<Vec<(usize, bool, crate::ffi::tasks::Site)>> = Mutex::new(Vec::new());
+/// The entries of `ENDS`, so that the end of a task takes no lock when it is empty.
+static ENDS_HELD: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn ends() -> std::sync::MutexGuard<'static, Vec<(usize, bool, crate::ffi::tasks::Site)>> {
+    ENDS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The task that runs holds an end of the channel at `words`: a `Sender` when `sender` is 1,
+/// the `Receiver` when it is 0. The checker puts a call at the start of a task for each end that
+/// the task moves. The report then knows who can end a wait on the channel. An end that moves
+/// again after the `spawn` keeps its first holder here.
+///
+/// # Safety
+///
+/// `words` is the words of a channel.
+#[no_mangle]
+pub unsafe extern "C" fn vx_task_holds_an_end(words: *mut i64, sender: i32) {
+    if let Some(site) = crate::ffi::tasks::current_site() {
+        ends().push((words as usize, sender != 0, site));
+        ENDS_HELD.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// The task that runs ends: it holds no end now.
+pub(crate) fn task_ended() {
+    if ENDS_HELD.load(Ordering::SeqCst) == 0 {
+        return;
+    }
+    let Some(site) = crate::ffi::tasks::current_site() else {
+        return;
+    };
+    let mut ends = ends();
+    let before = ends.len();
+    ends.retain(|e| !std::sync::Arc::ptr_eq(&e.2, &site));
+    ENDS_HELD.fetch_sub(before - ends.len(), Ordering::SeqCst);
+}
+
+/// The one task that holds each end of its kind of the channel at `words` that is not dropped:
+/// each `Sender` when `sender`, or the `Receiver`. `None` when the ends that the tasks moved are
+/// not all the ends that are not dropped, or when two tasks hold them.
+fn only_holder(words: usize, sender: bool) -> Option<crate::ffi::tasks::Site> {
+    let word = if sender { SENDERS } else { RECEIVER };
+    let live = unsafe { &*(words as *const AtomicI64).add(word) }.load(Ordering::SeqCst);
+    let ends = ends();
+    let held: Vec<_> = ends
+        .iter()
+        .filter(|e| e.0 == words && e.1 == sender)
+        .collect();
+    let first = held.first()?;
+    let one_task = held.iter().all(|e| std::sync::Arc::ptr_eq(&e.2, &first.2));
+    (held.len() as i64 == live && one_task).then(|| first.2.clone())
+}
+
 /// The holder word of a `Mutex` holds 0 when no code holds the lock, or when the report cannot
 /// name the holder. It holds 1 for the main code. For a task, it holds the address of the site of
 /// the task, and it keeps one count of the site, so that the address stays the task's.
@@ -744,8 +800,9 @@ type Wait = (Option<Who>, usize, What, Option<Place>, Option<Place>);
 
 /// One line for each waiter in the buckets: what it waits for, and then the lines of the `spawn`
 /// of its task. The main code comes first, then the tasks in the order of their lines. Two
-/// waits on one channel or one lock name the same number. Then each cycle of waits, when each
-/// wait in it is a join or a `lock` whose holder is known.
+/// waits on one channel or one lock name the same number. Then each cycle of waits, when the
+/// report knows what each wait in it waits for: the task of a join, the holder of a lock, or the
+/// one task that holds the other ends of a channel.
 fn report() -> String {
     let mut waits = Vec::new();
     for b in &TABLE {
@@ -774,6 +831,11 @@ fn report() -> String {
                 waiter(held as usize).filter(|_| held != 0)
             }
             What::Join(Some(site)) => waiter(std::sync::Arc::as_ptr(site) as *const u8 as usize),
+            // A `recv` waits for a `Sender`, and a `send` on a full channel for the `Receiver`.
+            What::Recv(words) | What::Send(words) if *words != 0 => {
+                let site = only_holder(*words, matches!(w.2, What::Recv(_)))?;
+                waiter(std::sync::Arc::as_ptr(&site) as *const u8 as usize)
+            }
             _ => None,
         })
         .collect();
@@ -785,6 +847,12 @@ fn report() -> String {
             list.len()
         }
     };
+    // `, which only the task from the `spawn` at main.vx:20 can send on`.
+    let only = |i: usize, verb: &str| {
+        (waits_for[i].and_then(|h| waits[h].0.as_ref()))
+            .map(|who| format!(", which only {} can {verb}", who.text()))
+            .unwrap_or_default()
+    };
     let mut doing = Vec::new();
     for (i, (_, word, what, at, made)) in waits.iter().enumerate() {
         // ` at main.vx:15` and `, made at main.vx:11`, or nothing when the line is not known.
@@ -794,12 +862,14 @@ fn report() -> String {
             .unwrap_or_default();
         doing.push(match what {
             What::Send(_) => format!(
-                "waits in `send`{at} on channel {}{made}",
-                number(&mut channels, *word)
+                "waits in `send`{at} on channel {}{made}{}",
+                number(&mut channels, *word),
+                only(i, "receive from")
             ),
             What::Recv(_) => format!(
-                "waits in `recv`{at} on channel {}{made}",
-                number(&mut channels, *word)
+                "waits in `recv`{at} on channel {}{made}{}",
+                number(&mut channels, *word),
+                only(i, "send on")
             ),
             What::Lock(_) => {
                 let held = waits_for[i]
@@ -855,9 +925,10 @@ fn report() -> String {
     out
 }
 
-/// The index of the count of `Sender`s in the words of a channel, as
-/// stdlib/std/sync/channel.vx lays them out.
+/// The index of the count of `Sender`s, and of the word that is 1 until the `Receiver` is
+/// dropped, in the words of a channel, as stdlib/std/sync/channel.vx lays them out.
 const SENDERS: usize = 2;
+const RECEIVER: usize = 3;
 
 /// The waits on the channel whose waits sleep on `word`, and its `Sender`s that are not dropped:
 /// `, made at main.vx:43: 1 wait in `recv` and 0 in `send`. 1 `Sender` is not dropped.` A wait
@@ -1306,6 +1377,43 @@ mod tests {
             !left.contains(&16),
             "a cancel did not take the fiber whose wait it ends"
         );
+    }
+
+    /// The report names the holder of the `Sender`s of a channel only when one task moved each
+    /// `Sender` that is not dropped. The words here are those of a channel that nothing uses.
+    #[test]
+    fn only_one_task_that_moved_each_sender_is_the_only_holder() {
+        let words: [AtomicI64; 4] = std::array::from_fn(|_| AtomicI64::new(0));
+        let at = words.as_ptr() as usize;
+        let (a, b): (crate::ffi::tasks::Site, crate::ffi::tasks::Site) = (
+            b"  in the task from the `spawn` at a.vx:1\n"[..].into(),
+            b"  in the task from the `spawn` at a.vx:2\n"[..].into(),
+        );
+        let is = |found: Option<crate::ffi::tasks::Site>, site: &crate::ffi::tasks::Site| {
+            found.is_some_and(|f| std::sync::Arc::ptr_eq(&f, site))
+        };
+        words[SENDERS].store(2, Ordering::SeqCst);
+        ends().push((at, true, a.clone()));
+        assert!(
+            only_holder(at, true).is_none(),
+            "one of two `Sender`s is placed"
+        );
+        ends().push((at, true, b.clone()));
+        assert!(
+            only_holder(at, true).is_none(),
+            "two tasks hold the `Sender`s"
+        );
+        ends().retain(|e| e.0 != at || !std::sync::Arc::ptr_eq(&e.2, &b));
+        ends().push((at, true, a.clone()));
+        assert!(
+            is(only_holder(at, true), &a),
+            "one task holds both `Sender`s"
+        );
+        assert!(
+            only_holder(at, false).is_none(),
+            "no task holds the `Receiver`"
+        );
+        ends().retain(|e| e.0 != at);
     }
 
     /// Waiter 0 waits for the cycle 1, 2, 3 and is not in it. Waiter 4 waits for itself, and

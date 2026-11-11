@@ -59,6 +59,9 @@ extern {
   fn vx_channel_take_skip(words : *mut AtomicI64, k : i64) -> i32;
   /// Take each number of the channel at `words` out of the skip set.
   fn vx_channel_forget_skips(words : *mut AtomicI64) -> void;
+  /// The task that runs holds an end of the channel at `words`: a `Sender` for 1, the `Receiver`
+  /// for 0. The checker puts a call at the start of a task for each end that the task moves.
+  fn vx_task_holds_an_end(words : *mut AtomicI64, sender : i32) -> void;
 }
 
 // The number of the next `send`.
@@ -141,6 +144,12 @@ unsafe impl<T : Send> Send for Receiver<T> {}
 // A `send` and a `recv` can wait for another task on the host.
 impl<T> HostOnly for Sender<T> {}
 impl<T> HostOnly for Receiver<T> {}
+
+/// The checker finds the ends that a task moves with these, for the deadlock report.
+trait SenderOfAChannel {}
+trait ReceiverOfAChannel {}
+impl<T> SenderOfAChannel for Sender<T> {}
+impl<T> ReceiverOfAChannel for Receiver<T> {}
 
 /// A channel with room for `n` values. `n` must be at least 1.
 fn channel<T : Send + Owned>(n : i64, at : Caller) -> (Sender<T>, Receiver<T>) {

@@ -5,24 +5,27 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// Each task waits in `recv` for a value that only the other task sends. The deadlock report
-// names the line of each wait, the line that made its channel, and the `spawn` of each task. The
-// main code waits for the end of the first task. For each channel, the report counts the waits on
-// it and its `Sender`s that are not dropped.
+// Each task waits in `recv` for a value that only the other task sends. Each task moves its
+// ends at its `spawn`, so the report knows who holds each `Sender` and prints the cycle. Each
+// wait has its line, the line that made its channel, and the `spawn` of its task. The main code
+// waits for the end of the first task.
 //
 // RUN: not vxc %s --run 2>&1 | FileCheck %s
 // RUN: not vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
 // RUN: env VX_TASK_RUNTIME=shared not vxc %s --run 2>&1 | FileCheck %s
 
 // CHECK: vx: deadlock: each task of the program waits, and nothing can wake one. The program stops.
-// CHECK-NEXT: {{^}}  the main code waits for the end of the task from the `spawn` at {{.*}}.vx:50{{$}}
-// CHECK-NEXT: {{^}}  a task waits in `recv` at {{.*}}.vx:32 on channel 1, made at {{.*}}.vx:47{{$}}
-// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:50{{$}}
-// CHECK-NEXT: {{^}}  a task waits in `recv` at {{.*}}.vx:32 on channel 2, made at {{.*}}.vx:48{{$}}
+// CHECK-NEXT: {{^}}  the main code waits for the end of the task from the `spawn` at {{.*}}.vx:53{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `recv` at {{.*}}.vx:35 on channel 1, made at {{.*}}.vx:50, which only the task from the `spawn` at {{.*}}.vx:56 can send on{{$}}
 // CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:53{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `recv` at {{.*}}.vx:35 on channel 2, made at {{.*}}.vx:51, which only the task from the `spawn` at {{.*}}.vx:53 can send on{{$}}
+// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:56{{$}}
+// CHECK-NEXT: {{^}}  the waits form a cycle:{{$}}
+// CHECK-NEXT: {{^}}    the task from the `spawn` at {{.*}}.vx:53 waits in `recv` at {{.*}}.vx:35 on channel 1, made at {{.*}}.vx:50, which only the task from the `spawn` at {{.*}}.vx:56 can send on{{$}}
+// CHECK-NEXT: {{^}}    the task from the `spawn` at {{.*}}.vx:56 waits in `recv` at {{.*}}.vx:35 on channel 2, made at {{.*}}.vx:51, which only the task from the `spawn` at {{.*}}.vx:53 can send on{{$}}
 // CHECK-NEXT: {{^}}  the channels of these waits:{{$}}
-// CHECK-NEXT: {{^}}    channel 1, made at {{.*}}.vx:47: 1 wait in `recv` and 0 in `send`. 1 `Sender` is not dropped.{{$}}
-// CHECK-NEXT: {{^}}    channel 2, made at {{.*}}.vx:48: 1 wait in `recv` and 0 in `send`. 1 `Sender` is not dropped.{{$}}
+// CHECK-NEXT: {{^}}    channel 1, made at {{.*}}.vx:50: 1 wait in `recv` and 0 in `send`. 1 `Sender` is not dropped.{{$}}
+// CHECK-NEXT: {{^}}    channel 2, made at {{.*}}.vx:51: 1 wait in `recv` and 0 in `send`. 1 `Sender` is not dropped.{{$}}
 
 import std::sync::channel;
 
