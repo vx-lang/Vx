@@ -427,7 +427,8 @@ message, `%`, `\` and each control character are `%` and two hex digits, so a ne
 
 ## 4. Symbol names
 
-- A function the program defines keeps its name, and is `hidden` and `dso_local`.
+- A function the program defines keeps its name, unless a C function has it (see
+  below). It is `hidden` and `dso_local`.
   The executable does not export it, so a program's `fn write` does not replace
   libc's `write` for the runtime library.
 - A `pub fn` keeps its name and is exported, so a shared library built from the
@@ -437,6 +438,10 @@ message, `%`, `\` and each control character are `%` and two hex digits, so a ne
   `_vx_`. The kernel entry
   points `_vx_ciface_<kernel>` are the only ones today. The dispatch runtime
   finds them with `dlsym`.
+- A function with the name of a C function gets the name `<file>__<name>`, so that
+  each call of the C function still reaches it. The C functions are the ones that an
+  `extern` block declares, and `malloc`, `realloc`, `aligned_alloc` and `free`, which
+  the compiler calls. A `pub fn` with such a name is an error.
 - `main` keeps its C name, because the C runtime calls it.
 - A function in an `extern` block keeps its C name and C linkage.
 
