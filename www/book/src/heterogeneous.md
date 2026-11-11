@@ -82,7 +82,7 @@ The block also calls no helper function. A function declared without a topology 
 and calling it from inside a device region is a compile error:
 
 ```
-Error[E6001]: Function 'f' requires topology 'CPU', but is called from 'ANE'
+Error[E6001]: Type error: Function 'f' requires topology 'CPU', but is called from 'ANE'
 ```
 
 That is the address-space rule doing its job. Code meant for a device is written in the region, or
@@ -108,7 +108,7 @@ for each device (see [Tasks and channels](tasks.md)).
 
 The point of putting placement in the type system is the errors you get for free.
 
-**Dereferencing a device pointer from the host.** A `Pinned<T, NPU_SRAM>` that escapes into a host
+**Dereferencing a device pointer from the host.** A `Pinned<T, Topology::NPU>` that escapes into a host
 expression is a type error with a source span. This is the error that motivates the whole design: in
 C++ with CUDA it is a segfault, and in Python it is a silent wrong answer.
 
@@ -159,14 +159,16 @@ argument on `Tensor` — the memory space it lives in — and that `Verified(...
 The same program compiles and runs against different hardware by swapping the machine file:
 
 ```bash
-vxc --machine fleet/h100-sxm.vx program.vx
-vxc --machine fleet/m4-uma.vx  program.vx
+vxc --machine fleet/h100-sxm.vx --host default program.vx
+vxc --machine fleet/m4-uma.vx --host default program.vx
 ```
+
+`--host default` says which machine runs `main` ([Machine files](machine-files.md)).
 
 You can ask what the compiler concluded, as JSON, rather than reading it out of diagnostics:
 
 ```bash
-vxc --machine fleet/h100-sxm.vx program.vx --diagnostics-json out.json
+vxc --machine fleet/h100-sxm.vx --host default program.vx --diagnostics-json out.json
 ```
 
 That record carries every diagnostic with its structured fields — a capacity rejection includes the

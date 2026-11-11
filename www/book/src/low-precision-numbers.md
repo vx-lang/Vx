@@ -11,19 +11,15 @@ that list.
 | :--- | ---: | :--- | :---: | :---: | :--- |
 | `f16` | 16 | up to 65504, about 3 decimal digits | yes | yes | works |
 | `bf16` | 16 | the range of `f32`, about 2 decimal digits | yes | yes | works |
-| `f8e4m3` | 8 | up to 448 | no | yes | declaration only ([#1874]) |
-| `f8e5m2` | 8 | up to 57344 | yes | yes | declaration only ([#1874]) |
-| `f4e2m1` | 4 | 0, 0.5, 1, 1.5, 2, 3, 4, 6, and their negatives | no | no | declaration only ([#1874]) |
-| `f8e8m0` | 8 | powers of two, 2⁻¹²⁷ to 2¹²⁷ | no | yes | planned ([#1874]), block scales only |
+| `f8e4m3` | 8 | up to 448 | no | yes | works, except matmul ([#1876]) |
+| `f8e5m2` | 8 | up to 57344 | yes | yes | works, except matmul ([#1876]) |
+| `f4e2m1` | 4 | 0, 0.5, 1, 1.5, 2, 3, 4, 6, and their negatives | no | no | works, except matmul ([#1876]) |
+| `f8e8m0` | 8 | powers of two, 2⁻¹²⁷ to 2¹²⁷ | no | yes | planned ([#1877]), block scales only |
 | `i4` | 4 | -8 to 7 | | | works |
 | `u4` | 4 | 0 to 15 | | | works |
 
 In a float type's name, `e` is the number of exponent bits and `m` the number of mantissa bits.
 More exponent bits give a wider range. More mantissa bits give more precision.
-
-"Declaration only" means the type checker and the memory capacity checks accept the type, but the
-compiler cannot generate code for it yet. You can use it in a machine file's `dtypes:` and in the
-type of a tensor that the capacity checks count. A program that computes with it does not compile.
 
 ## Conversions
 
@@ -48,16 +44,14 @@ A conversion to a narrower float rounds to the nearest value it can hold. On a t
 value whose last bit is 0.
 
 A value too large for the type gives infinity in `f16` and `bf16`. `f8e4m3` and `f4e2m1` have no
-infinity, so a value too large for them will give the largest value they hold: 448 or 6. `f8e5m2`
-will do the same, and give 57344. NVIDIA's conversion instructions also work this way when
+infinity, so a value too large for them gives the largest value they hold: 448 or 6. `f8e5m2`
+does the same, and gives 57344. NVIDIA's conversion instructions also work this way when
 saturation is on.
 
 Integer arithmetic wraps around. In `i4`, `3 * 2 + 3` is 9, which does not fit, so the answer is
 -7. In `u4`, `15 + 1` is 0.
 
 ## Arithmetic on fp8 and fp4
-
-The compiler does not support this part yet ([#1875], [#1876]).
 
 `f16`, `bf16`, `i4` and `u4` compute like the other number types. An operation on two `bf16`
 values gives a `bf16`.
@@ -77,7 +71,7 @@ products in `f32`, and convert the sum in a separate step.
 This rule does not break the rule that nothing converts by itself. The result type is in the
 program text, so the reader sees where the precision changes.
 
-A matmul works the same way:
+A matmul will work the same way. The compiler does not support it yet ([#1876]):
 
 ```rust
 let c : Tensor<f32, [64, 64]> = a @ b;      // a and b are f4e2m1 tensors
@@ -112,7 +106,5 @@ turns it back into `f32`. `@` applies the scales and adds the products in `f32`.
 The memory capacity checks count the scales too. A 4096 by 4096 NVFP4 tensor is 8 MiB of values
 and 1 MiB of scales, so it needs 9 MiB.
 
-[#1874]: https://github.com/vx-lang/Vx/issues/1874
-[#1875]: https://github.com/vx-lang/Vx/issues/1875
 [#1876]: https://github.com/vx-lang/Vx/issues/1876
 [#1877]: https://github.com/vx-lang/Vx/issues/1877
