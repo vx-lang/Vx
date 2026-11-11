@@ -2906,7 +2906,10 @@ pub fn emit_function_mlir(
     em.entry += &valid_pointer_assumes(func, &valid, arg_offset);
 
     for (idx, ins) in hir.iter().enumerate() {
-        em.step(idx, ins)?;
+        // A gap names what the program's author wrote and where, not only the emitter line that
+        // bailed: the site alone sends the reader into the compiler.
+        em.step(idx, ins)
+            .map_err(|why| why.in_instruction(ins.opcode, func.name.as_ref()))?;
     }
 
     // Every block must end in a terminator. A void function falls through to a bare `return`.

@@ -1,0 +1,69 @@
+//===- spirv_device_image_borrowed_tensor_local.vx - a borrowed tensor local -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// A tensor local that is given a new value in a function with a branch is kept
+// in a stack slot that holds its memref. `&mut t` still means the tensor, so a
+// call can pass it and the kernel it reaches still gets a SPIR-V image.
+//
+// The flat emitter used to have no type for that slot as a call argument, so it
+// declined the whole program and the AST code generator compiled the module
+// instead. On the branch this was found in, the AST path then imaged no kernel.
+//
+// CHECK: vx.spawn topology({{[0-9]+}}) {
+// CHECK: } {arch = "spirv64"
+// EXPECT: 2
+// EXPECT: 4
+// EXPECT: 6
+// EXPECT: 8
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+}
+
+/// A `[n, 1]` tensor on the card, with `2 * i` at row `i`.
+fn fresh(n : i32) -> Tensor<i32, [?, ?], Memory::GPU_HBM> {
+  let mut host = unsafe { Tensor<i32, [?, ?]>::uninit([n, 1]) };
+  for i in 0..n {
+    host[i][0] = i * 2;
+  }
+  return transfer(host, Memory::GPU_HBM);
+}
+
+/// `t[i][0] = t[i][0] + 2`, on the card.
+fn add_two(t : &mut Tensor<i32, [?, ?], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::Dev) {
+    for i in 0..4 {
+      t[i][0] = t[i][0] + 2;
+    }
+  }
+}
+
+fn main() -> i32 {
+  let mut t = fresh(4);
+  // The branch and the new value together keep `t` in a slot.
+  let restart = 1;
+  if restart > 0 {
+    t = fresh(4);
+  }
+
+  add_two(&mut t);
+
+  let host = transfer(t, Memory::CPU_DRAM);
+  for i in 0..4 {
+    println!(host[i][0]);
+  }
+  return 0;
+}

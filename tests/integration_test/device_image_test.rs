@@ -673,6 +673,56 @@ fn a_kernel_with_a_struct_local_gets_a_spirv_module() {
     }
 }
 
+/// The flat code generator carries a program that borrows a tensor local, and
+/// the kernel it reaches still gets a SPIR-V image.
+///
+/// A tensor local given a new value in a function with a branch is kept in a
+/// slot holding its memref. The flat emitter had no type for that slot as a call
+/// argument, so it declined the whole module and the AST code generator took
+/// over. The AST path can image this kernel today, which is why the image alone
+/// would not notice the regression: what the decline costs is the shipping code
+/// generator for every function in the module. So this checks that no decline
+/// happened as well as that the image exists.
+#[test]
+fn a_borrowed_tensor_local_does_not_cost_the_module_its_device_images() {
+    let out = Command::new(env!("CARGO_BIN_EXE_vxc"))
+        .arg(corpus("spirv_device_image_borrowed_tensor_local.vx"))
+        .arg("--emit-llvm")
+        .output()
+        .unwrap_or_else(|e| panic!("could not run vxc: {e}"));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "vxc failed:\n{stderr}");
+    assert!(
+        !stderr.contains("emit declined") && !stderr.contains("program outside the flat subset"),
+        "borrowing a tensor local took the whole module off the flat code generator; stderr \
+         was:\n{stderr}"
+    );
+
+    let ir = String::from_utf8_lossy(&out.stdout);
+    let kernel = "vx_npu_kernel_0";
+    let payload = payload_bytes(&ir, kernel);
+
+    let has = |needle: &[u8]| payload.windows(needle.len()).any(|w| w == needle);
+    assert!(
+        has(b"format=spirv\0"),
+        "the payload does not say the image is SPIR-V, so a dispatch library \
+         has to guess"
+    );
+    let section = payload_section(&payload);
+    assert_eq!(
+        &section[..4],
+        &[0x03, 0x02, 0x23, 0x07],
+        "the section does not start with SPIR-V's magic number 0x07230203"
+    );
+    match spirv_val(section) {
+        Some(Ok(())) => {}
+        Some(Err(report)) => {
+            panic!("spirv-val rejected the module the compiler emitted:\n{report}")
+        }
+        None => println!("spirv-val is not installed, so the module was not validated"),
+    }
+}
+
 /// A placed region that calls the runtime -- `print` inside the region -- also
 /// reaches no device image, and now says so, naming the callee it could not
 /// bring along (#1137).
