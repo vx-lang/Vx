@@ -15,7 +15,8 @@
 // error if that module uses it. This is how a local item shadows a glob import in Rust.
 //
 // A C function in an `extern` block cannot be renamed, so a Vx function with its name is renamed
-// in every module, and the modules that see only the C function call it.
+// in every module, and the modules that see only the C function call it. A `pub fn` with the
+// name of a C function is an error, because the object file must export it under its own name.
 //
 //===----------------------------------------------------------------------===//
 use crate::lexer::{Token, TokenTypeBase};
@@ -102,6 +103,20 @@ pub fn plan(programs: &[Program], roots: &[Symbol]) -> Result<Plan, String> {
                 .any(|p| p.functions.iter().any(|f| &f.name == *name))
         })
         .collect();
+    // A C program calls a `pub fn` by its name, so the compiler cannot rename it.
+    for p in programs {
+        for f in &p.functions {
+            if f.is_pub && c_functions.contains(&f.name) {
+                let file = f.file.as_ref().unwrap_or(&p.module_path);
+                return Err(format!(
+                    "{file}:{}: `pub fn {name}` cannot keep its name, because the C function \
+                     `{name}` has that name. Choose another name",
+                    f.span.line,
+                    name = f.name
+                ));
+            }
+        }
+    }
     let clashes = declarers
         .into_iter()
         .filter(|(name, mods)| mods.len() > 1 || c_functions.contains(name));
