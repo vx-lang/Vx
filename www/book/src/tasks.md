@@ -191,7 +191,8 @@ impl Drop for SlotGuard {
 }
 ```
 
-After the limit, a `send` or `recv` in the `drop` gives up as in a cancelled block.
+After the limit, a `send` or `recv` in the `drop` gives up as in a cancelled block. This includes
+the waits of the tasks that the `drop` spawns.
 `VX_DROP_WAIT_SECONDS` can make the limit of each `drop` shorter, for a test or to find a `drop`
 that hangs, but never longer.
 
@@ -205,7 +206,7 @@ let flushed = within(Duration::from_millis(50), || -> bool {
 });
 ```
 
-The limit also holds in the functions that `body` calls. After the limit, a wait gives up as in a
+The limit also holds in the functions that `body` calls, and in the tasks that it spawns. After the limit, a wait gives up as in a
 cancelled block, and `cancelled()` is true until `body` returns. Outside a `drop`, a cancel still
 stops the waits in `body`. A `return` in `body` ends `body`, and not the function around the call.
 

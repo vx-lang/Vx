@@ -388,6 +388,7 @@ impl Scheduler {
             state: AtomicU8::new(RUNNING),
             locals: TaskLocals {
                 mark,
+                put_aside: crate::ffi::tasks::deadlines_for_a_task(),
                 site,
                 ..Default::default()
             },
