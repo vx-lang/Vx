@@ -323,7 +323,8 @@ pub enum Opcode {
     /// when `imm` is 1, standard output when it is 0. An `eprint!` and a `panic` are between two.
     PrintStream = 72,
     /// In a `tasks` block, before the drops of a `return`, `break` or `continue` that leaves it:
-    /// waits until each task of the block ends.
+    /// waits until each task of the block ends. With `imm` 1, at the end of the block's body,
+    /// before the drops of what its tasks use: it joins the tasks and cancels none of them.
     TasksWait = 73,
     /// Leaves the innermost `Spawn` region from its middle, with no value. It ends its block, as
     /// `Ret` does.

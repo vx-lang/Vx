@@ -123,10 +123,14 @@ def Vx_YieldOp : Vx_Op<"yield", [Pure, Terminator, ReturnLike]> {
 }
 
 // In a `tasks` block, before a `return`, `break` or `continue` leaves it: waits
-// until each task of the block ends, so that the drops before the exit run with no
-// task running. It reads and writes memory, so nothing moves across it.
+// until each task of the block ends, so that the drops before the exit run with
+// no task running. It reads and writes memory, so nothing moves across it. With
+// `join`, it is at the end of the block's body, before the drops of what the
+// tasks use: it joins the tasks as the end of the block does, and cancels none
+// of them.
 def Vx_TasksWaitOp : Vx_Op<"tasks_wait", [MemoryEffects<[MemRead, MemWrite]>]> {
     let summary = "Waits for the tasks of the enclosing tasks block.";
+    let arguments = (ins UnitAttr:$join);
     let assemblyFormat = "attr-dict";
 }
 

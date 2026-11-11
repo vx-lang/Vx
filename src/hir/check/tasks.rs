@@ -223,6 +223,17 @@ impl TaskCx {
             .find(|h| h.name.as_ref() == name && h.depth == depth)
     }
 
+    /// The names of the handles of the task that holds the borrow `borrower`: the task, or its
+    /// hold on what it copied.
+    pub(crate) fn handles_of(&self, borrower: &str) -> Vec<String> {
+        let task = borrower.strip_suffix(COPY_SUFFIX).unwrap_or(borrower);
+        self.handles
+            .iter()
+            .filter(|h| h.task == task)
+            .map(|h| h.name.to_string())
+            .collect()
+    }
+
     /// The innermost task body, if no closure starts between it and the code being checked.
     fn innermost_spawn(&self, closures: usize) -> Option<&Frame> {
         self.frames
@@ -419,15 +430,19 @@ impl TypeChecker<'_> {
             self.pointer_facts_enter_body()
         });
         let running = self.pointer_facts_running_tasks();
-        let mut ty = self.check_expr_block(stmts, ret.as_deref(), consume);
-        if let Some(r) = ret {
+        let mut ty = match (*kind, ret.as_deref_mut()) {
+            // The last value of a `tasks` block is checked in the block, as in an `unsafe` block.
+            // So a task that it starts, or a `return` in it, is known when the drops are placed.
+            (TaskBlockKind::Tasks, Some(r)) => {
+                self.check_expr_block_with_value(stmts, r, unused, consume)
+            }
+            _ => self.check_expr_block(stmts, ret.as_deref(), consume),
+        };
+        if let (TaskBlockKind::Spawn, Some(r)) = (*kind, ret) {
             self.value_unused = unused;
             // A `return` of the task gives the type of its last value, as the return type of a
             // function does.
-            let returned = match kind {
-                TaskBlockKind::Spawn => self.current_return_type.clone(),
-                TaskBlockKind::Tasks => None,
-            };
+            let returned = self.current_return_type.clone();
             let outer = self.expected_type.take();
             self.expected_type = returned.filter(|t| *t != Type::Unknown).or(outer.clone());
             ty = self.check_expr_type_flag(r, consume);
@@ -496,7 +511,9 @@ impl TypeChecker<'_> {
                 passed_up: Vec::new(),
             });
         });
-        self.drops_exit_tasks();
+        if let Some(join_at) = self.drops_exit_tasks() {
+            value_before_tasks_join(expr, join_at, &ty);
+        }
         // The end of the block joins each task that the program did not join (T2).
         let Some(Frame::Tasks {
             scope_len,
@@ -1486,6 +1503,48 @@ impl TypeChecker<'_> {
             Some(crate::diagnostic::SourceSpan::from_ast_span(at)),
         );
     }
+}
+
+/// The checked `tasks` block `expr` joins its tasks at statement `join_at`, and then drops what
+/// they use. Its last value of type `ty` moves before the join, so it still runs while the tasks
+/// do. A value that names a variable only reads it, so it stays.
+fn value_before_tasks_join(expr: &mut Expr, join_at: usize, ty: &Type) {
+    let Expr::TaskBlock(tb) = expr else {
+        unreachable!("only a task block reaches here")
+    };
+    if crate::syntax::types::is_never_ty(ty)
+        || matches!(tb.ret.as_deref(), None | Some(Expr::Identifier(_)))
+    {
+        return;
+    }
+    let value = *tb.ret.take().expect("matched above");
+    let span = value.span();
+    let stmt = if crate::syntax::types::is_void_ty(ty) {
+        // The block has no value now, so the drops after the join wait for nothing.
+        for s in &mut tb.stmts[join_at..] {
+            if let Statement::Drop(d) = s {
+                d.after_value = false;
+            }
+        }
+        Statement::ExprStmt(ExprStmtStmt {
+            expr: value,
+            has_semi: true,
+            span,
+        })
+    } else {
+        tb.ret = Some(Box::new(Expr::Identifier(IdentifierExpr::new(
+            "$value".into(),
+            span,
+        ))));
+        Statement::LetDecl(LetDeclStmt {
+            name: "$value".into(),
+            is_mut: false,
+            ty_ann: Some(ty.clone()),
+            expr: value,
+            span,
+        })
+    };
+    tb.stmts.insert(join_at, stmt);
 }
 
 /// Find the joins that end a task's borrows: for `let h = spawn { .. }` in a block, the first

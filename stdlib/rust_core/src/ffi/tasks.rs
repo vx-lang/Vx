@@ -497,6 +497,20 @@ pub unsafe extern "C" fn vx_tasks_wait(group: *mut VxTaskGroup) {
     }
 }
 
+/// The end of the body of a `tasks` block, before the drops of what its tasks use: joins each
+/// task that is not joined yet, as `vx_tasks_end` does. It cancels none of them. `vx_tasks_end`
+/// still ends the block.
+///
+/// # Safety
+/// `group` comes from `vx_tasks_begin`, and its block did not end.
+#[no_mangle]
+pub unsafe extern "C" fn vx_tasks_join(group: *mut VxTaskGroup) {
+    let group = &mut *group;
+    for task in &mut group.tasks {
+        wait(task);
+    }
+}
+
 /// The end of a `tasks` block: joins each task that is not joined yet, in the order of their
 /// `spawn`s. Then frees each `env`, and `group`.
 ///

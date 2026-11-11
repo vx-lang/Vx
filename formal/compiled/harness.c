@@ -84,6 +84,8 @@ void vx_tasks_wait(struct group *g) {
     vx_task_join(g, i);
 }
 
+void vx_tasks_join(struct group *g) { vx_tasks_wait(g); }
+
 void vx_tasks_end(struct group *g) {
   vx_tasks_wait(g);
   for (int i = 0; i < g->count; i++)
