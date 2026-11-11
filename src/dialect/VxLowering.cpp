@@ -1652,8 +1652,9 @@ static LLVM::LLVMFuncOp getOrDeclareRuntimeFn(OpBuilder &builder,
                                               StringRef name, Type result,
                                               ArrayRef<Type> params);
 
-// `VX_CTRL_WAIT_FOR_TENSORS` and `VX_CTRL_WAIT_FOR_THREAD` in
+// `VX_CTRL_WAIT`, `VX_CTRL_WAIT_FOR_TENSORS` and `VX_CTRL_WAIT_FOR_THREAD` in
 // include/vx_hardware_runtime.h.
+constexpr int32_t kCtrlWait = 0x05;
 constexpr int32_t kCtrlWaitForTensors = 0x06;
 constexpr int32_t kCtrlWaitForThread = 0x07;
 
@@ -8133,6 +8134,56 @@ static void waitBeforeReturningToC(ModuleOp module,
   }
 }
 
+// A C function that gets a pointer into GPU memory can read that memory at
+// once, before the GPU ran the kernels that write it. The code generators mark
+// such a function with `vx.gets_device_pointer`. On an Apple GPU, each call to
+// it waits first, through `VX_CTRL_WAIT`. The pointer gives no size, so the
+// call waits for every launch.
+static void waitBeforeCGetsADevicePointer(ModuleOp module,
+                                          ArrayRef<int32_t> topologies) {
+  MLIRContext *ctx = module.getContext();
+  SmallVector<func::CallOp> calls;
+  module.walk([&](func::CallOp call) {
+    auto callee = module.lookupSymbol<func::FuncOp>(call.getCalleeAttr());
+    if (callee && callee->hasAttr("vx.gets_device_pointer"))
+      calls.push_back(call);
+  });
+  for (auto f : module.getOps<func::FuncOp>())
+    if (f->removeAttr("vx.gets_device_pointer"))
+      assert(f.isExternal() && "only a declaration gets vx.gets_device_pointer");
+  if (topologies.empty() || calls.empty())
+    return;
+  OpBuilder b(ctx);
+  auto i32Type = b.getI32Type();
+  auto ptrType = LLVM::LLVMPointerType::get(ctx);
+  getOrDeclareRuntimeFn(b, module, UnknownLoc::get(ctx), "vx_plugin_control",
+                        i32Type, {i32Type, ptrType});
+  for (func::CallOp call : calls) {
+    Location loc = call.getLoc();
+    Value slot;
+    {
+      OpBuilder::InsertionGuard guard(b);
+      b.setInsertionPointToStart(
+          &call->getParentOfType<func::FuncOp>().getBody().front());
+      Value one = b.create<LLVM::ConstantOp>(loc, b.getI64Type(),
+                                             b.getI64IntegerAttr(1));
+      slot = b.create<LLVM::AllocaOp>(loc, ptrType, i32Type, one);
+    }
+    b.setInsertionPoint(call);
+    Value opcode = b.create<LLVM::ConstantOp>(loc, i32Type,
+                                              b.getI32IntegerAttr(kCtrlWait));
+    for (int32_t topology : topologies) {
+      b.create<LLVM::StoreOp>(loc,
+                              b.create<LLVM::ConstantOp>(
+                                  loc, i32Type, b.getI32IntegerAttr(topology)),
+                              slot);
+      b.create<LLVM::CallOp>(loc, TypeRange{i32Type},
+                             SymbolRefAttr::get(ctx, "vx_plugin_control"),
+                             ValueRange{opcode, slot});
+    }
+  }
+}
+
 /// For `--emit-ptx` and `--emit-msl`: gives each kernel in `gpuModule` the
 /// name of the function that holds its region, and describes its parameters
 /// for a program that launches the kernel. Section 3.5 of `docs/lang/abi.md`
@@ -8867,6 +8918,8 @@ struct ConvertVxToLLVMPass
     }
     declareLocalDevices(getOperation());
     waitBeforeReturningToC(getOperation(), appleGpuTopologies.getArrayRef());
+    waitBeforeCGetsADevicePointer(getOperation(),
+                                  appleGpuTopologies.getArrayRef());
     checkPackedTensorArguments(getOperation());
   }
 };

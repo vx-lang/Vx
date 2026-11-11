@@ -1466,7 +1466,7 @@ impl<'c> MeliorGenerator<'c> {
             let name_attr = melior::ir::attribute::StringAttribute::new(self.context, name);
             let type_attr = melior::ir::attribute::TypeAttribute::new(func_type.into());
 
-            let builder = melior::ir::operation::OperationBuilder::new("func.func", self.loc())
+            let mut builder = melior::ir::operation::OperationBuilder::new("func.func", self.loc())
                 .add_attributes(&[
                     (
                         melior::ir::Identifier::new(self.context, "sym_name"),
@@ -1481,6 +1481,12 @@ impl<'c> MeliorGenerator<'c> {
                         melior::ir::attribute::StringAttribute::new(self.context, "private").into(),
                     ),
                 ]);
+            if gets_device_pointer(ext.params.iter().map(|(_, t)| t)) {
+                builder = builder.add_attributes(&[(
+                    melior::ir::Identifier::new(self.context, "vx.gets_device_pointer"),
+                    melior::ir::attribute::Attribute::unit(self.context),
+                )]);
+            }
 
             let region = melior::ir::Region::new();
             let func_op = builder.add_regions([region]).build()?;
@@ -3280,6 +3286,17 @@ pub(crate) fn written_placement(ty: &syntax::Type) -> Option<&syntax::Placement>
         syntax::Type::Verified(inner) | syntax::Type::Pinned(inner, _) => written_placement(inner),
         _ => None,
     }
+}
+
+/// Whether a parameter is a pointer into memory other than host memory, such as GPU memory. A
+/// memory parameter `in Memory::M` counts too, because a call can bind it to GPU memory. A C
+/// function with such a parameter gets `vx.gets_device_pointer`, and on an Apple GPU each call
+/// to it waits for the GPU first.
+pub(crate) fn gets_device_pointer<'a>(params: impl IntoIterator<Item = &'a syntax::Type>) -> bool {
+    params.into_iter().any(|t| {
+        matches!(t, syntax::Type::Pointer(_, Some(place), _)
+            if place.space != syntax::MemorySpace::CPUDRAM)
+    })
 }
 
 /// Whether an address space is on-chip scratch: shared memory or per-thread memory.
