@@ -745,6 +745,20 @@ mod timer {
         t.cond.notify_one();
     }
 
+    /// For a test: VX_TEST_TIMER_PAUSE_MS holds the timer thread between the pop of a deadline and
+    /// its wake, as a thread that waits for a CPU does.
+    fn pause_before_a_wake() -> Option<Duration> {
+        static PAUSE: OnceLock<Option<Duration>> = OnceLock::new();
+        *PAUSE.get_or_init(|| {
+            let ms = std::env::var("VX_TEST_TIMER_PAUSE_MS").ok()?;
+            let Ok(ms) = ms.parse::<u64>() else {
+                eprintln!("vx: VX_TEST_TIMER_PAUSE_MS must be a number, not '{ms}'");
+                std::process::abort();
+            };
+            Some(Duration::from_millis(ms))
+        })
+    }
+
     fn run(t: &'static Timer) {
         let mut d = t.deadlines.lock().unwrap_or_else(|e| e.into_inner());
         loop {
@@ -765,6 +779,9 @@ mod timer {
             d.heap.pop();
             d.firing = true;
             drop(d);
+            if let Some(pause) = pause_before_a_wake() {
+                std::thread::sleep(pause);
+            }
             wake(bucket(word as *const i64), Fibers::Of(word));
             d = t.deadlines.lock().unwrap_or_else(|e| e.into_inner());
             d.firing = false;
