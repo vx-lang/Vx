@@ -36,8 +36,7 @@ pub fn parse_type_text(text: &str) -> Option<Type> {
 /// Whether `name` is a built-in type: `void`, a scalar, or a name `parse_named_type` reads as
 /// built in. A struct, enum or trait with such a name could never be used.
 pub(crate) fn is_builtin_type_name(name: &str) -> bool {
-    matches!(name, "void" | "Tensor" | "DynTensor" | "Matrix")
-        || name.parse::<ElementType>().is_ok()
+    matches!(name, "void" | "Tensor" | "DynTensor") || name.parse::<ElementType>().is_ok()
 }
 
 impl<'a> Parser<'a> {
