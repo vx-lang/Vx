@@ -149,6 +149,17 @@ Each 16 x 8 piece of the result is then a chain of `mma.sync.m16n8k16`, one for 
 core adds the products in an order of its own, so a result can differ from the CPU copy in its
 last bits. With small integer inputs, each sum is exact and the two results are equal.
 
+On the Apple GPU, a matmul uses the simdgroup matrices of Metal when all of these are true:
+
+- The result is `f32`, and each tile is `f32` or `f16`.
+- Each size is a multiple of 8.
+- Each tile is in shared memory, and the elements of each row are next to each other.
+
+Each 8 x 8 piece of the result is then a `simdgroup_float8x8`. With `+`, it starts from the old
+value, and otherwise from 0. Each 8 values of `k` add one `simdgroup_multiply_accumulate` to it.
+The GPU adds the products in an order of its own, so a result can differ from the CPU copy in its
+last bits, as on the tensor cores.
+
 Each other matmul uses the lanes of the subgroup: they share the elements of the result, and each
 lane computes its elements in the order above.
 

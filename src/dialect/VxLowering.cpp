@@ -3588,6 +3588,28 @@ static Type mmaElementOf(vx::LaneMatmulOp op) {
   return elem;
 }
 
+/// Whether the Metal printer can print a lane matmul with the simdgroup
+/// matrices of the Apple GPU: an f32 result, f32 or f16 tiles in shared
+/// memory, static sizes that are multiples of 8, and rows whose elements are
+/// next to each other (src/dialect/MetalImage.cpp, `laneMatmul`).
+static bool fitsSimdgroupMatrices(vx::LaneMatmulOp op) {
+  auto fits = [](Value v, bool result) {
+    auto t = cast<MemRefType>(v.getType());
+    Type elem = t.getElementType();
+    auto space = dyn_cast_or_null<IntegerAttr>(t.getMemorySpace());
+    SmallVector<int64_t> strides;
+    int64_t offset;
+    return t.getRank() == 2 && t.hasStaticShape() &&
+           (elem.isF32() || (!result && elem.isF16())) && space &&
+           space.getInt() == 3 &&
+           succeeded(t.getStridesAndOffset(strides, offset)) &&
+           strides[1] == 1 && t.getDimSize(0) % 8 == 0 &&
+           t.getDimSize(1) % 8 == 0 && t.getDimSize(1) > 0;
+  };
+  return fits(op.getAcc(), true) && fits(op.getLhs(), false) &&
+         fits(op.getRhs(), false);
+}
+
 /// A lane matmul on the tensor cores. Each 16 x 8 piece of `acc` is one chain
 /// of `mma.sync.m16n8k16`, one for each 16 columns of `lhs`. Lane `l` loads the
 /// elements of its fragments from the tiles: row `l / 4` and `l / 4 + 8`, and
@@ -3697,9 +3719,15 @@ static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
 
 /// Replaces a lane matmul with its expansion: the host's loops with `serial`,
 /// and otherwise the expansion that `device` picks. `tensorCores` says that
-/// the kernel goes to an NVIDIA chip with `mma.sync`.
+/// the kernel goes to an NVIDIA chip with `mma.sync`. `simdgroupMatrices` says
+/// that it goes to the Apple GPU, whose printer prints a matmul that fits
+/// `fitsSimdgroupMatrices`, so that one stays.
 static void expandLaneMatmul(OpBuilder &b, vx::LaneMatmulOp op, bool device,
-                             bool tensorCores = false) {
+                             bool tensorCores = false,
+                             bool simdgroupMatrices = false) {
+  if (device && !op.getSerial() && simdgroupMatrices &&
+      fitsSimdgroupMatrices(op))
+    return;
   if (device && !op.getSerial()) {
     if (Type elem = tensorCores ? mmaElementOf(op) : Type())
       expandLaneMatmulWithMma(b, op, elem);
@@ -5837,14 +5865,15 @@ struct ConvertVxToStandardPass
         }
         SmallVector<vx::LaneMatmulOp> matmuls;
         gpuFunc.walk([&](vx::LaneMatmulOp op) { matmuls.push_back(op); });
-        bool tensorCores =
-            pipelineOfKernel(kernel,
-                             static_cast<int32_t>(kernel.getTopology())) ==
-                DevicePipeline::Nvptx &&
-            chipHasMmaSync(deviceChip(gpuModule));
+        DevicePipeline pipeline = pipelineOfKernel(
+            kernel, static_cast<int32_t>(kernel.getTopology()));
+        bool tensorCores = pipeline == DevicePipeline::Nvptx &&
+                           chipHasMmaSync(deviceChip(gpuModule));
+        bool simdgroupMatrices = pipeline == DevicePipeline::Metal;
         for (vx::LaneMatmulOp op : matmuls) {
           OpBuilder b(op);
-          expandLaneMatmul(b, op, /*device=*/true, tensorCores);
+          expandLaneMatmul(b, op, /*device=*/true, tensorCores,
+                           simdgroupMatrices);
         }
         LaneCopyState copies{gpuFunc};
         SmallVector<Operation *> copyOps;
