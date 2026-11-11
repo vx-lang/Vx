@@ -1,0 +1,84 @@
+//===- a_task_uses_a_let_mut_tensor.vx - Vx Compiler ---------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A task can write to a `let mut` tensor of the function that starts it, or pass it on as `&mut`.
+// The function frees the tensor after the `tasks` block. The AST code generator did not compile
+// these programs: "vx.drop of a buffer whose origin is not known".
+//
+// EXPECT: write 1 | pass on 1 | caller too 3 | loop 5 5 5 | end
+
+fn bump(t : &mut Tensor<f32, [?]>) -> void {
+  t[0] = t[0] + 1.0;
+  return;
+}
+
+fn fill_with_five(t : &mut Tensor<f32, [4]>) -> void {
+  *t = Tensor<f32, [4]>::fill(5.0);
+  return;
+}
+
+fn write() -> void {
+  let mut b = Tensor<f32, [4]>::fill(0.0);
+  tasks {
+    spawn {
+      b[0] = 1.0;
+    };
+  };
+  print!("write {} ", b[0]);
+}
+
+fn pass_on() -> void {
+  let mut b = Tensor<f32, [4]>::fill(0.0);
+  tasks {
+    spawn {
+      bump(&mut b);
+    };
+  };
+  print!("pass on {} ", b[0]);
+}
+
+// The function also passes the tensor on, before and after the task.
+fn caller_too() -> void {
+  let mut b = Tensor<f32, [4]>::fill(0.0);
+  bump(&mut b);
+  tasks {
+    spawn {
+      bump(&mut b);
+    };
+  };
+  bump(&mut b);
+  print!("caller too {} ", b[0]);
+}
+
+// A new tensor and a new task on each pass.
+fn in_a_loop() -> void {
+  print!("loop");
+  let mut i = 0;
+  while i < 3 {
+    let mut b = Tensor<f32, [4]>::fill(0.0);
+    tasks {
+      spawn {
+        fill_with_five(&mut b);
+      };
+    };
+    print!(" {}", b[0]);
+    i = i + 1;
+  }
+  print!(" ");
+}
+
+fn main() -> i32 {
+  write();
+  print!("| ");
+  pass_on();
+  print!("| ");
+  caller_too();
+  print!("| ");
+  in_a_loop();
+  println!("| end");
+  return 0;
+}

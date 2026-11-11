@@ -4469,6 +4469,9 @@ static BufferOrigin originOf(Value v, llvm::SmallPtrSetImpl<void *> &seen,
           if (operand.get() == cell &&
               takesOwnership(call, operand.getOperandNumber()))
             return BufferOrigin::Unknown;
+      } else if (user->hasAttr("vx.task_borrows")) {
+        // Handed to a task, which borrows it as a call does.
+        continue;
       } else if (!isa<memref::LoadOp>(user)) {
         return BufferOrigin::Unknown; // the cell itself escapes
       }
@@ -4603,8 +4606,8 @@ static LogicalResult giveMovedResultsHeapSlots(ModuleOp module) {
             slots.insert(slot);
     } else if (auto cast = dyn_cast<UnrealizedConversionCastOp>(op)) {
       // Into a struct field's descriptor: the struct frees it when it is
-      // dropped.
-      if (cast->getNumOperands() == 1 &&
+      // dropped. A task that borrows a cell does not free it.
+      if (cast->getNumOperands() == 1 && !cast->hasAttr("vx.task_borrows") &&
           isa<MemRefType>(cast->getOperand(0).getType()) &&
           !isa<MemRefType>(cast->getResult(0).getType()))
         if (auto slot = slotOf(cast->getOperand(0)))
@@ -5344,9 +5347,17 @@ static LogicalResult lowerTask(vx::SpawnOp task, Value group, ModuleOp module,
       v = memref::LoadOp::create(b, loc, capture);
     else if (copied[i])
       v = LLVM::LoadOp::create(b, loc, copied[i], capture);
-    if (v.getType() != fieldTypes[2 + i])
-      v = UnrealizedConversionCastOp::create(b, loc, fieldTypes[2 + i], v)
-              .getResult(0);
+    if (v.getType() != fieldTypes[2 + i]) {
+      auto cast =
+          UnrealizedConversionCastOp::create(b, loc, fieldTypes[2 + i], v);
+      // The cell of a `let mut` tensor, which the task reads or passes on as
+      // `&mut`: the task borrows it until the `tasks` block ends, as a call
+      // would.
+      auto cell = dyn_cast<MemRefType>(v.getType());
+      if (cell && cell.getRank() == 0 && isa<MemRefType>(cell.getElementType()))
+        cast->setAttr("vx.task_borrows", UnitAttr::get(ctx));
+      v = cast.getResult(0);
+    }
     LLVM::StoreOp::create(b, loc, v, field(b, newEnv, 2 + i));
   }
   Value fnRef = func::ConstantOp::create(b, loc, fn.getFunctionType(),
