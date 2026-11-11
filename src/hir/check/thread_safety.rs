@@ -74,7 +74,6 @@ impl<'a> TypeChecker<'a> {
             Type::Scalar(_)
             | Type::Simd(..)
             | Type::Tensor(..)
-            | Type::Matrix
             | Type::Function(..)
             | Type::Generic(..)
             | Type::Const(_)

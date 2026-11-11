@@ -564,7 +564,6 @@ fn write_type(w: &mut Writer, ty: &Type) -> Result<(), String> {
             write_element_type(w, e);
             w.u64(*n as u64);
         }
-        Matrix => w.u8(13),
         Unknown => w.u8(14),
         // A dimension is `?` or a literal. A const-generic name or an arithmetic dimension
         // belongs to a template, and a template is not an interface.
@@ -657,7 +656,7 @@ fn read_type(r: &mut Reader) -> Result<Type, String> {
             Closure(params, ret)
         }
         12 => Simd(read_element_type(r)?, r.u64()? as usize),
-        13 => Matrix,
+        // No type has tag 13. A `.vxlib` from an older compiler may hold it.
         14 => Unknown,
         15 => {
             let e = read_element_type(r)?;

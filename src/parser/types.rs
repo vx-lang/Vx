@@ -559,7 +559,6 @@ impl<'a> Parser<'a> {
                     "`DynTensor<{el}>` is spelled `Tensor<{el}, [?, ?]>`; state the rank"
                 )))
             }
-            "Matrix" => Ok(Type::Matrix),
             _ => {
                 if let Ok(el_ty) = std::str::FromStr::from_str(&ident) {
                     return Ok(Type::Scalar(el_ty));
