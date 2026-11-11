@@ -364,6 +364,7 @@ impl<'a> TypeChecker<'a> {
                 // call folded the lambda is unused, and the `let` that bound it is dropped.
                 let span = expr.span();
                 self.fold_comptime_lambda_call(expr, &span, &ty);
+                self.fold_float_limit_call(expr);
                 ty
             }
             Expr::IndirectCall(..) => self.check_a_call_that_can_change_facts(expr, |c, e| {

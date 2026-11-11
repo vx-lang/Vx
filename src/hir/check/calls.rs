@@ -1756,6 +1756,26 @@ impl<'a> TypeChecker<'a> {
         all_bound
     }
 
+    /// Write a float limit constant as the number it returns: `f32::infinity()` becomes
+    /// `inf` of type `f32`, and `f64::neg_infinity()` becomes `-inf` of type `f64`.
+    ///
+    /// The body of each is one `mlir!` block that yields the constant, so the literal says the
+    /// same thing, and a device region gets a value where it would otherwise have a call. A
+    /// call of anything else, or one with arguments, is left as it is.
+    pub(crate) fn fold_float_limit_call(&mut self, expr: &mut Expr) {
+        let Expr::FunctionCall(fc) = expr else {
+            return;
+        };
+        if !fc.args.is_empty() {
+            return;
+        }
+        let (name, span) = (fc.name.clone(), fc.span);
+        let Some((value, elem)) = Self::float_limit_constant(name.as_ref()) else {
+            return;
+        };
+        *expr = Expr::Number(NumberExpr::new(value.to_string(), Some(elem), span));
+    }
+
     /// Fold a call to a comptime lambda, or refuse it.
     ///
     /// A comptime lambda is a function that runs while compiling, so every call has to work

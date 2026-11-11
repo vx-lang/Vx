@@ -219,6 +219,23 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The value that a float's limit constant returns, for the two infinities of `f32` and
+    /// `f64`: the name and the type, as `("inf", f32)`.
+    ///
+    /// Each one's body is a single `mlir!` block that yields an `arith.constant`, so a literal
+    /// says the same thing. Writing the number where the call was lets a device region use it
+    /// without a call, which a region that runs across threads has to avoid and a device image
+    /// cannot make.
+    pub(crate) fn float_limit_constant(name: &str) -> Option<(&'static str, ElementType)> {
+        Some(match name {
+            "f32::infinity" => ("inf", ElementType::F32),
+            "f32::neg_infinity" => ("-inf", ElementType::F32),
+            "f64::infinity" => ("inf", ElementType::F64),
+            "f64::neg_infinity" => ("-inf", ElementType::F64),
+            _ => return None,
+        })
+    }
+
     /// Type an untyped numeric literal (#240). An unsuffixed literal reaches the checker with
     /// `ty: None`; it adopts the *expected* scalar type of its context when that is a compatible
     /// numeric type (integer literal → integer type, float literal → float type), and otherwise

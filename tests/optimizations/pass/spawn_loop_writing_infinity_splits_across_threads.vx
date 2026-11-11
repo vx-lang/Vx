@@ -1,0 +1,57 @@
+//===- spawn_loop_writing_infinity_splits_across_threads.vx ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each loop of a GPU `spawn` region fills a row with negative infinity, one
+// written as `f32::neg_infinity()` and one as `-f32::infinity()`. Every pass
+// writes its own row, so each loop splits across threads. It splits only
+// because each call became the number it returns: the kernel gets the constant
+// instead of a call to a function that only the host has.
+//
+// Each group of checks is labelled with its function, so a check for a constant
+// cannot match the same constant in the imported module's own copy of
+// `f32::neg_infinity`, which the file also contains.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=Warning
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=Warning
+// CHECK-LABEL: func.func @fill_rows_with_negative_infinity
+// CHECK: vx.spawn
+// CHECK-NOT: func.call @"f32::neg_infinity"
+// CHECK: arith.constant 0xFF800000 : f32
+// CHECK: vx_parallel_trip = 64 : i64
+// CHECK-LABEL: func.func @fill_rows_with_minus_infinity
+// CHECK: vx.spawn
+// CHECK-NOT: func.call @"f32::infinity"
+// CHECK: arith.constant 0x7F800000 : f32
+// CHECK: arith.negf
+// CHECK: vx_parallel_trip = 64 : i64
+import core::num;
+
+fn fill_rows_with_negative_infinity() -> f32 {
+  let mut o = Tensor<f32, [64, 1], Memory::GPU_HBM>::new();
+  spawn on(Topology::GPU) {
+    for r in 0..64 {
+      o[r][0] = f32::neg_infinity();
+    }
+  }
+  return transfer(o, Memory::CPU_DRAM)[0][0];
+}
+
+fn fill_rows_with_minus_infinity() -> f32 {
+  let mut o = Tensor<f32, [64, 1], Memory::GPU_HBM>::new();
+  spawn on(Topology::GPU) {
+    for r in 0..64 {
+      o[r][0] = -f32::infinity();
+    }
+  }
+  return transfer(o, Memory::CPU_DRAM)[0][0];
+}
+
+fn main() -> i32 {
+  print(fill_rows_with_negative_infinity());
+  print(fill_rows_with_minus_infinity());
+  return 0;
+}
