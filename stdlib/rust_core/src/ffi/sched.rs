@@ -442,12 +442,21 @@ const MAX_WORKERS: usize = 256;
 pub(crate) fn program_scheduler() -> Option<&'static Scheduler> {
     static SCHED: OnceLock<Option<&'static Scheduler>> = OnceLock::new();
     *SCHED.get_or_init(|| {
+        let shared = match std::env::var("VX_TASK_RUNTIME") {
+            Ok(v) if v == "shared" => true,
+            Ok(v) if v == "threads" => false,
+            Ok(v) => {
+                eprintln!("vx: VX_TASK_RUNTIME must be shared or threads, not '{v}'");
+                std::process::abort();
+            }
+            Err(_) => false,
+        };
         if let Ok(seed) = std::env::var("VX_TASK_SEED") {
             let Ok(seed) = seed.parse::<u64>() else {
                 eprintln!("vx: VX_TASK_SEED must be a number, not '{seed}'");
                 std::process::abort();
             };
-            if std::env::var("VX_TASK_RUNTIME").is_ok_and(|v| v != "shared") {
+            if std::env::var("VX_TASK_RUNTIME").is_ok() && !shared {
                 eprintln!("vx: VX_TASK_SEED needs VX_TASK_RUNTIME=shared, or no VX_TASK_RUNTIME");
                 std::process::abort();
             }
@@ -461,7 +470,6 @@ pub(crate) fn program_scheduler() -> Option<&'static Scheduler> {
             }
             return Some(Scheduler::start_with_seed(seed));
         }
-        let shared = std::env::var("VX_TASK_RUNTIME").is_ok_and(|v| v == "shared");
         shared.then(|| {
             let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
             let workers = count_setting("VX_TASK_WORKERS", cpus);
