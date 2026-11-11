@@ -667,7 +667,34 @@ impl<'a> TypeChecker<'a> {
             }) => {
                 let op = op.clone();
                 let span = *span;
-                if let Some(call) = self.container_store(lhs, Some(&op), rhs, span) {
+                // `a += b` on a struct or an enum is `a = a + b`, through `Add`: Vx has no
+                // `AddAssign`. The left side is read twice, so it must name a variable or its
+                // fields, whose reads have no effect.
+                let on_user_type = Self::is_user_type(&self.check_expr_type_probe(lhs));
+                if on_user_type && !Self::names_a_variable_or_its_fields(lhs) {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3004,
+                        "a compound assignment on a struct or an enum reads its left side \
+                         twice, so the left side must be a variable, a field of one, or `*r`: \
+                         put the value in a variable, or write `a = a + b`"
+                            .to_string(),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+                    );
+                } else if on_user_type {
+                    let value = Expr::BinaryOp(BinaryOpExpr {
+                        lhs: Box::new(lhs.clone()),
+                        op,
+                        rhs: Box::new(rhs.clone()),
+                        span,
+                        operand_ty: None,
+                    });
+                    *stmt = Statement::Assign(AssignStmt {
+                        lhs: lhs.clone(),
+                        rhs: value,
+                        span,
+                    });
+                    self.check_statement(stmt, return_type, consume);
+                } else if let Some(call) = self.container_store(lhs, Some(&op), rhs, span) {
                     *stmt = Statement::ExprStmt(ExprStmtStmt::new(call, true, span));
                     self.check_statement(stmt, return_type, consume);
                 } else {
@@ -1961,6 +1988,16 @@ impl<'a> TypeChecker<'a> {
             }
         }
         None
+    }
+
+    /// `x`, `x.f.g` or `*r`: a place whose read has no effect, so it can be read twice.
+    fn names_a_variable_or_its_fields(place: &Expr) -> bool {
+        match place {
+            Expr::Identifier(_) => true,
+            Expr::MemberAccess(m) => Self::names_a_variable_or_its_fields(&m.base),
+            Expr::Dereference(d) => Self::names_a_variable_or_its_fields(&d.expr),
+            _ => false,
+        }
     }
 
     /// Check an assignment / compound assignment: type the LHS, then the RHS expecting the LHS
