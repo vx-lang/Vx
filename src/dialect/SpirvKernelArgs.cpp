@@ -548,10 +548,17 @@ flattenSpirvKernelArgs(gpu::GPUModuleOp gpuModule, std::string &error,
   // descriptor that SPIR-V rejects, and it would fail as an invalid module
   // rather than as this message.
   WalkResult left = gpuModule.walk([&](Operation *op) {
-    if (isa<memref::GlobalOp>(op)) {
-      error = "a `" + op->getName().getStringRef().str() +
-              "` in the device module, which the SPIR-V argument flattening "
-              "does not lower";
+    if (auto global = dyn_cast<memref::GlobalOp>(op)) {
+      /* A call in the kernel's body put this here, and a libm call is the one
+         that does: `f32::exp`, `tanh`, `sin` and `cos` read a lookup table from
+         the stdlib, and the table becomes a `memref.global`. The symbol names
+         the table, so the message names the function without this code knowing
+         which one it was. */
+      error = "it reads `" + global.getSymName().str() +
+              "` from the device module, and the SPIR-V argument flattening "
+              "lowers only the kernel's arguments, not a `memref.global`. A "
+              "call to a libm function such as `f32::exp`, `tanh`, `sin` or "
+              "`cos` puts its constant table there";
       return WalkResult::interrupt();
     }
     if (mentionsMemref(op)) {
