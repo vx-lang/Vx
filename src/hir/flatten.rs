@@ -1130,7 +1130,10 @@ impl<'r> Lowerer<'r> {
     fn lower_block(&mut self, stmts: &[Statement]) -> Lowered<()> {
         self.scoped(|me| {
             if let Some(level) = me.across.level {
-                me.lower_stretches(stmts, level)?;
+                let lane0 = me.across.lane0.clone();
+                let lowered = me.lower_stretches(stmts, level);
+                me.across.lane0 = lane0;
+                lowered?;
             } else {
                 for s in stmts {
                     me.lower_stmt(s)?;

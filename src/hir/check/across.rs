@@ -287,6 +287,7 @@ impl Walk<'_> {
         let mut i = 0;
         while i < stmts.len() {
             if across_lanes::holds_across(&stmts[i]) {
+                across_lanes::lane0_after_holder(&stmts[i], &mut lane0);
                 after.push(lane0.clone());
                 i += 1;
                 continue;
@@ -402,6 +403,7 @@ impl Walk<'_> {
                     if Self::stretch_level(ctx) && across_lanes::holds_across(s) {
                         self.uniform_around(&f.iterable, "the bound of this loop", ctx);
                         body.strict_ifs = true;
+                        body.lane0 = across_lanes::lane0_in_loop(&f.body, &ctx.lane0);
                         if across_lanes::not_uniform(
                             &f.iterable,
                             &|n| Self::is_uniform(ctx, n),
@@ -423,6 +425,7 @@ impl Walk<'_> {
                 body.plain_loops += 1;
                 if Self::stretch_level(ctx) && across_lanes::holds_across(s) {
                     body.strict_ifs = true;
+                    body.lane0 = across_lanes::lane0_in_loop(&l.body, &ctx.lane0);
                 }
                 self.stmts(&l.body, &body);
             }
@@ -1266,10 +1269,12 @@ impl Walk<'_> {
             if let Some((name, at)) = read {
                 self.error(
                     format!(
-                        "this {} loop reads `{name}`, which only lane 0 has: lane 0 alone runs \
-                         the code that sets it, because that code writes memory. Pass the value \
-                         through memory, such as an element of a tensor in shared memory",
-                        kind_word(level.kind)
+                        "this {kind} loop reads `{name}`, which only lane 0 has: lane 0 alone \
+                         runs the code that sets it. That code writes memory, or it changes a \
+                         variable from outside it. In the body of a loop, that code can come \
+                         after this {kind} loop and set the value for the next turn. Pass the \
+                         value through memory, such as an element of a tensor in shared memory",
+                        kind = kind_word(level.kind)
                     ),
                     at,
                 );
