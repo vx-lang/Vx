@@ -1,0 +1,48 @@
+//===- book_topology_reachable_if_comptime.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on topologies (www/book/src/heterogeneous.md): a declared topology
+// `Acme` that the host can send data to, and `if comptime Reachable<..>` that tests the routes.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}host to acme 1{{$}}
+// CHECK-NEXT: {{^}}acme to host: no{{$}}
+// CHECK-NEXT: {{^}}gpu to acme: yes{{$}}
+
+// ANCHOR: program
+Topology Acme {
+  memory: Memory::AcmeSRAM,
+  visible: [Memory::AcmeSRAM, Memory::CPU_DRAM],
+  transfer Memory::CPU_DRAM -> Memory::AcmeSRAM : 40 sync,
+}
+
+fn host_can_reach<D : Topology>() on Topology::D -> i32 {
+  if comptime Reachable<Topology::CPU, D> {
+    return 1;
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let a = spawn on(Topology::Acme) {
+    host_can_reach()
+  };
+  println!("host to acme {}", a);
+  if comptime Reachable<Topology::Acme, Topology::CPU> {
+    println!("acme to host: yes");
+  } else {
+    println!("acme to host: no");
+  }
+  if comptime Reachable<Topology::GPU, Topology::Acme> {
+    println!("gpu to acme: yes");
+  } else {
+    println!("gpu to acme: no");
+  }
+  return 0;
+}
+// ANCHOR_END: program

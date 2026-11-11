@@ -104,6 +104,97 @@ tensor. A later runtime will run the copy in the background, and the program wil
 A `spawn on` can also be in a task. So a `tasks` block can give work to several devices, one task
 for each device (see [Tasks and channels](tasks.md)).
 
+## Functions for any topology
+
+The last section said that a device region cannot call a plain function. A plain function
+belongs to the host. Often you want one helper for both: a clamp, a sum, a small formula. Vx
+lets a function be generic over the topology that runs it, and over the memory of its data.
+
+### One helper for host and device code
+
+Write `on Topology::Any` after the parameters. Then the function runs on the topology of the code
+that calls it. Each topology that calls it gets its own copy of the function.
+
+`on Topology::Any` is short for a topology parameter that no argument binds. A topology
+parameter is a generic parameter with the bound `Topology`, such as `<D : Topology>`. Inside the
+function, `Topology::D` names it. So `fn f<D : Topology>(..) on Topology::D` means the same thing.
+This program uses both forms:
+
+```rust
+{{#include ../../../tests/backend/pass/book_topology_any_helper.vx:program}}
+```
+
+It prints `gpu 5 13 host 0 -2`. With no GPU in the machine, the GPU region runs on the host, so
+the program runs on any computer. Without `on Topology::Any`, the call `clamp(12, 0, 5)` in the
+GPU region gets the error E6001.
+
+`Topology::Any` is correct only after `on` in a function signature. A program cannot declare a
+topology with the name `Any` (E6016).
+
+### A function for any memory
+
+A tensor's type records its memory. A parameter of type `&Tensor<i32, [?]>` names no memory, and
+the host cannot give it a tensor in GPU memory (E3003). To accept a tensor in any memory, give the
+function a memory parameter, such as `<M : Memory>`. Write the tensor type with `Memory::M` as
+its memory:
+
+```rust
+{{#include ../../../tests/backend/pass/book_topology_memory_parameter.vx:program}}
+```
+
+It prints `host 6 gpu 30`. Each call binds `M` to the memory of its tensor argument. Two
+arguments that both name `Memory::M` must be in the same memory. A call must also give `M` a
+memory through a tensor argument (E3016).
+
+The memory parameter does not change where the code runs. The host still cannot read a tensor in
+GPU memory. If `main` calls `sum_three(&g)`, the compiler reports E6003 and asks for a `transfer`.
+
+### Your own topology
+
+A program can declare a topology of its own with a `Topology` block:
+
+- `memory:` names the default memory of the topology. Every `Topology` block must have it.
+  The memory can be a new name.
+- `visible:` lists the memories that its code can read. It defaults to the `memory:` space.
+- Each `transfer A -> B : cost` line adds a route for data, in one direction only.
+
+`Reachable<A, B>` is true when data can go from topology `A` to topology `B` on the declared
+routes. In an `if comptime` statement, the compiler tests it while it compiles. It compiles only
+the branch that applies. A topology variable such as `D` can be an argument:
+
+```rust
+{{#include ../../../tests/backend/pass/book_topology_reachable_if_comptime.vx:program}}
+```
+
+It prints:
+
+```text
+host to acme 1
+acme to host: no
+gpu to acme: yes
+```
+
+The host can send data to `Acme`, but `Acme` has no route back. GPU data can go to `Acme`
+through the host. If a topology has no route from the host, the compiler gives warning W1026.
+
+### Asking for a route
+
+A generic function that moves data between two topology parameters must say that a route exists.
+Write `where Reachable<S, D>` after the return type. The compiler checks the clause at each call,
+for the topologies of that call. A call with no route is a compile error. To give more than one
+clause, separate them with commas.
+
+```rust
+{{#include ../../../tests/backend/pass/book_topology_reachable_where.vx:program}}
+```
+
+It prints `sum 14`. The argument binds `S` to the GPU, and the caller `main` binds `D` to the
+host. If `x` is in `Acme` memory, the call fails with
+`` unsatisfied `where Reachable<S, D>` in call to 'fetch_sum' ``.
+
+Name only topology parameters in a `where` clause. The compiler does not check a clause that names
+anything else yet ([Vx#3230](https://github.com/vx-lang/Vx/issues/3230)).
+
 ## What gets rejected
 
 The point of putting placement in the type system is the errors you get for free.
