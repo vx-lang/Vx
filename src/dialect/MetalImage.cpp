@@ -174,6 +174,7 @@ private:
   bool mathOp(Operation *op);
   bool llvmOp(Operation *op);
   bool atomicOp(Operation *op);
+  bool laneMatmul(Operation *op);
   bool atomicAt(Operation *op, Value ptr, Type t, Address &out);
   void acquireFence(const Address &a);
   bool ifOp(scf::IfOp op);
@@ -590,6 +591,8 @@ bool Printer::op(Operation *o) {
     return llvmOp(o);
   if (ns == "math")
     return mathOp(o);
+  if (o->getName().getStringRef() == "vx.lane_matmul")
+    return laneMatmul(o);
   if (o->getName().getStringRef() == "nvvm.bar.warp.sync") {
     // The end of a lane loop in a subgroup loop. A subgroup is a SIMD-group
     // of 32 threads, and all of them wait, as with the mask of all lanes.
@@ -602,6 +605,78 @@ bool Printer::op(Operation *o) {
     return true;
   }
   return fail(o, "the Metal code generator cannot print this op");
+}
+
+// A matmul of tiles that the lowering left for the simdgroup matrices
+// (`fitsSimdgroupMatrices` in src/dialect/VxLowering.cpp). Each 8 x 8 piece of
+// the result is a simdgroup_float8x8. With `accumulate` it starts from the old
+// value, and each 8 columns of the left tile add one product to it. The GPU
+// adds in an order of its own, so the last bits can differ from the CPU copy.
+bool Printer::laneMatmul(Operation *o) {
+  View tiles[3];
+  std::string matrix[3], stride[3];
+  for (unsigned k = 0; k < 3; ++k) {
+    auto t = cast<MemRefType>(o->getOperand(k).getType());
+    SmallVector<int64_t> strides;
+    int64_t offset;
+    if (!viewOf(o->getOperand(k), tiles[k], o))
+      return false;
+    if (tiles[k].space != "threadgroup" || t.getRank() != 2 ||
+        !t.hasStaticShape() || failed(t.getStridesAndOffset(strides, offset)) ||
+        strides[1] != 1)
+      return fail(o, "a matmul of tiles whose rows are not next to each "
+                     "other in shared memory");
+    if (t.getElementType().isF32())
+      matrix[k] = "simdgroup_float8x8";
+    else if (t.getElementType().isF16() && k > 0)
+      matrix[k] = "simdgroup_half8x8";
+    else
+      return fail(o, "a matmul of tiles with a type that has no simdgroup "
+                     "matrix");
+    stride[k] = "(ulong)" + tiles[k].strides[0];
+  }
+  auto acc = cast<MemRefType>(o->getOperand(0).getType());
+  auto lhs = cast<MemRefType>(o->getOperand(1).getType());
+  int64_t rows = acc.getDimSize(0) / 8, cols = acc.getDimSize(1) / 8;
+  int64_t inner = lhs.getDimSize(1);
+  assert(rows > 0 && cols > 0 && inner % 8 == 0 && acc.getDimSize(0) % 8 == 0 &&
+         acc.getDimSize(1) % 8 == 0 &&
+         "the lowering left only matmuls of whole 8 x 8 pieces");
+  auto at = [&](unsigned k) { return tiles[k].ptr + " + " + tiles[k].origin; };
+  std::string c = fresh("mm"), a = fresh("ma"), b = fresh("mb");
+  std::string r = std::to_string(rows), n = std::to_string(cols);
+  line() << "{\n";
+  ++depth;
+  line() << "simdgroup_float8x8 " << c << "[" << rows * cols << "];\n";
+  line() << "for (int i = 0; i < " << r << "; i++)\n";
+  line() << "  for (int j = 0; j < " << n << "; j++)\n";
+  if (o->hasAttr("accumulate"))
+    line() << "    simdgroup_load(" << c << "[i * " << n << " + j], " << at(0)
+           << " + i * 8 * " << stride[0] << " + j * 8, " << stride[0] << ");\n";
+  else
+    line() << "    " << c << "[i * " << n << " + j] = simdgroup_float8x8(0);\n";
+  line() << "for (int k = 0; k < " << inner << "; k += 8) {\n";
+  line() << "  " << matrix[1] << " " << a << "[" << r << "];\n";
+  line() << "  " << matrix[2] << " " << b << "[" << n << "];\n";
+  line() << "  for (int i = 0; i < " << r << "; i++)\n";
+  line() << "    simdgroup_load(" << a << "[i], " << at(1) << " + i * 8 * "
+         << stride[1] << " + k, " << stride[1] << ");\n";
+  line() << "  for (int j = 0; j < " << n << "; j++)\n";
+  line() << "    simdgroup_load(" << b << "[j], " << at(2) << " + k * "
+         << stride[2] << " + j * 8, " << stride[2] << ");\n";
+  line() << "  for (int i = 0; i < " << r << "; i++)\n";
+  line() << "    for (int j = 0; j < " << n << "; j++)\n";
+  line() << "      simdgroup_multiply_accumulate(" << c << "[i * " << n
+         << " + j], " << a << "[i], " << b << "[j], " << c << "[i * " << n
+         << " + j]);\n";
+  line() << "}\n";
+  line() << "for (int i = 0; i < " << r << "; i++)\n";
+  line() << "  for (int j = 0; j < " << n << "; j++)\n";
+  line() << "    simdgroup_store(" << c << "[i * " << n << " + j], " << at(0)
+         << " + i * 8 * " << stride[0] << " + j * 8, " << stride[0] << ");\n";
+  --depth;
+  line() << "}\n";
+  return true;
 }
 
 bool Printer::arith(Operation *o) {
