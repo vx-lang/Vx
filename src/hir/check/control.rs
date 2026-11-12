@@ -1752,6 +1752,13 @@ impl<'a> TypeChecker<'a> {
                     .collect();
 
                 if !self.speculating {
+                    // A closure whose body moves a capture takes it, so the code around the
+                    // closure must not drop it too. The move in the body stopped at the body.
+                    for (name, ty) in &captured_vars {
+                        if !matches!(ty, Type::Tensor(..)) && self.is_moved(name.as_ref()) {
+                            self.drops_note_move(name.as_ref(), false);
+                        }
+                    }
                     // A tensor is moved into the closure, as before.
                     for (name, ty) in &captured_vars {
                         if matches!(ty, Type::Tensor(_, _, _))
