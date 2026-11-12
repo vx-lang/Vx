@@ -107,7 +107,8 @@ cp "$TARGET_DIR/libvx_std_core.${DLL}" "$STAGE/lib/"
 # lying around for the glob to find. A clean runner had only vxc-*, shipped no dispatch library,
 # and every program containing `spawn on` failed to link with undefined vx_plugin_* symbols.
 # The filenames below are specific enough to select on their own.
-for out_dir in "$TARGET_DIR"/build/*/out; do
+# Cargo 1.100 moved the output of a build script from build/vxc-<hash>/out to build/vxc/<hash>/out.
+for out_dir in "$TARGET_DIR"/build/*/out "$TARGET_DIR"/build/*/*/out; do
     [ -d "$out_dir" ] || continue
     for lib in "$out_dir"/*dispatch."${DLL}" "$out_dir"/*dispatch.a "$out_dir"/libvx_mlir_shims."${DLL}"; do
         [ -f "$lib" ] && cp "$lib" "$STAGE/lib/"
@@ -124,7 +125,7 @@ ls "$STAGE/lib/"
 set -- "$STAGE"/lib/*dispatch."${DLL}"
 if [ ! -e "$1" ]; then
     echo "error: no shared dispatch library staged into lib/." >&2
-    echo "  Looked in $TARGET_DIR/build/*/out for *dispatch.$DLL." >&2
+    echo "  Looked in $TARGET_DIR/build/*/out and $TARGET_DIR/build/*/*/out for *dispatch.$DLL." >&2
     echo "  Without it every program using 'spawn on' fails to link." >&2
     exit 1
 fi
