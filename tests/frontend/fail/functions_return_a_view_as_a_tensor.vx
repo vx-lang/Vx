@@ -1,0 +1,39 @@
+//===- functions_return_a_view_as_a_tensor.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A function that returns a tensor by value gives its caller a tensor of its own. A view
+// returned that way would be a copy, and a write through it would not reach the owner. So
+// the first three functions are errors. The fix is to return `&mut Tensor`. The last function
+// returns a copy with `.clone()`, which is correct.
+//
+// CHECK: E4011{{.*}}:21:{{.*}}returns a view of `q` as a tensor of its own
+// CHECK: E4011{{.*}}:25:{{.*}}returns a view of memory from a raw pointer as a tensor of its own
+// CHECK: E4011{{.*}}:30:{{.*}}returns a view of memory from a raw pointer as a tensor of its own
+// CHECK-NOT: E4011
+
+fn second_row(q : &mut Tensor<f32, [2, 4]>) -> Tensor<f32, [4]> {
+  return q[1];
+}
+
+fn view_of(p : *mut f32) -> Tensor<f32, [4, 1]> {
+  return unsafe { tensor_view_2d(p, 4, 1) };
+}
+
+fn view_in_a_variable(p : *mut f32) -> Tensor<f32, [4, 1]> {
+  let v = unsafe { tensor_view_2d(p, 4, 1) };
+  return v;
+}
+
+fn copy_of_a_row(q : &Tensor<f32, [2, 4]>) -> Tensor<f32, [4]> {
+  return q[1].clone();
+}
+
+fn main() -> i32 {
+  return 0;
+}

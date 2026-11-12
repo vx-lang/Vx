@@ -163,8 +163,13 @@ print(q[1][0]);     // fine: r is not used again
 - The owner cannot be moved (E4007), assigned (E4009) or, under a `mut` view, read (E4002) while
   the view is still going to be used. As with `&`, the borrow ends at the view's last use.
 - A view of a tensor the function owns, a local or a parameter taken by value, cannot be
-  returned (E4005). A view of a tensor taken by reference (`q : &Tensor<..>`) can be: it points
-  into the caller's tensor.
+  returned (E4005). A view of a tensor taken by reference (`q : &Tensor<..>`) can be returned
+  as a reference: `-> &Tensor<..>` or `-> &mut Tensor<..>`, with `return &q[1]`. The result
+  borrows the caller's tensor, and a write through a `&mut` result changes that tensor. A view
+  of memory from a raw pointer, `tensor_view_2d(p, ..)`, is returned the same way.
+- A function that returns a tensor by value (`-> Tensor<..>`) cannot return a view (E4011): the
+  caller would get a copy, and its writes would not reach the owner. Return a reference, or
+  return a copy with `q[1].clone()`.
 - A view cannot be stored where a tensor of its own is held: a variable that already exists
   (`keep = q[1]`) or a struct field (`h.t = q[1]`, `Holder { t : q[1] }`) (E4011). It would
   replace that tensor with a window onto another. Bind it to a new variable with `let` instead.

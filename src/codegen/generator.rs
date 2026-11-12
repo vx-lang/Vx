@@ -81,6 +81,9 @@ pub struct MeliorGenerator<'c> {
     /// The program's `const` tables by name; `generate_module` adds each one's global.
     pub(crate) const_tables: HashMap<crate::symbol::Symbol, crate::registry::ConstTable>,
     pub current_return_type: Option<Type<'c>>,
+    /// The function returns a `&Tensor` or `&mut Tensor`, so a `return` gives back the tensor's
+    /// own memref. See `returns_reference`.
+    pub(crate) current_returns_reference: bool,
     /// The buffer the caller allocated for this function's tensor result, when it returns through
     /// one. A `return` writes its value in here and returns nothing. `None` for every other return
     /// type, which still returns by value. See `returns_through_slot`.
@@ -489,6 +492,7 @@ impl<'c> MeliorGenerator<'c> {
     /// caller that disagreed with the definition about this would build a call MLIR rejects.
     pub(crate) fn abi_signature(
         &self,
+        name: &str,
         ret_ty: Type<'c>,
         arg_tys: &[Type<'c>],
     ) -> (Option<Type<'c>>, Vec<Type<'c>>) {
@@ -496,13 +500,43 @@ impl<'c> MeliorGenerator<'c> {
         if ret_ty == self.none_ty {
             return (None, arg_tys.to_vec());
         }
-        if !returns_through_slot(&ret_ty.to_string()) {
+        if self.returns_reference(name) {
+            return (Some(self.reference_result_ty(ret_ty)), arg_tys.to_vec());
+        }
+        if !self.uses_return_slot(name, ret_ty) {
             return (Some(ret_ty), arg_tys.to_vec());
         }
         let mut with_slot = Vec::with_capacity(arg_tys.len() + 1);
         with_slot.push(ret_ty);
         with_slot.extend_from_slice(arg_tys);
         (None, with_slot)
+    }
+
+    /// Whether the function `name` returns a `&Tensor` or `&mut Tensor`. Its result is the
+    /// memref of the tensor it names, as in the flat code generator, and never a copy.
+    pub(crate) fn returns_reference(&self, name: &str) -> bool {
+        self.syntax_functions
+            .get(name)
+            .is_some_and(|f| crate::codegen::flat::borrowed_tensor_memref(&f.return_type).is_some())
+    }
+
+    /// The type a function that returns a reference gives back: the descriptor that the cell
+    /// `ret_ty`, `memref<memref<A>>`, holds. A cell on the callee's stack would be gone once it
+    /// returns, so the caller makes a cell of its own for the descriptor.
+    pub(crate) fn reference_result_ty(&self, ret_ty: Type<'c>) -> Type<'c> {
+        let text = ret_ty.to_string();
+        let inner = text
+            .strip_prefix("memref<")
+            .and_then(|t| t.strip_suffix('>'))
+            .filter(|t| t.starts_with("memref<"))
+            .unwrap_or_else(|| panic!("a reference to a tensor is a cell, not {text}"));
+        Type::parse(self.context, inner).expect("the descriptor type of a cell parses")
+    }
+
+    /// Whether a call to `name` passes a buffer for the result. A reference names a tensor that
+    /// already exists, so it comes back as the result.
+    pub(crate) fn uses_return_slot(&self, name: &str, ret_ty: Type<'c>) -> bool {
+        returns_through_slot(&ret_ty.to_string()) && !self.returns_reference(name)
     }
 
     pub fn is_memref(&self, ty: &Type<'c>) -> bool {
@@ -570,7 +604,7 @@ impl<'c> MeliorGenerator<'c> {
             .get(call_fn_name.as_str())
             .cloned()
             .ok_or_else(|| format!("closure call fn {} not found", call_fn_name))?;
-        let (ret, args) = self.abi_signature(ret_ty, &arg_types);
+        let (ret, args) = self.abi_signature(&call_fn_name, ret_ty, &arg_types);
         let fn_ty = melior::ir::r#type::FunctionType::new(self.context, &args, ret.as_slice());
         let const_op = melior::ir::operation::OperationBuilder::new("func.constant", self.loc())
             .add_attributes(&[(
@@ -1073,6 +1107,7 @@ impl<'c> MeliorGenerator<'c> {
             string_counter: 0,
             const_tables: HashMap::new(),
             current_return_type: None,
+            current_returns_reference: false,
             current_return_slot: None,
             nrvo_slot: None,
             queued_drops: Vec::new(),
@@ -1522,7 +1557,7 @@ impl<'c> MeliorGenerator<'c> {
         // The return slot, when there is one, becomes the first parameter and the result goes
         // away. `arg_tys` is what the block arguments are built from below, so a declared
         // parameter `i` is block argument `i + slot_args`.
-        let (abi_ret, arg_tys) = self.abi_signature(ret_ty, &declared_tys);
+        let (abi_ret, arg_tys) = self.abi_signature(&func.name, ret_ty, &declared_tys);
         let slot_args = arg_tys.len() - declared_tys.len();
 
         let mut actual_ret_tys = Vec::new();
@@ -1597,6 +1632,7 @@ impl<'c> MeliorGenerator<'c> {
         }
 
         self.current_return_type = Some(ret_ty);
+        self.current_returns_reference = self.returns_reference(&func.name);
         // Facts are scoped to the function being lowered so a proven `assert` cannot be
         // transported into a device kernel in an unrelated function (which could name the
         // same variable but bind a different, non-dominating SSA value).
@@ -1647,6 +1683,7 @@ impl<'c> MeliorGenerator<'c> {
 
         self.current_return_type = None;
         self.current_return_slot = None;
+        self.current_returns_reference = false;
 
         let mut func_attributes = vec![
             (
@@ -1671,8 +1708,14 @@ impl<'c> MeliorGenerator<'c> {
         let attr = melior::ir::Attribute::parse(self.context, &text)
             .ok_or_else(|| LowerError::from(format!("bad argument attributes {text}")))?;
         func_attributes.push((melior::ir::Identifier::new(self.context, "arg_attrs"), attr));
-        if let (0, Some(Some(p))) = (slot_args, owned_tensor(&func.return_type)) {
-            let text = format!("[{}]", self.placed_attr(&p));
+        let result_attr = match (slot_args, owned_tensor(&func.return_type)) {
+            (0, Some(Some(p))) => Some(self.placed_attr(&p)),
+            // A returned reference names a tensor that the caller does not own.
+            _ if self.returns_reference(&func.name) => Some("{vx.reference}".to_string()),
+            _ => None,
+        };
+        if let Some(attr) = result_attr {
+            let text = format!("[{attr}]");
             let attr = melior::ir::Attribute::parse(self.context, &text)
                 .ok_or_else(|| LowerError::from(format!("bad result attributes {text}")))?;
             func_attributes.push((melior::ir::Identifier::new(self.context, "res_attrs"), attr));
@@ -3176,7 +3219,12 @@ impl<'c> MeliorGenerator<'c> {
                 self.is_lvalue_context &= !is_raw_ptr;
                 let lowered = self.generate_expr(expr, block);
                 self.is_lvalue_context = prev_lvalue;
-                let (val, ty, block) = lowered.ok()?;
+                let (mut val, mut ty, block) = lowered.ok()?;
+                // A call that returns `&Tensor` gives the cell that holds the tensor.
+                if matches!(expr, Expr::FunctionCall(_) | Expr::MethodCall(_)) {
+                    val = crate::codegen::lower::expr::load_tensor_slot(self, &block, val, &mut ty)
+                        .ok()?;
+                }
                 Some((val, ty, Vec::new(), block))
             }
         }

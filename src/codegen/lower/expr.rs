@@ -151,7 +151,7 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
             let (ret_ty, arg_tys) = gen.functions.get(name).unwrap();
             // The address of a function has to name the signature it was emitted with, return
             // slot and all, or an indirect call through it disagrees with the body.
-            let (abi_ret, abi_args) = gen.abi_signature(*ret_ty, arg_tys);
+            let (abi_ret, abi_args) = gen.abi_signature(name, *ret_ty, arg_tys);
             let abi_rets: Vec<_> = abi_ret.into_iter().collect();
             let func_ty = melior::ir::r#type::FunctionType::new(gen.context, &abi_args, &abi_rets);
             let const_op = OperationBuilder::new("func.constant", gen.loc())
@@ -4566,7 +4566,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             // A callee returning a statically shaped tensor writes into a buffer we allocate and
             // pass as its first argument, and the call itself produces nothing -- the result is
             // that buffer (#643).
-            let ret_slot = if returns_through_slot(&ret_ty.to_string()) {
+            let ret_slot = if gen.uses_return_slot(name, ret_ty) {
                 let alloc_op = OperationBuilder::new("memref.alloca", gen.loc())
                     .add_attributes(&[(
                         Identifier::new(gen.context, "operandSegmentSizes"),
@@ -4645,7 +4645,15 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 current_b.append_operation(builder.build()?);
                 return Ok((slot, ret_ty, current_b));
             }
-            if ret_ty.to_string() != "none" {
+            if gen.returns_reference(name) {
+                // The callee gives back the descriptor of the tensor it names. A reference is a
+                // cell that holds a descriptor, so the result goes into a cell here.
+                let desc_ty = gen.reference_result_ty(ret_ty);
+                let call_ref = current_b.append_operation(builder.add_results(&[desc_ty]).build()?);
+                let desc = call_ref.result(0)?.into();
+                let cell = tensor_in_a_slot(gen, &current_b, desc, desc_ty, ret_ty)?;
+                Ok((cell, ret_ty, current_b))
+            } else if ret_ty.to_string() != "none" {
                 builder = builder.add_results(&[ret_ty]);
                 let call_op = builder.build()?;
                 let call_ref = current_b.append_operation(call_op);
@@ -6183,7 +6191,7 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
 
             // The type of the call function's address, as its definition has it: no result for a
             // `void` closure.
-            let (ret, args) = gen.abi_signature(ret_ty, &orig_arg_types);
+            let (ret, args) = gen.abi_signature(&call_fn_name, ret_ty, &orig_arg_types);
             let fn_ty = melior::ir::r#type::FunctionType::new(gen.context, &args, ret.as_slice());
             let const_op = OperationBuilder::new("func.constant", gen.loc())
                 .add_attributes(&[(
