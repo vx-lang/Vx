@@ -191,8 +191,8 @@ pattern ::=
 
 // How a number is spelled. The base prefix and the `_` separators change nothing about the
 // value: `0x2A`, `0b101010`, `0o52`, `4_2` and `42` are the same literal. A prefixed literal
-// is an integer, so it has no fraction, no exponent and no float suffix. A suffix is the literal's type;
-// without one the literal takes the type its context asks for.
+// is an integer, so it has no fraction, no exponent and no float suffix. A suffix is the literal's type.
+// Without one, the literal takes the type its context asks for.
 number_literal ::= ( decimal_literal | hex_literal | octal_literal | binary_literal ) element_type?
 decimal_literal ::= digit ( digit | "_" )* ( "." digit ( digit | "_" )* )? exponent?
 exponent        ::= ( "e" | "E" ) ( "+" | "-" )? digit ( digit | "_" )*

@@ -25,7 +25,7 @@ This is deliberate — silent widening is a common source of both bugs and unint
 cliffs.
 
 An integer can be written in decimal, hex, octal or binary, and `_` can separate groups of digits
-in any of them. The spelling is for the reader; the value is the same either way:
+in any of them. The spelling is for the reader. The value is the same either way:
 
 ```rust
 fn main() -> i32 {
@@ -40,7 +40,7 @@ fn main() -> i32 {
 }
 ```
 
-A prefixed literal is an integer, so `0x1.5` is an error; write a fraction in decimal.
+A prefixed literal is an integer, so `0x1.5` is an error. Write a fraction in decimal.
 
 A `const` at the top level names a value known while compiling. Its type is required, and each use
 is replaced by the value:

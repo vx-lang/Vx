@@ -1645,6 +1645,7 @@ pub(crate) fn no_fact() -> Expr {
             value: "0".to_string().into(),
             ty: None,
             span: Span::default(),
+            written: None,
         }))
     };
     Expr::RelationalOp(RelationalOpExpr {
