@@ -172,7 +172,7 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn parse_binary_expr(&mut self, precedence: u8) -> ParseResult<'a, Expr> {
-        let mut left = self.parse_primary_expr()?;
+        let mut left = self.parse_as_expr()?;
 
         loop {
             // A shift-assignment ends the expression. `x <<= 5` opens with the same `<`
@@ -967,7 +967,7 @@ impl<'a> Parser<'a> {
             self.consume(&TokenType::RightBrace, "Expected '}'")?;
             // Only `as` may follow the block: a `(` or `[` on the next line starts a new
             // statement, and `as` cannot.
-            return self.parse_as_casts(Expr::UnsafeBlock(UnsafeBlockExpr {
+            return Ok(Expr::UnsafeBlock(UnsafeBlockExpr {
                 stmts,
                 ret,
                 span: unsafe_span,
@@ -1583,7 +1583,6 @@ impl<'a> Parser<'a> {
                     index: Box::new(index),
                     span: ix_span,
                 });
-            } else if self.check(&TokenType::As) {
                 expr = self.parse_as_casts(expr)?;
             } else if self.check(&TokenType::Question) {
                 let token = self.advance();
@@ -1603,6 +1602,34 @@ impl<'a> Parser<'a> {
             }
         }
 
+        Ok(expr)
+    }
+
+    /// `parse_primary_expr` followed by any `as` casts and trailing `?`.
+    /// This level sits between binary operators (looser) and unary operators
+    /// (tighter), matching Rust: `*r as T` is `(*r) as T`, not `*(r as T)`.
+    fn parse_as_expr(&mut self) -> ParseResult<'a, Expr> {
+        let mut expr = self.parse_primary_expr()?;
+        loop {
+            if self.check(&TokenType::As) {
+                expr = self.parse_as_casts(expr)?;
+            } else if self.check(&TokenType::Question) {
+                let token = self.advance();
+                let span = Span {
+                    line: token.line,
+                    column: token.column,
+                    length: token.length,
+                    expansion: self.expansion(),
+                };
+                expr = Expr::UnaryOp(UnaryOpExpr {
+                    op: UnaryOp::Try,
+                    expr: Box::new(expr),
+                    span,
+                });
+            } else {
+                break;
+            }
+        }
         Ok(expr)
     }
 
@@ -2672,5 +2699,50 @@ mod tests {
         } else {
             panic!("Expected UnaryOp(Neg, FunctionCall), got {:?}", expr);
         }
+    }
+
+    #[test]
+    fn test_deref_binds_tighter_than_as() {
+        // *p as i32 must parse as (*p) as i32, matching Rust.
+        let expr = parse_expr("*p as i32");
+        match expr {
+            Expr::AsCast(AsCastExpr { expr: inner, .. }) => {
+                assert!(
+                    matches!(&*inner, Expr::Dereference(_)),
+                    "expected (*p) as i32, got cast of {:?}",
+                    inner
+                );
+            }
+            other => panic!("expected AsCast, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_unary_neg_binds_tighter_than_as() {
+        // -x as i64 must parse as (-x) as i64.
+        let expr = parse_expr("-x as i64");
+        match expr {
+            Expr::AsCast(AsCastExpr { expr: inner, .. }) => {
+                assert!(
+                    matches!(&*inner, Expr::UnaryOp(u) if u.op == UnaryOp::Neg),
+                    "expected (-x) as i64, got cast of {:?}",
+                    inner
+                );
+            }
+            other => panic!("expected AsCast, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_deref_cast_chain() {
+        // *p as i64 as f64 → AsCast(AsCast(Dereference(p), i64), f64)
+        let expr = parse_expr("*p as i64 as f64");
+        if let Expr::AsCast(AsCastExpr { expr: mid, .. }) = expr {
+            if let Expr::AsCast(AsCastExpr { expr: inner, .. }) = &*mid {
+                assert!(matches!(&**inner, Expr::Dereference(_)));
+                return;
+            }
+        }
+        panic!("expected chained AsCast(Dereference(_))");
     }
 }
