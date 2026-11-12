@@ -8,14 +8,13 @@
 // `main` gives the closure `seven` to the C function `take_closure`, and C can call it. So its
 // call function gets a wrapper, which tells the runtime when a call from C starts and returns.
 // Only Vx code calls the closure `eight`, through `call_it`, so its call function has no wrapper.
-// No C library defines `take_closure`, so the test only compiles the program.
+// No C library defines `take_closure`, so the test only checks the IR and does not run.
 //
 // The IR checks, with each code generator:
 // - The WRAP lines: the wrapper of `seven` calls the runtime before and after the closure.
 // - The MAIN lines: `main` gives C the wrapper of `seven`, and gives `call_it` the closure
 //   `eight` itself.
 //
-// NO_EXEC
 // RUN: vxc %s --action emit-llvm > %t.flat 2>&1
 // RUN: vxc %s --legacy-codegen --action emit-llvm > %t.ast 2>&1
 // RUN: FileCheck %s --input-file=%t.flat --check-prefix=WRAP
