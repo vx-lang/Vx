@@ -71,7 +71,7 @@ The problem is not unique to Vx. Mojo exposes MLIR operations in source through 
 
 A 2022 thread, "MLIR generic IR stability and upgradability", asked a related question. It discussed bytecode and the generic form. It ended without a policy, and one reply suggested that each dialect should decide for itself. It did not discuss hand-written text.
 
-People raised this problem after my talk on `mlir!` blocks at the MLIR workshop in Santa Clara, and in a [Reddit thread](https://www.reddit.com/r/Compilers/s/FWtGw97mGv). They are right. I also think the problem points to an opportunity.
+People raised this problem after my talk on `mlir!` blocks at the MLIR workshop in Santa Clara, and in a [Reddit thread](https://www.reddit.com/r/Compilers/comments/1xet0e1/). They are right. I also think the problem points to an opportunity.
 
 ## The opportunity: a stable layer for kernel code
 
@@ -105,7 +105,7 @@ The options go from cheapest to most expensive. A project could take more than o
 - Vx: https://github.com/vx-lang/Vx
 - How Vx uses MLIR: https://vxlang.org/blog/vx-fully-embraces-ml-ir-mlir.html
 - The 2022 thread: https://discourse.llvm.org/t/mlir-generic-ir-stability-and-upgradability/65371
-- The Reddit thread: https://www.reddit.com/r/Compilers/s/FWtGw97mGv
+- The Reddit thread: https://www.reddit.com/r/Compilers/comments/1xet0e1/
 - LLVM IR backwards compatibility: https://llvm.org/docs/DeveloperPolicy.html#ir-backwards-compatibility
 - MLIR bytecode format: https://mlir.llvm.org/docs/BytecodeFormat/
 - StableHLO compatibility: https://openxla.org/stablehlo/compatibility
