@@ -497,9 +497,11 @@ pub enum DiagnosticCode {
     E4010,
     /// A view of a tensor (a row `q[i]` or a field `h.t`) used where a tensor of its own is
     /// held: stored in a variable that already exists (`t = q[i]`) or a struct field
-    /// (`h.t = q[i]`, `Holder { t : q[i] }`), or passed to a function that takes the tensor by
-    /// value (`f(q[i])`). A view shares its owner's memory and is not a copy. Bind it to a new
-    /// variable with `let`, pass `q[i].clone()`, or take the parameter by reference.
+    /// (`h.t = q[i]`, `Holder { t : q[i] }`), passed to a function that takes the tensor by
+    /// value (`f(q[i])`), or returned from a function that returns a tensor by value
+    /// (`return q[i]`). A view shares its owner's memory and is not a copy. Bind it to a new
+    /// variable with `let`, pass `q[i].clone()`, take the parameter by reference, or return a
+    /// reference (`-> &mut Tensor<..>`).
     E4011,
     /// A call to the `drop` method of a `Drop` impl by hand: `x.drop()`. `drop` runs when the
     /// value is dropped, so calling it as well would run it twice. Write `drop(x)`, from

@@ -62,6 +62,9 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
         let (mut val, expr_ty, block) = gen.generate_expr(expr, block)?;
         gen.nrvo_slot = None;
         gen.expected_type = None;
+        if gen.current_returns_reference && !gen.in_spawn {
+            return return_reference(gen, block, val, expr_ty);
+        }
         // `return f();` in a function returning `void`, such as `apply<T>` with `T = void`:
         // the call has run, and there is no value to return.
         if !gen.in_spawn && gen.current_return_type == Some(gen.none_ty) {
@@ -405,6 +408,30 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
         }
         Ok(Some(block))
     }
+}
+
+/// `return r` in a function that returns `&Tensor` or `&mut Tensor`: give back the memref of
+/// the tensor that `r` names, never a copy. A row is a strided view, so its pointer moves to
+/// the row, as for a row passed to a `&Tensor` parameter.
+fn return_reference<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    val: Value<'c, 'c>,
+    ty: Type<'c>,
+) -> Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError> {
+    let cell_ty = gen
+        .current_return_type
+        .expect("a function has a return type");
+    let ret_ty = gen.reference_result_ty(cell_ty);
+    let mut ty = ty;
+    let mut val = super::expr::load_tensor_slot(gen, &block, val, &mut ty)?;
+    if ty != ret_ty {
+        val = super::cast_memref(gen, &block, val, ty, ret_ty)?;
+    }
+    let block = gen.run_value_drops(block)?;
+    super::expr::emit_func_return(gen, block, Some(val))?;
+    gen.has_returned = true;
+    Ok(None)
 }
 
 /// The nominal struct/enum name a type ultimately names, peeling reference/pointer wrappers and
