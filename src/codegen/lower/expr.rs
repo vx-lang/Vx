@@ -5256,6 +5256,18 @@ fn payload_binding_type(
     let position = pats
         .iter()
         .position(|p| matches!(p, syntax::Pattern::Identifier(n) if *n == id.name))?;
+    variant_payload_type(gen, en, vn, position, scrutinee_ty)
+}
+
+/// The type of the payload at `position` of the variant `vn` of `en`, with the type arguments
+/// that `en` names, such as `T` of `Result<T, E>::Ok`.
+pub(crate) fn variant_payload_type(
+    gen: &MeliorGenerator<'_>,
+    en: &str,
+    vn: &str,
+    position: usize,
+    scrutinee_ty: Option<&syntax::Type>,
+) -> Option<syntax::Type> {
     let (base, args) = match crate::parser::types::parse_type_text(en)? {
         syntax::Type::GenericInstance(base, args) => (base.to_string(), args),
         other => {
@@ -5271,7 +5283,7 @@ fn payload_binding_type(
         .enums
         .get(&base)?
         .iter()
-        .find(|(v, _)| v.as_ref() == vn.as_ref())?
+        .find(|(v, _)| v.as_ref() == vn)?
         .1
         .as_ref()?
         .get(position)?

@@ -803,6 +803,11 @@ pub fn generate_match_chain<'c>(
             let Pattern::Identifier(name) = pattern else {
                 continue;
             };
+            // The Vx type of the name, so a later `transfer` of it knows where its data is.
+            match crate::codegen::lower::expr::variant_payload_type(gen, en, vn, position, None) {
+                Some(ty) => gen.ast_env.insert(name.to_string().into(), ty),
+                None => gen.ast_env.remove(name.as_ref()),
+            };
             let Some(slot_text) = slots.get(position) else {
                 continue;
             };
