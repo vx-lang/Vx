@@ -1,10 +1,8 @@
 # [RFC] Stable MLIR text for library and kernel authors
 
-*A proposal to the MLIR community.*
-
 ## Summary
 
-Vx is a programming language for tensor programs. Its standard library contains 164 blocks of upstream MLIR that people wrote by hand. MLIR makes no promise that this text will still parse after the next LLVM release. Three forms that the library uses today did not exist in 2021.
+Vx is a programming language for tensor programs. Its standard library contains about 180 blocks of upstream MLIR that people wrote by hand. MLIR makes no promise that this text will still parse after the next LLVM release. Three forms that the library uses today did not exist in 2021.
 
 I think the problem is larger than one language. Programmers need a layer between the language and the hardware that the compiler can still read and optimize. Upstream MLIR dialects are a good vocabulary for that layer. A small stability promise could make MLIR the standard home for it.
 
@@ -12,7 +10,7 @@ This RFC describes the situation, the problem and the opportunity. It ends with 
 
 ## The situation: MLIR as inline assembly
 
-C and Rust give a library author inline assembly. Vx gives them an `mlir!` block. The header binds Vx values to SSA names and declares effects. The body is a list of upstream MLIR operations. This block is from `stdlib/core/num.vx`:
+C and Rust give a library author inline assembly. Vx gives them an `mlir!` block. The header binds Vx values to SSA names and declares effects. The body is a list of upstream MLIR operations. This block is a simpler form of one in `stdlib/core/num.vx`:
 
 ```
 fn count_ones(self : usize) -> usize {
@@ -23,9 +21,11 @@ fn count_ones(self : usize) -> usize {
 }
 ```
 
-The compiler checks the header against the Vx types. It wraps the body in a private `func.func` and parses it with the MLIR parser. At `-O1` and above, it inlines the wrapper before loop fusion. The block then takes part in the same passes as the code around it.
+`macro.yield` is a Vx op, not an upstream one. It gives the block's result back to the Vx code.
 
-The Vx standard library uses 164 of these blocks. They implement bit operations, atomics, SIMD reductions, tensor fills and a port of libm. They use `arith`, `math`, `vector`, `memref`, `scf`, `linalg` and the `llvm` dialect. None of them needs a compiler intrinsic or a call into libc.
+The compiler checks the header against the Vx types. It wraps the body in a private `func.func` and parses it with the MLIR parser. At `-O1` and above, it inlines small wrappers before loop fusion. The block then takes part in the same passes as the code around it.
+
+The Vx standard library source contains about 180 of these blocks. Some are templates in macros that the library expands for several types. They implement bit operations, atomics, SIMD reductions, tensor fills and a port of libm. They use `arith`, `math`, `vector`, `memref`, `scf`, `linalg` and the `llvm` dialect. Only three blocks use an op of Vx's own dialect: the heap allocation functions, where the compiler picks the C allocator for the target. No other block needs a compiler intrinsic or a call into libc.
 
 Three properties make this design attractive:
 
@@ -45,6 +45,15 @@ MLIR's custom assembly formats change as the dialects improve. That is good for 
 | `nvvm.vote` | `nvvm.vote.ballot.sync %m, %p : i32` | `nvvm.vote.sync ballot %m, %p -> i32` | [cd2f85a24b55](https://github.com/llvm/llvm-project/commit/cd2f85a24b55), April 2025 |
 
 Each change was reasonable. The `vector.reduction` commit carried the NFC tag, yet it changed the text that people write.
+
+The generic form does not avoid these breaks. All four changes also break it:
+
+- `vector.reduction`: the kind changed from a string attribute to `#vector.kind<add>`.
+- `linalg.fill`: the op got `ins` and `outs` operand groups and a region.
+- `llvm.atomicrmw`: the operand types changed with opaque pointers.
+- `nvvm.vote`: the op name changed.
+
+The generic form fixes the syntax of an op, but not its name, its attributes or its operands.
 
 Vx copes in two ways today. It pins one LLVM release, currently LLVM 22. It also parses every block with the MLIR parser, so a break usually appears as a clear parse error. But each LLVM upgrade can force edits to library source, and library authors must make them. If third-party libraries contain `mlir!` blocks, a compiler upgrade can break code that the Vx project does not control.
 
@@ -78,7 +87,7 @@ PTX shows what a promise buys. It is a stable, versioned layer that people write
 
 The options go from cheapest to most expensive. A project could take more than one.
 
-1. **Write the policy down.** The MLIR docs state the policy for bytecode and for the C API. I found none for custom assembly formats. One paragraph, like the one in the LLVM Developer Policy, would help frontends plan.
+1. **Write the policy down.** The MLIR docs state a policy for bytecode, which is stable, and for the C API, which has no guarantees yet. I found none for custom assembly formats. One paragraph, like the one in the LLVM Developer Policy, would help frontends plan.
 1. **Mark format changes.** A commit tag or a release-note section for assembly format changes would let frontends find breaks without a bisect. Today such a change can carry the NFC tag.
 1. **Test hand-written text upstream.** Vx can contribute its blocks as round-trip tests. LLVM keeps `compatibility.ll` for bitcode in the same spirit. A change that breaks the corpus then becomes visible in review.
 1. **Keep old forms for one release.** For a few core dialects, the parser could accept the old form for one release and emit a warning. The cost is old parser code that stays in the tree for that release.
