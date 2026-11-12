@@ -1,0 +1,56 @@
+//===- only_a_closure_given_to_c_tells_the_runtime.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `main` gives the closure `seven` to the C function `take_closure`, and C can call it. So its
+// call function gets a wrapper, which tells the runtime when a call from C starts and returns.
+// Only Vx code calls the closure `eight`, through `call_it`, so its call function has no wrapper.
+// No C library defines `take_closure`, so the test only compiles the program.
+//
+// The IR checks, with each code generator:
+// - The WRAP lines: the wrapper of `seven` calls the runtime before and after the closure.
+// - The MAIN lines: `main` gives C the wrapper of `seven`, and gives `call_it` the closure
+//   `eight` itself.
+//
+// NO_EXEC
+// RUN: vxc %s --action emit-llvm > %t.flat 2>&1
+// RUN: vxc %s --legacy-codegen --action emit-llvm > %t.ast 2>&1
+// RUN: FileCheck %s --input-file=%t.flat --check-prefix=WRAP
+// RUN: FileCheck %s --input-file=%t.ast --check-prefix=WRAP
+// RUN: FileCheck %s --input-file=%t.flat --check-prefix=MAIN --implicit-check-not=Closure_2_call.from_foreign
+// RUN: FileCheck %s --input-file=%t.ast --check-prefix=MAIN --implicit-check-not=Closure_2_call.from_foreign
+//
+// WRAP-LABEL: llvm.func hidden @Closure_1_call.from_foreign(
+// WRAP-NEXT: llvm.call @vx_callback_enter()
+// WRAP-NEXT: llvm.call @Closure_1_call(
+// WRAP-NEXT: llvm.call @vx_callback_exit()
+//
+// MAIN-LABEL: llvm.func @main()
+// MAIN-DAG: llvm.mlir.addressof @Closure_1_call.from_foreign :
+// MAIN-DAG: llvm.mlir.addressof @Closure_2_call :
+// MAIN: llvm.call @take_closure(
+// MAIN: llvm.call @call_it(
+
+extern "C" {
+  fn take_closure(f : || -> i64) -> void;
+}
+
+fn call_it(f : || -> i64) -> i64 {
+  return f();
+}
+
+fn main() -> i32 {
+  let seven = || -> i64 {
+    return 7;
+  };
+  unsafe { take_closure(seven as || -> i64); }
+  let eight = || -> i64 {
+    return 8;
+  };
+  let got = call_it(eight as || -> i64);
+  println!("{}", got);
+  return 0;
+}
