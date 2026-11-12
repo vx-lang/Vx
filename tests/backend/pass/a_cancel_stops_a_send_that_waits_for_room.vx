@@ -13,6 +13,7 @@
 // The cancelled `send` already had its place in the channel, after the value 1. A later `recv`
 // must pass that place: the value 3 then arrives after 1.
 //
+// NO-SEED-SWEEP: the main code calls `sleep` in a loop until a task acts, and `sleep` holds the thread.
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}send gave back 2, cancelled true{{$}}

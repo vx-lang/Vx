@@ -9,6 +9,7 @@
 // until the second task sets a flag, so the two tasks must run at the same time, or the program
 // hangs. After the block, the value or the `return` must take effect.
 //
+// NO-SEED-SWEEP: a task loops with no wait until another task acts, and one thread cannot run the other task.
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}doubled 7 -1{{$}}
