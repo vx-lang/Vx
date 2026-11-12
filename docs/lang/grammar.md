@@ -183,8 +183,9 @@ primary_expr ::=
 
 pattern ::= 
     | "_"
-    | number_literal
+    | "-"? number_literal
     | string_literal
+    | "true" | "false"
     | identifier ( "<" identifier ">" )? "::" identifier ( "(" ( pattern ","? )* ")" )?
     | identifier
 ```

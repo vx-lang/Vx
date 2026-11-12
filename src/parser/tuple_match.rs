@@ -174,9 +174,6 @@ impl<'a> Parser<'a> {
             ArmPattern::Plain(plain) => match plain.as_ref() {
                 Pattern::Wildcard => {}
                 Pattern::Literal(lit) => steps.push(Step::Test(equals(value, lit))),
-                Pattern::Identifier(name) if is_bool(name) => {
-                    steps.push(Step::Test(equals(value, &identifier(name.as_ref()))))
-                }
                 Pattern::Identifier(name) => binds.push(Statement::LetDecl(LetDeclStmt {
                     name: name.clone(),
                     is_mut: false,
@@ -193,7 +190,7 @@ impl<'a> Parser<'a> {
                             .iter()
                             .map(|p| match p {
                                 Pattern::Wildcard => Pattern::Wildcard,
-                                Pattern::Identifier(n) if !is_bool(n) => p.clone(),
+                                Pattern::Identifier(_) => p.clone(),
                                 _ => {
                                     let temp = format!("$payload{}", self.tuple_lets);
                                     self.tuple_lets += 1;
@@ -321,10 +318,6 @@ fn build_steps(
         e.has_semi = true;
     }
     vec![stmt]
-}
-
-fn is_bool(name: &Symbol) -> bool {
-    name.as_ref() == "true" || name.as_ref() == "false"
 }
 
 impl IfExpr {

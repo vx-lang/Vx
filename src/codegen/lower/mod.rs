@@ -749,6 +749,8 @@ pub fn generate_match_chain<'c>(
         Pattern::Literal(lit) => {
             let lit_val = match &**lit {
                 Expr::Number(n) => n.value.as_ref().parse::<i64>().unwrap_or(0),
+                Expr::Identifier(id) if id.name.as_ref() == "true" => 1,
+                Expr::Identifier(id) if id.name.as_ref() == "false" => 0,
                 other => panic!("Unsupported literal pattern in codegen: {:?}", other),
             };
             let const_op = block.append_operation(
