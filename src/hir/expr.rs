@@ -358,11 +358,12 @@ impl<'a> TypeChecker<'a> {
                 self.check_expr_type_flag(&mut fc.args[0], consume)
             }
             Expr::FunctionCall(..) => {
+                // The check can replace a lambda call with a call that has no place.
+                let span = expr.span();
                 let ty = self
                     .check_a_call_that_can_change_facts(expr, |c, e| c.check_functioncall_expr(e));
                 // A comptime lambda runs while compiling, so its calls fold here. With every
                 // call folded the lambda is unused, and the `let` that bound it is dropped.
-                let span = expr.span();
                 self.fold_comptime_lambda_call(expr, &span, &ty);
                 ty
             }

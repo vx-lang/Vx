@@ -60,7 +60,7 @@ fn number_on_a_bool(b : bool) -> i32 {
 
 fn minus_one_on_a_u8(n : u8) -> i32 {
   match n {
-    // CHECK: Error[E3019] {{.*}}: match arm literal '-1' is not representable in the scrutinee's type 'u8', so the arm can never be selected
+    // CHECK: Error[E3019] at {{.*}}bool_and_negative_patterns_the_checker_refuses.vx:[[@LINE+1]]:5: match arm literal '-1' is not representable in the scrutinee's type 'u8', so the arm can never be selected
     -1 => {
       return 1;
     }
