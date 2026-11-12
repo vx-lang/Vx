@@ -10,7 +10,7 @@
 //
 // RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: not vxc %s -j 2 --host default --machine fleet/h100-sxm.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
-// CHECK: Error[E6025]: `Memory::M` in function 'no_parameter' names no location: no declared topology holds `Memory::M`
+// CHECK: Error[E6025] at {{.*}}memory_variable_without_a_parameter.vx:19:4: `Memory::M` in parameter 't' of function 'no_parameter' names no location: no declared topology holds `Memory::M`
 
 fn with_parameter<M : Memory>(t : &Tensor<i32, [?], Memory::M>) -> i32 {
   return t[0];
