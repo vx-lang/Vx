@@ -387,8 +387,9 @@ pub enum DiagnosticCode {
     /// pattern when it chooses an arm, so the arm would be taken for any payload. Bind the
     /// payload to a name and test it in the arm, with an `if` or another `match`.
     E3050,
-    /// A `match` pattern that names a variant of another enum than the value matched, such as
-    /// `Other::Red` in a `match` on a `Color`. Write the variant with the matched value's enum.
+    /// A `match` pattern of another type than the value matched: a variant of another enum, such
+    /// as `Other::Red` in a `match` on a `Color`, `true` in a `match` on an `i32`, or `1` in a
+    /// `match` on a `bool`. Write a pattern of the matched value's type.
     E3051,
     /// Arithmetic on fp8 or fp4 values (`f8e4m3`, `f8e5m2` or `f4e2m1`) with no written result
     /// type, as in `print(a * b)`. The compiler computes in f32 and rounds once to the written
@@ -496,9 +497,11 @@ pub enum DiagnosticCode {
     E4010,
     /// A view of a tensor (a row `q[i]` or a field `h.t`) used where a tensor of its own is
     /// held: stored in a variable that already exists (`t = q[i]`) or a struct field
-    /// (`h.t = q[i]`, `Holder { t : q[i] }`), or passed to a function that takes the tensor by
-    /// value (`f(q[i])`). A view shares its owner's memory and is not a copy. Bind it to a new
-    /// variable with `let`, pass `q[i].clone()`, or take the parameter by reference.
+    /// (`h.t = q[i]`, `Holder { t : q[i] }`), passed to a function that takes the tensor by
+    /// value (`f(q[i])`), or returned from a function that returns a tensor by value
+    /// (`return q[i]`). A view shares its owner's memory and is not a copy. Bind it to a new
+    /// variable with `let`, pass `q[i].clone()`, take the parameter by reference, or return a
+    /// reference (`-> &mut Tensor<..>`).
     E4011,
     /// A call to the `drop` method of a `Drop` impl by hand: `x.drop()`. `drop` runs when the
     /// value is dropped, so calling it as well would run it twice. Write `drop(x)`, from

@@ -1,0 +1,72 @@
+//===- a_file_read_in_a_time_limit_waits_for_its_data.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A cancel does not stop a file read, because the read still writes to the buffer of the task.
+// A task reads 1 byte from a FIFO (a named pipe) in `within` of 0.1 seconds. The RUN line
+// writes the byte after 0.6 seconds. The read must wait for the byte and give it. After the
+// read, the time limit has passed, so `cancelled()` is true.
+//
+// Each RUN line has its own FIFO. The test runner gives a program no input of its own, so this
+// one runs only from the RUN lines.
+//
+// NO_EXEC
+// RUN: rm -f %t.shared %t.threads && mkfifo %t.shared %t.threads
+// RUN: (exec 3>%t.shared; sleep 0.6; printf V >&3) 2>/dev/null & env INPUT=%t.shared VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=deadlock
+// RUN: (exec 3>%t.threads; sleep 0.6; printf V >&3) 2>/dev/null & env INPUT=%t.threads vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=deadlock
+// RUN: rm -f %t.shared %t.threads
+// CHECK: {{^}}the read gave the byte 86{{$}}
+// CHECK-NEXT: {{^}}the read waited for the byte: true{{$}}
+// CHECK-NEXT: {{^}}cancelled after the read: true{{$}}
+
+import core::convert;
+import core::time;
+import std::fs;
+import std::sync::wait;
+import std::time;
+
+extern {
+  fn getenv(name : *const i8) -> *const i8;
+}
+
+// The byte that the read gave, or -1 when the read gave no byte.
+fn read_one_byte() -> i64 {
+  let mut input = unsafe { File::open(getenv("INPUT"), OpenMode::Read()) };
+  let mut byte : u8 = 0;
+  let n = unsafe { input.read((&mut byte) as *mut u8, 1) };
+  if n != 1 {
+    return -1;
+  }
+  return i64::from(byte);
+}
+
+// Reads the byte, and says what the read did.
+fn read_and_say(start : Instant) -> i64 {
+  let b = read_one_byte();
+  println!("the read gave the byte {}", b);
+  println!("the read waited for the byte: {}", start.elapsed() >= Duration::from_millis(400));
+  println!("cancelled after the read: {}", cancelled());
+  return b;
+}
+
+fn read_in_a_time_limit() -> void {
+  let start = Instant::now();
+  let byte = within(Duration::from_millis(100), || -> i64 {
+    return read_and_say(start);
+  });
+  if byte != 86 {
+    println!("Error: the byte was {}", byte);
+  }
+}
+
+fn main() -> i32 {
+  tasks {
+    spawn {
+      read_in_a_time_limit();
+    };
+  };
+  return 0;
+}

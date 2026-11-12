@@ -884,8 +884,14 @@ impl<'a> TypeChecker<'a> {
         if !self.borrow.views.contains_key(name.as_ref()) {
             self.check_spawn_capture_moved(expr);
         }
-        if !self.speculating && !Self::views_foreign_memory(expr) {
-            self.drops_note_owner(name.as_ref(), &binding_ty);
+        if let Some(p) = Self::foreign_view_pointer(expr) {
+            let provenance = self.ref_provenance_of(p);
+            self.borrow.foreign_views.insert(name.clone(), provenance);
+        } else {
+            self.borrow.foreign_views.remove(name);
+            if !self.speculating {
+                self.drops_note_owner(name.as_ref(), &binding_ty);
+            }
         }
         if let Expr::Identifier(from) = &*expr {
             if !self.speculating {

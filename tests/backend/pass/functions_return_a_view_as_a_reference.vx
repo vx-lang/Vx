@@ -1,0 +1,59 @@
+//===- functions_return_a_view_as_a_reference.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A function that returns `&mut Tensor` gives its caller the view itself, not a copy. So a
+// write through the result changes the owner. The views are a row of a tensor parameter, and a
+// view of memory from a raw pointer. The view of memory is returned through one call, through
+// two calls, and from a variable that holds it.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+// RUN: vxc %s --run -O2 2>&1 | FileCheck %s
+// CHECK: row 5 -> 7
+// CHECK-NEXT: pointer 5 -> 8
+// CHECK-NEXT: two calls 9
+// CHECK-NEXT: variable 6
+
+fn second_row(q : &mut Tensor<f32, [2, 4]>) -> &mut Tensor<f32, [4]> {
+  return &mut q[1];
+}
+
+fn view_of(p : *mut f32) -> &mut Tensor<f32, [4, 1]> {
+  return unsafe { &mut tensor_view_2d(p, 4, 1) };
+}
+
+fn view_through_another_call(p : *mut f32) -> &mut Tensor<f32, [4, 1]> {
+  return view_of(p);
+}
+
+fn view_in_a_variable(p : *mut f32) -> &mut Tensor<f32, [4, 1]> {
+  let mut v = unsafe { tensor_view_2d(p, 4, 1) };
+  return &mut v;
+}
+
+fn main() -> i32 {
+  let mut o = Tensor<f32, [2, 4]>::fill(5.0);
+  let r = second_row(&mut o);
+  let row_before = r[0];
+  r[0] = 7.0;
+  println!("row {} -> {}", row_before, o[1][0]);
+
+  let mut b = Tensor<f32, [4, 1]>::fill(5.0);
+  let v = view_of(b.as_mut_ptr());
+  let view_before = v[0][0];
+  v[0][0] = 8.0;
+  println!("pointer {} -> {}", view_before, b[0][0]);
+
+  let w = view_through_another_call(b.as_mut_ptr());
+  w[3][0] = 9.0;
+  println!("two calls {}", b[3][0]);
+
+  let x = view_in_a_variable(b.as_mut_ptr());
+  x[2][0] = 6.0;
+  println!("variable {}", b[2][0]);
+  return 0;
+}

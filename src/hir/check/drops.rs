@@ -1275,10 +1275,15 @@ impl<'a> TypeChecker<'a> {
     /// `tensor_view_2d(..)`, also as the value of an `unsafe` block: a view of memory the
     /// program got from elsewhere, which no drop frees.
     pub(crate) fn views_foreign_memory(expr: &Expr) -> bool {
+        Self::foreign_view_pointer(expr).is_some()
+    }
+
+    /// The pointer that `tensor_view_2d(p, ..)` views, also as the value of an `unsafe` block.
+    pub(crate) fn foreign_view_pointer(expr: &Expr) -> Option<&Expr> {
         match expr {
-            Expr::FunctionCall(c) => c.name.as_ref() == "tensor_view_2d",
-            Expr::UnsafeBlock(u) => u.ret.as_deref().is_some_and(Self::views_foreign_memory),
-            _ => false,
+            Expr::FunctionCall(c) if c.name.as_ref() == "tensor_view_2d" => c.args.first(),
+            Expr::UnsafeBlock(u) => u.ret.as_deref().and_then(Self::foreign_view_pointer),
+            _ => None,
         }
     }
 

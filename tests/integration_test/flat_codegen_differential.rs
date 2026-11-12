@@ -3814,8 +3814,8 @@ fn flat_matches_ast_corpus_tensor_view_2d() {
     // yet; they are row-major, as the oracle's.)
     assert_parity(
         "extern \"C\" { fn vx_alloc_f32(n : i32) -> *mut f32; fn vx_free_f32(p : *mut f32, n : i32) -> void; }\n\
-         fn view(p : *mut f32, r : i32, c : i32) -> Tensor<f32, [?, ?]> { \
-           let v = unsafe { tensor_view_2d(p, r, c) }; return v; }\n\
+         fn view(p : *mut f32, r : i32, c : i32) -> &Tensor<f32, [?, ?]> { \
+           let v = unsafe { tensor_view_2d(p, r, c) }; return &v; }\n\
          fn main() -> i32 { let p : *mut f32 = unsafe { vx_alloc_f32(6) }; \
            unsafe { for i in 0..6 { p[i] = (i + 1) as f32; } } \
            let a = view(p, 2, 3); let x = a[1][2]; let w = a.extent(1); \

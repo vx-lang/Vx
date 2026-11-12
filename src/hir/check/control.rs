@@ -1093,6 +1093,33 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Refuse `true` or `false` in a `match` on a value that is not a `bool`, and a number in a
+    /// `match` on a `bool`. The arm would compare values of two types.
+    fn check_bool_pattern(&mut self, pattern: &Pattern, expr_ty: &Type, span: &Span) {
+        let Pattern::Literal(lit) = pattern else {
+            return;
+        };
+        if self.speculating || matches!(expr_ty, Type::Unknown | Type::Generic(..)) {
+            return;
+        }
+        let is_bool = *expr_ty == Type::Scalar(ElementType::Bool);
+        let message = match (bool_literal(lit), &**lit) {
+            (Some(b), _) if !is_bool => {
+                format!("`{b}` is a `bool`, but the value matched has the type `{expr_ty}`")
+            }
+            (None, Expr::Number(n)) if is_bool => format!(
+                "`{}` is a number, but the value matched is a `bool`; write `true` or `false`",
+                n.value
+            ),
+            _ => return,
+        };
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E3051,
+            message,
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+    }
+
     pub(crate) fn bind_pattern_variables(&mut self, pattern: &Pattern, expr_ty: &Type) {
         match pattern {
             Pattern::Identifier(name) => {
@@ -1365,12 +1392,14 @@ impl<'a> TypeChecker<'a> {
                     match &arm.pattern {
                         Pattern::Wildcard | Pattern::Identifier(_) => has_wildcard = true,
                         Pattern::EnumVariant(_, variant, _) => covered.push(variant.clone()),
-                        _ => {}
+                        Pattern::Literal(lit) => covered.extend(bool_literal(lit)),
                     }
-                    // `_ => {}` and an empty enum variant arm are there to make the match cover
-                    // every case, so they stay quiet. Every arm the compiler writes is one of them.
+                    // `_ => {}` and an empty arm for an enum variant or a `bool` are there to make
+                    // the match cover every case, so they stay quiet. Every arm the compiler
+                    // writes is one of them.
                     if arm.body.is_empty()
                         && !matches!(arm.pattern, Pattern::Wildcard | Pattern::EnumVariant(..))
+                        && !matches!(&arm.pattern, Pattern::Literal(l) if bool_literal(l).is_some())
                         && !self.speculating
                     {
                         self.errors.warn(
@@ -1381,6 +1410,7 @@ impl<'a> TypeChecker<'a> {
                     }
                     self.refuse_payload_subpattern(&arm.pattern, &arm.span);
                     self.check_variant_pattern(&arm.pattern, &expr_ty, &arm.span);
+                    self.check_bool_pattern(&arm.pattern, &expr_ty, &arm.span);
                     self.pointer_branches
                         .push(Self::pointer_arm_name(&arm.pattern));
                     self.push_scope();
@@ -1509,7 +1539,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.consteval.constraints = facts_after_branches(prefix_before, ends_after);
 
-                // Coverage. An enum scrutinee can be enumerated, so a missing variant is a fact
+                // Coverage. An enum or a `bool` can be enumerated, so a missing case is a fact
                 // about the match wherever it sits: the uncovered value falls through, and if
                 // every written arm returns, the function falls off its end carrying whatever
                 // was in the return slot. A scrutinee that cannot be enumerated has no such
@@ -1517,7 +1547,12 @@ impl<'a> TypeChecker<'a> {
                 // fall-through edge would otherwise have no value to carry.
                 if !has_wildcard && !self.speculating {
                     let at = Some(crate::diagnostic::SourceSpan::from_ast_span(match_span));
-                    match self.enum_variants_of(&expr_ty) {
+                    let cases = if expr_ty == Type::Scalar(ElementType::Bool) {
+                        Some(vec!["true".into(), "false".into()])
+                    } else {
+                        self.enum_variants_of(&expr_ty)
+                    };
+                    match cases {
                         Some(all) => {
                             let missing: Vec<String> = all
                                 .iter()
@@ -1751,6 +1786,13 @@ impl<'a> TypeChecker<'a> {
                     .collect();
 
                 if !self.speculating {
+                    // A closure whose body moves a capture takes it, so the code around the
+                    // closure must not drop it too. The move in the body stopped at the body.
+                    for (name, ty) in &captured_vars {
+                        if !matches!(ty, Type::Tensor(..)) && self.is_moved(name.as_ref()) {
+                            self.drops_note_move(name.as_ref(), false);
+                        }
+                    }
                     // A tensor is moved into the closure, as before.
                     for (name, ty) in &captured_vars {
                         if matches!(ty, Type::Tensor(_, _, _))
@@ -2070,6 +2112,16 @@ fn is_a_condition(e: &Expr) -> bool {
         Expr::LogicalOp(l) => is_a_condition(&l.lhs) && is_a_condition(&l.rhs),
         Expr::UnaryOp(u) if matches!(u.op, UnaryOp::Not) => is_a_condition(&u.expr),
         _ => false,
+    }
+}
+
+/// `true` or `false`, when the literal of a pattern is one of them.
+fn bool_literal(lit: &Expr) -> Option<crate::symbol::Symbol> {
+    match lit {
+        Expr::Identifier(id) if matches!(id.name.as_ref(), "true" | "false") => {
+            Some(id.name.clone())
+        }
+        _ => None,
     }
 }
 
