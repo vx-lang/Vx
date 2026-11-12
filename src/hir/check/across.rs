@@ -287,6 +287,7 @@ impl Walk<'_> {
         let mut i = 0;
         while i < stmts.len() {
             if across_lanes::holds_across(&stmts[i]) {
+                across_lanes::lane0_after_holder(&stmts[i], &mut lane0);
                 after.push(lane0.clone());
                 i += 1;
                 continue;
@@ -402,6 +403,7 @@ impl Walk<'_> {
                     if Self::stretch_level(ctx) && across_lanes::holds_across(s) {
                         self.uniform_around(&f.iterable, "the bound of this loop", ctx);
                         body.strict_ifs = true;
+                        body.lane0 = across_lanes::lane0_in_loop(&f.body, &ctx.lane0);
                         if across_lanes::not_uniform(
                             &f.iterable,
                             &|n| Self::is_uniform(ctx, n),
@@ -423,6 +425,7 @@ impl Walk<'_> {
                 body.plain_loops += 1;
                 if Self::stretch_level(ctx) && across_lanes::holds_across(s) {
                     body.strict_ifs = true;
+                    body.lane0 = across_lanes::lane0_in_loop(&l.body, &ctx.lane0);
                 }
                 self.stmts(&l.body, &body);
             }
@@ -471,12 +474,8 @@ impl Walk<'_> {
                 if let Some(m) = lanes::lane_matmul(a) {
                     self.lane_matmul(&m, ctx);
                 }
-                // `t = lanes::copy_async(..)` gives a token variable its next copy, as a
-                // pipeline does when it starts the next copy before it waits for this one.
-                if let (Expr::Identifier(_), Some(fc)) = (&a.lhs, lanes::bare_lanes_call(&a.rhs)) {
-                    if lanes::calls_routine(&a.rhs, lanes::LaneOp::CopyAsync) {
-                        self.lane_call(fc, ctx);
-                    }
+                if let Some(fc) = lanes::next_copy(a) {
+                    self.lane_call(fc, ctx);
                 }
                 self.expr(&a.lhs, ctx);
                 self.expr(&a.rhs, ctx);
@@ -502,12 +501,35 @@ impl Walk<'_> {
             ctx.region.clone(),
             ctx.axes.last(),
         ) {
+            let args: Vec<&Expr> = fc.args.iter().collect();
+            self.reads_lane0(fc.name.as_ref(), &args, ctx);
             self.lane_calls.push(LaneCall {
                 at: fc.span,
                 name: fc.name.as_ref().to_string(),
                 scope: axis.kind,
                 region,
             });
+        }
+    }
+
+    /// L5: every lane runs a lane routine or a matmul of tiles, so `args` may not read a value
+    /// that only lane 0 has.
+    fn reads_lane0(&mut self, name: &str, args: &[&Expr], ctx: &Ctx) {
+        let read = args
+            .iter()
+            .find_map(|e| across_lanes::expr_reads_any(e, &ctx.lane0));
+        if let Some((value, at)) = read {
+            let shown = lanes::shown_name(name);
+            self.error(
+                format!(
+                    "{shown} reads `{value}`, which only lane 0 has: lane 0 alone runs the code \
+                     that sets it. That code writes memory, or it changes a variable from outside \
+                     it. Every lane runs {shown}, so the other lanes would read an old value. \
+                     Pass the value through memory, such as an element of a tensor in shared \
+                     memory"
+                ),
+                at,
+            );
         }
     }
 
@@ -523,6 +545,7 @@ impl Walk<'_> {
             if axis.kind != LevelKind::Subgroups {
                 return;
             }
+            self.reads_lane0(lanes::MATMUL, &[m.acc, m.lhs, m.rhs], ctx);
             self.lane_matmuls.insert(m.at);
             self.needs_subgroups_of_32(&LaneCall {
                 at: m.at,
@@ -1266,10 +1289,12 @@ impl Walk<'_> {
             if let Some((name, at)) = read {
                 self.error(
                     format!(
-                        "this {} loop reads `{name}`, which only lane 0 has: lane 0 alone runs \
-                         the code that sets it, because that code writes memory. Pass the value \
-                         through memory, such as an element of a tensor in shared memory",
-                        kind_word(level.kind)
+                        "this {kind} loop reads `{name}`, which only lane 0 has: lane 0 alone \
+                         runs the code that sets it. That code writes memory, or it changes a \
+                         variable from outside it. In the body of a loop, that code can come \
+                         after this {kind} loop and set the value for the next turn. Pass the \
+                         value through memory, such as an element of a tensor in shared memory",
+                        kind = kind_word(level.kind)
                     ),
                     at,
                 );

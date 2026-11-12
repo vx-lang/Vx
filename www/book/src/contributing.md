@@ -25,9 +25,9 @@ A sample of what is open:
 
 | Issue | What it is |
 | --- | --- |
-| [Vx#494](https://github.com/vx-lang/Vx/issues/494) | The unused-variable warning fires on a variable used only through method calls |
-| [Vx#445](https://github.com/vx-lang/Vx/issues/445) | Twelve warning codes are declared but never emitted |
-| [Vx#423](https://github.com/vx-lang/Vx/issues/423) | Issue numbers in code comments, against a rule that forbids them |
+| [Vx#2519](https://github.com/vx-lang/Vx/issues/2519) | `vx-format --version` and `vx-api --version` print the wrong version |
+| [Vx#2514](https://github.com/vx-lang/Vx/issues/2514) | One `%r#0` in an `mlir!` block leaves the whole file unformatted |
+| [Vx#2512](https://github.com/vx-lang/Vx/issues/2512) | Give the editor an outline of a file's functions, structs and enums |
 
 If one of these is unclear, say so on the issue. A first issue that cannot be picked up cold is a
 bug in the issue, not in you.

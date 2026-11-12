@@ -111,8 +111,9 @@ serves every implementor. An impl that writes `doubled` itself keeps its own.
 Traits describe shared behaviour, and are implemented with `impl ... for`:
 
 ```rust
-impl<T> Iterator<VecIter<T>, T> for VecIter<T> {
-    // ...
+impl<T> Iterator for VecIter<T> {
+    type Item = &T;
+    // fn next(self : &mut VecIter<T>) -> Option<&T> { ... }
 }
 ```
 

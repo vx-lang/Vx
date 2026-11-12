@@ -720,12 +720,14 @@ impl<'a> MacroExpander<'a> {
                     if colon_tok.kind == OwnedTokenType::Colon && j + 3 < matcher_tokens.len() {
                         let kind_tok = &matcher_tokens[j + 3];
                         if let OwnedTokenType::Identifier(kind) = &kind_tok.kind {
-                            // Match a meta-variable. `ident` takes exactly one token; `expr`
-                            // and `ty` take everything up to the next token the matcher names,
-                            // which is what lets `$t : ty` capture `Tensor<f32, [4]>` as well
-                            // as `i32`. They are not told apart beyond that: nothing here
-                            // parses the capture to check it really is a type or an
-                            // expression, and the error surfaces where the capture is used.
+                            // Match a meta-variable. `ident` takes exactly one token. `expr`
+                            // and `ty` take the tokens up to the next token the matcher names,
+                            // outside brackets: the `,` of `f(1, 2)` stays in the capture. A
+                            // `ty` also counts `<..>`, so that it takes `Tensor<f32, [4]>`. An
+                            // `expr` cannot, because its `<` can be a comparison. A `,` outside
+                            // brackets ends an `expr`, so a rule for 2 values does not fit a
+                            // call with 3. Nothing here parses the capture, and an error
+                            // shows where the capture is used.
                             if kind.as_ref() == "ident" {
                                 if i >= input.len() {
                                     return Err("Input ended unexpectedly".to_string());
@@ -736,18 +738,35 @@ impl<'a> MacroExpander<'a> {
                                 continue;
                             }
                             if kind.as_ref() == "expr" || kind.as_ref() == "ty" {
+                                let is_ty = kind.as_ref() == "ty";
+                                let next = matcher_tokens.get(j + 4).map(|t| &t.kind);
+                                let mut depth = 0usize;
                                 let mut captured = Vec::new();
-                                if j + 4 < matcher_tokens.len() {
-                                    let next_m_tok = &matcher_tokens[j + 4];
-                                    while i < input.len() && input[i].kind != next_m_tok.kind {
-                                        captured.push(input[i].clone());
-                                        i += 1;
+                                while i < input.len() {
+                                    let k = &input[i].kind;
+                                    if depth == 0
+                                        && (Some(k) == next
+                                            || (!is_ty && *k == OwnedTokenType::Comma))
+                                    {
+                                        break;
                                     }
-                                } else {
-                                    while i < input.len() {
-                                        captured.push(input[i].clone());
-                                        i += 1;
+                                    match k {
+                                        OwnedTokenType::LeftParen
+                                        | OwnedTokenType::LeftBracket
+                                        | OwnedTokenType::LeftBrace => depth += 1,
+                                        OwnedTokenType::LeftAngle if is_ty => depth += 1,
+                                        OwnedTokenType::RightParen
+                                        | OwnedTokenType::RightBracket
+                                        | OwnedTokenType::RightBrace => {
+                                            depth = depth.saturating_sub(1)
+                                        }
+                                        OwnedTokenType::RightAngle if is_ty => {
+                                            depth = depth.saturating_sub(1)
+                                        }
+                                        _ => {}
                                     }
+                                    captured.push(input[i].clone());
+                                    i += 1;
                                 }
                                 captures.insert(name.clone(), captured);
                                 j += 4;

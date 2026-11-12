@@ -18,7 +18,7 @@ Borrow instead of moving to keep the original alive:
 
 ```rust
 fn total(v : &Vec<i32>) -> i32 { /* ... */ }
-fn append(v : &mut Vec<i32>, x : i32) { /* ... */ }
+fn append(v : &mut Vec<i32>, x : i32) -> void { /* ... */ }
 ```
 
 `&T` is a shared borrow, `&mut T` is an exclusive one. The usual rule applies: any number of shared
@@ -174,20 +174,13 @@ print(q[1][0]);     // fine: r is not used again
   take the tensor by reference, `f(&q[1])`. `t.clone()` makes a new tensor of `t`'s type with
   a copy of its elements.
 
-**Why views are checked this strictly.** Vx is moving to freeing memory automatically
-(`docs/implementation_plans/drop_semantics.md`). A tensor that only holds memory will be freed
-after the last use of the tensor *and of every view of it*, and a type with a `Drop` of its own
-at the end of its block. Freeing at the last use is only safe if the checker sees every view, so
+**Why views are checked this strictly.** Vx frees memory automatically
+([Dropping values](#dropping-values)). It frees a tensor that only holds memory after the last use
+of the tensor *and of every view of it*. It drops a type with a `Drop` of its own at the end of
+its block. Freeing at the last use is only safe if the checker sees every view, so
 a free that comes too early is a borrow checker bug, not a rule for the programmer to remember.
 The checker tells a view from an owner by where the value came from, since both have the type
 `Tensor`; a separate view type (#400) may replace this later.
-
-**Not checked yet.** These views are still invisible to the checker, or refused when they need
-not be:
-
-| Case | Issue |
-| --- | --- |
-| Two `mut` rows of different indices, refused because indices are not told apart | #1060 |
 
 ## Dropping values
 

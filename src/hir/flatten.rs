@@ -1130,7 +1130,10 @@ impl<'r> Lowerer<'r> {
     fn lower_block(&mut self, stmts: &[Statement]) -> Lowered<()> {
         self.scoped(|me| {
             if let Some(level) = me.across.level {
-                me.lower_stretches(stmts, level)?;
+                let lane0 = me.across.lane0.clone();
+                let lowered = me.lower_stretches(stmts, level);
+                me.across.lane0 = lane0;
+                lowered?;
             } else {
                 for s in stmts {
                     me.lower_stmt(s)?;
@@ -1780,18 +1783,10 @@ impl<'r> Lowerer<'r> {
                     }
                 };
                 let mem_id = crate::arch::memory_space_dispatch_id(&t.space) as u32 as u64;
-                // Where the value is now, which its type says when it is pinned to a topology. A
-                // borrowed tensor says it with its placement, and no transfer made it here.
-                let source = match self.infer_ast_type(&t.expr) {
-                    Some(Type::Pinned(_, top)) => crate::arch::topology_dispatch_id(&top) as u32,
-                    Some(Type::Borrow { inner, .. }) => match *inner {
-                        Type::Tensor(_, _, Some(p)) => {
-                            crate::arch::topology_dispatch_id(&p.topology) as u32
-                        }
-                        _ => 0,
-                    },
-                    _ => 0,
-                };
+                // Where the value is now, which its type says.
+                let source = self
+                    .infer_ast_type(&t.expr)
+                    .map_or(0, |ty| crate::arch::source_topology_id(&ty) as u32);
                 let shared = if t.shared {
                     crate::bytecode::TRANSFER_SHARED
                 } else {

@@ -40,7 +40,8 @@ pub(super) struct AcrossState {
     pub lanes: u64,
     /// The level whose code is being lowered, outside its lane loops. `None` in a lane loop.
     pub level: Option<AcrossLevel>,
-    /// The names that only lane 0 has, as the checker found them.
+    /// The names that only lane 0 has. Each block forgets the names that it adds, so lane 0 runs
+    /// no more code than the checker expects.
     pub lane0: HashSet<String>,
     /// In code that lane 0 alone runs.
     pub on_lane0: bool,
@@ -334,9 +335,7 @@ impl Lowerer<'_> {
         let mut i = 0;
         while i < stmts.len() {
             if across_lanes::holds_across(&stmts[i]) {
-                let lane0 = self.across.lane0.clone();
                 self.lower_stmt(&stmts[i])?;
-                self.across.lane0 = lane0;
                 i += 1;
                 continue;
             }
