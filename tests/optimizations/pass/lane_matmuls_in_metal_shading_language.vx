@@ -1,0 +1,180 @@
+// The MSL of a matmul of tiles on the Apple GPU. When the result is f32, each tile is f32 or f16,
+// each size is a multiple of 8, and the tiles are in shared memory, each 8 x 8 piece of the
+// result is a `simdgroup_float8x8`. Each 8 columns of the left tile add one
+// `simdgroup_multiply_accumulate`. A bf16 tile or a size that is not a multiple of 8 keeps the
+// loops of the lanes. The test needs no GPU.
+//
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx --emit-msl -o %t.metal
+// RUN: FileCheck %s --input-file=%t.metal
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/m4-uma.vx --emit-msl -o %t.ast.metal
+// RUN: FileCheck %s --input-file=%t.ast.metal
+
+// f32 tiles with `+`: the 2 x 1 pieces of `acc[w]`, 16 x 8, start from its old value, and the 24
+// columns of `a[w]` take three steps of 8.
+// CHECK-LABEL: kernel void f32_tiles(
+// CHECK: simdgroup_float8x8 [[C:mm[0-9]+]][2];
+// CHECK-NEXT: for (int i = 0; i < 2; i++)
+// CHECK-NEXT: for (int j = 0; j < 1; j++)
+// CHECK-NEXT: simdgroup_load([[C]][i * 1 + j], [[ACC:vx_npu_kernel_[0-9]+_smem_[0-9]+]] + {{o[0-9]+}} + i * 8 * (ulong)8 + j * 8, (ulong)8);
+// CHECK-NEXT: for (int k = 0; k < 24; k += 8) {
+// CHECK-NEXT: simdgroup_float8x8 [[A:ma[0-9]+]][2];
+// CHECK-NEXT: simdgroup_float8x8 [[B:mb[0-9]+]][1];
+// CHECK-NEXT: for (int i = 0; i < 2; i++)
+// CHECK-NEXT: simdgroup_load([[A]][i], {{vx_npu_kernel_[0-9]+_smem_[0-9]+}} + {{o[0-9]+}} + i * 8 * (ulong)24 + k, (ulong)24);
+// CHECK-NEXT: for (int j = 0; j < 1; j++)
+// CHECK-NEXT: simdgroup_load([[B]][j], {{vx_npu_kernel_[0-9]+_smem_[0-9]+}} + {{o[0-9]+}} + k * (ulong)8 + j * 8, (ulong)8);
+// CHECK-NEXT: for (int i = 0; i < 2; i++)
+// CHECK-NEXT: for (int j = 0; j < 1; j++)
+// CHECK-NEXT: simdgroup_multiply_accumulate([[C]][i * 1 + j], [[A]][i], [[B]][j], [[C]][i * 1 + j]);
+// CHECK-NEXT: }
+// CHECK-NEXT: for (int i = 0; i < 2; i++)
+// CHECK-NEXT: for (int j = 0; j < 1; j++)
+// CHECK-NEXT: simdgroup_store([[C]][i * 1 + j], [[ACC]] + {{o[0-9]+}} + i * 8 * (ulong)8 + j * 8, (ulong)8);
+pub fn f32_tiles(out : &mut Tensor<f32, [2, 16, 8], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut a = unsafe { Tensor<f32, [2, 16, 24], Memory::SMEM>::uninit() };
+      let mut b = unsafe { Tensor<f32, [2, 24, 8], Memory::SMEM>::uninit() };
+      let mut acc = unsafe { Tensor<f32, [2, 16, 8], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for k in 0..24 {
+              a[w][i][k] = (i + k) as f32;
+            }
+            for j in 0..8 {
+              acc[w][i][j] = 1.0;
+            }
+          }
+          if i < 24 {
+            for j in 0..8 {
+              b[w][i][j] = (i - j) as f32;
+            }
+          }
+        }
+        acc[w] = acc[w] + a[w] @ b[w];
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for j in 0..8 {
+              out[w][i][j] = acc[w][i][j];
+            }
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+// f16 tiles with no `+`: the pieces start from 0, and the tiles are `simdgroup_half8x8`.
+// CHECK-LABEL: kernel void f16_tiles(
+// CHECK: simdgroup_float8x8 [[C:mm[0-9]+]][2];
+// CHECK-NEXT: for (int i = 0; i < 2; i++)
+// CHECK-NEXT: for (int j = 0; j < 1; j++)
+// CHECK-NEXT: [[C]][i * 1 + j] = simdgroup_float8x8(0);
+// CHECK-NEXT: for (int k = 0; k < 16; k += 8) {
+// CHECK-NEXT: simdgroup_half8x8 {{ma[0-9]+}}[2];
+// CHECK-NEXT: simdgroup_half8x8 {{mb[0-9]+}}[1];
+// CHECK: simdgroup_multiply_accumulate(
+pub fn f16_tiles(out : &mut Tensor<f32, [2, 16, 8], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut a = unsafe { Tensor<f16, [2, 16, 16], Memory::SMEM>::uninit() };
+      let mut b = unsafe { Tensor<f16, [2, 16, 8], Memory::SMEM>::uninit() };
+      let mut acc = unsafe { Tensor<f32, [2, 16, 8], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for k in 0..16 {
+              a[w][i][k] = (i + k) as f16;
+            }
+            for j in 0..8 {
+              b[w][i][j] = (i - j) as f16;
+            }
+          }
+        }
+        acc[w] = (a[w] as f32) @ (b[w] as f32);
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for j in 0..8 {
+              out[w][i][j] = acc[w][i][j];
+            }
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+// bf16 tiles have no simdgroup matrix here, so each lane computes its elements.
+// CHECK-LABEL: kernel void bf16_tiles(
+// CHECK-NOT: simdgroup_load
+// CHECK: return;
+pub fn bf16_tiles(out : &mut Tensor<f32, [2, 16, 8], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut a = unsafe { Tensor<bf16, [2, 16, 16], Memory::SMEM>::uninit() };
+      let mut b = unsafe { Tensor<bf16, [2, 16, 8], Memory::SMEM>::uninit() };
+      let mut acc = unsafe { Tensor<f32, [2, 16, 8], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for k in 0..16 {
+              a[w][i][k] = (i + k) as bf16;
+            }
+            for j in 0..8 {
+              b[w][i][j] = (i - j) as bf16;
+            }
+          }
+        }
+        acc[w] = (a[w] as f32) @ (b[w] as f32);
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for j in 0..8 {
+              out[w][i][j] = acc[w][i][j];
+            }
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+// A result of 12 rows is not whole 8 x 8 pieces, so each lane computes its elements.
+// CHECK-LABEL: kernel void rows_of_12(
+// CHECK-NOT: simdgroup_load
+// CHECK: return;
+pub fn rows_of_12(out : &mut Tensor<f32, [2, 12, 8], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut a = unsafe { Tensor<f32, [2, 12, 16], Memory::SMEM>::uninit() };
+      let mut b = unsafe { Tensor<f32, [2, 16, 8], Memory::SMEM>::uninit() };
+      let mut acc = unsafe { Tensor<f32, [2, 12, 8], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        for i in 0..32 across lanes {
+          if i < 12 {
+            for k in 0..16 {
+              a[w][i][k] = (i + k) as f32;
+            }
+          }
+          if i < 16 {
+            for j in 0..8 {
+              b[w][i][j] = (i - j) as f32;
+            }
+          }
+        }
+        acc[w] = a[w] @ b[w];
+        for i in 0..32 across lanes {
+          if i < 12 {
+            for j in 0..8 {
+              out[w][i][j] = acc[w][i][j];
+            }
+          }
+        }
+      }
+    }
+  }
+  return;
+}

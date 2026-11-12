@@ -1,0 +1,39 @@
+//===- book_tensor_ops_statistics.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on tensor operations (www/book/src/tensor-ops.md): `argmax`,
+// `argmin`, `variance`, `std_dev` and `softmax_inplace` on 1-D tensors of f64.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}argmax 4{{$}}
+// CHECK: {{^}}argmin 3{{$}}
+// CHECK: {{^}}variance 7.6 std_dev 2.756809750418044{{$}}
+// CHECK: {{^}}softmax 0.090030573170{{[0-9]*}} 0.244728471054{{[0-9]*}} 0.665240955774{{[0-9]*}}{{$}}
+// CHECK: {{^}}empty argmax is none: true{{$}}
+
+// ANCHOR: program
+import std::tensor;
+
+fn main() -> i32 {
+  let scores : Tensor<f64, [5]> = [ 2.0, 4.0, 4.0, 1.0, 9.0 ];
+  match scores.argmax() {
+    Option<i32>::Some(i) => println!("argmax {}", i),
+    Option<i32>::None => println!("argmax none"),
+  }
+  println!("argmin {}", scores.argmin().unwrap());
+  println!("variance {} std_dev {}", scores.variance(), scores.std_dev());
+
+  let mut logits : Tensor<f64, [3]> = [ 1000.0, 1001.0, 1002.0 ];
+  logits.softmax_inplace();
+  println!("softmax {} {} {}", logits[0], logits[1], logits[2]);
+
+  let empty = Tensor<f64>([0]);
+  println!("empty argmax is none: {}", empty.argmax().is_none());
+  return 0;
+}
+// ANCHOR_END: program

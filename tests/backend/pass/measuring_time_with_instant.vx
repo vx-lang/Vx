@@ -34,7 +34,7 @@ fn main() -> i32 {
   println!("a second later is later: {}", later > start);
   println!("since a later reading: {} ns", start.duration_since(&later).as_nanos());
   println!("a second later minus now: {} ms", (later - start).as_millis());
-  println!("no reading after the longest duration: {}", start.checked_add(&Duration::max_value()).is_none());
+  println!("no reading after the longest duration: {}", later.checked_add(&Duration::max_value()).is_none());
 
   println!("1.5 s in nanoseconds: {}", Duration::from_millis(1500).as_nanos_i64());
   println!("the longest duration in nanoseconds: {}", Duration::max_value().as_nanos_i64());

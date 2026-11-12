@@ -287,6 +287,53 @@ C, or Python's `ctypes`, can now load `libadd_one.so` and call `add_one`. Give a
 parameters and a result that C can pass: numbers, `bool` and raw pointers. Only a top-level
 function that is not generic can be `pub` for now.
 
+## Inline MLIR
+
+The compiler turns a Vx program into MLIR, a set of small languages for compilers. Each of these
+languages is a *dialect*: `arith` has integer and float arithmetic, `math` has functions such as
+`ctpop` (count the bits that are 1), and `llvm` has the operations of LLVM. An `mlir!` block puts
+MLIR text directly into a Vx function. Use it for one operation that Vx has no syntax for.
+
+```vx
+mlir!(inputs : (%a = x : i32), returns : i32, dialects : ["math"]) {
+  %r = math.ctpop %a : i32
+  macro.yield %r : i32
+}
+```
+
+- `inputs` gives each Vx value to the block. `%a = x : i32` names the value of `x` as `%a` in the
+  MLIR, with the MLIR type `i32`.
+- `returns` gives the Vx type of the value of the block. `macro.yield` gives that value. A block
+  that gives no value says `returns : void`.
+- `dialects` lists each dialect whose operations the block uses.
+
+This program has two functions whose bodies are `mlir!` blocks
+(`book_unsafe_ffi_inline_mlir.vx`):
+
+```rust
+{{#include ../../../tests/backend/pass/book_unsafe_ffi_inline_mlir.vx:program}}
+```
+
+It prints:
+
+```text
+ones in 255: 8
+ones in 1024: 1
+larger of 3 and 7: 7
+```
+
+The `dialects` list must agree with the body. If `count_ones` listed `"arith"` and not `"math"`,
+the compiler would give the error E8010: the block uses `math.ctpop`, but the list does not name
+`math`. A name in the list that is not a dialect is also E8010.
+
+The compiler does not check what the MLIR operations do. So treat each `mlir!` block as code that
+the compiler trusts, as you treat an `unsafe` block. The standard library uses `mlir!` in this way.
+`core::ptr` moves a raw pointer and compares two raw pointers with one LLVM operation each.
+
+The compiler assumes one more thing about a block: a block that gets a raw pointer can free the
+memory behind it. So a function that says `ensures !frees(p)` (see [Pointer
+clauses](#pointer-clauses)) cannot give `p` to an `mlir!` block (E8012). `clobbers : [n]` tells the compiler that the block writes the variable `n`.
+
 ## What unsafe does not unlock
 
 `unsafe` covers operations the type system cannot justify. It does **not** override placement.

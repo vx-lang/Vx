@@ -1,0 +1,62 @@
+//===- book_traits_ordering.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on operators and standard traits
+// (www/book/src/operators-and-traits.md): a struct that implements `Ord` gets `<`, `>=`, `max`,
+// `min` and `clamp`.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}true false true{{$}}
+// CHECK: {{^}}max 2.0{{$}}
+// CHECK: {{^}}min 1.9{{$}}
+// CHECK: {{^}}clamp 2.0{{$}}
+
+// ANCHOR: program
+import core::cmp;
+import core::marker;
+
+struct Version {
+  major : i32,
+  minor : i32,
+}
+
+impl Copy for Version {}
+
+impl PartialEq for Version {
+  fn eq(self : &Version, other : &Version) -> bool {
+    return self.major == other.major && self.minor == other.minor;
+  }
+}
+
+impl Eq for Version {}
+
+impl Ord for Version {
+  fn cmp(self : &Version, other : &Version) -> Ordering {
+    return self.major.cmp(&other.major).then(self.minor.cmp(&other.minor));
+  }
+}
+
+fn main() -> i32 {
+  let old = Version {
+    major: 1, minor: 9
+  };
+  let new = Version {
+    major: 2, minor: 0
+  };
+  println!("{} {} {}", old < new, old >= new, old == old);
+  let high = old.max(new);
+  let low = old.min(new);
+  let held = Version {
+    major: 3, minor: 1
+  }.clamp(old, new);
+  println!("max {}.{}", high.major, high.minor);
+  println!("min {}.{}", low.major, low.minor);
+  println!("clamp {}.{}", held.major, held.minor);
+  return 0;
+}
+// ANCHOR_END: program

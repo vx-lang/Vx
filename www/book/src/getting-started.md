@@ -55,12 +55,10 @@ On macOS, Homebrew's LLVM is keg-only, so it is deliberately not on your `PATH`.
 change that — the installer records where it found LLVM, and the `vxc` wrapper points the compiler
 at it directly.
 
-### z3 (optional)
+### z3
 
-Seam verification — proving that an asynchronous `transfer` has been made visible before the buffer
-is read — is discharged by shelling out to `z3`. It is opt-in behind `--verify-seams`, so a
-toolchain without z3 compiles and runs everything else normally; you only need it when you turn that
-flag on.
+The compiler runs `z3` to prove contracts: `requires`, `ensures`, `invariant` and `Verified<T>`.
+`--verify-seams` uses it too. Without z3, a program with a contract does not compile.
 
 The **binary** is executed, so installing `libz3-dev` alone is not enough.
 
@@ -83,8 +81,8 @@ This prints the version, and for a release build also the commit it was built fr
 when you run `cargo build`. Keep that line with anything you report: two builds of the same
 version can generate different code.
 
-Then compile something. Note that `--run` propagates *the program's own* exit code, so a non-zero
-exit status here is your program's return value rather than a failure:
+Then compile something. A program that returns a value other than 0 makes `vxc` exit with status
+1 and print the value. Here that is the program's return value, not a failure:
 
 ```bash
 cat > hello.vx <<'EOF'
@@ -97,10 +95,11 @@ EOF
 vxc --run hello.vx
 ```
 
-The last line should read:
+The last two lines should read:
 
 ```
 [JIT] Program exited with code: 42
+Program exited with non-zero code: 42
 ```
 
 ## Installing a specific version
