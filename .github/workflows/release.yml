@@ -78,7 +78,11 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
           df -h /
 
-      - uses: dtolnay/rust-toolchain@stable
+      # The Rust that CI tested the release with. Cargo 1.100 moved the output of build scripts,
+      # and a manual run of an older tag uses that tag's package.sh, which looks in the old place.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
 
       # mlir-sys remembers where LLVM was when it was built, so a new LLVM needs a new cache.
       - uses: Swatinem/rust-cache@v2
