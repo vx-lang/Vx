@@ -641,8 +641,22 @@ pub(crate) fn lower_on_lane0<'c>(
 
 /// The statements of a loop body. In the code of a level, a stretch of them with no `across`
 /// loop runs on lane 0, with one barrier after it, when it writes memory or reads a name that
-/// only lane 0 has. A drop in the stretch runs after the barrier.
+/// only lane 0 has. A drop in the stretch runs after the barrier. Then it forgets the names that
+/// the statements added to `lane0`, so lane 0 runs no more code than the checker expects.
 pub(crate) fn lower_level_statements<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    stmts: &[Statement],
+    block: Block<'c>,
+) -> Result<Option<Block<'c>>, LowerError> {
+    let lane0 = gen.across_map.as_ref().map(|m| m.lane0.clone());
+    let lowered = lower_stretches(gen, stmts, block);
+    if let (Some(map), Some(lane0)) = (gen.across_map.as_mut(), lane0) {
+        map.lane0 = lane0;
+    }
+    lowered
+}
+
+fn lower_stretches<'c>(
     gen: &mut MeliorGenerator<'c>,
     stmts: &[Statement],
     mut block: Block<'c>,

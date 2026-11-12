@@ -230,6 +230,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/apple_gpu_element_atomics_in_metal_shading_language.vx",
             // needs --machine
             "optimizations/pass/apple_gpu_counted_loops_are_for_loops_in_metal_shading_language.vx",
+            "optimizations/pass/lane_matmuls_in_metal_shading_language.vx",
             // needs --machine
             "optimizations/pass/a_bulk_hash_table_search_wraps_around_the_end_of_the_table.vx",
             // needs --machine

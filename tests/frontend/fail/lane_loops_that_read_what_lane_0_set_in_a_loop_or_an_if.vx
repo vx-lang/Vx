@@ -1,0 +1,151 @@
+//===- lane_loops_that_read_what_lane_0_set_in_a_loop_or_an_if.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Lane 0 alone runs code that changes a variable from outside it, such as `last = 7`. The other
+// lanes keep the old value of `last`, so a lane loop may not read it (E6032). In each function,
+// a lane loop or a subgroup loop reads `last` in the next turn of a loop, or after a loop or an
+// `if`.
+//
+// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6032
+// CHECK: Error[E6032] at {{.*}}lane_loops_that_read_what_lane_0_set_in_a_loop_or_an_if.vx:30:{{.*}}this lane loop reads `last`, which only lane 0 has: lane 0 alone runs the code that sets it. That code writes memory, or it changes a variable from outside it. In the body of a loop, that code can come after this lane loop and set the value for the next turn.
+// CHECK: Error[E6032] at {{.*}}lane_loops_that_read_what_lane_0_set_in_a_loop_or_an_if.vx:47:{{.*}}this lane loop reads `last`, which only lane 0 has
+// CHECK: Error[E6032] at {{.*}}lane_loops_that_read_what_lane_0_set_in_a_loop_or_an_if.vx:64:{{.*}}this subgroup loop reads `last`, which only lane 0 has
+// CHECK: Error[E6032] at {{.*}}lane_loops_that_read_what_lane_0_set_in_a_loop_or_an_if.vx:80:{{.*}}this lane loop reads `last`, which only lane 0 has
+// CHECK: Error[E6032] at {{.*}}lane_loops_that_read_what_lane_0_set_in_a_loop_or_an_if.vx:99:{{.*}}this lane loop reads `last`, which only lane 0 has
+// CHECK: Error[E6032] at {{.*}}lane_loops_that_read_what_lane_0_set_in_a_loop_or_an_if.vx:124:{{.*}}this lane loop reads `last`, which only lane 0 has
+// CHECK: Error[E6032] at {{.*}}lane_loops_that_read_what_lane_0_set_in_a_loop_or_an_if.vx:142:{{.*}}this lane loop reads `last`, which only lane 0 has
+
+// The program of the issue. In the second turn, only lane 0 would write 7.
+pub fn in_the_next_turn(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for s in 0..1 across subgroups {
+        let mut last = 0;
+        for t in 0..2 {
+          for l in 0..32 across lanes(32) {
+            out[t * 32 + l] = last;
+          }
+          last = 7;
+        }
+      }
+    }
+  }
+  return;
+}
+
+// The code that sets `last` also writes memory.
+pub fn in_the_next_turn_after_a_write(out : &mut Tensor<i32, [?], Memory::HBM>, picks : &mut Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut last = 0;
+      for t in 0..4 {
+        for l in 0..32 across lanes {
+          out[t * 32 + l] = last + l;
+        }
+        picks[t] = t;
+        last = t;
+      }
+    }
+  }
+  return;
+}
+
+// A subgroup loop in the code of a block reads `last` too.
+pub fn subgroups_in_the_next_turn(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut last = 0;
+      for t in 0..2 {
+        for s in 0..4 across subgroups {
+          out[t * 4 + s] = last;
+        }
+        last = 7;
+      }
+    }
+  }
+  return;
+}
+
+// A `loop` that a value from the host ends.
+pub fn in_the_next_turn_of_a_loop(out : &mut Tensor<i32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut last = 0;
+      loop {
+        for l in 0..32 across lanes {
+          out[l] = last;
+        }
+        last = 7;
+        if n > 0 {
+          break;
+        }
+      }
+    }
+  }
+  return;
+}
+
+// An inner loop sets `last`, and the next turn of the outer loop reads it.
+pub fn set_in_an_inner_loop(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut last = 0;
+      for t in 0..2 {
+        for l in 0..32 across lanes {
+          out[t * 32 + l] = last;
+        }
+        for k in 0..2 {
+          for l in 0..32 across lanes {
+            out[64 + l] = k;
+          }
+          last = k;
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn after_the_loop(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut last = 0;
+      for t in 0..2 {
+        for l in 0..32 across lanes {
+          out[t * 32 + l] = 1;
+        }
+        last = 7;
+      }
+      for l in 0..32 across lanes {
+        out[64 + l] = last;
+      }
+    }
+  }
+  return;
+}
+
+pub fn after_an_if(out : &mut Tensor<i32, [?], Memory::HBM>, c : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut last = 0;
+      if c > 0 {
+        for l in 0..32 across lanes {
+          out[l] = 1;
+        }
+        last = 7;
+      }
+      for l in 0..32 across lanes {
+        out[32 + l] = last;
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

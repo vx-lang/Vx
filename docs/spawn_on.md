@@ -225,7 +225,8 @@ spawn on(Topology::Gpu) {
   read. The function may only read elements of `t`, ask for its length, or pass it to code that
   says `reads_only` for it.
 - Each lane loop ends with a barrier. Lane 0 runs the code between lane loops that writes
-  memory.
+  memory or changes a variable from outside it. A lane loop may not read a value that only lane 0
+  has. In the body of a loop, that includes a value that later code sets for the next turn.
 - A condition or a bound around a lane loop may read an element of a `&` tensor parameter. Only
   an atomic operation can change one, and then every access must be atomic. So every lane reads
   the same value. A replayed CUDA graph gets a value such as the number of splits this way.

@@ -86,7 +86,7 @@ source config.local
 ./target/release/vxc --run /tmp/hello.vx
 ```
 
-Expect the last line to read `[JIT] Program exited with code: 42`. Then run the suite:
+Expect the last line to read `Program exited with non-zero code: 42`. Then run the suite:
 
 ```bash
 cargo test

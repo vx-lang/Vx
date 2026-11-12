@@ -45,7 +45,7 @@ for row in 0..rows across blocks {
 A call is the whole value of a `let` in the code of a level: the code of a body of
 `across blocks` or `across subgroups`, outside its lane loops. That is where a lane loop can be,
 and every lane must get to the call, as to a lane loop (L5, L8, L10). E6032 refuses a call in
-any other place.
+any other place. As in a lane loop, the arguments may not read a value that only lane 0 has.
 
 - In the code of a block, `N` is at most 1024. To launch, the lanes of the block are a multiple
   of 32, and at least `N`.
@@ -148,6 +148,17 @@ Each 16 x 8 piece of the result is then a chain of `mma.sync.m16n8k16`, one for 
 `k`. The tile elements go to the tensor core as they are: the `as f32` makes no copy. The tensor
 core adds the products in an order of its own, so a result can differ from the CPU copy in its
 last bits. With small integer inputs, each sum is exact and the two results are equal.
+
+On the Apple GPU, a matmul uses the simdgroup matrices of Metal when all of these are true:
+
+- The result is `f32`, and each tile is `f32` or `f16`.
+- Each size is a multiple of 8.
+- Each tile is in shared memory, and the elements of each row are next to each other.
+
+Each 8 x 8 piece of the result is then a `simdgroup_float8x8`. With `+`, it starts from the old
+value, and otherwise from 0. Each 8 values of `k` add one `simdgroup_multiply_accumulate` to it.
+The GPU adds the products in an order of its own, so a result can differ from the CPU copy in its
+last bits, as on the tensor cores.
 
 Each other matmul uses the lanes of the subgroup: they share the elements of the result, and each
 lane computes its elements in the order above.

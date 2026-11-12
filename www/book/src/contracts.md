@@ -278,9 +278,11 @@ The inner `halve(x)` meets `x > 0` from `twice_halved`'s own `requires`. The out
 from the inner call's `ensures`. A function with no `ensures` promises nothing, so the prover knows
 nothing about what it returns.
 
-**What it can reason about:** whole numbers with `+`, `-` and `*`, comparisons, `&&`, `||` and `!`,
-fields and elements of those, and calls. A condition that uses anything else, such as division, is
-ignored, and the compiler warns that it was: "the prover ignores a condition here".
+**What it can reason about:** whole numbers with `+`, `-`, `*` and `%`, comparisons, `&&`, `||`
+and `!`, fields and elements of those, and calls. A fact that uses anything else, such as division,
+gives the prover nothing, and the compiler warns: "the prover ignores a condition here". A condition
+that the prover must prove is never ignored. If it uses division, the prover cannot prove it, so
+the compiler reports an error.
 
 **Not yet:**
 
