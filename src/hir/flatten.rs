@@ -2523,6 +2523,9 @@ impl<'r> Lowerer<'r> {
             // `Closure_N` struct), so a closure local passed to `.map` is recognized as a closure. (#242)
             Expr::StructInit(si) => Some(Type::Struct(si.name.clone(), si.type_id)),
             Expr::UnsafeBlock(u) => self.infer_ast_type(u.ret.as_deref()?),
+            // The value of a `spawn` region is its tail. The checker moves a `let` of the region
+            // to before it, so a local of the region already has its type here.
+            Expr::SpawnOn(sp) => self.infer_ast_type(sp.ret.as_deref()?),
             Expr::AsCast(c) => Some(c.target_ty.clone()),
             // `&e` has a borrow type over `e`'s type (`&x` where `x : i32` -> `&i32`), so an
             // unannotated `let r = &x` types `r` as `&i32` and a later `*r` recovers `i32`. (#230)
@@ -2539,6 +2542,16 @@ impl<'r> Lowerer<'r> {
             // A named function's return type, else a function-typed local's (`let f = probe;`).
             Expr::FunctionCall(_) if crate::syntax::task_join_handle(e).is_some() => {
                 self.infer_ast_type(crate::syntax::task_join_handle(e)?)
+            }
+            // `Tensor<f32, [4], Memory::GPU_HBM>::uninit()` writes the whole type, placement
+            // included. A transfer home of the tensor needs the placement.
+            Expr::FunctionCall(fc)
+                if matches!(
+                    fc.name.as_ref(),
+                    "Tensor::new" | "Tensor::uninit" | "Tensor::fill"
+                ) =>
+            {
+                fc.type_args.as_ref().and_then(|a| a.first()).cloned()
             }
             Expr::FunctionCall(fc) => self
                 .registry

@@ -2162,6 +2162,7 @@ impl<'a> TypeChecker<'a> {
         let prev_store_targets = std::mem::take(&mut self.borrow.store_targets);
         let prev_store_target_vars = std::mem::take(&mut self.borrow.store_target_vars);
         let prev_views = std::mem::take(&mut self.borrow.views);
+        let prev_foreign_views = std::mem::take(&mut self.borrow.foreign_views);
         let prev_view_owners = std::mem::take(&mut self.borrow.view_owners_by_let);
         // The borrow table too. A function's body can be checked from inside another's: a
         // generic method is checked when a call first instantiates it. The caller's borrows are
@@ -2374,6 +2375,7 @@ impl<'a> TypeChecker<'a> {
         self.borrow.store_targets = prev_store_targets;
         self.borrow.store_target_vars = prev_store_target_vars;
         self.borrow.views = prev_views;
+        self.borrow.foreign_views = prev_foreign_views;
         self.borrow.view_owners_by_let = prev_view_owners;
         self.borrow.restore(prev_borrows);
         self.borrow.restore_shadowed(prev_shadowed);

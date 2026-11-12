@@ -69,6 +69,7 @@
 #include "llvm/Target/TargetOptions.h"
 
 #include <atomic>
+#include <set>
 
 using namespace mlir;
 using namespace mlir::vx;
@@ -8212,7 +8213,8 @@ static void waitBeforeCGetsADevicePointer(ModuleOp module,
   });
   for (auto f : module.getOps<func::FuncOp>())
     if (f->removeAttr("vx.gets_device_pointer"))
-      assert(f.isExternal() && "only a declaration gets vx.gets_device_pointer");
+      assert(f.isExternal() &&
+             "only a declaration gets vx.gets_device_pointer");
   if (topologies.empty() || calls.empty())
     return;
   OpBuilder b(ctx);
@@ -9498,16 +9500,137 @@ struct CheckIntegerDivisionPass
   }
 };
 
+// With `-fbounds-checks`, an index outside the shape of a tensor stops the
+// program. Each index of a `memref.load` and `memref.store` must be less than
+// its dimension. A row `t[i]` is a `memref.reinterpret_cast` of lower rank
+// than its source, and it must stay inside the elements of the source. A
+// constant index inside a static dimension is not checked, and neither is an
+// operation inside a `linalg` region or a GPU kernel, where `cf.assert` does
+// not lower.
+struct CheckTensorIndicesPass
+    : public PassWrapper<CheckTensorIndicesPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(CheckTensorIndicesPass)
+
+  llvm::StringRef getArgument() const override {
+    return "vx-check-tensor-indices";
+  }
+
+  llvm::StringRef getDescription() const override {
+    return "Traps on a tensor index outside the tensor's shape";
+  }
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<cf::ControlFlowDialect, arith::ArithDialect,
+                    memref::MemRefDialect>();
+  }
+
+  static constexpr const char *kMessage =
+      "index out of bounds: an index is outside the shape of the tensor";
+
+  static Value indexValue(OpBuilder &b, Location loc, OpFoldResult v) {
+    if (auto value = dyn_cast<Value>(v))
+      return value;
+    return b.create<arith::ConstantIndexOp>(
+        loc, cast<IntegerAttr>(cast<Attribute>(v)).getInt());
+  }
+
+  // Whether a view with these sizes is empty, and its last element: the
+  // offset plus (size - 1) * stride for each dimension.
+  static std::pair<Value, Value> emptyAndLast(OpBuilder &b, Location loc,
+                                              Value offset, ValueRange sizes,
+                                              ValueRange strides) {
+    Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+    Value one = b.create<arith::ConstantIndexOp>(loc, 1);
+    Value empty = b.create<arith::ConstantIntOp>(loc, b.getI1Type(), 0);
+    Value last = offset;
+    for (auto [size, stride] : llvm::zip_equal(sizes, strides)) {
+      Value isZero =
+          b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, size, zero);
+      empty = b.create<arith::OrIOp>(loc, empty, isZero);
+      Value steps = b.create<arith::SubIOp>(loc, size, one);
+      Value reach = b.create<arith::MulIOp>(loc, steps, stride);
+      last = b.create<arith::AddIOp>(loc, last, reach);
+    }
+    return {empty, last};
+  }
+
+  static void checkRow(memref::ReinterpretCastOp row) {
+    auto sourceTy = dyn_cast<MemRefType>(row.getSource().getType());
+    if (!sourceTy || row.getType().getRank() >= sourceTy.getRank())
+      return;
+    OpBuilder b(row);
+    Location loc = row.getLoc();
+    auto source =
+        b.create<memref::ExtractStridedMetadataOp>(loc, row.getSource());
+    auto [sourceEmpty, sourceLast] = emptyAndLast(
+        b, loc, source.getOffset(), source.getSizes(), source.getStrides());
+    SmallVector<Value> sizes, strides;
+    for (OpFoldResult v : row.getMixedSizes())
+      sizes.push_back(indexValue(b, loc, v));
+    for (OpFoldResult v : row.getMixedStrides())
+      strides.push_back(indexValue(b, loc, v));
+    Value offset = indexValue(b, loc, row.getMixedOffsets().front());
+    auto [rowEmpty, rowLast] = emptyAndLast(b, loc, offset, sizes, strides);
+    Value starts = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge,
+                                           offset, source.getOffset());
+    Value ends = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sle,
+                                         rowLast, sourceLast);
+    Value one = b.create<arith::ConstantIntOp>(loc, b.getI1Type(), 1);
+    Value sourceHas = b.create<arith::XOrIOp>(loc, sourceEmpty, one);
+    Value inside = b.create<arith::AndIOp>(
+        loc, sourceHas, b.create<arith::AndIOp>(loc, starts, ends));
+    Value ok = b.create<arith::OrIOp>(loc, rowEmpty, inside);
+    b.create<cf::AssertOp>(loc, ok, kMessage);
+  }
+
+  static void checkElement(Operation *op, Value memref, ValueRange indices) {
+    auto ty = cast<MemRefType>(memref.getType());
+    OpBuilder b(op);
+    Location loc = op->getLoc();
+    for (auto [k, index] : llvm::enumerate(indices)) {
+      std::optional<int64_t> known = getConstantIntValue(index);
+      if (known && !ty.isDynamicDim(k) && *known >= 0 &&
+          *known < ty.getDimSize(k))
+        continue;
+      Value size = b.createOrFold<memref::DimOp>(loc, memref, k);
+      // Unsigned, so a negative index is outside too.
+      Value ok =
+          b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ult, index, size);
+      b.create<cf::AssertOp>(loc, ok, kMessage);
+    }
+  }
+
+  void runOnOperation() override {
+    SmallVector<Operation *> ops;
+    getOperation().walk([&](Operation *op) {
+      if (isa<memref::LoadOp, memref::StoreOp, memref::ReinterpretCastOp>(op) &&
+          op->getParentOfType<gpu::GPUModuleOp>() == nullptr &&
+          op->getParentOp()->getDialect()->getNamespace() != "linalg")
+        ops.push_back(op);
+    });
+    for (Operation *op : ops) {
+      if (auto load = dyn_cast<memref::LoadOp>(op))
+        checkElement(op, load.getMemRef(), load.getIndices());
+      else if (auto store = dyn_cast<memref::StoreOp>(op))
+        checkElement(op, store.getMemRef(), store.getIndices());
+      else
+        checkRow(cast<memref::ReinterpretCastOp>(op));
+    }
+  }
+};
+
 // A task that parks can continue on another thread. Foreign code that calls a
 // Vx function can keep state that belongs to its thread, so the task must stay
 // on its thread until the Vx function returns
 // (waiting_tasks_channels_and_task_errors.md, W9).
 //
-// Foreign code gets a Vx function only as a function value. The compiler does
-// not know where a value goes, so each function value points to a wrapper. The
-// wrapper calls `vx_callback_enter` and `vx_callback_exit` around the function.
-// A direct call does not use the wrapper. The function value that autodiff
-// gives to Enzyme stays as it is.
+// Foreign code gets a Vx function only as a function value. So each function
+// value that foreign code can get points to a wrapper. The wrapper calls
+// `vx_callback_enter` and `vx_callback_exit` around the function. A direct
+// call, or a call from Vx code through a function value that stays in Vx code,
+// does not use the wrapper. A closure is the common case: its call function is
+// a function value. The function value that autodiff gives to Enzyme stays as
+// it is.
 //
 // The pass runs first, before the task lowering takes the address of each
 // task body.
@@ -9527,12 +9650,159 @@ struct CountCallbacksPass
     return call && call.getCallee().starts_with("__enzyme_");
   }
 
+  // Whether foreign code can get `start`, a function value. The walk follows
+  // the value through the uses that keep it in Vx code. Any other use counts as
+  // one that gives it to foreign code, so an unknown use costs only speed.
+  //
+  // A closure is a struct of its environment and its call function. So the
+  // walk also follows a struct that holds the function value, with the
+  // position of the value in it. A field read of another position, such as the
+  // environment, does not get the function value.
+  static bool
+  mayReachForeignCode(Value start, ModuleOp module,
+                      const llvm::StringMap<SmallVector<func::CallOp>> &callsTo,
+                      const llvm::StringSet<> &hasFunctionValue) {
+    using Position = SmallVector<int64_t, 2>;
+    SmallVector<std::pair<Value, Position>> work{{start, {}}};
+    std::set<std::pair<const void *, std::vector<int64_t>>> seen;
+    auto follow = [&](Value v, ArrayRef<int64_t> pos) {
+      if (seen.insert({v.getAsOpaquePointer(), {pos.begin(), pos.end()}})
+              .second)
+        work.push_back({v, Position(pos)});
+    };
+    // A stack slot, with the field that `addr` points to: the slot itself, or
+    // a field that a GEP of constant indices picks. The slot is one that only
+    // loads, stores and such GEPs use, so a value in it comes back out only
+    // through its loads.
+    auto slotField =
+        [](Value addr) -> std::optional<std::pair<Value, Position>> {
+      Value slot = addr;
+      Position field;
+      if (auto gep = addr.getDefiningOp<LLVM::GEPOp>()) {
+        ArrayRef<int32_t> indices = gep.getRawConstantIndices();
+        if (indices.empty() || indices[0] != 0 ||
+            llvm::is_contained(indices, LLVM::GEPOp::kDynamicIndex))
+          return std::nullopt;
+        slot = gep.getBase();
+        auto alloca = slot.getDefiningOp<LLVM::AllocaOp>();
+        if (!alloca || alloca.getElemType() != gep.getElemType())
+          return std::nullopt;
+        field.append(indices.begin() + 1, indices.end());
+      }
+      if (!slot.getDefiningOp<LLVM::AllocaOp>())
+        return std::nullopt;
+      // A use of the slot, or of a field of it, that only reads or writes it.
+      auto isLoadOrStore = [](OpOperand &use) {
+        Operation *op = use.getOwner();
+        if (isa<LLVM::LoadOp, LLVM::LifetimeStartOp, LLVM::LifetimeEndOp>(op))
+          return true;
+        auto store = dyn_cast<LLVM::StoreOp>(op);
+        return store && store.getValue() != use.get();
+      };
+      for (OpOperand &use : slot.getUses()) {
+        auto gep = dyn_cast<LLVM::GEPOp>(use.getOwner());
+        if (gep && gep.getBase() == slot) {
+          if (!llvm::all_of(gep.getResult().getUses(), isLoadOrStore))
+            return std::nullopt;
+        } else if (!isLoadOrStore(use)) {
+          return std::nullopt;
+        }
+      }
+      return std::make_pair(slot, field);
+    };
+    while (!work.empty()) {
+      auto [v, pos] = work.pop_back_val();
+      for (OpOperand &use : v.getUses()) {
+        Operation *user = use.getOwner();
+        if (isa<UnrealizedConversionCastOp>(user)) {
+          follow(user->getResult(use.getOperandNumber()), pos);
+        } else if (auto insert = dyn_cast<LLVM::InsertValueOp>(user)) {
+          Position inner(insert.getPosition());
+          if (use.get() == insert.getValue())
+            inner.append(pos.begin(), pos.end());
+          else
+            inner = pos;
+          follow(insert.getResult(), inner);
+        } else if (auto extract = dyn_cast<LLVM::ExtractValueOp>(user)) {
+          ArrayRef<int64_t> field = extract.getPosition();
+          if (ArrayRef<int64_t>(pos).take_front(field.size()) == field &&
+              field.size() <= pos.size())
+            follow(extract.getResult(),
+                   ArrayRef<int64_t>(pos).drop_front(field.size()));
+        } else if (isa<func::CallIndirectOp>(user)) {
+          if (use.getOperandNumber() != 0 || !pos.empty())
+            return true;
+        } else if (auto call = dyn_cast<func::CallOp>(user)) {
+          if (isEnzymeCall(user))
+            continue;
+          auto callee = module.lookupSymbol<func::FuncOp>(call.getCallee());
+          if (!callee || callee.isExternal())
+            return true;
+          follow(callee.getArgument(use.getOperandNumber()), pos);
+        } else if (isa<func::ReturnOp>(user)) {
+          // Foreign code that calls the function through a function value
+          // gets what it returns.
+          auto fn = user->getParentOfType<func::FuncOp>();
+          if (hasFunctionValue.contains(fn.getSymName()))
+            return true;
+          auto calls = callsTo.find(fn.getSymName());
+          if (calls != callsTo.end())
+            for (func::CallOp call : calls->second)
+              follow(call.getResult(use.getOperandNumber()), pos);
+        } else if (auto store = dyn_cast<LLVM::StoreOp>(user)) {
+          auto stored = slotField(store.getAddr());
+          if (store.getValue() != v || !stored)
+            return true;
+          // Where the function value is in the slot.
+          Position inSlot = stored->second;
+          inSlot.append(pos.begin(), pos.end());
+          SmallVector<Value> addrs{stored->first};
+          for (Operation *slotUser : stored->first.getUsers())
+            if (isa<LLVM::GEPOp>(slotUser))
+              addrs.push_back(slotUser->getResult(0));
+          for (Value addr : addrs) {
+            auto read = slotField(addr);
+            if (!read)
+              return true;
+            Position loaded = read->second;
+            if (loaded.size() > inSlot.size() ||
+                !llvm::equal(loaded, ArrayRef<int64_t>(inSlot).take_front(
+                                         loaded.size())))
+              continue;
+            for (Operation *addrUser : addr.getUsers())
+              if (auto load = dyn_cast<LLVM::LoadOp>(addrUser))
+                follow(load.getResult(),
+                       ArrayRef<int64_t>(inSlot).drop_front(loaded.size()));
+          }
+        } else if (auto branch = dyn_cast<BranchOpInterface>(user)) {
+          std::optional<BlockArgument> arg =
+              branch.getSuccessorBlockArgument(use.getOperandNumber());
+          if (!arg)
+            return true;
+          follow(*arg, pos);
+        } else {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   void runOnOperation() override {
     ModuleOp module = getOperation();
     MLIRContext *ctx = module.getContext();
     SmallVector<func::ConstantOp> values;
+    llvm::StringMap<SmallVector<func::CallOp>> callsTo;
+    llvm::StringSet<> hasFunctionValue;
     for (auto fn : module.getOps<func::FuncOp>())
-      fn.walk([&](func::ConstantOp c) { values.push_back(c); });
+      fn.walk([&](Operation *op) {
+        if (auto c = dyn_cast<func::ConstantOp>(op)) {
+          values.push_back(c);
+          hasFunctionValue.insert(c.getValue());
+        } else if (auto call = dyn_cast<func::CallOp>(op)) {
+          callsTo[call.getCallee()].push_back(call);
+        }
+      });
     auto runtimeFn = [&](llvm::StringRef name) {
       if (auto fn = module.lookupSymbol<func::FuncOp>(name))
         return fn;
@@ -9546,7 +9816,8 @@ struct CountCallbacksPass
     for (func::ConstantOp value : values) {
       auto target = module.lookupSymbol<func::FuncOp>(value.getValue());
       if (!target || target.isExternal() ||
-          llvm::all_of(value->getUsers(), isEnzymeCall))
+          !mayReachForeignCode(value.getResult(), module, callsTo,
+                               hasFunctionValue))
         continue;
       func::FuncOp &wrapper = wrappers[target.getSymName()];
       if (!wrapper) {
@@ -9992,6 +10263,9 @@ void registerVxPasses() {
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<CheckIntegerDivisionPass>();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return std::make_unique<CheckTensorIndicesPass>();
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<HideProgramSymbolsPass>();

@@ -438,6 +438,29 @@ impl<'a> Parser<'a> {
                 let expr = self.parse_primary_expr()?; // parses number or string
                 Ok(Pattern::Literal(Box::new(expr)))
             }
+            TokenType::Minus if matches!(self.peek_n(1).kind, TokenType::Number(_)) => {
+                self.advance();
+                let mut expr = self.parse_primary_expr()?;
+                if let Expr::Number(n) = &mut expr {
+                    n.value = format!("-{}", n.value).into();
+                }
+                Ok(Pattern::Literal(Box::new(expr)))
+            }
+            // `true` and `false` are the two values of a `bool`, not names that bind it.
+            TokenType::Identifier(s) if s == "true" || s == "false" => {
+                self.advance();
+                Ok(Pattern::Literal(Box::new(Expr::Identifier(
+                    IdentifierExpr {
+                        name: s.into(),
+                        span: Span {
+                            line: token.line,
+                            column: token.column,
+                            length: token.length,
+                            expansion: self.expansion(),
+                        },
+                    },
+                ))))
+            }
             TokenType::Identifier(s) => {
                 let mut enum_name = s.to_string();
                 self.advance();
@@ -2258,6 +2281,26 @@ mod tests {
         } else {
             panic!("Expected Match, got {:?}", expr);
         }
+    }
+
+    #[test]
+    fn test_parse_match_with_bool_and_negative_literals() {
+        let expr = parse_expr("match x { true => { a; } false => { b; } -1 => { c; } }");
+        let Expr::Match(MatchExpr { arms, .. }) = expr else {
+            panic!("Expected Match, got {:?}", expr);
+        };
+        let literal = |i: usize| match &arms[i].pattern {
+            Pattern::Literal(lit) => match &**lit {
+                Expr::Identifier(id) => id.name.to_string(),
+                Expr::Number(n) => n.value.to_string(),
+                other => panic!("Expected true, false or a number, got {:?}", other),
+            },
+            other => panic!("Expected a literal pattern, got {:?}", other),
+        };
+        assert_eq!(
+            (literal(0), literal(1), literal(2)),
+            ("true".into(), "false".into(), "-1".into())
+        );
     }
 
     #[test]
