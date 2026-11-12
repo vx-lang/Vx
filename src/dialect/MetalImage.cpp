@@ -34,6 +34,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/MemRef/IR/MemRefMemorySlot.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dominance.h"
@@ -41,6 +42,7 @@
 #include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/CFGToSCF.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/Inliner.h"
 #include "mlir/Transforms/InliningUtils.h"
 #include "mlir/Transforms/Mem2Reg.h"
@@ -1572,9 +1574,18 @@ bool Printer::forOp(scf::ForOp f) {
     line() << it << " " << carried.back() << " = " << name(init) << ";\n";
   }
   std::string iv = define(f.getInductionVar());
+  std::string uty;
+  if (!unsignedType(f.getInductionVar().getType(), uty, f))
+    return false;
+  // The lifted loops that become `for` loops compare with a sign.
+  if (f.getUnsignedCmp())
+    return fail(f, "a for loop that compares without a sign");
+  // The step wraps as the integer arithmetic of MLIR does: signed overflow is
+  // undefined in MSL.
   line() << "for (" << ty << " " << iv << " = " << name(f.getLowerBound())
          << "; " << iv << " < " << name(f.getUpperBound()) << "; " << iv
-         << " += " << name(f.getStep()) << ") {\n";
+         << " = (" << ty << ")((" << uty << ")" << iv << " + (" << uty << ")"
+         << name(f.getStep()) << ")) {\n";
   ++depth;
   for (auto [arg, c] : llvm::zip(f.getRegionIterArgs(), carried)) {
     std::string at;
@@ -1713,6 +1724,14 @@ LogicalResult structure(gpu::GPUModuleOp m, std::string &error) {
       error = "simplifying a structured kernel failed";
       return failure();
     }
+  }
+  // The lifted loops are `scf.while`. The Metal compiler unrolls a `for` with
+  // a constant bound, and it left the same loop as a `while (true)` as it was.
+  RewritePatternSet uplift(context);
+  scf::populateUpliftWhileToForPatterns(uplift);
+  if (failed(applyPatternsGreedily(m, std::move(uplift)))) {
+    error = "making the loops of a kernel `for` loops failed";
+    return failure();
   }
   return success();
 }
