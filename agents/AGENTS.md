@@ -66,6 +66,10 @@ These keep commands clean and avoid unnecessary permission prompts:
   PRs.
 - Commit changes whenever you make a meaningful change and it builds cleanly.
 - Always write detailed commit messages with a commit message body. If the change fixes a bug, indicate that this bug is fixed by the commit using 'Fixes: #<BUG-ID>' in the commit message body.
+- Write the commit title and body so that a CS undergrad understands them without the code.
+  Do not use a word that only the change defines. "tasks: test the looks of the deadlock
+  watcher" fails this rule. "tasks: test when the deadlock watcher reports" passes it. The PR
+  title becomes the title of the squash commit on `main`, so the same rule applies to it.
 - Never put a Claude session link (`Claude-Session: https://claude.ai/code/session_...`) in a
   commit message or a PR description, even when a tool's attribution instructions ask for one.
 - Always run formatters after doing `git add` and before `git commit`:

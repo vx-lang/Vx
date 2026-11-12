@@ -474,7 +474,7 @@ impl<'a> TypeChecker<'a> {
 
     /// Whether control never reaches the end of `stmts`: it returns, breaks, continues, panics,
     /// aborts or calls a function declared `-> !` on every path.
-    fn branch_ends_early(&self, stmts: &[Statement]) -> bool {
+    pub(crate) fn branch_ends_early(&self, stmts: &[Statement]) -> bool {
         let functions = &self.env.functions;
         let never = |name: &str| {
             functions
@@ -593,6 +593,7 @@ impl<'a> TypeChecker<'a> {
         // The prover's facts follow the paths: the `then` branch knows the condition and the
         // `else` branch its negation, and what a branch learns ends with it.
         let facts_before = self.consteval.constraints.len();
+        let prefix_before = self.consteval.constraints.clone();
         let pointers_before = self.pointer_facts.clone();
         let cond_fact = (!if_expr.is_comptime && crate::hir::prover::is_modelled(&if_expr.cond))
             .then(|| (*if_expr.cond).clone());
@@ -616,6 +617,9 @@ impl<'a> TypeChecker<'a> {
             self.pointer_branches.pop();
         }
         let then_facts = self.consteval.constraints.split_off(facts_before);
+        // An assignment in the `then` branch renames the facts from before the `if` in place, so
+        // the `else` branch starts from a copy of them.
+        let then_prefix = std::mem::replace(&mut self.consteval.constraints, prefix_before.clone());
         let pointers_then = std::mem::replace(&mut self.pointer_facts, pointers_before);
         if let Some(c) = &cond_fact {
             self.consteval
@@ -701,15 +705,25 @@ impl<'a> TypeChecker<'a> {
             (false, true) => pointers_then,
             _ => pointers_then.join(&pointers_else),
         };
-        match (then_ends, else_ends) {
-            (true, false) => self.consteval.constraints.extend(else_facts),
-            (false, true) => self.consteval.constraints.extend(then_facts),
-            (true, true) => self
-                .consteval
-                .constraints
-                .push(crate::hir::prover::unreachable_fact()),
-            (false, false) => {}
-        }
+        let else_prefix = std::mem::take(&mut self.consteval.constraints);
+        let ends = [
+            BranchEnd {
+                before: then_prefix,
+                learned: then_facts,
+            },
+            BranchEnd {
+                before: else_prefix,
+                learned: else_facts,
+            },
+        ];
+        // A branch that ends early does not reach the code after the `if`.
+        let reaching: Vec<BranchEnd> = ends
+            .into_iter()
+            .zip([then_ends, else_ends])
+            .filter(|(_, ends_early)| !ends_early)
+            .map(|(end, _)| end)
+            .collect();
+        self.consteval.constraints = facts_after_branches(prefix_before, reaching);
         let joined = match (marks_after_then, marks_after_else) {
             (Some(a), Some(b)) => Self::union_moved(a, b),
             (Some(a), None) | (None, Some(a)) => a,
@@ -746,21 +760,15 @@ impl<'a> TypeChecker<'a> {
                 span,
                 generated,
                 closure_body,
-                within,
                 ..
             }) => {
                 let block_span = *span;
                 let closure_body = *closure_body;
-                let within = *within;
-                // The block body of a closure, and a `within` block, are plain blocks: they
-                // allow nothing more than the code around them.
+                // The block body of a closure is a plain block: it allows nothing more than the
+                // code around it.
                 let written = !*generated && !closure_body;
                 let prev_unsafe = self.in_unsafe_block;
-                self.in_unsafe_block = prev_unsafe || !(closure_body || within);
-                if within {
-                    self.within_depth += 1;
-                    self.within_start_next = true;
-                }
+                self.in_unsafe_block = prev_unsafe || !closure_body;
                 // A block the compiler made is transparent here: what it holds counts for the
                 // written block around it.
                 let prev_written = self.in_written_unsafe_block;
@@ -847,9 +855,6 @@ impl<'a> TypeChecker<'a> {
                     self.in_written_unsafe_block = prev_written;
                 }
                 self.in_unsafe_block = prev_unsafe;
-                if within {
-                    self.within_depth -= 1;
-                }
                 ret_ty
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
@@ -934,15 +939,22 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Whether `pattern`, just bound, takes a value that has to move: a name bound to
-    /// something linear that is not `Copy`.
-    fn pattern_moves(&mut self, pattern: &Pattern) -> bool {
-        let mut bound = Vec::new();
-        pattern_names(pattern, &mut bound);
-        bound.iter().any(|n| {
-            let ty = self.lookup(n).map(|(t, _)| t.clone());
-            ty.is_some_and(|t| t.is_linear() && !self.is_copy(&t))
-        })
+    /// Whether `pattern`, matched against a value of type `ty`, takes a part that has to move:
+    /// it binds a name to something linear that is not `Copy`. The names get their types as
+    /// in `bind_pattern_variables`.
+    fn pattern_moves(&mut self, pattern: &Pattern, ty: &Type) -> bool {
+        match pattern {
+            Pattern::Identifier(_) => ty.is_linear() && !self.is_copy(ty),
+            Pattern::EnumVariant(enum_name, variant, Some(parts)) => self
+                .payload_types(enum_name, variant, ty)
+                .is_some_and(|types| {
+                    parts
+                        .iter()
+                        .zip(&types)
+                        .any(|(p, t)| self.pattern_moves(p, t))
+                }),
+            _ => false,
+        }
     }
 
     /// The names of `pattern`, just bound by a `match` on a reference, are parts of a value that
@@ -1087,35 +1099,18 @@ impl<'a> TypeChecker<'a> {
                 self.insert(name.to_string(), expr_ty.clone());
             }
             Pattern::EnumVariant(enum_name, variant_name, Some(payloads)) => {
-                let mut base_name = enum_name.clone();
-                if let Some(idx) = enum_name.find('<') {
-                    base_name = enum_name[..idx].to_string().into();
-                }
-                if let Some(enum_decl) = self.env.enums.get(base_name.as_ref()) {
-                    if let Some(variant) = enum_decl.variants.iter().find(|v| v.0 == *variant_name)
-                    {
-                        if let Some(payload_types) = &variant.1 {
-                            let mut mapping = std::collections::HashMap::new();
-                            let matched = match expr_ty {
-                                Type::Borrow { inner, .. } => inner,
-                                other => other,
-                            };
-                            if let Type::GenericInstance(_, args) = matched {
-                                for (i, param) in enum_decl.generics.iter().enumerate() {
-                                    if i < args.len() {
-                                        mapping.insert(param.name().into(), args[i].clone());
-                                    }
-                                }
-                            }
-                            // A pattern inside a payload is refused (E3050), but its names
-                            // are still bound, so that error is the only one.
-                            for (i, p) in payloads.iter().enumerate() {
-                                let p_ty = payload_types
-                                    .get(i)
-                                    .map_or(Type::Unknown, |t| t.substitute(&mapping));
-                                self.bind_pattern_variables(p, &p_ty);
-                            }
-                        }
+                let base = enum_name
+                    .find('<')
+                    .map_or(enum_name.as_ref(), |i| &enum_name[..i]);
+                if self.env.enums.contains_key(base) {
+                    // A pattern inside a payload is refused (E3050), but its names are still
+                    // bound, so that error is the only one.
+                    let Some(types) = self.payload_types(enum_name, variant_name, expr_ty) else {
+                        return;
+                    };
+                    for (i, p) in payloads.iter().enumerate() {
+                        let p_ty = types.get(i).cloned().unwrap_or(Type::Unknown);
+                        self.bind_pattern_variables(p, &p_ty);
                     }
                 } else {
                     for p in payloads {
@@ -1123,6 +1118,62 @@ impl<'a> TypeChecker<'a> {
                             self.insert(name.to_string(), Type::Unknown);
                         }
                     }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The type of each part of the payload of `enum_name::variant_name`, in a value of type
+    /// `expr_ty`. `None` when the enum or the variant is unknown, or the variant has no payload.
+    fn payload_types(
+        &self,
+        enum_name: &crate::symbol::Symbol,
+        variant_name: &crate::symbol::Symbol,
+        expr_ty: &Type,
+    ) -> Option<Vec<Type>> {
+        let base = enum_name
+            .find('<')
+            .map_or(enum_name.as_ref(), |i| &enum_name[..i]);
+        let enum_decl = self.env.enums.get(base)?;
+        let variant = enum_decl.variants.iter().find(|v| v.0 == *variant_name)?;
+        let mut mapping = std::collections::HashMap::new();
+        let matched = match expr_ty {
+            Type::Borrow { inner, .. } => inner,
+            other => other,
+        };
+        if let Type::GenericInstance(_, args) = matched {
+            for (param, arg) in enum_decl.generics.iter().zip(args) {
+                mapping.insert(param.name().into(), arg.clone());
+            }
+        }
+        let types = variant.1.as_ref()?;
+        Some(types.iter().map(|t| t.substitute(&mapping)).collect())
+    }
+
+    /// An arm that takes its value owns all of it, also the parts that its pattern does not
+    /// name: a `_`, or the payload of `One::It` written with no `(..)`. Each such part that
+    /// needs a drop gets a hidden name, so that the arm drops it with its other names.
+    fn name_the_parts_to_drop(&mut self, pattern: &mut Pattern, expr_ty: &Type) {
+        match pattern {
+            Pattern::Wildcard if !self.drops_glue(expr_ty).is_empty() => {
+                let name = self.drops_fresh("rest");
+                self.insert(name.clone(), expr_ty.clone());
+                *pattern = Pattern::Identifier(name.into());
+            }
+            Pattern::EnumVariant(enum_name, variant, payloads) => {
+                let Some(types) = self.payload_types(enum_name, variant, expr_ty) else {
+                    return;
+                };
+                let written = payloads.is_some();
+                let parts = payloads.get_or_insert_with(|| vec![Pattern::Wildcard; types.len()]);
+                for (part, ty) in parts.iter_mut().zip(&types) {
+                    if matches!(part, Pattern::Wildcard) {
+                        self.name_the_parts_to_drop(part, ty);
+                    }
+                }
+                if !written && parts.iter().all(|p| matches!(p, Pattern::Wildcard)) {
+                    *payloads = None;
                 }
             }
             _ => {}
@@ -1261,6 +1312,13 @@ impl<'a> TypeChecker<'a> {
                 let behind_ref = matches!(expr_ty, Type::Borrow { .. })
                     || matches!(&**match_expr, Expr::Identifier(id)
                         if self.is_bound_behind_ref(id.name.as_ref()));
+                // When only some arms move a part, the value may still be there after the
+                // `match`, as after an `if` that moves it in one branch.
+                let every_arm_moves = place
+                    && !self.speculating
+                    && arms
+                        .iter()
+                        .all(|arm| self.pattern_moves(&arm.pattern, &expr_ty));
 
                 let mut match_ty: Option<Type> = None;
                 let mut covered: Vec<crate::symbol::Symbol> = Vec::new();
@@ -1271,19 +1329,35 @@ impl<'a> TypeChecker<'a> {
                 let borrows_before = self.borrow.snapshot();
                 let mut arm_borrows = Vec::new();
                 let mut joined: Option<Vec<std::collections::HashSet<String>>> = None;
-                // What an arm learns ends with it: the prover does not model the patterns, so
-                // it cannot say which arm the code after the `match` came through.
+                // Each arm starts from the facts before the `match`, and the arms join after it.
                 let facts_before = self.consteval.constraints.len();
+                let prefix_before = self.consteval.constraints.clone();
+                let mut ends_after = Vec::new();
                 let mut every_arm_ends = !arms.is_empty();
                 let values_before = self.consteval.env.clone();
                 let mut values_after_arms = Vec::new();
                 let pointers_before = self.pointer_facts.clone();
                 let mut pointers_after: Option<crate::hir::check::pointer_facts::PointerFacts> =
                     None;
+                // Arms that are only a number with no suffix, such as `_ => { 0 }`. Their number
+                // takes the type of the other arms once those are known.
+                let mut literal_arms = Vec::new();
+                let mut literal_ty = None;
+                // A `match` on an integer that the prover models: each arm knows which pattern
+                // matched, and which literal patterns above it did not.
+                let integer = matches!(&expr_ty, Type::Scalar(e)
+                    if e.int_bits().is_some() && *e != ElementType::Bool);
+                let matched_number = (integer && crate::hir::prover::is_modelled(match_expr))
+                    .then(|| (**match_expr).clone());
+                let mut literals_above: Vec<Expr> = Vec::new();
                 for (i, arm) in arms.iter_mut().enumerate() {
+                    let literal_arm = self.expected_type.is_none()
+                        && unsuffixed_number_tail(&mut arm.body).is_some_and(|n| n.ty.is_none());
                     self.consteval.env = values_before.clone();
                     self.pointer_facts = pointers_before.clone();
-                    self.consteval.constraints.truncate(facts_before);
+                    // An arm renames the facts from before the `match` in place, so each arm
+                    // starts from a copy of them.
+                    self.consteval.constraints = prefix_before.clone();
                     self.restore_moved(marks_before.clone());
                     if i > 0 {
                         arm_borrows.extend(self.borrow.next_branch(&borrows_before));
@@ -1316,10 +1390,17 @@ impl<'a> TypeChecker<'a> {
                     if behind_ref {
                         self.mark_bound_behind_ref(&arm.pattern);
                         takes_value = false;
-                    } else if place && !self.speculating && self.pattern_moves(&arm.pattern) {
+                    } else if place
+                        && !self.speculating
+                        && self.pattern_moves(&arm.pattern, &expr_ty)
+                    {
                         // Moved before the arm's own names exist, which may hide it.
                         self.pop_scope();
-                        self.match_moves(match_expr);
+                        if every_arm_moves {
+                            self.match_moves(match_expr);
+                        } else {
+                            self.drops_arm_takes(|c| c.match_moves(match_expr));
+                        }
                         self.push_scope();
                         self.bind_pattern_variables(&arm.pattern, &expr_ty);
                         // `match *p` takes nothing: through a reference the move is refused
@@ -1327,9 +1408,22 @@ impl<'a> TypeChecker<'a> {
                         takes_value = matches!(**match_expr, Expr::Identifier(_));
                     }
                     if takes_value && !self.speculating {
+                        if self.drops_rewriting() {
+                            self.name_the_parts_to_drop(&mut arm.pattern, &expr_ty);
+                        }
                         let mut bound = Vec::new();
                         pattern_names(&arm.pattern, &mut bound);
+                        // Listed first, the parts with no name drop last. In Rust too, the end
+                        // of a `match` drops the rest of the value that it took.
+                        bound.sort_by_key(|n| !n.starts_with("__vx_rest_"));
                         self.drops_bind_arm(&bound);
+                    }
+                    if let Some(value) = &matched_number {
+                        let facts = facts_of_a_pattern(value, &literals_above, &arm.pattern);
+                        self.consteval.constraints.extend(facts);
+                    }
+                    if let Pattern::Literal(lit) = &arm.pattern {
+                        literals_above.push((**lit).clone());
                     }
 
                     let arm_ty = if !self.speculating {
@@ -1343,6 +1437,9 @@ impl<'a> TypeChecker<'a> {
                     every_arm_ends &= self.branch_ends_early(&arm.body);
                     if !self.branch_ends_early(&arm.body) {
                         values_after_arms.push(self.consteval.env.clone());
+                        let mut before = std::mem::take(&mut self.consteval.constraints);
+                        let learned = before.split_off(facts_before);
+                        ends_after.push(BranchEnd { before, learned });
                         let arm_pointers = std::mem::take(&mut self.pointer_facts);
                         pointers_after = Some(match pointers_after.take() {
                             Some(joined) => joined.join(&arm_pointers),
@@ -1369,9 +1466,24 @@ impl<'a> TypeChecker<'a> {
                             ..
                         }))
                     );
-                    if yields_value && match_ty.is_none() {
+                    if literal_arm {
+                        literal_arms.push(i);
+                        literal_ty.get_or_insert(arm_ty);
+                    } else if yields_value && match_ty.is_none() {
                         match_ty = Some(arm_ty);
                     }
+                }
+                match &match_ty {
+                    Some(ty) => {
+                        for i in literal_arms {
+                            let n = unsuffixed_number_tail(&mut arms[i].body)
+                                .expect("a literal arm ends in a number");
+                            if let Some(e) = crate::hir::expr::expected_numeric_elem(ty, &n.value) {
+                                n.ty = Some(e);
+                            }
+                        }
+                    }
+                    None => match_ty = literal_ty,
                 }
                 self.restore_moved(joined.unwrap_or(marks_before));
                 self.borrow.add_back(arm_borrows);
@@ -1385,12 +1497,17 @@ impl<'a> TypeChecker<'a> {
                     None => pointers_before,
                 };
                 self.consteval.env = Self::join_known_values(values_after_arms);
-                self.consteval.constraints.truncate(facts_before);
-                if every_arm_ends {
-                    self.consteval
-                        .constraints
-                        .push(crate::hir::prover::unreachable_fact());
+                // With no `_` arm, the code after the `match` can come from before it.
+                if !has_wildcard {
+                    ends_after.push(BranchEnd {
+                        before: prefix_before.clone(),
+                        learned: Vec::new(),
+                    });
                 }
+                if every_arm_ends {
+                    ends_after.clear();
+                }
+                self.consteval.constraints = facts_after_branches(prefix_before, ends_after);
 
                 // Coverage. An enum scrutinee can be enumerated, so a missing variant is a fact
                 // about the match wherever it sits: the uncovered value falls through, and if
@@ -1546,6 +1663,11 @@ impl<'a> TypeChecker<'a> {
                 self.consteval.closure_body_depth += 1;
                 // A `return` in the body leaves the closure, not the function around it.
                 self.drops_enter_function(Vec::new(), &[]);
+                // A `break` in the body needs a loop of the body.
+                let outer_loops = std::mem::replace(
+                    &mut self.borrow.loops_outside_the_closure,
+                    self.borrow.loop_exits.len(),
+                );
                 self.traffic.closure_depth += 1;
                 self.consteval.comptime_return_is_value = matches!(*b, Expr::ComptimeBlock(_));
                 // The body runs when a call runs it, so it starts with no fact of its parent.
@@ -1555,12 +1677,16 @@ impl<'a> TypeChecker<'a> {
                 let outer_borrows = self.borrow.snapshot();
                 // What the body learns, such as from an `assert`, holds only in a call.
                 let outer_facts = self.consteval.constraints.len();
+                let in_within = self.within_bodies.contains(&e.span);
+                self.within_depth += usize::from(in_within);
                 let expr_ret_ty = self.check_expr_type(&mut b);
+                self.within_depth -= usize::from(in_within);
                 self.consteval.constraints.truncate(outer_facts);
                 self.borrow.restore(outer_borrows);
                 self.pointer_facts_leave_body(outer_pointers);
                 self.consteval.comptime_return_is_value = false;
                 self.traffic.closure_depth -= 1;
+                self.borrow.loops_outside_the_closure = outer_loops;
                 self.drops_exit_function();
                 self.consteval.closure_body_depth -= 1;
                 self.consteval.comptime_depth = outer_comptime;
@@ -1616,7 +1742,7 @@ impl<'a> TypeChecker<'a> {
                             None
                         } else if changed_in_body.contains(name.as_ref()) {
                             Some((name.clone(), true))
-                        } else if matches!(ty, Type::Struct(..)) && !self.is_copy(ty) {
+                        } else if is_struct_like(ty) && !self.is_copy(ty) {
                             Some((name.clone(), false))
                         } else {
                             None
@@ -1700,6 +1826,8 @@ impl<'a> TypeChecker<'a> {
                     name: struct_name.clone().into(),
                     generics: vec![],
                     fields: env_fields.clone(),
+                    invariants: Vec::new(),
+                    file: None,
                     doc_comment: None,
                 };
                 self.mono.generated_structs.push(struct_decl);
@@ -1729,9 +1857,16 @@ impl<'a> TypeChecker<'a> {
                         struct_name: Some(struct_name.clone().into()),
                         span: e.span,
                     });
+                    // Only a moved capture that the body changes needs `mut`: a tensor. The
+                    // others are borrowed, or copied and only read. A reference to a tensor is
+                    // `mut` too, because the AST code generator reads it from the environment
+                    // only into the cell of a `let mut`.
+                    let tensor_reference = matches!(cap_ty, Type::Borrow { inner, .. }
+                        if matches!(**inner, Type::Tensor(..)));
                     body_stmts.push(Statement::LetDecl(LetDeclStmt {
                         name: cap_name.clone(),
-                        is_mut: !borrows.contains_key(cap_name),
+                        is_mut: !borrows.contains_key(cap_name)
+                            && (changed_in_body.contains(cap_name.as_ref()) || tensor_reference),
                         ty_ann: Some(cap_ty.clone()),
                         expr: env_access,
                         span: e.span,
@@ -1830,5 +1965,199 @@ impl<'a> TypeChecker<'a> {
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
+    }
+}
+
+/// What the prover knows where a branch reaches the code after the branches.
+struct BranchEnd {
+    /// The facts from before the branches, as the branch changed them.
+    before: Vec<Expr>,
+    /// The facts that the branch learned, such as its condition.
+    learned: Vec<Expr>,
+}
+
+/// The prover's facts after branches. `before` holds the facts from before the branches, and
+/// `reaching` the branches that reach the code after them.
+fn facts_after_branches(before: Vec<Expr>, mut reaching: Vec<BranchEnd>) -> Vec<Expr> {
+    match reaching.len() {
+        0 => {
+            let mut facts = before;
+            facts.push(crate::hir::prover::unreachable_fact());
+            facts
+        }
+        1 => {
+            let end = reaching.pop().expect("one branch");
+            let mut facts = end.before;
+            facts.extend(end.learned);
+            facts
+        }
+        _ => join_facts_of_branches(&before, reaching),
+    }
+}
+
+/// The prover's facts after branches that reach the code after them, `ends`. `before` holds the
+/// facts from before the branches. A branch changes such a fact in place when it changes a
+/// variable of the fact: an assignment renames the old value to `$old_N`, and any other change
+/// ends the fact.
+///
+/// - A fact that no branch changed holds after the branches.
+/// - A fact that one branch changed takes the version of that branch. It names the old values,
+///   and the other branches changed no variable of it. Those branches also keep the fact as it was.
+/// - The other facts hold only in their branch. So the code after the branches knows "the facts
+///   of the first branch, or the facts of the second".
+fn join_facts_of_branches(before: &[Expr], ends: Vec<BranchEnd>) -> Vec<Expr> {
+    assert!(
+        ends.iter().all(|e| e.before.len() == before.len()),
+        "a branch keeps the facts before it"
+    );
+    let no_fact = crate::hir::check::raw::no_fact();
+    let mut joined = Vec::with_capacity(before.len());
+    let mut either: Vec<Vec<Expr>> = vec![Vec::new(); ends.len()];
+    let keep = |facts: &mut Vec<Expr>, fact: &Expr| {
+        if *fact != no_fact && is_a_condition(fact) {
+            facts.push(fact.clone());
+        }
+    };
+    for (k, fact) in before.iter().enumerate() {
+        let changed: Vec<usize> = (0..ends.len())
+            .filter(|&j| ends[j].before[k] != *fact)
+            .collect();
+        match changed[..] {
+            [] => joined.push(fact.clone()),
+            [one] => {
+                joined.push(ends[one].before[k].clone());
+                for (j, facts) in either.iter_mut().enumerate() {
+                    if j != one {
+                        keep(facts, fact);
+                    }
+                }
+            }
+            _ => {
+                joined.push(no_fact.clone());
+                for (j, facts) in either.iter_mut().enumerate() {
+                    keep(facts, &ends[j].before[k]);
+                }
+            }
+        }
+    }
+    for (j, end) in ends.into_iter().enumerate() {
+        for fact in end.learned {
+            // A marker is a note for a later error, and the prover skips it.
+            if crate::hir::stmt::read_lost_invariant(&fact).is_some() {
+                joined.push(fact);
+            } else {
+                keep(&mut either[j], &fact);
+            }
+        }
+    }
+    // A branch that knows nothing new makes "one branch or another" say nothing.
+    if either.iter().all(|facts| !facts.is_empty()) {
+        let all = |facts: Vec<Expr>| join_with(facts, LogicalOp::And);
+        joined.push(join_with(
+            either.into_iter().map(all).collect(),
+            LogicalOp::Or,
+        ));
+    }
+    joined
+}
+
+/// Whether the prover can read the fact `e` as true or false. It knows only numbers, so a `bool`
+/// variable such as the `c` of `if c` is not one. Inside "one branch or another", such a fact
+/// would make the prover ignore the whole fact.
+fn is_a_condition(e: &Expr) -> bool {
+    match e {
+        Expr::RelationalOp(_) => true,
+        Expr::LogicalOp(l) => is_a_condition(&l.lhs) && is_a_condition(&l.rhs),
+        Expr::UnaryOp(u) if matches!(u.op, UnaryOp::Not) => is_a_condition(&u.expr),
+        _ => false,
+    }
+}
+
+/// The facts that an arm of a `match` on the number `value` knows from its pattern: `value == 5`
+/// for the literal `5`, `n == value` for the name `n`, and `value != l` for each literal `l` of an
+/// arm above it. A name that hides a variable of `value` would change what `value` means, so that
+/// arm knows nothing.
+fn facts_of_a_pattern(value: &Expr, literals_above: &[Expr], pattern: &Pattern) -> Vec<Expr> {
+    let number = |e: &Expr| matches!(e, Expr::Number(_));
+    let relation = |lhs: Expr, op: RelationalOp, rhs: Expr| {
+        Expr::RelationalOp(RelationalOpExpr {
+            lhs: Box::new(lhs),
+            op,
+            rhs: Box::new(rhs),
+            span: Span::default(),
+            operand_ty: None,
+        })
+    };
+    if let Pattern::Identifier(n) = pattern {
+        if crate::hir::check::raw::expr_mentions(value, n.as_ref()) {
+            return Vec::new();
+        }
+    }
+    let mut facts: Vec<Expr> = literals_above
+        .iter()
+        .filter(|l| number(l))
+        .map(|l| relation(value.clone(), RelationalOp::NotEq, l.clone()))
+        .collect();
+    match pattern {
+        Pattern::Literal(l) if number(l) => {
+            facts.push(relation(value.clone(), RelationalOp::Eq, (**l).clone()))
+        }
+        Pattern::Identifier(n) => {
+            let name = Expr::Identifier(IdentifierExpr {
+                name: n.clone(),
+                span: Span::default(),
+            });
+            facts.push(relation(name, RelationalOp::Eq, value.clone()))
+        }
+        _ => {}
+    }
+    facts
+}
+
+/// `facts` joined with `op`. Each list here has at least one fact.
+fn join_with(facts: Vec<Expr>, op: LogicalOp) -> Expr {
+    facts
+        .into_iter()
+        .reduce(|lhs, rhs| {
+            Expr::LogicalOp(LogicalOpExpr {
+                lhs: Box::new(lhs),
+                op: op.clone(),
+                rhs: Box::new(rhs),
+                span: Span::default(),
+            })
+        })
+        .expect("a list with a fact")
+}
+
+/// The number that a block's value is, as in `{ 0 }` or `{ -1 }`.
+fn unsuffixed_number_tail(body: &mut [Statement]) -> Option<&mut NumberExpr> {
+    let Some(Statement::ExprStmt(ExprStmtStmt {
+        expr,
+        has_semi: false,
+        ..
+    })) = body.last_mut()
+    else {
+        return None;
+    };
+    match expr {
+        Expr::Number(n) => Some(n),
+        Expr::UnaryOp(UnaryOpExpr {
+            op: UnaryOp::Neg,
+            expr,
+            ..
+        }) => match expr.as_mut() {
+            Expr::Number(n) => Some(n),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// A struct, or an instance of a generic struct such as `Receiver<i64>`.
+fn is_struct_like(ty: &Type) -> bool {
+    match ty {
+        Type::Struct(..) => true,
+        Type::GenericInstance(base, _) => matches!(**base, Type::Struct(..)),
+        _ => false,
     }
 }

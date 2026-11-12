@@ -1,0 +1,78 @@
+//===- facts_after_both_branches.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not='Warning[' --implicit-check-not='Error['
+// CHECK: 2 2 3 1 2
+//
+// After an `if` or a `match`, the prover knows the facts of one branch or the other. A branch
+// that does not assign a variable keeps its value from before.
+
+import core::option;
+
+// `best` is 0, or a value of `i` from `1..k`.
+fn select(k : i32) -> i32
+requires k > 0
+ensures return >= 0 && return < k
+{
+  let mut best = 0;
+  for i in 1..k invariant best >= 0 && best < k {
+    if i == 2 {
+      best = i;
+    }
+  }
+  return best;
+}
+
+// Both branches assign `x`.
+fn one_or_two(c : bool) -> i64
+ensures 1i64 <= return && return <= 2i64
+{
+  let mut x = 0i64;
+  if c {
+    x = 1i64;
+  } else {
+    x = 2i64;
+  }
+  return x;
+}
+
+// Both branches assign `x` from its value before the `if`.
+fn grow(n : i64, c : bool) -> i64
+requires 0i64 <= n && n <= 100i64
+ensures return > n
+{
+  let mut x = n;
+  if c {
+    x = x + 1i64;
+  } else {
+    x = x + 2i64;
+  }
+  return x;
+}
+
+// Each arm of a `match` assigns `r`.
+fn from_an_option(o : Option<i64>) -> i64
+ensures 1i64 <= return && return <= 2i64
+{
+  let mut r = 0i64;
+  match o {
+    Option<i64>::Some(_) => {
+      r = 1i64;
+    }
+    _ => {
+      r = 2i64;
+    }
+  }
+  return r;
+}
+
+fn main() -> i32 {
+  let some = from_an_option(Option<i64>::Some(7i64));
+  let none = from_an_option(Option<i64>::None());
+  println!("{} {} {} {} {}", select(5), one_or_two(false), grow(1i64, false), some, none);
+  return 0;
+}

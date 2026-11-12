@@ -1,0 +1,62 @@
+//===- comparing_two_references_compares_the_values.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `==`, `!=` and `<` on two references compare the values that they point at, not the
+// addresses. Two references to a struct call its `eq`, also in a generic function.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=Warning
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=Warning
+// CHECK: {{^}}equal cells: true, other cells: false{{$}}
+// CHECK-NEXT: {{^}}not equal: false true{{$}}
+// CHECK-NEXT: {{^}}in a generic function: true false{{$}}
+// CHECK-NEXT: {{^}}equal numbers: true, other numbers: false{{$}}
+// CHECK-NEXT: {{^}}below: true false{{$}}
+
+import core::cmp;
+
+struct Cell {
+  row : i64,
+}
+
+impl PartialEq for Cell {
+  fn eq(self : &Cell, other : &Cell) -> bool {
+    return self.row == other.row;
+  }
+}
+
+fn not_equal(a : &Cell, b : &Cell) -> bool {
+  return a != b;
+}
+
+fn same<K : PartialEq>(a : &K, b : &K) -> bool {
+  return a == b;
+}
+
+fn below(a : &i64, b : &i64) -> bool {
+  return a < b;
+}
+
+fn main() -> i32 {
+  let a = Cell {
+    row : 1
+  };
+  let b = Cell {
+    row : 1
+  };
+  let c = Cell {
+    row : 2
+  };
+  println!("equal cells: {}, other cells: {}", &a == &b, &a == &c);
+  println!("not equal: {} {}", not_equal(&a, &b), not_equal(&a, &c));
+  println!("in a generic function: {} {}", same(&a, &b), same(&a, &c));
+  let x : i64 = 3;
+  let y : i64 = 3;
+  let z : i64 = 4;
+  println!("equal numbers: {}, other numbers: {}", &x == &y, &x == &z);
+  println!("below: {} {}", below(&y, &z), below(&z, &y));
+  return 0;
+}

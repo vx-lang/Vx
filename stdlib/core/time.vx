@@ -13,8 +13,6 @@
 // `u64` rather than `u128` (Vx#1005), and stop with an assertion when the answer does not
 // fit.
 import core::cmp;
-import core::hash;
-import core::num;
 import core::ops;
 import core::option;
 
@@ -117,6 +115,15 @@ impl Duration {
     return self.secs * 1000000000 + (self.nanos as u64);
   }
 
+  /// The whole duration in nanoseconds as an `i64`, or the largest `i64` when it does not fit.
+  /// The runtime takes a time limit in this form.
+  fn as_nanos_i64(self : &Duration) -> i64 {
+    if self.secs >= 9223372036 {
+      return 9223372036854775807;
+    }
+    return (self.secs as i64) * 1000000000 + (self.nanos as i64);
+  }
+
   fn as_secs_f64(self : &Duration) -> f64 {
     return (self.secs as f64) + (self.nanos as f64) / 1000000000.0;
   }
@@ -130,9 +137,10 @@ impl Duration {
   fn from_secs_f64(secs : f64) -> Duration {
     assert(secs >= 0.0, "from_secs_f64 needs a number of seconds that is not negative or NaN");
     assert(secs < 18446744073709551616.0, "from_secs_f64 overflows a Duration");
-    let whole = secs.floor();
-    let mut nanos = ((secs - whole) * 1000000000.0).round() as u32;
-    let mut whole_secs = whole as u64;
+    // `secs` is not negative, so `as` rounds it down and `+ 0.5` rounds the nanoseconds to the
+    // nearest. This keeps `core::num` out of `core::time`, which `core::ops` imports.
+    let mut whole_secs = secs as u64;
+    let mut nanos = ((secs - (whole_secs as f64)) * 1000000000.0 + 0.5) as u32;
     if nanos >= 1000000000 {
       nanos = nanos - 1000000000;
       whole_secs = whole_secs + 1;
@@ -328,12 +336,5 @@ impl Ord for Duration {
 impl PartialOrd for Duration {
   fn partial_cmp(self : &Duration, other : &Duration) -> Option<Ordering> {
     return Option<Ordering>::Some(self.cmp(other));
-  }
-}
-
-impl Hash for Duration {
-  fn hash<H : Hasher>(self : &Duration, state : &mut H) -> i32 {
-    let _secs = state.write_u64(self.secs);
-    return state.write_u32(self.nanos);
   }
 }

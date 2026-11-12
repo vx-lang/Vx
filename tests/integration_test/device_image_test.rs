@@ -827,43 +827,53 @@ fn the_host_stack_slot_warning_is_spirv_only() {
 /// A `--legacy-codegen` compile of the same `spirv64` topology still gets no
 /// image, and now says so out loud.
 ///
-/// The AST code generator counts its loops in `index` and hands the counter to
-/// the next block through a `cf` branch. The SPIR-V conversion turns `index`
-/// into a 64-bit integer in the operations it rewrites but not in a branch's
-/// block arguments, and refuses the module with "type mismatch for bb argument
-/// #0 of successor #0". So the kernel keeps the host path, which computes the
-/// right answer, one thread at a time, and never touches the card. That is a
-/// decision the program's author has to be able to see: before, the device copy
-/// was simply absent and the output said nothing.
-///
-/// The flat code generator, which is the default, counts in `i32` and does get
-/// a SPIR-V image for this same program. `spirv_device_image_loop_kernel.vx` is
-/// that fixture, and its image is pinned by the test above.
+/// On the AST code generator, a loop in a `spirv64` region keeps its counter in a
+/// stack slot, as on the flat code generator. The SPIR-V conversion cannot take a
+/// branch that carries an `index` value, so before this the kernel ran on the host.
+/// The kernels that get an image on the flat path get one here too. A `&mut Tensor`
+/// parameter reaches the kernel as the tensor it holds, with no memory space.
 #[test]
-fn a_legacy_compiled_spirv_kernel_says_it_runs_on_the_host() {
-    let path = corpus("spirv_device_image_loop_kernel.vx");
-    let out = Command::new(env!("CARGO_BIN_EXE_vxc"))
-        .arg(&path)
-        .arg("--legacy-codegen")
-        .arg("--emit-llvm")
-        .output()
-        .unwrap_or_else(|e| panic!("could not run vxc: {e}"));
-    assert!(
-        out.status.success(),
-        "legacy path failed:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let ir = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        !ir.contains("format=spirv"),
-        "the AST path's loop counters cannot reach a SPIR-V image, so there \
-         must be no image rather than one that is wrong"
-    );
-
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("`index` value between blocks") && stderr.contains("run on the host"),
-        "the compiler dropped this kernel's device copy without saying why, so \
-         the author believes it runs on the card; stderr was:\n{stderr}"
-    );
+fn a_legacy_compiled_spirv_kernel_gets_a_spirv_module() {
+    let kernel = "vx_npu_kernel_0";
+    for name in [
+        "spirv_device_image.vx",
+        "spirv_device_image_loop_kernel.vx",
+        "spirv_device_image_strided_row.vx",
+        "spirv_device_image_struct_local.vx",
+        "spirv_device_image_tensor_reference.vx",
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_vxc"))
+            .arg(corpus(name))
+            .arg("--legacy-codegen")
+            .arg("--emit-llvm")
+            .output()
+            .unwrap_or_else(|e| panic!("could not run vxc: {e}"));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "{name}: the AST path failed:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("cannot become a `spirv64` device image"),
+            "{name}: the kernel runs on the host; stderr was:\n{stderr}"
+        );
+        let ir = String::from_utf8_lossy(&out.stdout);
+        let payload = payload_bytes(&ir, kernel);
+        let has = |needle: &[u8]| payload.windows(needle.len()).any(|w| w == needle);
+        assert!(
+            has(b"format=spirv\0"),
+            "{name}: the payload has no SPIR-V image"
+        );
+        let section = payload_section(&payload);
+        assert_eq!(
+            &section[..4],
+            &[0x03, 0x02, 0x23, 0x07],
+            "{name}: the section does not start with SPIR-V's magic number"
+        );
+        match spirv_val(section) {
+            Some(Ok(())) => {}
+            Some(Err(report)) => panic!("{name}: spirv-val rejected the module:\n{report}"),
+            None => println!("spirv-val is not installed, so the module was not validated"),
+        }
+    }
 }

@@ -14,10 +14,10 @@ it expects.
 | `sequential.cat` | Sequential consistency with barriers: every run is one interleaving. |
 | `vx.bell` | The tags that a test can put on an access or a fence. |
 | `run_litmus.py` | Runs every test and compares each result with its `Expect:` line. |
-| `run_lean.py` | Checks that the Lean model and `vx.cat` agree on the tests for CPUs. |
+| `run_lean.py` | Checks that the Lean model and `vx.cat` agree on the tests without branches. |
 | `tests/` | One test for each case of the rules. |
 | `memalloy/` | The CPU part of the model, compared with RC11 and with AArch64 by memalloy. |
-| `lean/` | The CPU part of the model in Lean 4, with proofs for executions of any size. |
+| `lean/` | The model in Lean 4, with proofs for executions of any size. |
 
 ## Running the tests
 
@@ -250,6 +250,23 @@ relaxed read-modify-write, and a drop takes 1 away with a release one. The drop 
 an acquire fence and frees the value. `arc_last_drop_hb_free` shows that each event before another
 drop happens before each event after that fence. The clones and drops between the two drops form a
 release sequence. `arc_last_drop_release_sequence.litmus` checks this with three tasks.
+`ChannelOrders.lean` checks the slots of `stdlib/std/sync/channel.vx`. A `send` and a `recv` hand
+a slot over with a release store and an acquire load. No two writes to a slot write the same
+number, so the load reads that store. `slot_send_hb_recv` and `slot_recv_hb_send` give the edges.
+`ReleaseSequence.lean` has the lemmas that these three files share.
+
+`Scopes.lean` adds the scopes and the barriers of `vx.cat` as a separate layer. Each event has a
+scope, and each thread has a subgroup, a block and a device. `Reaches`, `Strong`, `rs`, `sw`,
+`bar`, `hb` and `DataRace` follow `vx.cat`. With every scope `system`, they equal the definitions
+of `Rc11.lean` (`rs_eq`, `sw_eq`, `hb_eq`, `consistent_iff`, `dataRace_iff`), so the CPU proofs
+still hold.
+`LastArriver.lean` proves the last-arriver pattern of #2139. Each block writes its partial
+result, runs a release fence and adds 1 to a counter. The block whose add reads `n - 1` runs an
+acquire fence and reads the partials. `last_block_reads_every_partial` shows that each partial
+write happens before that read, when the fences and the adds have device scope.
+`LastArriverExample.lean` shows a run of two blocks where, with adds of block scope, the read of
+a partial races with its write. `last_arriver_*.litmus` check the same cases in herd7.
+
 `ChannelExample.lean` builds a run where the main code sends 7 and drops its sender, and a task
 makes two `recv`s. The first gets 7, and the second finds the channel closed. `check` finds that
 the model allows this run with no data race. `MutexExample.lean` builds a run where a lock orders
@@ -314,7 +331,7 @@ modulo `n`. It gives the bound only when no other event comes between two calls.
 shows that other events can keep a ready receiver waiting forever.
 
 The definitions in `lean/VxMemoryModel/Rc11.lean` follow `memalloy/vx_cpu.cat` line by line.
-`run_lean.py` checks that Lean and `vx.cat` agree on the 13 tests without scopes and barriers:
+`run_lean.py` checks that Lean and `vx.cat` agree on each test without a branch:
 
 ```bash
 python3 formal/memory_model/run_lean.py    # needs lake and herd7
@@ -322,8 +339,14 @@ python3 formal/memory_model/run_lean.py    # needs lake and herd7
 
 For each test, the script lists every candidate execution, and Lean decides which ones the
 model allows and which have a data race. `lean/VxMemoryModel/Check.lean` decides the
-definitions themselves, so a wrong answer cannot come from a second copy of the model. The
-final states, the observation and the race flag must be the same as those of herd7.
+definitions themselves, and `ScopedCheck.lean` decides those of `Scopes.lean`. A test with a
+scope or a barrier goes through `ScopedCheck.lean`, and a test for CPUs through both. So a wrong
+answer cannot come from a second copy of the model. The final states, the observation and the
+race flag must be the same as those of herd7.
+
+The script runs `check` as a compiled program, `vxcheck` (`lean/CheckMain.lean`), that reads one
+execution on each line. This is about 70 times faster than `#eval`, so a test with three blocks
+takes less than a minute (`last_arriver_of_three_blocks.litmus`).
 
 ## Reading a test
 
@@ -341,7 +364,9 @@ exists (1:r1 = 0)
 - `w[rel] flag 1` writes 1 to `flag` with release order. `r[acq] r0 flag` reads `flag` into
   `r0` with acquire order. `plain` is an access that is not atomic. The orders are `plain`,
   `rlx`, `acq`, `rel`, `acq_rel` and `sc`.
-- `r[acq,block] r0 flag` is an atomic of block scope. An atomic without a scope has system scope.
+- `r[acq,block] r0 flag` is an atomic of block scope, and `f[rel,device]` is a fence of device
+  scope. An atomic or a fence without a scope has system scope.
+- `rmw[rlx,device] r0 (add r0 1) count` adds 1 to `count` and reads the old value into `r0`.
 - `f[barrier,block]` is a barrier of block scope. The scopes are `subgroup`, `block`, `device`
   and `system`.
 - `scopes:` puts the threads in subgroups, blocks and devices. A CPU test writes
@@ -353,7 +378,7 @@ exists (1:r1 = 0)
 
 A fork or a join is a release write and an acquire read of a flag, as in the example.
 
-## Two choices in the model
+## Three choices in the model
 
 - **No value comes out of thin air.** The model keeps the rule of RC11: no cycle of program order
   and reads, also for relaxed atomics. PTX and AArch64 allow such a cycle, so vxc makes each
@@ -363,18 +388,29 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
   `load_buffering_relaxed.litmus`.
 - **Two atomics race unless each one reaches the thread of the other.** This follows the PTX
   model. `atomic_of_block_scope_across_blocks.litmus` shows the case.
+- **A release and an acquire synchronize only when they reach each other**, and so do the write
+  and the read that link them. With fences, these are two pairs, as in PTX.
+  `last_arriver_with_fences_of_block_scope.litmus` shows the case.
+- **A read-modify-write continues a release sequence only when it and the write it reads reach
+  each other.** This is the "observation order" of the PTX model.
+  `release_sequence_broken_by_an_add_of_block_scope.litmus` shows the case.
 
 ## Limits
 
-- A test may have at most one barrier in each thread. The model matches barriers by scope, not
-  by count.
+- The model matches barriers by scope, not by count. So a thread may run two barriers of one
+  scope only when no other thread is in its group of that scope
+  (`two_barriers_in_a_block_of_one_thread.litmus`). A test with two such barriers in two threads
+  can get a wrong answer.
+- A barrier of system scope has no effect (`barrier_of_system_scope_orders_nothing.litmus`).
 - The rule for sequentially consistent atomics ignores scopes.
 - herd7 checks each test completely, but only the tests. memalloy checks every execution up to 5
   or 6 events.
 - The core language has no functions and no references.
 - The rules compare each task of an inner block with all the code of the outer block, also the
   code after the inner block joined it.
-- The Lean model has no scopes and no barriers.
+- `run_lean.py` skips the tests with a branch.
+- `vxcheck` copies each execution into arrays before `check` (`fastData`). No theorem shows that
+  the copy equals `Data.ofLists`. On the tests, its answers are those of `#eval`.
 - The model covers only C0 to C7. The rules for sequential code, E1 to E7 and A1 to A6, are not in
   it.
 - `Consistent` does not ask that `co` orders the writes to each place. A theorem that needs it

@@ -43,7 +43,7 @@
 // COUNT-NOT: names no location
 
 Memory Vault {
-  capacity: 8 GB, bandwidth: 1 TB/s
+  scope: device, capacity: 8 GB, bandwidth: 1 TB/s
 }
 
 Topology Island {

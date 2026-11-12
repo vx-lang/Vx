@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // `main` calls the three Vec functions. `push` and the drop at the end of `main` take the
 // address of the stack slot that holds the constructed value.
 // CHECK-LABEL: func.func @main

@@ -36,3 +36,7 @@ fn main() -> i32 {
   print(q);
   return 0;
 }
+
+// The 8 errors above are the only ones. `--implicit-check-not` does not look past the first
+// `CHECK-DAG` match, so this line counts them.
+// CHECK: {{^}}Semantic check failed on {{.*}}: 8 error(s) emitted

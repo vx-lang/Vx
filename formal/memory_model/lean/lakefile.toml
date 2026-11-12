@@ -3,3 +3,7 @@ defaultTargets = ["VxMemoryModel"]
 
 [[lean_lib]]
 name = "VxMemoryModel"
+
+[[lean_exe]]
+name = "vxcheck"
+root = "CheckMain"

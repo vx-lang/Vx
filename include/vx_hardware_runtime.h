@@ -393,7 +393,8 @@ static inline size_t vx_payload_text_end(const void *payload,
 /// computes, "matmul", so a plugin can route it to a vendor library instead of
 /// guessing from buffer shapes -- which cannot be done for square operands,
 /// where every operand assignment conforms), `roles=`, `outkind=`, `topo=` (the
-/// dispatch id, decoded by vx_payload_topology), `toponame=`, `grid=`, `block=`
+/// dispatch id, decoded by vx_payload_topology), `toponame=`, `offload=`,
+/// `arch=` (the `arch:` of a declared topology), `grid=`, `block=`
 /// and `grid_loops=` (the launch shape of an `across` kernel, vx_launch_shape),
 /// `host_blocks=` (the host copy shares the blocks of axis x among the host's
 /// workers, vx_host_worker_count_for), `launch=`, `coop=`, `format=` (what the
@@ -421,6 +422,10 @@ vx_payload_field(const void *payload, size_t payload_size, const char *key) {
 
   const char *base = (const char *)payload;
   size_t key_len = strlen(key);
+  /* When the last byte is NUL, a NUL ends each entry inside the blob. Then a
+     match can return before the walk finds the end of its entry, and finding
+     `image=` does not read the whole image. */
+  const int terminated = base[payload_size - 1] == '\0';
 
   /* Skip the kernel name, then walk the remaining NUL-terminated entries. memchr rather
      than a byte loop: an `image=` entry holds a whole module's PTX, and looking up a field
@@ -434,6 +439,9 @@ vx_payload_field(const void *payload, size_t payload_size, const char *key) {
   while (pos < payload_size) {
     const char *entry = base + pos;
     size_t remaining = payload_size - pos;
+    if (terminated && remaining > key_len && memcmp(entry, key, key_len) == 0) {
+      return entry + key_len;
+    }
     const char *end = (const char *)memchr(entry, '\0', remaining);
     if (!end) {
       /* Unterminated: refuse rather than read past the blob. */
@@ -560,6 +568,8 @@ static inline int64_t vx_payload_section(const void *payload,
 #define VX_TOPO_AMX 300
 #define VX_TOPO_ANE 400
 #define VX_TOPO_GPU_BASE 500
+#define VX_TOPO_CPU_AVX512 600
+#define VX_TOPO_CPU_NEON 700
 // Network memory, as a `vx.transfer` target. Distinct bands rather than the
 // shared 300 they used to answer, which was `VX_TOPO_AMX` -- a transfer into a
 // peer's memory arrived indistinguishable from a request for Apple's matrix
@@ -674,10 +684,30 @@ int32_t vx_plugin_control(uint32_t opcode, void *payload);
 #define VX_CTRL_LOCAL_DEVICE 0x04
 // Wait until every launch on a topology has finished. `payload` points to the
 // int32_t topology id. A backend may wait for more than that topology. A
-// transfer over a `: shared` edge sends it before the CPU reads GPU memory in
-// place. A backend whose launches finish before they return ignores it.
+// backend whose launches finish before they return ignores it, and the same
+// goes for the two opcodes after it. An object from an older vxc sends it where
+// vxc now sends VX_CTRL_WAIT_FOR_TENSORS or VX_CTRL_WAIT_FOR_THREAD.
 #define VX_CTRL_WAIT 0x05
+// Wait for each launch on a topology that writes the memory of some tensors.
+// `payload` points to a `vx_wait_for_tensors`. A backend may wait for more, as
+// for VX_CTRL_WAIT. A transfer over a `: shared` edge sends it before the CPU
+// reads a tensor in place. A `pub fn` of a library for the Apple GPU sends it
+// with its tensor parameters before it returns.
+#define VX_CTRL_WAIT_FOR_TENSORS 0x06
+// Wait for each launch on a topology that the calling thread made. `payload`
+// points to the int32_t topology id. A backend may wait for more. A `pub fn`
+// of a library for the Apple GPU sends it before it returns.
+#define VX_CTRL_WAIT_FOR_THREAD 0x07
 #define VX_CTRL_VENDOR_BASE 0x1000 // Vendors start their custom opcodes here
+
+// The tensors of VX_CTRL_WAIT_FOR_TENSORS. `args` and `tags` hold `count`
+// tensors, as `device_args` and `arg_tags` of vx_plugin_dispatch_async do.
+typedef struct vx_wait_for_tensors {
+  int32_t topology;
+  int32_t count;
+  void **args;
+  const int32_t *tags;
+} vx_wait_for_tensors;
 
 #ifdef __cplusplus
 }

@@ -1,0 +1,165 @@
+//===- a_tensor_in_gpu_memory_in_a_struct_or_enum_is_freed_by_its_plugin.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A struct field or an enum payload can hold a tensor in the GPU memory `W`. The plugin of `W`
+// made the tensor, so the drop of the struct or the enum gives it back to that plugin with
+// `vx_plugin_free`, with the topology of `W`, 1376527430. It must not call libc `free`, which
+// cannot free GPU memory.
+//
+// - `holder.vx`: a struct with such a field.
+// - `pinned.vx`: a struct with a field of `Pinned<Tensor<..>, Topology::GPU[0]>`. The topology
+//   says where the tensor is, so the plugin of the GPU, 500, frees it.
+// - `slot.vx`: an enum with such a payload.
+// - `run.vx`: the payload goes to a function, which reads it back on the host.
+//
+// Each file runs with both code generators.
+//
+// RUN: split-file %s %t
+// RUN: vxc %t/holder.vx --action emit-llvm 2>&1 | FileCheck %s --check-prefix=HOLDER
+// RUN: vxc %t/holder.vx --action emit-llvm --legacy-codegen 2>&1 | FileCheck %s --check-prefix=HOLDER
+// RUN: vxc %t/pinned.vx --action emit-llvm 2>&1 | FileCheck %s --check-prefix=PINNED
+// RUN: vxc %t/pinned.vx --action emit-llvm --legacy-codegen 2>&1 | FileCheck %s --check-prefix=PINNED
+// RUN: vxc %t/slot.vx --action emit-llvm 2>&1 | FileCheck %s --check-prefix=SLOT
+// RUN: vxc %t/slot.vx --action emit-llvm --legacy-codegen 2>&1 | FileCheck %s --check-prefix=SLOT
+// RUN: vxc %t/run.vx 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
+// RUN: vxc %t/run.vx --legacy-codegen 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
+//===----------------------------------------------------------------------===//
+
+// HOLDER-LABEL: llvm.func hidden @drop_a_holder(
+// HOLDER: [[W:%[0-9]+]] = llvm.mlir.constant(1376527430 : i32)
+// HOLDER-NOT: llvm.call @free(
+// HOLDER: llvm.call @vx_plugin_free({{%[0-9]+}}, [[W]])
+// HOLDER-NOT: llvm.call @free(
+// HOLDER: llvm.return
+
+// PINNED-LABEL: llvm.func hidden @drop_a_pinned_holder(
+// PINNED: [[GPU:%[0-9]+]] = llvm.mlir.constant(500 : i32)
+// PINNED-NOT: llvm.call @free(
+// PINNED: llvm.call @vx_plugin_free({{%[a-z0-9]+}}, [[GPU]])
+// PINNED-NOT: llvm.call @free(
+// PINNED: llvm.return
+
+// SLOT-LABEL: llvm.func hidden @drop_a_slot(
+// SLOT: [[W:%[0-9]+]] = llvm.mlir.constant(1376527430 : i32)
+// SLOT-NOT: llvm.call @free(
+// SLOT: llvm.call @vx_plugin_free({{%[0-9]+}}, [[W]])
+// SLOT-NOT: llvm.call @free(
+// SLOT: {{^  }}}{{$}}
+
+// OUT: {{^}}3 0{{$}}
+
+//--- holder.vx
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 4 MiB, managed: explicit, scope: device
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10,
+  transfer Memory::W -> Memory::CPU_DRAM : 10
+}
+
+struct Holder {
+  t : Tensor<f32, [4], Memory::W>,
+}
+
+fn drop_a_holder(t : Tensor<f32, [4], Memory::W>) -> void {
+  let _h = Holder {
+    t : t
+  };
+}
+
+fn main() -> i32 {
+  drop_a_holder(transfer(Tensor<f32, [4]>::fill(2.0), Memory::W));
+  return 0;
+}
+
+//--- pinned.vx
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s
+}
+
+struct Pinner {
+  t : Pinned<Tensor<f32, [2, 2]>, Topology::GPU[0]>,
+}
+
+fn drop_a_pinned_holder(t : Pinned<Tensor<f32, [2, 2]>, Topology::GPU[0]>) -> void {
+  let _h = Pinner {
+    t : t
+  };
+}
+
+fn main() -> i32 {
+  drop_a_pinned_holder(transfer(Tensor<f32, [2, 2]>::fill(2.0), Memory::GPU_HBM));
+  return 0;
+}
+
+//--- slot.vx
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 4 MiB, managed: explicit, scope: device
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10,
+  transfer Memory::W -> Memory::CPU_DRAM : 10
+}
+
+enum Slot {
+  Full(Tensor<f32, [4], Memory::W>),
+  Empty,
+}
+
+fn drop_a_slot(t : Tensor<f32, [4], Memory::W>) -> void {
+  let _s = Slot::Full(t);
+}
+
+fn main() -> i32 {
+  drop_a_slot(transfer(Tensor<f32, [4]>::fill(2.0), Memory::W));
+  return 0;
+}
+
+//--- run.vx
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 4 MiB, managed: explicit, scope: device
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10,
+  transfer Memory::W -> Memory::CPU_DRAM : 10
+}
+
+enum Slot {
+  Full(Tensor<f32, [4], Memory::W>),
+  Empty,
+}
+
+fn third(s : Slot) -> f32 {
+  match s {
+    Slot::Full(t) => {
+      let h = transfer(t, Memory::CPU_DRAM);
+      return h[2];
+    }
+    Slot::Empty => {
+      return 0.0;
+    }
+  }
+}
+
+fn main() -> i32 {
+  let a = transfer(Tensor<f32, [4]>::fill(3.0), Memory::W);
+  print!("{} {}", third(Slot::Full(a)), third(Slot::Empty));
+  return 0;
+}

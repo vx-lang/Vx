@@ -1,0 +1,42 @@
+//===- measuring_time_with_instant.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Instant::now()` reads a clock that never goes back, and `later - earlier` is a `Duration`.
+// `sleep` takes a `Duration` and never sleeps less. `as_nanos_i64` gives the largest `i64` for a
+// duration that does not fit, as the runtime takes a time limit.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}slept at least 20 ms: true{{$}}
+// CHECK: {{^}}elapsed at least 20 ms: true{{$}}
+// CHECK: {{^}}a second later is later: true{{$}}
+// CHECK: {{^}}since a later reading: 0 ns{{$}}
+// CHECK: {{^}}a second later minus now: 1000 ms{{$}}
+// CHECK: {{^}}no reading after the longest duration: true{{$}}
+// CHECK: {{^}}1.5 s in nanoseconds: 1500000000{{$}}
+// CHECK: {{^}}the longest duration in nanoseconds: 9223372036854775807{{$}}
+
+import core::option;
+import core::time;
+import std::time;
+
+fn main() -> i32 {
+  let start = Instant::now();
+  sleep(Duration::from_millis(20));
+  let waited = Instant::now() - start;
+  println!("slept at least 20 ms: {}", waited >= Duration::from_millis(20));
+  println!("elapsed at least 20 ms: {}", start.elapsed().as_millis() >= 20);
+
+  let later = start.checked_add(&Duration::from_secs(1)).unwrap();
+  println!("a second later is later: {}", later > start);
+  println!("since a later reading: {} ns", start.duration_since(&later).as_nanos());
+  println!("a second later minus now: {} ms", (later - start).as_millis());
+  println!("no reading after the longest duration: {}", later.checked_add(&Duration::max_value()).is_none());
+
+  println!("1.5 s in nanoseconds: {}", Duration::from_millis(1500).as_nanos_i64());
+  println!("the longest duration in nanoseconds: {}", Duration::max_value().as_nanos_i64());
+  return 0;
+}

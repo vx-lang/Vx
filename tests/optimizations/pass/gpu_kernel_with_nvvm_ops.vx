@@ -46,3 +46,8 @@ pub fn fast_exp(o : &mut Tensor<f32, [?], Memory::HBM>, a : &Tensor<f32, [?], Me
 fn main() -> i32 {
   return 0;
 }
+
+// `--implicit-check-not` does not look past the first `CHECK-DAG` match, so these lines
+// check the end of the output.
+// CHECK-NOT: Error
+// CHECK-NOT: runs on the CPU

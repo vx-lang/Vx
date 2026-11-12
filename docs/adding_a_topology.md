@@ -179,17 +179,12 @@ These are the errors a first attempt actually hits, in the order you are likely 
 | `E6003` | A value is read on a device whose `visible:` list does not include the space it lives in. |
 | `E6009` | A tensor does not fit the declared `capacity`. This one is the point of the exercise. |
 | `W1026` | The topology's memory has no transfer edge from the host, so nothing can reach it. |
+| `E6037` | A type places a tensor in the memory, and the memory has no `scope:`. |
 
-One more, which only appears on the AST backend (`--legacy-codegen`) and only when a tensor is
-*placed* in the space rather than transferred into it:
-
-```
-Codegen Error: topology 'Acc_RAM' has no memory space that maps to this target's
-address spaces; declare its memory with a `scope:` (device/sm/cta/thread)
-```
-
-Declaring `scope:` on the memory fixes it. A space with no `scope:` has no honest target address
-space, and defaulting one would put the data somewhere the program did not ask for.
+Declaring `scope:` on the memory fixes E6037. A space with no `scope:` has no address space on
+the target, and a default would put the data somewhere the program did not ask for. A memory with
+`scope: device` describes a machine, so a transfer from host memory then needs a host
+(`--host default`, E6014).
 
 ______________________________________________________________________
 

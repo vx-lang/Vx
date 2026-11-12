@@ -1,0 +1,62 @@
+//===- pointer_facts_keep_the_old_value_of_a_variable.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An assignment to a number keeps the pointer facts that name the number. Each fact names the old
+// value by a new name, and the prover knows how the new value follows from the old one. So each
+// call below proves its pointer `requires`.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-NOT: E8006
+// CHECK: func.func @main
+
+import core::ptr;
+
+fn first(p : *const i64) -> i64
+requires valid(p, 1i64)
+requires initialized(p, 1i64)
+{
+  return unsafe { p[0] };
+}
+
+fn sum(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  let mut total = 0i64;
+  for i in 0i64..n {
+    total = total + unsafe { p[i] };
+  }
+  return total;
+}
+
+// The facts name `n`. After `n = n - 1`, they name the old `n`, which is one more than `n`.
+fn all_but_the_last(p : *const i64, mut n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+requires 1i64 <= n
+{
+  n = n - 1i64;
+  return sum(p, n);
+}
+
+// `q` is `p` moved by `k` elements. After `k = 0`, `q` is `p` moved by the old `k`.
+fn the_last(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+requires 1i64 <= n
+{
+  let mut k = n - 1i64;
+  let q = offset(p, k);
+  k = 0i64;
+  return first(q) + k;
+}
+
+fn main() -> i32 {
+  let x = 5i64;
+  let p : *const i64 = &x;
+  return (all_but_the_last(p, 1i64) + the_last(p, 1i64)) as i32;
+}

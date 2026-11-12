@@ -1,0 +1,164 @@
+//===- loop_invariants_with_pointer_clauses_that_fail.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each loop invariant below is a pointer clause that the compiler cannot prove. It gets E8008
+// when it may not hold when the loop starts, and E8009 when it may not hold in the next pass.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+import core::ptr;
+import std::vec;
+
+fn first(p : *const i64) -> i64
+requires valid(p, 1i64)
+requires initialized(p, 1i64)
+{
+  return unsafe { p[0] };
+}
+
+fn touch(_p : *const i64) -> void
+ensures frees(_p)
+{
+  return;
+}
+
+fn need_initialized(p : *const i64, n : i64) -> i64
+requires initialized(p, n)
+{
+  return n;
+}
+
+fn not_written_yet(p : *mut i64, n : i64) -> i64
+requires valid(p, n)
+{
+  // CHECK: Error[E8008] at {{.*}}.vx:[[@LINE+1]]:30: this loop invariant `initialized(p, n)` may not hold when the loop starts
+  for i in 0i64..n invariant initialized(p, n) {
+    unsafe { p[i] = 1i64; }
+  }
+  return 0i64;
+}
+
+// The call to `touch` before the loop can free the memory at `p`.
+fn after_an_event(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  touch(p);
+  // CHECK: Error[E8008] at {{.*}}.vx:[[@LINE+2]]:30: this loop invariant `valid(p, n)` may not hold when the loop starts
+  // CHECK-NEXT: note: a fact that proves it ended at the call to 'touch', which can free memory through `p` (at [[@LINE-2]]:3){{$}}
+  for i in 0i64..n invariant valid(p, n) {
+  }
+  return 0i64;
+}
+
+// The body never writes, so the next pass has one element too few.
+fn counts_without_writing(p : *mut i64, n : i64) -> i64
+requires valid(p, n)
+{
+  let mut i = 0i64;
+  // CHECK: Error[E8009] at {{.*}}.vx:[[@LINE+1]]:45: this loop invariant `initialized(p, i)` may not hold after a pass through the loop body
+  while i < n invariant 0i64 <= i invariant initialized(p, i) {
+    i = i + 1i64;
+  }
+  return i;
+}
+
+// The `continue` skips the write.
+fn skips_the_write(p : *mut i64, n : i64, c : bool) -> i64
+requires valid(p, n)
+{
+  // CHECK: Error[E8009] at {{.*}}.vx:[[@LINE+1]]:30: this loop invariant `initialized(p, i)` may not hold for the next `i` after the `continue` at line [[#@LINE+3]]
+  for i in 0i64..n invariant initialized(p, i) {
+    if c {
+      continue;
+    }
+    unsafe { p[i] = 1i64; }
+  }
+  return 0i64;
+}
+
+// The call to `touch` in the body can free the memory at `q`.
+fn frees_in_the_body(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  let mut q = p;
+  let mut i = 0i64;
+  // CHECK: Error[E8009] at {{.*}}.vx:[[@LINE+1]]:45: this loop invariant `valid(q, n - i)` may not hold after a pass through the loop body
+  while i < n invariant 0i64 <= i invariant valid(q, n - i) {
+    touch(q);
+    q = offset(q, 1i64);
+    i = i + 1i64;
+  }
+  return 0i64;
+}
+
+// At the end of a pass, `q` points into `y`, whose storage ends with the pass.
+fn into_a_local_of_the_body(p : *const i64) -> i64
+requires valid(p, 1i64)
+requires initialized(p, 1i64)
+{
+  let mut q = p;
+  let mut total = 0i64;
+  let mut i = 0i64;
+  // CHECK: Error[E8009] at {{.*}}.vx:[[@LINE+2]]:28: this loop invariant `valid(q, 1)` may not hold after a pass through the loop body
+  // CHECK: Error[E8009] at {{.*}}.vx:[[@LINE+1]]:53: this loop invariant `initialized(q, 1)` may not hold after a pass through the loop body
+  while i < 3i64 invariant valid(q, 1i64) invariant initialized(q, 1i64) {
+    total = total + first(q);
+    let y = 7i64;
+    q = &y;
+    i = i + 1i64;
+  }
+  return total;
+}
+
+fn holds(p : *const Vec<i64>) -> i64
+requires valid(p, 1i64)
+requires initialized(p, 1i64)
+ensures !frees(p)
+{
+  return 0i64;
+}
+
+// At the end of a pass, `q` points at `v`. The next pass moves the value out of `v` before it
+// reads through `q`. So the base of `q` in a pass must have the memory of `v`, and it does not.
+fn into_an_outer_local(p : *const Vec<i64>) -> i64
+requires valid(p, 1i64)
+requires initialized(p, 1i64)
+{
+  let mut q = p;
+  let mut v = Vec<i64>::new();
+  let mut i = 0i64;
+  // CHECK: Error[E8009] at {{.*}}.vx:[[@LINE+2]]:28: this loop invariant `valid(q, 1)` may not hold after a pass through the loop body
+  // CHECK: Error[E8009] at {{.*}}.vx:[[@LINE+1]]:53: this loop invariant `initialized(q, 1)` may not hold after a pass through the loop body
+  while i < 3i64 invariant valid(q, 1i64) invariant initialized(q, 1i64) {
+    let w = v;
+    let _ = holds(q);
+    v = w;
+    q = &v;
+    i = i + 1i64;
+  }
+  return 0i64;
+}
+
+// When the loop starts, the compiler assumes `0 <= n`, and then `k >= 3`. A loop with `n < 0`
+// runs no pass, so the invariant gives no fact after the loop. The body ends the fact from the
+// `requires` and makes the fact of the invariant again, so only the invariant could give it.
+fn after_a_loop_that_can_run_no_pass(p : *const i64, n : i64, k : i64) -> i64
+requires initialized(p, k)
+requires k >= 3i64 || n < 0i64
+{
+  for i in 0i64..n invariant initialized(p, 3i64) {
+    touch(p);
+    unsafe { assume initialized(p, 3i64); }
+  }
+  // CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+1]]:10: this call to 'need_initialized' may not meet its precondition `initialized(p, n)`
+  return need_initialized(p, 3i64);
+}
+
+fn main() -> i32 {
+  return 0;
+}

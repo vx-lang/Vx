@@ -1,0 +1,57 @@
+//===- writes_at_slots_from_an_atomic_counter.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Compaction: each pass whose number is a multiple of 3 takes a slot from a counter, and writes
+// its number there. `atomic_fetch_add_u32(&count, 0, 1u32, ..)` gives each call a different old
+// value, so no two passes write the same element of `out`, and the race proof accepts the write.
+// The order of the slots depends on timing, so the test checks the count and the sum. The
+// multiples of 3 below 128 are 43 numbers, and they add up to 3 * (0 + 1 + .. + 42) = 2709.
+// A pass that takes 2 slots with an increment of 2 writes both of them.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=PTX
+// CHECK: {{^}}count 43 sum 2709{{$}}
+// CHECK-NEXT: {{^}}pairs 86 sum 5418{{$}}
+// PTX: atom.global.add.u32
+import core::sync::atomic;
+
+fn main() -> i32 {
+  let count = transfer(Tensor<u32, [1]>::fill(0u32), Memory::HBM);
+  let mut out = transfer(Tensor<i32, [128]>::fill(0), Memory::HBM);
+  let pair_count = transfer(Tensor<u32, [1]>::fill(0u32), Memory::HBM);
+  let mut pairs = transfer(Tensor<i32, [256]>::fill(0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      for l in 0..32 across lanes {
+        let n = b * 32 + l;
+        if n % 3 == 0 {
+          let at : u32 = atomic_fetch_add_u32(&count, 0, 1u32, AtomicOrdering::Relaxed);
+          out[at as i64] = n;
+          let two : u32 = atomic_fetch_add_u32(&pair_count, 0, 2u32, AtomicOrdering::Relaxed);
+          pairs[two as i64] = n;
+          pairs[two as i64 + 1] = n;
+        }
+      }
+    }
+  }
+  let c = transfer(count, Memory::CPU_DRAM);
+  let o = transfer(out, Memory::CPU_DRAM);
+  let mut sum = 0;
+  for i in 0..c[0] as i32 {
+    sum = sum + o[i];
+  }
+  println!("count {} sum {}", c[0], sum);
+  let pc = transfer(pair_count, Memory::CPU_DRAM);
+  let p = transfer(pairs, Memory::CPU_DRAM);
+  let mut psum = 0;
+  for i in 0..pc[0] as i32 {
+    psum = psum + p[i];
+  }
+  println!("pairs {} sum {}", pc[0], psum);
+  return 0;
+}

@@ -88,7 +88,9 @@ pub fn lane_routine(name: &str) -> Option<(LaneOp, bool)> {
 /// A call to a lane routine as a message names it. The checker writes `t.wait()` on a copy token
 /// as `lanes::copy_wait(t)`, which the program does not show.
 pub fn shown_name(name: &str) -> String {
-    if lane_routine(name).is_some_and(|(op, _)| op == LaneOp::CopyWait) {
+    if name == MATMUL {
+        "a matmul of tiles".to_string()
+    } else if lane_routine(name).is_some_and(|(op, _)| op == LaneOp::CopyWait) {
         "the `.wait()` of a copy token".to_string()
     } else {
         format!("`{name}`")
@@ -106,6 +108,15 @@ pub fn bare_lane_statement(e: &Expr) -> Option<&FunctionCallExpr> {
     bare_lanes_call(e).filter(|fc| lane_routine(&fc.name).is_some_and(|(op, _)| op.is_statement()))
 }
 
+/// The call of `t = lanes::copy_async(..)`, which gives the token variable `t` its next copy, as a
+/// pipeline does when it starts the next copy before it waits for this one.
+pub fn next_copy(a: &crate::syntax::AssignStmt) -> Option<&FunctionCallExpr> {
+    match &a.lhs {
+        Expr::Identifier(_) if calls_routine(&a.rhs, LaneOp::CopyAsync) => bare_lanes_call(&a.rhs),
+        _ => None,
+    }
+}
+
 /// Whether `op` is a lane routine that `e` calls.
 pub fn calls_routine(e: &Expr, op: LaneOp) -> bool {
     bare_lanes_call(e).is_some_and(|fc| lane_routine(&fc.name).is_some_and(|(o, _)| o == op))
@@ -116,6 +127,84 @@ pub fn bare_lanes_call(e: &Expr) -> Option<&FunctionCallExpr> {
     match crate::syntax::bare_unsafe_value(e) {
         Expr::FunctionCall(fc) if fc.name.as_ref().starts_with("lanes::") => Some(fc),
         _ => None,
+    }
+}
+
+/// The name that the checks of `across` loops give a lane matmul.
+pub const MATMUL: &str = "@";
+
+/// `acc = acc + x @ y`, or `acc = x @ y`, where each of `x` and `y` is a tile or `t as f32` of a
+/// tile. In the code of a subgroup, every lane of the subgroup computes it together.
+pub struct LaneMatmul<'a> {
+    pub acc: &'a Expr,
+    /// The tiles, without their `as f32`.
+    pub lhs: &'a Expr,
+    pub rhs: &'a Expr,
+    /// Whether the products are added to the old `acc`.
+    pub accumulate: bool,
+    /// The `@`.
+    pub at: Span,
+}
+
+/// The matmul of tiles that the assignment `a` is, if it is one.
+pub fn lane_matmul(a: &crate::syntax::AssignStmt) -> Option<LaneMatmul<'_>> {
+    use crate::syntax::BinaryOp;
+    if !is_place(&a.lhs) {
+        return None;
+    }
+    let (product, accumulate) = match &a.rhs {
+        Expr::BinaryOp(sum) if sum.op == BinaryOp::Add && same_place(&sum.lhs, &a.lhs) => {
+            (&*sum.rhs, true)
+        }
+        other => (other, false),
+    };
+    let Expr::BinaryOp(mm) = product else {
+        return None;
+    };
+    if mm.op != BinaryOp::MatMul {
+        return None;
+    }
+    Some(LaneMatmul {
+        acc: &a.lhs,
+        lhs: matmul_tile(&mm.lhs)?,
+        rhs: matmul_tile(&mm.rhs)?,
+        accumulate,
+        at: mm.span,
+    })
+}
+
+/// The tile of an operand of a lane matmul: `t`, or `t` of `t as f32`.
+fn matmul_tile(e: &Expr) -> Option<&Expr> {
+    match e {
+        Expr::AsCast(c) if c.target_ty == Type::Scalar(ElementType::F32) && is_place(&c.expr) => {
+            Some(&c.expr)
+        }
+        e if is_place(e) => Some(e),
+        _ => None,
+    }
+}
+
+/// A variable, or an element or a row of one: `t`, `t[w]`, `t[w][1]`.
+fn is_place(e: &Expr) -> bool {
+    match e {
+        Expr::Identifier(_) => true,
+        Expr::IndexAccess(ix) => is_place(&ix.base),
+        _ => false,
+    }
+}
+
+/// Whether `a` and `b` are the same place, written the same way.
+fn same_place(a: &Expr, b: &Expr) -> bool {
+    match (a, b) {
+        (Expr::Identifier(x), Expr::Identifier(y)) => x.name == y.name,
+        (Expr::Number(x), Expr::Number(y)) => x.value == y.value,
+        (Expr::IndexAccess(x), Expr::IndexAccess(y)) => {
+            same_place(&x.base, &y.base) && same_place(&x.index, &y.index)
+        }
+        (Expr::BinaryOp(x), Expr::BinaryOp(y)) => {
+            x.op == y.op && same_place(&x.lhs, &y.lhs) && same_place(&x.rhs, &y.rhs)
+        }
+        _ => false,
     }
 }
 

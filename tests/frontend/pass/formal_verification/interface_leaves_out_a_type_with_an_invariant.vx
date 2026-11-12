@@ -1,0 +1,37 @@
+//===- interface_leaves_out_a_type_with_an_invariant.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-interface -o %t.vxlib 2>&1 | FileCheck %s
+//
+// A library interface (`.vxlib`) cannot carry an invariant yet. Without the invariant, a program
+// that uses the library could write the fields. So the interface leaves out `Span`, and keeps
+// `Point`.
+
+// CHECK: structs 1/2
+// CHECK: skipped structs 'Span': it has an invariant, and an interface cannot carry one yet{{$}}
+struct Span
+invariant self.lo <= self.hi
+{
+  lo : i32,
+  hi : i32,
+}
+
+struct Point {
+  x : i32,
+}
+
+fn make() -> Span {
+  return Span {
+    lo : 1, hi : 2
+  };
+}
+
+fn origin() -> Point {
+  return Point {
+    x : 0
+  };
+}

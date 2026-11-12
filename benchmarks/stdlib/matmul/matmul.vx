@@ -26,12 +26,12 @@ fn run(n : i32) -> i32 {
   let mut total : f64 = 0.0;
   for rep in 0..5 {
     a[1][rep] = 3.0 + (rep as f32);
-    let t0 = now();
+    let t0 = Instant::now();
     let c = a.matmul(&b);
-    let t1 = now();
+    let t1 = Instant::now();
     total += c[1][rep] as f64;
-    if t1 - t0 < best {
-      best = t1 - t0;
+    if (t1 - t0).as_secs_f32() < best {
+      best = (t1 - t0).as_secs_f32();
     }
   }
   unsafe {

@@ -1,0 +1,59 @@
+//===- pointer_facts_after_a_region_that_can_free.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `spawn on` region that uses a vector from outside it can free memory that `p` points into.
+// So the facts about `p` end when the region starts.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+import std::vec;
+
+fn need_valid(p : *const i64) -> i64
+requires valid(p, 1i64)
+{
+  return 0i64;
+}
+
+// CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+8]]:10: this call to 'need_valid' may not meet its precondition `valid(p, 1)`
+// CHECK-NEXT: note: a fact that proves it ended at the `spawn on` region, whose task can free memory through `v` (at [[@LINE+4]]:3)
+fn after_a_push(p : *const i64, v : &mut Vec<i64>) -> i64
+requires valid(p, 1i64)
+{
+  spawn on(Topology::CpuAvx512) {
+    v.push(1i64);
+  }
+  return need_valid(p);
+}
+
+// CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+11]]:10: this call to 'need_valid' may not meet its precondition `valid(p, 1)`
+// CHECK-NEXT: note: a fact that proves it ended at the `spawn on` region, whose task can free memory through `v` (at [[@LINE+4]]:3)
+fn through_a_closure(p : *const i64, v : &mut Vec<i64>) -> i64
+requires valid(p, 1i64)
+{
+  spawn on(Topology::CpuAvx512) {
+    let add = | k : i64 | -> i64 {
+      v.push(k); return 0i64;
+    };
+    add(2i64);
+  }
+  return need_valid(p);
+}
+
+// CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+8]]:10: this call to 'need_valid' may not meet its precondition `valid(p, 1)`
+// CHECK-NEXT: note: a fact that proves it ended at the `spawn on` region, whose task can free memory through `v` (at [[@LINE+4]]:12)
+fn through_the_value(p : *const i64, v : &mut Vec<i64>) -> i64
+requires valid(p, 1i64)
+{
+  let _n = spawn on(Topology::CpuAvx512) {
+    v.len()
+  };
+  return need_valid(p);
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -22,6 +22,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
@@ -280,6 +281,41 @@ static StringRef spaceOfTransfer(vx::TransferOp xfer) {
   if (auto s = xfer->getAttrOfType<StringAttr>("space"))
     return s.getValue();
   return "a device memory space";
+}
+
+/// A topology as the program names it, for a diagnostic: "`Topology::Dev`". A
+/// declared topology's id is a hash of its name, so the id is a last resort.
+static std::string topologyInWords(int32_t topology, StringAttr name) {
+  if (name)
+    return ("`Topology::" + name.getValue() + "`").str();
+  return "topology id " + std::to_string(topology);
+}
+
+/// A placed region as its author knows it, for a diagnostic: "the region placed
+/// on `Topology::Dev` in `main` (kernel `vx_npu_kernel_0`)". The compiler makes
+/// the kernel name from a counter, so it alone does not say which region it is.
+/// A kernel with several launches is named by its first launch.
+static std::string regionInWords(vx::KernelOp kernel) {
+  vx::LaunchOp launch;
+  if (auto module = kernel->getParentOfType<ModuleOp>())
+    module.walk([&](vx::LaunchOp l) {
+      if (l.getCalleeAttr().getValue() != kernel.getSymName())
+        return WalkResult::advance();
+      launch = l;
+      return WalkResult::interrupt();
+    });
+  StringAttr name;
+  func::FuncOp holder;
+  if (launch) {
+    name = launch->getAttrOfType<StringAttr>("vx.topology_name");
+    holder = launch->getParentOfType<func::FuncOp>();
+  }
+  std::string text =
+      "the region placed on " +
+      topologyInWords(static_cast<int32_t>(kernel.getTopology()), name);
+  if (holder)
+    text += (" in `" + holder.getSymName() + "`").str();
+  return text + " (kernel `" + kernel.getSymName().str() + "`)";
 }
 
 static StringRef kernelKindOf(Region &body, Operation **payloadOut = nullptr) {
@@ -641,6 +677,16 @@ static void useStackScratchIn(Region &kernel, PatternRewriter &rewriter) {
   }
 }
 
+/// The block argument that `v` is, or that `v` reads. The AST code generator
+/// keeps a reference to a tensor in a slot, and a region reads the tensor from
+/// the slot before it starts.
+static BlockArgument parameterOf(Value v) {
+  if (auto load = v.getDefiningOp<memref::LoadOp>();
+      load && load.getIndices().empty() && isa<MemRefType>(v.getType()))
+    v = load.getMemRef();
+  return dyn_cast<BlockArgument>(v);
+}
+
 /// A launch size as source text, from the parameters of `func` and numbers,
 /// for the `--emit-ptx` manifest: `(rows + 3) / 4`. Empty when the size comes
 /// from anything else.
@@ -711,6 +757,9 @@ static std::string launchSizeText(Value v, func::FuncOp func, int depth = 0) {
 /// from `sm_100` on. The kernel reads the tensor map from device memory, which
 /// needs `fence.proxy.tensormap` and so PTX ISA 8.3. Plain `sm_90` gets 7.8.
 static bool chipHasTensorMaps(StringRef chip);
+
+/// The GPU generation that the kernels in `gpuModule` compile for.
+static std::string deviceChip(gpu::GPUModuleOp gpuModule);
 
 /// Gives each lane copy in a GPU region a tensor map of its source, which the
 /// host makes before the launch, when the GPU can copy the tile with TMA. The
@@ -969,7 +1018,7 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     auto parentFunc = op->getParentOfType<func::FuncOp>();
     {
       auto paramIndex = [&](Value v) -> unsigned {
-        auto arg = dyn_cast<BlockArgument>(v);
+        auto arg = parameterOf(v);
         if (parentFunc && arg &&
             arg.getOwner() == &parentFunc.getBody().front())
           return arg.getArgNumber();
@@ -1023,18 +1072,23 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     // `&mut`). The borrow checker proved that nothing else writes such a
     // buffer while the kernel runs. `vx.align` is the `alignment:` of the
     // buffer's memory space, 0 for none. A device kernel puts these on its
-    // parameter.
+    // parameter. A tensor read from a slot parameter has `vx.tensor_access`
+    // on the slot in place of the `llvm.` marks.
     {
       SmallVector<Attribute> access;
       SmallVector<int64_t> align;
       for (Value v : captures) {
-        auto arg = dyn_cast<BlockArgument>(v);
+        auto arg = parameterOf(v);
         StringRef kind;
         int64_t bytes = 0;
         if (parentFunc && arg &&
             arg.getOwner() == &parentFunc.getBody().front()) {
           unsigned i = arg.getArgNumber();
-          if (parentFunc.getArgAttr(i, "llvm.readonly"))
+          if (Value(arg) != v) {
+            if (auto a = parentFunc.getArgAttrOfType<StringAttr>(
+                    i, "vx.tensor_access"))
+              kind = a.getValue();
+          } else if (parentFunc.getArgAttr(i, "llvm.readonly"))
             kind = "readonly";
           else if (parentFunc.getArgAttr(i, "llvm.noalias"))
             kind = "noalias";
@@ -1070,7 +1124,7 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       // the kernel gives.
       SmallVector<int64_t> paramOf;
       for (Value cap : captures) {
-        auto arg = dyn_cast<BlockArgument>(cap);
+        auto arg = parameterOf(cap);
         auto count = cap.getDefiningOp<vx::TransferOp>();
         if (count && count->hasAttr("vx.arrivals")) {
           kernelOp->setAttr("vx.arrivals", count->getAttr("vx.arrivals"));
@@ -1224,12 +1278,8 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     if (op->hasAttr("vx_parallel_coop"))
       launchOp->setAttr("vx_parallel_coop", rewriter.getUnitAttr());
 
-    // The topology's declared name, forwarded from the spawn. Optional by
-    // design: the flat path emits `vx.spawn` from an instruction stream that
-    // carries the dispatch id and not the name, so a launch may legitimately
-    // arrive without one. A plugin then has the id and nothing else, which is
-    // exactly the situation before this existed -- the same way `kind=` and
-    // `roles=` degrade rather than fail (#348).
+    // The topology's name as the program wrote it, forwarded from the spawn.
+    // A launch may have none, such as a task's. A plugin then has only the id.
     if (auto topoName = op->getAttrOfType<StringAttr>("topology_name")) {
       launchOp->setAttr("vx.topology_name", topoName);
     }
@@ -1237,6 +1287,10 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     // built-in has no mark, and the runtime lets a manifest send it anywhere.
     if (auto offload = op->getAttrOfType<BoolAttr>("offload")) {
       launchOp->setAttr("vx.offload", offload);
+    }
+    // The `arch:` of a declared topology. A built-in has none.
+    if (auto arch = op->getAttrOfType<StringAttr>("arch")) {
+      launchOp->setAttr("vx.arch", arch);
     }
 
     if (resultSlot) {
@@ -1599,8 +1653,13 @@ static LLVM::LLVMFuncOp getOrDeclareRuntimeFn(OpBuilder &builder,
                                               StringRef name, Type result,
                                               ArrayRef<Type> params);
 
-// `VX_CTRL_WAIT` in include/vx_hardware_runtime.h.
+// `VX_CTRL_WAIT`, `VX_CTRL_WAIT_FOR_TENSORS` and `VX_CTRL_WAIT_FOR_THREAD` in
+// include/vx_hardware_runtime.h.
 constexpr int32_t kCtrlWait = 0x05;
+constexpr int32_t kCtrlWaitForTensors = 0x06;
+constexpr int32_t kCtrlWaitForThread = 0x07;
+
+static int32_t dtypeCode(Type t);
 
 // "Warning at file:line:col: " for an operation from the source, else
 // "Warning in function `f`: ". The driver prints only the message. The flat
@@ -1697,6 +1756,128 @@ useThatNeedsTheCopy(Value copy, SmallVectorImpl<vx::DropOp> &drops) {
   return {nullptr, nullptr};
 }
 
+// Whether the callee of `call` only reads the buffer of operand `n`: its
+// parameter is `llvm.readonly`, or a slot with `vx.tensor_access = "readonly"`.
+static bool calleeOnlyReads(func::CallOp call, unsigned n) {
+  auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+      call, call.getCalleeAttr());
+  if (!callee || callee.isExternal())
+    return false;
+  if (callee.getArgAttr(n, "llvm.readonly"))
+    return true;
+  auto access = callee.getArgAttrOfType<StringAttr>(n, "vx.tensor_access");
+  return access && access.getValue() == "readonly";
+}
+
+// Whether code can write the memory of `arg` through it: an element store, an
+// atomic, an `mlir!` block, or a call whose parameter is not `llvm.readonly`.
+// A load, a shape read, a view and a `let` slot that holds it only read it.
+static bool mayWriteThrough(Value arg) {
+  SmallVector<Value> work{arg};
+  llvm::DenseSet<Value> seen;
+  while (!work.empty()) {
+    Value value = work.pop_back_val();
+    if (!seen.insert(value).second)
+      continue;
+    for (OpOperand &use : value.getUses()) {
+      Operation *user = use.getOwner();
+      if (auto load = dyn_cast<memref::LoadOp>(user);
+          load && load.getMemRef() == value)
+        continue;
+      if (isa<memref::DimOp, vx::DropOp>(user))
+        continue;
+      if (auto meta = dyn_cast<memref::ExtractStridedMetadataOp>(user)) {
+        work.push_back(meta.getBaseBuffer());
+        continue;
+      }
+      if (isa<ViewLikeOpInterface, memref::CastOp>(user)) {
+        for (Value result : user->getResults())
+          work.push_back(result);
+        continue;
+      }
+      if (auto store = dyn_cast<memref::StoreOp>(user)) {
+        // The `let` slot of the parameter: its loads are the parameter again.
+        Value slot = store.getMemref();
+        if (store.getValueToStore() != value ||
+            !slot.getDefiningOp<memref::AllocaOp>())
+          return true;
+        for (OpOperand &u : slot.getUses()) {
+          if (auto load = dyn_cast<memref::LoadOp>(u.getOwner()))
+            work.push_back(load.getResult());
+          // The AST code generator passes a `&` tensor to a call in a slot.
+          else if (auto call = dyn_cast<func::CallOp>(u.getOwner());
+                   call && !calleeOnlyReads(call, u.getOperandNumber()))
+            return true;
+        }
+        continue;
+      }
+      if (auto call = dyn_cast<func::CallOp>(user)) {
+        if (calleeOnlyReads(call, use.getOperandNumber()))
+          continue;
+        return true;
+      }
+      if (auto effects = dyn_cast<MemoryEffectOpInterface>(user)) {
+        SmallVector<MemoryEffects::EffectInstance> list;
+        effects.getEffectsOnValue(value, list);
+        if (llvm::none_of(list, [](const MemoryEffects::EffectInstance &e) {
+              return isa<MemoryEffects::Write, MemoryEffects::Free>(
+                  e.getEffect());
+            }))
+          continue;
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+// Whether code can write the tensor that the slot parameter `slot` holds. The
+// AST code generator passes a `&` tensor as a slot.
+static bool mayWriteThroughSlot(Value slot) {
+  for (OpOperand &use : slot.getUses()) {
+    Operation *user = use.getOwner();
+    if (auto load = dyn_cast<memref::LoadOp>(user)) {
+      if (mayWriteThrough(load.getResult()))
+        return true;
+      continue;
+    }
+    if (auto call = dyn_cast<func::CallOp>(user);
+        call && calleeOnlyReads(call, use.getOperandNumber()))
+      continue;
+    return true;
+  }
+  return false;
+}
+
+// A `&` parameter is `llvm.readonly`, as Rust marks a `&T`. But the element
+// atomics of `core::sync::atomic` change a tensor through a `&`, and so does a
+// function that passes one on to them. Drops the mark from each parameter that
+// code can write through, until no mark changes: a call keeps a mark only when
+// the callee's parameter has it. A slot parameter has the mark as
+// `vx.tensor_access = "readonly"`.
+static void dropReadonlyOfWrittenParameters(ModuleOp module) {
+  for (bool changed = true; changed;) {
+    changed = false;
+    module.walk([&](func::FuncOp f) {
+      if (f.isExternal())
+        return;
+      for (unsigned i = 0; i < f.getNumArguments(); ++i) {
+        if (f.getArgAttr(i, "llvm.readonly") &&
+            mayWriteThrough(f.getArgument(i))) {
+          f.removeArgAttr(i, "llvm.readonly");
+          changed = true;
+        }
+        auto access = f.getArgAttrOfType<StringAttr>(i, "vx.tensor_access");
+        if (access && access.getValue() == "readonly" &&
+            mayWriteThroughSlot(f.getArgument(i))) {
+          f.removeArgAttr(i, "vx.tensor_access");
+          changed = true;
+        }
+      }
+    });
+  }
+}
+
 // A parameter of the function `v` is in: its block argument, or a load of the
 // argument's slot, which is how the AST code generator reads a `&` parameter.
 static bool isParameter(Value v) {
@@ -1706,6 +1887,101 @@ static bool isParameter(Value v) {
   auto arg = dyn_cast<BlockArgument>(v);
   return arg && arg.getOwner()->isEntryBlock() &&
          isa<func::FuncOp>(arg.getOwner()->getParentOp());
+}
+
+// A tensor that `tensorsToWaitFor` can describe: a strided memref of elements,
+// not a slot.
+static bool isTensorToWaitFor(Type t) {
+  auto type = dyn_cast<MemRefType>(t);
+  return type && !isa<MemRefType>(type.getElementType()) &&
+         (type.getLayout().isIdentity() ||
+          isa<StridedLayoutAttr>(type.getLayout()));
+}
+
+// A `vx_wait_for_tensors` for `vx_plugin_control`, with a descriptor for each
+// of `tensors` as a launch passes it. The stack slots go in the entry block of
+// `func`, so a wait in a loop does not grow the stack.
+static Value tensorsToWaitFor(OpBuilder &b, Location loc, func::FuncOp func,
+                              int32_t topology, ValueRange tensors) {
+  MLIRContext *ctx = b.getContext();
+  auto ptrType = LLVM::LLVMPointerType::get(ctx);
+  auto i32Type = b.getI32Type();
+  auto i64Type = b.getI64Type();
+  auto payloadType = LLVM::LLVMStructType::getLiteral(
+      ctx, {i32Type, i32Type, ptrType, ptrType});
+  const int32_t count = static_cast<int32_t>(tensors.size());
+  SmallVector<Type> descTypes;
+  SmallVector<Value> descs, slots;
+  Value args, tags, payload;
+  {
+    OpBuilder::InsertionGuard guard(b);
+    b.setInsertionPointToStart(&func.getBody().front());
+    Value one =
+        b.create<LLVM::ConstantOp>(loc, i64Type, b.getI64IntegerAttr(1));
+    Value all = b.create<LLVM::ConstantOp>(
+        loc, i64Type, b.getI64IntegerAttr(std::max(count, 1)));
+    for (Value t : tensors) {
+      const int64_t rank = cast<MemRefType>(t.getType()).getRank();
+      SmallVector<Type> fields{ptrType, ptrType, i64Type};
+      if (rank > 0)
+        fields.append(2, LLVM::LLVMArrayType::get(i64Type, rank));
+      descTypes.push_back(LLVM::LLVMStructType::getLiteral(ctx, fields));
+      descs.push_back(
+          b.create<LLVM::AllocaOp>(loc, ptrType, descTypes.back(), one));
+      slots.push_back(b.create<LLVM::AllocaOp>(loc, ptrType, ptrType, one));
+    }
+    args = b.create<LLVM::AllocaOp>(loc, ptrType, ptrType, all);
+    tags = b.create<LLVM::AllocaOp>(loc, ptrType, i32Type, all);
+    payload = b.create<LLVM::AllocaOp>(loc, ptrType, payloadType, one);
+  }
+  auto i64 = [&](Value index) -> Value {
+    return b.create<arith::IndexCastOp>(loc, i64Type, index);
+  };
+  auto i32 = [&](int32_t value) -> Value {
+    return b.create<LLVM::ConstantOp>(loc, i32Type, b.getI32IntegerAttr(value));
+  };
+  for (auto [i, t] : llvm::enumerate(tensors)) {
+    auto type = cast<MemRefType>(t.getType());
+    auto meta = b.create<memref::ExtractStridedMetadataOp>(loc, t);
+    Value aligned = b.create<LLVM::IntToPtrOp>(
+        loc, ptrType,
+        i64(b.create<memref::ExtractAlignedPointerAsIndexOp>(loc, t)));
+    Value desc = b.create<LLVM::UndefOp>(loc, descTypes[i]);
+    desc =
+        b.create<LLVM::InsertValueOp>(loc, desc, aligned, ArrayRef<int64_t>{0});
+    desc =
+        b.create<LLVM::InsertValueOp>(loc, desc, aligned, ArrayRef<int64_t>{1});
+    desc = b.create<LLVM::InsertValueOp>(loc, desc, i64(meta.getOffset()),
+                                         ArrayRef<int64_t>{2});
+    for (int64_t d = 0; d < type.getRank(); ++d) {
+      desc = b.create<LLVM::InsertValueOp>(loc, desc, i64(meta.getSizes()[d]),
+                                           ArrayRef<int64_t>{3, d});
+      desc = b.create<LLVM::InsertValueOp>(loc, desc, i64(meta.getStrides()[d]),
+                                           ArrayRef<int64_t>{4, d});
+    }
+    b.create<LLVM::StoreOp>(loc, desc, descs[i]);
+    b.create<LLVM::StoreOp>(loc, descs[i], slots[i]);
+    b.create<LLVM::StoreOp>(
+        loc, slots[i],
+        b.create<LLVM::GEPOp>(loc, ptrType, ptrType, args,
+                              ArrayRef<LLVM::GEPArg>{static_cast<int32_t>(i)}));
+    // The tag of a tensor argument of a launch.
+    const int32_t tag = static_cast<int32_t>(type.getRank()) << 16 |
+                        dtypeCode(type.getElementType()) << 8;
+    b.create<LLVM::StoreOp>(
+        loc, i32(tag),
+        b.create<LLVM::GEPOp>(loc, ptrType, i32Type, tags,
+                              ArrayRef<LLVM::GEPArg>{static_cast<int32_t>(i)}));
+  }
+  auto field = [&](int32_t k) -> Value {
+    return b.create<LLVM::GEPOp>(loc, ptrType, payloadType, payload,
+                                 ArrayRef<LLVM::GEPArg>{0, k});
+  };
+  b.create<LLVM::StoreOp>(loc, i32(topology), field(0));
+  b.create<LLVM::StoreOp>(loc, i32(count), field(1));
+  b.create<LLVM::StoreOp>(loc, args, field(2));
+  b.create<LLVM::StoreOp>(loc, tags, field(3));
+  return payload;
 }
 
 // Skip the copy of a transfer that sema marked `shared`: its source is a `&`
@@ -1752,34 +2028,26 @@ static void elideSharedTransfers(ModuleOp module) {
       continue;
     }
 
-    // Wait for the GPU, through `vx_plugin_control(VX_CTRL_WAIT, &topology)`.
-    // The slot for the topology goes at the start of the function, so a
-    // transfer in a loop does not grow the stack.
+    // Wait for the GPU launches that write `src`, through
+    // `vx_plugin_control(VX_CTRL_WAIT_FOR_TENSORS, ...)`.
     Location loc = t.getLoc();
     OpBuilder builder(t);
     auto ptrType = LLVM::LLVMPointerType::get(module.getContext());
     auto i32Type = builder.getI32Type();
-    auto func = t->getParentOfType<func::FuncOp>();
-    Value slot;
-    {
-      OpBuilder::InsertionGuard guard(builder);
-      builder.setInsertionPointToStart(&func.getBody().front());
-      Value one = builder.create<LLVM::ConstantOp>(
-          loc, builder.getI64Type(), builder.getI64IntegerAttr(1));
-      slot = builder.create<LLVM::AllocaOp>(loc, ptrType, i32Type, one);
-    }
-    Value topology = builder.create<LLVM::ConstantOp>(
-        loc, i32Type, builder.getI32IntegerAttr(sourceTopologyOf(t)));
-    builder.create<LLVM::StoreOp>(loc, topology, slot);
+    assert(isTensorToWaitFor(srcType) &&
+           "a `&` tensor parameter is a strided memref of elements");
+    Value tensors =
+        tensorsToWaitFor(builder, loc, t->getParentOfType<func::FuncOp>(),
+                         sourceTopologyOf(t), ValueRange{src});
     Value opcode = builder.create<LLVM::ConstantOp>(
-        loc, i32Type, builder.getI32IntegerAttr(kCtrlWait));
+        loc, i32Type, builder.getI32IntegerAttr(kCtrlWaitForTensors));
     // An unknown location: LLVM refuses a declaration with debug info.
     getOrDeclareRuntimeFn(builder, module, UnknownLoc::get(module.getContext()),
                           "vx_plugin_control", i32Type, {i32Type, ptrType});
     builder.create<LLVM::CallOp>(
         loc, TypeRange{i32Type},
         SymbolRefAttr::get(module.getContext(), "vx_plugin_control"),
-        ValueRange{opcode, slot});
+        ValueRange{opcode, tensors});
 
     Value inPlace = src;
     if (srcType != copyType)
@@ -1914,13 +2182,10 @@ static LogicalResult diagnoseUnrunnableSpawns(Operation *root) {
     if (!xfer)
       return;
 
-    // A declared topology's id is a hash of its name, so name it instead.
-    std::string where = "topology " + std::to_string(topology);
-    if (auto name = spawn->getAttrOfType<StringAttr>("topology_name"))
-      where = ("`Topology::" + name.getValue() + "`").str();
-
     spawn.emitError()
-        << "this region is placed on " << where
+        << "this region is placed on "
+        << topologyInWords(topology,
+                           spawn->getAttrOfType<StringAttr>("topology_name"))
         << ", but the compiler cannot emit a device kernel for it and its "
            "operands are in '"
         << spaceOfTransfer(xfer)
@@ -3220,6 +3485,270 @@ static void expandLaneSort(OpBuilder &b, vx::LaneSortOp op, bool device) {
   op.erase();
 }
 
+/// Element (i, j) of a lane matmul: the sum of the products from 0, in the
+/// order of `k`, and then the old value of the element when the op adds.
+static void laneMatmulElement(OpBuilder &b, Location loc, vx::LaneMatmulOp op,
+                              Value i, Value j) {
+  Type f32 = b.getF32Type();
+  auto wide = [&](OpBuilder &nb, Location l, Value v) -> Value {
+    return v.getType().isF32() ? v : nb.create<arith::ExtFOp>(l, f32, v);
+  };
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  Value one = b.create<arith::ConstantIndexOp>(loc, 1);
+  Value depth = b.create<memref::DimOp>(loc, op.getLhs(), 1);
+  Value start =
+      b.create<arith::ConstantFloatOp>(loc, b.getF32Type(), APFloat(0.0f));
+  auto sum = b.create<scf::ForOp>(
+      loc, zero, depth, one, ValueRange{start},
+      [&](OpBuilder &nb, Location l, Value k, ValueRange s) {
+        Value x = wide(
+            nb, l, nb.create<memref::LoadOp>(l, op.getLhs(), ValueRange{i, k}));
+        Value y = wide(
+            nb, l, nb.create<memref::LoadOp>(l, op.getRhs(), ValueRange{k, j}));
+        Value p = nb.create<arith::MulFOp>(l, x, y);
+        nb.create<scf::YieldOp>(
+            l, ValueRange{nb.create<arith::AddFOp>(l, s[0], p)});
+      });
+  Value result = sum.getResult(0);
+  if (op.getAccumulate()) {
+    Value old = b.create<memref::LoadOp>(loc, op.getAcc(), ValueRange{i, j});
+    result = b.create<arith::AddFOp>(loc, old, result);
+  }
+  b.create<memref::StoreOp>(loc, result, op.getAcc(), ValueRange{i, j});
+}
+
+/// A lane matmul in loops over the rows and the columns, for the host and for a
+/// kernel that runs on one lane.
+static void expandLaneMatmulOnHost(OpBuilder &b, vx::LaneMatmulOp op) {
+  Location loc = op.getLoc();
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  Value one = b.create<arith::ConstantIndexOp>(loc, 1);
+  Value rows = b.create<memref::DimOp>(loc, op.getAcc(), 0);
+  Value cols = b.create<memref::DimOp>(loc, op.getAcc(), 1);
+  b.create<scf::ForOp>(loc, zero, rows, one, ValueRange{},
+                       [&](OpBuilder &nb, Location l, Value i, ValueRange) {
+                         nb.create<scf::ForOp>(l, zero, cols, one, ValueRange{},
+                                               [&](OpBuilder &mb, Location m,
+                                                   Value j, ValueRange) {
+                                                 laneMatmulElement(mb, m, op, i,
+                                                                   j);
+                                                 mb.create<scf::YieldOp>(m);
+                                               });
+                         nb.create<scf::YieldOp>(l);
+                       });
+}
+
+/// A lane matmul on the lanes of a subgroup: lane `l` computes the elements
+/// `l`, `l + 32` and so on, in row order. The subgroup barrier after the op
+/// makes the elements visible to the other lanes.
+static void expandLaneMatmulOnDevice(OpBuilder &b, vx::LaneMatmulOp op) {
+  assert(op.getSubgroup() &&
+         "the checker allows a lane matmul only in the code "
+         "of a subgroup");
+  Location loc = op.getLoc();
+  Value lanes = b.create<arith::ConstantIndexOp>(loc, 32);
+  Value tid =
+      b.create<gpu::ThreadIdOp>(loc, b.getIndexType(), gpu::Dimension::x);
+  Value lane = b.create<arith::RemUIOp>(loc, tid, lanes);
+  Value cols = b.create<memref::DimOp>(loc, op.getAcc(), 1);
+  Value all = b.create<arith::MulIOp>(
+      loc, b.create<memref::DimOp>(loc, op.getAcc(), 0), cols);
+  b.create<scf::ForOp>(loc, lane, all, lanes, ValueRange{},
+                       [&](OpBuilder &nb, Location l, Value e, ValueRange) {
+                         Value i = nb.create<arith::DivUIOp>(l, e, cols);
+                         Value j = nb.create<arith::RemUIOp>(l, e, cols);
+                         laneMatmulElement(nb, l, op, i, j);
+                         nb.create<scf::YieldOp>(l);
+                       });
+}
+
+/// Whether `chip` has `mma.sync.m16n8k16` for bf16 and f16: `sm_80` and later.
+static bool chipHasMmaSync(StringRef chip) {
+  unsigned version = 0;
+  return chip.consume_front("sm_") &&
+         !chip.take_while(llvm::isDigit).getAsInteger(10, version) &&
+         version >= 80;
+}
+
+/// The element type of the tiles of a lane matmul that `mma.sync.m16n8k16`
+/// can take: both bf16 or both f16, an f32 result, and static sizes that are
+/// multiples of 16 x 8 x 16. Otherwise null.
+static Type mmaElementOf(vx::LaneMatmulOp op) {
+  auto acc = cast<MemRefType>(op.getAcc().getType());
+  auto lhs = cast<MemRefType>(op.getLhs().getType());
+  auto rhs = cast<MemRefType>(op.getRhs().getType());
+  Type elem = lhs.getElementType();
+  if (!acc.getElementType().isF32() || rhs.getElementType() != elem ||
+      !(elem.isBF16() || elem.isF16()) || !acc.hasStaticShape() ||
+      !lhs.hasStaticShape() || !rhs.hasStaticShape())
+    return {};
+  int64_t m = acc.getDimSize(0), n = acc.getDimSize(1), k = lhs.getDimSize(1);
+  if (m % 16 || n % 8 || k % 16 || k == 0)
+    return {};
+  return elem;
+}
+
+/// Whether the Metal printer can print a lane matmul with the simdgroup
+/// matrices of the Apple GPU: an f32 result, f32 or f16 tiles in shared
+/// memory, static sizes that are multiples of 8, and rows whose elements are
+/// next to each other (src/dialect/MetalImage.cpp, `laneMatmul`).
+static bool fitsSimdgroupMatrices(vx::LaneMatmulOp op) {
+  auto fits = [](Value v, bool result) {
+    auto t = cast<MemRefType>(v.getType());
+    Type elem = t.getElementType();
+    auto space = dyn_cast_or_null<IntegerAttr>(t.getMemorySpace());
+    SmallVector<int64_t> strides;
+    int64_t offset;
+    return t.getRank() == 2 && t.hasStaticShape() &&
+           (elem.isF32() || (!result && elem.isF16())) && space &&
+           space.getInt() == 3 &&
+           succeeded(t.getStridesAndOffset(strides, offset)) &&
+           strides[1] == 1 && t.getDimSize(0) % 8 == 0 &&
+           t.getDimSize(1) % 8 == 0 && t.getDimSize(1) > 0;
+  };
+  return fits(op.getAcc(), true) && fits(op.getLhs(), false) &&
+         fits(op.getRhs(), false);
+}
+
+/// A lane matmul on the tensor cores. Each 16 x 8 piece of `acc` is one chain
+/// of `mma.sync.m16n8k16`, one for each 16 columns of `lhs`. Lane `l` loads the
+/// elements of its fragments from the tiles: row `l / 4` and `l / 4 + 8`, and
+/// the columns `2 * (l % 4)` and the one after. The tensor core adds the
+/// products in an order of its own, so the last bits can differ from the
+/// expansion on the host.
+static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
+                                    Type elem) {
+  Location loc = op.getLoc();
+  MLIRContext *ctx = b.getContext();
+  Type f32 = b.getF32Type(), i16 = b.getI16Type(), i32 = b.getI32Type();
+  auto acc = cast<MemRefType>(op.getAcc().getType());
+  int64_t m = acc.getDimSize(0), n = acc.getDimSize(1);
+  int64_t k = cast<MemRefType>(op.getLhs().getType()).getDimSize(1);
+  auto index = [&](int64_t v) -> Value {
+    return b.create<arith::ConstantIndexOp>(loc, v);
+  };
+  Value tid =
+      b.create<gpu::ThreadIdOp>(loc, b.getIndexType(), gpu::Dimension::x);
+  Value lane = b.create<arith::RemUIOp>(loc, tid, index(32));
+  Value group = b.create<arith::DivUIOp>(loc, lane, index(4));
+  Value pair = b.create<arith::MulIOp>(
+      loc, b.create<arith::RemUIOp>(loc, lane, index(4)), index(2));
+  Value zero = index(0), one = index(1), eight = index(8);
+  Value zeroF =
+      b.create<arith::ConstantFloatOp>(loc, b.getF32Type(), APFloat(0.0f));
+  // Two elements in one register, the first in the low 16 bits. f16 goes to
+  // the tensor core as `vector<2xf16>` and bf16 as `i32`.
+  auto pack = [&](OpBuilder &nb, Location l, Value lo, Value hi) -> Value {
+    auto bits = [&](Value v) -> Value {
+      return nb.create<arith::ExtUIOp>(l, i32,
+                                       nb.create<arith::BitcastOp>(l, i16, v));
+    };
+    Value word = nb.create<arith::OrIOp>(
+        l, bits(lo),
+        nb.create<arith::ShLIOp>(l, bits(hi),
+                                 nb.create<arith::ConstantIntOp>(l, i32, 16)));
+    if (elem.isF16())
+      return nb.create<LLVM::BitcastOp>(l, VectorType::get({2}, elem), word);
+    return word;
+  };
+  auto add = [&](OpBuilder &nb, Location l, Value x, Value y) -> Value {
+    return nb.create<arith::AddIOp>(l, x, y);
+  };
+  Type result = LLVM::LLVMStructType::getLiteral(ctx, {f32, f32, f32, f32});
+  std::array<NVVM::MMATypes, 2> types = {
+      elem.isF16() ? NVVM::MMATypes::f16 : NVVM::MMATypes::bf16,
+      elem.isF16() ? NVVM::MMATypes::f16 : NVVM::MMATypes::bf16};
+  std::array<NVVM::MMALayout, 2> layouts = {NVVM::MMALayout::row,
+                                            NVVM::MMALayout::col};
+
+  auto piece = [&](OpBuilder &nb, Location l, Value top, Value left) {
+    Value row0 = add(nb, l, top, group), row1 = add(nb, l, row0, eight);
+    Value col0 = add(nb, l, left, pair), col1 = add(nb, l, col0, one);
+    Value col = add(nb, l, left, group);
+    SmallVector<std::pair<Value, Value>> place = {
+        {row0, col0}, {row0, col1}, {row1, col0}, {row1, col1}};
+    SmallVector<Value> start;
+    for (auto [i, j] : place)
+      start.push_back(
+          op.getAccumulate()
+              ? nb.create<memref::LoadOp>(l, op.getAcc(), ValueRange{i, j})
+                    .getResult()
+              : zeroF);
+    auto chain = nb.create<scf::ForOp>(
+        l, zero, index(k), index(16), start,
+        [&](OpBuilder &kb, Location kl, Value depth, ValueRange c) {
+          Value k0 = add(kb, kl, depth, pair), k1 = add(kb, kl, k0, one);
+          Value k8 = add(kb, kl, k0, eight), k9 = add(kb, kl, k1, eight);
+          auto lhs = [&](Value i, Value j) -> Value {
+            return kb.create<memref::LoadOp>(kl, op.getLhs(), ValueRange{i, j});
+          };
+          auto rhs = [&](Value i) -> Value {
+            return kb.create<memref::LoadOp>(kl, op.getRhs(),
+                                             ValueRange{i, col});
+          };
+          SmallVector<Value> a = {pack(kb, kl, lhs(row0, k0), lhs(row0, k1)),
+                                  pack(kb, kl, lhs(row1, k0), lhs(row1, k1)),
+                                  pack(kb, kl, lhs(row0, k8), lhs(row0, k9)),
+                                  pack(kb, kl, lhs(row1, k8), lhs(row1, k9))};
+          SmallVector<Value> bv = {pack(kb, kl, rhs(k0), rhs(k1)),
+                                   pack(kb, kl, rhs(k8), rhs(k9))};
+          auto mma = kb.create<NVVM::MmaOp>(
+              kl, result, a, bv, c, ArrayRef<int64_t>{16, 8, 16}, std::nullopt,
+              std::nullopt, types, layouts);
+          SmallVector<Value> d;
+          for (int64_t e = 0; e < 4; ++e)
+            d.push_back(kb.create<LLVM::ExtractValueOp>(kl, mma.getRes(), e));
+          kb.create<scf::YieldOp>(kl, d);
+        });
+    for (auto [e, ij] : llvm::enumerate(place))
+      nb.create<memref::StoreOp>(l, chain.getResult(e), op.getAcc(),
+                                 ValueRange{ij.first, ij.second});
+  };
+  b.create<scf::ForOp>(loc, zero, index(m), index(16), ValueRange{},
+                       [&](OpBuilder &nb, Location l, Value top, ValueRange) {
+                         nb.create<scf::ForOp>(l, zero, index(n), index(8),
+                                               ValueRange{},
+                                               [&](OpBuilder &cb, Location cl,
+                                                   Value left, ValueRange) {
+                                                 piece(cb, cl, top, left);
+                                                 cb.create<scf::YieldOp>(cl);
+                                               });
+                         nb.create<scf::YieldOp>(l);
+                       });
+}
+
+/// Replaces a lane matmul with its expansion: the host's loops with `serial`,
+/// and otherwise the expansion that `device` picks. `tensorCores` says that
+/// the kernel goes to an NVIDIA chip with `mma.sync`. `simdgroupMatrices` says
+/// that it goes to the Apple GPU, whose printer prints a matmul that fits
+/// `fitsSimdgroupMatrices`, so that one stays.
+static void expandLaneMatmul(OpBuilder &b, vx::LaneMatmulOp op, bool device,
+                             bool tensorCores = false,
+                             bool simdgroupMatrices = false) {
+  if (device && !op.getSerial() && simdgroupMatrices &&
+      fitsSimdgroupMatrices(op))
+    return;
+  if (device && !op.getSerial()) {
+    if (Type elem = tensorCores ? mmaElementOf(op) : Type())
+      expandLaneMatmulWithMma(b, op, elem);
+    else
+      expandLaneMatmulOnDevice(b, op);
+  } else {
+    expandLaneMatmulOnHost(b, op);
+  }
+  op.erase();
+}
+
+/// The memref that the row `row` is cut from: the source of a cast, or the
+/// memref whose strided metadata the cast starts from. `t[w][c]` is a cast of
+/// the metadata of the cast `t[w]`.
+static Value rowSource(memref::ReinterpretCastOp row) {
+  Value source = row.getSource();
+  if (auto meta = source.getDefiningOp<memref::ExtractStridedMetadataOp>())
+    return meta.getSource();
+  return source;
+}
+
 /// The tile behind the input of a lane reduction whose lanes can keep their
 /// elements in registers: the `memref.alloca` itself, or the alloca of a row in
 /// the code of a subgroup. A subgroup needs `own_row`.
@@ -3227,10 +3756,19 @@ template <typename OpTy>
 static memref::AllocaOp laneTile(OpTy op, Value input) {
   if (op.getSubgroup() && !op.getOwnRow())
     return {};
-  if (auto row = input.getDefiningOp<memref::ReinterpretCastOp>();
-      row && op.getSubgroup())
-    input = row.getSource();
+  while (auto row = input.getDefiningOp<memref::ReinterpretCastOp>()) {
+    if (!op.getSubgroup())
+      break;
+    input = rowSource(row);
+  }
   return input.getDefiningOp<memref::AllocaOp>();
+}
+
+/// The row of a subgroup that a lane-element store or a reduction is on:
+/// `vx.lane_row`, or 0. Each row of a tile has its own register.
+static int64_t laneRow(Operation *op) {
+  auto row = op->getAttrOfType<IntegerAttr>("vx.lane_row");
+  return row ? row.getInt() : 0;
 }
 
 /// Whether every use of `tile` is a store with `vx.lane_element` of `level`, a
@@ -3246,8 +3784,14 @@ static bool onlyLaneElements(Value tile, StringRef level,
       if (!attr || attr.getValue() != level || store.getMemRef() != tile)
         return false;
     } else if (auto cast = dyn_cast<memref::ReinterpretCastOp>(user)) {
-      if (row || level != "subgroup" ||
+      if (level != "subgroup" ||
           !onlyLaneElements(cast.getResult(), level, reads, /*row=*/true))
+        return false;
+    } else if (auto meta = dyn_cast<memref::ExtractStridedMetadataOp>(user)) {
+      // `t[w][c]`: the metadata of the row `t[w]`, for a cast of a row in it.
+      // The offset and the strides are numbers. Only the base buffer is memory.
+      if (!row || !onlyLaneElements(meta.getBaseBuffer(), level, reads,
+                                    /*row=*/true))
         return false;
     } else if (!reads.contains(user) && !(isa<vx::DropOp>(user) && !row)) {
       return false;
@@ -3313,16 +3857,20 @@ expandLaneReductionsFromRegisters(gpu::GPUFuncOp f,
         }
     }
   }
-  // One register a tile, as a stack slot in the entry block, which LLVM puts
-  // in a register.
-  llvm::MapVector<Operation *, Value> slots;
+  // One register a row of a tile, as a stack slot in the entry block, which
+  // LLVM puts in a register.
+  using Row = std::pair<Operation *, int64_t>;
+  llvm::MapVector<Row, Value> slots;
+  llvm::SetVector<Operation *> tiles;
   Block &entry = f.getBody().front();
   OpBuilder atEntry(&entry, entry.begin());
   for (Operation *op : reductions)
     for (memref::AllocaOp tile : chosen.contains(op)
                                      ? tilesOf(op)
                                      : SmallVector<memref::AllocaOp, 2>{}) {
-      if (slots.count(tile))
+      tiles.insert(tile);
+      Row key{tile, laneRow(op)};
+      if (slots.count(key))
         continue;
       Type elem = tile.getType().getElementType();
       Location loc = tile.getLoc();
@@ -3334,7 +3882,7 @@ expandLaneReductionsFromRegisters(gpu::GPUFuncOp f,
                        : atEntry.create<arith::ConstantOp>(
                              loc, atEntry.getIntegerAttr(elem, 0));
       atEntry.create<memref::StoreOp>(loc, zero, slot);
-      slots[tile] = slot;
+      slots[key] = slot;
     }
   SmallVector<Operation *> rest;
   for (Operation *op : reductions) {
@@ -3345,30 +3893,52 @@ expandLaneReductionsFromRegisters(gpu::GPUFuncOp f,
     OpBuilder b(op);
     SmallVector<Value, 2> registers;
     for (memref::AllocaOp tile : tilesOf(op))
-      registers.push_back(
-          b.create<memref::LoadOp>(op->getLoc(), slots[tile], ValueRange{}));
+      registers.push_back(b.create<memref::LoadOp>(
+          op->getLoc(), slots[Row{tile, laneRow(op)}], ValueRange{}));
     if (auto r = dyn_cast<vx::LaneReduceOp>(op))
       expandLaneReduction(b, r, /*device=*/true, registers);
     else
       expandLaneReduction(b, cast<vx::LaneArgmaxOp>(op), /*device=*/true,
                           registers);
   }
-  // The stores go to the registers. Then nothing uses the tiles.
-  for (auto [tile, slot] : slots) {
+  // The stores go to the registers of their rows. A store to a row that no
+  // reduction reads goes nowhere. Then nothing uses the tiles.
+  for (Operation *tile : tiles) {
     SmallVector<Operation *> users;
-    for (Operation *user : tile->getUsers()) {
-      users.push_back(user);
-      if (isa<memref::ReinterpretCastOp>(user))
-        users.append(user->getUsers().begin(), user->getUsers().end());
-    }
+    std::function<void(Operation *)> collect = [&](Operation *op) {
+      for (Operation *user : op->getUsers()) {
+        users.push_back(user);
+        if (isa<memref::ReinterpretCastOp, memref::ExtractStridedMetadataOp>(
+                user))
+          collect(user);
+      }
+    };
+    collect(tile);
     for (Operation *user : users)
       if (auto store = dyn_cast<memref::StoreOp>(user)) {
+        auto slot = slots.find(Row{tile, laneRow(store)});
+        if (slot == slots.end())
+          continue;
         OpBuilder b(store);
-        b.create<memref::StoreOp>(store.getLoc(), store.getValue(), slot);
+        b.create<memref::StoreOp>(store.getLoc(), store.getValue(),
+                                  slot->second);
       }
-    for (Operation *user : llvm::reverse(users))
-      user->erase();
-    tile->erase();
+    // The stores and the reductions are gone or moved. Erase what then has no
+    // use: the casts, the metadata, and the index arithmetic on it.
+    llvm::SetVector<Operation *> left(users.begin(), users.end());
+    left.insert(tile);
+    for (bool erased = true; erased;) {
+      erased = false;
+      for (Operation *op : left.takeVector()) {
+        if (isa<memref::StoreOp>(op) || op->use_empty()) {
+          op->erase();
+          erased = true;
+        } else {
+          left.insert(op);
+        }
+      }
+    }
+    assert(left.empty() && "a use of a lane tile that is not a lane element");
   }
   return rest;
 }
@@ -3612,7 +4182,7 @@ static bool runsOnDevice(Operation *op, ModuleOp module,
   // Rewritten to `gpu.return` and `gpu.barrier` in the device clone (Vx#379).
   // A `vx.launch_dim` leaves the region when it is outlined.
   if (isa<vx::YieldOp, vx::ReturnOp, vx::BarrierOp, vx::LaunchDimOp,
-          vx::LaneReduceOp, vx::LaneArgmaxOp, vx::LaneSortOp,
+          vx::LaneReduceOp, vx::LaneArgmaxOp, vx::LaneSortOp, vx::LaneMatmulOp,
           vx::LaneCopyAsyncOp, vx::LaneCopyAsyncMapOp, vx::LaneCopyWaitOp>(op))
     return true;
   // The SPIR-V path's own rules, from the one place that holds them. NVPTX
@@ -3927,6 +4497,9 @@ static BufferOrigin originOf(Value v, llvm::SmallPtrSetImpl<void *> &seen,
           if (operand.get() == cell &&
               takesOwnership(call, operand.getOperandNumber()))
             return BufferOrigin::Unknown;
+      } else if (user->hasAttr("vx.task_borrows")) {
+        // Handed to a task, which borrows it as a call does.
+        continue;
       } else if (!isa<memref::LoadOp>(user)) {
         return BufferOrigin::Unknown; // the cell itself escapes
       }
@@ -3962,6 +4535,9 @@ static BufferOrigin originOf(Value v, llvm::SmallPtrSetImpl<void *> &seen,
     return BufferOrigin::Borrowed;
   }
   Operation *def = v.getDefiningOp();
+  // In a task, a heap buffer of the function that started it.
+  if (def && def->hasAttr("vx.task_takes"))
+    return BufferOrigin::Heap;
   // A spawn region's value: a buffer made outside the region and handed out.
   if (auto spawn = dyn_cast_or_null<vx::SpawnOp>(def)) {
     unsigned i = cast<OpResult>(v).getResultNumber();
@@ -4032,6 +4608,19 @@ static BufferOrigin originOf(Value v) {
   return originOf(v, topology);
 }
 
+// The call that fills `slot`, the stack slot of a statically shaped result: the
+// one that takes it first. Null for a stack buffer that no call fills, which is
+// not a result.
+static func::CallOp resultSlotFill(memref::AllocaOp slot) {
+  func::CallOp fill;
+  for (Operation *user : slot->getUsers())
+    if (auto c = dyn_cast<func::CallOp>(user); c && c.getNumOperands() > 0 &&
+                                               c.getOperand(0) == slot &&
+                                               c.getNumResults() == 0)
+      fill = c;
+  return fill;
+}
+
 // A statically shaped result comes back in a stack slot the caller allocates
 // once, in its entry block. A function that takes it by value frees it, so a
 // result that is passed by value gets a heap buffer instead, allocated where
@@ -4061,8 +4650,8 @@ static LogicalResult giveMovedResultsHeapSlots(ModuleOp module) {
             slots.insert(slot);
     } else if (auto cast = dyn_cast<UnrealizedConversionCastOp>(op)) {
       // Into a struct field's descriptor: the struct frees it when it is
-      // dropped.
-      if (cast->getNumOperands() == 1 &&
+      // dropped. A task that borrows a cell does not free it.
+      if (cast->getNumOperands() == 1 && !cast->hasAttr("vx.task_borrows") &&
           isa<MemRefType>(cast->getOperand(0).getType()) &&
           !isa<MemRefType>(cast->getResult(0).getType()))
         if (auto slot = slotOf(cast->getOperand(0)))
@@ -4070,15 +4659,9 @@ static LogicalResult giveMovedResultsHeapSlots(ModuleOp module) {
     }
   });
   for (memref::AllocaOp slot : slots) {
-    // The call that fills the slot is the one that takes it first. A stack
-    // buffer no call fills is not a result: checkMovedArguments reports one
+    // checkMovedArguments reports a stack buffer that is not a result and is
     // passed by value.
-    func::CallOp fill;
-    for (Operation *user : slot->getUsers())
-      if (auto c = dyn_cast<func::CallOp>(user); c && c.getNumOperands() > 0 &&
-                                                 c.getOperand(0) == slot &&
-                                                 c.getNumResults() == 0)
-        fill = c;
+    func::CallOp fill = resultSlotFill(slot);
     if (!fill)
       continue;
     DominanceInfo dominance(fill->getParentOfType<func::FuncOp>());
@@ -4113,14 +4696,19 @@ static LogicalResult checkMovedArguments(ModuleOp module) {
 
 // A function returns a `?`-shaped tensor by handing back a buffer, which its
 // caller then owns and frees. One that returns a view, or a parameter it only
-// borrows, returns a copy instead.
+// borrows, returns a copy instead. A `vx.reference` result is a reference to a
+// tensor, and is returned as it is.
 static LogicalResult returnOwnedBuffers(ModuleOp module) {
   LogicalResult result = success();
   module.walk([&](func::ReturnOp ret) {
+    auto func = ret->getParentOfType<func::FuncOp>();
     for (OpOperand &operand : ret->getOpOperands()) {
       auto type = dyn_cast<MemRefType>(operand.get().getType());
       // A tensor placed in another memory is left as it was.
       if (!type || type.getMemorySpace())
+        continue;
+      if (func &&
+          func.getResultAttr(operand.getOperandNumber(), "vx.reference"))
         continue;
       BufferOrigin origin = originOf(operand.get());
       // A placed buffer goes to the caller, which frees it on its device.
@@ -4159,11 +4747,17 @@ static LogicalResult lowerDrops(ModuleOp module) {
   SmallVector<vx::DropOp> drops;
   module.walk([&](vx::DropOp d) { drops.push_back(d); });
   for (vx::DropOp d : drops) {
-    // A struct owns its tensor fields, and every buffer stored into one is on
+    // A struct owns its tensor fields. A field whose type names a device memory
+    // came from that memory's plugin. Every other buffer stored into one is on
     // the heap (see giveMovedResultsHeapSlots).
     std::optional<int32_t> topology;
-    BufferOrigin origin =
-        d.getField() ? BufferOrigin::Heap : originOf(d.getBuffer(), topology);
+    BufferOrigin origin = BufferOrigin::Heap;
+    if (d.getField() && d.getPlaced()) {
+      topology = *d.getPlaced();
+      origin = BufferOrigin::Placed;
+    } else if (!d.getField()) {
+      origin = originOf(d.getBuffer(), topology);
+    }
     if (d.getOwnedOnly() && origin != BufferOrigin::Heap &&
         origin != BufferOrigin::Placed)
       origin = BufferOrigin::NotFreed;
@@ -4209,10 +4803,17 @@ static void freeTemporaries(ModuleOp module) {
     if (!op->getParentOfType<func::FuncOp>() ||
         op->getParentOfType<vx::SpawnOp>())
       return;
+    // A `vx.reference` result names a tensor that the caller does not own.
+    auto call = dyn_cast<func::CallOp>(op);
+    auto callee =
+        call ? module.lookupSymbol<func::FuncOp>(call.getCallee()) : nullptr;
     if (isa<memref::AllocOp, vx::AllocOp, func::CallOp>(op))
       for (Value r : op->getResults())
         if (auto type = dyn_cast<MemRefType>(r.getType());
-            type && !type.getMemorySpace())
+            type && !type.getMemorySpace() &&
+            !(callee &&
+              callee.getResultAttr(cast<OpResult>(r).getResultNumber(),
+                                   "vx.reference")))
           fresh.push_back(r);
   });
   for (Value buffer : fresh) {
@@ -4676,8 +5277,18 @@ static LogicalResult lowerTask(vx::SpawnOp task, Value group, ModuleOp module,
     Value v =
         LLVM::LoadOp::create(b, loc, fieldTypes[2 + i], field(b, env, 2 + i));
     Type type = copied[i] ? copied[i] : capture.getType();
-    if (v.getType() != type)
-      v = UnrealizedConversionCastOp::create(b, loc, type, v).getResult(0);
+    if (v.getType() != type) {
+      auto cast = UnrealizedConversionCastOp::create(b, loc, type, v);
+      // A heap buffer of the function, or a result slot, which moves to the
+      // heap because the task gets it. A task that takes it, as `let b = b;`
+      // does, frees it or passes it on by value.
+      auto slot = castSource(capture).getDefiningOp<memref::AllocaOp>();
+      if (!copied[i] && isa<MemRefType>(type) &&
+          (originOf(capture) == BufferOrigin::Heap ||
+           (slot && resultSlotFill(slot))))
+        cast->setAttr("vx.task_takes", UnitAttr::get(ctx));
+      v = cast.getResult(0);
+    }
     inTask.push_back(v);
   }
   Block *first = &body.front();
@@ -4736,19 +5347,31 @@ static LogicalResult lowerTask(vx::SpawnOp task, Value group, ModuleOp module,
       LLVM::lookupOrCreateFn(b, module, "vx_task_start_at",
                              {ptrTy, ptrTy, ptrTy, ptrTy, i64Ty}, i64Ty);
   assert(succeeded(start) && "the runtime function has one declaration");
-  // Where the `spawn` is, so that an abort in the task can say it: the file
-  // from the module, and the line from the op. A line of 0 is not known.
+  // Where the `spawn` is, so that an abort in the task can say it: the file of
+  // the function from the op, else the file of the module, and the line from
+  // the op. A line of 0 is not known.
   Value file = LLVM::ZeroOp::create(b, loc, ptrTy);
-  if (auto source = module->getAttrOfType<StringAttr>("vx.source")) {
-    StringRef name = "__vx_source_file";
-    if (module.lookupSymbol<LLVM::GlobalOp>(name))
-      file = LLVM::AddressOfOp::create(b, loc, ptrTy, name);
-    else {
-      // A C string: the runtime reads it up to its 0.
-      std::string text = source.getValue().str();
-      text.push_back('\0');
-      file =
-          LLVM::createGlobalString(loc, b, name, text, LLVM::Linkage::Internal);
+  auto source = task->getAttrOfType<StringAttr>("vx.file");
+  if (!source)
+    source = module->getAttrOfType<StringAttr>("vx.source");
+  if (source) {
+    // A C string: the runtime reads it up to its 0. One global for each file.
+    std::string text = source.getValue().str();
+    text.push_back('\0');
+    std::string name;
+    for (unsigned i = 0;; ++i) {
+      name = "__vx_source_file" + (i ? "_" + std::to_string(i) : "");
+      auto global = module.lookupSymbol<LLVM::GlobalOp>(name);
+      if (!global) {
+        file = LLVM::createGlobalString(loc, b, name, text,
+                                        LLVM::Linkage::Internal);
+        break;
+      }
+      auto value = dyn_cast_or_null<StringAttr>(global.getValueOrNull());
+      if (value && value.getValue() == text) {
+        file = LLVM::AddressOfOp::create(b, loc, ptrTy, name);
+        break;
+      }
     }
   }
   int64_t spawnLine = 0;
@@ -4772,9 +5395,17 @@ static LogicalResult lowerTask(vx::SpawnOp task, Value group, ModuleOp module,
       v = memref::LoadOp::create(b, loc, capture);
     else if (copied[i])
       v = LLVM::LoadOp::create(b, loc, copied[i], capture);
-    if (v.getType() != fieldTypes[2 + i])
-      v = UnrealizedConversionCastOp::create(b, loc, fieldTypes[2 + i], v)
-              .getResult(0);
+    if (v.getType() != fieldTypes[2 + i]) {
+      auto cast =
+          UnrealizedConversionCastOp::create(b, loc, fieldTypes[2 + i], v);
+      // The cell of a `let mut` tensor, which the task reads or passes on as
+      // `&mut`: the task borrows it until the `tasks` block ends, as a call
+      // would.
+      auto cell = dyn_cast<MemRefType>(v.getType());
+      if (cell && cell.getRank() == 0 && isa<MemRefType>(cell.getElementType()))
+        cast->setAttr("vx.task_borrows", UnitAttr::get(ctx));
+      v = cast.getResult(0);
+    }
     LLVM::StoreOp::create(b, loc, v, field(b, newEnv, 2 + i));
   }
   Value fnRef = func::ConstantOp::create(b, loc, fn.getFunctionType(),
@@ -4856,15 +5487,16 @@ static LogicalResult lowerTasksBlock(vx::SpawnOp block, ModuleOp module) {
       waits.push_back(wait);
     return WalkResult::advance();
   });
-  if (!waits.empty()) {
-    auto waitFn = LLVM::lookupOrCreateFn(b, module, "vx_tasks_wait", {ptrTy},
+  for (vx::TasksWaitOp wait : waits) {
+    // An exit cancels the tasks before it joins them. The join at the end of
+    // the body cancels none.
+    StringRef name = wait.getJoin() ? "vx_tasks_join" : "vx_tasks_wait";
+    auto waitFn = LLVM::lookupOrCreateFn(b, module, name, {ptrTy},
                                          LLVM::LLVMVoidType::get(ctx));
     assert(succeeded(waitFn) && "the runtime function has one declaration");
-    for (vx::TasksWaitOp wait : waits) {
-      OpBuilder wb(wait);
-      LLVM::CallOp::create(wb, loc, *waitFn, ValueRange{group});
-      wait.erase();
-    }
+    OpBuilder wb(wait);
+    LLVM::CallOp::create(wb, loc, *waitFn, ValueRange{group});
+    wait.erase();
   }
   SmallVector<TaskSlot> slots;
   for (vx::SpawnOp task : tasks)
@@ -4998,8 +5630,7 @@ struct ConvertVxToStandardPass
           refusal = "it hands a value back through a host stack slot, which a "
                     "device cannot address";
         if (refusal) {
-          k.emitWarning() << "kernel `" << k.getSymName()
-                          << "` cannot become a `"
+          k.emitWarning() << regionInWords(k) << " cannot become a `"
                           << archNameOfPipeline(pipeline)
                           << "` device image: " << *refusal
                           << ". It will run on the host instead.";
@@ -5062,8 +5693,7 @@ struct ConvertVxToStandardPass
       // The region keeps the host path, which computes the right answer.
       if (pipeline == DevicePipeline::Spirv) {
         if (auto refusal = spirvRefusalOf(blocker)) {
-          k.emitWarning() << "kernel `" << k.getSymName()
-                          << "` cannot become a `"
+          k.emitWarning() << regionInWords(k) << " cannot become a `"
                           << archNameOfPipeline(pipeline)
                           << "` device image: " << *refusal
                           << ". It will run on the host instead.";
@@ -5232,6 +5862,18 @@ struct ConvertVxToStandardPass
         for (vx::LaneSortOp op : sorts) {
           OpBuilder b(op);
           expandLaneSort(b, op, /*device=*/true);
+        }
+        SmallVector<vx::LaneMatmulOp> matmuls;
+        gpuFunc.walk([&](vx::LaneMatmulOp op) { matmuls.push_back(op); });
+        DevicePipeline pipeline = pipelineOfKernel(
+            kernel, static_cast<int32_t>(kernel.getTopology()));
+        bool tensorCores = pipeline == DevicePipeline::Nvptx &&
+                           chipHasMmaSync(deviceChip(gpuModule));
+        bool simdgroupMatrices = pipeline == DevicePipeline::Metal;
+        for (vx::LaneMatmulOp op : matmuls) {
+          OpBuilder b(op);
+          expandLaneMatmul(b, op, /*device=*/true, tensorCores,
+                           simdgroupMatrices);
         }
         LaneCopyState copies{gpuFunc};
         SmallVector<Operation *> copyOps;
@@ -5577,6 +6219,10 @@ struct ConvertVxToStandardPass
 
   void runOnOperation() override {
     getOperation()->emitRemark("Lowering Vx to Standard dialects");
+
+    // First, so that every later step reads only the `llvm.readonly` marks
+    // that hold.
+    dropReadonlyOfWrittenParameters(getOperation());
 
     // First, so that each later step sees a task as a call that starts it, and
     // keeps what the task uses alive until the task is joined.
@@ -6228,6 +6874,14 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
       payload.push_back('\0');
     }
 
+    // The `arch:` of a declared topology. The runtime counts a topology with
+    // a CPU arch as the host, so `VX_ENABLE_CPU_FALLBACK=0` does not stop it.
+    if (auto arch = op->getAttrOfType<StringAttr>("vx.arch")) {
+      payload += "arch=";
+      payload += arch.getValue().str();
+      payload.push_back('\0');
+    }
+
     // How many iterations the kernel's grid-strided loop covers, when the
     // frontend proved it stridable (#251). The runtime sizes the launch from
     // this; absent, the kernel is serial and gets the 1x1x1 launch it needs.
@@ -6702,6 +7356,17 @@ struct LaneCopyWaitLowering : public OpRewritePattern<vx::LaneCopyWaitOp> {
 
   LogicalResult matchAndRewrite(vx::LaneCopyWaitOp op,
                                 PatternRewriter &rewriter) const override {
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct LaneMatmulLowering : public OpRewritePattern<vx::LaneMatmulOp> {
+  using OpRewritePattern<vx::LaneMatmulOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vx::LaneMatmulOp op,
+                                PatternRewriter &rewriter) const override {
+    expandLaneMatmulOnHost(rewriter, op);
     rewriter.eraseOp(op);
     return success();
   }
@@ -7275,9 +7940,10 @@ static LogicalResult serializeSpirv(std::unique_ptr<llvm::Module> module,
 ///    the image -- in this process, from the LLVM already linked, so compiling
 ///    a `.vx` file needs no external `llc`.
 ///
-/// An empty image on failure, with `error` naming the stage.
-static DeviceImage spirvImageOf(gpu::GPUModuleOp gpuModule,
-                                std::string &error) {
+/// An empty image on failure, with `error` naming the stage. When kernels are
+/// the cause, `refused` names each one with its own reason instead.
+static DeviceImage spirvImageOf(gpu::GPUModuleOp gpuModule, std::string &error,
+                                SmallVectorImpl<SpirvKernelRefusal> &refused) {
   MLIRContext *context = gpuModule.getContext();
   OwningOpRef<ModuleOp> device = deviceModuleCopy(gpuModule);
 
@@ -7293,7 +7959,7 @@ static DeviceImage spirvImageOf(gpu::GPUModuleOp gpuModule,
     error = "the device module vanished in the pipeline";
     return {};
   }
-  if (failed(flattenSpirvKernelArgs(*kernels.begin(), error)))
+  if (failed(flattenSpirvKernelArgs(*kernels.begin(), error, refused)))
     return {};
 
   PassManager toSpv(context, ModuleOp::getOperationName());
@@ -7462,6 +8128,124 @@ static void declareLocalDevices(ModuleOp module) {
   }
 }
 
+// A C caller reads the tensors of a `pub fn` as soon as it returns, with no
+// call into the runtime. So in a library with Apple GPU kernels, each `pub fn`
+// waits before each return. It waits for the launches of its thread, through
+// `VX_CTRL_WAIT_FOR_THREAD`. It also waits for the launches of other threads
+// that write its tensor parameters, through `VX_CTRL_WAIT_FOR_TENSORS`. A
+// program with `main` has no C caller, and the runtime waits at exit.
+static void waitBeforeReturningToC(ModuleOp module,
+                                   ArrayRef<int32_t> topologies) {
+  if (topologies.empty() || module.lookupSymbol<func::FuncOp>("main"))
+    return;
+  MLIRContext *ctx = module.getContext();
+  for (auto f : module.getOps<func::FuncOp>()) {
+    if (!f->hasAttr("vx.pub") || f.isExternal())
+      continue;
+    OpBuilder b = OpBuilder::atBlockBegin(&f.front());
+    auto i32Type = b.getI32Type();
+    auto ptrType = LLVM::LLVMPointerType::get(ctx);
+    getOrDeclareRuntimeFn(b, module, UnknownLoc::get(ctx), "vx_plugin_control",
+                          i32Type, {i32Type, ptrType});
+    Value one = b.create<LLVM::ConstantOp>(f.getLoc(), b.getI64Type(),
+                                           b.getI64IntegerAttr(1));
+    Value slot = b.create<LLVM::AllocaOp>(f.getLoc(), ptrType, i32Type, one);
+    SmallVector<func::ReturnOp> returns;
+    f.walk([&](func::ReturnOp r) { returns.push_back(r); });
+    // The AST code generator gives a reference to a tensor as a slot that
+    // holds the tensor. The wait reads the tensor from the slot.
+    SmallVector<Value> params, slotParams;
+    for (BlockArgument arg : f.getArguments()) {
+      auto slot = dyn_cast<MemRefType>(arg.getType());
+      if (isTensorToWaitFor(arg.getType()))
+        params.push_back(arg);
+      else if (slot && slot.getRank() == 0 &&
+               isTensorToWaitFor(slot.getElementType()))
+        slotParams.push_back(arg);
+    }
+    for (func::ReturnOp r : returns) {
+      b.setInsertionPoint(r);
+      auto opcode = [&](int32_t code) -> Value {
+        return b.create<LLVM::ConstantOp>(r.getLoc(), i32Type,
+                                          b.getI32IntegerAttr(code));
+      };
+      auto control = [&](Value code, Value payload) {
+        b.create<LLVM::CallOp>(r.getLoc(), TypeRange{i32Type},
+                               SymbolRefAttr::get(ctx, "vx_plugin_control"),
+                               ValueRange{code, payload});
+      };
+      SmallVector<Value> tensors = params;
+      for (Value slot : slotParams)
+        tensors.push_back(b.create<memref::LoadOp>(r.getLoc(), slot));
+      for (Value v : r.getOperands())
+        if (isTensorToWaitFor(v.getType()))
+          tensors.push_back(v);
+      Value forThread = opcode(kCtrlWaitForThread);
+      for (int32_t topology : topologies) {
+        b.create<LLVM::StoreOp>(
+            r.getLoc(),
+            b.create<LLVM::ConstantOp>(r.getLoc(), i32Type,
+                                       b.getI32IntegerAttr(topology)),
+            slot);
+        control(forThread, slot);
+        if (!tensors.empty())
+          control(opcode(kCtrlWaitForTensors),
+                  tensorsToWaitFor(b, r.getLoc(), f, topology, tensors));
+      }
+    }
+  }
+}
+
+// A C function that gets a pointer into GPU memory can read that memory at
+// once, before the GPU ran the kernels that write it. The code generators mark
+// such a function with `vx.gets_device_pointer`. On an Apple GPU, each call to
+// it waits first, through `VX_CTRL_WAIT`. The pointer gives no size, so the
+// call waits for every launch.
+static void waitBeforeCGetsADevicePointer(ModuleOp module,
+                                          ArrayRef<int32_t> topologies) {
+  MLIRContext *ctx = module.getContext();
+  SmallVector<func::CallOp> calls;
+  module.walk([&](func::CallOp call) {
+    auto callee = module.lookupSymbol<func::FuncOp>(call.getCalleeAttr());
+    if (callee && callee->hasAttr("vx.gets_device_pointer"))
+      calls.push_back(call);
+  });
+  for (auto f : module.getOps<func::FuncOp>())
+    if (f->removeAttr("vx.gets_device_pointer"))
+      assert(f.isExternal() && "only a declaration gets vx.gets_device_pointer");
+  if (topologies.empty() || calls.empty())
+    return;
+  OpBuilder b(ctx);
+  auto i32Type = b.getI32Type();
+  auto ptrType = LLVM::LLVMPointerType::get(ctx);
+  getOrDeclareRuntimeFn(b, module, UnknownLoc::get(ctx), "vx_plugin_control",
+                        i32Type, {i32Type, ptrType});
+  for (func::CallOp call : calls) {
+    Location loc = call.getLoc();
+    Value slot;
+    {
+      OpBuilder::InsertionGuard guard(b);
+      b.setInsertionPointToStart(
+          &call->getParentOfType<func::FuncOp>().getBody().front());
+      Value one = b.create<LLVM::ConstantOp>(loc, b.getI64Type(),
+                                             b.getI64IntegerAttr(1));
+      slot = b.create<LLVM::AllocaOp>(loc, ptrType, i32Type, one);
+    }
+    b.setInsertionPoint(call);
+    Value opcode = b.create<LLVM::ConstantOp>(loc, i32Type,
+                                              b.getI32IntegerAttr(kCtrlWait));
+    for (int32_t topology : topologies) {
+      b.create<LLVM::StoreOp>(loc,
+                              b.create<LLVM::ConstantOp>(
+                                  loc, i32Type, b.getI32IntegerAttr(topology)),
+                              slot);
+      b.create<LLVM::CallOp>(loc, TypeRange{i32Type},
+                             SymbolRefAttr::get(ctx, "vx_plugin_control"),
+                             ValueRange{opcode, slot});
+    }
+  }
+}
+
 /// For `--emit-ptx` and `--emit-msl`: gives each kernel in `gpuModule` the
 /// name of the function that holds its region, and describes its parameters
 /// for a program that launches the kernel. Section 3.5 of `docs/lang/abi.md`
@@ -7496,8 +8280,7 @@ nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule,
     if (!paramOf || !names || !types) {
       f.emitError() << flag
                     << " cannot name this GPU kernel, because the code "
-                       "generator did not record the function that holds it. "
-                       "Only the flat code generator records it";
+                       "generator did not record the function that holds it";
       return failure();
     }
     assert(paramOf.size() == static_cast<int64_t>(f.getNumArguments()) &&
@@ -7731,6 +8514,7 @@ struct ConvertVxToLLVMPass
 
     llvm::StringMap<DeviceImage> deviceImages;
     llvm::StringMap<int64_t> dynamicShared;
+    llvm::SmallSetVector<int32_t, 2> appleGpuTopologies;
     for (gpu::GPUModuleOp m : deviceModules) {
       // One image per module, and every kernel in it is an entry point: a
       // loader takes the module and then asks for a function by name. So the
@@ -7741,6 +8525,7 @@ struct ConvertVxToLLVMPass
       // `vx.kernel` name, and after that rename the two no longer match.
       std::optional<DevicePipeline> pipeline;
       vx::KernelOp disagrees; // the first kernel that asks for another pipeline
+      llvm::SmallSetVector<int32_t, 2> topologies;
       WalkResult walk = m.walk([&](gpu::GPUFuncOp f) -> WalkResult {
         auto it = kernelsByName.find(f.getName());
         // A `gpu.func` here is the copy of a `vx.kernel` of the same name: the
@@ -7758,6 +8543,7 @@ struct ConvertVxToLLVMPass
         // whose kernel answers `None` means the two answers have disagreed.
         assert(p != DevicePipeline::None &&
                "a kernel with no device pipeline got a device copy");
+        topologies.insert(static_cast<int32_t>(it->second.getTopology()));
         if (!pipeline)
           pipeline = p;
         else if (*pipeline != p && !disagrees)
@@ -7811,6 +8597,7 @@ struct ConvertVxToLLVMPass
         exported = std::move(*kernels);
       }
       std::string error;
+      SmallVector<SpirvKernelRefusal> refused;
       DeviceImage image;
       switch (*pipeline) {
       case DevicePipeline::Nvptx:
@@ -7820,7 +8607,7 @@ struct ConvertVxToLLVMPass
         image = DeviceImage{"msl", mslImageOf(m, error)};
         break;
       case DevicePipeline::Spirv:
-        image = spirvImageOf(m, error);
+        image = spirvImageOf(m, error, refused);
         break;
       case DevicePipeline::None:
         llvm_unreachable("the pipeline was checked to be present above");
@@ -7851,6 +8638,31 @@ struct ConvertVxToLLVMPass
         module.walk([&](vx::LaunchOp l) {
           launchesByName[l.getCalleeAttr().getValue()].push_back(l);
         });
+        // The kernels share one image, so all of them lose it when one fails.
+        // Each kernel that fails gets its own reason, and each other kernel is
+        // told about the first one that failed.
+        llvm::StringMap<std::string> reasons;
+        for (const SpirvKernelRefusal &r : refused)
+          reasons[r.kernel] = r.reason;
+        vx::KernelOp firstFailed;
+        if (!refused.empty()) {
+          firstFailed = kernelsByName.lookup(refused.front().kernel);
+          assert(firstFailed && "every gpu.func here has a vx.kernel");
+        }
+        auto cannotBecomeAnImage = [&](vx::KernelOp kernel) {
+          std::string text = regionInWords(kernel) + " cannot become a `" +
+                             archNameOfPipeline(*pipeline).str() +
+                             "` device image";
+          if (!firstFailed)
+            return text + ": " + error;
+          auto own = reasons.find(kernel.getSymName());
+          if (own != reasons.end())
+            return text + ": " + own->second;
+          return text + ". It shares one image with " +
+                 regionInWords(firstFailed) +
+                 ". That region cannot become one: " +
+                 reasons.lookup(firstFailed.getSymName());
+        };
         bool unreadableOperands = false;
         m.walk([&](gpu::GPUFuncOp f) {
           vx::KernelOp kernel = kernelsByName.lookup(f.getName());
@@ -7864,14 +8676,14 @@ struct ConvertVxToLLVMPass
           if (!xfer)
             return;
           kernel.emitError()
-              << "kernel `" << f.getName() << "` cannot become a `"
-              << archNameOfPipeline(*pipeline) << "` device image: " << error
-              << ".\n  Its operands are in '" << spaceOfTransfer(xfer)
+              << cannotBecomeAnImage(kernel)
+              << ".\n  This region's operands are in '" << spaceOfTransfer(xfer)
               << "', declared `managed: explicit` -- memory the host cannot "
-                 "read, so running the kernel on the host instead would read "
+                 "read, so running the region on the host instead would read "
                  "device memory there.\n"
-              << "  Either the kernel must be one the target can compile, or "
-                 "its operands must stay in a space the host can read.";
+              << "  Either every region in the image must be one the target "
+                 "can compile, or this region's operands must stay in a space "
+                 "the host can read.";
           unreadableOperands = true;
         });
         if (unreadableOperands) {
@@ -7882,10 +8694,8 @@ struct ConvertVxToLLVMPass
           vx::KernelOp kernel = kernelsByName.lookup(f.getName());
           if (!kernel)
             return;
-          kernel.emitWarning()
-              << "kernel `" << f.getName() << "` cannot become a `"
-              << archNameOfPipeline(*pipeline) << "` device image: " << error
-              << ". It will run on the host instead.";
+          kernel.emitWarning() << cannotBecomeAnImage(kernel)
+                               << ". It will run on the host instead.";
         });
         continue;
       }
@@ -7896,6 +8706,8 @@ struct ConvertVxToLLVMPass
         if (auto bytes = f->getAttrOfType<IntegerAttr>("vx.dynamic_shared"))
           dynamicShared[f.getName()] = bytes.getInt();
       });
+      if (*pipeline == DevicePipeline::Metal)
+        appleGpuTopologies.insert(topologies.begin(), topologies.end());
       if (exportingText) {
         std::string target = *pipeline == DevicePipeline::Metal
                                  ? std::string("applegpu")
@@ -8140,8 +8952,8 @@ struct ConvertVxToLLVMPass
     // not know the vx dialect (Vx#379).
     target.addIllegalOp<vx::BarrierOp>();
     target.addIllegalOp<vx::LaneReduceOp, vx::LaneArgmaxOp, vx::LaneSortOp,
-                        vx::LaneCopyAsyncOp, vx::LaneCopyAsyncMapOp,
-                        vx::LaneCopyWaitOp>();
+                        vx::LaneMatmulOp, vx::LaneCopyAsyncOp,
+                        vx::LaneCopyAsyncMapOp, vx::LaneCopyWaitOp>();
 
     LLVMTypeConverter typeConverter(&getContext());
     RewritePatternSet patterns(&getContext());
@@ -8155,7 +8967,7 @@ struct ConvertVxToLLVMPass
     patterns.add<BarrierOpLowering>(&getContext());
     patterns.add<LaneReductionLowering<vx::LaneReduceOp>,
                  LaneReductionLowering<vx::LaneArgmaxOp>, LaneSortLowering,
-                 LaneCopyAsyncLowering<vx::LaneCopyAsyncOp>,
+                 LaneMatmulLowering, LaneCopyAsyncLowering<vx::LaneCopyAsyncOp>,
                  LaneCopyAsyncLowering<vx::LaneCopyAsyncMapOp>,
                  LaneCopyWaitLowering>(&getContext());
 
@@ -8167,6 +8979,9 @@ struct ConvertVxToLLVMPass
       return;
     }
     declareLocalDevices(getOperation());
+    waitBeforeReturningToC(getOperation(), appleGpuTopologies.getArrayRef());
+    waitBeforeCGetsADevicePointer(getOperation(),
+                                  appleGpuTopologies.getArrayRef());
     checkPackedTensorArguments(getOperation());
   }
 };
@@ -8412,6 +9227,59 @@ struct RaiseLoopAccessesPass
   }
 };
 
+// Upstream's `convert-linalg-to-affine-loops` makes an `affine.for` for each
+// loop of a linalg op, with a size of an operand as its bound. A size that a
+// loop computes, such as that of a tensor made in the loop, is not an affine
+// dimension there, and the `affine.for` does not verify. This pass lowers such
+// an op to `scf.for` loops instead, and every other op as upstream does.
+struct LinalgToAffineLoopsPass
+    : public PassWrapper<LinalgToAffineLoopsPass, OperationPass<func::FuncOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LinalgToAffineLoopsPass)
+
+  llvm::StringRef getArgument() const override {
+    return "vx-linalg-to-affine-loops";
+  }
+
+  llvm::StringRef getDescription() const override {
+    return "Lowers linalg ops to affine loops, or to scf loops where a bound "
+           "is not an affine dimension";
+  }
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<affine::AffineDialect, memref::MemRefDialect,
+                    scf::SCFDialect>();
+  }
+
+  struct Lower : public OpInterfaceRewritePattern<linalg::LinalgOp> {
+    using OpInterfaceRewritePattern::OpInterfaceRewritePattern;
+
+    LogicalResult matchAndRewrite(linalg::LinalgOp op,
+                                  PatternRewriter &rewriter) const override {
+      if (!op.hasPureBufferSemantics())
+        return failure();
+      bool affine = true;
+      for (Range range : op.createLoopRanges(rewriter, op.getLoc()))
+        for (OpFoldResult bound : {range.offset, range.size, range.stride})
+          if (Value value = llvm::dyn_cast_if_present<Value>(bound))
+            affine = affine && affine::isValidDim(value);
+      if (failed(affine ? linalg::linalgOpToAffineLoops(rewriter, op)
+                        : linalg::linalgOpToLoops(rewriter, op)))
+        return failure();
+      rewriter.eraseOp(op);
+      return success();
+    }
+  };
+
+  void runOnOperation() override {
+    MLIRContext *context = &getContext();
+    RewritePatternSet patterns(context);
+    patterns.add<Lower>(context);
+    memref::DimOp::getCanonicalizationPatterns(patterns, context);
+    affine::AffineApplyOp::getCanonicalizationPatterns(patterns, context);
+    (void)applyPatternsGreedily(getOperation(), std::move(patterns));
+  }
+};
+
 // Make a stack buffer behave like the heap buffer it replaced:
 // `malloc`-compatible alignment, and in the entry block.
 //
@@ -8610,7 +9478,10 @@ struct CheckIntegerDivisionPass
       if (isSigned && ty.getWidth() > 1 && (!constant || divisor.isAllOnes())) {
         Value min = b.create<arith::ConstantOp>(
             loc, b.getIntegerAttr(ty, APInt::getSignedMinValue(ty.getWidth())));
-        Value minusOne = b.create<arith::ConstantIntOp>(loc, ty, -1);
+        // A -1 from ConstantIntOp has only 64 one bits. An i128 needs 128, or
+        // MIN / -1 misses the check.
+        Value minusOne = b.create<arith::ConstantOp>(
+            loc, b.getIntegerAttr(ty, APInt::getAllOnes(ty.getWidth())));
         Value isMin =
             b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, lhs, min);
         Value isMinusOne = b.create<arith::CmpIOp>(
@@ -9112,6 +9983,9 @@ void registerVxPasses() {
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<RaiseLoopAccessesPass>();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return std::make_unique<LinalgToAffineLoopsPass>();
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<ReorderableReductionsPass>();

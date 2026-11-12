@@ -1,0 +1,64 @@
+//===- book_closures_function_pointers.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on closures (www/book/src/closures.md): a named function given
+// as a value of a function pointer type, in a variable, a struct field and a generic call.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}apply 25{{$}}
+// CHECK: {{^}}g 8{{$}}
+// CHECK: {{^}}step 6{{$}}
+// CHECK: {{^}}hello{{$}}
+// CHECK: {{^}}run 7{{$}}
+
+// ANCHOR: program
+fn square(x : i64) -> i64 {
+  return x * x;
+}
+
+fn double(x : i64) -> i64 {
+  return x * 2;
+}
+
+fn say_hello() -> void {
+  println!("hello");
+}
+
+fn seven() -> i64 {
+  return 7;
+}
+
+fn apply(f : fn(i64) -> i64, x : i64) -> i64 {
+  return f(x);
+}
+
+fn run<T>(f : fn() -> T) -> T {
+  return f();
+}
+
+struct Step {
+  op : fn(i64) -> i64,
+}
+
+fn main() -> i32 {
+  println!("apply {}", apply(square, 5));
+
+  let g : fn(i64) -> i64 = double;
+  println!("g {}", g(4i64));
+
+  let s = Step {
+    op : double
+  };
+  let op = s.op;
+  println!("step {}", op(3i64));
+
+  run(say_hello);
+  println!("run {}", run(seven));
+  return 0;
+}
+// ANCHOR_END: program

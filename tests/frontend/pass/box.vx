@@ -4,7 +4,7 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // CHECK-DAG: func.func private @print_str(
 // CHECK-DAG: func.func private @print_i32(
 // CHECK-LABEL: func.func @main() -> i32

@@ -1,0 +1,15 @@
+LISA last_arriver_of_device_scope
+(* Two blocks each write a partial result, then run a release fence and add 1 to a counter.
+   The block whose add reads 1 is the last: it runs an acquire fence and reads the partial of the
+   other block. Fences and adds have device scope, so the counter publishes the partial.
+   Expect: never, no data race. *)
+{ count = 0; part0 = 0; part1 = 0; }
+ P0                                  | P1                                  ;
+ w[plain] part0 1                    | w[plain] part1 1                    ;
+ f[rel,device]                       | f[rel,device]                       ;
+ rmw[rlx,device] r0 (add r0 1) count | rmw[rlx,device] r0 (add r0 1) count ;
+                                     | f[acq,device]                       ;
+                                     | r[plain] r1 part0                   ;
+scopes: (device (block P0) (block P1))
+filter (1:r0 = 1)
+exists (1:r1 = 0)

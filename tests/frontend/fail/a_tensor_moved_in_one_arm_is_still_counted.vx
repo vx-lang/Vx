@@ -1,0 +1,46 @@
+//===- a_tensor_moved_in_one_arm_is_still_counted.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A move ends the count of a tensor in GPU memory only when the move is in the block of its
+// `let`. Here `a` moves only when `keep` is false. When `keep` is true, `a` and `b` are both in
+// `W`, which is 4608 bytes. `W` holds 4096.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//===----------------------------------------------------------------------===//
+
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 4 KiB, managed: explicit, scope: device
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10,
+  transfer Memory::W -> Memory::CPU_DRAM : 10
+}
+
+fn free(t : Tensor<f32, [128], Memory::W>) -> void {
+  let _h = transfer(t, Memory::CPU_DRAM);
+}
+
+fn moved_in_one_arm(keep : bool) -> f32 {
+  let a = transfer(Tensor<f32, [128]>::fill(1.0), Memory::W);
+  if !keep {
+    free(a);
+  }
+  let b = transfer(Tensor<f32, [1024]>::fill(2.0), Memory::W);
+  let c = transfer(b, Memory::CPU_DRAM);
+  return c[0];
+}
+
+fn main() -> i32 {
+  let _x = moved_in_one_arm(true);
+  return 0;
+}
+
+// CHECK: Error[E6010] {{.*}} the working set placed in memory space 'W' (2 tiles) sums to 4608 bytes, over its 4096 byte capacity

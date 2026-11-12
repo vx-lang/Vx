@@ -1,0 +1,29 @@
+// Three tasks lock one `Mutex` and add 1 to the plain value in it. GenMC checks every order of
+// the tasks: no data race on the value, no lost wake, and the final value is 3.
+
+import std::sync::mutex;
+
+fn add_one(m : &Mutex<i64>) -> void {
+  let mut g = m.lock();
+  let v = g.get();
+  *v = *v + 1;
+}
+
+fn main() -> i32 {
+  let m = Mutex<i64>::new(0);
+  tasks {
+    spawn {
+      add_one(&m);
+    };
+    spawn {
+      add_one(&m);
+    };
+    spawn {
+      add_one(&m);
+    };
+  };
+  if m.into_inner() != 3 {
+    panic("the count is wrong");
+  }
+  return 0;
+}

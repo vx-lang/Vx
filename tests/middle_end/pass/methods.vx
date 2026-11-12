@@ -26,12 +26,6 @@ fn main() -> i32 {
 }
 
 // CHECK: module
-// CHECK: func.func @Point$distance(%arg0: !llvm.struct<"Point", (f32, f32)>) -> f32 {
-// CHECK: %0 = llvm.extractvalue %arg0[0] : !llvm.struct<"Point", (f32, f32)>
-// CHECK: %1 = llvm.extractvalue %arg0[1] : !llvm.struct<"Point", (f32, f32)>
-// CHECK: %2 = arith.addf %0, %1 : f32
-// CHECK: return %2 : f32
-// CHECK: }
 // CHECK: func.func @main() -> i32 {
 // CHECK: %0 = llvm.mlir.undef : !llvm.struct<"Point", (f32, f32)>
 // CHECK: %cst = arith.constant 3.000000e+00 : f32
@@ -41,5 +35,11 @@ fn main() -> i32 {
 // CHECK: %3 = call @Point$distance(%2) : (!llvm.struct<"Point", (f32, f32)>) -> f32
 // CHECK: %c0_i32 = arith.constant 0 : i32
 // CHECK: return %c0_i32 : i32
+// CHECK: }
+// CHECK: func.func @Point$distance(%arg0: !llvm.struct<"Point", (f32, f32)>) -> f32 {
+// CHECK: %0 = llvm.extractvalue %arg0[0] : !llvm.struct<"Point", (f32, f32)>
+// CHECK: %1 = llvm.extractvalue %arg0[1] : !llvm.struct<"Point", (f32, f32)>
+// CHECK: %2 = arith.addf %0, %1 : f32
+// CHECK: return %2 : f32
 // CHECK: }
 // CHECK: }

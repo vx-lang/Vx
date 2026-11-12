@@ -1,0 +1,26 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefixes=WARN,CHECK --implicit-check-not=Error # flat-codegen
+// WARN: Warning[W1014]
+// WARN-SAME: -1 does not fit in usize, so this cast will stop the program
+
+fn main() -> i32 {
+  let _negative = (-1i64) as usize;
+  return 0;
+}
+
+// CHECK: module attributes {vx.drops} {
+// CHECK:   func.func private @vx_init_signals()
+// CHECK:   func.func @main() -> i32 {
+// CHECK:     call @vx_init_signals() : () -> ()
+// CHECK:     %c1_i64 = arith.constant 1 : i64
+// CHECK:     %c0_i64 = arith.constant 0 : i64
+// CHECK:     %0 = arith.subi %c0_i64, %c1_i64 : i64
+// CHECK:     %c0_i64_0 = arith.constant 0 : i64
+// CHECK:     %1 = arith.cmpi sge, %0, %c0_i64_0 : i64
+// CHECK:     cf.assert %1, "cast to usize is out of range"
+// CHECK:     %c9223372036854775807_i64 = arith.constant 9223372036854775807 : i64
+// CHECK:     %2 = arith.cmpi sle, %0, %c9223372036854775807_i64 : i64
+// CHECK:     cf.assert %2, "cast to usize is out of range"
+// CHECK:     %c0_i32 = arith.constant 0 : i32
+// CHECK:     return %c0_i32 : i32
+// CHECK:   }
+// CHECK: }

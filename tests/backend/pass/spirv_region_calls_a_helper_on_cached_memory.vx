@@ -10,8 +10,8 @@
 // `managed: cached`, which the host can read, so that is safe and only the
 // warning is needed.
 //
-// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s
-// CHECK: kernel `{{[a-z0-9_]+}}` cannot become a `spirv64` device image: it passes a tensor to `add_one`
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s # flat-codegen
+// CHECK: the region placed on `Topology::Dev` in `main` (kernel `{{[a-z0-9_]+}}`) cannot become a `spirv64` device image: it passes a tensor to `add_one`
 // CHECK: It will run on the host instead.
 // EXPECT: [1,  1,  1,  1]
 

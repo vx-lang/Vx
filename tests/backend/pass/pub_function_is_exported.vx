@@ -28,3 +28,7 @@ fn main() -> i32 {
   println!("{}", 1);
   return 0;
 }
+
+// `--implicit-check-not` does not look past the first `CHECK-DAG` match, so these lines
+// check the end of the output.
+// CHECK-NOT: W1002

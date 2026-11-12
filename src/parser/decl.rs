@@ -1054,15 +1054,18 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// The name of a declared struct, enum or trait. `void` is the built-in type with one
-    /// value, and the compiler recognizes it by name, so a program cannot declare its own.
+    /// The name of a declared struct, enum or trait. The compiler reads the name of a built-in
+    /// type, such as `void` or `Matrix`, as that type, so a program cannot declare its own.
     fn expect_type_name(&mut self, msg: &str) -> ParseResult<'a, String> {
         let token = self.peek().clone();
         let name = self.expect_identifier(msg)?;
-        if name == "void" {
+        if super::types::is_builtin_type_name(&name) {
             return Err(self.error_at(
                 &token,
-                "`void` is a built-in type and cannot be declared; choose another name",
+                &format!(
+                    "`{name}` is a built-in type, so a program cannot declare a type with this \
+                     name. Choose another name."
+                ),
             ));
         }
         Ok(name)
@@ -1093,6 +1096,11 @@ impl<'a> Parser<'a> {
 
         let generics = self.parse_generic_params()?;
 
+        let mut invariants = Vec::new();
+        while self.match_token(&TokenType::Invariant) {
+            invariants.push(self.parse_expr()?);
+        }
+
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
         let mut fields: Vec<(crate::symbol::Symbol, crate::syntax::types::Type)> = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
@@ -1116,6 +1124,8 @@ impl<'a> Parser<'a> {
             name: name.into(),
             generics,
             fields,
+            invariants,
+            file: None,
             doc_comment: None,
         })
     }

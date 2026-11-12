@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 // Test array literals, indexing, and iteration patterns.
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: call @sum_array() : () -> i32
 // CHECK: call @dot_product() : () -> i32

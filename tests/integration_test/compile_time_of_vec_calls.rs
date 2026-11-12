@@ -48,7 +48,8 @@ fn three_thousand_vec_get_calls_type_check_in_seconds() {
         "vxc failed on the program:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    // About 0.3 s in a debug build now. The limit leaves room for a slow machine.
+    // About 4 s of CPU time in a debug build, most of it to find the method `get`. The limit
+    // leaves room for a slow, busy machine.
     assert!(
         took < Duration::from_secs(20),
         "3000 calls of Vec::get took {took:?} to type-check"

@@ -19,9 +19,10 @@
 use super::*;
 use crate::arch::LevelKind;
 use crate::bytecode::{
-    ACROSS_BLOCK, ACROSS_BLOCKS, ACROSS_LANE, ACROSS_STRIDE, BARRIER_SUBGROUP, LANE_REDUCE_ARGMAX,
-    LANE_REDUCE_COPY, LANE_REDUCE_COPY_WAIT, LANE_REDUCE_DESCENDING, LANE_REDUCE_MAX,
-    LANE_REDUCE_ORDERED, LANE_REDUCE_OWN_ROW, LANE_REDUCE_SORT, LANE_REDUCE_SUBGROUP,
+    ACROSS_BLOCK, ACROSS_BLOCKS, ACROSS_LANE, ACROSS_STRIDE, BARRIER_SUBGROUP,
+    LANE_REDUCE_ACCUMULATE, LANE_REDUCE_ARGMAX, LANE_REDUCE_COPY, LANE_REDUCE_COPY_WAIT,
+    LANE_REDUCE_DESCENDING, LANE_REDUCE_MATMUL, LANE_REDUCE_MAX, LANE_REDUCE_ORDERED,
+    LANE_REDUCE_OWN_ROW, LANE_REDUCE_SORT, LANE_REDUCE_SUBGROUP, LANE_ROW_SHIFT,
     TENSOR_STORE_BLOCK_LANE_ELEMENT, TENSOR_STORE_SUBGROUP_LANE_ELEMENT,
 };
 use crate::hir::check::across_lanes;
@@ -39,7 +40,8 @@ pub(super) struct AcrossState {
     pub lanes: u64,
     /// The level whose code is being lowered, outside its lane loops. `None` in a lane loop.
     pub level: Option<AcrossLevel>,
-    /// The names that only lane 0 has, as the checker found them.
+    /// The names that only lane 0 has. Each block forgets the names that it adds, so lane 0 runs
+    /// no more code than the checker expects.
     pub lane0: HashSet<String>,
     /// In code that lane 0 alone runs.
     pub on_lane0: bool,
@@ -125,6 +127,76 @@ const IS_LAST: &str = r#"%vx_at = arith.constant 0 : index
 %vx_last = memref.load %flag[%vx_at] : memref<1xi32, 3>
 macro.yield %vx_last : i32"#;
 
+/// Where the code after a nest of blocks is, in a region with such code.
+pub(crate) struct Arrivals<'a> {
+    /// The loop whose passes count.
+    pub counted: &'a crate::syntax::ForLoopStmt,
+    /// The statements that the last pass runs.
+    pub after: Vec<&'a Statement>,
+    /// The outer loop of a group, when the code is the code of a group.
+    pub outer: Option<&'a crate::syntax::ForLoopStmt>,
+    /// The length of the count, which `--emit-ptx` uses in its name: "one" for a whole nest,
+    /// "axis0" when the outer loop of a group goes over all of the first axis, and "" otherwise.
+    pub length: &'static str,
+}
+
+/// The loops and the statements of the code after the nest of blocks in `stmts`, or of the code
+/// of a group: each pass of the outer loop is a group of the passes of the inner one.
+pub(crate) fn arrivals(stmts: &[Statement]) -> Option<Arrivals<'_>> {
+    let at = stmts
+        .iter()
+        .position(|s| matches!(s, Statement::ForLoop(f) if f.across.is_some()))?;
+    let Statement::ForLoop(nest) = &stmts[at] else {
+        return None;
+    };
+    let grouped = nest.body.len() > 1 && crate::hir::check::across::same_level(&nest.body[0], nest);
+    if grouped {
+        let Statement::ForLoop(inner) = &nest.body[0] else {
+            return None;
+        };
+        let whole_axis = nest.across.as_ref().is_some_and(|a| a.share.is_none())
+            && matches!(&*nest.iterable, Expr::Range(r)
+                if matches!(&*r.start, Expr::Number(n) if n.value.as_ref() == "0"));
+        return Some(Arrivals {
+            counted: inner,
+            after: nest.body[1..].iter().collect(),
+            outer: Some(nest),
+            length: if whole_axis { "axis0" } else { "" },
+        });
+    }
+    let rest = &stmts[at + 1..];
+    // The code after the nest drops the names it declares. A drop of a name from before the nest
+    // stays in the body that every block runs.
+    let declared: Vec<_> = rest
+        .iter()
+        .filter_map(|s| match s {
+            Statement::LetDecl(l) => Some(&l.name),
+            _ => None,
+        })
+        .collect();
+    let after = rest
+        .iter()
+        .filter(|s| !matches!(s, Statement::Drop(d) if !declared.contains(&&d.name)))
+        .filter(|s| !crate::hir::check::across::same_level(s, nest))
+        .collect();
+    Some(Arrivals {
+        counted: nest,
+        after,
+        outer: None,
+        length: "one",
+    })
+}
+
+/// The ops that end one pass of a nest of blocks, on lane 0, as an `mlir!` block.
+pub(crate) fn arrive_block() -> &'static str {
+    ARRIVE
+}
+
+/// The ops that read whether this pass was the last, as an `mlir!` block.
+pub(crate) fn is_last_block() -> &'static str {
+    IS_LAST
+}
+
 /// The lanes of a block of a region with `across` loops: the most that a lane loop or a subgroup
 /// loop asks for, and 1 with none. `None` for a region with no loop of blocks.
 pub(crate) fn across_block_lanes(stmts: &[Statement]) -> Option<u64> {
@@ -148,7 +220,7 @@ pub(crate) fn across_block_lanes(stmts: &[Statement]) -> Option<u64> {
 
 /// The loop of blocks in `stmts`, when the checker found one that the GPU launches. A loop that
 /// `-fauto-schedule-levels` made a plain loop is not one.
-pub(super) fn blocks_loop(stmts: &[Statement]) -> Option<&crate::syntax::ForLoopStmt> {
+pub(crate) fn blocks_loop(stmts: &[Statement]) -> Option<&crate::syntax::ForLoopStmt> {
     stmts.iter().find_map(|s| match s {
         Statement::ForLoop(f)
             if f.across
@@ -163,7 +235,7 @@ pub(super) fn blocks_loop(stmts: &[Statement]) -> Option<&crate::syntax::ForLoop
 
 /// The lanes that a lane loop or a subgroup loop shares its passes among: `n` of
 /// `across lanes(n)`, or else its trip. The checker made sure that it is a number.
-fn across_width(f: &crate::syntax::ForLoopStmt) -> Option<u64> {
+pub(crate) fn across_width(f: &crate::syntax::ForLoopStmt) -> Option<u64> {
     let number = |e: &Expr| match e {
         Expr::Number(n) => n.value.parse::<u64>().ok(),
         _ => None,
@@ -178,7 +250,9 @@ fn across_width(f: &crate::syntax::ForLoopStmt) -> Option<u64> {
 }
 
 /// The lane loop that is the whole body of the lane loop `f`, if there is one.
-fn inner_lane_loop(f: &crate::syntax::ForLoopStmt) -> Option<&crate::syntax::ForLoopStmt> {
+pub(crate) fn inner_lane_loop(
+    f: &crate::syntax::ForLoopStmt,
+) -> Option<&crate::syntax::ForLoopStmt> {
     let mut body = f.body.iter().filter(|s| !matches!(s, Statement::Drop(_)));
     match (body.next(), body.next()) {
         (Some(Statement::ForLoop(g)), None)
@@ -191,7 +265,7 @@ fn inner_lane_loop(f: &crate::syntax::ForLoopStmt) -> Option<&crate::syntax::For
 }
 
 /// The lanes of the lane loops inside the lane loop `f`, each the whole body of the one around it.
-fn inner_lanes(f: &crate::syntax::ForLoopStmt) -> u64 {
+pub(crate) fn inner_lanes(f: &crate::syntax::ForLoopStmt) -> u64 {
     match inner_lane_loop(f) {
         Some(g) => across_width(g).unwrap_or(1) * inner_lanes(g),
         None => 1,
@@ -261,9 +335,7 @@ impl Lowerer<'_> {
         let mut i = 0;
         while i < stmts.len() {
             if across_lanes::holds_across(&stmts[i]) {
-                let lane0 = self.across.lane0.clone();
                 self.lower_stmt(&stmts[i])?;
-                self.across.lane0 = lane0;
                 i += 1;
                 continue;
             }
@@ -465,11 +537,17 @@ impl Lowerer<'_> {
         }
         if self.across.kinds.last() == Some(&LevelKind::Subgroups) {
             imm |= LANE_REDUCE_SUBGROUP;
-            if tensors
+            let rows: Vec<Option<u64>> = tensors
                 .iter()
-                .all(|t| matches!(t, Expr::Borrow(b) if self.is_subgroup_row(&b.expr)))
-            {
-                imm |= LANE_REDUCE_OWN_ROW;
+                .map(|t| match t {
+                    Expr::Borrow(b) => self.subgroup_row_number(&b.expr),
+                    _ => None,
+                })
+                .collect();
+            if let Some(Some(row)) = rows.first() {
+                if rows.iter().all(|r| *r == Some(*row)) {
+                    imm |= LANE_REDUCE_OWN_ROW | (row << LANE_ROW_SHIFT);
+                }
             }
         }
         if argmax {
@@ -486,6 +564,33 @@ impl Lowerer<'_> {
     }
 
     /// `lanes::sort(&mut t, n)` and `lanes::sort_descending(&mut t, n)`: an effect on `t`. The
+    /// `acc = acc + (a as f32) @ (b as f32)` in the code of a subgroup: an effect on `acc`, which
+    /// every lane of the subgroup computes. A subgroup barrier after it lets each lane read the
+    /// elements that the other lanes wrote.
+    pub(super) fn lower_lane_matmul(
+        &mut self,
+        m: &crate::hir::check::lanes::LaneMatmul,
+    ) -> Lowered<()> {
+        let matrix = |v: &Val, elems: &[ElementType]| matches!(&v.ty, LoweredTy::Tensor { elem, shape } if shape.len() == 2 && elems.contains(elem));
+        let acc = self.lower_expr(m.acc)?;
+        let lhs = self.lower_expr(m.lhs)?;
+        let rhs = self.lower_expr(m.rhs)?;
+        let tile = [ElementType::F32, ElementType::BF16, ElementType::F16];
+        if !matrix(&acc, &[ElementType::F32]) || !matrix(&lhs, &tile) || !matrix(&rhs, &tile) {
+            return Err(Decline::TypeNotModelled {
+                what: "a lane matmul of something that is not a matrix of floats",
+            });
+        }
+        let mut imm = LANE_REDUCE_MATMUL | LANE_REDUCE_SUBGROUP;
+        if m.accumulate {
+            imm |= LANE_REDUCE_ACCUMULATE;
+        }
+        self.emit_effect(Opcode::Arg, rhs.reg, Register(0), 0);
+        self.emit_effect(Opcode::LaneReduce, acc.reg, lhs.reg, imm);
+        self.barrier(AcrossLevel::Subgroup);
+        Ok(())
+    }
+
     /// value is a constant that nothing reads, as for `barrier()`.
     fn lower_lane_sort(
         &mut self,
@@ -568,22 +673,35 @@ impl Lowerer<'_> {
             AcrossLevel::Block if matches!(&*ix.base, Expr::Identifier(_)) => {
                 TENSOR_STORE_BLOCK_LANE_ELEMENT
             }
-            AcrossLevel::Subgroup if self.is_subgroup_row(&ix.base) => {
-                TENSOR_STORE_SUBGROUP_LANE_ELEMENT
-            }
+            AcrossLevel::Subgroup => match self.subgroup_row_number(&ix.base) {
+                Some(row) => TENSOR_STORE_SUBGROUP_LANE_ELEMENT | (row << LANE_ROW_SHIFT),
+                None => 0,
+            },
             _ => 0,
         }
     }
 
-    /// Whether `e` is the row of a tile that the code of this subgroup alone writes.
-    fn is_subgroup_row(&self, e: &Expr) -> bool {
-        match (&self.across.subgroup_row, e) {
+    /// When `e` is a row of a tile that the code of this subgroup alone writes, the number that
+    /// tells it from the other rows of the subgroup: 0 for `t` or `t[w]`, and `c + 1` for
+    /// `t[w][c]` with a number `c`. Each row keeps its own register on the device.
+    fn subgroup_row_number(&self, e: &Expr) -> Option<u64> {
+        let is_own_row = |e: &Expr| match (&self.across.subgroup_row, e) {
             (Some(SubgroupRow::Whole), Expr::Identifier(_)) => true,
             (Some(SubgroupRow::Index(w)), Expr::IndexAccess(r)) => {
                 matches!(&*r.base, Expr::Identifier(_))
                     && matches!(&*r.index, Expr::Identifier(id) if &id.name == w)
             }
             _ => false,
+        };
+        if is_own_row(e) {
+            return Some(0);
+        }
+        match e {
+            Expr::IndexAccess(r) if is_own_row(&r.base) => match &*r.index {
+                Expr::Number(n) => n.value.parse::<u64>().ok().map(|c| c + 1),
+                _ => None,
+            },
+            _ => None,
         }
     }
 

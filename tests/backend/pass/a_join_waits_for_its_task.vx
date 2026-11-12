@@ -19,10 +19,11 @@
 // CHECK-NEXT: {{^}}after a join into a variable, x is 11{{$}}
 // CHECK-NEXT: {{^}}w is 5{{$}}
 
+import core::time;
 import std::time;
 
 fn sleep_then_add_one(x : &mut i64) -> void {
-  sleep(0.2);
+  sleep(Duration::from_millis(200));
   *x = *x + 1;
 }
 

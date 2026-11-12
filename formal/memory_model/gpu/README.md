@@ -30,8 +30,9 @@ relaxed load before a later store, so vxc makes the load `ld.acquire`. Compiled 
 They need a GPU. On a CPU the blocks run one after the other, and the first round waits forever.
 
 ```bash
-vxc formal/memory_model/gpu/mp_rel_acq_blocks.vx --host default --machine fleet/h100-sxm.vx -o mp
-for i in $(seq 10); do timeout 120 ./mp; done
+for i in $(seq 10); do
+  timeout 120 vxc formal/memory_model/gpu/mp_rel_acq_blocks.vx --host default --machine fleet/h100-sxm.vx
+done
 ```
 
 `tests/optimizations/pass/atomic_orders_and_fence_scopes_in_ptx.vx` checks the PTX of each atomic

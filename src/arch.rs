@@ -476,6 +476,18 @@ pub fn topology_dispatch_id(top: &Topology) -> i32 {
     }
 }
 
+/// The dispatch id of the topology that holds a value of type `ty`, the `source_topology` of a
+/// `transfer` of it, or 0 for host memory. A tensor parameter, owned or borrowed, says it with
+/// its placement, and no transfer in the function put it there.
+pub fn source_topology_id(ty: &Type) -> i32 {
+    let placed = |t: &Type| t.topology().map_or(0, |top| topology_dispatch_id(&top));
+    match ty {
+        Type::Pinned(_, top) => topology_dispatch_id(top),
+        Type::Borrow { inner, .. } => placed(inner),
+        _ => placed(ty),
+    }
+}
+
 /// Dispatch id for a memory-space transfer target (`vx.transfer target_topology = N`). Each
 /// space maps to its canonical owning topology's id, so it agrees with `topology_dispatch_id`.
 pub fn memory_space_dispatch_id(mem: &MemorySpace) -> i32 {

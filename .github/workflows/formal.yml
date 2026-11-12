@@ -11,6 +11,10 @@ on:
   pull_request:
     branches: [ main ]
     paths: [ 'formal/**', '.github/workflows/formal.yml' ]
+  # A weekly run finds a break in the tool setup, such as a new runner image, before a PR does.
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
 
 jobs:
   memory-model:

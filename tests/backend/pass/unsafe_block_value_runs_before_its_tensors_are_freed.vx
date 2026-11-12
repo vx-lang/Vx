@@ -9,7 +9,7 @@
 // before the block frees what it made. The compiler used to free `a` first.
 //
 // RUN: env VX_PRINT_DROPS=1 vxc %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s --check-prefix=DROPS --implicit-check-not="main: b,"
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=ORDER
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=ORDER # flat-codegen
 // RUN: vxc %s --run 2>&1 | FileCheck %s
 // RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
 //

@@ -1,0 +1,95 @@
+//===- struct_lifetime_ends_after_last_use_in_a_caller_of_vec_new.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action print-ast 2>/dev/null | FileCheck %s
+//
+// The stack slot of a struct is free after the struct's last use. In a function that uses raw
+// pointers, it is free only at the end of its block, because a raw pointer keeps no borrow.
+//
+// `first_to_call_vec_new` is the first function here that calls `Vec<i64>::new`, so the checker
+// checks the body of `Vec<i64>::new` while it checks this function. That body uses raw pointers,
+// but this function does not. So the lifetime of `a` ends after its last use, before `let v`.
+// `v` itself is a struct with something to drop, and its lifetime ends after that drop.
+//
+// In `a_closure_with_a_raw_pointer`, the closure stores a raw pointer to `a` in `h`. So the
+// lifetime of `a` ends at the `return`, after `read(&h)` reads `a` through that pointer.
+
+import core::ops;
+import std::vec;
+
+struct Pair {
+  a : i64,
+  b : i64,
+}
+
+struct Holder {
+  p : *const Pair,
+}
+
+fn sum_of(p : &Pair) -> i64 {
+  return p.a + p.b;
+}
+
+fn no_pair() -> Holder {
+  return Holder {
+    p: unsafe { 0 as *const Pair }
+  };
+}
+
+fn keep(h : &mut Holder, p : *const Pair) -> void {
+  h.p = p;
+}
+
+fn read(h : &Holder) -> i64 {
+  return unsafe { (*h.p).b };
+}
+
+fn first_to_call_vec_new() -> i64 {
+  let a = Pair {
+    a: 1,
+    b: 2
+  };
+  let first = a.a + a.b;
+  let v = Vec<i64>::new();
+  let b = Pair {
+    a: 30,
+    b: 40
+  };
+  return first + sum_of(&b) + v.len() as i64;
+}
+
+fn a_closure_with_a_raw_pointer() -> i64 {
+  let mut h = no_pair();
+  let a = Pair {
+    a: 1,
+    b: 2
+  };
+  let keep_a = |n : i64| unsafe { keep(&mut h, &a); n };
+  let zero = keep_a(0 as i64);
+  let b = Pair {
+    a: 30,
+    b: 40
+  };
+  return zero + sum_of(&b) + read(&h);
+}
+
+fn main() -> i32 {
+  println!("{}", first_to_call_vec_new());
+  println!("{}", a_closure_with_a_raw_pointer());
+  return 0;
+}
+
+// CHECK-LABEL: Function: first_to_call_vec_new
+// CHECK:      Let first =
+// CHECK:      Drop a by ending its lifetime
+// CHECK-NEXT: Let v =
+// CHECK:      Drop v by ending its lifetime, after the value
+
+// CHECK-LABEL: Function: a_closure_with_a_raw_pointer
+// CHECK:      Let zero =
+// CHECK-NOT:  Drop a
+// CHECK:      Drop a by ending its lifetime, after the value

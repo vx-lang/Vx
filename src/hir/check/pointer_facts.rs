@@ -14,10 +14,11 @@
 // Each event that can free memory ends each fact about memory that the body does not name: a
 // call with an argument that can free memory, an assignment that drops a value, the drop of a
 // local, an `mlir!` block with such an input or a clobber, and a `spawn`. No callee is known to
-// keep memory alive yet, so a call that gets a raw pointer is such an event. Each ended fact
-// keeps the place and the reason of its event, for the note of E8006. Before a loop body, a scan
-// of the body finds its first event, which ends the facts for each pass. After a loop, the facts
-// are those that hold at each place where the loop ends.
+// keep memory alive yet, so a call that gets a raw pointer is such an event. A call that can free
+// memory only through owners, locals that own only memory that the body made, is no event. Each
+// ended fact keeps the place and the reason of its event, for the note of E8006. Before a loop
+// body, a scan of the body finds its first event, which ends the facts for each pass. After a
+// loop, the facts are those that hold at each place where the loop ends.
 //
 //===----------------------------------------------------------------------===//
 
@@ -49,6 +50,10 @@ struct Range {
     base: usize,
     lo: Vec<Expr>,
     hi: Vec<Expr>,
+    /// Whether the checker made this `Init` fact from two others. A later `Init` fact that
+    /// touches it grows it in place. The other facts stay, so that the end of an `if` keeps them
+    /// when the other branch has them.
+    merged: bool,
 }
 
 /// The `len` elements from `lo` at each of two bases share no byte.
@@ -87,8 +92,15 @@ pub(crate) struct LoopExit {
 }
 
 /// The raw-pointer state of the code around a body that starts with none of it: a closure body, a
-/// task body or the body of another function.
-pub(crate) struct OuterPointerState(PointerFacts, Vec<LoopExit>, Vec<String>, PointerFunction);
+/// task body or the body of another function. It also holds the invariants of the loops around
+/// the body, which a `continue` in the body does not reach.
+pub(crate) struct OuterPointerState(
+    PointerFacts,
+    Vec<LoopExit>,
+    Vec<String>,
+    PointerFunction,
+    Vec<crate::hir::stmt::InvariantLoop>,
+);
 
 /// The function whose body the checker checks.
 #[derive(Clone, Default)]
@@ -101,6 +113,8 @@ pub(crate) struct PointerFunction {
     scope: usize,
     /// The parameters that the body assigns or takes a `&mut` to.
     params_changed: std::collections::HashSet<String>,
+    /// The local variables that can be owners (see `PointerFacts::owners`).
+    owner_candidates: std::collections::HashSet<String>,
 }
 
 /// A pointer value: a base, and an offset in elements that is the exact sum of its terms.
@@ -128,6 +142,9 @@ pub(crate) struct PointerFacts {
     /// yet, by an id and the name of the handle. While one runs, it can free memory, so no fact
     /// about other memory starts.
     tasks: Vec<(usize, Option<String>, Span)>,
+    /// The owners: local variables that own only memory that the body made, and that no pointer
+    /// can point into. A call that can free memory only through owners ends no fact.
+    owners: std::collections::HashSet<String>,
 }
 
 impl PointerFacts {
@@ -152,6 +169,25 @@ impl PointerFacts {
                 .chain([&a.len])
                 .any(|e| expr_mentions(e, name))
         });
+    }
+
+    /// Gives each name of `names` its new name in each fact and each entry.
+    fn rename_all(&mut self, names: &HashMap<crate::symbol::Symbol, Expr>) {
+        let rename = |t: &mut Expr| *t = crate::hir::prover::substitute_names(t, names);
+        for v in self.entries.values_mut() {
+            v.offset.iter_mut().for_each(rename);
+        }
+        for r in self
+            .ranges
+            .iter_mut()
+            .chain(self.ended.iter_mut().map(|e| &mut e.range))
+        {
+            r.lo.iter_mut().chain(r.hi.iter_mut()).for_each(rename);
+        }
+        for a in &mut self.aparts {
+            let terms = a.first.1.iter_mut().chain(a.second.1.iter_mut());
+            terms.chain([&mut a.len]).for_each(rename);
+        }
     }
 
     /// Ends each range that `ends` selects, and records the event for the note of E8006.
@@ -228,6 +264,7 @@ impl PointerFacts {
                 self.tasks.push(t.clone());
             }
         }
+        self.owners.retain(|o| other.owners.contains(o));
         self
     }
 }
@@ -259,6 +296,11 @@ type Params = Vec<(crate::symbol::Symbol, Type)>;
 
 /// A `let` of a loop body: its name, its written type and its value.
 type BodyLet = (String, Option<Type>, Expr);
+
+/// Whether `body` declares a variable named `name`, at any depth.
+pub(crate) fn body_declares(body: &[Statement], name: &str) -> bool {
+    declarations_of_a_body(body).0.contains_key(name)
+}
 
 /// The variables that `body` declares at any depth, with the number of declarations of each:
 /// each `let`, the variable of each `for`, each name that a pattern binds and each parameter of a
@@ -312,6 +354,121 @@ fn declarations_of_a_body(body: &[Statement]) -> (HashMap<String, usize>, Vec<Bo
         _ => {}
     });
     (out, lets)
+}
+
+/// The local variables of `body` that can be owners. The body declares each one once, with a
+/// `let` of a call. It names each one only as the receiver of a method call, as an argument of a
+/// call, as `&v` or `&mut v` there, or as the value that the function returns. So only a call can
+/// make a pointer into its memory or put memory into it. No closure, task, `spawn on` region or
+/// `mlir!` block names it.
+fn owner_candidates(
+    body: &[Statement],
+    params: &[(crate::symbol::Symbol, Type)],
+) -> std::collections::HashSet<String> {
+    fn names_in(e: &Expr) -> Vec<String> {
+        let mut names = Vec::new();
+        crate::syntax::visit_expr(e, &mut |e| {
+            if let Expr::Identifier(id) = e {
+                names.push(id.name.to_string());
+            }
+        });
+        names
+    }
+    // Counts each `return v` of `stmts`, and finds each macro statement.
+    fn statements(stmts: &[Statement], plain: &mut HashMap<String, usize>, macros: &mut bool) {
+        for s in stmts {
+            match s {
+                Statement::Return(r) => {
+                    if let Some(Expr::Identifier(id)) = &r.expr {
+                        *plain.entry(id.name.to_string()).or_default() += 1;
+                    }
+                }
+                Statement::ForLoop(l) => statements(&l.body, plain, macros),
+                Statement::Loop(l) => statements(&l.body, plain, macros),
+                Statement::MacroCall(_) => *macros = true,
+                _ => {}
+            }
+        }
+    }
+    let (declared, lets) = declarations_of_a_body(body);
+    let mut candidates: std::collections::HashSet<String> = lets
+        .into_iter()
+        .filter(|(name, _, init)| {
+            declared.get(name) == Some(&1)
+                && matches!(init, Expr::FunctionCall(_) | Expr::MethodCall(_))
+                && !params.iter().any(|(p, _)| p.as_ref() == name)
+        })
+        .map(|(name, _, _)| name)
+        .collect();
+    // Each mention of a name, and each mention in one of the places above.
+    let mut all: HashMap<String, usize> = HashMap::new();
+    let mut plain: HashMap<String, usize> = HashMap::new();
+    let mut ruled_out = Vec::new();
+    // The walk does not read the tokens of a macro that is not expanded.
+    let mut macros = false;
+    let argument = |a: &Expr| match a {
+        Expr::Borrow(b) => match &*b.expr {
+            Expr::Identifier(id) => Some(id.name.to_string()),
+            _ => None,
+        },
+        Expr::Identifier(id) => Some(id.name.to_string()),
+        _ => None,
+    };
+    statements(body, &mut plain, &mut macros);
+    crate::syntax::visit_exprs(body, &mut |e| match e {
+        Expr::Identifier(id) => *all.entry(id.name.to_string()).or_default() += 1,
+        Expr::FunctionCall(fc) => {
+            for name in fc.args.iter().filter_map(argument) {
+                *plain.entry(name).or_default() += 1;
+            }
+        }
+        Expr::MethodCall(m) => {
+            if let Expr::Identifier(id) = &*m.base {
+                *plain.entry(id.name.to_string()).or_default() += 1;
+            }
+            for name in m.args.iter().filter_map(argument) {
+                *plain.entry(name).or_default() += 1;
+            }
+        }
+        Expr::Closure(_) | Expr::InlineMlir(_) => ruled_out.extend(names_in(e)),
+        Expr::SpawnOn(_) | Expr::TaskBlock(_) | Expr::ComptimeBlock(_) => {
+            ruled_out.extend(names_in(e));
+            let stmts = match e {
+                Expr::SpawnOn(b) => &b.stmts,
+                Expr::TaskBlock(b) => &b.stmts,
+                Expr::ComptimeBlock(b) => &b.stmts,
+                _ => unreachable!("matched above"),
+            };
+            statements(stmts, &mut plain, &mut macros);
+        }
+        Expr::MacroCall(_) => macros = true,
+        Expr::If(i) => {
+            statements(&i.then_block, &mut plain, &mut macros);
+            if let Some(b) = &i.else_block {
+                statements(b, &mut plain, &mut macros);
+            }
+        }
+        Expr::Match(m) => {
+            for arm in &m.arms {
+                statements(&arm.body, &mut plain, &mut macros);
+            }
+        }
+        Expr::UnsafeBlock(u) => statements(&u.stmts, &mut plain, &mut macros),
+        _ => {}
+    });
+    if let Some(Statement::ExprStmt(ExprStmtStmt {
+        expr: Expr::Identifier(id),
+        has_semi: false,
+        ..
+    })) = body.last()
+    {
+        *plain.entry(id.name.to_string()).or_default() += 1;
+    }
+    if macros {
+        return Default::default();
+    }
+    candidates.retain(|name| all.get(name) == plain.get(name) && !ruled_out.contains(name));
+    candidates
 }
 
 /// A term of an exact goal for the prover: program values are compared and added as exact
@@ -401,6 +558,9 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn add_range(&mut self, kind: Kind, base: usize, lo: Vec<Expr>, hi: Vec<Expr>) {
+        if kind == Kind::Init && self.merge_init(base, &lo, &hi) {
+            return;
+        }
         self.pointer_fact_ids += 1;
         let id = self.pointer_fact_ids;
         self.pointer_facts.ranges.push(Range {
@@ -409,7 +569,53 @@ impl<'a> TypeChecker<'a> {
             base,
             lo,
             hi,
+            merged: false,
         });
+    }
+
+    /// Before an assignment to the number `name`, after the prover's facts gave its old value
+    /// the new name in `names`: the pointer facts name the old value in the same way. A fact
+    /// that changes gets a new id, so the end of an `if` keeps it only when both branches have
+    /// it. A fact that still names `name` ends.
+    pub(crate) fn pointer_facts_name_the_old_value(
+        &mut self,
+        name: &str,
+        names: &HashMap<crate::symbol::Symbol, Expr>,
+    ) {
+        // Renames each term that names `name`, and says whether one did.
+        fn rename<'e>(
+            terms: impl Iterator<Item = &'e mut Expr>,
+            name: &str,
+            names: &HashMap<crate::symbol::Symbol, Expr>,
+        ) -> bool {
+            let mut changed = false;
+            for t in terms.filter(|t| expr_mentions(t, name)) {
+                *t = crate::hir::prover::substitute_names(t, names);
+                changed = true;
+            }
+            changed
+        }
+        let mut ids = self.pointer_fact_ids;
+        let facts = &mut self.pointer_facts;
+        for v in facts.entries.values_mut() {
+            rename(v.offset.iter_mut(), name, names);
+        }
+        let ended = facts.ended.iter_mut().map(|e| &mut e.range);
+        for r in facts.ranges.iter_mut().chain(ended) {
+            if rename(r.lo.iter_mut().chain(r.hi.iter_mut()), name, names) {
+                ids += 1;
+                r.id = ids;
+            }
+        }
+        for a in facts.aparts.iter_mut() {
+            let terms = a.first.1.iter_mut().chain(a.second.1.iter_mut());
+            if rename(terms.chain([&mut a.len]), name, names) {
+                ids += 1;
+                a.id = ids;
+            }
+        }
+        self.pointer_fact_ids = ids;
+        self.pointer_facts.forget(name);
     }
 
     /// The facts at the start of the body of `func`: each raw pointer parameter has a base of
@@ -432,6 +638,7 @@ impl<'a> TypeChecker<'a> {
             ensures: func.ensures.iter().filter(well_formed).cloned().collect(),
             scope: self.scopes.len() - 1,
             params_changed: crate::hir::check::raw::names_a_body_writes(&func.body),
+            owner_candidates: owner_candidates(&func.body, &func.params),
         };
         for (name, ty) in &func.params {
             if matches!(ty, Type::Pointer(..)) {
@@ -599,6 +806,62 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// `let name = init` declared the candidate `name`. It is an owner when it holds a value, and
+    /// `init` calls a function with no argument that can free memory, as `Vec<i64>::new()` does.
+    /// A call reaches the memory of its caller only through its arguments, so the value owns only
+    /// new memory.
+    pub(crate) fn pointer_facts_note_an_owner(&mut self, name: &str, init: &Expr) {
+        if !self.pointer_function.owner_candidates.contains(name) {
+            return;
+        }
+        let Expr::FunctionCall(fc) = init else {
+            return;
+        };
+        let holds_a_value = self.lookup(name).is_some_and(|(t, _)| {
+            !matches!(
+                t,
+                Type::Pointer(..)
+                    | Type::Borrow { .. }
+                    | Type::Ref(..)
+                    | Type::Closure(..)
+                    | Type::Function(..)
+                    | Type::Generic(..)
+                    | Type::Unknown
+            )
+        });
+        if !holds_a_value {
+            return;
+        }
+        // The call of a closure gets the closure as its first argument, which can free memory.
+        let params = self.call_param_types(fc.name.as_ref(), init);
+        let frees = fc.args.iter().enumerate().any(|(i, a)| {
+            let param = params.as_ref().and_then(|p| p.get(i));
+            self.argument_can_free(a, param)
+        });
+        if !frees {
+            self.pointer_facts.owners.insert(name.to_string());
+        }
+    }
+
+    /// Whether a value of the type `ty` can point into memory: it holds a reference, a raw
+    /// pointer or a type with a drop, at any depth.
+    fn type_can_point(&mut self, ty: &Type, depth: usize) -> bool {
+        if depth > 8 {
+            return true;
+        }
+        let parts = match ty {
+            Type::Borrow { .. } | Type::Ref(..) => return true,
+            Type::Struct(name, _) if name.as_ref() == "void" => return false,
+            Type::Struct(name, _) | Type::Enum(name, _) => self.declared_part_types(name, &[]),
+            Type::GenericInstance(base, args) => match &**base {
+                Type::Struct(name, _) | Type::Enum(name, _) => self.declared_part_types(name, args),
+                _ => return true,
+            },
+            _ => return self.type_can_free(ty, depth),
+        };
+        self.type_can_free(ty, depth) || parts.iter().any(|t| self.type_can_point(t, depth + 1))
+    }
+
     /// The value of `init` for the variable `name`, when `name` is a raw pointer. Computed before
     /// the facts about `name` are dropped, because `init` can use the old value.
     pub(crate) fn pointer_value_for(&mut self, name: &str, init: &Expr) -> Option<PointerValue> {
@@ -639,7 +902,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 _ => true,
             },
-            Type::Tensor(..) | Type::Matrix | Type::Module(..) => true,
+            Type::Tensor(..) | Type::Module(..) => true,
         }
     }
 
@@ -716,7 +979,9 @@ impl<'a> TypeChecker<'a> {
                 let why = self.in_branch(format!("the end of the scope of `{name}`"));
                 self.pointer_facts.end_local(name.as_ref(), at, &why);
             }
-            if !self.drops_glue(ty).is_empty() || matches!(ty, Type::Generic(..)) {
+            // The drop of an owner frees only memory that the body made.
+            let drops = !self.drops_glue(ty).is_empty() || matches!(ty, Type::Generic(..));
+            if drops && !self.pointer_facts.owners.contains(name.as_ref()) {
                 dropped.push(name.as_ref());
             }
         }
@@ -935,9 +1200,48 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The write `p[k] = x` or `*p = x` gives the element a value, so a pointer `p` at the base
+    /// `b` and the offset `j` gets `Init(b, j + k, j + k + 1)`. The compiler trusts the write, as
+    /// it trusts the rest of the `unsafe` block. Inside a call, the facts change after the call,
+    /// so a write there gives no fact.
+    pub(crate) fn pointer_facts_note_a_write(&mut self, place: &Expr) {
+        let (pointer, index) = match place {
+            Expr::IndexAccess(a) => (&*a.base, Some(&*a.index)),
+            Expr::Dereference(d) => (&*d.expr, None),
+            _ => return,
+        };
+        let Expr::Identifier(p) = pointer else {
+            return;
+        };
+        if !self.fact_change_frames.is_empty()
+            || !matches!(self.lookup(p.name.as_ref()), Some((Type::Pointer(..), _)))
+            || index.is_some_and(|k| !crate::hir::prover::is_modelled(k))
+        {
+            return;
+        }
+        let Some(value) = self.pointer_facts.entry_of(p.name.as_ref()) else {
+            return;
+        };
+        let mut lo = value.offset;
+        lo.extend(index.cloned());
+        let mut hi = lo.clone();
+        hi.push(one());
+        self.add_range(Kind::Init, value.base, lo, hi);
+    }
+
     /// At the start of a loop: a fact holds in the body only when no pass ends it, so an event
     /// that the body can have ends the facts before the body.
     pub(crate) fn end_pointer_facts_a_loop_can_end(&mut self, body: &[Statement]) {
+        // The checker checks the body once. A later statement of the body can put memory from
+        // outside into an owner before the next pass, so an owner that the body names stops
+        // being one.
+        let mut named = std::collections::HashSet::new();
+        crate::syntax::visit_exprs(body, &mut |e| {
+            if let Expr::Identifier(id) = e {
+                named.insert(id.name.to_string());
+            }
+        });
+        self.pointer_facts.owners.retain(|o| !named.contains(o));
         if self.pointer_facts.ranges.is_empty() {
             return;
         }
@@ -963,16 +1267,18 @@ impl<'a> TypeChecker<'a> {
                     ..Default::default()
                 },
             ),
+            std::mem::take(&mut self.invariant_loops),
         )
     }
 
     /// The end of a body that `pointer_facts_enter_body` started.
     pub(crate) fn pointer_facts_leave_body(&mut self, outer: OuterPointerState) {
-        let OuterPointerState(facts, loops, branches, function) = outer;
+        let OuterPointerState(facts, loops, branches, function, invariant_loops) = outer;
         self.pointer_facts = facts;
         self.pointer_loops = loops;
         self.pointer_branches = branches;
         self.pointer_function = function;
+        self.invariant_loops = invariant_loops;
     }
 
     /// The start of a loop body. `self.scopes` holds the scopes outside the body.
@@ -1003,17 +1309,127 @@ impl<'a> TypeChecker<'a> {
 
     /// After a loop: a fact holds when it holds at each place where the loop ends. A `for` loop
     /// also ends at its head, where `head` holds. A `loop` ends only at a `break`.
-    pub(crate) fn pointer_facts_after_a_loop(&mut self, head: Option<PointerFacts>) {
+    /// `renamed` gives the variable of a `for` loop its value where the loop ended.
+    pub(crate) fn pointer_facts_after_a_loop(
+        &mut self,
+        head: Option<PointerFacts>,
+        renamed: Option<(&str, &Expr)>,
+    ) {
         let exit = self
             .pointer_loops
             .pop()
             .expect("pushed at the start of the loop");
-        self.pointer_facts = match (head, exit.at_break) {
+        let names = renamed.map(|(var, value)| HashMap::from([(var.into(), value.clone())]));
+        let rename = |mut facts: PointerFacts| {
+            if let Some(names) = &names {
+                facts.rename_all(names);
+            }
+            facts
+        };
+        self.pointer_facts = match (head.map(rename), exit.at_break.map(rename)) {
             (Some(head), Some(at_break)) => head.join(&at_break),
             (Some(state), None) | (None, Some(state)) => state,
             // No path leaves the loop, so no code after it runs.
             (None, None) => PointerFacts::default(),
         };
+    }
+
+    /// The value of each raw pointer variable that the pointer clauses of a loop invariant name,
+    /// before the start of the loop body ends the facts of the body.
+    pub(crate) fn invariant_pointers(&self, clauses: &[Expr]) -> Vec<(String, PointerValue)> {
+        let mut values: Vec<(String, PointerValue)> = self
+            .pointer_facts
+            .entries
+            .iter()
+            .filter(|(name, _)| clauses.iter().any(|c| expr_mentions(c, name)))
+            .map(|(name, v)| (name.clone(), v.clone()))
+            .collect();
+        values.sort_by(|a, b| a.0.cmp(&b.0));
+        values
+    }
+
+    /// At the start of a loop body: each pointer clause of the invariant adds its facts, as a
+    /// `requires` does at the start of a function. `before` holds the values from
+    /// `invariant_pointers`. A pointer that the body assigns lost its value, so it gets a new base
+    /// with the memory of its base when the loop started. Returns each such pointer with its new
+    /// base.
+    pub(crate) fn pointer_facts_assume_invariants(
+        &mut self,
+        clauses: &[Expr],
+        before: &[(String, PointerValue)],
+    ) -> Vec<(String, usize)> {
+        let mut pass_bases = Vec::new();
+        for (name, value) in before {
+            if self.pointer_facts.entries.contains_key(name) {
+                continue;
+            }
+            let memory = self.pointer_facts.memory.get(&value.base).cloned();
+            let base = self.new_base_in(memory.unwrap_or_else(|| vec![Memory::Other]));
+            let entry = PointerValue {
+                base,
+                offset: Vec::new(),
+            };
+            self.pointer_facts.entries.insert(name.clone(), entry);
+            pass_bases.push((name.clone(), base));
+        }
+        for clause in clauses {
+            let (function, pointers, len) = read_clause(clause).expect("a pointer clause");
+            let values: Vec<PointerValue> = pointers
+                .iter()
+                .map(|p| self.pointer_value(p, None))
+                .collect();
+            self.add_pointer_fact(function, &values, len.clone());
+        }
+        pass_bases
+    }
+
+    /// Proves the pointer clause `clause` of a loop invariant from the facts here, as at a call.
+    /// On a failure, gives the event that ended a fact that would prove it, if there is one.
+    pub(crate) fn prove_pointer_clause_here(
+        &mut self,
+        clause: &Expr,
+    ) -> Result<(), Option<(Span, String)>> {
+        let (function, pointers, len) = read_clause(clause).expect("a pointer clause");
+        let values: Vec<PointerValue> = pointers
+            .iter()
+            .map(|p| self.pointer_value(p, None))
+            .collect();
+        let goal = self.pointer_goal(function, &values, len, None);
+        if self.prove_exact(&goal) {
+            return Ok(());
+        }
+        Err(self.ended_fact_that_proves(function, &values, len))
+    }
+
+    /// At the end of a pass or at a `continue`: whether the pointer clause `clause` holds for the
+    /// next pass. `names` gives the variables of the body new names, as in the prover's facts. A
+    /// pointer that the body assigns must also point into the memory of the base that the pass
+    /// started with. Otherwise the next pass could use a fact that a later event does not end.
+    pub(crate) fn pointer_clause_holds_in_the_next_pass(
+        &mut self,
+        clause: &Expr,
+        names: &HashMap<crate::symbol::Symbol, Expr>,
+        pass_bases: &[(String, usize)],
+    ) -> bool {
+        let here = self.pointer_facts.clone();
+        self.pointer_facts.rename_all(names);
+        let memory_kept = pass_bases.iter().all(|(name, start)| {
+            if !expr_mentions(clause, name) {
+                return true;
+            }
+            let facts = &self.pointer_facts;
+            let Some(now) = facts.entries.get(name).map(|v| v.base) else {
+                return false;
+            };
+            match (facts.memory.get(&now), facts.memory.get(start)) {
+                _ if now == *start => true,
+                (Some(now), Some(start)) => now.iter().all(|m| start.contains(m)),
+                _ => false,
+            }
+        });
+        let holds = memory_kept && self.prove_pointer_clause_here(clause).is_ok();
+        self.pointer_facts = here;
+        holds
     }
 
     /// The first event that a pass of the loop `body` can have, as its place and its reason.
@@ -1232,7 +1648,11 @@ impl<'a> TypeChecker<'a> {
                 let why = "the `mlir!` block, which can free memory".to_string();
                 events.push((false, m.span, why));
             }
-            Expr::SpawnOn(s) => events.push((false, s.span, spawn.to_string())),
+            Expr::SpawnOn(s) => {
+                if let Some(v) = self.region_frees_through(&s.stmts, s.ret.as_deref(), declared) {
+                    events.push((false, s.span, region_event(&v)));
+                }
+            }
             Expr::TaskBlock(t) if t.kind == TaskBlockKind::Spawn => {
                 events.push((false, t.span, spawn.to_string()))
             }
@@ -1323,6 +1743,39 @@ impl<'a> TypeChecker<'a> {
             None => self.scan_type(arg, declared),
         };
         self.type_can_free(&ty, 0)
+    }
+
+    /// A variable from outside a `spawn on` region, with the statements `stmts` and the value
+    /// `ret`, that can free memory. The task of the region reaches the memory of the code around
+    /// it only through such a variable. `declared` holds the variables of a loop body that the
+    /// checker has not checked yet.
+    pub(crate) fn region_frees_through(
+        &mut self,
+        stmts: &[Statement],
+        ret: Option<&Expr>,
+        declared: &HashMap<String, Type>,
+    ) -> Option<crate::symbol::Symbol> {
+        let mut names = Vec::new();
+        let mut note = |e: &Expr| {
+            if let Expr::Identifier(id) = e {
+                if !names.contains(&id.name) {
+                    names.push(id.name.clone());
+                }
+            }
+        };
+        crate::syntax::visit_exprs(stmts, &mut note);
+        if let Some(r) = ret {
+            crate::syntax::visit_expr(r, &mut note);
+        }
+        names.into_iter().find(|name| {
+            let outside =
+                declared.contains_key(name.as_ref()) || self.lookup(name.as_ref()).is_some();
+            let use_of = Expr::Identifier(IdentifierExpr {
+                name: name.clone(),
+                span: Span::default(),
+            });
+            outside && self.scan_can_free(&use_of, None, declared)
+        })
     }
 
     /// Whether the drop of a value of the type `ty` can free memory.
@@ -1452,9 +1905,56 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The owner that the argument `a` is, as `v`, or borrows, as `&v` and `&mut v`.
+    fn owner_named_by(&self, a: &Expr) -> Option<String> {
+        let e = match a {
+            Expr::Borrow(b) => &*b.expr,
+            e => e,
+        };
+        match e {
+            Expr::Identifier(id) if self.pointer_facts.owners.contains(id.name.as_ref()) => {
+                Some(id.name.to_string())
+            }
+            _ => None,
+        }
+    }
+
+    /// A call with the arguments `args` gives a value of the type `result`. Each owner of `args`
+    /// stops being one when another argument can free memory, because the call can then put
+    /// memory or a pointer from outside into the owner. It also stops when the result can point
+    /// into it.
+    fn owners_at_a_call(&mut self, args: &[&Expr], result: &Type) {
+        let named: Vec<String> = args.iter().filter_map(|a| self.owner_named_by(a)).collect();
+        if named.is_empty() {
+            return;
+        }
+        // A number points nowhere.
+        let others: Vec<&Expr> = args
+            .iter()
+            .copied()
+            .filter(|a| self.owner_named_by(a).is_none() && !matches!(a, Expr::Number(_)))
+            .collect();
+        let mut others_can_free = false;
+        for a in others {
+            let ty = self.check_expr_type_probe(a);
+            others_can_free |= self.type_can_free(&ty, 0);
+        }
+        if others_can_free || self.type_can_point(result, 0) {
+            for o in &named {
+                self.pointer_facts.owners.remove(o);
+            }
+        }
+    }
+
     /// After the call `expr` is checked and its value `requires` is proved: prove each pointer
-    /// `requires` of the callee in safe code, and then apply the events of the call.
-    pub(crate) fn pointer_facts_at_call(&mut self, expr: &Expr, written: WrittenCall) {
+    /// `requires` of the callee in safe code, and then apply the events of the call. `result` is
+    /// the type of the value of the call.
+    pub(crate) fn pointer_facts_at_call(
+        &mut self,
+        expr: &Expr,
+        written: WrittenCall,
+        result: &Type,
+    ) {
         let WrittenCall {
             name: written,
             local_can_free,
@@ -1494,15 +1994,20 @@ impl<'a> TypeChecker<'a> {
                 Expr::FunctionCall(_) if !local_call => self.not_freed_by(name),
                 _ => 0,
             };
-            let mut through = callee.filter(|c| self.argument_can_free(c, None));
+            let mut freeing: Vec<&Expr> = callee
+                .filter(|c| self.argument_can_free(c, None))
+                .into_iter()
+                .collect();
             for (i, a) in args.iter().enumerate() {
-                if through.is_none()
-                    && (i >= 32 || not_freed & (1 << i) == 0)
+                if (i >= 32 || not_freed & (1 << i) == 0)
                     && self.argument_can_free(a, params.as_ref().and_then(|p| p.get(i)))
                 {
-                    through = Some(a);
+                    freeing.push(a);
                 }
             }
+            // A call that can free memory only through owners ends no fact.
+            let only_owners = freeing.iter().all(|a| self.owner_named_by(a).is_some());
+            let through = freeing.first().copied().filter(|_| !only_owners);
             // The check gives a call of a closure the closure value as an argument.
             let is_the_closure = |a: &Expr| match a {
                 Expr::Borrow(b) => {
@@ -1539,6 +2044,8 @@ impl<'a> TypeChecker<'a> {
         if let Some(why) = why {
             self.pointer_facts_event(at, |_| why);
         }
+        let every: Vec<&Expr> = callee.into_iter().chain(args).collect();
+        self.owners_at_a_call(&every, result);
         if !self.speculating && !local_call && matches!(expr, Expr::FunctionCall(_)) {
             self.add_facts_of_ensures(name, args, at);
         }
@@ -1687,6 +2194,7 @@ impl<'a> TypeChecker<'a> {
                 base: v.base,
                 lo,
                 hi,
+                merged: false,
             };
             let why = "the `spawn`, whose task can free memory until its `join()`".to_string();
             self.pointer_facts.ended.push(Ended {
@@ -1901,6 +2409,10 @@ impl<'a> TypeChecker<'a> {
                 continue;
             }
             let ended = self.ended_fact_that_proves(function, &values, &m);
+            let lost = match ended {
+                Some(_) => None,
+                None => self.note_of_a_lost_invariant(|c| c.prove_exact(&goal)),
+            };
             let error = self.errors.error_with_code(
                 crate::diagnostic::DiagnosticCode::E8006,
                 format!(
@@ -1917,6 +2429,7 @@ impl<'a> TypeChecker<'a> {
                     span: Some(crate::diagnostic::SourceSpan::from_ast_span(&at)),
                 });
             }
+            error.notes.extend(lost);
         }
         any_trusted
     }
@@ -1953,8 +2466,60 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Before a new fact `Init(base, lo, hi)`: whether another `Init` fact of the base takes its
+    /// place. A fact that covers the new range does. So does a fact whose range touches or
+    /// overlaps it: the two become one merged fact, from the lower `lo` to the higher `hi`. Then
+    /// no chain of three facts forms, and a goal needs at most two facts.
+    fn merge_init(&mut self, base: usize, lo: &[Expr], hi: &[Expr]) -> bool {
+        let mut same: Vec<Range> = self
+            .pointer_facts
+            .ranges
+            .iter()
+            .filter(|r| r.kind == Kind::Init && r.base == base)
+            .cloned()
+            .collect();
+        let at_most = |a: &[Expr], b: &[Expr]| le(sum(a, &[]), sum(b, &[]));
+        for r in &same {
+            if self.prove_exact(&Exact::And(vec![at_most(&r.lo, lo), at_most(hi, &r.hi)])) {
+                return true;
+            }
+        }
+        // A merged fact grows in place, so it comes first.
+        same.sort_by_key(|r| !r.merged);
+        for r in same {
+            let new_after = [at_most(&r.lo, lo), at_most(lo, &r.hi), at_most(&r.hi, hi)];
+            let new_before = [at_most(lo, &r.lo), at_most(&r.lo, hi), at_most(hi, &r.hi)];
+            let new_covers = [at_most(lo, &r.lo), at_most(&r.hi, hi)];
+            let (new_lo, new_hi) = if self.prove_exact(&Exact::And(new_after.into())) {
+                (r.lo.clone(), hi.to_vec())
+            } else if self.prove_exact(&Exact::And(new_before.into())) {
+                (lo.to_vec(), r.hi.clone())
+            } else if self.prove_exact(&Exact::And(new_covers.into())) {
+                (lo.to_vec(), hi.to_vec())
+            } else {
+                continue;
+            };
+            self.pointer_fact_ids += 1;
+            let merged = Range {
+                id: self.pointer_fact_ids,
+                kind: Kind::Init,
+                base,
+                lo: new_lo,
+                hi: new_hi,
+                merged: true,
+            };
+            let ranges = &mut self.pointer_facts.ranges;
+            match ranges.iter_mut().find(|f| f.id == r.id && f.merged) {
+                Some(f) => *f = merged,
+                None => ranges.push(merged),
+            }
+            return true;
+        }
+        false
+    }
+
     /// The goal that proves `valid`, `initialized` or `!overlaps` for the pointer values
-    /// `values` and the length `m`, from one fact. `extra` is one more range to use.
+    /// `values` and the length `m`, from one fact or two. `extra` is one more range to use.
     fn pointer_goal(
         &self,
         function: &str,
@@ -1978,10 +2543,31 @@ impl<'a> TypeChecker<'a> {
                     Kind::Init
                 };
                 let v = &values[0];
-                let goals = ranges()
+                let mine: Vec<&Range> = ranges()
                     .filter(|r| r.kind == kind && r.base == v.base)
-                    .map(|r| within(r, v))
                     .collect();
+                let mut goals: Vec<Exact> = mine.iter().map(|r| within(r, v)).collect();
+                // Two facts: the first holds the start, and the second the end. `Init` ranges
+                // can touch. `Valid` ranges must share an element, because two allocations can
+                // sit next to each other.
+                for a in &mine {
+                    for b in mine.iter().filter(|b| b.id != a.id) {
+                        let joins = match kind {
+                            Kind::Init => le(sum(&b.lo, &[]), sum(&a.hi, &[])),
+                            Kind::Valid => le(sum(&b.lo, &[&one()]), sum(&a.hi, &[])),
+                        };
+                        goals.push(Exact::And(vec![
+                            le(sum(&a.lo, &[]), sum(&v.offset, &[])),
+                            le(sum(&a.lo, &[]), sum(&b.lo, &[])),
+                            joins,
+                            le(sum(&v.offset, &[m]), sum(&b.hi, &[])),
+                        ]));
+                    }
+                }
+                // Zero elements hold values. `valid(p, 0)` still says that `p` is not null.
+                if kind == Kind::Init {
+                    goals.push(le(term(m.clone()), term(zero())));
+                }
                 Exact::And(vec![le(term(zero()), term(m.clone())), Exact::Or(goals)])
             }
             _ => {
@@ -2021,6 +2607,12 @@ impl<'a> TypeChecker<'a> {
     }
 }
 
+/// The event of a `spawn on` region whose task can free memory through the variable `v`, for the
+/// note of E8006.
+pub(crate) fn region_event(v: &str) -> String {
+    format!("the `spawn on` region, whose task can free memory through `{v}`")
+}
+
 /// The argument `e` as the program wrote it, for the note of E8006.
 fn shown_argument(e: &Expr) -> String {
     fn text(e: &Expr) -> Option<String> {
@@ -2039,7 +2631,7 @@ fn shown_argument(e: &Expr) -> String {
 }
 
 /// The clause as the program wrote it, for an error.
-fn clause_source(e: &Expr) -> String {
+pub(crate) fn clause_source(e: &Expr) -> String {
     let Some((function, pointers, len)) = read_clause(e) else {
         return String::new();
     };

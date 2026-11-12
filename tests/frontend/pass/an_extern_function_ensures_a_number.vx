@@ -1,0 +1,33 @@
+//===- an_extern_function_ensures_a_number.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The compiler trusts the `ensures` of an `extern` function, and each call gets it as a fact.
+// `vxc --audit` lists it.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not='Warning[' --implicit-check-not='Error['
+// CHECK: func.func @main
+//
+// RUN: vxc %s --audit 2>&1 | FileCheck %s --check-prefix=AUDIT
+// AUDIT: an_extern_function_ensures_a_number.vx:[[@LINE+5]]:{{[0-9]+}}: the `extern` function `c_count` ensures `{{.*}}return <= n{{.*}}`, and the compiler trusts it
+// AUDIT-NOT: {{.}}
+
+extern "C" {
+  safe fn c_count(n : i64) -> i64
+  ensures 0i64 <= return && return <= n;
+}
+
+fn in_range(got : i64, n : i64) -> i64
+requires 0i64 <= got && got <= n
+{
+  return got;
+}
+
+fn main() -> i32 {
+  let n = 8i64;
+  let got = c_count(n);
+  return in_range(got, n) as i32;
+}

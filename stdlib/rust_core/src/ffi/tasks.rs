@@ -76,14 +76,14 @@ impl CancelMark {
 }
 
 /// One scope with a deadline (F6a): a `drop`, with the mark that `vx_cancel_off` put aside, or a
-/// `within` block.
+/// call of `within`.
 pub(crate) struct Deadline {
     /// The mark put aside, for a `drop`.
     mark: Option<Arc<CancelMark>>,
     /// The earliest deadline of this scope and the scopes around it, on the clock of
     /// `vx_clock_ns`.
     at: i64,
-    /// A `drop`, not a `within` block.
+    /// A `drop`, not a call of `within`.
     drop: bool,
 }
 
@@ -130,10 +130,23 @@ fn seconds_to_ns(seconds: f64) -> i64 {
     (seconds.max(0.0) * 1e9) as i64
 }
 
-/// The earliest deadline of the `drop`s and the `within` blocks that this thread runs in, if it
+/// The earliest deadline of the `drop`s and the calls of `within` that this thread runs in, if it
 /// runs in one. After it, each wait that can be cancelled gives up, as in a cancelled block.
 pub(crate) fn drop_deadline() -> Option<i64> {
     PUT_ASIDE.with(|p| p.borrow().last().map(|d| d.at))
+}
+
+/// The deadlines that a new task starts with: the earliest deadline of the code that spawns it.
+/// So a task in a `drop` or in a call of `within` gives up at the same time as that code.
+pub(crate) fn deadlines_for_a_task() -> PutAside {
+    let at = drop_deadline();
+    at.map(|at| Deadline {
+        mark: None,
+        at,
+        drop: false,
+    })
+    .into_iter()
+    .collect()
 }
 
 /// Starts a scope with a deadline `limit_ns` from now. It keeps the deadline of the scope
@@ -145,14 +158,14 @@ fn push_deadline(mark: Option<Arc<CancelMark>>, limit_ns: i64, drop: bool) {
 }
 
 /// Before a `drop`: this thread runs with no mark until `vx_cancel_on`, so no wait gives
-/// `Cancelled` (F6), until the deadline of the `drop`. The deadline is `limit` seconds from now,
-/// from the type's `Drop::wait_limit`, or `VX_DROP_WAIT_SECONDS` when that is shorter (F6a). A
+/// `Cancelled` (F6), until the deadline of the `drop`. The deadline is `limit_ns` nanoseconds from
+/// now, from the type's `Drop::wait_limit`, or `VX_DROP_WAIT_SECONDS` when that is shorter. A
 /// `drop` in a `drop` keeps the earlier deadline. A `tasks` block in the `drop` gets a mark
 /// with no parent.
 #[no_mangle]
-pub extern "C" fn vx_cancel_off(limit: f64) {
+pub extern "C" fn vx_cancel_off(limit_ns: i64) {
     let mark = CURRENT.with(|c| c.borrow_mut().take());
-    let limit_ns = seconds_to_ns(limit);
+    let limit_ns = limit_ns.max(0);
     let limit_ns = drop_wait_cap_ns().map_or(limit_ns, |cap| cap.min(limit_ns));
     push_deadline(mark, limit_ns, true);
 }
@@ -162,27 +175,28 @@ pub extern "C" fn vx_cancel_off(limit: f64) {
 pub extern "C" fn vx_cancel_on() {
     let scope = PUT_ASIDE.with(|p| p.borrow_mut().pop());
     let scope = scope.expect("vx_cancel_on comes after vx_cancel_off");
-    assert!(scope.drop, "a `within` block in a drop did not end");
+    assert!(scope.drop, "a call of `within` in a drop did not end");
     CURRENT.with(|c| {
         assert!(c.borrow().is_none(), "a tasks block in a drop did not end");
         *c.borrow_mut() = scope.mark;
     });
 }
 
-/// The start of a `within(limit) { .. }` block (F6a): each wait in it that can be cancelled gives
-/// up `limit` seconds from now, or at the deadline of a scope around it when that is earlier.
-/// Outside a `drop`, a cancel still stops the waits. `VX_DROP_WAIT_SECONDS` does not shorten it.
+/// The start of a call of `within(limit, body)`: each wait in `body` that can be cancelled gives
+/// up `limit_ns` nanoseconds from now, or at the deadline of a scope around it when that is
+/// earlier. Outside a `drop`, a cancel still stops the waits. `VX_DROP_WAIT_SECONDS` does not
+/// shorten it.
 #[no_mangle]
-pub extern "C" fn vx_within_start(limit: f64) {
-    push_deadline(None, seconds_to_ns(limit), false);
+pub extern "C" fn vx_within_start(limit_ns: i64) {
+    push_deadline(None, limit_ns.max(0), false);
 }
 
-/// The end of a `within` block, on each path out of it.
+/// The end of a call of `within`, after `body` returns.
 #[no_mangle]
 pub extern "C" fn vx_within_end() {
     let scope = PUT_ASIDE.with(|p| p.borrow_mut().pop());
     let scope = scope.expect("vx_within_end comes after vx_within_start");
-    assert!(!scope.drop, "a drop in a `within` block did not end");
+    assert!(!scope.drop, "a drop in a call of `within` did not end");
 }
 
 /// Swaps the current mark and the marks put aside of this thread with these. The shared runtime
@@ -318,12 +332,28 @@ pub(crate) fn tasks_begin(sched: Option<&'static Scheduler>) -> *mut VxTaskGroup
 /// `Cancelled` (F4, F9). At the `CANCELS_TO_WARN`th time, a warning says which task it is.
 #[no_mangle]
 pub extern "C" fn vx_cancelled() -> i32 {
+    unsafe { vx_cancelled_at(std::ptr::null(), 0) }
+}
+
+/// `vx_cancelled` for the wait at `file` and `line`, which the warning names. `file` is a C string,
+/// or null when the place is not known.
+///
+/// # Safety
+/// `file` is null or points to a C string.
+#[no_mangle]
+pub unsafe extern "C" fn vx_cancelled_at(file: *const c_char, line: i32) -> i32 {
     let set = CURRENT.with(|c| c.borrow().as_ref().is_some_and(|m| m.is_set()));
     if set && CANCELS.with(|n| n.replace(n.get() + 1) + 1) == CANCELS_TO_WARN {
+        let wait = if file.is_null() {
+            String::new()
+        } else {
+            let file = unsafe { CStr::from_ptr(file) }.to_string_lossy();
+            format!("  at {file}:{line}\n")
+        };
         let site = current_site().map(|s| String::from_utf8_lossy(&s).into_owned());
         eprint!(
             "vx: warning: a task saw the cancel of its `tasks` block {CANCELS_TO_WARN} times. A \
-             loop may wait again after each `Cancelled`.\n{}",
+             loop may wait again after each `Cancelled`.\n{wait}{}",
             site.unwrap_or_else(|| "  in the main code\n".to_string())
         );
     }
@@ -392,6 +422,7 @@ pub unsafe extern "C" fn vx_task_start_at(
     }
     let task_env = Env(env);
     let own_site = site.clone();
+    let put_aside = deadlines_for_a_task();
     let thread_done = Arc::new(AtomicI64::new(0));
     let done = thread_done.clone();
     crate::ffi::wait::thread_started();
@@ -401,9 +432,11 @@ pub unsafe extern "C" fn vx_task_start_at(
             let task_env = task_env;
             let mut site = site;
             CURRENT.with(|c| *c.borrow_mut() = Some(mark));
+            PUT_ASIDE.with(|p| *p.borrow_mut() = put_aside);
             swap_site(&mut site);
             run(task_env.0);
             lines::task_ended();
+            crate::ffi::wait::task_ended();
             // The wake comes before the count of threads goes down. So the joining thread
             // never counts as waiting for a thread that the count no longer has.
             done.store(1, Ordering::SeqCst);
@@ -459,6 +492,20 @@ pub unsafe extern "C" fn vx_tasks_wait(group: *mut VxTaskGroup) {
     let group = &mut *group;
     // Leaving the block early cancels its tasks, and then joins them (F7).
     group.mark.cancel();
+    for task in &mut group.tasks {
+        wait(task);
+    }
+}
+
+/// The end of the body of a `tasks` block, before the drops of what its tasks use: joins each
+/// task that is not joined yet, as `vx_tasks_end` does. It cancels none of them. `vx_tasks_end`
+/// still ends the block.
+///
+/// # Safety
+/// `group` comes from `vx_tasks_begin`, and its block did not end.
+#[no_mangle]
+pub unsafe extern "C" fn vx_tasks_join(group: *mut VxTaskGroup) {
+    let group = &mut *group;
     for task in &mut group.tasks {
         wait(task);
     }

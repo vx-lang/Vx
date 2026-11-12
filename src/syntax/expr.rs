@@ -519,10 +519,6 @@ pub struct UnsafeBlockExpr {
     /// The program wrote this block as the body of a closure, `|x| { .. }`. It is a plain block,
     /// so the code in it cannot do what needs `unsafe`.
     pub closure_body: bool,
-    /// The program wrote this block as `within(limit) { .. }` (F6a). It is a plain block whose
-    /// first statement is `vx::within_start(limit)`, so the code in it cannot do what needs
-    /// `unsafe`.
-    pub within: bool,
 }
 impl UnsafeBlockExpr {
     pub fn new(stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self {
@@ -536,7 +532,6 @@ impl UnsafeBlockExpr {
             cancels_on_err: None,
             value_ty: None,
             closure_body: false,
-            within: false,
         }
     }
 }
@@ -782,6 +777,30 @@ pub fn tasks_wait_stmt(span: Span) -> super::Statement {
     })
 }
 
+/// The callee of the statement the checker puts at the end of the body of a `tasks` block, before
+/// the drops of what its tasks use. No program can name it. It joins each task of the block that
+/// is not joined yet, as the end of the block does, and cancels none of them.
+pub const TASKS_JOIN: &str = "$tasks_join";
+
+/// `$tasks_join();`, at the end of a body whose last statement is at `span`.
+pub fn tasks_join_stmt(span: Span) -> super::Statement {
+    super::Statement::ExprStmt(super::ExprStmtStmt {
+        expr: Expr::FunctionCall(FunctionCallExpr::new(
+            TASKS_JOIN.into(),
+            None,
+            Vec::new(),
+            span,
+        )),
+        has_semi: true,
+        span,
+    })
+}
+
+/// Whether `e` is the call of [`tasks_join_stmt`].
+pub fn is_tasks_join(e: &Expr) -> bool {
+    matches!(e, Expr::FunctionCall(c) if c.name.as_ref() == TASKS_JOIN)
+}
+
 /// The callee that `h.join()` becomes, with `h` as its argument. No program can name it. The
 /// code generators wait for the task of `h` at the call, and its value is the value of `h`.
 pub const TASK_JOIN: &str = "$task_join";
@@ -876,6 +895,20 @@ pub fn diverges_on_every_path(expr: &Expr) -> bool {
         }
     }
     match expr {
+        // A folded `if comptime` keeps one branch and leaves the other empty.
+        Expr::If(IfExpr {
+            is_comptime: true,
+            then_block,
+            else_block,
+            ..
+        }) if then_block.is_empty() || else_block.as_ref().is_none_or(|e| e.is_empty()) => {
+            let taken = if then_block.is_empty() {
+                else_block.as_deref().unwrap_or_default()
+            } else {
+                then_block
+            };
+            block_returns(taken)
+        }
         // An `if` with no `else` always has a path that falls through.
         Expr::If(IfExpr {
             then_block,
@@ -1199,7 +1232,7 @@ fn substitute_mlir_returns(ty: &Type, mapping: &std::collections::HashMap<Symbol
         Type::Struct(name, None) if mapping.contains_key(name) => mapping[name].clone(),
         Type::Pointer(inner, mem, is_mut) => Type::Pointer(
             Box::new(substitute_mlir_returns(inner, mapping)),
-            mem.clone(),
+            super::types::substitute_memory(mem, mapping),
             *is_mut,
         ),
         _ => ty.substitute(mapping),
@@ -1764,7 +1797,6 @@ impl Expr {
                 cancels_on_err: e.cancels_on_err.as_ref().map(|t| t.substitute(mapping)),
                 value_ty: e.value_ty.as_ref().map(|t| t.substitute(mapping)),
                 closure_body: e.closure_body,
-                within: e.within,
             }),
             Expr::StructInit(e) => {
                 let mut new_name = e.name.clone();

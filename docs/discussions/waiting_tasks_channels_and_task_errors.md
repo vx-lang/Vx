@@ -461,12 +461,12 @@ cleanup needs longer says so with `wait_limit`.
 ```vx
 impl Drop for SlotGuard {
   fn drop(self : &mut SlotGuard) -> void {
-    within(0.05) {
+    within(Duration::from_millis(50), || -> void {
       match self.pool_tx.send(self.slot) {
         Result<void, SendError<Slot>>::Ok(_) => {}
         Result<void, SendError<Slot>>::Err(_e) => { count_lost_slot(); }
       }
-    }
+    });
   }
 }
 ```
@@ -478,10 +478,9 @@ impl Drop for SlotGuard {
   only a `drop` runs with cancellation off (decision 6).
 - After the block, `cancelled()` says whether the task itself was cancelled, so the code can tell
   a cancel from a timeout.
-- `within` is a block, as `tasks` is (decision 1 of the scoped tasks note), and not a function
-  that takes a closure. A closure captures the locals that it names by value
-  (`docs/lang/syntax.md` §12), so its body could not change `self` or the locals of the code
-  around it.
+- This note first made `within` a block, because a closure then captured its locals by value
+  and could not change `self`. `docs/discussions/closures_that_change_captured_locals.md` changed
+  that, so `within` is now a library function that takes a closure.
 - `within:` already names the parent of a `Memory` in a machine file. The two do not meet: that
   one is a key before `:`, and this one starts a statement and comes before `(`.
 
@@ -499,11 +498,15 @@ of the block (F2). A `join()` of a task that failed leaves the block the same wa
 
 - A race: the two tasks, the variable, and the line of each access, and the `join` where the
   first access ends.
+  Done for a task that holds the variable: the error names the line of its `spawn`, the line
+  where it uses the variable, and the `join()` to call before the line of the error.
 - A value that is not `Send`: the field path that makes it so, for example "`Job` is not `Send`
   because `Job.cache.buf` is a `*mut u8`". Rust gives a chain of future types here.
 - A `Task<T>` that leaves its `tasks` block (T3): the line where it leaves.
 - A host wait in a device body, such as `recv` (W5, M6): the call, and the `spawn on` that puts the
   body on the device.
+  Done for a channel end and a lock: E6038 names the variable, the field that holds one, and the
+  line of the `spawn on`. A call of a host function, such as `sleep`, gets E6001.
 
 **F9. Run-time reports.**
 
@@ -537,6 +540,16 @@ tasks makes that real. So:
 - When `n` or the count is known only at run time, the verdict is "unknown". That is the true
   answer. The program gets a verdict with an `invariant` clause on the `for` loop that bounds the
   count. `hir/memory.rs` already reads these clauses.
+
+Done: the tasks of one block add up. A call in a task adds the largest callee peak of each other
+task, and the tiles of each other task, in `capacity_fold.rs`. A join that always runs ends its
+task, so the code after it and a task that starts after it do not add the task's memory.
+
+Done: a `spawn` in a loop of its block. A `for` loop over a constant range multiplies the tasks
+by its count of passes. A join in the same pass keeps one task at a time. Another loop gives
+E6039, and an `invariant` that bounds the count does not help yet. Not done: the values in a
+channel, which waits for #2970, and the stack of each task. The check does not count host memory
+yet.
 
 ## 6. The runtime work
 

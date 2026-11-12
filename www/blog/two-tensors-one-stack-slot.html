@@ -41,7 +41,8 @@
 <article class="post">
 
 <h1>Stack coloring enabled by lifetime markers</h1>
-<p class="post-meta">Aditya Kumar &middot; 2 November 2026</p>
+<p class="post-meta">Aditya Kumar &middot; 2 November 2026 &middot; updated 7 November 2026, for
+structs and enums</p>
 
 <blockquote class="tldr"><strong>TL;DR</strong> — A function needs one stack slot for each local
 array. Two arrays can share a slot only when the compiler knows that they are not in use at the same
@@ -434,10 +435,14 @@ other. The lane calls no <code>malloc</code>. The test
 <h2 id="what-it-does-not-do-yet"><a href="#what-it-does-not-do-yet">What it does not do yet</a></h2>
 
 <ul>
-<li>vxc adds markers only to tensors, because the markers come from the drops of tensors. A struct
-keeps its slot for the whole call. Vx frees a tensor after its last use. But it drops a value whose
-type implements <code>Drop</code> at the end of its block, as Rust does, because the drop can have
-effects, such as releasing a lock.</li>
+<li>Since <a href="https://github.com/vx-lang/Vx/pull/2639">#2639</a>, a struct or an enum gets
+lifetime markers too. Its lifetime ends after its last use, as the lifetime of a tensor does. But Vx
+drops a value whose type implements <code>Drop</code> at the end of its block, as Rust does. The
+drop can have effects, such as releasing a lock. So the lifetime of that value ends at the end of
+its block. A raw pointer keeps no borrow. So in a function that uses raw pointers, a
+struct can keep its slot until the end of its block, or for the whole call.</li>
+<li>A struct that a call returns goes through an extra slot that LLVM makes for the call, and that
+slot has no markers (<a href="https://github.com/vx-lang/Vx/issues/2642">#2642</a>).</li>
 <li>When a function passes a tensor by value to a call, that tensor stays on the heap.</li>
 <li>The older AST code generator keeps each tensor on the heap, so this change does not affect
 it.</li>

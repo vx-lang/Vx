@@ -11,8 +11,8 @@
 //===----------------------------------------------------------------------===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // RUN: not vxc %s 2>&1 | FileCheck %s --check-prefix=COUNT
-// CHECK-DAG: Unsupported cast: cannot cast from Borrow { inner: Scalar(I32), mem_space: None, is_mut: false, {{.*}} } to Pointer(Scalar(I32), None, true)
-// CHECK-DAG: Unsupported cast: cannot cast from Borrow { inner: Scalar(I32), mem_space: None, is_mut: true, {{.*}} } to Pointer(Scalar(I64), None, true)
+// CHECK-DAG: Unsupported cast: cannot cast from `&i32` to `*mut i32`
+// CHECK-DAG: Unsupported cast: cannot cast from `&mut i32` to `*mut i64`
 //
 // COUNT-COUNT-2: Unsupported cast
 // COUNT-NOT: Unsupported cast
