@@ -58,6 +58,29 @@ impl TypeChecker<'_> {
                     None,
                 );
             }
+            // A transfer into `GPU_HBM` goes to the built-in NVIDIA GPU, whatever topology holds
+            // the memory. So a topology of another arch would have its kernels in one place and
+            // its tensors in another.
+            if let Some(arch) = decl
+                .descriptor
+                .arch
+                .as_ref()
+                .filter(|a| a.as_ref() != "nvptx64")
+            {
+                if decl.descriptor.default_space == crate::syntax::MemorySpace::GpuHbm {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E6016,
+                        format!(
+                            "topology '{name}' has `arch: {arch}`, but its memory is \
+                             `Memory::GPU_HBM`, the memory of the built-in NVIDIA GPU. Its \
+                             tensors would go to the NVIDIA GPU, where its kernels cannot run. \
+                             Give the memory of '{name}' another name",
+                            name = decl.name
+                        ),
+                        None,
+                    );
+                }
+            }
             if decl.name.as_ref() == crate::syntax::ANY_TOPOLOGY {
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E6016,
