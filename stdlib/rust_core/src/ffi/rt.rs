@@ -76,7 +76,6 @@ pub extern "C" fn vx_init_signals() {
 // ============================================================================
 
 static mut BENCHMARK_START: Option<Instant> = None;
-static mut GLOBAL_START: Option<Instant> = None;
 
 #[no_mangle]
 pub extern "C" fn start_benchmark() -> f32 {
@@ -121,20 +120,10 @@ pub extern "C" fn vx_bench_report(name: *const c_char, unit: *const c_char, valu
     0
 }
 
+/// Sleeps for `ns` nanoseconds, or not at all when `ns` is not positive.
 #[no_mangle]
-#[allow(static_mut_refs)]
-pub extern "C" fn vx_get_time() -> f32 {
-    unsafe {
-        if GLOBAL_START.is_none() {
-            GLOBAL_START = Some(Instant::now());
-        }
-        GLOBAL_START.unwrap().elapsed().as_secs_f32()
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn vx_sleep(seconds: f32) -> i32 {
-    thread::sleep(Duration::from_secs_f32(seconds));
+pub extern "C" fn vx_sleep(ns: i64) -> i32 {
+    thread::sleep(Duration::from_nanos(ns.max(0) as u64));
     0
 }
 

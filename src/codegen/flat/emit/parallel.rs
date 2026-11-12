@@ -203,7 +203,13 @@ impl FnEmit<'_> {
         // has no name: its high half is the line of its `spawn`.
         let name = match name.checked_sub(1) {
             _ if topo == crate::arch::TASK_DISPATCH_ID as i64 => {
-                format!(", vx.line = {name} : i64")
+                let file = self.file.map_or(String::new(), |f| {
+                    format!(
+                        ", vx.file = \"{}\"",
+                        f.replace('\\', "\\\\").replace('"', "\\\"")
+                    )
+                });
+                format!(", vx.line = {name} : i64{file}")
             }
             Some(i) => {
                 let s = self.strings.get(i as usize).ok_or(crate::emitter_gap!())?;
@@ -315,6 +321,39 @@ impl FnEmit<'_> {
         Ok(())
     }
 
+    /// `vx.lane_matmul`: `operand1` is the accumulator, `operand2` the left tile, and the `Arg`
+    /// before is the right tile.
+    fn op_lane_matmul(&mut self, ins: &HirInstruction) -> Lowered<()> {
+        let rhs = self.pending_args.pop().ok_or(crate::emitter_gap!())?;
+        let mut names = Vec::new();
+        let mut types = Vec::new();
+        for r in [ins.operand1.0, ins.operand2.0, rhs] {
+            names.push(
+                self.names
+                    .get(r as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone(),
+            );
+            types.push(
+                self.mem_of
+                    .get(r as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone()
+                    .ok_or(crate::emitter_gap!())?,
+            );
+        }
+        let mut attrs = String::from("subgroup");
+        if ins.imm & crate::bytecode::LANE_REDUCE_ACCUMULATE != 0 {
+            attrs += ", accumulate";
+        }
+        self.body += &format!(
+            "  \"vx.lane_matmul\"({}) {{{attrs}}} : ({}) -> ()\n",
+            names.join(", "),
+            types.join(", ")
+        );
+        Ok(())
+    }
+
     /// `vx.lane_reduce`: the lowering of each copy of the kernel expands it, into shuffles on the
     /// GPU and into loops on the CPU.
     pub(crate) fn op_lane_reduce(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
@@ -334,6 +373,9 @@ impl FnEmit<'_> {
         }
         if ins.imm & crate::bytecode::LANE_REDUCE_COPY != 0 {
             return self.op_lane_copy(idx, ins);
+        }
+        if ins.imm & crate::bytecode::LANE_REDUCE_MATMUL != 0 {
+            return self.op_lane_matmul(ins);
         }
         let t = self
             .names
@@ -399,6 +441,10 @@ impl FnEmit<'_> {
         }
         if ins.imm & crate::bytecode::LANE_REDUCE_OWN_ROW != 0 {
             add("own_row");
+            let row = ins.imm >> crate::bytecode::LANE_ROW_SHIFT;
+            if row > 0 {
+                add(&format!("vx.lane_row = {row} : i64"));
+            }
         }
         let v = format!("%v{idx}");
         if argmax {

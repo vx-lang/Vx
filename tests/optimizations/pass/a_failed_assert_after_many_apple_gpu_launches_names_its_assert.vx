@@ -1,0 +1,58 @@
+// The program launches two kernels with asserts 1201 times before it waits for the GPU. Each
+// launch has its own word for the number of a failed assert, and 1024 words fill a buffer. Launch
+// 1201 is the first launch in the second buffer to fail. The runtime must report its assert,
+// not an assert of another launch.
+//
+// VX_DISPATCH_VERBOSE=1 prints a line at each wait, and no wait comes before the failure.
+// MTL_DEBUG_LAYER=1 turns on the checks of the Metal API. They stop the program when a launch
+// gets a word past the end of its buffer.
+//
+// REQUIRES: macos
+// RUN: env MTL_DEBUG_LAYER=1 VX_DISPATCH_VERBOSE=1 not vxc %s --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s
+//
+// CHECK-NOT: waited for
+// CHECK: [Vx Metal] FATAL: kernel {{vx_npu_kernel_[0-9]+}}: a value of scale_below is not below the limit
+// CHECK-NEXT: at {{.*}}a_failed_assert_after_many_apple_gpu_launches_names_its_assert.vx:{{[0-9]+}}
+// CHECK-NOT: not printed
+
+pub fn add_below(out : &mut Tensor<i32, [?], Memory::HBM>, limit : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      for l in 0..64 across lanes {
+        let v = b * 64 + l;
+        assert(v < limit, "a value of add_below is not below the limit");
+        out[v] = out[v] + 1;
+      }
+    }
+  }
+  return;
+}
+
+pub fn scale_below(out : &mut Tensor<i32, [?], Memory::HBM>, limit : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      for l in 0..64 across lanes {
+        let v = b * 64 + l;
+        assert(v < limit, "a value of scale_below is not below the limit");
+        out[v] = v * 2;
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut a = transfer(Tensor<i32, [256]>::fill(0), Memory::HBM);
+  let mut b = transfer(Tensor<i32, [256]>::fill(0), Memory::HBM);
+  for i in 0..600 {
+    add_below(&mut a, 256);
+    scale_below(&mut b, 256);
+  }
+  scale_below(&mut b, 100);
+  for i in 0..10 {
+    add_below(&mut a, 256);
+  }
+  let h = transfer(b, Memory::CPU_DRAM);
+  println!("not printed {}", h[0]);
+  return 0;
+}

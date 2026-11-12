@@ -18,10 +18,13 @@ let reaches =
 let strong = reaches & reaches^-1
 
 (* C2 and C7: a release write, read by an acquire read, synchronizes the two threads. A fork
-   and a join are such a pair. *)
-let rs = [W]; (po & loc)?; [W & Atomic]; (rf; rmw)*
-let sw = [Rel | AcqRel | Sc]; ([F]; po)?; rs; (rf & strong); [R & Atomic]; (po; [F])?;
-         [Acq | AcqRel | Sc]
+   and a join are such a pair. The release and the acquire must reach each other, as must the
+   write and the read that link them. With fences, these are two pairs, as in PTX. A
+   read-modify-write continues a release sequence only when it and the write it reads reach
+   each other. This is "observation order" in the PTX model. *)
+let rs = [W]; (po & loc)?; [W & Atomic]; ((rf & strong); rmw)*
+let sw = ([Rel | AcqRel | Sc]; ([F]; po)?; rs; (rf & strong); [R & Atomic]; (po; [F])?;
+          [Acq | AcqRel | Sc]) & strong
 
 let hb = (po | sw | bar)+
 

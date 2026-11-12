@@ -6,6 +6,8 @@ mod integration_test {
     mod ane_device_test;
     // It runs kernels on the Apple GPU through Metal.
     #[cfg(target_os = "macos")]
+    mod apple_gpu_functions_called_from_two_c_threads;
+    #[cfg(target_os = "macos")]
     mod apple_gpu_kernels_called_from_c;
     mod architecture_test;
     mod arrival_counts_test;
@@ -59,6 +61,7 @@ mod integration_test {
     mod shipped_programs_compile;
     mod solver_policy_test;
     mod tensors_with_gaps_from_c;
+    mod time_limit;
     mod traffic_test;
     mod transport_test;
     // It links with `cc -shared` and loads `.so` files.

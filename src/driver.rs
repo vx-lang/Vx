@@ -251,8 +251,12 @@ pub struct DriverOptions {
     /// buffering, which the memory model otherwise forbids. The default,
     /// `-fno-weak-relaxed-atomics`, makes each relaxed read an acquire read.
     ///
+    /// `-fbounds-checks`: an index outside the shape of a tensor stops the program with an
+    /// error. The check is in CPU code, not in a GPU kernel. The default, `-fno-bounds-checks`,
+    /// does not check indices.
+    ///
     /// For each feature, the last one wins
-    #[arg(short = 'f', value_name = "FEATURE", value_parser = ["auto-schedule-levels", "no-auto-schedule-levels", "weak-relaxed-atomics", "no-weak-relaxed-atomics"])]
+    #[arg(short = 'f', value_name = "FEATURE", value_parser = ["auto-schedule-levels", "no-auto-schedule-levels", "weak-relaxed-atomics", "no-weak-relaxed-atomics", "bounds-checks", "no-bounds-checks"])]
     pub features: Vec<String>,
 
     /// Optimization level (-O0 to -O3)
@@ -294,6 +298,11 @@ impl DriverOptions {
     /// Whether `-fweak-relaxed-atomics` is on.
     pub fn weak_relaxed_atomics(&self) -> bool {
         self.feature("weak-relaxed-atomics")
+    }
+
+    /// Whether `-fbounds-checks` is on.
+    pub fn bounds_checks(&self) -> bool {
+        self.feature("bounds-checks")
     }
 
     /// Whether `--sanitize=thread` is on.
@@ -383,6 +392,19 @@ impl CompilerDriver {
                  use --action run-jit"
                     .to_string(),
             );
+        }
+        // run-jit builds and runs in one step. It never writes `-o`. Saying nothing
+        // made readers think `vxc prog.vx -o out` produced an executable.
+        if self.options.action == Action::RunJit {
+            if let Some(out) = &self.options.output {
+                return Err(format!(
+                    "-o '{}' has no effect with run-jit, the default action. \
+                     run-jit runs the program and writes no file. \
+                     To write an object file, use --action emit-obj. \
+                     To run the program, remove -o.",
+                    out.display()
+                ));
+            }
         }
         if self.options.inputs.len() == 1 {
             return self.execute_one();
@@ -557,7 +579,8 @@ impl CompilerDriver {
             let host_arch = Self::host_arch_of(programs.iter());
             // Only the file the user named reports its diagnostics, matching what the
             // sequential driver keeps from its own import pass.
-            let reported = crate::pipeline::Reported::OnlyEntry(filename.into());
+            let reported =
+                crate::pipeline::Reported::OnlyEntry(self.module_loader().root_name(filename));
             // A failed check ends with the line the sequential driver prints, with the file.
             let text = crate::pipeline::compile_modules_mlir_in(
                 programs,
@@ -966,9 +989,7 @@ impl CompilerDriver {
     ) -> Result<(), String> {
         let ast = program_arr
             .iter()
-            .find(|p| {
-                p.module_path == <std::string::String as Clone>::clone(&filename.to_string()).into()
-            })
+            .find(|p| p.module_path == self.module_loader().root_name(filename))
             .unwrap();
         println!("{:#?}", ast);
         Ok(())
@@ -1042,9 +1063,7 @@ impl CompilerDriver {
     > {
         let syntax_idx = program_arr
             .iter()
-            .position(|p| {
-                p.module_path == <std::string::String as Clone>::clone(&filename.to_string()).into()
-            })
+            .position(|p| p.module_path == self.module_loader().root_name(filename))
             .unwrap();
         let ast = program_arr.remove(syntax_idx);
 
@@ -1118,12 +1137,13 @@ impl CompilerDriver {
             Self::session_with_interfaces(interfaces, self.options.auto_schedule_levels())?;
 
         // Every function names its file, so a diagnostic found while checking it names the
-        // file too, wherever the check runs from. Before the env takes its clones, since a
-        // generic instance is built from the env's copy of the function. After macro
-        // expansion, which adds functions.
-        ast.name_file_on_functions();
+        // file too, wherever the check runs from. A struct names its file, because only that
+        // file can change the fields of a type with an invariant. Before the env takes its
+        // clones, since a generic instance is built from the env's copy of the function. After
+        // macro expansion, which adds functions.
+        ast.name_file_on_items();
         for p in other_asts.values_mut() {
-            p.name_file_on_functions();
+            p.name_file_on_items();
         }
 
         // Build the resolution env from *owned* clones: full bodies for the imported modules (so
@@ -1314,6 +1334,7 @@ impl CompilerDriver {
         if !has_errors {
             checker.errors.inner.extend(unused_functions.inner);
         }
+        checker.errors.drop_repeats();
 
         // The machine-readable verdict, before the human-readable rendering below: one record on
         // stdout carrying every diagnostic plus the resolved staging routes, so an admission
@@ -1612,6 +1633,8 @@ impl CompilerDriver {
                 let mut codegen =
                     MeliorGenerator::new(&context, monomorphized_ast.module_path.to_string());
                 codegen.emit_seam_certs = self.options.emit_seam_certs;
+                codegen.describe_params =
+                    matches!(self.options.action, Action::EmitPtx | Action::EmitMsl);
                 codegen
                     .generate(&monomorphized_ast, &module_syntaxes)
                     .map_err(|e| format!("Codegen Error: {:?}", e))?;
@@ -1647,6 +1670,7 @@ impl CompilerDriver {
             self.options.opt_level,
             llvm_lower,
             self.options.disable_mlir_optimizations,
+            self.options.bounds_checks(),
         );
 
         let pass_manager = melior::pass::PassManager::new(context);
@@ -2164,6 +2188,7 @@ fn get_optimization_pipeline(
     opt_level: u8,
     llvm_lower: bool,
     disable_mlir_optimizations: bool,
+    bounds_checks: bool,
 ) -> String {
     let mut passes = vec![];
 
@@ -2176,6 +2201,10 @@ fn get_optimization_pipeline(
         passes.push("convert-vx-to-standard".to_string());
         // Before any optimization, so none can remove or move a division before it is checked.
         passes.push("vx-check-integer-division".to_string());
+        // Before inlining, while each row of a tensor is still its own view.
+        if bounds_checks {
+            passes.push("vx-check-tensor-indices".to_string());
+        }
         // Before linalg is lowered, while each reduce is still one `linalg.generic`.
         passes.push("vx-reorderable-reductions".to_string());
     }
@@ -2191,7 +2220,7 @@ fn get_optimization_pipeline(
         passes.push("canonicalize".to_string());
         passes.push("cse".to_string());
         passes.push(
-            "func.func(convert-linalg-to-affine-loops,vx-raise-loop-accesses,vx-fuse-and-tile-loops,affine-loop-unroll,affine-scalrep)"
+            "func.func(vx-linalg-to-affine-loops,vx-raise-loop-accesses,vx-fuse-and-tile-loops,affine-loop-unroll,affine-scalrep)"
                 .to_string(),
         );
         passes.push("lower-affine".to_string());
@@ -2496,6 +2525,10 @@ mod tests {
         ]);
         assert!(o.auto_schedule_levels() && !o.weak_relaxed_atomics());
         assert!(!parse(&[]).weak_relaxed_atomics());
+        let o = parse(&["-fbounds-checks", "-fno-weak-relaxed-atomics"]);
+        assert!(o.bounds_checks());
+        assert!(!parse(&["-fbounds-checks", "-fno-bounds-checks"]).bounds_checks());
+        assert!(!parse(&[]).bounds_checks());
     }
 
     /// Two modules can declare a host topology at once -- `--machine fleet/h100.vx --host default`
@@ -2564,6 +2597,40 @@ mod tests {
             declined,
             Ok(None),
             "unparseable MLIR did not hand the compile back to the sequential driver"
+        );
+    }
+
+    /// `run-jit` (the default) never writes `-o`. Refusing it beats silently
+    /// ignoring the flag.
+    #[test]
+    fn run_jit_refuses_minus_o() {
+        // Use a path the message cannot contain by chance ("out" sits inside "without").
+        let driver = driver_for(&["vxc", "prog.vx", "-o", "not_written.bin"]);
+        let err = driver.execute().expect_err("run-jit must refuse -o");
+        assert!(
+            err.contains("has no effect with run-jit"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.contains("not_written.bin"),
+            "error should name the path: {err}"
+        );
+    }
+
+    /// With several inputs, `-o` must still be refused before each unit runs.
+    #[test]
+    fn run_jit_refuses_minus_o_with_two_inputs() {
+        let driver = driver_for(&["vxc", "one.vx", "two.vx", "-o", "not_written.bin"]);
+        let err = driver
+            .execute()
+            .expect_err("run-jit must refuse -o with two inputs");
+        assert!(
+            err.contains("has no effect with run-jit"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.contains("not_written.bin"),
+            "error should name the path: {err}"
         );
     }
 }

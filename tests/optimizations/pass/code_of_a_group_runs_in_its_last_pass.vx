@@ -18,9 +18,17 @@
 // RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: env CUDA_VISIBLE_DEVICES= vxc %s -j 2 --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=PTX
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=PTX
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --action emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR
 // CHECK: merged 896 904 8896 25144 runs 1 1 1 1
 // PTX: .entry vx_npu_kernel_0(
 // PTX-SAME: fence.acq_rel.gpu{{.*}}atom.global.add.u32{{.*}}fence.acq_rel.gpu{{.*}}st.shared.b32{{.*}}bar.sync{{.*}}ld.shared.b32{{.*}}setp.ne.b32
+// The count has an element for each head, and the pass adds 1 to the element of its head `h - 0`.
+// MLIR: "vx.transfer"{{.*}}vx.arrivals = "axis0"
+// MLIR: %[[GROUP:[0-9]+]] = arith.subi %{{[0-9]+}}, %c0_i32{{.*}} : i32
+// MLIR-NEXT: arith.constant 8 : i32
+// MLIR: call @{{.*}}(%{{[0-9]+}}, %[[GROUP]], %{{[0-9]+}}, %alloca{{.*}}) : (memref<?xi32>, i32, i32, memref<1xi32, 3>) -> ()
 
 fn main() -> i32 {
   let mut partial = transfer(Tensor<i32, [4, 256]>::fill(0), Memory::HBM);

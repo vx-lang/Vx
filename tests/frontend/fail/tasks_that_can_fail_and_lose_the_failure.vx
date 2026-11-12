@@ -83,3 +83,7 @@ fn joined_in_an_inner_block() -> Result<i32, i32> {
 fn main() -> i32 {
   return 0;
 }
+
+// The 5 errors above are the only ones. `--implicit-check-not` does not look past the first
+// `CHECK-DAG` match, so this line counts them.
+// CHECK: {{^}}Semantic check failed on {{.*}}: 5 error(s) emitted

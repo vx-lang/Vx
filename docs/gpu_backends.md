@@ -81,10 +81,43 @@ copy. `--emit-msl` writes the MSL and the same manifest as `--emit-ptx`.
 - The GPU flushes a subnormal `f32` to 0, and the CPU copy does too, so the two
   give the same bits. The CPU copy sets FPCR.FZ on arm64, and FTZ and DAZ on
   x86-64, while it runs.
-- Each launch waits for the GPU to finish.
-- Not yet: atomics, dynamic shared memory and `vector` ops. Each is a compile
+- The launches of each thread share one command buffer, and the GPU runs them at a wait. The
+  runtime waits before the CPU reads or frees memory that a kernel can use, and before a launch
+  that runs on the CPU. It waits only for the kernels that write memory the CPU reads, or that
+  use memory the CPU writes. A `pub fn` of a library waits before it returns to C, for the
+  kernels of its thread and for the kernels that write its tensor parameters. A call to a C
+  function with a pointer into GPU memory waits for every kernel, because the pointer gives no
+  size. `VX_METAL_SYNC=1`
+  waits after each launch, so a GPU fault names its kernel. `VX_DISPATCH_VERBOSE=1` prints each launch, and
+  at each wait the number of kernels and their time on the GPU.
+- Metal cannot stop a kernel. So a failed `assert` in a kernel stores the number of the assert in
+  a buffer, and the thread ends. The wait that finishes the launch prints the assert's message and
+  stops the program, as a failed assert on NVIDIA stops it at the next wait.
+- The element atomics of `core::sync::atomic` work on `i32` and `u32` tensors in device and
+  shared memory, with the order `Relaxed`. Metal atomics take only `memory_order_relaxed`. So an
+  acquire fence follows each atomic that reads, because Vx makes each `Relaxed` read an
+  `Acquire` read (`docs/lang/semantics.md`, section 2.5). MSL has only a weak compare-and-swap,
+  so the printed code runs it again after a failure that changed nothing. Another order, an
+  atomic on a 64-bit integer or a float, and an atomic on memory of one thread are compile errors
+  that give the reason. The Apple GPU has 64-bit atomics only for min and max, and they do not
+  give the old value.
+- Not yet: dynamic shared memory and `vector` ops. Each is a compile
   error that names the op. Kernels for two GPU architectures in one program
   are a compile error too.
+
+**The Neural Engine.** On a Mac, CoreML runs some kernels placed on `Topology::NPU[i]` or
+`Topology::ANE`: a matmul or an affine map in a shape that has a compiled model. `build.rs`
+compiles these models into `ane-primitives/`. The runtime looks for a model in
+`VX_ANE_MODEL_DIR`, in the directory of the program, in `ane-primitives/` and in the working
+directory. Each other kernel runs on the CPU.
+
+- When the model of such a kernel is missing or CoreML cannot run it, the kernel runs on the CPU.
+  The runtime then prints one line for the kernel, with the reason and the directories that it
+  searched.
+- `VX_ENABLE_CPU_FALLBACK=0` stops the program instead, when a kernel placed on a device runs on
+  the CPU. Use it for a test or a benchmark that must use the device. A topology that a machine
+  file declares with `arch: x86_64` or `arch: aarch64` is the CPU. Any other declared topology
+  counts as a device.
 
 **SYCL first.** The first community backend targets Intel GPUs through the
 SYCL runtime. Vx still compiles each kernel itself, to SPIR-V; the dispatch

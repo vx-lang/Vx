@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Optimizing for the common case, in language design</title>
 <meta name="author" content="Aditya Kumar">
-<meta name="description" content="Hardware designers make the common case fast. A language can make the common case need no extra words. How Vx decides what a task takes from its surroundings, compared with Go, C#, JavaScript and Rust.">
+<meta name="description" content="Hardware designers make the common case fast. A language can make the common case need no extra words. How Vx decides what a task takes from its surroundings, compared with Go, C#, JavaScript and Rust, and how GPU blocks and lanes follow the same rules.">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 
 <meta property="og:title" content="Optimizing for the common case, in language design">
@@ -41,7 +41,8 @@
 <article class="post">
 
 <h1>Optimizing for the common case, in language design</h1>
-<p class="post-meta">Aditya Kumar &middot; 20 October 2026</p>
+<p class="post-meta">Aditya Kumar &middot; 20 October 2026 &middot; updated 6 November 2026, for
+tasks and the <code>across</code> loops</p>
 
 <blockquote class="tldr"><strong>TL;DR</strong> — Hardware designers make the common case fast.
 A language can make the common case need no extra words. The most common parallel loop starts one
@@ -49,7 +50,8 @@ task per index. Go, C# and JavaScript first made that loop a trap, and later cha
 Rust makes it correct with one keyword, <code>move</code>. In Vx, a task takes each variable the
 way it uses it (borrow, copy or move) with no <code>move</code> keyword, and a copy can never go
 stale. The loop needs nothing extra, and a program that a silent copy would get wrong fails to
-compile.</blockquote>
+compile. On a GPU, the same loop is <code>for ... across blocks</code> and
+<code>for ... across lanes</code>, and a race between two passes fails to compile.</blockquote>
 
 <p class="lede">&ldquo;Make the common case fast&rdquo; is one of the oldest rules of computer
 architecture. A designer measures what programs do most often, and spends the effort there. The
@@ -63,7 +65,6 @@ need no extra words, and the rare case should be visible in the code.</p>
 task needs its own index, and it reads data that all the tasks share. In Vx, the loop looks like
 this:</p>
 
-<!-- vx-doctest: skip (tasks and spawn come with #1925) -->
 <pre><code><span class="k">fn</span> <span class="f">work</span>(i : <span class="t">i32</span>) -&gt; <span class="t">void</span> {
   <span class="f">println!</span>(<span class="n">"task {}"</span>, i);
 }
@@ -81,9 +82,42 @@ this:</p>
 task that it starts, so no task can outlive the variables that it uses. Each task gets its own copy
 of <code>i</code>, so <code>i</code> may end with its iteration of the loop. A task ends at its
 <em>join</em>: a call to <code>join()</code> on the task's handle, or the end of its
-<code>tasks</code> block. Today each task runs to its
-end at its <code>spawn</code>, which the design allows. Threads come later
+<code>tasks</code> block. Each task runs on an OS thread of its own
 (<a href="https://github.com/vx-lang/Vx/issues/1863">#1863</a>).</p>
+
+<h3 id="the-same-loop-on-a-gpu"><a href="#the-same-loop-on-a-gpu">The same loop on a GPU: blocks and lanes</a></h3>
+
+<p>On a GPU, the common case has its own loop syntax. In a <code>spawn on(...)</code> region,
+<code>for ... across blocks</code> runs one block for each pass of the loop. Inside a block,
+<code>for ... across lanes</code> runs one lane for each pass. Think of a block as one workgroup,
+and a lane as one GPU thread in that workgroup. This kernel scales each row of <code>x</code> by
+its length, with one block for each row and one lane for each element:</p>
+
+<!-- vx-doctest: skip (needs a GPU topology) -->
+<pre><code><span class="k">spawn</span> <span class="k">on</span>(<span class="t">Topology</span>::<span class="t">Device</span>) {
+  <span class="k">for</span> row <span class="k">in</span> <span class="n">0</span>..rows <span class="k">across</span> blocks {
+    <span class="k">let</span> <span class="k">mut</span> part = <span class="k">unsafe</span> { <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">1024</span>], <span class="t">Memory</span>::<span class="t">SMEM</span>&gt;::<span class="f">uninit</span>() };
+    <span class="k">for</span> t <span class="k">in</span> <span class="n">0</span>..<span class="n">1024</span> <span class="k">across</span> lanes {
+      part[t] = x[row][t] * x[row][t];
+    }
+    <span class="k">let</span> ss = lanes::<span class="f">sum</span>(&amp;part, <span class="n">1024</span>);   <span class="c">// every lane gets the sum</span>
+    <span class="k">for</span> t <span class="k">in</span> <span class="n">0</span>..<span class="n">1024</span> <span class="k">across</span> lanes {
+      y[row][t] = x[row][t] / ss.<span class="f">sqrt</span>();
+    }
+  }
+}</code></pre>
+
+<p><code>part</code> is in the shared memory of the block, so all the lanes of one block see it.
+Each lane loop ends with a barrier, so <code>lanes::sum</code> sees every element of
+<code>part</code>
+(<a href="https://github.com/vx-lang/Vx/blob/main/docs/lane_reductions.md">lane reductions</a>).</p>
+
+<p>An <code>across</code> loop is simpler than a task, because it does not copy or borrow
+anything. Delete each <code>across</code>, and the program means the same
+(<a href="https://github.com/vx-lang/Vx/blob/main/docs/spawn_on.md">docs/spawn_on.md</a>). So
+<code>row</code> and <code>t</code> are plain loop variables, and on a CPU the cores share the
+blocks. The word <code>across</code> only says that the passes may run at the same time. The
+compiler then checks that this is safe, which a later section shows.</p>
 
 <h2 id="three-languages-made-this-loop-a-trap"><a href="#three-languages-made-this-loop-a-trap">Three languages made this loop a trap</a></h2>
 
@@ -195,7 +229,6 @@ references, and structs that implement <code>Copy</code>.</li>
 <p>Here one <code>tasks</code> block does all three. It borrows <code>v</code>, copies
 <code>half</code> and moves <code>w</code>, with no annotation:</p>
 
-<!-- vx-doctest: skip (tasks and spawn come with #1925) -->
 <pre><code><span class="k">import</span> std::vec;
 
 <span class="k">fn</span> <span class="f">numbers</span>(n : <span class="t">i32</span>) -&gt; <span class="t">Vec</span>&lt;<span class="t">i32</span>&gt; {
@@ -248,12 +281,11 @@ never sees the new value. The first version of the change that adds tasks
 (<a href="https://github.com/vx-lang/Vx/pull/1925">#1925</a>) copied <code>stop</code> here, so
 this program compiled and the task never stopped:</p>
 
-<!-- vx-doctest: skip (tasks and spawn come with #1925) -->
 <pre><code><span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
   <span class="k">let</span> <span class="k">mut</span> stop = <span class="k">false</span>;
-  <span class="k">let</span> <span class="k">mut</span> spins = <span class="n">0</span>;
   <span class="k">tasks</span> {
     <span class="k">spawn</span> {
+      <span class="k">let</span> <span class="k">mut</span> spins = <span class="n">0</span>;
       <span class="k">while</span> !stop {
         spins += <span class="n">1</span>;
       }
@@ -284,7 +316,6 @@ error speaks of a borrow. The stop flag is now an error, with a hint:</p>
 <p>Each rare case needs one line, and that line shows the intent. To give the task the value as it
 is now, the program copies it first:</p>
 
-<!-- vx-doctest: skip (tasks and spawn come with #1925) -->
 <pre><code><span class="k">fn</span> <span class="f">work</span>(x : <span class="t">i32</span>) -&gt; <span class="t">void</span> {
   <span class="f">println!</span>(<span class="n">"work {}"</span>, x);
 }
@@ -301,7 +332,8 @@ is now, the program copies it first:</p>
 }</code></pre>
 
 <p>It prints <code>work 1</code>, then <code>x 2</code>. To share a value that changes, such as the
-stop flag, the program uses an atomic or a channel. W1034 is gone, and so are its false alarms.
+stop flag, the program uses an atomic or a channel. Tasks no longer get W1034, so its false
+alarms on tasks are gone.
 The rule made the formal model of tasks simpler too. With no write until the join, a copy at the
 <code>spawn</code> gives the task the same value as a read in place.</p>
 
@@ -331,9 +363,11 @@ tasks that outlive their block.</p>
 </table>
 </div>
 
-<h2 id="closures-are-next"><a href="#closures-are-next">Closures are next</a></h2>
+<h2 id="closures-are-next"><a href="#closures-are-next">Closures: a warning first</a></h2>
 
-<p>A Vx closure has the same problem today:</p>
+<p>A Vx closure that changes a local now holds it <code>&amp;mut</code> until its last use
+(<a href="https://github.com/vx-lang/Vx/pull/2779">#2779</a>). A closure that only reads a number
+still copies it, so this program has the old problem:</p>
 
 <pre><code><span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
   <span class="k">let</span> <span class="k">mut</span> x = <span class="n">10</span>;
@@ -343,10 +377,55 @@ tasks that outlive their block.</p>
   <span class="k">return</span> <span class="n">0</span>;
 }</code></pre>
 
-<p>It prints 11, because the closure copied <code>x</code> when the program made the closure. Rust refuses the same
-program: <code>error[E0506]: cannot assign to `x` because it is borrowed</code>. The plan in #1938
-is to give closures the same rule until their last use. That change can break programs that
-compile today, and each one needs a one-line fix, so a warning comes first, for one release.</p>
+<p>It prints 11, because the closure copied <code>x</code> when the program made the closure. Rust
+refuses the same program: <code>error[E0506]: cannot assign to `x` because it is borrowed</code>.
+Vx compiles it, with a warning:</p>
+
+<pre class="diag">Warning[W1034] at 4:3: the closure in 'add' copied 'x' on line 3, so the closure does not see this write</pre>
+
+<p>The plan in #1938 is to give closures the rule of tasks, until their last use. That change can
+break programs that compile today, and each one needs a one-line fix. So the warning comes first,
+for one release, and the error comes after it.</p>
+
+<h2 id="blocks-and-lanes-follow-the-same-rules"><a href="#blocks-and-lanes-follow-the-same-rules">Blocks and lanes follow the same rules</a></h2>
+
+<p>An <code>across</code> loop has no stale copy, because it copies nothing. Its trap is a
+different one: two passes that touch the same element at the same time. Vx handles that trap in
+the same three steps as the stop flag.</p>
+
+<p>The common case needs no extra words. In the kernel above, each block writes only its own row,
+and each lane writes only its own element. The compiler proves that no two passes touch the same
+element, and the program says nothing about it.</p>
+
+<p>A program that a plain GPU kernel would get wrong fails to compile. Here every block adds 1 to
+one counter:</p>
+
+<!-- vx-doctest: skip (needs a GPU topology) -->
+<pre><code><span class="k">spawn</span> <span class="k">on</span>(<span class="t">Topology</span>::<span class="t">Device</span>) {
+  <span class="k">for</span> b <span class="k">in</span> <span class="n">0</span>..n <span class="k">across</span> blocks {
+    count[<span class="n">0</span>] = count[<span class="n">0</span>] + <span class="n">1u32</span>;   <span class="c">// every block writes count[0]</span>
+  }
+}</code></pre>
+
+<p>In CUDA, this kernel compiles, and it loses some of the adds when two blocks run at the same
+time. In Vx it gets E6032: &ldquo;two passes of this block loop may write the same element of
+`count`: an index of the write must fix `b`&rdquo;. A <code>println!</code> in an
+<code>across</code> loop, and a write by each lane to a variable from outside the lane loop, get
+E6032 too.</p>
+
+<p>The rare case needs one line, and the line shows the intent. To share a counter, the program
+uses an atomic add:</p>
+
+<!-- vx-doctest: skip (needs a GPU topology) -->
+<pre><code><span class="k">spawn</span> <span class="k">on</span>(<span class="t">Topology</span>::<span class="t">Device</span>) {
+  <span class="k">for</span> b <span class="k">in</span> <span class="n">0</span>..n <span class="k">across</span> blocks {
+    <span class="k">let</span> _old = <span class="f">atomic_fetch_add_u32</span>(&amp;count, <span class="n">0</span>, <span class="n">1u32</span>, <span class="t">AtomicOrdering</span>::<span class="t">Relaxed</span>);
+  }
+}</code></pre>
+
+<p>This is the advice of the stop-flag error too: to share a value that changes, use an atomic.
+A task and a block are different tools, but the same rules decide what each one needs the
+programmer to write.</p>
 
 <h2 id="the-pattern"><a href="#the-pattern">The pattern</a></h2>
 
@@ -358,10 +437,11 @@ compile today, and each one needs a one-line fix, so a warning comes first, for 
 <li>Each rare case needs one line, and the line shows the intent.</li>
 </ul>
 
-<p>Go and C# changed the meaning of their loops years after release. Vx can make the choice before
-its tasks ship. The change that adds <code>tasks</code> and <code>spawn</code>,
-<a href="https://github.com/vx-lang/Vx/pull/1925">#1925</a>, is in review. Every Vx program in
-this post ran on its branch.</p>
+<p>Go and C# changed the meaning of their loops years after release. Vx made the choice before
+its tasks shipped. The change that adds <code>tasks</code> and <code>spawn</code>,
+<a href="https://github.com/vx-lang/Vx/pull/1925">#1925</a>, merged on 20 October 2026, with
+these rules in it. The <code>across blocks</code> and <code>across lanes</code> loops follow the
+same rules on a GPU.</p>
 
 <p class="post-foot">Vx is Apache 2.0 with the LLVM exception &mdash;
 <a href="/docs/getting-started.html">install it</a> and try the examples.</p>

@@ -206,6 +206,9 @@ impl<'a> TypeChecker<'a> {
             _ => None,
         };
         let expected = std::mem::replace(&mut self.expected_type, operand_expected);
+        // A cast to a number only reads its operand: a tensor cast makes a new tensor, and the
+        // operand stays usable.
+        let consume = consume && !matches!(expr.target_ty, Type::Scalar(_));
         let source_ty = self.check_expr_type_flag(&mut expr.expr, consume);
         self.expected_type = expected;
         let target_ty = expr.target_ty.clone();
@@ -263,14 +266,21 @@ impl<'a> TypeChecker<'a> {
                     return Type::Unknown;
                 }
             }
-            // `slice as f16`: an elementwise cast over a rank-1 float slice, yielding a
-            // slice of the target element type. This is the spelling that narrows a
-            // widened slice back into half storage, which the assignment rules require
-            // rather than performing silently.
+            // `t as f32`: a cast of each element of a float tensor, to a tensor of the same
+            // shape. On a slice, it narrows a widened slice back into half storage, which the
+            // assignment rules require rather than performing silently.
             (Type::Tensor(src_el, dims, top), Type::Scalar(dst_el))
-                if dims.len() == 1 && src_el.is_float() && dst_el.is_float() =>
+                if src_el.is_float() && dst_el.is_float() =>
             {
                 return Type::Tensor(dst_el.clone(), dims.clone(), top.clone());
+            }
+            // A borrowed tensor, such as a parameter `a : &Tensor<bf16, ..>`.
+            (Type::Borrow { inner, .. }, Type::Scalar(dst_el)) if dst_el.is_float() => {
+                if let Type::Tensor(src_el, dims, top) = &**inner {
+                    if src_el.is_float() {
+                        return Type::Tensor(dst_el.clone(), dims.clone(), top.clone());
+                    }
+                }
             }
             (Type::Scalar(src), Type::Scalar(dst)) => {
                 // A literal is left alone, since a cast is one way to give a number its type.
@@ -307,7 +317,13 @@ impl<'a> TypeChecker<'a> {
                     {
                         self.errors.warn(
                             crate::diagnostic::DiagnosticCode::W1014,
-                            format!("{v} does not fit in {dst}, so `as` changes its value"),
+                            if *dst == ElementType::USize {
+                                format!(
+                                    "{v} does not fit in usize, so this cast will stop the program"
+                                )
+                            } else {
+                                format!("{v} does not fit in {dst}, so `as` changes its value")
+                            },
                             Some(crate::diagnostic::SourceSpan::from_ast_span(&expr.span)),
                         );
                     }
@@ -341,8 +357,7 @@ impl<'a> TypeChecker<'a> {
         }
 
         self.errors.push(format!(
-            "Unsupported cast: cannot cast from {:?} to {:?}",
-            source_ty, target_ty
+            "Unsupported cast: cannot cast from `{source_ty}` to `{target_ty}`"
         ));
         Type::Unknown
     }
@@ -392,6 +407,18 @@ impl<'a> TypeChecker<'a> {
             span,
         });
         Some((**inner).clone())
+    }
+
+    /// The value that the reference `e` points at: `x` for `&x`, and `*e` for another reference.
+    fn through_reference(e: &Expr, inner: &Type) -> Expr {
+        if let Expr::Borrow(b) = e {
+            return (*b.expr).clone();
+        }
+        Expr::Dereference(DereferenceExpr {
+            expr: Box::new(e.clone()),
+            ty: Some(inner.clone()),
+            span: e.span(),
+        })
     }
 
     /// `a + b` on a struct or an enum whose type has the operator's trait method: the call
@@ -1032,6 +1059,37 @@ impl<'a> TypeChecker<'a> {
                 RelationalOp::Ge => "ge",
             };
             let span = *span;
+            // `&a == &b` compares the values, as Rust's impls for references do. Two references
+            // to numbers compare the numbers, and two references to a struct pass themselves to
+            // its `eq`.
+            if let (Type::Borrow { inner: li, .. }, Type::Borrow { inner: ri, .. }) =
+                (self.operand_type(lhs), self.operand_type(rhs))
+            {
+                if Self::is_user_type(&li)
+                    && self
+                        .resolve_method_in_impls(
+                            &li,
+                            &method.into(),
+                            &mut std::collections::HashMap::new(),
+                        )
+                        .is_some()
+                {
+                    let mut call = Expr::MethodCall(crate::syntax::MethodCallExpr {
+                        base: Box::new(Self::through_reference(lhs, &li)),
+                        method_name: method.into(),
+                        type_args: None,
+                        args: vec![(**rhs).clone()],
+                        span,
+                    });
+                    let ty = self.check_expr_type_flag(&mut call, false);
+                    *expr = call;
+                    return ty;
+                }
+                if matches!(*li, Type::Scalar(_)) && matches!(*ri, Type::Scalar(_)) {
+                    **lhs = Self::through_reference(lhs, &li);
+                    **rhs = Self::through_reference(rhs, &ri);
+                }
+            }
             let rhs_ref = Expr::Borrow(crate::syntax::expr::BorrowExpr {
                 expr: rhs.clone(),
                 is_mut: false,

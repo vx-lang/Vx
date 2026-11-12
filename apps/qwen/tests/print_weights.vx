@@ -1,0 +1,240 @@
+// Loads a weight file into GPU memory, copies each tensor back, and prints its first codes and
+// the sum of all its codes. A code is the bits of one value: 16 for bf16 and f16, 8 for an
+// f8e4m3 code, and 32 for an f32 scale. For Q4_0 codes, it is a byte that holds two of them.
+// `reference.py --tensors` prints the same lines from the file, so equal lines mean that each
+// tensor reached GPU memory whole and in the right place. The second pair of RUN lines does the
+// same for the fp8 file of the tiny model, and the third pair for the Q4_0 file of the tiny
+// mixture-of-experts model.
+//
+// RUN: python3 %S/../scripts/make_tiny_model.py %t.vxw > /dev/null
+// RUN: vxc %s --package qwen=%S/../src --host default --machine fleet/m4-uma.vx -- %t.vxw | FileCheck %s
+// RUN: python3 %S/../scripts/make_tiny_model.py --fp8 %t-fp8.vxw > /dev/null
+// RUN: vxc %s --package qwen=%S/../src --host default --machine fleet/m4-uma.vx -- %t-fp8.vxw | FileCheck %s --check-prefix=FP8
+// RUN: python3 %S/../scripts/make_tiny_model.py --moe --q4 %t-moe-q4.vxw > /dev/null
+// RUN: vxc %s --package qwen=%S/../src --host default --machine fleet/m4-uma.vx -- %t-moe-q4.vxw | FileCheck %s --check-prefix=MOE-Q4
+//
+// CHECK: {{^}}config hidden=128 layers=2 vocab=256;{{$}}
+// CHECK-NEXT: {{^}}embed count=32768 codes=47665,15857,48564,48396 sum=1052457310;{{$}}
+// CHECK-NEXT: {{^}}layers.0.attn_norm count=128 codes=16263,16240,16254,16257 sum=2080250;{{$}}
+// CHECK-NEXT: {{^}}layers.0.qkv count=32768 codes=15547,48549,48414,15868 sum=1051852570;{{$}}
+// CHECK-NEXT: {{^}}layers.0.qkv_bias count=256 codes=15886,48570,15847,48540 sum=8085547;{{$}}
+// CHECK-NEXT: {{^}}layers.0.attn_out count=16384 codes=48521,48576,48539,15416 sum=523608423;{{$}}
+// CHECK-NEXT: {{^}}layers.0.mlp_norm count=128 codes=16239,16265,16264,16249 sum=2080436;{{$}}
+// CHECK-NEXT: {{^}}layers.0.gate_up count=65536 codes=48693,48510,48608,15703 sum=2108067209;{{$}}
+// CHECK-NEXT: {{^}}layers.0.down count=32768 codes=48401,48507,48205,47858 sum=1045669326;{{$}}
+// CHECK-NEXT: {{^}}layers.1.attn_norm count=128 codes=16260,16254,16267,16243 sum=2080374;{{$}}
+// CHECK-NEXT: {{^}}layers.1.qkv count=32768 codes=15856,48201,48647,48476 sum=1044391932;{{$}}
+// CHECK-NEXT: {{^}}layers.1.qkv_bias count=256 codes=15769,15713,15666,48146 sum=8345995;{{$}}
+// CHECK-NEXT: {{^}}layers.1.attn_out count=16384 codes=48154,15492,48408,15168 sum=524347805;{{$}}
+// CHECK-NEXT: {{^}}layers.1.mlp_norm count=128 codes=16258,16233,16261,16245 sum=2080374;{{$}}
+// CHECK-NEXT: {{^}}layers.1.gate_up count=65536 codes=48443,48682,48562,15273 sum=2099380470;{{$}}
+// CHECK-NEXT: {{^}}layers.1.down count=32768 codes=15646,48458,15358,48449 sum=1041312438;{{$}}
+// CHECK-NEXT: {{^}}final_norm count=128 codes=16262,16238,16239,16258 sum=2080474;{{$}}
+//
+// FP8: {{^}}config hidden=128 layers=2 vocab=256;{{$}}
+// FP8-NEXT: {{^}}embed count=32768 codes=47665,15857,48564,48396 sum=1052457310;{{$}}
+// FP8-NEXT: {{^}}layers.0.attn_norm count=128 codes=16263,16240,16254,16257 sum=2080250;{{$}}
+// FP8-NEXT: {{^}}layers.0.qkv count=32768 codes=104,247,238,123 sum=5853434;{{$}}
+// FP8-NEXT: {{^}}layers.0.qkv.scale count=2 codes=967835648,961693989 sum=1929529637;{{$}}
+// FP8-NEXT: {{^}}layers.0.qkv_bias count=256 codes=15886,48570,15847,48540 sum=8085547;{{$}}
+// FP8-NEXT: {{^}}layers.0.attn_out count=16384 codes=249,253,250,100 sum=2918058;{{$}}
+// FP8-NEXT: {{^}}layers.0.attn_out.scale count=1 codes=964015835 sum=964015835;{{$}}
+// FP8-NEXT: {{^}}layers.0.mlp_norm count=128 codes=16239,16265,16264,16249 sum=2080436;{{$}}
+// FP8-NEXT: {{^}}layers.0.gate_up count=65536 codes=254,242,249,112 sum=11719771;{{$}}
+// FP8-NEXT: {{^}}layers.0.gate_up.scale count=4 codes=970082597,964465225,977123035,956076617 sum=3867747474;{{$}}
+// FP8-NEXT: {{^}}layers.0.down count=32768 codes=245,251,233,211 sum=5852312;{{$}}
+// FP8-NEXT: {{^}}layers.0.down.scale count=2 codes=959447040,944916773 sum=1904363813;{{$}}
+// FP8-NEXT: {{^}}layers.1.attn_norm count=128 codes=16260,16254,16267,16243 sum=2080374;{{$}}
+// FP8-NEXT: {{^}}layers.1.qkv count=32768 codes=123,225,252,242 sum=5822651;{{$}}
+// FP8-NEXT: {{^}}layers.1.qkv.scale count=2 codes=967835648,961693989 sum=1929529637;{{$}}
+// FP8-NEXT: {{^}}layers.1.qkv_bias count=256 codes=15769,15713,15666,48146 sum=8345995;{{$}}
+// FP8-NEXT: {{^}}layers.1.attn_out count=16384 codes=226,105,242,85 sum=2921997;{{$}}
+// FP8-NEXT: {{^}}layers.1.attn_out.scale count=1 codes=964015835 sum=964015835;{{$}}
+// FP8-NEXT: {{^}}layers.1.mlp_norm count=128 codes=16258,16233,16261,16245 sum=2080374;{{$}}
+// FP8-NEXT: {{^}}layers.1.gate_up count=65536 codes=238,253,246,85 sum=11685616;{{$}}
+// FP8-NEXT: {{^}}layers.1.gate_up.scale count=4 codes=970082597,964465225,977123035,956076617 sum=3867747474;{{$}}
+// FP8-NEXT: {{^}}layers.1.down count=32768 codes=118,249,100,249 sum=5837281;{{$}}
+// FP8-NEXT: {{^}}layers.1.down.scale count=2 codes=959447040,944916773 sum=1904363813;{{$}}
+// FP8-NEXT: {{^}}final_norm count=128 codes=16262,16238,16239,16258 sum=2080474;{{$}}
+// FP8-NEXT: {{^}}lm_head count=32768 codes=192,123,248,237 sum=5856622;{{$}}
+// FP8-NEXT: {{^}}lm_head.scale count=2 codes=967835648,961693989 sum=1929529637;{{$}}
+//
+// MOE-Q4: {{^}}config hidden=256 layers=2 vocab=256;{{$}}
+// MOE-Q4-NEXT: {{^}}embed count=65536 codes=15696,15335,15653,48269 sum=2107467388;{{$}}
+// MOE-Q4-NEXT: {{^}}layers.0.attn_norm count=256 codes=16236,16237,16259,16263 sum=4160845;{{$}}
+// MOE-Q4-NEXT: {{^}}layers.0.qkv count=65536 codes=147,248,120,45 sum=8603117;{{$}}
+// MOE-Q4-NEXT: {{^}}layers.0.qkv.scale count=4096 codes=8792,8800,41384,8736 sum=102548784;{{$}}
+// MOE-Q4-NEXT: {{^}}layers.0.q_norm count=64 codes=16260,16262,16266,16245 sum=1040152;{{$}}
+// MOE-Q4-NEXT: {{^}}layers.0.k_norm count=64 codes=16267,16239,16238,16267 sum=1040154;{{$}}
+// MOE-Q4-NEXT: {{^}}layers.0.attn_out count=32768 codes=164,77,70,50 sum=4293598;{{$}}
+// MOE-Q4-NEXT: {{^}}layers.0.attn_out.scale count=2048 codes=41560,8760,41560,8784 sum=51098464;{{$}}
+// MOE-Q4-NEXT: {{^}}layers.0.mlp_norm count=256 codes=16233,16239,16241,16266 sum=4160699;{{$}}
+// MOE-Q4-NEXT: {{^}}layers.0.router count=2048 codes=48741,15702,15976,48609 sum=66279611;{{$}}
+// MOE-Q4-NEXT: {{^}}layers.0.experts_gate_up count=524288 codes=34,142,230,143 sum=68831021;{{$}}
+// MOE-Q4-NEXT: {{^}}layers.0.experts_gate_up.scale count=32768 codes=8792,41520,41568,41496 sum=817738168;{{$}}
+// MOE-Q4-NEXT: {{^}}layers.0.experts_down count=262144 codes=18,86,17,245 sum=34456358;{{$}}
+// MOE-Q4-NEXT: {{^}}layers.0.experts_down.scale count=16384 codes=8744,41520,41536,41568 sum=407182592;{{$}}
+// MOE-Q4-NEXT: {{^}}layers.1.attn_norm count=256 codes=16252,16234,16241,16241 sum=4160742;{{$}}
+// MOE-Q4-NEXT: {{^}}layers.1.qkv count=65536 codes=175,113,229,63 sum=8620782;{{$}}
+// MOE-Q4-NEXT: {{^}}layers.1.qkv.scale count=4096 codes=41552,41544,8800,41568 sum=106385832;{{$}}
+// MOE-Q4-NEXT: {{^}}layers.1.q_norm count=64 codes=16250,16235,16253,16247 sum=1040245;{{$}}
+// MOE-Q4-NEXT: {{^}}layers.1.k_norm count=64 codes=16236,16247,16262,16256 sum=1040146;{{$}}
+// MOE-Q4-NEXT: {{^}}layers.1.attn_out count=32768 codes=126,250,142,239 sum=4321298;{{$}}
+// MOE-Q4-NEXT: {{^}}layers.1.attn_out.scale count=2048 codes=41512,8800,41544,41344 sum=51423184;{{$}}
+// MOE-Q4-NEXT: {{^}}layers.1.mlp_norm count=256 codes=16256,16266,16246,16232 sum=4160480;{{$}}
+// MOE-Q4-NEXT: {{^}}layers.1.router count=2048 codes=16005,15929,16012,15694 sum=67074749;{{$}}
+// MOE-Q4-NEXT: {{^}}layers.1.experts_gate_up count=524288 codes=36,19,12,9 sum=68818538;{{$}}
+// MOE-Q4-NEXT: {{^}}layers.1.experts_gate_up.scale count=32768 codes=8776,41480,8752,8760 sum=813714256;{{$}}
+// MOE-Q4-NEXT: {{^}}layers.1.experts_down count=262144 codes=254,170,33,136 sum=34402462;{{$}}
+// MOE-Q4-NEXT: {{^}}layers.1.experts_down.scale count=16384 codes=41552,41392,41544,41568 sum=403373536;{{$}}
+// MOE-Q4-NEXT: {{^}}final_norm count=256 codes=16232,16267,16245,16255 sum=4160755;{{$}}
+// MOE-Q4-NEXT: {{^}}lm_head count=65536 codes=249,250,241,235 sum=11707896;{{$}}
+// MOE-Q4-NEXT: {{^}}lm_head.scale count=4 codes=963266853,963266853,963266853,963266853 sum=3853067412;{{$}}
+
+import qwen::weights;
+import core::num;
+import core::convert;
+
+/// The 16 bits of a bf16 value.
+fn code(v : bf16) -> u32 {
+  return (v as f32).to_bits() >> 16;
+}
+
+/// Prints `name count=N codes=a,b,c,d sum=S;`, with the first `shown` codes of `first`.
+fn print_line(name : *const i8, layer : i32, count : i64, first : &Tensor<u32, [?]>, shown : i32, sum : u64) -> void {
+  if layer >= 0 {
+    print!("layers.{}.", layer);
+  }
+  print!("{} count={} codes=", name, count);
+  for i in 0..shown {
+    if i > 0 {
+      print!(",");
+    }
+    print!("{}", first[i]);
+  }
+  println!(" sum={};", sum);
+  return;
+}
+
+/// The line of a tensor of bf16 values in GPU memory. A code is the 16 bits of a value.
+fn report(name : *const i8, layer : i32, t : &Tensor<bf16, [?], Memory::HBM>) -> void {
+  let h = transfer(t, Memory::CPU_DRAM);
+  let n = h.len();
+  let mut first = Tensor<u32>([4]);
+  let mut sum : u64 = 0;
+  for i in 0..n {
+    if i < 4 {
+      first[i] = code(h[i]);
+    }
+    sum = sum + u64::from(code(h[i]));
+  }
+  print_line(name, layer, i64::from(n), &first, i32::min(n, 4), sum);
+  return;
+}
+
+/// The line of a matrix of codes in GPU memory: 4 f8e4m3 codes, or 8 Q4_0 codes, in each u32
+/// word. A code here is one byte of the word.
+fn report_codes(name : *const i8, layer : i32, t : &Tensor<u32, [?], Memory::HBM>) -> void {
+  let h = transfer(t, Memory::CPU_DRAM);
+  let n = h.len();
+  let mut first = Tensor<u32>([4]);
+  for k in 0..4 {
+    first[k] = (h[0] >> ((8 * k) as u32)) & 255u32;
+  }
+  let mut sum : u64 = 0;
+  for i in 0..n {
+    let w = h[i];
+    sum = sum + u64::from((w & 255u32) + ((w >> 8u32) & 255u32) + ((w >> 16u32) & 255u32) + (w >> 24u32));
+  }
+  print_line(name, layer, 4 * i64::from(n), &first, 4, sum);
+  return;
+}
+
+/// The line of a tensor of f32 scales in GPU memory. A code is the 32 bits of a value.
+fn report_scales(name : *const i8, layer : i32, t : &Tensor<f32, [?], Memory::HBM>) -> void {
+  let h = transfer(t, Memory::CPU_DRAM);
+  let n = h.len();
+  let mut first = Tensor<u32>([4]);
+  let mut sum : u64 = 0;
+  for i in 0..n {
+    if i < 4 {
+      first[i] = h[i].to_bits();
+    }
+    sum = sum + u64::from(h[i].to_bits());
+  }
+  print_line(name, layer, i64::from(n), &first, i32::min(n, 4), sum);
+  return;
+}
+
+/// The line of a tensor of f16 scales in GPU memory. A code is the 16 bits of a value.
+fn report_f16(name : *const i8, layer : i32, t : &Tensor<f16, [?], Memory::HBM>) -> void {
+  let h = transfer(t, Memory::CPU_DRAM);
+  let n = h.len();
+  // A plain host tensor, whose memory a pointer can read as u16 bits.
+  let mut plain = Tensor<f16>([n]);
+  for i in 0..n {
+    plain[i] = h[i];
+  }
+  let raw : *mut i8 = plain.as_mut_ptr();
+  let bits : *mut u16 = raw;
+  let mut first = Tensor<u32>([4]);
+  let mut sum : u64 = 0;
+  for i in 0..n {
+    let code = u32::from(unsafe { bits[i] });
+    if i < 4 {
+      first[i] = code;
+    }
+    sum = sum + u64::from(code);
+  }
+  print_line(name, layer, i64::from(n), &first, i32::min(n, 4), sum);
+  return;
+}
+
+/// The lines of a weight matrix: its bf16 values, or its codes and then its scales.
+fn report_matrix(name : *const i8, scale_name : *const i8, layer : i32, m : &WeightMatrix) -> void {
+  if m.dtype == U4 {
+    report_codes(name, layer, &m.codes);
+    report_f16(scale_name, layer, &m.group_scales);
+  } else if m.dtype == F8E4M3 {
+    report_codes(name, layer, &m.codes);
+    report_scales(scale_name, layer, &m.scales);
+  } else {
+    report(name, layer, &m.bf16);
+  }
+  return;
+}
+
+fn main(argc : i32, argv : *mut *mut i8) -> i32 {
+  assert(argc == 2, "give the weight file as the only argument");
+  let w = load_weights(unsafe { argv[1] });
+  let c = &w.config;
+  println!("config hidden={} layers={} vocab={};", c.hidden_size, c.num_layers, c.vocab_size);
+  report("embed", -1, &w.embed);
+  for l in 0..c.num_layers {
+    let layer = &w.layers[l];
+    report("attn_norm", l, &layer.attn_norm);
+    report_matrix("qkv", "qkv.scale", l, &layer.qkv);
+    if c.qkv_bias {
+      report("qkv_bias", l, &layer.qkv_bias);
+    }
+    if c.qk_norm {
+      report("q_norm", l, &layer.q_norm);
+      report("k_norm", l, &layer.k_norm);
+    }
+    report_matrix("attn_out", "attn_out.scale", l, &layer.attn_out);
+    report("mlp_norm", l, &layer.mlp_norm);
+    if c.num_experts > 0 {
+      report("router", l, &layer.router);
+      report_matrix("experts_gate_up", "experts_gate_up.scale", l, &layer.gate_up);
+      report_matrix("experts_down", "experts_down.scale", l, &layer.down);
+    } else {
+      report_matrix("gate_up", "gate_up.scale", l, &layer.gate_up);
+      report_matrix("down", "down.scale", l, &layer.down);
+    }
+  }
+  report("final_norm", -1, &w.final_norm);
+  if !c.tied_embeddings {
+    report_matrix("lm_head", "lm_head.scale", -1, &w.lm_head);
+  }
+  return 0;
+}

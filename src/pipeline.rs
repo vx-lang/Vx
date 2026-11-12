@@ -153,9 +153,10 @@ fn run_frontend_on(
         macro_expansion_phase(&mut modules, sched)
     })?;
     // Every function names its file, so a diagnostic found while checking it names the file
-    // too, wherever the check runs from. After expansion, which adds functions.
+    // too, wherever the check runs from. A struct names its file, because only that file can
+    // change the fields of a type with an invariant. After expansion, which adds functions.
     for m in &mut modules {
-        m.name_file_on_functions();
+        m.name_file_on_items();
     }
     // `name_resolution_phase` hands back the symbol map so the freeze point can reuse it instead of
     // rebuilding it (c4c35e31); the timing wrapper carries the value through.
@@ -745,12 +746,6 @@ fn nominal_gid(ty: &syntax::Type) -> Option<crate::gid::TypeId> {
             id.words[2] = crate::gid::ESCAPE_HATCH_MASK | crate::gid::generic_digest(&ids);
             Some(id)
         }
-        Type::Matrix => Some(crate::gid::TypeId::new(
-            0,
-            crate::hash::DefPath::Named("$matrix").compute_symbol_hash(),
-            0,
-            0,
-        )),
         // `Module` and `Unknown` genuinely have no type identity. They should not reach a generic
         // argument position; `emit_type_gid` now declines the whole instantiation rather than
         // silently interning it with the argument missing.
@@ -993,6 +988,9 @@ pub fn build_frozen_registry_with(
                     fields: s.fields.clone(),
                 },
             );
+            if !s.invariants.is_empty() {
+                registry.structs_with_invariants.insert(gid);
+            }
         }
         // Data-carrying enum decls, so the flat path can synthesize a monomorphized instance's
         // `{ tag, payload }` layout by substituting its type args into the variant payload types
@@ -1597,6 +1595,12 @@ fn type_check_phase(
         })
         .flat_map(|c| c.diagnostics.iter())
         .chain(imported_errors.iter())
+        .collect();
+    // Two checks can read one body, such as a method that a call checks again.
+    let mut seen = std::collections::HashSet::new();
+    let reported: Vec<&crate::diagnostic::Diagnostic> = reported
+        .into_iter()
+        .filter(|d| d.repeat_key().is_none_or(|key| seen.insert(key)))
         .collect();
     let mut warnings: Vec<crate::diagnostic::Diagnostic> = reported
         .iter()

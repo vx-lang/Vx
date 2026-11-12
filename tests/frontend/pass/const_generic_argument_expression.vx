@@ -18,6 +18,9 @@
 // without being evaluated at all.
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
+// RUN: (vxc %s 2>&1; echo "exit=$?") | FileCheck --check-prefix=EXIT %s
+// RUN: (vxc %s --legacy-codegen 2>&1; echo "exit=$?") | FileCheck --check-prefix=EXIT %s
 
 fn pick<const N : i32>() -> i32 {
   return N;
@@ -44,3 +47,6 @@ fn main() -> i32 {
 // CHECK-DAG: func.func @countdown$const$2(
 // CHECK-DAG: func.func @countdown$const$1(
 // CHECK-DAG: func.func @countdown$const$0(
+
+// The program returns 7 + 3. The checks above read no number from `countdown`.
+// EXIT: Program exited with non-zero code: 10{{$}}

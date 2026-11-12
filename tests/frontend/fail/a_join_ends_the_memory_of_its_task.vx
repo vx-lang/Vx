@@ -1,0 +1,113 @@
+//===- a_join_ends_the_memory_of_its_task.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A join that always runs ends its task. So the code after the join does not run at the same time
+// as the task, and their memory does not add up. `use_one` places 3 MiB in `W`, which holds 4 MiB.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 4 MiB, managed: explicit
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10,
+  transfer Memory::W -> Memory::CPU_DRAM : 10
+}
+
+fn use_one() -> f32 {
+  let aT = unsafe { Tensor<f32, [1024, 768]>::uninit() };
+  let a = transfer(aT, Memory::W);
+  let r = transfer(a, Memory::CPU_DRAM);
+  return r[0][0];
+}
+
+// The block calls it after the join.
+fn the_block_calls_it_after_the_join() -> f32 {
+  let mut y = 0.0;
+  tasks {
+    let h = spawn {
+      return use_one();
+    };
+    let x = h.join();
+    y = x + use_one();
+  }
+  return y;
+}
+
+// The second task starts after the join of the first.
+fn a_task_starts_after_the_join() -> f32 {
+  let mut y = 0.0;
+  tasks {
+    let h = spawn {
+      return use_one();
+    };
+    let x = h.join();
+    let g = spawn {
+      return use_one();
+    };
+    y = x + g.join();
+  }
+  return y;
+}
+
+// The block calls it before the join, while the task runs.
+fn the_block_calls_it_before_the_join() -> f32 {
+  let mut y = 0.0;
+  tasks {
+    let h = spawn {
+      // CHECK-DAG: Error[E6027] at {{.*}}.vx:[[@LINE+1]]:14: the working set along call path 'the_block_calls_it_before_the_join -> use_one' in memory space 'W' peaks at 6291456 bytes
+      return use_one();
+    };
+    y = use_one();
+    y = y + h.join();
+  }
+  return y;
+}
+
+// The second task starts before the join of the first.
+fn a_task_starts_before_the_join() -> f32 {
+  let mut y = 0.0;
+  tasks {
+    let h = spawn {
+      // CHECK-DAG: Error[E6027] at {{.*}}.vx:[[@LINE+1]]:14: the working set along call path 'a_task_starts_before_the_join -> use_one' in memory space 'W' peaks at 6291456 bytes
+      return use_one();
+    };
+    let g = spawn {
+      return use_one();
+    };
+    y = h.join() + g.join();
+  }
+  return y;
+}
+
+// A join in one branch of an `if` does not always run. So the task can still run after it.
+fn a_join_in_one_branch(c: bool) -> f32 {
+  let mut y = 0.0;
+  tasks {
+    let h = spawn {
+      // CHECK-DAG: Error[E6027] at {{.*}}.vx:[[@LINE+1]]:14: the working set along call path 'a_join_in_one_branch -> use_one' in memory space 'W' peaks at 6291456 bytes
+      return use_one();
+    };
+    if c {
+      y = h.join();
+    }
+    y = y + use_one();
+  }
+  return y;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// The errors above are the only ones. `--implicit-check-not` does not look past the last
+// `CHECK-DAG` line, so this line counts them.
+// CHECK: {{^}}Semantic check failed on {{.*}}: 3 error(s) emitted

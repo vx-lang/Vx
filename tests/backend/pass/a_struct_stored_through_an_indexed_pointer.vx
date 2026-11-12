@@ -1,0 +1,70 @@
+//===- a_struct_stored_through_an_indexed_pointer.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `t[i] = value` writes a whole struct into an element of a raw pointer. The value is a struct
+// literal, a local, another element, or the result of a call. The last case stores a pointer
+// in a `*mut *mut Pair`, and then writes a struct through it. Both code generators compile it.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}literal 3 4{{$}}
+// CHECK: {{^}}local 5 6{{$}}
+// CHECK: {{^}}element 3 4{{$}}
+// CHECK: {{^}}call 7 8{{$}}
+// CHECK: {{^}}through a pointer 9{{$}}
+
+import std::libc;
+
+struct Pair {
+  a : i32,
+  b : i32,
+}
+
+fn make(a : i32) -> Pair {
+  return Pair {
+    a : a,
+    b : a + 1
+  };
+}
+
+fn main() -> i32 {
+  let t : *mut Pair = unsafe { malloc(32) };
+  unsafe { t[1] = Pair { a : 3, b : 4 }; }
+  let p = unsafe { t[1] };
+  println!("literal {} {}", p.a, p.b);
+
+  let q = Pair {
+    a : 5,
+    b : 6
+  };
+  unsafe { t[0] = q; }
+  let r = unsafe { t[0] };
+  println!("local {} {}", r.a, r.b);
+
+  unsafe { t[2] = t[1]; }
+  let s = unsafe { t[2] };
+  println!("element {} {}", s.a, s.b);
+
+  unsafe { t[3] = make(7); }
+  let u = unsafe { t[3] };
+  println!("call {} {}", u.a, u.b);
+
+  let one : *mut Pair = unsafe { malloc(8) };
+  let pp : *mut *mut Pair = unsafe { malloc(16) };
+  unsafe {
+    pp[1] = one;
+    let back : *mut Pair = pp[1];
+    back[0] = Pair {
+      a : 1,
+      b : 9
+    };
+  }
+  let v = unsafe { one[0] };
+  println!("through a pointer {}", v.b);
+  unsafe { free(t); free(one); free(pp); }
+  return 0;
+}

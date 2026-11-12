@@ -14,6 +14,7 @@
 // The operator traits the plan puts in this module will join them here.
 
 import core::marker;
+import core::time;
 
 struct Closure0<Ret> {
   env : *mut i8, func : fn(*mut i8)->Ret,
@@ -61,13 +62,18 @@ trait Try {
 /// they are declared. A program does not call it; `core::mem::drop` gives a value up early.
 ///
 /// `drop` runs with cancellation off, so a wait in it cannot be cancelled. `wait_limit` says how
-/// long its waits can take, in seconds. After it, each wait in the `drop` that can be cancelled
-/// gives up, as in a cancelled block. A type whose cleanup needs longer writes its own.
+/// long its waits can take. After it, each wait in the `drop` that can be cancelled gives up, as
+/// in a cancelled block. A type whose cleanup needs longer writes its own.
 trait Drop {
   fn drop(self : &mut Self) -> void;
-  /// How long the waits in `drop` can take, in seconds.
-  fn wait_limit(self : &Self) -> f64 {
-    return 10.0;
+  /// How long the waits in `drop` can take.
+  fn wait_limit(self : &Self) -> Duration {
+    return Duration::from_secs(10);
+  }
+  /// `wait_limit` in nanoseconds, for the runtime. The compiler calls it before each `drop`, so
+  /// an impl does not write it.
+  fn wait_limit_nanos(self : &Self) -> i64 {
+    return self.wait_limit().as_nanos_i64();
   }
 }
 

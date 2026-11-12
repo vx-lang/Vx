@@ -211,50 +211,50 @@ fn main() -> i32 {
   let mut total_ld_r : f64 = 0.0;
   for rep in 0..20 {
     let m : i32 = n - rep * 64;
-    let t0 = now();
+    let t0 = Instant::now();
     total_vs += vector_sum(&a, m) as f64;
-    let t1 = now();
+    let t1 = Instant::now();
     total_vd += vector_dot(&a, &b, m) as f64;
-    let t2 = now();
+    let t2 = Instant::now();
     total_ls += loop_sum(&a, m) as f64;
-    let t3 = now();
+    let t3 = Instant::now();
     total_ld += loop_dot(&a, &b, m) as f64;
-    let t4 = now();
-    let s_ls_l = now();
+    let t4 = Instant::now();
+    let s_ls_l = Instant::now();
     total_ls_l += linalg_sum(&a, m) as f64;
-    let e_ls_l = now();
-    if e_ls_l - s_ls_l < best_ls_l {
-      best_ls_l = e_ls_l - s_ls_l;
+    let e_ls_l = Instant::now();
+    if (e_ls_l - s_ls_l).as_secs_f32() < best_ls_l {
+      best_ls_l = (e_ls_l - s_ls_l).as_secs_f32();
     }
-    let s_ls_r = now();
+    let s_ls_r = Instant::now();
     total_ls_r += linalg_sum_reassoc(&a, m) as f64;
-    let e_ls_r = now();
-    if e_ls_r - s_ls_r < best_ls_r {
-      best_ls_r = e_ls_r - s_ls_r;
+    let e_ls_r = Instant::now();
+    if (e_ls_r - s_ls_r).as_secs_f32() < best_ls_r {
+      best_ls_r = (e_ls_r - s_ls_r).as_secs_f32();
     }
-    let s_ld_l = now();
+    let s_ld_l = Instant::now();
     total_ld_l += linalg_dot(&a, &b, m) as f64;
-    let e_ld_l = now();
-    if e_ld_l - s_ld_l < best_ld_l {
-      best_ld_l = e_ld_l - s_ld_l;
+    let e_ld_l = Instant::now();
+    if (e_ld_l - s_ld_l).as_secs_f32() < best_ld_l {
+      best_ld_l = (e_ld_l - s_ld_l).as_secs_f32();
     }
-    let s_ld_r = now();
+    let s_ld_r = Instant::now();
     total_ld_r += linalg_dot_reassoc(&a, &b, m) as f64;
-    let e_ld_r = now();
-    if e_ld_r - s_ld_r < best_ld_r {
-      best_ld_r = e_ld_r - s_ld_r;
+    let e_ld_r = Instant::now();
+    if (e_ld_r - s_ld_r).as_secs_f32() < best_ld_r {
+      best_ld_r = (e_ld_r - s_ld_r).as_secs_f32();
     }
-    if t1 - t0 < best_vs {
-      best_vs = t1 - t0;
+    if (t1 - t0).as_secs_f32() < best_vs {
+      best_vs = (t1 - t0).as_secs_f32();
     }
-    if t2 - t1 < best_vd {
-      best_vd = t2 - t1;
+    if (t2 - t1).as_secs_f32() < best_vd {
+      best_vd = (t2 - t1).as_secs_f32();
     }
-    if t3 - t2 < best_ls {
-      best_ls = t3 - t2;
+    if (t3 - t2).as_secs_f32() < best_ls {
+      best_ls = (t3 - t2).as_secs_f32();
     }
-    if t4 - t3 < best_ld {
-      best_ld = t4 - t3;
+    if (t4 - t3).as_secs_f32() < best_ld {
+      best_ld = (t4 - t3).as_secs_f32();
     }
   }
   unsafe {

@@ -1,0 +1,37 @@
+//===- for_loop_invariant_needs_no_requires_on_the_range.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// The body of `for i in a..b` runs only when `a < b`. So when the loop starts, the checker can
+// assume `a <= b`, and `invariant i <= n` needs no `requires 0 <= n`.
+
+fn count_up_to(n : i64) -> i64 {
+  let mut total = 0i64;
+  for i in 0i64..n invariant i <= n invariant total == i {
+    total = total + 1i64;
+  }
+  return total;
+}
+
+fn width(lo : i64, hi : i64) -> i64 {
+  let mut w = 0i64;
+  for i in lo..hi invariant lo <= i && i <= hi {
+    w = w + 1i64;
+  }
+  return w;
+}
+
+fn main() -> i32 {
+  // A range with no values runs no pass.
+  // CHECK: 3 0 0 4 0{{$}}
+  println!(
+  "{} {} {} {} {}", count_up_to(3i64), count_up_to(0i64), count_up_to(-2i64), width(1i64, 5i64),
+  width(5i64, 1i64)
+  );
+  return 0;
+}

@@ -31,7 +31,7 @@
 // outlined kernel.
 //
 // Usage:
-//   vx-worker --port 9001 [--topology 500] [--verbose]
+//   vx-worker --port 9001 [--topology 500] [--io-timeout 30] [--verbose]
 //
 //===----------------------------------------------------------------------===//
 
@@ -43,14 +43,17 @@
 #include "vx_wire.h"
 
 #include <arpa/inet.h>
+#include <cerrno>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <poll.h>
 #include <signal.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -71,6 +74,10 @@ bool g_verbose = [] {
   return v && v[0] != '\0' && strcmp(v, "0") != 0;
 }();
 uint32_t g_worker_id = 1;
+/// The seconds that one read or write on a host connection can wait. The worker
+/// serves its hosts in turn, so a host that sends half a request, or stops
+/// reading a reply, would otherwise stop the worker for every host.
+int g_io_timeout = 30;
 
 /* Sized for a generation rather than a demo. Every dispatch stages its
    activations and frees them after, and `vx_remote_table_free` marks a region
@@ -78,19 +85,35 @@ uint32_t g_worker_id = 1;
    something dead rather than to whatever was allocated next. That makes the
    table grow with the number of dispatches: llama2 at 64 tokens is about 5600
    stagings, and 4096 entries ran out mid-generation.
-   Reusing a slot once no handle can name it is the real fix and needs a
-   generation check on resolve; 256K entries is 12 MB and buys a run long
-   enough not to need it yet. */
-vx_remote_region g_regions[262144];
-vx_remote_table g_table;
+   The table gives every slot back when its host disconnects, so this limit
+   applies to one host. 256K entries is 12 MB, allocated when a host connects
+   and touched only as it grows. */
+constexpr size_t kRegionsPerHost = 262144;
+
+/// One connected host. Each host has its own table, so a handle names a buffer
+/// of that host only. Two hosts can get the same handle value for different
+/// buffers, and neither can reach the buffers of the other.
+struct Host {
+  int fd;
+  vx_remote_region *regions;
+  vx_remote_table table;
+  /* Wire traffic served to this host, by message kind (1..4). Reported when
+     the host disconnects; see the counting site in `serve_one`. */
+  uint64_t msg_count[5];
+  uint64_t msg_bytes[5];
+};
+
+/// The hosts that a worker serves at the same time. The worker serves them in
+/// turn, one request at a time, so their work never overlaps on the device.
+constexpr size_t kMaxHosts = 16;
+Host g_hosts[kMaxHosts];
+size_t g_host_count = 0;
+/// The host whose request the worker serves now.
+Host *g_host = nullptr;
 
 /* Sized for llama2's largest staged blob rather than for a token: a projection
    weight arrives in one TRANSFER. */
 uint8_t g_body[64u << 20];
-/* Wire traffic this worker has served, by message kind (1..4). Reported when
-   the host disconnects; see the counting site in the message loop. */
-uint64_t g_msg_count[5] = {0, 0, 0, 0, 0};
-uint64_t g_msg_bytes[5] = {0, 0, 0, 0, 0};
 
 /* How long the device spent, which is a different question from how long the
    program took and the only one this side of the network can answer.
@@ -165,7 +188,7 @@ void report_traffic() {
   static const char *kNames[5] = {"", "TRANSFER", "DISPATCH", "FREE", "FETCH"};
   uint64_t total = 0;
   for (int i = 1; i <= 4; ++i) {
-    total += g_msg_count[i];
+    total += g_host->msg_count[i];
   }
   if (total == 0) {
     return;
@@ -173,10 +196,10 @@ void report_traffic() {
   fprintf(stderr,
           "[Vx worker] served %llu message(s):", (unsigned long long)total);
   for (int i = 1; i <= 4; ++i) {
-    if (g_msg_count[i] != 0) {
+    if (g_host->msg_count[i] != 0) {
       fprintf(stderr, " %s=%llu (%llu B)", kNames[i],
-              (unsigned long long)g_msg_count[i],
-              (unsigned long long)g_msg_bytes[i]);
+              (unsigned long long)g_host->msg_count[i],
+              (unsigned long long)g_host->msg_bytes[i]);
     }
   }
   fprintf(stderr, "\n");
@@ -222,8 +245,8 @@ uint64_t serve_transfer(const vx_wire_transfer *t) {
   if (!dev) {
     return 0;
   }
-  uint64_t handle =
-      vx_remote_table_alloc(&g_table, g_worker_id, t->nbytes, t->dtype, dev);
+  uint64_t handle = vx_remote_table_alloc(&g_host->table, g_worker_id,
+                                          t->nbytes, t->dtype, dev);
   if (handle == 0) {
     vx_plugin_free(dev, (uint32_t)g_topology);
     return 0;
@@ -257,7 +280,7 @@ int serve_dispatch(const vx_wire_dispatch *d, const vx_wire_arg *args,
   storage.descriptors = descriptors;
   storage.descriptors_capacity = sizeof(descriptors);
 
-  if (!vx_agent_rebuild_args(&g_table, args, d->num_args, &storage)) {
+  if (!vx_agent_rebuild_args(&g_host->table, args, d->num_args, &storage)) {
     /* Which one, and which handle. vx_agent.h refuses without naming anything
        on purpose -- it cannot substitute a plausible region -- and says the
        caller will report it. This is that report, and until it existed the
@@ -270,7 +293,7 @@ int serve_dispatch(const vx_wire_dispatch *d, const vx_wire_arg *args,
       if (args[i].handle == 0) {
         continue;
       }
-      if (!vx_remote_resolve(&g_table, args[i].handle, &ref)) {
+      if (!vx_remote_resolve(&g_host->table, args[i].handle, &ref)) {
         log_line("[Vx worker]   arg %lld: handle %llx is not one this worker "
                  "minted or still holds\n",
                  (long long)i, (unsigned long long)args[i].handle);
@@ -391,8 +414,8 @@ int serve_dispatch(const vx_wire_dispatch *d, const vx_wire_arg *args,
       log_line("[Vx worker] refused: a slot was never published\n");
       return 0;
     }
-    handle = vx_remote_table_alloc(&g_table, g_worker_id, bytes, plan.dtype,
-                                   published);
+    handle = vx_remote_table_alloc(&g_host->table, g_worker_id, bytes,
+                                   plan.dtype, published);
     if (handle == 0) {
       return 0;
     }
@@ -415,38 +438,51 @@ int serve_dispatch(const vx_wire_dispatch *d, const vx_wire_arg *args,
   return 1;
 }
 
-int serve(int fd) {
-  /* Per connection, not per process. A worker that serves two runs in a row
-     reported the second as the sum of both -- 64 messages then "78", which is
-     64 + 14 and reads as a run that sent more than it did. */
-  for (int i = 0; i < 5; ++i) {
-    g_msg_count[i] = 0;
-    g_msg_bytes[i] = 0;
+/// Serves one request of `g_host`. Returns false when the host disconnected or
+/// the connection failed, and the worker must drop the host.
+/// Logs why the worker drops the host after a read or a write failed.
+void log_io_failure(bool reading) {
+  if (errno == EAGAIN || errno == EWOULDBLOCK) {
+    fprintf(stderr,
+            reading ? "[Vx worker] the host sent part of a request and then "
+                      "nothing for %d s; dropping the host\n"
+                    : "[Vx worker] the host did not read its reply for %d s; "
+                      "dropping the host\n",
+            g_io_timeout);
+    return;
   }
+  fprintf(stderr, "[Vx worker] transport failure; dropping the host\n");
+}
 
-  for (;;) {
+/// Sends a reply to the host. Returns false when the send failed.
+bool reply(uint32_t type, const void *body, uint64_t len) {
+  if (vx_transport_send(g_host->fd, type, body, len) == VX_TRANSPORT_OK) {
+    return true;
+  }
+  log_io_failure(false);
+  return false;
+}
+
+bool serve_one() {
+  const int fd = g_host->fd;
+  {
     uint32_t type = 0;
     uint64_t len = 0;
     int rc = vx_transport_recv(fd, &type, g_body, sizeof(g_body), &len);
 
     if (rc == VX_TRANSPORT_EOF) {
       log_line("[Vx worker] host disconnected\n");
-      report_traffic();
-      report_timing();
-      return 0;
+      return false;
     }
     if (rc == VX_TRANSPORT_TOO_LARGE) {
       fprintf(stderr, "[Vx worker] a message exceeded the %zu-byte buffer\n",
               sizeof(g_body));
       /* Drained by the transport, so answering keeps the stream in step. */
-      vx_transport_send(fd, type, nullptr, 0);
-      continue;
+      return reply(type, nullptr, 0);
     }
     if (rc != VX_TRANSPORT_OK) {
-      fprintf(stderr, "[Vx worker] transport failure; dropping the host\n");
-      report_traffic();
-      report_timing();
-      return 1;
+      log_io_failure(true);
+      return false;
     }
 
     vx_wire_reader r;
@@ -459,8 +495,8 @@ int serve(int fd) {
     // exist. TRANSFER and DISPATCH were logged; FETCH and FREE were not, which
     // made "about six round trips per dispatch" an estimate nobody could check.
     if (type >= 1 && type <= 4) {
-      g_msg_count[type] += 1;
-      g_msg_bytes[type] += (uint64_t)len;
+      g_host->msg_count[type] += 1;
+      g_host->msg_bytes[type] += (uint64_t)len;
     }
 
     switch (type) {
@@ -473,9 +509,8 @@ int serve(int fd) {
       vx_wire_writer w;
       vx_wire_writer_init(&w, g_reply, sizeof(g_reply));
       vx_wire_put_u64(&w, handle);
-      if (vx_transport_send(fd, VX_WIRE_TRANSFER, g_reply, w.len) !=
-          VX_TRANSPORT_OK) {
-        return 1;
+      if (!reply(VX_WIRE_TRANSFER, g_reply, w.len)) {
+        return false;
       }
       break;
     }
@@ -494,9 +529,8 @@ int serve(int fd) {
       vx_wire_writer w;
       vx_wire_writer_init(&w, g_reply, sizeof(g_reply));
       vx_wire_put_results(&w, ok ? 0 : -1, results, ok ? num_results : 0);
-      if (vx_transport_send(fd, VX_WIRE_DISPATCH, g_reply, w.len) !=
-          VX_TRANSPORT_OK) {
-        return 1;
+      if (!reply(VX_WIRE_DISPATCH, g_reply, w.len)) {
+        return false;
       }
       break;
     }
@@ -504,22 +538,20 @@ int serve(int fd) {
       uint64_t handle = 0, nbytes = 0;
       vx_remote_ref ref;
       if (!vx_wire_get_fetch(&r, &handle, &nbytes) ||
-          !vx_remote_resolve(&g_table, handle, &ref) ||
+          !vx_remote_resolve(&g_host->table, handle, &ref) ||
           nbytes > ref.region->size - ref.offset || nbytes > sizeof(g_reply)) {
         /* Nothing, rather than bytes invented for a handle that named nothing
            or a length that ran past what it named. */
-        if (vx_transport_send(fd, VX_WIRE_FETCH, nullptr, 0) !=
-            VX_TRANSPORT_OK) {
-          return 1;
+        if (!reply(VX_WIRE_FETCH, nullptr, 0)) {
+          return false;
         }
         break;
       }
       vx_plugin_transfer_device_to_host((char *)ref.region->remote + ref.offset,
                                         g_reply, (size_t)nbytes,
                                         (uint32_t)g_topology);
-      if (vx_transport_send(fd, VX_WIRE_FETCH, g_reply, nbytes) !=
-          VX_TRANSPORT_OK) {
-        return 1;
+      if (!reply(VX_WIRE_FETCH, g_reply, nbytes)) {
+        return false;
       }
       break;
     }
@@ -527,19 +559,62 @@ int serve(int fd) {
       uint64_t handle = 0;
       vx_remote_ref ref;
       if (vx_wire_get_free(&r, &handle) &&
-          vx_remote_resolve(&g_table, handle, &ref) && ref.offset == 0) {
+          vx_remote_resolve(&g_host->table, handle, &ref) && ref.offset == 0) {
         vx_plugin_free(ref.region->remote, (uint32_t)g_topology);
-        vx_remote_table_free(&g_table, handle);
+        vx_remote_table_free(&g_host->table, handle);
       }
       log_line("[Vx worker] FREE handle %llx\n", (unsigned long long)handle);
-      vx_transport_send(fd, VX_WIRE_FREE, nullptr, 0);
+      if (!reply(VX_WIRE_FREE, nullptr, 0)) {
+        return false;
+      }
       break;
     }
     default:
       fprintf(stderr, "[Vx worker] unknown message type %u\n", type);
-      return 1;
+      return false;
     }
   }
+  return true;
+}
+
+void release_region(void *remote) {
+  vx_plugin_free(remote, (uint32_t)g_topology);
+}
+
+/// Starts to serve a host that connected. Returns false when the worker has no
+/// room for it.
+bool add_host(int fd) {
+  if (g_host_count == kMaxHosts) {
+    return false;
+  }
+  vx_remote_region *regions =
+      (vx_remote_region *)calloc(kRegionsPerHost, sizeof(vx_remote_region));
+  if (!regions) {
+    return false;
+  }
+  Host *h = &g_hosts[g_host_count++];
+  memset(h, 0, sizeof(*h));
+  h->fd = fd;
+  h->regions = regions;
+  vx_remote_table_init(&h->table, regions, kRegionsPerHost);
+  return true;
+}
+
+/// Drops host `i`. A host that stops early sends no FREE for its buffers, so
+/// the worker frees each buffer that the host left.
+void drop_host(size_t i) {
+  g_host = &g_hosts[i];
+  report_traffic();
+  report_timing();
+  close(g_host->fd);
+  size_t left = vx_remote_table_free_all(&g_host->table, release_region);
+  if (left > 0) {
+    fprintf(stderr, "[Vx worker] freed %zu buffer(s) that the host left\n",
+            left);
+  }
+  free(g_host->regions);
+  g_hosts[i] = g_hosts[--g_host_count];
+  g_host = nullptr;
 }
 
 } // namespace
@@ -554,17 +629,24 @@ int main(int argc, char **argv) {
       g_topology = (int32_t)atoi(argv[++i]);
     } else if (strcmp(argv[i], "--worker-id") == 0 && i + 1 < argc) {
       g_worker_id = (uint32_t)atoi(argv[++i]);
+    } else if (strcmp(argv[i], "--io-timeout") == 0 && i + 1 < argc) {
+      g_io_timeout = atoi(argv[++i]);
     } else if (strcmp(argv[i], "--verbose") == 0) {
       g_verbose = true;
     } else {
       fprintf(stderr,
-              "usage: %s --port N [--topology T] [--worker-id W] [--verbose]\n",
+              "usage: %s --port N [--topology T] [--worker-id W] "
+              "[--io-timeout S] [--verbose]\n",
               argv[0]);
       return 2;
     }
   }
   if (port <= 0 || port > 65535) {
     fprintf(stderr, "error: --port is required and must be 1..65535\n");
+    return 2;
+  }
+  if (g_io_timeout <= 0) {
+    fprintf(stderr, "error: --io-timeout must be at least 1 second\n");
     return 2;
   }
   if (g_worker_id == 0 || g_worker_id > VX_REMOTE_WORKER_MAX) {
@@ -574,9 +656,6 @@ int main(int argc, char **argv) {
 
   /* A host that goes away mid-reply must not take the worker with it. */
   signal(SIGPIPE, SIG_IGN);
-
-  vx_remote_table_init(&g_table, g_regions,
-                       sizeof(g_regions) / sizeof(g_regions[0]));
 
   int listener = socket(AF_INET, SOCK_STREAM, 0);
   if (listener < 0) {
@@ -603,19 +682,54 @@ int main(int argc, char **argv) {
   fprintf(stderr, "[Vx worker] listening on %d, topology %d, worker id %u\n",
           port, g_topology, g_worker_id);
 
-  /* One host at a time, served to completion. A worker owns a device, and two
-     hosts dispatching onto it concurrently would interleave on that device
-     with nothing here sequencing them. */
+  /* Each host in turn, one request at a time. A worker that served one host
+     until it disconnected could deadlock across machines: host A holds worker
+     1 and asks worker 2, while host B holds worker 2 and asks worker 1. Now no
+     host holds a worker between its requests. */
+  struct pollfd fds[kMaxHosts + 1];
   for (;;) {
-    int fd = accept(listener, nullptr, nullptr);
-    if (fd < 0) {
-      perror("accept");
+    fds[0].fd = listener;
+    fds[0].events = POLLIN;
+    for (size_t i = 0; i < g_host_count; ++i) {
+      fds[1 + i].fd = g_hosts[i].fd;
+      fds[1 + i].events = POLLIN;
+    }
+    const size_t polled = g_host_count;
+    if (poll(fds, 1 + polled, -1) < 0) {
+      perror("poll");
       continue;
     }
-    int one_nd = 1;
-    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one_nd, sizeof(one_nd));
-    fprintf(stderr, "[Vx worker] host connected\n");
-    serve(fd);
-    close(fd);
+    /* From the last to the first, because a dropped host takes the place of
+       the last one. */
+    for (size_t i = polled; i-- > 0;) {
+      if (fds[1 + i].revents == 0) {
+        continue;
+      }
+      g_host = &g_hosts[i];
+      const bool keep = serve_one();
+      g_host = nullptr;
+      if (!keep) {
+        drop_host(i);
+      }
+    }
+    if (fds[0].revents & POLLIN) {
+      int fd = accept(listener, nullptr, nullptr);
+      if (fd < 0) {
+        perror("accept");
+        continue;
+      }
+      int one_nd = 1;
+      setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one_nd, sizeof(one_nd));
+      timeval limit = {g_io_timeout, 0};
+      setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &limit, sizeof(limit));
+      setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &limit, sizeof(limit));
+      if (!add_host(fd)) {
+        fprintf(stderr, "[Vx worker] refused a host: %zu hosts are connected\n",
+                kMaxHosts);
+        close(fd);
+        continue;
+      }
+      fprintf(stderr, "[Vx worker] host connected\n");
+    }
   }
 }

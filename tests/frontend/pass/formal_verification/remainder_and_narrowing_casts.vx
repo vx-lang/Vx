@@ -1,0 +1,338 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=Warning # flat-codegen
+
+import core::convert;
+
+fn sample_row(position : i32, rows : i32, offset : i32, stride : i32) -> i32
+requires rows > 0
+requires position >= 0 && position < rows
+requires offset >= 0 && offset < rows
+requires stride >= 0 && stride < rows
+ensures return >= 0 && return < rows {
+  let index = i64::from(offset) + i64::from(position) * i64::from(stride);
+  return (index % i64::from(rows)) as i32;
+}
+
+fn signed_remainder(value : i32, divisor : i32) -> i32
+requires value <= 0 && divisor > 0
+ensures return <= 0 && return > -divisor {
+  return value % divisor;
+}
+
+fn negative_divisor(value : i32) -> i32
+requires value >= 0
+ensures return >= 0 && return < 7 {
+  return value % -7;
+}
+
+fn unsigned_remainder(value : u64, divisor : u64) -> u64
+requires divisor > 0u64
+ensures return >= 0u64 && return < divisor {
+  return value % divisor;
+}
+
+fn narrow_in_range(value : i64) -> i32
+requires value >= -2147483648i64 && value <= 2147483647i64
+ensures return == value {
+  return value as i32;
+}
+
+fn narrow_wrapping(value : i64) -> i32
+requires value == 2147483648i64
+ensures return == -2147483648i64 {
+  return value as i32;
+}
+
+fn unsigned_to_signed(value : u8) -> i8
+requires value == 255u8
+ensures return == -1 {
+  return value as i8;
+}
+
+fn signed_to_unsigned(value : i8) -> u16
+requires value == -1
+ensures return == 65535u16 {
+  return value as u16;
+}
+
+fn source_width_before_cast(value : i32) -> i64
+requires value == 2147483647
+ensures return == -2147483648i64 {
+  return i64::from(value + 1);
+}
+
+fn consume_index(index : i32) -> i32
+requires index >= 0 && index < 10
+ensures return == index {
+  return index;
+}
+
+fn cast_argument(value : i64) -> i32
+requires value >= 0i64 && value < 10i64
+ensures return == value {
+  return consume_index(value as i32);
+}
+
+fn main() -> i32 {
+  let _source_width = source_width_before_cast(2147483647);
+  let _argument = cast_argument(9i64);
+  let _signed = signed_remainder(-8, 7);
+  let _negative = negative_divisor(8);
+  let _unsigned = unsigned_remainder(18446744073709551615u64, 7u64);
+  let _minimum = narrow_in_range(-2147483648i64);
+  let _maximum = narrow_in_range(2147483647i64);
+  let _wrapped = narrow_wrapping(2147483648i64);
+  let _signed_byte = unsigned_to_signed(255u8);
+  let _unsigned_word = signed_to_unsigned(-1);
+  let row = consume_index(sample_row(2, 10, 1, 3));
+  if row != 7 || _signed != -1 || _negative != 1 || _unsigned != 1u64 {
+    return 1;
+  }
+  if _minimum != (-2147483647 - 1) || _maximum != 2147483647 || _wrapped != (-2147483647 - 1) {
+    return 2;
+  }
+  if _signed_byte != -1 || _unsigned_word != 65535u16 || _source_width != -2147483648i64 || _argument != 9 {
+    return 3;
+  }
+  return 0;
+}
+
+// CHECK: module attributes {vx.drops} {
+// CHECK:   func.func private @vx_init_signals()
+// CHECK:   func.func @main() -> i32 {
+// CHECK:     call @vx_init_signals() : () -> ()
+// CHECK:     %alloca = memref.alloca() : memref<i1>
+// CHECK:     %alloca_0 = memref.alloca() : memref<i1>
+// CHECK:     %alloca_1 = memref.alloca() : memref<i1>
+// CHECK:     %alloca_2 = memref.alloca() : memref<i1>
+// CHECK:     %alloca_3 = memref.alloca() : memref<i1>
+// CHECK:     %alloca_4 = memref.alloca() : memref<i1>
+// CHECK:     %alloca_5 = memref.alloca() : memref<i1>
+// CHECK:     %alloca_6 = memref.alloca() : memref<i1>
+// CHECK:     %c2147483647_i32 = arith.constant 2147483647 : i32
+// CHECK:     %0 = call @source_width_before_cast(%c2147483647_i32) : (i32) -> i64
+// CHECK:     %c9_i64 = arith.constant 9 : i64
+// CHECK:     %1 = call @cast_argument(%c9_i64) : (i64) -> i32
+// CHECK:     %c8_i32 = arith.constant 8 : i32
+// CHECK:     %c0_i32 = arith.constant 0 : i32
+// CHECK:     %2 = arith.subi %c0_i32, %c8_i32 : i32
+// CHECK:     %c7_i32 = arith.constant 7 : i32
+// CHECK:     %3 = call @signed_remainder(%2, %c7_i32) : (i32, i32) -> i32
+// CHECK:     %c8_i32_7 = arith.constant 8 : i32
+// CHECK:     %4 = call @negative_divisor(%c8_i32_7) : (i32) -> i32
+// CHECK:     %c-1_i64 = arith.constant -1 : i64
+// CHECK:     %c7_i64 = arith.constant 7 : i64
+// CHECK:     %5 = call @unsigned_remainder(%c-1_i64, %c7_i64) : (i64, i64) -> i64
+// CHECK:     %c2147483648_i64 = arith.constant 2147483648 : i64
+// CHECK:     %c0_i64 = arith.constant 0 : i64
+// CHECK:     %6 = arith.subi %c0_i64, %c2147483648_i64 : i64
+// CHECK:     %7 = call @narrow_in_range(%6) : (i64) -> i32
+// CHECK:     %c2147483647_i64 = arith.constant 2147483647 : i64
+// CHECK:     %8 = call @narrow_in_range(%c2147483647_i64) : (i64) -> i32
+// CHECK:     %c2147483648_i64_8 = arith.constant 2147483648 : i64
+// CHECK:     %9 = call @narrow_wrapping(%c2147483648_i64_8) : (i64) -> i32
+// CHECK:     %c-1_i8 = arith.constant -1 : i8
+// CHECK:     %10 = call @unsigned_to_signed(%c-1_i8) : (i8) -> i8
+// CHECK:     %c1_i8 = arith.constant 1 : i8
+// CHECK:     %c0_i8 = arith.constant 0 : i8
+// CHECK:     %11 = arith.subi %c0_i8, %c1_i8 : i8
+// CHECK:     %12 = call @signed_to_unsigned(%11) : (i8) -> i16
+// CHECK:     %c2_i32 = arith.constant 2 : i32
+// CHECK:     %c10_i32 = arith.constant 10 : i32
+// CHECK:     %c1_i32 = arith.constant 1 : i32
+// CHECK:     %c3_i32 = arith.constant 3 : i32
+// CHECK:     %13 = call @sample_row(%c2_i32, %c10_i32, %c1_i32, %c3_i32) : (i32, i32, i32, i32) -> i32
+// CHECK:     %14 = call @consume_index(%13) : (i32) -> i32
+// CHECK:     %c7_i32_9 = arith.constant 7 : i32
+// CHECK:     %15 = arith.cmpi ne, %14, %c7_i32_9 : i32
+// CHECK:     cf.cond_br %15, ^bb2, ^bb1
+// CHECK:   ^bb1:  // pred: ^bb0
+// CHECK:     %c1_i32_10 = arith.constant 1 : i32
+// CHECK:     %c0_i32_11 = arith.constant 0 : i32
+// CHECK:     %16 = arith.subi %c0_i32_11, %c1_i32_10 : i32
+// CHECK:     %17 = arith.cmpi ne, %3, %16 : i32
+// CHECK:     memref.store %17, %alloca_1[] : memref<i1>
+// CHECK:     cf.br ^bb3
+// CHECK:   ^bb2:  // pred: ^bb0
+// CHECK:     %true = arith.constant true
+// CHECK:     memref.store %true, %alloca_1[] : memref<i1>
+// CHECK:     cf.br ^bb3
+// CHECK:   ^bb3:  // 2 preds: ^bb1, ^bb2
+// CHECK:     %18 = memref.load %alloca_1[] : memref<i1>
+// CHECK:     cf.cond_br %18, ^bb5, ^bb4
+// CHECK:   ^bb4:  // pred: ^bb3
+// CHECK:     %c1_i32_12 = arith.constant 1 : i32
+// CHECK:     %19 = arith.cmpi ne, %4, %c1_i32_12 : i32
+// CHECK:     memref.store %19, %alloca_0[] : memref<i1>
+// CHECK:     cf.br ^bb6
+// CHECK:   ^bb5:  // pred: ^bb3
+// CHECK:     %true_13 = arith.constant true
+// CHECK:     memref.store %true_13, %alloca_0[] : memref<i1>
+// CHECK:     cf.br ^bb6
+// CHECK:   ^bb6:  // 2 preds: ^bb4, ^bb5
+// CHECK:     %20 = memref.load %alloca_0[] : memref<i1>
+// CHECK:     cf.cond_br %20, ^bb8, ^bb7
+// CHECK:   ^bb7:  // pred: ^bb6
+// CHECK:     %c1_i64 = arith.constant 1 : i64
+// CHECK:     %21 = arith.cmpi ne, %5, %c1_i64 : i64
+// CHECK:     memref.store %21, %alloca[] : memref<i1>
+// CHECK:     cf.br ^bb9
+// CHECK:   ^bb8:  // pred: ^bb6
+// CHECK:     %true_14 = arith.constant true
+// CHECK:     memref.store %true_14, %alloca[] : memref<i1>
+// CHECK:     cf.br ^bb9
+// CHECK:   ^bb9:  // 2 preds: ^bb7, ^bb8
+// CHECK:     %22 = memref.load %alloca[] : memref<i1>
+// CHECK:     cf.cond_br %22, ^bb10, ^bb11
+// CHECK:   ^bb10:  // pred: ^bb9
+// CHECK:     %c1_i32_15 = arith.constant 1 : i32
+// CHECK:     return %c1_i32_15 : i32
+// CHECK:   ^bb11:  // pred: ^bb9
+// CHECK:     %c2147483647_i32_16 = arith.constant 2147483647 : i32
+// CHECK:     %c0_i32_17 = arith.constant 0 : i32
+// CHECK:     %23 = arith.subi %c0_i32_17, %c2147483647_i32_16 : i32
+// CHECK:     %c1_i32_18 = arith.constant 1 : i32
+// CHECK:     %24 = arith.subi %23, %c1_i32_18 : i32
+// CHECK:     %25 = arith.cmpi ne, %7, %24 : i32
+// CHECK:     cf.cond_br %25, ^bb13, ^bb12
+// CHECK:   ^bb12:  // pred: ^bb11
+// CHECK:     %c2147483647_i32_19 = arith.constant 2147483647 : i32
+// CHECK:     %26 = arith.cmpi ne, %8, %c2147483647_i32_19 : i32
+// CHECK:     memref.store %26, %alloca_3[] : memref<i1>
+// CHECK:     cf.br ^bb14
+// CHECK:   ^bb13:  // pred: ^bb11
+// CHECK:     %true_20 = arith.constant true
+// CHECK:     memref.store %true_20, %alloca_3[] : memref<i1>
+// CHECK:     cf.br ^bb14
+// CHECK:   ^bb14:  // 2 preds: ^bb12, ^bb13
+// CHECK:     %27 = memref.load %alloca_3[] : memref<i1>
+// CHECK:     cf.cond_br %27, ^bb16, ^bb15
+// CHECK:   ^bb15:  // pred: ^bb14
+// CHECK:     %c2147483647_i32_21 = arith.constant 2147483647 : i32
+// CHECK:     %c0_i32_22 = arith.constant 0 : i32
+// CHECK:     %28 = arith.subi %c0_i32_22, %c2147483647_i32_21 : i32
+// CHECK:     %c1_i32_23 = arith.constant 1 : i32
+// CHECK:     %29 = arith.subi %28, %c1_i32_23 : i32
+// CHECK:     %30 = arith.cmpi ne, %9, %29 : i32
+// CHECK:     memref.store %30, %alloca_2[] : memref<i1>
+// CHECK:     cf.br ^bb17
+// CHECK:   ^bb16:  // pred: ^bb14
+// CHECK:     %true_24 = arith.constant true
+// CHECK:     memref.store %true_24, %alloca_2[] : memref<i1>
+// CHECK:     cf.br ^bb17
+// CHECK:   ^bb17:  // 2 preds: ^bb15, ^bb16
+// CHECK:     %31 = memref.load %alloca_2[] : memref<i1>
+// CHECK:     cf.cond_br %31, ^bb18, ^bb19
+// CHECK:   ^bb18:  // pred: ^bb17
+// CHECK:     %c2_i32_25 = arith.constant 2 : i32
+// CHECK:     return %c2_i32_25 : i32
+// CHECK:   ^bb19:  // pred: ^bb17
+// CHECK:     %c1_i8_26 = arith.constant 1 : i8
+// CHECK:     %c0_i8_27 = arith.constant 0 : i8
+// CHECK:     %32 = arith.subi %c0_i8_27, %c1_i8_26 : i8
+// CHECK:     %33 = arith.cmpi ne, %10, %32 : i8
+// CHECK:     cf.cond_br %33, ^bb21, ^bb20
+// CHECK:   ^bb20:  // pred: ^bb19
+// CHECK:     %c-1_i16 = arith.constant -1 : i16
+// CHECK:     %34 = arith.cmpi ne, %12, %c-1_i16 : i16
+// CHECK:     memref.store %34, %alloca_6[] : memref<i1>
+// CHECK:     cf.br ^bb22
+// CHECK:   ^bb21:  // pred: ^bb19
+// CHECK:     %true_28 = arith.constant true
+// CHECK:     memref.store %true_28, %alloca_6[] : memref<i1>
+// CHECK:     cf.br ^bb22
+// CHECK:   ^bb22:  // 2 preds: ^bb20, ^bb21
+// CHECK:     %35 = memref.load %alloca_6[] : memref<i1>
+// CHECK:     cf.cond_br %35, ^bb24, ^bb23
+// CHECK:   ^bb23:  // pred: ^bb22
+// CHECK:     %c2147483648_i64_29 = arith.constant 2147483648 : i64
+// CHECK:     %c0_i64_30 = arith.constant 0 : i64
+// CHECK:     %36 = arith.subi %c0_i64_30, %c2147483648_i64_29 : i64
+// CHECK:     %37 = arith.cmpi ne, %0, %36 : i64
+// CHECK:     memref.store %37, %alloca_5[] : memref<i1>
+// CHECK:     cf.br ^bb25
+// CHECK:   ^bb24:  // pred: ^bb22
+// CHECK:     %true_31 = arith.constant true
+// CHECK:     memref.store %true_31, %alloca_5[] : memref<i1>
+// CHECK:     cf.br ^bb25
+// CHECK:   ^bb25:  // 2 preds: ^bb23, ^bb24
+// CHECK:     %38 = memref.load %alloca_5[] : memref<i1>
+// CHECK:     cf.cond_br %38, ^bb27, ^bb26
+// CHECK:   ^bb26:  // pred: ^bb25
+// CHECK:     %c9_i32 = arith.constant 9 : i32
+// CHECK:     %39 = arith.cmpi ne, %1, %c9_i32 : i32
+// CHECK:     memref.store %39, %alloca_4[] : memref<i1>
+// CHECK:     cf.br ^bb28
+// CHECK:   ^bb27:  // pred: ^bb25
+// CHECK:     %true_32 = arith.constant true
+// CHECK:     memref.store %true_32, %alloca_4[] : memref<i1>
+// CHECK:     cf.br ^bb28
+// CHECK:   ^bb28:  // 2 preds: ^bb26, ^bb27
+// CHECK:     %40 = memref.load %alloca_4[] : memref<i1>
+// CHECK:     cf.cond_br %40, ^bb29, ^bb30
+// CHECK:   ^bb29:  // pred: ^bb28
+// CHECK:     %c3_i32_33 = arith.constant 3 : i32
+// CHECK:     return %c3_i32_33 : i32
+// CHECK:   ^bb30:  // pred: ^bb28
+// CHECK:     %c0_i32_34 = arith.constant 0 : i32
+// CHECK:     return %c0_i32_34 : i32
+// CHECK:   }
+// CHECK:   func.func @unsigned_to_signed(%arg0: i8) -> i8 {
+// CHECK:     return %arg0 : i8
+// CHECK:   }
+// CHECK:   func.func @unsigned_remainder(%arg0: i64, %arg1: i64) -> i64 {
+// CHECK:     %0 = arith.remui %arg0, %arg1 : i64
+// CHECK:     return %0 : i64
+// CHECK:   }
+// CHECK:   func.func @source_width_before_cast(%arg0: i32) -> i64 {
+// CHECK:     %c1_i32 = arith.constant 1 : i32
+// CHECK:     %0 = arith.addi %arg0, %c1_i32 : i32
+// CHECK:     %1 = call @"i64::From$i32$from"(%0) : (i32) -> i64
+// CHECK:     return %1 : i64
+// CHECK:   }
+// CHECK:   func.func @"i64::From$i32$from"(%arg0: i32) -> i64 {
+// CHECK:     %0 = arith.extsi %arg0 : i32 to i64
+// CHECK:     return %0 : i64
+// CHECK:   }
+// CHECK:   func.func @signed_to_unsigned(%arg0: i8) -> i16 {
+// CHECK:     %0 = arith.extsi %arg0 : i8 to i16
+// CHECK:     return %0 : i16
+// CHECK:   }
+// CHECK:   func.func @signed_remainder(%arg0: i32, %arg1: i32) -> i32 {
+// CHECK:     %0 = arith.remsi %arg0, %arg1 : i32
+// CHECK:     return %0 : i32
+// CHECK:   }
+// CHECK:   func.func @sample_row(%arg0: i32, %arg1: i32, %arg2: i32, %arg3: i32) -> i32 {
+// CHECK:     %0 = call @"i64::From$i32$from"(%arg2) : (i32) -> i64
+// CHECK:     %1 = call @"i64::From$i32$from"(%arg0) : (i32) -> i64
+// CHECK:     %2 = call @"i64::From$i32$from"(%arg3) : (i32) -> i64
+// CHECK:     %3 = arith.muli %1, %2 : i64
+// CHECK:     %4 = arith.addi %0, %3 : i64
+// CHECK:     %5 = call @"i64::From$i32$from"(%arg1) : (i32) -> i64
+// CHECK:     %6 = arith.remsi %4, %5 : i64
+// CHECK:     %7 = arith.trunci %6 : i64 to i32
+// CHECK:     return %7 : i32
+// CHECK:   }
+// CHECK:   func.func @negative_divisor(%arg0: i32) -> i32 {
+// CHECK:     %c7_i32 = arith.constant 7 : i32
+// CHECK:     %c0_i32 = arith.constant 0 : i32
+// CHECK:     %0 = arith.subi %c0_i32, %c7_i32 : i32
+// CHECK:     %1 = arith.remsi %arg0, %0 : i32
+// CHECK:     return %1 : i32
+// CHECK:   }
+// CHECK:   func.func @narrow_wrapping(%arg0: i64) -> i32 {
+// CHECK:     %0 = arith.trunci %arg0 : i64 to i32
+// CHECK:     return %0 : i32
+// CHECK:   }
+// CHECK:   func.func @narrow_in_range(%arg0: i64) -> i32 {
+// CHECK:     %0 = arith.trunci %arg0 : i64 to i32
+// CHECK:     return %0 : i32
+// CHECK:   }
+// CHECK:   func.func @consume_index(%arg0: i32) -> i32 {
+// CHECK:     return %arg0 : i32
+// CHECK:   }
+// CHECK:   func.func @cast_argument(%arg0: i64) -> i32 {
+// CHECK:     %0 = arith.trunci %arg0 : i64 to i32
+// CHECK:     %1 = call @consume_index(%0) : (i32) -> i32
+// CHECK:     return %1 : i32
+// CHECK:   }
+// CHECK: }

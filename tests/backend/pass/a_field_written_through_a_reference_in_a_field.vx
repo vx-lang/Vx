@@ -1,0 +1,35 @@
+//===- a_field_written_through_a_reference_in_a_field.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `h.r.x = v` writes a field of the struct that the reference `h.r` points at. The program reads
+// the struct afterwards to check that the write reached it. Both code generators run it.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}x 7 y 2{{$}}
+
+struct Point {
+  x : i32,
+  y : i32,
+}
+
+struct Holder {
+  r : &mut Point,
+}
+
+fn main() -> i32 {
+  let mut p = Point {
+    x : 1,
+    y : 2
+  };
+  let mut h = Holder {
+    r : &mut p
+  };
+  h.r.x = 7;
+  println!("x {} y {}", p.x, p.y);
+  return 0;
+}

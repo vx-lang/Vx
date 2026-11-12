@@ -78,7 +78,9 @@ holds the elements `lo` to `hi - 1`, counted from the base.
 **A fact is about values.** When the body assigns a pointer variable, the variable gets the entry
 of its new value. When a call can change a variable (#2620), the variable loses its entry. In both
 cases, the checker also drops each fact and each entry whose expressions name the variable. A
-`let` that hides a name does the same, and so does the end of the scope of a variable. A variable
+`let` that hides a name does the same, and so does the end of the scope of a variable. An
+assignment to an integer variable outside a call keeps the facts: each one names the old value by
+the new name that the prover's facts give it, as `$old_N`. A variable
 that loses its entry gets a new base with no facts. A base keeps its facts when one of its
 variables gets a new value. So a fact about the old value of `p` stays true for each copy of that
 value.
@@ -143,7 +145,7 @@ name, as in `let got = read(buf, cap)`.
 ## 5. Where a fact ends
 
 **No event ends an `Apart` fact.** It is about addresses only, and a free does not change an
-address. The checker still drops it when the body assigns a variable that it names (section 3).
+address. An assignment to a variable that it names changes it or drops it, as section 3 says.
 
 `Valid` and `Init` facts end at events. Two definitions say which events can free memory:
 
@@ -168,12 +170,34 @@ A fact whose base has other memory ends at these events:
 | An assignment to a place of a type with a drop | `*b = Box::new(2i64)` frees the old box. |
 | The drop of a value of a type with a drop | A local `Vec` at the end of its block |
 | A `spawn` whose task captures an argument that can free memory | The task can free memory at any point until its `join()` or the end of its `tasks` block. So in that time, the checker keeps no fact about other memory, also a fact that starts in that time. |
+| A `spawn on` region that uses a variable from outside it that can free memory | `spawn on(..) { v.push(1i64); }`. The code waits for the region at its end, so the event is at the start of the region. |
 
 A call of a closure also gets the values that the closure captures, as arguments. So a closure
 that captures `&mut v` can free memory, also when the call passes only an `i64`. A closure value
 whose type does not show what it captures, such as `||->i32`, is an argument that can free memory.
 `Closure1` and the other closure structs of `core::ops` keep their captured values behind the raw
 pointer `env`, so they are such arguments already.
+
+**A call through an owner ends no fact.** An *owner* is a local variable that owns only memory that
+the body made, and that no pointer points into. A call that can free memory only through owners,
+and the drop of an owner, free no memory that a fact is about. A local variable `v` is an owner
+when:
+
+- The body declares `v` once, with `let v = f(..)`, and no argument of `f` can free memory, as in
+  `Vec<i64>::new()`. A call reaches the memory of its caller only through its arguments, so the
+  value owns only new memory. A raw pointer, a reference and a closure are no owners.
+- The body names `v` only as the receiver of a method call, as an argument of a call, as `&v` or
+  `&mut v` there, or as the value that the function returns. No closure, task, `spawn on` region
+  or `mlir!` block names it. So only a call can make a pointer into its memory.
+
+`v` stops being an owner at these points:
+
+- A call that gets `v` and another argument that can free memory, such as `v.push(b)` with a `Box`
+  of the caller. The call can put memory or a pointer from outside into `v`.
+- A call that gets `v` and gives a value that can point into memory, such as `v.as_mut_ptr()`.
+- The start of a loop whose body names `v`. The checker checks the body once, and a later statement
+  can put memory from outside into `v` before the next pass.
+- The end of an `if` or a `match` with a branch that ended it.
 
 The pointer functions of `core::ptr` are no event: `offset`, `add`, `sub`, their `_mut` forms,
 `eq`, `is_null` and `null`. They only compute an address. The checker trusts their `mlir!` bodies,
@@ -270,6 +294,18 @@ prover knows at the call, such as the conditions of the path.
 
 `valid(p, 0)` at the end of a range has `k == hi`. The goal accepts it, because the address one
 past the end of an allocation is not null and is aligned.
+
+Two facts of the same kind and base also prove `valid` or `initialized`. The first fact holds the
+start, and the second the end. For `Init(b, lo1, hi1)` and `Init(b, lo2, hi2)`, the goal is
+`0 <= m && lo1 <= k && lo1 <= lo2 && lo2 <= hi1 && k + m <= hi2`. For two `Valid` facts, the goal
+has `lo2 < hi1` in place of `lo2 <= hi1`. The two ranges must share an element, because two
+allocations can sit next to each other. `initialized(p, m)` also holds when the prover proves
+`m == 0`, because zero elements hold values.
+
+When the checker adds an `Init` fact that touches or overlaps another `Init` fact of the base, it
+adds one merged fact for both. It keeps the facts that it had, so the end of an `if` still keeps a
+fact that both branches have. A later write next to the merged fact grows it. So a chain of writes
+gives one fact, and a goal needs at most two facts.
 
 Each goal uses exact integer arithmetic, with no wrap. Otherwise an offset near `i64::MAX` plus a
 length could wrap to a small number and pass the bound. An address can still wrap: `offset(p, k)`
@@ -478,8 +514,8 @@ requires valid(buf, cap)
 The C function `read` returns -1 on an error. `c_read_some` returns 0 instead, because
 `initialized` is false for a negative length. The checker trusts the `ensures` of an `extern`
 function, and the audit lists it. A second read into `offset_mut(buf, got)` gives a second `Init`
-fact. The checker does not join two ranges (section 11), so a checksum of both parts needs two
-calls.
+fact. The two `Init` facts touch, so the checker merges them (section 7), and a checksum of both
+parts can be one call.
 
 ### Allocation and free
 
@@ -541,7 +577,8 @@ requires n > 0i64
    the same address.
 1. The second `sum` gets E8006, with a note on the line of the `dealloc`.
 
-`fill_zero` needs an `assume`, because a write gives no `Init` fact in v1 (section 11).
+`fill_zero` needs an `assume`, because a write gives a fact for one element only, and a loop
+cannot join them (section 11).
 
 ### A pointer in a field: lists and copies
 
@@ -688,17 +725,21 @@ needs a fact there. Open question 6 asks about a warning for it.
 - Only a local variable has an entry. A pointer in a field, such as `s.data`, gets a new base with
   no facts at each read. Only an `ensures` or an `assume` gives it a fact.
 - A loop that moves a pointer, as in `p = offset(p, 1i64)`, drops the entry of `p` at the start of
-  the body. A loop that indexes, as in `p[i]`, keeps it.
-- A fact about other memory ends at each event that can free memory. That includes memory that the
-  pointer cannot point into, such as a vector that the body made itself.
-- One fact must prove a clause. The checker does not join two ranges.
-- A write through a pointer makes no `Init` fact. So a loop that fills a buffer gives no fact. The
-  write keeps the facts that the pointer has.
-- An `extern` function can state only `frees` clauses and pointer clauses. It cannot state a
-  value `ensures` such as `0i64 <= return`, so the `c_read_some` of section 8 cannot be written
+  the body. A loop that indexes, as in `p[i]`, keeps it. A loop invariant that is a pointer clause
+  about `p` gives `p` its facts again in each pass (`raw_pointer_facts_in_loops.md`).
+- A fact about other memory ends at each event that can free memory, except at a call through an
+  owner (section 5). So a vector that the body made keeps the facts only while it is an owner. A
+  loop whose body names it ends that, and so does a reference to it in a variable. A vector of the
+  caller keeps no fact. A clause `requires !points_into(p, *v)` can fix that (#3042).
+- At most two facts prove a clause. The checker merges `Init` facts that touch, but a chain of
+  three `Valid` facts does not join.
+- A write through a pointer makes an `Init` fact for its one element only. So a loop that fills a
+  buffer gives no fact for the buffer. The write keeps the facts that the pointer has.
+- An `extern` function cannot state a `requires`. Its `ensures` can be a `frees` clause, a
+  pointer clause or a clause about numbers. So the `c_read_some` of section 8 cannot be written
   yet.
-- A `spawn on` region ends the facts about other memory at its start. The code waits for the
-  region at its end, so no task of it runs after the region.
+- A `spawn on` region that uses a variable from outside it that can free memory ends the facts
+  about other memory at its start, also when its task frees nothing.
 - The inference from the syntax stops at a method call, as the inference of `!keeps` does. Only a
   method or an instance of a generic function gets `!frees` from its checked body.
 - The loop rule reads the body before the checker checks it. At a method call, it uses only a

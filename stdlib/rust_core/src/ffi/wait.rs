@@ -19,7 +19,9 @@
 // A task of the shared runtime (sched.rs) does not sleep: it parks. Under the lock it goes on
 // the list of fibers of the bucket, with the address of its word. A wake of a word puts each
 // fiber of that word back on the queue. A fiber of another word of the bucket stays parked, so
-// the queue does not depend on which words share a bucket.
+// the queue does not depend on which words share a bucket. A cancel wakes only the fibers whose
+// wait can be cancelled: another fiber would only park again, and with a seed, its extra turn
+// changes the order of the tasks.
 //
 //===----------------------------------------------------------------------===//
 
@@ -37,8 +39,8 @@ struct Bucket {
 }
 
 struct Waiters {
-    /// The fibers that park on a word of this bucket, with the address of the word.
-    fibers: Vec<(FiberRef, usize)>,
+    /// The fibers that park on a word of this bucket.
+    fibers: Vec<Parked>,
     /// The threads that sleep here with no time limit, which the deadlock watcher counts.
     sleepers: Vec<std::thread::ThreadId>,
     /// The scheduler of each fiber that sleeps here on its worker's thread, under a callback.
@@ -51,13 +53,25 @@ struct Waiters {
     notes: Vec<Note>,
 }
 
+/// A fiber that parks on a word.
+struct Parked {
+    fiber: FiberRef,
+    /// The address of the word.
+    word: usize,
+    /// Whether a cancel ends the wait.
+    can_cancel: bool,
+}
+
 /// What a wait is for, as the library says it with `vx_waiting_for`.
 #[derive(Clone)]
 enum What {
     Word,
-    Send,
-    Recv,
-    Lock,
+    /// A `send` or a `recv`, with the address of the words of its channel, or 0 when it is not
+    /// known.
+    Send(usize),
+    Recv(usize),
+    /// A `lock`, with the address of the holder word of its `Mutex`, or 0 when it is not known.
+    Lock(usize),
     Select,
     /// The join of the task with this site, or of a task with no site.
     Join(Option<crate::ffi::tasks::Site>),
@@ -110,8 +124,151 @@ struct Note {
     what: What,
     at: Option<Place>,
     made: Option<Place>,
-    /// Where the waiting task started, or `None` for the main code.
-    site: Option<crate::ffi::tasks::Site>,
+    /// Who waits, or `None` for a task with no site.
+    who: Option<Who>,
+}
+
+/// The code that waits, or that holds a lock, for the cycle of waits in the deadlock report.
+#[derive(Clone)]
+enum Who {
+    Main,
+    Task(crate::ffi::tasks::Site),
+}
+
+impl Who {
+    /// Who runs here. `None` for a task with no site, which the report cannot tell apart from
+    /// another task.
+    fn here() -> Option<Who> {
+        match crate::ffi::tasks::current_site() {
+            Some(site) => Some(Who::Task(site)),
+            None if sched::current_fiber().is_null() && on_the_main_thread() => Some(Who::Main),
+            None => None,
+        }
+    }
+
+    /// Each task has its own site, so the address of the site names the task.
+    fn key(&self) -> usize {
+        match self {
+            Who::Main => HELD_BY_THE_MAIN_CODE as usize,
+            Who::Task(site) => std::sync::Arc::as_ptr(site) as *const u8 as usize,
+        }
+    }
+
+    fn text(&self) -> String {
+        match self {
+            Who::Main => "the main code".to_string(),
+            Who::Task(site) => format!(
+                "the task from the `spawn` at {}",
+                crate::ffi::tasks::spawn_line(site)
+            ),
+        }
+    }
+}
+
+fn on_the_main_thread() -> bool {
+    #[cfg(target_os = "linux")]
+    return unsafe { libc::gettid() == libc::getpid() };
+    #[cfg(target_vendor = "apple")]
+    return unsafe { libc::pthread_main_np() != 0 };
+    #[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
+    return false;
+}
+
+/// The channel ends that each task moved at its `spawn`: the words of the channel, whether the
+/// end is a `Sender`, and the task. The entries of a task go at its end.
+static ENDS: Mutex<Vec<(usize, bool, crate::ffi::tasks::Site)>> = Mutex::new(Vec::new());
+/// The entries of `ENDS`, so that the end of a task takes no lock when it is empty.
+static ENDS_HELD: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn ends() -> std::sync::MutexGuard<'static, Vec<(usize, bool, crate::ffi::tasks::Site)>> {
+    ENDS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The task that runs holds an end of the channel at `words`: a `Sender` when `sender` is 1,
+/// the `Receiver` when it is 0. The checker puts a call at the start of a task for each end that
+/// the task moves. The report then knows who can end a wait on the channel. An end that moves
+/// again after the `spawn` keeps its first holder here.
+///
+/// # Safety
+///
+/// `words` is the words of a channel.
+#[no_mangle]
+pub unsafe extern "C" fn vx_task_holds_an_end(words: *mut i64, sender: i32) {
+    if let Some(site) = crate::ffi::tasks::current_site() {
+        ends().push((words as usize, sender != 0, site));
+        ENDS_HELD.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// The task that runs ends: it holds no end now.
+pub(crate) fn task_ended() {
+    if ENDS_HELD.load(Ordering::SeqCst) == 0 {
+        return;
+    }
+    let Some(site) = crate::ffi::tasks::current_site() else {
+        return;
+    };
+    let mut ends = ends();
+    let before = ends.len();
+    ends.retain(|e| !std::sync::Arc::ptr_eq(&e.2, &site));
+    ENDS_HELD.fetch_sub(before - ends.len(), Ordering::SeqCst);
+}
+
+/// The one task that holds each end of its kind of the channel at `words` that is not dropped:
+/// each `Sender` when `sender`, or the `Receiver`. `None` when the ends that the tasks moved are
+/// not all the ends that are not dropped, or when two tasks hold them.
+fn only_holder(words: usize, sender: bool) -> Option<crate::ffi::tasks::Site> {
+    let word = if sender { SENDERS } else { RECEIVER };
+    let live = unsafe { &*(words as *const AtomicI64).add(word) }.load(Ordering::SeqCst);
+    let ends = ends();
+    let held: Vec<_> = ends
+        .iter()
+        .filter(|e| e.0 == words && e.1 == sender)
+        .collect();
+    let first = held.first()?;
+    let one_task = held.iter().all(|e| std::sync::Arc::ptr_eq(&e.2, &first.2));
+    (held.len() as i64 == live && one_task).then(|| first.2.clone())
+}
+
+/// The holder word of a `Mutex` holds 0 when no code holds the lock, or when the report cannot
+/// name the holder. It holds 1 for the main code. For a task, it holds the address of the site of
+/// the task, and it keeps one count of the site, so that the address stays the task's.
+const HELD_BY_THE_MAIN_CODE: i64 = 1;
+
+/// `lock` took the lock of the `Mutex` with the holder word `holder`.
+///
+/// # Safety
+///
+/// `holder` is the holder word of a live `Mutex`.
+#[no_mangle]
+pub unsafe extern "C" fn vx_lock_taken(holder: *mut i64) {
+    let held = match Who::here() {
+        Some(Who::Main) => HELD_BY_THE_MAIN_CODE,
+        Some(Who::Task(site)) => std::sync::Arc::into_raw(site) as *const u8 as i64,
+        None => 0,
+    };
+    unsafe { &*(holder as *const AtomicI64) }.store(held, Ordering::SeqCst);
+}
+
+/// The drop of a guard unlocks the `Mutex` with the holder word `holder`. A guard is not `Send`,
+/// so the task that took the lock unlocks it.
+///
+/// # Safety
+///
+/// `holder` is the holder word of a live `Mutex`.
+#[no_mangle]
+pub unsafe extern "C" fn vx_lock_released(holder: *mut i64) {
+    let held = unsafe { &*(holder as *const AtomicI64) }.swap(0, Ordering::SeqCst);
+    if held > HELD_BY_THE_MAIN_CODE {
+        let site = crate::ffi::tasks::current_site();
+        let site = site.expect("only the task that holds a lock unlocks it");
+        let ptr = std::sync::Arc::as_ptr(&site);
+        assert_eq!(
+            ptr as *const u8 as i64, held,
+            "only the task that holds a lock unlocks it"
+        );
+        unsafe { std::sync::Arc::decrement_strong_count(ptr) };
+    }
 }
 
 thread_local! {
@@ -119,14 +276,16 @@ thread_local! {
     static WHAT: std::cell::RefCell<Waiting> = const { std::cell::RefCell::new(NOT_SAID) };
 }
 
-/// Says what the next wait of this thread is for: 1 for a `send`, 2 for a `recv`, 3 for a
-/// `lock` and 4 for a `select`. The deadlock report prints it, with the line of the wait at
-/// `at_file:at_line`, and the line that made the channel or the lock at `made_file:made_line`.
-/// A null file means that the line is not known.
+/// Says what the next wait of this thread is for: 1 for a `send`, 2 for a `recv` and 4 for a
+/// `select`. The deadlock report prints it, with the line of the wait at `at_file:at_line`, and
+/// the line that made the channel at `made_file:made_line`. A null file means that the line is
+/// not known. For a `send` and a `recv`, `channel` is the words of the channel, and the report
+/// counts the ends of the channel there. A `lock` uses `vx_waiting_for_lock`.
 ///
 /// # Safety
 ///
-/// Each file that is not null is a C string that lives as long as the program.
+/// Each file that is not null is a C string that lives as long as the program. A `channel` that
+/// is not null is the words of a channel that lives until the wait ends.
 #[no_mangle]
 pub unsafe extern "C" fn vx_waiting_for(
     what: i32,
@@ -134,16 +293,38 @@ pub unsafe extern "C" fn vx_waiting_for(
     at_line: i32,
     made_file: *const libc::c_char,
     made_line: i32,
+    channel: *mut i64,
 ) {
     let what = match what {
-        1 => What::Send,
-        2 => What::Recv,
-        3 => What::Lock,
+        1 => What::Send(channel as usize),
+        2 => What::Recv(channel as usize),
         4 => What::Select,
         _ => What::Word,
     };
     let waiting = Waiting {
         what,
+        at: Place::new(at_file, at_line),
+        made: Place::new(made_file, made_line),
+    };
+    WHAT.with(|w| *w.borrow_mut() = waiting);
+}
+
+/// As `vx_waiting_for` a `lock`, on the `Mutex` with the holder word `holder`.
+///
+/// # Safety
+///
+/// As for `vx_waiting_for`, and `holder` is the holder word of a `Mutex` that lives until the
+/// wait ends.
+#[no_mangle]
+pub unsafe extern "C" fn vx_waiting_for_lock(
+    at_file: *const libc::c_char,
+    at_line: i32,
+    made_file: *const libc::c_char,
+    made_line: i32,
+    holder: *mut i64,
+) {
+    let waiting = Waiting {
+        what: What::Lock(holder as usize),
         at: Place::new(at_file, at_line),
         made: Place::new(made_file, made_line),
     };
@@ -260,7 +441,7 @@ pub unsafe extern "C" fn vx_wait_while(word: *const i64, value: i64) {
 /// task or thread was not cancelled. With a deadline of `vx_clock_ns`, it also returns at the
 /// deadline: a thread sleeps with a time limit, and a fiber asks the timer to wake its bucket.
 unsafe fn wait(word: *const i64, value: i64, or_cancel: bool, deadline_ns: Option<i64>) {
-    // In a `drop` or a `within` block, a wait that can be cancelled ends at the earliest deadline
+    // In a `drop` or a call of `within`, a wait that can be cancelled ends at the earliest deadline
     // of the scopes around it (F6, F6a).
     let deadline_ns = match crate::ffi::tasks::drop_deadline().filter(|_| or_cancel) {
         Some(d) => Some(deadline_ns.map_or(d, |own| own.min(d))),
@@ -296,7 +477,7 @@ unsafe fn wait(word: *const i64, value: i64, or_cancel: bool, deadline_ns: Optio
         what,
         at,
         made,
-        site: crate::ffi::tasks::current_site(),
+        who: Who::here(),
     };
     if fiber.is_null() {
         // With a seed, this thread runs the ready tasks. The check is under the lock of the
@@ -364,7 +545,11 @@ unsafe fn wait(word: *const i64, value: i64, or_cancel: bool, deadline_ns: Optio
         return;
     }
     sched::will_park(fiber);
-    waiters.fibers.push((FiberRef(fiber), word as usize));
+    waiters.fibers.push(Parked {
+        fiber: FiberRef(fiber),
+        word: word as usize,
+        can_cancel: or_cancel,
+    });
     waiters.notes.push(note(fiber as usize));
     drop(waiters);
     // A wake of the bucket before the park leaves the fiber `WOKEN`, so the timer can fire now.
@@ -421,11 +606,11 @@ pub unsafe extern "C" fn vx_wake_all(word: *const i64) {
     wake(bucket(word), Fibers::Of(word as usize));
 }
 
-/// Wake each thread that waits on any word. A cancel uses it: each wait reads its word again,
-/// and a wait that can be cancelled then sees the cancel.
+/// Wake each thread that waits on any word, and each fiber whose wait a cancel ends. A cancel
+/// uses it: each woken wait reads its word again, and a wait that can be cancelled sees the cancel.
 pub(crate) fn wake_every_thread() {
     for b in &TABLE {
-        wake(b, Fibers::All);
+        wake(b, Fibers::ThatCanCancel);
     }
 }
 
@@ -442,7 +627,8 @@ pub(crate) fn wake_every_sleeper() {
 enum Fibers {
     /// The fibers that park on the word at this address.
     Of(usize),
-    All,
+    /// The fibers whose wait a cancel ends.
+    ThatCanCancel,
     None,
 }
 
@@ -450,19 +636,19 @@ enum Fibers {
 fn take_fibers(waiters: &mut Waiters, which: Fibers) -> Vec<FiberRef> {
     let (taken, kept) = std::mem::take(&mut waiters.fibers)
         .into_iter()
-        .partition(|&(_, w)| match which {
-            Fibers::Of(word) => w == word,
-            Fibers::All => true,
+        .partition(|p: &Parked| match which {
+            Fibers::Of(word) => p.word == word,
+            Fibers::ThatCanCancel => p.can_cancel,
             Fibers::None => false,
         });
     waiters.fibers = kept;
-    taken.into_iter().map(|(fiber, _)| fiber).collect()
+    taken.into_iter().map(|p| p.fiber).collect()
 }
 
 /// Drops the notes of the waiters that a wake took. A wake takes every thread, but a fiber of
 /// another word stays parked, and it keeps its note for the deadlock report.
 fn keep_the_notes_of_parked_fibers(waiters: &mut Waiters) {
-    let parked: Vec<usize> = waiters.fibers.iter().map(|(f, _)| f.0 as usize).collect();
+    let parked: Vec<usize> = waiters.fibers.iter().map(|p| p.fiber.0 as usize).collect();
     waiters.notes.retain(|n| parked.contains(&n.owner));
 }
 
@@ -559,6 +745,20 @@ mod timer {
         t.cond.notify_one();
     }
 
+    /// For a test: VX_TEST_TIMER_PAUSE_MS holds the timer thread between the pop of a deadline and
+    /// its wake, as a thread that waits for a CPU does.
+    fn pause_before_a_wake() -> Option<Duration> {
+        static PAUSE: OnceLock<Option<Duration>> = OnceLock::new();
+        *PAUSE.get_or_init(|| {
+            let ms = std::env::var("VX_TEST_TIMER_PAUSE_MS").ok()?;
+            let Ok(ms) = ms.parse::<u64>() else {
+                eprintln!("vx: VX_TEST_TIMER_PAUSE_MS must be a number, not '{ms}'");
+                std::process::abort();
+            };
+            Some(Duration::from_millis(ms))
+        })
+    }
+
     fn run(t: &'static Timer) {
         let mut d = t.deadlines.lock().unwrap_or_else(|e| e.into_inner());
         loop {
@@ -579,6 +779,9 @@ mod timer {
             d.heap.pop();
             d.firing = true;
             drop(d);
+            if let Some(pause) = pause_before_a_wake() {
+                std::thread::sleep(pause);
+            }
             wake(bucket(word as *const i64), Fibers::Of(word));
             d = t.deadlines.lock().unwrap_or_else(|e| e.into_inner());
             d.firing = false;
@@ -608,18 +811,51 @@ mod timer {
     }
 }
 
+/// One wait of the report: who waits, its word, what it waits for, its line, and the line that
+/// made its channel or lock.
+type Wait = (Option<Who>, usize, What, Option<Place>, Option<Place>);
+
 /// One line for each waiter in the buckets: what it waits for, and then the lines of the `spawn`
 /// of its task. The main code comes first, then the tasks in the order of their lines. Two
-/// waits on one channel or one lock name the same number.
+/// waits on one channel or one lock name the same number. Then each cycle of waits, when the
+/// report knows what each wait in it waits for: the task of a join, the holder of a lock, or the
+/// one task that holds the other ends of a channel.
 fn report() -> String {
     let mut waits = Vec::new();
     for b in &TABLE {
         let w = Held::new(b);
         for n in &w.notes {
-            waits.push((n.site.clone(), n.word, n.what.clone(), n.at, n.made));
+            waits.push((n.who.clone(), n.word, n.what.clone(), n.at, n.made));
         }
     }
-    waits.sort_by_key(|w| w.0.as_ref().map(crate::ffi::tasks::site_key));
+    let site_of = |who: &Option<Who>| match who {
+        Some(Who::Task(site)) => Some(site.clone()),
+        _ => None,
+    };
+    waits.sort_by_key(|w| site_of(&w.0).as_ref().map(crate::ffi::tasks::site_key));
+    // The waiter with the key `key`.
+    let waiter = |key: usize| {
+        waits
+            .iter()
+            .position(|w| w.0.as_ref().is_some_and(|who| who.key() == key))
+    };
+    // The waiter that each waiter waits for, when the report knows it.
+    let waits_for: Vec<Option<usize>> = waits
+        .iter()
+        .map(|w| match &w.2 {
+            What::Lock(holder) if *holder != 0 => {
+                let held = unsafe { &*(*holder as *const AtomicI64) }.load(Ordering::SeqCst);
+                waiter(held as usize).filter(|_| held != 0)
+            }
+            What::Join(Some(site)) => waiter(std::sync::Arc::as_ptr(site) as *const u8 as usize),
+            // A `recv` waits for a `Sender`, and a `send` on a full channel for the `Receiver`.
+            What::Recv(words) | What::Send(words) if *words != 0 => {
+                let site = only_holder(*words, matches!(w.2, What::Recv(_)))?;
+                waiter(std::sync::Arc::as_ptr(&site) as *const u8 as usize)
+            }
+            _ => None,
+        })
+        .collect();
     let (mut channels, mut locks) = (Vec::new(), Vec::new());
     let number = |list: &mut Vec<usize>, word: usize| match list.iter().position(|&w| w == word) {
         Some(i) => i + 1,
@@ -628,41 +864,57 @@ fn report() -> String {
             list.len()
         }
     };
-    let mut out = String::new();
-    for (site, word, what, at, made) in waits {
+    // `, which only the task from the `spawn` at main.vx:20 can send on`.
+    let only = |i: usize, verb: &str| {
+        (waits_for[i].and_then(|h| waits[h].0.as_ref()))
+            .map(|who| format!(", which only {} can {verb}", who.text()))
+            .unwrap_or_default()
+    };
+    let mut doing = Vec::new();
+    for (i, (_, word, what, at, made)) in waits.iter().enumerate() {
         // ` at main.vx:15` and `, made at main.vx:11`, or nothing when the line is not known.
         let at = at.map(|p| format!(" at {}", p.text())).unwrap_or_default();
         let made = made
             .map(|p| format!(", made at {}", p.text()))
             .unwrap_or_default();
-        let doing = match what {
-            What::Send => format!(
-                "waits in `send`{at} on channel {}{made}",
-                number(&mut channels, word)
+        doing.push(match what {
+            What::Send(_) => format!(
+                "waits in `send`{at} on channel {}{made}{}",
+                number(&mut channels, *word),
+                only(i, "receive from")
             ),
-            What::Recv => format!(
-                "waits in `recv`{at} on channel {}{made}",
-                number(&mut channels, word)
+            What::Recv(_) => format!(
+                "waits in `recv`{at} on channel {}{made}{}",
+                number(&mut channels, *word),
+                only(i, "send on")
             ),
-            What::Lock => format!(
-                "waits in `lock`{at} on lock {}{made}",
-                number(&mut locks, word)
-            ),
+            What::Lock(_) => {
+                let held = waits_for[i]
+                    .and_then(|h| waits[h].0.as_ref())
+                    .map(|who| format!(", held by {}", who.text()))
+                    .unwrap_or_default();
+                format!(
+                    "waits in `lock`{at} on lock {}{made}{held}",
+                    number(&mut locks, *word)
+                )
+            }
             What::Select => format!("waits in `select`{at}"),
             What::Join(Some(task)) => format!(
                 "waits for the end of the task from the `spawn` at {}",
-                crate::ffi::tasks::spawn_line(&task)
+                crate::ffi::tasks::spawn_line(task)
             ),
             What::Join(None) => "waits for the end of a task".to_string(),
             What::Word => "waits on an atomic word".to_string(),
-        };
-        let who = if site.is_some() {
-            "a task"
-        } else {
-            "the main code"
+        });
+    }
+    let mut out = String::new();
+    for (w, doing) in waits.iter().zip(&doing) {
+        let who = match &w.0 {
+            Some(Who::Main) => "the main code",
+            _ => "a task",
         };
         out += &format!("  {who} {doing}\n");
-        for line in site
+        for line in site_of(&w.0)
             .as_deref()
             .map(String::from_utf8_lossy)
             .unwrap_or_default()
@@ -671,7 +923,97 @@ fn report() -> String {
             out += &format!("  {line}\n");
         }
     }
+    for cycle in cycles(&waits_for) {
+        out += "  the waits form a cycle:\n";
+        for i in cycle {
+            let who = waits[i]
+                .0
+                .as_ref()
+                .expect("a wait in a cycle has a known waiter");
+            out += &format!("    {} {}\n", who.text(), doing[i]);
+        }
+    }
+    if !channels.is_empty() {
+        out += "  the channels of these waits:\n";
+    }
+    for (i, &word) in channels.iter().enumerate() {
+        out += &format!("    channel {}{}\n", i + 1, channel_text(&waits, word));
+    }
     out
+}
+
+/// The index of the count of `Sender`s, and of the word that is 1 until the `Receiver` is
+/// dropped, in the words of a channel, as stdlib/std/sync/channel.vx lays them out.
+const SENDERS: usize = 2;
+const RECEIVER: usize = 3;
+
+/// The waits on the channel whose waits sleep on `word`, and its `Sender`s that are not dropped:
+/// `, made at main.vx:43: 1 wait in `recv` and 0 in `send`. 1 `Sender` is not dropped.` A wait
+/// holds the `Receiver`, or waits only while it is not dropped, so the text does not name it.
+fn channel_text(waits: &[Wait], word: usize) -> String {
+    let on_it = |w: &&Wait| w.1 == word;
+    let recvs = (waits.iter().filter(on_it))
+        .filter(|w| matches!(w.2, What::Recv(_)))
+        .count();
+    let sends = (waits.iter().filter(on_it))
+        .filter(|w| matches!(w.2, What::Send(_)))
+        .count();
+    let (words, made) = (waits.iter().filter(on_it))
+        .find_map(|w| match w.2 {
+            What::Send(words) | What::Recv(words) => Some((words, w.4)),
+            _ => None,
+        })
+        .expect("a channel of the report has a wait on it");
+    let made = made
+        .map(|p| format!(", made at {}", p.text()))
+        .unwrap_or_default();
+    let plural = if recvs == 1 { "wait" } else { "waits" };
+    let mut text = format!("{made}: {recvs} {plural} in `recv` and {sends} in `send`.");
+    if words != 0 {
+        let senders = unsafe { &*(words as *const AtomicI64).add(SENDERS) };
+        text += &match senders.load(Ordering::SeqCst) {
+            0 => " Each `Sender` is dropped.".to_string(),
+            1 => " 1 `Sender` is not dropped.".to_string(),
+            n => format!(" {n} `Sender`s are not dropped."),
+        };
+    }
+    text
+}
+
+/// Each cycle in a graph where node `i` has at most one edge, to `next[i]`. A cycle starts at
+/// its lowest node.
+fn cycles(next: &[Option<usize>]) -> Vec<Vec<usize>> {
+    const NEW: u8 = 0;
+    const ON_THE_PATH: u8 = 1;
+    const DONE: u8 = 2;
+    let mut state = vec![NEW; next.len()];
+    let mut found = Vec::new();
+    for start in 0..next.len() {
+        let mut path = Vec::new();
+        let mut i = Some(start);
+        while let Some(at) = i {
+            match state[at] {
+                NEW => {
+                    state[at] = ON_THE_PATH;
+                    path.push(at);
+                    i = next[at];
+                }
+                ON_THE_PATH => {
+                    let first = path.iter().position(|&p| p == at).expect("on the path");
+                    let mut cycle = path[first..].to_vec();
+                    let lowest = (0..cycle.len()).min_by_key(|&k| cycle[k]).expect("a cycle");
+                    cycle.rotate_left(lowest);
+                    found.push(cycle);
+                    break;
+                }
+                _ => break,
+            }
+        }
+        for p in path {
+            state[p] = DONE;
+        }
+    }
+    found
 }
 
 /// The deadlock report (F9 in docs/discussions/waiting_tasks_channels_and_task_errors.md). A
@@ -753,13 +1095,20 @@ mod deadlock {
             && !crate::ffi::io::pending()
     }
 
+    /// One check of the watcher. `seen` is the progress count of the last check, if that check
+    /// found the program stuck. Returns the value of `seen` for the next check, and true to report.
+    fn check_once(seen: Option<u64>, stuck: bool, progress: u64) -> (Option<u64>, bool) {
+        let now = stuck.then_some(progress);
+        (now, now.is_some() && now == seen)
+    }
+
     fn run() {
         let mut seen = None;
         loop {
             std::thread::sleep(TICK);
             let progress = PROGRESS.load(Ordering::SeqCst);
-            let now = stuck().then_some(progress);
-            if now.is_some() && now == seen {
+            let (now, report) = check_once(seen, stuck(), progress);
+            if report {
                 eprint!(
                     "vx: deadlock: each task of the program waits, and nothing can wake one. \
                      The program stops.\n{}",
@@ -768,6 +1117,53 @@ mod deadlock {
                 std::process::abort();
             }
             seen = now;
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::check_once;
+
+        /// Runs the checks of the watcher in order, each a pair (stuck, progress). Returns the
+        /// number of the check that reports, if one does.
+        fn report_at(checks: &[(bool, u64)]) -> Option<usize> {
+            let mut seen = None;
+            for (i, &(stuck, progress)) in checks.iter().enumerate() {
+                let (now, report) = check_once(seen, stuck, progress);
+                if report {
+                    return Some(i);
+                }
+                seen = now;
+            }
+            None
+        }
+
+        #[test]
+        fn one_stuck_check_does_not_report() {
+            assert_eq!(report_at(&[(true, 5)]), None);
+        }
+
+        #[test]
+        fn two_stuck_checks_with_no_progress_report_at_the_second() {
+            assert_eq!(report_at(&[(false, 1), (true, 5), (true, 5)]), Some(2));
+        }
+
+        /// The timer thread or the io thread woke a task between the two checks. The task can
+        /// go on, so no report.
+        #[test]
+        fn a_wake_between_two_stuck_checks_stops_the_report() {
+            assert_eq!(report_at(&[(true, 5), (true, 6)]), None);
+        }
+
+        /// A check that does not find the program stuck starts the count again, even with no
+        /// progress. For example, a deadline of the timer was still to come at the middle check.
+        #[test]
+        fn a_check_that_does_not_find_the_program_stuck_starts_the_count_again() {
+            assert_eq!(report_at(&[(true, 5), (false, 5), (true, 5)]), None);
+            assert_eq!(
+                report_at(&[(true, 5), (false, 5), (true, 5), (true, 5)]),
+                Some(3)
+            );
         }
     }
 }
@@ -865,7 +1261,16 @@ mod tests {
         let at = word.as_ptr() as usize;
         let waiter = std::thread::spawn(move || {
             while word.load(Ordering::SeqCst) == 0 {
-                unsafe { vx_waiting_for(2, std::ptr::null(), 0, std::ptr::null(), 0) };
+                unsafe {
+                    vx_waiting_for(
+                        2,
+                        std::ptr::null(),
+                        0,
+                        std::ptr::null(),
+                        0,
+                        std::ptr::null_mut(),
+                    )
+                };
                 unsafe { vx_wait_while(at as *const i64, 0) };
             }
         });
@@ -876,7 +1281,7 @@ mod tests {
                 .unwrap()
                 .notes
                 .iter()
-                .filter(|n| n.word == at && (!recv_only || matches!(n.what, What::Recv)))
+                .filter(|n| n.word == at && (!recv_only || matches!(n.what, What::Recv(_))))
                 .count()
         };
         while notes_of_the_word(true) == 0 {
@@ -899,7 +1304,7 @@ mod tests {
             std::thread::yield_now();
         }
         word.store(1, Ordering::SeqCst);
-        wake(b, Fibers::All);
+        wake(b, Fibers::None);
         // The sleeper needs this lock to come back from its wait, so it is still in it here.
         let counted = sleeps(b, me);
         sleeper.join().unwrap();
@@ -913,17 +1318,22 @@ mod tests {
         let sleeper = sleeper(&word, &rounds);
         let me = sleeper.thread().id();
         let b = bucket(word.as_ptr());
-        let asleep_in_round = |n| {
-            while rounds.load(Ordering::SeqCst) < n || sleeps(b, me) == 0 {
-                std::thread::yield_now();
+        // The count is the one that ended the wait. The system can return the sleeper with no
+        // wake at any time, so a second read can give 0.
+        let asleep_in_round = |n| loop {
+            if rounds.load(Ordering::SeqCst) >= n {
+                let count = sleeps(b, me);
+                if count != 0 {
+                    return count;
+                }
             }
+            std::thread::yield_now();
         };
         asleep_in_round(1);
         // A return of the condition variable with no wake, as the system may give.
         drop(b.lock.lock().unwrap());
         b.cond.notify_all();
-        asleep_in_round(2);
-        let counted = sleeps(b, me);
+        let counted = asleep_in_round(2);
         word.store(1, Ordering::SeqCst);
         wake(b, Fibers::Of(word.as_ptr() as usize));
         sleeper.join().unwrap();
@@ -933,13 +1343,26 @@ mod tests {
         );
     }
 
-    /// A wake of a word must not take a fiber that parks on another word of the same bucket.
-    /// With a seed, such a wake changes the order of the tasks. The fibers here never run.
+    fn parked(word: usize, can_cancel: bool) -> Parked {
+        Parked {
+            fiber: FiberRef(std::ptr::null_mut()),
+            word,
+            can_cancel,
+        }
+    }
+
+    /// A wake of a word must not take a fiber that parks on another word of the same bucket, and
+    /// a cancel must not take a fiber whose wait a cancel does not end. With a seed, such a wake
+    /// changes the order of the tasks. The fibers here never run.
     #[test]
     fn a_wake_takes_only_the_fibers_that_it_names() {
-        let fiber = || FiberRef(std::ptr::null_mut());
         let mut waiters = Waiters {
-            fibers: vec![(fiber(), 8), (fiber(), 16), (fiber(), 8)],
+            fibers: vec![
+                parked(8, false),
+                parked(16, true),
+                parked(8, true),
+                parked(24, false),
+            ],
             sleepers: Vec::new(),
             blocked: Vec::new(),
             notes: Vec::new(),
@@ -955,10 +1378,67 @@ mod tests {
             2,
             "a wake of a word did not take each fiber of the word"
         );
-        let words: Vec<usize> = waiters.fibers.iter().map(|&(_, w)| w).collect();
-        assert_eq!(words, [16], "a wake of a word took a fiber of another word");
-        assert_eq!(take_fibers(&mut waiters, Fibers::All).len(), 1);
-        assert!(waiters.fibers.is_empty());
+        let words = |w: &Waiters| w.fibers.iter().map(|p| p.word).collect::<Vec<usize>>();
+        assert_eq!(
+            words(&waiters),
+            [16, 24],
+            "a wake of a word took a fiber of another word"
+        );
+        take_fibers(&mut waiters, Fibers::ThatCanCancel);
+        let left = words(&waiters);
+        assert!(
+            left.contains(&24),
+            "a cancel took a fiber whose wait it does not end"
+        );
+        assert!(
+            !left.contains(&16),
+            "a cancel did not take the fiber whose wait it ends"
+        );
+    }
+
+    /// The report names the holder of the `Sender`s of a channel only when one task moved each
+    /// `Sender` that is not dropped. The words here are those of a channel that nothing uses.
+    #[test]
+    fn only_one_task_that_moved_each_sender_is_the_only_holder() {
+        let words: [AtomicI64; 4] = std::array::from_fn(|_| AtomicI64::new(0));
+        let at = words.as_ptr() as usize;
+        let (a, b): (crate::ffi::tasks::Site, crate::ffi::tasks::Site) = (
+            b"  in the task from the `spawn` at a.vx:1\n"[..].into(),
+            b"  in the task from the `spawn` at a.vx:2\n"[..].into(),
+        );
+        let is = |found: Option<crate::ffi::tasks::Site>, site: &crate::ffi::tasks::Site| {
+            found.is_some_and(|f| std::sync::Arc::ptr_eq(&f, site))
+        };
+        words[SENDERS].store(2, Ordering::SeqCst);
+        ends().push((at, true, a.clone()));
+        assert!(
+            only_holder(at, true).is_none(),
+            "one of two `Sender`s is placed"
+        );
+        ends().push((at, true, b.clone()));
+        assert!(
+            only_holder(at, true).is_none(),
+            "two tasks hold the `Sender`s"
+        );
+        ends().retain(|e| e.0 != at || !std::sync::Arc::ptr_eq(&e.2, &b));
+        ends().push((at, true, a.clone()));
+        assert!(
+            is(only_holder(at, true), &a),
+            "one task holds both `Sender`s"
+        );
+        assert!(
+            only_holder(at, false).is_none(),
+            "no task holds the `Receiver`"
+        );
+        ends().retain(|e| e.0 != at);
+    }
+
+    /// Waiter 0 waits for the cycle 1, 2, 3 and is not in it. Waiter 4 waits for itself, and
+    /// waiter 5 waits for nothing.
+    #[test]
+    fn each_cycle_of_waits_is_found_once_from_its_lowest_waiter() {
+        let next = [Some(2), Some(2), Some(3), Some(1), Some(4), None];
+        assert_eq!(cycles(&next), vec![vec![1, 2, 3], vec![4]]);
     }
 
     /// A fiber that a wake leaves parked keeps its note for the deadlock report. The waiters
@@ -970,13 +1450,24 @@ mod tests {
         let note = |owner: usize, word: usize| Note {
             owner,
             word,
-            what: What::Recv,
+            what: What::Recv(0),
             at: None,
             made: None,
-            site: None,
+            who: None,
         };
         let mut waiters = Waiters {
-            fibers: vec![(on_a, 100), (on_b, 200)],
+            fibers: vec![
+                Parked {
+                    fiber: on_a,
+                    word: 100,
+                    can_cancel: false,
+                },
+                Parked {
+                    fiber: on_b,
+                    word: 200,
+                    can_cancel: false,
+                },
+            ],
             sleepers: Vec::new(),
             blocked: Vec::new(),
             // A thread that sleeps on word 100 has the owner 24.

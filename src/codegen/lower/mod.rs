@@ -21,6 +21,7 @@ use melior::ir::{
 };
 
 use crate::syntax;
+pub(crate) mod across;
 mod control_flow;
 pub(crate) mod expr;
 mod seam_cert;
@@ -436,6 +437,61 @@ fn is_plain_scalar(text: &str) -> bool {
     parse_scalar_type(text).is_some()
 }
 
+/// Check the original value before a cast to usize can discard any bits.
+pub(crate) fn check_usize_cast<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    value: melior::ir::Value<'c, 'c>,
+    from: &ElementType,
+) -> Result<(), LowerError> {
+    if *from == ElementType::USize || from.int_bits().is_none() {
+        return Ok(());
+    }
+    let ty = value.r#type();
+    let checks = [
+        (from.is_signed_int(), 0, 5),
+        (
+            from.int_bits().is_some_and(|bits| bits > 63),
+            i64::MAX,
+            if from.is_signed_int() { 3 } else { 7 },
+        ),
+    ];
+    for (needed, bound, predicate) in checks {
+        if !needed {
+            continue;
+        }
+        let bound = block.append_operation(
+            OperationBuilder::new("arith.constant", gen.loc())
+                .add_results(&[ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    IntegerAttribute::new(ty, bound).into(),
+                )])
+                .build()?,
+        );
+        let fits = block.append_operation(
+            OperationBuilder::new("arith.cmpi", gen.loc())
+                .add_operands(&[value, bound.result(0)?.into()])
+                .add_results(&[gen.i1_ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "predicate"),
+                    IntegerAttribute::new(gen.i64_ty, predicate).into(),
+                )])
+                .build()?,
+        );
+        block.append_operation(
+            OperationBuilder::new("cf.assert", gen.loc())
+                .add_operands(&[fits.result(0)?.into()])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "msg"),
+                    StringAttribute::new(gen.context, "cast to usize is out of range").into(),
+                )])
+                .build()?,
+        );
+    }
+    Ok(())
+}
+
 /// `a op b` on `usize`, for the operators that can leave its range: `+`, `-`, `*` and `<<`.
 /// The operands are checked first and a failed check traps through `cf.assert`; the operation
 /// itself then never wraps and carries `overflow<nsw, nuw>`. Checking the result instead would
@@ -693,6 +749,8 @@ pub fn generate_match_chain<'c>(
         Pattern::Literal(lit) => {
             let lit_val = match &**lit {
                 Expr::Number(n) => n.value.as_ref().parse::<i64>().unwrap_or(0),
+                Expr::Identifier(id) if id.name.as_ref() == "true" => 1,
+                Expr::Identifier(id) if id.name.as_ref() == "false" => 0,
                 other => panic!("Unsupported literal pattern in codegen: {:?}", other),
             };
             let const_op = block.append_operation(
@@ -737,6 +795,7 @@ pub fn generate_match_chain<'c>(
 
     // Each name in the pattern is bound to the payload value at its position, read from that
     // position's slot. `_` binds nothing.
+    let mut payload_tensors = Vec::new();
     if let Pattern::EnumVariant(en, vn, Some(payloads)) = &arm.pattern {
         let opt_ty_str = _match_ty.to_string();
         let slots = crate::codegen::lower::expr::enum_payload_slot_texts(&opt_ty_str);
@@ -783,6 +842,28 @@ pub fn generate_match_chain<'c>(
                     declared_payload_ty(gen, en.as_ref(), vn.as_ref(), position, &opt_ty_str)
                 })
             };
+            // A tensor payload is its descriptor, which becomes the memref again.
+            let tensor = gen
+                .enum_tensor_payloads
+                .borrow()
+                .get(struct_name)
+                .and_then(|m| m.get(&(vn.to_string(), position)))
+                .cloned();
+            let as_tensor = |gen: &mut MeliorGenerator<'c>,
+                             val: melior::ir::Value<'c, 'c>,
+                             ty: melior::ir::Type<'c>|
+             -> Result<
+                (melior::ir::Value<'c, 'c>, melior::ir::Type<'c>),
+                LowerError,
+            > {
+                let Some(text) = &tensor else {
+                    return Ok((val, ty));
+                };
+                let memref = melior::ir::Type::parse(gen.context, text)
+                    .ok_or_else(|| LowerError::ParseType(text.clone()))?;
+                let val = crate::codegen::lower::expr::memref_of(gen, &then_block, val, memref)?;
+                Ok((val, memref))
+            };
 
             // A byte slot holds payloads of different kinds. Read it back as this variant's.
             if payload_ty_str.starts_with("!llvm.array<") {
@@ -801,6 +882,10 @@ pub fn generate_match_chain<'c>(
                     ty,
                     payload_ty,
                 )?;
+                let (val, ty) = as_tensor(gen, val, ty)?;
+                if tensor.is_some() {
+                    payload_tensors.push(name.clone());
+                }
                 gen.note_shadow(name.as_ref());
                 gen.env.insert(name.to_string().into(), (val, ty));
                 continue;
@@ -853,13 +938,20 @@ pub fn generate_match_chain<'c>(
                 }
                 None => (payload_val, payload_ty),
             };
+            let (payload_val, payload_ty) = as_tensor(gen, payload_val, payload_ty)?;
+            if tensor.is_some() {
+                payload_tensors.push(name.clone());
+            }
             gen.note_shadow(name.as_ref());
             gen.env
                 .insert(name.to_string().into(), (payload_val, payload_ty));
         }
     }
 
+    let outer = gen.payload_tensors.clone();
+    gen.payload_tensors.extend(payload_tensors);
     lower_match_arm_body(gen, &arm.body, then_block, merge_block, value_ty)?;
+    gen.payload_tensors = outer;
     gen.close_blocks_to(depth);
 
     generate_match_chain(
@@ -1840,6 +1932,10 @@ pub(crate) fn memref_in_space_of(ty: &str, like: &str) -> Option<String> {
 /// `memref.cast` from `from` to `to`, through a `memref.memory_space_cast` when the two are in
 /// different memory spaces: a placed tensor in a type with its address space, and the same
 /// buffer where a plain memref is wanted. A plain cast cannot change the space.
+///
+/// A row (`memref<4xf32, strided<[1], offset: ?>>`) given a plain memref type first has its data
+/// pointer moved to the row. A plain memref's offset is 0 by its type, so the code that uses it
+/// never reads the offset, and a cast alone would give it row 0.
 pub(crate) fn cast_memref<'c>(
     gen: &MeliorGenerator<'c>,
     block: &melior::ir::BlockRef<'c, 'c>,
@@ -1847,9 +1943,18 @@ pub(crate) fn cast_memref<'c>(
     from: melior::ir::Type<'c>,
     to: melior::ir::Type<'c>,
 ) -> Result<melior::ir::Value<'c, 'c>, LowerError> {
-    let (from_s, to_s) = (from.to_string(), to.to_string());
+    let (mut from_s, to_s) = (from.to_string(), to.to_string());
     let mut val = val;
     let mut current = from;
+    if from_s.contains("strided<") && !to_s.contains("strided<") {
+        let plain = expr::contiguous_view_as_plain(&from_s)
+            .ok_or_else(|| LowerError::from(format!("cannot use a {from_s} view as a {to_s}")))?;
+        let plain_ty = melior::ir::Type::parse(gen.context, &plain)
+            .ok_or_else(|| LowerError::ParseType(plain.clone()))?;
+        val = expr::move_view_pointer(gen, block, val, current, plain_ty)?;
+        current = plain_ty;
+        from_s = plain;
+    }
     if memref_space(&from_s) != memref_space(&to_s) {
         let spaced = memref_in_space_of(&from_s, &to_s)
             .ok_or_else(|| LowerError::from(format!("not a memref: {from_s}")))?;

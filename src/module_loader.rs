@@ -132,14 +132,14 @@ impl ModuleLoader {
 
     pub fn load_main(&mut self, filename: &str) -> Result<(), ModuleError> {
         self.add_entry_dir(Path::new(filename));
-        let mut main_program = Self::parse_file(Path::new(filename), filename.into())?;
+        let name = self.root_name(filename);
+        let mut main_program = Self::parse_file(Path::new(filename), name.clone())?;
         self.name_file_once(&mut main_program, Path::new(filename))?;
-        self.paths.insert(filename.into(), PathBuf::from(filename));
-        self.roots.push(filename.into());
+        self.paths.insert(name.clone(), PathBuf::from(filename));
+        self.roots.push(name.clone());
 
         let imports = main_program.imports.clone();
-        self.loaded_modules
-            .insert(filename.to_string().into(), main_program);
+        self.loaded_modules.insert(name, main_program);
 
         for import in imports {
             self.load_import(&import.path)?;
@@ -171,9 +171,10 @@ impl ModuleLoader {
         let mut wave: Vec<(Symbol, PathBuf)> = Vec::new();
         for root in roots {
             self.add_entry_dir(Path::new(root));
-            if seen.insert(root.as_str().into()) {
-                wave.push((root.as_str().into(), PathBuf::from(root)));
-                self.roots.push(root.as_str().into());
+            let name = self.root_name(root);
+            if seen.insert(name.clone()) {
+                wave.push((name.clone(), PathBuf::from(root)));
+                self.roots.push(name);
             }
         }
         while !wave.is_empty() {
@@ -278,6 +279,25 @@ impl ModuleLoader {
         let mut programs: Vec<Program> = self.loaded_modules.values().cloned().collect();
         self.rename_clashes(&mut programs)?;
         Ok(programs)
+    }
+
+    /// The name of the root file `file`: its module name when it is a module of the standard
+    /// library, as `core::ops` for `stdlib/core/ops.vx`, or else the file name. So an import
+    /// that leads back to the root finds it, and does not load the file again as a second module.
+    pub(crate) fn root_name(&self, file: &str) -> Symbol {
+        let canonical = |p: &Path| fs::canonicalize(p).ok();
+        let module = canonical(Path::new(file)).and_then(|file| {
+            self.std_roots.iter().rev().find_map(|root| {
+                let rel = file.strip_prefix(canonical(root)?).ok()?.with_extension("");
+                let path: Vec<Symbol> = rel
+                    .components()
+                    .map(|c| c.as_os_str().to_str().map(Symbol::from))
+                    .collect::<Option<_>>()?;
+                let found = canonical(&self.resolve_module_path(&path)?)?;
+                (found == file).then(|| Self::module_name(&path))
+            })
+        });
+        module.unwrap_or_else(|| file.into())
     }
 
     /// The name a module is known by: its import path joined with `::`.

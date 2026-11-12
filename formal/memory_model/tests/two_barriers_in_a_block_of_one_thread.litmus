@@ -1,0 +1,11 @@
+LISA two_barriers_in_a_block_of_one_thread
+(* P0 is the only thread of its block. Its two barriers of block scope wait for no other thread.
+   The write between them races with the read of P1, in another block.
+   Expect: sometimes, a data race. *)
+{ x = 0; }
+ P0               | P1            ;
+ f[barrier,block] | r[plain] r0 x ;
+ w[plain] x 1     |               ;
+ f[barrier,block] |               ;
+scopes: (device (block P0) (block P1))
+exists (1:r0 = 0)

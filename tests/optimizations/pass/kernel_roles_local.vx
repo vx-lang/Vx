@@ -40,7 +40,7 @@
 //
 // The flat code generator passes the local buffers directly. The roles must
 // still resolve.
-// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s --check-prefix=FLAT
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s --check-prefix=FLAT # flat-codegen
 // FLAT: vx.launch @vx_npu_kernel_0
 // FLAT-SAME: vx.kernel_kind = "matmul"
 // FLAT-SAME: vx.kernel_out_kind = "buffer"

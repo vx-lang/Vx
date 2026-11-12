@@ -1,0 +1,41 @@
+//===- an_if_as_the_condition_of_an_if.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An `if` that gives a `bool` can be the condition of an `if`. The legacy code generator used
+// the condition of the inner `if` in place of its value, and so printed `b end`.
+//
+// EXPECT: a c end
+
+fn main() -> i32 {
+  let x = 3;
+  // The inner `else` runs and gives `true`.
+  if (if x == 0 {
+    false
+  } else {
+    true
+  }) {
+    print!("a ");
+  }
+  // The inner `then` runs and gives `false`.
+  if (if x == 3 {
+    false
+  } else {
+    true
+  }) {
+    print!("b ");
+  }
+  // The inner `else` runs and gives `x == 3`.
+  if (if x == 0 {
+    x == 0
+  } else {
+    x == 3
+  }) {
+    print!("c ");
+  }
+  println!("end");
+  return 0;
+}

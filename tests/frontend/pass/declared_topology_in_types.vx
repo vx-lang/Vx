@@ -16,7 +16,7 @@
 // CHECK: vx.spawn topology(1071043665)
 
 Memory CHIP_RAM {
-  capacity: 1 GB, bandwidth: 1 TB/s
+  scope: device, capacity: 1 GB, bandwidth: 1 TB/s
 }
 
 Topology MyChip {

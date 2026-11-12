@@ -257,10 +257,10 @@ fn main() {
             if status.success() {
                 // Compile the .mlpackage into .mlmodelc
                 // The fp16 512x512 is the one the Neural Engine will actually take:
-                // CoreML prefers the CPU for every fp32 matmul at every size, and
-                // for fp16 below 512. The 4x4 pair stays because the dispatcher's
-                // fp32 matmul and affine routes are written against it; no test
-                // covers the affine route.
+                // CoreML prefers the CPU or the GPU for every fp32 matmul, never
+                // the Neural Engine, and the CPU for fp16 below 512. The 4x4 pair
+                // stays because the dispatcher's fp32 matmul and affine routes are
+                // written against it; no test covers the affine route.
                 for model_name in &[
                     "matmul_4x4",
                     "affine_4",
@@ -347,11 +347,7 @@ fn main() {
         let cxx = env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
         let cxxflags_env =
             env::var("CXXFLAGS").unwrap_or_else(|_| "-O3 -Wno-deprecated-declarations".to_string());
-        let mut cxxflags: Vec<&str> = cxxflags_env.split_whitespace().collect();
-        // Fall back to running the outlined kernel on the CPU (via libffi) when the ANE/CoreML
-        // path is unavailable -- no accelerator, or the CoreML models were not built (no
-        // coremltools/coremlc). Without this the dispatcher aborts on any unhandled kernel.
-        cxxflags.push("-DVX_ENABLE_CPU_FALLBACK");
+        let cxxflags: Vec<&str> = cxxflags_env.split_whitespace().collect();
 
         // Compile the Objective-C++ runtime file for AOT (Static Archive)
         let mut clang_cmd = Command::new(&cxx);

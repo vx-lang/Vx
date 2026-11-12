@@ -189,13 +189,13 @@ requires valid(p, n)
 }
 
 // CHECK: E8006] at {{.*}}pointer_facts_that_a_loop_ends.vx:[[@LINE+10]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
-// CHECK-NEXT: note: a fact that proves it ended at the `spawn`, whose task can free memory, in a pass of the loop (at [[@LINE+5]]:5)
-fn after_a_loop_with_a_spawn_on_block(p : *const i64, n : i64) -> i64
+// CHECK-NEXT: note: a fact that proves it ended at the `spawn on` region, whose task can free memory through `v`, in a pass of the loop (at [[@LINE+5]]:5)
+fn after_a_loop_with_a_spawn_on_block(p : *const i64, n : i64, v : &mut Vec<i64>) -> i64
 requires valid(p, n)
 {
   for _i in 0i64..3i64 {
     spawn on(Topology::CpuAvx512) {
-      let _x = 1i64;
+      v.push(1i64);
     }
   }
   return need_valid(p, n);

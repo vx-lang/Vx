@@ -1,0 +1,109 @@
+//===- loop_invariant_that_the_next_pass_breaks.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// Each invariant below holds when its loop starts, but not at the start of a later pass. So each
+// one gets E8009. A `for i in a..b` loop starts its next pass with `i + 1`, and a `continue`
+// starts the next pass too. A `let` in the body that hides a variable of the invariant does not
+// prove the invariant.
+
+fn for_the_next_i() -> i64 {
+  let mut s = 0i64;
+  // CHECK: Error[E8009] at {{.*}}.vx:[[@LINE+1]]:35: this loop invariant `s <= 2 - i` may not hold for the next `i` after a pass through the loop body: the compiler cannot prove it from what it knows at the end of the body{{$}}
+  for i in 0i64..3i64 invariant s <= 2i64 - i {
+    s = 2i64 - i;
+  }
+  return s;
+}
+
+fn below_the_end_of_the_range(n : i64) -> i64
+requires n > 0i64
+{
+  let mut total = 0i64;
+  // CHECK: Error[E8009] at {{.*}}.vx:[[@LINE+1]]:32: this loop invariant `i < n` may not hold for the next `i` after a pass through the loop body: the compiler cannot prove it from what it knows at the end of the body{{$}}
+  for i in 0i64..n invariant i < n {
+    total = total + i;
+  }
+  return total;
+}
+
+fn after_a_continue() -> i64 {
+  let mut s = 0i64;
+  let mut i = 0i64;
+  // CHECK: Error[E8009] at {{.*}}.vx:[[@LINE+1]]:30: this loop invariant `s <= 1` may not hold after the `continue` at line [[#@LINE+5]]: the compiler cannot prove it from what it knows there{{$}}
+  while i < 3i64 invariant s <= 1i64 {
+    i = i + 1i64;
+    if i == 1i64 {
+      s = 5i64;
+      continue;
+    } else {
+      s = 0i64;
+    }
+  }
+  return s;
+}
+
+fn for_the_next_i_after_a_continue() -> i64 {
+  let mut s = 0i64;
+  // CHECK: Error[E8009] at {{.*}}.vx:[[@LINE+1]]:35: this loop invariant `s <= i` may not hold for the next `i` after the `continue` at line [[#@LINE+4]]: the compiler cannot prove it from what it knows there{{$}}
+  for i in 0i64..3i64 invariant s <= i {
+    if i == 1i64 {
+      s = 5i64;
+      continue;
+    }
+    s = 0i64;
+  }
+  return s;
+}
+
+fn hidden_by_a_let() -> i64 {
+  let mut s = 0i64;
+  let mut t = 0i64;
+  // CHECK: Error[E8009] at {{.*}}.vx:[[@LINE+1]]:35: this loop invariant `s <= 1` may not hold after a pass through the loop body: the compiler cannot prove it from what it knows at the end of the body{{$}}
+  for i in 0i64..3i64 invariant s <= 1i64 {
+    s = 5i64;
+    let s = 0i64;
+    t = t + s;
+  }
+  return t;
+}
+
+fn hidden_by_a_let_before_a_continue() -> i64 {
+  let mut s = 0i64;
+  let mut t = 0i64;
+  let mut i = 0i64;
+  // CHECK: Error[E8009] at {{.*}}.vx:[[@LINE+1]]:30: this loop invariant `s <= 1` may not hold after the `continue` at line [[#@LINE+7]]: the compiler cannot prove it from what it knows there{{$}}
+  while i < 3i64 invariant s <= 1i64 {
+    i = i + 1i64;
+    if i == 1i64 {
+      s = 5i64;
+      let s = 0i64;
+      t = t + s;
+      continue;
+    } else {
+      s = 0i64;
+    }
+  }
+  return t;
+}
+
+fn a_let_that_hides_the_loop_variable() -> i64 {
+  let mut s = 0i64;
+  let mut t = 0i64;
+  // CHECK: Error[E8009] at {{.*}}.vx:[[@LINE+1]]:35: this loop invariant `s == i` may not hold for the next `i` after a pass through the loop body: the compiler cannot prove it from what it knows at the end of the body{{$}}
+  for i in 0i64..3i64 invariant s == i {
+    s = 2i64;
+    let i = 1i64;
+    t = t + i;
+  }
+  return t;
+}
+
+fn main() -> i32 {
+  return 0;
+}

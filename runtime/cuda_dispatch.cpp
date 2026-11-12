@@ -1848,6 +1848,8 @@ int32_t vx_plugin_control(uint32_t opcode, void *payload) {
   case VX_CTRL_INIT_DEVICE:
     return cuda_available() ? 1 : 0;
   case VX_CTRL_WAIT:
+  case VX_CTRL_WAIT_FOR_TENSORS:
+  case VX_CTRL_WAIT_FOR_THREAD:
     if (cuda_available()) {
       wait_for_kernels("a read of GPU memory in place");
     }

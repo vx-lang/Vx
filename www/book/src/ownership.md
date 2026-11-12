@@ -18,7 +18,7 @@ Borrow instead of moving to keep the original alive:
 
 ```rust
 fn total(v : &Vec<i32>) -> i32 { /* ... */ }
-fn append(v : &mut Vec<i32>, x : i32) { /* ... */ }
+fn append(v : &mut Vec<i32>, x : i32) -> void { /* ... */ }
 ```
 
 `&T` is a shared borrow, `&mut T` is an exclusive one. The usual rule applies: any number of shared
@@ -163,8 +163,13 @@ print(q[1][0]);     // fine: r is not used again
 - The owner cannot be moved (E4007), assigned (E4009) or, under a `mut` view, read (E4002) while
   the view is still going to be used. As with `&`, the borrow ends at the view's last use.
 - A view of a tensor the function owns, a local or a parameter taken by value, cannot be
-  returned (E4005). A view of a tensor taken by reference (`q : &Tensor<..>`) can be: it points
-  into the caller's tensor.
+  returned (E4005). A view of a tensor taken by reference (`q : &Tensor<..>`) can be returned
+  as a reference: `-> &Tensor<..>` or `-> &mut Tensor<..>`, with `return &q[1]`. The result
+  borrows the caller's tensor, and a write through a `&mut` result changes that tensor. A view
+  of memory from a raw pointer, `tensor_view_2d(p, ..)`, is returned the same way.
+- A function that returns a tensor by value (`-> Tensor<..>`) cannot return a view (E4011): the
+  caller would get a copy, and its writes would not reach the owner. Return a reference, or
+  return a copy with `q[1].clone()`.
 - A view cannot be stored where a tensor of its own is held: a variable that already exists
   (`keep = q[1]`) or a struct field (`h.t = q[1]`, `Holder { t : q[1] }`) (E4011). It would
   replace that tensor with a window onto another. Bind it to a new variable with `let` instead.
@@ -174,20 +179,13 @@ print(q[1][0]);     // fine: r is not used again
   take the tensor by reference, `f(&q[1])`. `t.clone()` makes a new tensor of `t`'s type with
   a copy of its elements.
 
-**Why views are checked this strictly.** Vx is moving to freeing memory automatically
-(`docs/implementation_plans/drop_semantics.md`). A tensor that only holds memory will be freed
-after the last use of the tensor *and of every view of it*, and a type with a `Drop` of its own
-at the end of its block. Freeing at the last use is only safe if the checker sees every view, so
+**Why views are checked this strictly.** Vx frees memory automatically
+([Dropping values](#dropping-values)). It frees a tensor that only holds memory after the last use
+of the tensor *and of every view of it*. It drops a type with a `Drop` of its own at the end of
+its block. Freeing at the last use is only safe if the checker sees every view, so
 a free that comes too early is a borrow checker bug, not a rule for the programmer to remember.
 The checker tells a view from an owner by where the value came from, since both have the type
 `Tensor`; a separate view type (#400) may replace this later.
-
-**Not checked yet.** These views are still invisible to the checker, or refused when they need
-not be:
-
-| Case | Issue |
-| --- | --- |
-| Two `mut` rows of different indices, refused because indices are not told apart | #1060 |
 
 ## Dropping values
 
@@ -219,6 +217,18 @@ fn main() -> i32 {
     return 0;   // prints 2, then 1
 }
 ```
+
+A `match` arm that moves a part out of the matched value takes all of the value. For example,
+`match t { Two::Pair(a, _) => .. }` moves all of `t` into the arm. An arm that moves nothing leaves
+`t` as it is, and when that arm runs, `t` drops at the end of its block. Each arm of a `match` on a
+value with no name, such as `match make() { .. }`, takes the value too. At its end, the arm drops the
+names that it binds, and then the parts that it does not name, such as the `_` part. Rust keeps
+the `_` part in `t` and drops it at the end of the block of `t`.
+
+In a `let`, `_` is a name like any other. `let _ = e;` drops the value at the same point as
+`let _x = e;`, and `let _ = a;` moves `a`. In Rust, `let _ = e;` drops the value at the end of the
+statement, and `let _ = a;` moves nothing. The reasons are in
+[the language semantics](https://github.com/vx-lang/Vx/blob/main/docs/lang/semantics.md#26-drops).
 
 `Vec`, `Box`, `String`, `File` and the socket types implement `Drop`, so none of them is freed by
 hand. `drop` cannot be called directly (E4012). To end a value's life early, `core::mem` has

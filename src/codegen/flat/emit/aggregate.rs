@@ -12,10 +12,8 @@ fn is_scalar_field(fty: &str) -> bool {
 }
 
 impl FnEmit<'_> {
-    // Store a scalar into a struct field (no result). `operand1` is the struct slot pointer,
-    // `operand2` the value, `imm` the field's byte offset. GEP to the field, then `llvm.store`;
-    // the field index comes from matching the offset against the layout, the value type from
-    // the stored register's tracked type.
+    // Store a field by explicit index.
+    // The stored register supplies the active value type, including enum payload values.
     pub(crate) fn op_field_store(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let gid = (*self
             .agg_of
@@ -23,11 +21,7 @@ impl FnEmit<'_> {
             .ok_or(crate::emitter_gap!())?)
         .ok_or(crate::emitter_gap!())?;
         let agg = self.ctx.aggs.get(&gid).ok_or(crate::emitter_gap!())?;
-        let field_idx = agg
-            .offsets
-            .iter()
-            .position(|&o| o == ins.imm)
-            .ok_or(crate::emitter_gap!())?;
+        let field_idx = agg.field_index(ins.imm)?;
         // Tensor descriptors use the storage field's declared type.
         let fty = agg
             .field_tys
@@ -51,11 +45,18 @@ impl FnEmit<'_> {
         // A tensor value goes in as its descriptor. A rank the field does not have (a rank-0
         // `Tensor<f32>()` for a `[?, ?]` field, which the checker admits) has no descriptor the
         // field can hold, and no pass folds the cast, so the function declines.
+        // An enum's payload slot is plain bytes, so a tensor goes in as the descriptor of its
+        // own rank.
+        let mut descriptor = None;
         let val = match self.mem_of.get(ins.operand2.0 as usize).cloned().flatten() {
             Some(memty) => {
-                if memref_rank(&memty) != descriptor_rank(&fty) {
-                    return Err(crate::emitter_gap!());
-                }
+                let rank = memref_rank(&memty).ok_or(crate::emitter_gap!())?;
+                let fty = match descriptor_rank(&fty) {
+                    Some(r) if r == rank => fty.clone(),
+                    None if !agg.variant_payloads.is_empty() => memref_descriptor_ty(rank),
+                    _ => return Err(crate::emitter_gap!()),
+                };
+                descriptor = Some(fty.clone());
                 // A row is a strided view whose descriptor carries an offset into its tensor. The
                 // field is read back as a plain memref, whose type says the offset is 0, so the
                 // offset would be lost and the read would land in row 0. Move the data pointer
@@ -99,7 +100,9 @@ impl FnEmit<'_> {
             .cloned()
             .flatten()
             .is_some();
-        let store_ty = if self.is_pointer_value(ins.operand2.0 as usize)? {
+        let store_ty = if let Some(d) = descriptor {
+            d
+        } else if self.is_pointer_value(ins.operand2.0 as usize)? {
             "!llvm.ptr".to_string()
         } else {
             match self.etypes.get(ins.operand2.0 as usize).cloned().flatten() {
@@ -113,7 +116,7 @@ impl FnEmit<'_> {
         Ok(())
     }
 
-    // Load a field using its byte offset, or an enum payload using its variant and field indices.
+    // Load a field by index, or an enum payload by variant and payload position.
     pub(crate) fn op_field_load(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let gid = (*self
             .agg_of
@@ -127,11 +130,7 @@ impl FnEmit<'_> {
             Some(index) => (index.field as usize)
                 .checked_add(1)
                 .ok_or(crate::emitter_gap!())?,
-            None => agg
-                .offsets
-                .iter()
-                .position(|&o| o == ins.imm)
-                .ok_or(crate::emitter_gap!())?,
+            None => agg.field_index(ins.imm)?,
         };
         // The field's declared MLIR type drives the load: a scalar field yields its element
         // (tracked in `etypes`), a pointer field (`Vec`'s `data`) an `!llvm.ptr` value
@@ -190,8 +189,19 @@ impl FnEmit<'_> {
             .types
             .get(ins.type_idx.0 as usize)
             .is_some_and(|g| self.ctx.tensors.contains_key(g));
+        // A tensor in an enum's payload slot is the descriptor of its own rank.
+        let fty = match self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .and_then(|g| self.ctx.tensors.get(g))
+        {
+            Some((_, shape)) if payload.is_some() => memref_descriptor_ty(shape.len()),
+            _ => fty,
+        };
         let load_ty = if pointer {
             "!llvm.ptr".to_string()
+        } else if payload.is_some() && result_is_tensor {
+            fty.clone()
         } else {
             match self
                 .types
@@ -259,11 +269,7 @@ impl FnEmit<'_> {
             .aggs
             .get(&parent_gid)
             .ok_or(crate::emitter_gap!())?;
-        let field_idx = agg
-            .offsets
-            .iter()
-            .position(|&o| o == ins.imm)
-            .ok_or(crate::emitter_gap!())?;
+        let field_idx = agg.field_index(ins.imm)?;
         let field_gid = *self
             .types
             .get(ins.type_idx.0 as usize)
@@ -311,8 +317,17 @@ impl FnEmit<'_> {
         // — the deref loads/stores an 8-byte pointer and the loaded value is itself a pointer
         // (`ptr_of`), so a further deref (`**rr`) chains. (#278)
         let elem_is_ptr = gid == ptr_gid();
+        // A tensor element (`*mut Tensor<f32, [4]>`, a channel's buffer) is its descriptor.
+        let tensor_memty = match self.ctx.tensors.get(&gid) {
+            Some((elem, shape)) => {
+                Some(tensor_memref_ty(elem, shape).ok_or(crate::emitter_gap!())?)
+            }
+            None => None,
+        };
         let (et, scalar_e, agg_gid) = if elem_is_ptr {
             ("!llvm.ptr".to_string(), None, None)
+        } else if let Some((_, shape)) = self.ctx.tensors.get(&gid) {
+            (memref_descriptor_ty(shape.len()), None, None)
         } else if let Some(e) = elem_of_gid(gid) {
             (
                 mlir_scalar(&e).ok_or(crate::emitter_gap!())?.to_string(),
@@ -349,6 +364,14 @@ impl FnEmit<'_> {
                 .map(|(own, sibs)| alias_store_attrs(*own, sibs))
                 .unwrap_or_default();
             self.body += &format!("  {n} = llvm.load {p}{attrs} : !llvm.ptr -> {et}\n");
+            if let Some(memty) = tensor_memty {
+                let m = format!("%pm{idx}");
+                self.body +=
+                    &format!("  {m} = builtin.unrealized_conversion_cast {n} : {et} to {memty}\n");
+                self.names[idx] = m;
+                self.mem_of[idx] = Some(memty);
+                return Ok(());
+            }
             self.names[idx] = n;
             self.etypes[idx] = scalar_e;
             self.agg_val_of[idx] = agg_gid;
@@ -376,11 +399,36 @@ impl FnEmit<'_> {
             .ok_or(crate::emitter_gap!())?
             .clone()
             .ok_or(crate::emitter_gap!())?;
-        let val = self
+        let mut val = self
             .names
             .get(ins.operand2.0 as usize)
             .ok_or(crate::emitter_gap!())?
             .clone();
+        // A struct literal (`t[1] = Pair { .. }`) is a stack slot. Load the struct from it
+        // first. A place that holds a pointer stores the slot's address itself.
+        let slot_gid = self.agg_of.get(ins.operand2.0 as usize).copied().flatten();
+        if let (Some(gid), false) = (slot_gid, et == "!llvm.ptr") {
+            let struct_ty = &self
+                .ctx
+                .aggs
+                .get(&gid)
+                .ok_or(crate::emitter_gap!())?
+                .struct_ty;
+            assert_eq!(
+                *struct_ty, et,
+                "a struct stored through a pointer has the pointer's element type"
+            );
+            let loaded = format!("%ps{idx}");
+            self.body += &format!("  {loaded} = llvm.load {val} : !llvm.ptr -> {et}\n");
+            val = loaded;
+        }
+        // A tensor goes in as its descriptor.
+        if let Some(memty) = self.mem_of.get(ins.operand2.0 as usize).cloned().flatten() {
+            let d = format!("%pd{idx}");
+            self.body +=
+                &format!("  {d} = builtin.unrealized_conversion_cast {val} : {memty} to {et}\n");
+            val = d;
+        }
         // A write in the first `n` elements of a `requires !overlaps(p, q, n)` pointer.
         let attrs = self
             .alias_scope_of

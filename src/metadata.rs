@@ -95,7 +95,7 @@ impl<'a> VxMetadata<'a> {
 const VXLIB_MAGIC: &[u8; 4] = b"VXLB";
 /// Format tag folded into an FNV-1a stamp (`src/hash.rs`) written after the magic. A codec change
 /// bumps this string, so a stale artifact is *detected* (version mismatch on load) rather than misread.
-const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v17";
+const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v19";
 
 /// Append-only little-endian byte writer for the interface codec.
 struct Writer {
@@ -564,7 +564,6 @@ fn write_type(w: &mut Writer, ty: &Type) -> Result<(), String> {
             write_element_type(w, e);
             w.u64(*n as u64);
         }
-        Matrix => w.u8(13),
         Unknown => w.u8(14),
         // A dimension is `?` or a literal. A const-generic name or an arithmetic dimension
         // belongs to a template, and a template is not an interface.
@@ -657,7 +656,7 @@ fn read_type(r: &mut Reader) -> Result<Type, String> {
             Closure(params, ret)
         }
         12 => Simd(read_element_type(r)?, r.u64()? as usize),
-        13 => Matrix,
+        // No type has tag 13. A `.vxlib` from an older compiler may hold it.
         14 => Unknown,
         15 => {
             let e = read_element_type(r)?;
@@ -1018,6 +1017,15 @@ pub fn serialize_registry_interface_reporting(
         skipped: Vec::new(),
     };
     for (gid, sf) in structs {
+        // Another program could write the fields of a struct with an invariant if the interface
+        // carried the struct without its invariant.
+        if reg.structs_with_invariants.contains(gid) {
+            struct_report.skipped.push((
+                nominal_name(reg, gid),
+                "it has an invariant, and an interface cannot carry one yet".to_string(),
+            ));
+            continue;
+        }
         let mut rec = Writer::new();
         rec.u64(sf.generics.len() as u64);
         for g in &sf.generics {
@@ -1225,6 +1233,8 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
         bodies,
         enum_variants,
         structs,
+        // The writer leaves out each struct with an invariant.
+        structs_with_invariants: Default::default(),
         // Data-carrying enum decls are not serialized into a `.vxlib` yet; constructing/matching a
         // monomorphized imported enum then falls back to the AST path (#242).
         enum_data: FxHashMap::default(),
@@ -1269,6 +1279,78 @@ mod tests {
                 "decoded enum payload fields must preserve the immediate"
             );
         }
+    }
+
+    #[test]
+    fn previous_offset_only_field_format_is_rejected() {
+        let registry = ImmutableGlobalRegistry::build_and_validate(vec![]).unwrap();
+        let mut bytes = serialize_registry_interface(&registry);
+        bytes[4..12].copy_from_slice(
+            &crate::hash::compute_module_hash("vxlib-interface-v17").to_le_bytes(),
+        );
+        assert_eq!(
+            deserialize_registry_interface(&bytes).err(),
+            Some("vxlib: format version mismatch (stale or incompatible artifact)".into())
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::load(Opcode::FieldLoad)]
+    #[case::store(Opcode::FieldStore)]
+    #[case::address(Opcode::FieldAddr)]
+    fn indexed_field_instructions_round_trip(#[case] opcode: Opcode) {
+        let instruction = HirInstruction::new(
+            opcode,
+            Register(5),
+            Register(0),
+            TypeIdx(3),
+            crate::bytecode::encode_field_index(2),
+        );
+        let mut writer = Writer::new();
+        write_hir_instruction(&mut writer, &instruction);
+        let restored = read_hir_instruction(&mut Reader::new(&writer.buf)).unwrap();
+        assert_eq!(
+            crate::bytecode::decode_field_index(restored.imm),
+            2,
+            "the restored instruction must select field 2"
+        );
+        assert_eq!(
+            read_hir_instruction(&mut Reader::new(&writer.buf)),
+            Ok(instruction),
+            "artifact instructions must retain the field index flag and index"
+        );
+    }
+
+    #[test]
+    fn artifacts_without_aggregate_layout_checks_are_rejected() {
+        let registry = ImmutableGlobalRegistry::build_and_validate(vec![]).unwrap();
+        let mut bytes = serialize_registry_interface(&registry);
+        bytes[4..12].copy_from_slice(
+            &crate::hash::compute_module_hash("vxlib-interface-v18").to_le_bytes(),
+        );
+        assert_eq!(
+            deserialize_registry_interface(&bytes).err(),
+            Some("vxlib: format version mismatch (stale or incompatible artifact)".into()),
+            "artifacts without aggregate layout checks require rebuilding"
+        );
+    }
+
+    #[test]
+    fn aggregate_layout_checks_survive_artifact_serialization() {
+        let instruction = HirInstruction::new(
+            Opcode::CheckAggregate,
+            Register(5),
+            Register(0),
+            TypeIdx(3),
+            0,
+        );
+        let mut writer = Writer::new();
+        write_hir_instruction(&mut writer, &instruction);
+        assert_eq!(
+            read_hir_instruction(&mut Reader::new(&writer.buf)),
+            Ok(instruction),
+            "imported functions must retain their aggregate layout checks"
+        );
     }
 
     #[test]

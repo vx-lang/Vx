@@ -1,0 +1,39 @@
+//===- a_void_closure_that_ends_in_a_match.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A closure that returns `void` can end in a `match` whose arms give no value. Both code
+// generators compile it, and the default one does not fall back to the other one.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}some 4{{$}}
+// CHECK-NEXT: {{^}}none{{$}}
+
+import core::option;
+
+fn run(f : || -> void) -> void {
+  f();
+}
+
+fn show(v : Option<i64>) -> void {
+  run(|| -> void {
+    match v {
+      Option<i64>::Some(n) => {
+        println!("some {}", n);
+      }
+      Option<i64>::None => {
+        println!("none");
+      }
+    }
+  });
+}
+
+fn main() -> i32 {
+  show(Option<i64>::Some(4));
+  show(Option<i64>::None);
+  return 0;
+}

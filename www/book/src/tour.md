@@ -87,7 +87,7 @@ if x > 10 {
 }
 
 for i in 0..n {
-    // ...
+    total = total + i;
 }
 
 while i < n {
@@ -308,7 +308,7 @@ fn main() -> i32 {
 }
 ```
 
-Also available: `HashMap`, `HashSet`, `Option`, `Result`, `String`, `Box`, and iterator adaptors.
+Also available: `Option`, `Result`, `String`, `Box`, and iterator adaptors.
 See [the standard library](tooling.md#the-standard-library) for the full list.
 
 ## Modules
@@ -321,8 +321,10 @@ import std::io;
 import graph::traversal;
 ```
 
-`std::` resolves against the standard library shipped with your toolchain. Anything else resolves
-against the library search path and then the current directory.
+`std::` resolves against the standard library shipped with your toolchain. Any other import
+resolves against the standard library roots first, so `graph::traversal` is the library's `graph`.
+Then it resolves against the directory of the file you compile, and never against the current
+directory. `--package` adds a library in another directory ([Tooling](tooling.md)).
 
 An import brings in everything the module declares, and everything it imports. A module's own
 declaration wins over an imported one with the same name, so declaring `struct Range` does not

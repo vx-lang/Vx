@@ -53,6 +53,29 @@ pub(crate) fn first_frees_call(e: &Expr) -> Option<Span> {
     found
 }
 
+/// Whether the `ensures` clause `e` of the `extern` function `ext` is a clause about numbers that
+/// the prover reads, such as `0i64 <= return`. It can name only integer parameters, and `return`
+/// when the function returns an integer.
+fn is_extern_value_clause(ext: &crate::syntax::ExternDecl, e: &Expr) -> bool {
+    let integer = |ty: &Type| matches!(ty, Type::Scalar(el) if el.int_bits().is_some() && *el != ElementType::Bool);
+    let mut names_integers = true;
+    crate::syntax::visit_expr(e, &mut |e| {
+        if let Expr::Identifier(id) = e {
+            let name = id.name.as_ref();
+            names_integers &= match name {
+                "return" => integer(&ext.return_type),
+                _ => ext
+                    .params
+                    .iter()
+                    .any(|(p, ty)| p.as_ref() == name && integer(ty)),
+            };
+        }
+    });
+    names_integers
+        && crate::hir::check::atomic_contracts::is_prover_clause(e)
+        && crate::hir::prover::is_modelled(e)
+}
+
 /// The `frees` clause `e` of the function `owner` as the position of the parameter that it names
 /// and whether it has `!`, or the reason that it is not well formed.
 fn read_frees_clause(
@@ -565,7 +588,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// E8011 for the `ensures` of each `extern` function: the compiler trusts them, so each one
-    /// is a well formed `frees` clause or pointer clause.
+    /// is a well formed `frees` clause, pointer clause or clause about numbers.
     pub(crate) fn check_extern_clauses(&mut self) {
         let externs: Vec<&crate::syntax::ExternDecl> = self.env.externs.clone();
         for ext in externs {
@@ -577,10 +600,12 @@ impl<'a> TypeChecker<'a> {
                     {
                         self.pointer_clause_error(message, at);
                     }
-                } else if first_frees_call(e).is_none() {
+                } else if first_frees_call(e).is_none() && !is_extern_value_clause(ext, e) {
                     self.pointer_clause_error(
-                        "an `extern` function can have only a `frees` clause or a pointer clause \
-                         in its `ensures`, as in `ensures !frees(p)`"
+                        "an `extern` function can have only a `frees` clause, a pointer clause or \
+                         a clause about numbers in its `ensures`, as in `ensures 0i64 <= return`. \
+                         A clause about numbers names only integer parameters, and `return` when \
+                         the function returns an integer"
                             .to_string(),
                         e.span(),
                     );

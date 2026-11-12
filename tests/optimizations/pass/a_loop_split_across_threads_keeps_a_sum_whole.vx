@@ -1,0 +1,273 @@
+//===- a_loop_split_across_threads_keeps_a_sum_whole.vx ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The compiler splits the passes of a `spawn` loop across threads only when no pass needs a value
+// from another pass. A thread runs many passes with one copy of each variable declared before the
+// loop. So a sum kept in such a variable would hold only that thread's part of the sum.
+//
+// These kernels are not split, so each runs on one thread and gets the right values:
+// - `running_total` and `sum_in_a_tensor` keep a sum from pass to pass, in a variable and in a
+//   tensor. `normalize` does the same in a kernel of blocks and threads. It is the kernel of the
+//   bug report.
+// - `written_in_an_if` reads an element that the pass may not have written.
+// - `index_changed_in_the_pass` writes `s[k]`, changes `k`, and reads the element of `s` that the
+//   pass before wrote.
+// - `shadowed_in_an_inner_loop` keeps a sum in `total`. An inner loop has a `total` of its own.
+// - `written_in_a_loop_that_may_not_run` reads an element after an inner loop that writes it.
+//   That loop runs 0 times in half of the passes.
+// - `last_of_a_split_loop` sets `last` in a loop of threads, and the next loop reads it. Each
+//   thread would have its own `last`.
+// - `another_threads_element` reads an element of `row` that another thread wrote.
+//
+// These kernels set their variable or element first in each pass, so they are still split:
+// `scratch_set_in_each_pass`, `scratch_set_in_each_thread_pass`, `tensor_set_in_each_pass`. So is
+// `last_reset_between_loops`, which gives `last` one value for every thread between its loops,
+// and `scratch_set_in_each_turn`, which writes an element first in each turn of an inner loop.
+//
+// The program runs the two sums with 4 CPU workers. The CPU gives each worker a part of a loop
+// that the compiler splits, so a split sum would be 16, not 64.
+//
+// Each MLIR line below is a function's name and the end of its `spawn` region, where the marks of
+// a split are.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | awk '/func.func @/ {f=$2} /topology_name/ {print f, $0}' | FileCheck %s --check-prefix=MLIR
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | awk '/func.func @/ {f=$2} /topology_name/ {print f, $0}' | FileCheck %s --check-prefix=MLIR
+// MLIR-DAG: {{^}}@running_total({{.*}} {topology_name = "GPU[0]"}{{$}}
+// MLIR-DAG: {{^}}@sum_in_a_tensor({{.*}} {topology_name = "GPU[0]"}{{$}}
+// MLIR-DAG: {{^}}@normalize({{.*}} {topology_name = "GPU[0]"}{{$}}
+// MLIR-DAG: {{^}}@written_in_an_if({{.*}} {topology_name = "GPU[0]"}{{$}}
+// MLIR-DAG: {{^}}@last_of_a_split_loop({{.*}} {topology_name = "GPU[0]"}{{$}}
+// MLIR-DAG: {{^}}@another_threads_element({{.*}} {topology_name = "GPU[0]"}{{$}}
+// MLIR-DAG: {{^}}@index_changed_in_the_pass({{.*}} {topology_name = "GPU[0]"}{{$}}
+// MLIR-DAG: {{^}}@shadowed_in_an_inner_loop({{.*}} {topology_name = "GPU[0]"}{{$}}
+// MLIR-DAG: {{^}}@written_in_a_loop_that_may_not_run({{.*}} {topology_name = "GPU[0]"}{{$}}
+// MLIR-DAG: {{^}}@scratch_set_in_each_pass({{.*}} {topology_name = "GPU[0]", vx_parallel_trip = 64 : i64}{{$}}
+// MLIR-DAG: {{^}}@scratch_set_in_each_thread_pass({{.*}} {topology_name = "GPU[0]", vx_parallel_threads = 64 : i64, vx_parallel_trip = 8 : i64, vx_parallel_two_level}{{$}}
+// MLIR-DAG: {{^}}@tensor_set_in_each_pass({{.*}} {topology_name = "GPU[0]", vx_parallel_trip = 64 : i64}{{$}}
+// MLIR-DAG: {{^}}@scratch_set_in_each_turn({{.*}} {topology_name = "GPU[0]", vx_parallel_trip = 64 : i64}{{$}}
+// MLIR-DAG: {{^}}@last_reset_between_loops({{.*}} {topology_name = "GPU[0]", vx_parallel_threads = 64 : i64, vx_parallel_trip = 8 : i64, vx_parallel_two_level}{{$}}
+//
+// RUN: env VX_HOST_THREADS=4 vxc %s 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
+// OUT-NOT: Warning
+// OUT: {{^}}1 64{{$}}
+// OUT-NEXT: {{^}}1 64{{$}}
+
+Memory CPU_DRAM {}
+
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM,
+  capacity: 24 GiB,
+  bandwidth: 300 GB/s,
+  managed: cached,
+  scope: device
+}
+
+fn running_total(out : &mut Tensor<f32, [64, 1], Memory::GPU_HBM>, src : &Tensor<f32, [64, 1], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    let mut total : f32 = 0.0;
+    for i in 0..64 {
+      total += src[i][0];
+      out[i][0] = total;
+    }
+  }
+  return;
+}
+
+fn sum_in_a_tensor(out : &mut Tensor<f32, [64, 1], Memory::GPU_HBM>, src : &Tensor<f32, [64, 1], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    let mut total = Tensor<f32, [1, 1]>::fill(0.0);
+    for i in 0..64 {
+      total[0][0] += src[i][0];
+      out[i][0] = total[0][0];
+    }
+  }
+  return;
+}
+
+pub fn normalize(out : &mut Tensor<f32, [512, 1], Memory::GPU_HBM>, src : &Tensor<f32, [512, 1], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    for h in 0..8 {
+      let mut total : f32 = 0.0;
+      for d in 0..64 {
+        total += src[h * 64 + d][0];
+      }
+      for d in 0..64 {
+        out[h * 64 + d][0] = src[h * 64 + d][0] / total;
+      }
+    }
+  }
+  return;
+}
+
+pub fn written_in_an_if(out : &mut Tensor<f32, [64, 1], Memory::GPU_HBM>, src : &Tensor<f32, [64, 1], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    let mut s = Tensor<f32, [1, 1]>::fill(0.0);
+    for i in 0..64 {
+      if i > 3 {
+        s[0][0] = src[i][0];
+      }
+      out[i][0] = s[0][0];
+    }
+  }
+  return;
+}
+
+pub fn last_of_a_split_loop(out : &mut Tensor<f32, [512, 1], Memory::GPU_HBM>, src : &Tensor<f32, [512, 1], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    for h in 0..8 {
+      let mut last : f32 = 0.0;
+      for d in 0..64 {
+        last = src[h * 64 + d][0];
+        out[h * 64 + d][0] = last;
+      }
+      for d in 0..64 {
+        out[h * 64 + d][0] = out[h * 64 + d][0] + last;
+      }
+    }
+  }
+  return;
+}
+
+pub fn another_threads_element(out : &mut Tensor<f32, [512, 1], Memory::GPU_HBM>, src : &Tensor<f32, [512, 1], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    let mut row = unsafe { Tensor<f32, [64, 1]>::uninit() };
+    for h in 0..8 {
+      for d in 0..64 {
+        row[d][0] = src[h * 64 + d][0];
+      }
+      for d in 0..64 {
+        out[h * 64 + d][0] = row[63 - d][0];
+      }
+    }
+  }
+  return;
+}
+
+pub fn scratch_set_in_each_pass(out : &mut Tensor<f32, [64, 1], Memory::GPU_HBM>, src : &Tensor<f32, [64, 4], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    let mut row : f32 = 0.0;
+    for i in 0..64 {
+      row = 0.0;
+      for j in 0..4 {
+        row += src[i][j];
+      }
+      out[i][0] = row;
+    }
+  }
+  return;
+}
+
+pub fn scratch_set_in_each_thread_pass(out : &mut Tensor<f32, [512, 1], Memory::GPU_HBM>, src : &Tensor<f32, [512, 1], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    for h in 0..8 {
+      let mut twice : f32 = 0.0;
+      for d in 0..64 {
+        twice = src[h * 64 + d][0] * 2.0;
+        out[h * 64 + d][0] = twice;
+      }
+    }
+  }
+  return;
+}
+
+pub fn tensor_set_in_each_pass(out : &mut Tensor<f32, [64, 1], Memory::GPU_HBM>, src : &Tensor<f32, [64, 1], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    let mut s = Tensor<f32, [1, 1]>::fill(0.0);
+    for i in 0..64 {
+      s[0][0] = src[i][0] * 2.0;
+      out[i][0] = s[0][0];
+    }
+  }
+  return;
+}
+
+pub fn index_changed_in_the_pass(out : &mut Tensor<f32, [64, 1], Memory::GPU_HBM>, src : &Tensor<f32, [64, 1], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    let mut s = Tensor<f32, [2, 1]>::fill(0.0);
+    let mut k = 0;
+    for i in 0..64 {
+      k = i % 2;
+      s[k][0] = src[i][0];
+      k = 1 - k;
+      out[i][0] = s[k][0];
+    }
+  }
+  return;
+}
+
+pub fn last_reset_between_loops(out : &mut Tensor<f32, [512, 1], Memory::GPU_HBM>, src : &Tensor<f32, [512, 1], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    for h in 0..8 {
+      let mut last : f32 = 0.0;
+      for d in 0..64 {
+        last = src[h * 64 + d][0];
+        out[h * 64 + d][0] = last;
+      }
+      last = 1.0;
+      for d in 0..64 {
+        out[h * 64 + d][0] = out[h * 64 + d][0] + last;
+      }
+    }
+  }
+  return;
+}
+
+pub fn shadowed_in_an_inner_loop(out : &mut Tensor<f32, [64, 1], Memory::GPU_HBM>, src : &Tensor<f32, [64, 1], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    let mut total : f32 = 0.0;
+    for i in 0..64 {
+      for j in 0..1 {
+        let total : f32 = 1.0;
+        out[i][j] = total;
+      }
+      total += src[i][0];
+      out[i][0] = total;
+    }
+  }
+  return;
+}
+
+pub fn scratch_set_in_each_turn(out : &mut Tensor<f32, [64, 8], Memory::GPU_HBM>, src : &Tensor<f32, [64, 8], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    let mut s = Tensor<f32, [1, 8]>::fill(0.0);
+    for i in 0..64 {
+      for d in 0..8 {
+        s[0][d] = src[i][d] * 0.5;
+        out[i][d] = s[0][d] + 1.0;
+      }
+    }
+  }
+  return;
+}
+
+pub fn written_in_a_loop_that_may_not_run(out : &mut Tensor<f32, [64, 1], Memory::GPU_HBM>, src : &Tensor<f32, [64, 1], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    let mut s = Tensor<f32, [1, 1]>::fill(0.0);
+    let mut k = 0;
+    for i in 0..64 {
+      k = i % 2;
+      for j in 0..k {
+        s[0][0] = src[i][0];
+      }
+      out[i][0] = s[0][0];
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let src = transfer(Tensor<f32, [64, 1]>::fill(1.0), Memory::GPU_HBM);
+  let mut out = transfer(Tensor<f32, [64, 1]>::fill(0.0), Memory::GPU_HBM);
+  running_total(&mut out, &src);
+  let back = transfer(out, Memory::CPU_DRAM);
+  println!("{} {}", back[0][0], back[63][0]);
+  let mut out2 = transfer(Tensor<f32, [64, 1]>::fill(0.0), Memory::GPU_HBM);
+  sum_in_a_tensor(&mut out2, &src);
+  let back2 = transfer(out2, Memory::CPU_DRAM);
+  println!("{} {}", back2[0][0], back2[63][0]);
+  return 0;
+}

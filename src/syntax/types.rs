@@ -790,7 +790,7 @@ pub fn memory_variable(p: &Placement) -> Option<&Symbol> {
 }
 
 /// `place`, with a memory variable replaced by the memory that `mapping` binds it to.
-fn substitute_memory(
+pub(crate) fn substitute_memory(
     place: &Option<Placement>,
     mapping: &std::collections::HashMap<Symbol, Type>,
 ) -> Option<Placement> {
@@ -811,7 +811,6 @@ pub enum Type {
     /// different types and get different monomorphs (Vx#401); each is a [`Dim`], so a
     /// run-time extent is spelled per position rather than by a different type.
     Tensor(ElementType, Vec<Dim>, Option<Placement>),
-    Matrix,
     Ref(Box<Type>, MemorySpace),
     Borrow {
         inner: Box<Type>,
@@ -910,7 +909,6 @@ impl Type {
         match self {
             Type::Ref(_, _)
             | Type::Tensor(_, _, _)
-            | Type::Matrix
             | Type::Verified(_)
             | Type::Pinned(_, _)
             | Type::Enum(_, _) => true,
@@ -952,9 +950,11 @@ impl Type {
                 is_mut: *is_mut,
                 region_id: *region_id,
             },
-            Type::Pointer(inner, mem, is_mut) => {
-                Type::Pointer(Box::new(inner.substitute(mapping)), mem.clone(), *is_mut)
-            }
+            Type::Pointer(inner, mem, is_mut) => Type::Pointer(
+                Box::new(inner.substitute(mapping)),
+                substitute_memory(mem, mapping),
+                *is_mut,
+            ),
             Type::Tensor(el_ty, dims, top) => {
                 let new_el_ty = if let ElementType::Generic(ref name) = el_ty {
                     if let Some(Type::Scalar(concrete_el)) = mapping.get(name) {
@@ -1054,8 +1054,7 @@ impl Type {
                 params.iter().any(Type::mentions_tensor) || ret.mentions_tensor()
             }
             Type::Module(_, exports) => exports.values().any(Type::mentions_tensor),
-            Type::Matrix
-            | Type::Scalar(_)
+            Type::Scalar(_)
             | Type::Struct(..)
             | Type::Enum(..)
             | Type::Generic(..)
@@ -1083,8 +1082,7 @@ impl Type {
                 params.iter().any(Type::states_a_location) || ret.states_a_location()
             }
             Type::Module(_, exports) => exports.values().any(Type::states_a_location),
-            Type::Matrix
-            | Type::Scalar(_)
+            Type::Scalar(_)
             | Type::Struct(..)
             | Type::Enum(..)
             | Type::Generic(..)
@@ -1515,7 +1513,6 @@ impl std::fmt::Display for Type {
             Type::Verified(inner) => write!(f, "Verified<{inner}>"),
             Type::Ref(inner, space) => write!(f, "Ref<{inner}, Memory::{}>", space.name()),
             Type::Pinned(inner, topo) => write!(f, "Pinned<{inner}, {topo}>"),
-            Type::Matrix => write!(f, "Matrix"),
             Type::Module(path, _) => write!(f, "module {path}"),
         }
     }
@@ -1568,7 +1565,6 @@ impl Mangle for Type {
                 }
                 Ok(())
             }
-            Type::Matrix => write!(w, "Matrix"),
             Type::Struct(name, _) => write!(w, "{}", name),
             Type::Enum(name, _) => write!(w, "{}", name),
             Type::Generic(name, _) => write!(w, "{}", name),
@@ -1804,7 +1800,6 @@ mod tests {
     #[test]
     fn test_type_is_linear_true_cases() {
         assert!(Type::Tensor(ElementType::F32, vec![], None).is_linear());
-        assert!(Type::Matrix.is_linear());
         assert!(Type::Ref(
             Box::new(Type::Scalar(ElementType::I32)),
             MemorySpace::CPUDRAM

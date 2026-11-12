@@ -1372,41 +1372,60 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// The fact that `place = value` gives, such as `x == e` for `x = e`, for an integer variable.
-    /// Call it before the assignment ends the old facts. The old value gets a new name, `$old_N`,
-    /// in the facts and in the value. So the facts about it stay true, such as `y == x` after
-    /// `let y = x; x = 0;`, and in `x = x + 1` the `x` on the right is the old value.
-    pub(crate) fn fact_of_an_assignment(
+    /// Before an assignment to the integer variable `place`: gives the old value a new name,
+    /// `$old_N`, in each fact, so the facts about it stay true, such as `y == x` after
+    /// `let y = x; x = 0;`. A fact that still names `x` after the rename ends. Returns the
+    /// renaming, or `None` when the assignment must end the facts as any other change does.
+    pub(crate) fn name_the_old_value(
         &mut self,
         place: &Expr,
-        value: &Expr,
         ty: &Type,
-    ) -> Option<Expr> {
+    ) -> Option<std::collections::HashMap<crate::symbol::Symbol, Expr>> {
         let Expr::Identifier(id) = place else {
             return None;
         };
-        let is_int =
-            matches!(ty, Type::Scalar(e) if e.int_bits().is_some() && *e != ElementType::Bool);
+        let int = match ty {
+            Type::Scalar(e) if e.int_bits().is_some() && *e != ElementType::Bool => e,
+            _ => return None,
+        };
         // A change inside a call ends the facts after the call, which would end this fact too.
-        if !is_int || !self.fact_change_frames.is_empty() {
+        if !self.fact_change_frames.is_empty() {
             return None;
         }
         let old = Expr::Identifier(IdentifierExpr {
-            name: format!("$old_{}", self.old_values).into(),
+            name: format!("$old_{}", self.old_values.len()).into(),
             span: Span::default(),
         });
-        self.old_values += 1;
+        self.old_values.push(int.clone());
+        let x = id.name.as_ref();
         let names = std::collections::HashMap::from([(id.name.clone(), old)]);
+        // Only a fact that names `x` changes, so a long run of assignments does not copy every
+        // fact at each one.
         for c in self.consteval.constraints.iter_mut() {
-            *c = crate::hir::prover::substitute_names(c, &names);
+            if expr_mentions(c, x) {
+                *c = crate::hir::prover::substitute_names(c, &names);
+                if expr_mentions(c, x) {
+                    *c = no_fact();
+                }
+            }
         }
+        Some(names)
+    }
+
+    /// The fact `place == value` after `name_the_old_value` gave the old value its new name in
+    /// `names`. In `x = x + 1`, the `x` on the right is the old value.
+    pub(crate) fn fact_of_an_assignment(
+        place: &Expr,
+        value: &Expr,
+        names: &std::collections::HashMap<crate::symbol::Symbol, Expr>,
+    ) -> Option<Expr> {
         if !crate::hir::prover::is_modelled(value) {
             return None;
         }
         Some(Expr::RelationalOp(RelationalOpExpr {
             lhs: Box::new(place.clone()),
             op: RelationalOp::Eq,
-            rhs: Box::new(crate::hir::prover::substitute_names(value, &names)),
+            rhs: Box::new(crate::hir::prover::substitute_names(value, names)),
             span: Span::default(),
             operand_ty: None,
         }))
@@ -1571,7 +1590,7 @@ impl<'a> TypeChecker<'a> {
             Expr::IndirectCall(ic) => &ic.args,
             _ => &[],
         };
-        let events = |this: &mut Self| this.pointer_facts_at_call(expr, written);
+        let events = |this: &mut Self| this.pointer_facts_at_call(expr, written, &ty);
         self.pointer_facts_events_then_changes(events, |this| {
             let params = match &*expr {
                 Expr::FunctionCall(fc) => this.call_param_types(fc.name.as_ref(), expr),
@@ -1617,6 +1636,24 @@ impl<'a> TypeChecker<'a> {
             other => self.type_can_hold_reference(&other),
         }
     }
+}
+
+/// `0 == 0`, which takes the place of a fact that ends, so the index of each later fact stays.
+pub(crate) fn no_fact() -> Expr {
+    let zero = || {
+        Box::new(Expr::Number(NumberExpr {
+            value: "0".to_string().into(),
+            ty: None,
+            span: Span::default(),
+        }))
+    };
+    Expr::RelationalOp(RelationalOpExpr {
+        lhs: zero(),
+        op: RelationalOp::Eq,
+        rhs: zero(),
+        span: Span::default(),
+        operand_ty: None,
+    })
 }
 
 /// Does the expression mention identifier `name` anywhere? Conservative: an expression

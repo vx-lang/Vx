@@ -1,0 +1,38 @@
+//===- a_local_function_pointer_hides_a_function.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// In `main`, the local `add` holds a function pointer, and it hides the function `add`. The
+// checker took the local, but both code generators called the function, and each one crashed.
+// `declared` sees no local `add`, so it calls the function.
+//
+// EXPECT: 14 200
+
+import core::ops;
+
+struct Rules {
+  add : Closure1<i32, i32>,
+}
+
+fn add(x : i32) -> i32 {
+  return x * 100;
+}
+
+fn declared() -> i32 {
+  return add(2);
+}
+
+fn main() -> i32 {
+  let k : i32 = 10;
+  let r : Rules = Rules {
+    add : | x : i32 | x + k
+  };
+  let add = r.add.func;
+  print(add(r.add.env, 4));
+  print!(" ");
+  print(declared());
+  return 0;
+}

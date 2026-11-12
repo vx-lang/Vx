@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Warning --implicit-check-not=Error
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Warning --implicit-check-not=Error # flat-codegen
 //
 // In a cancelled task, each wait gives `Cancelled` at once. A `loop` or `while` whose arm takes
 // `Cancelled` and does not leave the loop then never ends, so the compiler warns about the arm.

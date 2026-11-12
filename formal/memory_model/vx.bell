@@ -19,8 +19,8 @@ let wider(t) = match t with
 
 enum kinds = 'barrier
 
-(* An access has an order, and an atomic may also have a scope: r[acq,block]. A fence has an
-   order, or it is a barrier of a scope: f[barrier,block]. *)
+(* An access or a fence has an order, and it may also have a scope: r[acq,block], f[rel,device].
+   A barrier is a fence with a scope and no order: f[barrier,block]. *)
 instructions R[orders]
 instructions R[orders,scopes]
 instructions W[orders]
@@ -28,4 +28,5 @@ instructions W[orders,scopes]
 instructions RMW[orders]
 instructions RMW[orders,scopes]
 instructions F[orders]
+instructions F[orders,scopes]
 instructions F[kinds,scopes]

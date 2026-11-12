@@ -22,7 +22,7 @@ use super::super::*;
 use crate::diagnostic::DiagnosticCode;
 use crate::hir::check::thread_safety::ThreadTrait;
 use crate::syntax::{Span, TaskBlockExpr, TaskBlockKind};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// What the checker knows about the `tasks` blocks and tasks around the code it checks.
 #[derive(Default)]
@@ -32,6 +32,8 @@ pub(crate) struct TaskCx {
     /// The task handles that `let h = spawn { .. }` made, in the order of their `let`s.
     handles: Vec<Handle>,
     next_id: usize,
+    /// The number of the next `tasks` block, unique in the program as task names are.
+    next_block: usize,
     /// The `spawn`s whose task a later statement of the same block always joins.
     joined_in_block: HashSet<Span>,
     /// The `h.join()` calls that always run after the `spawn` of `h`, in the same block. Such a
@@ -45,10 +47,22 @@ pub(crate) struct TaskCx {
     joining: bool,
     /// The tasks started in a loop that is in their `tasks` block.
     loop_tasks: Vec<LoopTask>,
+    /// The `spawn` of each task, by its name, and where the task first uses each variable from
+    /// outside it. A borrow error names them when a task holds the borrow.
+    sites: HashMap<String, TaskSite>,
+    /// `placement_order` at the join that always runs after the `spawn` of each task, by the
+    /// number of the task. The task has ended there.
+    ended: HashMap<usize, usize>,
+}
+
+struct TaskSite {
+    spawn: Span,
+    used_at: BTreeMap<crate::symbol::Symbol, Span>,
 }
 
 enum Frame {
     Tasks {
+        block: usize,
         /// `scopes.len()` in the block. A task's borrow made at this depth lasts until the end
         /// of the block.
         scope_len: usize,
@@ -61,18 +75,41 @@ enum Frame {
         passed_up: Vec<(Type, Span)>,
     },
     Spawn {
+        run: TaskRun,
         /// `scopes.len()` before the body. A variable of a lower scope is from outside the task.
         depth: usize,
         closures: usize,
         loops: usize,
         /// Each variable from outside that the body names, with its type.
         used: BTreeMap<crate::symbol::Symbol, Type>,
+        /// Where the body first names each variable of `used`.
+        used_at: BTreeMap<crate::symbol::Symbol, Span>,
         /// The error type and the place of each `?` that passes an error up to the task.
         passed_up: Vec<(Type, Span)>,
     },
 }
 
 impl TaskCx {
+    /// Each `tasks` block around the code being checked, outermost first, with the task of that
+    /// block that the code is in.
+    pub(crate) fn task_chain(&self) -> Vec<TaskLevel> {
+        let mut chain: Vec<TaskLevel> = Vec::new();
+        for f in &self.frames {
+            match f {
+                Frame::Tasks { block, .. } => chain.push(TaskLevel {
+                    block: *block,
+                    run: None,
+                }),
+                Frame::Spawn { run, .. } => {
+                    if let Some(last) = chain.last_mut() {
+                        last.run = Some(*run);
+                    }
+                }
+            }
+        }
+        chain
+    }
+
     /// The scope of the `spawn` of the task body whose top scope is `scope`.
     pub(crate) fn spawn_scope_of_body(&self, scope: usize) -> Option<usize> {
         self.frames.iter().find_map(|f| match f {
@@ -129,6 +166,28 @@ pub(crate) enum SpawnPlace {
     Statement,
 }
 
+/// A `tasks` block that code is in, and the task of the block that the code is in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TaskLevel {
+    pub(crate) block: usize,
+    /// `None` is the code of the block itself.
+    pub(crate) run: Option<TaskRun>,
+}
+
+/// A `spawn`, and how many of its tasks can run at the same time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TaskRun {
+    /// The number in the name of the task.
+    pub(crate) task: usize,
+    /// A `spawn` in a loop of the block starts a task in each pass, and nothing ends them before
+    /// the block ends. `None` when the count of passes is not known at compile time.
+    pub(crate) copies: Option<u64>,
+    /// `placement_order` when the first of the tasks can start: at the `spawn`, or at the start of
+    /// the outermost loop of the block around it.
+    pub(crate) start: usize,
+    pub(crate) spawn: Span,
+}
+
 struct LoopTask {
     task: String,
     /// The loops around the `spawn`, counted as `loop_exits.len()`.
@@ -142,16 +201,18 @@ impl TaskCx {
     /// Start the check of a function body, and return the state of the code around it. The
     /// task names stay unique, so that a task of the function never ends one of its caller.
     pub(crate) fn enter_function(&mut self) -> TaskCx {
-        let next_id = self.next_id;
+        let (next_id, next_block) = (self.next_id, self.next_block);
         let outer = std::mem::take(self);
         self.next_id = next_id;
+        self.next_block = next_block;
         outer
     }
 
     pub(crate) fn exit_function(&mut self, outer: TaskCx) {
-        let next_id = self.next_id;
+        let (next_id, next_block) = (self.next_id, self.next_block);
         *self = outer;
         self.next_id = next_id;
+        self.next_block = next_block;
     }
 
     fn handle(&self, name: &str, depth: Option<usize>) -> Option<&Handle> {
@@ -160,6 +221,17 @@ impl TaskCx {
             .iter()
             .rev()
             .find(|h| h.name.as_ref() == name && h.depth == depth)
+    }
+
+    /// The names of the handles of the task that holds the borrow `borrower`: the task, or its
+    /// hold on what it copied.
+    pub(crate) fn handles_of(&self, borrower: &str) -> Vec<String> {
+        let task = borrower.strip_suffix(COPY_SUFFIX).unwrap_or(borrower);
+        self.handles
+            .iter()
+            .filter(|h| h.task == task)
+            .map(|h| h.name.to_string())
+            .collect()
     }
 
     /// The innermost task body, if no closure starts between it and the code being checked.
@@ -178,28 +250,52 @@ const TASK_PREFIX: &str = "task#";
 /// The end of the borrower name of a task's hold on a variable that it copied.
 const COPY_SUFFIX: &str = "/copy";
 
-/// A sentence to add to a borrow error when the borrow `b` belongs to a task.
-pub(crate) fn held_by_task_note(b: &crate::hir::env::BorrowRecord) -> &'static str {
-    match &b.borrower_name {
-        Some(name) if name.starts_with(TASK_PREFIX) && name.ends_with(COPY_SUFFIX) => {
-            " A task that is not joined yet copied it, so it must not change until the task \
-             ends. To give the task the value that it has now, copy it into a new variable \
-             before the `spawn`. To share a value that changes, use an atomic."
-        }
-        Some(name) if name.starts_with(TASK_PREFIX) => {
-            " A task that is not joined yet uses it. A task holds what it uses until its \
-             `join()`, or until the end of its `tasks` block."
-        }
-        _ => "",
-    }
-}
-
 impl TypeChecker<'_> {
-    /// [`held_by_task_note`], or a note that names the closure that holds the borrow.
-    pub(crate) fn held_by_note(&self, b: &crate::hir::env::BorrowRecord) -> String {
-        let task = held_by_task_note(b);
+    /// Sentences to add to a borrow error on `var` when the borrow `b` belongs to a task. They
+    /// name the `spawn` of the task, the line where it uses `var`, and the join that ends it.
+    fn held_by_task_note(&self, b: &crate::hir::env::BorrowRecord, var: &str) -> String {
+        let Some(task) = b
+            .borrower_name
+            .as_deref()
+            .filter(|n| n.starts_with(TASK_PREFIX))
+        else {
+            return String::new();
+        };
+        let copied = task.ends_with(COPY_SUFFIX);
+        let task = task.strip_suffix(COPY_SUFFIX).unwrap_or(task);
+        let site = self.tasks.sites.get(task);
+        let which = match site {
+            Some(site) => format!("The task from the `spawn` at line {}", site.spawn.line),
+            None => "A task".to_string(),
+        };
+        let used_at = site
+            .and_then(|s| s.used_at.get(var))
+            .map(|at| format!(" at line {}", at.line))
+            .unwrap_or_default();
+        let join = match self.tasks.handles.iter().find(|h| h.task == task) {
+            Some(h) => format!(" Call `{}.join()` before this line.", h.name),
+            None => String::new(),
+        };
+        if copied {
+            format!(
+                " {which} copied it{used_at}, and it is not joined yet. So it must not change \
+                 until the task ends.{join} To give the task the value that it has now, copy it \
+                 into a new variable before the `spawn`. To share a value that changes, use an \
+                 atomic."
+            )
+        } else {
+            format!(
+                " {which} uses it{used_at}, and it is not joined yet. A task holds what it uses \
+                 until its `join()`, or until the end of its `tasks` block.{join}"
+            )
+        }
+    }
+
+    /// [`held_by_task_note`], or a note that names the closure that holds the borrow on `var`.
+    pub(crate) fn held_by_note(&self, b: &crate::hir::env::BorrowRecord, var: &str) -> String {
+        let task = self.held_by_task_note(b, var);
         let Some(holder) = b.borrower_name.as_deref().filter(|_| task.is_empty()) else {
-            return task.to_string();
+            return task;
         };
         match self.lookup(holder) {
             Some((Type::Struct(name, _), _)) if name.starts_with("Closure_") => format!(
@@ -207,6 +303,47 @@ impl TypeChecker<'_> {
                 if b.is_mut { "changes" } else { "reads" }
             ),
             _ => String::new(),
+        }
+    }
+
+    fn task_ends_here(&mut self, task: &str) {
+        let number = task
+            .strip_prefix(TASK_PREFIX)
+            .and_then(|n| n.parse().ok())
+            .expect("a task name is the prefix and a number");
+        self.traffic.placement_order += 1;
+        self.tasks
+            .ended
+            .insert(number, self.traffic.placement_order);
+    }
+
+    /// Where each task that a join ends has ended, by the number of the task.
+    pub(crate) fn ended_tasks(&self) -> &HashMap<usize, usize> {
+        &self.tasks.ended
+    }
+
+    /// The count of passes of `for _ in iterable` when the range has constant bounds.
+    pub(crate) fn pass_count(&self, iterable: &Expr) -> Option<u64> {
+        let Expr::Range(r) = iterable else {
+            return None;
+        };
+        let (a, b) = (self.known_int(&r.start)?, self.known_int(&r.end)?);
+        Some(b.saturating_sub(a).max(0) as u64)
+    }
+
+    fn known_int(&self, e: &Expr) -> Option<i64> {
+        match e {
+            Expr::Number(n) => n.value.as_ref().parse::<i64>().ok(),
+            Expr::BinaryOp(b) => {
+                let (l, r) = (self.known_int(&b.lhs)?, self.known_int(&b.rhs)?);
+                match b.op {
+                    BinaryOp::Add => l.checked_add(r),
+                    BinaryOp::Sub => l.checked_sub(r),
+                    BinaryOp::Mul => l.checked_mul(r),
+                    _ => None,
+                }
+            }
+            _ => None,
         }
     }
 }
@@ -293,15 +430,19 @@ impl TypeChecker<'_> {
             self.pointer_facts_enter_body()
         });
         let running = self.pointer_facts_running_tasks();
-        let mut ty = self.check_expr_block(stmts, ret.as_deref(), consume);
-        if let Some(r) = ret {
+        let mut ty = match (*kind, ret.as_deref_mut()) {
+            // The last value of a `tasks` block is checked in the block, as in an `unsafe` block.
+            // So a task that it starts, or a `return` in it, is known when the drops are placed.
+            (TaskBlockKind::Tasks, Some(r)) => {
+                self.check_expr_block_with_value(stmts, r, unused, consume)
+            }
+            _ => self.check_expr_block(stmts, ret.as_deref(), consume),
+        };
+        if let (TaskBlockKind::Spawn, Some(r)) = (*kind, ret) {
             self.value_unused = unused;
             // A `return` of the task gives the type of its last value, as the return type of a
             // function does.
-            let returned = match kind {
-                TaskBlockKind::Spawn => self.current_return_type.clone(),
-                TaskBlockKind::Tasks => None,
-            };
+            let returned = self.current_return_type.clone();
             let outer = self.expected_type.take();
             self.expected_type = returned.filter(|t| *t != Type::Unknown).or(outer.clone());
             ty = self.check_expr_type_flag(r, consume);
@@ -344,7 +485,6 @@ impl TypeChecker<'_> {
             cancels_on_err,
             value_ty,
             closure_body: false,
-            within: false,
         });
     }
 
@@ -360,7 +500,9 @@ impl TypeChecker<'_> {
         let loops = self.borrow.loop_exits.len();
         self.drops_enter_tasks();
         let ty = self.check_task_body(expr, consume, |me| {
+            me.tasks.next_block += 1;
             me.tasks.frames.push(Frame::Tasks {
+                block: me.tasks.next_block,
                 scope_len: me.scopes.len(),
                 closures,
                 loops,
@@ -369,7 +511,9 @@ impl TypeChecker<'_> {
                 passed_up: Vec::new(),
             });
         });
-        self.drops_exit_tasks();
+        if let Some(join_at) = self.drops_exit_tasks() {
+            value_before_tasks_join(expr, join_at, &ty);
+        }
         // The end of the block joins each task that the program did not join (T2).
         let Some(Frame::Tasks {
             scope_len,
@@ -686,16 +830,35 @@ impl TypeChecker<'_> {
         if !ended_by_join {
             self.move_locals_that_end_first(expr, tasks_scope_len);
         }
-        let id = format!("{TASK_PREFIX}{}", self.tasks.next_id);
+        let task = self.tasks.next_id;
+        let id = format!("{TASK_PREFIX}{task}");
         self.tasks.next_id += 1;
         let changed_outside = std::mem::take(&mut self.changed_vars);
         let depth = self.scopes.len();
         let loops = self.borrow.loop_exits.len();
+        // A join in the same block ends the task of a pass before the next pass starts.
+        let in_loops = if ended_by_join {
+            &[][..]
+        } else {
+            &self.borrow.loop_exits[tasks_loops..loops]
+        };
+        let run = TaskRun {
+            task,
+            copies: in_loops
+                .iter()
+                .try_fold(1u64, |n, l| n.checked_mul(l.passes?)),
+            start: in_loops
+                .first()
+                .map_or(self.traffic.placement_order, |l| l.order),
+            spawn: span,
+        };
         self.tasks.frames.push(Frame::Spawn {
+            run,
             depth,
             closures,
             loops,
             used: BTreeMap::new(),
+            used_at: BTreeMap::new(),
             passed_up: Vec::new(),
         });
         // A `return` in the body leaves the task, and its value is the value of the task. The
@@ -704,18 +867,29 @@ impl TypeChecker<'_> {
         let outer_ensures = std::mem::take(&mut self.consteval.current_ensures);
         self.drops_enter_task();
         let mut ty = self.check_task_body(expr, consume, |_| {});
-        self.drops_exit_task();
+        let holds = self.drops_exit_task();
+        if let Expr::TaskBlock(tb) = &mut *expr {
+            tb.stmts.splice(0..0, holds);
+        }
         let returned = std::mem::replace(&mut self.current_return_type, outer_ret);
         self.consteval.current_ensures = outer_ensures;
         self.pop_scope();
         let Some(Frame::Spawn {
             mut used,
+            used_at,
             passed_up,
             ..
         }) = self.tasks.frames.pop()
         else {
             unreachable!("pushed above")
         };
+        self.tasks.sites.insert(
+            id.clone(),
+            TaskSite {
+                spawn: span,
+                used_at,
+            },
+        );
         self.check_task_exits(&ty, returned, &passed_up, place, &span);
         let changed_in_task = std::mem::replace(&mut self.changed_vars, changed_outside);
         self.changed_vars.extend(changed_in_task.iter().cloned());
@@ -1057,9 +1231,16 @@ impl TypeChecker<'_> {
             );
         }
         for frame in &mut self.tasks.frames {
-            if let Frame::Spawn { depth: d, used, .. } = frame {
+            if let Frame::Spawn {
+                depth: d,
+                used,
+                used_at,
+                ..
+            } = frame
+            {
                 if depth < *d {
                     used.entry(name.into()).or_insert_with(|| ty.clone());
+                    used_at.entry(name.into()).or_insert(*span);
                 }
             }
         }
@@ -1127,6 +1308,7 @@ impl TypeChecker<'_> {
         if self.tasks.ending_joins.contains(&span) && !in_other_task {
             self.borrow.end_task(&task);
             self.tasks.loop_tasks.retain(|t| t.task != task);
+            self.task_ends_here(&task);
         }
         // The code waits for the task here, not where it first reads the value.
         if !self.speculating {
@@ -1211,6 +1393,7 @@ impl TypeChecker<'_> {
         if self.tasks.ending_joins.contains(&span) {
             self.borrow.end_task(task);
             self.tasks.loop_tasks.retain(|t| t.task != task);
+            self.task_ends_here(task);
             self.note_failure_joined(handle);
         }
         if !self.speculating {
@@ -1320,6 +1503,48 @@ impl TypeChecker<'_> {
             Some(crate::diagnostic::SourceSpan::from_ast_span(at)),
         );
     }
+}
+
+/// The checked `tasks` block `expr` joins its tasks at statement `join_at`, and then drops what
+/// they use. Its last value of type `ty` moves before the join, so it still runs while the tasks
+/// do. A value that names a variable only reads it, so it stays.
+fn value_before_tasks_join(expr: &mut Expr, join_at: usize, ty: &Type) {
+    let Expr::TaskBlock(tb) = expr else {
+        unreachable!("only a task block reaches here")
+    };
+    if crate::syntax::types::is_never_ty(ty)
+        || matches!(tb.ret.as_deref(), None | Some(Expr::Identifier(_)))
+    {
+        return;
+    }
+    let value = *tb.ret.take().expect("matched above");
+    let span = value.span();
+    let stmt = if crate::syntax::types::is_void_ty(ty) {
+        // The block has no value now, so the drops after the join wait for nothing.
+        for s in &mut tb.stmts[join_at..] {
+            if let Statement::Drop(d) = s {
+                d.after_value = false;
+            }
+        }
+        Statement::ExprStmt(ExprStmtStmt {
+            expr: value,
+            has_semi: true,
+            span,
+        })
+    } else {
+        tb.ret = Some(Box::new(Expr::Identifier(IdentifierExpr::new(
+            "$value".into(),
+            span,
+        ))));
+        Statement::LetDecl(LetDeclStmt {
+            name: "$value".into(),
+            is_mut: false,
+            ty_ann: Some(ty.clone()),
+            expr: value,
+            span,
+        })
+    };
+    tb.stmts.insert(join_at, stmt);
 }
 
 /// Find the joins that end a task's borrows: for `let h = spawn { .. }` in a block, the first
