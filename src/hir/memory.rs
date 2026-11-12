@@ -717,6 +717,7 @@ mod tests {
             overcommit: false,
             crossing: crate::syntax::Crossing::default(),
             numa_node: None,
+            place: Default::default(),
             doc_comment: None,
         }
     }

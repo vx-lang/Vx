@@ -20,5 +20,5 @@ fn main() -> i32 {
 
 // Nothing downstream can catch this: the binding is substituted into the impl's signatures
 // before name resolution, so a missing one leaves the impl's own `-> i64` to be trusted.
-// CHECK: E3037
+// CHECK: E3037] at {{.*}}associated_type_not_bound.vx:9:1:
 // CHECK-SAME: does not bind the associated type 'Item'

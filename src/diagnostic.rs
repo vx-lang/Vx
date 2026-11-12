@@ -992,6 +992,13 @@ impl std::fmt::Display for Diagnostic {
     }
 }
 
+/// Where diagnostics point: a file, and a place in it.
+#[derive(Debug, Clone)]
+pub struct Here {
+    file: Option<crate::symbol::Symbol>,
+    at: crate::syntax::Span,
+}
+
 #[derive(Debug, Clone)]
 pub struct DiagnosticsVec {
     pub inner: Vec<Diagnostic>,
@@ -1010,6 +1017,36 @@ impl DiagnosticsVec {
             file: None,
             at: crate::syntax::Span::default(),
         }
+    }
+
+    /// Point at a statement that the checker starts, and return the place to put back after
+    /// it. A statement that the compiler wrote has no place, and keeps the place around it.
+    pub fn enter_statement(&mut self, span: crate::syntax::Span) -> crate::syntax::Span {
+        let prev = self.at;
+        if span != crate::syntax::Span::default() {
+            self.at = span;
+        }
+        prev
+    }
+
+    /// Where diagnostics point now, to give back to `point_back`.
+    pub fn here(&self) -> Here {
+        Here {
+            file: self.file.clone(),
+            at: self.at,
+        }
+    }
+
+    /// Point the diagnostics that follow at a declaration: in its file, at its name. A
+    /// declaration that the compiler wrote has no file, and keeps the file of `outside`.
+    pub fn point_at(&mut self, place: &crate::syntax::DeclPlace, outside: &Here) {
+        self.file = place.file.clone().or_else(|| outside.file.clone());
+        self.at = place.span;
+    }
+
+    pub fn point_back(&mut self, here: Here) {
+        self.file = here.file;
+        self.at = here.at;
     }
 
     /// `span`, or where the checker is when `span` is `None`.

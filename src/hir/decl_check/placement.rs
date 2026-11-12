@@ -42,8 +42,7 @@ impl TypeChecker<'_> {
             order: (String, usize),
             context: String,
             ty: crate::syntax::Type,
-            file: Option<crate::symbol::Symbol>,
-            span: crate::syntax::Span,
+            place: crate::syntax::DeclPlace,
         }
         let mut sites: Vec<Site> = Vec::new();
         for (name, f) in &self.env.syntax_functions {
@@ -61,8 +60,10 @@ impl TypeChecker<'_> {
                         order: (format!("function '{name}'"), i),
                         context,
                         ty: ty.clone(),
-                        file: f.file.clone(),
-                        span: f.span,
+                        place: crate::syntax::DeclPlace {
+                            file: f.file.clone(),
+                            span: f.span,
+                        },
                     });
                 }
             }
@@ -75,24 +76,21 @@ impl TypeChecker<'_> {
                         order: (context.clone(), 0),
                         context,
                         ty: ty.clone(),
-                        file: s.file.clone(),
-                        span: crate::syntax::Span::default(),
+                        place: s.place.clone(),
                     });
                 }
             }
         }
         sites.sort_by(|a, b| a.order.cmp(&b.order));
 
+        let outside = self.errors.here();
         for site in sites {
-            let file = site.file.or_else(|| self.errors.file.clone());
-            let prev_file = std::mem::replace(&mut self.errors.file, file);
-            let prev_at = std::mem::replace(&mut self.errors.at, site.span);
+            self.errors.point_at(&site.place, &outside);
             // A declared position states where a tensor lives without allocating one here,
             // so it takes the per-tile verdict and stays out of any function's working set.
-            self.check_declared_type_placement(&site.ty, &site.context, &site.span);
-            self.errors.file = prev_file;
-            self.errors.at = prev_at;
+            self.check_declared_type_placement(&site.ty, &site.context, &site.place.span);
         }
+        self.errors.point_back(outside);
     }
 
     /// Report every placement inside `ty` that names no place.

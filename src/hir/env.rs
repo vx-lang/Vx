@@ -67,6 +67,8 @@ pub struct DuplicateImpl {
     /// The module of the impl indexed first, and of the one that repeats it.
     pub first: crate::symbol::Symbol,
     pub second: crate::symbol::Symbol,
+    /// Where the second impl is written.
+    pub place: crate::syntax::DeclPlace,
 }
 
 /// One `Memory`/`Topology` name declared by two modules with *different* declarations — see
@@ -78,6 +80,8 @@ pub struct DuplicateDecl {
     pub name: crate::symbol::Symbol,
     /// The module whose declaration collided with one already indexed.
     pub module: crate::symbol::Symbol,
+    /// Where that declaration is written.
+    pub place: crate::syntax::DeclPlace,
 }
 
 pub struct GlobalAstEnv<'a> {
@@ -203,6 +207,7 @@ impl<'a> GlobalAstEnv<'a> {
                             kind: "memory space",
                             name: m.name.clone(),
                             module: module.module_path.clone(),
+                            place: m.place.clone(),
                         });
                     }
                 }
@@ -217,6 +222,7 @@ impl<'a> GlobalAstEnv<'a> {
                             kind: "topology",
                             name: t.name.clone(),
                             module: module.module_path.clone(),
+                            place: t.place.clone(),
                         });
                     }
                 }
@@ -231,6 +237,10 @@ impl<'a> GlobalAstEnv<'a> {
                             kind: "const",
                             name: c.name.clone(),
                             module: module.module_path.clone(),
+                            place: crate::syntax::DeclPlace {
+                                file: module.file.clone(),
+                                span: c.span,
+                            },
                         });
                     }
                 }
@@ -258,6 +268,7 @@ impl<'a> GlobalAstEnv<'a> {
                                 what: what.clone(),
                                 first: first.clone(),
                                 second: module.module_path.clone(),
+                                place: i.place.clone(),
                             })
                         }
                         Some(_) => {}

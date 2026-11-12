@@ -15,4 +15,4 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: E6005
+// CHECK: E6005] at {{.*}}incoherent_topology_default_not_visible.vx:6:10:

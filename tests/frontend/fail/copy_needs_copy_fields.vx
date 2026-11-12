@@ -22,7 +22,7 @@ struct HoldsTensor {
 }
 
 impl Copy for HoldsTensor {}
-// CHECK: Error[E3031]{{.*}}'HoldsTensor' cannot be `Copy`: its field 't' has type Tensor<f32, [4]>
+// CHECK: Error[E3031] at {{.*}}copy_needs_copy_fields.vx:24:1: 'HoldsTensor' cannot be `Copy`: its field 't' has type Tensor<f32, [4]>
 
 enum CarriesTensor {
   Plain,
@@ -30,7 +30,7 @@ enum CarriesTensor {
 }
 
 impl Copy for CarriesTensor {}
-// CHECK: Error[E3031]{{.*}}'CarriesTensor' cannot be `Copy`: its variant 'WithTensor' has type Tensor<f32, [4]>
+// CHECK: Error[E3031] at {{.*}}copy_needs_copy_fields.vx:32:1: 'CarriesTensor' cannot be `Copy`: its variant 'WithTensor' has type Tensor<f32, [4]>
 
 struct Plain {
   a : i32,
@@ -41,7 +41,7 @@ struct HoldsPlain {
 }
 
 impl Copy for HoldsPlain {}
-// CHECK: Error[E3031]{{.*}}'HoldsPlain' cannot be `Copy`: its field 'p' has type Plain
+// CHECK: Error[E3031] at {{.*}}copy_needs_copy_fields.vx:43:1: 'HoldsPlain' cannot be `Copy`: its field 'p' has type Plain
 
 fn main() -> i32 {
   return 0;
