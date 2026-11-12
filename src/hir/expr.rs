@@ -213,10 +213,9 @@ impl<'a> TypeChecker<'a> {
                 let consume =
                     consume && !(self.value_unused && matches!(expr, Expr::Identifier(_)));
                 self.allow_spawn_statement(expr);
-                let prev_statement_span =
-                    std::mem::replace(&mut self.current_statement_span, *stmt_span);
+                let prev_statement_span = std::mem::replace(&mut self.errors.at, *stmt_span);
                 let ty = self.check_expr_type_flag(expr, consume);
-                self.current_statement_span = prev_statement_span;
+                self.errors.at = prev_statement_span;
                 if !*has_semi {
                     // A last expression that never finishes, `todo()`, gives the block the type
                     // `!` but no value: it is a statement, after which nothing runs.
@@ -508,7 +507,7 @@ impl<'a> TypeChecker<'a> {
         if !untyped_literal && !self.speculating && self.active_space_declares_dtypes {
             // Most expression nodes carry no span of their own, so point at the statement
             // that contains them instead.
-            let statement = self.current_statement_span;
+            let statement = self.errors.at;
             let (span, context) = if span.line != 0 {
                 (span, "this expression")
             } else {

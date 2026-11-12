@@ -998,6 +998,9 @@ pub struct DiagnosticsVec {
     /// The file whose code is being checked. Every diagnostic reported from now on names it.
     /// The checker sets it from each function it checks, and puts the previous one back after.
     pub file: Option<crate::symbol::Symbol>,
+    /// Where the checker is in `file`: the statement it checks, or the function outside its
+    /// statements. A diagnostic reported with no place of its own points there.
+    pub at: crate::syntax::Span,
 }
 
 impl DiagnosticsVec {
@@ -1005,7 +1008,15 @@ impl DiagnosticsVec {
         Self {
             inner: Vec::new(),
             file: None,
+            at: crate::syntax::Span::default(),
         }
+    }
+
+    /// `span`, or where the checker is when `span` is `None`.
+    fn place(&self, span: Option<SourceSpan>) -> Option<SourceSpan> {
+        span.or_else(|| {
+            (self.at != crate::syntax::Span::default()).then(|| SourceSpan::from_ast_span(&self.at))
+        })
     }
 
     pub fn report(&mut self, level: DiagnosticLevel, message: impl Into<Cow<'static, str>>) {
@@ -1031,7 +1042,7 @@ impl DiagnosticsVec {
             code: None,
             message: message.into(),
             span: None,
-            source_span: None,
+            source_span: self.place(None),
             file: self.file.clone(),
             notes: Vec::new(),
             fix_its: Vec::new(),
@@ -1052,7 +1063,7 @@ impl DiagnosticsVec {
             code: Some(code),
             message: message.into(),
             span: None,
-            source_span: span,
+            source_span: self.place(span),
             file: self.file.clone(),
             notes: Vec::new(),
             fix_its: Vec::new(),
@@ -1074,7 +1085,7 @@ impl DiagnosticsVec {
             code: Some(code),
             message: message.into(),
             span: None,
-            source_span: span,
+            source_span: self.place(span),
             file: self.file.clone(),
             notes: Vec::new(),
             fix_its: Vec::new(),

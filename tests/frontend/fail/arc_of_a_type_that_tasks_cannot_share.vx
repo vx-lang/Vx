@@ -30,8 +30,8 @@ fn move_an_arc_of_a_cell_into_a_task() -> void {
 fn keep<T : Owned>(_v : T) -> void {
 }
 
-// CHECK: Error in {{.*}}arc_of_a_type_that_tasks_cannot_share.vx: Type 'Arc<&i64>' does not implement trait 'Owned' required by parameter 'T': `unsafe impl Owned for Arc<T>` needs `T : Owned`, and '&i64' is a reference, which is not `Owned`
 fn keep_an_arc_of_a_reference(x : &i64) -> void {
+  // CHECK: Error at {{.*}}arc_of_a_type_that_tasks_cannot_share.vx:[[@LINE+1]]:3: Type 'Arc<&i64>' does not implement trait 'Owned' required by parameter 'T': `unsafe impl Owned for Arc<T>` needs `T : Owned`, and '&i64' is a reference, which is not `Owned`
   keep(Arc<&i64>::new(x));
 }
 
