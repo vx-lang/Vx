@@ -404,17 +404,9 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
         // at the first variable the value was bound to -- every `let` is an `alloca` and a store,
         // and the read is a load whose operand is the slot. The way home was compiled into a
         // `memcpy` from device memory for exactly that reason (#321, #348).
-        // A borrowed tensor says it with its placement, and no transfer made it there.
-        let source_topology_id = match gen.infer_ast_type(&self.expr) {
-            Some(syntax::Type::Pinned(_, top)) => crate::arch::topology_dispatch_id(&top),
-            Some(syntax::Type::Borrow { inner, .. }) => match *inner {
-                syntax::Type::Tensor(_, _, Some(p)) => {
-                    crate::arch::topology_dispatch_id(&p.topology)
-                }
-                _ => 0,
-            },
-            _ => 0,
-        };
+        let source_topology_id = gen
+            .infer_ast_type(&self.expr)
+            .map_or(0, |ty| crate::arch::source_topology_id(&ty));
 
         use melior::ir::operation::OperationLike;
         let mut target_ty = src_ty;
