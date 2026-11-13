@@ -601,7 +601,7 @@ impl<'a> TypeChecker<'a> {
         return_type: &Type,
         consume: bool,
     ) {
-        let prev_statement_span = std::mem::replace(&mut self.errors.at, stmt.span());
+        let prev_statement_span = self.errors.enter_statement(stmt.span());
         let value = match &*stmt {
             Statement::LetDecl(d) => Some(&d.expr),
             Statement::Assign(a) => Some(&a.rhs),

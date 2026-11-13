@@ -213,7 +213,7 @@ impl<'a> TypeChecker<'a> {
                 let consume =
                     consume && !(self.value_unused && matches!(expr, Expr::Identifier(_)));
                 self.allow_spawn_statement(expr);
-                let prev_statement_span = std::mem::replace(&mut self.errors.at, *stmt_span);
+                let prev_statement_span = self.errors.enter_statement(*stmt_span);
                 let ty = self.check_expr_type_flag(expr, consume);
                 self.errors.at = prev_statement_span;
                 if !*has_semi {
