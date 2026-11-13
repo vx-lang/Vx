@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plain loops at the speed of CUDA</title>
+<meta name="author" content="Aditya Kumar">
+<meta name="description" content="On an A100, a plain Vx across loop ran 12% faster than the same loop in CUDA, and three of llm.c's kernels written as across loops came within 5% of llm.c's own CUDA. What it took, and how we measured.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="Plain loops at the speed of CUDA">
+<meta property="og:description" content="On an A100, Vx across loops matched hand-written CUDA and three of llm.c's kernels. What it took, and how we measured.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-11-13T18:00:00Z">
+<meta property="og:url" content="https://vxlang.org/blog/plain-loops-at-the-speed-of-cuda.html">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>Plain loops at the speed of CUDA</h1>
+<p class="post-meta">Aditya Kumar &middot; 13 November 2026</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> — In Vx, a GPU kernel is two nested
+<code>for</code> loops: one <code>across blocks</code> and one <code>across lanes</code>. We timed
+such loops on an NVIDIA A100 against CUDA. A loop that scales a 4096 by 16384 grid ran in 0.343
+ms, and the same loop in CUDA took 0.388 ms. Three kernels from llm.c, Andrej Karpathy's GPT-2 in
+C and CUDA, written as <code>across</code> loops, came within 5% of llm.c's own CUDA, and the
+softmax was faster. Getting there took two things a program says, <code>lanes::sum</code> and
+<code>fast_tanh</code>, and one compiler change. Every number here is from one A100, and we timed
+some in different ways. The last section says which.</blockquote>
+
+<p class="lede">The promise of <code>across</code> loops is that you write the loop you mean, and
+the compiler makes the GPU kernel. A promise like that is only worth something if the kernel is
+fast. So we rented an A100 and compared Vx with the CUDA a person would write.</p>
+
+<h2 id="one-loop"><a href="#one-loop">One loop</a></h2>
+
+<p>This is the first <code>across</code> example in the book, on a larger grid. Each block takes a
+row, and 256 lanes go through its 16,384 columns:</p>
+
+<pre><code><span class="k">spawn on</span>(Topology::Device) {
+  <span class="k">for</span> y <span class="k">in</span> <span class="n">0</span>..<span class="n">4096</span> <span class="k">across blocks</span> {
+    <span class="k">for</span> x <span class="k">in</span> <span class="n">0</span>..<span class="n">16384</span> <span class="k">across lanes</span>(<span class="n">256</span>) {
+      grid[y][x] = grid[y][x] * <span class="n">2.0</span> + (y <span class="k">as</span> <span class="t">f32</span>);
+    }
+  }
+}</code></pre>
+
+<p>The same loop in CUDA, written the usual way, is one block per row, with each thread going
+through the columns in steps of the block size:</p>
+
+<pre><code><span class="k">__global__ void</span> <span class="f">scale_rows</span>(<span class="t">float</span> *grid) {
+  <span class="t">int</span> y = blockIdx.x;
+  <span class="k">for</span> (<span class="t">int</span> x = threadIdx.x; x &lt; COLS; x += blockDim.x) {
+    <span class="t">size_t</span> i = (<span class="t">size_t</span>)y * COLS + x;
+    grid[i] = grid[i] * <span class="n">2.0f</span> + (<span class="t">float</span>)y;
+  }
+}
+<span class="c">// scale_rows&lt;&lt;&lt;4096, 256&gt;&gt;&gt;(grid);</span></code></pre>
+
+<div class="table-scroll">
+<table>
+<thead><tr><th>The loop</th><th>Time</th><th>Memory speed</th></tr></thead>
+<tbody>
+<tr><td>Vx</td><td>0.343 ms</td><td>1.57 TB/s</td></tr>
+<tr><td>CUDA, nvcc 12.8 <code>-O3</code></td><td>0.388 ms</td><td>1.38 TB/s</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>The loop reads and writes 512 MiB, so its speed is the speed of the memory. Vx was 12% faster
+because it knows something the CUDA kernel does not: the block size. The CUDA kernel reads
+<code>blockDim.x</code> when it runs. Vx launches every kernel with the block size the program
+gave, so the compiler puts the number 256 into the GPU code. A CUDA programmer can get the
+same by writing 256 in place of <code>blockDim.x</code>. We did not time that version.</p>
+
+<h2 id="three-kernels-from-llm-c"><a href="#three-kernels-from-llm-c">Three kernels from llm.c</a></h2>
+
+<p>A loop that only scales numbers is a low bar. <a href="https://github.com/karpathy/llm.c">llm.c</a>
+is a better one. It has several CUDA versions of each kernel of GPT-2, from simple to fast, and a
+harness that times them. We wrote three of them in Vx: GELU, layernorm and softmax, on llm.c's
+sizes. This is GELU in llm.c's first version:</p>
+
+<pre><code><span class="k">__global__ void</span> <span class="f">gelu_forward_kernel1</span>(<span class="t">floatX</span>* out, <span class="k">const</span> <span class="t">floatX</span>* inp, <span class="t">int</span> N) {
+    <span class="t">int</span> i = blockIdx.x * blockDim.x + threadIdx.x;
+    <span class="k">if</span> (i &lt; N) {
+        <span class="t">float</span> xi = inp[i];
+        <span class="t">float</span> cube = <span class="n">0.044715f</span> * xi * xi * xi;
+        out[i] = <span class="n">0.5f</span> * xi * (<span class="n">1.0f</span> + <span class="f">tanhf</span>(GELU_SCALING_FACTOR * (xi + cube)));
+    }
+}</code></pre>
+
+<p>And in Vx:</p>
+
+<pre><code><span class="k">pub fn</span> <span class="f">gelu_forward</span>(out : &amp;<span class="k">mut</span> <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [?], Memory::HBM&gt;, inp : &amp;<span class="t">Tensor</span>&lt;<span class="t">f32</span>, [?], Memory::HBM&gt;, n : <span class="t">i32</span>) -&gt; <span class="t">void</span> {
+  <span class="k">spawn on</span>(Topology::Device) {
+    <span class="k">for</span> b <span class="k">in</span> <span class="n">0</span>..(n + <span class="n">255</span>) / <span class="n">256</span> <span class="k">across blocks</span> {
+      <span class="k">for</span> l <span class="k">in</span> <span class="n">0</span>..<span class="n">256</span> <span class="k">across lanes</span> {
+        <span class="k">let</span> i = b * <span class="n">256</span> + l;
+        <span class="k">if</span> i &lt; n {
+          <span class="k">let</span> x = inp[i];
+          <span class="k">let</span> cube = <span class="n">0.044715</span> * x * x * x;
+          out[i] = <span class="n">0.5</span> * x * (<span class="n">1.0</span> + (<span class="n">0.7978846</span> * (x + cube)).<span class="f">fast_tanh</span>());
+        }
+      }
+    }
+  }
+  <span class="k">return</span>;
+}</code></pre>
+
+<p>The Vx function is also an ordinary function. The compiler checks that two passes of a loop
+cannot write the same element, and the same source runs on the CPU, one lane at a time, when there is no GPU.</p>
+
+<p>The times, on an A100, for the fastest version of each kernel in llm.c:</p>
+
+<div class="table-scroll">
+<table>
+<thead><tr><th>Kernel</th><th>Vx</th><th>llm.c</th></tr></thead>
+<tbody>
+<tr><td>GELU, 6.3 M floats</td><td>0.047 ms</td><td>0.046 ms</td></tr>
+<tr><td>GELU, the same, 1000 launches in a row</td><td>0.0376 ms</td><td>0.0368 ms</td></tr>
+<tr><td>layernorm, 8192 rows of 768</td><td>0.043 ms</td><td>0.041 ms (version 6)</td></tr>
+<tr><td>softmax, 8192 rows of 1024</td><td>0.050 ms</td><td>0.055 ms (version 7), 0.050 ms with <code>--use_fast_math</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Each Vx result matched a CPU computation of the same function. The llm.c harness checks its
+own.</p>
+
+<h2 id="what-it-took"><a href="#what-it-took">What it took</a></h2>
+
+<p>The first versions were not this fast. Three changes closed the gap, and two of them are in
+the program, not the compiler.</p>
+
+<p><strong><code>lanes::sum</code> and <code>lanes::max</code>.</strong> In layernorm and
+softmax, each lane computes a part, and then the parts become one number for the row. Our first
+versions combined the 256 parts in a plain loop, which one lane runs alone. llm.c uses a tree in
+shared memory, and so does <code>lanes::sum</code>. Changing only those lines took layernorm from
+0.088 to 0.043 ms, and softmax, with the next change too, from 0.130 to 0.050 ms.</p>
+
+<p><strong><code>fast_tanh</code> and <code>fast_exp</code>.</strong> Vx's <code>tanh</code> and
+<code>exp</code> are exact: an <code>f32</code> result is the float nearest to the true value, and
+the CPU and the GPU give the same bits. To round correctly, they compute in <code>f64</code>, and
+a GPU does <code>f64</code> arithmetic more slowly. <code>fast_tanh</code> and
+<code>fast_exp</code> use a few <code>f32</code> instructions on the GPU, as CUDA's do. GELU went
+from 0.060 to 0.047 ms. The new book chapter
+<a href="/docs/exact-and-fast-math.html">Exact and fast math</a> says when to use which.</p>
+
+<p><strong>The block size in the GPU code.</strong> This is the compiler change
+(<a href="https://github.com/vx-lang/Vx/pull/3354">#3354</a>). A lane loop steps by the block
+size, which the GPU code read when it ran. So in GELU, where the lane loop covers exactly one
+block, LLVM did not know that the loop runs once. It kept the loop, and two more instructions for
+each load and store. Vx always launches a kernel with the block size the program gave, so the
+compiler now writes that number into the GPU code. Every kernel we timed got 4% to 10% faster, and
+gave the same results:</p>
+
+<div class="table-scroll">
+<table>
+<thead><tr><th>Kernel</th><th>Before</th><th>After</th></tr></thead>
+<tbody>
+<tr><td>GELU with <code>fast_tanh</code></td><td>0.051 ms</td><td>0.047 ms</td></tr>
+<tr><td>GELU with the exact <code>tanh</code></td><td>0.064 ms</td><td>0.060 ms</td></tr>
+<tr><td>layernorm with <code>lanes::sum</code></td><td>0.046 ms</td><td>0.043 ms</td></tr>
+<tr><td>softmax with <code>fast_exp</code> and <code>lanes::</code></td><td>0.052 ms</td><td>0.050 ms</td></tr>
+<tr><td>the loop from the first section</td><td>0.383 ms</td><td>0.343 ms</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>The change is on <code>main</code>, and it will be in the next release. Vx 0.0.4 gives the
+"before" numbers.</p>
+
+<h2 id="how-we-measured"><a href="#how-we-measured">How we measured</a></h2>
+
+<p>A comparison is only as good as its method, so here is ours, with its limits.</p>
+
+<ul>
+<li><strong>The machine.</strong> One A100-SXM4-80GB, CUDA 12.8, driver 595.91. Each kernel ran
+on one size, and the GPU had no other work.</li>
+<li><strong>Single launches.</strong> With <code>VX_TIME_KERNEL=1</code>, Vx times each launch on
+its own with CUDA events. The tables give the median of 50 launches, or 10 for the loop of the
+first section. We timed the CUDA version of that loop in the same way.</li>
+<li><strong>llm.c's own timing.</strong> llm.c runs a kernel many times in a row and gives the
+average. On this A100, that gave about 4 µs less per launch than timing a single launch. So the
+layernorm and softmax comparisons favour llm.c. For GELU, we timed llm.c's kernel as Vx times its
+own: the 0.046 ms in the table.</li>
+<li><strong>1000 launches in a row.</strong> To check that GELU really is level, we loaded the GPU
+code from Vx and the code from nvcc into one program, and ran each 1000 times in a row, 7 times
+over. The spread was under 1%. Vx was 2% slower.</li>
+<li><strong>Fast math.</strong> The llm.c numbers are without <code>--use_fast_math</code>,
+except where the table says so. With it, llm.c was up to 9% faster. Vx uses fast functions only
+where the program calls them.</li>
+<li><strong>Caches.</strong> layernorm's input is 25 MB, which fits in the A100's 40 MB L2 cache.
+That may help a version that reads its input three times, as ours does.</li>
+</ul>
+
+<h2 id="what-is-left"><a href="#what-is-left">What is left</a></h2>
+
+<ul>
+<li><strong>Half-precision math.</strong> An <code>across</code> loop cannot call
+<code>tanh</code> or <code>fast_tanh</code> on <code>f16</code> or <code>bf16</code> yet
+(<a href="https://github.com/vx-lang/Vx/issues/3353">#3353</a>). llm.c's fast versions use
+<code>bf16</code>.</li>
+<li><strong>Other GPUs.</strong> These are numbers from one A100. A GPU with slower
+<code>f64</code>, such as an L4, will show a larger gap between the exact and the fast functions.</li>
+<li><strong>More kernels.</strong> Matrix products in llm.c use cuBLAS, and attention uses more
+of the GPU than a lane loop shows. Those are the next comparisons.</li>
+</ul>
+
+<p>The measurements that found the compiler change are in
+<a href="https://github.com/vx-lang/Vx/issues/3352">#3352</a>. The book's
+<a href="/docs/writing-parallel-code.html">Writing parallel code</a> chapter shows how to write
+<code>across</code> loops and <code>lanes::</code>.</p>
+
+<p class="post-foot">Vx is Apache 2.0 with the LLVM exception &mdash;
+<a href="/docs/getting-started.html">install it</a> and try the examples.</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
+</footer>
+
+<script src="/blog/copy-code.js" defer></script>
+</body>
+</html>
