@@ -7,8 +7,15 @@ element, so the loops give the same result on the GPU as they do one pass at a t
 
 Each program in this chapter is also a test of the compiler. You can find it under
 `tests/optimizations/pass/` with the name that its section gives. The programs use the machine
-file of an NVIDIA H100, so run them with `--machine fleet/h100-sxm.vx --host default`. On a computer with no GPU,
-the runtime prints `no CUDA device` and runs each kernel on the CPU. The result is the same.
+file of an NVIDIA H100, so run them with this command:
+
+```sh
+vxc program.vx --machine "$HOME/.vx/current/fleet/h100-sxm.vx" --host default
+```
+
+[Machine files](machine-files.md#using-one) says where the install puts these files. On a computer
+with no GPU, the runtime prints `no CUDA device` and runs each kernel on the CPU. The result is the
+same.
 
 ## Blocks and lanes
 

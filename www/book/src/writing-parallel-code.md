@@ -1,8 +1,11 @@
 # Writing parallel code
 
-[Tasks and channels](tasks.md) explains each tool for concurrency. This chapter explains how to
-choose between them, and how to check that a parallel program is correct. It is for programmers
-who come from Rust with tokio, from Go, or from C with threads.
+Vx has two kinds of parallel code. Tasks do different work at the same time, and
+[Tasks and channels](tasks.md) explains them. An `across` loop does the same work on each element
+of a tensor, on the blocks and lanes of a GPU, and [Parallel code on a GPU](gpu.md) explains it.
+This chapter explains how to choose between the tools, and how to check that a parallel program is
+correct. It is for programmers who come from Rust with tokio, from Go, from C with threads, or from
+CUDA.
 
 ## Start with the program in order
 
@@ -10,10 +13,15 @@ Write the program without tasks first, and keep it. The version in order is the 
 both versions on the same input, and compare the results. A parallel program that is fast and
 wrong is easy to write. A comparison finds the problem in the first run.
 
+For an `across` loop, the version in order is the same program without the word `across`.
+
 ## Choose the shape of the work
 
-Most parallel programs have one of three shapes:
+Most parallel programs have one of four shapes:
 
+- **The same work on each element.** Each pass of a loop works on its own elements of a tensor.
+  Write it as an `across` loop, as [Loops across blocks and lanes](#loops-across-blocks-and-lanes)
+  shows. This shape needs no tasks.
 - **Split the data.** Each task takes one part of the input and gives one result. The tasks
   borrow the input from the function around them, and `join()` gives each result. The first
   program of [Tasks and channels](tasks.md) has this shape.
@@ -43,16 +51,52 @@ the same in each run.
 
 | You need | Use |
 | --- | --- |
+| The same work on each element of a tensor | an `across` loop in a `spawn on` region |
+| A sum, a maximum or a sort over the lanes of a block | `lanes::sum`, `lanes::max`, `lanes::sort` |
+| Many passes that add to the same element of a tensor | `atomic_fetch_add_u32` and the other atomics on elements |
+| A copy into a tile while the lanes work | `lanes::copy_async` |
+| Work on several devices at the same time | a task for each device, with a `spawn on` in each task |
 | The result of one task | `join()` on its handle |
 | Values from many tasks | a channel |
 | A counter or a flag that tasks share | an atomic |
 | A change to more than one value at a time | a `Mutex` |
-| Values from more than one channel | `select` |
+| Values from more than one channel | a `Selector` |
 | A value that lives longer than its `tasks` block | an `Arc` |
 
 Use a channel when you are not sure. A channel moves each value to one owner, so two tasks never
 change the same data. A task can borrow the locals of the function around it, so most programs
 need no `Arc`.
+
+## Loops across blocks and lanes
+
+A word after the range of a loop, `across blocks` or `across lanes(n)`, makes its passes run at the
+same time on a GPU. A block runs on one part of the chip, and a lane is one thread of a block. This
+program doubles each element of a tensor, and adds the number of its row, `y`
+(`book_gpu_blocks_and_lanes.vx`):
+
+```rust
+{{#include ../../../tests/optimizations/pass/book_gpu_blocks_and_lanes.vx:program}}
+```
+
+It prints `corner 2, last row 65`. Give the compiler a machine file with a GPU:
+
+```sh
+vxc blocks.vx --machine "$HOME/.vx/current/fleet/h100-sxm.vx" --host default
+```
+
+On a computer with no GPU, each kernel runs on the threads of the CPU, and the result is the same.
+
+An `across` loop is easier to get right than tasks:
+
+- The compiler checks that two passes cannot write the same element. When they can, it gives the
+  error E6032. So an `across` loop has no data race for a test to find.
+- The meaning of the program does not depend on `across`. Remove each `across`, and the loops run
+  one pass at a time with the same result.
+- The lanes of a block can share a tile in `Memory::SMEM`. The end of each lane loop waits for all
+  the lanes of the block, so the next lane loop can read what any lane wrote.
+
+[Parallel code on a GPU](gpu.md) explains the rules of `across`, tiles, the `lanes::` routines,
+atomics on elements, and copies in the background.
 
 ## Keep the result independent of the order
 
@@ -66,6 +110,8 @@ The order in which tasks run changes from run to run. Do not let the result depe
   a batch of transfers.
 - Do not add floating-point numbers in the order that they arrive. The sum can change in the last
   bits. Store the numbers by job, and add them in job order.
+- In an `across` loop, `lanes::sum` adds in the same order each time. `lanes::sum_unordered` lets the compiler
+  choose the order, so the last bits of its sum can differ from `lanes::sum`.
 
 ## Choose a memory order
 
@@ -74,13 +120,14 @@ The order in which tasks run changes from run to run. Do not let the result depe
   `Acquire`. [Memory orders](tasks.md#memory-orders) has a program that does this.
 - Use `SeqCst` only when two or more flags must be seen in one order by every task.
 
-Vx compiles a `Relaxed` load as an `Acquire` load. So a program that needs `Acquire` but asks for
-`Relaxed` can work on Vx and fail elsewhere. Ask for the order that the program needs.
+By default, Vx compiles a `Relaxed` load as an `Acquire` load. With `-fweak-relaxed-atomics`, the
+load stays `Relaxed`. So a program that needs `Acquire` but asks for `Relaxed` can work on Vx and
+fail elsewhere. Ask for the order that the program needs.
 
 ## Waits that do not end
 
-- A `recv()` loop ends only after the program drops each `Sender`. Drop the `Sender` that made the clones,
-  as the program above does with `drop(tx)`.
+- A `recv()` loop ends only after the program drops each `Sender`. Drop the `Sender` that made the
+  clones, as the program above does with `drop(tx)`.
 - `join()` and `lock()` cannot be cancelled. Do not hold a `Mutex` while a task waits for a channel.
 - When each task waits and nothing can wake one, the runtime stops the program with
   `vx: deadlock: ...`. It does not hang.
@@ -96,6 +143,9 @@ Run each test in these ways:
 - With `vxc --sanitize=thread`, which finds data races through raw pointers that the compiler
   cannot see.
 
+For an `across` loop, also run the program with `CUDA_VISIBLE_DEVICES=`. Then it runs the CPU copy
+of each kernel, and the result must be the same as on the GPU.
+
 ## Coming from tokio
 
 | Rust | Vx |
@@ -105,9 +155,26 @@ Run each test in these ways:
 | `async fn` and `.await` | a normal function: `recv()`, `join()` and `lock()` wait in place |
 | `tokio::sync::mpsc` | `std::sync::channel` |
 | `tokio::select!` | `Selector` |
-| `AtomicU64` with `Ordering::Relaxed` | `AtomicI64` with `AtomicOrdering::Relaxed` |
+| `AtomicU64` with `Ordering::Relaxed` | `AtomicU64` with `AtomicOrdering::Relaxed` |
 
 Vx has no `async`. [Why Vx has no `async`](tasks.md#why-vx-has-no-async) explains this.
+
+## Coming from CUDA
+
+| CUDA | Vx |
+| --- | --- |
+| a kernel and the code that starts it | a `spawn on(Topology::Device)` region with `across` loops |
+| `blockIdx.x` | the variable of a loop `across blocks` |
+| `threadIdx.x` | the variable of a loop `across lanes(n)` |
+| `__shared__` memory | a tensor in `Memory::SMEM` |
+| `__syncthreads()` | the end of a lane loop |
+| `atomicAdd` | `atomic_fetch_add_u32`, and the same for other types |
+| a block reduction, such as `cub::BlockReduce` | `lanes::sum`, `lanes::max` |
+| `cp.async` or TMA | `lanes::copy_async` |
+| `cudaMemcpy` | `transfer(x, Memory::HBM)` and `transfer(x, Memory::CPU_DRAM)` |
+
+The compiler generates PTX for an NVIDIA GPU. An Apple GPU runs block and lane loops, shared memory,
+and atomics on `i32` and `u32`.
 
 ## Calling parallel Vx from C or Rust
 
@@ -121,7 +188,3 @@ cc host.c work.o -L"$HOME/.vx/current/lib" -lvx_std_core -Wl,-rpath,"$HOME/.vx/c
 ```
 
 [Calling Vx from C](unsafe-and-ffi.md#calling-vx-from-c) says which types a `pub fn` can take.
-
-## On a GPU
-
-Code on a GPU uses blocks and lanes, not tasks. [Parallel code on a GPU](gpu.md) explains them.
