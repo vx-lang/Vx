@@ -1,0 +1,76 @@
+//===- book_gpu_exact_and_fast_tanh.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on exact and fast math (www/book/src/exact-and-fast-math.md): two
+// kernels compute the GELU of 1024 numbers, one with `tanh` and one with `fast_tanh`, and the
+// results differ by less than 1e-6.
+//
+// The first two RUN lines run the CPU copy of the kernels (`CUDA_VISIBLE_DEVICES=`), with both
+// code generators. The other two check the GPU code: the exact kernel computes in `f64`, and the
+// fast kernel does not.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s --check-prefix=PTX < %t.ptx
+// CHECK: {{^}}gelu(1) = 0.841192{{$}}
+// CHECK-NEXT: {{^}}the two kernels differ by less than 1e-6: true{{$}}
+// PTX-LABEL: .entry gelu_exact(
+// PTX: .f64
+// PTX-LABEL: .entry gelu_fast(
+// PTX-NOT: .f64
+// PTX: ret;
+
+// ANCHOR: program
+import core::num;
+
+pub fn gelu_exact(out : &mut Tensor<f32, [1024], Memory::HBM>, x : &Tensor<f32, [1024], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      for l in 0..256 across lanes {
+        let v = x[b * 256 + l];
+        out[b * 256 + l] = 0.5 * v * (1.0 + (0.7978846 * (v + 0.044715 * v * v * v)).tanh());
+      }
+    }
+  }
+  return;
+}
+
+pub fn gelu_fast(out : &mut Tensor<f32, [1024], Memory::HBM>, x : &Tensor<f32, [1024], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      for l in 0..256 across lanes {
+        let v = x[b * 256 + l];
+        out[b * 256 + l] = 0.5 * v * (1.0 + (0.7978846 * (v + 0.044715 * v * v * v)).fast_tanh());
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut values = Tensor<f32, [1024]>::fill(0.0);
+  for i in 0..1024 {
+    values[i] = (i as f32) / 128.0 - 4.0;
+  }
+  let x = transfer(values, Memory::HBM);
+  let mut exact = transfer(Tensor<f32, [1024]>::fill(0.0), Memory::HBM);
+  let mut fast = transfer(Tensor<f32, [1024]>::fill(0.0), Memory::HBM);
+  gelu_exact(&mut exact, &x);
+  gelu_fast(&mut fast, &x);
+  let e = transfer(exact, Memory::CPU_DRAM);
+  let f = transfer(fast, Memory::CPU_DRAM);
+  let mut largest : f32 = 0.0;
+  for i in 0..1024 {
+    largest = largest.max((e[i] - f[i]).abs());
+  }
+  // x[640] is 1.0.
+  println!("gelu(1) = {}", e[640]);
+  println!("the two kernels differ by less than 1e-6: {}", largest < 0.000001);
+  return 0;
+}
+// ANCHOR_END: program

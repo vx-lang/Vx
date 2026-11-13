@@ -55,6 +55,7 @@ the same in each run.
 | A sum, a maximum or a sort over the lanes of a block | `lanes::sum`, `lanes::max`, `lanes::sort` |
 | Many passes that add to the same element of a tensor | `atomic_fetch_add_u32` and the other atomics on elements |
 | A copy into a tile while the lanes work | `lanes::copy_async` |
+| A faster `exp` or `tanh` in a GPU kernel | `fast_exp`, `fast_tanh` ([Exact and fast math](exact-and-fast-math.md)) |
 | Work on several devices at the same time | a task for each device, with a `spawn on` in each task |
 | The result of one task | `join()` on its handle |
 | Values from many tasks | a channel |
@@ -171,6 +172,7 @@ Vx has no `async`. [Why Vx has no `async`](tasks.md#why-vx-has-no-async) explain
 | `atomicAdd` | `atomic_fetch_add_u32`, and the same for other types |
 | a block reduction, such as `cub::BlockReduce` | `lanes::sum`, `lanes::max` |
 | `cp.async` or TMA | `lanes::copy_async` |
+| `expf`, `tanhf` with `--use_fast_math` | `fast_exp`, `fast_tanh` |
 | `cudaMemcpy` | `transfer(x, Memory::HBM)` and `transfer(x, Memory::CPU_DRAM)` |
 
 The compiler generates PTX for an NVIDIA GPU. An Apple GPU runs block and lane loops, shared memory,
