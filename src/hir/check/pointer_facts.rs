@@ -972,7 +972,7 @@ impl<'a> TypeChecker<'a> {
         &mut self,
         vars: &HashMap<crate::symbol::Symbol, (Type, Topology)>,
     ) {
-        let at = self.current_statement_span;
+        let at = self.errors.at;
         let mut dropped: Vec<&str> = Vec::new();
         for (name, (ty, _)) in vars {
             if self.pointer_facts.has_local(name.as_ref()) {
@@ -1195,7 +1195,7 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn pointer_facts_move_out(&mut self, var: &str) {
         if self.pointer_facts.has_local(var) {
             let why = self.in_branch(format!("the move out of `{var}`"));
-            let at = self.current_statement_span;
+            let at = self.errors.at;
             self.pointer_facts.end_init_of_local(var, at, &why);
         }
     }
@@ -1526,7 +1526,7 @@ impl<'a> TypeChecker<'a> {
                 // when the driver checks a body again, for the flat code generator. A drop that
                 // only ends the lifetime of a value frees nothing.
                 Statement::Drop(d) if !d.ends_lifetime => {
-                    let at = self.current_statement_span;
+                    let at = self.errors.at;
                     events.push((false, at, format!("the drop of `{}`", d.name)))
                 }
                 Statement::LetDecl(l) => {
@@ -1865,7 +1865,7 @@ impl<'a> TypeChecker<'a> {
         };
         // The parser gives some calls no place, such as `(h.f)()`.
         let at = if at == Span::default() {
-            self.current_statement_span
+            self.errors.at
         } else {
             at
         };

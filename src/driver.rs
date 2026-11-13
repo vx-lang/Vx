@@ -912,6 +912,7 @@ impl CompilerDriver {
                 // property of an allocation nobody has made yet. A host file that wants
                 // to name its domains declares them itself.
                 numa_node: None,
+                place: Default::default(),
                 doc_comment: Some("the machine this was compiled on (--host default)".to_string()),
             }],
             // The compiling machine's own architecture, so `--host default`
@@ -930,6 +931,7 @@ impl CompilerDriver {
                     levels: None,
                     offload: false,
                 },
+                place: Default::default(),
             }],
             imports: Vec::new(),
             macros: Vec::new(),
@@ -1097,6 +1099,7 @@ impl CompilerDriver {
                 name: name.clone(),
                 generics: Vec::new(),
                 variants: variants.iter().map(|v| (v.clone(), None)).collect(),
+                place: Default::default(),
                 doc_comment: None,
             })
             .collect();

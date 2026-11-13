@@ -305,8 +305,7 @@ impl<'a> TypeChecker<'a> {
             } else {
                 format!("{text} does not fit `{ty}`")
             };
-            // A number literal has no span of its own: spans take part in comparing types,
-            // and a literal is also a tensor dimension. The `-` before one has a span.
+            // A number the compiler wrote has no place in the source.
             let at = (span != Span::default())
                 .then(|| crate::diagnostic::SourceSpan::from_ast_span(&span));
             self.errors
@@ -827,7 +826,8 @@ impl<'a> TypeChecker<'a> {
                                         struct_fields[prev].0,
                                         order.join(", ")
                                     ),
-                                    // A number literal has no position, so the literal's is used.
+                                    // At the field's value, or at the struct literal when the
+                                    // value has no place.
                                     Some(crate::diagnostic::SourceSpan::from_ast_span(
                                         &Some(f_expr.span())
                                             .filter(|s| s.line > 0)

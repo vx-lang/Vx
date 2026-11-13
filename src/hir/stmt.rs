@@ -601,7 +601,7 @@ impl<'a> TypeChecker<'a> {
         return_type: &Type,
         consume: bool,
     ) {
-        let prev_statement_span = std::mem::replace(&mut self.current_statement_span, stmt.span());
+        let prev_statement_span = self.errors.enter_statement(stmt.span());
         let value = match &*stmt {
             Statement::LetDecl(d) => Some(&d.expr),
             Statement::Assign(a) => Some(&a.rhs),
@@ -742,7 +742,7 @@ impl<'a> TypeChecker<'a> {
         }
         self.check_frame_escape(stmt);
         self.end_moved_tiles();
-        self.current_statement_span = prev_statement_span;
+        self.errors.at = prev_statement_span;
     }
 
     /// The tiles of the value of `let name`. A tensor that the initializer moved, as in
@@ -2396,7 +2396,7 @@ impl<'a> TypeChecker<'a> {
         }
         // The old value of a type with a drop is dropped, which can free memory.
         if !self.drops_glue(&lhs_ty).is_empty() {
-            let at = self.current_statement_span;
+            let at = self.errors.at;
             self.pointer_facts_event(at, |_| "an assignment that drops the old value".to_string());
         }
         // After the event, so that the event does not end the new fact.
