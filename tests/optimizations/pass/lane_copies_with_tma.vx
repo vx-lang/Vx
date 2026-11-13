@@ -48,16 +48,17 @@
 // If the map is not 0, thread 0 copies the first tile with TMA: 128 bytes from column 3 and row 2
 // (the innermost dimension first), into `tiles[0]`, on mbarrier 0.
 // PTX-SAME: ld.param.b64 \09%rd[[MAP1:[0-9]+]], [vx_npu_kernel_0_param_7];
-// PTX-SAME: setp.ne.b64 \09%p{{[0-9]+}}, %rd[[MAP1]], 0;
+// PTX-SAME: setp.eq.b64 \09%p{{[0-9]+}}, %rd[[MAP1]], 0;
+// The address of the tiles comes once, before the test of the map.
+// PTX-SAME: mov.b64 \09%rd[[TILES:[0-9]+]], vx_npu_kernel_0_smem_1;
 // PTX-SAME: fence.proxy.tensormap::generic.acquire.sys [%rd[[MAP1]]], 128;
 // PTX-SAME: fence.proxy.async.shared::cta;
 // PTX-SAME: mov.b64 \09%rd[[BAR0:[0-9]+]], vx_npu_kernel_0_smem_0;
 // PTX-SAME: mov.b32 \09%r[[BYTES:[0-9]+]], 128;
 // PTX-SAME: mbarrier.arrive.expect_tx.shared::cta.b64 st, [%rd[[BAR0]]], %r[[BYTES]];
-// PTX-SAME: mov.b64 \09%rd[[TILE0:[0-9]+]], vx_npu_kernel_0_smem_1;
 // PTX-SAME: mov.b32 \09%r[[C0:[0-9]+]], 3;
 // PTX-SAME: mov.b32 \09%r[[R0:[0-9]+]], 2;
-// PTX-SAME: cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%rd[[TILE0]]], [%rd[[MAP1]], {%r[[C0]], %r[[R0]]}], [%rd[[BAR0]]];
+// PTX-SAME: cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%rd[[TILES]]], [%rd[[MAP1]], {%r[[C0]], %r[[R0]]}], [%rd[[BAR0]]];
 // Otherwise the lanes copy it with `cp.async`, and thread 0 ends the phase of mbarrier 0.
 // PTX-SAME: cp.async.ca.shared.global
 // PTX-SAME: mbarrier.arrive.shared::cta.b64
@@ -66,7 +67,6 @@
 // PTX-SAME: mov.b64 \09%rd[[RING:[0-9]+]], vx_npu_kernel_0_smem_0;
 // PTX-SAME: add.s64 \09%rd[[BAR1:[0-9]+]], %rd[[RING]], 8;
 // PTX-SAME: mbarrier.arrive.expect_tx.shared::cta.b64 st, [%rd[[BAR1]]], %r{{[0-9]+}};
-// PTX-SAME: mov.b64 \09%rd[[TILES:[0-9]+]], vx_npu_kernel_0_smem_1;
 // PTX-SAME: add.s64 \09%rd[[TILE1:[0-9]+]], %rd[[TILES]], 128;
 // PTX-SAME: mov.b32 \09%r[[C1:[0-9]+]], 2;
 // PTX-SAME: mov.b32 \09%r[[R1:[0-9]+]], 8;
