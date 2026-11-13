@@ -1583,7 +1583,6 @@ impl<'a> Parser<'a> {
                     index: Box::new(index),
                     span: ix_span,
                 });
-                expr = self.parse_as_casts(expr)?;
             } else if self.check(&TokenType::Question) {
                 let token = self.advance();
                 let span = Span {
@@ -1608,7 +1607,7 @@ impl<'a> Parser<'a> {
     /// `parse_primary_expr` followed by any `as` casts and trailing `?`.
     /// This level sits between binary operators (looser) and unary operators
     /// (tighter), matching Rust: `*r as T` is `(*r) as T`, not `*(r as T)`.
-    fn parse_as_expr(&mut self) -> ParseResult<'a, Expr> {
+    pub(crate) fn parse_as_expr(&mut self) -> ParseResult<'a, Expr> {
         let mut expr = self.parse_primary_expr()?;
         loop {
             if self.check(&TokenType::As) {
@@ -2744,5 +2743,28 @@ mod tests {
             }
         }
         panic!("expected chained AsCast(Dereference(_))");
+    }
+
+    #[test]
+    fn test_indexed_operand_cast_precedence() {
+        // -values[0] as i64 must parse as (-values[0]) as i64
+        let expr = parse_expr("-values[0] as i64");
+        match expr {
+            Expr::AsCast(AsCastExpr { expr: inner, .. }) => {
+                assert!(
+                    matches!(&*inner, Expr::UnaryOp(u) if u.op == UnaryOp::Neg),
+                    "expected (-values[0]) as i64, got cast of {:?}",
+                    inner
+                );
+            }
+            other => panic!("expected AsCast, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_unsafe_block_cast() {
+        // unsafe { 7i32 } as i64 must parse correctly
+        let expr = parse_expr("unsafe { 7i32 } as i64");
+        assert!(matches!(expr, Expr::AsCast(_)));
     }
 }
