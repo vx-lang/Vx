@@ -748,7 +748,16 @@ pub fn generate_match_chain<'c>(
         // ICE'd here — `Unsupported pattern in codegen` (#263).
         Pattern::Literal(lit) => {
             let lit_val = match &**lit {
-                Expr::Number(n) => n.value.as_ref().parse::<i64>().unwrap_or(0),
+                // A `u64` above `i64::MAX` goes in as the same 64 bits read as signed, as a
+                // number literal does in `expr.rs`. Only an arm of an `i128` or `u128` match
+                // can need more than 64 bits. E3019 accepts it, but this code generator does
+                // not support it yet, so it stops the compiler.
+                Expr::Number(n) => {
+                    let v = n.value.as_ref();
+                    v.parse::<i64>()
+                        .or_else(|_| v.parse::<u64>().map(|u| u as i64))
+                        .unwrap_or_else(|_| panic!("match arm literal out of range: {v}"))
+                }
                 Expr::Identifier(id) if id.name.as_ref() == "true" => 1,
                 Expr::Identifier(id) if id.name.as_ref() == "false" => 0,
                 other => panic!("Unsupported literal pattern in codegen: {:?}", other),
