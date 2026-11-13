@@ -15,7 +15,6 @@
 
 use std::ffi::{c_char, CStr};
 use std::ptr;
-use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 // ============================================================================
 // Math & Core Functions
@@ -120,10 +119,17 @@ pub extern "C" fn vx_bench_report(name: *const c_char, unit: *const c_char, valu
     0
 }
 
-/// Sleeps for `ns` nanoseconds, or not at all when `ns` is not positive.
+/// Sleeps for `ns` nanoseconds, or not at all when `ns` is not positive. The sleep is a wait
+/// that only its deadline ends, so other tasks can run on the thread of a task that sleeps.
 #[no_mangle]
 pub extern "C" fn vx_sleep(ns: i64) -> i32 {
-    thread::sleep(Duration::from_nanos(ns.max(0) as u64));
+    use crate::ffi::wait::{vx_clock_ns, vx_wait_while_until};
+    // Nothing sets this word.
+    let word = std::sync::atomic::AtomicI64::new(0);
+    let deadline = vx_clock_ns().saturating_add(ns.max(0));
+    while vx_clock_ns() < deadline {
+        unsafe { vx_wait_while_until(word.as_ptr(), 0, deadline, 0) };
+    }
     0
 }
 
