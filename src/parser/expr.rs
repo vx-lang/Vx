@@ -1737,6 +1737,13 @@ mod tests {
         parser.parse_expr().expect("Failed to parse expression")
     }
 
+    fn parse_program(input: &str) -> crate::syntax::Program {
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        parser.parse().expect("Failed to parse program")
+    }
+
     #[test]
     fn test_parse_enum_variant_no_payload() {
         let input = "Option::None";
@@ -2766,5 +2773,89 @@ mod tests {
         // unsafe { 7i32 } as i64 must parse correctly
         let expr = parse_expr("unsafe { 7i32 } as i64");
         assert!(matches!(expr, Expr::AsCast(_)));
+    }
+
+    #[test]
+    fn test_unsafe_block_cast_full_function() {
+        let input = r#"
+            fn value() -> i64 {
+                unsafe { 7i32 } as i64
+            }
+        "#;
+        let program = parse_program(input);
+
+        let func = program.functions.first().expect("No function parsed");
+        assert_eq!(func.name.to_string(), "value");
+
+        let last_stmt = func.body.last().expect("Function body is empty");
+
+        // The parser turns the final expression into a Return statement
+        match last_stmt {
+            Statement::Return(ret) => {
+                if let Some(expr) = &ret.expr {
+                    match &expr {
+                        Expr::AsCast(cast) => {
+                            assert!(
+                                matches!(&*cast.expr, Expr::UnsafeBlock(_)),
+                                "Expected cast of UnsafeBlock, got cast of {:?}",
+                                cast.expr
+                            );
+                        }
+                        other => panic!("Expected AsCast, got {:?}", other),
+                    }
+                } else {
+                    panic!("Expected a return expression");
+                }
+            }
+            other => panic!("Expected final statement to be a Return, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_unsafe_block_statement_boundary() {
+        let input = r#"
+            fn update(x: &mut i32) -> i32 {
+                unsafe {
+                    let value = 7i32;
+                }
+                *x = 1;
+            }
+        "#;
+        let program = parse_program(input);
+
+        let func = program.functions.first().expect("No function parsed");
+        assert_eq!(func.name.to_string(), "update");
+
+        assert_eq!(
+            func.body.len(),
+            2,
+            "Expected exactly 2 statements, got {:?}",
+            func.body
+        );
+
+        match &func.body[0] {
+            Statement::ExprStmt(stmt) => {
+                assert!(
+                    matches!(&stmt.expr, Expr::UnsafeBlock(_)),
+                    "Expected first statement to be UnsafeBlock, got {:?}",
+                    stmt.expr
+                );
+            }
+            other => panic!("Expected ExprStmt for first statement, got {:?}", other),
+        }
+
+        match &func.body[1] {
+            Statement::Assign(assign) => {
+                assert!(
+                    matches!(&assign.lhs, Expr::Dereference(_)),
+                    "Expected LHS of second statement to be Dereference, got {:?}",
+                    assign.lhs
+                );
+            }
+            other => panic!(
+                "Expected Assign statement for second statement, got {:?}",
+                other
+            ),
+        }
     }
 }
