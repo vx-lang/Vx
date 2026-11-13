@@ -125,6 +125,7 @@ jobs:
           # driver_types.h, which includes <crt/host_defines.h>, and the crt directory ships with
           # nvcc rather than with cudart. Installing only cuda-cudart-dev gets far enough to find
           # cuda_runtime.h and then fails compiling against it.
+          # A new major version here must also change CUDA_MAJOR in www/install.sh.
           sudo apt-get install -y -qq \
             cuda-cudart-dev-12-6 libcublas-dev-12-6 cuda-driver-dev-12-6 cuda-nvcc-12-6
           # build.rs looks under /usr/local/cuda first.
