@@ -5841,11 +5841,13 @@ struct ConvertVxToStandardPass
       // most 256 threads fits at 255 registers each, the most ptxas gives.
       // The limit also changes how ptxas picks registers, so a smaller block
       // gets none.
+      int32_t blockThreads = 0;
       if (auto block = kernel->getAttrOfType<StringAttr>("vx.launch_block")) {
-        int32_t threads = 0;
-        if (!block.getValue().getAsInteger(10, threads) && threads > 256)
+        if (block.getValue().getAsInteger(10, blockThreads))
+          blockThreads = 0;
+        if (blockThreads > 256)
           gpuFunc->setAttr("nvvm.maxntid",
-                           inner.getDenseI32ArrayAttr({threads, 1, 1}));
+                           inner.getDenseI32ArrayAttr({blockThreads, 1, 1}));
       }
 
       // The whole region, not its entry block. What the outliner produces is
@@ -5927,6 +5929,29 @@ struct ConvertVxToStandardPass
           else
             expandLaneReduction(b, cast<vx::LaneArgmaxOp>(op), /*device=*/true);
         }
+      }
+
+      // Every launch has the block of a `vx.launch_block` that is a number, so
+      // the block size is a constant and each lane index is below it. A lane
+      // loop of as many passes as the block then runs once, and LLVM removes
+      // the loop. `known_block_size` would say the same, but it also gives the
+      // kernel `.maxntid`, which a block of 256 or fewer must not get.
+      if (blockThreads > 0) {
+        SmallVector<gpu::BlockDimOp> dims;
+        gpuFunc.walk([&](gpu::BlockDimOp d) { dims.push_back(d); });
+        for (gpu::BlockDimOp d : dims) {
+          OpBuilder b(d);
+          int64_t size =
+              d.getDimension() == gpu::Dimension::x ? blockThreads : 1;
+          d.replaceAllUsesWith(
+              b.create<arith::ConstantIndexOp>(d.getLoc(), size).getResult());
+          d.erase();
+        }
+        gpuFunc.walk([&](gpu::ThreadIdOp t) {
+          int64_t size =
+              t.getDimension() == gpu::Dimension::x ? blockThreads : 1;
+          t.setUpperBoundAttr(OpBuilder(t).getIndexAttr(size));
+        });
       }
 
       // Shared-memory STORAGE. A space-3 `memref.alloca` is correct on the
