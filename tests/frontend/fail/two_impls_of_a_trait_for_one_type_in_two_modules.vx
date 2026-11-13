@@ -11,7 +11,7 @@
 // Two imported modules each implement `Describe` for `Point`. The error names both modules,
 // and comes even though the program calls neither impl.
 //
-// CHECK: Error[E3049]: `impl Describe for Point` is written in '{{.*}}describe_{{left|right}}' and in '{{.*}}describe_{{left|right}}'
+// CHECK: Error[E3049] at {{.*}}describe_{{left|right}}.vx:11:1: `impl Describe for Point` is written in '{{.*}}describe_{{left|right}}' and in '{{.*}}describe_{{left|right}}'
 import tests::modules::describe_shape;
 import tests::modules::describe_left;
 import tests::modules::describe_right;

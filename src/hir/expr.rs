@@ -214,10 +214,9 @@ impl<'a> TypeChecker<'a> {
                 let consume =
                     consume && !(self.value_unused && matches!(expr, Expr::Identifier(_)));
                 self.allow_spawn_statement(expr);
-                let prev_statement_span =
-                    std::mem::replace(&mut self.current_statement_span, *stmt_span);
+                let prev_statement_span = self.errors.enter_statement(*stmt_span);
                 let ty = self.check_expr_type_flag(expr, consume);
-                self.current_statement_span = prev_statement_span;
+                self.errors.at = prev_statement_span;
                 if !*has_semi {
                     // A last expression that never finishes, `todo()`, gives the block the type
                     // `!` but no value: it is a statement, after which nothing runs.
@@ -359,11 +358,12 @@ impl<'a> TypeChecker<'a> {
                 self.check_expr_type_flag(&mut fc.args[0], consume)
             }
             Expr::FunctionCall(..) => {
+                // The check can replace a lambda call with a call that has no place.
+                let span = expr.span();
                 let ty = self
                     .check_a_call_that_can_change_facts(expr, |c, e| c.check_functioncall_expr(e));
                 // A comptime lambda runs while compiling, so its calls fold here. With every
                 // call folded the lambda is unused, and the `let` that bound it is dropped.
-                let span = expr.span();
                 self.fold_comptime_lambda_call(expr, &span, &ty);
                 ty
             }
@@ -508,7 +508,7 @@ impl<'a> TypeChecker<'a> {
         if !untyped_literal && !self.speculating && self.active_space_declares_dtypes {
             // Most expression nodes carry no span of their own, so point at the statement
             // that contains them instead.
-            let statement = self.current_statement_span;
+            let statement = self.errors.at;
             let (span, context) = if span.line != 0 {
                 (span, "this expression")
             } else {

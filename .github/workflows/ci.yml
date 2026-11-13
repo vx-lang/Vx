@@ -132,8 +132,8 @@ jobs:
       - name: Check Vx Formatting (vx-format)
         run: |
           cargo build --release --bin vx-format
-          find tests stdlib -name "*.vx" -exec ./target/release/vx-format {} +
-          git diff --exit-code || (echo "Vx files are not formatted properly. Run vx-format locally." && exit 1)
+          # Discover the same repository configuration as scripts/pre-commit.sh.
+          find tests stdlib -name "*.vx" -exec ./target/release/vx-format --check {} +
 
       - name: Check Markdown Formatting (mdformat)
         run: |
@@ -250,6 +250,18 @@ jobs:
           else
             echo "Skipping stress tests. They run every 10th commit (current run: $GITHUB_RUN_NUMBER)."
           fi
+
+      # Each test of tasks again, under other orders of its tasks: 3 seeds on each run, and 20
+      # on every 10th run. "1 passed" fails the step if the test was renamed or did not run.
+      - name: Run the tests of tasks under many schedules
+        run: |
+          seeds=3
+          if [ $((GITHUB_RUN_NUMBER % 10)) -eq 0 ]; then seeds=20; fi
+          echo "Running the tests of tasks with $seeds seeds"
+          out=$(VX_TEST_TASK_SEEDS=$seeds cargo test --release --test integration_test -- \
+            --ignored --exact integration_test::compile_test::test_tasks_under_many_schedules 2>&1) \
+            || { echo "$out"; exit 1; }
+          grep -q "1 passed" <<<"$out" || { echo "$out"; echo "The test did not run"; exit 1; }
 
       - name: Run benchmarks (Every 10th Commit, offset by 1)
         run: |

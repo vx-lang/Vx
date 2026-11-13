@@ -1179,6 +1179,24 @@ bool run_device_image(const void *payload, size_t payload_size,
     if (rc != CUDA_SUCCESS) {
       const char *name = nullptr;
       driver().GetErrorName(rc, &name);
+      // A launch does not wait for the GPU, so a fault of an earlier kernel
+      // shows up here, at the next call to the driver.
+      if (rc == CUDA_ERROR_ILLEGAL_ADDRESS || rc == CUDA_ERROR_LAUNCH_FAILED ||
+          rc == CUDA_ERROR_MISALIGNED_ADDRESS ||
+          rc == CUDA_ERROR_ILLEGAL_INSTRUCTION ||
+          rc == CUDA_ERROR_HARDWARE_STACK_ERROR ||
+          rc == CUDA_ERROR_INVALID_ADDRESS_SPACE ||
+          rc == CUDA_ERROR_INVALID_PC || rc == CUDA_ERROR_ASSERT) {
+        fprintf(stderr,
+                "[Vx CUDA] FATAL: an earlier kernel failed on the GPU: %s.\n"
+                "          The error showed when the device image for %s "
+                "loaded. A common cause\n"
+                "          is a kernel that uses memory the GPU cannot reach, "
+                "such as a pointer to\n"
+                "          host memory.\n",
+                name ? name : "?", kernel_name);
+        abort();
+      }
       fprintf(stderr,
               "[Vx CUDA] FATAL: the device image for %s did not load: %s.\n"
               "          It was compiled for %s. A known cause is an "

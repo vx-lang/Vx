@@ -276,6 +276,7 @@ impl TopologyDescriptor {
 pub struct TopologyDecl {
     pub name: crate::symbol::Symbol,
     pub descriptor: TopologyDescriptor,
+    pub place: crate::syntax::DeclPlace,
 }
 
 /// A way a declared topology fails its coherence obligations. Graph-decidable here; the
@@ -1708,6 +1709,7 @@ mod tests {
             overcommit: false,
             crossing: crate::syntax::Crossing::default(),
             numa_node: None,
+            place: Default::default(),
             doc_comment: None,
         }
     }
@@ -2473,6 +2475,7 @@ mod tests {
                 levels: None,
                 offload: false,
             },
+            place: Default::default(),
         }
     }
 

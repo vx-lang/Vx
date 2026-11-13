@@ -11,23 +11,24 @@
 //
 // RUN: not vxc %s --action emit-llvm 2>&1 | FileCheck %s # flat-codegen
 // CHECK: cannot become a `spirv64` device image: it passes a tensor to `first`
-// CHECK: This region's operands are in 'GPU_HBM', declared `managed: explicit`
+// CHECK: This region's operands are in 'DEV_HBM', declared `managed: explicit`
 // CHECK: Either every region in the image must be one the target can compile
 // CHECK-NOT: will run on the host instead
 
 Memory CPU_DRAM {}
-Memory GPU_HBM {
-  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: explicit
+Memory DEV_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: explicit, scope: device
 }
 Topology Dev {
   arch: spirv64,
-  memory: Memory::GPU_HBM,
-  visible: [Memory::GPU_HBM],
-  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 63 GB/s,
+  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 63 GB/s
 }
 
 // `on Topology::Dev` is what lets the kernel call it at all.
-fn first(a: &Tensor<f32, [4], Memory::GPU_HBM>) on Topology::Dev -> f32 {
+fn first(a: &Tensor<f32, [4], Memory::DEV_HBM>) on Topology::Dev -> f32 {
   return a[0];
 }
 
@@ -38,8 +39,8 @@ fn main() -> i32 {
     h[i] = i as f32;
     o_h[i] = 0.0;
   }
-  let d = transfer(h, Memory::GPU_HBM);
-  let mut o = transfer(o_h, Memory::GPU_HBM);
+  let d = transfer(h, Memory::DEV_HBM);
+  let mut o = transfer(o_h, Memory::DEV_HBM);
 
   spawn on(Topology::Dev) {
     for i in 0..4 {

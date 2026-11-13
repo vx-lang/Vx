@@ -874,7 +874,8 @@ impl<'a> TypeChecker<'a> {
                                         struct_fields[prev].0,
                                         order.join(", ")
                                     ),
-                                    // A number literal has no position, so the literal's is used.
+                                    // At the field's value, or at the struct literal when the
+                                    // value has no place.
                                     Some(crate::diagnostic::SourceSpan::from_ast_span(
                                         &Some(f_expr.span())
                                             .filter(|s| s.line > 0)

@@ -599,13 +599,16 @@ pub enum DiagnosticCode {
     /// lowering with no functions (an empty body cannot move anything, and accepting it would
     /// make `impl transfer` an inert annotation rather than code).
     E6015,
-    /// A `Topology` or `Memory` declaration whose identity cannot be relied on. Two forms: the
+    /// A `Topology` or `Memory` declaration whose identity cannot be relied on. Three forms: the
     /// declared name shadows a built-in topology (every use of `Topology::<Name>` resolves to the
     /// built-in, so the declaration is silently ignored -- including its `arch:`); or two declared
     /// names collide on one dispatch id (custom ids are derived from the name by hashing), in
     /// which case which declaration is in force would be hash-iteration order -- observed as the
     /// same program getting a device image on some runs and not others for a topology, and as a
-    /// `transfer` carrying the other space's capacity and granule for a memory space.
+    /// `transfer` carrying the other space's capacity and granule for a memory space; or a
+    /// topology whose `arch:` is not `nvptx64` has `Memory::GPU_HBM` as its memory. That memory
+    /// belongs to the built-in NVIDIA GPU, so the tensors of the topology would go to that GPU,
+    /// and its kernels would run elsewhere. Give the memory another name.
     E6016,
     /// A misuse of the `raw::` transfer-lowering primitives (Vx#353): a `raw::` call
     /// outside an `impl transfer` body, an unknown primitive name, a tile argument that
@@ -994,12 +997,22 @@ impl std::fmt::Display for Diagnostic {
     }
 }
 
+/// Where diagnostics point: a file, and a place in it.
+#[derive(Debug, Clone)]
+pub struct Here {
+    file: Option<crate::symbol::Symbol>,
+    at: crate::syntax::Span,
+}
+
 #[derive(Debug, Clone)]
 pub struct DiagnosticsVec {
     pub inner: Vec<Diagnostic>,
     /// The file whose code is being checked. Every diagnostic reported from now on names it.
     /// The checker sets it from each function it checks, and puts the previous one back after.
     pub file: Option<crate::symbol::Symbol>,
+    /// Where the checker is in `file`: the statement it checks, or the function outside its
+    /// statements. A diagnostic reported with no place of its own points there.
+    pub at: crate::syntax::Span,
 }
 
 impl DiagnosticsVec {
@@ -1007,7 +1020,45 @@ impl DiagnosticsVec {
         Self {
             inner: Vec::new(),
             file: None,
+            at: crate::syntax::Span::default(),
         }
+    }
+
+    /// Point at a statement that the checker starts, and return the place to put back after
+    /// it. A statement that the compiler wrote has no place, and keeps the place around it.
+    pub fn enter_statement(&mut self, span: crate::syntax::Span) -> crate::syntax::Span {
+        let prev = self.at;
+        if span != crate::syntax::Span::default() {
+            self.at = span;
+        }
+        prev
+    }
+
+    /// Where diagnostics point now, to give back to `point_back`.
+    pub fn here(&self) -> Here {
+        Here {
+            file: self.file.clone(),
+            at: self.at,
+        }
+    }
+
+    /// Point the diagnostics that follow at a declaration: in its file, at its name. A
+    /// declaration that the compiler wrote has no file, and keeps the file of `outside`.
+    pub fn point_at(&mut self, place: &crate::syntax::DeclPlace, outside: &Here) {
+        self.file = place.file.clone().or_else(|| outside.file.clone());
+        self.at = place.span;
+    }
+
+    pub fn point_back(&mut self, here: Here) {
+        self.file = here.file;
+        self.at = here.at;
+    }
+
+    /// `span`, or where the checker is when `span` is `None`.
+    fn place(&self, span: Option<SourceSpan>) -> Option<SourceSpan> {
+        span.or_else(|| {
+            (self.at != crate::syntax::Span::default()).then(|| SourceSpan::from_ast_span(&self.at))
+        })
     }
 
     pub fn report(&mut self, level: DiagnosticLevel, message: impl Into<Cow<'static, str>>) {
@@ -1033,7 +1084,7 @@ impl DiagnosticsVec {
             code: None,
             message: message.into(),
             span: None,
-            source_span: None,
+            source_span: self.place(None),
             file: self.file.clone(),
             notes: Vec::new(),
             fix_its: Vec::new(),
@@ -1054,7 +1105,7 @@ impl DiagnosticsVec {
             code: Some(code),
             message: message.into(),
             span: None,
-            source_span: span,
+            source_span: self.place(span),
             file: self.file.clone(),
             notes: Vec::new(),
             fix_its: Vec::new(),
@@ -1076,7 +1127,7 @@ impl DiagnosticsVec {
             code: Some(code),
             message: message.into(),
             span: None,
-            source_span: span,
+            source_span: self.place(span),
             file: self.file.clone(),
             notes: Vec::new(),
             fix_its: Vec::new(),

@@ -1426,7 +1426,12 @@ impl<'a> Parser<'a> {
                                 },
                             }),
                             ty: el_ty,
-                            span: Span::default(),
+                            span: crate::syntax::Span {
+                                line: token.line,
+                                column: token.column,
+                                length: token.length,
+                                expansion: self.expansion(),
+                            },
                         })
                     }
                     TokenType::StringLiteral(s) => Expr::StringLiteral(StringLiteralExpr {

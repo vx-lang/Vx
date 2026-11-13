@@ -31,15 +31,20 @@ impl TypeChecker<'_> {
         // The targets are collected first because reporting borrows the checker mutably.
         // An impl records its target as a struct whatever the declaration turns out to be,
         // so both tables are consulted by name.
-        let targets: Vec<crate::symbol::Symbol> = impls
+        let targets: Vec<(crate::symbol::Symbol, crate::syntax::DeclPlace)> = impls
             .iter()
             .filter_map(|ib| match &ib.target_type {
-                Type::Struct(name, _) | Type::Enum(name, _) => Some(name.clone()),
+                Type::Struct(name, _) | Type::Enum(name, _) => {
+                    Some((name.clone(), ib.place.clone()))
+                }
                 _ => None,
             })
             .collect();
 
-        for name in targets {
+        // Each error points at the `impl Copy`.
+        let outside = self.errors.here();
+        for (name, place) in targets {
+            self.errors.point_at(&place, &outside);
             let mut held: Vec<(String, Type)> = Vec::new();
             if let Some(decl) = self.env.structs.get(name.as_ref()) {
                 for (field, ty) in &decl.fields {
@@ -67,5 +72,6 @@ impl TypeChecker<'_> {
                 }
             }
         }
+        self.errors.point_back(outside);
     }
 }

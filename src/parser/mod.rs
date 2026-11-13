@@ -163,6 +163,17 @@ impl<'a> Parser<'a> {
         self.tokens.first().map_or(0, |t| t.expansion)
     }
 
+    /// The place of the next token, the one that `advance` reads next.
+    pub(crate) fn next_span(&self) -> crate::syntax::Span {
+        let token = self.peek();
+        crate::syntax::Span {
+            line: token.line,
+            column: token.column,
+            length: token.length,
+            expansion: self.expansion(),
+        }
+    }
+
     pub(crate) fn peek(&self) -> &'a Token<'a> {
         self.peek_n(0)
     }

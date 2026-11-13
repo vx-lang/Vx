@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>What compiling against z3 taught us about trusting provers</title>
+<meta name="author" content="Aditya Kumar">
+<meta name="description" content="Since June, the Vx compiler asks the z3 solver to prove contracts while it compiles. What went wrong in five months: a missing z3 that passed every proof, a type error that z3 skipped in most queries, facts that contradicted each other and proved anything, and a program that asked z3 16,128 questions.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="What compiling against z3 taught us about trusting provers">
+<meta property="og:description" content="A missing z3 that passed every proof, a type error that z3 skipped in most queries, facts that proved anything, and a program that asked 16,128 questions. What five months of z3 in the Vx compiler taught us.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-11-13T18:00:00Z">
+<meta property="og:url" content="https://vxlang.org/blog/what-compiling-against-z3-taught-us-about-trusting-provers.html">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>What compiling against z3 taught us about trusting provers</h1>
+<p class="post-meta">Aditya Kumar &middot; 13 November 2026</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> — Since June, the Vx compiler asks the z3 solver
+to prove contracts while it compiles. In five months we found no wrong answer from z3. Every bug
+was on our side of the pipe: the question we sent, how we read the answer, or how often we asked.
+For ten weeks, a machine without z3 passed every proof. In about 23,000 of 26,000 queries, z3
+skipped a line with a type error and answered without it, and the tests still passed. Wrong facts,
+such as a fact that outlived its variable, let z3 prove false contracts, and the programs printed
+wrong answers. And one function asked z3 16,128 questions, each in a new process.</blockquote>
+
+<p class="lede">A contract states what a function needs and what it promises. Vx proves contracts
+at compile time with <a href="https://github.com/Z3Prover/z3">z3</a>, an SMT solver from
+Microsoft Research. Two earlier posts, <a href="/blog/what-comptime-can-do.html">What comptime
+can do</a> and <a href="/blog/proving-tensor-indices.html">Proving tensor indices at compile
+time</a>, showed what such proofs catch. This post is about the work around the solver. It shows
+how Vx asks z3 a question, and what went wrong in the five months since 3 June.</p>
+
+<h2 id="how-vx-asks-a-question"><a href="#how-vx-asks-a-question">How Vx asks a question</a></h2>
+
+<p>Here is a function with a contract:</p>
+
+<pre><code><span class="k">fn</span> <span class="f">add_one</span>(x : <span class="t">i32</span>) -&gt; <span class="t">i32</span>
+<span class="k">requires</span> x &lt; <span class="n">100</span>
+<span class="k">ensures</span> <span class="k">return</span> &gt; x {
+  <span class="k">return</span> x + <span class="n">1</span>;
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="f">print</span>(<span class="f">add_one</span>(<span class="n">5</span>));
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>To prove the <code>ensures</code>, the compiler, <code>vxc</code>, writes this text and sends it
+to z3. We saved
+it with a small script named <code>z3</code>, put first on <code>PATH</code>, that copies its input
+and then runs the real z3:</p>
+
+<!-- vx-doctest: skip (SMT-LIB, the query that vxc sends to z3) -->
+<pre><code>(set-option :rlimit 1000000)
+(set-logic QF_LIA)
+(declare-const |return| Int)
+(declare-const |x| Int)
+(assert (&lt;= (- 2147483648) |x| (- 2147483648 1)))
+(assert (&lt; |x| 100))
+(assert (= |return| (- (mod (+ (+ |x| 1) 2147483648) 4294967296) 2147483648)))
+(assert (not (&gt; |return| |x|)))
+(check-sat)</code></pre>
+
+<p>The first three <code>assert</code> lines are <em>facts</em>, things the compiler knows. They
+say that <code>x</code> is an <code>i32</code>, that the <code>requires</code> holds, and that
+<code>return</code> is <code>x + 1</code>, wrapped to 32 bits. The last one says the opposite of the <em>goal</em>, the
+claim to prove. Here the goal is the <code>ensures</code>. Then <code>check-sat</code> asks
+whether some <code>x</code> makes every line true. z3 answers <code>unsat</code>: no such
+<code>x</code> exists. So the <code>ensures</code> holds for every input that the
+<code>requires</code> allows. Delete the <code>requires</code> and z3 finds
+<code>x = 2147483647</code>, where the sum wraps to a negative number. The build then stops with
+E8001.</p>
+
+<p>Three details in that text each have a reason:</p>
+
+<ul>
+<li><strong>The <code>mod</code> on the third line.</strong> z3's integers have no largest value.
+Until 1 November, Vx sent <code>x + 1</code> as it is. z3 then proved an <code>ensures</code>
+that overflow made false at run time (<a href="https://github.com/vx-lang/Vx/issues/982">#982</a>, and the example in
+<a href="/blog/proving-tensor-indices.html">the earlier post</a>). Now <code>+</code>,
+<code>-</code> and <code>*</code> wrap at the width of their type.</li>
+<li><strong>The <code>rlimit</code> on the first line.</strong> It limits z3 to a million steps of
+work. A limit in seconds gives a different answer on a slower or busier machine. A limit in steps
+gives the same answer on every machine with the same z3. The proofs in our tests need at most
+about 6,000 steps. A million steps take between 0.5 and 2 seconds.</li>
+<li><strong>The order of the names.</strong> The compiler sorts the declarations, so a program
+gives z3 the same text in every run. A step limit gives the same answer only for the same
+text.</li>
+</ul>
+
+<p>The text goes to <code>z3 -in -smt2</code> over a pipe. The design discussion in June chose
+text over the z3 library, so that the compiler would not depend on one solver. Text has a second
+use: a person can read each query, and paste it into z3 to try it. The cost is a new process for
+each question. We come back to that cost at the end.</p>
+
+<h2 id="a-missing-z3-passed-every-proof"><a href="#a-missing-z3-passed-every-proof">A missing z3 passed every proof</a></h2>
+
+<p>The first version, on 3 June, printed a warning when z3 was missing: "Skipping formal
+verification." Despite the message, the code reported each proof as failed. Two days later the
+tests failed on a CI machine without z3. The commit that fixed CI made the code match the
+message:</p>
+
+<!-- vx-doctest: skip (Rust, from the compiler in June) -->
+<pre><code><span class="k">return</span> Ok(<span class="k">false</span>); <span class="c">// Return UNSAT so the proof trivially succeeds and compilation can continue</span></code></pre>
+
+<p>From then on, a machine without z3 built every program, and treated each contract as proved.
+By August the warning was gone too. The build printed nothing, and exited with status 0. We fixed
+it on 19 August, the day we found it
+(<a href="https://github.com/vx-lang/Vx/issues/374">#374</a>). A second path did the same until 3
+September (<a href="https://github.com/vx-lang/Vx/issues/442">#442</a>). It proves facts about
+memory transfers between devices, under the flag <code>--verify-seams</code>. We found it while we
+measured the cost of those proofs. Without z3, one took 0.0031 ms, the time it takes to give
+up.</p>
+
+<p>Today, a missing z3 stops the build:</p>
+
+<pre class="diag"><code>Warning in add_one.vx: SMT solver error: no SMT solver available, so this condition could not be proved (No such file or directory (os error 2)). Vx runs `z3` to verify contracts, loop invariants, `Verified&lt;T&gt;` asserts and `raw::` bounds; install it (macOS: `brew install z3`, Ubuntu: `apt install z3`)
+Error[E8001] at add_one.vx:4:3: Function 'add_one' cannot prove postcondition (ensures) at compile time
+Error[E8006] at add_one.vx:8:9: this call to 'add_one' may not meet its precondition `x &lt; 100`: the compiler cannot prove it from what is known here</code></pre>
+
+<p>The rule now: a proof that did not run is a failed proof.</p>
+
+<p>The rule has a cost. z3 is optional for a program with no contracts, and the install guide says
+so. But the compiler proves a library contract again in each program that uses it. On 4 November,
+a change gave <code>Vec::len</code> the contract <code>ensures return == self.len</code>. We tried
+it with no <code>z3</code> on <code>PATH</code>, and a program that called <code>v.len()</code>
+stopped with E8001 inside <code>vec.vx</code>. The fix, in the same change, proves three simple
+kinds of goal with no solver. They are a goal that is one of the facts, a goal of the form
+<code>a &lt;= a</code>, and <code>0 &lt;= b</code> when a fact says <code>b &gt;= 0</code>. The
+contracts of <code>Vec</code>
+hold in these ways, and a test compiles a program that uses <code>Vec</code> with no
+<code>z3</code>.</p>
+
+<h2 id="z3-answers-in-its-own-types"><a href="#z3-answers-in-its-own-types">z3 answers in its own types</a></h2>
+
+<p>Every name in an SMT query has a <em>sort</em>, the solver's word for a type. Until 8 November,
+Vx declared every name as an <code>Int</code>, also a <code>bool</code> parameter. A
+<code>bool</code> used as a condition is then a sort error. This query asks whether
+<code>x &gt;= 1</code> when <code>x</code> is 1 or 2, depending on <code>c</code>:</p>
+
+<!-- vx-doctest: skip (SMT-LIB) -->
+<pre><code>(set-logic QF_LIA)
+(declare-const |c| Int)
+(declare-const |x| Int)
+(assert (or (and |c| (= |x| 1)) (and (not |c|) (= |x| 2))))
+(assert (not (&gt;= |x| 1)))
+(check-sat)</code></pre>
+
+<p>z3 4.15.4 answers:</p>
+
+<pre class="diag"><code>(error "line 4 column 30: Sort mismatch at argument #1 for function (declare-fun and (Bool Bool) Bool) supplied sort is Int")
+sat</code></pre>
+
+<p>z3 reports the error, skips that <code>assert</code>, and answers for the rest. Without the
+fact about <code>x</code>, the goal fails. Vx looked only for <code>sat</code> or
+<code>unsat</code> in the answer, so the proof failed with no visible cause.</p>
+
+<p>A lost fact can make a proof fail, and it can never make one pass. No test needed a fact that
+z3 skipped, so every test stayed green. When we counted, about 23,000 of the 26,000 queries in the
+integration tests ended in a z3 error
+(<a href="https://github.com/vx-lang/Vx/issues/2987">#2987</a>). The fix gives each name its sort,
+and treats any z3 error as a bug in the compiler: the compiler stops and prints the query. A
+compile of every <code>.vx</code> file in the tests, the standard library and the examples went
+from 11,665 queries with an error to none.</p>
+
+<p>Stopping on every z3 error found the next mismatch at once. Take a comparison of floats, such
+as <code>s &gt; 0.0</code>, in a branch where the compiler proves that an index is inside its
+tensor. It reaches z3 as an integer fact with a decimal number in it. z3 answers
+<code>logic does not support reals</code>, and the compiler now crashes
+(<a href="https://github.com/vx-lang/Vx/issues/3145">#3145</a>, still open). Before the strict
+check, z3 dropped that fact too. We prefer the crash: it names the bug, with the query.</p>
+
+<p>The logic has the same kind of limit. <code>QF_LIA</code> allows only linear arithmetic, so z3
+refused <code>row * dims + d</code>, a product of two variables
+(<a href="https://github.com/vx-lang/Vx/issues/2849">#2849</a>). Vx now asks for nonlinear
+arithmetic, <code>QF_NIA</code>, only when a fact needs it. And in a contract, a
+<code>usize</code> sum still has no upper limit in z3, while the program stops on overflow at run
+time
+(<a href="https://github.com/vx-lang/Vx/issues/2986">#2986</a>, open).</p>
+
+<h2 id="z3-trusts-the-facts"><a href="#z3-trusts-the-facts">z3 trusts the facts</a></h2>
+
+<p>The question is always the same: is there an input where every fact holds and the goal fails?
+z3 does not check the facts. A wrong fact can prove a false goal by itself. And if two facts
+contradict each other, no input makes every fact hold, so z3 answers <code>unsat</code> for every
+goal, true or false. So a wrong fact is worse than a missing one. A missing fact makes a true
+contract fail to prove. A wrong fact can make a false contract pass.</p>
+
+<p>Most of our serious bugs had this shape. Here is one. The compiler kept the facts of a
+<code>let</code> after its block ended:</p>
+
+<pre><code><span class="k">fn</span> <span class="f">f</span>(c : <span class="t">i32</span>) -&gt; <span class="t">i32</span>
+<span class="k">ensures</span> <span class="k">return</span> == <span class="n">500</span> {
+  <span class="k">let</span> y : <span class="t">i32</span> = <span class="n">1</span>;
+  <span class="k">if</span> c &gt; <span class="n">0</span> {
+    <span class="k">return</span> <span class="n">500</span>;
+  } <span class="k">else</span> {
+    <span class="k">let</span> y : <span class="t">i32</span> = <span class="n">500</span>;
+    <span class="f">print!</span>(<span class="n">"{} "</span>, y);
+  }
+  <span class="k">return</span> y;
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="f">println!</span>(<span class="n">"{}"</span>, <span class="f">f</span>(-<span class="n">5</span>));
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>The fact <code>y == 500</code> from the inner <code>let</code> outlived the
+<code>else</code> block. At <code>return y</code> it described the outer <code>y</code>, which
+holds 1. The compiler proved <code>return == 500</code>, and the program printed <code>500 1</code>
+(<a href="https://github.com/vx-lang/Vx/issues/2406">#2406</a>). Today it stops with E8001.</p>
+
+<p>The same shape came back in other places:</p>
+
+<ul>
+<li>A fact from before a loop held for the whole loop body, also after the body changed the
+variable. A call with <code>requires n &lt; 5</code> passed, and the program printed
+<code>n=30;</code> (<a href="https://github.com/vx-lang/Vx/issues/2619">#2619</a>).</li>
+<li>A fact about <code>c.n</code> survived a call that changed <code>c</code> through a
+<code>&amp;mut</code>. The program printed <code>n=10;</code>, and a second case printed
+<code>n=1000;</code> (<a href="https://github.com/vx-lang/Vx/issues/2620">#2620</a>).</li>
+<li>An <code>assert</code> that the compiler could not decide became a run-time check and a
+fact. Inside a <code>comptime</code> block, the check went away with the block, and the fact
+stayed. A function with
+<code>ensures return &gt; 100</code> compiled, and the program printed 5
+(<a href="https://github.com/vx-lang/Vx/issues/2034">#2034</a>).</li>
+<li>A <code>for</code> loop checked its invariant for the same <code>i</code> at the end of the
+body. The next pass has <code>i + 1</code>
+(<a href="https://github.com/vx-lang/Vx/issues/2827">#2827</a>).</li>
+</ul>
+
+<p>We stopped two more before they reached <code>main</code>. When an assignment
+<code>x = e</code> became a fact, the old value of <code>x</code> needed a name. With one shared
+name, <code>x = x + 1; x = x * 2;</code> gives <code>$old == $old + 1</code>, which no number
+satisfies. So each old value gets a name of its own, and so does each loop exit.</p>
+
+<p>Another time, we gave <code>return</code> the range of its type as a fact. It looked harmless.
+To test the wraparound, we broke it on purpose, and the wrong value of <code>return</code> fell
+outside that range. The two facts contradicted each other, so z3 proved the <code>ensures</code>
+anyway. The range hid the bug, so <code>return</code> gets no range of its own.</p>
+
+<p>The rule now: a fact names one value, and it ends where that value ends. To test a change to
+the prover, we break each part of it on purpose, one at a time. Then we check that the test for
+that part fails. A test that stays green when its rule is broken checks nothing.</p>
+
+<h2 id="the-price-of-a-process"><a href="#the-price-of-a-process">The price of a process</a></h2>
+
+<p>On an M4 Mac, the <code>add_one</code> query takes 4.5 ms in a new z3 process. The same query,
+sent 200 times to one z3 process, takes 1.5 ms each. So most of the time goes to starting z3.
+For <code>add_one</code>, <code>vxc</code> 0.0.4 starts z3 four times for two questions, because
+its default code generator checks each function twice.</p>
+
+<p>We built the proofs about memory transfers with one z3 process from the start. Each question
+goes between a <code>push</code> and a <code>pop</code>, which save and restore the state of z3.
+A question costs about 55 µs (<a href="https://github.com/vx-lang/Vx/issues/433">#433</a>). The
+contract prover came first, and it still starts a process for each question.</p>
+
+<p>That cost became visible this week. A write through a raw pointer gives a fact: these bytes are
+now set. Two writes side by side give two facts, and a proof about the whole range needs them
+joined. So on 6 November, each new write began to ask z3 whether its range touches the range of
+each earlier write. It asked in up to four ways. Each question was a new process. A function with N writes asked
+4·N·(N−1) questions. Half of them came from the second time the default code generator checked
+the function:</p>
+
+<table>
+<thead>
+<tr><th>Writes</th><th>z3 runs</th><th>Time</th></tr>
+</thead>
+<tbody>
+<tr><td>4</td><td>48</td><td>0.9 s</td></tr>
+<tr><td>8</td><td>224</td><td>4.0 s</td></tr>
+<tr><td>16</td><td>960</td><td>17.6 s</td></tr>
+<tr><td>32</td><td>3,968</td><td>70 s</td></tr>
+<tr><td>64</td><td>16,128</td><td>about 5 min</td></tr>
+</tbody>
+</table>
+
+<p>In the 8-write program, z3 answered <code>sat</code> to every one of these questions. No two
+ranges could be joined, because the offsets depend on a run-time number. A file of generated GPU
+kernels in <a href="https://github.com/vx-lang/glm-vx">glm-vx</a> had up to 64 writes per tile.
+It did not finish in six hours. <code>vxc</code> used under a minute of CPU, and its z3 processes
+used about 5.6 hours (<a href="https://github.com/vx-lang/Vx/issues/3326">#3326</a>).</p>
+
+<p>The fix (<a href="https://github.com/vx-lang/Vx/pull/3327">#3327</a>, in review) asks fewer
+questions. When two offsets differ by a whole number, such as <code>k + 3</code> and
+<code>k + 4</code>, it compares them with no solver. So writes to <code>p[0]</code> through
+<code>p[63]</code> need no z3 at all. It asks one question first, "can
+these two ranges touch?", and skips the other three when the answer is no. And it asks about at
+most four earlier writes. The 64-write function went from 16,128 z3 runs to 492, and the file of
+kernels from more than six hours to under six minutes.</p>
+
+<p>The next step is to start z3 less often: one process for each function, or the z3 library
+linked into the compiler (<a href="https://github.com/vx-lang/Vx/issues/375">#375</a>). On a Mac,
+<code>vxc</code> already links that library, through Homebrew's LLVM, and calls none of its
+functions.</p>
+
+<h2 id="what-we-keep"><a href="#what-we-keep">What we keep</a></h2>
+
+<ul>
+<li><strong>Text over a pipe.</strong> Each query is a file that a person can read and run. When
+z3 rejects one, the compiler prints it.</li>
+<li><strong>A missing z3 fails the build.</strong> A proof that did not happen must look different
+from a proof that passed.</li>
+<li><strong>A limit in steps.</strong> The same program gets the same answer on every machine.</li>
+<li><strong>No solver for the easy goals.</strong> A program with no contracts of its own should
+not need z3, so the contracts of the standard library must hold without it.</li>
+<li><strong>Every z3 error is a compiler bug.</strong> An error that z3 skips is a fact that Vx
+loses.</li>
+<li><strong>One value per fact.</strong> A fact that outlives its value can prove anything.</li>
+</ul>
+
+<p>Still open: floats in a fact (<a href="https://github.com/vx-lang/Vx/issues/3145">#3145</a>),
+<code>usize</code> overflow (<a href="https://github.com/vx-lang/Vx/issues/2986">#2986</a>), an
+<code>ensures</code> about a returned struct
+(<a href="https://github.com/vx-lang/Vx/issues/1590">#1590</a>), and one process for many questions
+(<a href="https://github.com/vx-lang/Vx/issues/375">#375</a>).</p>
+
+<p>We compiled every program in this post with <code>vxc</code> 0.0.4 and z3 4.15.4 on an M4 Mac.
+The table comes from #3326, measured at commit 22a0a84f. Tell us
+about a contract that Vx could not prove, or one that it should not have, on
+<a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
+</footer>
+
+<script src="/blog/copy-code.js" defer></script>
+</body>
+</html>

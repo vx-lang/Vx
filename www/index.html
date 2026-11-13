@@ -54,7 +54,7 @@
     <button id="copy" aria-label="Copy install command">Copy</button>
   </div>
   <p class="install-note">
-    macOS on Apple Silicon and Linux x86_64. <a href="/docs/getting-started.html">Other install options</a>.
+    macOS on Apple Silicon and Linux x86_64, with a CUDA build for a machine with an NVIDIA driver. <a href="/docs/getting-started.html">Other install options</a>.
   </p>
 </section>
 
@@ -138,6 +138,55 @@
       <h3>Autodiff</h3>
       <p>Differentiating a function whose result or first parameter is an integer or a <code>bool</code>.</p>
     </div>
+    <div class="card">
+      <h3>Data races between tasks</h3>
+      <p>Two tasks that use one value at the same time, where one of them writes. A program that compiles has none outside <code>unsafe</code> code.</p>
+    </div>
+    <div class="card">
+      <h3>Races in GPU loops</h3>
+      <p>Two passes of an <code>across</code> loop that write the same element. A lane that reads a value that only lane 0 has.</p>
+    </div>
+    <div class="card">
+      <h3>Pointer contracts</h3>
+      <p>A call from safe code that breaks a fact an <code>unsafe fn</code> requires of its raw pointers, such as <code>valid(p, n)</code>.</p>
+    </div>
+  </div>
+</section>
+
+<section class="pane">
+  <div class="pane-text">
+    <h2>A GPU kernel is a loop</h2>
+    <p>
+      A word after the range of a loop says which level of the GPU runs its passes:
+      <code>across blocks</code>, <code>across subgroups</code> or <code>across lanes</code>. The
+      compiler proves that no two passes write the same element, so the loop gives the same result
+      on the GPU as it does one pass at a time.
+    </p>
+    <p>
+      The same source runs on an NVIDIA GPU through PTX, and on an Apple GPU through Metal. On a
+      machine with no GPU, the runtime runs the blocks on the cores of the CPU.
+      <a href="/docs/gpu.html">Parallel code on a GPU</a> shows the rest.
+    </p>
+  </div>
+  <div class="pane-code">
+<pre><code><span class="c">// Each block doubles one row, and adds the row number.</span>
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+    <span class="k">let mut</span> grid = <span class="f">transfer</span>(
+        <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">64</span>, <span class="n">300</span>]&gt;::<span class="f">fill</span>(<span class="n">1.0</span>), <span class="t">Memory</span>::<span class="t">HBM</span>);
+
+    <span class="k">spawn on</span>(<span class="t">Topology</span>::<span class="t">Device</span>) {
+        <span class="k">for</span> y <span class="k">in</span> <span class="n">0</span>..<span class="n">64</span> <span class="k">across</span> blocks {
+            <span class="k">for</span> x <span class="k">in</span> <span class="n">0</span>..<span class="n">300</span> <span class="k">across</span> <span class="f">lanes</span>(<span class="n">256</span>) {
+                grid[y][x] = grid[y][x] * <span class="n">2.0</span> + (y <span class="k">as</span> <span class="t">f32</span>);
+            }
+        }
+    }
+
+    <span class="k">let</span> back = <span class="f">transfer</span>(grid, <span class="t">Memory</span>::<span class="t">CPU_DRAM</span>);
+    <span class="f">println!</span>("corner {}, last row {}",
+             back[<span class="n">0</span>][<span class="n">0</span>], back[<span class="n">63</span>][<span class="n">299</span>]);
+    <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
   </div>
 </section>
 
@@ -155,8 +204,8 @@
       copied off a vendor sheet means what the sheet meant.
     </p>
     <p>
-      The repository ships machine files for H100, H200, B200, A100, MI300X, Apple M4 and multi-GPU
-      nodes — each citing its sources, and marking unverified figures as unverified.
+      The repository ships machine files for H100, H200, B200, A100, MI300X, Intel Arc A770, Apple
+      M4 and multi-GPU nodes — each citing its sources, and marking unverified figures as unverified.
     </p>
   </div>
   <div class="pane-code">
@@ -202,6 +251,7 @@
       <table class="backends">
         <tr><th>CPU (x86-64, arm64)</th><td>MLIR → LLVM IR → native, AOT or JIT</td></tr>
         <tr><th>NVIDIA GPU</th><td>MLIR → NVVM → PTX → SASS</td></tr>
+        <tr><th>Apple GPU</th><td>MLIR → Metal Shading Language → Metal</td></tr>
         <tr><th>Apple AMX / ANE</th><td>CoreML primitive dispatch via plugin</td></tr>
         <tr><th>Distributed</th><td>Manifest-driven remote regions over a wire protocol</td></tr>
       </table>

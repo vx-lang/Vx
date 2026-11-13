@@ -974,7 +974,7 @@ impl<'a> TypeChecker<'a> {
         &mut self,
         vars: &HashMap<crate::symbol::Symbol, (Type, Topology)>,
     ) {
-        let at = self.current_statement_span;
+        let at = self.errors.at;
         let mut dropped: Vec<&str> = Vec::new();
         for (name, (ty, _)) in vars {
             if self.pointer_facts.has_local(name.as_ref()) {
@@ -1197,7 +1197,7 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn pointer_facts_move_out(&mut self, var: &str) {
         if self.pointer_facts.has_local(var) {
             let why = self.in_branch(format!("the move out of `{var}`"));
-            let at = self.current_statement_span;
+            let at = self.errors.at;
             self.pointer_facts.end_init_of_local(var, at, &why);
         }
     }
@@ -1528,7 +1528,7 @@ impl<'a> TypeChecker<'a> {
                 // when the driver checks a body again, for the flat code generator. A drop that
                 // only ends the lifetime of a value frees nothing.
                 Statement::Drop(d) if !d.ends_lifetime => {
-                    let at = self.current_statement_span;
+                    let at = self.errors.at;
                     events.push((false, at, format!("the drop of `{}`", d.name)))
                 }
                 Statement::LetDecl(l) => {
@@ -1867,7 +1867,7 @@ impl<'a> TypeChecker<'a> {
         };
         // The parser gives some calls no place, such as `(h.f)()`.
         let at = if at == Span::default() {
-            self.current_statement_span
+            self.errors.at
         } else {
             at
         };
@@ -2472,6 +2472,10 @@ impl<'a> TypeChecker<'a> {
     /// place. A fact that covers the new range does. So does a fact whose range touches or
     /// overlaps it: the two become one merged fact, from the lower `lo` to the higher `hi`. Then
     /// no chain of three facts forms, and a goal needs at most two facts.
+    ///
+    /// The solver answers only a few questions for each new fact, so a function with many writes
+    /// takes time linear in their number. A question that the form of its ranges decides needs no
+    /// solver. A merge that the limit misses only leaves two facts where one could be.
     fn merge_init(&mut self, base: usize, lo: &[Expr], hi: &[Expr]) -> bool {
         let mut same: Vec<Range> = self
             .pointer_facts
@@ -2480,23 +2484,53 @@ impl<'a> TypeChecker<'a> {
             .filter(|r| r.kind == Kind::Init && r.base == base)
             .cloned()
             .collect();
+        // A merged fact grows in place, so it comes first. Then the newest facts come first.
+        same.sort_by_key(|r| (!r.merged, std::cmp::Reverse(r.id)));
+        let holds = |c: &mut Self, goal: Exact| {
+            c.decide_by_form(&goal)
+                .unwrap_or_else(|| c.prove_exact(&goal))
+        };
         let at_most = |a: &[Expr], b: &[Expr]| le(sum(a, &[]), sum(b, &[]));
+        let below = |a: &[Expr], b: &[Expr]| le(sum(a, &[&one()]), sum(b, &[]));
+        // Each way to take the new fact's place needs the two ranges to touch, when neither range
+        // is negative. A fact that may not touch it needs no more questions. Only the first few
+        // facts that need the solver for this question get it.
+        let mut solver_questions = 4;
+        let touches: Vec<bool> = same
+            .iter()
+            .map(|r| {
+                let touch = Exact::And(vec![at_most(&r.lo, hi), at_most(lo, &r.hi)]);
+                let goal = Exact::Or(vec![touch, below(hi, lo), below(&r.hi, &r.lo)]);
+                self.decide_by_form(&goal).unwrap_or_else(|| {
+                    solver_questions > 0 && {
+                        solver_questions -= 1;
+                        self.prove_exact(&goal)
+                    }
+                })
+            })
+            .collect();
+        let same: Vec<Range> = same
+            .into_iter()
+            .zip(touches)
+            .filter_map(|(r, touches)| touches.then_some(r))
+            .collect();
         for r in &same {
-            if self.prove_exact(&Exact::And(vec![at_most(&r.lo, lo), at_most(hi, &r.hi)])) {
+            if holds(
+                self,
+                Exact::And(vec![at_most(&r.lo, lo), at_most(hi, &r.hi)]),
+            ) {
                 return true;
             }
         }
-        // A merged fact grows in place, so it comes first.
-        same.sort_by_key(|r| !r.merged);
         for r in same {
             let new_after = [at_most(&r.lo, lo), at_most(lo, &r.hi), at_most(&r.hi, hi)];
             let new_before = [at_most(lo, &r.lo), at_most(&r.lo, hi), at_most(hi, &r.hi)];
             let new_covers = [at_most(lo, &r.lo), at_most(&r.hi, hi)];
-            let (new_lo, new_hi) = if self.prove_exact(&Exact::And(new_after.into())) {
+            let (new_lo, new_hi) = if holds(self, Exact::And(new_after.into())) {
                 (r.lo.clone(), hi.to_vec())
-            } else if self.prove_exact(&Exact::And(new_before.into())) {
+            } else if holds(self, Exact::And(new_before.into())) {
                 (lo.to_vec(), r.hi.clone())
-            } else if self.prove_exact(&Exact::And(new_covers.into())) {
+            } else if holds(self, Exact::And(new_covers.into())) {
                 (lo.to_vec(), hi.to_vec())
             } else {
                 continue;
