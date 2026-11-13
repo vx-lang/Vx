@@ -1,3 +1,5 @@
+//===- result_holds_structs_with_different_enum_fields.vx - Vx Compiler -*- Vx -*-===//
+//
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

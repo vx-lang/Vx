@@ -1,3 +1,5 @@
+//===- pass_a_result_through.vx - Vx Compiler ----------------*- Vx -*-===//
+//
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
@@ -7,6 +9,6 @@
 
 import core::result;
 
-fn pass_through<T, E>(r : Result<T, E>) -> Result<T, E> {
+fn pass_through<T, E>(r: Result<T, E>) -> Result<T, E> {
   return r;
 }
