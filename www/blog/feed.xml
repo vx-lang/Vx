@@ -9,9 +9,9 @@
   <author><name>Aditya Kumar</name></author>
 
   <entry>
-    <title>Five months of proofs with z3</title>
-    <link href="https://vxlang.org/blog/five-months-of-proofs-with-z3.html"/>
-    <id>https://vxlang.org/blog/five-months-of-proofs-with-z3.html</id>
+    <title>What compiling against z3 taught us about trusting provers</title>
+    <link href="https://vxlang.org/blog/what-compiling-against-z3-taught-us-about-trusting-provers.html"/>
+    <id>https://vxlang.org/blog/what-compiling-against-z3-taught-us-about-trusting-provers.html</id>
     <updated>2026-11-13T18:00:00Z</updated>
     <author><name>Aditya Kumar</name></author>
     <summary>Since June, the Vx compiler asks the z3 solver to prove contracts while it compiles. It writes each question as SMT-LIB text and sends it to a new z3 process. In five months we found no wrong answer from z3, and every bug was on our side of the pipe. For ten weeks a machine without z3 passed every proof, until a missing solver began to stop the build. Every name was declared as an integer, so z3 skipped each fact that used a bool, in about 23,000 of 26,000 queries, and the tests still passed. Facts that outlived their variables let z3 prove false contracts, and the programs printed wrong answers. And a function with 64 writes through a raw pointer asked z3 16,128 questions, one process each, and a file of GPU kernels did not compile in six hours. The fix asks 492 for that function.</summary>
