@@ -4476,37 +4476,41 @@ static BufferOrigin commonOrigin(ArrayRef<Value> values,
   return common.value_or(BufferOrigin::Undecided);
 }
 
+// The legacy code generator keeps a `let mut` tensor in a cell, a memref of
+// memrefs. The origin of the buffers that are stored into `cell`.
+static BufferOrigin cellOrigin(Value cell, llvm::SmallPtrSetImpl<void *> &seen,
+                               std::optional<int32_t> &topology) {
+  if (!cell.getDefiningOp<memref::AllocaOp>())
+    return BufferOrigin::Unknown;
+  SmallVector<Value> stored;
+  for (Operation *user : cell.getUsers()) {
+    if (auto store = dyn_cast<memref::StoreOp>(user)) {
+      if (store.getMemRef() != cell)
+        return BufferOrigin::Unknown;
+      stored.push_back(store.getValueToStore());
+    } else if (auto call = dyn_cast<func::CallOp>(user)) {
+      // `&t`, passed as a pointer to the cell: the function borrows it.
+      for (OpOperand &operand : call->getOpOperands())
+        if (operand.get() == cell &&
+            takesOwnership(call, operand.getOperandNumber()))
+          return BufferOrigin::Unknown;
+    } else if (user->hasAttr("vx.task_borrows")) {
+      // Handed to a task, which borrows it as a call does.
+      continue;
+    } else if (!isa<memref::LoadOp>(user)) {
+      return BufferOrigin::Unknown; // the cell itself escapes
+    }
+  }
+  return commonOrigin(stored, seen, topology);
+}
+
 static BufferOrigin originOf(Value v, llvm::SmallPtrSetImpl<void *> &seen,
                              std::optional<int32_t> &topology) {
   v = castSource(v);
   seen.insert(v.getAsOpaquePointer());
-  // The legacy code generator keeps a `let mut` tensor in a cell, a memref of
-  // memrefs: what is read back is one of the buffers stored into it.
-  if (auto load = v.getDefiningOp<memref::LoadOp>()) {
-    Value cell = load.getMemRef();
-    if (!cell.getDefiningOp<memref::AllocaOp>())
-      return BufferOrigin::Unknown;
-    SmallVector<Value> stored;
-    for (Operation *user : cell.getUsers()) {
-      if (auto store = dyn_cast<memref::StoreOp>(user)) {
-        if (store.getMemRef() != cell)
-          return BufferOrigin::Unknown;
-        stored.push_back(store.getValueToStore());
-      } else if (auto call = dyn_cast<func::CallOp>(user)) {
-        // `&t`, passed as a pointer to the cell: the function borrows it.
-        for (OpOperand &operand : call->getOpOperands())
-          if (operand.get() == cell &&
-              takesOwnership(call, operand.getOperandNumber()))
-            return BufferOrigin::Unknown;
-      } else if (user->hasAttr("vx.task_borrows")) {
-        // Handed to a task, which borrows it as a call does.
-        continue;
-      } else if (!isa<memref::LoadOp>(user)) {
-        return BufferOrigin::Unknown; // the cell itself escapes
-      }
-    }
-    return commonOrigin(stored, seen, topology);
-  }
+  // What is read back from a cell is one of the buffers stored into it.
+  if (auto load = v.getDefiningOp<memref::LoadOp>())
+    return cellOrigin(load.getMemRef(), seen, topology);
   if (auto arg = dyn_cast<BlockArgument>(v)) {
     Block *block = arg.getOwner();
     auto func = dyn_cast<func::FuncOp>(block->getParentOp());
@@ -4607,6 +4611,16 @@ static BufferOrigin originOf(Value v, std::optional<int32_t> &topology) {
 static BufferOrigin originOf(Value v) {
   std::optional<int32_t> topology;
   return originOf(v, topology);
+}
+
+// Whether `v` is the cell of a `let mut` tensor, and holds a heap buffer.
+static bool holdsHeapBuffer(Value v) {
+  auto type = dyn_cast<MemRefType>(v.getType());
+  if (!type || type.getRank() != 0 || !isa<MemRefType>(type.getElementType()))
+    return false;
+  llvm::SmallPtrSet<void *, 8> seen;
+  std::optional<int32_t> topology;
+  return cellOrigin(v, seen, topology) == BufferOrigin::Heap;
 }
 
 // The call that fills `slot`, the stack slot of a statically shaped result: the
@@ -5164,14 +5178,16 @@ static Operation *resultSlotStore(vx::SpawnOp task, Value &slot) {
 }
 
 /// The value that a load of the stack slot `capture` gives, when the task
-/// only loads it: a scalar local, or a struct that the task moves or copies.
-/// The task copies such a slot at its `spawn` (T4), because the variable may
-/// end, and its slot get a new value, before the task reads it. A null type
-/// for any other capture.
+/// only loads it: a scalar local, the cell of a `let mut` tensor, or a struct
+/// that the task moves or copies. The task copies such a slot at its `spawn`
+/// (T4), because the variable may end, and its slot get a new value, before
+/// the task reads it. A null type for any other capture.
 static Type copiedAtSpawn(Value capture, Region &body) {
   Type loaded;
   if (auto type = dyn_cast<MemRefType>(capture.getType())) {
-    if (type.getRank() != 0 || !type.getElementType().isIntOrIndexOrFloat() ||
+    Type element = type.getElementType();
+    if (type.getRank() != 0 ||
+        !(element.isIntOrIndexOrFloat() || isa<MemRefType>(element)) ||
         !capture.getDefiningOp<memref::AllocaOp>())
       return {};
     loaded = type.getElementType();
@@ -5287,10 +5303,14 @@ static LogicalResult lowerTask(vx::SpawnOp task, Value group, ModuleOp module,
       // A heap buffer of the function, or a result slot, which moves to the
       // heap because the task gets it. A task that takes it, as `let b = b;`
       // does, frees it or passes it on by value.
+      // The tensor that the cell of a `let mut` tensor held at the `spawn` is
+      // such a buffer too.
       auto slot = castSource(capture).getDefiningOp<memref::AllocaOp>();
-      if (!copied[i] && isa<MemRefType>(type) &&
-          (originOf(capture) == BufferOrigin::Heap ||
-           (slot && resultSlotFill(slot))))
+      bool heap = copied[i] ? isa<MemRefType>(type) && holdsHeapBuffer(capture)
+                            : isa<MemRefType>(type) &&
+                                  (originOf(capture) == BufferOrigin::Heap ||
+                                   (slot && resultSlotFill(slot)));
+      if (heap)
         cast->setAttr("vx.task_takes", UnitAttr::get(ctx));
       v = cast.getResult(0);
     }
