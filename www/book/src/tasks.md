@@ -271,7 +271,8 @@ Set these variables when the program starts:
 - `VX_TASK_SEED=n` runs all tasks on one thread, and the seed picks the next task to run. The same
   seed gives the same order each time, so a bug that depends on the order happens again in the
   next run. Try other seeds to find such a bug. A seed cannot go with `VX_TASK_WORKERS` or
-  `VX_TASK_MAX_WORKERS`.
+  `VX_TASK_MAX_WORKERS`. Only a wait lets another task run. So with a seed, a task that loops
+  with no wait until another task acts never ends.
 
 ## Finding a data race at run time
 

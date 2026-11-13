@@ -1005,6 +1005,12 @@ fn legacy_codegen_goes_after_each_vxc_command() {
 }
 
 fn run_lit_test(path: &Path) -> Result<(), String> {
+    run_lit_test_with_env(path, &[])
+}
+
+/// As `run_lit_test`, with the variables `env` set for each RUN line. With variables, the RUN
+/// lines that set a `VX_TASK_` variable of their own or use a sanitizer do not run.
+fn run_lit_test_with_env(path: &Path, env: &[(&str, String)]) -> Result<(), String> {
     let source = fs::read_to_string(path).expect("Failed to read test file");
 
     // Same lit-style gate the middle-end and backend runners apply. A check against IR that
@@ -1060,6 +1066,19 @@ fn run_lit_test(path: &Path) -> Result<(), String> {
             path
         ));
     }
+    let run_lines: Vec<&str> = if env.is_empty() {
+        run_lines
+    } else {
+        if xfail {
+            return Ok(());
+        }
+        run_lines
+            .into_iter()
+            .filter(|l| !l.contains("VX_TASK_") && !l.contains("--sanitize"))
+            .collect()
+    };
+    // The settings, for an error message. A person can run a failed line again with them.
+    let settings: String = env.iter().map(|(k, v)| format!(" {k}={v}")).collect();
 
     // The freshly built vxc/vx-opt lead; the rest of PATH is what carries FileCheck.
     let bin_dir = Path::new(env!("CARGO_BIN_EXE_vxc")).parent().unwrap();
@@ -1136,7 +1155,8 @@ fn run_lit_test(path: &Path) -> Result<(), String> {
         } else {
             line
         };
-        let output = std::process::Command::new("bash")
+        let mut command = std::process::Command::new("bash");
+        command
             .arg("-c")
             .arg(line)
             .env("PATH", &path_var)
@@ -1144,9 +1164,14 @@ fn run_lit_test(path: &Path) -> Result<(), String> {
             // A RUN line without `--legacy-codegen` tests the default code generator. If that
             // code generator declines the program, vxc fails, and does not use the AST one.
             .env("VX_NO_AST_FALLBACK", "1")
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .output()
-            .expect("Failed to execute RUN line");
+            .current_dir(env!("CARGO_MANIFEST_DIR"));
+        if !env.is_empty() {
+            for name in TASK_RUNTIME_VARIABLES {
+                command.env_remove(name);
+            }
+        }
+        command.envs(env.iter().map(|(k, v)| (k, v)));
+        let output = command.output().expect("Failed to execute RUN line");
 
         if xfail {
             if !output.status.success() {
@@ -1157,7 +1182,7 @@ fn run_lit_test(path: &Path) -> Result<(), String> {
 
         if output.status.code() == Some(124) && has_timeout() {
             return Err(format!(
-                "RUN line did not finish in {RUN_LINE_SECONDS} seconds for {:?}:\n  {}",
+                "RUN line did not finish in {RUN_LINE_SECONDS} seconds for {:?}:\n {settings} {}",
                 path,
                 cmd.trim()
             ));
@@ -1169,7 +1194,7 @@ fn run_lit_test(path: &Path) -> Result<(), String> {
                 ""
             };
             return Err(format!(
-                "RUN line failed{only} for {:?}:\n  {}\nStdout:\n{}\nStderr:\n{}",
+                "RUN line failed{only} for {:?}:\n {settings} {}\nStdout:\n{}\nStderr:\n{}",
                 path,
                 cmd.trim(),
                 String::from_utf8_lossy(&output.stdout),
@@ -1538,6 +1563,68 @@ fn test_backend_fail() -> Result<(), String> {
     run_directory_tests(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/fail"),
         run_shell_tests,
+    )
+}
+
+/// The variables that choose how the runtime runs tasks.
+const TASK_RUNTIME_VARIABLES: [&str; 4] = [
+    "VX_TASK_RUNTIME",
+    "VX_TASK_WORKERS",
+    "VX_TASK_MAX_WORKERS",
+    "VX_TASK_SEED",
+];
+
+/// The settings of the task runtime that `test_tasks_under_many_schedules` runs each test with:
+/// the seeds 1 to `seeds`, and the shared runtime with 1, 2 and 8 workers. A seed runs the tasks
+/// on one thread, in an order that the seed chooses.
+fn task_runtime_settings(seeds: u64) -> Vec<Vec<(&'static str, String)>> {
+    let mut settings: Vec<_> = (1..=seeds)
+        .map(|seed| vec![("VX_TASK_SEED", seed.to_string())])
+        .collect();
+    for workers in [1, 2, 8] {
+        settings.push(vec![
+            ("VX_TASK_RUNTIME", "shared".to_string()),
+            ("VX_TASK_WORKERS", workers.to_string()),
+        ]);
+    }
+    settings
+}
+
+/// Runs each test in `tests/backend/pass` that starts tasks again, under other orders of its
+/// tasks. A test of tasks usually runs with one order, so a race that shows only in another
+/// order passes. `VX_TEST_TASK_SEEDS` sets the number of seeds (3 by default). CI runs this
+/// test by name with more seeds on every 10th run.
+///
+/// A seed runs all tasks on one thread. So a test that checks for more than one thread, or
+/// that loops with no wait until another task acts, says `// NO-SEED-SWEEP: <reason>`. It
+/// still runs with the shared runtime. A RUN line that sets a `VX_TASK_` variable keeps it,
+/// and does not run again here.
+#[test]
+#[ignore = "it runs each test of tasks many times; CI runs it by name"]
+fn test_tasks_under_many_schedules() -> Result<(), String> {
+    let seeds = match std::env::var("VX_TEST_TASK_SEEDS") {
+        Ok(n) => n
+            .parse::<u64>()
+            .map_err(|_| format!("VX_TEST_TASK_SEEDS must be a number, not '{n}'"))?,
+        Err(_) => 3,
+    };
+    let settings = task_runtime_settings(seeds);
+    run_directory_tests(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/pass"),
+        |path| {
+            let source = fs::read_to_string(path).map_err(|e| format!("{path:?}: {e}"))?;
+            // A file with no RUN line checks its `EXPECT` lines in `test_backend`.
+            if !source.contains("tasks {") || !source.contains("// RUN:") {
+                return Ok(());
+            }
+            let no_seeds = source.contains("// NO-SEED-SWEEP:");
+            for env in &settings {
+                if !(no_seeds && env.iter().any(|(k, _)| *k == "VX_TASK_SEED")) {
+                    run_lit_test_with_env(path, env)?;
+                }
+            }
+            Ok(())
+        },
     )
 }
 
