@@ -5,8 +5,17 @@
   <link href="https://vxlang.org/blog/feed.xml" rel="self"/>
   <link href="https://vxlang.org/blog/"/>
   <id>https://vxlang.org/blog/</id>
-  <updated>2026-11-09T18:00:00Z</updated>
+  <updated>2026-11-13T18:00:00Z</updated>
   <author><name>Aditya Kumar</name></author>
+
+  <entry>
+    <title>Five months of proofs with z3</title>
+    <link href="https://vxlang.org/blog/five-months-of-proofs-with-z3.html"/>
+    <id>https://vxlang.org/blog/five-months-of-proofs-with-z3.html</id>
+    <updated>2026-11-13T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>Since June, the Vx compiler asks the z3 solver to prove contracts while it compiles. It writes each question as SMT-LIB text and sends it to a new z3 process. In five months we found no wrong answer from z3, and every bug was on our side of the pipe. For ten weeks a machine without z3 passed every proof, until a missing solver began to stop the build. Every name was declared as an integer, so z3 skipped each fact that used a bool, in about 23,000 of 26,000 queries, and the tests still passed. Facts that outlived their variables let z3 prove false contracts, and the programs printed wrong answers. And a function with 64 writes through a raw pointer asked z3 16,128 questions, one process each, and a file of GPU kernels did not compile in six hours. The fix asks 492 for that function.</summary>
+  </entry>
 
   <entry>
     <title>The promise of Vx</title>
@@ -17,6 +26,7 @@
     <summary>The computer on your desk has many cores, memory in banks and a GPU. The apps you download use little of it, because most of them were written for one core, long before LLMs could help anyone write code. The promise of Vx is that you write the small app you need, and the compiler spreads it over the machine you have: its cores, its memories and its GPU. Three small programs show how: two tasks that share the work with no locks, a blur that runs on the Apple GPU through Metal and on an NVIDIA GPU as PTX, and tensors placed on the NUMA node of the cores that read them. A table says what works today: a Mac and Linux with an NVIDIA GPU work, and AMD, Intel and Windows do not yet.</summary>
   </entry>
 
+  <entry>
     <title>Checking the deadlock watcher</title>
     <link href="https://vxlang.org/blog/checking-the-deadlock-watcher.html"/>
     <id>https://vxlang.org/blog/checking-the-deadlock-watcher.html</id>
