@@ -2933,14 +2933,17 @@ impl<'r> Lowerer<'r> {
                 crate::syntax::Pattern::Wildcard | crate::syntax::Pattern::Identifier(_)
             )
         });
-        // The arms compare the subject with `==`: an enum tag, an integer of any width, or a
-        // `bool`.
+        // The arms compare the subject with `==`: an enum tag, a number, or a `bool`.
         let subj_elem = match &subj.ty {
-            LoweredTy::Scalar(e) if e.int_bits().is_some() || *e == ElementType::Bool => e.clone(),
+            LoweredTy::Scalar(e)
+                if e.int_bits().is_some() || e.is_float() || *e == ElementType::Bool =>
+            {
+                e.clone()
+            }
             _ if binds_only => ElementType::I32,
             _ => {
                 return Err(Decline::Unsupported {
-                    what: "a match subject that is not an integer or a bool",
+                    what: "a match subject that is not a number or a bool",
                 })
             }
         };
@@ -2986,7 +2989,14 @@ impl<'r> Lowerer<'r> {
                 }
                 // A literal arm (`0 => ..`): the same chain, with the literal as the tag.
                 crate::syntax::Pattern::Literal(lit) => {
-                    let mut lit_v = self.lower_expr(lit)?;
+                    let mut lit_v = match &**lit {
+                        // A number arm of a float `match` has the float's type: `0.1` read as
+                        // an `f32` and then widened is not the `f64` 0.1.
+                        Expr::Number(n) if subj_elem.is_float() => {
+                            self.lower_number_literal(n.value.as_ref(), &subj_elem)?
+                        }
+                        _ => self.lower_expr(lit)?,
+                    };
                     match &lit_v.ty {
                         LoweredTy::Scalar(e) if *e == subj_elem => {}
                         // A literal with no suffix, at the width of the subject.

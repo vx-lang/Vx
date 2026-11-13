@@ -1100,9 +1100,10 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Refuse `true` or `false` in a `match` on a value that is not a `bool`, and a number in a
-    /// `match` on a `bool`. The arm would compare values of two types.
-    fn check_bool_pattern(&mut self, pattern: &Pattern, expr_ty: &Type, span: &Span) {
+    /// Refuse `true` or `false` in a `match` on a value that is not a `bool`, a number in a
+    /// `match` on a `bool`, and a float in a `match` on an integer. The arm would compare values
+    /// of two types.
+    fn check_literal_pattern_kind(&mut self, pattern: &Pattern, expr_ty: &Type, span: &Span) {
         let Pattern::Literal(lit) = pattern else {
             return;
         };
@@ -1110,6 +1111,7 @@ impl<'a> TypeChecker<'a> {
             return;
         }
         let is_bool = *expr_ty == Type::Scalar(ElementType::Bool);
+        let is_integer = !is_bool && matches!(expr_ty, Type::Scalar(e) if e.int_bits().is_some());
         let message = match (bool_literal(lit), &**lit) {
             (Some(b), _) if !is_bool => {
                 format!("`{b}` is a `bool`, but the value matched has the type `{expr_ty}`")
@@ -1118,6 +1120,14 @@ impl<'a> TypeChecker<'a> {
                 "`{}` is a number, but the value matched is a `bool`; write `true` or `false`",
                 n.value
             ),
+            (None, Expr::Number(n))
+                if is_integer && crate::syntax::types::is_float_literal_spelling(&n.value) =>
+            {
+                format!(
+                    "`{}` is a float, but the value matched has the type `{expr_ty}`",
+                    n.value
+                )
+            }
             _ => return,
         };
         self.errors.error_with_code(
@@ -1417,7 +1427,7 @@ impl<'a> TypeChecker<'a> {
                     }
                     self.refuse_payload_subpattern(&arm.pattern, &arm.span);
                     self.check_variant_pattern(&arm.pattern, &expr_ty, &arm.span);
-                    self.check_bool_pattern(&arm.pattern, &expr_ty, &arm.span);
+                    self.check_literal_pattern_kind(&arm.pattern, &expr_ty, &arm.span);
                     self.pointer_branches
                         .push(Self::pointer_arm_name(&arm.pattern));
                     self.push_scope();
