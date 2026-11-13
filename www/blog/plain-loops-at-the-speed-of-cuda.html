@@ -45,8 +45,9 @@ such loops on an NVIDIA A100 against CUDA. A loop that scales a 4096 by 16384 gr
 ms, and the same loop in CUDA took 0.388 ms. Three kernels from llm.c, Andrej Karpathy's GPT-2 in
 C and CUDA, written as <code>across</code> loops, came within 5% of llm.c's own CUDA, and the
 softmax was faster. Getting there took two things a program says, <code>lanes::sum</code> and
-<code>fast_tanh</code>, and one compiler change. Every number here is from one A100, and we timed
-some in different ways. The last section says which.</blockquote>
+<code>fast_tanh</code>, and one compiler change. We also read the GPU code that nvc++ makes from
+the same loops in OpenMP, OpenACC and C++ parallel algorithms. Every number here is from one A100,
+and we timed some in different ways. The section "How we measured" says which.</blockquote>
 
 <p class="lede">The promise of <code>across</code> loops is that you write the loop you mean, and
 the compiler makes the GPU kernel. A promise like that is only worth something if the kernel is
@@ -189,6 +190,83 @@ gave the same results:</p>
 
 <p>The change is on <code>main</code>, and it will be in the next release. Vx 0.0.4 gives the
 "before" numbers.</p>
+
+<h2 id="and-c-or-c-plus-plus"><a href="#and-c-or-c-plus-plus">And C or C++?</a></h2>
+
+<p>A plain C or C++ loop runs on the CPU. To run it on a GPU, a C++ programmer adds one of three
+things: an OpenMP pragma, an OpenACC pragma, or a C++17 parallel algorithm such as
+<code>std::for_each(std::execution::par_unseq, ...)</code>, often called stdpar. We wrote the
+loop of the first section, GELU and layernorm in each, and compiled them with nvc++ 26.9 from
+NVIDIA's HPC SDK, with <code>-O3</code> for <code>sm_80</code>. We did not run them. We read the
+PTX, the GPU code, which says what the GPU will do but not how fast it does it.</p>
+
+<p><strong>The loop of the first section.</strong> The usual way to write a loop nest with a
+pragma is <code>collapse(2)</code>:</p>
+
+<pre><code><span class="k">#pragma omp target teams distribute parallel for collapse(2)</span>
+<span class="k">for</span> (<span class="t">int</span> y = <span class="n">0</span>; y &lt; ROWS; y++)
+  <span class="k">for</span> (<span class="t">int</span> x = <span class="n">0</span>; x &lt; COLS; x++)
+    grid[(<span class="t">long</span>)y * COLS + x] = grid[(<span class="t">long</span>)y * COLS + x] * <span class="n">2.0f</span> + (<span class="t">float</span>)y;</code></pre>
+
+<p>Both OpenMP and OpenACC then make one loop of 67 million passes. For each element, the GPU
+code gets <code>y</code> and <code>x</code> back from the single index with 64-bit shifts and
+masks, about 15 instructions of index arithmetic for one load and one store. The compiler also
+marks the loop not to unroll. With
+the rows on blocks and the columns on threads, which is the shape of the Vx loop, the two differ a
+lot:</p>
+
+<div class="table-scroll">
+<table>
+<thead><tr><th>Rows on blocks, columns on threads</th><th>The GPU code</th></tr></thead>
+<tbody>
+<tr><td>Vx</td><td>4 elements for each pass of the loop, at fixed offsets, with no test for each element</td></tr>
+<tr><td>OpenACC, <code>gang</code> and <code>vector_length(256)</code></td><td>16 elements for each pass, at fixed offsets, and a bounds test of 3 instructions for each element</td></tr>
+<tr><td>OpenMP, <code>teams distribute</code> and <code>parallel for</code></td><td>1,188 instructions, a call into the OpenMP runtime, a stack in local memory and a state machine in shared memory</td></tr>
+<tr><td>stdpar, <code>std::for_each</code> over the flat index</td><td>2 elements for each thread at fixed offsets, because the CUB library under it fixes 256 threads</td></tr>
+<tr><td>CUDA, as in the first section</td><td>one element for each pass, with 4 instructions to make its 64-bit address, because <code>blockDim.x</code> is not known</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>The OpenMP kernel is large because a <code>parallel for</code> inside <code>teams
+distribute</code> is a parallel region inside each team. As far as we can tell from the code, the region begins
+when the kernel runs: one thread of each team runs alone, and then wakes the others through the
+state machine.</p>
+
+<p><strong>GELU.</strong> All of them, and Vx, give the same code for <code>tanh</code>: an
+<code>ex2.approx</code>, an <code>rcp.approx</code> and a polynomial. Only nvcc with
+<code>--use_fast_math</code> does better. It uses one instruction, <code>tanh.approx.f32</code>,
+which Vx's <code>fast_tanh</code> does not use yet
+(<a href="https://github.com/vx-lang/Vx/issues/3359">#3359</a>).</p>
+
+<p><strong>Layernorm.</strong> Here each row needs two sums. In Vx, each sum is a
+<code>lanes::sum</code>, which became warp shuffles: 168 instructions for the kernel, with no
+calls. In C++:</p>
+
+<ul>
+<li><strong>OpenACC</strong>, with <code>loop vector reduction(+: s)</code> inside a
+<code>gang</code> loop, gave a tree in shared memory: 188 instructions and 12 barriers. That is
+close to Vx.</li>
+<li><strong>OpenMP</strong>, with <code>parallel for reduction(+: s)</code> inside <code>teams
+distribute</code>, gave 3,657 instructions. The threads add their parts to one value in shared memory
+with atomic adds, so the threads of a block take turns.</li>
+<li><strong>stdpar</strong> cannot call a parallel algorithm inside another one on the GPU. So the
+natural version gives each row to one thread, which sums its 768 numbers alone. That is 8,192
+threads on a GPU that runs 221,184 at a time. Neighbouring threads also read addresses 3 KB apart,
+so the GPU cannot combine their reads. The other way, a <code>std::reduce</code> for each sum,
+launches a kernel for each of the 16,384 sums.</li>
+</ul>
+
+<p><strong>A loop with a race.</strong> We gave nvc++ a loop in which two passes write the same
+element, <code>out[i / 2] = inp[i]</code>, with OpenACC and with OpenMP. It compiled both with no
+warning, and the result would depend on which thread wrote last. Vx refuses the same loop:</p>
+
+<pre><code>Error[E6032]: two passes of this block loop may write the same element of `out`: an index of the write must fix `b`</code></pre>
+
+<p>So a careful C++ programmer can get code as good as Vx's from OpenACC, by choosing the right
+form of the loop. The difference is that Vx has only that form. The loop nest is always blocks
+and lanes, a reduction is always <code>lanes::sum</code>, and the compiler checks that the
+passes do not race. It does not depend on choosing the right pragma.</p>
 
 <h2 id="how-we-measured"><a href="#how-we-measured">How we measured</a></h2>
 
