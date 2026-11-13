@@ -5219,20 +5219,11 @@ impl<'c> LowerToMelior<'c> for NumberExpr {
             let op_ref = block.append_operation(op);
             Ok((op_ref.result(0)?.into(), ty, block))
         } else {
-            // A `u64` above `i64::MAX` is a legitimate literal that does not parse as one:
-            // MLIR's integer types are signless, so it goes in as the same 64 bits read as
-            // signed. The flat path's `encode_imm` falls back the same way, and the two
-            // backends have to agree on a constant.
-            let bits = val_str
-                .parse::<i64>()
-                .or_else(|_| val_str.parse::<u64>().map(|v| v as i64))
-                .unwrap_or_else(|_| panic!("integer literal out of range: {val_str}"));
+            // The flat path builds the same value in `lower_number_literal`.
+            let value = super::integer_constant(gen.context, ty, val_str);
             let op = OperationBuilder::new("arith.constant", gen.loc())
                 .add_results(&[ty])
-                .add_attributes(&[(
-                    Identifier::new(gen.context, "value"),
-                    IntegerAttribute::new(ty, bits).into(),
-                )])
+                .add_attributes(&[(Identifier::new(gen.context, "value"), value)])
                 .build()?;
             let op_ref = block.append_operation(op);
             Ok((op_ref.result(0)?.into(), ty, block))

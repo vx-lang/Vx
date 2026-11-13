@@ -1475,6 +1475,42 @@ impl<'r> Lowerer<'r> {
         }
     }
 
+    /// A number literal of type `elem`. A constant holds 64 bits, so an `i128` outside the
+    /// range of `i64`, or a `u128` above `u64::MAX`, is built as `(high << 64) | low`.
+    fn lower_number_literal(&mut self, text: &str, elem: &ElementType) -> Lowered<Val> {
+        let declined = || Decline::TypeNotModelled {
+            what: "a literal that does not encode",
+        };
+        if let Some(imm) = encode_imm(text, elem) {
+            return Ok(self.emit_value(Opcode::Const, Register(0), Register(0), elem.clone(), imm));
+        }
+        if elem.int_bits() != Some(128) {
+            return Err(declined());
+        }
+        let bits = text
+            .parse::<i128>()
+            .map(|v| v as u128)
+            .or_else(|_| text.parse::<u128>())
+            .map_err(|_| declined())?;
+        // A `u128` constant fills its upper 64 bits with zeroes.
+        let mut half = |imm: u64| {
+            self.emit_value(
+                Opcode::Const,
+                Register(0),
+                Register(0),
+                ElementType::U128,
+                imm,
+            )
+        };
+        let low = half(bits as u64);
+        let high = half((bits >> 64) as u64);
+        let shift = half(64);
+        let high = self.emit_value(Opcode::Shl, high.reg, shift.reg, ElementType::U128, 0);
+        let value = self.emit_value(Opcode::BitOr, high.reg, low.reg, ElementType::U128, 0);
+        // A `u128` and an `i128` are the same MLIR type, so this cast writes no code.
+        Ok(self.emit_value(Opcode::Cast, value.reg, Register(0), elem.clone(), 0))
+    }
+
     /// Lower an expression to the register holding its result (emitting instructions as needed).
     /// Returns `None` for anything outside the current subset — the caller then aborts.
     fn lower_expr(&mut self, e: &Expr) -> Lowered<Val> {
@@ -1483,10 +1519,7 @@ impl<'r> Lowerer<'r> {
                 let elem = number_elem(n).ok_or(Decline::TypeNotModelled {
                     what: "a numeric literal with no element type",
                 })?;
-                let imm = encode_imm(n.value.as_ref(), &elem).ok_or(Decline::TypeNotModelled {
-                    what: "a literal that does not encode",
-                })?;
-                Ok(self.emit_value(Opcode::Const, Register(0), Register(0), elem, imm))
+                self.lower_number_literal(n.value.as_ref(), &elem)
             }
             // A name read: an SSA alias (no instruction) or a `SlotLoad` from its memory slot. A name
             // that isn't a local but names a registered function is a *function pointer* value (a bare
@@ -8943,6 +8976,10 @@ fn encode_imm(s: &str, elem: &ElementType) -> Option<u64> {
         }
     } else if let Ok(i) = s.parse::<i64>() {
         Some(i as u64)
+    } else if elem.is_signed_int() && elem.int_bits().is_some_and(|b| b > 64) {
+        // The emitter widens these 64 bits as signed, so an `i128` above `i64::MAX` would
+        // turn negative.
+        None
     } else {
         s.parse::<u64>().ok()
     }
