@@ -46,17 +46,24 @@ impl TypeChecker<'_> {
         // Vx#352: `Topology GPU { arch: applegpu }` still produced an NVPTX image via the band,
         // the machine file's word silently discarded.
         for decl in declared {
-            if !matches!(TopologyKind::from_name(&decl.name), TopologyKind::Custom(_)) {
-                self.errors.error_with_code(
-                    crate::diagnostic::DiagnosticCode::E6016,
-                    format!(
-                        "topology '{}' shadows the built-in topology of the same name; every \
-                         `Topology::{}` resolves to the built-in, so this declaration (including \
-                         its `arch:`) would be silently ignored -- rename it",
-                        decl.name, decl.name
-                    ),
-                    None,
-                );
+            let kind = TopologyKind::from_name(&decl.name);
+            if !matches!(kind, TopologyKind::Custom(_)) {
+                let has_arch = decl.descriptor.arch.is_some();
+                let has_transfers = !decl.descriptor.transfers.is_empty();
+                let has_chip = decl.descriptor.chip.is_some();
+                let has_levels = decl.descriptor.levels.is_some();
+                let has_offload = decl.descriptor.offload;
+
+                if has_arch || has_transfers || has_chip || has_levels || has_offload {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E6016,
+                        format!(
+                            "topology '{}' shadows the built-in topology of the same name; you cannot override its `arch:`, `chip:`, `levels:`, `offload:`, or transfer edges. Only `dtypes:` may be used to restrict its element types.",
+                            decl.name
+                        ),
+                        None,
+                    );
+                }
             }
             if decl.name.as_ref() == crate::syntax::ANY_TOPOLOGY {
                 self.errors.error_with_code(

@@ -1117,11 +1117,19 @@ impl TransferCostGraph {
     /// double sweep in place.
     pub fn add_topology_edges(&mut self, topologies: &[TopologyDecl]) {
         for decl in topologies {
-            self.apply_descriptor_edges(&decl.descriptor);
-            self.descriptors.insert(
-                crate::syntax::TopologyKind::Custom(decl.name.clone()),
-                decl.descriptor.clone(),
-            );
+            let kind = crate::syntax::TopologyKind::from_name(&decl.name);
+
+            if matches!(kind, crate::syntax::TopologyKind::Custom(_)) {
+                self.apply_descriptor_edges(&decl.descriptor);
+                self.descriptors.insert(kind, decl.descriptor.clone());
+            } else {
+                // Built-in. Patch the dtypes if provided.
+                if let Some(existing) = self.descriptors.get_mut(&kind) {
+                    if let Some(dtypes) = &decl.descriptor.dtypes {
+                        existing.dtypes = Some(dtypes.clone());
+                    }
+                }
+            }
         }
     }
 
@@ -2751,5 +2759,41 @@ mod tests {
         let err = g.owning_topology(&shared).unwrap_err();
         assert!(err.contains("ambiguous"), "{err}");
         assert!(err.contains("DevA") && err.contains("DevB"), "{err}");
+    }
+
+    #[test]
+    fn test_patch_builtin_topology_dtypes() {
+        let mut graph = TransferCostGraph::default();
+
+        // The built-in NPU has no dtypes
+        let npu_kind = crate::syntax::TopologyKind::NPU;
+        assert!(graph.descriptor(&npu_kind).unwrap().dtypes.is_none());
+
+        // Create a decl that patches it
+        let decl = TopologyDecl {
+            name: "NPU".into(),
+            descriptor: TopologyDescriptor {
+                arch: None,
+                default_space: MemorySpace::NPUHBM,
+                visibility: vec![MemorySpace::NPUHBM],
+                transfers: vec![],
+                dtypes: Some(vec![crate::syntax::ElementType::F16]),
+                chip: None,
+                levels: None,
+                offload: false,
+            },
+        };
+
+        graph.add_topology_edges(&[decl]);
+
+        // It should be patched now
+        let dtypes = graph
+            .descriptor(&npu_kind)
+            .unwrap()
+            .dtypes
+            .as_ref()
+            .unwrap();
+        assert_eq!(dtypes.len(), 1);
+        assert_eq!(dtypes[0], crate::syntax::ElementType::F16);
     }
 }
