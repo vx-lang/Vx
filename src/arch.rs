@@ -1674,6 +1674,8 @@ impl TransferCostGraph {
 
 #[cfg(test)]
 mod tests {
+    use crate::syntax::DeclPlace;
+
     use super::*;
     use syntax::{ElementType, Expr, NumberExpr, Span};
 
@@ -2775,6 +2777,10 @@ mod tests {
         // Create a decl that patches it
         let decl = TopologyDecl {
             name: "NPU".into(),
+            place: DeclPlace {
+                file: None,
+                span: crate::syntax::Span::default(),
+            },
             descriptor: TopologyDescriptor {
                 arch: None,
                 default_space: MemorySpace::NPUHBM,
