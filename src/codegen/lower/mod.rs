@@ -637,6 +637,29 @@ fn parse_scalar_type(text: &str) -> Option<syntax::Type> {
     }
 }
 
+/// The value of an integer constant of type `ty`, from its decimal text. MLIR reads the text at
+/// the width of `ty`: a `u64` above `i64::MAX` keeps its 64 bits, and an `i128` keeps its value.
+/// The checker refuses a value that `ty` cannot hold, so such a value is a compiler bug.
+pub(crate) fn integer_constant<'c>(
+    context: &'c Context,
+    ty: melior::ir::Type<'c>,
+    text: &str,
+) -> Attribute<'c> {
+    // A loop counter is an `index`.
+    assert!(
+        melior::ir::TypeLike::is_integer(&ty) || melior::ir::TypeLike::is_index(&ty),
+        "an integer constant of the type {ty}: {text}"
+    );
+    // MLIR fills the upper bits of a type wider than 64 bits with zeroes, so -5 would turn
+    // into 2^64 - 5 in an `i128`.
+    let wide = melior::ir::r#type::IntegerType::try_from(ty).is_ok_and(|t| t.width() > 64);
+    if let (false, Ok(value)) = (wide, text.parse::<i64>()) {
+        return IntegerAttribute::new(ty, value).into();
+    }
+    Attribute::parse(context, &format!("{text} : {ty}"))
+        .unwrap_or_else(|| panic!("integer literal out of range for {ty}: {text}"))
+}
+
 pub fn generate_match_chain<'c>(
     gen: &mut MeliorGenerator<'c>,
     arms: &[MatchArm],
@@ -748,27 +771,20 @@ pub fn generate_match_chain<'c>(
         // ICE'd here — `Unsupported pattern in codegen` (#263).
         Pattern::Literal(lit) => {
             let lit_val = match &**lit {
-                // A `u64` above `i64::MAX` goes in as the same 64 bits read as signed, as a
-                // number literal does in `expr.rs`. Only an arm of an `i128` or `u128` match
-                // can need more than 64 bits. E3019 accepts it, but this code generator does
-                // not support it yet, so it stops the compiler.
-                Expr::Number(n) => {
-                    let v = n.value.as_ref();
-                    v.parse::<i64>()
-                        .or_else(|_| v.parse::<u64>().map(|u| u as i64))
-                        .unwrap_or_else(|_| panic!("match arm literal out of range: {v}"))
+                // E3019 refuses an arm that the type of the match cannot hold.
+                Expr::Number(n) => integer_constant(gen.context, _match_ty, n.value.as_ref()),
+                Expr::Identifier(id) if id.name.as_ref() == "true" => {
+                    IntegerAttribute::new(_match_ty, 1).into()
                 }
-                Expr::Identifier(id) if id.name.as_ref() == "true" => 1,
-                Expr::Identifier(id) if id.name.as_ref() == "false" => 0,
+                Expr::Identifier(id) if id.name.as_ref() == "false" => {
+                    IntegerAttribute::new(_match_ty, 0).into()
+                }
                 other => panic!("Unsupported literal pattern in codegen: {:?}", other),
             };
             let const_op = block.append_operation(
                 OperationBuilder::new("arith.constant", gen.loc())
                     .add_results(&[_match_ty])
-                    .add_attributes(&[(
-                        Identifier::new(gen.context, "value"),
-                        IntegerAttribute::new(_match_ty, lit_val).into(),
-                    )])
+                    .add_attributes(&[(Identifier::new(gen.context, "value"), lit_val)])
                     .build()?,
             );
             let const_val = const_op.result(0)?.into();
