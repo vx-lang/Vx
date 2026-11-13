@@ -250,8 +250,8 @@ argument on `Tensor` — the memory space it lives in — and that `Verified(...
 The same program compiles and runs against different hardware by swapping the machine file:
 
 ```bash
-vxc --machine fleet/h100-sxm.vx --host default program.vx
-vxc --machine fleet/m4-uma.vx --host default program.vx
+vxc --machine $HOME/.vx/current/fleet/h100-sxm.vx --host default program.vx
+vxc --machine $HOME/.vx/current/fleet/m4-uma.vx --host default program.vx
 ```
 
 `--host default` says which machine runs `main` ([Machine files](machine-files.md)).
@@ -259,7 +259,7 @@ vxc --machine fleet/m4-uma.vx --host default program.vx
 You can ask what the compiler concluded, as JSON, rather than reading it out of diagnostics:
 
 ```bash
-vxc --machine fleet/h100-sxm.vx --host default program.vx --diagnostics-json out.json
+vxc --machine $HOME/.vx/current/fleet/h100-sxm.vx --host default program.vx --diagnostics-json out.json
 ```
 
 That record carries every diagnostic with its structured fields — a capacity rejection includes the
