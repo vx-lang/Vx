@@ -27,6 +27,7 @@
 - [Unsafe and FFI](unsafe-and-ffi.md)
 - [Automatic differentiation](autodiff.md)
 - [Low-precision numbers](low-precision-numbers.md)
+- [Exact and fast math](exact-and-fast-math.md)
 - [Tensor operations](tensor-ops.md)
 
 # Heterogeneous computing
