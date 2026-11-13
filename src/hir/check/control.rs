@@ -72,9 +72,10 @@ impl<'a> TypeChecker<'a> {
         return_is_value: bool,
     ) -> ComptimeFold {
         let interpretation = self.observe_comptime_block(stmts, ret, before);
-        // At the block's last expression; at the `comptime` keyword when there is none, or when
-        // it has no position of its own, as a number literal does.
+        // At the block's last expression; at the `comptime` keyword when there is none, when it
+        // has no place, or when it is a number, which cannot be what went wrong.
         let span = ret
+            .filter(|r| !matches!(r, Expr::Number(_)))
             .map(|r| r.span())
             .filter(|span| *span != Span::default())
             .unwrap_or(block_span);
@@ -913,7 +914,12 @@ impl<'a> TypeChecker<'a> {
     /// Such an arm can never be selected. Codegen parses the literal with a zero fallback, which
     /// silently turns it into a comparison against 0 -- so the arm fires for scrutinee 0 instead
     /// of never. Reported here, where the scrutinee's type is known.
-    pub(crate) fn check_literal_pattern_range(&mut self, pattern: &Pattern, expr_ty: &Type) {
+    pub(crate) fn check_literal_pattern_range(
+        &mut self,
+        pattern: &Pattern,
+        expr_ty: &Type,
+        span: &Span,
+    ) {
         if self.speculating {
             return;
         }
@@ -935,7 +941,7 @@ impl<'a> TypeChecker<'a> {
                      so the arm can never be selected",
                     n.value, elem
                 ),
-                Some(crate::diagnostic::SourceSpan::from_ast_span(&n.span)),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
             );
         }
     }
@@ -1415,7 +1421,7 @@ impl<'a> TypeChecker<'a> {
                     self.pointer_branches
                         .push(Self::pointer_arm_name(&arm.pattern));
                     self.push_scope();
-                    self.check_literal_pattern_range(&arm.pattern, &expr_ty);
+                    self.check_literal_pattern_range(&arm.pattern, &expr_ty, &arm.span);
                     self.bind_pattern_variables(&arm.pattern, &expr_ty);
                     let mut takes_value = !place;
                     if behind_ref {
