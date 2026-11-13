@@ -4711,6 +4711,10 @@ static LogicalResult returnOwnedBuffers(ModuleOp module) {
       if (func &&
           func.getResultAttr(operand.getOperandNumber(), "vx.reference"))
         continue;
+      // A placed result moves to the caller as it is. A copy here would read
+      // device memory on the host.
+      if (func && func.getResultAttr(operand.getOperandNumber(), "vx.placed"))
+        continue;
       BufferOrigin origin = originOf(operand.get());
       // A placed buffer goes to the caller, which frees it on its device.
       if (origin == BufferOrigin::Heap || origin == BufferOrigin::Placed)

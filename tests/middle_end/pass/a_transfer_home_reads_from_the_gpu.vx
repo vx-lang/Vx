@@ -6,9 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 // A transfer to the CPU of a tensor in GPU memory must read it from the GPU. The type of the
-// tensor says where it is, whatever made it: `uninit()`, `new()`, a `spawn` region or a
-// parameter. The transfer then carries `source_topology = 500` (the GPU), and the program calls
-// `vx_plugin_transfer_device_to_host` for each one. Without the mark it copies with the CPU,
+// tensor says where it is, whatever made it: `uninit()`, `new()`, a `spawn` region, a
+// parameter or a `match` arm. The transfer then carries `source_topology = 500` (the GPU), and
+// the program calls `vx_plugin_transfer_device_to_host` for each one. Without the mark it copies with the CPU,
 // which reads GPU memory and crashes on a machine with a GPU. No GPU is needed to compile it.
 //
 // RUN: env VX_NO_AST_FALLBACK=1 vxc %s --action emit-mlir 2>&1 | FileCheck %s
@@ -24,8 +24,10 @@
 // CHECK: "vx.transfer"({{.*}}source_topology = 500 : i32, space = "CPU_DRAM"
 // CHECK-LABEL: func.func @from_a_parameter(
 // CHECK: "vx.transfer"({{.*}}source_topology = 500 : i32, space = "CPU_DRAM"
+// CHECK-LABEL: func.func @from_a_match(
+// CHECK: "vx.transfer"({{.*}}source_topology = 500 : i32, space = "CPU_DRAM"
 //
-// CALL-COUNT-4: llvm.call @vx_plugin_transfer_device_to_host(
+// CALL-COUNT-5: llvm.call @vx_plugin_transfer_device_to_host(
 // CALL-NOT: llvm.call @vx_plugin_transfer_device_to_host(
 
 fn from_uninit() -> f32 {
@@ -62,8 +64,26 @@ fn from_a_parameter(g : Tensor<f32, [4], Memory::GPU_HBM>) -> f32 {
   return h[0];
 }
 
+enum Held<T> {
+  Full(T),
+  Empty,
+}
+
+fn from_a_match(r : Held<Tensor<f32, [4], Memory::GPU_HBM>>) -> f32 {
+  match r {
+    Held<Tensor<f32, [4], Memory::GPU_HBM>>::Full(full) => {
+      let h = transfer(full, Memory::CPU_DRAM);
+      return h[0];
+    }
+    Held<Tensor<f32, [4], Memory::GPU_HBM>>::Empty => {
+      return 0.0;
+    }
+  }
+}
+
 fn main() -> i32 {
   let p = Tensor<f32, [4], Memory::GPU_HBM>::new();
-  print(from_uninit() + from_new() + from_a_spawn() + from_a_parameter(p));
+  let q = Held<Tensor<f32, [4], Memory::GPU_HBM>>::Full(Tensor<f32, [4], Memory::GPU_HBM>::new());
+  print(from_uninit() + from_new() + from_a_spawn() + from_a_parameter(p) + from_a_match(q));
   return 0;
 }
