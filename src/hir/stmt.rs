@@ -3186,6 +3186,64 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Whether `goal` holds, when its form decides it with no solver: each comparison in it
+    /// compares two sums with the same terms apart from whole numbers. `None` when the form does
+    /// not decide it.
+    pub(crate) fn decide_by_form(
+        &self,
+        goal: &crate::hir::check::pointer_facts::Exact,
+    ) -> Option<bool> {
+        use crate::hir::check::pointer_facts::Exact;
+        let mut prover = hir::prover::SmtProver::new();
+        let (mut calls, mut facts) = (0, Vec::new());
+        // The terms of a sum that are not whole numbers, sorted, and the total of the numbers.
+        type Split = Option<(Vec<String>, i128)>;
+        let mut split = |e: &Exact| -> Split {
+            let parts = match e {
+                Exact::Sum(ts) => ts.as_slice(),
+                e => std::slice::from_ref(e),
+            };
+            let (mut terms, mut total) = (Vec::new(), 0i128);
+            for t in parts {
+                let Exact::Term(_) = t else {
+                    return None;
+                };
+                let s = self.lower_exact(t, &mut prover, &mut calls, &mut facts)?;
+                match s.parse::<i128>() {
+                    Ok(n) => total = total.checked_add(n)?,
+                    Err(_) => terms.push(s),
+                }
+            }
+            terms.sort();
+            Some((terms, total))
+        };
+        fn decide(goal: &Exact, split: &mut dyn FnMut(&Exact) -> Split) -> Option<bool> {
+            match goal {
+                // One false part decides an `and`, and one true part decides an `or`, even when
+                // another part is unknown.
+                Exact::And(gs) | Exact::Or(gs) => {
+                    let decisive = matches!(goal, Exact::Or(_));
+                    let mut unknown = false;
+                    for g in gs {
+                        match decide(g, split) {
+                            Some(v) if v == decisive => return Some(v),
+                            Some(_) => {}
+                            None => unknown = true,
+                        }
+                    }
+                    (!unknown).then_some(!decisive)
+                }
+                Exact::Le(a, b) => {
+                    let (a, x) = split(a)?;
+                    let (b, y) = split(b)?;
+                    (a == b).then_some(x <= y)
+                }
+                Exact::Term(_) | Exact::Sum(_) => None,
+            }
+        }
+        decide(goal, &mut split)
+    }
+
     fn lower_exact(
         &self,
         goal: &crate::hir::check::pointer_facts::Exact,
