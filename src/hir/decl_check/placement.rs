@@ -36,39 +36,62 @@ impl TypeChecker<'_> {
     /// of them.
     pub fn check_placements_name_a_place(&mut self) {
         // Sorted, because both tables are HashMaps and this reports per declaration: an unsorted
-        // walk would emit the same diagnostics in a different order on every run.
-        let mut sites: Vec<(String, Vec<crate::syntax::Type>)> = Vec::new();
+        // walk would emit the same diagnostics in a different order on every run. Each site
+        // keeps the file and the place that its diagnostics name.
+        struct Site {
+            order: (String, usize),
+            context: String,
+            ty: crate::syntax::Type,
+            file: Option<crate::symbol::Symbol>,
+            span: crate::syntax::Span,
+        }
+        let mut sites: Vec<Site> = Vec::new();
         for (name, f) in &self.env.syntax_functions {
-            let tys: Vec<crate::syntax::Type> = f
-                .params
-                .iter()
-                .map(|(_, t)| t)
-                .chain(std::iter::once(&f.return_type))
-                .filter(|t| t.states_a_location())
-                .cloned()
-                .collect();
-            if !tys.is_empty() {
-                sites.push((format!("function '{name}'"), tys));
+            // One site for each parameter and one for the return type, so that each bad
+            // placement has a message of its own.
+            let params = f.params.iter().map(|(p, t)| (Some(p), t));
+            let ret = std::iter::once((None, &f.return_type));
+            for (i, (param, ty)) in params.chain(ret).enumerate() {
+                if ty.states_a_location() {
+                    let context = match param {
+                        Some(p) => format!("parameter '{p}' of function '{name}'"),
+                        None => format!("the return type of function '{name}'"),
+                    };
+                    sites.push(Site {
+                        order: (format!("function '{name}'"), i),
+                        context,
+                        ty: ty.clone(),
+                        file: f.file.clone(),
+                        span: f.span,
+                    });
+                }
             }
         }
         for (name, s) in &self.env.structs {
             for (field, ty) in &s.fields {
                 if ty.states_a_location() {
-                    sites.push((
-                        format!("field '{field}' of struct '{name}'"),
-                        vec![ty.clone()],
-                    ));
+                    let context = format!("field '{field}' of struct '{name}'");
+                    sites.push(Site {
+                        order: (context.clone(), 0),
+                        context,
+                        ty: ty.clone(),
+                        file: s.file.clone(),
+                        span: crate::syntax::Span::default(),
+                    });
                 }
             }
         }
-        sites.sort_by(|a, b| a.0.cmp(&b.0));
+        sites.sort_by(|a, b| a.order.cmp(&b.order));
 
-        for (context, tys) in sites {
-            for ty in &tys {
-                // A declared position states where a tensor lives without allocating one here,
-                // so it takes the per-tile verdict and stays out of any function's working set.
-                self.check_declared_type_placement(ty, &context, &crate::syntax::Span::default());
-            }
+        for site in sites {
+            let file = site.file.or_else(|| self.errors.file.clone());
+            let prev_file = std::mem::replace(&mut self.errors.file, file);
+            let prev_at = std::mem::replace(&mut self.errors.at, site.span);
+            // A declared position states where a tensor lives without allocating one here,
+            // so it takes the per-tile verdict and stays out of any function's working set.
+            self.check_declared_type_placement(&site.ty, &site.context, &site.span);
+            self.errors.file = prev_file;
+            self.errors.at = prev_at;
         }
     }
 

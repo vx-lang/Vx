@@ -1,0 +1,12 @@
+//===- library_with_a_placement_that_names_no_place.vx - Vx Compiler *- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A library function whose parameter is in a memory that no topology holds.
+
+pub fn first(t : &Tensor<f32, [4], Memory::Nowhere>) -> f32 {
+  return t[0];
+}
