@@ -350,6 +350,12 @@ impl Scheduler {
             && self.running.load(Ordering::SeqCst) == self.blocked.load(Ordering::SeqCst)
     }
 
+    /// Whether a seed chooses the order of the tasks. Then the tasks run on a thread that is
+    /// not a worker.
+    pub(crate) fn has_seed(&self) -> bool {
+        self.random.is_some()
+    }
+
     /// A running fiber starts to wait on its thread, under a callback.
     pub(crate) fn blocked(&self) {
         self.blocked.fetch_add(1, Ordering::SeqCst);
