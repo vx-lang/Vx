@@ -765,12 +765,21 @@ pub fn generate_match_chain<'c>(
             );
             cmp_op.result(0)?.into()
         }
-        // A scalar literal arm (`0 => …`, `1 => …`) over an integer scrutinee: compare the
+        // A scalar literal arm (`0 => …`, `1 => …`) over a number scrutinee: compare the
         // scrutinee against the literal with the same `arith.cmpi eq` shape as the enum-tag path,
         // but against `match_val` directly (no tag extraction). Without this, an integer `match`
         // ICE'd here — `Unsupported pattern in codegen` (#263).
         Pattern::Literal(lit) => {
+            let float = crate::codegen::generator::is_float_text(&_match_ty.to_string());
             let lit_val = match &**lit {
+                // A number arm of a float `match`, `2` or `0.1`, is a float of that type.
+                Expr::Number(n) if float => {
+                    let v = n.value.as_ref();
+                    let v = v
+                        .parse::<f64>()
+                        .unwrap_or_else(|_| panic!("float match arm that does not parse: {v}"));
+                    melior::ir::attribute::FloatAttribute::new(gen.context, _match_ty, v).into()
+                }
                 // E3019 refuses an arm that the type of the match cannot hold.
                 Expr::Number(n) => integer_constant(gen.context, _match_ty, n.value.as_ref()),
                 Expr::Identifier(id) if id.name.as_ref() == "true" => {
@@ -788,15 +797,21 @@ pub fn generate_match_chain<'c>(
                     .build()?,
             );
             let const_val = const_op.result(0)?.into();
+            // `oeq` for a float and `eq` for an integer: each has the number 1 and 0.
+            let (cmp, predicate) = if float {
+                ("arith.cmpf", 1)
+            } else {
+                ("arith.cmpi", 0)
+            };
             let cmp_op = block.append_operation(
-                OperationBuilder::new("arith.cmpi", gen.loc())
+                OperationBuilder::new(cmp, gen.loc())
                     .add_operands(&[match_val, const_val])
                     .add_results(&[melior::ir::r#type::IntegerType::new(gen.context, 1).into()])
                     .add_attributes(&[(
                         Identifier::new(gen.context, "predicate"),
                         IntegerAttribute::new(
                             melior::ir::r#type::IntegerType::new(gen.context, 64).into(),
-                            0, // eq
+                            predicate,
                         )
                         .into(),
                     )])
