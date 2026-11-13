@@ -65,6 +65,7 @@ impl TypeChecker<'_> {
                         None,
                     );
                 }
+            }
             self.errors.point_at(&decl.place, &outside);
             if !matches!(TopologyKind::from_name(&decl.name), TopologyKind::Custom(_)) {
                 self.errors.error_with_code(
