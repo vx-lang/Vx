@@ -13,20 +13,20 @@
 // PLACE: Error[E6016] at {{.*}}topology_dispatch_id_collision.vx:25:10:
 // CHECK: collide on dispatch id 117023822
 Memory CPU_DRAM {}
-Memory GPU_HBM {
+Memory DEV_HBM {
   within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
 }
 Topology DO2TX {
   arch: nvptx64,
-  memory: Memory::GPU_HBM,
-  visible: [Memory::GPU_HBM],
-  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 63 GB/s
 }
 Topology DSC0A {
   arch: applegpu,
-  memory: Memory::GPU_HBM,
-  visible: [Memory::GPU_HBM],
-  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 63 GB/s
 }
 fn main() -> i32 {
   return 0;
