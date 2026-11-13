@@ -109,6 +109,8 @@ struct Access {
 struct Proof<'c> {
     /// The parameters with an `atomic` clause, for each function that has one.
     contracts: &'c HashMap<String, Vec<usize>>,
+    /// The names of the generic functions.
+    templates: &'c HashSet<String>,
     /// The key of the loop's own variable.
     own: String,
     scopes: Vec<HashMap<String, Binding>>,
@@ -156,6 +158,7 @@ pub(crate) fn across_loop_race(
     f: &ForLoopStmt,
     level: &str,
     contracts: &HashMap<String, Vec<usize>>,
+    templates: &HashSet<String>,
 ) -> Result<Vec<LargestEnd>, (String, Span)> {
     let range = match &*f.iterable {
         Expr::Range(r) => int(&r.start).zip(int(&r.end)),
@@ -168,6 +171,7 @@ pub(crate) fn across_loop_race(
     let prove = |limits: HashMap<String, i128>| {
         let mut p = Proof {
             contracts,
+            templates,
             own: String::new(),
             scopes: vec![HashMap::new()],
             ranges: HashMap::new(),
@@ -613,10 +617,15 @@ impl Proof<'_> {
                          the barrier"
                             .to_string()
                     } else {
+                        let name =
+                            crate::hir::check::atomic_contracts::shown_function(&fc.name, |t| {
+                                self.templates.contains(t)
+                            });
                         format!(
-                            "the call to `{}` may write through an argument, and the checker \
-                             does not read its body. Write its work in the loop",
-                            fc.name
+                            "the call to `{name}` may write through an argument, and the checker \
+                             does not read its body. If `{name}` writes no memory, give it \
+                             `ensures writes_only()`. If it only reads a tensor parameter `t`, \
+                             give it `ensures reads_only(t)`. Or write its work in the loop"
                         )
                     };
                     self.fail(why, fc.span);
