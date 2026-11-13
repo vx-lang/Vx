@@ -13,7 +13,7 @@ fn falls_off_the_end(x : i32) -> i32 {
   let y : i32 = x + 1;
 }
 
-// CHECK-DAG: E3028{{.*}}'empty' returns i32 but its body can finish without returning a value
+// CHECK-DAG: E3028] at {{.*}}missing_return.vx:[[@LINE+1]]:4: 'empty' returns i32 but its body can finish without returning a value
 fn empty(x : i32) -> i32 {
 }
 

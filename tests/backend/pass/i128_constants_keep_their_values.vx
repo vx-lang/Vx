@@ -1,0 +1,31 @@
+//===- i128_constants_keep_their_values.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An `i128` constant keeps its value when it is above the largest `i64` or below zero. The
+// flat code generator used to turn 2^63 into -2^63, and the AST one turned -5 into 2^64 - 5.
+//
+// EXPECT: true true true true
+
+const NEGATIVE : i128 = -5;
+
+fn main() -> i32 {
+  let zero : i128 = 0;
+  let two_32 : i128 = 4294967296;
+  let two_63 : i128 = two_32 * 2147483648;
+  let two_64 : i128 = two_32 * two_32;
+  let a : i128 = 9223372036854775808;
+  let b : i128 = 18446744073709551615;
+  let c : i128 = -9223372036854775809;
+  print(a == two_63);
+  print(" ");
+  print(b == two_64 - 1);
+  print(" ");
+  print(c == zero - two_63 - 1);
+  print(" ");
+  print(NEGATIVE == zero - 5);
+  return 0;
+}

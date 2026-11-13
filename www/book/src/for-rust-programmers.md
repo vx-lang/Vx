@@ -24,6 +24,8 @@ lists what to change. Each item shows the Rust form and the Vx form.
   caller, give your `at` to the call. `Location::here()` is Rust's `Location::caller()` and
   `file!()`, `line!()` and `column!()` in one.
 - **Closure parameters have types.** `|x| x + 1` is `| x : i64 | x + 1`.
+- **No `async`, and no tokio.** A `tasks` block and `spawn` start tasks, and a function that waits
+  is a normal function. [Writing parallel code](writing-parallel-code.md) maps tokio to Vx.
 - **No `impl Trait` parameters.** `fn show(g : &impl Area)` is `fn show<T : Area>(g : &T)`.
 
 ## Types and values

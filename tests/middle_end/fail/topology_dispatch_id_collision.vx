@@ -1,4 +1,5 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s 2>&1 | FileCheck %s --check-prefix=PLACE
 // A declared name's dispatch id is a hash, so two names can still collide -- DO2TX and DSC0A
 // both hash to 117023822. Everything keyed by the id (spawn dispatch, seam identity, the
 // declared-arch table) then depends on hash-iteration order for which declaration wins;
@@ -8,22 +9,24 @@
 // The names are deliberately unlovely: finding a colliding pair in the 3000..INT32_MAX range
 // took a search over a million candidates, which is the point of widening it.
 // CHECK: E6016
+// The console also names the place in the source.
+// PLACE: Error[E6016] at {{.*}}topology_dispatch_id_collision.vx:25:10:
 // CHECK: collide on dispatch id 117023822
 Memory CPU_DRAM {}
-Memory GPU_HBM {
+Memory DEV_HBM {
   within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
 }
 Topology DO2TX {
   arch: nvptx64,
-  memory: Memory::GPU_HBM,
-  visible: [Memory::GPU_HBM],
-  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 63 GB/s
 }
 Topology DSC0A {
   arch: applegpu,
-  memory: Memory::GPU_HBM,
-  visible: [Memory::GPU_HBM],
-  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 63 GB/s
 }
 fn main() -> i32 {
   return 0;

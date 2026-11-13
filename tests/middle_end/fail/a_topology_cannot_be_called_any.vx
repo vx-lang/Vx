@@ -1,7 +1,10 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s 2>&1 | FileCheck %s --check-prefix=PLACE
 // `on Topology::Any` means that a function runs where it is called, so no topology can have
 // the name `Any`.
 // CHECK: E6016
+// The console also names the place in the source.
+// PLACE: Error[E6016] at {{.*}}a_topology_cannot_be_called_any.vx:13:10:
 // CHECK: a topology cannot be called `Any`
 Memory CPU_DRAM {}
 Memory WIDE {

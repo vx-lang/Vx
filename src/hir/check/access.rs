@@ -2113,7 +2113,15 @@ impl<'a> TypeChecker<'a> {
                         _ => break,
                     }
                 }
+                // `&mut tensor_view_2d(p, ..)` names the memory `p` points at, as `&mut *p` does.
+                // So does a borrow of a variable that holds such a view, or of a part of it.
+                if let Some(p) = Self::foreign_view_pointer(place) {
+                    return self.ref_provenance_of(p);
+                }
                 if let Some((base, _path)) = Self::extract_base_and_path(&b.expr) {
+                    if let Some(provenance) = self.borrow.foreign_views.get(base.as_str()) {
+                        return *provenance;
+                    }
                     match self.borrow.current_params.get(base.as_str()) {
                         Some(pty) if Self::is_ref_type(pty) => Some(RefProvenance::External),
                         _ => Some(RefProvenance::Local(self.frame_depth_of(&base))),

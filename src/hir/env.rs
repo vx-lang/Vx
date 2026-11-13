@@ -67,6 +67,8 @@ pub struct DuplicateImpl {
     /// The module of the impl indexed first, and of the one that repeats it.
     pub first: crate::symbol::Symbol,
     pub second: crate::symbol::Symbol,
+    /// Where the second impl is written.
+    pub place: crate::syntax::DeclPlace,
 }
 
 /// One `Memory`/`Topology` name declared by two modules with *different* declarations — see
@@ -78,6 +80,8 @@ pub struct DuplicateDecl {
     pub name: crate::symbol::Symbol,
     /// The module whose declaration collided with one already indexed.
     pub module: crate::symbol::Symbol,
+    /// Where that declaration is written.
+    pub place: crate::syntax::DeclPlace,
 }
 
 pub struct GlobalAstEnv<'a> {
@@ -203,6 +207,7 @@ impl<'a> GlobalAstEnv<'a> {
                             kind: "memory space",
                             name: m.name.clone(),
                             module: module.module_path.clone(),
+                            place: m.place.clone(),
                         });
                     }
                 }
@@ -217,6 +222,7 @@ impl<'a> GlobalAstEnv<'a> {
                             kind: "topology",
                             name: t.name.clone(),
                             module: module.module_path.clone(),
+                            place: t.place.clone(),
                         });
                     }
                 }
@@ -231,6 +237,10 @@ impl<'a> GlobalAstEnv<'a> {
                             kind: "const",
                             name: c.name.clone(),
                             module: module.module_path.clone(),
+                            place: crate::syntax::DeclPlace {
+                                file: module.file.clone(),
+                                span: c.span,
+                            },
                         });
                     }
                 }
@@ -258,6 +268,7 @@ impl<'a> GlobalAstEnv<'a> {
                                 what: what.clone(),
                                 first: first.clone(),
                                 second: module.module_path.clone(),
+                                place: i.place.clone(),
                             })
                         }
                         Some(_) => {}
@@ -638,9 +649,6 @@ pub struct TypeChecker<'a> {
     /// `(line, column, element type)`.
     pub(crate) region_element_reports:
         std::collections::HashSet<(usize, usize, crate::syntax::ElementType)>,
-    /// The statement being checked. Most expression nodes carry no span of their own, so a
-    /// diagnostic about one has to point at the statement that contains it.
-    pub(crate) current_statement_span: crate::syntax::Span,
     pub transfer_cost_graph: &'a crate::arch::TransferCostGraph,
     /// Borrow-checking state (active records + NLL liveness), encapsulated so a conflict-check read
     /// cannot bypass the dead-borrow sweep. Replaces the former `active_borrows` /
@@ -803,7 +811,6 @@ impl<'a> TypeChecker<'a> {
             active_memory,
             active_space_declares_dtypes,
             region_element_reports: std::collections::HashSet::new(),
-            current_statement_span: crate::syntax::Span::default(),
             transfer_cost_graph,
             borrow: crate::hir::borrow_cx::BorrowCx::default(),
             speculating: false,
@@ -1992,6 +1999,7 @@ impl<'a> TypeChecker<'a> {
         // Diagnostics name the file the function is written in, even when it is a generic
         // instance or a copied default checked from inside another file's function.
         let prev_file = std::mem::replace(&mut self.errors.file, func.file.clone());
+        let prev_at = std::mem::replace(&mut self.errors.at, func.span);
 
         // `main` is the C entry point: its return value is the process exit code,
         // so it must return i32 (#210). A non-i32 `main` is a hard error rather
@@ -2162,6 +2170,7 @@ impl<'a> TypeChecker<'a> {
         let prev_store_targets = std::mem::take(&mut self.borrow.store_targets);
         let prev_store_target_vars = std::mem::take(&mut self.borrow.store_target_vars);
         let prev_views = std::mem::take(&mut self.borrow.views);
+        let prev_foreign_views = std::mem::take(&mut self.borrow.foreign_views);
         let prev_view_owners = std::mem::take(&mut self.borrow.view_owners_by_let);
         // The borrow table too. A function's body can be checked from inside another's: a
         // generic method is checked when a call first instantiates it. The caller's borrows are
@@ -2374,6 +2383,7 @@ impl<'a> TypeChecker<'a> {
         self.borrow.store_targets = prev_store_targets;
         self.borrow.store_target_vars = prev_store_target_vars;
         self.borrow.views = prev_views;
+        self.borrow.foreign_views = prev_foreign_views;
         self.borrow.view_owners_by_let = prev_view_owners;
         self.borrow.restore(prev_borrows);
         self.borrow.restore_shadowed(prev_shadowed);
@@ -2397,6 +2407,7 @@ impl<'a> TypeChecker<'a> {
         self.in_written_unsafe_block = prev_written_unsafe;
         self.unsafe_op_seen = prev_unsafe_op_seen;
         self.errors.file = prev_file;
+        self.errors.at = prev_at;
     }
 
     pub fn parse_ty_str(&self, s: &str) -> Type {

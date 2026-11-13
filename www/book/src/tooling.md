@@ -29,6 +29,7 @@ Optimization is `-O0` through `-O3`, defaulting to `-O0`.
 | --- | --- |
 | `-fweak-relaxed-atomics` | A relaxed atomic read stays relaxed, so the program can see load buffering. The default, `-fno-weak-relaxed-atomics`, makes each relaxed read an acquire read |
 | `-fauto-schedule-levels` | An `across` loop on a chip that cannot launch its levels runs as a plain `for` loop. The default, `-fno-auto-schedule-levels`, makes such a loop an error |
+| `-fbounds-checks` | An index outside the shape of a tensor stops the program with an error. The check is in CPU code, not in a GPU kernel. The default, `-fno-bounds-checks`, does not check indices |
 | `--legacy-codegen` | Generate code with the second code generator, which walks the syntax tree. The tests check that both code generators print the same |
 
 For each `-f` feature, the last flag on the command line wins.

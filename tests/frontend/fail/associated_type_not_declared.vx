@@ -23,5 +23,5 @@ fn main() -> i32 {
 // and means nothing.
 // CHECK: E3037
 // CHECK-SAME: does not bind the associated type 'Item'
-// CHECK: E3038
+// CHECK: E3038] at {{.*}}associated_type_not_declared.vx:9:1:
 // CHECK-SAME: binds 'Itm', which trait Counter does not declare

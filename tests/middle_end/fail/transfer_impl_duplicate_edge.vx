@@ -1,4 +1,5 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s 2>&1 | FileCheck %s --check-prefix=PLACE
 // Two lowerings for one edge ON ONE MACHINE: which is in force would be module load
 // order, the same ambiguity E6012 refuses for declarations (Vx#352).
 //
@@ -8,6 +9,8 @@
 // test transfer_impl_two_machines.vx holds that. Only a repeat for the SAME machine is
 // ambiguous, because only then is there nothing to tell the two apart.
 // CHECK: E6015
+// The console also names the place in the source.
+// PLACE: Error[E6015] at {{.*}}transfer_impl_duplicate_edge.vx:27:1:
 // CHECK: Topology::Dev has 2 lowerings for the edge L2 -> SMEM
 Topology Dev {
   memory: Memory::L2,

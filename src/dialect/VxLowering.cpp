@@ -4711,6 +4711,10 @@ static LogicalResult returnOwnedBuffers(ModuleOp module) {
       if (func &&
           func.getResultAttr(operand.getOperandNumber(), "vx.reference"))
         continue;
+      // A placed result moves to the caller as it is. A copy here would read
+      // device memory on the host.
+      if (func && func.getResultAttr(operand.getOperandNumber(), "vx.placed"))
+        continue;
       BufferOrigin origin = originOf(operand.get());
       // A placed buffer goes to the caller, which frees it on its device.
       if (origin == BufferOrigin::Heap || origin == BufferOrigin::Placed)
@@ -9500,6 +9504,125 @@ struct CheckIntegerDivisionPass
   }
 };
 
+// With `-fbounds-checks`, an index outside the shape of a tensor stops the
+// program. Each index of a `memref.load` and `memref.store` must be less than
+// its dimension. A row `t[i]` is a `memref.reinterpret_cast` of lower rank
+// than its source, and it must stay inside the elements of the source. A
+// constant index inside a static dimension is not checked, and neither is an
+// operation inside a `linalg` region or a GPU kernel, where `cf.assert` does
+// not lower.
+struct CheckTensorIndicesPass
+    : public PassWrapper<CheckTensorIndicesPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(CheckTensorIndicesPass)
+
+  llvm::StringRef getArgument() const override {
+    return "vx-check-tensor-indices";
+  }
+
+  llvm::StringRef getDescription() const override {
+    return "Traps on a tensor index outside the tensor's shape";
+  }
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<cf::ControlFlowDialect, arith::ArithDialect,
+                    memref::MemRefDialect>();
+  }
+
+  static constexpr const char *kMessage =
+      "index out of bounds: an index is outside the shape of the tensor";
+
+  static Value indexValue(OpBuilder &b, Location loc, OpFoldResult v) {
+    if (auto value = dyn_cast<Value>(v))
+      return value;
+    return b.create<arith::ConstantIndexOp>(
+        loc, cast<IntegerAttr>(cast<Attribute>(v)).getInt());
+  }
+
+  // Whether a view with these sizes is empty, and its last element: the
+  // offset plus (size - 1) * stride for each dimension.
+  static std::pair<Value, Value> emptyAndLast(OpBuilder &b, Location loc,
+                                              Value offset, ValueRange sizes,
+                                              ValueRange strides) {
+    Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+    Value one = b.create<arith::ConstantIndexOp>(loc, 1);
+    Value empty = b.create<arith::ConstantIntOp>(loc, b.getI1Type(), 0);
+    Value last = offset;
+    for (auto [size, stride] : llvm::zip_equal(sizes, strides)) {
+      Value isZero =
+          b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, size, zero);
+      empty = b.create<arith::OrIOp>(loc, empty, isZero);
+      Value steps = b.create<arith::SubIOp>(loc, size, one);
+      Value reach = b.create<arith::MulIOp>(loc, steps, stride);
+      last = b.create<arith::AddIOp>(loc, last, reach);
+    }
+    return {empty, last};
+  }
+
+  static void checkRow(memref::ReinterpretCastOp row) {
+    auto sourceTy = dyn_cast<MemRefType>(row.getSource().getType());
+    if (!sourceTy || row.getType().getRank() >= sourceTy.getRank())
+      return;
+    OpBuilder b(row);
+    Location loc = row.getLoc();
+    auto source =
+        b.create<memref::ExtractStridedMetadataOp>(loc, row.getSource());
+    auto [sourceEmpty, sourceLast] = emptyAndLast(
+        b, loc, source.getOffset(), source.getSizes(), source.getStrides());
+    SmallVector<Value> sizes, strides;
+    for (OpFoldResult v : row.getMixedSizes())
+      sizes.push_back(indexValue(b, loc, v));
+    for (OpFoldResult v : row.getMixedStrides())
+      strides.push_back(indexValue(b, loc, v));
+    Value offset = indexValue(b, loc, row.getMixedOffsets().front());
+    auto [rowEmpty, rowLast] = emptyAndLast(b, loc, offset, sizes, strides);
+    Value starts = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge,
+                                           offset, source.getOffset());
+    Value ends = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sle,
+                                         rowLast, sourceLast);
+    Value one = b.create<arith::ConstantIntOp>(loc, b.getI1Type(), 1);
+    Value sourceHas = b.create<arith::XOrIOp>(loc, sourceEmpty, one);
+    Value inside = b.create<arith::AndIOp>(
+        loc, sourceHas, b.create<arith::AndIOp>(loc, starts, ends));
+    Value ok = b.create<arith::OrIOp>(loc, rowEmpty, inside);
+    b.create<cf::AssertOp>(loc, ok, kMessage);
+  }
+
+  static void checkElement(Operation *op, Value memref, ValueRange indices) {
+    auto ty = cast<MemRefType>(memref.getType());
+    OpBuilder b(op);
+    Location loc = op->getLoc();
+    for (auto [k, index] : llvm::enumerate(indices)) {
+      std::optional<int64_t> known = getConstantIntValue(index);
+      if (known && !ty.isDynamicDim(k) && *known >= 0 &&
+          *known < ty.getDimSize(k))
+        continue;
+      Value size = b.createOrFold<memref::DimOp>(loc, memref, k);
+      // Unsigned, so a negative index is outside too.
+      Value ok =
+          b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ult, index, size);
+      b.create<cf::AssertOp>(loc, ok, kMessage);
+    }
+  }
+
+  void runOnOperation() override {
+    SmallVector<Operation *> ops;
+    getOperation().walk([&](Operation *op) {
+      if (isa<memref::LoadOp, memref::StoreOp, memref::ReinterpretCastOp>(op) &&
+          op->getParentOfType<gpu::GPUModuleOp>() == nullptr &&
+          op->getParentOp()->getDialect()->getNamespace() != "linalg")
+        ops.push_back(op);
+    });
+    for (Operation *op : ops) {
+      if (auto load = dyn_cast<memref::LoadOp>(op))
+        checkElement(op, load.getMemRef(), load.getIndices());
+      else if (auto store = dyn_cast<memref::StoreOp>(op))
+        checkElement(op, store.getMemRef(), store.getIndices());
+      else
+        checkRow(cast<memref::ReinterpretCastOp>(op));
+    }
+  }
+};
+
 // A task that parks can continue on another thread. Foreign code that calls a
 // Vx function can keep state that belongs to its thread, so the task must stay
 // on its thread until the Vx function returns
@@ -10144,6 +10267,9 @@ void registerVxPasses() {
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<CheckIntegerDivisionPass>();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return std::make_unique<CheckTensorIndicesPass>();
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<HideProgramSymbolsPass>();

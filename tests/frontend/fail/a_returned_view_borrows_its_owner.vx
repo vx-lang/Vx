@@ -1,0 +1,25 @@
+//===- a_returned_view_borrows_its_owner.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A row that a function returns as `&mut Tensor` is a mutable borrow of the tensor that the
+// caller passed. So the caller cannot read or write that tensor while it still uses the row.
+//
+// CHECK: E4002{{.*}}:22:{{.*}}Cannot access 'o' because it is mutably borrowed
+
+fn second_row(q : &mut Tensor<f32, [2, 4]>) -> &mut Tensor<f32, [4]> {
+  return &mut q[1];
+}
+
+fn main() -> i32 {
+  let mut o = Tensor<f32, [2, 4]>::fill(5.0);
+  let r = second_row(&mut o);
+  o[0][0] = 1.0;
+  r[0] = 7.0;
+  return 0;
+}

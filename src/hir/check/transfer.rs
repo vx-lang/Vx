@@ -2743,7 +2743,7 @@ impl<'a> TypeChecker<'a> {
                 // literal there was skipped by the expression check.
                 if self.active_space_declares_dtypes {
                     if let Some(ret_span) = ret_span {
-                        let statement = self.current_statement_span;
+                        let statement = self.errors.at;
                         let span = if ret_span.line != 0 {
                             ret_span
                         } else {

@@ -22,9 +22,13 @@ Add that line to `~/.zshrc` or `~/.bashrc` to make it permanent.
 | Platform | Status |
 | --- | --- |
 | macOS on Apple Silicon (M1–M4) | Supported. Apple accelerator dispatch available. |
-| Linux x86_64 (glibc 2.35+) | Supported. CUDA dispatch when a toolkit is present. |
+| Linux x86_64 (glibc 2.35+) | Supported. CUDA dispatch needs the NVIDIA driver and CUDA 12. |
 | Intel macOS | Not supported — the runtime assumes Apple Silicon. |
 | Linux arm64, Windows | No prebuilt toolchain. [Build from source](building.md). |
+
+On a machine with the NVIDIA driver, the installer takes the CUDA build. That build needs the
+CUDA 12 runtime and cuBLAS 12. When they are missing, the installer takes the build without CUDA
+and says so. `VX_NO_CUDA=1` always takes the build without CUDA.
 
 ## Prerequisites
 
@@ -105,7 +109,7 @@ Program exited with non-zero code: 42
 ## Installing a specific version
 
 ```bash
-curl -fsSL https://vxlang.org/install.sh | VX_VERSION=v0.0.3 sh
+curl -fsSL https://vxlang.org/install.sh | VX_VERSION=v0.0.4 sh
 ```
 
 `VX_VERSION` goes after the `|`, so that it is set for the `sh` that runs the installer.

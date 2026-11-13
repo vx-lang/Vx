@@ -891,7 +891,7 @@ mod tests {
             generics: Vec::new(),
             fields: fields.into_iter().map(|(n, t)| (sym(n), t)).collect(),
             invariants: Vec::new(),
-            file: None,
+            place: Default::default(),
             doc_comment: None,
         }
     }
@@ -1103,6 +1103,7 @@ mod tests {
                 (sym("Green"), None),
                 (sym("Blue"), None),
             ],
+            place: Default::default(),
             doc_comment: None,
         };
         let mut enums = FxHashMap::default();
@@ -1123,6 +1124,7 @@ mod tests {
                 (sym("None"), None),
                 (sym("Some"), Some(vec![scalar(ElementType::I32)])),
             ],
+            place: Default::default(),
             doc_comment: None,
         };
         let mut enums = FxHashMap::default();

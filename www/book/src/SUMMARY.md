@@ -18,6 +18,7 @@
 - [Files, input and time](files-input-time.md)
 - [Tasks and channels](tasks.md)
 - [What Vx guarantees about concurrency](guarantees.md)
+- [Writing parallel code](writing-parallel-code.md)
 - [Generics and traits](generics.md)
 - [Closures and function values](closures.md)
 - [Operators and standard traits](operators-and-traits.md)

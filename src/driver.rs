@@ -251,8 +251,12 @@ pub struct DriverOptions {
     /// buffering, which the memory model otherwise forbids. The default,
     /// `-fno-weak-relaxed-atomics`, makes each relaxed read an acquire read.
     ///
+    /// `-fbounds-checks`: an index outside the shape of a tensor stops the program with an
+    /// error. The check is in CPU code, not in a GPU kernel. The default, `-fno-bounds-checks`,
+    /// does not check indices.
+    ///
     /// For each feature, the last one wins
-    #[arg(short = 'f', value_name = "FEATURE", value_parser = ["auto-schedule-levels", "no-auto-schedule-levels", "weak-relaxed-atomics", "no-weak-relaxed-atomics"])]
+    #[arg(short = 'f', value_name = "FEATURE", value_parser = ["auto-schedule-levels", "no-auto-schedule-levels", "weak-relaxed-atomics", "no-weak-relaxed-atomics", "bounds-checks", "no-bounds-checks"])]
     pub features: Vec<String>,
 
     /// Optimization level (-O0 to -O3)
@@ -294,6 +298,11 @@ impl DriverOptions {
     /// Whether `-fweak-relaxed-atomics` is on.
     pub fn weak_relaxed_atomics(&self) -> bool {
         self.feature("weak-relaxed-atomics")
+    }
+
+    /// Whether `-fbounds-checks` is on.
+    pub fn bounds_checks(&self) -> bool {
+        self.feature("bounds-checks")
     }
 
     /// Whether `--sanitize=thread` is on.
@@ -903,6 +912,7 @@ impl CompilerDriver {
                 // property of an allocation nobody has made yet. A host file that wants
                 // to name its domains declares them itself.
                 numa_node: None,
+                place: Default::default(),
                 doc_comment: Some("the machine this was compiled on (--host default)".to_string()),
             }],
             // The compiling machine's own architecture, so `--host default`
@@ -921,6 +931,7 @@ impl CompilerDriver {
                     levels: None,
                     offload: false,
                 },
+                place: Default::default(),
             }],
             imports: Vec::new(),
             macros: Vec::new(),
@@ -1088,6 +1099,7 @@ impl CompilerDriver {
                 name: name.clone(),
                 generics: Vec::new(),
                 variants: variants.iter().map(|v| (v.clone(), None)).collect(),
+                place: Default::default(),
                 doc_comment: None,
             })
             .collect();
@@ -1661,6 +1673,7 @@ impl CompilerDriver {
             self.options.opt_level,
             llvm_lower,
             self.options.disable_mlir_optimizations,
+            self.options.bounds_checks(),
         );
 
         let pass_manager = melior::pass::PassManager::new(context);
@@ -2178,6 +2191,7 @@ fn get_optimization_pipeline(
     opt_level: u8,
     llvm_lower: bool,
     disable_mlir_optimizations: bool,
+    bounds_checks: bool,
 ) -> String {
     let mut passes = vec![];
 
@@ -2190,6 +2204,10 @@ fn get_optimization_pipeline(
         passes.push("convert-vx-to-standard".to_string());
         // Before any optimization, so none can remove or move a division before it is checked.
         passes.push("vx-check-integer-division".to_string());
+        // Before inlining, while each row of a tensor is still its own view.
+        if bounds_checks {
+            passes.push("vx-check-tensor-indices".to_string());
+        }
         // Before linalg is lowered, while each reduce is still one `linalg.generic`.
         passes.push("vx-reorderable-reductions".to_string());
     }
@@ -2510,6 +2528,10 @@ mod tests {
         ]);
         assert!(o.auto_schedule_levels() && !o.weak_relaxed_atomics());
         assert!(!parse(&[]).weak_relaxed_atomics());
+        let o = parse(&["-fbounds-checks", "-fno-weak-relaxed-atomics"]);
+        assert!(o.bounds_checks());
+        assert!(!parse(&["-fbounds-checks", "-fno-bounds-checks"]).bounds_checks());
+        assert!(!parse(&[]).bounds_checks());
     }
 
     /// Two modules can declare a host topology at once -- `--machine fleet/h100.vx --host default`

@@ -432,19 +432,30 @@ fn fold_cycle(
             available_bytes: budget.cap,
             tiles: None,
         };
-        // The cycle is reported once; it is named from its first function's file.
-        errors.file = scc.first().and_then(|&i| nodes[i].file.clone());
+        // The cycle is reported once, in its first function's file, at a call that stays in it.
+        let first = scc.first().copied();
+        errors.file = first.and_then(|i| nodes[i].file.clone());
+        let at = first
+            .and_then(|i| {
+                nodes[i].calls.iter().find(|c| {
+                    index
+                        .get(c.callee.as_str())
+                        .is_some_and(|j| scc.contains(j))
+                })
+            })
+            .filter(|c| c.span.line > 0)
+            .map(|c| crate::diagnostic::SourceSpan::from_ast_span(&c.span));
         if budget.overcommit {
             errors
                 .warn(
                     crate::diagnostic::DiagnosticCode::W1028,
                     format!("{msg}; allowed because '{space}' is `overcommit`"),
-                    None,
+                    at,
                 )
                 .facts = Some(facts);
         } else {
             errors
-                .error_with_code(crate::diagnostic::DiagnosticCode::E6028, msg, None)
+                .error_with_code(crate::diagnostic::DiagnosticCode::E6028, msg, at)
                 .facts = Some(facts);
         }
     }
