@@ -47,7 +47,7 @@ the same in each run.
 | Values from many tasks | a channel |
 | A counter or a flag that tasks share | an atomic |
 | A change to more than one value at a time | a `Mutex` |
-| Values from more than one channel | `select` |
+| Values from more than one channel | a `Selector` |
 | A value that lives longer than its `tasks` block | an `Arc` |
 
 Use a channel when you are not sure. A channel moves each value to one owner, so two tasks never
@@ -74,8 +74,9 @@ The order in which tasks run changes from run to run. Do not let the result depe
   `Acquire`. [Memory orders](tasks.md#memory-orders) has a program that does this.
 - Use `SeqCst` only when two or more flags must be seen in one order by every task.
 
-Vx compiles a `Relaxed` load as an `Acquire` load. So a program that needs `Acquire` but asks for
-`Relaxed` can work on Vx and fail elsewhere. Ask for the order that the program needs.
+By default, Vx compiles a `Relaxed` load as an `Acquire` load. With `-fweak-relaxed-atomics`, the
+load stays `Relaxed`. So a program that needs `Acquire` but asks for `Relaxed` can work on Vx and
+fail elsewhere. Ask for the order that the program needs.
 
 ## Waits that do not end
 
@@ -105,7 +106,7 @@ Run each test in these ways:
 | `async fn` and `.await` | a normal function: `recv()`, `join()` and `lock()` wait in place |
 | `tokio::sync::mpsc` | `std::sync::channel` |
 | `tokio::select!` | `Selector` |
-| `AtomicU64` with `Ordering::Relaxed` | `AtomicI64` with `AtomicOrdering::Relaxed` |
+| `AtomicU64` with `Ordering::Relaxed` | `AtomicU64` with `AtomicOrdering::Relaxed` |
 
 Vx has no `async`. [Why Vx has no `async`](tasks.md#why-vx-has-no-async) explains this.
 
