@@ -638,9 +638,6 @@ pub struct TypeChecker<'a> {
     /// `(line, column, element type)`.
     pub(crate) region_element_reports:
         std::collections::HashSet<(usize, usize, crate::syntax::ElementType)>,
-    /// The statement being checked. Most expression nodes carry no span of their own, so a
-    /// diagnostic about one has to point at the statement that contains it.
-    pub(crate) current_statement_span: crate::syntax::Span,
     pub transfer_cost_graph: &'a crate::arch::TransferCostGraph,
     /// Borrow-checking state (active records + NLL liveness), encapsulated so a conflict-check read
     /// cannot bypass the dead-borrow sweep. Replaces the former `active_borrows` /
@@ -803,7 +800,6 @@ impl<'a> TypeChecker<'a> {
             active_memory,
             active_space_declares_dtypes,
             region_element_reports: std::collections::HashSet::new(),
-            current_statement_span: crate::syntax::Span::default(),
             transfer_cost_graph,
             borrow: crate::hir::borrow_cx::BorrowCx::default(),
             speculating: false,
@@ -1992,6 +1988,7 @@ impl<'a> TypeChecker<'a> {
         // Diagnostics name the file the function is written in, even when it is a generic
         // instance or a copied default checked from inside another file's function.
         let prev_file = std::mem::replace(&mut self.errors.file, func.file.clone());
+        let prev_at = std::mem::replace(&mut self.errors.at, func.span);
 
         // `main` is the C entry point: its return value is the process exit code,
         // so it must return i32 (#210). A non-i32 `main` is a hard error rather
@@ -2399,6 +2396,7 @@ impl<'a> TypeChecker<'a> {
         self.in_written_unsafe_block = prev_written_unsafe;
         self.unsafe_op_seen = prev_unsafe_op_seen;
         self.errors.file = prev_file;
+        self.errors.at = prev_at;
     }
 
     pub fn parse_ty_str(&self, s: &str) -> Type {

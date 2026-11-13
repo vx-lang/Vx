@@ -10,11 +10,6 @@
 // A channel takes only values that hold no reference (`Owned`), because a value can outlive the
 // task that sent it. The error names the field or the variant that holds the reference. A raw
 // pointer is `Owned`, so a channel of channel ends compiles.
-//
-// CHECK-DAG: Error in {{.*}}: Type '&i64' does not implement trait 'Owned' required by parameter 'T': '&i64' is a reference, which is not `Owned`
-// CHECK-DAG: Error in {{.*}}: Type 'Holder' does not implement trait 'Owned' required by parameter 'T': field 'r' of 'Holder' has type '&i64', and '&i64' is a reference, which is not `Owned`
-// CHECK-DAG: Error in {{.*}}: Type 'Slot' does not implement trait 'Owned' required by parameter 'T': variant 'Full' of 'Slot' has type '&i64', and '&i64' is a reference, which is not `Owned`
-// CHECK: Semantic check failed on '{{.*}}': 3 error(s) emitted
 
 import std::sync::channel;
 
@@ -29,14 +24,17 @@ enum Slot {
 }
 
 fn plain() -> void {
+  // CHECK-DAG: Error at {{.*}}.vx:[[@LINE+1]]:3: Type '&i64' does not implement trait 'Owned' required by parameter 'T': '&i64' is a reference, which is not `Owned`
   let ends = channel<&i64>(1);
 }
 
 fn in_a_field() -> void {
+  // CHECK-DAG: Error at {{.*}}.vx:[[@LINE+1]]:3: Type 'Holder' does not implement trait 'Owned' required by parameter 'T': field 'r' of 'Holder' has type '&i64', and '&i64' is a reference, which is not `Owned`
   let ends = channel<Holder>(1);
 }
 
 fn in_an_enum_payload() -> void {
+  // CHECK-DAG: Error at {{.*}}.vx:[[@LINE+1]]:3: Type 'Slot' does not implement trait 'Owned' required by parameter 'T': variant 'Full' of 'Slot' has type '&i64', and '&i64' is a reference, which is not `Owned`
   let ends = channel<Slot>(1);
 }
 
@@ -48,3 +46,5 @@ fn values_and_channel_ends() -> void {
 fn main() -> i32 {
   return 0;
 }
+
+// CHECK: Semantic check failed on '{{.*}}': 3 error(s) emitted
