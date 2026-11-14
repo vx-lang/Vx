@@ -14,6 +14,7 @@
 //===----------------------------------------------------------------------===//
 use std::fs::File;
 use std::io::Write;
+use std::path::Path;
 use std::process::Command;
 
 /// Where `libvx_std_core` sits for the profile this compiler was built with.
@@ -702,17 +703,36 @@ pub fn execute_mlir_streams(
     // resolution in `shared_library_paths` has always checked this; the link path had not.
     if !lib_npu.is_empty() && std::path::Path::new(&lib_npu).exists() {
         clang_cmd.arg(format!("-Wl,-rpath,{}", parent_of(&lib_npu)));
-        clang_cmd.args([&lib_npu]);
+        // Linked only if the program actually uses it. A program with no
+        // `spawn on` never calls the plugin, and a dispatch backend linked
+        // anyway drags its whole vendor runtime into every binary -- which is
+        // not free. libsycl's initializer calls `read`, and a Vx program that
+        // happens to define a function named `read` exports that name from the
+        // executable, interposes libc's `read` for the whole process, and the
+        // initializer then reads with garbage arguments before `main` runs.
+        // Keeping an unused backend out of the link is the backend's job, and
+        // the flag that does it is the linker's, so it differs by platform.
+        // `dispatch_backend_link_args` holds that difference where a test can
+        // read it back on a machine that is not the one being linked for.
+        clang_cmd.args(dispatch_backend_link_args(
+            std::env::consts::OS,
+            lib_npu.as_str(),
+        ));
         clang_cmd.arg("-lffi");
 
         // The dispatcher resolves the outlined kernel with
         // dlsym(RTLD_DEFAULT, "_vx_ciface_..."), which searches the running
         // executable's dynamic symbol table. Mach-O exports those symbols
-        // anyway; ELF does not unless asked, so without this the lookup fails
-        // at run time on Linux.
-        if cfg!(target_os = "linux") {
-            clang_cmd.arg("-rdynamic");
-        }
+        // anyway; ELF does not unless asked, so Linux asks for exactly them.
+        // The helper holds the version script that keeps every other symbol
+        // out, and a test reads both flags back on any machine. A sanitized
+        // program is the exception and keeps the whole table, because
+        // ThreadSanitizer's interceptors live in it.
+        clang_cmd.args(outlined_kernel_link_args(
+            std::env::consts::OS,
+            temp_dir.path(),
+            thread_sanitizer,
+        )?);
 
         // With the CUDA plugin, a program's own `extern` block may call cuBLAS or the CUDA
         // runtime directly, passing device pointers it took with `as_ptr()`. The plugin links
@@ -798,6 +818,72 @@ pub fn execute_mlir_streams(
     })
 }
 
+/// The arguments that put the dispatch backend on the link line.
+///
+/// Only Linux links libsycl, so only Linux needs `--as-needed` to keep an
+/// unused backend's initializer out of a program that defines `read`. macOS
+/// takes no flag: the Apple linker knows no `--as-needed`, and
+/// `-dead_strip_dylibs` would also drop the runner utils the shims call into.
+fn dispatch_backend_link_args(target_os: &str, lib_npu: &str) -> Vec<String> {
+    if target_os == "linux" {
+        vec![
+            "-Wl,--as-needed".to_string(),
+            lib_npu.to_string(),
+            "-Wl,--no-as-needed".to_string(),
+        ]
+    } else {
+        vec![lib_npu.to_string()]
+    }
+}
+
+/// The version script `outlined_kernel_link_args` writes, read by GNU ld.
+///
+/// Only the outlined kernels stay in the dynamic symbol table; `global: *`
+/// would be `-rdynamic` again.
+const KERNEL_EXPORT_RULES: &str = "{\n  global: _vx_ciface_*;\n  local: *;\n};\n";
+
+/// The linker arguments that export the outlined kernels and nothing else.
+///
+/// The dispatcher finds a kernel with `dlsym(RTLD_DEFAULT, "_vx_ciface_...")`,
+/// which reads the running executable's dynamic symbol table. Mach-O exports
+/// those symbols already, so macOS takes no flag.
+///
+/// On ELF, `--export-dynamic-symbol` adds `_vx_ciface_*` to that table but is
+/// not a whitelist: GNU ld also exports an executable's definition of a symbol
+/// a linked shared library refers to. libsycl and `libvx_std_core` both call
+/// `read`, so a program's `pub fn read` reached libsycl's initializer in place
+/// of libc's even before `-rdynamic` was used. The version script is what makes
+/// every other symbol local, `read` included.
+///
+/// `dir` must outlive the link and the run -- the caller passes the JIT's
+/// temporary directory, which it keeps until the program has exited.
+///
+/// A sanitizer build is the exception. ThreadSanitizer's interceptors have to
+/// stay in the dynamic symbol table, and a version script making every other
+/// symbol local made it crash inside its own `__tsan_func_entry`, before it
+/// could report anything. So a sanitized program keeps the old `-rdynamic` and
+/// gives up the interposition fix: a diagnostic that cannot run is worth less
+/// than a program that runs.
+pub fn outlined_kernel_link_args(
+    target_os: &str,
+    dir: &Path,
+    sanitized: bool,
+) -> Result<Vec<String>, String> {
+    if target_os != "linux" {
+        return Ok(Vec::new());
+    }
+    if sanitized {
+        return Ok(vec!["-rdynamic".to_string()]);
+    }
+    let map = dir.join("vx_kernel_exports.map");
+    std::fs::write(&map, KERNEL_EXPORT_RULES)
+        .map_err(|e| format!("cannot write {}: {e}", map.display()))?;
+    Ok(vec![
+        "-Wl,--export-dynamic-symbol=_vx_ciface_*".to_string(),
+        format!("-Wl,--version-script={}", map.display()),
+    ])
+}
+
 /// The signal that killed a run, in words, or `None` for an ordinary exit.
 ///
 /// A signal is not an exit code: `ExitStatus::code` answers `None` for one, so
@@ -859,6 +945,78 @@ mod tests {
         if let Err(why) = runtime_library_path() {
             panic!("{why}");
         }
+    }
+
+    /// libsycl is what needs `--as-needed`, and only Linux links it. macOS must get the plain
+    /// path: the Apple linker does not know that flag, and `-dead_strip_dylibs` also drops
+    /// `libmlir_c_runner_utils`, which `libvx_mlir_shims` calls into without listing it as a
+    /// dependency. The fixture that would catch that is
+    /// `tests/backend/pass/tensor_print_narrow.vx`, which aborts in the runner's printer.
+    #[test]
+    fn macos_links_the_dispatch_backend_with_no_linker_flag() {
+        assert_eq!(
+            dispatch_backend_link_args("macos", "/lib/libvx_dispatch.dylib"),
+            ["/lib/libvx_dispatch.dylib"]
+        );
+    }
+
+    /// The other side of the same branch: a change that drops `--as-needed` on Linux is a
+    /// program that defines `read` dying before `main`, because libsycl's initializer calls it.
+    #[test]
+    fn linux_links_the_dispatch_backend_only_as_needed() {
+        assert_eq!(
+            dispatch_backend_link_args("linux", "/lib/libvx_dispatch.so"),
+            [
+                "-Wl,--as-needed",
+                "/lib/libvx_dispatch.so",
+                "-Wl,--no-as-needed"
+            ]
+        );
+    }
+
+    /// The dispatcher finds a kernel through the executable's dynamic symbol table, so
+    /// `_vx_ciface_*` has to be there. Nothing else does: a program's `pub fn read` in that
+    /// table is called by libsycl's initializer with libc's arguments, and aborts before
+    /// `main`. `--export-dynamic-symbol` alone leaves `read` there, because GNU ld also
+    /// exports a definition a linked shared library refers to; the version script is what
+    /// removes it.
+    #[test]
+    fn linux_exports_only_the_outlined_kernels() {
+        let dir = std::env::temp_dir().join(format!("vx-kernel-exports-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let map = dir.join("vx_kernel_exports.map");
+        assert_eq!(
+            outlined_kernel_link_args("linux", &dir, false).unwrap(),
+            [
+                "-Wl,--export-dynamic-symbol=_vx_ciface_*".to_string(),
+                format!("-Wl,--version-script={}", map.display()),
+            ]
+        );
+        assert_eq!(std::fs::read_to_string(&map).unwrap(), KERNEL_EXPORT_RULES);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A sanitizer keeps the dynamic symbol table it needs. ThreadSanitizer's interceptors have
+    /// to stay visible, and a version script making everything else local crashed it inside its
+    /// own `__tsan_func_entry` before it could report anything, so a sanitized program gets the
+    /// old `-rdynamic` and no script.
+    #[test]
+    fn linux_exports_everything_when_the_program_is_sanitized() {
+        let dir = std::env::temp_dir().join(format!("vx-tsan-exports-{}", std::process::id()));
+        assert_eq!(
+            outlined_kernel_link_args("linux", &dir, true).unwrap(),
+            ["-rdynamic".to_string()]
+        );
+        assert!(!dir.join("vx_kernel_exports.map").exists());
+    }
+
+    /// Mach-O exports the kernel entry point already, and the Apple linker knows neither
+    /// `--export-dynamic-symbol` nor `--version-script`.
+    #[test]
+    fn macos_exports_the_outlined_kernels_with_no_linker_flag() {
+        assert!(outlined_kernel_link_args("macos", Path::new("/tmp"), false)
+            .unwrap()
+            .is_empty());
     }
 
     /// A macOS dylib records the path it expects to be found at, and every program the JIT

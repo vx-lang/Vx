@@ -801,6 +801,8 @@ impl<'a> TypeChecker<'a> {
             // The same value as the type inside, with a proof attached.
             Type::Verified(inner) => self.drops_glue_at(inner, depth),
             // A tensor pinned to a device is in that device's memory, so its plugin frees it.
+            // A struct field is not a transfer's result, so the pin on its type is all the drop
+            // has to go on. A part with a `call` frees through its own `Drop` impl instead.
             Type::Pinned(inner, topology) => {
                 let mut glue = self.drops_glue_at(inner, depth);
                 for part in glue.iter_mut().filter(|p| p.call.is_none()) {

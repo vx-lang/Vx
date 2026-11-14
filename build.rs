@@ -67,6 +67,64 @@ fn cuda_root() -> Option<(PathBuf, PathBuf)> {
     None
 }
 
+/// A oneAPI install that can build the Intel XPU dispatch library.
+struct XpuToolchain {
+    /// The oneAPI root, for the message that says which one was found.
+    root: PathBuf,
+    /// `icpx`, which compiles and links the library.
+    compiler: PathBuf,
+    /// One `-I` per directory, the compiler's and oneMKL's.
+    include_dirs: Vec<PathBuf>,
+    /// One `-L` (and `-rpath`) per directory, the compiler's and oneMKL's.
+    lib_dirs: Vec<PathBuf>,
+}
+
+/// Where a usable oneAPI toolchain lives, or `None` to build the portable host
+/// shim instead.
+///
+/// The XPU backend needs oneAPI three times over: oneMKL's SYCL interface is
+/// C++ that only DPC++ compiles, the image goes in through Level Zero, and the
+/// device it was measured on is reached through SYCL. A GPU is not required
+/// here and deliberately not looked for -- the library decides at run time
+/// whether a device is present (see `xpu_available()` in
+/// runtime/xpu_dispatch.cpp), exactly as the CUDA backend does -- so only the
+/// toolkit is looked for.
+///
+/// Set VX_DISABLE_XPU to build the host shim on a machine that has oneAPI.
+fn xpu_root() -> Option<XpuToolchain> {
+    if env::var_os("VX_DISABLE_XPU").is_some() {
+        return None;
+    }
+
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = env::var_os("ONEAPI_ROOT") {
+        roots.push(PathBuf::from(dir));
+    }
+    roots.push(PathBuf::from("/opt/intel/oneapi"));
+
+    for root in roots {
+        // `latest` is the symlink the installer writes; a root with no such
+        // link is not one this looks into rather than being guessed at.
+        let compiler = root.join("compiler/latest");
+        let mkl = root.join("mkl/latest");
+        if !compiler.join("include/sycl/sycl.hpp").exists()
+            || !compiler.join("bin/icpx").exists()
+            || !mkl.join("include/oneapi/mkl.hpp").exists()
+            || !mkl.join("lib/libmkl_sycl_blas.so").exists()
+        {
+            continue;
+        }
+        return Some(XpuToolchain {
+            root,
+            compiler: compiler.join("bin/icpx"),
+            include_dirs: vec![compiler.join("include"), mkl.join("include")],
+            lib_dirs: vec![compiler.join("lib"), mkl.join("lib")],
+        });
+    }
+
+    None
+}
+
 fn main() {
     // Ensure llvm-config is in PATH because the `melior` and `tblgen` dependencies require it.
     let llvm_configs = [
@@ -464,31 +522,39 @@ fn main() {
         // A program containing a non-CPU `spawn on` needs a provider for the
         // vx_plugin_* ABI or it will not link, so one is always built. Which
         // one depends on what the machine has: the CUDA backend where a toolkit
-        // is installed (runtime/cuda_dispatch.cpp), and otherwise the portable
+        // is installed (runtime/cuda_dispatch.cpp), the Intel XPU backend where
+        // oneAPI is (runtime/xpu_dispatch.cpp), and otherwise the portable
         // shim that runs outlined kernels on the CPU through libffi
-        // (runtime/host_dispatch.cpp). Both fall back to the host for anything
-        // they cannot route, so the choice affects speed, not results.
+        // (runtime/host_dispatch.cpp). Each falls back to the host for anything
+        // it cannot route, so the choice affects speed, not results.
         println!("cargo:rerun-if-changed=runtime/host_dispatch.cpp");
         println!("cargo:rerun-if-changed=runtime/host_dispatch_common.h");
         println!("cargo:rerun-if-changed=runtime/x86_dispatch.cpp");
         println!("cargo:rerun-if-changed=runtime/arm64_dispatch.cpp");
         println!("cargo:rerun-if-changed=runtime/cuda_dispatch.cpp");
+        println!("cargo:rerun-if-changed=runtime/xpu_dispatch.cpp");
+        println!("cargo:rerun-if-changed=runtime/vx_kernel_launch.h");
 
         // Which backend answers the plugin ABI. CUDA wins where a toolkit is
-        // installed, since it is the only one of these that can reach an
-        // accelerator; otherwise the target's own CPU backend, and the portable
-        // one for an architecture nobody has looked at yet.
+        // installed, then oneAPI where it is, otherwise the target's own CPU
+        // backend, and the portable one for an architecture nobody has looked
+        // at yet. The order is the precedence: one library serves the process
+        // (#1137, "one dispatch library per build"), so a machine with both
+        // toolkits takes the first row.
         //
         // Every target gets a backend, which is what lets the compiler emit
         // allocate/transfer/free unconditionally and never name a vendor.
         let cuda = cuda_root();
+        let xpu = xpu_root();
         let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
-        let (source, lib_stem) = match (&cuda, arch.as_str()) {
-            (Some(_), _) => ("runtime/cuda_dispatch.cpp", "vx_cuda_dispatch"),
-            (None, "x86_64") => ("runtime/x86_dispatch.cpp", "vx_x86_dispatch"),
-            (None, "aarch64") => ("runtime/arm64_dispatch.cpp", "vx_arm64_dispatch"),
-            (None, _) => ("runtime/host_dispatch.cpp", "vx_host_dispatch"),
+        let (source, lib_stem) = match (&cuda, &xpu, arch.as_str()) {
+            (Some(_), _, _) => ("runtime/cuda_dispatch.cpp", "vx_cuda_dispatch"),
+            (None, Some(_), _) => ("runtime/xpu_dispatch.cpp", "vx_xpu_dispatch"),
+            (None, None, "x86_64") => ("runtime/x86_dispatch.cpp", "vx_x86_dispatch"),
+            (None, None, "aarch64") => ("runtime/arm64_dispatch.cpp", "vx_arm64_dispatch"),
+            (None, None, _) => ("runtime/host_dispatch.cpp", "vx_host_dispatch"),
         };
+        let use_xpu = cuda.is_none() && xpu.is_some();
 
         let out_dir = env::var("OUT_DIR").unwrap();
         let lib_shared_path = PathBuf::from(&out_dir).join(format!(
@@ -498,7 +564,15 @@ fn main() {
             std::env::consts::DLL_SUFFIX
         ));
 
-        let cxx = env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
+        // The XPU library is built with oneAPI's compiler rather than clang++,
+        // which is the one difference this backend has from the other three:
+        // oneMKL's SYCL interface is C++ that needs DPC++ to compile and to
+        // link.
+        let cxx = if use_xpu {
+            xpu.as_ref().unwrap().compiler.clone()
+        } else {
+            PathBuf::from(env::var("CXX").unwrap_or_else(|_| "clang++".to_string()))
+        };
         let cxxflags_env = env::var("CXXFLAGS").unwrap_or_else(|_| "-O3".to_string());
         let cxxflags: Vec<&str> = cxxflags_env.split_whitespace().collect();
 
@@ -511,6 +585,34 @@ fn main() {
             "-o",
             lib_shared_path.to_str().unwrap(),
         ]);
+        if use_xpu {
+            let toolchain = xpu.as_ref().unwrap();
+            clang_shared_cmd.arg("-fsycl");
+            // Level Zero is the layer the image is loaded through; its loader
+            // comes from the system, so it is named and not path-qualified.
+            clang_shared_cmd.arg("-lze_loader");
+            for dir in &toolchain.include_dirs {
+                clang_shared_cmd.arg(format!("-I{}", dir.display()));
+            }
+            for dir in &toolchain.lib_dirs {
+                clang_shared_cmd.arg(format!("-L{}", dir.display()));
+                // The rpath matters because this library is loaded by the
+                // programs vxc links, not by vxc itself: without it a program
+                // would have to be run with oneAPI on LD_LIBRARY_PATH.
+                clang_shared_cmd.arg(format!("-Wl,-rpath,{}", dir.display()));
+            }
+            clang_shared_cmd.args([
+                "-lmkl_sycl_blas",
+                "-lmkl_intel_ilp64",
+                "-lmkl_sequential",
+                "-lmkl_core",
+                "-lsycl",
+                "-lOpenCL",
+                "-lpthread",
+                "-lm",
+                "-ldl",
+            ]);
+        }
         clang_shared_cmd.args(&cxxflags);
 
         if let Some((root, libdir)) = &cuda {
@@ -530,20 +632,30 @@ fn main() {
 
         let status = clang_shared_cmd
             .status()
-            .unwrap_or_else(|_| panic!("Failed to execute {} for {}", cxx, source));
-        assert!(status.success(), "{} failed to build {}", cxx, source);
+            .unwrap_or_else(|_| panic!("Failed to execute {} for {}", cxx.display(), source));
+        assert!(
+            status.success(),
+            "{} failed to build {}",
+            cxx.display(),
+            source
+        );
 
         println!(
             "cargo:rustc-env=NPU_SHARED_LIB_PATH={}",
             lib_shared_path.display()
         );
-        match &cuda {
-            Some((root, _)) => eprintln!(
+        match (&cuda, &xpu) {
+            (Some((root, _)), _) => eprintln!(
                 "Built the CUDA dispatch backend against {}; \
                  recognised matmuls run on the GPU, everything else on the CPU.",
                 root.display()
             ),
-            None => eprintln!(
+            (None, Some(toolchain)) if use_xpu => eprintln!(
+                "Built the Intel XPU dispatch backend against {}; \
+                 placed kernels run on the GPU through Level Zero and oneMKL.",
+                toolchain.root.display()
+            ),
+            _ => eprintln!(
                 "Built the {} dispatch backend; kernels run on the CPU via libffi.",
                 source
             ),

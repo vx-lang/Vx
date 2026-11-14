@@ -1,0 +1,52 @@
+//===- elementwise_on_the_arc.vx - a loop region on the machine's own GPU ---===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An elementwise region placed on the Arc's own topology, with its operands
+// transferred into the machine file's HBM. That space is declared `managed:
+// explicit` -- memory the host cannot read -- so the region has to run on the
+// device: the host fallback would dereference device memory.
+//
+// The compiler used to refuse this region, because only a matmul was given a
+// device kernel. It now emits an image for any placed region, so this is the
+// case that says so: the runner compiles it with
+// `--machine fleet/arc-a770.vx --host default`, runs it on both backends and
+// compares the two printed numbers, and requires the Arc run to say it loaded
+// the image rather than falling back to the host.
+//
+// transpose.vx covers the same region shape on a declared `arch: spirv64`
+// topology. This one goes through the machine file, which is what a real
+// program does.
+
+fn main() -> i32 {
+  let mut a = unsafe { Tensor<f32, [8, 8]>::uninit() };
+  let mut b = unsafe { Tensor<f32, [8, 8]>::uninit() };
+  for i in 0..8 {
+    for j in 0..8 {
+      a[i][j] = (i + j) as f32;
+      b[i][j] = 2.0;
+    }
+  }
+
+  let c = unsafe { Tensor<f32, [8, 8]>::uninit() };
+  let ga = transfer(a, Memory::HBM);
+  let gb = transfer(b, Memory::HBM);
+  let mut gc = transfer(c, Memory::HBM);
+  spawn on(Topology::Device) {
+    for i in 0..8 {
+      let arow = ga[i];
+      let brow = gb[i];
+      let mut crow = gc[i];
+      for j in 0..8 {
+        crow[j] = arow[j] * brow[j];
+      }
+    }
+  }
+  let home = transfer(gc, Memory::CPU_DRAM);
+
+  print(home[0][0]);
+  return 0;
+}
