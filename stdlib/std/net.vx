@@ -7,34 +7,41 @@
 //===----------------------------------------------------------------------===//
 // TCP and UDP sockets. Each call that can fail gives a `Result` with a `NetError`.
 //
+// The safe methods take a `String` address and a `Vec<u8>` buffer. The length of the vector is the
+// size of the buffer. The `unsafe` methods that end in `_raw` or `_c_str` take raw pointers.
+// `BufReader` reads lines, and `BufWriter` collects small writes into one.
+//
 // The Rust core gives a status for each call: 0 when it worked, a number below 0 for each error
 // that `NetError` names, and else the error number of the system. A call that worked writes its
 // value through its last pointer.
 //===----------------------------------------------------------------------===//
 import core::ops;
+import core::ptr;
 import core::result;
+import std::string;
+import std::vec;
 
 extern {
-  /// The Rust core behind `TcpStream::connect`.
+  /// The Rust core behind `TcpStream::connect_c_str`.
   fn vx_tcp_stream_connect(c_addr : *const i8, out : *mut *mut i8) -> i32;
-  /// The Rust core behind `TcpStream::read`.
+  /// The Rust core behind `TcpStream::read_raw`.
   fn vx_tcp_stream_read(ptr : *mut i8, buffer : *mut u8, len : u64, out : *mut u64) -> i32;
-  /// The Rust core behind `TcpStream::write`.
+  /// The Rust core behind `TcpStream::write_raw`.
   fn vx_tcp_stream_write(ptr : *mut i8, buffer : *const u8, len : u64, out : *mut u64) -> i32;
   /// The Rust core behind dropping a `TcpStream`.
   fn vx_tcp_stream_drop(ptr : *mut i8) -> i32;
 
-  /// The Rust core behind `UdpSocket::bind`.
+  /// The Rust core behind `UdpSocket::bind_c_str`.
   fn vx_udp_socket_bind(c_addr : *const i8, out : *mut *mut i8) -> i32;
-  /// The Rust core behind `UdpSocket::recv`.
+  /// The Rust core behind `UdpSocket::recv_raw`.
   fn vx_udp_socket_recv(ptr : *mut i8, buffer : *mut u8, len : u64, out : *mut u64) -> i32;
-  /// The Rust core behind `UdpSocket::send_to`.
+  /// The Rust core behind `UdpSocket::send_to_raw`.
   fn vx_udp_socket_send_to(ptr : *mut i8, buffer : *const u8, len : u64,
   c_addr : *const i8, out : *mut u64) -> i32;
   /// The Rust core behind dropping a `UdpSocket`.
   fn vx_udp_socket_drop(ptr : *mut i8) -> i32;
 
-  /// The Rust core behind `TcpListener::bind`.
+  /// The Rust core behind `TcpListener::bind_c_str`.
   fn vx_tcp_listener_bind(c_addr : *const i8, out : *mut *mut i8) -> i32;
   /// The Rust core behind `TcpListener::accept`. Waits until a connection arrives.
   fn vx_tcp_listener_accept(ptr : *mut i8, out : *mut *mut i8) -> i32;
@@ -91,6 +98,25 @@ fn count_or_error(status : i32, count : u64) -> Result<u64, NetError> {
   return Result<u64, NetError>::Err(net_error(status));
 }
 
+/// A NUL-terminated copy of `addr`, for the Rust core. Give it to `free_c_copy` after the call.
+fn c_copy(addr : &String) -> *const i8 {
+  return unsafe { vx_string_as_c_str(addr.ptr) };
+}
+
+/// Release a copy that `c_copy` made.
+fn free_c_copy(c_addr : *const i8) -> void {
+  let _freed = unsafe { vx_string_free_c_str(c_addr) };
+}
+
+/// A vector of `len` zero bytes, for a buffer.
+fn zero_bytes(len : i32) -> Vec<u8> {
+  let mut bytes = Vec<u8>::with_capacity(len);
+  for _i in 0..len {
+    bytes.push(0u8);
+  }
+  return bytes;
+}
+
 /// A connected TCP socket, held by the Rust core behind an opaque pointer.
 ///
 /// Closed when it is dropped.
@@ -107,7 +133,7 @@ impl TcpStream {
   /// waits.
   ///
   /// Unsafe because nothing checks that `addr` points at a NUL-terminated string.
-  unsafe fn connect(addr : *const i8) -> Result<TcpStream, NetError> {
+  unsafe fn connect_c_str(addr : *const i8) -> Result<TcpStream, NetError> {
     let mut ptr : *mut i8 = unsafe { 0 as *mut i8 };
     let status = unsafe {
       vx_tcp_stream_connect(addr, (&mut ptr) as *mut *mut i8)
@@ -125,7 +151,7 @@ impl TcpStream {
   /// in pieces, so a caller that wants a whole one loops.
   ///
   /// Unsafe because `buffer` must have room for `len` bytes.
-  unsafe fn read(self : *mut TcpStream, buffer : *mut u8, len : u64)
+  unsafe fn read_raw(self : *mut TcpStream, buffer : *mut u8, len : u64)
   -> Result<u64, NetError> {
     let mut count : u64 = 0;
     let status = unsafe {
@@ -136,13 +162,82 @@ impl TcpStream {
 
   /// Write up to `len` bytes from `buffer` and give how many were taken. A short write is
   /// normal, and the rest is not tried again here.
-  unsafe fn write(self : *mut TcpStream, buffer : *const u8, len : u64)
+  unsafe fn write_raw(self : *mut TcpStream, buffer : *const u8, len : u64)
   -> Result<u64, NetError> {
     let mut count : u64 = 0;
     let status = unsafe {
       vx_tcp_stream_write(self.ptr, buffer, len, (&mut count) as *mut u64)
     };
     return count_or_error(status, count);
+  }
+
+  /// Write all `len` bytes from `buffer`, in as many writes as it takes, and give `len`.
+  ///
+  /// Unsafe because `buffer` must have `len` bytes to read.
+  unsafe fn write_all_raw(self : *mut TcpStream, buffer : *const u8, len : u64)
+  -> Result<u64, NetError> {
+    let mut done : u64 = 0;
+    while done < len {
+      let part = unsafe {
+        self.write_raw(add(buffer, done as usize), len - done)
+      };
+      let n = part?;
+      if n == 0 {
+        return Result<u64, NetError>::Err(NetError::Reset);
+      }
+      done = done + n;
+    }
+    return Result<u64, NetError>::Ok(done);
+  }
+
+  /// Connect to `addr`, written as `host:port`. A task of the shared runtime parks while it
+  /// waits.
+  fn connect(addr : &String) -> Result<TcpStream, NetError> {
+    let c_addr = c_copy(addr);
+    let stream = unsafe { TcpStream::connect_c_str(c_addr) };
+    free_c_copy(c_addr);
+    return stream;
+  }
+
+  /// Read up to `buffer.len()` bytes into `buffer` and give how many arrived. 0 means that the
+  /// peer closed the connection. A short read is normal, as for `read_raw`.
+  fn read(self : &mut TcpStream, buffer : &mut Vec<u8>) -> Result<u64, NetError> {
+    let len = buffer.len() as u64;
+    return unsafe { self.read_raw(buffer.as_mut_ptr(), len) };
+  }
+
+  /// Write up to `buffer.len()` bytes and give how many were taken. A short write is normal.
+  /// `write_all` writes them all.
+  fn write(self : &mut TcpStream, buffer : &Vec<u8>) -> Result<u64, NetError> {
+    let len = buffer.len() as u64;
+    return unsafe { self.write_raw(buffer.as_mut_ptr() as *const u8, len) };
+  }
+
+  /// Fill all of `buffer`, in as many reads as it takes, and give its length. When the peer
+  /// closes the connection first, it gives `Reset`.
+  fn read_exact(self : &mut TcpStream, buffer : &mut Vec<u8>) -> Result<u64, NetError> {
+    let len = buffer.len() as u64;
+    let data = buffer.as_mut_ptr();
+    let mut done : u64 = 0;
+    while done < len {
+      let part = unsafe {
+        self.read_raw(add_mut(data, done as usize), len - done)
+      };
+      let n = part?;
+      if n == 0 {
+        return Result<u64, NetError>::Err(NetError::Reset);
+      }
+      done = done + n;
+    }
+    return Result<u64, NetError>::Ok(done);
+  }
+
+  /// Write all of `buffer`, in as many writes as it takes, and give its length.
+  fn write_all(self : &mut TcpStream, buffer : &Vec<u8>) -> Result<u64, NetError> {
+    let len = buffer.len() as u64;
+    return unsafe {
+      self.write_all_raw(buffer.as_mut_ptr() as *const u8, len)
+    };
   }
 }
 
@@ -166,7 +261,7 @@ impl UdpSocket {
   /// Bind to `addr`, written as `host:port`.
   ///
   /// Unsafe because nothing checks that `addr` points at a NUL-terminated string.
-  unsafe fn bind(addr : *const i8) -> Result<UdpSocket, NetError> {
+  unsafe fn bind_c_str(addr : *const i8) -> Result<UdpSocket, NetError> {
     let mut ptr : *mut i8 = unsafe { 0 as *mut i8 };
     let status = unsafe {
       vx_udp_socket_bind(addr, (&mut ptr) as *mut *mut i8)
@@ -183,7 +278,7 @@ impl UdpSocket {
   /// cut, and the rest is lost: UDP works that way. The address of the sender is not given.
   ///
   /// Unsafe because `buffer` must have room for `len` bytes.
-  unsafe fn recv(self : *mut UdpSocket, buffer : *mut u8, len : u64)
+  unsafe fn recv_raw(self : *mut UdpSocket, buffer : *mut u8, len : u64)
   -> Result<u64, NetError> {
     let mut count : u64 = 0;
     let status = unsafe {
@@ -194,7 +289,7 @@ impl UdpSocket {
 
   /// Send one datagram of `len` bytes to `addr`, and give how many were sent. Nothing makes
   /// sure that it arrives, or arrives once, or arrives in order.
-  unsafe fn send_to(self : *mut UdpSocket, buffer : *const u8, len : u64,
+  unsafe fn send_to_raw(self : *mut UdpSocket, buffer : *const u8, len : u64,
   addr : *const i8)
   -> Result<u64, NetError> {
     let mut count : u64 = 0;
@@ -202,6 +297,33 @@ impl UdpSocket {
       vx_udp_socket_send_to(self.ptr, buffer, len, addr, (&mut count) as *mut u64)
     };
     return count_or_error(status, count);
+  }
+
+  /// Bind to `addr`, written as `host:port`.
+  fn bind(addr : &String) -> Result<UdpSocket, NetError> {
+    let c_addr = c_copy(addr);
+    let socket = unsafe { UdpSocket::bind_c_str(c_addr) };
+    free_c_copy(c_addr);
+    return socket;
+  }
+
+  /// Receive one datagram into `buffer` and give its length. A datagram longer than
+  /// `buffer.len()` is cut, as for `recv_raw`. A task of the shared runtime parks while it waits.
+  fn recv(self : &mut UdpSocket, buffer : &mut Vec<u8>) -> Result<u64, NetError> {
+    let len = buffer.len() as u64;
+    return unsafe { self.recv_raw(buffer.as_mut_ptr(), len) };
+  }
+
+  /// Send all of `buffer` as one datagram to `addr`, and give how many bytes were sent.
+  fn send_to(self : &mut UdpSocket, buffer : &Vec<u8>, addr : &String)
+  -> Result<u64, NetError> {
+    let len = buffer.len() as u64;
+    let c_addr = c_copy(addr);
+    let sent = unsafe {
+      self.send_to_raw(buffer.as_mut_ptr() as *const u8, len, c_addr)
+    };
+    free_c_copy(c_addr);
+    return sent;
   }
 }
 
@@ -225,7 +347,7 @@ impl TcpListener {
   /// Listen on `addr`, written as `host:port`.
   ///
   /// Unsafe because nothing checks that `addr` points at a NUL-terminated string.
-  unsafe fn bind(addr : *const i8) -> Result<TcpListener, NetError> {
+  unsafe fn bind_c_str(addr : *const i8) -> Result<TcpListener, NetError> {
     let mut ptr : *mut i8 = unsafe { 0 as *mut i8 };
     let status = unsafe {
       vx_tcp_listener_bind(addr, (&mut ptr) as *mut *mut i8)
@@ -236,6 +358,14 @@ impl TcpListener {
     return Result<TcpListener, NetError>::Ok(TcpListener {
       ptr : ptr
     });
+  }
+
+  /// Listen on `addr`, written as `host:port`.
+  fn bind(addr : &String) -> Result<TcpListener, NetError> {
+    let c_addr = c_copy(addr);
+    let listener = unsafe { TcpListener::bind_c_str(c_addr) };
+    free_c_copy(c_addr);
+    return listener;
   }
 
   /// Wait for a connection and give it. A task of the shared runtime parks while it waits, so
@@ -258,5 +388,113 @@ impl Drop for TcpListener {
   /// Stop listening and release the socket.
   fn drop(self : &mut TcpListener) -> void {
     let _dropped = unsafe { vx_tcp_listener_drop(self.ptr) };
+  }
+}
+
+/// The size of the buffer of a `BufReader` or a `BufWriter`, in bytes.
+const NET_BUFFER_SIZE : i32 = 4096;
+
+/// A `TcpStream` with a buffer for reads, so that `read_line` reads many bytes per call of the
+/// system, not one.
+struct BufReader {
+  stream : TcpStream,
+  buffer : Vec<u8>,
+  // The next byte of `buffer` to give.
+  start : i32,
+  // The end of the bytes in `buffer` that are not given yet.
+  end : i32,
+}
+
+impl BufReader {
+  /// A reader of `stream`.
+  fn new(stream : TcpStream) -> BufReader {
+    return BufReader {
+      stream : stream, buffer : zero_bytes(NET_BUFFER_SIZE), start : 0, end : 0
+    };
+  }
+
+  /// The stream, for example to write a reply. Do not read from it: the reader can hold the next
+  /// bytes in its buffer.
+  fn get_mut(self : &mut BufReader) -> &mut TcpStream {
+    return &mut self.stream;
+  }
+
+  /// Add the bytes of the next line, with its `\n`, to the end of `line`, and give how many it
+  /// added. The last line can have no `\n`. 0 means that the peer closed the connection.
+  fn read_line(self : &mut BufReader, line : &mut Vec<u8>) -> Result<u64, NetError> {
+    let mut count : u64 = 0;
+    let mut at_end = false;
+    while !at_end {
+      if self.start == self.end {
+        let n = self.stream.read(&mut self.buffer)?;
+        if n == 0 {
+          return Result<u64, NetError>::Ok(count);
+        }
+        self.start = 0;
+        self.end = n as i32;
+      }
+      let byte = self.buffer.get(self.start);
+      self.start = self.start + 1;
+      line.push(byte);
+      count = count + 1;
+      at_end = byte == 10u8;
+    }
+    return Result<u64, NetError>::Ok(count);
+  }
+}
+
+/// A `TcpStream` with a buffer for writes. Small writes go into the buffer, and `flush` sends them
+/// in one write. A drop flushes too, but it cannot report an error, so call `flush` first.
+struct BufWriter {
+  stream : TcpStream,
+  buffer : Vec<u8>,
+  // The number of bytes in `buffer` that are not sent yet.
+  used : i32,
+}
+
+impl BufWriter {
+  /// A writer to `stream`.
+  fn new(stream : TcpStream) -> BufWriter {
+    return BufWriter {
+      stream : stream, buffer : zero_bytes(NET_BUFFER_SIZE), used : 0
+    };
+  }
+
+  /// The stream, for example to read a reply. Call `flush` first, so that the peer gets all bytes.
+  fn get_mut(self : &mut BufWriter) -> &mut TcpStream {
+    return &mut self.stream;
+  }
+
+  /// Add all of `bytes` to the buffer, and give their count. When they do not fit, it flushes the
+  /// buffer first. When they are more than the buffer holds, it writes them at once.
+  fn write(self : &mut BufWriter, bytes : &Vec<u8>) -> Result<u64, NetError> {
+    let n = bytes.len();
+    if self.used + n > self.buffer.len() {
+      let _sent = self.flush()?;
+    }
+    if n > self.buffer.len() {
+      return self.stream.write_all(bytes);
+    }
+    for i in 0..n {
+      self.buffer.set(self.used + i, bytes.get(i));
+    }
+    self.used = self.used + n;
+    return Result<u64, NetError>::Ok(n as u64);
+  }
+
+  /// Send all bytes in the buffer, and give their count.
+  fn flush(self : &mut BufWriter) -> Result<u64, NetError> {
+    let len = self.used as u64;
+    self.used = 0;
+    return unsafe {
+      self.stream.write_all_raw(self.buffer.as_mut_ptr() as *const u8, len)
+    };
+  }
+}
+
+impl Drop for BufWriter {
+  /// Send the bytes in the buffer. An error is lost, because a drop gives no value.
+  fn drop(self : &mut BufWriter) -> void {
+    let _sent = self.flush();
   }
 }

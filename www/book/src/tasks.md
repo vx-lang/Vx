@@ -298,7 +298,8 @@ have that problem. A borrow that lives across a wait is a borrow across a call, 
 checker needs no new rule.
 
 A task that waits holds no OS thread in the shared runtime, so a program can have many waiting
-tasks. The language is the same for both runtimes.
+tasks. The language is the same for both runtimes. [Networks](files-input-time.md#networks) shows
+a TCP server and a client as two tasks.
 
 ## Compared with Rust and Go
 
