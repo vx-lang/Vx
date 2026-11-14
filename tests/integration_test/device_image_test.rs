@@ -471,6 +471,67 @@ fn spirv_val(module: &[u8]) -> Option<Result<(), String>> {
     }
 }
 
+/// Compile `fixture` to LLVM IR, then check that the image of `vx_npu_kernel_0` in its
+/// dispatch payload is a SPIR-V module the validator accepts.
+///
+/// These are the claims every SPIR-V fixture makes. `legacy` compiles through the AST code
+/// generator instead of the flat one, and `check_stderr` sees what the compiler wrote there,
+/// which is where a test's own claim about the path it took lives. The payload and its section
+/// come back so a test can check what only its own program shows.
+fn assert_valid_spirv_image(
+    fixture: &str,
+    legacy: bool,
+    check_stderr: impl Fn(&str),
+) -> (Vec<u8>, Vec<u8>) {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_vxc"));
+    command.arg(corpus(fixture)).arg("--emit-llvm");
+    if legacy {
+        command.arg("--legacy-codegen");
+    }
+    let out = command
+        .output()
+        .unwrap_or_else(|e| panic!("could not run vxc: {e}"));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "vxc failed on {fixture}:\n{stderr}");
+    check_stderr(&stderr);
+
+    let ir = String::from_utf8_lossy(&out.stdout);
+    let kernel = "vx_npu_kernel_0";
+    let payload = payload_bytes(&ir, kernel);
+    let has = |needle: &[u8]| payload.windows(needle.len()).any(|w| w == needle);
+    assert!(
+        has(b"format=spirv\0"),
+        "{fixture}: the payload does not say the image is SPIR-V, so a dispatch library has to \
+         guess"
+    );
+    assert!(
+        !has(b"image="),
+        "{fixture}: the image is in a NUL-terminated `image=` entry, where its own first word \
+         would end it"
+    );
+    let section = payload_section(&payload).to_vec();
+    assert_eq!(
+        &section[..4],
+        &[0x03, 0x02, 0x23, 0x07],
+        "{fixture}: the section does not start with SPIR-V's magic number 0x07230203"
+    );
+    assert!(
+        section
+            .windows(kernel.len())
+            .any(|w| w == kernel.as_bytes()),
+        "{fixture}: the module does not name `{kernel}`, so a loader would load it and then ask \
+         for a function that is not in it"
+    );
+    match spirv_val(&section) {
+        Some(Ok(())) => {}
+        Some(Err(report)) => {
+            panic!("{fixture}: spirv-val rejected the module the compiler emitted:\n{report}")
+        }
+        None => println!("spirv-val is not installed, so {fixture}'s module was not validated"),
+    }
+    (payload, section)
+}
+
 /// A topology whose machine model declares `arch: spirv64` gets a SPIR-V
 /// module, and it is carried in the payload's section rather than in an
 /// `image=` entry (#1137).
@@ -487,9 +548,8 @@ fn spirv_val(module: &[u8]) -> Option<Result<(), String>> {
 /// module's first word.
 #[test]
 fn a_spirv_topology_gets_a_spirv_module_in_the_payload_section() {
-    let ir = emit_llvm("spirv_device_image.vx");
     let kernel = "vx_npu_kernel_0";
-    let payload = payload_bytes(&ir, kernel);
+    let (payload, _) = assert_valid_spirv_image("spirv_device_image.vx", false, |_| {});
 
     // The text part: the kernel name first, then the entries.
     assert!(
@@ -497,39 +557,6 @@ fn a_spirv_topology_gets_a_spirv_module_in_the_payload_section() {
         "the payload does not lead with the kernel name, which is what selects \
          an entry point out of a loaded module"
     );
-    let has = |needle: &[u8]| payload.windows(needle.len()).any(|w| w == needle);
-    assert!(
-        has(b"format=spirv\0"),
-        "the payload does not say the image is SPIR-V, so a dispatch library \
-         has to guess"
-    );
-    assert!(
-        !has(b"image="),
-        "the image is in a NUL-terminated `image=` entry, where its own first \
-         word would end it"
-    );
-
-    let section = payload_section(&payload);
-    assert_eq!(
-        &section[..4],
-        &[0x03, 0x02, 0x23, 0x07],
-        "the section does not start with SPIR-V's magic number 0x07230203"
-    );
-    assert!(
-        section
-            .windows(kernel.len())
-            .any(|w| w == kernel.as_bytes()),
-        "the module does not name `{kernel}`, so a loader would load it and then \
-         ask for a function that is not in it"
-    );
-
-    match spirv_val(section) {
-        Some(Ok(())) => {}
-        Some(Err(report)) => {
-            panic!("spirv-val rejected the module the compiler emitted:\n{report}")
-        }
-        None => println!("spirv-val is not installed, so the module was not validated"),
-    }
 }
 
 /// The shape a real placed kernel has -- four rank-2 operands, a loop nest, and
@@ -546,43 +573,7 @@ fn a_spirv_topology_gets_a_spirv_module_in_the_payload_section() {
 /// arithmetic the flat arguments are addressed through.
 #[test]
 fn a_loop_and_views_kernel_gets_a_spirv_module_in_the_payload_section() {
-    let ir = emit_llvm("spirv_device_image_loop_kernel.vx");
-    let kernel = "vx_npu_kernel_0";
-    let payload = payload_bytes(&ir, kernel);
-
-    let has = |needle: &[u8]| payload.windows(needle.len()).any(|w| w == needle);
-    assert!(
-        has(b"format=spirv\0"),
-        "the payload does not say the image is SPIR-V, so a dispatch library \
-         has to guess"
-    );
-    assert!(
-        !has(b"image="),
-        "the image is in a NUL-terminated `image=` entry, where its own first \
-         word would end it"
-    );
-
-    let section = payload_section(&payload);
-    assert_eq!(
-        &section[..4],
-        &[0x03, 0x02, 0x23, 0x07],
-        "the section does not start with SPIR-V's magic number 0x07230203"
-    );
-    assert!(
-        section
-            .windows(kernel.len())
-            .any(|w| w == kernel.as_bytes()),
-        "the module does not name `{kernel}`, so a loader would load it and then \
-         ask for a function that is not in it"
-    );
-
-    match spirv_val(section) {
-        Some(Ok(())) => {}
-        Some(Err(report)) => {
-            panic!("spirv-val rejected the module the compiler emitted:\n{report}")
-        }
-        None => println!("spirv-val is not installed, so the module was not validated"),
-    }
+    assert_valid_spirv_image("spirv_device_image_loop_kernel.vx", false, |_| {});
 }
 
 /// A kernel that reads a view of a view -- a strided row -- or a row of a
@@ -597,43 +588,7 @@ fn a_loop_and_views_kernel_gets_a_spirv_module_in_the_payload_section() {
 /// on the device and the image has to be a real one.
 #[test]
 fn a_strided_and_dynamic_row_kernel_gets_a_spirv_module_in_the_payload_section() {
-    let ir = emit_llvm("spirv_device_image_strided_row.vx");
-    let kernel = "vx_npu_kernel_0";
-    let payload = payload_bytes(&ir, kernel);
-
-    let has = |needle: &[u8]| payload.windows(needle.len()).any(|w| w == needle);
-    assert!(
-        has(b"format=spirv\0"),
-        "the payload does not say the image is SPIR-V, so a dispatch library \
-         has to guess"
-    );
-    assert!(
-        !has(b"image="),
-        "the image is in a NUL-terminated `image=` entry, where its own first \
-         word would end it"
-    );
-
-    let section = payload_section(&payload);
-    assert_eq!(
-        &section[..4],
-        &[0x03, 0x02, 0x23, 0x07],
-        "the section does not start with SPIR-V's magic number 0x07230203"
-    );
-    assert!(
-        section
-            .windows(kernel.len())
-            .any(|w| w == kernel.as_bytes()),
-        "the module does not name `{kernel}`, so a loader would load it and then \
-         ask for a function that is not in it"
-    );
-
-    match spirv_val(section) {
-        Some(Ok(())) => {}
-        Some(Err(report)) => {
-            panic!("spirv-val rejected the module the compiler emitted:\n{report}")
-        }
-        None => println!("spirv-val is not installed, so the module was not validated"),
-    }
+    assert_valid_spirv_image("spirv_device_image_strided_row.vx", false, |_| {});
 }
 
 /// A placed `spirv64` region whose body holds a struct-valued local still gets
@@ -648,29 +603,7 @@ fn a_strided_and_dynamic_row_kernel_gets_a_spirv_module_in_the_payload_section()
 /// home.
 #[test]
 fn a_kernel_with_a_struct_local_gets_a_spirv_module() {
-    let ir = emit_llvm("spirv_device_image_struct_local.vx");
-    let kernel = "vx_npu_kernel_0";
-    let payload = payload_bytes(&ir, kernel);
-
-    let has = |needle: &[u8]| payload.windows(needle.len()).any(|w| w == needle);
-    assert!(
-        has(b"format=spirv\0"),
-        "a struct-valued local no longer keeps the region at home, so the \
-         payload must say the image is SPIR-V"
-    );
-    let section = payload_section(&payload);
-    assert_eq!(
-        &section[..4],
-        &[0x03, 0x02, 0x23, 0x07],
-        "the section does not start with SPIR-V's magic number 0x07230203"
-    );
-    match spirv_val(section) {
-        Some(Ok(())) => {}
-        Some(Err(report)) => {
-            panic!("spirv-val rejected the module the compiler emitted:\n{report}")
-        }
-        None => println!("spirv-val is not installed, so the module was not validated"),
-    }
+    assert_valid_spirv_image("spirv_device_image_struct_local.vx", false, |_| {});
 }
 
 /// The flat code generator carries a program that borrows a tensor local, and
@@ -698,42 +631,14 @@ fn a_borrowed_enum_payload_tensor_does_not_cost_the_module_its_device_images() {
 }
 
 fn borrowed_tensor_keeps_its_device_image(fixture: &str) {
-    let out = Command::new(env!("CARGO_BIN_EXE_vxc"))
-        .arg(corpus(fixture))
-        .arg("--emit-llvm")
-        .output()
-        .unwrap_or_else(|e| panic!("could not run vxc: {e}"));
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "vxc failed on {fixture}:\n{stderr}");
-    assert!(
-        !stderr.contains("emit declined") && !stderr.contains("program outside the flat subset"),
-        "borrowing a tensor in {fixture} took the whole module off the flat code generator; \
-         stderr was:\n{stderr}"
-    );
-
-    let ir = String::from_utf8_lossy(&out.stdout);
-    let kernel = "vx_npu_kernel_0";
-    let payload = payload_bytes(&ir, kernel);
-
-    let has = |needle: &[u8]| payload.windows(needle.len()).any(|w| w == needle);
-    assert!(
-        has(b"format=spirv\0"),
-        "the payload does not say the image is SPIR-V, so a dispatch library \
-         has to guess"
-    );
-    let section = payload_section(&payload);
-    assert_eq!(
-        &section[..4],
-        &[0x03, 0x02, 0x23, 0x07],
-        "the section does not start with SPIR-V's magic number 0x07230203"
-    );
-    match spirv_val(section) {
-        Some(Ok(())) => {}
-        Some(Err(report)) => {
-            panic!("spirv-val rejected the module the compiler emitted:\n{report}")
-        }
-        None => println!("spirv-val is not installed, so the module was not validated"),
-    }
+    assert_valid_spirv_image(fixture, false, |stderr| {
+        assert!(
+            !stderr.contains("emit declined")
+                && !stderr.contains("program outside the flat subset"),
+            "borrowing a tensor in {fixture} took the whole module off the flat code generator; \
+             stderr was:\n{stderr}"
+        );
+    });
 }
 
 /// A placed region that calls the runtime -- `print` inside the region -- also
@@ -897,7 +802,6 @@ fn the_host_stack_slot_warning_is_spirv_only() {
 /// parameter reaches the kernel as the tensor it holds, with no memory space.
 #[test]
 fn a_legacy_compiled_spirv_kernel_gets_a_spirv_module() {
-    let kernel = "vx_npu_kernel_0";
     for name in [
         "spirv_device_image.vx",
         "spirv_device_image_loop_kernel.vx",
@@ -905,38 +809,11 @@ fn a_legacy_compiled_spirv_kernel_gets_a_spirv_module() {
         "spirv_device_image_struct_local.vx",
         "spirv_device_image_tensor_reference.vx",
     ] {
-        let out = Command::new(env!("CARGO_BIN_EXE_vxc"))
-            .arg(corpus(name))
-            .arg("--legacy-codegen")
-            .arg("--emit-llvm")
-            .output()
-            .unwrap_or_else(|e| panic!("could not run vxc: {e}"));
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(
-            out.status.success(),
-            "{name}: the AST path failed:\n{stderr}"
-        );
-        assert!(
-            !stderr.contains("cannot become a `spirv64` device image"),
-            "{name}: the kernel runs on the host; stderr was:\n{stderr}"
-        );
-        let ir = String::from_utf8_lossy(&out.stdout);
-        let payload = payload_bytes(&ir, kernel);
-        let has = |needle: &[u8]| payload.windows(needle.len()).any(|w| w == needle);
-        assert!(
-            has(b"format=spirv\0"),
-            "{name}: the payload has no SPIR-V image"
-        );
-        let section = payload_section(&payload);
-        assert_eq!(
-            &section[..4],
-            &[0x03, 0x02, 0x23, 0x07],
-            "{name}: the section does not start with SPIR-V's magic number"
-        );
-        match spirv_val(section) {
-            Some(Ok(())) => {}
-            Some(Err(report)) => panic!("{name}: spirv-val rejected the module:\n{report}"),
-            None => println!("spirv-val is not installed, so the module was not validated"),
-        }
+        assert_valid_spirv_image(name, true, |stderr| {
+            assert!(
+                !stderr.contains("cannot become a `spirv64` device image"),
+                "{name}: the kernel runs on the host; stderr was:\n{stderr}"
+            );
+        });
     }
 }

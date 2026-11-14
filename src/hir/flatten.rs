@@ -2059,11 +2059,15 @@ impl<'r> Lowerer<'r> {
             Expr::Borrow(b) => {
                 if let Expr::Identifier(id) = &*b.expr {
                     if let Some(Binding::Slot { reg, ty }) = self.scope.get(&id.name).cloned() {
-                        // Any tensor slot holds the tensor's memref, not the tensor's address. A
-                        // `let` gets one when the function has branches and the local is given a
-                        // new value (see `LetDecl`), and a `match` gives one to the tensor it takes
-                        // out of an enum's payload (see `bind_local`). Borrowing a tensor is
-                        // transparent, so the borrow is the memref read out of the slot.
+                        // Every tensor slot holds the tensor's memref, not the tensor's address,
+                        // which is the only reason this read yields the tensor. A tensor local
+                        // gets a slot when the code has control flow and the local is given a new
+                        // value (see `LetDecl`), when the function is in memory mode, so
+                        // `bind_local` slots it even with no reassignment, when a `match` binds it
+                        // out of an enum's payload (see `bind_local`), and from a value-position
+                        // `let x : T = if ..`, whose `if` allocates a result slot (see `LetDecl`).
+                        // Borrowing a tensor is transparent, so the borrow is the memref read out
+                        // of the slot.
                         if matches!(ty, LoweredTy::Tensor { .. }) {
                             return Ok(self.emit_typed(Opcode::SlotLoad, reg, Register(0), ty, 0));
                         }

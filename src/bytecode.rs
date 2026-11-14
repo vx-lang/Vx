@@ -19,7 +19,7 @@
 /// High-Level Intermediate Representation (HIR)
 /// Flat Array Bytecode replacing the AST.
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum Opcode {
     Nop = 0,

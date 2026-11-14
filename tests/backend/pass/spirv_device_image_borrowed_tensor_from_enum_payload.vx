@@ -8,8 +8,8 @@
 // RUN: VX_FLAT_DBG=1 vxc %s --action emit-mlir 2>&1 | FileCheck %s
 //
 // A tensor that a `match` takes out of an enum's payload is kept in a stack
-// slot, the same way as any other tensor local. `&x` still means the tensor, so
-// a call can pass it and the kernel it reaches still gets a SPIR-V image.
+// slot. `&x` still means the tensor, so a call can pass it and the kernel that
+// contains the call still gets a SPIR-V image.
 //
 // The checks show that the flat code generator built this module and that the
 // spawn region targets a `spirv64` device. Whether that region really becomes a

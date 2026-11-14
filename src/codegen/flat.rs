@@ -1680,6 +1680,70 @@ fn mlir_block_error(text: &str, location: &str, message: &str) -> Option<String>
     None
 }
 
+/// One function's emitted text, the calls it makes, and the runtime-helper bitmask over
+/// `RUNTIME_HELPERS`.
+type FnEmission = (String, Vec<(String, Vec<String>, String)>, u64);
+
+/// `why`, naming the function it was found in.
+///
+/// `$` is how the compiler joins the parts of a name it made: a generic instance's type
+/// arguments, a method's receiver. Such a name is the one the function is emitted under, not one
+/// the program's author wrote. The function record has no field holding the source spelling, so
+/// the message says the name is an instance rather than presenting it as a source name.
+fn name_the_gap(why: Decline, func: &Function) -> Decline {
+    if func.name.contains('$') {
+        why.in_instance(func.name.as_ref())
+    } else {
+        why.in_function(func.name.as_ref())
+    }
+}
+
+/// Emit one function of the module from its flat HIR, naming the function in any gap the emit
+/// raises.
+///
+/// The naming wraps the whole emit -- signature as well as body -- because a gap found while
+/// spelling a parameter or return type belongs to the same function, and the emitter line alone
+/// does not say which one.
+#[allow(clippy::too_many_arguments)]
+fn emit_one(
+    func: &Function,
+    hir: &[HirInstruction],
+    types: &[TypeId],
+    ctx: &EmitCtx,
+    str_base: usize,
+    strings: &[String],
+    inline_base: usize,
+    inline_blocks: &[crate::hir::flatten::InlineBlock],
+    alias_stores: &[(usize, usize, Vec<usize>)],
+    distinct_ctr: u32,
+    helper_pats: &[String],
+) -> Lowered<FnEmission> {
+    let mut calls = Vec::new();
+    let mut distinct_ctr = distinct_ctr;
+    let text = emit_function_mlir(
+        func,
+        hir,
+        types,
+        ctx,
+        &mut calls,
+        str_base,
+        strings,
+        inline_base,
+        inline_blocks,
+        alias_stores,
+        &mut distinct_ctr,
+    )
+    .map_err(|why| name_the_gap(why, func))?;
+    let helpers = helper_pats.iter().enumerate().fold(0u64, |m, (i, pat)| {
+        if text.contains(pat.as_str()) {
+            m | (1u64 << i)
+        } else {
+            m
+        }
+    });
+    Ok((text, calls, helpers))
+}
+
 /// Generate MLIR for all functions, wrapped in `module { … }`.
 /// Unsupported constructs permit AST fallback. Conflicting layouts stop compilation and report both records.
 /// Callees and declared layouts resolve through the frozen registry.
@@ -1814,7 +1878,6 @@ pub fn emit_module_mlir(
         .map(|(name, _)| format!("@{name}("))
         .collect();
 
-    type FnEmission = (String, Vec<(String, Vec<String>, String)>, u64);
     // An inline block's wrapper is named from a module-wide base, so two functions' do not collide.
     let inline_bases: Vec<usize> = {
         let mut bases = Vec::with_capacity(funcs.len());
@@ -1825,36 +1888,26 @@ pub fn emit_module_mlir(
         }
         bases
     };
-    let emit_one =
+    let emit_at =
         |(fi, (func, hir, types)): (usize, &(&Function, &[HirInstruction], &[TypeId]))| {
-            let mut calls = Vec::new();
-            let mut distinct_ctr = distinct_bases[fi];
-            let text = emit_function_mlir(
+            emit_one(
                 func,
                 hir,
                 types,
                 &ctx,
-                &mut calls,
                 str_bases[fi],
                 string_tables.get(fi).copied().unwrap_or(&[]),
                 inline_bases[fi],
                 inline_tables.get(fi).copied().unwrap_or(&[]),
                 alias_tables.get(fi).copied().unwrap_or(&[]),
-                &mut distinct_ctr,
-            )?;
-            let helpers = helper_pats.iter().enumerate().fold(0u64, |m, (i, pat)| {
-                if text.contains(pat.as_str()) {
-                    m | (1u64 << i)
-                } else {
-                    m
-                }
-            });
-            Ok((text, calls, helpers))
+                distinct_bases[fi],
+                &helper_pats,
+            )
         };
     let mut emitted: Vec<Lowered<FnEmission>> = if sched == crate::config::Schedule::Sequential {
-        funcs.iter().enumerate().map(emit_one).collect()
+        funcs.iter().enumerate().map(emit_at).collect()
     } else {
-        funcs.par_iter().enumerate().map(emit_one).collect()
+        funcs.par_iter().enumerate().map(emit_at).collect()
     };
     crate::intern_mode::record(crate::intern_mode::CODEGEN_EMIT, emit_start.elapsed());
 
@@ -2917,10 +2970,8 @@ pub fn emit_function_mlir(
     em.entry += &valid_pointer_assumes(func, &valid, arg_offset);
 
     for (idx, ins) in hir.iter().enumerate() {
-        // A gap names the emitter line that bailed and the function the program's author wrote:
-        // the site alone sends the reader into the compiler.
-        em.step(idx, ins)
-            .map_err(|why| why.in_function(func.name.as_ref()))?;
+        // Any gap here is named by `emit_one`, which wraps the whole emit of this function.
+        em.step(idx, ins)?;
     }
 
     // Every block must end in a terminator. A void function falls through to a bare `return`.
@@ -3244,18 +3295,18 @@ mod tests {
             HirInstruction::new(Opcode::Ret, Register(0), Register(0), TypeIdx(0), 0),
         ];
         let types = [scalar_gid(&ElementType::I32)];
-        let decline = emit_function_mlir(
+        let decline = emit_one(
             &f,
             &code,
             &types,
             &EmitCtx::default(),
-            &mut Vec::new(),
             0,
             &[],
             0,
             &[],
             &[],
-            &mut 1,
+            1,
+            &[],
         )
         .expect_err("a field store into a slot nothing allocated has no lowering");
         let message = decline.to_string();
@@ -3263,6 +3314,38 @@ mod tests {
             message.ends_with("in function 'check_token'"),
             "the gap must name the function the program has, not only the emitter's line: \
              {message}"
+        );
+    }
+
+    /// A gap found while spelling a function's signature names the function too.
+    ///
+    /// A signature a real program can build is one the module's own registry can spell, so the
+    /// context here is made by hand: it knows the name `Pair` but holds no layout under the GID
+    /// that name maps to. The return type then reaches the signature path's own bail-out. The
+    /// function has no instructions, so the gap can only be the signature's -- a body gap cannot
+    /// happen in an empty stream.
+    #[test]
+    fn a_gap_in_the_signature_names_the_function_it_was_found_in() {
+        let f = parse_fn("fn check_token() -> Pair { }");
+        let missing = TypeId::new(1, 1, 0, 0);
+        let mut ctx = EmitCtx {
+            identities: Arc::new(crate::layout::identity::AggregateIdentities::new([(
+                missing,
+                "Pair".into(),
+            )])),
+            ..EmitCtx::default()
+        };
+        ctx.agg_names.insert("Pair".into(), missing);
+        let decline = emit_one(&f, &[], &[], &ctx, 0, &[], 0, &[], &[], 1, &[])
+            .expect_err("a return type with no layout in the context has no MLIR spelling");
+        let message = decline.to_string();
+        assert!(
+            message.starts_with("an emitter gap at src/codegen/flat.rs:"),
+            "the gap must be the one the signature path raises, not a body gap: {message}"
+        );
+        assert!(
+            message.ends_with("in function 'check_token'"),
+            "a gap found in the signature must name the function as a body gap does: {message}"
         );
     }
 
