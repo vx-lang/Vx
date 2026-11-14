@@ -35,6 +35,11 @@
 //   end, so when it is zero the loop has no passes.
 // - `quarters`: subgroup `w` writes the quarter `(w / 2, w % 2)` of a tile. In the lane loop,
 //   `w / 2` and `w % 2` are the same in every pass.
+// - `quotient_of_a_subgroup_in_the_row`: subgroup `w` of block `blk` writes the quarter
+//   `(w / 2, w % 2)` of the block's tile. `w` is below 4 and `j` below 32, so `(w / 2) * 32 + j` is
+//   at most 63, and the row `blk * 64 + (w / 2) * 32 + j` fixes `blk`.
+// - `remainder_of_a_subgroup_in_the_row`: the same, with `w % 2` in the row and `w / 2` in the
+//   column.
 //
 // RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --allow-empty --implicit-check-not=Error
 
@@ -303,6 +308,36 @@ pub fn quarters(c : &mut Tensor<f32, [?, 64, 64], Memory::HBM>, n : i32) -> void
         for j in 0..32 across lanes {
           for i in 0..32 {
             c[b][(w / 2) * 32 + i][(w % 2) * 32 + j] = 0.0;
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn quotient_of_a_subgroup_in_the_row(c : &mut Tensor<f32, [?, 64], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..4 across blocks {
+      for w in 0..4 across subgroups {
+        for j in 0..32 across lanes {
+          for i in 0..32 {
+            c[blk * 64 + (w / 2) * 32 + j][(w % 2) * 32 + i] = 0.0;
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn remainder_of_a_subgroup_in_the_row(c : &mut Tensor<f32, [?, 64], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..4 across blocks {
+      for w in 0..4 across subgroups {
+        for j in 0..32 across lanes {
+          for i in 0..32 {
+            c[blk * 64 + (w % 2) * 32 + j][(w / 2) * 32 + i] = 0.0;
           }
         }
       }
