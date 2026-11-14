@@ -273,30 +273,37 @@ fn lower_spawn_region<'c>(
         }
     }
 
-    // The declared arch travels on the spawn here exactly as on the flat path (Vx#352):
-    // without it, the same source lost its device image whenever flat codegen declined and
-    // this path took over -- silently, since the eligibility gate saw no attribute and a
-    // custom topology's id cannot enter the band fallback. Custom topologies only: built-ins
-    // declare no arch and ride the band, same asymmetry as the flat emitter.
-    if let syntax::Topology::Custom(name) = &this.top {
-        if let Some(desc) = gen.topologies.get(name) {
-            if let Some(arch) = &desc.arch {
-                let arch_attr =
-                    melior::ir::attribute::StringAttribute::new(gen.context, arch.as_ref()).into();
-                spawn_builder = spawn_builder
-                    .add_attributes(&[(Identifier::new(gen.context, "arch"), arch_attr)]);
-            }
-            if let Some(chip) = &desc.chip {
-                let chip_attr =
-                    melior::ir::attribute::StringAttribute::new(gen.context, chip.as_ref()).into();
-                spawn_builder = spawn_builder
-                    .add_attributes(&[(Identifier::new(gen.context, "chip"), chip_attr)]);
-            }
-            // Whether the fleet may run it on a worker of another node. A built-in has no mark.
-            let offload_attr = melior::ir::attribute::BoolAttribute::new(gen.context, desc.offload);
-            spawn_builder = spawn_builder
-                .add_attributes(&[(Identifier::new(gen.context, "offload"), offload_attr.into())]);
-        }
+    // The arch travels on the spawn on both paths (Vx#352), so the device pipeline is chosen
+    // from the topology's descriptor rather than from its dispatch-id band. A declared
+    // topology reads it from the machine file; a built-in reads it from the built-in table.
+    let (desc_arch, desc_chip, desc_offload) = match &this.top {
+        syntax::Topology::Custom(name) => match gen.topologies.get(name) {
+            Some(desc) => (desc.arch.clone(), desc.chip.clone(), Some(desc.offload)),
+            None => (None, None, None),
+        },
+        top => match crate::arch::builtin_descriptors().remove(&top.kind()) {
+            // Built-ins print their arch, but never offload. The runtime treats an
+            // absent offload attribute as "unspecified" (allow offloading).
+            Some(desc) if desc.arch.is_some() => (desc.arch, desc.chip, None),
+            _ => (None, None, None),
+        },
+    };
+    if let Some(arch) = &desc_arch {
+        let arch_attr =
+            melior::ir::attribute::StringAttribute::new(gen.context, arch.as_ref()).into();
+        spawn_builder =
+            spawn_builder.add_attributes(&[(Identifier::new(gen.context, "arch"), arch_attr)]);
+    }
+    if let Some(chip) = &desc_chip {
+        let chip_attr =
+            melior::ir::attribute::StringAttribute::new(gen.context, chip.as_ref()).into();
+        spawn_builder =
+            spawn_builder.add_attributes(&[(Identifier::new(gen.context, "chip"), chip_attr)]);
+    }
+    if let Some(offload) = desc_offload {
+        let offload_attr = melior::ir::attribute::BoolAttribute::new(gen.context, offload);
+        spawn_builder = spawn_builder
+            .add_attributes(&[(Identifier::new(gen.context, "offload"), offload_attr.into())]);
     }
 
     // Topology → plugin selection: if a hardware plugin claims this topology, record its

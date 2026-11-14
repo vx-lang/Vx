@@ -1286,7 +1286,7 @@ pub fn local_devices_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i32, i32)>
 pub struct DeclaredArch {
     pub arch: String,
     pub chip: Option<String>,
-    pub offload: bool,
+    pub offload: Option<bool>,
 }
 
 /// The declared-arch table for `EmitCtx::topo_archs`, from the per-compilation env: one entry per
@@ -1311,7 +1311,7 @@ pub fn topo_archs_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i64, Declared
                     .chip
                     .as_ref()
                     .map(|c| c.as_ref().to_string()),
-                offload: decl.descriptor.offload,
+                offload: Some(decl.descriptor.offload),
             },
         ));
     }
@@ -1321,8 +1321,26 @@ pub fn topo_archs_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i64, Declared
             continue;
         };
         let top = match kind {
+            crate::syntax::TopologyKind::CPU => crate::syntax::Topology::CPU,
             crate::syntax::TopologyKind::GPU => crate::syntax::Topology::gpu(0),
+            crate::syntax::TopologyKind::NPU => crate::syntax::Topology::NPU(Box::new(
+                crate::syntax::Expr::Number(crate::syntax::NumberExpr::new(
+                    "0".to_string(),
+                    None,
+                    crate::syntax::Span::default(),
+                )),
+            )),
             crate::syntax::TopologyKind::ANE => crate::syntax::Topology::ANE,
+            crate::syntax::TopologyKind::AccCore => crate::syntax::Topology::AccCore(Box::new(
+                crate::syntax::Expr::Number(crate::syntax::NumberExpr::new(
+                    "0".to_string(),
+                    None,
+                    crate::syntax::Span::default(),
+                )),
+            )),
+            crate::syntax::TopologyKind::AMX => crate::syntax::Topology::AMX,
+            crate::syntax::TopologyKind::CpuAvx512 => crate::syntax::Topology::CpuAvx512,
+            crate::syntax::TopologyKind::CpuNeon => crate::syntax::Topology::CpuNeon,
             _ => continue,
         };
         let id = crate::arch::topology_dispatch_id(&top);
@@ -1331,7 +1349,7 @@ pub fn topo_archs_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i64, Declared
             DeclaredArch {
                 arch: arch.as_ref().to_string(),
                 chip: desc.chip.as_ref().map(|c| c.as_ref().to_string()),
-                offload: desc.offload,
+                offload: None,
             },
         ));
     }

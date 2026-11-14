@@ -36,20 +36,20 @@
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | awk '/func.func @/ {f=$2} /topology_name/ {print f, $0}' | FileCheck %s --check-prefix=MLIR
 // RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | awk '/func.func @/ {f=$2} /topology_name/ {print f, $0}' | FileCheck %s --check-prefix=MLIR
-// MLIR-DAG: {{^}}@running_total({{.*}} {arch = "nvptx64", offload = true, topology_name = "GPU[0]"}{{$}}
-// MLIR-DAG: {{^}}@sum_in_a_tensor({{.*}} {arch = "nvptx64", offload = true, topology_name = "GPU[0]"}{{$}}
-// MLIR-DAG: {{^}}@normalize({{.*}} {arch = "nvptx64", offload = true, topology_name = "GPU[0]"}{{$}}
-// MLIR-DAG: {{^}}@written_in_an_if({{.*}} {arch = "nvptx64", offload = true, topology_name = "GPU[0]"}{{$}}
-// MLIR-DAG: {{^}}@last_of_a_split_loop({{.*}} {arch = "nvptx64", offload = true, topology_name = "GPU[0]"}{{$}}
-// MLIR-DAG: {{^}}@another_threads_element({{.*}} {arch = "nvptx64", offload = true, topology_name = "GPU[0]"}{{$}}
-// MLIR-DAG: {{^}}@index_changed_in_the_pass({{.*}} {arch = "nvptx64", offload = true, topology_name = "GPU[0]"}{{$}}
-// MLIR-DAG: {{^}}@shadowed_in_an_inner_loop({{.*}} {arch = "nvptx64", offload = true, topology_name = "GPU[0]"}{{$}}
-// MLIR-DAG: {{^}}@written_in_a_loop_that_may_not_run({{.*}} {arch = "nvptx64", offload = true, topology_name = "GPU[0]"}{{$}}
-// MLIR-DAG: {{^}}@scratch_set_in_each_pass({{.*}} {arch = "nvptx64", offload = true, topology_name = "GPU[0]", vx_parallel_trip = 64 : i64}{{$}}
-// MLIR-DAG: {{^}}@scratch_set_in_each_thread_pass({{.*}} {arch = "nvptx64", offload = true, topology_name = "GPU[0]", vx_parallel_threads = 64 : i64, vx_parallel_trip = 8 : i64, vx_parallel_two_level}{{$}}
-// MLIR-DAG: {{^}}@tensor_set_in_each_pass({{.*}} {arch = "nvptx64", offload = true, topology_name = "GPU[0]", vx_parallel_trip = 64 : i64}{{$}}
-// MLIR-DAG: {{^}}@scratch_set_in_each_turn({{.*}} {arch = "nvptx64", offload = true, topology_name = "GPU[0]", vx_parallel_trip = 64 : i64}{{$}}
-// MLIR-DAG: {{^}}@last_reset_between_loops({{.*}} {arch = "nvptx64", offload = true, topology_name = "GPU[0]", vx_parallel_threads = 64 : i64, vx_parallel_trip = 8 : i64, vx_parallel_two_level}{{$}}
+// MLIR-DAG: {{^}}@running_total({{.*}} {arch = "nvptx64", topology_name = "GPU[0]"}{{$}}
+// MLIR-DAG: {{^}}@sum_in_a_tensor({{.*}} {arch = "nvptx64", topology_name = "GPU[0]"}{{$}}
+// MLIR-DAG: {{^}}@normalize({{.*}} {arch = "nvptx64", topology_name = "GPU[0]"}{{$}}
+// MLIR-DAG: {{^}}@written_in_an_if({{.*}} {arch = "nvptx64", topology_name = "GPU[0]"}{{$}}
+// MLIR-DAG: {{^}}@last_of_a_split_loop({{.*}} {arch = "nvptx64", topology_name = "GPU[0]"}{{$}}
+// MLIR-DAG: {{^}}@another_threads_element({{.*}} {arch = "nvptx64", topology_name = "GPU[0]"}{{$}}
+// MLIR-DAG: {{^}}@index_changed_in_the_pass({{.*}} {arch = "nvptx64", topology_name = "GPU[0]"}{{$}}
+// MLIR-DAG: {{^}}@shadowed_in_an_inner_loop({{.*}} {arch = "nvptx64", topology_name = "GPU[0]"}{{$}}
+// MLIR-DAG: {{^}}@written_in_a_loop_that_may_not_run({{.*}} {arch = "nvptx64", topology_name = "GPU[0]"}{{$}}
+// MLIR-DAG: {{^}}@scratch_set_in_each_pass({{.*}} {arch = "nvptx64", topology_name = "GPU[0]", vx_parallel_trip = 64 : i64}{{$}}
+// MLIR-DAG: {{^}}@scratch_set_in_each_thread_pass({{.*}} {arch = "nvptx64", topology_name = "GPU[0]", vx_parallel_threads = 64 : i64, vx_parallel_trip = 8 : i64, vx_parallel_two_level}{{$}}
+// MLIR-DAG: {{^}}@tensor_set_in_each_pass({{.*}} {arch = "nvptx64", topology_name = "GPU[0]", vx_parallel_trip = 64 : i64}{{$}}
+// MLIR-DAG: {{^}}@scratch_set_in_each_turn({{.*}} {arch = "nvptx64", topology_name = "GPU[0]", vx_parallel_trip = 64 : i64}{{$}}
+// MLIR-DAG: {{^}}@last_reset_between_loops({{.*}} {arch = "nvptx64", topology_name = "GPU[0]", vx_parallel_threads = 64 : i64, vx_parallel_trip = 8 : i64, vx_parallel_two_level}{{$}}
 //
 // RUN: env VX_HOST_THREADS=4 vxc %s 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
 // OUT-NOT: Warning

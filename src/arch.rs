@@ -934,21 +934,23 @@ pub(crate) fn builtin_descriptors() -> HashMap<crate::syntax::TopologyKind, Topo
         }
     };
 
-    m.insert(K::CPU, d(CPUDRAM, &[CPUDRAM, NPUHBM], None, false));
-    m.insert(K::GPU, d(GpuHbm, &[GpuHbm], Some("nvptx64"), true));
+    m.insert(
+        K::CPU,
+        d(CPUDRAM, &[CPUDRAM, NPUHBM], Some("x86_64"), false),
+    );
+    m.insert(K::GPU, d(GpuHbm, &[GpuHbm], Some("nvptx64"), false));
     m.insert(K::NPU, d(NPUHBM, &[NPUHBM], None, false));
     m.insert(
         K::ANE,
         d(NPUHBM, &[NPUHBM, CPUDRAM], Some("appleane"), false),
     );
-    m.insert(K::AMX, d(CPUDRAM, &[CPUDRAM], None, false));
+    m.insert(K::AMX, d(CPUDRAM, &[CPUDRAM], Some("amx"), false));
     m.insert(K::AccCore, d(LocalSRAM, &[LocalSRAM], None, false));
-    m.insert(K::CpuAvx512, d(CPUDRAM, &[CPUDRAM], None, false));
-    m.insert(K::CpuNeon, d(CPUDRAM, &[CPUDRAM], None, false));
+    m.insert(K::CpuAvx512, d(CPUDRAM, &[CPUDRAM], Some("avx_512"), false));
+    m.insert(K::CpuNeon, d(CPUDRAM, &[CPUDRAM], Some("neon"), false));
     m.insert(K::Slice, d(NPUHBM, &[NPUHBM], None, false));
     m
 }
-
 // Topology descriptors are no longer a process-global registry. A `TransferCostGraph` carries
 // them per-compilation (`descriptors` field, seeded from the built-ins plus `Program.topologies`
 // via `seed_from_topologies`); see `descriptor` / `default_memory_for` methods below. This is the

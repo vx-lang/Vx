@@ -284,10 +284,12 @@ impl FnEmit<'_> {
             if !declared.arch.is_empty() {
                 attrs.push_str(&format!("arch = \"{}\", ", declared.arch));
             }
+            if let Some(offload) = declared.offload {
+                attrs.push_str(&format!("offload = {}, ", offload));
+            }
             if let Some(chip) = &declared.chip {
                 attrs.push_str(&format!("chip = \"{}\", ", chip));
             }
-            attrs.push_str(&format!("offload = {}, ", declared.offload));
         }
 
         self.body += &format!(
