@@ -110,7 +110,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3008`](/errors/E3008/) | Enum payload type mismatch |
 | [`E3009`](/errors/E3009/) | Enum payload arity mismatch |
 | [`E3010`](/errors/E3010/) | Function argument count mismatch |
-| [`E3011`](/errors/E3011/) | Unsupported cast |
+| [`E3011`](/errors/E3011/) | An `as` cast between two types that it does not convert, such as from an integer or a float to `bool`. Rust refuses the same casts. A comparison such as `x != 0` says which values count as true. |
 | [`E3012`](/errors/E3012/) | Type mismatch in struct field initialization |
 | [`E3013`](/errors/E3013/) | Missing struct field in initialization |
 | [`E3014`](/errors/E3014/) | Range type mismatch |

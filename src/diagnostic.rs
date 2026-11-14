@@ -212,7 +212,9 @@ pub enum DiagnosticCode {
     E3009,
     /// Function argument count mismatch
     E3010,
-    /// Unsupported cast
+    /// An `as` cast between two types that it does not convert, such as from an integer or a
+    /// float to `bool`. Rust refuses the same casts. A comparison such as `x != 0` says which
+    /// values count as true.
     E3011,
     /// Type mismatch in struct field initialization
     E3012,

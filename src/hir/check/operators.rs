@@ -283,6 +283,20 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             (Type::Scalar(src), Type::Scalar(dst)) => {
+                // Rust's rule: only a `bool` casts to a `bool`. From an integer the cast kept
+                // the lowest bit, so `2 as bool` was `false`.
+                if *dst == ElementType::Bool && *src != ElementType::Bool {
+                    let zero = if src.is_float() { "0.0" } else { "0" };
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3011,
+                        format!(
+                            "cannot cast `{src}` to `bool`: compare it with zero instead, as in \
+                             `x != {zero}`"
+                        ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&expr.span)),
+                    );
+                    return Type::Unknown;
+                }
                 // A literal is left alone, since a cast is one way to give a number its type.
                 // So is a generic instance: there `x as T` converts for every other `T`.
                 let literal = match &*expr.expr {
