@@ -13,10 +13,10 @@
 // CHECK-DAG: func.func private @vx_udp_socket_recv(!llvm.ptr, !llvm.ptr, i64, !llvm.ptr) -> i32
 // CHECK-DAG: func.func private @vx_udp_socket_send_to(!llvm.ptr, !llvm.ptr, i64, !llvm.ptr, !llvm.ptr) -> i32
 // CHECK-LABEL: func.func @main() -> i32
-// CHECK: call @TcpStream$read(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, i64) -> !llvm.struct<(i32, i64)>
-// CHECK: call @TcpStream$write(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, i64) -> !llvm.struct<(i32, i64)>
-// CHECK: call @UdpSocket$recv(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, i64) -> !llvm.struct<(i32, i64)>
-// CHECK: call @UdpSocket$send_to(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, i64, !llvm.ptr) -> !llvm.struct<(i32, i64)>
+// CHECK: call @TcpStream$read_raw(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, i64) -> !llvm.struct<(i32, i64)>
+// CHECK: call @TcpStream$write_raw(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, i64) -> !llvm.struct<(i32, i64)>
+// CHECK: call @UdpSocket$recv_raw(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, i64) -> !llvm.struct<(i32, i64)>
+// CHECK: call @UdpSocket$send_to_raw(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, i64, !llvm.ptr) -> !llvm.struct<(i32, i64)>
 import core::result;
 import std::net;
 
@@ -33,10 +33,10 @@ fn main() -> i32 {
     let mut byte : u8 = 0;
     let length : u64 = 1;
     // A null handle is refused, so each call gives an error.
-    let read = stream.read((&mut byte) as *mut u8, length);
-    let write = stream.write((&byte) as *const u8, length);
-    let recv = socket.recv((&mut byte) as *mut u8, length);
-    let send = socket.send_to((&byte) as *const u8, length, "127.0.0.1:0");
+    let read = stream.read_raw((&mut byte) as *mut u8, length);
+    let write = stream.write_raw((&byte) as *const u8, length);
+    let recv = socket.recv_raw((&mut byte) as *mut u8, length);
+    let send = socket.send_to_raw((&byte) as *const u8, length, "127.0.0.1:0");
     if !read.is_err() || !write.is_err() || !recv.is_err() || !send.is_err() {
       return 1;
     }
