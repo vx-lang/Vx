@@ -36,7 +36,7 @@
 #                turns a missing launch lock from a coin flip into a report
 #                that names the map.
 #
-# Four more cases check the compiler's and the library's own decisions rather
+# Five more cases check the compiler's and the library's own decisions rather
 # than one kernel's arithmetic, because none of those faults shows up as a
 # number that looks wrong:
 #
@@ -61,6 +61,16 @@
 #                an answer. The backend has to refuse and name the space id.
 #                Before it did, the region quietly ran on the host and the run
 #                printed numbers.
+#   slot result  a matmul that allocates its result inside the kernel, which
+#                only `--legacy-codegen` writes (`outkind=slot`). The library
+#                allocates that result and publishes a descriptor naming it,
+#                and the program frees it at cleanup with libc `free`. So the
+#                library has to publish memory `free` can release: device
+#                memory that is host-visible reads correctly and then aborts
+#                the program with `free(): invalid size`, after the right
+#                numbers. The case requires exit 0 on the Arc, the exact
+#                answer, and the library's own line saying it took the slot
+#                path rather than falling back to the host copy.
 #
 # A kernel the device cannot run is reported, not skipped: the compiler's
 # refusal or the host fallback is the result for that case. Two programs are
@@ -75,11 +85,12 @@
 # matmul at tolerance 0 and at 1e-4 and prints which of the two carries the
 # verdict. Either answer is a fact about the size, not a fault.
 #
-# Two checks are assertions, with no sabotage step to show them able to fail:
-# the kernel cache keyed on the library and the name (the same-name case), and
-# the address check before a launch (the host-memory case). Proving either one
-# able to fail means building a deliberately broken copy of the library, which
-# this script does not do.
+# Three checks are assertions, with no sabotage step to show them able to fail:
+# the kernel cache keyed on the library and the name (the same-name case), the
+# address check before a launch (the host-memory case), and the memory a slot
+# result is published in (the slot-result case). Proving any of them able to
+# fail means building a deliberately broken copy of the library, which this
+# script does not do.
 #
 # Memory: the largest program holds three 8192x8192 fp32 tensors (805 MiB),
 # checked against the shared ceiling and printed. Only one GPU helper runs at a
@@ -560,6 +571,66 @@ echo "==> matmul_big / $kernel: matmul f32 8192x8192x8192 (Arc only)"
 # The CPU backend's reference GEMM would need about 47 minutes at this size, so
 # only the Arc is run here; the CPU half of the comparison is the 1024 case.
 dispatch_case arc matmul_big matmul f32 8192 8192 8192 5 "$kernel" 2
+
+echo "==> a matmul that allocates its result, through --legacy-codegen"
+# `c = a @ b` over run-time extents allocates the result inside the kernel, so
+# the payload says `outkind=slot` and the library allocates the result and
+# publishes a descriptor naming it. The program then frees that result at
+# cleanup with libc `free`, because the result is the storage of a local
+# tensor. So the published allocation has to be memory libc can release, not
+# shared USM: `free` on shared USM reads correctly and then kills the program
+# with "free(): invalid size", which is why this case checks the exit status
+# and not only the numbers.
+#
+# Only `--legacy-codegen` emits `outkind=slot`. The default pipeline lowers
+# this shape itself and has no outlined kernel to label, so a run without the
+# flag would never reach the code this case is about.
+SLOT_EXPECTED="30 42 81 "
+slot_cpu_status=0
+run_whole_program cpu "$OUT/slot_matmul.cpu.raw" \
+  "$OUT/slot_matmul.cpu.run.txt" --legacy-codegen \
+  "$PROGRAMS/slot_matmul.vx" || slot_cpu_status=$?
+if [ "$slot_cpu_status" != 0 ]; then
+  echo "error: the CPU run of the slot matmul exited $slot_cpu_status" >&2
+  sed 's/^/         /' "$OUT/slot_matmul.cpu.run.txt" >&2
+  exit 1
+fi
+slot_arc_status=0
+run_whole_program arc "$OUT/slot_matmul.arc.raw" \
+  "$OUT/slot_matmul.arc.run.txt" --legacy-codegen \
+  "$PROGRAMS/slot_matmul.vx" || slot_arc_status=$?
+if [ "$slot_arc_status" != 0 ]; then
+  echo "error: the Arc run of the slot matmul exited $slot_arc_status" >&2
+  echo "       a run that printed the answer and then died is a free of memory" >&2
+  echo "       the program's allocator did not make" >&2
+  sed 's/^/         /' "$OUT/slot_matmul.arc.run.txt" >&2
+  exit 1
+fi
+collect_numbers "$OUT/slot_matmul.cpu.raw" "$OUT/slot_matmul.cpu.out" 3 \
+  "the CPU slot matmul"
+collect_numbers "$OUT/slot_matmul.arc.raw" "$OUT/slot_matmul.arc.out" 3 \
+  "the Arc slot matmul"
+slot_cpu_answer="$(tr -s ' \n' ' ' <"$OUT/slot_matmul.cpu.out")"
+slot_arc_answer="$(tr -s ' \n' ' ' <"$OUT/slot_matmul.arc.out")"
+if [ "$slot_cpu_answer" != "$SLOT_EXPECTED" ] || \
+  [ "$slot_arc_answer" != "$SLOT_EXPECTED" ]; then
+  echo "error: the slot matmul printed '${slot_arc_answer}' on the Arc and" >&2
+  echo "       '${slot_cpu_answer}' on the CPU, not '$SLOT_EXPECTED'" >&2
+  exit 1
+fi
+# The answer alone does not say which code produced it: a host copy of the
+# outlined kernel gives the same numbers. Only the slot plan reaches the
+# library's own allocation, so the run has to say it took that path.
+if ! grep -q "GEMM 2x3x3 f32 -> slot" "$OUT/slot_matmul.arc.run.txt"; then
+  echo "error: the Arc run did not route the matmul as a slot plan, so this" >&2
+  echo "       case did not exercise the publication it is about" >&2
+  grep -h "Vx XPU" "$OUT/slot_matmul.arc.run.txt" | sed 's/^/         /' >&2
+  exit 1
+fi
+grep -h "GEMM 2x3x3 f32 -> slot" "$OUT/slot_matmul.arc.run.txt" |
+  sed 's/^/    /'
+echo "    arc: $slot_arc_answer(freed at exit, status 0)"
+echo "    cpu: $slot_cpu_answer(the same numbers)"
 
 # The whole program, through the compiler's own driver on both backends, which
 # prints one sum per declared type. Every type rides through the ABI above too,

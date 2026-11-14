@@ -749,7 +749,9 @@ StagedBuffer stage(const void *host_data, int64_t rows, int64_t cols,
   /* A program's tensor is ordinary host memory, and there is no USM copy that
      reaches it: `queue::memcpy` needs USM at both ends. An operand that was
      transferred into a device space is USM already and took the road above, so
-     this is the tensor a program never moved -- usually the small one. */
+     this is the tensor a program never moved -- usually the small one. A result
+     a slot published is one of these too: it is the program's memory, so a
+     later matmul reads it as this case does and puts it back on the device. */
   buf.ptr = device_alloc(buf.bytes);
   if (!buf.ptr) {
     fprintf(stderr,
@@ -830,14 +832,13 @@ bool run_gemm(const vx_gemm_plan &plan) {
 
   /* Where the GEMM writes.
      A USM destination is written where it lies -- `ldc` carries its row stride.
-     A host tensor is not USM, so the result lands in a host-visible buffer
-     first and is copied back row by row. A slot is a published allocation, so
-     the buffer the GEMM writes is the one the program receives: this used to
-     allocate `c`, run the GEMM into it, allocate a second buffer of the same
-     size and copy `c` across, which doubled the peak and copied every result
-     byte once more for nothing. It is shared USM rather than `malloc` because
-     the descriptor is memory a later placed kernel may read: a host pointer in
-     it is an address the GPU cannot reach. */
+     Anything else is not memory oneMKL can write, so the result lands in
+     device-visible memory first and is copied across. A slot is one of those:
+     the program frees its result with its own allocator, so the allocation it
+     receives has to be one `malloc` made, and the buffer the GEMM writes is
+     shared USM that `free` cannot release. That leaves one device buffer for
+     the GEMM and one host buffer for the descriptor, which is what
+     cuda_dispatch.cpp keeps for the same reason. */
   StagedBuffer c;
   if (out_is_usm) {
     c.ptr = plan.out_data;
@@ -898,10 +899,22 @@ bool run_gemm(const vx_gemm_plan &plan) {
   }
 
   if (out_is_slot) {
-    /* The buffer the GEMM wrote is the allocation the program receives, so its
-       ownership moves to the program with the descriptor. */
-    c.owned = false;
-    vx_gemm_publish_slot(&plan, c.ptr);
+    /* The program frees this result with its own allocator -- the storage of a
+       local tensor is `free`d -- so it has to be memory that allocator made.
+       Shared USM is not: `free` on it aborts the program with "invalid size",
+       which is what publishing the GEMM's own buffer did. The copy is the price
+       of the ownership rule: one pass over the result. A later placed kernel
+       cannot address the published pointer either, so it takes the host path,
+       and a later matmul stages the bytes onto the device again. */
+    void *result = malloc(c.bytes);
+    if (!result) {
+      fprintf(stderr,
+              "[Vx XPU] FATAL: out of host memory for a %lldx%lld result\n",
+              (long long)plan.m, (long long)plan.n);
+      abort();
+    }
+    memcpy(result, c.ptr, c.bytes);
+    vx_gemm_publish_slot(&plan, result);
     return true;
   }
 

@@ -1,0 +1,78 @@
+//===- slot_matmul.vx - a matrix multiply that publishes its result ---------===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `c = a @ b` over run-time extents allocates its result inside the kernel, so
+// the payload says `outkind=slot` and the dispatch library allocates the result
+// and publishes a descriptor naming it. The program then frees that result at
+// cleanup, with libc `free`, because it is the storage of a local tensor.
+//
+// That is the ownership rule this case exists to check: the published pointer
+// has to be memory the program's own allocator made. The XPU library used to
+// publish shared USM, which reads correctly -- so the answer below was right --
+// and then aborted the program with `free(): invalid size` when the tensor went
+// out of scope. docs/lang/abi.md §3.1 states the rule.
+//
+// Only `--legacy-codegen` emits `outkind=slot`: the flat path, which lowers
+// this shape by default, generates its own loop nest and has no outlined kernel
+// to label. The runner therefore forces that flag, requires exit 0, and
+// requires the library's own line saying it took the slot path -- a run that
+// fell back to the host copy would print the same numbers without reaching the
+// code this case is about.
+//
+// The topology is declared with `arch: spirv64` so the payload's topology is
+// the library's own SPIR-V device (1000) rather than `Topology::GPU` (500,
+// NVIDIA's). A 2x3 times a 3x3 does not conform the other way round, so a
+// plugin that swapped the operands would fail on shapes before it could print
+// a plausible matrix of wrong numbers.
+
+Memory CPU_DRAM {}
+Memory DEV_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s,
+  managed: cached, scope: device
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 63 GB/s,
+  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 60 GB/s
+}
+
+fn gemm(a : Tensor<f32, [?, ?]>, b : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]> {
+  let mut c = unsafe { Tensor<f32, [?, ?]>::uninit([2, 3]) };
+  spawn on(Topology::Dev) {
+    c = a @ b;
+  }
+  return c;
+}
+
+fn main() -> i32 {
+  // [[1,2,3],[4,5,6]] @ [[1,2,3],[4,5,6],[7,8,9]] is [[30,36,42],[66,81,96]].
+  let mut a = unsafe { Tensor<f32, [?, ?]>::uninit([2, 3]) };
+  let mut b = unsafe { Tensor<f32, [?, ?]>::uninit([3, 3]) };
+  for i in 0..2 {
+    for j in 0..3 {
+      a[i][j] = (i * 3 + j + 1) as f32;
+    }
+  }
+  for i in 0..3 {
+    for j in 0..3 {
+      b[i][j] = (i * 3 + j + 1) as f32;
+    }
+  }
+
+  let c = gemm(a, b);
+  // Three entries, not six: the first and last of the first row and the middle
+  // of the second separate A*B from its transpose and from B*A.
+  print(c[0][0]);
+  print!(" ");
+  print(c[0][2]);
+  print!(" ");
+  print(c[1][1]);
+  print!(" ");
+  return 0;
+}
