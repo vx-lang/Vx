@@ -94,7 +94,7 @@ Topology Device {
   transfer Memory::L2 -> Memory::SMEM
 }
 // spec: CoreML on Apple silicon plans no f32 matmul for the Neural Engine at any
-// size (Vx#405). The engine represents f16 for matrix work, and the scalar types
+// size. The engine represents f16 for matrix work, and the scalar types
 // cover loop counters and shapes. A more detailed spec for this part would point
 // to the CoreML specification here.
 Topology NPU {

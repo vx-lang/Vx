@@ -599,15 +599,15 @@ pub enum DiagnosticCode {
     E6015,
     /// A `Topology` or `Memory` declaration whose identity cannot be relied on. Three forms: a
     /// declared topology tries to override hardware facts of a built-in topology (like `arch:`,
-    /// `chip:`, or transfer edges) -- such overrides are silently ignored, though patching
-    /// `dtypes:` is allowed; or two declared names collide on one dispatch id (custom ids are
-    /// derived from the name by hashing), in which case which declaration is in force would be
-    /// hash-iteration order -- observed as the same program getting a device image on some runs
-    /// and not others for a topology, and as a `transfer` carrying the other space's capacity and
-    /// granule for a memory space; or a topology whose `arch:` is not `nvptx64` has
-    /// `Memory::GPU_HBM` as its memory. That memory belongs to the built-in NVIDIA GPU, so the
-    /// tensors of the topology would go to that GPU, and its kernels would run elsewhere. Give
-    /// the memory another name.
+    /// `chip:`, or transfer edges) -- the compiler refuses such overrides, though patching
+    /// `dtypes:` is allowed on a topology that owns its memory space; or two declared names collide
+    /// on one dispatch id (custom ids are derived from the name by hashing), in which case which
+    /// declaration is in force would be hash-iteration order -- observed as the same program
+    /// getting a device image on some runs and not others for a topology, and as a `transfer`
+    /// carrying the other space's capacity and granule for a memory space; or a topology whose
+    /// `arch:` is not `nvptx64` has `Memory::GPU_HBM` as its memory. That memory belongs to the
+    /// built-in NVIDIA GPU, so the tensors of the topology would go to that GPU, and its kernels
+    /// would run elsewhere. Give the memory another name.
     E6016,
     /// A misuse of the `raw::` transfer-lowering primitives (Vx#353): a `raw::` call
     /// outside an `impl transfer` body, an unknown primitive name, a tile argument that

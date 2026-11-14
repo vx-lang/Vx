@@ -95,22 +95,7 @@ fn lower_spawn_region<'c>(
         gen.two_level_plan = Some(plan);
         trip
     });
-    let arch = match &this.top {
-        syntax::Topology::Custom(name, _) => {
-            if let Some(desc) = gen.topologies.get(name) {
-                desc.arch.as_ref().map(|a| a.to_string())
-            } else {
-                crate::arch::builtin_descriptors()
-                    .get(&this.top.kind())
-                    .and_then(|d| d.arch.as_ref())
-                    .map(|a| a.to_string())
-            }
-        }
-        _ => crate::arch::builtin_descriptors()
-            .get(&this.top.kind())
-            .and_then(|d| d.arch.as_ref())
-            .map(|a| a.to_string()),
-    };
+    let (arch, _, _) = crate::arch::topology_arch_and_chip(&this.top, &gen.topologies);
     gen.spawn_arches.push(arch);
     // A `&mut Tensor` parameter is a slot that holds the tensor. A SPIR-V kernel cannot take a
     // memref of memrefs or a memref with a memory space. So the region reads the tensor, loaded
@@ -273,21 +258,11 @@ fn lower_spawn_region<'c>(
         }
     }
 
-    // The arch travels on the spawn on both paths (Vx#352), so the device pipeline is chosen
+    // The arch travels on the spawn on both paths, so the device pipeline is chosen
     // from the topology's descriptor rather than from its dispatch-id band. A declared
     // topology reads it from the machine file; a built-in reads it from the built-in table.
-    let (desc_arch, desc_chip, desc_offload) = match &this.top {
-        syntax::Topology::Custom(name, _) => match gen.topologies.get(name) {
-            Some(desc) => (desc.arch.clone(), desc.chip.clone(), Some(desc.offload)),
-            None => (None, None, None),
-        },
-        top => match crate::arch::builtin_descriptors().remove(&top.kind()) {
-            // Built-ins print their arch, but never offload. The runtime treats an
-            // absent offload attribute as "unspecified" (allow offloading).
-            Some(desc) if desc.arch.is_some() => (desc.arch, desc.chip, None),
-            _ => (None, None, None),
-        },
-    };
+    let (desc_arch, desc_chip, desc_offload) =
+        crate::arch::topology_arch_and_chip(&this.top, &gen.topologies);
     if let Some(arch) = &desc_arch {
         let arch_attr =
             melior::ir::attribute::StringAttribute::new(gen.context, arch.as_ref()).into();

@@ -1107,12 +1107,10 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       if (llvm::any_of(align, [](int64_t a) { return a != 0; }))
         kernelOp->setAttr("vx.arg_align", rewriter.getI64ArrayAttr(align));
     }
-    // The declared arch travels from the machine file, via the spawn, onto the
+    // The declared arch travels from the topology descriptor, via the spawn, onto the
     // outlined kernel -- a discardable attribute, so no dialect change. It is
     // what lets `materializeGpuKernels` gate device compilation on the
-    // DECLARATION instead of the dispatch-id band, which a custom topology
-    // arithmetically cannot enter (declared ids start at 3000; the band is
-    // [500, 600)).
+    // declared architecture attribute.
     if (auto arch = op->getAttrOfType<StringAttr>("arch"))
       kernelOp->setAttr("arch", arch);
     if (auto chip = op->getAttrOfType<StringAttr>("chip"))
@@ -4263,20 +4261,15 @@ static DevicePipeline pipelineForArch(StringRef arch) {
     return DevicePipeline::Spirv;
   if (arch == "applegpu")
     return DevicePipeline::Metal;
-  if (arch == "appleane")
-    return DevicePipeline::None;
   return DevicePipeline::None;
 }
 
-/// The pipeline that compiles the kernel placed on `topology`: the declared
-/// architecture when it carries one, and the dispatch-id band when it does not.
+/// The pipeline that compiles the kernel placed on `topology`: determined by the
+/// `arch` attribute on the operation.
 ///
-/// The band is the fallback for a kernel with no arch attribute: a built-in
-/// topology, whose descriptor declares no arch. The AST code generator stamps
-/// the attribute too, for a topology that declares one
-/// (src/codegen/lower/tensors.rs), so both code generators agree on which
-/// kernels ride the band. A declared arch with no row in the table answers
-/// `None`.
+/// Both code generators stamp the `arch` attribute from the topology's
+/// descriptor (whether declared or built-in). A kernel with no `arch` attribute
+/// or with an unrecognized architecture answers `None`.
 ///
 /// `materializeGpuKernels` asks this to decide whether a kernel gets a device
 /// copy, `spawnRunsOnDevice` asks it the same question about the `vx.spawn` the

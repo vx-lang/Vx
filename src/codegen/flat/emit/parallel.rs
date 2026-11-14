@@ -280,7 +280,7 @@ impl FnEmit<'_> {
         };
 
         let mut attrs = String::new();
-        if let Some(declared) = self.ctx.topo_archs.get(&topo) {
+        if let Some(declared) = self.ctx.topo_arch(topo) {
             if !declared.arch.is_empty() {
                 attrs.push_str(&format!("arch = \"{}\", ", declared.arch));
             }

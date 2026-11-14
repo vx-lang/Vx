@@ -20,22 +20,21 @@
 // EXPECT: [1,   2]]
 
 Memory CPU_DRAM {}
-// Renamed from GPU_HBM to CUSTOM_HBM to avoid the nvptx64 check.
-Memory CUSTOM_HBM {
+Memory GPU_HBM {
   within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
 }
 Memory SMEM {
-  within: Memory::CUSTOM_HBM, capacity: 228 KiB, bandwidth: 128 B/cyc,
+  within: Memory::GPU_HBM, capacity: 228 KiB, bandwidth: 128 B/cyc,
   granule: 1 KiB, managed: explicit, scope: sm
 }
 Topology Dev {
   // Deliberately NO arch: a topology that does not say what code to emit for it
   // gets no device image -- refusing to guess, the same policy fleet/m4-uma.vx
-  // documents for its own arch field (Vx#352).
-  memory: Memory::CUSTOM_HBM,
-  visible: [Memory::CUSTOM_HBM, Memory::SMEM],
-  transfer Memory::CPU_DRAM -> Memory::CUSTOM_HBM : 63 GB/s,
-  transfer Memory::CUSTOM_HBM -> Memory::SMEM
+  // documents for its own arch field.
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s,
+  transfer Memory::GPU_HBM -> Memory::SMEM
 }
 
 fn main() -> i32 {
@@ -47,8 +46,8 @@ fn main() -> i32 {
       o[i][d] = 0.0;
     }
   }
-  let ad = transfer(a, Memory::CUSTOM_HBM);
-  let mut od = transfer(o, Memory::CUSTOM_HBM);
+  let ad = transfer(a, Memory::GPU_HBM);
+  let mut od = transfer(o, Memory::GPU_HBM);
   spawn on(Topology::Dev) {
     let tile = transfer(ad, Memory::SMEM);
     for i in 0..2 {

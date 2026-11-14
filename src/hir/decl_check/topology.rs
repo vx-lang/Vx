@@ -51,44 +51,66 @@ impl TypeChecker<'_> {
             }
 
             if !matches!(kind, TopologyKind::Custom(_)) {
+                let builtin = crate::arch::builtin_descriptors().remove(&kind);
+                let differs_memory = builtin.as_ref().is_none_or(|b| {
+                    decl.descriptor.default_space != b.default_space
+                        || decl.descriptor.visibility != b.visibility
+                });
                 let has_arch = decl.descriptor.arch.is_some();
                 let has_transfers = !decl.descriptor.transfers.is_empty();
                 let has_chip = decl.descriptor.chip.is_some();
                 let has_levels = decl.descriptor.levels.is_some();
                 let has_offload = decl.descriptor.offload;
+                let cannot_patch_dtypes = !matches!(
+                    kind,
+                    TopologyKind::CPU
+                        | TopologyKind::GPU
+                        | TopologyKind::NPU
+                        | TopologyKind::AccCore
+                );
 
-                if has_arch || has_transfers || has_chip || has_levels || has_offload {
+                if has_arch
+                    || has_transfers
+                    || has_chip
+                    || has_levels
+                    || has_offload
+                    || differs_memory
+                    || cannot_patch_dtypes
+                {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E6016,
                         format!(
-                            "topology '{}' shadows the built-in topology of the same name; you cannot override its `arch:`, `chip:`, `levels:`, `offload:`, or transfer edges. Only `dtypes:` may be used to restrict its element types.",
+                            "topology '{}' shadows the built-in topology of the same name, and you cannot override its `arch:`, `memory:`, `visible:`, or transfer edges. Only `dtypes:` on a topology that owns its memory space may be used to restrict element types.",
                             decl.name
                         ),
                         None,
                     );
+                    continue;
                 }
             }
-            // Restore the GPU_HBM check from #3314. A topology that places data in GPU_HBM
-            // must explicitly declare `arch: nvptx64`.
-            let is_nvptx = decl
+
+            // A transfer into `GPU_HBM` goes to the built-in NVIDIA GPU, whatever topology holds
+            // the memory. So a topology of another arch would have its kernels in one place and
+            // its tensors in another.
+            if let Some(arch) = decl
                 .descriptor
                 .arch
                 .as_ref()
-                .is_some_and(|a| a.as_ref() == "nvptx64");
-            let uses_gpu_hbm = decl.descriptor.default_space == crate::syntax::MemorySpace::GpuHbm
-                || decl
-                    .descriptor
-                    .visibility
-                    .contains(&crate::syntax::MemorySpace::GpuHbm);
-            if uses_gpu_hbm && decl.descriptor.arch.is_some() && !is_nvptx {
-                self.errors.error_with_code(
-                    crate::diagnostic::DiagnosticCode::E6016,
-                    format!(
-                        "topology '{}' uses `Memory::GPU_HBM`, which is only valid for `arch: nvptx64`",
-                        decl.name
-                    ),
-                    None,
-                );
+                .filter(|a| a.as_ref() != "nvptx64")
+            {
+                if decl.descriptor.default_space == crate::syntax::MemorySpace::GpuHbm {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E6016,
+                        format!(
+                            "topology '{name}' has `arch: {arch}`, but its memory is \
+                             `Memory::GPU_HBM`, the memory of the built-in NVIDIA GPU. Its \
+                             tensors would go to the NVIDIA GPU, where its kernels cannot run. \
+                             Give the memory of '{name}' another name",
+                            name = decl.name
+                        ),
+                        None,
+                    );
+                }
             }
 
             if decl.name.as_ref() == crate::syntax::ANY_TOPOLOGY {
@@ -119,7 +141,6 @@ impl TypeChecker<'_> {
                 _ => format!("{name}[{i}]"),
             };
             for decl in sorted {
-                // Moved to the top per maintainer feedback.
                 self.errors.point_at(&decl.place, &outside);
                 let ids = crate::arch::declared_dispatch_ids(&decl.name, decl.descriptor.count);
                 for (i, id) in ids.into_iter().enumerate() {
@@ -146,7 +167,6 @@ impl TypeChecker<'_> {
         self.errors.point_back(outside.clone());
 
         for decl in declared {
-            // Moved to the top per maintainer feedback.
             self.errors.point_at(&decl.place, &outside);
             let name = &decl.name;
             for issue in
@@ -296,27 +316,38 @@ impl TypeChecker<'_> {
             .transfer_impls
             .iter()
             .map(|t| {
+                // Source-declared topologies only. A BUILT-IN topology carries
+                // `transfers: Vec::new()` -- its edges live in `TransferCostGraph::default()`
+                // rather than on its descriptor -- so there is nothing on it to implement, and
+                // no way for a program to add one. Consulting the cost graph instead is not the
+                // fix: the graph is flat and merged across every topology, so any machine could
+                // then claim any edge another machine declared, which is exactly the conflation
+                // the topology key removes.
                 let declared = self
                     .env
                     .topologies
                     .values()
                     .find(|d| d.name.as_ref() == t.topology.display_name());
                 match declared {
-                    Some(d) => (
-                        TopologyStanding::Declared,
-                        d.descriptor
-                            .transfers
-                            .iter()
-                            .any(|e| e.from == t.from && e.to == t.to),
-                    ),
-                    None if self
+                    Some(d)
+                        if matches!(TopologyKind::from_name(&d.name), TopologyKind::Custom(_)) =>
+                    {
+                        (
+                            TopologyStanding::Declared,
+                            d.descriptor
+                                .transfers
+                                .iter()
+                                .any(|e| e.from == t.from && e.to == t.to),
+                        )
+                    }
+                    _ if self
                         .transfer_cost_graph
                         .descriptor(&t.topology.kind())
                         .is_some() =>
                     {
                         (TopologyStanding::BuiltIn, false)
                     }
-                    None => (TopologyStanding::Unknown, false),
+                    _ => (TopologyStanding::Unknown, false),
                 }
             })
             .collect();

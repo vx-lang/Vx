@@ -961,22 +961,72 @@ pub(crate) fn builtin_descriptors() -> HashMap<crate::syntax::TopologyKind, Topo
         }
     };
 
-    m.insert(
-        K::CPU,
-        d(CPUDRAM, &[CPUDRAM, NPUHBM], Some("x86_64"), false),
-    );
+    m.insert(K::CPU, d(CPUDRAM, &[CPUDRAM, NPUHBM], None, false));
     m.insert(K::GPU, d(GpuHbm, &[GpuHbm], Some("nvptx64"), false));
     m.insert(K::NPU, d(NPUHBM, &[NPUHBM], None, false));
     m.insert(
         K::ANE,
         d(NPUHBM, &[NPUHBM, CPUDRAM], Some("appleane"), false),
     );
-    m.insert(K::AMX, d(CPUDRAM, &[CPUDRAM], Some("amx"), false));
+    m.insert(K::AMX, d(CPUDRAM, &[CPUDRAM], None, false));
     m.insert(K::AccCore, d(LocalSRAM, &[LocalSRAM], None, false));
-    m.insert(K::CpuAvx512, d(CPUDRAM, &[CPUDRAM], Some("avx_512"), false));
-    m.insert(K::CpuNeon, d(CPUDRAM, &[CPUDRAM], Some("neon"), false));
+    m.insert(K::CpuAvx512, d(CPUDRAM, &[CPUDRAM], None, false));
+    m.insert(K::CpuNeon, d(CPUDRAM, &[CPUDRAM], None, false));
     m.insert(K::Slice, d(NPUHBM, &[NPUHBM], None, false));
     m
+}
+
+/// The default architecture for a built-in topology, if it defines one.
+pub fn builtin_topology_arch(kind: &crate::syntax::TopologyKind) -> Option<&'static str> {
+    match kind {
+        crate::syntax::TopologyKind::GPU => Some("nvptx64"),
+        crate::syntax::TopologyKind::ANE => Some("appleane"),
+        _ => None,
+    }
+}
+
+/// The built-in topology kind for a dispatch id, if the id falls in a built-in range.
+pub fn builtin_kind_from_dispatch_id(id: i64) -> Option<crate::syntax::TopologyKind> {
+    match id {
+        0 => Some(crate::syntax::TopologyKind::CPU),
+        100..200 => Some(crate::syntax::TopologyKind::NPU),
+        200..300 => Some(crate::syntax::TopologyKind::AccCore),
+        300 => Some(crate::syntax::TopologyKind::AMX),
+        400 => Some(crate::syntax::TopologyKind::ANE),
+        500..600 => Some(crate::syntax::TopologyKind::GPU),
+        600 => Some(crate::syntax::TopologyKind::CpuAvx512),
+        700 => Some(crate::syntax::TopologyKind::CpuNeon),
+        _ => None,
+    }
+}
+
+/// The declared arch, chip, and offload for a topology.
+/// Checks the declared topologies first, then falls back to built-in descriptors.
+pub fn topology_arch_and_chip(
+    top: &Topology,
+    declared: &HashMap<crate::symbol::Symbol, TopologyDescriptor>,
+) -> (Option<String>, Option<String>, Option<bool>) {
+    match top {
+        Topology::Custom(name, _) => match declared.get(name) {
+            Some(desc) => (
+                desc.arch.as_ref().map(|a| a.to_string()),
+                desc.chip.as_ref().map(|c| c.to_string()),
+                Some(desc.offload),
+            ),
+            None => (None, None, None),
+        },
+        _ => {
+            let kind = top.kind();
+            match builtin_descriptors().remove(&kind) {
+                Some(desc) if desc.arch.is_some() => (
+                    desc.arch.as_ref().map(|a| a.to_string()),
+                    desc.chip.as_ref().map(|c| c.to_string()),
+                    None,
+                ),
+                _ => (None, None, None),
+            }
+        }
+    }
 }
 // Topology descriptors are no longer a process-global registry. A `TransferCostGraph` carries
 // them per-compilation (`descriptors` field, seeded from the built-ins plus `Program.topologies`
@@ -1171,15 +1221,10 @@ impl TransferCostGraph {
             if matches!(kind, crate::syntax::TopologyKind::Custom(_)) {
                 self.apply_descriptor_edges(&decl.descriptor);
                 self.descriptors.insert(kind, decl.descriptor.clone());
-            } else {
+            } else if let Some(existing) = self.descriptors.get_mut(&kind) {
                 // Built-in. Patch the dtypes if provided.
-                if let Some(existing) = self.descriptors.get_mut(&kind) {
-                    if let Some(dtypes) = &decl.descriptor.dtypes {
-                        existing.dtypes = Some(dtypes.clone());
-                    }
-                } else {
-                    // A built-in like `Topology::Current` has no memory descriptor to patch.
-                    continue;
+                if let Some(dtypes) = &decl.descriptor.dtypes {
+                    existing.dtypes = Some(dtypes.clone());
                 }
             }
         }
