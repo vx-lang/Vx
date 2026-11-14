@@ -4046,6 +4046,8 @@ static DevicePipeline pipelineForArch(StringRef arch) {
     return DevicePipeline::Spirv;
   if (arch == "applegpu")
     return DevicePipeline::Metal;
+  if (arch == "appleane")
+    return DevicePipeline::None;
   return DevicePipeline::None;
 }
 
@@ -4067,11 +4069,6 @@ static DevicePipeline pipelineForArch(StringRef arch) {
 static DevicePipeline pipelineOfKernel(Operation *placed, int32_t topology) {
   if (auto arch = placed->getAttrOfType<StringAttr>("arch"))
     return pipelineForArch(arch.getValue());
-  // The GPU band from `topology_dispatch_id` in src/arch.rs, where `GPU[i]` is
-  // 500 + i. NPU and AccCore are below the band and outline the same way, but
-  // they reach their devices through a different backend.
-  if (topology >= 500 && topology < 600)
-    return DevicePipeline::Nvptx;
   return DevicePipeline::None;
 }
 

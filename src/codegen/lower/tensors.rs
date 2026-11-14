@@ -101,6 +101,10 @@ fn lower_spawn_region<'c>(
             .get(name)
             .and_then(|d| d.arch.as_ref())
             .map(|a| a.to_string()),
+        syntax::Topology::GPU(_) => Some("nvptx64".to_string()),
+        syntax::Topology::NPU(_) => Some("appleane".to_string()),
+        syntax::Topology::CpuAvx512 => Some("x86_64".to_string()),
+        syntax::Topology::CpuNeon => Some("aarch64".to_string()),
         _ => None,
     };
     gen.spawn_arches.push(arch);

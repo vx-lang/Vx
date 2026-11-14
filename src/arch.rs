@@ -626,6 +626,7 @@ pub enum DeviceTarget {
     /// The Apple GPU. Vx writes Metal Shading Language for it, and the MSL printer reads the
     /// NVPTX numbers: 3 is `threadgroup` memory.
     AppleGpu,
+    AppleAne,
 }
 
 impl DeviceTarget {
@@ -640,6 +641,7 @@ impl DeviceTarget {
             "amdgcn" => Some(DeviceTarget::AmdGcn),
             "spirv64" => Some(DeviceTarget::Spirv64),
             "applegpu" => Some(DeviceTarget::AppleGpu),
+            "appleane" => Some(DeviceTarget::AppleAne),
             _ => None,
         }
     }
@@ -656,6 +658,7 @@ impl DeviceTarget {
             | DeviceTarget::Aarch64
             | DeviceTarget::AmdGcn
             | DeviceTarget::Spirv64 => None,
+            DeviceTarget::AppleAne => Some((1024, 32)),
         }
     }
 
