@@ -1,0 +1,180 @@
+//===- work_queue_gives_each_value_to_one_receiver.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A work queue has many receivers, and each value goes to one of them.
+//
+// - Three workers share the values 1 to 1000. Together they get 1000 values with the sum 500500,
+//   so no value is lost or taken twice. Each `recv` then gives `Closed`.
+// - `recv_for` gives `TimedOut` when no value comes.
+// - A `send_for` waits for room and gives up. Its place in the queue stays empty. A `try_recv`
+//   passes it, as on a `channel`, so the value 3 arrives after 1. The drop of one receiver
+//   leaves its clone, so the send of 3 still works.
+// - The code of a `tasks` block returns early while two workers wait in `recv`. The cancel ends
+//   both.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_SEED=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK-COUNT-3: {{^}}a worker got Closed{{$}}
+// CHECK-NEXT: {{^}}the workers got 1000 values, sum 500500{{$}}
+// CHECK-NEXT: {{^}}recv gave TimedOut{{$}}
+// CHECK-NEXT: {{^}}send_for gave back 2, timed out true{{$}}
+// CHECK-NEXT: {{^}}recv gave 1{{$}}
+// CHECK-NEXT: {{^}}try_recv gave Empty{{$}}
+// CHECK-NEXT: {{^}}recv gave 3{{$}}
+// CHECK-NEXT: {{^}}try_recv gave Closed{{$}}
+// CHECK-COUNT-2: {{^}}a worker got Cancelled{{$}}
+// CHECK-NEXT: {{^}}leave_early gave 7{{$}}
+
+import core::sync::atomic;
+import core::time;
+import std::sync::wait;
+import std::sync::work_queue;
+
+fn say(e : RecvError) -> void {
+  match e {
+    RecvError::Closed => {
+      println!("a worker got Closed");
+    }
+    RecvError::Cancelled => {
+      println!("a worker got Cancelled");
+    }
+    RecvError::TimedOut => {
+      println!("recv gave TimedOut");
+    }
+  }
+}
+
+fn show(r : Result<i64, RecvError>) -> void {
+  match r {
+    Result<i64, RecvError>::Ok(v) => {
+      println!("recv gave {}", v);
+    }
+    Result<i64, RecvError>::Err(e) => {
+      say(e);
+    }
+  }
+}
+
+// Adds each value to `sum` and counts it in `count`, until `recv` gives an error.
+fn work(rx : WorkReceiver<i64>, count : &AtomicI64, sum : &AtomicI64) -> void {
+  loop {
+    match rx.recv() {
+      Result<i64, RecvError>::Ok(v) => {
+        count.fetch_add(1, AtomicOrdering::SeqCst);
+        sum.fetch_add(v, AtomicOrdering::SeqCst);
+      }
+      Result<i64, RecvError>::Err(e) => {
+        say(e);
+        return;
+      }
+    }
+  }
+}
+
+fn send_now(tx : &Sender<i64>, v : i64) -> void {
+  match tx.send(v) {
+    Result<void, SendError<i64>>::Ok() => {}
+    Result<void, SendError<i64>>::Err(_e) => {
+      println!("the send of {} did not send", v);
+    }
+  }
+}
+
+fn say_try(e : TryRecvError) -> void {
+  match e {
+    TryRecvError::Empty => {
+      println!("try_recv gave Empty");
+    }
+    TryRecvError::Closed => {
+      println!("try_recv gave Closed");
+    }
+  }
+}
+
+fn try_once(rx : &WorkReceiver<i64>) -> void {
+  match rx.try_recv() {
+    Result<i64, TryRecvError>::Ok(v) => {
+      println!("try_recv gave {}", v);
+    }
+    Result<i64, TryRecvError>::Err(e) => {
+      say_try(e);
+    }
+  }
+}
+
+fn leave_early(early : bool) -> i64 {
+  let count = AtomicI64::new(0);
+  let sum = AtomicI64::new(0);
+  let (tx, rx) = work_queue<i64>(4);
+  let rx2 = rx.clone();
+  tasks {
+    spawn {
+      work(rx, &count, &sum);
+    };
+    spawn {
+      work(rx2, &count, &sum);
+    };
+    if early {
+      return 7;
+    }
+    drop(tx);
+  };
+  return 0;
+}
+
+fn main() -> i32 {
+  let count = AtomicI64::new(0);
+  let sum = AtomicI64::new(0);
+  let (tx, rx) = work_queue<i64>(4);
+  let rx2 = rx.clone();
+  let rx3 = rx.clone();
+  tasks {
+    spawn {
+      work(rx, &count, &sum);
+    };
+    spawn {
+      work(rx2, &count, &sum);
+    };
+    spawn {
+      work(rx3, &count, &sum);
+    };
+    let first : i64 = 1;
+    for v in first..1001 {
+      send_now(&tx, v);
+    }
+    drop(tx);
+  };
+  println!("the workers got {} values, sum {}", count.load(AtomicOrdering::SeqCst), sum.load(AtomicOrdering::SeqCst));
+
+  let (tx, rx) = work_queue<i64>(1);
+  let rx2 = rx.clone();
+  show(rx.recv_for(Duration::from_millis(20)));
+  send_now(&tx, 1);
+  match tx.send_for(2, Duration::from_millis(20)) {
+    Result<void, SendError<i64>>::Ok() => {
+      println!("send_for sent 2");
+    }
+    Result<void, SendError<i64>>::Err(e) => {
+      println!("send_for gave back {}, timed out {}", e.value, e.timed_out);
+    }
+  }
+  show(rx2.recv());
+  try_once(&rx);
+  // `rx2` is a clone, so the queue still has a receiver.
+  drop(rx);
+  send_now(&tx, 3);
+  drop(tx);
+  show(rx2.recv());
+  try_once(&rx2);
+
+
+  let left = leave_early(true);
+  println!("leave_early gave {}", left);
+  return 0;
+}

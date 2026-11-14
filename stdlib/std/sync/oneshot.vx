@@ -1,0 +1,91 @@
+//===- oneshot.vx - Vx Standard Library ---------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A oneshot channel carries one value. It is the reply to a request.
+//
+// It is a `channel` with room for one value. The `send` of a `OneshotSender` takes the sender by
+// value, so the type allows only one `send`. That `send` never waits: the one slot is free.
+//===----------------------------------------------------------------------===//
+import core::marker;
+import core::panic;
+import core::result;
+import core::sync::atomic;
+import core::time;
+import std::sync::channel;
+import std::sync::wait;
+import std::time;
+
+/// The end of a oneshot channel that sends its one value.
+struct OneshotSender<T> {
+  end : Sender<T>,
+}
+
+/// The end of a oneshot channel that receives its one value.
+struct OneshotReceiver<T> {
+  end : Receiver<T>,
+}
+
+unsafe impl<T : Send> Send for OneshotSender<T> {}
+unsafe impl<T : Send> Send for OneshotReceiver<T> {}
+impl<T> HostOnly for OneshotSender<T> {}
+impl<T> HostOnly for OneshotReceiver<T> {}
+
+/// A channel for one value.
+fn oneshot<T : Send + Owned>(at : Caller) -> (OneshotSender<T>, OneshotReceiver<T>) {
+  let (tx, rx) = channel<T>(1, at);
+  return (OneshotSender<T> {
+    end : tx
+  }, OneshotReceiver<T> {
+    end : rx
+  });
+}
+
+impl<T>
+OneshotSender<T> {
+  /// Send `v`, and drop the sender. It does not wait, so a cancel does not stop it. When the
+  /// `OneshotReceiver` was dropped, give `v` back.
+  fn send(self : OneshotSender<T>, v : T) -> Result<void, SendError<T>> {
+    let words = self.end.words;
+    if word(words, RECEIVER).load(AtomicOrdering::SeqCst) == 0 {
+      return Result<void, SendError<T>>::Err(SendError<T> {
+        value : v, cancelled : false, timed_out : false
+      });
+    }
+    // The send number 0 of the channel, and slot 0, which is free.
+    word(words, SENDS).store(1, AtomicOrdering::Relaxed);
+    let data = self.end.data;
+    unsafe { data[0] = v; }
+    word(words, SLOTS).store(1, AtomicOrdering::Release);
+    notify(words);
+    return Result<void, SendError<T>>::Ok();
+  }
+}
+
+impl<T>
+OneshotReceiver<T> {
+  /// The value. Wait until it comes. Give `Closed` when the `OneshotSender` was dropped with no
+  /// `send`, or the value was already received. Give `Cancelled` when the `tasks` block of this
+  /// task was cancelled.
+  fn recv(self : &OneshotReceiver<T>, at : Caller) -> Result<T, RecvError> {
+    return self.end.recv_until(Instant::never(), at);
+  }
+
+  /// `recv`, and give `TimedOut` when it waited `limit` for the value.
+  fn recv_for(self : &OneshotReceiver<T>, limit : Duration, at : Caller) -> Result<T, RecvError> {
+    return self.end.recv_until(deadline_after(limit), at);
+  }
+
+  /// `recv` until the clock reaches `deadline`.
+  fn recv_until(self : &OneshotReceiver<T>, deadline : Instant, at : Caller) -> Result<T, RecvError> {
+    return self.end.recv_until(deadline, at);
+  }
+
+  /// The value, if it came. It does not wait.
+  fn try_recv(self : &OneshotReceiver<T>) -> Result<T, TryRecvError> {
+    return self.end.try_recv();
+  }
+}

@@ -1,0 +1,143 @@
+//===- thread_sanitizer_finds_no_race_through_broadcast_watch_and_work_queue.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Tasks pass `Note`s through a broadcast channel, a watch channel and a work queue. A `Note`
+// holds its number in memory of its own, so each clone and each drop writes plain memory. The
+// atomics of the channels must order each of these writes, and ThreadSanitizer must report no
+// race.
+//
+// REQUIRES: thread-sanitizer
+// RUN: vxc --sanitize=thread %s 2>&1 | FileCheck %s --implicit-check-not=ThreadSanitizer
+// RUN: env VX_TASK_RUNTIME=shared vxc --sanitize=thread %s 2>&1 | FileCheck %s --implicit-check-not=ThreadSanitizer
+// CHECK-DAG: {{^}}a broadcast receiver got the sum 5050{{$}}
+// CHECK-DAG: {{^}}a broadcast receiver got the sum 5050{{$}}
+// CHECK-DAG: {{^}}a broadcast receiver got the sum 5050{{$}}
+// CHECK-DAG: {{^}}the watch receiver saw 100 last{{$}}
+// CHECK: {{^}}the work queue gave the sum 5050{{$}}
+
+import core::clone;
+import core::sync::atomic;
+import std::alloc;
+import std::sync::broadcast;
+import std::sync::watch;
+import std::sync::work_queue;
+
+struct Note {
+  number : *mut i64,
+}
+
+unsafe impl Send for Note {}
+
+fn note(v : i64) -> Note {
+  let p : *mut i64 = alloc(8, 8);
+  unsafe { p[0] = v; }
+  return Note {
+    number : p
+  };
+}
+
+fn read(n : &Note) -> i64 {
+  let p = n.number;
+  return unsafe { p[0] };
+}
+
+impl Clone for Note {
+  fn clone(self : &Note) -> Note {
+    return note(read(self));
+  }
+}
+
+impl Drop for Note {
+  fn drop(self : &mut Note) -> void {
+    let p : *mut i8 = self.number;
+    dealloc(p, 8);
+  }
+}
+
+fn sum_news(rx : BroadcastReceiver<Note>) -> void {
+  let mut sum : i64 = 0;
+  loop {
+    match rx.recv() {
+      Result<Note, RecvError>::Ok(n) => {
+        sum = sum + read(&n);
+      }
+      Result<Note, RecvError>::Err(_e) => {
+        println!("a broadcast receiver got the sum {}", sum);
+        return;
+      }
+    }
+  }
+}
+
+fn do_work(rx : WorkReceiver<Note>, total : &AtomicI64) -> void {
+  loop {
+    match rx.recv() {
+      Result<Note, RecvError>::Ok(n) => {
+        total.fetch_add(read(&n), AtomicOrdering::SeqCst);
+      }
+      Result<Note, RecvError>::Err(_e) => {
+        return;
+      }
+    }
+  }
+}
+
+fn watch_last(rx : WatchReceiver<Note>) -> void {
+  let mut last : i64 = 0;
+  loop {
+    match rx.recv() {
+      Result<Note, RecvError>::Ok(n) => {
+        last = read(&n);
+      }
+      Result<Note, RecvError>::Err(_e) => {
+        println!("the watch receiver saw {} last", last);
+        return;
+      }
+    }
+  }
+}
+
+fn main() -> i32 {
+  let (news, rx) = broadcast<Note>(4);
+  let rx2 = news.subscribe();
+  let rx3 = rx.clone();
+  let total = AtomicI64::new(0);
+  let (jobs, workers) = work_queue<Note>(4);
+  let workers2 = workers.clone();
+  let (setting, watcher) = watch<Note>(note(0));
+  tasks {
+    spawn {
+      sum_news(rx);
+    };
+    spawn {
+      sum_news(rx2);
+    };
+    spawn {
+      sum_news(rx3);
+    };
+    spawn {
+      do_work(workers, &total);
+    };
+    spawn {
+      do_work(workers2, &total);
+    };
+    spawn {
+      watch_last(watcher);
+    };
+    let first : i64 = 1;
+    for v in first..101 {
+      let _a = news.send(note(v));
+      let _b = jobs.send(note(v));
+      let _c = setting.send(note(v));
+    }
+    drop(news);
+    drop(jobs);
+    drop(setting);
+  };
+  println!("the work queue gave the sum {}", total.load(AtomicOrdering::SeqCst));
+  return 0;
+}

@@ -1,0 +1,55 @@
+//===- a_drop_that_waits_on_oneshot_broadcast_watch_or_work_queue.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `send` or `recv` with no time limit in a `drop` gets the warning W1036, as on a `channel`.
+// The `send` of a oneshot channel and of a watch channel never waits, so it gets no warning.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not='Warning[' --implicit-check-not='Error['
+// CHECK: Warning[W1036] at {{.*}}.vx:[[@LINE+22]]:{{[0-9]+}}: 'send' waits with no time limit of its own in a 'drop'.
+// CHECK: Warning[W1036] at {{.*}}.vx:[[@LINE+22]]:{{[0-9]+}}: 'recv' waits with no time limit of its own in a 'drop'.
+// CHECK: Warning[W1036] at {{.*}}.vx:[[@LINE+22]]:{{[0-9]+}}: 'recv' waits with no time limit of its own in a 'drop'.
+// CHECK: Warning[W1036] at {{.*}}.vx:[[@LINE+22]]:{{[0-9]+}}: 'recv' waits with no time limit of its own in a 'drop'.
+// CHECK: Warning[W1036] at {{.*}}.vx:[[@LINE+22]]:{{[0-9]+}}: 'recv' waits with no time limit of its own in a 'drop'.
+
+import std::sync::broadcast;
+import std::sync::oneshot;
+import std::sync::watch;
+import std::sync::work_queue;
+
+struct Ends {
+  news : BroadcastSender<i64>,
+  heard : BroadcastReceiver<i64>,
+  reply : OneshotReceiver<i64>,
+  setting : WatchReceiver<i64>,
+  jobs : WorkReceiver<i64>,
+  set : WatchSender<i64>,
+}
+
+impl Drop for Ends {
+  fn drop(self : &mut Ends) -> void {
+    let _a = self.news.send(1);
+    let _b = self.heard.recv();
+    let _c = self.reply.recv();
+    let _d = self.setting.recv();
+    let _e = self.jobs.recv();
+    // These two do not wait.
+    let _f = self.set.send(2);
+    let (answer, _asked) = oneshot<i64>();
+    let _g = answer.send(3);
+  }
+}
+
+fn main() -> i32 {
+  let (news, heard) = broadcast<i64>(1);
+  let (_answer, reply) = oneshot<i64>();
+  let (set, setting) = watch<i64>(0);
+  let (_to_jobs, jobs) = work_queue<i64>(1);
+  let _ends = Ends {
+    news : news, heard : heard, reply : reply, setting : setting, jobs : jobs, set : set
+  };
+  return 0;
+}

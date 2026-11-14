@@ -1,0 +1,229 @@
+//===- watch.vx - Vx Standard Library -----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A watch channel holds one value, the latest. Its receivers see only the latest value. It is for
+// a setting or a status that changes.
+//
+// The first words are the words of `channel`. The value has a version, which each `send` adds 1
+// to. A receiver keeps the version that it saw last, and `recv` waits until the version changes.
+// A `send` and a read of the value take the lock of the channel, so a read never sees half of a
+// `send`.
+//===----------------------------------------------------------------------===//
+import core::clone;
+import core::marker;
+import core::mem;
+import core::panic;
+import core::ptr;
+import core::result;
+import core::sync::atomic;
+import core::time;
+import std::alloc;
+import std::sync::channel;
+import std::sync::wait;
+import std::time;
+
+// The three words of the lock.
+const WATCH_LOCK : i64 = 8;
+// The version of the value.
+const WATCH_VERSION : i64 = 11;
+const WATCH_WORDS : i64 = 12;
+
+/// The end of a watch channel that sends. A watch channel has one.
+struct WatchSender<T> {
+  words : *mut AtomicI64,
+  data : *mut T,
+  // The line that made the channel, for the deadlock report.
+  made : Location,
+}
+
+/// An end of a watch channel that receives. Clone it to watch the value in many tasks.
+struct WatchReceiver<T> {
+  words : *mut AtomicI64,
+  data : *mut T,
+  made : Location,
+  // The version of the value that this receiver saw last, in a word of its own.
+  seen : *mut AtomicI64,
+}
+
+unsafe impl<T : Send> Send for WatchSender<T> {}
+unsafe impl<T : Send> Send for WatchReceiver<T> {}
+impl<T> HostOnly for WatchSender<T> {}
+impl<T> HostOnly for WatchReceiver<T> {}
+impl<T> SenderOfAChannel for WatchSender<T> {}
+impl<T> ReceiverOfAChannel for WatchReceiver<T> {}
+
+/// A watch channel that holds `v`. The receiver saw `v` already, so its first `recv` waits for
+/// a `send`. Each receiver gets a clone of the value, so `T` must be `Clone`.
+fn watch<T : Send + Owned + Clone>(v : T, at : Caller) -> (WatchSender<T>, WatchReceiver<T>) {
+  let words : *mut AtomicI64 = alloc(WATCH_WORDS * 8, 8);
+  let data : *mut T = alloc(sizeof<T>(), 16);
+  if is_null_mut(words) || is_null_mut(data) {
+    panic("watch: out of memory");
+  }
+  for i in 0..WATCH_WORDS {
+    unsafe { words[i] = AtomicI64::new(0); }
+  }
+  unsafe {
+    words[SENDERS] = AtomicI64::new(1);
+    words[RECEIVER] = AtomicI64::new(1);
+    words[ENDS] = AtomicI64::new(2);
+    data[0] = v;
+  }
+  return (WatchSender<T> {
+    words : words, data : data, made : at.location
+  },
+  WatchReceiver<T> {
+    words : words, data : data, made : at.location, seen : new_receiver_word(0)
+  });
+}
+
+/// A clone of the value, and its version.
+fn watch_read<T : Clone>(words : *mut AtomicI64, data : *mut T) -> (T, i64) {
+  lock_channel(words, WATCH_LOCK);
+  let shared : &T = unsafe { &data[0] };
+  let value = shared.clone();
+  let version = word(words, WATCH_VERSION).load(AtomicOrdering::SeqCst);
+  unlock_channel(words, WATCH_LOCK);
+  return (value, version);
+}
+
+/// One end is dropped. The last one drops the value, and frees the channel.
+fn watch_release<T>(words : *mut AtomicI64, data : *mut T) -> void {
+  if word(words, ENDS).fetch_sub(1, AtomicOrdering::SeqCst) != 1 {
+    return;
+  }
+  let value : T = unsafe { take_slot(data, 0) };
+  drop(value);
+  let w : *mut i8 = words;
+  let d : *mut i8 = data;
+  dealloc(w, 8);
+  dealloc(d, 16);
+}
+
+impl<T : Clone>
+WatchSender<T> {
+  /// Put `v` in place of the value, and wake the receivers. It does not wait for a receiver, so a
+  /// cancel does not stop it. When each receiver was dropped, keep the old value and give `v` back.
+  fn send(self : &WatchSender<T>, v : T) -> Result<void, SendError<T>> {
+    let words = self.words;
+    if word(words, RECEIVER).load(AtomicOrdering::SeqCst) == 0 {
+      return Result<void, SendError<T>>::Err(SendError<T> {
+        value : v, cancelled : false, timed_out : false
+      });
+    }
+    let data = self.data;
+    lock_channel(words, WATCH_LOCK);
+    let old : T = unsafe { take_slot(data, 0) };
+    unsafe { data[0] = v; }
+    word(words, WATCH_VERSION).fetch_add(1, AtomicOrdering::SeqCst);
+    unlock_channel(words, WATCH_LOCK);
+    drop(old);
+    notify(words);
+    return Result<void, SendError<T>>::Ok();
+  }
+
+  /// A clone of the value.
+  fn get(self : &WatchSender<T>) -> T {
+    let (value, _version) = watch_read<T>(self.words, self.data);
+    return value;
+  }
+
+  /// A new receiver. It saw the value that the channel holds now.
+  fn subscribe(self : &WatchSender<T>) -> WatchReceiver<T> {
+    let words = self.words;
+    word(words, RECEIVER).fetch_add(1, AtomicOrdering::SeqCst);
+    word(words, ENDS).fetch_add(1, AtomicOrdering::SeqCst);
+    let version = word(words, WATCH_VERSION).load(AtomicOrdering::SeqCst);
+    return WatchReceiver<T> {
+      words : words, data : self.data, made : self.made, seen : new_receiver_word(version)
+    };
+  }
+}
+
+impl<T : Clone>
+WatchReceiver<T> {
+  /// A clone of the value. This receiver then saw it.
+  fn get(self : &WatchReceiver<T>) -> T {
+    let (value, version) = watch_read<T>(self.words, self.data);
+    word(self.seen, 0).store(version, AtomicOrdering::Relaxed);
+    return value;
+  }
+
+  /// Whether a `send` changed the value after this receiver saw it last.
+  fn has_changed(self : &WatchReceiver<T>) -> bool {
+    let version = word(self.words, WATCH_VERSION).load(AtomicOrdering::SeqCst);
+    return version != word(self.seen, 0).load(AtomicOrdering::Relaxed);
+  }
+
+  /// The value, when it is new to this receiver. Wait until a `send` changes it. Several sends
+  /// during the wait give only the last value. When the `WatchSender` was dropped and this receiver
+  /// saw the last value, give `Closed`. When the `tasks` block of this task was cancelled, give
+  /// `Cancelled`.
+  fn recv(self : &WatchReceiver<T>, at : Caller) -> Result<T, RecvError> {
+    return self.recv_until(Instant::never(), at);
+  }
+
+  /// `recv`, and give `TimedOut` when it waited `limit` for a new value.
+  fn recv_for(self : &WatchReceiver<T>, limit : Duration, at : Caller) -> Result<T, RecvError> {
+    return self.recv_until(deadline_after(limit), at);
+  }
+
+  /// `recv` until the clock reaches `deadline`.
+  fn recv_until(self : &WatchReceiver<T>, deadline : Instant, at : Caller) -> Result<T, RecvError> {
+    let words = self.words;
+    let mut why = RecvError::Closed;
+    loop {
+      if cancelled_at(at) {
+        why = RecvError::Cancelled;
+        break;
+      }
+      let seen = word(words, WAKE).load(AtomicOrdering::SeqCst);
+      // Read `SENDERS` before the version. The last `send` comes before the drop of the sender,
+      // so a closed channel shows its last version.
+      let closed = word(words, SENDERS).load(AtomicOrdering::SeqCst) == 0;
+      if self.has_changed() {
+        return Result<T, RecvError>::Ok(self.get());
+      }
+      if closed {
+        break;
+      }
+      if past_deadline(deadline) {
+        why = RecvError::TimedOut;
+        break;
+      }
+      wait_for_event(words, seen, deadline, WAIT_IN_RECV, at, self.made);
+    }
+    return Result<T, RecvError>::Err(why);
+  }
+}
+
+impl<T> Clone for WatchReceiver<T> {
+  /// A receiver that saw the same version as this one.
+  fn clone(self : &WatchReceiver<T>) -> WatchReceiver<T> {
+    word(self.words, RECEIVER).fetch_add(1, AtomicOrdering::SeqCst);
+    word(self.words, ENDS).fetch_add(1, AtomicOrdering::SeqCst);
+    return WatchReceiver<T> {
+      words : self.words, data : self.data, made : self.made, seen : new_receiver_word(word(self.seen, 0).load(AtomicOrdering::Relaxed))
+    };
+  }
+}
+
+impl<T> Drop for WatchSender<T> {
+  fn drop(self : &mut WatchSender<T>) -> void {
+    word(self.words, SENDERS).store(0, AtomicOrdering::SeqCst);
+    notify(self.words);
+    watch_release<T>(self.words, self.data);
+  }
+}
+
+impl<T> Drop for WatchReceiver<T> {
+  fn drop(self : &mut WatchReceiver<T>) -> void {
+    word(self.words, RECEIVER).fetch_sub(1, AtomicOrdering::SeqCst);
+    free_receiver_word(self.seen);
+    watch_release<T>(self.words, self.data);
+  }
+}
