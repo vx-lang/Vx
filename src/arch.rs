@@ -1129,6 +1129,9 @@ impl TransferCostGraph {
                     if let Some(dtypes) = &decl.descriptor.dtypes {
                         existing.dtypes = Some(dtypes.clone());
                     }
+                } else {
+                    // A built-in like `Topology::Current` has no memory descriptor to patch.
+                    continue;
                 }
             }
         }

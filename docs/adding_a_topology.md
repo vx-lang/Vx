@@ -175,7 +175,7 @@ These are the errors a first attempt actually hits, in the order you are likely 
 | Diagnostic | Cause |
 |-------------|--------------------------------------------------------------------------------|
 | `E6014` | A transfer touches host memory and no host was declared. Pass `--host default`. |
-| `E6016` | The name is already a built-in (`Topology GPU { .. }`), or two declared names collide on a dispatch id. |
+| `E6016` | A topology named after a built-in tries to override fields the compiler hardcodes (like arch: or transfer edges), or two declared names collide on a dispatch id.
 | `E6003` | A value is read on a device whose `visible:` list does not include the space it lives in. |
 | `E6009` | A tensor does not fit the declared `capacity`. This one is the point of the exercise. |
 | `W1026` | The topology's memory has no transfer edge from the host, so nothing can reach it. |
