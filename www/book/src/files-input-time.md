@@ -111,7 +111,35 @@ When `vxc program.vx` runs a program, the program gets no standard input
 
 `std::time` measures time. `Instant::now()` reads a clock that never goes back. `elapsed()` gives
 the time since a reading, as a `Duration`. The difference `later - earlier` of two readings is a
-`Duration` too. `sleep(d)` stops the thread for at least the `Duration` `d`.
+`Duration` too. `sleep(d)` pauses the task for at least the `Duration` `d`. It is a wait, as a
+`recv` is: in the shared runtime, other tasks run on the thread of the task while it sleeps. A
+cancel of the `tasks` block, or the limit of `within`, ends the sleep early
+([Cancellation](tasks.md#cancellation)). `sleep` gives `true` when the whole time passed, and
+`false` when it ended early. `sleep_until(at)` sleeps until the `Instant` `at`.
+
+For periodic work, use an `Interval`. `Interval::new(period)` makes one, and each `tick()` waits
+for the next tick. Tick `k` is due `k` periods after `Interval::new`. So a late tick does not move
+the ticks after it, and the ticks do not drift. `tick()` gives the time when the tick was due, or
+`None` after a cancel:
+
+```rust
+let mut every_second = Interval::new(Duration::from_secs(1));
+loop {
+  match every_second.tick() {
+    Option<Instant>::Some(_due) => {
+      // The periodic work.
+    }
+    Option<Instant>::None => {
+      break;
+    }
+  }
+}
+```
+
+When the work takes longer than a period, the program misses ticks. The next `tick()` then comes
+at once, and `Interval` skips the missed ticks: the ticks after it are due on time again. `Interval` does not
+give the missed ticks in a burst, because a burst gives more work to a program that is already
+late. Go's `time.Ticker` also skips missed ticks.
 
 `Duration` comes from `core::time`. `Duration::from_secs`, `from_millis`, `from_micros` and
 `from_nanos` make one. `as_secs`, `as_millis` and `as_nanos` give its length, and `subsec_millis`

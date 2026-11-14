@@ -1,0 +1,64 @@
+//===- an_interval_ticks_on_time_and_skips_missed_ticks.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Interval::tick` gives the time when each tick was due. Each such time is a whole number of
+// periods after the first one, so the ticks do not drift. No tick comes before its time. After
+// work that takes 2.5 periods, the next tick skips the missed ticks: it is at least 2 periods
+// after the tick before it. A burst of the missed ticks would give 1 period. The checks do not
+// depend on how fast the machine is.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 VX_TASK_MAX_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}the period is 100 ms{{$}}
+// CHECK-NEXT: {{^}}no tick came early: true{{$}}
+// CHECK-NEXT: {{^}}each tick is a whole number of periods after the first: true{{$}}
+// CHECK-NEXT: {{^}}the late tick skipped the missed ticks: true{{$}}
+
+import core::option;
+import core::time;
+import std::time;
+
+// The time when the next tick of `iv` was due. It also checks that the tick did not come early.
+fn next_tick(iv : &mut Interval, early : &mut bool) -> Instant {
+  match iv.tick() {
+    Option<Instant>::Some(at) => {
+      if Instant::now() < at {
+        *early = true;
+      }
+      return at;
+    }
+    Option<Instant>::None => {
+      println!("a tick gave None with no cancel");
+      return Instant::now();
+    }
+  }
+}
+
+// Whether `later - earlier` is a whole number of `period`s, and longer than zero.
+fn whole_periods(later : Instant, earlier : Instant, period : Duration) -> bool {
+  let d = (later - earlier).as_nanos();
+  return d > 0 && d % period.as_nanos() == 0;
+}
+
+fn main() -> i32 {
+  let period = Duration::from_millis(100);
+  let mut iv = Interval::new(period);
+  println!("the period is {} ms", iv.period().as_millis());
+  let mut early = false;
+  let first = next_tick(&mut iv, &mut early);
+  let second = next_tick(&mut iv, &mut early);
+  // Work that takes 2.5 periods.
+  sleep(Duration::from_millis(250));
+  let late = next_tick(&mut iv, &mut early);
+  let after = next_tick(&mut iv, &mut early);
+  println!("no tick came early: {}", !early);
+  let whole = whole_periods(second, first, period) && whole_periods(late, second, period) && whole_periods(after, late, period);
+  println!("each tick is a whole number of periods after the first: {}", whole);
+  println!("the late tick skipped the missed ticks: {}", late - second >= period + period);
+  return 0;
+}

@@ -16,7 +16,7 @@ Move the `extern "C"` declaration inside the new stdlib module. By centralizing 
 
 ### 4. Build a Safe Public Wrapper
 
-Write a strongly-typed, native public function (e.g., `fn sleep(d : Duration) -> i32`) that abstracts the underlying FFI call.
+Write a strongly-typed, native public function (e.g., `fn sleep(d : Duration) -> bool`) that abstracts the underlying FFI call.
 
 - *Why:* This scopes any potential `unsafe` behavior entirely inside the standard library, guaranteeing that user-space code remains completely safe and verified.
 
