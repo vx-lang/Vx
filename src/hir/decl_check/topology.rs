@@ -39,14 +39,11 @@ impl TypeChecker<'_> {
     pub fn check_topology_coherence(&mut self, declared: &[crate::arch::TopologyDecl]) {
         // Identity checks first (E6016): a topology whose declaration cannot take effect fails
         // here, before any coherence rule reads the declaration as though it were in force.
-        //
-        // Shadowing: the parser resolves built-in names unconditionally (`Topology::GPU` is the
-        // built-in GPU whatever the program declares), so a declaration under such a name
-        // registers as Custom("GPU") and is unreachable from every use site. Found by review on
-        // Vx#352: `Topology GPU { arch: applegpu }` still produced an NVPTX image via the band,
-        // the machine file's word silently discarded.
         let outside = self.errors.here();
         for decl in declared {
+            // Moved to the top per maintainer feedback.
+            self.errors.point_at(&decl.place, &outside);
+
             let kind = TopologyKind::from_name(&decl.name);
             if !matches!(kind, TopologyKind::Custom(_)) {
                 let has_arch = decl.descriptor.arch.is_some();
@@ -67,7 +64,29 @@ impl TypeChecker<'_> {
                 }
             }
 
-            self.errors.point_at(&decl.place, &outside);
+            // Restore the GPU_HBM check from #3314. A topology that places data in GPU_HBM
+            // must explicitly declare `arch: nvptx64`.
+            let is_nvptx = decl
+                .descriptor
+                .arch
+                .as_ref()
+                .is_some_and(|a| a.as_ref() == "nvptx64");
+            let uses_gpu_hbm = decl.descriptor.default_space == crate::syntax::MemorySpace::GpuHbm
+                || decl
+                    .descriptor
+                    .visibility
+                    .contains(&crate::syntax::MemorySpace::GpuHbm);
+            if uses_gpu_hbm && !is_nvptx {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E6016,
+                    format!(
+                        "topology '{}' uses `Memory::GPU_HBM`, which is only valid for `arch: nvptx64`",
+                        decl.name
+                    ),
+                    None,
+                );
+            }
+
             if decl.name.as_ref() == crate::syntax::ANY_TOPOLOGY {
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E6016,
@@ -79,6 +98,7 @@ impl TypeChecker<'_> {
             }
         }
         self.errors.point_back(outside.clone());
+
         // Dispatch-id collision: the id is a hash of the name, so two names can share one id.
         // Everything keyed by the id -- spawn dispatch,
         // seam identity, and now the declared-arch table -- then depends on hash-iteration order
@@ -90,6 +110,7 @@ impl TypeChecker<'_> {
             let mut sorted: Vec<&crate::arch::TopologyDecl> = declared.iter().collect();
             sorted.sort_by(|a, b| a.name.as_ref().cmp(b.name.as_ref()));
             for decl in sorted {
+                // Moved to the top per maintainer feedback.
                 self.errors.point_at(&decl.place, &outside);
                 let id = crate::arch::topology_dispatch_id(&crate::syntax::Topology::Custom(
                     decl.name.clone(),
@@ -111,7 +132,9 @@ impl TypeChecker<'_> {
             }
         }
         self.errors.point_back(outside.clone());
+
         for decl in declared {
+            // Moved to the top per maintainer feedback.
             self.errors.point_at(&decl.place, &outside);
             let name = &decl.name;
             for issue in
@@ -253,11 +276,6 @@ impl TypeChecker<'_> {
     ///   * an empty lowering (nothing to emit, so the `impl` would be an inert annotation);
     ///   * a `for Topology::X` naming a topology this compilation has never heard of;
     ///   * a topology that exists but does not declare the edge being implemented.
-    ///
-    /// The last two are new with the topology key. Before it, a lowering named no machine, so
-    /// there was nothing to check it against -- `TransferImplDecl` carried a comment saying the
-    /// edge should be matched against a topology's declared edges "(not yet wired)", and it
-    /// could not be wired, because the declaration did not say which topology to look at.
     pub fn check_transfer_impls(&mut self) {
         // Read the topology facts first. Emitting a diagnostic needs `&mut self`, and the
         // descriptor lookup borrows `self`, so the two cannot be interleaved.
@@ -266,13 +284,6 @@ impl TypeChecker<'_> {
             .transfer_impls
             .iter()
             .map(|t| {
-                // Source-declared topologies only. A BUILT-IN topology carries
-                // `transfers: Vec::new()` -- its edges live in `TransferCostGraph::default()`
-                // rather than on its descriptor -- so there is nothing on it to implement, and
-                // no way for a program to add one. Consulting the cost graph instead is not the
-                // fix: the graph is flat and merged across every topology, so any machine could
-                // then claim any edge another machine declared, which is exactly the conflation
-                // the topology key removes.
                 let declared = self
                     .env
                     .topologies
@@ -352,12 +363,7 @@ impl TypeChecker<'_> {
         > = std::collections::HashMap::new();
         for t in &self.env.transfer_impls {
             self.errors.point_at(&t.place, &outside);
-            // A generic fn inside a lowering can never be checked: generic bodies are checked at
-            // instantiation, and a lowering fn is not callable, so it is never instantiated -- its
-            // body would escape the checker forever. That silently reopens, for generics only, the
-            // exact parses-clean-while-broken gap #353 closes, so it is refused outright: a
-            // lowering is instantiated per EDGE, not per type, and a type parameter has no meaning
-            // there.
+
             for f in &t.methods {
                 if !f.generics.is_empty() {
                     self.errors.error_with_code(
@@ -390,7 +396,6 @@ impl TypeChecker<'_> {
                     None,
                 );
             }
-            // The error for two lowerings of one edge points at the last one.
             let entry = seen
                 .entry((
                     t.from.clone(),
