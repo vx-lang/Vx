@@ -1294,29 +1294,54 @@ pub struct DeclaredArch {
 /// entry, no `arch` attribute, and therefore no device compilation -- refusing to guess is the
 /// same policy `fleet/m4-uma.vx` documents for its own arch field.
 pub fn topo_archs_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i64, DeclaredArch)> {
-    let mut out: Vec<(i64, DeclaredArch)> = env
-        .topologies
-        .values()
-        .filter_map(|decl| {
-            let arch = decl.descriptor.arch.as_ref()?;
+    let mut out: Vec<(i64, DeclaredArch)> = Vec::new();
+    for decl in env.topologies.values() {
+        if let Some(arch) = decl.descriptor.arch.as_ref() {
             let id = crate::arch::topology_dispatch_id(&crate::syntax::Topology::Custom(
                 decl.name.clone(),
             ));
-            let declared = DeclaredArch {
-                arch: arch.as_ref().to_string(),
-                chip: decl
-                    .descriptor
-                    .chip
-                    .as_ref()
-                    .map(|c| c.as_ref().to_string()),
-                offload: decl.descriptor.offload,
+            out.push((
+                id as i64,
+                DeclaredArch {
+                    arch: arch.as_ref().to_string(),
+                    chip: decl
+                        .descriptor
+                        .chip
+                        .as_ref()
+                        .map(|c| c.as_ref().to_string()),
+                    offload: decl.descriptor.offload,
+                },
+            ));
+        }
+    }
+
+    for (kind, desc) in crate::arch::builtin_descriptors() {
+        if let Some(arch) = desc.arch.as_ref() {
+            let top = match kind {
+                crate::syntax::TopologyKind::CPU => crate::syntax::Topology::CPU,
+                crate::syntax::TopologyKind::GPU => crate::syntax::Topology::gpu(0),
+                crate::syntax::TopologyKind::NPU => crate::syntax::Topology::NPU(Box::new(
+                    crate::syntax::Expr::Number(crate::syntax::NumberExpr::new(
+                        "0".to_string(),
+                        None,
+                        crate::syntax::Span::default(),
+                    )),
+                )),
+                crate::syntax::TopologyKind::ANE => crate::syntax::Topology::ANE,
+                _ => continue,
             };
-            Some((id as i64, declared))
-        })
-        .collect();
-    // Sorted, because `env.topologies` is a HashMap and iteration order would otherwise decide
-    // which entry wins an id collision -- the coin-flip E6016 refuses upstream, kept impossible
-    // here too so the emitted MLIR is byte-reproducible (the freeze protocol depends on that).
+            let id = crate::arch::topology_dispatch_id(&top);
+            out.push((
+                id as i64,
+                DeclaredArch {
+                    arch: arch.as_ref().to_string(),
+                    chip: desc.chip.as_ref().map(|c| c.as_ref().to_string()),
+                    offload: desc.offload,
+                },
+            ));
+        }
+    }
+
     out.sort();
     out
 }

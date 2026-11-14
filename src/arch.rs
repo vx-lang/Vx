@@ -658,7 +658,7 @@ impl DeviceTarget {
             | DeviceTarget::Aarch64
             | DeviceTarget::AmdGcn
             | DeviceTarget::Spirv64 => None,
-            DeviceTarget::AppleAne => Some((1024, 32)),
+            DeviceTarget::AppleAne => None,
         }
     }
 
@@ -915,28 +915,27 @@ pub fn owning_topology_in(
 fn builtin_descriptors() -> HashMap<crate::syntax::TopologyKind, TopologyDescriptor> {
     use crate::syntax::TopologyKind as K;
     use MemorySpace::*;
-    let d = |default_space: MemorySpace, visibility: &[MemorySpace]| TopologyDescriptor {
-        arch: None,
-        default_space,
-        visibility: visibility.to_vec(),
-        transfers: Vec::new(), // built-in transfer edges live in TransferCostGraph::default
-        // The built-ins describe a class of device rather than a part, and which element types a
-        // GPU has is a property of the part. Undeclared, so they constrain nothing.
-        dtypes: None,
-        chip: None,
-        levels: None,
-        offload: false,
+    let d = |default_space: MemorySpace, visibility: &[MemorySpace], arch: Option<&str>| {
+        TopologyDescriptor {
+            arch: arch.map(|s| s.into()),
+            default_space,
+            visibility: visibility.to_vec(),
+            transfers: Vec::new(),
+            dtypes: None,
+            chip: None,
+            levels: None,
+            offload: false,
+        }
     };
-    let mut m = HashMap::new();
-    m.insert(K::CPU, d(CPUDRAM, &[CPUDRAM, NPUHBM]));
-    m.insert(K::GPU, d(GpuHbm, &[GpuHbm]));
-    m.insert(K::NPU, d(NPUHBM, &[NPUHBM]));
-    m.insert(K::ANE, d(NPUHBM, &[NPUHBM, CPUDRAM]));
-    m.insert(K::AMX, d(CPUDRAM, &[CPUDRAM]));
-    m.insert(K::AccCore, d(LocalSRAM, &[LocalSRAM]));
-    m.insert(K::CpuAvx512, d(CPUDRAM, &[CPUDRAM]));
-    m.insert(K::CpuNeon, d(CPUDRAM, &[CPUDRAM]));
-    m.insert(K::Slice, d(NPUHBM, &[NPUHBM]));
+
+    m.insert(K::CPU, d(CPUDRAM, &[CPUDRAM, NPUHBM], Some("x86_64")));
+    m.insert(K::GPU, d(GpuHbm, &[GpuHbm], Some("nvptx64")));
+    m.insert(K::NPU, d(NPUHBM, &[NPUHBM], None));
+    m.insert(K::AMX, d(CPUDRAM, &[CPUDRAM], Some("amx")));
+    m.insert(K::AccCore, d(LocalSRAM, &[LocalSRAM], None));
+    m.insert(K::CpuAvx512, d(CPUDRAM, &[CPUDRAM], Some("avx_512")));
+    m.insert(K::CpuNeon, d(CPUDRAM, &[CPUDRAM], Some("neon")));
+    m.insert(K::Slice, d(NPUHBM, &[NPUHBM], None));
     m
 }
 
@@ -1120,6 +1119,12 @@ impl TransferCostGraph {
     /// twice per *function*, in `default()` and again in `seed_from_topologies`. Hoisting the graph
     /// to one per compilation (see `GlobalAstEnv::build`) fixed the per-function part and left the
     /// double sweep in place.
+    /// Patch the existing descriptor for a built-in topology if a machine file declares it.
+    ///
+    /// Note: The compiler's type checker associates a memory space with its *owning* topology.
+    /// For example, `NPU_HBM` belongs to `NPU`. Patching `dtypes:` on `ANE` will have no effect
+    /// if an `ANE` tries to use `NPU_HBM`, because `check_element_type` will look up `NPU`'s
+    /// descriptor, not `ANE`'s.
     pub fn add_topology_edges(&mut self, topologies: &[TopologyDecl]) {
         for decl in topologies {
             let kind = crate::syntax::TopologyKind::from_name(&decl.name);

@@ -37,14 +37,19 @@ impl TypeChecker<'_> {
     /// a published payload and handed to `seam::check_seam_buffers`; a `Reject` (the buffer
     /// can be read stale) means the edge does not preserve visibility.
     pub fn check_topology_coherence(&mut self, declared: &[crate::arch::TopologyDecl]) {
-        // Identity checks first (E6016): a topology whose declaration cannot take effect fails
-        // here, before any coherence rule reads the declaration as though it were in force.
         let outside = self.errors.here();
         for decl in declared {
-            // Moved to the top per maintainer feedback.
             self.errors.point_at(&decl.place, &outside);
-
             let kind = TopologyKind::from_name(&decl.name);
+            if matches!(kind, TopologyKind::Current) {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E6016,
+                    "a topology cannot be named `Current`: it is a built-in alias for the topology where the code runs, and its fields cannot be patched",
+                    None,
+                );
+                continue;
+            }
+
             if !matches!(kind, TopologyKind::Custom(_)) {
                 let has_arch = decl.descriptor.arch.is_some();
                 let has_transfers = !decl.descriptor.transfers.is_empty();
@@ -63,7 +68,6 @@ impl TypeChecker<'_> {
                     );
                 }
             }
-
             // Restore the GPU_HBM check from #3314. A topology that places data in GPU_HBM
             // must explicitly declare `arch: nvptx64`.
             let is_nvptx = decl
@@ -76,7 +80,7 @@ impl TypeChecker<'_> {
                     .descriptor
                     .visibility
                     .contains(&crate::syntax::MemorySpace::GpuHbm);
-            if uses_gpu_hbm && !is_nvptx {
+            if uses_gpu_hbm && decl.descriptor.arch.is_some() && !is_nvptx {
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E6016,
                     format!(
