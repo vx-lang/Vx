@@ -978,50 +978,7 @@ impl<'a> Parser<'a> {
             });
             return Ok(self.wrap_try(expr));
         } else if self.check(&TokenType::If) {
-            // The `if` token, so a diagnostic about the `if` points at it.
-            let if_span = crate::syntax::Span {
-                line: self.peek().line,
-                column: self.peek().column,
-                length: self.peek().length,
-                expansion: self.expansion(),
-            };
-            self.advance();
-            let is_comptime = self.match_token(&TokenType::Comptime);
-            let cond = self.parse_expr()?;
-            self.consume(&TokenType::LeftBrace, "Expected '{'")?;
-            let mut then_block = Vec::new();
-            while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
-                self.parse_statement_into(&mut then_block)?;
-            }
-            self.consume(&TokenType::RightBrace, "Expected '}'")?;
-
-            let mut else_block = None;
-            if self.match_token(&TokenType::Else) {
-                if self.check(&TokenType::If) {
-                    // `else if`
-                    let inner_if = self.parse_primary_expr()?;
-                    else_block = Some(vec![Statement::ExprStmt(ExprStmtStmt {
-                        expr: inner_if,
-                        has_semi: false,
-                        span: Span::default(),
-                    })]);
-                } else {
-                    self.consume(&TokenType::LeftBrace, "Expected '{'")?;
-                    let mut block = Vec::new();
-                    while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
-                        self.parse_statement_into(&mut block)?;
-                    }
-                    self.consume(&TokenType::RightBrace, "Expected '}'")?;
-                    else_block = Some(block);
-                }
-            }
-            let expr = Expr::If(IfExpr {
-                is_comptime,
-                cond: Box::new(cond),
-                then_block,
-                else_block,
-                span: if_span,
-            });
+            let expr = Expr::If(self.parse_if_expr()?);
             return Ok(self.wrap_try(expr));
         } else if self.check(&TokenType::Match) {
             // The `match` token, so a diagnostic about the `match` points at it.
@@ -1595,6 +1552,47 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
+    fn parse_if_expr(&mut self) -> ParseResult<'a, IfExpr> {
+        let if_span = self.next_span();
+        self.advance();
+        let is_comptime = self.match_token(&TokenType::Comptime);
+        let cond = self.parse_expr()?;
+        self.consume(&TokenType::LeftBrace, "Expected '{'")?;
+        let mut then_block = Vec::new();
+        while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+            self.parse_statement_into(&mut then_block)?;
+        }
+        self.consume(&TokenType::RightBrace, "Expected '}'")?;
+
+        let mut else_block = None;
+        if self.match_token(&TokenType::Else) {
+            if self.check(&TokenType::If) {
+                // `else if`
+                let inner_if = self.parse_if_expr()?;
+                else_block = Some(vec![Statement::ExprStmt(ExprStmtStmt {
+                    expr: Expr::If(inner_if),
+                    has_semi: false,
+                    span: Span::default(),
+                })]);
+            } else {
+                self.consume(&TokenType::LeftBrace, "Expected '{'")?;
+                let mut block = Vec::new();
+                while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+                    self.parse_statement_into(&mut block)?;
+                }
+                self.consume(&TokenType::RightBrace, "Expected '}'")?;
+                else_block = Some(block);
+            }
+        }
+        Ok(IfExpr {
+            is_comptime,
+            cond: Box::new(cond),
+            then_block,
+            else_block,
+            span: if_span,
+        })
+    }
+
     fn wrap_try(&mut self, mut expr: Expr) -> Expr {
         while self.check(&TokenType::Question) {
             let token = self.advance();
@@ -1613,31 +1611,37 @@ impl<'a> Parser<'a> {
         expr
     }
 
-    /// `parse_primary_expr` followed by any `as` casts and trailing `?`.
+    /// `parse_primary_expr` followed by any `as` casts.
     /// This level sits between binary operators (looser) and unary operators
     /// (tighter), matching Rust: `*r as T` is `(*r) as T`, not `*(r as T)`.
     pub(crate) fn parse_as_expr(&mut self) -> ParseResult<'a, Expr> {
         let mut expr = self.parse_primary_expr()?;
-        loop {
-            if self.check(&TokenType::As) {
-                let as_span = Span {
-                    line: self.peek().line,
-                    column: self.peek().column,
-                    length: self.peek().length,
-                    expansion: self.expansion(),
+        while self.check(&TokenType::As) {
+            let as_span = self.next_span();
+            self.advance();
+            let target_ty = self.parse_type()?;
+            expr = Expr::AsCast(AsCastExpr {
+                expr: Box::new(expr),
+                target_ty,
+                source_ty: None,
+                span: as_span,
+            });
+            if self.check(&TokenType::Question)
+                || self.check(&TokenType::Dot)
+                || self.check(&TokenType::LeftBracket)
+                || self.check(&TokenType::LeftParen)
+            {
+                let op_desc = match self.peek().kind {
+                    TokenType::Question => "`?`",
+                    TokenType::Dot => "`.`",
+                    TokenType::LeftBracket => "`[`",
+                    TokenType::LeftParen => "`(`",
+                    _ => "operator",
                 };
-                self.advance();
-                let target_ty = self.parse_type()?;
-                expr = Expr::AsCast(AsCastExpr {
-                    expr: Box::new(expr),
-                    target_ty,
-                    source_ty: None,
-                    span: as_span,
-                });
-            } else if self.check(&TokenType::Question) {
-                expr = self.wrap_try(expr);
-            } else {
-                break;
+                return Err(self.error(&format!(
+                    "cannot use {} directly after a cast; parenthesize the cast expression",
+                    op_desc
+                )));
             }
         }
         Ok(expr)
@@ -1724,6 +1728,17 @@ mod tests {
         let tokens = lexer.tokenize();
         let mut parser = Parser::new(&tokens, input);
         parser.parse_expr().expect("Failed to parse expression")
+    }
+
+    fn parse_expr_err(input: &str) -> String {
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        match parser.parse_expr() {
+            Ok(expr) => panic!("Expected parse error for '{}', but got {:?}", input, expr),
+            Err(crate::parser::ParserError::Custom { message, .. }) => message,
+            Err(other) => other.format(input, None),
+        }
     }
 
     fn parse_program(input: &str) -> crate::syntax::Program {
@@ -2732,13 +2747,43 @@ mod tests {
     fn test_deref_cast_chain() {
         // *p as i64 as f64 → AsCast(AsCast(Dereference(p), i64), f64)
         let expr = parse_expr("*p as i64 as f64");
-        if let Expr::AsCast(AsCastExpr { expr: mid, .. }) = expr {
-            if let Expr::AsCast(AsCastExpr { expr: inner, .. }) = &*mid {
-                assert!(matches!(&**inner, Expr::Dereference(_)));
-                return;
+        match expr {
+            Expr::AsCast(AsCastExpr {
+                expr: mid,
+                target_ty: outer_ty,
+                ..
+            }) => {
+                assert!(matches!(
+                    outer_ty,
+                    Type::Scalar(crate::syntax::ElementType::F64)
+                ));
+                match *mid {
+                    Expr::AsCast(AsCastExpr {
+                        expr: inner,
+                        target_ty: inner_ty,
+                        ..
+                    }) => {
+                        assert!(matches!(
+                            inner_ty,
+                            Type::Scalar(crate::syntax::ElementType::I64)
+                        ));
+                        match *inner {
+                            Expr::Dereference(DereferenceExpr { expr: target, .. }) => {
+                                match *target {
+                                    Expr::Identifier(IdentifierExpr { name, .. }) => {
+                                        assert_eq!(name.as_ref(), "p");
+                                    }
+                                    other => panic!("expected Identifier(p), got {:?}", other),
+                                }
+                            }
+                            other => panic!("expected Dereference, got {:?}", other),
+                        }
+                    }
+                    other => panic!("expected inner AsCast, got {:?}", other),
+                }
             }
+            other => panic!("expected outer AsCast, got {:?}", other),
         }
-        panic!("expected chained AsCast(Dereference(_))");
     }
 
     #[test]
@@ -2873,18 +2918,65 @@ mod tests {
     }
 
     #[test]
-    fn test_cast_followed_by_try() {
-        // x as i64? must parse with Try wrapping AsCast
-        let expr = parse_expr("x as i64?");
+    fn test_cast_followed_by_postfix_refused() {
+        // Rust refuses ?, ., [, and ( directly after a cast, asking for parentheses.
+        let err_try = parse_expr_err("x as i64?");
+        assert!(err_try
+            .contains("cannot use `?` directly after a cast; parenthesize the cast expression"));
+
+        let err_dot = parse_expr_err("x as f64.sqrt()");
+        assert!(err_dot
+            .contains("cannot use `.` directly after a cast; parenthesize the cast expression"));
+
+        let err_index = parse_expr_err("x as i64[0]");
+        assert!(err_index
+            .contains("cannot use `[` directly after a cast; parenthesize the cast expression"));
+
+        let err_call = parse_expr_err("x as i64(0)");
+        assert!(err_call
+            .contains("cannot use `(` directly after a cast; parenthesize the cast expression"));
+
+        // With parentheses around the cast, each is accepted:
+        let expr = parse_expr("(x as i64)?");
+        assert!(matches!(
+            expr,
+            Expr::UnaryOp(UnaryOpExpr {
+                op: UnaryOp::Try,
+                ..
+            })
+        ));
+
+        let expr = parse_expr("(x as f64).sqrt()");
+        assert!(matches!(expr, Expr::MethodCall(_)));
+
+        let expr = parse_expr("(x as i64)[0]");
+        assert!(matches!(expr, Expr::IndexAccess(_)));
+    }
+
+    #[test]
+    fn test_if_else_if_chain_trailing_try() {
+        // if a { Ok(1) } else if b { Ok(2) } else { Err(3) }?
+        // must parse with Try wrapping the entire outer If expression,
+        // and the inner else-if must not be wrapped in Try.
+        let expr = parse_expr("if a { Ok(1) } else if b { Ok(2) } else { Err(3) }?");
         match expr {
             Expr::UnaryOp(UnaryOpExpr {
                 op: UnaryOp::Try,
                 expr: inner,
                 ..
-            }) => {
-                assert!(matches!(*inner, Expr::AsCast(_)));
-            }
-            other => panic!("expected UnaryOp(Try), got {:?}", other),
+            }) => match *inner {
+                Expr::If(IfExpr { else_block, .. }) => {
+                    let stmts = else_block.expect("expected else block");
+                    match &stmts[0] {
+                        Statement::ExprStmt(ExprStmtStmt { expr: inner_if, .. }) => {
+                            assert!(matches!(inner_if, Expr::If(_)));
+                        }
+                        other => panic!("expected inner If expression statement, got {:?}", other),
+                    }
+                }
+                other => panic!("expected outer If, got {:?}", other),
+            },
+            other => panic!("expected Try, got {:?}", other),
         }
     }
 

@@ -6,14 +6,14 @@
 //
 //===----------------------------------------------------------------------===//
 
-// unsafe { .. } as T parses as (unsafe { .. }) as T.
-fn value() -> i64 {
-  unsafe { 7i32 } as i64
+// !unsafe { .. } as T parses as (!unsafe { .. }) as T.
+fn value() -> i32 {
+  !unsafe { 0u8 } as i32
 }
 
 fn main() -> i32 {
   let x = value();
-  if x != 7 {
+  if x != 255 {
     return 1;
   }
   return 0;
