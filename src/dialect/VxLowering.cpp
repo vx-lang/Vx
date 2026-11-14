@@ -1555,11 +1555,12 @@ static void placeTransferFree(vx::TransferOp transfer) {
   SmallVector<Value> aliases;
   if (!collectAliases(buffer, aliases))
     return;
-  // An owner's drop frees it, or a function it is passed to by value does.
-  // What is left is a temporary nothing names, `print(transfer(..))`.
+  // An owner's drop frees it, a function it is passed to by value does, or a
+  // free after its copy for such a function does. What is left is a temporary
+  // nothing names, `print(transfer(..))`.
   for (Value alias : aliases)
     for (OpOperand &use : alias.getUses()) {
-      if (isa<vx::DropOp>(use.getOwner()))
+      if (isa<vx::DropOp, vx::FreeOp>(use.getOwner()))
         return;
       auto call = dyn_cast<func::CallOp>(use.getOwner());
       if (!call)
@@ -4560,6 +4561,14 @@ static bool takesOwnership(func::CallOp call, unsigned i) {
   return callee && callee.getArgAttr(i, "vx.owned");
 }
 
+// Whether parameter `i` of the function `call` reaches takes a placed tensor
+// by value, which that function then frees through its plugin.
+static bool takesPlaced(func::CallOp call, unsigned i) {
+  auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+      call, call.getCalleeAttr());
+  return callee && placedTopology(callee.getArgAttr(i, "vx.placed"));
+}
+
 // Marks where `buffer` starts or stops being used. The marker names the
 // buffer by its pointer, because the `llvm.alloca` comes later.
 // `vx-lifetime-markers-on-allocas` then puts the alloca in its place.
@@ -4605,7 +4614,8 @@ static void promoteOwnedBuffers(Region &region, RewriterBase &rewriter) {
         } else if (auto d = dyn_cast<memref::DeallocOp>(user)) {
           deallocs.push_back(d);
         } else if (auto call = dyn_cast<func::CallOp>(user)) {
-          escapes |= takesOwnership(call, use.getOperandNumber());
+          escapes |= takesOwnership(call, use.getOperandNumber()) ||
+                     takesPlaced(call, use.getOperandNumber());
         } else if (isa<func::ReturnOp, BranchOpInterface,
                        RegionBranchTerminatorOpInterface,
                        memref::ExtractAlignedPointerAsIndexOp>(user) ||
@@ -4634,14 +4644,6 @@ static void promoteOwnedBuffers(Region &region, RewriterBase &rewriter) {
       rewriter.eraseOp(d);
     }
   }
-}
-
-// Whether parameter `i` of the function `call` reaches takes a placed tensor
-// by value, which that function then frees through its plugin.
-static bool takesPlaced(func::CallOp call, unsigned i) {
-  auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
-      call, call.getCalleeAttr());
-  return callee && placedTopology(callee.getArgAttr(i, "vx.placed"));
 }
 
 // The buffer behind `v`: through a `memref.cast`, and through the
@@ -4906,6 +4908,42 @@ static LogicalResult giveMovedResultsHeapSlots(ModuleOp module) {
     slot.erase();
   }
   return success();
+}
+
+// A function that takes a tensor by value frees it with `free`. A placed
+// buffer came from a plugin, and only that plugin can free it. So the call
+// gets a heap copy, and the placed buffer is freed after the copy. The
+// checker lets only host memory reach such a parameter, so the host can read
+// the buffer.
+static void copyPlacedArgumentsToTheHeap(ModuleOp module) {
+  module.walk([&](func::CallOp call) {
+    for (OpOperand &operand : call->getOpOperands()) {
+      if (!takesOwnership(call, operand.getOperandNumber()))
+        continue;
+      auto type = dyn_cast<MemRefType>(operand.get().getType());
+      std::optional<int32_t> topology;
+      if (!type || type.getMemorySpace() ||
+          originOf(operand.get(), topology) != BufferOrigin::Placed ||
+          !topology)
+        continue;
+      OpBuilder builder(call);
+      Location loc = call.getLoc();
+      SmallVector<Value> sizes;
+      for (int64_t d = 0; d < type.getRank(); ++d)
+        if (type.isDynamicDim(d))
+          sizes.push_back(
+              memref::DimOp::create(builder, loc, operand.get(), d));
+      auto copy = memref::AllocOp::create(
+          builder, loc, MemRefType::get(type.getShape(), type.getElementType()),
+          sizes);
+      memref::CopyOp::create(builder, loc, operand.get(), copy);
+      freePlaced(builder, loc, operand.get(), *topology);
+      Value owned = copy.getResult();
+      if (owned.getType() != type)
+        owned = memref::CastOp::create(builder, loc, type, owned);
+      operand.set(owned);
+    }
+  });
 }
 
 // Every tensor passed by value must be a heap buffer: the function that takes
@@ -6518,6 +6556,8 @@ struct ConvertVxToStandardPass
     }
     // Before the frees, so a transfer that copies nothing gets none.
     elideSharedTransfers(getOperation());
+    // Before the transfer frees, which then skip the buffers this frees.
+    copyPlacedArgumentsToTheHeap(getOperation());
     placeTransferFrees(getOperation());
     readCellsBeforeSpawns(getOperation());
     promoteBufferCells(getOperation());
