@@ -25,33 +25,33 @@
 // EXPECT: 8
 
 Memory CPU_DRAM {}
-Memory GPU_HBM {
-  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+Memory DEV_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached, scope: device
 }
 Topology Dev {
   arch: spirv64,
-  memory: Memory::GPU_HBM,
-  visible: [Memory::GPU_HBM],
-  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 63 GB/s
 }
 
 /// Either a `[n, 1]` tensor on the card, or nothing.
 enum Holder {
-  Full(Tensor<i32, [?, ?], Memory::GPU_HBM>),
+  Full(Tensor<i32, [?, ?], Memory::DEV_HBM>),
   Empty,
 }
 
 /// A `[n, 1]` tensor on the card, with `2 * i` at row `i`.
-fn fresh(n : i32) -> Tensor<i32, [?, ?], Memory::GPU_HBM> {
+fn fresh(n : i32) -> Tensor<i32, [?, ?], Memory::DEV_HBM> {
   let mut host = unsafe { Tensor<i32, [?, ?]>::uninit([n, 1]) };
   for i in 0..n {
     host[i][0] = i * 2;
   }
-  return transfer(host, Memory::GPU_HBM);
+  return transfer(host, Memory::DEV_HBM);
 }
 
 /// `out[i][0] = t[i][0] + 2`, on the card.
-fn add_two(t : &Tensor<i32, [?, ?], Memory::GPU_HBM>, out : &mut Tensor<i32, [?, ?], Memory::GPU_HBM>) -> void {
+fn add_two(t : &Tensor<i32, [?, ?], Memory::DEV_HBM>, out : &mut Tensor<i32, [?, ?], Memory::DEV_HBM>) -> void {
   spawn on(Topology::Dev) {
     for i in 0..4 {
       out[i][0] = t[i][0] + 2;
