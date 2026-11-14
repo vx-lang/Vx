@@ -1161,11 +1161,9 @@ pub struct EmitCtx {
     /// carries no memory decls, so this is threaded in from the per-compilation env. Empty for a program
     /// with no declared sub-spaces.
     pub subspaces: HashMap<u64, SubspaceInfo>,
-    /// Declared topology arch by dispatch id, so a `vx.spawn` can carry the arch its machine file
-    /// declared and the device pipeline can gate on the DECLARATION rather than on the dispatch-id
-    /// band -- which a custom topology can never enter (declared ids start at 3000 by
-    /// construction, and the GPU band is [500, 600)). Built-in topologies are not in this map and
-    /// keep riding the band.
+    /// Declared topology arch by dispatch id, so a `vx.spawn` can carry the arch declared for
+    /// the topology (both custom and built-in) and the device pipeline can gate on the
+    /// declared architecture attribute.
     pub topo_archs: HashMap<i64, DeclaredArch>,
     /// The program's `const` tables as (global name, memref type), in the registry's order, which
     /// is what a `ConstTable` instruction's `imm` counts in.
@@ -1286,7 +1284,7 @@ pub fn local_devices_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i32, i32)>
 pub struct DeclaredArch {
     pub arch: String,
     pub chip: Option<String>,
-    pub offload: bool,
+    pub offload: Option<bool>,
 }
 
 /// The declared-arch table for `EmitCtx::topo_archs`, from the per-compilation env: one entry per
@@ -1306,13 +1304,64 @@ pub fn topo_archs_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i64, Declared
                     .chip
                     .as_ref()
                     .map(|c| c.as_ref().to_string()),
-                offload: decl.descriptor.offload,
+                offload: Some(decl.descriptor.offload),
             };
             let ids = crate::arch::declared_dispatch_ids(&decl.name, decl.descriptor.count);
             Some(ids.into_iter().map(move |id| (id as i64, declared.clone())))
         })
         .flatten()
         .collect();
+
+    for (kind, desc) in crate::arch::builtin_descriptors() {
+        let Some(arch) = desc.arch.as_ref() else {
+            continue;
+        };
+        if kind == crate::syntax::TopologyKind::GPU {
+            for id in 500..600 {
+                out.push((
+                    id,
+                    DeclaredArch {
+                        arch: arch.as_ref().to_string(),
+                        chip: desc.chip.as_ref().map(|c| c.as_ref().to_string()),
+                        offload: None,
+                    },
+                ));
+            }
+            continue;
+        }
+        let top = match kind {
+            crate::syntax::TopologyKind::CPU => crate::syntax::Topology::CPU,
+            crate::syntax::TopologyKind::NPU => crate::syntax::Topology::NPU(Box::new(
+                crate::syntax::Expr::Number(crate::syntax::NumberExpr::new(
+                    "0".to_string(),
+                    None,
+                    crate::syntax::Span::default(),
+                )),
+            )),
+            crate::syntax::TopologyKind::ANE => crate::syntax::Topology::ANE,
+            crate::syntax::TopologyKind::AccCore => crate::syntax::Topology::AccCore(Box::new(
+                crate::syntax::Expr::Number(crate::syntax::NumberExpr::new(
+                    "0".to_string(),
+                    None,
+                    crate::syntax::Span::default(),
+                )),
+            )),
+            crate::syntax::TopologyKind::AMX => crate::syntax::Topology::AMX,
+            crate::syntax::TopologyKind::CpuAvx512 => crate::syntax::Topology::CpuAvx512,
+            crate::syntax::TopologyKind::CpuNeon => crate::syntax::Topology::CpuNeon,
+            _ => continue,
+        };
+        let id = crate::arch::topology_dispatch_id(&top);
+        out.push((
+            id as i64,
+            DeclaredArch {
+                arch: arch.as_ref().to_string(),
+                chip: desc.chip.as_ref().map(|c| c.as_ref().to_string()),
+                offload: None,
+            },
+        ));
+    }
+
     // Sorted, because `env.topologies` is a HashMap and iteration order would otherwise decide
     // which entry wins an id collision -- the coin-flip E6016 refuses upstream, kept impossible
     // here too so the emitted MLIR is byte-reproducible (the freeze protocol depends on that).
@@ -1362,6 +1411,20 @@ pub fn subspaces_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<SubspaceInfo> {
 }
 
 impl EmitCtx {
+    pub fn topo_arch(&self, topo: i64) -> Option<DeclaredArch> {
+        if let Some(declared) = self.topo_archs.get(&topo) {
+            return Some(declared.clone());
+        }
+        let kind = crate::arch::builtin_kind_from_dispatch_id(topo)?;
+        let desc = crate::arch::builtin_descriptors().remove(&kind)?;
+        let arch = desc.arch?;
+        Some(DeclaredArch {
+            arch: arch.to_string(),
+            chip: desc.chip.map(|c| c.to_string()),
+            offload: None,
+        })
+    }
+
     fn registry_layout_agrees(
         registry: &ImmutableGlobalRegistry,
         definition: &crate::registry::TypeDefinition,

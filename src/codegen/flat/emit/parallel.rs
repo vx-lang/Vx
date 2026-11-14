@@ -278,21 +278,23 @@ impl FnEmit<'_> {
         } else {
             String::new()
         };
-        if let Some(declared) = self.ctx.topo_archs.get(&topo) {
-            let arch = &declared.arch;
-            let chip = match &declared.chip {
-                Some(chip) => format!(", chip = \"{chip}\""),
-                None => String::new(),
-            };
-            let offload = declared.offload;
-            self.body += &format!(
-                "  }}) {{arch = \"{arch}\"{chip}, offload = {offload}, topology = {topo} : i32{name}{trip}{across}}} : () -> ({result_ty})\n"
-            );
-        } else {
-            self.body += &format!(
-                "  }}) {{topology = {topo} : i32{name}{trip}{across}}} : () -> ({result_ty})\n"
-            );
+
+        let mut attrs = String::new();
+        if let Some(declared) = self.ctx.topo_arch(topo) {
+            if !declared.arch.is_empty() {
+                attrs.push_str(&format!("arch = \"{}\", ", declared.arch));
+            }
+            if let Some(offload) = declared.offload {
+                attrs.push_str(&format!("offload = {}, ", offload));
+            }
+            if let Some(chip) = &declared.chip {
+                attrs.push_str(&format!("chip = \"{}\", ", chip));
+            }
         }
+
+        self.body += &format!(
+            "  }}) {{{attrs}topology = {topo} : i32{name}{trip}{across}}} : () -> ({result_ty})\n"
+        );
         self.terminated = false;
         Ok(())
     }

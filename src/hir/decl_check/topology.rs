@@ -37,29 +37,58 @@ impl TypeChecker<'_> {
     /// a published payload and handed to `seam::check_seam_buffers`; a `Reject` (the buffer
     /// can be read stale) means the edge does not preserve visibility.
     pub fn check_topology_coherence(&mut self, declared: &[crate::arch::TopologyDecl]) {
-        // Identity checks first (E6016): a topology whose declaration cannot take effect fails
-        // here, before any coherence rule reads the declaration as though it were in force.
-        //
-        // Shadowing: the parser resolves built-in names unconditionally (`Topology::GPU` is the
-        // built-in GPU whatever the program declares), so a declaration under such a name
-        // registers as Custom("GPU") and is unreachable from every use site. Found by review on
-        // Vx#352: `Topology GPU { arch: applegpu }` still produced an NVPTX image via the band,
-        // the machine file's word silently discarded.
         let outside = self.errors.here();
         for decl in declared {
             self.errors.point_at(&decl.place, &outside);
-            if !matches!(TopologyKind::from_name(&decl.name), TopologyKind::Custom(_)) {
+            let kind = TopologyKind::from_name(&decl.name);
+            if matches!(kind, TopologyKind::Current) {
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E6016,
-                    format!(
-                        "topology '{}' shadows the built-in topology of the same name; every \
-                         `Topology::{}` resolves to the built-in, so this declaration (including \
-                         its `arch:`) would be silently ignored -- rename it",
-                        decl.name, decl.name
-                    ),
+                    "a topology cannot be named `Current`: it is a built-in alias for the topology where the code runs, and its fields cannot be patched",
                     None,
                 );
+                continue;
             }
+
+            if !matches!(kind, TopologyKind::Custom(_)) {
+                let builtin = crate::arch::builtin_descriptors().remove(&kind);
+                let differs_memory = builtin.as_ref().is_none_or(|b| {
+                    decl.descriptor.default_space != b.default_space
+                        || decl.descriptor.visibility != b.visibility
+                });
+                let has_arch = decl.descriptor.arch.is_some();
+                let has_transfers = !decl.descriptor.transfers.is_empty();
+                let has_chip = decl.descriptor.chip.is_some();
+                let has_levels = decl.descriptor.levels.is_some();
+                let has_offload = decl.descriptor.offload;
+                let cannot_patch_dtypes = !matches!(
+                    kind,
+                    TopologyKind::CPU
+                        | TopologyKind::GPU
+                        | TopologyKind::NPU
+                        | TopologyKind::AccCore
+                );
+
+                if has_arch
+                    || has_transfers
+                    || has_chip
+                    || has_levels
+                    || has_offload
+                    || differs_memory
+                    || cannot_patch_dtypes
+                {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E6016,
+                        format!(
+                            "topology '{}' shadows the built-in topology of the same name, and you cannot override its `arch:`, `memory:`, `visible:`, or transfer edges. Only `dtypes:` on a topology that owns its memory space may be used to restrict element types.",
+                            decl.name
+                        ),
+                        None,
+                    );
+                    continue;
+                }
+            }
+
             // A transfer into `GPU_HBM` goes to the built-in NVIDIA GPU, whatever topology holds
             // the memory. So a topology of another arch would have its kernels in one place and
             // its tensors in another.
@@ -83,6 +112,7 @@ impl TypeChecker<'_> {
                     );
                 }
             }
+
             if decl.name.as_ref() == crate::syntax::ANY_TOPOLOGY {
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E6016,
@@ -94,6 +124,7 @@ impl TypeChecker<'_> {
             }
         }
         self.errors.point_back(outside.clone());
+
         // Dispatch-id collision: the id is a hash of the name, so two names can share one id.
         // Everything keyed by the id -- spawn dispatch,
         // seam identity, and now the declared-arch table -- then depends on hash-iteration order
@@ -134,6 +165,7 @@ impl TypeChecker<'_> {
             }
         }
         self.errors.point_back(outside.clone());
+
         for decl in declared {
             self.errors.point_at(&decl.place, &outside);
             let name = &decl.name;
@@ -276,11 +308,6 @@ impl TypeChecker<'_> {
     ///   * an empty lowering (nothing to emit, so the `impl` would be an inert annotation);
     ///   * a `for Topology::X` naming a topology this compilation has never heard of;
     ///   * a topology that exists but does not declare the edge being implemented.
-    ///
-    /// The last two are new with the topology key. Before it, a lowering named no machine, so
-    /// there was nothing to check it against -- `TransferImplDecl` carried a comment saying the
-    /// edge should be matched against a topology's declared edges "(not yet wired)", and it
-    /// could not be wired, because the declaration did not say which topology to look at.
     pub fn check_transfer_impls(&mut self) {
         // Read the topology facts first. Emitting a diagnostic needs `&mut self`, and the
         // descriptor lookup borrows `self`, so the two cannot be interleaved.
@@ -302,21 +329,25 @@ impl TypeChecker<'_> {
                     .values()
                     .find(|d| d.name.as_ref() == t.topology.display_name());
                 match declared {
-                    Some(d) => (
-                        TopologyStanding::Declared,
-                        d.descriptor
-                            .transfers
-                            .iter()
-                            .any(|e| e.from == t.from && e.to == t.to),
-                    ),
-                    None if self
+                    Some(d)
+                        if matches!(TopologyKind::from_name(&d.name), TopologyKind::Custom(_)) =>
+                    {
+                        (
+                            TopologyStanding::Declared,
+                            d.descriptor
+                                .transfers
+                                .iter()
+                                .any(|e| e.from == t.from && e.to == t.to),
+                        )
+                    }
+                    _ if self
                         .transfer_cost_graph
                         .descriptor(&t.topology.kind())
                         .is_some() =>
                     {
                         (TopologyStanding::BuiltIn, false)
                     }
-                    None => (TopologyStanding::Unknown, false),
+                    _ => (TopologyStanding::Unknown, false),
                 }
             })
             .collect();
@@ -375,12 +406,7 @@ impl TypeChecker<'_> {
         > = std::collections::HashMap::new();
         for t in &self.env.transfer_impls {
             self.errors.point_at(&t.place, &outside);
-            // A generic fn inside a lowering can never be checked: generic bodies are checked at
-            // instantiation, and a lowering fn is not callable, so it is never instantiated -- its
-            // body would escape the checker forever. That silently reopens, for generics only, the
-            // exact parses-clean-while-broken gap #353 closes, so it is refused outright: a
-            // lowering is instantiated per EDGE, not per type, and a type parameter has no meaning
-            // there.
+
             for f in &t.methods {
                 if !f.generics.is_empty() {
                     self.errors.error_with_code(
@@ -413,7 +439,6 @@ impl TypeChecker<'_> {
                     None,
                 );
             }
-            // The error for two lowerings of one edge points at the last one.
             let entry = seen
                 .entry((
                     t.from.clone(),

@@ -7,12 +7,12 @@
 //===----------------------------------------------------------------------===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
 //
-// Every name the parser reads as a built-in topology is refused as the name of a
-// declared one, the second spelling of `CpuAvx512` and `CpuNeon` included: a use
-// of that name would always mean the built-in, so the declaration would be ignored.
+// Declarations of built-in names are refused for their `transfer` edges, and
+// `Current` is refused for its name. A use of that name always means the built-in,
+// so overriding its transfer edges is refused.
 // topology_shadows_builtin.vx shows what goes wrong when it is not refused.
 // CHECK-DAG: topology 'CPU' shadows the built-in
-// CHECK-DAG: topology 'Current' shadows the built-in
+// CHECK-DAG: a topology cannot be named `Current`
 // CHECK-DAG: topology 'NPU' shadows the built-in
 // CHECK-DAG: topology 'AccCore' shadows the built-in
 // CHECK-DAG: topology 'AMX' shadows the built-in
