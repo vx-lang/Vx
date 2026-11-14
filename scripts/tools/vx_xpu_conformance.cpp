@@ -30,7 +30,8 @@
 //   vx_xpu_conformance compare <dtype> <count> <tolerance> <a.bin> <b.bin>
 //
 // `op` is one of ew, reduce, transpose, matmul; `dtype` is one of f32, f16,
-// i8, u8, i16, u16, i32, u32, i64, u64, bool.
+// i8, u8, i16, u16, i32, u32, i64, u64, i4, u4, bool. An i4 or u4 tensor holds
+// one element per byte, which is the layout the compiler gives it.
 //
 // `run` dispatches the payload `reps` times and writes the result to out.bin;
 // it also prints the best dispatch time and, when the work is small enough,
@@ -114,12 +115,18 @@ struct DType {
   bool is_float;
 };
 
+// The ABI has no four-bit element code, so i4 and u4 name i8 in the tag. That
+// is honest for these tensors: the compiler stores one i4 or u4 element in one
+// byte, and the device image loads and stores that byte. The harness therefore
+// compares four-bit values read out of a byte, and never a byte pair packed two
+// to a nibble.
 static const DType kDtypes[] = {
     {"f32", VX_DTYPE_F32, 4, true},  {"f16", VX_DTYPE_F16, 2, true},
     {"i8", VX_DTYPE_I8, 1, false},   {"u8", VX_DTYPE_I8, 1, false},
     {"i16", VX_DTYPE_I16, 2, false}, {"u16", VX_DTYPE_I16, 2, false},
     {"i32", VX_DTYPE_I32, 4, false}, {"u32", VX_DTYPE_I32, 4, false},
     {"i64", VX_DTYPE_I64, 8, false}, {"u64", VX_DTYPE_I64, 8, false},
+    {"i4", VX_DTYPE_I8, 1, false},   {"u4", VX_DTYPE_I8, 1, false},
     {"bool", VX_DTYPE_I1, 1, false},
 };
 
@@ -205,6 +212,11 @@ static void storeElem(std::vector<char> &raw, size_t index, const DType &dt,
     break;
   }
   case VX_DTYPE_I1:
+    // Any nonzero value stored as a bool is 1, which is how a one-byte bool is
+    // read back. The .vx programs' `as bool` cast keeps only the low bit
+    // instead, so `2 as bool` is false there -- which would fill the harness's
+    // elementwise operands with a value that makes every result 1 and assert
+    // nothing. The harness fills its own data for that reason.
     *p = value != 0.0 ? 1 : 0;
     break;
   case VX_DTYPE_I8: {
@@ -274,14 +286,50 @@ static double loadElem(const std::vector<char> &raw, size_t index,
   }
 }
 
-// Adds two values the way the element type does, so a narrow type wraps where
-// the device wraps. Only the integer kernels need this; the float ones are
-// exact at these values.
-static double addTyped(double a, double b, const DType &dt) {
+// The value as the element type stores it, so the reference is computed from
+// the same bytes the kernel reads. Only a narrow type changes the value, and
+// bool is the one that matters here: `3 as bool` is 1, and the kernel reads 1.
+static double storedValue(const DType &dt, double value) {
+  switch (dt.code) {
+  case VX_DTYPE_I1:
+    return value != 0.0 ? 1.0 : 0.0;
+  case VX_DTYPE_I8:
+    return (double)(int8_t)value;
+  case VX_DTYPE_I16:
+    return (double)(int16_t)value;
+  case VX_DTYPE_I32:
+    return (double)(int32_t)value;
+  case VX_DTYPE_I64:
+    return (double)(int64_t)value;
+  case VX_DTYPE_F16:
+    return (double)floatOfHalf(halfOf((float)value));
+  case VX_DTYPE_F32:
+    return (double)(float)value;
+  default:
+    return value;
+  }
+}
+
+// `a * b` the way the element type does it. A bool multiplies as one bit, so
+// the result is 1 only when both operands are.
+static double mulTyped(const DType &dt, double a, double b) {
+  if (dt.is_float)
+    return a * b;
+  if (dt.code == VX_DTYPE_I1)
+    return (a != 0.0 && b != 0.0) ? 1.0 : 0.0;
+  return a * b;
+}
+
+// `a + b` the way the element type does it. A bool adds as one bit, so
+// `true + true` wraps to false -- which is what the compiler's i1 add does and
+// what both backends compute. It is not a logical or.
+static double addTyped(const DType &dt, double a, double b) {
   if (dt.is_float)
     return a + b;
-  if (dt.code == VX_DTYPE_I1)
-    return (a != 0.0 || b != 0.0) ? 1.0 : 0.0;
+  if (dt.code == VX_DTYPE_I1) {
+    const int sum = (a != 0.0 ? 1 : 0) + (b != 0.0 ? 1 : 0);
+    return (double)(sum & 1);
+  }
   return a + b;
 }
 
@@ -561,6 +609,10 @@ static Call buildCall(Op op, const DType &dt, int64_t M, int64_t N, int64_t K,
 
 /// The answer the kernel should give, computed here so a wrong result on both
 /// backends is still caught.
+///
+/// The arithmetic is the element type's: every operand is first the value its
+/// type stores, and a product or a sum wraps at the type's width. For bool that
+/// is one bit, so `true * true + true` is 0, not 1.
 static std::vector<char> referenceOf(Op op, const DType &dt, int64_t M,
                                      int64_t N, int64_t K) {
   std::vector<char> out;
@@ -568,30 +620,38 @@ static std::vector<char> referenceOf(Op op, const DType &dt, int64_t M,
     out.assign((size_t)M * (size_t)N * dt.bytes, 0);
     for (int64_t i = 0; i < M; ++i)
       for (int64_t j = 0; j < N; ++j) {
-        const double v =
-            addTyped(inputA(op, i, j) * inputB(op, i, j), inputC(op, i, j), dt);
+        const double a = storedValue(dt, inputA(op, i, j));
+        const double b = storedValue(dt, inputB(op, i, j));
+        const double c = storedValue(dt, inputC(op, i, j));
+        const double v = addTyped(dt, mulTyped(dt, a, b), c);
         storeElem(out, (size_t)(i * N + j), dt, v);
       }
   } else if (op == Op::Reduce) {
     out.assign((size_t)M * dt.bytes, 0);
     for (int64_t i = 0; i < M; ++i) {
       double sum = 0.0;
-      for (int64_t j = 0; j < N; ++j)
-        sum = addTyped(sum, inputA(op, i, j), dt);
+      for (int64_t j = 0; j < N; ++j) {
+        const double a = storedValue(dt, inputA(op, i, j));
+        sum = addTyped(dt, sum, a);
+      }
       storeElem(out, (size_t)i, dt, sum);
     }
   } else if (op == Op::Transpose) {
     out.assign((size_t)N * (size_t)M * dt.bytes, 0);
     for (int64_t i = 0; i < M; ++i)
       for (int64_t j = 0; j < N; ++j)
-        storeElem(out, (size_t)(j * M + i), dt, inputA(op, i, j));
+        storeElem(out, (size_t)(j * M + i), dt,
+                  storedValue(dt, inputA(op, i, j)));
   } else {
     out.assign((size_t)M * (size_t)N * dt.bytes, 0);
     for (int64_t i = 0; i < M; ++i)
       for (int64_t j = 0; j < N; ++j) {
         double sum = 0.0;
-        for (int64_t k = 0; k < K; ++k)
-          sum += inputA(op, i, k) * inputB(op, k, j);
+        for (int64_t k = 0; k < K; ++k) {
+          const double a = storedValue(dt, inputA(op, i, k));
+          const double b = storedValue(dt, inputB(op, k, j));
+          sum = addTyped(dt, sum, mulTyped(dt, a, b));
+        }
         storeElem(out, (size_t)(i * N + j), dt, sum);
       }
   }

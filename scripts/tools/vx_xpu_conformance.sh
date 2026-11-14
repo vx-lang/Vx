@@ -17,19 +17,28 @@
 # What is compared, and how:
 #
 #   elementwise  `o = a*b + c` in each element type the Arc machine model
-#                declares that has a byte address. Every value is a small
-#                integer its type holds exactly, so the comparison is equality.
-#                The CPU run is checked against an independent reference first,
-#                so a kernel paired with the wrong element type stops the run
+#                declares. Every value is a small integer its type holds
+#                exactly, so the comparison is equality. Each declared type
+#                has its own region, and every region is run: thirteen of them
+#                through the dispatch ABI, one at a time, and the whole program
+#                through vxc's driver on both backends, which prints one sum
+#                per type. i4 and u4 ride in one byte each, so their ABI tag
+#                names i8 and the values compared are the four-bit ones. The
+#                CPU run is checked against an independent reference first, so
+#                a region paired with the wrong element type stops the run
 #                rather than looking like a backend disagreement.
 #   reduce       a row sum, so the device holds an accumulator.
 #   transpose    a transposing write, so both operands' strides are exercised.
 #   matmul       oneMKL on the Arc against the CPU backend's own GEMM, at 1024
 #                element by element (relative tolerance, the two sum in
 #                different orders) and at 8192 for throughput.
+#   threads      eight threads dispatch at once under ThreadSanitizer, which
+#                turns a missing launch lock from a coin flip into a report
+#                that names the map.
 #
-# Two more cases check the library's own state rather than one kernel's
-# arithmetic, because neither fault shows up as a number that looks wrong:
+# Four more cases check the compiler's and the library's own decisions rather
+# than one kernel's arithmetic, because none of those faults shows up as a
+# number that looks wrong:
 #
 #   same name    reduce and transpose each call their one kernel
 #                `vx_npu_kernel_0`, and the two images are different kernels
@@ -41,23 +50,36 @@
 #                device cannot address. The backend has to refuse the launch
 #                ("argument 0 is at an address the device cannot reach") and run
 #                the kernel's host copy instead, with the CPU backend's answer.
-#   machine      a program that declares nothing and uses the machine file's
-#   file         own `Memory::HBM` and `Topology::Device`. The hash must be
-#                aliased to the SPIR-V band and the region must run from its image;
+#   machine file a program that declares nothing and uses the machine file's
+#                own `Memory::HBM` and `Topology::Device`. The hash must be
+#                aliased to the SPIR-V band, and the region must run from its
+#                image. A second program puts a loop region, not a matmul, on
+#                that topology, and both backends must print the same number.
 #   declared     a tensor transferred into a declared space that is not the
 #   space        topology's `memory:`. The compiler sends no alias for it and
 #                the space says the host cannot read it, so host memory is not
-#                an answer. The backend has to refuse and name the space id;
-#                before it did, the region quietly ran on the host and the run
+#                an answer. The backend has to refuse and name the space id.
+#                Before it did, the region quietly ran on the host and the run
 #                printed numbers.
 #
 # A kernel the device cannot run is reported, not skipped: the compiler's
-# refusal or the host fallback is the result for that case.
+# refusal or the host fallback is the result for that case. Two programs are
+# compiled only to be refused, and each refusal has to name what it refused.
 #
-# Each comparison is shown able to fail: seven sabotage steps perturb an input,
-# loosen or tighten a tolerance, mispair a region with an element type, key the
-# kernel cache by the name alone, drop the address check before a launch, and
-# change a printed line, and each must turn the run red.
+# Five sabotage steps break something on purpose, and each one must turn the
+# run red: a changed input element, a tolerance too loose to notice it, a
+# region paired with the wrong element type, two regions' element types
+# swapped, and a changed line of the whole-program result.
+#
+# One step among them is a report and fails nothing. It compares the 1024
+# matmul at tolerance 0 and at 1e-4 and prints which of the two carries the
+# verdict. Either answer is a fact about the size, not a fault.
+#
+# Two checks are assertions, with no sabotage step to show them able to fail:
+# the kernel cache keyed on the library and the name (the same-name case), and
+# the address check before a launch (the host-memory case). Proving either one
+# able to fail means building a deliberately broken copy of the library, which
+# this script does not do.
 #
 # Memory: the largest program holds three 8192x8192 fp32 tensors (805 MiB),
 # checked against the shared ceiling and printed. Only one GPU helper runs at a
@@ -263,13 +285,57 @@ compare_sides() {
   fi
 }
 
+# Run a whole program through the compiler's own driver on one backend:
+# `run_whole_program <cpu|arc> <stdout> <stderr> <vxc arguments...>`.
+#
+# The status is vxc's, and the caller checks it. A compiler that failed, or a
+# program that died, prints nothing, and two empty results compare equal -- so
+# the failure has to be caught here rather than by the comparison.
+run_whole_program() {
+  local side="$1" out="$2" err="$3"
+  shift 3
+  local status=0
+  if [ "$side" = cpu ]; then
+    VX_DISPATCH_LIB="$OUT/libvx_x86_dispatch.so" \
+      timeout 600 "$VXC" "$@" --run >"$out" 2>"$err" || status=$?
+  else
+    VX_DISPATCH_VERBOSE=1 timeout 600 "$VXC" "$@" --run \
+      >"$out" 2>"$err" || status=$?
+  fi
+  return "$status"
+}
+
+# Keep the numbers a whole-program run printed, and require the expected
+# number of them: `collect_numbers <raw> <out> <count> <what>`. A run that
+# printed nothing has nothing to compare, so a short result is an error here
+# and not a difference the comparison below could miss.
+collect_numbers() {
+  local raw="$1" out="$2" want="$3" what="$4"
+  grep -E '^-?[0-9]+( +-?[0-9]+)* *$' "$raw" >"$out" || true
+  local got
+  got="$(wc -w <"$out")"
+  if [ "$got" != "$want" ]; then
+    echo "error: $what printed $got numbers, not $want" >&2
+    echo "       so nothing was compared, or the whole program did not run" >&2
+    sed 's/^/         /' "$out" >&2
+    exit 1
+  fi
+}
+
 echo "==> building the elementwise program"
 build_program elementwise
-# The element types the Arc machine model declares that have a byte address, in
-# the order elementwise.vx declares its regions. i4 and u4 are declared too and
-# the device runs them; a 4-bit element has no descriptor this harness can
-# build, so those two are reported separately at the end.
-EW_DTYPES=(f32 f16 i8 u8 i16 u16 i32 u32 i64 u64 bool)
+# One element type per region, in the order elementwise.vx declares them. The
+# position in this list is the region, so a type missing here moves every type
+# after it onto its neighbour's kernel: with bool at index 10 the run drove the
+# i4 region with one-byte bool descriptors, and both backends then matched an
+# all-ones reference without the bool region ever running.
+EW_DTYPES=(f32 f16 i8 u8 i16 u16 i32 u32 i64 u64 i4 u4 bool)
+ew_regions="$(wc -l <"$OUT/elementwise/order.txt")"
+if [ "${#EW_DTYPES[@]}" != "$ew_regions" ]; then
+  echo "error: elementwise.vx declares $ew_regions regions and this list names" >&2
+  echo "       ${#EW_DTYPES[@]} element types, so some region is never run" >&2
+  exit 1
+fi
 for i in "${!EW_DTYPES[@]}"; do
   kernel="$(kernel_at "$i" elementwise)"
   echo "==> elementwise / $kernel: ew ${EW_DTYPES[$i]} 32x32"
@@ -495,24 +561,41 @@ echo "==> matmul_big / $kernel: matmul f32 8192x8192x8192 (Arc only)"
 # only the Arc is run here; the CPU half of the comparison is the 1024 case.
 dispatch_case arc matmul_big matmul f32 8192 8192 8192 5 "$kernel" 2
 
-# i4, u4 and bool have no descriptor this harness can build -- a four-bit and a
-# one-bit element are not addressable one at a time -- so the whole program is
-# run through the compiler's own driver on both backends and the two printed
-# lines are compared. That covers every declared type over a whole 32x32 tensor.
-echo "==> i4, u4 and bool, whole-program run on both backends"
-jit_run() {
-  local side="$1" name="$2"
-  if [ "$side" = cpu ]; then
-    VX_DISPATCH_LIB="$OUT/libvx_x86_dispatch.so" \
-      timeout 600 "$VXC" "$PROGRAMS/$name.vx" --run 2>/dev/null
-  else
-    VX_DISPATCH_VERBOSE=1 timeout 600 "$VXC" "$PROGRAMS/$name.vx" --run \
-      2>"$OUT/$name.arc.run.txt"
-  fi | grep -E '^-?[0-9]+( +-?[0-9]+)* *$' || true
-}
-jit_run cpu elementwise >"$OUT/elementwise.cpu.out"
-jit_run arc elementwise >"$OUT/elementwise.arc.out"
-grep -c "ran from its own image" "$OUT/elementwise.arc.run.txt" | sed 's/^/    arc  images run: /'
+# The whole program, through the compiler's own driver on both backends, which
+# prints one sum per declared type. Every type rides through the ABI above too,
+# so this is a second, independent way to see the same thirteen regions: a
+# region added to the program without a case in the list above still has to
+# produce the same number here.
+echo "==> the whole program on both backends, one sum per declared type"
+jit_cpu_status=0
+run_whole_program cpu "$OUT/elementwise.cpu.raw" \
+  "$OUT/elementwise.cpu.run.txt" "$PROGRAMS/elementwise.vx" || jit_cpu_status=$?
+if [ "$jit_cpu_status" != 0 ]; then
+  echo "error: vxc failed on the CPU backend for the whole elementwise program" >&2
+  tail -10 "$OUT/elementwise.cpu.run.txt" >&2
+  exit 1
+fi
+jit_arc_status=0
+run_whole_program arc "$OUT/elementwise.arc.raw" \
+  "$OUT/elementwise.arc.run.txt" "$PROGRAMS/elementwise.vx" || jit_arc_status=$?
+if [ "$jit_arc_status" != 0 ]; then
+  echo "error: vxc failed on the Arc for the whole elementwise program" >&2
+  tail -10 "$OUT/elementwise.arc.run.txt" >&2
+  exit 1
+fi
+collect_numbers "$OUT/elementwise.cpu.raw" "$OUT/elementwise.cpu.out" \
+  "$ew_regions" "the CPU whole-program run"
+collect_numbers "$OUT/elementwise.arc.raw" "$OUT/elementwise.arc.out" \
+  "$ew_regions" "the Arc whole-program run"
+images_run="$(grep -c "ran from its own image" "$OUT/elementwise.arc.run.txt" ||
+  true)"
+if [ "$images_run" != "$ew_regions" ]; then
+  echo "error: $images_run of $ew_regions regions ran from the Arc's own image" >&2
+  echo "       so the rest answered from the host copy, and their numbers say" >&2
+  echo "       nothing about the device" >&2
+  exit 1
+fi
+echo "    arc  images run: $images_run of $ew_regions"
 echo "    cpu: $(cat "$OUT/elementwise.cpu.out")"
 echo "    arc: $(cat "$OUT/elementwise.arc.out")"
 if ! diff -q "$OUT/elementwise.cpu.out" "$OUT/elementwise.arc.out" >/dev/null; then
@@ -529,7 +612,8 @@ VX_CONFORMANCE_PERTURB=1 VX_CONFORMANCE_WARMUP=0 VX_DISPATCH_VERBOSE=1 \
   "$OUT/elementwise/$sab_kernel.payload" "$sab_kernel" \
   "$OUT/elementwise/$sab_kernel.arc.perturbed.bin" \
   >"$OUT/elementwise/$sab_kernel.arc.perturbed.txt" 2>&1
-grep -h "sabotage:" "$OUT/elementwise/$sab_kernel.arc.perturbed.txt" | sed 's/^/    /'
+grep -h "sabotage:" "$OUT/elementwise/$sab_kernel.arc.perturbed.txt" |
+  sed 's/^/    /' || true
 if "$OUT/elementwise/on_cpu" compare f32 1024 0 \
   "$OUT/elementwise/$sab_kernel.cpu.bin" \
   "$OUT/elementwise/$sab_kernel.arc.perturbed.bin"; then
@@ -548,7 +632,9 @@ if ! "$OUT/elementwise/on_cpu" compare f32 1024 1e9 \
 fi
 echo "    a tolerance of 1e9 hides the change, so the tolerance decides"
 
-echo "==> sabotage 3: the matmul tolerance is what the verdict rests on"
+echo "==> report 3: the matmul tolerance is what the verdict rests on"
+# This prints which tolerance carries the verdict and fails nothing: either
+# answer is a fact about the size, not a fault.
 mat_kernel="$(kernel_at 0 matmul)"
 if "$OUT/matmul/on_cpu" compare f32 1048576 0 \
   "$OUT/matmul/$mat_kernel.cpu.bin" "$OUT/matmul/$mat_kernel.arc.bin"; then
@@ -583,6 +669,22 @@ if diff -q "$OUT/elementwise.cpu.out" "$OUT/elementwise.tampered.out" \
   exit 1
 fi
 echo "    a changed final number makes the comparison fail, as it must"
+
+echo "==> sabotage 6: a region paired with its neighbour's element type"
+# bool is region 12 and i4 is region 10, and both hold one value per byte, so a
+# list that put these two the wrong way round would drive the bool region for
+# i4. The bool kernel computes 1 everywhere, and the i4 reference is 1, 3, 5
+# and 7, so the two must differ.
+bool_kernel="$(kernel_at 12 elementwise)"
+if VX_CONFORMANCE_WARMUP=0 timeout 600 "$OUT/elementwise/on_cpu" run ew i4 \
+  32 32 1 1 "$OUT/elementwise/$bool_kernel.payload" "$bool_kernel" \
+  "$OUT/elementwise/$bool_kernel.paired-i4.bin" 2>&1 \
+  | grep -q "against reference: 0 of"; then
+  echo "error: the bool region matched the i4 reference, so a region index that" >&2
+  echo "       moved by two would go unnoticed" >&2
+  exit 1
+fi
+echo "    the bool region with i4 descriptors does not match, as it must not"
 
 echo "==> refusals: programs the device cannot run, by the compiler's own words"
 # These are the cases where the right answer is a refusal rather than a number.
@@ -712,20 +814,28 @@ echo "    refused by name, and the program printed no numbers"
 # kernel -- and now emits an image for it, so the check is that it runs on the
 # card and prints the same number the CPU backend prints.
 echo "==> a loop region on the Arc's own topology, through the machine file"
-machine_run() {
-  local side="$1"
-  if [ "$side" = cpu ]; then
-    VX_DISPATCH_LIB="$OUT/libvx_x86_dispatch.so" \
-      timeout 600 "$VXC" --machine "$ROOT/fleet/arc-a770.vx" --host default \
-      "$PROGRAMS/elementwise_on_the_arc.vx" --run 2>/dev/null
-  else
-    VX_DISPATCH_VERBOSE=1 timeout 600 "$VXC" --machine "$ROOT/fleet/arc-a770.vx" \
-      --host default "$PROGRAMS/elementwise_on_the_arc.vx" --run \
-      2>"$OUT/elementwise_on_the_arc.arc.run.txt"
-  fi | grep -E '^-?[0-9]+( +-?[0-9]+)* *$' || true
-}
-machine_run cpu >"$OUT/elementwise_on_the_arc.cpu.out"
-machine_run arc >"$OUT/elementwise_on_the_arc.arc.out"
+machine_cpu_status=0
+run_whole_program cpu "$OUT/elementwise_on_the_arc.cpu.raw" \
+  "$OUT/elementwise_on_the_arc.cpu.run.txt" --machine "$ROOT/fleet/arc-a770.vx" \
+  --host default "$PROGRAMS/elementwise_on_the_arc.vx" || machine_cpu_status=$?
+if [ "$machine_cpu_status" != 0 ]; then
+  echo "error: vxc failed on the CPU backend for the machine-file program" >&2
+  tail -10 "$OUT/elementwise_on_the_arc.cpu.run.txt" >&2
+  exit 1
+fi
+machine_arc_status=0
+run_whole_program arc "$OUT/elementwise_on_the_arc.arc.raw" \
+  "$OUT/elementwise_on_the_arc.arc.run.txt" --machine "$ROOT/fleet/arc-a770.vx" \
+  --host default "$PROGRAMS/elementwise_on_the_arc.vx" || machine_arc_status=$?
+if [ "$machine_arc_status" != 0 ]; then
+  echo "error: vxc failed on the Arc for the machine-file program" >&2
+  tail -10 "$OUT/elementwise_on_the_arc.arc.run.txt" >&2
+  exit 1
+fi
+collect_numbers "$OUT/elementwise_on_the_arc.cpu.raw" \
+  "$OUT/elementwise_on_the_arc.cpu.out" 1 "the CPU machine-file run"
+collect_numbers "$OUT/elementwise_on_the_arc.arc.raw" \
+  "$OUT/elementwise_on_the_arc.arc.out" 1 "the Arc machine-file run"
 grep -h "ran from its own image" "$OUT/elementwise_on_the_arc.arc.run.txt" |
   sed 's/^/    arc  /'
 if ! grep -q "ran from its own image" "$OUT/elementwise_on_the_arc.arc.run.txt"; then
