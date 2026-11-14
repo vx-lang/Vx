@@ -5,14 +5,18 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// A placed kernel calls a helper that takes a tensor in `managed: explicit`
-// memory. A SPIR-V image cannot pass a tensor into a call, and the host cannot
-// read that memory either, so the program does not compile.
+// Two placed regions use tensors in `managed: explicit` memory. The second
+// region calls a helper that takes a tensor. A SPIR-V image cannot pass a
+// tensor into a call, and the host cannot read that memory either, so the
+// program does not compile. The error names only the second region. The first
+// region makes no call, so it gets its image.
 //
 // RUN: not vxc %s --action emit-llvm 2>&1 | FileCheck %s # flat-codegen
-// CHECK: cannot become a `spirv64` device image: it passes a tensor to `first`
+// CHECK-NOT: in `main` (kernel `{{[a-z0-9_]+}}`) cannot become
+// CHECK: the region placed on `Topology::Dev` in `main` (kernel `{{[a-z0-9_]+}}`) cannot become a `spirv64` device image: it passes a tensor to `first`
 // CHECK: This region's operands are in 'DEV_HBM', declared `managed: explicit`
-// CHECK: Either every region in the image must be one the target can compile
+// CHECK: Change the region so that the target can compile it, or keep its operands in a space the host can read.
+// CHECK-NOT: cannot become
 // CHECK-NOT: will run on the host instead
 
 Memory CPU_DRAM {}
@@ -41,6 +45,12 @@ fn main() -> i32 {
   }
   let d = transfer(h, Memory::DEV_HBM);
   let mut o = transfer(o_h, Memory::DEV_HBM);
+
+  spawn on(Topology::Dev) {
+    for i in 0..4 {
+      o[i] = d[i] + 1.0;
+    }
+  }
 
   spawn on(Topology::Dev) {
     for i in 0..4 {
