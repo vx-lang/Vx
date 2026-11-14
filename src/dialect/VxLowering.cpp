@@ -3632,16 +3632,24 @@ static bool fitsSimdgroupMatrices(vx::LaneMatmulOp op) {
 
 static bool startsAtMultipleOf(Value tile, int64_t n);
 
-/// The alloca that `buffer` views, through views and the base buffer of their
-/// metadata, or null.
-static memref::AllocaOp allocaBehind(Value buffer) {
+/// Collects the allocas that `buffer` views, through views, the base buffer of
+/// their metadata, and a choice of two buffers. Returns false when one of them
+/// is not an alloca.
+static bool allocasBehind(Value buffer,
+                          SmallVectorImpl<memref::AllocaOp> &out) {
   if (auto meta = buffer.getDefiningOp<memref::ExtractStridedMetadataOp>())
-    return allocaBehind(meta.getSource());
+    return allocasBehind(meta.getSource(), out);
+  if (auto pick = buffer.getDefiningOp<arith::SelectOp>())
+    return allocasBehind(pick.getTrueValue(), out) &&
+           allocasBehind(pick.getFalseValue(), out);
   if (Operation *def = buffer.getDefiningOp();
       isa_and_nonnull<memref::ReinterpretCastOp, memref::SubViewOp,
                       memref::CastOp>(def))
-    return allocaBehind(def->getOperand(0));
-  return buffer.getDefiningOp<memref::AllocaOp>();
+    return allocasBehind(def->getOperand(0), out);
+  auto alloca = buffer.getDefiningOp<memref::AllocaOp>();
+  if (alloca)
+    out.push_back(alloca);
+  return alloca != nullptr;
 }
 
 /// Whether the index `v` is a multiple of `n`: a constant, the offset or a
@@ -3680,9 +3688,13 @@ static bool startsAtMultipleOf(Value tile, int64_t n) {
     return true;
   if (auto cast = dyn_cast_or_null<memref::CastOp>(def))
     return startsAtMultipleOf(cast.getSource(), n);
+  if (auto pick = dyn_cast_or_null<arith::SelectOp>(def))
+    return startsAtMultipleOf(pick.getTrueValue(), n) &&
+           startsAtMultipleOf(pick.getFalseValue(), n);
   // The offset of a reinterpret cast counts from the start of the alloca.
+  SmallVector<memref::AllocaOp> allocas;
   if (auto view = dyn_cast_or_null<memref::ReinterpretCastOp>(def))
-    return allocaBehind(view.getSource()) &&
+    return allocasBehind(view.getSource(), allocas) &&
            knownMultipleOf(view.getMixedOffsets()[0], n);
   if (auto view = dyn_cast_or_null<memref::SubViewOp>(def)) {
     SmallVector<int64_t> strides;
@@ -4085,17 +4097,25 @@ static bool onlyCompared(Value v) {
 }
 
 /// Collects the loads, stores, `cp.async`s and `ldmatrix`s of `buffer`,
-/// through its views. Returns false when `buffer` has another use, such as a
-/// raw address.
-static bool tileAccesses(Value buffer, SmallVectorImpl<Operation *> &out) {
+/// through its views, and in `partners` the other buffers of each choice of
+/// two buffers that it is in. Returns false when `buffer` has another use,
+/// such as a raw address.
+static bool tileAccesses(Value buffer, llvm::SetVector<Operation *> &out,
+                         SmallVectorImpl<Value> &partners) {
   for (OpOperand &use : buffer.getUses()) {
     Operation *user = use.getOwner();
     if (isa<memref::ReinterpretCastOp, memref::SubViewOp, memref::CastOp>(
             user)) {
-      if (!tileAccesses(user->getResult(0), out))
+      if (!tileAccesses(user->getResult(0), out, partners))
         return false;
+    } else if (auto pick = dyn_cast<arith::SelectOp>(user)) {
+      if (use.getOperandNumber() == 0 ||
+          !tileAccesses(pick.getResult(), out, partners))
+        return false;
+      partners.push_back(use.getOperandNumber() == 1 ? pick.getFalseValue()
+                                                     : pick.getTrueValue());
     } else if (auto meta = dyn_cast<memref::ExtractStridedMetadataOp>(user)) {
-      if (!tileAccesses(meta.getBaseBuffer(), out))
+      if (!tileAccesses(meta.getBaseBuffer(), out, partners))
         return false;
     } else if (auto base =
                    dyn_cast<memref::ExtractAlignedPointerAsIndexOp>(user)) {
@@ -4109,7 +4129,7 @@ static bool tileAccesses(Value buffer, SmallVectorImpl<Operation *> &out) {
                (isa<nvgpu::DeviceAsyncCopyOp>(user) &&
                 cast<nvgpu::DeviceAsyncCopyOp>(user).getDst() == buffer)) {
       if (!isa<memref::DimOp>(user))
-        out.push_back(user);
+        out.insert(user);
     } else {
       return false;
     }
@@ -4122,33 +4142,66 @@ static bool tileAccesses(Value buffer, SmallVectorImpl<Operation *> &out) {
 /// `c` of each 128-byte line `l` of the tile moves to chunk `c ^ (l % 8)`,
 /// with rows in place of lines when a row is longer than 128 bytes. Each
 /// access then reads the element at its new place in a flat view of the tile.
+/// The two buffers of a tile that a loop copies ahead get the layout together.
 /// A tile with another use, such as a TMA copy, keeps its layout.
 static void swizzleLdmatrixTiles(gpu::GPUFuncOp func) {
   llvm::SetVector<memref::AllocaOp> tiles;
   func.walk([&](nvgpu::LdMatrixOp op) {
-    if (memref::AllocaOp tile = allocaBehind(op.getSrcMemref()))
-      tiles.insert(tile);
+    SmallVector<memref::AllocaOp> allocas;
+    if (allocasBehind(op.getSrcMemref(), allocas))
+      tiles.insert(allocas.begin(), allocas.end());
   });
-  for (memref::AllocaOp tile : tiles) {
-    auto type = tile.getType();
+  DenseSet<Operation *> done;
+  for (memref::AllocaOp first : tiles) {
+    if (!done.insert(first).second)
+      continue;
+    // The tile and the buffers that share its accesses.
+    auto type = first.getType();
     int64_t rowBytes = type.getDimSize(type.getRank() - 1) * 2;
-    SmallVector<Operation *> accesses;
-    if (!type.hasStaticShape() || type.getElementTypeBitWidth() != 16 ||
-        rowBytes < 32 || !llvm::isPowerOf2_64(rowBytes) ||
-        type.getNumElements() * 2 % 128 ||
-        !tileAccesses(tile.getResult(), accesses))
+    SmallVector<memref::AllocaOp> group = {first};
+    llvm::SetVector<Operation *> accesses;
+    bool fits = type.hasStaticShape() && type.getElementTypeBitWidth() == 16 &&
+                rowBytes >= 32 && llvm::isPowerOf2_64(rowBytes) &&
+                type.getNumElements() * 2 % 128 == 0;
+    for (size_t g = 0; fits && g < group.size(); ++g) {
+      SmallVector<Value> partners;
+      fits = tileAccesses(group[g].getResult(), accesses, partners);
+      for (Value partner : partners) {
+        auto other = partner.getDefiningOp<memref::AllocaOp>();
+        fits &= other && other.getType() == type;
+        if (other && done.insert(other).second)
+          group.push_back(other);
+      }
+    }
+    if (!fits)
       continue;
     // In elements: the line or row number starts at bit `shift`, and the
     // chunk number at bit 3.
     int64_t shift = llvm::Log2_64(std::max<int64_t>(128, rowBytes)) - 1;
-    Location loc = tile.getLoc();
-    OpBuilder b(tile->getBlock(), std::next(tile->getIterator()));
-    Value flat = b.create<memref::ReinterpretCastOp>(
-        loc,
-        MemRefType::get({type.getNumElements()}, type.getElementType(), nullptr,
-                        type.getMemorySpace()),
-        tile.getResult(), 0, ArrayRef<int64_t>{type.getNumElements()},
-        ArrayRef<int64_t>{1});
+    Location loc = first.getLoc();
+    DenseMap<Value, Value> flats;
+    for (memref::AllocaOp tile : group) {
+      OpBuilder b(tile->getBlock(), std::next(tile->getIterator()));
+      flats[tile.getResult()] = b.create<memref::ReinterpretCastOp>(
+          loc,
+          MemRefType::get({type.getNumElements()}, type.getElementType(),
+                          nullptr, type.getMemorySpace()),
+          tile.getResult(), 0, ArrayRef<int64_t>{type.getNumElements()},
+          ArrayRef<int64_t>{1});
+    }
+    // The flat view of the buffer behind `view`.
+    std::function<Value(OpBuilder &, Value)> flatOf = [&](OpBuilder &ab,
+                                                          Value view) -> Value {
+      if (Value flat = flats.lookup(view))
+        return flat;
+      if (auto pick = view.getDefiningOp<arith::SelectOp>())
+        return ab.create<arith::SelectOp>(loc, pick.getCondition(),
+                                          flatOf(ab, pick.getTrueValue()),
+                                          flatOf(ab, pick.getFalseValue()));
+      if (auto meta = view.getDefiningOp<memref::ExtractStridedMetadataOp>())
+        return flatOf(ab, meta.getSource());
+      return flatOf(ab, view.getDefiningOp()->getOperand(0));
+    };
     // The new place of element `indices` of `view`.
     auto place = [&](OpBuilder &ab, Value view, ValueRange indices) -> Value {
       auto meta = ab.create<memref::ExtractStridedMetadataOp>(loc, view);
@@ -4169,22 +4222,303 @@ static void swizzleLdmatrixTiles(gpu::GPUFuncOp func) {
       OpBuilder ab(access);
       if (auto load = dyn_cast<memref::LoadOp>(access)) {
         Value at = place(ab, load.getMemRef(), load.getIndices());
-        load.getMemrefMutable().assign(flat);
+        load.getMemrefMutable().assign(flatOf(ab, load.getMemRef()));
         load.getIndicesMutable().assign(at);
       } else if (auto store = dyn_cast<memref::StoreOp>(access)) {
         Value at = place(ab, store.getMemRef(), store.getIndices());
-        store.getMemrefMutable().assign(flat);
+        store.getMemrefMutable().assign(flatOf(ab, store.getMemRef()));
         store.getIndicesMutable().assign(at);
       } else if (auto ld = dyn_cast<nvgpu::LdMatrixOp>(access)) {
         Value at = place(ab, ld.getSrcMemref(), ld.getIndices());
-        ld.getSrcMemrefMutable().assign(flat);
+        ld.getSrcMemrefMutable().assign(flatOf(ab, ld.getSrcMemref()));
         ld.getIndicesMutable().assign(at);
       } else {
         auto copy = cast<nvgpu::DeviceAsyncCopyOp>(access);
         Value at = place(ab, copy.getDst(), copy.getDstIndices());
-        copy.getDstMutable().assign(flat);
+        copy.getDstMutable().assign(flatOf(ab, copy.getDst()));
         copy.getDstIndicesMutable().assign(at);
       }
+    }
+  }
+}
+
+/// A loop in the shape that the code generators give a counted `for`: the
+/// header compares the loop variable with the bound and leaves the loop when
+/// the test fails, and each pass adds the constant `step`. The flat code
+/// generator keeps the variable in an alloca, and the AST code generator in an
+/// argument of the header, with `first` from the block before the loop.
+struct CountedLoop {
+  Value variable, step, first;
+  arith::CmpIOp test;
+  Block *preheader, *latch;
+
+  bool inAlloca() const { return !isa<BlockArgument>(variable); }
+};
+
+static std::optional<CountedLoop> countedLoop(CFGLoop *loop) {
+  // The block before the loop: its one predecessor outside, which goes only
+  // to the header.
+  Block *preheader = loop->getLoopPredecessor();
+  if (preheader && preheader->getNumSuccessors() != 1)
+    preheader = nullptr;
+  Block *latch = loop->getLoopLatch();
+  Block *header = loop->getHeader();
+  auto exit = dyn_cast<cf::CondBranchOp>(header->getTerminator());
+  if (!preheader || !latch || !isa<cf::BranchOp>(latch->getTerminator()) ||
+      !isa<cf::BranchOp>(preheader->getTerminator()) || !exit ||
+      !loop->contains(exit.getTrueDest()) ||
+      loop->contains(exit.getFalseDest()))
+    return std::nullopt;
+  auto test = exit.getCondition().getDefiningOp<arith::CmpIOp>();
+  if (!test)
+    return std::nullopt;
+  Value variable, next, first;
+  if (auto argument = dyn_cast<BlockArgument>(test.getLhs());
+      argument && argument.getOwner() == header) {
+    variable = argument;
+    unsigned i = argument.getArgNumber();
+    next = cast<cf::BranchOp>(latch->getTerminator()).getDestOperands()[i];
+    first = cast<cf::BranchOp>(preheader->getTerminator()).getDestOperands()[i];
+  } else if (auto load = test.getLhs().getDefiningOp<memref::LoadOp>();
+             load && load.getMemRef().getDefiningOp<memref::AllocaOp>()) {
+    variable = load.getMemRef();
+    SmallVector<memref::StoreOp> stores;
+    for (Operation *user : variable.getUsers())
+      if (auto store = dyn_cast<memref::StoreOp>(user);
+          store && loop->contains(store->getBlock()))
+        stores.push_back(store);
+    if (stores.size() != 1)
+      return std::nullopt;
+    next = stores[0].getValue();
+  } else {
+    return std::nullopt;
+  }
+  // The variable plus a step that is a number. The loop of blocks steps by
+  // the size of the grid, and a block seldom runs a second pass of it.
+  auto add = next.getDefiningOp<arith::AddIOp>();
+  if (!add || !add.getRhs().getDefiningOp<arith::ConstantOp>())
+    return std::nullopt;
+  auto before = add.getLhs().getDefiningOp<memref::LoadOp>();
+  if (add.getLhs() != variable && (!before || before.getMemRef() != variable))
+    return std::nullopt;
+  return CountedLoop{variable, add.getRhs(), first, test, preheader, latch};
+}
+
+/// The value of `v` in a pass of `loop` where the loop variable holds `at`, by
+/// cloning at `b` the ops that compute it in the loop. `map` gives values that
+/// change. Each op cloned must be pure and have no regions, or be a load of an
+/// alloca that the loop does not store to. Returns null when one is not, and
+/// with `check` it only tests.
+static Value valueInPass(OpBuilder &b, Value v, CFGLoop *loop,
+                         const CountedLoop &counted, Value at, IRMapping &map,
+                         bool check) {
+  if (Value known = map.lookupOrNull(v))
+    return known;
+  if (v == counted.variable)
+    return at;
+  Operation *def = v.getDefiningOp();
+  if (!def)
+    return loop->contains(cast<BlockArgument>(v).getOwner()) ? Value() : v;
+  Operation *top = loop->getHeader()->getParent()->findAncestorOpInRegion(*def);
+  if (!top || !loop->contains(top->getBlock()))
+    return v;
+  if (auto load = dyn_cast<memref::LoadOp>(def)) {
+    if (load.getMemRef() == counted.variable)
+      return at;
+    if (!load.getMemRef().getDefiningOp<memref::AllocaOp>() ||
+        llvm::any_of(load.getMemRef().getUsers(), [&](Operation *user) {
+          return !isa<memref::LoadOp>(user) && loop->contains(user->getBlock());
+        }))
+      return {};
+  } else if (!isPure(def) || def->getNumRegions()) {
+    return {};
+  }
+  for (Value operand : def->getOperands()) {
+    Value value = valueInPass(b, operand, loop, counted, at, map, check);
+    if (!value)
+      return {};
+    if (!check && value != operand)
+      map.map(operand, value);
+  }
+  if (check)
+    return v;
+  Operation *copy = b.clone(*def, map);
+  return copy->getResult(cast<OpResult>(v).getResultNumber());
+}
+
+/// Whether `op` makes every lane of the block wait.
+static bool waitsForTheBlock(Operation &op) {
+  if (auto wait = dyn_cast<vx::LaneCopyWaitOp>(op))
+    return !wait.getSubgroup();
+  return isa<gpu::BarrierOp>(op) ||
+         (isa<vx::BarrierOp>(op) && !op.hasAttr("subgroup"));
+}
+
+/// Whether every path in `loop` from just after `from` to `to`, around the
+/// loop, has a barrier of the block.
+static bool barrierOnEveryPath(Operation *from, Operation *to, CFGLoop *loop) {
+  SmallVector<std::pair<Block *, Block::iterator>> work = {
+      {from->getBlock(), std::next(from->getIterator())}};
+  DenseSet<Block *> seen;
+  while (!work.empty()) {
+    auto [block, at] = work.pop_back_val();
+    bool stopped = false;
+    for (; at != block->end() && !stopped; ++at) {
+      if (&*at == to)
+        return false;
+      stopped = waitsForTheBlock(*at);
+    }
+    if (stopped)
+      continue;
+    for (Block *next : block->getSuccessors())
+      if (loop->contains(next) && seen.insert(next).second)
+        work.push_back({next, next->begin()});
+  }
+  return true;
+}
+
+/// Copies the tiles of a loop one pass ahead, so that the copy of the next
+/// pass runs while the lanes work on this one. A tile that a loop fills with
+/// `lanes::copy_async` and waits for in the same pass gets a second buffer:
+/// each pass uses one, and copies the tile of the next pass into the other.
+/// The copy of the first pass goes before the loop. This needs a barrier of
+/// the block between the last use of a buffer in a pass and the copy into it
+/// in the next pass, and no use of the tile after the loop. A tile that does
+/// not fit keeps its copies as they are.
+static void pipelineLaneCopies(gpu::GPUFuncOp func) {
+  Region &body = func.getBody();
+  if (body.hasOneBlock())
+    return;
+  llvm::MapVector<Operation *, SmallVector<vx::LaneCopyAsyncOp>> byTile;
+  func.walk([&](vx::LaneCopyAsyncOp op) {
+    if (!op.getSerial() && !op.getSubgroup() && op->getParentRegion() == &body)
+      if (memref::AllocaOp tile = laneCopyTileAlloca(op.getTile()))
+        byTile[tile].push_back(op);
+  });
+  if (byTile.empty())
+    return;
+  DominanceInfo dominance(func);
+  CFGLoopInfo loops(dominance.getDomTree(&body));
+  DenseMap<CFGLoop *, Value> parities;
+  Block &entry = body.front();
+  for (auto &[tileOp, copies] : byTile) {
+    auto tile = cast<memref::AllocaOp>(tileOp);
+    CFGLoop *loop = loops.getLoopFor(copies.front()->getBlock());
+    std::optional<CountedLoop> counted =
+        loop ? countedLoop(loop) : std::nullopt;
+    if (!counted || loop->contains(tile->getBlock()))
+      continue;
+    // Each copy: in this loop and not a loop in it, with one wait there.
+    auto fits = [&](vx::LaneCopyAsyncOp copy) {
+      if (loops.getLoopFor(copy->getBlock()) != loop ||
+          !copy.getToken().hasOneUse())
+        return false;
+      auto wait =
+          dyn_cast<vx::LaneCopyWaitOp>(*copy.getToken().getUsers().begin());
+      IRMapping map;
+      return wait && !wait.getSerial() && !wait.getSubgroup() &&
+             wait->getParentRegion() == &body &&
+             loops.getLoopFor(wait->getBlock()) == loop &&
+             llvm::all_of(copy->getOperands(), [&](Value v) {
+               OpBuilder none(copy);
+               return valueInPass(none, v, loop, *counted, v, map,
+                                  /*check=*/true);
+             });
+    };
+    IRMapping testMap;
+    OpBuilder none(func);
+    if (!llvm::all_of(copies, fits) ||
+        !valueInPass(none, counted->test.getResult(), loop, *counted,
+                     counted->test.getResult(), testMap, /*check=*/true))
+      continue;
+    // Each use of the tile: in the loop, or a drop. And a barrier between
+    // each use in the loop and each copy into the tile in the next pass.
+    bool safe = llvm::all_of(tile->getUsers(), [&](Operation *user) {
+      return isa<vx::DropOp>(user) || loop->contains(user->getBlock());
+    });
+    SmallVector<Operation *> uses;
+    accessesOf(tile.getResult(), uses);
+    for (Operation *use : uses) {
+      Operation *top = body.findAncestorOpInRegion(*use);
+      if (!top || isa<vx::DropOp>(use) ||
+          llvm::is_contained(copies, dyn_cast<vx::LaneCopyAsyncOp>(use)))
+        continue;
+      safe &= loop->contains(top->getBlock()) &&
+              llvm::all_of(copies, [&](vx::LaneCopyAsyncOp copy) {
+                return barrierOnEveryPath(top, copy, loop);
+              });
+    }
+    if (!safe)
+      continue;
+
+    Location loc = tile.getLoc();
+    OpBuilder b(tile);
+    b.setInsertionPointAfter(tile);
+    Value other = b.clone(*tile)->getResult(0);
+    // `parity` is true in the passes that use `other`.
+    Value &parity = parities[loop];
+    if (!parity) {
+      parity =
+          b.create<memref::AllocaOp>(loc, MemRefType::get({}, b.getI1Type()));
+      OpBuilder pb(counted->preheader->getTerminator());
+      pb.create<memref::StoreOp>(
+          loc, pb.create<arith::ConstantIntOp>(loc, pb.getI1Type(), 0), parity);
+      OpBuilder lb(counted->latch->getTerminator());
+      lb.create<memref::StoreOp>(
+          loc,
+          lb.create<arith::XOrIOp>(
+              loc, lb.create<memref::LoadOp>(loc, parity),
+              lb.create<arith::ConstantIntOp>(loc, lb.getI1Type(), 1)),
+          parity);
+    }
+    OpBuilder hb(loop->getHeader(), loop->getHeader()->begin());
+    Value odd = hb.create<memref::LoadOp>(loc, parity);
+    Value now = hb.create<arith::SelectOp>(loc, odd, other, tile);
+    Value next = hb.create<arith::SelectOp>(loc, odd, tile, other);
+    tile.getResult().replaceUsesWithIf(now, [&](OpOperand &use) {
+      Operation *owner = use.getOwner();
+      return loop->contains(owner->getBlock()) &&
+             owner != now.getDefiningOp() && owner != next.getDefiningOp();
+    });
+
+    for (vx::LaneCopyAsyncOp copy : copies) {
+      Value token = OpBuilder(&entry, entry.begin())
+                        .create<memref::AllocaOp>(
+                            loc, MemRefType::get({}, b.getI32Type()));
+      // Starts the copy of the pass where the loop variable holds `at`, into
+      // `into`, at `ob`, when that pass runs.
+      auto start = [&](OpBuilder &ob, Value at, Value into) {
+        IRMapping map;
+        map.map(now, into);
+        Value runs = valueInPass(ob, counted->test.getResult(), loop, *counted,
+                                 at, map, /*check=*/false);
+        auto when = ob.create<scf::IfOp>(loc, runs, /*withElseRegion=*/false);
+        OpBuilder::InsertionGuard guard(ob);
+        ob.setInsertionPoint(when.thenBlock()->getTerminator());
+        for (Value operand : copy->getOperands())
+          valueInPass(ob, operand, loop, *counted, at, map, /*check=*/false);
+        Operation *started = ob.clone(*copy, map);
+        ob.create<memref::StoreOp>(loc, started->getResult(0), token);
+      };
+      OpBuilder pb(counted->preheader->getTerminator());
+      start(pb,
+            counted->inAlloca()
+                ? pb.create<memref::LoadOp>(loc, counted->variable).getResult()
+                : counted->first,
+            tile);
+      OpBuilder cb(copy);
+      Value mine = cb.create<memref::LoadOp>(loc, token);
+      Value at =
+          counted->inAlloca()
+              ? cb.create<memref::LoadOp>(loc, counted->variable).getResult()
+              : counted->variable;
+      start(
+          cb,
+          cb.create<arith::AddIOp>(
+              loc, at, cb.clone(*counted->step.getDefiningOp())->getResult(0)),
+          next);
+      copy.getToken().replaceAllUsesWith(mine);
+      copy.erase();
     }
   }
 }
@@ -6323,6 +6657,11 @@ struct ConvertVxToStandardPass
       gpuEntry.getOperations().splice(gpuEntry.end(),
                                       clonedEntry->getOperations());
       clonedEntry->erase();
+
+      // On a GPU without TMA, the copies of a tile in a loop run one pass
+      // ahead. Before the steps below, which expand the copies.
+      if (!chipHasTensorMaps(deviceChip(gpuModule)))
+        pipelineLaneCopies(gpuFunc);
 
       // The device half of the lane reductions: shuffles and shared memory.
       // Before the steps below, which make their shared scratch `.shared`
