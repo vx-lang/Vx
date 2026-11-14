@@ -979,10 +979,11 @@ impl Proof<'_> {
             .iter()
             .filter(|(v, _)| !v.ends_with("#outside"))
             .map(|(v, c)| {
+                // The number of values that `v` can have.
                 let span = match Self::part_of(v) {
                     Some((own, ..)) if self.ranges.get(own).copied().flatten().is_some() => self
                         .index_range(v)
-                        .and_then(|(lo, hi)| i64::try_from(hi - lo).ok()),
+                        .and_then(|(lo, hi)| i64::try_from(hi - lo + 1).ok()),
                     Some(_) => None,
                     None => self
                         .ranges

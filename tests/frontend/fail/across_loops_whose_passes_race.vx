@@ -384,6 +384,17 @@ pub fn remainder_too_wide_for_its_digit(c : &mut Tensor<f32, [?, ?], Memory::HBM
   return;
 }
 
+// `v % 4` can be 3, so blocks 3 and 4 both write `out[3]`.
+pub fn remainder_and_quotient_that_overlap(out : &mut Tensor<f32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for v in 0..8 across blocks {
+      // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:[[# @LINE + 1]]:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `v`
+      out[(v % 4) + 3 * (v / 4)] = 1.0;
+    }
+  }
+  return;
+}
+
 fn main() -> i32 {
   return 0;
 }
