@@ -15,8 +15,8 @@ Topology NPU {
 
 fn main() -> i32 {
   spawn on(Topology::NPU[0]) {
-    // CHECK: Error[E6026] at {{.*}}an_f32_tensor_on_an_npu_that_takes_only_f16_is_refused.vx:[[@LINE+1]]:13: this expression has element type f32, which NPU[0] cannot represent; it declares [f16]
-    let a = Tensor<f32>([4, 4]);
+    // CHECK: Error[E6026] at {{.*}}:[[@LINE+1]]:14: this expression has element type f32, which NPU[0] cannot represent; it declares [f16, i32, u32, bool]
+    let _a = Tensor<f32>([4, 4]);
   }
   return 0;
 }

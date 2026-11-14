@@ -17,19 +17,19 @@
 //
 // FLAT-NOT: flat-codegen
 // FLAT-LABEL: func.func @main()
-// FLAT: {topology_name = "GPU[0]"} : i32
-// FLAT: {topology_name = "GPU[0]"} : i32
-// FLAT: {topology_name = "GPU[0]"} : i32
-// FLAT: {topology_name = "CPU"} : i32
-// FLAT: {topology_name = "GPU[0]"} : i32
-// FLAT: {topology_name = "CPU"} : i32
-// FLAT: {topology_name = "NPU[0]"} : i32
-// FLAT: {topology_name = "GPU[0]"} : i32
-// FLAT: {topology_name = "GPU[0]"} : i32
+// FLAT: {arch = "nvptx64", offload = true, topology_name = "GPU[0]"} : i32
+// FLAT: {arch = "nvptx64", offload = true, topology_name = "GPU[0]"} : i32
+// FLAT: {arch = "nvptx64", offload = true, topology_name = "GPU[0]"} : i32
+// FLAT: {arch = "x86_64", offload = false, topology_name = "CPU"} : i32
+// FLAT: {arch = "nvptx64", offload = true, topology_name = "GPU[0]"} : i32
+// FLAT: {arch = "x86_64", offload = false, topology_name = "CPU"} : i32
+// FLAT: {offload = false, topology_name = "NPU[0]"} : i32
+// FLAT: {arch = "nvptx64", offload = true, topology_name = "GPU[0]"} : i32
+// FLAT: {arch = "nvptx64", offload = true, topology_name = "GPU[0]"} : i32
 // FLAT-LABEL: func.func @stage$topology$746f706f6c6f6779286b696e64333a43505529$topology$746f706f6c6f6779286b696e64333a475055696e646578393a6e756d626572313a3029(
-// FLAT: {topology_name = "CPU"} : i32
+// FLAT: {arch = "x86_64", offload = false, topology_name = "CPU"} : i32
 // FLAT-LABEL: func.func @run_on$topology$746f706f6c6f6779286b696e64333a475055696e646578393a6e756d626572313a3029(
-// FLAT: {topology_name = "GPU[0]"}
+// FLAT: {arch = "nvptx64", offload = true, topology_name = "GPU[0]"}
 // FLAT-LABEL: func.func @pipeline$topology$746f706f6c6f6779286b696e64333a475055696e646578393a6e756d626572313a3029$topology$746f706f6c6f6779286b696e64333a43505529$topology$746f706f6c6f6779286b696e64333a4e5055696e646578393a6e756d626572313a3029(
 // FLAT: "vx.transfer"(%arg0) <{target_topology = 0 : i32}> {source_topology = 500 : i32, space = "CPU_DRAM"}
 // FLAT-LABEL: func.func @move_between$topology$746f706f6c6f6779286b696e64333a43505529$topology$746f706f6c6f6779286b696e64333a475055696e646578393a6e756d626572313a3029(

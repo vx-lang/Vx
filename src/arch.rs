@@ -912,10 +912,16 @@ pub fn owning_topology_in(
 /// `visibility` includes each topology's own `default_space`, which subsumes the old
 /// "a topology sees its own memory" special-cases (NPU→NPUHBM, AccCore→LocalSRAM,
 /// GPU→GpuHbm).
-fn builtin_descriptors() -> HashMap<crate::syntax::TopologyKind, TopologyDescriptor> {
+pub(crate) fn builtin_descriptors() -> HashMap<crate::syntax::TopologyKind, TopologyDescriptor> {
     use crate::syntax::TopologyKind as K;
     use MemorySpace::*;
-    let d = |default_space: MemorySpace, visibility: &[MemorySpace], arch: Option<&str>| {
+
+    let mut m = HashMap::new();
+
+    let d = |default_space: MemorySpace,
+             visibility: &[MemorySpace],
+             arch: Option<&str>,
+             offload: bool| {
         TopologyDescriptor {
             arch: arch.map(|s| s.into()),
             default_space,
@@ -924,18 +930,22 @@ fn builtin_descriptors() -> HashMap<crate::syntax::TopologyKind, TopologyDescrip
             dtypes: None,
             chip: None,
             levels: None,
-            offload: false,
+            offload,
         }
     };
 
-    m.insert(K::CPU, d(CPUDRAM, &[CPUDRAM, NPUHBM], Some("x86_64")));
-    m.insert(K::GPU, d(GpuHbm, &[GpuHbm], Some("nvptx64")));
-    m.insert(K::NPU, d(NPUHBM, &[NPUHBM], None));
-    m.insert(K::AMX, d(CPUDRAM, &[CPUDRAM], Some("amx")));
-    m.insert(K::AccCore, d(LocalSRAM, &[LocalSRAM], None));
-    m.insert(K::CpuAvx512, d(CPUDRAM, &[CPUDRAM], Some("avx_512")));
-    m.insert(K::CpuNeon, d(CPUDRAM, &[CPUDRAM], Some("neon")));
-    m.insert(K::Slice, d(NPUHBM, &[NPUHBM], None));
+    m.insert(K::CPU, d(CPUDRAM, &[CPUDRAM, NPUHBM], None, false));
+    m.insert(K::GPU, d(GpuHbm, &[GpuHbm], Some("nvptx64"), true));
+    m.insert(K::NPU, d(NPUHBM, &[NPUHBM], None, false));
+    m.insert(
+        K::ANE,
+        d(NPUHBM, &[NPUHBM, CPUDRAM], Some("appleane"), false),
+    );
+    m.insert(K::AMX, d(CPUDRAM, &[CPUDRAM], None, false));
+    m.insert(K::AccCore, d(LocalSRAM, &[LocalSRAM], None, false));
+    m.insert(K::CpuAvx512, d(CPUDRAM, &[CPUDRAM], None, false));
+    m.insert(K::CpuNeon, d(CPUDRAM, &[CPUDRAM], None, false));
+    m.insert(K::Slice, d(NPUHBM, &[NPUHBM], None, false));
     m
 }
 

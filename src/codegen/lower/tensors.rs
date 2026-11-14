@@ -96,13 +96,20 @@ fn lower_spawn_region<'c>(
         trip
     });
     let arch = match &this.top {
-        top => {
-            let kind = top.kind();
-            gen.topologies
-                .get(&kind)
-                .and_then(|d| d.arch.as_ref())
-                .map(|a| a.to_string())
+        syntax::Topology::Custom(name) => {
+            if let Some(desc) = gen.topologies.get(name.as_ref()) {
+                desc.arch.as_ref().map(|a| a.to_string())
+            } else {
+                crate::arch::builtin_descriptors()
+                    .get(&this.top.kind())
+                    .and_then(|d| d.arch.as_ref())
+                    .map(|a| a.to_string())
+            }
         }
+        _ => crate::arch::builtin_descriptors()
+            .get(&this.top.kind())
+            .and_then(|d| d.arch.as_ref())
+            .map(|a| a.to_string()),
     };
     gen.spawn_arches.push(arch);
     // A `&mut Tensor` parameter is a slot that holds the tensor. A SPIR-V kernel cannot take a
