@@ -42,8 +42,7 @@
 <blockquote class="tldr"><strong>TL;DR</strong> — In Vx, a GPU kernel is a nested pair of structured
 <code>for</code> loops annotated with <code>across blocks</code> and <code>across lanes</code>
 inside a <code>spawn on</code> region. Semantically, <code>across</code> is a checked schedule
-annotation: deleting every <code>across</code> yields a sequential loop nest with the same result,
-and the frontend rejects races and non-uniform barrier control flow at compile time
+annotation: the loop nest means what it means when each loop runs one pass at a time, and the frontend rejects races and non-uniform barrier control flow at compile time
 (<code>E6032</code>). We timed these loops on an NVIDIA A100 against CUDA. A loop scaling a
 4096 &times; 16384 grid ran in 0.343 ms versus 0.388 ms in CUDA. Three kernels from
 <code>llm.c</code>—GELU, layernorm, and softmax—written as <code>across</code> loops came within
@@ -95,7 +94,11 @@ lane-0-private values.</li>
 
 <p>Removing every <code>across</code> modifier leaves an ordinary sequential loop nest with the
 same denotational meaning (up to explicit <code>atomic</code> interleavings or unordered
-reductions), and the compiler emits a host CPU copy from the same IR when no GPU is present.</p>
+reductions). The exception is a <code>lanes::</code> collective such as <code>lanes::sum</code>: it
+must sit in an <code>across blocks</code> loop, so a kernel that calls one does not compile
+without its <code>across</code> loops. Its sequential meaning is a reduction in a fixed order. The
+compiler emits a host CPU copy from the same IR when no GPU is present, and that copy computes the
+reduction in the same order, with the same bits.</p>
 
 <h2 id="one-loop"><a href="#one-loop">One loop: why knowing the block size matters</a></h2>
 
@@ -244,8 +247,8 @@ replaces <code>gpu.block_dim</code> with that constant and attaches it as the up
 on <code>gpu.thread_id</code> (without emitting <code>nvvm.maxntid</code> for blocks of 256 threads
 or fewer, since <code>.maxntid</code> alters <code>ptxas</code> register allocation). On the CPU
 fallback clone, <code>gpu.thread_id</code> and <code>gpu.block_dim</code> still fold to
-<code>0</code> and <code>1</code>. With that single change, LLVM proves single-trip lane loops dead,
-eliminates the bounds check against 256, and computes element addresses directly. Every benchmarked
+<code>0</code> and <code>1</code>. With that single change, LLVM sees that a lane loop as wide as its
+block runs once, removes the loop and its bounds check against 256, and computes element addresses directly. Every benchmarked
 kernel sped up by 4% to 10% with identical output bits:</p>
 
 <div class="table-scroll">
@@ -302,7 +305,8 @@ blocks/gangs, columns on threads/vectors), the generated PTX diverges sharply ac
 
 <p>OpenMP's 1,188-instruction kernel reflects its fork-join execution model: nesting
 <code>parallel for</code> inside <code>teams distribute</code> emits a dynamic parallel region per
-team where a single thread initializes and wakes worker threads via a shared-memory state machine.</p>
+team. As far as we can tell from the PTX, a single thread of each team starts the region and wakes
+the worker threads via a shared-memory state machine.</p>
 
 <p><strong>GELU.</strong> Vx, OpenMP, OpenACC, and <code>stdpar</code> all emit the same instruction
 sequence for <code>tanh</code>: <code>ex2.approx</code>, <code>rcp.approx</code>, and a polynomial
@@ -311,8 +315,8 @@ hardware instruction <code>tanh.approx.f32</code>, which Vx's <code>fast_tanh</c
 emit (<a href="https://github.com/vx-lang/Vx/issues/3359">#3359</a>).</p>
 
 <p><strong>Layernorm.</strong> Each row requires two reductions. Vx lowers <code>lanes::sum</code> to
-register-level warp shuffles, producing a self-contained 168-instruction kernel with zero runtime
-calls. In C++ with <code>nvc++</code>:</p>
+warp shuffles, with one exchange of the per-warp results through shared memory. The kernel is a
+self-contained 168 instructions with zero runtime calls. In C++ with <code>nvc++</code>:</p>
 
 <ul>
 <li><strong>OpenACC</strong> (<code>loop vector reduction(+: s)</code> inside a <code>gang</code>
@@ -377,8 +381,8 @@ kernels run in <code>bf16</code>.</li>
 <code>f64</code> throughput (such as an NVIDIA L4) will exhibit a much steeper penalty when using
 exact <code>tanh</code>/<code>exp</code> instead of <code>fast_*</code>.</li>
 <li><strong>Richer kernels:</strong> Matrix multiplications in <code>llm.c</code> dispatch to cuBLAS,
-and fused attention kernels exercise warp-group scheduling and asynchronous shared-memory copies
-beyond simple <code>across lanes</code> loops.</li>
+and so do the matrix products in its attention, unless it calls cuDNN's fused attention. Comparing
+those takes more than simple <code>across lanes</code> loops.</li>
 </ul>
 
 <p>The profiling notes behind #3354 are tracked in
