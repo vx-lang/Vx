@@ -636,8 +636,9 @@ pub(crate) fn struct_instance_ty<'c>(
 }
 
 /// `place.member = val` where `place` is a struct behind a pointer: `(*p).a = v` with a raw
-/// pointer `p`, or `m.r.x = v` where the field `m.r` is a reference. The value is stored through
-/// the pointer. `None` when `place` is not a struct behind a pointer.
+/// pointer `p`, `p[i].a = v` with a raw pointer `p`, or `m.r.x = v` where the field `m.r` is a
+/// reference. The value is stored through the pointer. `None` when `place` is not a struct behind
+/// a pointer.
 fn store_field_through_pointer<'c>(
     gen: &mut MeliorGenerator<'c>,
     block: melior::ir::BlockRef<'c, 'c>,
@@ -661,6 +662,11 @@ fn store_field_through_pointer<'c>(
             }
             _ => return Ok(None),
         },
+        // `p[i]` is lowered as a place below, which gives the address of the element.
+        Expr::IndexAccess(ix) => match gen.infer_ast_type(&ix.base) {
+            Some(T::Pointer(inner, _, _)) => (place, *inner),
+            _ => return Ok(None),
+        },
         _ => return Ok(None),
     };
     let Some(base_struct) = nominal_struct_name(&pointee) else {
@@ -674,7 +680,11 @@ fn store_field_through_pointer<'c>(
     let Some(field_idx) = decl.fields.iter().position(|(n, _)| n == member) else {
         return Ok(None);
     };
-    let (ptr_val, ptr_ty, block) = gen.generate_expr(ptr_expr, block)?;
+    let prev_lvalue = gen.is_lvalue_context;
+    gen.is_lvalue_context = prev_lvalue || matches!(place, Expr::IndexAccess(_));
+    let lowered = gen.generate_expr(ptr_expr, block);
+    gen.is_lvalue_context = prev_lvalue;
+    let (ptr_val, ptr_ty, block) = lowered?;
     assert!(
         ptr_ty.to_string().starts_with("!llvm.ptr"),
         "a struct behind a pointer lowers to a pointer, not {ptr_ty}"
@@ -1474,7 +1484,11 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
             {
                 return Ok(Some(new_b));
             } else {
-                panic!("Complex struct assignment lhs not supported");
+                return Err(LowerError::ParseType(format!(
+                    "line {}, column {}: this code generator cannot write a field of this place. \
+                     Take a `&mut` reference to the struct and write the field through it",
+                    span.line, span.column
+                )));
             }
         }
         Ok(Some(block))

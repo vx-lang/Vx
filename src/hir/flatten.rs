@@ -2648,6 +2648,25 @@ impl<'r> Lowerer<'r> {
             );
             return Ok((tagged.reg, gid));
         }
+        // `p[i].field` with `p : *mut S`: address the element in place, so a write reaches it.
+        if let Expr::IndexAccess(ix) = base {
+            if let Some(ptr_ty @ Type::Pointer(..)) = self.infer_ast_type(&ix.base) {
+                let Some(LoweredTy::Aggregate(gid)) = self.pointer_elem_synth(&ptr_ty) else {
+                    return Err(Decline::TypeNotModelled {
+                        what: "a field of a pointer element that is not a struct",
+                    });
+                };
+                let place = self.lower_place(base)?;
+                let tagged = self.emit_typed(
+                    Opcode::Cast,
+                    place.reg,
+                    Register(0),
+                    LoweredTy::Aggregate(gid),
+                    0,
+                );
+                return Ok((tagged.reg, gid));
+            }
+        }
         // A field as a base. A by-value nested-aggregate field (`outer.inner.a`) is addressed with a
         // `FieldAddr`, and a pointer field (`make(p).p.x`) is loaded. `m.base` is lowered only here:
         // lowering `base` again would run a call in it twice.
