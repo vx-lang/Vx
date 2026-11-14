@@ -79,10 +79,12 @@ constexpr uint64_t kGroups = 1;    // the kernel grid-strides by the whole grid
 constexpr uint64_t kFootprint = kOperands * kBytes;
 constexpr int kWarmup = 3, kReps = 20;
 
-// The GPU band's topology id. The compiler emits this for a
-// `transfer(t, Memory::GPU_HBM)` (src/arch.rs), and it is the id the library
-// decodes to a device ordinal -- so it is the id a compiled program passes.
-constexpr uint32_t kGpuTopology = 500;
+// The SPIR-V band's topology id. The compiler emits this for a topology whose
+// `arch:` is `spirv64` (src/arch.rs), and it is the id this library decodes to
+// a device ordinal -- so it is the id a compiled program passes. It is not the
+// CUDA backend's 500: the two libraries read one map, and each claims its own
+// accelerator.
+constexpr uint32_t kSpirvTopology = 1000;
 
 // The sabotage that corrupts the image flips the low byte of the 64-bit
 // constant that holds the row stride (4 elements). The module still validates;
@@ -353,19 +355,19 @@ static uint64_t runLibrary(std::vector<char> &payload, const char *kernelName,
   std::vector<float> a, b, c, expected;
   fillReference(a, b, c, expected);
 
-  // Every tensor goes through the library's allocator, in the GPU band's
-  // topology -- the id the compiler emits for a transfer into
-  // `Memory::GPU_HBM`. The library hands back memory the device can address and
+  // Every tensor goes through the library's allocator, in the SPIR-V band's
+  // topology -- the id the compiler puts on a topology whose `arch:` is
+  // `spirv64`. The library hands back memory the device can address and
   // the host can read, so the read-back below is a copy and not a decode.
   void *dev[kOperands];
-  dev[0] = vx_plugin_alloc_and_transfer(kBytes, a.data(), kGpuTopology,
+  dev[0] = vx_plugin_alloc_and_transfer(kBytes, a.data(), kSpirvTopology,
                                         VX_SPACE_ACCESS_HOST_READABLE);
-  dev[1] = vx_plugin_alloc_and_transfer(kBytes, b.data(), kGpuTopology,
+  dev[1] = vx_plugin_alloc_and_transfer(kBytes, b.data(), kSpirvTopology,
                                         VX_SPACE_ACCESS_HOST_READABLE);
-  dev[2] = vx_plugin_alloc_and_transfer(kBytes, c.data(), kGpuTopology,
+  dev[2] = vx_plugin_alloc_and_transfer(kBytes, c.data(), kSpirvTopology,
                                         VX_SPACE_ACCESS_HOST_READABLE);
   // The result buffer starts with nothing in it; the kernel writes all of it.
-  dev[3] = vx_plugin_alloc_and_transfer(kBytes, nullptr, kGpuTopology,
+  dev[3] = vx_plugin_alloc_and_transfer(kBytes, nullptr, kSpirvTopology,
                                         VX_SPACE_ACCESS_HOST_READABLE);
   for (uint64_t t = 0; t < kOperands; ++t)
     if (!dev[t]) {
@@ -426,7 +428,7 @@ static uint64_t runLibrary(std::vector<char> &payload, const char *kernelName,
   const double best = bestOf(dispatch);
 
   std::vector<float> got(kElems, 0.0f);
-  vx_plugin_transfer_device_to_host(dev[3], got.data(), kBytes, kGpuTopology);
+  vx_plugin_transfer_device_to_host(dev[3], got.data(), kBytes, kSpirvTopology);
 
   const uint64_t wrong = countWrong(got, expected);
   reportResult(wrong);
@@ -435,7 +437,7 @@ static uint64_t runLibrary(std::vector<char> &payload, const char *kernelName,
               kReps, kWarmup, best);
 
   for (uint64_t t = 0; t < kOperands; ++t)
-    vx_plugin_free(dev[t], kGpuTopology);
+    vx_plugin_free(dev[t], kSpirvTopology);
   return wrong;
 }
 

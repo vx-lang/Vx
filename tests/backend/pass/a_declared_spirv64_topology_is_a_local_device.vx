@@ -7,22 +7,25 @@
 //
 //===----------------------------------------------------------------------===//
 // A declared topology's dispatch id is a hash of its name, so nothing about it
-// says "GPU": `Topology Dev` in fleet/arc-a770.vx is not in the GPU band, and a
-// backend that only knows the band allocated its memory on the host. The
-// program therefore tells the backend which built-in id the declared one stands
-// for, as a module attribute of `(declared, built-in)` pairs.
+// says "GPU": `Topology Dev` here is not in a device band, and a backend that
+// only knows the band allocated its memory on the host. The program therefore
+// tells the backend which device the declared one stands for, as a module
+// attribute of `(declared id, device id)` pairs.
 //
 // The pair used to be sent for `nvptx64` topologies only, so a program naming
 // the Intel Arc through its machine file got host memory for its device
-// tensors. This pins the pair for `spirv64` too: the second number is 500,
-// which is `Topology::GPU[0]`.
+// tensors. This pins the pair for `spirv64` too, and the device id it sends is
+// that arch's own: 1000, the SPIR-V band. Not 500, which is NVIDIA's GPU -- the
+// CUDA library claims every pair it is given, so a SPIR-V topology carrying 500
+// would have its tensors allocated with `cudaMalloc` while its kernels ran on
+// the host.
 //
 // The memory is `Memory::CPU_DRAM` on purpose: a topology whose default space
 // is a built-in one sends the topology's pair alone, so the attribute holds
 // exactly two numbers. A declared space adds a second pair of its own.
 //
 // RUN: vxc %s --emit-mlir 2>&1 | FileCheck %s
-// CHECK: vx.local_devices = array<i32: {{[0-9]+}}, 500>
+// CHECK: vx.local_devices = array<i32: {{[0-9]+}}, 1000>
 
 Memory CPU_DRAM {
   capacity: 16 GiB, bandwidth: 50 GB/s, managed: cached

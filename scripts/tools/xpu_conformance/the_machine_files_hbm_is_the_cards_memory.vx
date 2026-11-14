@@ -11,16 +11,16 @@
 // both read from fleet/arc-a770.vx through `--machine`. That is the spelling
 // the machine file documents, and it has to reach the card: the declared ids
 // are hashes, so the topology's `memory: Memory::HBM` is what sends the pair
-// that maps the hash to the GPU band.
+// that maps the hash to the SPIR-V device.
 //
 // This is the other half of the declared-space refusal beside it. Here the
 // space the alias covers is used, and it must be device memory, the region must
 // run from its own image, and the host must read back the region's answer.
 //
 // The runner compiles with `--machine fleet/arc-a770.vx --host default`, checks
-// that the staged topology id is paired with 500 in `vx.local_devices`, runs
-// the program on the Arc, and requires `ran from its own image` and the
-// printed 4.
+// that the staged topology id is paired with 1000 -- the SPIR-V device -- in
+// `vx.local_devices`, runs the program on the Arc, and requires `ran from its
+// own image` and the printed 4.
 
 fn main() -> i32 {
   let a = Tensor<f32, [8]>::fill(2.0);

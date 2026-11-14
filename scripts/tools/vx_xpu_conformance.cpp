@@ -79,9 +79,29 @@
 #include <thread>
 #include <vector>
 
-// The GPU band's topology id (src/arch.rs): what a `transfer(t,
-// Memory::GPU_HBM)` carries, and the id both backends decode.
-static constexpr uint32_t kGpuTopology = 500;
+// The SPIR-V band's topology id (src/arch.rs): what a topology whose `arch:` is
+// `spirv64` stands for, and the id this library decodes. 500 is the NVIDIA GPU,
+// which the CUDA library claims.
+static constexpr uint32_t kSpirvTopology = 1000;
+
+/// Tell the backend which device the payload's topology stands for, when the
+/// program declared that topology.
+///
+/// A compiled program sends this pair from its `main` (`VX_CTRL_LOCAL_DEVICE`,
+/// emitted from the module's `vx.local_devices`), and this harness does not run
+/// `main`: it calls the dispatch ABI for one region. A declared topology's id
+/// is a hash, so without the pair the backend cannot tell that the region's
+/// topology is the SPIR-V device, and a classified matmul takes the host
+/// fallback. A built-in band speaks for itself, so nothing is sent for one.
+static void declarePayloadDevice(const char *payload, size_t size) {
+  const int32_t topo = vx_payload_topology(payload, size);
+  if (topo < VX_TOPO_NAME_BASE)
+    return;
+  int32_t pair[2] = {topo, (int32_t)kSpirvTopology};
+  // The CPU backend keeps no device table and answers 0, which is also what a
+  // program's own `main` gets there.
+  vx_plugin_control(VX_CTRL_LOCAL_DEVICE, pair);
+}
 
 static constexpr int kWarmup = 3;
 
@@ -581,7 +601,7 @@ static std::vector<char> referenceOf(Op op, const DType &dt, int64_t M,
 /// Put one operand's bytes where the device can read them.
 static void *stageOperand(const std::vector<char> &host) {
   return vx_plugin_alloc_and_transfer(host.size(), (void *)host.data(),
-                                      kGpuTopology,
+                                      kSpirvTopology,
                                       VX_SPACE_ACCESS_HOST_READABLE);
 }
 
@@ -634,6 +654,8 @@ static int runSameName(const DType &dt, Op opA, int64_t Ma, int64_t Na,
     std::fprintf(stderr, "a payload is empty\n");
     return 2;
   }
+  declarePayloadDevice(payloadA.bytes, payloadA.size);
+  declarePayloadDevice(payloadB.bytes, payloadB.size);
   if (std::strcmp(payloadA.bytes, payloadB.bytes) != 0) {
     std::fprintf(stderr,
                  "the payloads name %s and %s, and this needs one name\n",
@@ -688,7 +710,7 @@ static int runSameName(const DType &dt, Op opA, int64_t Ma, int64_t Na,
     const Operand &result = side.call.operands[side.call.outIndex];
     std::vector<char> got(result.host.size(), 0);
     vx_plugin_transfer_device_to_host(result.device, got.data(), got.size(),
-                                      kGpuTopology);
+                                      kSpirvTopology);
     const uint64_t wrong =
         countDifferent(got, side.reference, dt, got.size() / dt.bytes, 0.0);
     std::printf("  %s: %llu of %zu elements differ\n", order[step],
@@ -699,7 +721,7 @@ static int runSameName(const DType &dt, Op opA, int64_t Ma, int64_t Na,
 
   for (Side &side : sides)
     for (Operand &operand : side.call.operands)
-      vx_plugin_free(operand.device, kGpuTopology);
+      vx_plugin_free(operand.device, kSpirvTopology);
 
   std::printf("result: %s (%llu of 3 dispatches differ)\n",
               bad ? "DIFFERENT" : "equal", (unsigned long long)bad);
@@ -718,6 +740,7 @@ static int runSameName(const DType &dt, Op opA, int64_t Ma, int64_t Na,
 static int runThreads(Op op, const DType &dt, int64_t M, int64_t N, int64_t K,
                       int reps, const std::vector<char> &payload,
                       const char *outPath, int threads) {
+  declarePayloadDevice(payload.data(), payload.size());
   std::vector<Call> calls((size_t)threads);
   for (Call &call : calls)
     call = buildCall(op, dt, M, N, K, payload);
@@ -762,7 +785,7 @@ static int runThreads(Op op, const DType &dt, int64_t M, int64_t N, int64_t K,
     const Operand &result = call.operands[call.outIndex];
     std::vector<char> got(result.host.size(), 0);
     vx_plugin_transfer_device_to_host(result.device, got.data(), got.size(),
-                                      kGpuTopology);
+                                      kSpirvTopology);
     if (t == 0)
       first = got;
     const uint64_t wrong =
@@ -779,7 +802,7 @@ static int runThreads(Op op, const DType &dt, int64_t M, int64_t N, int64_t K,
 
   for (Call &call : calls)
     for (Operand &operand : call.operands)
-      vx_plugin_free(operand.device, kGpuTopology);
+      vx_plugin_free(operand.device, kSpirvTopology);
   return bad ? 1 : 0;
 }
 
@@ -793,6 +816,7 @@ static int runCase(Op op, const DType &dt, int64_t M, int64_t N, int64_t K,
     std::fprintf(stderr, "%s is not the payload for %s\n", payloadPath, kernel);
     return 2;
   }
+  declarePayloadDevice(payload.data(), payload.size());
 
   // The documented host fallback, reached the way a backend reaches it: the
   // payload says its image is in a format this backend does not load, so
@@ -895,7 +919,7 @@ static int runCase(Op op, const DType &dt, int64_t M, int64_t N, int64_t K,
   const Operand &result = call.operands[call.outIndex];
   std::vector<char> got(result.host.size(), 0);
   vx_plugin_transfer_device_to_host(result.device, got.data(), got.size(),
-                                    kGpuTopology);
+                                    kSpirvTopology);
   writeFile(outPath, got);
 
   // A matmul's two summations run in different orders, so the comparison
@@ -947,7 +971,7 @@ static int runCase(Op op, const DType &dt, int64_t M, int64_t N, int64_t K,
   // harness's memory.
   if (!host_pointer) {
     for (Operand &operand : call.operands)
-      vx_plugin_free(operand.device, kGpuTopology);
+      vx_plugin_free(operand.device, kSpirvTopology);
   }
   return 0;
 }

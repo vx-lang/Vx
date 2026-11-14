@@ -28,11 +28,14 @@
 // the host cannot read it, because host memory there is memory a kernel would
 // read as the device's.
 //
-// Routing. This library serves one device, the Intel GPU of the GPU band (id
-// 500), and a `Memory::GPU_HBM` transfer carries that id, so a placed program's
-// device memory lands here. Every other id is memory the host owns. A dispatch
-// runs here when its payload names the GPU band, or when it carries a
-// `format=spirv` image, which only this backend can load.
+// Routing. This library serves one device, the Intel GPU, whose dispatch id is
+// the SPIR-V band's `VX_TOPO_SPIRV_BASE` (1000). That id is not the CUDA
+// backend's: 500 is the NVIDIA GPU, and the CUDA library claims every pair it
+// is given, so a SPIR-V topology aliased to 500 had its tensors allocated with
+// `cudaMalloc` while its kernels ran here. Every id outside 1000..1099 is
+// memory the host owns. A dispatch runs here when its payload names the SPIR-V
+// band, or when it carries a `format=spirv` image, which only this backend can
+// load.
 //
 // A topology a machine file declares has an id that is a hash of its name, so
 // the program sends the id it stands for at the start of `main`
@@ -210,7 +213,7 @@ bool is_usm(const void *ptr) { return usm_type(ptr) != ZE_MEMORY_TYPE_UNKNOWN; }
 /// input to its output. A launch here waits before it returns, so the tensors
 /// the GPU wrote are finished, and this normally has nothing to wait for.
 ///
-/// The copy is made by the host. Every allocation in the GPU band is shared
+/// The copy is made by the host. Every allocation in the SPIR-V band is shared
 /// USM, which the host may read, so a collective can always make it. The check
 /// below is therefore a guard and not a road a run takes today: it is here
 /// because device-only allocation would make the copy impossible, and reading
@@ -290,7 +293,7 @@ struct LaunchQueue {
 /// Declared topology ids the program said are this machine's GPU, each with the
 /// built-in id it stands for (`VX_CTRL_LOCAL_DEVICE`).
 ///
-/// A declared id is a hash of a name, so it is not in the GPU band and nothing
+/// A declared id is a hash of a name, so it is not in a device band and nothing
 /// about it says "GPU". A program that names the Arc through a machine file
 /// sends the pair at the start of `main`, and without it every transfer to that
 /// topology would land in host memory -- memory the device cannot be launched
@@ -570,8 +573,8 @@ bool run_device_image(const void *payload, size_t payload_size,
      address. The driver does not refuse a host address: the kernel reads memory
      the GPU does not know, the process dies of a page fault, and nothing in the
      message says which launch did it. Every allocation this library makes in
-     the GPU band is USM, so a non-USM pointer here is memory of the program's
-     own, and the kernel that reads it is one the host has to run. */
+     the SPIR-V band is USM, so a non-USM pointer here is memory of the
+     program's own, and the kernel that reads it is one the host has to run. */
   for (int64_t i = 0; i < num_args; ++i) {
     if (VX_ABI_KIND(arg_tags[i]) != VX_ABI_KIND_MEMREF) {
       continue;
@@ -888,7 +891,7 @@ bool run_gemm(const vx_gemm_plan &plan) {
 ///
 /// Copying each operand to host memory and putting it back afterwards was
 /// written first, and there is no run that reaches it: every allocation in the
-/// GPU band is shared USM. It was removed rather than left standing, because
+/// SPIR-V band is shared USM. It was removed rather than left standing, because
 /// code no test can reach is code no test keeps right. When device-only
 /// allocation lands, the mirroring is what has to come back here.
 void refuse_device_operands_on_host(void *const *device_args,
@@ -926,10 +929,10 @@ extern "C" {
 /// Allocate in this backend's memory and copy into it.
 ///
 /// `space_access` is the model's claim about whether the host may read the
-/// result. In the GPU band it is ignored: every allocation there is shared USM,
-/// which the device can address and the host can read, so no program is wrong
-/// on it. Outside the band it decides whether host memory can answer a request
-/// at all -- see the refusal below.
+/// result. In the SPIR-V band it is ignored: every allocation there is shared
+/// USM, which the device can address and the host can read, so no program is
+/// wrong on it. Outside the band it decides whether host memory can answer a
+/// request at all -- see the refusal below.
 void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
                                    uint32_t topology_id,
                                    uint32_t space_access) {
@@ -941,18 +944,17 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
     return nullptr;
   }
 
-  /* Which memory this is. This library serves the GPU band: the built-in GPU is
-     id 500, and a `Memory::GPU_HBM` transfer carries it, so a placed program's
-     device memory lands here. A declared topology's id is a hash of its name,
-     and the program aliased it to the band at startup, so the alias is applied
+  /* Which memory this is. This library serves the SPIR-V band: 1000 is the
+     Intel GPU's own id, and a declared topology's id is a hash of its name, so
+     the program aliased the hash to 1000 at startup and the alias is applied
      first -- otherwise a program that names this GPU through a machine file
      would have its device tensors allocated on the host. Every other id -- the
-     host, another accelerator's band, a NUMA node -- names memory this backend
-     did not allocate and must not claim. */
+     host, another accelerator's band, the CUDA backend's 500, a NUMA node --
+     names memory this backend did not allocate and must not claim. */
   const int32_t requested = (int32_t)topology_id;
   const int32_t builtin = builtin_topology(requested);
   int gpu_index = xpu_available()
-                      ? vx_topology_device_index(builtin, VX_TOPO_GPU_BASE)
+                      ? vx_topology_device_index(builtin, VX_TOPO_SPIRV_BASE)
                       : -1;
   if (gpu_index > 0) {
     fprintf(stderr,
@@ -983,7 +985,7 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
        the host could read -- the same way: the topology, the bytes, what the
        program declared, and what to change. Here the answer would be host
        memory the program cannot use, so it is fatal rather than a warning. */
-    const bool declared = requested >= VX_TOPO_NAMED_BASE;
+    const bool declared = requested >= VX_TOPO_NAME_BASE;
     if (xpu_available() && declared && builtin == requested &&
         any_local_device_declared() &&
         space_access == VX_SPACE_ACCESS_EXPLICIT) {
@@ -1013,10 +1015,10 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
 
   /* Shared USM, whatever the model claims. The device can address it and the
      host can read it, so no program is wrong on it. Device-only memory is the
-     faster choice for a large staged tensor and is not used yet: the GPU band
-     carries `Memory::GPU_HBM` whether or not the machine file declared it
-     `managed: explicit`, so the topology id cannot tell the two apart, and the
-     host copy of a placed tensor reads this memory meanwhile -- which is what
+     faster choice for a large staged tensor and is not used yet: an id in this
+     band says which device, not which kind of memory the space declared, so
+     `managed: explicit` and the lack of it arrive the same way, and the host
+     copy of a placed tensor reads this memory meanwhile -- which is what
      tests/backend/pass/placed_tensors_are_allocated_on_their_device.vx does.
      Until the space itself says which kind it wants, the permissive allocation
      is the one that keeps every program correct. */
@@ -1061,16 +1063,16 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
   }
 
   /* Which device's work this is. An absent `topo=` is a producer that predates
-     the key, and the GPU band is this library's own. A low band names other
-     hardware -- the NPU is 100, an accelerator core 200 -- and must not be
-     served by the GPU backend; a matmul placed there falls back to the outlined
-     kernel, which is where it ran before this library existed. Serving every
-     named topology needs one dispatch library per build, which is not what this
-     is. */
+     the key, and the SPIR-V band is this library's own. A low band names other
+     hardware -- the NPU is 100, an accelerator core 200, the CUDA backend's GPU
+     500 -- and must not be served by this backend; a matmul placed there falls
+     back to the outlined kernel, which is where it ran before this library
+     existed. Serving every named topology needs one dispatch library per build,
+     which is not what this is. */
   int32_t topo = vx_payload_topology(binary_payload, payload_size);
   bool for_this_device =
       topo < 0 ||
-      vx_topology_device_index(builtin_topology(topo), VX_TOPO_GPU_BASE) >= 0;
+      vx_topology_device_index(builtin_topology(topo), VX_TOPO_SPIRV_BASE) >= 0;
 
   vx_gemm_plan plan;
   if (for_this_device &&
@@ -1155,8 +1157,8 @@ void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
     return routed;
   }
   vx_routing_refuse_handle("a peer handoff", src_device_ptr, src_topology_id);
-  /* This machine has one GPU, so a handoff into the GPU band lands on the same
-     card and is a copy. The destination has to be memory the device can
+  /* This machine has one GPU, so a handoff into the SPIR-V band lands on the
+     same card and is a copy. The destination has to be memory the device can
      address, because the descriptor that names it can reach a later placed
      kernel: a `malloc` buffer there is an address the GPU cannot read, and the
      fault says nothing about which launch took it.
@@ -1165,7 +1167,7 @@ void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
   const bool to_device =
       xpu_available() &&
       vx_topology_device_index(builtin_topology((int32_t)dst_topology_id),
-                               VX_TOPO_GPU_BASE) >= 0;
+                               VX_TOPO_SPIRV_BASE) >= 0;
   void *dst =
       to_device ? device_alloc(bytes, /*host_visible=*/true) : malloc(bytes);
   if (dst && src_device_ptr) {

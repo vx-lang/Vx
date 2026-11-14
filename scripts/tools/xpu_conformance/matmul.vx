@@ -5,20 +5,33 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// A 1024x1024 fp32 matrix multiply placed on the GPU. The region is one
-// `linalg.matmul`, which the compiler classifies (`kind=matmul`) and the
+// A 1024x1024 fp32 matrix multiply placed on the SPIR-V device. The region is
+// one `linalg.matmul`, which the compiler classifies (`kind=matmul`) and the
 // dispatch library routes to oneMKL on the Intel Arc.
 //
-// The placement is on the built-in `Topology::GPU` rather than a declared
-// `arch: spirv64` one, and that is not a detail: the library only routes a
-// classified matmul when the payload's topology is in the GPU band (500..599).
-// A custom topology's id is a hash (3000 and up), so a matmul placed there
-// takes the host fallback instead -- see the report.
+// The topology is declared here with `arch: spirv64` rather than left as the
+// built-in `Topology::GPU`, and that is not a detail: 500 is NVIDIA's GPU, and
+// the library routes a classified matmul only when the payload's topology is
+// its own SPIR-V device (1000). The declared topology is what the program pairs
+// with that id, so the region lands on the Arc's oneMKL.
 //
 // The runner times this region on the Arc, times the same region on the CPU
 // backend, and compares the results within a relative tolerance, because the
 // two sum in different orders. matmul_big.vx is the same region at 8192 in each
 // dimension, for the throughput figure.
+
+Memory CPU_DRAM {}
+Memory DEV_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s,
+  managed: cached, scope: device
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 63 GB/s,
+  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 60 GB/s
+}
 
 fn fill_a(i : i32, j : i32) -> f32 {
   return ((((i * 131 + j * 17) % 200) as f32) - 100.0) / 97.0;
@@ -38,14 +51,14 @@ fn main() -> i32 {
     }
   }
 
-  // The GPU sees only GPU memory, so the operands are copied there and the
-  // result is copied back.
-  let a_g = transfer(a, Memory::GPU_HBM);
-  let b_g = transfer(b, Memory::GPU_HBM);
+  // The device sees only device memory, so the operands are copied there and
+  // the result is copied back.
+  let a_g = transfer(a, Memory::DEV_HBM);
+  let b_g = transfer(b, Memory::DEV_HBM);
   let mut c_g = unsafe {
-    Tensor<f32, [1024, 1024], Memory::GPU_HBM>::uninit()
+    Tensor<f32, [1024, 1024], Memory::DEV_HBM>::uninit()
   };
-  spawn on(Topology::GPU) {
+  spawn on(Topology::Dev) {
     c_g = a_g @b_g;
   }
   let c = transfer(c_g, Memory::CPU_DRAM);

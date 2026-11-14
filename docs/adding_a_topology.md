@@ -230,8 +230,9 @@ If you are sure, every site that needs an arm:
 
 **`src/arch.rs`**
 
-6. A band in `topology_dispatch_id`. The hundreds 0–700 are taken, slices use 2000–2999, and
-   declared names start at 3000.
+6. A band in `topology_dispatch_id`. The hundreds 0–700 are taken, 800 and 900 are the network
+   spaces, 1000 is the `spirv64` device, 1100–1999 is the NUMA node band, slices use 2000–2999,
+   and declared names start at 3000.
 1. An arm in `builtin_default_space` — the space this kind holds.
 1. An arm in `first_device_of` — device zero of this kind.
 1. An entry in `builtin_descriptors` — its default space and its visibility list.

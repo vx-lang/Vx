@@ -13,6 +13,23 @@
 //
 // Three 8192x8192 fp32 tensors are 805 MiB, which is why the runner prints its
 // footprint and stays inside the shared VRAM ceiling.
+//
+// The topology is declared with `arch: spirv64` for the reason matmul.vx gives:
+// the dispatch library routes a classified matmul on its own SPIR-V device, and
+// the built-in `Topology::GPU` is NVIDIA's.
+
+Memory CPU_DRAM {}
+Memory DEV_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s,
+  managed: cached, scope: device
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 63 GB/s,
+  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 60 GB/s
+}
 
 fn fill_a(i : i32, j : i32) -> f32 {
   return ((((i * 131 + j * 17) % 200) as f32) - 100.0) / 97.0;
@@ -32,14 +49,14 @@ fn main() -> i32 {
     }
   }
 
-  // Three 8192-square f32 tensors are 768 MiB of GPU memory, well under the
+  // Three 8192-square f32 tensors are 768 MiB of device memory, well under the
   // helper's ceiling, and the CPU copies are what the fill and the print use.
-  let a_g = transfer(a, Memory::GPU_HBM);
-  let b_g = transfer(b, Memory::GPU_HBM);
+  let a_g = transfer(a, Memory::DEV_HBM);
+  let b_g = transfer(b, Memory::DEV_HBM);
   let mut c_g = unsafe {
-    Tensor<f32, [8192, 8192], Memory::GPU_HBM>::uninit()
+    Tensor<f32, [8192, 8192], Memory::DEV_HBM>::uninit()
   };
-  spawn on(Topology::GPU) {
+  spawn on(Topology::Dev) {
     c_g = a_g @b_g;
   }
   let c = transfer(c_g, Memory::CPU_DRAM);

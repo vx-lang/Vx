@@ -577,13 +577,25 @@ static inline int64_t vx_payload_section(const void *payload,
 // other (#348).
 #define VX_TOPO_NIC_BASE 800
 #define VX_TOPO_REMOTE_BASE 900
-// Topology slices hash into 2000..2999 and names declared in a machine file
+// Every hundred-wide kind band below 1000 is spoken for, so `spirv64`'s own
+// device takes the band at 1000. It needs an id of its own because a backend
+// has to be able to tell which accelerator an id is for: 500 means NVIDIA's
+// GPU, and the CUDA library applies every pair it is given
+// (`runtime/cuda_dispatch.cpp`), so it cannot be told that a SPIR-V device
+// answers to 500. NUMA nodes move up one band to make room: node N is
+// `VX_TOPO_NUMA_BASE + N`, and 899 is the largest node that still fits below
+// the slice band.
+//
+// Slices hash into 2000..2999 and names declared in a machine file
 // (`Topology DecodeWorker { .. }`) hash into 3000..INT32_MAX, mirroring
-// `topology_dispatch_id` and `CUSTOM_DISPATCH_ID_BASE` in src/arch.rs. A name
-// is the identity; the hash is a shortcut, which is why `toponame=` in the
-// payload is what a plugin resolving a worker to an endpoint should key on.
+// `topology_dispatch_id`, `NUMA_DISPATCH_BASE` and `CUSTOM_DISPATCH_ID_BASE` in
+// src/arch.rs. A name is the identity; the hash is a shortcut, which is why
+// `toponame=` in the payload is what a plugin resolving a worker to an
+// endpoint should key on.
+#define VX_TOPO_SPIRV_BASE 1000
+#define VX_TOPO_NUMA_BASE 1100
 #define VX_TOPO_SLICE_BASE 2000
-#define VX_TOPO_NAMED_BASE 3000
+#define VX_TOPO_NAME_BASE 3000
 #define VX_TOPO_BAND 100
 
 /// The device ordinal within `base`'s band, or -1 when the id is not in it.
@@ -677,11 +689,11 @@ int32_t vx_plugin_control(uint32_t opcode, void *payload);
 #define VX_CTRL_GET_DEVICE_COUNT                                               \
   0x03 // Returns number of valid Topology::NPU[i] indices
 // A topology or memory space declared in a machine file is a local device.
-// `payload` points to two int32_t: the declared id, then the built-in id it
-// stands for (500 is GPU 0). A declared id is a hash of its name, so without
-// this a backend cannot tell that it names a GPU. Programs send it at the
-// start of `main`. A name the fleet manifest lists is still remote. Returns 1
-// if kept.
+// `payload` points to two int32_t: the declared id, then the id of the device it
+// stands for -- 500 for `GPU[0]`, 1000 for a `spirv64` device. A declared id is
+// a hash of its name, so without this a backend cannot tell that it names a
+// GPU. Programs send it at the start of `main`. A name the fleet manifest lists
+// is still remote. Returns 1 if kept.
 #define VX_CTRL_LOCAL_DEVICE 0x04
 // Wait until every launch on a topology has finished. `payload` points to the
 // int32_t topology id. A backend may wait for more than that topology. A
