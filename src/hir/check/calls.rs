@@ -3996,6 +3996,7 @@ impl<'a> TypeChecker<'a> {
                     *expr = Expr::Transfer(TransferExpr {
                         expr: obj.clone(),
                         space: target_mem,
+                        device: None,
                         cost: None,
                         lowering: None,
                         is_async: false,
@@ -4012,6 +4013,7 @@ impl<'a> TypeChecker<'a> {
                     *expr = Expr::Transfer(TransferExpr {
                         expr: obj.clone(),
                         space: target_mem,
+                        device: None,
                         cost: None,
                         lowering: None,
                         is_async: false,

@@ -1090,11 +1090,22 @@ impl<'a> Parser<'a> {
                 self.consume(&TokenType::LeftParen, "Expected '(' after transfer")?;
                 let inner = self.parse_expr()?;
                 self.consume(&TokenType::Comma, "Expected ','")?;
-                let mem = self.parse_memory_space()?;
+                // `transfer(x, Topology::X[i])` names a device. The checker replaces this space
+                // with the memory that the declaration of the device gives.
+                let (mem, device) = if self.check(&TokenType::Topology) {
+                    let device = self.parse_topology()?;
+                    (
+                        crate::arch::builtin_default_space(&device.kind()),
+                        Some(device),
+                    )
+                } else {
+                    (self.parse_memory_space()?, None)
+                };
                 self.consume(&TokenType::RightParen, "Expected ')'")?;
                 Expr::Transfer(TransferExpr {
                     expr: Box::new(inner),
                     space: mem,
+                    device,
                     cost: None,
                     lowering: None,
                     is_async,

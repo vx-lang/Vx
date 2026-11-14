@@ -192,6 +192,71 @@ impl TypeChecker<'_> {
         }
     }
 
+    /// The topology with more than one device that holds `space` as its memory, and its count.
+    fn several_devices_holding(
+        &self,
+        space: &crate::syntax::MemorySpace,
+    ) -> Option<(crate::symbol::Symbol, u64)> {
+        let crate::syntax::Topology::Custom(name, _) =
+            self.transfer_cost_graph.owning_topology(space).ok()?
+        else {
+            return None;
+        };
+        let count = self.env.topologies.get(&name)?.descriptor.count?;
+        (count > 1).then_some((name, count))
+    }
+
+    /// Why `Memory::<space>` names no location: each device of a topology with more than one
+    /// device has its own copy of its memory, so the memory alone does not say which copy.
+    pub(crate) fn memory_of_several_devices(
+        &self,
+        space: &crate::syntax::MemorySpace,
+    ) -> Option<String> {
+        let (name, count) = self.several_devices_holding(space)?;
+        Some(format!(
+            "it is the memory of each of the {count} devices of '{name}', so it does not say \
+             which device. Name the device instead: `Topology::{name}[0]` to \
+             `Topology::{name}[{}]`",
+            count - 1
+        ))
+    }
+
+    /// The device whose copy of its memory a placement on `top` is in, as `Card[1]`, when `top`
+    /// is a topology with more than one device. A non-constant index is device 0, as it is for a
+    /// `spawn` (W1030).
+    pub(crate) fn device_copy(&self, top: &crate::syntax::Topology) -> Option<String> {
+        let crate::syntax::Topology::Custom(name, index) = top else {
+            return None;
+        };
+        let count = self.env.topologies.get(name)?.descriptor.count?;
+        if count < 2 {
+            return None;
+        }
+        let i = index
+            .as_deref()
+            .and_then(crate::arch::const_topology_index)
+            .unwrap_or(0);
+        Some(format!("{name}[{i}]"))
+    }
+
+    /// Why a tensor cannot be placed on `top`: a tensor is in the memory of one device, so it
+    /// cannot be on a slice of a topology whose devices each have a copy of that memory.
+    fn slice_of_several_devices(&self, top: &crate::syntax::Topology) -> Option<String> {
+        let crate::syntax::Topology::Slice(base, ..) = top else {
+            return None;
+        };
+        let crate::syntax::Topology::Custom(name, _) = &**base else {
+            return None;
+        };
+        let count = self.env.topologies.get(name)?.descriptor.count?;
+        (count > 1).then(|| {
+            format!(
+                "a tensor is in the memory of one device, so place it on one device of '{name}', \
+                 such as `Topology::{name}[0]`"
+            )
+        })
+    }
+
     /// Report every placement inside `ty` that names no place.
     ///
     /// Reads only the half the source wrote and derives the other from the cost graph's
@@ -215,7 +280,10 @@ impl TypeChecker<'_> {
                         p.as_written(),
                         "no topology of that name is declared".to_string(),
                     ));
-                } else if let Some(why) = self.declared_device_problem(&p.topology) {
+                } else if let Some(why) = self
+                    .declared_device_problem(&p.topology)
+                    .or_else(|| self.slice_of_several_devices(&p.topology))
+                {
                     bad.push((p.as_written(), why));
                 }
             }
@@ -229,6 +297,8 @@ impl TypeChecker<'_> {
                             p.space.name()
                         ),
                     ));
+                } else if let Some(why) = self.memory_of_several_devices(&p.space) {
+                    bad.push((p.as_written(), why));
                 }
             }
         });
