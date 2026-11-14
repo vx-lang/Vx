@@ -309,6 +309,46 @@ If the condition is false at run time, the program stops and reports the message
 Use `assert` for what you cannot state statically. Use `requires` and `ensures` where you can, so
 the error arrives at compile time instead.
 
+## Functions that never return
+
+A function that always stops the program has the return type `!`:
+
+```rust
+fn fail(msg : *const i8) -> ! {
+    panic(msg);
+}
+
+fn positive(x : i32) -> i32
+    ensures return > 0
+{
+    if x <= 0 {
+        fail("x must be positive");
+    }
+    return x;
+}
+
+fn main() -> i32 {
+    return positive(3) - 3;
+}
+```
+
+The prover knows that no path continues after a call to `fail`. So after the `if`, it knows
+`x > 0`, and it proves the `ensures`. If `fail` returns `void`, the prover cannot prove it (E8001),
+because it must assume that `fail` returns.
+
+Write `-> !`, not `ensures false`. The prover does not use `ensures false` to end a path, so the
+example above with `fail(msg : *const i8) -> void ensures false` also gives E8001.
+
+The compiler checks the body of a `-> !` function:
+
+- Each path must end in `panic`, `abort` or a call to another `-> !` function. A body that can
+  finish gives E3028.
+- A `return` gives E3002.
+
+A `-> !` function can have a `requires`. Each call must meet it, as with any other function.
+[A tour of Vx](tour.md#stopping-a-program) shows a call to a `-> !` function where a value is
+expected, and the `-> !` functions of `core::panic`.
+
 ## Verified
 
 `Verified<T>` is a type that carries the fact that a value has been checked. A plain `T` and a
