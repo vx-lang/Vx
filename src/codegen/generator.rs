@@ -2871,7 +2871,7 @@ impl<'c> MeliorGenerator<'c> {
             // and keeps today's numbering.
             let arch: Option<&str> = match top.as_ref() {
                 Some(p) => match &p.topology {
-                    syntax::Topology::Custom(name) => self
+                    syntax::Topology::Custom(name, _) => self
                         .topologies
                         .get(name)
                         .and_then(|d| d.arch.as_ref())

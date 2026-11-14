@@ -96,7 +96,7 @@ fn lower_spawn_region<'c>(
         trip
     });
     let arch = match &this.top {
-        syntax::Topology::Custom(name) => gen
+        syntax::Topology::Custom(name, _) => gen
             .topologies
             .get(name)
             .and_then(|d| d.arch.as_ref())
@@ -270,7 +270,7 @@ fn lower_spawn_region<'c>(
     // this path took over -- silently, since the eligibility gate saw no attribute and a
     // custom topology's id cannot enter the band fallback. Custom topologies only: built-ins
     // declare no arch and ride the band, same asymmetry as the flat emitter.
-    if let syntax::Topology::Custom(name) = &this.top {
+    if let syntax::Topology::Custom(name, _) = &this.top {
         if let Some(desc) = gen.topologies.get(name) {
             if let Some(arch) = &desc.arch {
                 let arch_attr =

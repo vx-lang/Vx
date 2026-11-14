@@ -42,7 +42,7 @@ pub(crate) fn is_builtin_type_name(name: &str) -> bool {
 impl<'a> Parser<'a> {
     pub(crate) fn parse_topology(&mut self) -> ParseResult<'a, Topology> {
         let topology = self.parse_topology_or_any()?;
-        if topology == Topology::Custom(crate::syntax::ANY_TOPOLOGY.into()) {
+        if topology == Topology::Custom(crate::syntax::ANY_TOPOLOGY.into(), None) {
             return Err(self.error(
                 "`Topology::Any` can only follow `on` in a function signature, where it means \
                  that the function runs where it is called",
@@ -117,11 +117,33 @@ impl<'a> Parser<'a> {
             }
             TopologyKind::CpuAvx512 => Ok(Topology::CpuAvx512),
             TopologyKind::CpuNeon => Ok(Topology::CpuNeon),
-            // Any other identifier is a user-defined topology, kept as a bare name here; its
-            // descriptor is resolved later from the AST-carried declarations
-            // (`Program.topologies`, indexed by `GlobalAstEnv`). Because the topology set is open,
-            // an unknown built-in typo is indistinguishable from a custom name here.
-            TopologyKind::Custom(name) => Ok(Topology::Custom(name)),
+            // Any other identifier is a user-defined topology; its descriptor is resolved later
+            // from the AST-carried declarations (`Program.topologies`, indexed by
+            // `GlobalAstEnv`). Because the topology set is open, an unknown built-in typo is
+            // indistinguishable from a custom name here. An index picks one device of a
+            // topology with `count:`, and the checker compares it with the count.
+            TopologyKind::Custom(name) => {
+                if !self.match_token(&TokenType::LeftBracket) {
+                    return Ok(Topology::Custom(name, None));
+                }
+                if name.as_ref() == crate::syntax::ANY_TOPOLOGY {
+                    return Err(self.error(
+                        "`Topology::Any` is not a device, so it takes no index in `[...]`",
+                    ));
+                }
+                let mut expr = self.parse_expr()?;
+                super::expr::stamp_dim_literals(&mut expr);
+                self.consume(&TokenType::RightBracket, "Expected ']'")?;
+                if let Expr::Range(RangeExpr { start, end, .. }) = expr {
+                    Ok(Topology::Slice(
+                        Box::new(Topology::Custom(name, Some(start.clone()))),
+                        start,
+                        end,
+                    ))
+                } else {
+                    Ok(Topology::Custom(name, Some(Box::new(expr))))
+                }
+            }
             TopologyKind::Slice => unreachable!("from_name never returns Slice"),
         }
     }
@@ -133,7 +155,7 @@ impl<'a> Parser<'a> {
             self.parse_topology()
         } else {
             let n = self.expect_identifier("Expected a topology name in Reachable<A, B>")?;
-            Ok(Topology::Custom(n.into()))
+            Ok(Topology::Custom(n.into(), None))
         }
     }
 

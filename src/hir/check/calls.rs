@@ -2509,7 +2509,7 @@ impl<'a> TypeChecker<'a> {
                 let _ = self.unify_types(&ret_ty, &expected, &mut mapping);
             }
             // `on Topology::D` with no argument that binds `D` runs where it is called.
-            if let Topology::Custom(d) = &generic_func.topology {
+            if let Topology::Custom(d, None) = &generic_func.topology {
                 if self.mono.pending_topo_vars.contains(d)
                     && !self.mono.pending_topo_bindings.contains_key(d)
                 {

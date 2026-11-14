@@ -99,25 +99,33 @@ impl TypeChecker<'_> {
         // seam identity, and now the declared-arch table -- then depends on hash-iteration order
         // for which declaration wins; measured as the same program getting a device image on some
         // runs and not others. Refused, because a coin-flip identity is not an identity.
+        // Each device of a topology with `count:` has an id of its own, so every one is checked.
         {
-            let mut by_id: std::collections::HashMap<i32, &crate::symbol::Symbol> =
+            let mut by_id: std::collections::HashMap<i32, (&crate::symbol::Symbol, usize)> =
                 std::collections::HashMap::new();
             let mut sorted: Vec<&crate::arch::TopologyDecl> = declared.iter().collect();
             sorted.sort_by(|a, b| a.name.as_ref().cmp(b.name.as_ref()));
+            let device = |name: &crate::symbol::Symbol, i: usize| match i {
+                0 => format!("{name}"),
+                _ => format!("{name}[{i}]"),
+            };
             for decl in sorted {
                 self.errors.point_at(&decl.place, &outside);
-                let id = crate::arch::topology_dispatch_id(&crate::syntax::Topology::Custom(
-                    decl.name.clone(),
-                ));
-                if let Some(prev) = by_id.insert(id, &decl.name) {
-                    if prev != &decl.name {
+                let ids = crate::arch::declared_dispatch_ids(&decl.name, decl.descriptor.count);
+                for (i, id) in ids.into_iter().enumerate() {
+                    let Some(prev) = by_id.insert(id, (&decl.name, i)) else {
+                        continue;
+                    };
+                    if prev != (&decl.name, i) {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E6016,
                             format!(
                                 "topologies '{}' and '{}' collide on dispatch id {} (custom ids \
                                  are derived from the name by hashing); which declaration is in \
                                  force would be hash order -- rename one",
-                                prev, decl.name, id
+                                device(prev.0, prev.1),
+                                device(&decl.name, i),
+                                id
                             ),
                             None,
                         );

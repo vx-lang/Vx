@@ -134,6 +134,20 @@ fn topology_index_eq(a: &Expr, b: &Expr) -> bool {
     a == b
 }
 
+/// The index of a declared topology. A bare name is device 0, so `X` and `X[0]` are one device.
+/// Constant indices compare by value, also with a bare name, so the relation stays transitive.
+fn declared_index_eq(a: &Option<Box<Expr>>, b: &Option<Box<Expr>>) -> bool {
+    let value = |e: &Option<Box<Expr>>| match e {
+        None => Some(0),
+        Some(e) => crate::arch::const_topology_index(e),
+    };
+    match (value(a), value(b), a, b) {
+        (Some(x), Some(y), _, _) => x == y,
+        (_, _, Some(x), Some(y)) => topology_index_eq(x, y),
+        _ => false,
+    }
+}
+
 /// Two topologies are equal when they name the SAME DEVICE.
 ///
 /// Hand-written rather than derived, and that is a semantic choice, not a style one. The
@@ -186,7 +200,9 @@ impl PartialEq for Topology {
             (Topology::NPU(a), Topology::NPU(b))
             | (Topology::AccCore(a), Topology::AccCore(b))
             | (Topology::GPU(a), Topology::GPU(b)) => topology_index_eq(a, b),
-            (Topology::Custom(a), Topology::Custom(b)) => a == b,
+            (Topology::Custom(a, ia), Topology::Custom(b, ib)) => {
+                a == b && declared_index_eq(ia, ib)
+            }
             (Topology::Slice(ba, sa, ea), Topology::Slice(bb, sb, eb)) => {
                 ba == bb && topology_index_eq(sa, sb) && topology_index_eq(ea, eb)
             }
@@ -280,7 +296,7 @@ impl Placement {
     /// other direction -- and `complete` replaces it.
     pub fn at(space: MemorySpace) -> Self {
         let topology = crate::arch::owning_topology_in(&space, &Default::default())
-            .unwrap_or_else(|_| Topology::Custom(Symbol::from(space.name().as_str())));
+            .unwrap_or_else(|_| Topology::Custom(Symbol::from(space.name().as_str()), None));
         Self {
             topology,
             space,
@@ -344,7 +360,7 @@ impl Placement {
     pub fn as_written(&self) -> String {
         match self.stated {
             Stated::Device => match self.topology.kind() {
-                TopologyKind::Custom(name) => format!("Topology::{name}"),
+                TopologyKind::Custom(_) => self.topology.to_string(),
                 builtin => format!("Topology::{builtin:?}"),
             },
             Stated::Space => format!("Memory::{}", self.space.name()),
@@ -374,7 +390,10 @@ pub enum Topology {
     /// A user-defined topology, identified by name and described in the topology
     /// registry (`crate::arch::topology_descriptor`). This is the open identity that
     /// lets users add their own topologies without editing the language.
-    Custom(Symbol),
+    ///
+    /// The index picks one device of a topology that declares `count:`. A bare name has
+    /// `None`, and it means device 0.
+    Custom(Symbol, Option<Box<Expr>>),
     Current,
 }
 
@@ -477,7 +496,10 @@ impl std::fmt::Display for Topology {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Topology::")?;
         match self {
-            Topology::NPU(e) | Topology::AccCore(e) | Topology::GPU(e) => {
+            Topology::NPU(e)
+            | Topology::AccCore(e)
+            | Topology::GPU(e)
+            | Topology::Custom(_, Some(e)) => {
                 write!(f, "{}[", self.kind())?;
                 write_index(f, e)?;
                 write!(f, "]")
@@ -527,6 +549,18 @@ impl Topology {
         ))))
     }
 
+    /// `Topology::<name>[index]`, device `index` of a declared topology.
+    pub fn declared_device(name: Symbol, index: i64) -> Topology {
+        Topology::Custom(
+            name,
+            Some(Box::new(Expr::Number(crate::syntax::NumberExpr::new(
+                index.to_string(),
+                None,
+                crate::syntax::Span::default(),
+            )))),
+        )
+    }
+
     pub fn kind(&self) -> TopologyKind {
         match self {
             Topology::CPU => TopologyKind::CPU,
@@ -537,8 +571,13 @@ impl Topology {
             Topology::GPU(_) => TopologyKind::GPU,
             Topology::CpuAvx512 => TopologyKind::CpuAvx512,
             Topology::CpuNeon => TopologyKind::CpuNeon,
-            Topology::Slice(..) => TopologyKind::Slice,
-            Topology::Custom(name) => TopologyKind::Custom(name.clone()),
+            // A slice of a declared topology is devices of that topology, with its memory and its
+            // element types. The built-in `Slice` kind is a range of NPUs.
+            Topology::Slice(base, ..) => match base.kind() {
+                declared @ TopologyKind::Custom(_) => declared,
+                _ => TopologyKind::Slice,
+            },
+            Topology::Custom(name, _) => TopologyKind::Custom(name.clone()),
             Topology::Current => TopologyKind::Current,
         }
     }
@@ -554,7 +593,10 @@ impl Topology {
             _ => None,
         };
         match self {
-            Topology::NPU(e) | Topology::AccCore(e) | Topology::GPU(e) => literal(e),
+            Topology::NPU(e)
+            | Topology::AccCore(e)
+            | Topology::GPU(e)
+            | Topology::Custom(_, Some(e)) => literal(e),
             _ => None,
         }
     }
@@ -592,6 +634,9 @@ impl Topology {
             Topology::NPU(e) => Topology::NPU(Box::new(e.substitute(mapping))),
             Topology::GPU(e) => Topology::GPU(Box::new(e.substitute(mapping))),
             Topology::AccCore(e) => Topology::AccCore(Box::new(e.substitute(mapping))),
+            Topology::Custom(name, Some(e)) => {
+                Topology::Custom(name.clone(), Some(Box::new(e.substitute(mapping))))
+            }
             Topology::Slice(base, start, end) => Topology::Slice(
                 Box::new(base.substitute(mapping)),
                 Box::new(start.substitute(mapping)),
@@ -625,7 +670,8 @@ impl Topology {
             Topology::Slice(base, start, end) => {
                 format!("{}[{}..{}]", base.display_name(), idx(start), idx(end))
             }
-            Topology::Custom(name) => name.to_string(),
+            Topology::Custom(name, None) => name.to_string(),
+            Topology::Custom(name, Some(e)) => format!("{name}[{}]", idx(e)),
             Topology::Current => "Current".to_string(),
         }
     }
@@ -1877,6 +1923,12 @@ mod tests {
             make_npu_expr("4"),
         );
         assert_eq!(slice.kind(), TopologyKind::Slice);
+        let declared = Topology::Slice(
+            Box::new(Topology::Custom("Dev".into(), Some(make_npu_expr("0")))),
+            make_npu_expr("0"),
+            make_npu_expr("2"),
+        );
+        assert_eq!(declared.kind(), TopologyKind::Custom("Dev".into()));
     }
 
     #[test]
@@ -2092,7 +2144,8 @@ mod tests {
             Topology::CpuAvx512,
             Topology::CpuNeon,
             Topology::Slice(Box::new(Topology::CPU), idx(), idx()),
-            Topology::Custom("Dev".into()),
+            Topology::Custom("Dev".into(), None),
+            Topology::Custom("Dev".into(), Some(idx())),
             Topology::Current,
         ];
         for t in &all {
@@ -2107,6 +2160,27 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A declared topology with no index is its device 0, and no other device.
+    #[test]
+    fn a_bare_declared_topology_is_its_device_0() {
+        let at = |i: &str| {
+            Topology::Custom(
+                "Dev".into(),
+                Some(Box::new(Expr::Number(NumberExpr::new(
+                    i.to_string(),
+                    None,
+                    Span::default(),
+                )))),
+            )
+        };
+        let bare = Topology::Custom("Dev".into(), None);
+        assert_eq!(bare, at("0"));
+        assert_eq!(at("0"), bare);
+        assert_ne!(bare, at("1"));
+        assert_ne!(at("1"), bare);
+        assert_ne!(bare, Topology::Custom("Other".into(), None));
     }
 
     /// `Display` and `from_name` each list the built-in names, so the two lists must agree:

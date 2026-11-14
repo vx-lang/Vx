@@ -90,7 +90,106 @@ impl TypeChecker<'_> {
             // so it takes the per-tile verdict and stays out of any function's working set.
             self.check_declared_type_placement(&site.ty, &site.context, &site.place.span);
         }
+        // The device in `on Topology::X[i]` names one device of a declared topology too, and one
+        // that can run code.
+        use crate::diagnostic::DiagnosticCode::{E6025, E6042};
+        let mut on_clauses: Vec<_> = self
+            .env
+            .syntax_functions
+            .iter()
+            .filter_map(|(name, f)| {
+                let on = format!("`on {}` of function '{name}'", f.topology);
+                let (code, message) = match self.declared_device_problem(&f.topology) {
+                    Some(why) => (E6025, format!("{on} names no device: {why}")),
+                    None => (
+                        E6042,
+                        format!("{on}: {}", self.device_with_no_gpu(&f.topology)?),
+                    ),
+                };
+                let place = crate::syntax::DeclPlace {
+                    file: f.file.clone(),
+                    span: f.span,
+                };
+                Some((name.to_string(), code, message, place))
+            })
+            .collect();
+        on_clauses.sort_by(|a, b| a.0.cmp(&b.0));
+        for (_, code, message, place) in on_clauses {
+            self.errors.point_at(&place, &outside);
+            self.errors.error_with_code(code, message, None);
+        }
         self.errors.point_back(outside);
+    }
+
+    /// Why code cannot run on `top` yet, when it is device 1 or a later device of a declared GPU.
+    /// The CUDA runtime gets only device 0 of a declared GPU, and the memory of every device is
+    /// on GPU 0.
+    pub(crate) fn device_with_no_gpu(&self, top: &crate::syntax::Topology) -> Option<String> {
+        let crate::syntax::Topology::Custom(name, Some(index)) = top else {
+            return None;
+        };
+        let i = crate::arch::const_topology_index(index).filter(|i| *i >= 1)?;
+        let decl = self.env.topologies.get(name)?;
+        if decl.descriptor.arch.as_ref().map(|a| a.as_ref()) != Some("nvptx64") {
+            return None;
+        }
+        Some(format!(
+            "device {i} of '{name}' has no GPU to run on yet, because the CUDA runtime gets only \
+             device 0 of a declared GPU. Run the code on `Topology::{name}[0]`"
+        ))
+    }
+
+    /// Why `top` names no device of a declared topology, or `None` when it names one. A topology
+    /// with `count: N` has the devices 0 to N - 1, and a use must pick one when N is more than 1.
+    /// The built-in topologies have their own index rules, so this says nothing about them.
+    pub(crate) fn declared_device_problem(&self, top: &crate::syntax::Topology) -> Option<String> {
+        use crate::syntax::Topology;
+        let (name, first, end) = match top {
+            Topology::Custom(name, index) => (name, index.as_deref(), None),
+            Topology::Slice(base, start, end) => match &**base {
+                Topology::Custom(name, _) => (name, Some(&**start), Some(&**end)),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let Some(decl) = self.env.topologies.get(name) else {
+            return first.map(|_| {
+                format!("no topology named '{name}' is declared, so it has no devices to index")
+            });
+        };
+        let count = decl.descriptor.count.unwrap_or(1);
+        let devices = if count == 1 {
+            "1 device".to_string()
+        } else {
+            format!("{count} devices")
+        };
+        let constant = |e: &crate::syntax::Expr| crate::arch::const_topology_index(e);
+        let Some(first) = first else {
+            return (count > 1).then(|| {
+                format!(
+                    "'{name}' has {devices}, so name one of them: `Topology::{name}[0]` to \
+                     `Topology::{name}[{}]`",
+                    count - 1
+                )
+            });
+        };
+        if let Some(i) = constant(first) {
+            if i < 0 || i as u64 >= count {
+                return Some(format!(
+                    "'{name}' has {devices}, so device {i} does not exist"
+                ));
+            }
+        }
+        let end = end.and_then(constant)?;
+        if end < 0 || end as u64 > count {
+            return Some(format!(
+                "'{name}' has {devices}, so a slice of it ends at {count} or before, not at {end}"
+            ));
+        }
+        match constant(first) {
+            Some(start) if start >= end => Some(format!("the slice {start}..{end} has no devices")),
+            _ => None,
+        }
     }
 
     /// Report every placement inside `ty` that names no place.
@@ -116,6 +215,8 @@ impl TypeChecker<'_> {
                         p.as_written(),
                         "no topology of that name is declared".to_string(),
                     ));
+                } else if let Some(why) = self.declared_device_problem(&p.topology) {
+                    bad.push((p.as_written(), why));
                 }
             }
             Written::Space => {
