@@ -65,6 +65,10 @@ the tile. In `c[(b / n) * 64 + i][(b % n) * 64 + j]`, the first index fixes `b /
 fixes `b % n`, so the two together fix `b`. `n` must be a number above zero, or a factor of the
 end of the loop, as in `for b in 0..m * n across blocks`. When `n` is zero, that loop has no passes.
 
+An index can also use `i / n` and `i % n`, where `i` is the variable of a loop in the block loop,
+with the same rule for `n`. With `i` below 4 and `j` below 32, `(i / 2) * 32 + j` is at most 63.
+So `c[b * 64 + (i / 2) * 32 + j]` fixes `b`.
+
 The same check refuses a read of an element that another pass writes, a write to a variable from
 outside the loop, `println!`, and a call that can write through its argument.
 
