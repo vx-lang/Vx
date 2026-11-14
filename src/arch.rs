@@ -674,7 +674,8 @@ impl DeviceTarget {
             DeviceTarget::X86_64
             | DeviceTarget::Aarch64
             | DeviceTarget::AmdGcn
-            | DeviceTarget::Spirv64 => space.nvptx_addrspace(),
+            | DeviceTarget::Spirv64
+            | DeviceTarget::AppleAne => space.nvptx_addrspace(),
         }
     }
 }
