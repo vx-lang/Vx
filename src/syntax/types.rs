@@ -1271,6 +1271,12 @@ impl ElementType {
         matches!(self, I4 | I8 | I16 | I32 | I64 | I128)
     }
 
+    /// Whether this is an unsigned integer, `usize` included. `bool` is not.
+    pub fn is_unsigned_int(&self) -> bool {
+        use ElementType::*;
+        matches!(self, U4 | U8 | U16 | U32 | U64 | U128 | USize)
+    }
+
     /// Whether this is a floating-point element type (`f16`/`f32`/`f64`/`bf16`/`f8e4m3`/`f8e5m2`).
     pub fn is_float(&self) -> bool {
         matches!(

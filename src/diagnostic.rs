@@ -306,9 +306,9 @@ pub enum DiagnosticCode {
     /// language -- compiled silently and did nothing.
     E3029,
     /// An operator applied to operand types it is not defined on -- `%` on a shaped tensor or on
-    /// a `bool`. Refused here because the alternative is worse in both directions: the flat
-    /// emitter would decline and fall back to a path that cannot lower it either, and an `i1`
-    /// operand would reach `arith.remsi` and verify.
+    /// a `bool`, or `-` on an unsigned integer or a `bool`. For `%`, the flat emitter would
+    /// decline and fall back to a path that cannot lower it either, and an `i1` operand would
+    /// reach `arith.remsi` and verify. `-` on an unsigned integer would wrap with no error.
     E3030,
     /// `impl Copy for X` where one of `X`'s fields is a type that moves. `Copy` promises a
     /// value survives being assigned elsewhere, and a field that does not survive it breaks
