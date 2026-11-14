@@ -10,12 +10,20 @@
 // smallest `i64`. A struct field after a nested enum keeps its value, so the store of the
 // nested enum stays inside its own storage.
 //
+// The last line checks `Result<Option<i32>, Error>`, where `Error` holds an `Option<i32>`, and
+// an enum whose two variants both hold an `Option<i32>` after an `i32`. 303 and 99 mark a `None`.
+// An `Err` subtracts 1000 and a `Right` negates its number, so a wrong outer variant shows too.
+//
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}9223372036854775807 7 -1{{$}}
 // CHECK: {{^}}-9223372036854775802 10{{$}}
 // CHECK: {{^}}canary 1234567890123 value -1{{$}}
 // CHECK: {{^}}42 9{{$}}
+// CHECK: {{^}}303 -9 -1011 31 -13 -47 99{{$}}
+
+import core::option;
+import core::result;
 
 enum Inner {
   Value(i64),
@@ -86,6 +94,82 @@ fn wrap_value(w : Wrap<Inner>) -> i64 {
   }
 }
 
+struct Error {
+  code : Option<i32>,
+}
+
+enum Pair {
+  Empty,
+  Left(i32, Option<i32>),
+  Right(i32, Option<i32>),
+}
+
+fn number_or(o : Option<i32>, missing : i32) -> i32 {
+  match o {
+    Option<i32>::Some(v) => {
+      return v;
+    }
+    Option<i32>::None => {
+      return missing;
+    }
+  }
+}
+
+fn pass_result(r : Result<Option<i32>, Error>) -> Result<Option<i32>, Error> {
+  return r;
+}
+
+fn result_number(r : Result<Option<i32>, Error>) -> i32 {
+  match r {
+    Result<Option<i32>, Error>::Ok(o) => {
+      return number_or(o, 303);
+    }
+    Result<Option<i32>, Error>::Err(e) => {
+      return number_or(e.code, 404) - 1000;
+    }
+  }
+}
+
+fn pass_pair(p : Pair) -> Pair {
+  return p;
+}
+
+fn pair_number(p : Pair) -> i32 {
+  match p {
+    Pair::Empty => {
+      return 0;
+    }
+    Pair::Left(n, o) => {
+      return n;
+    }
+    Pair::Right(n, o) => {
+      return -n;
+    }
+  }
+}
+
+fn pair_option(p : Pair) -> i32 {
+  match p {
+    Pair::Empty => {
+      return 0;
+    }
+    Pair::Left(n, o) => {
+      return number_or(o, 99);
+    }
+    Pair::Right(n, o) => {
+      return number_or(o, 99);
+    }
+  }
+}
+
+fn left() -> Pair {
+  return Pair::Left(31, Option<i32>::Some(-13));
+}
+
+fn right() -> Pair {
+  return Pair::Right(47, Option<i32>::None());
+}
+
 fn main() -> i32 {
   let a = Outer::Nested(Inner::Value(9223372036854775807i64));
   let b = Outer::Number(7);
@@ -102,5 +186,13 @@ fn main() -> i32 {
   let f = Wrap<Inner>::Nested(Inner::Value(42i64));
   let g = Wrap<Inner>::Number(9);
   println!("{} {}", wrap_value(f), wrap_value(g));
+  let ok_none = pass_result(Result<Option<i32>, Error>::Ok(Option<i32>::None()));
+  let ok_some = pass_result(Result<Option<i32>, Error>::Ok(Option<i32>::Some(-9)));
+  let err = pass_result(Result<Option<i32>, Error>::Err(Error {
+    code : Option<i32>::Some(-11)
+  }));
+  println!("{} {} {} {} {} {} {}", result_number(ok_none), result_number(ok_some),
+  result_number(err), pair_number(pass_pair(left())), pair_option(pass_pair(left())),
+  pair_number(pass_pair(right())), pair_option(pass_pair(right())));
   return 0;
 }
