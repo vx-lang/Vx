@@ -1290,18 +1290,15 @@ pub struct DeclaredArch {
 }
 
 /// The declared-arch table for `EmitCtx::topo_archs`, from the per-compilation env: one entry per
-/// user-declared topology that states an `arch:`. A topology that declines to declare one gets no
-/// entry, no `arch` attribute, and therefore no device compilation -- refusing to guess is the
-/// same policy `fleet/m4-uma.vx` documents for its own arch field.
+/// device of each user-declared topology that states an `arch:`. A topology that declines to
+/// declare one gets no entry, no `arch` attribute, and therefore no device compilation -- refusing
+/// to guess is the same policy `fleet/m4-uma.vx` documents for its own arch field.
 pub fn topo_archs_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i64, DeclaredArch)> {
     let mut out: Vec<(i64, DeclaredArch)> = env
         .topologies
         .values()
         .filter_map(|decl| {
             let arch = decl.descriptor.arch.as_ref()?;
-            let id = crate::arch::topology_dispatch_id(&crate::syntax::Topology::Custom(
-                decl.name.clone(),
-            ));
             let declared = DeclaredArch {
                 arch: arch.as_ref().to_string(),
                 chip: decl
@@ -1311,8 +1308,10 @@ pub fn topo_archs_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i64, Declared
                     .map(|c| c.as_ref().to_string()),
                 offload: decl.descriptor.offload,
             };
-            Some((id as i64, declared))
+            let ids = crate::arch::declared_dispatch_ids(&decl.name, decl.descriptor.count);
+            Some(ids.into_iter().map(move |id| (id as i64, declared.clone())))
         })
+        .flatten()
         .collect();
     // Sorted, because `env.topologies` is a HashMap and iteration order would otherwise decide
     // which entry wins an id collision -- the coin-flip E6016 refuses upstream, kept impossible

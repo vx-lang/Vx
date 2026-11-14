@@ -132,6 +132,7 @@ ______________________________________________________________________
 | `arch:` | The instruction set it executes: `x86_64`, `aarch64`, `nvptx64`, `amdgcn`. |
 | `transfer A -> B` | An edge in the cost graph. Repeatable. |
 | `offload: true` | The fleet may run it on a worker of another node. Defaults to `false`. |
+| `count: N` | How many devices it has. `Topology::X[i]` names one. Defaults to 1. |
 
 A worker of another node does not share the memory of this node. So a topology with
 `offload: true` gets no exception for `managed: cached` memory: a host tensor in its region needs
@@ -180,6 +181,7 @@ These are the errors a first attempt actually hits, in the order you are likely 
 | `E6009` | A tensor does not fit the declared `capacity`. This one is the point of the exercise. |
 | `W1026` | The topology's memory has no transfer edge from the host, so nothing can reach it. |
 | `E6037` | A type places a tensor in the memory, and the memory has no `scope:`. |
+| `E6025` | A use names a device that the topology does not have, such as `X[2]` with `count: 2`, or a bare `X` with more than one device. |
 
 Declaring `scope:` on the memory fixes E6037. A space with no `scope:` has no address space on
 the target, and a default would put the data somewhere the program did not ask for. A memory with

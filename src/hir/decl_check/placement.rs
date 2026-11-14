@@ -90,7 +90,83 @@ impl TypeChecker<'_> {
             // so it takes the per-tile verdict and stays out of any function's working set.
             self.check_declared_type_placement(&site.ty, &site.context, &site.place.span);
         }
+        // The device in `on Topology::X[i]` names one device of a declared topology too.
+        let mut on_clauses: Vec<_> = self
+            .env
+            .syntax_functions
+            .iter()
+            .filter_map(|(name, f)| {
+                let why = self.declared_device_problem(&f.topology)?;
+                let place = crate::syntax::DeclPlace {
+                    file: f.file.clone(),
+                    span: f.span,
+                };
+                Some((name.to_string(), f.topology.to_string(), why, place))
+            })
+            .collect();
+        on_clauses.sort_by(|a, b| a.0.cmp(&b.0));
+        for (name, written, why, place) in on_clauses {
+            self.errors.point_at(&place, &outside);
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E6025,
+                format!("`on {written}` of function '{name}' names no device: {why}"),
+                None,
+            );
+        }
         self.errors.point_back(outside);
+    }
+
+    /// Why `top` names no device of a declared topology, or `None` when it names one. A topology
+    /// with `count: N` has the devices 0 to N - 1, and a use must pick one when N is more than 1.
+    /// The built-in topologies have their own index rules, so this says nothing about them.
+    pub(crate) fn declared_device_problem(&self, top: &crate::syntax::Topology) -> Option<String> {
+        use crate::syntax::Topology;
+        let (name, first, end) = match top {
+            Topology::Custom(name, index) => (name, index.as_deref(), None),
+            Topology::Slice(base, start, end) => match &**base {
+                Topology::Custom(name, _) => (name, Some(&**start), Some(&**end)),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let Some(decl) = self.env.topologies.get(name) else {
+            return first.map(|_| {
+                format!("no topology named '{name}' is declared, so it has no devices to index")
+            });
+        };
+        let count = decl.descriptor.count.unwrap_or(1);
+        let devices = if count == 1 {
+            "1 device".to_string()
+        } else {
+            format!("{count} devices")
+        };
+        let constant = |e: &crate::syntax::Expr| crate::arch::const_topology_index(e);
+        let Some(first) = first else {
+            return (count > 1).then(|| {
+                format!(
+                    "'{name}' has {devices}, so name one of them: `Topology::{name}[0]` to \
+                     `Topology::{name}[{}]`",
+                    count - 1
+                )
+            });
+        };
+        if let Some(i) = constant(first) {
+            if i < 0 || i as u64 >= count {
+                return Some(format!(
+                    "'{name}' has {devices}, so device {i} does not exist"
+                ));
+            }
+        }
+        let end = end.and_then(constant)?;
+        if end < 0 || end as u64 > count {
+            return Some(format!(
+                "'{name}' has {devices}, so a slice of it ends at {count} or before, not at {end}"
+            ));
+        }
+        match constant(first) {
+            Some(start) if start >= end => Some(format!("the slice {start}..{end} has no devices")),
+            _ => None,
+        }
     }
 
     /// Report every placement inside `ty` that names no place.
@@ -116,6 +192,8 @@ impl TypeChecker<'_> {
                         p.as_written(),
                         "no topology of that name is declared".to_string(),
                     ));
+                } else if let Some(why) = self.declared_device_problem(&p.topology) {
+                    bad.push((p.as_written(), why));
                 }
             }
             Written::Space => {

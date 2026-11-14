@@ -157,7 +157,10 @@ impl<'a> TypeChecker<'a> {
         out: &mut std::collections::HashMap<String, u64>,
     ) {
         match topology {
-            Topology::NPU(index) | Topology::AccCore(index) | Topology::GPU(index) => {
+            Topology::NPU(index)
+            | Topology::AccCore(index)
+            | Topology::GPU(index)
+            | Topology::Custom(_, Some(index)) => {
                 Self::scan_expr_for_asserts(index, out);
             }
             Topology::Slice(base, start, end) => {
@@ -170,7 +173,7 @@ impl<'a> TypeChecker<'a> {
             | Topology::ANE
             | Topology::CpuAvx512
             | Topology::CpuNeon
-            | Topology::Custom(_)
+            | Topology::Custom(_, None)
             | Topology::Current => {}
         }
     }
@@ -1222,7 +1225,7 @@ impl<'a> TypeChecker<'a> {
     /// counts as one. The host does not.
     pub(crate) fn topology_offloads(&self, top: &Topology) -> bool {
         match top {
-            Topology::Custom(name) => self
+            Topology::Custom(name, _) => self
                 .env
                 .topologies
                 .get(name)
@@ -1601,10 +1604,9 @@ impl<'a> TypeChecker<'a> {
                 // handoff reports "no hardware path" (#253). Only an undeclared custom topology
                 // falls back to the like-named space (`Memory::Foo` <-> `Topology::Foo`), the
                 // sub-space placement case (SMEM/TMEM), which has no descriptor.
-                Type::Pinned(_, Topology::Custom(name)) => {
-                    let top = Topology::Custom(name.clone());
+                Type::Pinned(_, top @ Topology::Custom(name, _)) => {
                     if self.transfer_cost_graph.descriptor(&top.kind()).is_some() {
-                        self.transfer_cost_graph.default_memory_for(&top)
+                        self.transfer_cost_graph.default_memory_for(top)
                     } else {
                         MemorySpace::from_name(name.as_ref())
                     }
@@ -2399,7 +2401,7 @@ impl<'a> TypeChecker<'a> {
             MemorySpace::CPUDRAM => Topology::CPU,
             // A value in a user-defined memory space is pinned on the like-named
             // custom topology (naming convention: Memory::Foo <-> Topology::Foo).
-            MemorySpace::Custom(name) => Topology::Custom(name.clone()),
+            MemorySpace::Custom(name) => Topology::Custom(name.clone(), None),
         }
     }
 
@@ -2594,11 +2596,20 @@ impl<'a> TypeChecker<'a> {
                     *arrivals = Some((count, shared));
                 }
 
+                let no_device = self.declared_device_problem(&actual_top);
+                if let Some(why) = &no_device {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E6025,
+                        format!("`spawn on({actual_top})` names no device: {why}"),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&spawn_span)),
+                    );
+                }
+
                 // Typo-safety for the open topology set: a user-defined topology with no
                 // registered descriptor (not declared via `Topology <Name> { ... }` and not
                 // registered by a plugin) is often a misspelled built-in. Warn; it still
                 // compiles with host-like placement.
-                if let Topology::Custom(name) = &actual_top {
+                if let (Topology::Custom(name, _), None) = (&actual_top, &no_device) {
                     if self
                         .transfer_cost_graph
                         .descriptor(&crate::syntax::TopologyKind::Custom(name.clone()))
@@ -2650,17 +2661,16 @@ impl<'a> TypeChecker<'a> {
                         let _t1 = self.check_expr_type(start);
                         let _t2 = self.check_expr_type(end);
                     }
-                    // No index expression to validate (Custom carries only a name).
-                    Topology::GPU(e) => {
+                    Topology::GPU(e) | Topology::Custom(_, Some(e)) => {
                         let _t = self.check_expr_type(e);
                     }
-                    // No index expression to validate (Custom carries only a name).
+                    // No index expression to validate.
                     Topology::CPU
                     | Topology::AMX
                     | Topology::ANE
                     | Topology::CpuAvx512
                     | Topology::CpuNeon
-                    | Topology::Custom(_)
+                    | Topology::Custom(_, None)
                     | Topology::Current => {}
                 }
 

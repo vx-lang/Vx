@@ -395,6 +395,14 @@ impl SmtProver {
                             "Topology_GPU".to_string()
                         }
                     }
+                    // `[` cannot be in a name, so `Dev[1]` is not the name of another topology.
+                    Topology::Custom(name, index) => {
+                        match index.as_deref().map(crate::arch::const_topology_index) {
+                            None | Some(Some(0)) => format!("Topology_{name}"),
+                            Some(Some(i)) => format!("Topology_{name}[{i}]"),
+                            Some(None) => format!("Topology_{name}[?]"),
+                        }
+                    }
                     _ => "Topology_Complex".to_string(),
                 };
                 expect(want, Sort::Int)?;

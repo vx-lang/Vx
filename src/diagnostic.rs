@@ -652,6 +652,10 @@ pub enum DiagnosticCode {
     /// topology holds, written either as the space or as the device that would hold it. The
     /// derivation between the two spellings has a like-named fallback, so an undeclared name
     /// resolves to a space that exists only in the placement that mentions it.
+    ///
+    /// A placement, a `spawn on` or an `on` clause also gets this error when it names a device
+    /// that a declared topology does not have: `X[2]` when `X` has `count: 2`, or a bare `X`
+    /// when `X` has more than one device.
     E6025,
     /// A tensor whose element type the target hardware cannot represent, placed on it anyway.
     ///
