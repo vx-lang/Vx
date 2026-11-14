@@ -725,10 +725,13 @@ pub fn execute_mlir_streams(
         // executable's dynamic symbol table. Mach-O exports those symbols
         // anyway; ELF does not unless asked, so Linux asks for exactly them.
         // The helper holds the version script that keeps every other symbol
-        // out, and a test reads both flags back on any machine.
+        // out, and a test reads both flags back on any machine. A sanitized
+        // program is the exception and keeps the whole table, because
+        // ThreadSanitizer's interceptors live in it.
         clang_cmd.args(outlined_kernel_link_args(
             std::env::consts::OS,
             temp_dir.path(),
+            thread_sanitizer,
         )?);
 
         // With the CUDA plugin, a program's own `extern` block may call cuBLAS or the CUDA
@@ -854,9 +857,23 @@ const KERNEL_EXPORT_RULES: &str = "{\n  global: _vx_ciface_*;\n  local: *;\n};\n
 ///
 /// `dir` must outlive the link and the run -- the caller passes the JIT's
 /// temporary directory, which it keeps until the program has exited.
-pub fn outlined_kernel_link_args(target_os: &str, dir: &Path) -> Result<Vec<String>, String> {
+///
+/// A sanitizer build is the exception. ThreadSanitizer's interceptors have to
+/// stay in the dynamic symbol table, and a version script making every other
+/// symbol local made it crash inside its own `__tsan_func_entry`, before it
+/// could report anything. So a sanitized program keeps the old `-rdynamic` and
+/// gives up the interposition fix: a diagnostic that cannot run is worth less
+/// than a program that runs.
+pub fn outlined_kernel_link_args(
+    target_os: &str,
+    dir: &Path,
+    sanitized: bool,
+) -> Result<Vec<String>, String> {
     if target_os != "linux" {
         return Ok(Vec::new());
+    }
+    if sanitized {
+        return Ok(vec!["-rdynamic".to_string()]);
     }
     let map = dir.join("vx_kernel_exports.map");
     std::fs::write(&map, KERNEL_EXPORT_RULES)
@@ -969,7 +986,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let map = dir.join("vx_kernel_exports.map");
         assert_eq!(
-            outlined_kernel_link_args("linux", &dir).unwrap(),
+            outlined_kernel_link_args("linux", &dir, false).unwrap(),
             [
                 "-Wl,--export-dynamic-symbol=_vx_ciface_*".to_string(),
                 format!("-Wl,--version-script={}", map.display()),
@@ -979,11 +996,25 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A sanitizer keeps the dynamic symbol table it needs. ThreadSanitizer's interceptors have
+    /// to stay visible, and a version script making everything else local crashed it inside its
+    /// own `__tsan_func_entry` before it could report anything, so a sanitized program gets the
+    /// old `-rdynamic` and no script.
+    #[test]
+    fn linux_exports_everything_when_the_program_is_sanitized() {
+        let dir = std::env::temp_dir().join(format!("vx-tsan-exports-{}", std::process::id()));
+        assert_eq!(
+            outlined_kernel_link_args("linux", &dir, true).unwrap(),
+            ["-rdynamic".to_string()]
+        );
+        assert!(!dir.join("vx_kernel_exports.map").exists());
+    }
+
     /// Mach-O exports the kernel entry point already, and the Apple linker knows neither
     /// `--export-dynamic-symbol` nor `--version-script`.
     #[test]
     fn macos_exports_the_outlined_kernels_with_no_linker_flag() {
-        assert!(outlined_kernel_link_args("macos", Path::new("/tmp"))
+        assert!(outlined_kernel_link_args("macos", Path::new("/tmp"), false)
             .unwrap()
             .is_empty());
     }

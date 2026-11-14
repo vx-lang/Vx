@@ -436,6 +436,7 @@ mod compare {
             cmd.args(vxc::jit::outlined_kernel_link_args(
                 std::env::consts::OS,
                 out_dir,
+                false,
             )?);
         }
         cmd.arg("-lm");
