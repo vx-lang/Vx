@@ -10,7 +10,7 @@
 
 Topology NPU {
   memory: Memory::NPU_HBM,
-  dtypes: [f16]
+  dtypes: [f16, i32, u32, bool]
 }
 
 fn main() -> i32 {

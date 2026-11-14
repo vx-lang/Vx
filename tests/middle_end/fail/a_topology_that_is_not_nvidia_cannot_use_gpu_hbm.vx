@@ -12,7 +12,7 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not="topology 'Nvidia'"
 // The errors come in the order of the names.
 // CHECK: E6016
-// CHECK: topology 'Apple' has `arch: applegpu`, but its memory is `Memory::GPU_HBM`
+// CHECK: topology 'Apple' uses `Memory::GPU_HBM`, which is only valid for `arch: nvptx64`
 // CHECK: E6016
 // CHECK: topology 'Spirv' has `arch: spirv64`, but its memory is `Memory::GPU_HBM`
 
