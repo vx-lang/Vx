@@ -83,6 +83,8 @@ struct Walk<'g> {
     shared: HashSet<String>,
     /// The parameters with an `atomic` clause, for each function that has one.
     contracts: HashMap<String, Vec<usize>>,
+    /// The names of the generic functions, to name an instance by its template in a message.
+    templates: HashSet<String>,
     /// The size of the tensor of each lane reduction, from the type checker.
     lane_sizes: HashMap<Span, u64>,
     /// The lane reductions in a place that allows them.
@@ -138,6 +140,12 @@ impl crate::hir::TypeChecker<'_> {
             auto_schedule: self.worker.global.auto_schedule_levels,
             shared,
             contracts: self.atomic_contracts(),
+            templates: self
+                .env
+                .generic_functions
+                .keys()
+                .map(|k| k.as_ref().to_string())
+                .collect(),
             lane_sizes: self.lane_reductions.clone(),
             lane_calls: Vec::new(),
             lane_matmuls: HashSet::new(),
@@ -1273,6 +1281,7 @@ impl Walk<'_> {
             f,
             kind_word(level.kind),
             &self.contracts,
+            &self.templates,
         ) {
             Err((why, at)) => self.error(why, at),
             Ok(ends) => {

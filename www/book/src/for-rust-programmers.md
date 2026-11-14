@@ -41,6 +41,9 @@ lists what to change. Each item shows the Rust form and the Vx form.
   A `Relaxed` read is compiled as an `Acquire` read, so no value comes out of thin air.
   `-fweak-relaxed-atomics` gives Rust's `Relaxed`. See
   [Memory orders](tasks.md#memory-orders).
+- **Float math gives the same bits on each target.** `x.exp()` and the other float methods are
+  written in Vx, and the `f32` ones are correctly rounded. Rust's `f32::exp` calls the platform's C
+  library, as Vx's `x.fast_exp()` does. See [Exact and fast math](exact-and-fast-math.md).
 - **Uninitialized storage is `unsafe`.** `MaybeUninit` has no equivalent. Write
   `unsafe { Tensor<f32, [4]>::uninit() }` and set every element before reading it, or use
   `Tensor<f32, [4]>::new()`, which is zeroed.

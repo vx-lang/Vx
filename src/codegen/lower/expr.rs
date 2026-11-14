@@ -5928,7 +5928,12 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintExpr {
             switch_print_stream(gen, block, true)?;
         }
         for arg in &self.args {
-            let (arg_val, arg_ty, next) = gen.generate_expr(arg, block)?;
+            // A `println!(..);` statement expects no value, but each argument gives one. Without
+            // this reset, an `if` or a `match` argument takes the `none` type of the statement.
+            let prev_expected = gen.expected_type.take();
+            let lowered = gen.generate_expr(arg, block);
+            gen.expected_type = prev_expected;
+            let (arg_val, arg_ty, next) = lowered?;
             block = next;
             if let Some((fn_name, arg_val, arg_ty_str)) =
                 super::pick_scalar_print(gen, block, arg, arg_val, arg_ty)?

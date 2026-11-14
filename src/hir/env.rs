@@ -1100,7 +1100,10 @@ impl<'a> TypeChecker<'a> {
     pub fn extract_uses_expr(expr: &Expr, uses: &mut std::collections::HashSet<String>) {
         fn topology(value: &Topology, uses: &mut std::collections::HashSet<String>) {
             match value {
-                Topology::NPU(index) | Topology::AccCore(index) | Topology::GPU(index) => {
+                Topology::NPU(index)
+                | Topology::AccCore(index)
+                | Topology::GPU(index)
+                | Topology::Custom(_, Some(index)) => {
                     TypeChecker::extract_uses_expr(index, uses);
                 }
                 Topology::Slice(base, start, end) => {
@@ -1114,7 +1117,7 @@ impl<'a> TypeChecker<'a> {
                 | Topology::CpuAvx512
                 | Topology::CpuNeon
                 | Topology::Current
-                | Topology::Custom(_) => {}
+                | Topology::Custom(_, None) => {}
             }
         }
 
@@ -1685,7 +1688,7 @@ impl<'a> TypeChecker<'a> {
                 // to the argument's concrete topology; a concrete topology must match. Then
                 // unify the payload (which may itself carry type variables).
                 let tops_ok = match top1 {
-                    Topology::Custom(name) if self.mono.pending_topo_vars.contains(name) => {
+                    Topology::Custom(name, None) if self.mono.pending_topo_vars.contains(name) => {
                         self.mono
                             .pending_topo_bindings
                             .insert(name.clone(), top2.clone());
@@ -1728,7 +1731,7 @@ impl<'a> TypeChecker<'a> {
         top: Topology,
         topo_mapping: &std::collections::HashMap<crate::symbol::Symbol, Topology>,
     ) -> Topology {
-        if let Topology::Custom(name) = &top {
+        if let Topology::Custom(name, None) = &top {
             if let Some(bound) = topo_mapping.get(name) {
                 return bound.clone();
             }
@@ -2774,7 +2777,7 @@ mod specialization_identity_tests {
     #[case::tensor_host_gpu(tensor(None), gpu(0))]
     #[case::tensor_gpu_devices(gpu(0), gpu(1))]
     #[case::slice_bounds(slice("2"), slice("3"))]
-    #[case::custom_devices(tensor(Some(Placement::on(Topology::Custom("A".into())))), tensor(Some(Placement::on(Topology::Custom("B".into())))))]
+    #[case::custom_devices(tensor(Some(Placement::on(Topology::Custom("A".into(), None)))), tensor(Some(Placement::on(Topology::Custom("B".into(), None)))))]
     #[case::tensor_memory(
         gpu(0),
         tensor(Some(Placement::in_space(MemorySpace::CPUDRAM, Topology::gpu(0))))

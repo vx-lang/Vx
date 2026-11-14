@@ -1,0 +1,72 @@
+//===- a_device_that_its_topology_does_not_have.vx -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Card` has two devices, 0 and 1, and `One` has one. Each use below names a
+// device that its topology does not have, so each is error E6025: in a tensor
+// type, in an `on` clause and in a `spawn`.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+Memory CARD_RAM {
+  scope: device, capacity: 1 GB, bandwidth: 1 TB/s
+}
+
+Topology Card {
+  count: 2,
+  memory: Memory::CARD_RAM,
+  visible: [Memory::CARD_RAM],
+  transfer Memory::CPU_DRAM -> Memory::CARD_RAM : 100,
+}
+
+Memory ONE_RAM {
+  scope: device, capacity: 1 GB, bandwidth: 1 TB/s
+}
+
+Topology One {
+  memory: Memory::ONE_RAM,
+  visible: [Memory::ONE_RAM],
+  transfer Memory::CPU_DRAM -> Memory::ONE_RAM : 100,
+}
+
+// CHECK: Error[E6025] at {{.*}}.vx:[[@LINE+1]]:{{[0-9]+}}: `Topology::Card[5]` in parameter '_t' of function 'placed' names no location: 'Card' has 2 devices, so device 5 does not exist
+fn placed(_t : Tensor<f32, [4], Topology::Card[5]>) -> i32 {
+  return 0;
+}
+
+// CHECK: Error[E6025] at {{.*}}.vx:[[@LINE+1]]:{{[0-9]+}}: `on Topology::Card[7]` of function 'runs' names no device: 'Card' has 2 devices, so device 7 does not exist
+fn runs() on Topology::Card[7] -> i32 {
+  return 0;
+}
+
+fn main() -> i32 {
+  // CHECK: Error[E6025] at {{.*}}.vx:[[@LINE+1]]:3: `spawn on(Topology::Card)` names no device: 'Card' has 2 devices, so name one of them: `Topology::Card[0]` to `Topology::Card[1]`
+  spawn on(Topology::Card) {
+    let _a = 1;
+  }
+  // CHECK: Error[E6025] at {{.*}}.vx:[[@LINE+1]]:3: `spawn on(Topology::Card[2])` names no device: 'Card' has 2 devices, so device 2 does not exist
+  spawn on(Topology::Card[2]) {
+    let _a = 2;
+  }
+  // CHECK: Error[E6025] at {{.*}}.vx:[[@LINE+1]]:3: `spawn on(Topology::Card[0..3])` names no device: 'Card' has 2 devices, so a slice of it ends at 2 or before, not at 3
+  spawn on(Topology::Card[0..3]) {
+    let _a = 3;
+  }
+  // CHECK: Error[E6025] at {{.*}}.vx:[[@LINE+1]]:3: `spawn on(Topology::Card[1..1])` names no device: the slice 1..1 has no devices
+  spawn on(Topology::Card[1..1]) {
+    let _a = 4;
+  }
+  // CHECK: Error[E6025] at {{.*}}.vx:[[@LINE+1]]:3: `spawn on(Topology::One[1])` names no device: 'One' has 1 device, so device 1 does not exist
+  spawn on(Topology::One[1]) {
+    let _a = 5;
+  }
+  // CHECK: Error[E6025] at {{.*}}.vx:[[@LINE+1]]:3: `spawn on(Topology::Nowhere[1])` names no device: no topology named 'Nowhere' is declared, so it has no devices to index
+  spawn on(Topology::Nowhere[1]) {
+    let _a = 6;
+  }
+  // CHECK: 8 error(s) emitted
+  return 0;
+}

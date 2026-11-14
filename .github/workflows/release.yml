@@ -54,7 +54,7 @@ jobs:
 
     steps:
       # A manual run builds the tag that it names.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.version || github.ref }}
 
@@ -395,7 +395,7 @@ jobs:
           echo "packaged toolchain runs a program using grad"
 
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: vx-${{ matrix.target }}
           path: |
@@ -409,7 +409,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.repository == 'vx-lang/Vx' && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch')
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
@@ -417,7 +417,7 @@ jobs:
       - name: List what will be published
         run: ls -lh artifacts/
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.event.inputs.version || github.ref_name }}
           files: |

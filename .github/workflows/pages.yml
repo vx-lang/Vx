@@ -37,7 +37,7 @@ jobs:
       MDBOOK_VERSION: '0.5.4'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install mdBook
         run: |
@@ -188,13 +188,15 @@ jobs:
           echo "All $(wc -l < /tmp/cards.txt) referenced cards exist."
           echo "$pages_without page(s) carry no og:image."
 
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
         if: ${{ github.repository == 'vx-lang/Vx' }}
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         if: ${{ github.repository == 'vx-lang/Vx' }}
         with:
           path: _site
+          # Keep .well-known/tdmrep.json. Since v4 the action leaves out hidden files by default.
+          include-hidden-files: true
 
   deploy:
     if: ${{ github.repository == 'vx-lang/Vx' }}
@@ -205,4 +207,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

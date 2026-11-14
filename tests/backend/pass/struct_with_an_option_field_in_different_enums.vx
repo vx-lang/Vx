@@ -1,0 +1,141 @@
+//===- struct_with_an_option_field_in_different_enums.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// A struct with an `Option` field goes into four enums: `Option`, an enum that is not generic,
+// a variant where it comes after a `u8`, and a `Result` whose `Ok` holds an empty struct.
+// The program reads every value back. Each value prints as a different number.
+// EXPECT: 55 -7 4294967301 99 41 7 2 -9000000000 1 -3
+
+import core::convert;
+import core::option;
+import core::result;
+
+struct Error {
+  code: Option<i32>
+}
+
+// `code` has 8-byte alignment. So `Wide` starts at offset 8 in `Two`, not at 5 after the `u8`.
+// `struct_with_option_field_after_a_byte_starts_at_its_alignment` checks this offset in `src/hir/flatten/tests.rs`.
+struct Wide {
+  small: u8,
+  code: Option<i64>
+}
+
+enum Outcome {
+  Done(u64),
+  Failed(Error)
+}
+
+enum Two {
+  Pair(u8, Wide),
+  Number(u8)
+}
+
+struct Empty {}
+
+fn maybe_error(n: i32) -> Option<Error> {
+  if n > 0 {
+    return Option<Error>::Some(Error {
+      code: Option<i32>::Some(-7)
+    });
+  }
+  return Option<Error>::None();
+}
+
+fn code_or_55(o: Option<Error>) -> i32 {
+  match o {
+    Option<Error>::Some(e) => {
+      return e.code.unwrap_or(99);
+    }
+    Option<Error>::None => {
+      return 55;
+    }
+  }
+}
+
+fn outcome(n: i32) -> Outcome {
+  if n > 0 {
+    return Outcome::Failed(Error {
+      code: Option<i32>::None()
+    });
+  }
+  return Outcome::Done(4294967301u64);
+}
+
+fn outcome_value(o: Outcome) -> i64 {
+  match o {
+    Outcome::Done(v) => {
+      return v as i64;
+    }
+    Outcome::Failed(e) => {
+      return i64::from(e.code.unwrap_or(99));
+    }
+  }
+}
+
+fn two(n: i32) -> Two {
+  if n > 0 {
+    return Two::Pair(7u8, Wide {
+      small: 2u8,
+      code: Option<i64>::Some(-9000000000)
+    });
+  }
+  return Two::Number(41u8);
+}
+
+fn print_two(t: Two) -> void {
+  match t {
+    Two::Pair(a, w) => {
+      print(a);
+      print!(" ");
+      print(w.small);
+      print!(" ");
+      print(w.code.unwrap_or(99));
+    }
+    Two::Number(x) => {
+      print(x);
+    }
+  }
+}
+
+fn empty_or_error(n: i32) -> Result<Empty, Error> {
+  if n > 0 {
+    return Result<Empty, Error>::Err(Error {
+      code: Option<i32>::Some(-3)
+    });
+  }
+  return Result<Empty, Error>::Ok(Empty {});
+}
+
+fn empty_or_code(r: Result<Empty, Error>) -> i32 {
+  match r {
+    Result<Empty, Error>::Ok(e) => {
+      return 1;
+    }
+    Result<Empty, Error>::Err(e) => {
+      return e.code.unwrap_or(99);
+    }
+  }
+}
+
+fn main() -> i32 {
+  print(code_or_55(maybe_error(0)));
+  print!(" ");
+  print(code_or_55(maybe_error(1)));
+  print!(" ");
+  print(outcome_value(outcome(0)));
+  print!(" ");
+  print(outcome_value(outcome(1)));
+  print!(" ");
+  print_two(two(0));
+  print!(" ");
+  print_two(two(1));
+  print!(" ");
+  print(empty_or_code(empty_or_error(0)));
+  print!(" ");
+  print(empty_or_code(empty_or_error(1)));
+  return 0;
+}

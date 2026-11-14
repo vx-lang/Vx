@@ -653,6 +653,14 @@ pub enum DiagnosticCode {
     /// topology holds, written either as the space or as the device that would hold it. The
     /// derivation between the two spellings has a like-named fallback, so an undeclared name
     /// resolves to a space that exists only in the placement that mentions it.
+    ///
+    /// A placement, a `spawn on` or an `on` clause also gets this error when it names a device
+    /// that a declared topology does not have: `X[2]` when `X` has `count: 2`, or a bare `X`
+    /// when `X` has more than one device.
+    ///
+    /// Each device of such a topology has its own copy of its memory. So a placement or a
+    /// `transfer` that names that memory alone gets this error too: it does not say which copy.
+    /// Name the device instead, as in `transfer(x, Topology::X[1])`.
     E6025,
     /// A tensor whose element type the target hardware cannot represent, placed on it anyway.
     ///
@@ -736,6 +744,10 @@ pub enum DiagnosticCode {
     /// of that channel. The room of the channel is counted in the function that calls `channel`,
     /// only until that function returns.
     E6041,
+    /// Code on device 1 or a later device of a declared GPU (`arch: nvptx64` with `count:`). The
+    /// CUDA runtime gets only device 0 of a declared GPU, and the memory of every device is on
+    /// GPU 0, so the code has no GPU to run on yet. Run it on device 0.
+    E6042,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

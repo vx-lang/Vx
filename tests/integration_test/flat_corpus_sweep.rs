@@ -177,6 +177,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/across_loops_run_in_order_on_the_cpu.vx",         // needs --machine
             "optimizations/pass/atomic_adds_in_across_loops.vx",                  // needs --machine
             "optimizations/pass/functions_generic_over_memory.vx",                // needs --machine
+            "optimizations/pass/a_tensor_from_gpu_memory_is_passed_by_value_and_freed_once.vx", // needs --machine
             "optimizations/pass/functions_that_run_where_they_are_called.vx",     // needs --machine
             "optimizations/pass/element_atomics_in_across_loops.vx",              // needs --machine
             "optimizations/pass/float_atomics_in_across_loops.vx",                // needs --machine
@@ -208,6 +209,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/a_library_tells_the_backend_its_gpus.vx",  // needs --machine
             "optimizations/pass/splits_read_from_gpu_memory.vx",           // needs --machine
             "optimizations/pass/a_kernel_tells_ptxas_its_block_size.vx",   // needs --machine
+            "optimizations/pass/book_gpu_exact_and_fast_tanh.vx",          // needs --machine
+            "optimizations/pass/a_lane_loop_as_wide_as_its_block_runs_once.vx", // needs --machine
             "optimizations/pass/atomic_orders_and_fence_scopes_in_ptx.vx", // needs --machine
             "optimizations/pass/a_tensor_that_atomics_change_is_not_readonly.vx", // needs --machine
             "optimizations/pass/writes_at_slots_from_an_atomic_counter.vx", // needs --machine

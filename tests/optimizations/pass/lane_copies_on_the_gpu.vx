@@ -29,21 +29,25 @@
 // SM90: cp.async.ca.shared.global
 // SM90-NOT: cp.async.bulk
 
-// Two tiles in flight: the wait for the first lets the second go on.
+// Two tiles in flight: the wait for the first lets the second go on. The code of the second copy
+// ends with its commit, the wait for the first group, and the reads of the first tile. LLVM puts
+// that code first in the text, and the first copy after it.
 // CHECK-LABEL: .entry sum_tiles(
 // CHECK: .shared .align 16 .b8 {{.*}}[8192];
-// CHECK: selp.b32 %r[[ROW:[0-9]+]], 4, 0, %p{{[0-9]+}};
-// CHECK-NEXT: selp.b32 %r[[BYTES:[0-9]+]], %r[[ROW]], 0, %p{{[0-9]+}};
-// CHECK-NEXT: cp.async.ca.shared.global [%rd{{[0-9]+}}], [%rd{{[0-9]+}}], 4, %r[[BYTES]];
-// CHECK: cp.async.commit_group;
-// CHECK: cp.async.ca.shared.global
-// CHECK: cp.async.commit_group;
+// CHECK: cp.async.cg.shared.global
+// CHECK-NEXT: $L__BB
+// CHECK-NEXT: cp.async.commit_group;
 // CHECK-NEXT: cp.async.wait_group 1;
 // CHECK-NEXT: bar.sync 0;
 // CHECK: ld.shared.b32
 // CHECK: cp.async.wait_group 0;
 // CHECK-NEXT: bar.sync 0;
-// CHECK-NOT: cp.async
+// CHECK: selp.b32 %r[[ROW:[0-9]+]], 4, 0, %p{{[0-9]+}};
+// CHECK: selp.b32 %r[[BYTES:[0-9]+]], %r[[ROW]], 0, %p{{[0-9]+}};
+// CHECK-NEXT: cp.async.ca.shared.global [%rd{{[0-9]+}}], [%rd{{[0-9]+}}], 4, %r[[BYTES]];
+// CHECK: cp.async.commit_group;
+// CHECK: cp.async.ca.shared.global
+// CHECK-NOT: cp.async.wait_group
 // CHECK-LABEL: .entry three_in_flight(
 pub fn sum_tiles(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>, steps : i32) -> void {
   spawn on(Topology::Device) {
@@ -108,10 +112,13 @@ pub fn three_in_flight(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32
 // Each of 4 subgroups copies a tile of 64 elements into its own row. In 16 bytes at a time, the
 // tile is 16 copies, so lane `t % 32` of the subgroup starts one if `t % 32` is at most 15. In 4
 // bytes at a time, the loop goes 32 elements at a time.
+// The lane number goes through a 64-bit register on its way to the test.
 // CHECK: and.b32 %r[[LANE:[0-9]+]], %r{{[0-9]+}}, 31;
-// CHECK: setp.gt.u32 %p{{[0-9]+}}, %r[[LANE]], 15;
+// CHECK-NEXT: cvt.u64.u32 %rd[[LANE64:[0-9]+]], %r[[LANE]];
 // CHECK: cp.async.ca.shared.global
 // CHECK-NEXT: add.s64 %rd{{[0-9]+}}, %rd{{[0-9]+}}, 32;
+// CHECK: cvt.u32.u64 %r[[LANE32:[0-9]+]], %rd[[LANE64]];
+// CHECK-NEXT: setp.gt.u32 %p{{[0-9]+}}, %r[[LANE32]], 15;
 // CHECK: cp.async.cg.shared.global [%rd{{[0-9]+}}], [%rd{{[0-9]+}}], 16, %r{{[0-9]+}};
 // CHECK-NEXT: $L__BB{{[0-9_]+}}:
 // CHECK-NEXT: cp.async.commit_group;
@@ -146,13 +153,15 @@ pub fn rows_of_subgroups(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f
 // CHECK: ld.param.b32 %r[[C:[0-9]+]], [one_wide_tile_param_12];
 // CHECK: ld.param.b64 %rd[[ROW:[0-9]+]], [one_wide_tile_param_10];
 // CHECK: mov.u32 %r[[T:[0-9]+]], %tid.x;
+// CHECK-NEXT: cvt.u64.u32 %rd[[T64:[0-9]+]], %r[[T]];
 // CHECK: and.b64 %rd[[ROW4:[0-9]+]], %rd[[ROW]], 3;
 // CHECK-NEXT: setp.eq.b64 %p[[ROWOK:[0-9]+]], %rd[[ROW4]], 0;
 // CHECK: and.b32 %r[[C4:[0-9]+]], %r[[C]], 3;
 // CHECK-NEXT: setp.eq.b32 %p[[COK:[0-9]+]], %r[[C4]], 0;
 // CHECK-NEXT: and.pred %p[[OK:[0-9]+]], %p[[ROWOK]], %p[[COK]];
-// CHECK-NEXT: @%p[[OK]] bra
-// CHECK: shl.b32 %r[[T4:[0-9]+]], %r[[T]], 2;
+// CHECK: @%p[[OK]] bra
+// CHECK: cvt.u32.u64 %r[[T32:[0-9]+]], %rd[[T64]];
+// CHECK-NEXT: shl.b32 %r[[T4:[0-9]+]], %r[[T32]], 2;
 // CHECK-NEXT: and.b32 %r{{[0-9]+}}, %r[[T4]], 28;
 // CHECK: min.u64 %rd[[N:[0-9]+]], %rd{{[0-9]+}}, 4;
 // CHECK: cvt.u32.u64 %r[[N32:[0-9]+]], %rd[[N]];
@@ -218,6 +227,28 @@ pub fn eight_byte_tile(out : &mut Tensor<i64, [?], Memory::HBM>, x : &Tensor<i64
   return;
 }
 
+// Elements of 2 bytes go 8 at a time. `cp.async` copies at least 4 bytes, so one element at a time
+// is a load and a store, which end before the wait.
+// CHECK-LABEL: .entry two_byte_tile(
+// CHECK: min.u64 %rd{{[0-9]+}}, %rd{{[0-9]+}}, 8;
+// CHECK: cp.async.cg.shared.global [%rd{{[0-9]+}}], [%rd{{[0-9]+}}], 16, %r{{[0-9]+}};
+// CHECK: st.shared.b16
+// CHECK: ld.global.nc.b16
+// CHECK-NOT: cp.async.ca
+pub fn two_byte_tile(out : &mut Tensor<bf16, [?], Memory::HBM>, x : &Tensor<bf16, [?, ?], Memory::HBM>, c : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tile = unsafe { Tensor<bf16, [4, 16], Memory::SMEM>::uninit() };
+      let copy = lanes::copy_async(&mut tile, x, [0, c]);
+      copy.wait();
+      for t in 0..16 across lanes(32) {
+        out[t] = tile[3][t];
+      }
+    }
+  }
+  return;
+}
+
 // A row of 6 elements of 4 bytes is not a multiple of 16 bytes, so each copy is one element.
 // CHECK-LABEL: .entry narrow_tile(
 // CHECK: cp.async.ca.shared.global
@@ -240,18 +271,20 @@ pub fn narrow_tile(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?
 // the copy of the other one runs. The token of `even` gets a new copy in each pass. Every lane
 // runs that copy and copies its own part of the tile, at an address from its lane. Lane 0 alone
 // would copy at the fixed addresses of lane 0, such as `smem_0+128`. The wait comes right after
-// the commit of the next copy, and the lanes read `tiles[1]` (1024 bytes on) after its wait.
+// the commit of the next copy, and the lanes read `tiles[1]` (1024 bytes on) after its wait. LLVM
+// puts the reads of `tiles[1]` first in the text.
 // CHECK-LABEL: .entry pipeline(
 // CHECK: cp.async.commit_group;
 // CHECK: cp.async.commit_group;
 // CHECK-NEXT: cp.async.wait_group 1;
 // CHECK: bar.sync 0;
-// CHECK: ld.shared.b32
+// CHECK: ld.shared.b32 %r{{[0-9]+}}, [%rd{{[0-9]+}}+1024];
 // CHECK-NOT: smem_{{[0-9]+}}+128]
 // CHECK: cp.async.commit_group;
 // CHECK-NEXT: cp.async.wait_group 1;
 // CHECK: bar.sync 0;
-// CHECK: ld.shared.b32 %r{{[0-9]+}}, [%rd{{[0-9]+}}+1024];
+// CHECK: ld.shared.b32
+// CHECK-NOT: smem_{{[0-9]+}}+128]
 pub fn pipeline(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>, steps : i32) -> void {
   spawn on(Topology::Device) {
     for b in 0..1 across blocks {

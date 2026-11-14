@@ -30,6 +30,11 @@
 // - `pixels_with_alpha`: each lane writes the colors `x * 4 + c`, with `c` below 3, and the alpha
 //   `x * 4 + 3`. The two indices differ by 1 to 3, less than 4, so no two lanes make them equal.
 // - `bytes_to_floats`: `f32::from` says `ensures writes_only()`, so a lane can call it.
+// - `grid_of_tiles`: one block loop covers a grid of tiles. The row index fixes `blk / nt` and the
+//   column index fixes `blk % nt`, so the two together fix `blk`. `nt` is a factor of the loop's
+//   end, so when it is zero the loop has no passes.
+// - `quarters`: subgroup `w` writes the quarter `(w / 2, w % 2)` of a tile. In the lane loop,
+//   `w / 2` and `w % 2` are the same in every pass.
 //
 // RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --allow-empty --implicit-check-not=Error
 
@@ -269,6 +274,37 @@ pub fn bytes_to_floats(dst : &mut Tensor<f32, [?, ?], Memory::HBM>, src : &Tenso
     for y in 0..rows across blocks {
       for x in 0..cols across lanes(256) {
         dst[y][x] = f32::from(src[y][x]);
+      }
+    }
+  }
+  return;
+}
+
+pub fn grid_of_tiles(c : &mut Tensor<f32, [?, ?], Memory::HBM>, mt : i32, nt : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..mt * nt across blocks {
+      let bm = blk / nt;
+      let bn = blk % nt;
+      for j in 0..32 across lanes {
+        for i in 0..64 {
+          c[bm * 64 + i][bn * 64 + j] = 0.0;
+          c[bm * 64 + i][bn * 64 + j + 32] = 1.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn quarters(c : &mut Tensor<f32, [?, 64, 64], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for w in 0..4 across subgroups {
+        for j in 0..32 across lanes {
+          for i in 0..32 {
+            c[b][(w / 2) * 32 + i][(w % 2) * 32 + j] = 0.0;
+          }
+        }
       }
     }
   }

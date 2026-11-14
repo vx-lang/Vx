@@ -27,7 +27,7 @@ impl TypeChecker<'_> {
             | Topology::Current => false,
             Topology::GPU(_) | Topology::NPU(_) | Topology::AccCore(_) | Topology::ANE => true,
             Topology::Slice(inner, ..) => self.runs_on_a_device(inner),
-            Topology::Custom(_) => {
+            Topology::Custom(..) => {
                 self.transfer_cost_graph.default_memory_for(top)
                     != self.transfer_cost_graph.default_memory_for(&Topology::CPU)
             }

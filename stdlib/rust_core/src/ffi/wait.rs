@@ -494,18 +494,18 @@ unsafe fn wait(word: *const i64, value: i64, or_cancel: bool, deadline_ns: Optio
                 // runs it again. A woken thread can wait a long time for a CPU, and it must not
                 // look stuck then.
                 let seen = waiters.wakes;
-                // A worker's thread is not a thread that the watcher counts. Its fiber, which
-                // cannot park under a callback, counts in its scheduler.
+                // A fiber that cannot park under a callback counts in its scheduler. The watcher
+                // counts the threads that are not workers. With a seed, the fiber runs on such a
+                // thread, so its thread waits too.
                 let blocked_in = sched::current_scheduler();
-                match blocked_in {
-                    Some(s) => {
-                        waiters.blocked.push(s);
-                        s.blocked();
-                    }
-                    None => {
-                        waiters.sleepers.push(std::thread::current().id());
-                        deadlock::sleep_started();
-                    }
+                let thread_waits = blocked_in.is_none_or(|s| s.has_seed());
+                if let Some(s) = blocked_in {
+                    waiters.blocked.push(s);
+                    s.blocked();
+                }
+                if thread_waits {
+                    waiters.sleepers.push(std::thread::current().id());
+                    deadlock::sleep_started();
                 }
                 let me = this_thread();
                 waiters.notes.push(note(me));
@@ -517,27 +517,25 @@ unsafe fn wait(word: *const i64, value: i64, or_cancel: bool, deadline_ns: Optio
                         .position(|n| n.owner == me)
                         .expect("a waiter has a note in its bucket");
                     waiters.notes.swap_remove(i);
-                    match blocked_in {
-                        Some(s) => {
-                            let i = waiters
-                                .blocked
-                                .iter()
-                                .position(|&x| std::ptr::eq(x, s))
-                                .expect("a blocked fiber is on the list of its bucket");
-                            waiters.blocked.swap_remove(i);
-                            s.unblocked();
-                            deadlock::progress();
-                        }
-                        None => {
-                            let me = std::thread::current().id();
-                            let i = waiters
-                                .sleepers
-                                .iter()
-                                .position(|&t| t == me)
-                                .expect("a sleeping thread is on the list of its bucket");
-                            waiters.sleepers.swap_remove(i);
-                            deadlock::sleep_ended(1);
-                        }
+                    if let Some(s) = blocked_in {
+                        let i = waiters
+                            .blocked
+                            .iter()
+                            .position(|&x| std::ptr::eq(x, s))
+                            .expect("a blocked fiber is on the list of its bucket");
+                        waiters.blocked.swap_remove(i);
+                        s.unblocked();
+                        deadlock::progress();
+                    }
+                    if thread_waits {
+                        let me = std::thread::current().id();
+                        let i = waiters
+                            .sleepers
+                            .iter()
+                            .position(|&t| t == me)
+                            .expect("a sleeping thread is on the list of its bucket");
+                        waiters.sleepers.swap_remove(i);
+                        deadlock::sleep_ended(1);
                     }
                 }
             }

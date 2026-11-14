@@ -17,10 +17,12 @@
 // GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 8 x 1 x 1, block 128
 // GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 1 x 1 x 1, block 1024
 // nn_rope_and_store and nn_norm_rope_and_store: one block for each of the 3 heads of Q and K.
-// nn_attention: one for each of the 2 heads of Q.
+// nn_attention: one block of 4 SIMD groups for the 2 positions and the 2 heads of Q, then one
+// block of 32 lanes for each head to merge.
 // GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 3 x 1 x 1, block 128
 // GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 3 x 1 x 1, block 128
-// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 2 x 1 x 1, block 128
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 1 x 1 x 1, block 128
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 2 x 1 x 1, block 32
 // nn_matvec_fp8, nn_matvec_fp8_add and nn_matvec_fp8_heads_add: one block for each 4 of the 8
 // rows. nn_qkv_fp8: one block for each 4 values of each of the 4 heads. nn_swiglu_fp8: one block
 // for each 4 of the 8 rows.
@@ -40,14 +42,14 @@
 // nn_matvec_q4, nn_matvec_q4_add and nn_matvec_q4_heads_add: one block of 32 lanes for the 8
 // rows. nn_qkv_q4: one block of 32 lanes for each 8 values of each of the 4 heads. nn_swiglu_q4:
 // one block of 32 lanes for the 8 rows. nn_moe_swiglu_q4: one block of 32 lanes for the 8 rows of
-// each of the 2 experts. nn_moe_down_q4_add: one block of 128 lanes for the 8 rows.
+// each of the 2 experts. nn_moe_down_q4_add: one block of 32 lanes for the 8 rows.
 // GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 1 x 1 x 1, block 32
 // GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 1 x 1 x 1, block 32
 // GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 1 x 1 x 1, block 32
 // GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 4 x 4 x 1, block 32
 // GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 1 x 1 x 1, block 32
 // GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 2 x 1 x 1, block 32
-// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 1 x 1 x 1, block 128
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 1 x 1 x 1, block 32
 //
 // All inputs are 0, except the logits. So the largest logit picks the token.
 // OUT: {{^}}token 5, x[0] 0{{$}}
@@ -64,7 +66,7 @@ fn main() -> i32 {
   let mut att = transfer(Tensor<f32>([2, 32]), Memory::HBM);
   let mut k_cache = transfer(Tensor<f32>([4, 1, 32]), Memory::HBM);
   let mut v_cache = transfer(Tensor<f32>([4, 1, 32]), Memory::HBM);
-  let mut scores = transfer(Tensor<f32>([2, 4]), Memory::HBM);
+  let mut part = transfer(nn_attention_scratch(4, 2, 1, 32), Memory::HBM);
   let cos = transfer(Tensor<f32>([4, 16]), Memory::HBM);
   let sin = transfer(Tensor<f32>([4, 16]), Memory::HBM);
   let mut h = Tensor<f32>([10]);
@@ -92,7 +94,7 @@ fn main() -> i32 {
   nn_rms_norm(&mut y, &x, &w, 64, 0.000001);
   nn_rope_and_store(&mut q_out, &mut k_cache, &mut v_cache, &q, &k, &v, &cos, &sin, 1, 2, 1, 32);
   nn_norm_rope_and_store(&mut q_out, &mut k_cache, &mut v_cache, &q, &k, &v, &w, &w, &cos, &sin, 1, 2, 1, 32, 0.000001);
-  nn_attention(&mut att, &mut scores, &q_out, &k_cache, &v_cache, 1, 2, 1, 32);
+  nn_attention(&mut att, &mut part, &q_out, &k_cache, &v_cache, 1, 2, 1, 32);
   nn_matvec_fp8(&mut y, &codes, &scales, &x128, 8, 128);
   nn_matvec_fp8_add(&mut y, &codes, &scales, &x128, 8, 128);
   nn_matvec_fp8_heads_add(&mut y, &codes, &scales, &heads, 8, 2, 64);

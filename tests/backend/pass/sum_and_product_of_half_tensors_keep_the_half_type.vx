@@ -1,0 +1,79 @@
+//===- sum_and_product_of_half_tensors_keep_the_half_type.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `a + b` and `a * b` on two f16 or bf16 tensors of rank 2 give a tensor of the same
+// element type. This program used to crash the compiler. The values show the half
+// precision: f16 rounds 2048 + 1 to 2048, and bf16 rounds 256 + 1 to 256.
+// At rank 1 the result is f32, by the rule from #320, so 2048 + 1 stays 2049 there.
+// The legacy code generator still adds rank 1 in f16 and prints 2048, so only the type is
+// checked there.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --check-prefixes=CHECK,FLAT --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --check-prefixes=CHECK,LEGACY --implicit-check-not=Error
+// CHECK: {{^}}f16 rank 2 sum: 2048 5{{$}}
+// CHECK: {{^}}f16 rank 2 product: 6 -1.5{{$}}
+// CHECK: {{^}}bf16 rank 2 sum: 256 5{{$}}
+// CHECK: {{^}}bf16 rank 2 product: 6 -1.5{{$}}
+// FLAT: {{^}}f16 rank 1 sum: 2049{{$}}
+// LEGACY: {{^}}f16 rank 1 sum: {{[0-9]+}}{{$}}
+
+fn f16_rank_2() -> i32 {
+  let mut a = Tensor<f16, [2, 2]>::new();
+  let mut b = Tensor<f16, [2, 2]>::new();
+  a[0][0] = 2048.0;
+  b[0][0] = 1.0;
+  a[1][1] = 2.0;
+  b[1][1] = 3.0;
+  let sum: Tensor<f16, [2, 2]> = a + b;
+  println!("f16 rank 2 sum: {} {}", sum[0][0], sum[1][1]);
+  let mut p = Tensor<f16, [2, 2]>::new();
+  let mut q = Tensor<f16, [2, 2]>::new();
+  p[1][1] = 2.0;
+  q[1][1] = 3.0;
+  p[0][1] = 1.5;
+  q[0][1] = -1.0;
+  let product: Tensor<f16, [2, 2]> = p * q;
+  println!("f16 rank 2 product: {} {}", product[1][1], product[0][1]);
+  return 0;
+}
+
+fn bf16_rank_2() -> i32 {
+  let mut a = Tensor<bf16, [2, 2]>::new();
+  let mut b = Tensor<bf16, [2, 2]>::new();
+  a[0][0] = 256.0;
+  b[0][0] = 1.0;
+  a[1][1] = 2.0;
+  b[1][1] = 3.0;
+  let sum: Tensor<bf16, [2, 2]> = a + b;
+  println!("bf16 rank 2 sum: {} {}", sum[0][0], sum[1][1]);
+  let mut p = Tensor<bf16, [2, 2]>::new();
+  let mut q = Tensor<bf16, [2, 2]>::new();
+  p[1][1] = 2.0;
+  q[1][1] = 3.0;
+  p[0][1] = 1.5;
+  q[0][1] = -1.0;
+  let product: Tensor<bf16, [2, 2]> = p * q;
+  println!("bf16 rank 2 product: {} {}", product[1][1], product[0][1]);
+  return 0;
+}
+
+fn f16_rank_1() -> i32 {
+  let mut a = Tensor<f16, [2]>::new();
+  let mut b = Tensor<f16, [2]>::new();
+  a[0] = 2048.0;
+  b[0] = 1.0;
+  let sum: Tensor<f32, [2]> = a + b;
+  println!("f16 rank 1 sum: {}", sum[0]);
+  return 0;
+}
+
+fn main() -> i32 {
+  f16_rank_2();
+  bf16_rank_2();
+  f16_rank_1();
+  return 0;
+}

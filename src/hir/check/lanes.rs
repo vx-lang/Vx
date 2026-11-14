@@ -448,7 +448,7 @@ impl crate::hir::TypeChecker<'_> {
                         && dims.iter().all(|d| {
                             crate::hir::memory::static_extent(d).is_some_and(|n| n >= 1)
                         })
-                        && matches!(crate::hir::memory::element_bytes(e), Some(4 | 8)) =>
+                        && matches!(crate::hir::memory::element_bytes(e), Some(2 | 4 | 8)) =>
                 {
                     Some((e.clone(), dims.len()))
                 }
@@ -461,7 +461,7 @@ impl crate::hir::TypeChecker<'_> {
                 DiagnosticCode::E3003,
                 format!(
                     "the first argument of `{name}` must borrow a tile in shared memory as `&mut`, \
-                     with a size that is a number and elements of 4 or 8 bytes, such as \
+                     with a size that is a number and elements of 2, 4 or 8 bytes, such as \
                      `&mut tiles[0]` for `Tensor<f32, [2, 64, 64], Memory::SMEM>`, but it is `{}`",
                     arg_types[0]
                 ),

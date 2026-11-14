@@ -184,7 +184,7 @@ impl<'a> Parser<'a> {
         }
         // `on Topology::Any` is short for `<D : Topology> .. on Topology::D` with a `D` that no
         // parameter names.
-        if topology == Topology::Custom(crate::syntax::ANY_TOPOLOGY.into()) {
+        if topology == Topology::Custom(crate::syntax::ANY_TOPOLOGY.into(), None) {
             generics.push(GenericParam::Type {
                 name: crate::syntax::ANY_TOPOLOGY_PARAM.into(),
                 bounds: vec![crate::syntax::TraitBound::named("Topology")],
@@ -192,7 +192,7 @@ impl<'a> Parser<'a> {
             // The end of this function pops one name for each generic.
             self.generic_params
                 .push(crate::syntax::ANY_TOPOLOGY_PARAM.to_string());
-            topology = Topology::Custom(crate::syntax::ANY_TOPOLOGY_PARAM.into());
+            topology = Topology::Custom(crate::syntax::ANY_TOPOLOGY_PARAM.into(), None);
         }
 
         if !self.match_token(&TokenType::Arrow) {
@@ -315,7 +315,7 @@ impl<'a> Parser<'a> {
     ///
     /// The whole effect is registering the descriptor in the global topology registry
     /// (`crate::arch`), so nothing is stored in the AST. `Topology::<Name>` uses elsewhere
-    /// then resolve to `Topology::Custom(<Name>)` and pick up this description.
+    /// then resolve to `Topology::Custom(<Name>, ..)` and pick up this description.
     pub(crate) fn parse_topology_decl(&mut self) -> ParseResult<'a, crate::arch::TopologyDecl> {
         self.consume(&TokenType::Topology, "Expected 'Topology'")?;
         let place_span = self.next_span();
@@ -338,6 +338,7 @@ impl<'a> Parser<'a> {
         let mut chip: Option<crate::symbol::Symbol> = None;
         let mut offload = false;
         let mut levels: Option<Vec<crate::arch::Level>> = None;
+        let mut count: Option<u64> = None;
 
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
             // `transfer Memory::<From> -> Memory::<To> : <cost> [relaxed|sync]` -- a declared
@@ -482,6 +483,19 @@ impl<'a> Parser<'a> {
                     });
                 }
                 "levels" => levels = Some(self.parse_levels()?),
+                // How many devices of this kind the machine has. `Topology::<Name>[i]` names one.
+                // The compiler gives each device its own dispatch id and checks each for a
+                // collision, so the count has a limit.
+                "count" => {
+                    let n = self.parse_level_count("count")?;
+                    if n > crate::arch::MAX_TOPOLOGY_COUNT {
+                        return Err(self.error(&format!(
+                            "`count:` is at most {}, got {n}",
+                            crate::arch::MAX_TOPOLOGY_COUNT
+                        )));
+                    }
+                    count = Some(n);
+                }
                 "offload" => {
                     offload = match &self.advance().kind {
                         TokenType::Identifier(s) if &**s == "true" => true,
@@ -537,6 +551,7 @@ impl<'a> Parser<'a> {
                 chip,
                 levels,
                 offload,
+                count,
             },
         })
     }

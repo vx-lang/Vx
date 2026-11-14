@@ -930,6 +930,7 @@ impl CompilerDriver {
                     chip: None,
                     levels: None,
                     offload: false,
+                    count: None,
                 },
                 place: Default::default(),
             }],
