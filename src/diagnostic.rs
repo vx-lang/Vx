@@ -212,7 +212,9 @@ pub enum DiagnosticCode {
     E3009,
     /// Function argument count mismatch
     E3010,
-    /// Unsupported cast
+    /// An `as` cast between two types that it does not convert, such as from an integer or a
+    /// float to `bool`. Rust refuses the same casts. A comparison such as `x != 0` says which
+    /// values count as true.
     E3011,
     /// Type mismatch in struct field initialization
     E3012,
@@ -306,9 +308,9 @@ pub enum DiagnosticCode {
     /// language -- compiled silently and did nothing.
     E3029,
     /// An operator applied to operand types it is not defined on -- `%` on a shaped tensor or on
-    /// a `bool`. Refused here because the alternative is worse in both directions: the flat
-    /// emitter would decline and fall back to a path that cannot lower it either, and an `i1`
-    /// operand would reach `arith.remsi` and verify.
+    /// a `bool`, or `-` on an unsigned integer or a `bool`. For `%`, the flat emitter would
+    /// decline and fall back to a path that cannot lower it either, and an `i1` operand would
+    /// reach `arith.remsi` and verify. `-` on an unsigned integer would wrap with no error.
     E3030,
     /// `impl Copy for X` where one of `X`'s fields is a type that moves. `Copy` promises a
     /// value survives being assigned elsewhere, and a field that does not survive it breaks
@@ -387,8 +389,9 @@ pub enum DiagnosticCode {
     /// pattern when it chooses an arm, so the arm would be taken for any payload. Bind the
     /// payload to a name and test it in the arm, with an `if` or another `match`.
     E3050,
-    /// A `match` pattern that names a variant of another enum than the value matched, such as
-    /// `Other::Red` in a `match` on a `Color`. Write the variant with the matched value's enum.
+    /// A `match` pattern of another type than the value matched: a variant of another enum, such
+    /// as `Other::Red` in a `match` on a `Color`, `true` in a `match` on an `i32`, or `1` in a
+    /// `match` on a `bool`. Write a pattern of the matched value's type.
     E3051,
     /// Arithmetic on fp8 or fp4 values (`f8e4m3`, `f8e5m2` or `f4e2m1`) with no written result
     /// type, as in `print(a * b)`. The compiler computes in f32 and rounds once to the written
@@ -496,9 +499,11 @@ pub enum DiagnosticCode {
     E4010,
     /// A view of a tensor (a row `q[i]` or a field `h.t`) used where a tensor of its own is
     /// held: stored in a variable that already exists (`t = q[i]`) or a struct field
-    /// (`h.t = q[i]`, `Holder { t : q[i] }`), or passed to a function that takes the tensor by
-    /// value (`f(q[i])`). A view shares its owner's memory and is not a copy. Bind it to a new
-    /// variable with `let`, pass `q[i].clone()`, or take the parameter by reference.
+    /// (`h.t = q[i]`, `Holder { t : q[i] }`), passed to a function that takes the tensor by
+    /// value (`f(q[i])`), or returned from a function that returns a tensor by value
+    /// (`return q[i]`). A view shares its owner's memory and is not a copy. Bind it to a new
+    /// variable with `let`, pass `q[i].clone()`, take the parameter by reference, or return a
+    /// reference (`-> &mut Tensor<..>`).
     E4011,
     /// A call to the `drop` method of a `Drop` impl by hand: `x.drop()`. `drop` runs when the
     /// value is dropped, so calling it as well would run it twice. Write `drop(x)`, from
@@ -594,13 +599,16 @@ pub enum DiagnosticCode {
     /// lowering with no functions (an empty body cannot move anything, and accepting it would
     /// make `impl transfer` an inert annotation rather than code).
     E6015,
-    /// A `Topology` or `Memory` declaration whose identity cannot be relied on. Two forms: the
+    /// A `Topology` or `Memory` declaration whose identity cannot be relied on. Three forms: the
     /// declared name shadows a built-in topology (every use of `Topology::<Name>` resolves to the
     /// built-in, so the declaration is silently ignored -- including its `arch:`); or two declared
     /// names collide on one dispatch id (custom ids are derived from the name by hashing), in
     /// which case which declaration is in force would be hash-iteration order -- observed as the
     /// same program getting a device image on some runs and not others for a topology, and as a
-    /// `transfer` carrying the other space's capacity and granule for a memory space.
+    /// `transfer` carrying the other space's capacity and granule for a memory space; or a
+    /// topology whose `arch:` is not `nvptx64` has `Memory::GPU_HBM` as its memory. That memory
+    /// belongs to the built-in NVIDIA GPU, so the tensors of the topology would go to that GPU,
+    /// and its kernels would run elsewhere. Give the memory another name.
     E6016,
     /// A misuse of the `raw::` transfer-lowering primitives (Vx#353): a `raw::` call
     /// outside an `impl transfer` body, an unknown primitive name, a tile argument that
@@ -646,6 +654,14 @@ pub enum DiagnosticCode {
     /// topology holds, written either as the space or as the device that would hold it. The
     /// derivation between the two spellings has a like-named fallback, so an undeclared name
     /// resolves to a space that exists only in the placement that mentions it.
+    ///
+    /// A placement, a `spawn on` or an `on` clause also gets this error when it names a device
+    /// that a declared topology does not have: `X[2]` when `X` has `count: 2`, or a bare `X`
+    /// when `X` has more than one device.
+    ///
+    /// Each device of such a topology has its own copy of its memory. So a placement or a
+    /// `transfer` that names that memory alone gets this error too: it does not say which copy.
+    /// Name the device instead, as in `transfer(x, Topology::X[1])`.
     E6025,
     /// A tensor whose element type the target hardware cannot represent, placed on it anyway.
     ///
@@ -729,6 +745,10 @@ pub enum DiagnosticCode {
     /// of that channel. The room of the channel is counted in the function that calls `channel`,
     /// only until that function returns.
     E6041,
+    /// Code on device 1 or a later device of a declared GPU (`arch: nvptx64` with `count:`). The
+    /// CUDA runtime gets only device 0 of a declared GPU, and the memory of every device is on
+    /// GPU 0, so the code has no GPU to run on yet. Run it on device 0.
+    E6042,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch
@@ -989,12 +1009,22 @@ impl std::fmt::Display for Diagnostic {
     }
 }
 
+/// Where diagnostics point: a file, and a place in it.
+#[derive(Debug, Clone)]
+pub struct Here {
+    file: Option<crate::symbol::Symbol>,
+    at: crate::syntax::Span,
+}
+
 #[derive(Debug, Clone)]
 pub struct DiagnosticsVec {
     pub inner: Vec<Diagnostic>,
     /// The file whose code is being checked. Every diagnostic reported from now on names it.
     /// The checker sets it from each function it checks, and puts the previous one back after.
     pub file: Option<crate::symbol::Symbol>,
+    /// Where the checker is in `file`: the statement it checks, or the function outside its
+    /// statements. A diagnostic reported with no place of its own points there.
+    pub at: crate::syntax::Span,
 }
 
 impl DiagnosticsVec {
@@ -1002,7 +1032,45 @@ impl DiagnosticsVec {
         Self {
             inner: Vec::new(),
             file: None,
+            at: crate::syntax::Span::default(),
         }
+    }
+
+    /// Point at a statement that the checker starts, and return the place to put back after
+    /// it. A statement that the compiler wrote has no place, and keeps the place around it.
+    pub fn enter_statement(&mut self, span: crate::syntax::Span) -> crate::syntax::Span {
+        let prev = self.at;
+        if span != crate::syntax::Span::default() {
+            self.at = span;
+        }
+        prev
+    }
+
+    /// Where diagnostics point now, to give back to `point_back`.
+    pub fn here(&self) -> Here {
+        Here {
+            file: self.file.clone(),
+            at: self.at,
+        }
+    }
+
+    /// Point the diagnostics that follow at a declaration: in its file, at its name. A
+    /// declaration that the compiler wrote has no file, and keeps the file of `outside`.
+    pub fn point_at(&mut self, place: &crate::syntax::DeclPlace, outside: &Here) {
+        self.file = place.file.clone().or_else(|| outside.file.clone());
+        self.at = place.span;
+    }
+
+    pub fn point_back(&mut self, here: Here) {
+        self.file = here.file;
+        self.at = here.at;
+    }
+
+    /// `span`, or where the checker is when `span` is `None`.
+    fn place(&self, span: Option<SourceSpan>) -> Option<SourceSpan> {
+        span.or_else(|| {
+            (self.at != crate::syntax::Span::default()).then(|| SourceSpan::from_ast_span(&self.at))
+        })
     }
 
     pub fn report(&mut self, level: DiagnosticLevel, message: impl Into<Cow<'static, str>>) {
@@ -1028,7 +1096,7 @@ impl DiagnosticsVec {
             code: None,
             message: message.into(),
             span: None,
-            source_span: None,
+            source_span: self.place(None),
             file: self.file.clone(),
             notes: Vec::new(),
             fix_its: Vec::new(),
@@ -1049,7 +1117,7 @@ impl DiagnosticsVec {
             code: Some(code),
             message: message.into(),
             span: None,
-            source_span: span,
+            source_span: self.place(span),
             file: self.file.clone(),
             notes: Vec::new(),
             fix_its: Vec::new(),
@@ -1071,7 +1139,7 @@ impl DiagnosticsVec {
             code: Some(code),
             message: message.into(),
             span: None,
-            source_span: span,
+            source_span: self.place(span),
             file: self.file.clone(),
             notes: Vec::new(),
             fix_its: Vec::new(),

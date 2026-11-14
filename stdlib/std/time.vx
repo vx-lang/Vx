@@ -107,7 +107,8 @@ impl PartialOrd for Instant {
   }
 }
 
-/// Pause this thread for at least `d`. It may be longer. It is never shorter.
+/// Pause this task for at least `d`. It may be longer. It is never shorter. Other tasks can run on
+/// the thread of the task while it sleeps.
 fn sleep(d : Duration) -> i32 {
   return unsafe { vx_sleep(d.as_nanos_i64()) };
 }

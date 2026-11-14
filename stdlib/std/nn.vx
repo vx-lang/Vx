@@ -340,63 +340,523 @@ fn nn_norm_rope_and_store<M : Memory>(q_out : &mut Tensor<f32, [?, ?], Memory::M
 }
 
 /// Attention of the token at position `pos` over rows 0 to `pos` of the KV cache, with a softmax
-/// of the scores q . k / sqrt(head_dim). `scores` has a row of at least pos + 1 values for each
-/// head of q, which the kernel uses as scratch space.
-fn nn_attention<M : Memory>(out : &mut Tensor<f32, [?, ?], Memory::M>, scores : &mut Tensor<f32, [?, ?], Memory::M>, q : &Tensor<f32, [?, ?], Memory::M>, k_cache : &Tensor<f32, [?, ?, ?], Memory::M>, v_cache : &Tensor<f32, [?, ?, ?], Memory::M>, pos : i32, q_heads : i32, kv_heads : i32, head_dim : i32) -> void {
+/// of the scores q . k / sqrt(head_dim). `part` is scratch space from `nn_attention_scratch`.
+///
+/// The blocks of the first kernel split the positions, 32 to a block below position 640 and 64 from
+/// there on. A block serves the 8 heads of Q that share a head of K and V, so it reads each row of
+/// the cache once for all 8. A second kernel merges the parts of the blocks for each head.
+fn nn_attention<M : Memory>(out : &mut Tensor<f32, [?, ?], Memory::M>, part : &mut Tensor<f32, [?, ?, ?, ?], Memory::M>, q : &Tensor<f32, [?, ?], Memory::M>, k_cache : &Tensor<f32, [?, ?, ?], Memory::M>, v_cache : &Tensor<f32, [?, ?, ?], Memory::M>, pos : i32, q_heads : i32, kv_heads : i32, head_dim : i32) -> void {
   nn_check_heads(q.extent(0), q.extent(1), q_heads, head_dim);
   nn_check_heads(out.extent(0), out.extent(1), q_heads, head_dim);
   nn_check_cache(k_cache.extent(0), k_cache.extent(1), k_cache.extent(2), pos, kv_heads, head_dim);
   nn_check_cache(v_cache.extent(0), v_cache.extent(1), v_cache.extent(2), pos, kv_heads, head_dim);
   assert(q_heads % kv_heads == 0, "nn_attention: q_heads must be a multiple of kv_heads");
-  assert(scores.extent(0) >= q_heads && scores.extent(1) > pos, "nn_attention: `scores` needs a row of pos + 1 values for each head of q");
+  assert(head_dim % 32 == 0 && head_dim <= 128, "nn_attention: head_dim must be a multiple of 32, and at most 128");
+  let mut n_pos = 32;
+  if pos >= 640 {
+    n_pos = 64;
+  }
+  assert(part.extent(0) >= kv_heads * ((q_heads / kv_heads + 7) / 8) && part.extent(1) >= (pos + n_pos) / n_pos && part.extent(2) >= 8 && part.extent(3) >= head_dim + 2, "nn_attention: `part` is too small for this position. Make it with nn_attention_scratch");
+  if n_pos == 32 {
+    nn_attention_parts_32(part, q, k_cache, v_cache, pos, q_heads, kv_heads, head_dim);
+  } else {
+    nn_attention_parts_64(part, q, k_cache, v_cache, pos, q_heads, kv_heads, head_dim);
+  }
+  nn_attention_merge(out, part, pos, n_pos, q_heads, kv_heads, head_dim);
+  return;
+}
+
+/// The scratch space of `nn_attention` for positions below `max_seq`, on the CPU. Transfer it to the
+/// memory of the other tensors. Each block of positions writes the weighted sum of V for each of its
+/// heads, then the largest score and the sum of the weights.
+fn nn_attention_scratch(max_seq : i32, q_heads : i32, kv_heads : i32, head_dim : i32) -> Tensor<f32, [?, ?, ?, ?]> {
+  // 20 blocks of 32 positions below position 640, and blocks of 64 positions from there on.
+  let mut splits = (max_seq + 63) / 64;
+  if splits < 20 {
+    splits = 20;
+  }
+  return Tensor<f32>([kv_heads * ((q_heads / kv_heads + 7) / 8), splits, 8, head_dim + 2]);
+}
+
+/// The parts of `nn_attention` for blocks of 32 positions: 4 SIMD groups of 2 heads of Q.
+fn nn_attention_parts_32<M : Memory>(part : &mut Tensor<f32, [?, ?, ?, ?], Memory::M>, q : &Tensor<f32, [?, ?], Memory::M>, k_cache : &Tensor<f32, [?, ?, ?], Memory::M>, v_cache : &Tensor<f32, [?, ?, ?], Memory::M>, pos : i32, q_heads : i32, kv_heads : i32, head_dim : i32) -> void {
   let group = q_heads / kv_heads;
+  let tiles = (group + 7) / 8;
   let scale = 1.0 / (head_dim as f32).sqrt();
   spawn on(Topology::Device) {
-    for h in 0..q_heads across blocks {
-      let mut qh = unsafe { Tensor<f32, [128], Memory::SMEM>::uninit() };
-      let mut part = unsafe { Tensor<f32, [128], Memory::SMEM>::uninit() };
-      let g = h / group;
-      for l in 0..128 across lanes {
-        if l < head_dim {
-          qh[l] = q[h][l] * scale;
-        }
-      }
-      for l in 0..128 across lanes {
-        let mut m : f32 = -3.0e38;
-        for j in 0..(pos + 128) / 128 {
-          let t = j * 128 + l;
-          if t <= pos {
-            let mut s : f32 = 0.0;
-            for d in 0..head_dim {
-              s = s + qh[d] * k_cache[t][g][d];
+    for gt in 0..kv_heads * tiles across blocks {
+      for c in 0..(pos + 32) / 32 across blocks {
+        let mut w = unsafe { Tensor<f32, [4, 2, 32], Memory::SMEM>::uninit() };
+        let mut top = unsafe {
+          Tensor<f32, [4, 2, 32], Memory::SMEM>::uninit()
+        };
+        let mut sums = unsafe {
+          Tensor<f32, [4, 2, 32], Memory::SMEM>::uninit()
+        };
+        let g = gt / tiles;
+        let base = g * group + (gt - g * tiles) * 8;
+        let left = group - (gt - g * tiles) * 8;
+        for s in 0..4 across subgroups {
+          let first = base + s * 2;
+          let mut heads = left - s * 2;
+          if heads > 2 {
+            heads = 2;
+          }
+          // A head past the last one of the group reads the last one again, and its sums go nowhere.
+          let mut h0 = first + 0;
+          if 0 >= heads {
+            h0 = first + heads - 1;
+          }
+          let mut h1 = first + 1;
+          if 1 >= heads {
+            h1 = first + heads - 1;
+          }
+          for l in 0..32 across lanes(32) {
+            // The scores of the position of the lane, for each head. A position past `pos` reads row
+            // `pos`, and its score is -3e38.
+            let mut t0 = c * 32 + 0 + l;
+            if t0 > pos {
+              t0 = pos;
             }
-            scores[h][t] = s;
-            m = m.max(s);
+            let mut dot0_0 : f32 = 0.0;
+            let mut dot0_1 : f32 = 0.0;
+            for d in 0..head_dim {
+              let k0 = k_cache[t0][g][d];
+              let q0 = q[h0][d];
+              dot0_0 = dot0_0 + q0 * k0;
+              let q1 = q[h1][d];
+              dot0_1 = dot0_1 + q1 * k0;
+            }
+            let mut s0_0 : f32 = -3.0e38;
+            if c * 32 + 0 + l <= pos {
+              s0_0 = dot0_0 * scale;
+            }
+            w[s][0][0 + l] = s0_0;
+            top[s][0][l] = s0_0;
+            let mut s0_1 : f32 = -3.0e38;
+            if c * 32 + 0 + l <= pos {
+              s0_1 = dot0_1 * scale;
+            }
+            w[s][1][0 + l] = s0_1;
+            top[s][1][l] = s0_1;
+          }
+          let big0 = lanes::max(&top[s][0], 32);
+          let big1 = lanes::max(&top[s][1], 32);
+          // The weight of each position, as exp(score - the largest score of the block).
+          for l in 0..32 across lanes(32) {
+            let e0_0 = (w[s][0][0 + l] - big0).fast_exp();
+            w[s][0][0 + l] = e0_0;
+            sums[s][0][l] = e0_0;
+            let e0_1 = (w[s][1][0 + l] - big1).fast_exp();
+            w[s][1][0 + l] = e0_1;
+            sums[s][1][l] = e0_1;
+          }
+          let total0 = lanes::sum(&sums[s][0], 32);
+          let total1 = lanes::sum(&sums[s][1], 32);
+          // The weighted sum of the rows of V. Lane l takes values l, l + 32, l + 64 and l + 96.
+          for l in 0..32 across lanes(32) {
+            let mut acc0_0 : f32 = 0.0;
+            let mut acc0_1 : f32 = 0.0;
+            let mut acc0_2 : f32 = 0.0;
+            let mut acc0_3 : f32 = 0.0;
+            let mut acc1_0 : f32 = 0.0;
+            let mut acc1_1 : f32 = 0.0;
+            let mut acc1_2 : f32 = 0.0;
+            let mut acc1_3 : f32 = 0.0;
+            // With head_dim below 128, values past it read others again, and their sums go nowhere.
+            let d0 = (0 + l) % head_dim;
+            let d1 = (32 + l) % head_dim;
+            let d2 = (64 + l) % head_dim;
+            let d3 = (96 + l) % head_dim;
+            let mut last = pos - c * 32;
+            if last > 31 {
+              last = 31;
+            }
+            for t in 0..last + 1 {
+              let row = c * 32 + t;
+              let v0 = v_cache[row][g][d0];
+              let v1 = v_cache[row][g][d1];
+              let v2 = v_cache[row][g][d2];
+              let v3 = v_cache[row][g][d3];
+              let w0 = w[s][0][t];
+              acc0_0 = acc0_0 + w0 * v0;
+              acc0_1 = acc0_1 + w0 * v1;
+              acc0_2 = acc0_2 + w0 * v2;
+              acc0_3 = acc0_3 + w0 * v3;
+              let w1 = w[s][1][t];
+              acc1_0 = acc1_0 + w1 * v0;
+              acc1_1 = acc1_1 + w1 * v1;
+              acc1_2 = acc1_2 + w1 * v2;
+              acc1_3 = acc1_3 + w1 * v3;
+            }
+            if 0 < heads {
+              if 0 < head_dim {
+                part[gt][c][s * 2 + 0][0 + l] = acc0_0;
+              }
+              if 32 < head_dim {
+                part[gt][c][s * 2 + 0][32 + l] = acc0_1;
+              }
+              if 64 < head_dim {
+                part[gt][c][s * 2 + 0][64 + l] = acc0_2;
+              }
+              if 96 < head_dim {
+                part[gt][c][s * 2 + 0][96 + l] = acc0_3;
+              }
+            }
+            if 1 < heads {
+              if 0 < head_dim {
+                part[gt][c][s * 2 + 1][0 + l] = acc1_0;
+              }
+              if 32 < head_dim {
+                part[gt][c][s * 2 + 1][32 + l] = acc1_1;
+              }
+              if 64 < head_dim {
+                part[gt][c][s * 2 + 1][64 + l] = acc1_2;
+              }
+              if 96 < head_dim {
+                part[gt][c][s * 2 + 1][96 + l] = acc1_3;
+              }
+            }
+          }
+          if 0 < heads {
+            part[gt][c][s * 2 + 0][head_dim] = big0;
+            part[gt][c][s * 2 + 0][head_dim + 1] = total0;
+          }
+          if 1 < heads {
+            part[gt][c][s * 2 + 1][head_dim] = big1;
+            part[gt][c][s * 2 + 1][head_dim + 1] = total1;
           }
         }
-        part[l] = m;
       }
-      let m = lanes::max(&part, 128);
-      for l in 0..128 across lanes {
-        let mut s : f32 = 0.0;
-        for j in 0..(pos + 128) / 128 {
-          let t = j * 128 + l;
-          if t <= pos {
-            let e = (scores[h][t] - m).fast_exp();
-            scores[h][t] = e;
-            s = s + e;
+    }
+  }
+  return;
+}
+
+/// The parts of `nn_attention` for blocks of 64 positions: 2 SIMD groups of 4 heads of Q.
+fn nn_attention_parts_64<M : Memory>(part : &mut Tensor<f32, [?, ?, ?, ?], Memory::M>, q : &Tensor<f32, [?, ?], Memory::M>, k_cache : &Tensor<f32, [?, ?, ?], Memory::M>, v_cache : &Tensor<f32, [?, ?, ?], Memory::M>, pos : i32, q_heads : i32, kv_heads : i32, head_dim : i32) -> void {
+  let group = q_heads / kv_heads;
+  let tiles = (group + 7) / 8;
+  let scale = 1.0 / (head_dim as f32).sqrt();
+  spawn on(Topology::Device) {
+    for gt in 0..kv_heads * tiles across blocks {
+      for c in 0..(pos + 64) / 64 across blocks {
+        let mut w = unsafe { Tensor<f32, [2, 4, 64], Memory::SMEM>::uninit() };
+        let mut top = unsafe {
+          Tensor<f32, [2, 4, 32], Memory::SMEM>::uninit()
+        };
+        let mut sums = unsafe {
+          Tensor<f32, [2, 4, 32], Memory::SMEM>::uninit()
+        };
+        let g = gt / tiles;
+        let base = g * group + (gt - g * tiles) * 8;
+        let left = group - (gt - g * tiles) * 8;
+        for s in 0..2 across subgroups {
+          let first = base + s * 4;
+          let mut heads = left - s * 4;
+          if heads > 4 {
+            heads = 4;
+          }
+          // A head past the last one of the group reads the last one again, and its sums go nowhere.
+          let mut h0 = first + 0;
+          if 0 >= heads {
+            h0 = first + heads - 1;
+          }
+          let mut h1 = first + 1;
+          if 1 >= heads {
+            h1 = first + heads - 1;
+          }
+          let mut h2 = first + 2;
+          if 2 >= heads {
+            h2 = first + heads - 1;
+          }
+          let mut h3 = first + 3;
+          if 3 >= heads {
+            h3 = first + heads - 1;
+          }
+          for l in 0..32 across lanes(32) {
+            // The scores of each of the 2 positions of the lane, for each head. A position past `pos` reads row
+            // `pos`, and its score is -3e38.
+            let mut t0 = c * 64 + 0 + l;
+            if t0 > pos {
+              t0 = pos;
+            }
+            let mut dot0_0 : f32 = 0.0;
+            let mut dot0_1 : f32 = 0.0;
+            let mut dot0_2 : f32 = 0.0;
+            let mut dot0_3 : f32 = 0.0;
+            let mut t1 = c * 64 + 32 + l;
+            if t1 > pos {
+              t1 = pos;
+            }
+            let mut dot1_0 : f32 = 0.0;
+            let mut dot1_1 : f32 = 0.0;
+            let mut dot1_2 : f32 = 0.0;
+            let mut dot1_3 : f32 = 0.0;
+            for d in 0..head_dim {
+              let k0 = k_cache[t0][g][d];
+              let k1 = k_cache[t1][g][d];
+              let q0 = q[h0][d];
+              dot0_0 = dot0_0 + q0 * k0;
+              dot1_0 = dot1_0 + q0 * k1;
+              let q1 = q[h1][d];
+              dot0_1 = dot0_1 + q1 * k0;
+              dot1_1 = dot1_1 + q1 * k1;
+              let q2 = q[h2][d];
+              dot0_2 = dot0_2 + q2 * k0;
+              dot1_2 = dot1_2 + q2 * k1;
+              let q3 = q[h3][d];
+              dot0_3 = dot0_3 + q3 * k0;
+              dot1_3 = dot1_3 + q3 * k1;
+            }
+            let mut s0_0 : f32 = -3.0e38;
+            if c * 64 + 0 + l <= pos {
+              s0_0 = dot0_0 * scale;
+            }
+            w[s][0][0 + l] = s0_0;
+            let mut s1_0 : f32 = -3.0e38;
+            if c * 64 + 32 + l <= pos {
+              s1_0 = dot1_0 * scale;
+            }
+            w[s][0][32 + l] = s1_0;
+            top[s][0][l] = s0_0.max(s1_0);
+            let mut s0_1 : f32 = -3.0e38;
+            if c * 64 + 0 + l <= pos {
+              s0_1 = dot0_1 * scale;
+            }
+            w[s][1][0 + l] = s0_1;
+            let mut s1_1 : f32 = -3.0e38;
+            if c * 64 + 32 + l <= pos {
+              s1_1 = dot1_1 * scale;
+            }
+            w[s][1][32 + l] = s1_1;
+            top[s][1][l] = s0_1.max(s1_1);
+            let mut s0_2 : f32 = -3.0e38;
+            if c * 64 + 0 + l <= pos {
+              s0_2 = dot0_2 * scale;
+            }
+            w[s][2][0 + l] = s0_2;
+            let mut s1_2 : f32 = -3.0e38;
+            if c * 64 + 32 + l <= pos {
+              s1_2 = dot1_2 * scale;
+            }
+            w[s][2][32 + l] = s1_2;
+            top[s][2][l] = s0_2.max(s1_2);
+            let mut s0_3 : f32 = -3.0e38;
+            if c * 64 + 0 + l <= pos {
+              s0_3 = dot0_3 * scale;
+            }
+            w[s][3][0 + l] = s0_3;
+            let mut s1_3 : f32 = -3.0e38;
+            if c * 64 + 32 + l <= pos {
+              s1_3 = dot1_3 * scale;
+            }
+            w[s][3][32 + l] = s1_3;
+            top[s][3][l] = s0_3.max(s1_3);
+          }
+          let big0 = lanes::max(&top[s][0], 32);
+          let big1 = lanes::max(&top[s][1], 32);
+          let big2 = lanes::max(&top[s][2], 32);
+          let big3 = lanes::max(&top[s][3], 32);
+          // The weight of each position, as exp(score - the largest score of the block).
+          for l in 0..32 across lanes(32) {
+            let e0_0 = (w[s][0][0 + l] - big0).fast_exp();
+            w[s][0][0 + l] = e0_0;
+            let e1_0 = (w[s][0][32 + l] - big0).fast_exp();
+            w[s][0][32 + l] = e1_0;
+            sums[s][0][l] = e0_0 + e1_0;
+            let e0_1 = (w[s][1][0 + l] - big1).fast_exp();
+            w[s][1][0 + l] = e0_1;
+            let e1_1 = (w[s][1][32 + l] - big1).fast_exp();
+            w[s][1][32 + l] = e1_1;
+            sums[s][1][l] = e0_1 + e1_1;
+            let e0_2 = (w[s][2][0 + l] - big2).fast_exp();
+            w[s][2][0 + l] = e0_2;
+            let e1_2 = (w[s][2][32 + l] - big2).fast_exp();
+            w[s][2][32 + l] = e1_2;
+            sums[s][2][l] = e0_2 + e1_2;
+            let e0_3 = (w[s][3][0 + l] - big3).fast_exp();
+            w[s][3][0 + l] = e0_3;
+            let e1_3 = (w[s][3][32 + l] - big3).fast_exp();
+            w[s][3][32 + l] = e1_3;
+            sums[s][3][l] = e0_3 + e1_3;
+          }
+          let total0 = lanes::sum(&sums[s][0], 32);
+          let total1 = lanes::sum(&sums[s][1], 32);
+          let total2 = lanes::sum(&sums[s][2], 32);
+          let total3 = lanes::sum(&sums[s][3], 32);
+          // The weighted sum of the rows of V. Lane l takes values l, l + 32, l + 64 and l + 96.
+          for l in 0..32 across lanes(32) {
+            let mut acc0_0 : f32 = 0.0;
+            let mut acc0_1 : f32 = 0.0;
+            let mut acc0_2 : f32 = 0.0;
+            let mut acc0_3 : f32 = 0.0;
+            let mut acc1_0 : f32 = 0.0;
+            let mut acc1_1 : f32 = 0.0;
+            let mut acc1_2 : f32 = 0.0;
+            let mut acc1_3 : f32 = 0.0;
+            let mut acc2_0 : f32 = 0.0;
+            let mut acc2_1 : f32 = 0.0;
+            let mut acc2_2 : f32 = 0.0;
+            let mut acc2_3 : f32 = 0.0;
+            let mut acc3_0 : f32 = 0.0;
+            let mut acc3_1 : f32 = 0.0;
+            let mut acc3_2 : f32 = 0.0;
+            let mut acc3_3 : f32 = 0.0;
+            // With head_dim below 128, values past it read others again, and their sums go nowhere.
+            let d0 = (0 + l) % head_dim;
+            let d1 = (32 + l) % head_dim;
+            let d2 = (64 + l) % head_dim;
+            let d3 = (96 + l) % head_dim;
+            let mut last = pos - c * 64;
+            if last > 63 {
+              last = 63;
+            }
+            for t in 0..last + 1 {
+              let row = c * 64 + t;
+              let v0 = v_cache[row][g][d0];
+              let v1 = v_cache[row][g][d1];
+              let v2 = v_cache[row][g][d2];
+              let v3 = v_cache[row][g][d3];
+              let w0 = w[s][0][t];
+              acc0_0 = acc0_0 + w0 * v0;
+              acc0_1 = acc0_1 + w0 * v1;
+              acc0_2 = acc0_2 + w0 * v2;
+              acc0_3 = acc0_3 + w0 * v3;
+              let w1 = w[s][1][t];
+              acc1_0 = acc1_0 + w1 * v0;
+              acc1_1 = acc1_1 + w1 * v1;
+              acc1_2 = acc1_2 + w1 * v2;
+              acc1_3 = acc1_3 + w1 * v3;
+              let w2 = w[s][2][t];
+              acc2_0 = acc2_0 + w2 * v0;
+              acc2_1 = acc2_1 + w2 * v1;
+              acc2_2 = acc2_2 + w2 * v2;
+              acc2_3 = acc2_3 + w2 * v3;
+              let w3 = w[s][3][t];
+              acc3_0 = acc3_0 + w3 * v0;
+              acc3_1 = acc3_1 + w3 * v1;
+              acc3_2 = acc3_2 + w3 * v2;
+              acc3_3 = acc3_3 + w3 * v3;
+            }
+            if 0 < heads {
+              if 0 < head_dim {
+                part[gt][c][s * 4 + 0][0 + l] = acc0_0;
+              }
+              if 32 < head_dim {
+                part[gt][c][s * 4 + 0][32 + l] = acc0_1;
+              }
+              if 64 < head_dim {
+                part[gt][c][s * 4 + 0][64 + l] = acc0_2;
+              }
+              if 96 < head_dim {
+                part[gt][c][s * 4 + 0][96 + l] = acc0_3;
+              }
+            }
+            if 1 < heads {
+              if 0 < head_dim {
+                part[gt][c][s * 4 + 1][0 + l] = acc1_0;
+              }
+              if 32 < head_dim {
+                part[gt][c][s * 4 + 1][32 + l] = acc1_1;
+              }
+              if 64 < head_dim {
+                part[gt][c][s * 4 + 1][64 + l] = acc1_2;
+              }
+              if 96 < head_dim {
+                part[gt][c][s * 4 + 1][96 + l] = acc1_3;
+              }
+            }
+            if 2 < heads {
+              if 0 < head_dim {
+                part[gt][c][s * 4 + 2][0 + l] = acc2_0;
+              }
+              if 32 < head_dim {
+                part[gt][c][s * 4 + 2][32 + l] = acc2_1;
+              }
+              if 64 < head_dim {
+                part[gt][c][s * 4 + 2][64 + l] = acc2_2;
+              }
+              if 96 < head_dim {
+                part[gt][c][s * 4 + 2][96 + l] = acc2_3;
+              }
+            }
+            if 3 < heads {
+              if 0 < head_dim {
+                part[gt][c][s * 4 + 3][0 + l] = acc3_0;
+              }
+              if 32 < head_dim {
+                part[gt][c][s * 4 + 3][32 + l] = acc3_1;
+              }
+              if 64 < head_dim {
+                part[gt][c][s * 4 + 3][64 + l] = acc3_2;
+              }
+              if 96 < head_dim {
+                part[gt][c][s * 4 + 3][96 + l] = acc3_3;
+              }
+            }
+          }
+          if 0 < heads {
+            part[gt][c][s * 4 + 0][head_dim] = big0;
+            part[gt][c][s * 4 + 0][head_dim + 1] = total0;
+          }
+          if 1 < heads {
+            part[gt][c][s * 4 + 1][head_dim] = big1;
+            part[gt][c][s * 4 + 1][head_dim + 1] = total1;
+          }
+          if 2 < heads {
+            part[gt][c][s * 4 + 2][head_dim] = big2;
+            part[gt][c][s * 4 + 2][head_dim + 1] = total2;
+          }
+          if 3 < heads {
+            part[gt][c][s * 4 + 3][head_dim] = big3;
+            part[gt][c][s * 4 + 3][head_dim + 1] = total3;
           }
         }
-        part[l] = s;
       }
-      let total = lanes::sum(&part, 128);
-      for l in 0..128 across lanes {
-        if l < head_dim {
-          let mut acc : f32 = 0.0;
-          for t in 0..pos + 1 {
-            acc = acc + scores[h][t] * v_cache[t][g][l];
+    }
+  }
+  return;
+}
+
+/// Merges the parts of `nn_attention` of blocks of `n_pos` positions. A block does 32 values of one
+/// head of Q, a value for each lane.
+fn nn_attention_merge<M : Memory>(out : &mut Tensor<f32, [?, ?], Memory::M>, part : &Tensor<f32, [?, ?, ?, ?], Memory::M>, pos : i32, n_pos : i32, q_heads : i32, kv_heads : i32, head_dim : i32) -> void {
+  let group = q_heads / kv_heads;
+  let tiles = (group + 7) / 8;
+  let splits = (pos + n_pos) / n_pos;
+  spawn on(Topology::Device) {
+    for h in 0..q_heads across blocks {
+      for dq in 0..head_dim / 32 across blocks {
+        let mut top = unsafe {
+          Tensor<f32, [1, 1, 32], Memory::SMEM>::uninit()
+        };
+        let g = h / group;
+        let tile = (h - g * group) / 8;
+        let gt = g * tiles + tile;
+        let at = h - g * group - tile * 8;
+        for s in 0..1 across subgroups {
+          for l in 0..32 across lanes(32) {
+            let mut m : f32 = -3.0e38;
+            let mut c = l;
+            while c < splits {
+              m = m.max(part[gt][c][at][head_dim]);
+              c = c + 32;
+            }
+            top[s][0][l] = m;
           }
-          out[h][l] = acc / total;
+          let big = lanes::max(&top[s][0], 32);
+          for l in 0..32 across lanes(32) {
+            let d = dq * 32 + l;
+            let mut total : f32 = 0.0;
+            let mut acc : f32 = 0.0;
+            for c in 0..splits {
+              let w = (part[gt][c][at][head_dim] - big).fast_exp();
+              total = total + w * part[gt][c][at][head_dim + 1];
+              acc = acc + w * part[gt][c][at][d];
+            }
+            out[h][d] = acc / total;
+          }
         }
       }
     }
@@ -954,9 +1414,8 @@ fn nn_swiglu_fp8<M : Memory>(out : &mut Tensor<f32, [?], Memory::M>, w : &Tensor
 // divides x by 16^t to match. The 8 of each code comes off once for each word, as 8 times the sum of
 // its 8 values of x.
 //
-// `nn_moe_down_q4_add` adds k experts for each row. Its block has 128 lanes in 4 groups of 32, and
-// does 8 rows. Group g takes experts g, g + 4 and so on, and a lane takes one word of each row at a
-// time. So a row of 768 weights, 96 words, keeps all 32 lanes of a group busy.
+// `nn_moe_down_q4_add` adds k experts for each row. The lanes of its block share the pairs of words
+// of all k experts. So 8 experts with rows of 768 weights have 384 pairs, and each lane takes 12.
 
 /// y[r] = (row r of the Q4_0 matrix w) . x, for r below `rows`.
 fn nn_matvec_q4<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
@@ -1547,26 +2006,32 @@ fn nn_moe_down_q4_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Ten
   let groups = cols / 32;
   spawn on(Topology::Device) {
     for rb in 0..rows / 8 across blocks {
-      let mut part = unsafe { Tensor<f32, [8, 128], Memory::SMEM>::uninit() };
-      for l in 0..128 across lanes {
-        let mut acc = unsafe { Tensor<f32, [8]>::uninit() };
-        for j in 0..8 {
-          acc[j] = 0.0;
-        }
-        let mut e = l / 32;
-        while e < k {
-          let id = ids[e];
-          assert(id >= 0 && id < experts, "nn_moe_down_q4_add: an id is not the number of an expert");
-          let first = id * rows + rb * 8;
-          let we = weights[e];
-          let mut i = l % 32;
-          while i < words {
+      let mut part = unsafe {
+        Tensor<f32, [1, 8, 32], Memory::SMEM>::uninit()
+      };
+      // One SIMD group, so that the sums over its lanes need no barrier of the whole block.
+      for s in 0..1 across subgroups {
+        for l in 0..32 across lanes(32) {
+          let mut acc = unsafe { Tensor<f32, [8]>::uninit() };
+          for j in 0..8 {
+            acc[j] = 0.0;
+          }
+          // Step n of the block takes 2 words of each row of expert n / pairs.
+          let pairs = words / 2;
+          let mut n = l;
+          while n < k * pairs {
+            let e = n / pairs;
+            let i = (n - e * pairs) * 2;
+            let id = ids[e];
+            assert(id >= 0 && id < experts, "nn_moe_down_q4_add: an id is not the number of an expert");
+            let first = id * rows + rb * 8;
+            let we = weights[e];
             let c = i * 8;
-            let mut xp = unsafe { Tensor<f32, [8]>::uninit() };
-            for t in 0..8 {
+            let mut xp = unsafe { Tensor<f32, [16]>::uninit() };
+            for t in 0..16 {
               xp[t] = h[e][c + t];
             }
-            let sum8 = 8.0 * (xp[0] + xp[1] + xp[2] + xp[3] + xp[4] + xp[5] + xp[6] + xp[7]);
+            let sum8 = 8.0 * (xp[0] + xp[1] + xp[2] + xp[3] + xp[4] + xp[5] + xp[6] + xp[7] + xp[8] + xp[9] + xp[10] + xp[11] + xp[12] + xp[13] + xp[14] + xp[15]);
             xp[1] = xp[1] * 0.0625;
             xp[2] = xp[2] * 0.00390625;
             xp[3] = xp[3] * 0.000244140625;
@@ -1574,41 +2039,49 @@ fn nn_moe_down_q4_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Ten
             xp[5] = xp[5] * 0.00000095367431640625;
             xp[6] = xp[6] * 0.000000059604644775390625;
             xp[7] = xp[7] * 0.0000000037252902984619140625;
+            xp[9] = xp[9] * 0.0625;
+            xp[10] = xp[10] * 0.00390625;
+            xp[11] = xp[11] * 0.000244140625;
+            xp[12] = xp[12] * 0.0000152587890625;
+            xp[13] = xp[13] * 0.00000095367431640625;
+            xp[14] = xp[14] * 0.000000059604644775390625;
+            xp[15] = xp[15] * 0.0000000037252902984619140625;
             for j in 0..8 {
               let row = first + j;
-              let code = w[row * words + i];
-              let dot = ((code & 15u32) as f32) * xp[0] + ((code & 240u32) as f32) * xp[1] + ((code & 3840u32) as f32) * xp[2] + ((code & 61440u32) as f32) * xp[3] + ((code & 983040u32) as f32) * xp[4] + ((code & 15728640u32) as f32) * xp[5] + ((code & 251658240u32) as f32) * xp[6] + ((code & 4026531840u32) as f32) * xp[7];
+              let at = row * words + i;
+              let w0 = w[at];
+              let w1 = w[at + 1];
+              let dot = ((w0 & 15u32) as f32) * xp[0] + ((w0 & 240u32) as f32) * xp[1] + ((w0 & 3840u32) as f32) * xp[2] + ((w0 & 61440u32) as f32) * xp[3] + ((w0 & 983040u32) as f32) * xp[4] + ((w0 & 15728640u32) as f32) * xp[5] + ((w0 & 251658240u32) as f32) * xp[6] + ((w0 & 4026531840u32) as f32) * xp[7] + ((w1 & 15u32) as f32) * xp[8] + ((w1 & 240u32) as f32) * xp[9] + ((w1 & 3840u32) as f32) * xp[10] + ((w1 & 61440u32) as f32) * xp[11] + ((w1 & 983040u32) as f32) * xp[12] + ((w1 & 15728640u32) as f32) * xp[13] + ((w1 & 251658240u32) as f32) * xp[14] + ((w1 & 4026531840u32) as f32) * xp[15];
               acc[j] = acc[j] + we * (dot - sum8) * (scales[row * groups + i / 4] as f32);
             }
-            i = i + 32;
+            n = n + 32;
           }
-          e = e + 4;
+          part[s][0][l] = acc[0];
+          part[s][1][l] = acc[1];
+          part[s][2][l] = acc[2];
+          part[s][3][l] = acc[3];
+          part[s][4][l] = acc[4];
+          part[s][5][l] = acc[5];
+          part[s][6][l] = acc[6];
+          part[s][7][l] = acc[7];
         }
-        part[0][l] = acc[0];
-        part[1][l] = acc[1];
-        part[2][l] = acc[2];
-        part[3][l] = acc[3];
-        part[4][l] = acc[4];
-        part[5][l] = acc[5];
-        part[6][l] = acc[6];
-        part[7][l] = acc[7];
+        let s0 = lanes::sum(&part[s][0], 32);
+        let s1 = lanes::sum(&part[s][1], 32);
+        let s2 = lanes::sum(&part[s][2], 32);
+        let s3 = lanes::sum(&part[s][3], 32);
+        let s4 = lanes::sum(&part[s][4], 32);
+        let s5 = lanes::sum(&part[s][5], 32);
+        let s6 = lanes::sum(&part[s][6], 32);
+        let s7 = lanes::sum(&part[s][7], 32);
+        y[rb * 8] = y[rb * 8] + s0;
+        y[rb * 8 + 1] = y[rb * 8 + 1] + s1;
+        y[rb * 8 + 2] = y[rb * 8 + 2] + s2;
+        y[rb * 8 + 3] = y[rb * 8 + 3] + s3;
+        y[rb * 8 + 4] = y[rb * 8 + 4] + s4;
+        y[rb * 8 + 5] = y[rb * 8 + 5] + s5;
+        y[rb * 8 + 6] = y[rb * 8 + 6] + s6;
+        y[rb * 8 + 7] = y[rb * 8 + 7] + s7;
       }
-      let s0 = lanes::sum(&part[0], 128);
-      let s1 = lanes::sum(&part[1], 128);
-      let s2 = lanes::sum(&part[2], 128);
-      let s3 = lanes::sum(&part[3], 128);
-      let s4 = lanes::sum(&part[4], 128);
-      let s5 = lanes::sum(&part[5], 128);
-      let s6 = lanes::sum(&part[6], 128);
-      let s7 = lanes::sum(&part[7], 128);
-      y[rb * 8] = y[rb * 8] + s0;
-      y[rb * 8 + 1] = y[rb * 8 + 1] + s1;
-      y[rb * 8 + 2] = y[rb * 8 + 2] + s2;
-      y[rb * 8 + 3] = y[rb * 8 + 3] + s3;
-      y[rb * 8 + 4] = y[rb * 8 + 4] + s4;
-      y[rb * 8 + 5] = y[rb * 8 + 5] + s5;
-      y[rb * 8 + 6] = y[rb * 8 + 6] + s6;
-      y[rb * 8 + 7] = y[rb * 8 + 7] + s7;
     }
   }
   return;

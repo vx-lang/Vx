@@ -15,7 +15,7 @@
 // CHECK-NEXT: Error[E3003] at {{.*}}method_argument_of_the_wrong_type.vx:55:13: Type mismatch in argument 1 for function 'S::pick'. Expected i64, got bool
 // CHECK-NEXT: Error[E3010] at {{.*}}method_argument_of_the_wrong_type.vx:56:13: Function 'S::add' expects 1 arguments, got 2
 // CHECK-NEXT: Error[E3003] at {{.*}}method_argument_of_the_wrong_type.vx:57:30: Type mismatch in argument 1 for function 'Range::skip'. Expected i64, got bool
-// CHECK-NEXT: Error in {{.*}}method_argument_of_the_wrong_type.vx: Method 'next' not found on type S
+// CHECK-NEXT: Error at {{.*}}method_argument_of_the_wrong_type.vx:60:3: Method 'next' not found on type S
 // CHECK-NEXT: Semantic check failed
 import core::iter;
 

@@ -14,6 +14,12 @@
 // `mixed_tiles` has a bf16 and an f16 tile, and an sm_75 chip has no bf16 `mma.sync`. A subgroup
 // barrier comes before each matmul and after it.
 //
+// In `k_loop`, the matmul adds to `acc` in each pass of a loop, and nothing else in the loop reads
+// or writes `acc`. So each lane keeps its elements of `acc` in registers through the loop: it loads
+// them in the first pass, and stores them after the loop. Then the block waits at a barrier, and
+// the lanes read `acc`. `k_loop_that_reads_acc` reads `acc` in the loop, so it stores the elements
+// after each chain, as `bf16_tiles` does.
+//
 // RUN: env -u VX_GPU_CHIP vxc %s --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ptx
 // RUN: FileCheck %s --implicit-check-not=local_depot < %t.ptx
 // RUN: env VX_GPU_CHIP=sm_75 vxc %s --host default --machine fleet/a100-80.vx --emit-ptx -o %t.sm75.ptx
@@ -48,6 +54,23 @@
 // CHECK: cvt.f32.f16
 // CHECK: mul.rn.f32
 // CHECK: add.rn.f32
+// CHECK: bar.warp.sync
+// CHECK-LABEL: .entry k_loop(
+// CHECK: mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32
+// CHECK-NOT: st.shared.{{b32|v2}}
+// CHECK: mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32
+// CHECK-NOT: st.shared.{{b32|v2}}
+// CHECK: bar.sync 0;
+// A lane stores its 8 elements when the matmul gets another row of `acc`, and after the loop.
+// CHECK-COUNT-16: st.shared.b32 [%rd{{[0-9]+}}{{(\+[0-9]+)?}}], %r{{[0-9]+}};
+// CHECK: bar.sync 0;
+// CHECK-NOT: st.shared
+// CHECK: ld.shared.b32
+// CHECK-LABEL: .entry k_loop_that_reads_acc(
+// CHECK: mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32
+// CHECK: st.shared.{{b32|v2.b32}}
+// CHECK: mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32
+// CHECK: st.shared.{{b32|v2.b32}}
 // CHECK: bar.warp.sync
 // SM75-LABEL: .entry bf16_tiles(
 // SM75: mul.rn.f32
@@ -153,6 +176,111 @@ pub fn mixed_tiles(c : &mut Tensor<f32, [?, 4, 16, 8], Memory::HBM>, a : &Tensor
         for i in 0..32 across lanes {
           if i < 16 {
             for j in 0..8 {
+              c[blk][w][i][j] = acc[w][i][j];
+            }
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn k_loop(c : &mut Tensor<f32, [?, 2, 16, 16], Memory::HBM>, a : &Tensor<bf16, [?, ?], Memory::HBM>, b : &Tensor<bf16, [?, 16], Memory::HBM>, k : i32, blocks : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..blocks across blocks {
+      let mut sa = unsafe {
+        Tensor<bf16, [2, 16, 16], Memory::SMEM>::uninit()
+      };
+      let mut sb = unsafe { Tensor<bf16, [16, 16], Memory::SMEM>::uninit() };
+      let mut acc = unsafe {
+        Tensor<f32, [2, 16, 16], Memory::SMEM>::uninit()
+      };
+      for w in 0..2 across subgroups {
+        for j in 0..32 across lanes {
+          if j < 16 {
+            for i in 0..16 {
+              acc[w][i][j] = 0.0;
+            }
+          }
+        }
+      }
+      for kt in 0..k / 16 {
+        for j in 0..16 across lanes {
+          for r in 0..16 {
+            sb[r][j] = b[kt * 16 + r][j];
+          }
+        }
+        for w in 0..2 across subgroups {
+          for kk in 0..32 across lanes {
+            if kk < 16 {
+              for i in 0..16 {
+                sa[w][i][kk] = a[blk * 32 + w * 16 + i][kt * 16 + kk];
+              }
+            }
+          }
+          acc[w] = acc[w] + (sa[w] as f32) @ (sb as f32);
+        }
+      }
+      for w in 0..2 across subgroups {
+        for j in 0..32 across lanes {
+          if j < 16 {
+            for i in 0..16 {
+              c[blk][w][i][j] = acc[w][i][j];
+            }
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn k_loop_that_reads_acc(c : &mut Tensor<f32, [?, 2, 16, 16], Memory::HBM>, a : &Tensor<bf16, [?, ?], Memory::HBM>, b : &Tensor<bf16, [?, 16], Memory::HBM>, k : i32, blocks : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..blocks across blocks {
+      let mut sa = unsafe {
+        Tensor<bf16, [2, 16, 16], Memory::SMEM>::uninit()
+      };
+      let mut sb = unsafe { Tensor<bf16, [16, 16], Memory::SMEM>::uninit() };
+      let mut acc = unsafe {
+        Tensor<f32, [2, 16, 16], Memory::SMEM>::uninit()
+      };
+      for w in 0..2 across subgroups {
+        for j in 0..32 across lanes {
+          if j < 16 {
+            for i in 0..16 {
+              acc[w][i][j] = 0.0;
+            }
+          }
+        }
+      }
+      for kt in 0..k / 16 {
+        for j in 0..16 across lanes {
+          for r in 0..16 {
+            sb[r][j] = b[kt * 16 + r][j];
+          }
+        }
+        for w in 0..2 across subgroups {
+          for kk in 0..32 across lanes {
+            if kk < 16 {
+              for i in 0..16 {
+                sa[w][i][kk] = a[blk * 32 + w * 16 + i][kt * 16 + kk];
+              }
+            }
+          }
+          acc[w] = acc[w] + (sa[w] as f32) @ (sb as f32);
+          for j in 0..32 across lanes {
+            if j < 16 {
+              c[blk][w][0][j] = acc[w][0][j];
+            }
+          }
+        }
+      }
+      for w in 0..2 across subgroups {
+        for j in 0..32 across lanes {
+          if j < 16 {
+            for i in 0..16 {
               c[blk][w][i][j] = acc[w][i][j];
             }
           }

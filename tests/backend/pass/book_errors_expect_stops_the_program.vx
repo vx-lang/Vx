@@ -1,0 +1,40 @@
+//===- book_errors_expect_stops_the_program.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on errors (www/book/src/errors.md): `unwrap` gives the value of
+// an `Ok`, and `expect` on an `Err` stops the program with its message and the line of the call.
+// The program stops on purpose, so only the RUN lines run it.
+//
+// NO_EXEC
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: not vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}ok true, err false{{$}}
+// CHECK-NEXT: {{^}}10 / 2 = 5{{$}}
+// CHECK-NEXT: {{^}}panic: the divisor must not be zero{{$}}
+// CHECK-NEXT: {{^}}  at {{.*}}book_errors_expect_stops_the_program.vx:36{{$}}
+// CHECK-NOT: never printed
+
+// ANCHOR: program
+import core::result;
+
+fn divide(a : i64, b : i64) -> Result<i64, i64> {
+  if b == 0 {
+    return Result<i64, i64>::Err(a);
+  }
+  return Result<i64, i64>::Ok(a / b);
+}
+
+fn main() -> i32 {
+  let good = divide(10, 2);
+  println!("ok {}, err {}", good.is_ok(), good.is_err());
+  println!("10 / 2 = {}", good.unwrap());
+  let bad = divide(10, 0);
+  let q = bad.expect("the divisor must not be zero");
+  println!("never printed {}", q);
+  return 0;
+}
+// ANCHOR_END: program

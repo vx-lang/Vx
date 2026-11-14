@@ -91,11 +91,18 @@ impl EnumVariantExpr {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+/// A number compares by its value and type, not its place: a number can be a tensor dimension,
+/// and `[4]` written in two places is one type.
+#[derive(Debug, Clone)]
 pub struct NumberExpr {
     pub value: Symbol,
     pub ty: Option<ElementType>,
     pub span: Span,
+}
+impl PartialEq for NumberExpr {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value && self.ty == other.ty
+    }
 }
 impl NumberExpr {
     pub fn new(value: String, ty: Option<ElementType>, span: Span) -> Self {
@@ -151,6 +158,9 @@ impl SpawnOnExpr {
 pub struct TransferExpr {
     pub expr: Box<Expr>,
     pub space: MemorySpace,
+    /// The device of `transfer(x, Topology::X[i])`, which moves `x` into the memory of that
+    /// device. The checker sets `space` to that memory. `None` when the transfer names a memory.
+    pub device: Option<crate::syntax::Topology>,
     /// The bandwidth-derived roofline cost, filled in by sema. Cycles for a `B/cyc` hop,
     /// picoseconds for a `B/s` one — `u64` because picoseconds overflow `u32` at 4.3 ms.
     pub cost: Option<u64>,
@@ -191,6 +201,7 @@ impl TransferExpr {
         Self {
             expr,
             space,
+            device: None,
             cost: None,
             lowering: None,
             is_async: false,
@@ -1671,6 +1682,7 @@ impl Expr {
             Expr::Transfer(e) => Expr::Transfer(TransferExpr {
                 expr: Box::new(e.expr.substitute(mapping)),
                 space: e.space.clone(),
+                device: e.device.as_ref().map(|d| d.substitute(mapping)),
                 cost: e.cost,
                 lowering: e.lowering.clone(),
                 is_async: e.is_async,

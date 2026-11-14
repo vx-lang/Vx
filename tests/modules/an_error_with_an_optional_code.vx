@@ -1,0 +1,21 @@
+//===- an_error_with_an_optional_code.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// A struct with an `Option` field, for a test that uses it from another module.
+
+import core::option;
+
+struct Error {
+  small: u8,
+  code: Option<i64>
+}
+
+fn make_error(code: i64) -> Error {
+  return Error {
+    small: 2u8,
+    code: Option<i64>::Some(code)
+  };
+}

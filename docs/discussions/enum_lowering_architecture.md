@@ -130,7 +130,7 @@ They do not construct offset vectors, including on cache hits. Consumers use the
 1. Resolve the base declaration and calculate the concrete instance ID.
 1. Reuse a completed record from the current lowerer when available.
 1. Substitute concrete arguments into every variant's payload types.
-1. Resolve every present payload through [Lowerer::payload_field](../../src/hir/flatten.rs).
+1. Resolve every present payload through [Lowerer::payload_size_align](../../src/hir/flatten.rs).
 1. Calculate shared slot requirements through [enum_storage_layout](../../src/layout.rs).
 1. Select physical fields and retain each variant's actual payload metadata.
 1. Record the completed layout for transfer to the emitter.
@@ -343,10 +343,12 @@ Nested-owner cleanup remains separate validation work.
 
 ## 10. Current limits and artifact compatibility
 
-[Lowerer::payload_field](../../src/hir/flatten.rs) does not provide unrestricted recursive layout resolution.
+[Lowerer::payload_size_align](../../src/hir/flatten.rs) does not provide unrestricted recursive layout resolution.
 An enum inside another payload enum can still decline.
 Non-generic structs containing supported enum fields now receive complete worker-local layouts.
-Using such a struct as an outer enum payload remains guarded until its separate acceptance cases pass.
+Such a struct can also be an enum payload, as `Error` in `Result<u64, Error>`.
+`payload_size_align` uses the worker-local layout when the registry layout of the struct is incomplete.
+A payload with no supported layout, such as a function pointer, still declines the whole enum.
 Some generic structs containing enums already have a specialized resolution path in [Lowerer::struct_instance_layout_of](../../src/hir/flatten.rs).
 That path does not establish general nested-enum support.
 Similarly, [Lowerer::lower_ty_synth](../../src/hir/flatten.rs) handles supported concrete instances without making the free `lowered_ty` helper a recursive layout resolver.

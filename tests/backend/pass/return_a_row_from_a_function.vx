@@ -5,20 +5,19 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// A function that returns a row of a tensor it borrows, with a written shape and with `?`.
-// The AST path (`--legacy-codegen`) could not compile it: it tried to cast the row, a view
-// with the tensor's layout, to a plain tensor. Now the row is copied, so the function returns
-// a tensor of its own.
+// A function that returns a row of a tensor it borrows. `second_row` returns a copy of the row
+// with a written shape, so a change to the copy leaves `q` alone. `any_row` returns the row
+// itself as a reference, with a `?` shape.
 //
 // RUN: vxc %s --run 2>&1 | FileCheck %s
 // RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
 
 fn second_row(q : &Tensor<f32, [2, 4]>) -> Tensor<f32, [4]> {
-  return q[1];
+  return q[1].clone();
 }
 
-fn any_row(q : &Tensor<f32, [?, ?]>, i : i32) -> Tensor<f32, [?]> {
-  return q[i];
+fn any_row(q : &Tensor<f32, [?, ?]>, i : i32) -> &Tensor<f32, [?]> {
+  return &q[i];
 }
 
 fn main() -> i32 {

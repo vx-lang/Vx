@@ -1,0 +1,28 @@
+//===- a_cast_from_a_number_to_bool.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// Only a `bool` casts to a `bool`, as in Rust. A cast from an integer kept only the lowest bit,
+// so `2 as bool` was `false`. A cast from a `bool` to an integer stays allowed.
+
+fn main() -> i32 {
+  let x : i32 = 2;
+  // CHECK: Error[E3011] at {{.*}}a_cast_from_a_number_to_bool.vx:16:13: cannot cast `i32` to `bool`: compare it with zero instead, as in `x != 0`
+  let a = x as bool;
+  let f : f32 = 0.5;
+  // CHECK: Error[E3011] at {{.*}}a_cast_from_a_number_to_bool.vx:19:13: cannot cast `f32` to `bool`: compare it with zero instead, as in `x != 0.0`
+  let b = f as bool;
+  let small : u8 = 1;
+  // CHECK: Error[E3011] at {{.*}}a_cast_from_a_number_to_bool.vx:22:17: cannot cast `u8` to `bool`
+  let c = small as bool;
+  let flag = true;
+  let n : i32 = flag as i32;
+  let nonzero : bool = x != 0;
+  return 0;
+}
+// CHECK: 3 error(s) emitted

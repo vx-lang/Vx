@@ -1,0 +1,91 @@
+//===- book_workers_take_jobs_from_a_counter.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on writing parallel code
+// (www/book/src/writing-parallel-code.md): four workers take job numbers from an atomic counter
+// and send each result with its number, so the results end up in job order.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_SEED=3 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}squares 0 1 4 9 16 25 36 49 64 81{{$}}
+// CHECK-NEXT: {{^}}each job ran once: true{{$}}
+
+// ANCHOR: program
+import core::convert;
+import core::sync::atomic;
+import std::sync::channel;
+import std::vec;
+
+struct Done {
+  job : i32,
+  value : i64,
+}
+
+impl Copy for Done {}
+
+fn worker(jobs : i32, next : &AtomicI64, tx : Sender<Done>) -> void {
+  loop {
+    // Each fetch_add gives a number that no other worker gets.
+    let job = next.fetch_add(1, AtomicOrdering::Relaxed);
+    if job >= i64::from(jobs) {
+      return;
+    }
+    let value = job * job;
+    match tx.send(Done {
+      job : job as i32, value : value
+    }) {
+      Result<void, SendError<Done>>::Ok() => {}
+      Result<void, SendError<Done>>::Err(_e) => {
+        return;
+      }
+    }
+  }
+}
+
+fn main() -> i32 {
+  let jobs = 10;
+  let mut results = Vec<i64>::new();
+  let mut runs = Vec<i32>::new();
+  for _i in 0..jobs {
+    results.push(0);
+    runs.push(0);
+  }
+  let next = AtomicI64::new(0);
+  let (tx, rx) = channel<Done>(4);
+  tasks {
+    for _w in 0..4 {
+      let mine = tx.clone();
+      spawn {
+        worker(jobs, &next, mine);
+      };
+    }
+    drop(tx);
+    let mut open = true;
+    while open {
+      match rx.recv() {
+        Result<Done, RecvError>::Ok(d) => {
+          // The job number says where the result goes, whatever order the results arrive in.
+          results.set(d.job, d.value);
+          runs.set(d.job, runs.get(d.job) + 1);
+        }
+        Result<Done, RecvError>::Err(_e) => {
+          open = false;
+        }
+      }
+    }
+  };
+  print!("squares");
+  let mut once = true;
+  for i in 0..jobs {
+    print!(" {}", results.get(i));
+    once = once && runs.get(i) == 1;
+  }
+  println!("");
+  println!("each job ran once: {}", once);
+  return 0;
+}
+// ANCHOR_END: program

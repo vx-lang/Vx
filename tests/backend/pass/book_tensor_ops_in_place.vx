@@ -1,0 +1,54 @@
+//===- book_tensor_ops_in_place.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on tensor operations (www/book/src/tensor-ops.md): the
+// element-wise operations that change a 1-D tensor in place, one after the other.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}add_assign 11 22 33 44{{$}}
+// CHECK: {{^}}scale 5.5 11 16.5 22{{$}}
+// CHECK: {{^}}scaled_add -4.5 -9 -13.5 -18{{$}}
+// CHECK: {{^}}clamp_inplace -4.5 -9 -10 -10{{$}}
+// CHECK: {{^}}map_inplace 20.25 81 100 100{{$}}
+// CHECK: {{^}}sqrt_inplace 4.5 9 10 10{{$}}
+
+// ANCHOR: program
+import std::tensor;
+
+fn show(t : &Tensor<f32, [?]>) -> i32 {
+  for i in 0..t.len() {
+    print!(" {}", t[i]);
+  }
+  println!("");
+  return 0;
+}
+
+fn main() -> i32 {
+  let mut y : Tensor<f32, [4]> = [ 1.0, 2.0, 3.0, 4.0 ];
+  let x : Tensor<f32, [4]> = [ 10.0, 20.0, 30.0, 40.0 ];
+  y.add_assign(&x);
+  print!("add_assign");
+  show(&y);
+  y.scale(0.5);
+  print!("scale");
+  show(&y);
+  y.scaled_add(-1.0, &x);
+  print!("scaled_add");
+  show(&y);
+  y.clamp_inplace(-10.0, 0.0);
+  print!("clamp_inplace");
+  show(&y);
+  y.map_inplace(| v : f32 | v * v);
+  print!("map_inplace");
+  show(&y);
+  y.sqrt_inplace();
+  print!("sqrt_inplace");
+  show(&y);
+  return 0;
+}
+// ANCHOR_END: program

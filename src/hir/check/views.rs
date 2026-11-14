@@ -248,29 +248,57 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// `return expr` of a view of this function's own tensor: the tensor is gone once the
-    /// function returns.
+    /// `return expr` of a view, where the function returns a tensor by value. A view of this
+    /// function's own tensor is gone once the function returns (E4005). The caller of any other
+    /// view would get a copy, and its writes would not reach the owner (E4011).
     pub(crate) fn check_view_return(&mut self, expr: &Expr, ty: &Type, span: &crate::syntax::Span) {
         if self.speculating {
             return;
         }
-        if let Some(
-            view @ View {
-                provenance: Some(RefProvenance::Local(_)),
-                ..
-            },
-        ) = self.view_of(expr, ty)
-        {
-            let owner = view.owner();
-            self.errors.error_with_code(
-                crate::diagnostic::DiagnosticCode::E4005,
-                format!(
-                    "this returns a view of `{owner}`, a tensor this function owns, which is \
-                     gone once the function returns. Take `{owner}` by reference (`&`) so the \
-                     view points into the caller's tensor"
-                ),
-                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
-            );
+        let what = match self.view_of(expr, ty) {
+            Some(
+                view @ View {
+                    provenance: Some(RefProvenance::Local(_)),
+                    ..
+                },
+            ) => {
+                let owner = view.owner();
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E4005,
+                    format!(
+                        "this returns a view of `{owner}`, a tensor this function owns, which is \
+                         gone once the function returns. Take `{owner}` by reference (`&`), and \
+                         return the view as a reference, so it points into the caller's tensor"
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                );
+                return;
+            }
+            Some(view) => format!("a view of `{}`", view.owner()),
+            None if self.is_foreign_view(expr) => "a view of memory from a raw pointer".to_string(),
+            None => return,
+        };
+        let ty = match ty {
+            Type::Tensor(..) => ty.to_string(),
+            _ => "Tensor<..>".to_string(),
+        };
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E4011,
+            format!(
+                "this returns {what} as a tensor of its own. The caller would get a copy, and \
+                 its writes would not reach the memory of the view. Return a reference \
+                 (`-> &{ty}` or `-> &mut {ty}`) to give the caller the view, or return \
+                 `.clone()` to give it a copy"
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+    }
+
+    /// `tensor_view_2d(..)`, or a variable bound to one.
+    fn is_foreign_view(&self, expr: &Expr) -> bool {
+        match crate::syntax::expr::bare_unsafe_value(expr) {
+            Expr::Identifier(id) => self.borrow.foreign_views.contains_key(&id.name),
+            e => Self::views_foreign_memory(e),
         }
     }
 

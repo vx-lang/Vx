@@ -438,6 +438,29 @@ impl<'a> Parser<'a> {
                 let expr = self.parse_primary_expr()?; // parses number or string
                 Ok(Pattern::Literal(Box::new(expr)))
             }
+            TokenType::Minus if matches!(self.peek_n(1).kind, TokenType::Number(_)) => {
+                self.advance();
+                let mut expr = self.parse_primary_expr()?;
+                if let Expr::Number(n) = &mut expr {
+                    n.value = format!("-{}", n.value).into();
+                }
+                Ok(Pattern::Literal(Box::new(expr)))
+            }
+            // `true` and `false` are the two values of a `bool`, not names that bind it.
+            TokenType::Identifier(s) if s == "true" || s == "false" => {
+                self.advance();
+                Ok(Pattern::Literal(Box::new(Expr::Identifier(
+                    IdentifierExpr {
+                        name: s.into(),
+                        span: Span {
+                            line: token.line,
+                            column: token.column,
+                            length: token.length,
+                            expansion: self.expansion(),
+                        },
+                    },
+                ))))
+            }
             TokenType::Identifier(s) => {
                 let mut enum_name = s.to_string();
                 self.advance();
@@ -1067,11 +1090,22 @@ impl<'a> Parser<'a> {
                 self.consume(&TokenType::LeftParen, "Expected '(' after transfer")?;
                 let inner = self.parse_expr()?;
                 self.consume(&TokenType::Comma, "Expected ','")?;
-                let mem = self.parse_memory_space()?;
+                // `transfer(x, Topology::X[i])` names a device. The checker replaces this space
+                // with the memory that the declaration of the device gives.
+                let (mem, device) = if self.check(&TokenType::Topology) {
+                    let device = self.parse_topology()?;
+                    (
+                        crate::arch::builtin_default_space(&device.kind()),
+                        Some(device),
+                    )
+                } else {
+                    (self.parse_memory_space()?, None)
+                };
                 self.consume(&TokenType::RightParen, "Expected ')'")?;
                 Expr::Transfer(TransferExpr {
                     expr: Box::new(inner),
                     space: mem,
+                    device,
                     cost: None,
                     lowering: None,
                     is_async,
@@ -1305,7 +1339,12 @@ impl<'a> Parser<'a> {
                         Expr::Number(NumberExpr {
                             value: num_str.into(),
                             ty: el_ty,
-                            span: Span::default(),
+                            span: crate::syntax::Span {
+                                line: token.line,
+                                column: token.column,
+                                length: token.length,
+                                expansion: self.expansion(),
+                            },
                         })
                     }
                     TokenType::StringLiteral(s) => Expr::StringLiteral(StringLiteralExpr {
@@ -2258,6 +2297,26 @@ mod tests {
         } else {
             panic!("Expected Match, got {:?}", expr);
         }
+    }
+
+    #[test]
+    fn test_parse_match_with_bool_and_negative_literals() {
+        let expr = parse_expr("match x { true => { a; } false => { b; } -1 => { c; } }");
+        let Expr::Match(MatchExpr { arms, .. }) = expr else {
+            panic!("Expected Match, got {:?}", expr);
+        };
+        let literal = |i: usize| match &arms[i].pattern {
+            Pattern::Literal(lit) => match &**lit {
+                Expr::Identifier(id) => id.name.to_string(),
+                Expr::Number(n) => n.value.to_string(),
+                other => panic!("Expected true, false or a number, got {:?}", other),
+            },
+            other => panic!("Expected a literal pattern, got {:?}", other),
+        };
+        assert_eq!(
+            (literal(0), literal(1), literal(2)),
+            ("true".into(), "false".into(), "-1".into())
+        );
     }
 
     #[test]

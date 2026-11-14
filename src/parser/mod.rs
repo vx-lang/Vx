@@ -163,6 +163,17 @@ impl<'a> Parser<'a> {
         self.tokens.first().map_or(0, |t| t.expansion)
     }
 
+    /// The place of the next token, the one that `advance` reads next.
+    pub(crate) fn next_span(&self) -> crate::syntax::Span {
+        let token = self.peek();
+        crate::syntax::Span {
+            line: token.line,
+            column: token.column,
+            length: token.length,
+            expansion: self.expansion(),
+        }
+    }
+
     pub(crate) fn peek(&self) -> &'a Token<'a> {
         self.peek_n(0)
     }
@@ -412,7 +423,31 @@ mod tests {
         // Any identifier that is not a built-in is a user-defined topology.
         assert_eq!(
             parse_topology("Topology::MyTPU"),
-            Topology::Custom(crate::symbol::Symbol::from("MyTPU"))
+            Topology::Custom(crate::symbol::Symbol::from("MyTPU"), None)
+        );
+    }
+
+    #[test]
+    fn a_declared_topology_takes_an_index_or_a_slice() {
+        assert_eq!(
+            parse_topology("Topology::Dev[1]"),
+            Topology::declared_device("Dev".into(), 1)
+        );
+        assert_eq!(
+            parse_topology("Topology::Dev[0..2]"),
+            Topology::Slice(
+                Box::new(Topology::declared_device("Dev".into(), 0)),
+                Box::new(Expr::Number(NumberExpr::new(
+                    "0".to_string(),
+                    None,
+                    Span::default()
+                ))),
+                Box::new(Expr::Number(NumberExpr::new(
+                    "2".to_string(),
+                    None,
+                    Span::default()
+                ))),
+            )
         );
     }
 
@@ -441,6 +476,27 @@ mod tests {
             .descriptor
             .visibility
             .contains(&crate::syntax::MemorySpace::LocalSRAM));
+    }
+
+    /// `count:` is a number of devices from 1 to `MAX_TOPOLOGY_COUNT`. No `count:` is one device.
+    #[test]
+    fn a_topology_count_is_from_1_to_the_limit() {
+        let count = |field: &str| {
+            let input = format!("Topology Dev {{ memory: Memory::Local_SRAM, {field} }}");
+            let mut lexer = Lexer::new(&input);
+            let tokens = lexer.tokenize();
+            let mut parser = Parser::new(&tokens, &input);
+            // `None` when the parser refuses the declaration.
+            parser
+                .parse_topology_decl()
+                .ok()
+                .map(|d| d.descriptor.count)
+        };
+        assert_eq!(count("count: 2"), Some(Some(2)));
+        assert_eq!(count("count: 65536"), Some(Some(65536)));
+        assert_eq!(count("visible: [Memory::Local_SRAM]"), Some(None));
+        assert_eq!(count("count: 0"), None);
+        assert_eq!(count("count: 65537"), None);
     }
 
     #[test]
@@ -699,7 +755,7 @@ mod tests {
         // topology rather than erroring (its memory model comes from the registry).
         assert_eq!(
             parse_topology("Topology::Quantum"),
-            Topology::Custom(crate::symbol::Symbol::from("Quantum"))
+            Topology::Custom(crate::symbol::Symbol::from("Quantum"), None)
         );
     }
 

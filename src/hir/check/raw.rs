@@ -514,7 +514,10 @@ impl<'a> TypeChecker<'a> {
     ///     of the seam obligation: without the trailing barrier the transfer is
     ///     `Relaxed {{ published }}` and `hir/seam.rs`'s stale read is reachable.
     pub fn check_transfer_impl_bodies(&mut self, impls: &[crate::syntax::TransferImplDecl]) {
+        // An error with no place of its own points at the lowering.
+        let outside = self.errors.here();
         for t in impls {
+            self.errors.point_at(&t.place, &outside);
             // The topology this lowering is FOR, and its declaration of this edge. Before the
             // `for` clause existed this had to search every declared topology for one that
             // declared the edge, and then hold every one of them to the visibility rule --
@@ -742,6 +745,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
+        self.errors.point_back(outside);
     }
 
     /// The forward walk: statements in order, branches joined by union, and every way

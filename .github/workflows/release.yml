@@ -3,6 +3,7 @@ name: Release toolchains
 # Builds the downloadable toolchains and attaches them to a GitHub release.
 #
 # Triggered by pushing a tag:  git tag v0.0.1 && git push origin v0.0.1
+# To build a tag again with this file:  gh workflow run release.yml --ref main -f version=v0.0.1
 #
 # Artifacts are published on GitHub Releases rather than on the website, because release assets
 # are served without bandwidth charges -- which matters when each one is a few hundred megabytes.
@@ -12,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to build, e.g. v0.0.1'
+        description: 'The tag to build and release, e.g. v0.0.1'
         required: true
 
 permissions:
@@ -37,7 +38,7 @@ jobs:
           - os: ubuntu-22.04
             name: Linux x86_64
             target: x86_64-unknown-linux-gnu
-          - os: macos-14
+          - os: macos-15
             name: macOS arm64
             target: aarch64-apple-darwin
 
@@ -52,7 +53,10 @@ jobs:
             cuda: true
 
     steps:
-      - uses: actions/checkout@v4
+      # A manual run builds the tag that it names.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.version || github.ref }}
 
       - name: Work out the version
         id: version
@@ -74,7 +78,11 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
           df -h /
 
-      - uses: dtolnay/rust-toolchain@stable
+      # The Rust that CI tested the release with. Cargo 1.100 moved the output of build scripts,
+      # and a manual run of an older tag uses that tag's package.sh, which looks in the old place.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
 
       # mlir-sys remembers where LLVM was when it was built, so a new LLVM needs a new cache.
       - uses: Swatinem/rust-cache@v2
@@ -117,6 +125,7 @@ jobs:
           # driver_types.h, which includes <crt/host_defines.h>, and the crt directory ships with
           # nvcc rather than with cudart. Installing only cuda-cudart-dev gets far enough to find
           # cuda_runtime.h and then fails compiling against it.
+          # A new major version here must also change CUDA_MAJOR in www/install.sh.
           sudo apt-get install -y -qq \
             cuda-cudart-dev-12-6 libcublas-dev-12-6 cuda-driver-dev-12-6 cuda-nvcc-12-6
           # build.rs looks under /usr/local/cuda first.
@@ -386,7 +395,7 @@ jobs:
           echo "packaged toolchain runs a program using grad"
 
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: vx-${{ matrix.target }}
           path: |
@@ -398,9 +407,9 @@ jobs:
     name: Publish the release
     needs: build
     runs-on: ubuntu-latest
-    if: github.repository == 'vx-lang/Vx' && startsWith(github.ref, 'refs/tags/')
+    if: github.repository == 'vx-lang/Vx' && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch')
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
@@ -408,8 +417,9 @@ jobs:
       - name: List what will be published
         run: ls -lh artifacts/
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ github.event.inputs.version || github.ref_name }}
           files: |
             artifacts/*.tar.gz
             artifacts/*.sha256

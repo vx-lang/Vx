@@ -1,8 +1,11 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s 2>&1 | FileCheck %s --check-prefix=PLACE
 // A lowering for a machine this compilation has never heard of. It is code that
 // nothing can run, and before the `for` clause it could not even be asked: a
 // lowering named no machine, so there was nothing to check it against (Vx#353).
 // CHECK: E6015
+// The console also names the place in the source.
+// PLACE: Error[E6015] at {{.*}}transfer_impl_unknown_topology.vx:16:1:
 // CHECK: no topology named 'Ampere' is declared
 Topology Dev {
   memory: Memory::L2,

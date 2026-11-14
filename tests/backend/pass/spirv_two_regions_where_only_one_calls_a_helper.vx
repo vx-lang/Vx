@@ -5,32 +5,37 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// Two placed regions, one in `add_one` and one in `main`, share one SPIR-V
-// image. Only the region in `main` passes a tensor to a helper, which an image
-// cannot do yet, so both run on the host. The warning for the region in
-// `add_one` names the kernel of the region in `main` as the cause.
+// Two placed regions, one in `add_one` and one in `main`, are in one device
+// module. Only the region in `main` passes a tensor to a helper, which a SPIR-V
+// image cannot do yet. So the image holds only the region in `add_one`, and
+// only the region in `main` runs on the host.
 //
 // RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s # flat-codegen
-// CHECK-DAG: the region placed on `Topology::Dev` in `add_one` (kernel `{{vx_npu_kernel_[0-9]+}}`) cannot become a `spirv64` device image. It shares one image with the region placed on `Topology::Dev` in `main` (kernel `[[FAILED:vx_npu_kernel_[0-9]+]]`). That region cannot become one: it passes a tensor to `second_element`
-// CHECK-DAG: the region placed on `Topology::Dev` in `main` (kernel `[[FAILED]]`) cannot become a `spirv64` device image: it passes a tensor to `second_element`
+// CHECK-NOT: in `add_one` (kernel
+// CHECK: the region placed on `Topology::Dev` in `main` (kernel `[[FAILED:vx_npu_kernel_[0-9]+]]`) cannot become a `spirv64` device image: it passes a tensor to `second_element`
+// CHECK-SAME: It will run on the host instead.
+// CHECK-NOT: in `add_one` (kernel
+// CHECK-DAG: @[[FAILED]]_str("[[FAILED]]\00abi=1\00topo={{[0-9]+}}\00toponame=Dev\00offload=0\00arch=spirv64\00")
+// CHECK-DAG: @[[IMAGED:vx_npu_kernel_[0-9]+]]_str("[[IMAGED]]\00{{[^"]*}}format=spirv\00
 // EXPECT: [2,  3,  4,  5]
 
 Memory CPU_DRAM {}
-Memory GPU_HBM {
-  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+Memory DEV_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached, scope: device
 }
 Topology Dev {
   arch: spirv64,
-  memory: Memory::GPU_HBM,
-  visible: [Memory::GPU_HBM],
-  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 63 GB/s,
+  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 63 GB/s
 }
 
-fn second_element(a: &Tensor<f32, [4], Memory::GPU_HBM>) on Topology::Dev -> f32 {
+fn second_element(a: &Tensor<f32, [4], Memory::DEV_HBM>) on Topology::Dev -> f32 {
   return a[1];
 }
 
-fn add_one(d: &Tensor<f32, [4], Memory::GPU_HBM>, o: &mut Tensor<f32, [4], Memory::GPU_HBM>) -> i32 {
+fn add_one(d: &Tensor<f32, [4], Memory::DEV_HBM>, o: &mut Tensor<f32, [4], Memory::DEV_HBM>) -> i32 {
   spawn on(Topology::Dev) {
     for i in 0..4 {
       o[i] = d[i] + 1.0;
@@ -46,8 +51,8 @@ fn main() -> i32 {
     h[i] = i as f32;
     o_h[i] = 0.0;
   }
-  let d = transfer(h, Memory::GPU_HBM);
-  let mut o = transfer(o_h, Memory::GPU_HBM);
+  let d = transfer(h, Memory::DEV_HBM);
+  let mut o = transfer(o_h, Memory::DEV_HBM);
 
   let r = add_one(&d, &mut o);
   spawn on(Topology::Dev) {

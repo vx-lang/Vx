@@ -1,22 +1,26 @@
-//===- spirv_image_failure_names_the_region_that_failed.mlr -----*- MLIR -*-===//
+//===- spirv_image_leaves_out_only_the_kernels_that_fail.mlr ----*- MLIR -*-===//
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// Kernels `a`, `b` and `c` share one SPIR-V image. `b` reads through a
-// `memref.subview` and `c` through a `memref.cast`, which the image cannot do
-// yet. So all three lose the image. `b` and `c` each get their own reason, and
-// the warning for `a` names `b`, the first kernel that failed.
+// Kernels `a`, `b` and `c` are in one device module. `b` reads through a
+// `memref.subview` and `c` through a `memref.cast`, which a SPIR-V image cannot
+// do yet. So the image holds only `a`. `b` and `c` each get their own reason
+// and run on the host, and their payloads hold no image.
 //
 // RUN: vx-opt %s --vx-to-llvm 2>&1 | FileCheck %s
-// CHECK: the region placed on `Topology::Dev` in `main` (kernel `a`) cannot become a `spirv64` device image. It shares one image with the region placed on `Topology::Dev` in `main` (kernel `b`). That region cannot become one: it hands a tensor to `memref.subview`
-// CHECK-SAME: It will run on the host instead.
+// CHECK-NOT: (kernel `a`)
 // CHECK: the region placed on `Topology::Dev` in `main` (kernel `b`) cannot become a `spirv64` device image: it hands a tensor to `memref.subview`
 // CHECK-SAME: It will run on the host instead.
+// CHECK-NOT: (kernel `a`)
 // CHECK: the region placed on `Topology::Dev` in `main` (kernel `c`) cannot become a `spirv64` device image: it hands a tensor to `memref.cast`
 // CHECK-SAME: It will run on the host instead.
+// CHECK-NOT: (kernel `a`)
+// CHECK-DAG: @a_str("a\00abi=1\00topo=501\00toponame=Dev\00format=spirv\00
+// CHECK-DAG: @b_str("b\00abi=1\00topo=501\00toponame=Dev\00")
+// CHECK-DAG: @c_str("c\00abi=1\00topo=501\00toponame=Dev\00")
 
 module {
   func.func @main(%x: memref<4xf32>, %y: memref<4xf32>, %z: memref<4xf32>) -> i32 {

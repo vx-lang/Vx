@@ -16,17 +16,18 @@
 // EXPECT: [1,  1,  1,  1]
 
 Memory CPU_DRAM {}
-Memory GPU_HBM {
-  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+Memory DEV_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached, scope: device
 }
 Topology Dev {
   arch: spirv64,
-  memory: Memory::GPU_HBM,
-  visible: [Memory::GPU_HBM],
-  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 63 GB/s,
+  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 63 GB/s
 }
 
-fn add_one(a: &Tensor<f32, [4], Memory::GPU_HBM>, o: &mut Tensor<f32, [4], Memory::GPU_HBM>) on Topology::Dev -> f32 {
+fn add_one(a: &Tensor<f32, [4], Memory::DEV_HBM>, o: &mut Tensor<f32, [4], Memory::DEV_HBM>) on Topology::Dev -> f32 {
   for i in 0..4 {
     o[i] = a[i] + 1.0;
   }
@@ -40,8 +41,8 @@ fn main() -> i32 {
     a_h[i] = 0.0;
     o_h[i] = 0.0;
   }
-  let d = transfer(a_h, Memory::GPU_HBM);
-  let mut o = transfer(o_h, Memory::GPU_HBM);
+  let d = transfer(a_h, Memory::DEV_HBM);
+  let mut o = transfer(o_h, Memory::DEV_HBM);
 
   spawn on(Topology::Dev) {
     add_one(&d, &mut o);

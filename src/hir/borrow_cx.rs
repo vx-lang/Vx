@@ -78,6 +78,9 @@ pub(crate) struct BorrowCx {
     running_tasks: HashSet<String>,
     /// What each view variable (`let r = q[i]`) borrows. Reset per function.
     pub(crate) views: HashMap<Symbol, crate::hir::check::views::View>,
+    /// The variables bound to a view of memory from a raw pointer (`tensor_view_2d`), with where
+    /// that pointer points. Reset per function.
+    pub(crate) foreign_views: HashMap<Symbol, Option<crate::hir::env::RefProvenance>>,
     /// The tensors each view-making `let` may be part of, keyed by the `let`'s position. The
     /// traffic count reads it after the `let`'s scope has closed.
     pub(crate) view_owners_by_let: HashMap<crate::syntax::Span, Vec<String>>,
@@ -134,6 +137,7 @@ impl Default for BorrowCx {
             loop_exits: Vec::new(),
             loops_outside_the_closure: 0,
             views: HashMap::new(),
+            foreign_views: HashMap::new(),
             view_owners_by_let: HashMap::new(),
             shadowed: Vec::new(),
             borrowers_ever: HashMap::new(),

@@ -283,6 +283,20 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             (Type::Scalar(src), Type::Scalar(dst)) => {
+                // Rust's rule: only a `bool` casts to a `bool`. From an integer the cast kept
+                // the lowest bit, so `2 as bool` was `false`.
+                if *dst == ElementType::Bool && *src != ElementType::Bool {
+                    let zero = if src.is_float() { "0.0" } else { "0" };
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3011,
+                        format!(
+                            "cannot cast `{src}` to `bool`: compare it with zero instead, as in \
+                             `x != {zero}`"
+                        ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&expr.span)),
+                    );
+                    return Type::Unknown;
+                }
                 // A literal is left alone, since a cast is one way to give a number its type.
                 // So is a generic instance: there `x as T` converts for every other `T`.
                 let literal = match &*expr.expr {
@@ -407,6 +421,18 @@ impl<'a> TypeChecker<'a> {
             span,
         });
         Some((**inner).clone())
+    }
+
+    /// The value that the reference `e` points at: `x` for `&x`, and `*e` for another reference.
+    fn through_reference(e: &Expr, inner: &Type) -> Expr {
+        if let Expr::Borrow(b) = e {
+            return (*b.expr).clone();
+        }
+        Expr::Dereference(DereferenceExpr {
+            expr: Box::new(e.clone()),
+            ty: Some(inner.clone()),
+            span: e.span(),
+        })
     }
 
     /// `a + b` on a struct or an enum whose type has the operator's trait method: the call
@@ -1047,6 +1073,37 @@ impl<'a> TypeChecker<'a> {
                 RelationalOp::Ge => "ge",
             };
             let span = *span;
+            // `&a == &b` compares the values, as Rust's impls for references do. Two references
+            // to numbers compare the numbers, and two references to a struct pass themselves to
+            // its `eq`.
+            if let (Type::Borrow { inner: li, .. }, Type::Borrow { inner: ri, .. }) =
+                (self.operand_type(lhs), self.operand_type(rhs))
+            {
+                if Self::is_user_type(&li)
+                    && self
+                        .resolve_method_in_impls(
+                            &li,
+                            &method.into(),
+                            &mut std::collections::HashMap::new(),
+                        )
+                        .is_some()
+                {
+                    let mut call = Expr::MethodCall(crate::syntax::MethodCallExpr {
+                        base: Box::new(Self::through_reference(lhs, &li)),
+                        method_name: method.into(),
+                        type_args: None,
+                        args: vec![(**rhs).clone()],
+                        span,
+                    });
+                    let ty = self.check_expr_type_flag(&mut call, false);
+                    *expr = call;
+                    return ty;
+                }
+                if matches!(*li, Type::Scalar(_)) && matches!(*ri, Type::Scalar(_)) {
+                    **lhs = Self::through_reference(lhs, &li);
+                    **rhs = Self::through_reference(rhs, &ri);
+                }
+            }
             let rhs_ref = Expr::Borrow(crate::syntax::expr::BorrowExpr {
                 expr: rhs.clone(),
                 is_mut: false,
@@ -1267,6 +1324,33 @@ impl<'a> TypeChecker<'a> {
                 Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
             );
             return Type::Unknown;
+        }
+        // Rust's rule: `-` takes a signed integer or a float. On another unsigned type it
+        // would wrap with no error, and on a `bool` it does nothing. A negative literal is
+        // left to the check that a literal fits its type (E3045).
+        if *op == UnaryOp::Neg && !matches!(inner, Expr::Number(_)) {
+            let elem = match &inner_ty {
+                Type::Simd(e, _) => Some(e.clone()),
+                _ => Self::scalar_elem(&inner_ty),
+            };
+            let why = match elem {
+                Some(ElementType::Bool) => {
+                    Some("`-` does not apply to a `bool`: use `!` to flip it".to_string())
+                }
+                Some(e) if e.is_unsigned_int() => Some(format!(
+                    "`-` does not apply to a `{e}`, which is never negative: cast it to a \
+                     signed type first, or call `wrapping_neg()` from `core::num`"
+                )),
+                _ => None,
+            };
+            if let Some(why) = why {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3030,
+                    why,
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                );
+                return Type::Unknown;
+            }
         }
         let symbol = match op {
             UnaryOp::Neg => "-",

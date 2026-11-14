@@ -108,6 +108,15 @@ pub fn bare_lane_statement(e: &Expr) -> Option<&FunctionCallExpr> {
     bare_lanes_call(e).filter(|fc| lane_routine(&fc.name).is_some_and(|(op, _)| op.is_statement()))
 }
 
+/// The call of `t = lanes::copy_async(..)`, which gives the token variable `t` its next copy, as a
+/// pipeline does when it starts the next copy before it waits for this one.
+pub fn next_copy(a: &crate::syntax::AssignStmt) -> Option<&FunctionCallExpr> {
+    match &a.lhs {
+        Expr::Identifier(_) if calls_routine(&a.rhs, LaneOp::CopyAsync) => bare_lanes_call(&a.rhs),
+        _ => None,
+    }
+}
+
 /// Whether `op` is a lane routine that `e` calls.
 pub fn calls_routine(e: &Expr, op: LaneOp) -> bool {
     bare_lanes_call(e).is_some_and(|fc| lane_routine(&fc.name).is_some_and(|(o, _)| o == op))
@@ -439,7 +448,7 @@ impl crate::hir::TypeChecker<'_> {
                         && dims.iter().all(|d| {
                             crate::hir::memory::static_extent(d).is_some_and(|n| n >= 1)
                         })
-                        && matches!(crate::hir::memory::element_bytes(e), Some(4 | 8)) =>
+                        && matches!(crate::hir::memory::element_bytes(e), Some(2 | 4 | 8)) =>
                 {
                     Some((e.clone(), dims.len()))
                 }
@@ -452,7 +461,7 @@ impl crate::hir::TypeChecker<'_> {
                 DiagnosticCode::E3003,
                 format!(
                     "the first argument of `{name}` must borrow a tile in shared memory as `&mut`, \
-                     with a size that is a number and elements of 4 or 8 bytes, such as \
+                     with a size that is a number and elements of 2, 4 or 8 bytes, such as \
                      `&mut tiles[0]` for `Tensor<f32, [2, 64, 64], Memory::SMEM>`, but it is `{}`",
                     arg_types[0]
                 ),

@@ -601,7 +601,7 @@ impl<'a> TypeChecker<'a> {
         return_type: &Type,
         consume: bool,
     ) {
-        let prev_statement_span = std::mem::replace(&mut self.current_statement_span, stmt.span());
+        let prev_statement_span = self.errors.enter_statement(stmt.span());
         let value = match &*stmt {
             Statement::LetDecl(d) => Some(&d.expr),
             Statement::Assign(a) => Some(&a.rhs),
@@ -667,7 +667,34 @@ impl<'a> TypeChecker<'a> {
             }) => {
                 let op = op.clone();
                 let span = *span;
-                if let Some(call) = self.container_store(lhs, Some(&op), rhs, span) {
+                // `a += b` on a struct or an enum is `a = a + b`, through `Add`: Vx has no
+                // `AddAssign`. The left side is read twice, so it must name a variable or its
+                // fields, whose reads have no effect.
+                let on_user_type = Self::is_user_type(&self.check_expr_type_probe(lhs));
+                if on_user_type && !Self::names_a_variable_or_its_fields(lhs) {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3004,
+                        "a compound assignment on a struct or an enum reads its left side \
+                         twice, so the left side must be a variable, a field of one, or `*r`: \
+                         put the value in a variable, or write `a = a + b`"
+                            .to_string(),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+                    );
+                } else if on_user_type {
+                    let value = Expr::BinaryOp(BinaryOpExpr {
+                        lhs: Box::new(lhs.clone()),
+                        op,
+                        rhs: Box::new(rhs.clone()),
+                        span,
+                        operand_ty: None,
+                    });
+                    *stmt = Statement::Assign(AssignStmt {
+                        lhs: lhs.clone(),
+                        rhs: value,
+                        span,
+                    });
+                    self.check_statement(stmt, return_type, consume);
+                } else if let Some(call) = self.container_store(lhs, Some(&op), rhs, span) {
                     *stmt = Statement::ExprStmt(ExprStmtStmt::new(call, true, span));
                     self.check_statement(stmt, return_type, consume);
                 } else {
@@ -715,7 +742,7 @@ impl<'a> TypeChecker<'a> {
         }
         self.check_frame_escape(stmt);
         self.end_moved_tiles();
-        self.current_statement_span = prev_statement_span;
+        self.errors.at = prev_statement_span;
     }
 
     /// The tiles of the value of `let name`. A tensor that the initializer moved, as in
@@ -857,8 +884,14 @@ impl<'a> TypeChecker<'a> {
         if !self.borrow.views.contains_key(name.as_ref()) {
             self.check_spawn_capture_moved(expr);
         }
-        if !self.speculating && !Self::views_foreign_memory(expr) {
-            self.drops_note_owner(name.as_ref(), &binding_ty);
+        if let Some(p) = Self::foreign_view_pointer(expr) {
+            let provenance = self.ref_provenance_of(p);
+            self.borrow.foreign_views.insert(name.clone(), provenance);
+        } else {
+            self.borrow.foreign_views.remove(name);
+            if !self.speculating {
+                self.drops_note_owner(name.as_ref(), &binding_ty);
+            }
         }
         if let Expr::Identifier(from) = &*expr {
             if !self.speculating {
@@ -1963,6 +1996,16 @@ impl<'a> TypeChecker<'a> {
         None
     }
 
+    /// `x`, `x.f.g` or `*r`: a place whose read has no effect, so it can be read twice.
+    fn names_a_variable_or_its_fields(place: &Expr) -> bool {
+        match place {
+            Expr::Identifier(_) => true,
+            Expr::MemberAccess(m) => Self::names_a_variable_or_its_fields(&m.base),
+            Expr::Dereference(d) => Self::names_a_variable_or_its_fields(&d.expr),
+            _ => false,
+        }
+    }
+
     /// Check an assignment / compound assignment: type the LHS, then the RHS expecting the LHS
     /// type (#240), verify assignability, and fold a const RHS into the eval environment.
     /// `op` is `Some` for a compound assignment, and carries the operator that sits between
@@ -2353,7 +2396,7 @@ impl<'a> TypeChecker<'a> {
         }
         // The old value of a type with a drop is dropped, which can free memory.
         if !self.drops_glue(&lhs_ty).is_empty() {
-            let at = self.current_statement_span;
+            let at = self.errors.at;
             self.pointer_facts_event(at, |_| "an assignment that drops the old value".to_string());
         }
         // After the event, so that the event does not end the new fact.
@@ -3141,6 +3184,64 @@ impl<'a> TypeChecker<'a> {
             }
             Exact::Term(_) | Exact::Sum(_) => false,
         }
+    }
+
+    /// Whether `goal` holds, when its form decides it with no solver: each comparison in it
+    /// compares two sums with the same terms apart from whole numbers. `None` when the form does
+    /// not decide it.
+    pub(crate) fn decide_by_form(
+        &self,
+        goal: &crate::hir::check::pointer_facts::Exact,
+    ) -> Option<bool> {
+        use crate::hir::check::pointer_facts::Exact;
+        let mut prover = hir::prover::SmtProver::new();
+        let (mut calls, mut facts) = (0, Vec::new());
+        // The terms of a sum that are not whole numbers, sorted, and the total of the numbers.
+        type Split = Option<(Vec<String>, i128)>;
+        let mut split = |e: &Exact| -> Split {
+            let parts = match e {
+                Exact::Sum(ts) => ts.as_slice(),
+                e => std::slice::from_ref(e),
+            };
+            let (mut terms, mut total) = (Vec::new(), 0i128);
+            for t in parts {
+                let Exact::Term(_) = t else {
+                    return None;
+                };
+                let s = self.lower_exact(t, &mut prover, &mut calls, &mut facts)?;
+                match s.parse::<i128>() {
+                    Ok(n) => total = total.checked_add(n)?,
+                    Err(_) => terms.push(s),
+                }
+            }
+            terms.sort();
+            Some((terms, total))
+        };
+        fn decide(goal: &Exact, split: &mut dyn FnMut(&Exact) -> Split) -> Option<bool> {
+            match goal {
+                // One false part decides an `and`, and one true part decides an `or`, even when
+                // another part is unknown.
+                Exact::And(gs) | Exact::Or(gs) => {
+                    let decisive = matches!(goal, Exact::Or(_));
+                    let mut unknown = false;
+                    for g in gs {
+                        match decide(g, split) {
+                            Some(v) if v == decisive => return Some(v),
+                            Some(_) => {}
+                            None => unknown = true,
+                        }
+                    }
+                    (!unknown).then_some(!decisive)
+                }
+                Exact::Le(a, b) => {
+                    let (a, x) = split(a)?;
+                    let (b, y) = split(b)?;
+                    (a == b).then_some(x <= y)
+                }
+                Exact::Term(_) | Exact::Sum(_) => None,
+            }
+        }
+        decide(goal, &mut split)
     }
 
     fn lower_exact(

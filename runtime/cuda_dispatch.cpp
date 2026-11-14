@@ -1179,6 +1179,24 @@ bool run_device_image(const void *payload, size_t payload_size,
     if (rc != CUDA_SUCCESS) {
       const char *name = nullptr;
       driver().GetErrorName(rc, &name);
+      // A launch does not wait for the GPU, so a fault of an earlier kernel
+      // shows up here, at the next call to the driver.
+      if (rc == CUDA_ERROR_ILLEGAL_ADDRESS || rc == CUDA_ERROR_LAUNCH_FAILED ||
+          rc == CUDA_ERROR_MISALIGNED_ADDRESS ||
+          rc == CUDA_ERROR_ILLEGAL_INSTRUCTION ||
+          rc == CUDA_ERROR_HARDWARE_STACK_ERROR ||
+          rc == CUDA_ERROR_INVALID_ADDRESS_SPACE ||
+          rc == CUDA_ERROR_INVALID_PC || rc == CUDA_ERROR_ASSERT) {
+        fprintf(stderr,
+                "[Vx CUDA] FATAL: an earlier kernel failed on the GPU: %s.\n"
+                "          The error showed when the device image for %s "
+                "loaded. A common cause\n"
+                "          is a kernel that uses memory the GPU cannot reach, "
+                "such as a pointer to\n"
+                "          host memory.\n",
+                name ? name : "?", kernel_name);
+        abort();
+      }
       fprintf(stderr,
               "[Vx CUDA] FATAL: the device image for %s did not load: %s.\n"
               "          It was compiled for %s. A known cause is an "
@@ -1662,8 +1680,9 @@ int64_t vx_plugin_tensor_map(int64_t base, int64_t rank, int64_t elem_bytes,
   const int64_t strides[5] = {s0, s1, s2, s3, s4};
   const int64_t box[5] = {b0, b1, b2, b3, b4};
   if (!cuda_available() || rank < 1 || rank > 5 ||
-      (elem_bytes != 4 && elem_bytes != 8) || base % 16 != 0 ||
-      strides[rank - 1] != 1 || !is_device_ptr(reinterpret_cast<void *>(base)))
+      (elem_bytes != 2 && elem_bytes != 4 && elem_bytes != 8) ||
+      base % 16 != 0 || strides[rank - 1] != 1 ||
+      !is_device_ptr(reinterpret_cast<void *>(base)))
     return 0;
   const DriverApi *api = load_driver_api();
   if (!api || !api->TensorMapEncodeTiled)
@@ -1689,8 +1708,9 @@ int64_t vx_plugin_tensor_map(int64_t base, int64_t rank, int64_t elem_bytes,
   CUtensorMap map;
   const CUresult rc = api->TensorMapEncodeTiled(
       &map,
-      elem_bytes == 4 ? CU_TENSOR_MAP_DATA_TYPE_UINT32
-                      : CU_TENSOR_MAP_DATA_TYPE_UINT64,
+      elem_bytes == 2   ? CU_TENSOR_MAP_DATA_TYPE_UINT16
+      : elem_bytes == 4 ? CU_TENSOR_MAP_DATA_TYPE_UINT32
+                        : CU_TENSOR_MAP_DATA_TYPE_UINT64,
       static_cast<cuuint32_t>(rank), reinterpret_cast<void *>(base), global_dim,
       global_strides, box_dim, element_strides, CU_TENSOR_MAP_INTERLEAVE_NONE,
       CU_TENSOR_MAP_SWIZZLE_NONE, CU_TENSOR_MAP_L2_PROMOTION_L2_128B,

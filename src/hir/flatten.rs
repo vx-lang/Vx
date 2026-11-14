@@ -1130,7 +1130,10 @@ impl<'r> Lowerer<'r> {
     fn lower_block(&mut self, stmts: &[Statement]) -> Lowered<()> {
         self.scoped(|me| {
             if let Some(level) = me.across.level {
-                me.lower_stretches(stmts, level)?;
+                let lane0 = me.across.lane0.clone();
+                let lowered = me.lower_stretches(stmts, level);
+                me.across.lane0 = lane0;
+                lowered?;
             } else {
                 for s in stmts {
                     me.lower_stmt(s)?;
@@ -1472,6 +1475,42 @@ impl<'r> Lowerer<'r> {
         }
     }
 
+    /// A number literal of type `elem`. A constant holds 64 bits, so an `i128` outside the
+    /// range of `i64`, or a `u128` above `u64::MAX`, is built as `(high << 64) | low`.
+    fn lower_number_literal(&mut self, text: &str, elem: &ElementType) -> Lowered<Val> {
+        let declined = || Decline::TypeNotModelled {
+            what: "a literal that does not encode",
+        };
+        if let Some(imm) = encode_imm(text, elem) {
+            return Ok(self.emit_value(Opcode::Const, Register(0), Register(0), elem.clone(), imm));
+        }
+        if elem.int_bits() != Some(128) {
+            return Err(declined());
+        }
+        let bits = text
+            .parse::<i128>()
+            .map(|v| v as u128)
+            .or_else(|_| text.parse::<u128>())
+            .map_err(|_| declined())?;
+        // A `u128` constant fills its upper 64 bits with zeroes.
+        let mut half = |imm: u64| {
+            self.emit_value(
+                Opcode::Const,
+                Register(0),
+                Register(0),
+                ElementType::U128,
+                imm,
+            )
+        };
+        let low = half(bits as u64);
+        let high = half((bits >> 64) as u64);
+        let shift = half(64);
+        let high = self.emit_value(Opcode::Shl, high.reg, shift.reg, ElementType::U128, 0);
+        let value = self.emit_value(Opcode::BitOr, high.reg, low.reg, ElementType::U128, 0);
+        // A `u128` and an `i128` are the same MLIR type, so this cast writes no code.
+        Ok(self.emit_value(Opcode::Cast, value.reg, Register(0), elem.clone(), 0))
+    }
+
     /// Lower an expression to the register holding its result (emitting instructions as needed).
     /// Returns `None` for anything outside the current subset — the caller then aborts.
     fn lower_expr(&mut self, e: &Expr) -> Lowered<Val> {
@@ -1480,10 +1519,7 @@ impl<'r> Lowerer<'r> {
                 let elem = number_elem(n).ok_or(Decline::TypeNotModelled {
                     what: "a numeric literal with no element type",
                 })?;
-                let imm = encode_imm(n.value.as_ref(), &elem).ok_or(Decline::TypeNotModelled {
-                    what: "a literal that does not encode",
-                })?;
-                Ok(self.emit_value(Opcode::Const, Register(0), Register(0), elem, imm))
+                self.lower_number_literal(n.value.as_ref(), &elem)
             }
             // A name read: an SSA alias (no instruction) or a `SlotLoad` from its memory slot. A name
             // that isn't a local but names a registered function is a *function pointer* value (a bare
@@ -1544,15 +1580,15 @@ impl<'r> Lowerer<'r> {
                 // carries the left operand's type. When either operand is a tensor the op is
                 // *elementwise* and the result is the tensor type (a scalar operand broadcasts) -- an
                 // arith opcode with a tensor result type is the flat HIR's elementwise form, mirroring
-                // `arith.mulf` on a vector in codegen. A HALF tensor operand widens the result to
-                // f32 (Vx#320): the checker already typed the expression so, and codegen loads the
-                // half row through an extf -- arithmetic is always f32, storage is what varies.
+                // `arith.mulf` on a vector in codegen. A rank-1 HALF tensor operand widens the
+                // result to f32 (Vx#320): the checker types it so, and codegen loads the half row
+                // through an extf. The checker keeps the half type from rank 2 up, so this does too.
                 let widen = |t: &LoweredTy| -> LoweredTy {
                     match t {
                         LoweredTy::Tensor {
                             elem: ElementType::F16 | ElementType::BF16,
                             shape,
-                        } => LoweredTy::Tensor {
+                        } if shape.len() == 1 => LoweredTy::Tensor {
                             elem: ElementType::F32,
                             shape: shape.clone(),
                         },
@@ -1780,18 +1816,10 @@ impl<'r> Lowerer<'r> {
                     }
                 };
                 let mem_id = crate::arch::memory_space_dispatch_id(&t.space) as u32 as u64;
-                // Where the value is now, which its type says when it is pinned to a topology. A
-                // borrowed tensor says it with its placement, and no transfer made it here.
-                let source = match self.infer_ast_type(&t.expr) {
-                    Some(Type::Pinned(_, top)) => crate::arch::topology_dispatch_id(&top) as u32,
-                    Some(Type::Borrow { inner, .. }) => match *inner {
-                        Type::Tensor(_, _, Some(p)) => {
-                            crate::arch::topology_dispatch_id(&p.topology) as u32
-                        }
-                        _ => 0,
-                    },
-                    _ => 0,
-                };
+                // Where the value is now, which its type says.
+                let source = self
+                    .infer_ast_type(&t.expr)
+                    .map_or(0, |ty| crate::arch::source_topology_id(&ty) as u32);
                 let shared = if t.shared {
                     crate::bytecode::TRANSFER_SHARED
                 } else {
@@ -2541,6 +2569,9 @@ impl<'r> Lowerer<'r> {
             // `Closure_N` struct), so a closure local passed to `.map` is recognized as a closure. (#242)
             Expr::StructInit(si) => Some(Type::Struct(si.name.clone(), si.type_id)),
             Expr::UnsafeBlock(u) => self.infer_ast_type(u.ret.as_deref()?),
+            // The value of a `spawn` region is its tail. The checker moves a `let` of the region
+            // to before it, so a local of the region already has its type here.
+            Expr::SpawnOn(sp) => self.infer_ast_type(sp.ret.as_deref()?),
             Expr::AsCast(c) => Some(c.target_ty.clone()),
             // `&e` has a borrow type over `e`'s type (`&x` where `x : i32` -> `&i32`), so an
             // unannotated `let r = &x` types `r` as `&i32` and a later `*r` recovers `i32`. (#230)
@@ -2557,6 +2588,16 @@ impl<'r> Lowerer<'r> {
             // A named function's return type, else a function-typed local's (`let f = probe;`).
             Expr::FunctionCall(_) if crate::syntax::task_join_handle(e).is_some() => {
                 self.infer_ast_type(crate::syntax::task_join_handle(e)?)
+            }
+            // `Tensor<f32, [4], Memory::GPU_HBM>::uninit()` writes the whole type, placement
+            // included. A transfer home of the tensor needs the placement.
+            Expr::FunctionCall(fc)
+                if matches!(
+                    fc.name.as_ref(),
+                    "Tensor::new" | "Tensor::uninit" | "Tensor::fill"
+                ) =>
+            {
+                fc.type_args.as_ref().and_then(|a| a.first()).cloned()
             }
             Expr::FunctionCall(fc) => self
                 .registry
@@ -2619,6 +2660,25 @@ impl<'r> Lowerer<'r> {
                 0,
             );
             return Ok((tagged.reg, gid));
+        }
+        // `p[i].field` with `p : *mut S`: address the element in place, so a write reaches it.
+        if let Expr::IndexAccess(ix) = base {
+            if let Some(ptr_ty @ Type::Pointer(..)) = self.infer_ast_type(&ix.base) {
+                let Some(LoweredTy::Aggregate(gid)) = self.pointer_elem_synth(&ptr_ty) else {
+                    return Err(Decline::TypeNotModelled {
+                        what: "a field of a pointer element that is not a struct",
+                    });
+                };
+                let place = self.lower_place(base)?;
+                let tagged = self.emit_typed(
+                    Opcode::Cast,
+                    place.reg,
+                    Register(0),
+                    LoweredTy::Aggregate(gid),
+                    0,
+                );
+                return Ok((tagged.reg, gid));
+            }
         }
         // A field as a base. A by-value nested-aggregate field (`outer.inner.a`) is addressed with a
         // `FieldAddr`, and a pointer field (`make(p).p.x`) is loaded. `m.base` is lowered only here:
@@ -2905,14 +2965,17 @@ impl<'r> Lowerer<'r> {
                 crate::syntax::Pattern::Wildcard | crate::syntax::Pattern::Identifier(_)
             )
         });
-        // The arms compare the subject with `==`: an enum tag, an integer of any width, or a
-        // `bool`.
+        // The arms compare the subject with `==`: an enum tag, a number, or a `bool`.
         let subj_elem = match &subj.ty {
-            LoweredTy::Scalar(e) if e.int_bits().is_some() || *e == ElementType::Bool => e.clone(),
+            LoweredTy::Scalar(e)
+                if e.int_bits().is_some() || e.is_float() || *e == ElementType::Bool =>
+            {
+                e.clone()
+            }
             _ if binds_only => ElementType::I32,
             _ => {
                 return Err(Decline::Unsupported {
-                    what: "a match subject that is not an integer or a bool",
+                    what: "a match subject that is not a number or a bool",
                 })
             }
         };
@@ -2958,7 +3021,14 @@ impl<'r> Lowerer<'r> {
                 }
                 // A literal arm (`0 => ..`): the same chain, with the literal as the tag.
                 crate::syntax::Pattern::Literal(lit) => {
-                    let mut lit_v = self.lower_expr(lit)?;
+                    let mut lit_v = match &**lit {
+                        // A number arm of a float `match` has the float's type: `0.1` read as
+                        // an `f32` and then widened is not the `f64` 0.1.
+                        Expr::Number(n) if subj_elem.is_float() => {
+                            self.lower_number_literal(n.value.as_ref(), &subj_elem)?
+                        }
+                        _ => self.lower_expr(lit)?,
+                    };
                     match &lit_v.ty {
                         LoweredTy::Scalar(e) if *e == subj_elem => {}
                         // A literal with no suffix, at the width of the subject.
@@ -5185,36 +5255,6 @@ impl<'r> Lowerer<'r> {
                 (field.clone(), mlir)
             } else {
                 let (sz, al, mlir, kind) = match &fty {
-                    // An enum instance held by value, `Peek<T> { peeked : Option<T> }`. The type may
-                    // spell the enum as a struct, so it is found by name.
-                    Type::GenericInstance(b, a)
-                        if self
-                            .registry
-                            .aggregate_identities()
-                            .resolve_base(b.as_ref().into())
-                            .is_some_and(|(name, _)| {
-                                self.registry.enum_data.contains_key(&name)
-                            }) =>
-                    {
-                        let inner = self.enum_instance_layout_of(b.as_ref(), a)?;
-                        let layout = self.generated_layout(inner)?;
-                        (
-                            layout.size_bytes,
-                            layout.align_bytes,
-                            crate::codegen::flat::generated_storage_type(layout),
-                            FieldTy::Nominal(inner),
-                        )
-                    }
-                    Type::GenericInstance(b, a) if matches!(b.as_ref(), Type::Struct(..)) => {
-                        let inner = self.struct_instance_layout_of(b.as_ref(), a)?;
-                        let layout = self.generated_layout(inner)?;
-                        (
-                            layout.size_bytes,
-                            layout.align_bytes,
-                            crate::codegen::flat::generated_storage_type(layout),
-                            FieldTy::Nominal(inner),
-                        )
-                    }
                     Type::Struct(..) | Type::Enum(..)
                         if matches!(
                             lowered_ty(&fty, self.registry),
@@ -5223,25 +5263,12 @@ impl<'r> Lowerer<'r> {
                     {
                         (4, 4, "i32".to_string(), FieldTy::Scalar(ElementType::I32))
                     }
-                    Type::Struct(..) => {
+                    // A struct or an enum instance held by value, `Peek<T> { peeked : Option<T> }`.
+                    // The type may spell an enum as a struct, so the layout is found by name.
+                    Type::GenericInstance(..) | Type::Struct(..) => {
                         let inner = self.resolve_concrete_layout(&fty)?;
-                        let def = self.layout_of(&inner)?;
-                        let mlir = if let Some(layout) = self.generated_layout(inner) {
-                            crate::codegen::flat::generated_storage_type(layout)
-                        } else {
-                            crate::codegen::flat::agg_struct_ty_of(
-                                inner,
-                                self.registry,
-                                &mut Vec::new(),
-                            )
-                            .ok()?
-                        };
-                        (
-                            def.size_bytes as u64,
-                            def.align_bytes as u64,
-                            mlir,
-                            FieldTy::Nominal(inner),
-                        )
+                        let (sz, al, mlir) = self.aggregate_storage(inner)?;
+                        (sz, al, mlir, FieldTy::Nominal(inner))
                     }
                     _ => {
                         let (sz, al, kind) = crate::layout::structural_field_info(&fty)?;
@@ -5308,18 +5335,37 @@ impl<'r> Lowerer<'r> {
         agg_gid_of_ty(ty, self.registry).is_none() && self.resolve_concrete_layout(inner).is_some()
     }
 
-    /// A complete declared struct layout, resolved by declaration identity.
-    fn nominal_struct_gid(&self, ty: &Type) -> Option<TypeId> {
-        let gid = self.registry.nominal_layout_id(ty)?;
-        self.registry.structs.contains_key(&gid).then_some(gid)
+    /// The size, alignment and MLIR storage type of a completed aggregate: the layout this worker
+    /// built, else the registry's. The registry's layout counts only if each field has an MLIR type.
+    fn aggregate_storage(&self, gid: TypeId) -> Option<(u64, u64, String)> {
+        if let Some(layout) = self.generated_layout(gid) {
+            return Some((
+                layout.size_bytes,
+                layout.align_bytes,
+                crate::codegen::flat::generated_storage_type(layout),
+            ));
+        }
+        let def = self.registry.layouts.get(&gid)?;
+        let mlir =
+            crate::codegen::flat::agg_struct_ty_of(gid, self.registry, &mut Vec::new()).ok()?;
+        Some((def.size_bytes as u64, def.align_bytes as u64, mlir))
     }
 
-    /// The size, alignment and MLIR type of a value held inside an enum's payload or a generic
-    /// struct's field: a number or a pointer, a declared struct, or an instance of a generic
-    /// struct.
-    fn payload_field(&mut self, ty: &Type) -> Option<(u64, u64, String)> {
-        if let Some(field) = enum_payload_field(ty) {
-            return Some(field);
+    /// The size and alignment of a completed aggregate, as `aggregate_storage` gives them.
+    fn aggregate_size_align(&self, gid: TypeId) -> Option<(u64, u64)> {
+        if let Some(layout) = self.generated_layout(gid) {
+            return Some((layout.size_bytes, layout.align_bytes));
+        }
+        // Build the MLIR type of a registry layout only to check that it has one.
+        let (size, align, _) = self.aggregate_storage(gid)?;
+        Some((size, align))
+    }
+
+    /// The size and alignment of a value held in an enum payload: a number, a pointer, a
+    /// tensor, a struct, an instance of a generic struct, or another enum.
+    fn payload_size_align(&mut self, ty: &Type) -> Option<(u64, u64)> {
+        if let Some(size_align) = enum_payload_size_align(ty) {
+            return Some(size_align);
         }
         // An enum whose variants carry nothing, `Ordering`, is its `i32` tag.
         if self
@@ -5329,47 +5375,14 @@ impl<'r> Lowerer<'r> {
             .and_then(|(name, _)| self.registry.enum_data.get(&name))
             .is_some_and(|data| data.variants.iter().all(|(_, fields)| fields.is_empty()))
         {
-            return Some((4, 4, "i32".to_string()));
-        }
-        // An enum whose variants carry data, as `E` in `Result<u64, E>`: its whole storage.
-        let (nominal, args) = match ty {
-            Type::GenericInstance(base, args) => (base.as_ref(), args.as_slice()),
-            other => (other, &[][..]),
-        };
-        let is_enum = self
-            .registry
-            .aggregate_identities()
-            .resolve_base(nominal.into())
-            .is_some_and(|(name, _)| self.registry.enum_data.contains_key(&name));
-        if is_enum {
-            let gid = self.enum_instance_layout_of(nominal, args)?;
-            let layout = self.generated_layout(gid)?;
-            return Some((
-                layout.size_bytes,
-                layout.align_bytes,
-                crate::codegen::flat::generated_storage_type(layout),
-            ));
+            return Some((4, 4));
         }
         match ty {
-            Type::Struct(..) => {
-                let gid = self.nominal_struct_gid(ty)?;
-                let def = self.registry.layouts.get(&gid)?;
-                let mlir =
-                    crate::codegen::flat::agg_struct_ty_of(gid, self.registry, &mut Vec::new())
-                        .ok()?;
-                Some((def.size_bytes as u64, def.align_bytes as u64, mlir))
-            }
-            Type::GenericInstance(base, args) => {
-                let Type::Struct(..) = base.as_ref() else {
-                    return None;
-                };
-                let gid = self.struct_instance_layout_of(base.as_ref(), args)?;
-                let layout = self.generated_layout(gid)?;
-                Some((
-                    layout.size_bytes,
-                    layout.align_bytes,
-                    crate::codegen::flat::generated_storage_type(layout),
-                ))
+            // The registry leaves the layout of a struct with an enum field incomplete. This
+            // worker completes it, as it does for a generic instance or an enum with data.
+            Type::Struct(..) | Type::Enum(..) | Type::GenericInstance(..) => {
+                let gid = self.resolve_concrete_layout(ty)?;
+                self.aggregate_size_align(gid)
             }
             _ => None,
         }
@@ -5422,7 +5435,7 @@ impl<'r> Lowerer<'r> {
                 if crate::syntax::types::is_void_ty(&ty) {
                     continue;
                 }
-                let (size, align, _) = self.payload_field(&ty)?;
+                let (size, align) = self.payload_size_align(&ty)?;
                 payloads.push((size, align));
             }
             variants.push(payloads);
@@ -8730,28 +8743,20 @@ fn parse_scalar_type_arg(s: &str) -> Type {
     Type::Scalar(e)
 }
 
-/// The byte size, alignment, and MLIR type string of an enum payload field — a scalar or a pointer.
-/// `None` for a by-value aggregate/tensor/generic payload (not modelled). (#242)
-fn enum_payload_field(ty: &Type) -> Option<(u64, u64, String)> {
+/// The byte size and alignment of an enum payload that has no declaration: a scalar, a pointer
+/// or a tensor. `None` for a struct or an enum, and for a type the flat path does not model.
+fn enum_payload_size_align(ty: &Type) -> Option<(u64, u64)> {
     match ty {
         Type::Scalar(ElementType::Generic(_)) => None,
         Type::Scalar(e) => {
+            // A scalar with no MLIR type cannot be stored.
+            crate::mlir_ty::mlir_scalar(e)?;
             let (s, a) = crate::layout::scalar_size_align(e)?;
-            Some((
-                s as u64,
-                a as u64,
-                crate::mlir_ty::mlir_scalar(e)?.to_string(),
-            ))
+            Some((s as u64, a as u64))
         }
-        Type::Pointer(..) | Type::Borrow { .. } | Type::Ref(..) => {
-            Some((8, 8, "!llvm.ptr".to_string()))
-        }
+        Type::Pointer(..) | Type::Borrow { .. } | Type::Ref(..) => Some((8, 8)),
         // A tensor is its descriptor: two pointers, an offset, and a size and a stride per rank.
-        Type::Tensor(_, shape, ..) => Some((
-            8 * (3 + 2 * shape.len() as u64),
-            8,
-            crate::codegen::flat::memref_descriptor_ty(shape.len()),
-        )),
+        Type::Tensor(_, shape, ..) => Some((8 * (3 + 2 * shape.len() as u64), 8)),
         _ => None,
     }
 }
@@ -8948,6 +8953,10 @@ fn encode_imm(s: &str, elem: &ElementType) -> Option<u64> {
         }
     } else if let Ok(i) = s.parse::<i64>() {
         Some(i as u64)
+    } else if elem.is_signed_int() && elem.int_bits().is_some_and(|b| b > 64) {
+        // The emitter widens these 64 bits as signed, so an `i128` above `i64::MAX` would
+        // turn negative.
+        None
     } else {
         s.parse::<u64>().ok()
     }

@@ -6,10 +6,10 @@
 <p>
     <a href="https://github.com/vx-lang/Vx/actions"><img src="https://img.shields.io/badge/CI-passing-success?style=flat-square" alt="CI Status" /></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0%20with%20LLVM%20Exceptions-blue?style=flat-square" alt="License" /></a>
-    <img src="https://img.shields.io/badge/version-v0.0.3-orange?style=flat-square" alt="Version" />
+    <img src="https://img.shields.io/badge/version-v0.0.4-orange?style=flat-square" alt="Version" />
     <img src="https://img.shields.io/badge/rust-2021-blueviolet?style=flat-square" alt="Rust 2021" />
     <img src="https://img.shields.io/badge/LLVM%2FMLIR-22-red?style=flat-square" alt="LLVM/MLIR 22" />
-    <img src="https://img.shields.io/badge/targets-x86__64%20%7C%20AArch64%20%7C%20CUDA%20%7C%20Apple%20ANE-brightgreen?style=flat-square" alt="Targets" />
+    <img src="https://img.shields.io/badge/targets-x86__64%20%7C%20AArch64%20%7C%20CUDA%20%7C%20Apple%20GPU%20%7C%20Apple%20ANE-brightgreen?style=flat-square" alt="Targets" />
   </p>
 
 <p>
@@ -94,10 +94,18 @@ ______________________________________________________________________
 
 ## Quickstart
 
-### Prerequisites
+### Install a release
 
-- **macOS**: `brew install llvm z3 cmake`
-- **Linux (Ubuntu/Debian)**: Install LLVM 22 from [apt.llvm.org](https://apt.llvm.org), then `apt install z3 lld cmake`
+```bash
+curl -fsSL https://vxlang.org/install.sh | sh
+```
+
+The Linux toolchains include LLVM. On macOS, install LLVM 22 first with `brew install llvm@22`. [Getting started](https://vxlang.org/docs/getting-started.html) lists the other tools that a program can need, such as `z3`.
+
+### Prerequisites to build from source
+
+- **macOS**: `brew install llvm@22 z3 cmake ninja pkg-config`. The `llvm` formula of Homebrew is LLVM 23 now, and Vx needs LLVM 22.
+- **Linux (Ubuntu 24.04)**: `./scripts/provision/setup_linux.sh` installs LLVM 22 from [apt.llvm.org](https://apt.llvm.org) and the other packages.
 - **Rust**: Stable toolchain (Rust 2021)
 
 ### 1. Build the Compiler
@@ -141,7 +149,7 @@ source config.local
 cargo test
 ```
 
-Over 530 unit tests and 40 integration suites verify placement rules, differential CUDA checks, and determinism.
+Over 1,200 Rust tests and 2,200 test programs in `tests/` check the placement rules, the generated code, the runtimes, and the differential CUDA checks.
 
 ______________________________________________________________________
 
@@ -182,9 +190,9 @@ Topology Device {
 }
 ```
 
-The [`fleet/`](fleet/) directory includes 12 validated specifications:
+The [`fleet/`](fleet/) directory has 16 machine files:
 
-- **Accelerators**: NVIDIA A100 (40GB & 80GB), H100 SXM, H200, B200, AMD Instinct MI300X, Apple M4 UMA, ARM Cortex-M7.
+- **Accelerators**: NVIDIA A100 (40GB & 80GB), H100 SXM, H100 PCIe, H200, B200, AMD Instinct MI300X, Intel Arc A770, Apple M4 UMA, ARM Cortex-M7.
 - **Nodes & Systems**: 2-GPU and 8-GPU interconnected systems, Intel Xeon compute targets, and x86 host profiles.
 
 Because `vxc` cross-compiles against declared machines (`--machine fleet/<sku>.vx`), you can verify and compile binaries for an 8-GPU H100 cluster directly from an M4 MacBook Air without renting cloud GPUs.
@@ -216,7 +224,7 @@ fn main() -> i32 {
 }
 ```
 
-For a full real-world demonstration, explore [`examples/llama.vx`](examples/llama.vx), which implements a complete, clean Llama 2 forward pass with tensor abstractions.
+For a full real-world demonstration, explore [`examples/llama.vx`](examples/llama.vx), which implements a complete, clean Llama 2 forward pass with tensor abstractions. [`apps/qwen`](apps/qwen) runs Qwen2.5 and Qwen3 coder models on the GPU of an Apple Silicon Mac, with the GPU kernels of `std::nn`.
 
 ______________________________________________________________________
 
@@ -232,6 +240,7 @@ flowchart TD
 
     MLIR --> CPU["Host CPU (LLVM IR -> JIT or Object File)"]
     MLIR --> GPU["NVIDIA GPU (NVVM -> PTX -> cuBLAS)"]
+    MLIR --> METAL["Apple GPU (Metal Shading Language -> Metal)"]
     MLIR --> ANE["Apple Silicon (CoreML Plugin -> Neural Engine)"]
     MLIR --> REMOTE["Remote Nodes (Wire Protocol over SSH / TCP)"]
 ```
@@ -242,6 +251,7 @@ flowchart TD
 | :--- | :--- | :--- |
 | **CPU (x86_64, ARM64)** | MLIR $\\rightarrow$ LLVM IR $\\rightarrow$ Native (JIT or `.o`) | Full test suite and standard library |
 | **NVIDIA GPU** | MLIR $\\rightarrow$ NVVM $\\rightarrow$ PTX payload via CUDA driver | Disaggregated prefill/decode split, cuBLAS GEMMs on A100 & H100 |
+| **Apple GPU** | MLIR $\\rightarrow$ Metal Shading Language, compiled and run by Metal | The transformer decoder kernels of `std::nn`, and the Qwen app on an M4 |
 | **Apple Silicon (ANE)** | CoreML dispatch from native plugin | FP16 512×512 matmul on Neural Engine, FP32 dispatched to CPU |
 | **Remote Node** | Wire protocol carrying memref descriptors | ARM64 laptop orchestrating an x86_64 remote worker over SSH |
 
@@ -249,18 +259,21 @@ ______________________________________________________________________
 
 ## Current Status & Known Limitations
 
-> **Release Version**: Vx is currently in **v0.0.3**.
+> **Release Version**: Vx is currently in **v0.0.4**.
 > The syntax and core type-system checks are stable. The placement, routing, and memory algebra systems are verified by active test suites. However, as an early research systems compiler, several language features are actively being built.
 
 ### What is working vs. in progress
 
-| Category | Status in v0.0.3 | Tracking Issue / Reference |
+| Category | Status in v0.0.4 | Tracking Issue / Reference |
 | :--- | :--- | :--- |
 | **Memory Algebra & Topology** | ✅ Implemented, tested, diagnostic codes active | [`docs/memory_algebra.md`](docs/memory_algebra.md) |
 | **JIT & AOT Cross-Compilation** | ✅ Fully supported via LLVM and declared machines | [ROADMAP.md](ROADMAP.md) |
 | **Control Flow** | ✅ `if`, `match`, `for` over ranges and iterators, `while`, `break`/`continue` and recursion | [`tests/backend/pass/`](tests/backend/pass/) |
-| **Overlapped `spawn on`** | ⚠️ `spawn on(...) { ... }` is sequential by design; the non-blocking dispatch that overlaps it with host work is still to be built | [`docs/spawn_on.md`](docs/spawn_on.md) |
-| **Standard Library** | ✅ `core` (`option`, `result`, `iter`, `libm`, `cmp`, `fmt`) and `std` (`io`, `fs`, `net`, `time`, `vec`, `string`, `hash_map`, `tensor`) | [`docs/std_library_design.md`](docs/std_library_design.md) |
+| **Tasks and Channels** | ✅ `tasks` and `spawn` blocks, channels, `Mutex`, `select` and `Arc`. The borrow checker checks what each task reads and writes, and a deadlock stops the program with a report | [Tasks and channels](www/book/src/tasks.md) |
+| **GPU Kernels** | ✅ `for .. across blocks`, `subgroups` and `lanes` loops run on NVIDIA and Apple GPUs, and on the CPU. The compiler proves that no two passes write the same element | [Parallel code on a GPU](www/book/src/gpu.md) |
+| **Programs Across Machines** | ✅ A topology with `offload: true` runs on a worker of another machine | [`docs/adding_a_topology.md`](docs/adding_a_topology.md) |
+| **Overlapped `spawn on`** | ⚠️ A program sees `spawn on(...) { ... }` finish before the next statement. On NVIDIA and Apple GPUs, a launch returns once the runtime queues it. The other runtimes wait for each launch | [`docs/spawn_on.md`](docs/spawn_on.md) |
+| **Standard Library** | ✅ `core` (`option`, `result`, `iter`, `libm`, `cmp`, `fmt`, `sync::atomic`) and `std` (`io`, `fs`, `net`, `time`, `vec`, `string`, `hash_map`, `tensor`, `sync`, `collective`, `nn`, `bulk_hash`) | [`docs/std_library_design.md`](docs/std_library_design.md) |
 | **Automatic Memory Cleanup** | ✅ The compiler frees a value when its owner goes out of scope | [Ownership](www/book/src/ownership.md) |
 | **Autodiff (`grad`)** | ✅ Enzyme computes the derivatives, and the checker rejects a function with a discrete input or result | [Autodiff](www/book/src/autodiff.md) |
 | **Package Manager** | ⚠️ Not built yet. The design is under discussion | [#1275](https://github.com/vx-lang/Vx/issues/1275) |
@@ -276,6 +289,7 @@ ______________________________________________________________________
 - **`emacs-vx`**: Emacs major mode (`vx-mode`) providing syntax highlighting and `vx-format`-style indentation.
 - **`vx-format`**: Official AST-aware code formatter for `.vx` files.
 - **`vx-opt`**: Specialized driver for testing and inspecting passes on the custom `vx` MLIR dialect.
+- **`vx-api`**: Compares the interfaces of two versions of a library, and prints the smallest safe version bump.
 
 ______________________________________________________________________
 
@@ -290,10 +304,11 @@ src/                  Compiler implementation in Rust
   dialect/            Custom vx MLIR dialect and lowering passes (C++)
   gid.rs              256-bit content-hashed Global Identifiers
   pipeline.rs         Zero-lock 8-phase parallel frontend
-runtime/              Dispatch runtimes (Host CPU, NVIDIA CUDA, Apple CoreML, Remote Worker)
+runtime/              Dispatch runtimes (Host CPU, NVIDIA CUDA, Apple Metal, Apple CoreML, Remote Worker)
 fleet/                Declarative machine descriptions (A100, H100, B200, MI300X, M4, etc.)
 stdlib/               Standard library modules (tensor, simd, vec, io, math, fs, etc.)
 examples/             Example programs (including Llama 2 forward pass in llama.vx)
+apps/                 Applications written in Vx (a runner for Qwen models)
 docs/                 Language specification, tutorials, and architecture designs
 vx-analyzer/          Language server (LSP)
 vscode-vx/            VS Code extension
@@ -306,6 +321,7 @@ ______________________________________________________________________
 ## Documentation & Learning More
 
 - [The Vx Book (vxlang.org/docs)](https://vxlang.org/docs/): The official comprehensive guide covering installation, a language tour, ownership, topologies, the standard library, and compiler error diagnostics.
+- [Vx for Rust Programmers](https://vxlang.org/docs/for-rust-programmers.html): What to change when you write Vx the way you write Rust.
 - [Language Tutorial](docs/tutorial.md): In-repo introductory walkthrough of syntax, tensors, and topologies.
 - [Memory Algebra Specification](docs/memory_algebra.md): In-depth model of capacities, bandwidths, and routing costs.
 - [Parallel Compiler Architecture](docs/architecture_executive_summary.md): Technical deep-dive into the 256-bit GID and zero-lock pipeline.
@@ -331,7 +347,7 @@ If you use Vx in your research or systems work, please cite:
   title        = {{Vx}: a systems programming language for heterogeneous computing},
   year         = {2026},
   howpublished = {\url{https://vxlang.org}},
-  note         = {Version 0.0.3. Source at \url{https://github.com/vx-lang/Vx}}
+  note         = {Version 0.0.4. Source at \url{https://github.com/vx-lang/Vx}}
 }
 ```
 

@@ -62,6 +62,9 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
         let (mut val, expr_ty, block) = gen.generate_expr(expr, block)?;
         gen.nrvo_slot = None;
         gen.expected_type = None;
+        if gen.current_returns_reference && !gen.in_spawn {
+            return return_reference(gen, block, val, expr_ty);
+        }
         // `return f();` in a function returning `void`, such as `apply<T>` with `T = void`:
         // the call has run, and there is no value to return.
         if !gen.in_spawn && gen.current_return_type == Some(gen.none_ty) {
@@ -407,6 +410,30 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
     }
 }
 
+/// `return r` in a function that returns `&Tensor` or `&mut Tensor`: give back the memref of
+/// the tensor that `r` names, never a copy. A row is a strided view, so its pointer moves to
+/// the row, as for a row passed to a `&Tensor` parameter.
+fn return_reference<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    val: Value<'c, 'c>,
+    ty: Type<'c>,
+) -> Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError> {
+    let cell_ty = gen
+        .current_return_type
+        .expect("a function has a return type");
+    let ret_ty = gen.reference_result_ty(cell_ty);
+    let mut ty = ty;
+    let mut val = super::expr::load_tensor_slot(gen, &block, val, &mut ty)?;
+    if ty != ret_ty {
+        val = super::cast_memref(gen, &block, val, ty, ret_ty)?;
+    }
+    let block = gen.run_value_drops(block)?;
+    super::expr::emit_func_return(gen, block, Some(val))?;
+    gen.has_returned = true;
+    Ok(None)
+}
+
 /// The nominal struct/enum name a type ultimately names, peeling reference/pointer wrappers and
 /// generic instantiation. `&Vec<i32>` -> `Vec`. Used to recover a struct name for field assignment
 /// when the base lowers to a bare `!llvm.ptr` (which carries no struct identity) and sema did not
@@ -609,8 +636,9 @@ pub(crate) fn struct_instance_ty<'c>(
 }
 
 /// `place.member = val` where `place` is a struct behind a pointer: `(*p).a = v` with a raw
-/// pointer `p`, or `m.r.x = v` where the field `m.r` is a reference. The value is stored through
-/// the pointer. `None` when `place` is not a struct behind a pointer.
+/// pointer `p`, `p[i].a = v` with a raw pointer `p`, or `m.r.x = v` where the field `m.r` is a
+/// reference. The value is stored through the pointer. `None` when `place` is not a struct behind
+/// a pointer.
 fn store_field_through_pointer<'c>(
     gen: &mut MeliorGenerator<'c>,
     block: melior::ir::BlockRef<'c, 'c>,
@@ -634,6 +662,11 @@ fn store_field_through_pointer<'c>(
             }
             _ => return Ok(None),
         },
+        // `p[i]` is lowered as a place below, which gives the address of the element.
+        Expr::IndexAccess(ix) => match gen.infer_ast_type(&ix.base) {
+            Some(T::Pointer(inner, _, _)) => (place, *inner),
+            _ => return Ok(None),
+        },
         _ => return Ok(None),
     };
     let Some(base_struct) = nominal_struct_name(&pointee) else {
@@ -647,7 +680,11 @@ fn store_field_through_pointer<'c>(
     let Some(field_idx) = decl.fields.iter().position(|(n, _)| n == member) else {
         return Ok(None);
     };
-    let (ptr_val, ptr_ty, block) = gen.generate_expr(ptr_expr, block)?;
+    let prev_lvalue = gen.is_lvalue_context;
+    gen.is_lvalue_context = prev_lvalue || matches!(place, Expr::IndexAccess(_));
+    let lowered = gen.generate_expr(ptr_expr, block);
+    gen.is_lvalue_context = prev_lvalue;
+    let (ptr_val, ptr_ty, block) = lowered?;
     assert!(
         ptr_ty.to_string().starts_with("!llvm.ptr"),
         "a struct behind a pointer lowers to a pointer, not {ptr_ty}"
@@ -1447,7 +1484,11 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
             {
                 return Ok(Some(new_b));
             } else {
-                panic!("Complex struct assignment lhs not supported");
+                return Err(LowerError::ParseType(format!(
+                    "line {}, column {}: this code generator cannot write a field of this place. \
+                     Take a `&mut` reference to the struct and write the field through it",
+                    span.line, span.column
+                )));
             }
         }
         Ok(Some(block))
