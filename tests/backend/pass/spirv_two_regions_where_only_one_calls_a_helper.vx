@@ -5,14 +5,18 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// Two placed regions, one in `add_one` and one in `main`, share one SPIR-V
-// image. Only the region in `main` passes a tensor to a helper, which an image
-// cannot do yet, so both run on the host. The warning for the region in
-// `add_one` names the kernel of the region in `main` as the cause.
+// Two placed regions, one in `add_one` and one in `main`, are in one device
+// module. Only the region in `main` passes a tensor to a helper, which a SPIR-V
+// image cannot do yet. So the image holds only the region in `add_one`, and
+// only the region in `main` runs on the host.
 //
 // RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s # flat-codegen
-// CHECK-DAG: the region placed on `Topology::Dev` in `add_one` (kernel `{{vx_npu_kernel_[0-9]+}}`) cannot become a `spirv64` device image. It shares one image with the region placed on `Topology::Dev` in `main` (kernel `[[FAILED:vx_npu_kernel_[0-9]+]]`). That region cannot become one: it passes a tensor to `second_element`
-// CHECK-DAG: the region placed on `Topology::Dev` in `main` (kernel `[[FAILED]]`) cannot become a `spirv64` device image: it passes a tensor to `second_element`
+// CHECK-NOT: in `add_one` (kernel
+// CHECK: the region placed on `Topology::Dev` in `main` (kernel `[[FAILED:vx_npu_kernel_[0-9]+]]`) cannot become a `spirv64` device image: it passes a tensor to `second_element`
+// CHECK-SAME: It will run on the host instead.
+// CHECK-NOT: in `add_one` (kernel
+// CHECK-DAG: @[[FAILED]]_str("[[FAILED]]\00abi=1\00topo={{[0-9]+}}\00toponame=Dev\00offload=0\00arch=spirv64\00")
+// CHECK-DAG: @[[IMAGED:vx_npu_kernel_[0-9]+]]_str("[[IMAGED]]\00{{[^"]*}}format=spirv\00
 // EXPECT: [2,  3,  4,  5]
 
 Memory CPU_DRAM {}

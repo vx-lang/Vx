@@ -12,7 +12,7 @@
 // RUN: not vxc %s --action emit-llvm 2>&1 | FileCheck %s # flat-codegen
 // CHECK: the region placed on `Topology::Dev` in `main` (kernel `{{[a-z0-9_]+}}`) cannot become a `spirv64` device image: it passes a tensor to `add_one`
 // CHECK: This region's operands are in 'DEV_HBM', declared `managed: explicit`
-// CHECK: Either every region in the image must be one the target can compile
+// CHECK: Change the region so that the target can compile it, or keep its operands in a space the host can read.
 
 Memory CPU_DRAM {}
 Memory DEV_HBM {

@@ -8252,12 +8252,35 @@ static LogicalResult serializeSpirv(std::unique_ptr<llvm::Module> module,
 ///    the image -- in this process, from the LLVM already linked, so compiling
 ///    a `.vx` file needs no external `llc`.
 ///
+/// The image holds only the kernels in `gpuModule` that are not in `left`.
 /// An empty image on failure, with `error` naming the stage. When kernels are
 /// the cause, `refused` names each one with its own reason instead.
-static DeviceImage spirvImageOf(gpu::GPUModuleOp gpuModule, std::string &error,
-                                SmallVectorImpl<SpirvKernelRefusal> &refused) {
+static DeviceImage
+spirvImageOfKernels(gpu::GPUModuleOp gpuModule, const llvm::StringSet<> &left,
+                    std::string &error,
+                    SmallVectorImpl<SpirvKernelRefusal> &refused) {
   MLIRContext *context = gpuModule.getContext();
   OwningOpRef<ModuleOp> device = deviceModuleCopy(gpuModule);
+
+  // Remove the kernels that are left out. Then remove each helper and global
+  // that no kernel in the image uses any more.
+  if (!left.empty()) {
+    gpu::GPUModuleOp copy = *device->getOps<gpu::GPUModuleOp>().begin();
+    for (auto f : llvm::make_early_inc_range(copy.getOps<gpu::GPUFuncOp>()))
+      if (left.contains(f.getName()))
+        f.erase();
+    for (bool changed = true; changed;) {
+      changed = false;
+      for (Operation &op : llvm::make_early_inc_range(copy.getOps())) {
+        if (isa<gpu::GPUFuncOp>(op) || !isa<SymbolOpInterface>(op))
+          continue;
+        if (SymbolTable::symbolKnownUseEmpty(&op, copy)) {
+          op.erase();
+          changed = true;
+        }
+      }
+    }
+  }
 
   PassManager promote(context, ModuleOp::getOperationName());
   promote.addPass(createMem2Reg());
@@ -8321,6 +8344,30 @@ static DeviceImage spirvImageOf(gpu::GPUModuleOp gpuModule, std::string &error,
   if (failed(serializeSpirv(std::move(llvmModule), image, error)))
     return {};
   return DeviceImage{"spirv", std::move(image)};
+}
+
+/// The SPIR-V image of the kernels in `gpuModule` that can become one. Each
+/// kernel that cannot is named in `refused` with its reason, and the image is
+/// built again without it. So one kernel that fails does not cost the other
+/// kernels their image.
+static DeviceImage spirvImageOf(gpu::GPUModuleOp gpuModule, std::string &error,
+                                SmallVectorImpl<SpirvKernelRefusal> &refused) {
+  size_t kernels = 0;
+  gpuModule.walk([&](gpu::GPUFuncOp) { ++kernels; });
+  llvm::StringSet<> left;
+  // Each turn either ends or leaves out at least one more kernel.
+  while (left.size() < kernels) {
+    SmallVector<SpirvKernelRefusal> failed;
+    DeviceImage image = spirvImageOfKernels(gpuModule, left, error, failed);
+    if (failed.empty())
+      return image;
+    for (SpirvKernelRefusal &r : failed) {
+      assert(!left.contains(r.kernel) && "a kernel left out failed again");
+      left.insert(r.kernel);
+      refused.push_back(std::move(r));
+    }
+  }
+  return {};
 }
 
 // `VX_CTRL_LOCAL_DEVICE` in include/vx_hardware_runtime.h.
@@ -8925,100 +8972,92 @@ struct ConvertVxToLLVMPass
       case DevicePipeline::None:
         llvm_unreachable("the pipeline was checked to be present above");
       }
-      if (image.bytes.empty()) {
-        // An NVPTX or Apple GPU refusal is fatal, and so is one that
-        // `--emit-ptx` or `--emit-msl` asked for. The program placed a kernel
-        // on that device, and carrying on produces a program that compiles,
-        // dispatches, and is then refused at the far end for a reason that
-        // does not name the cause -- the kernel is missing. The compile is the
-        // place where the cause is still legible.
-        if (*pipeline != DevicePipeline::Spirv) {
-          m.emitError("cannot compile ") << namedKernels(m) << ": " << error;
-          signalPassFailure();
-          return;
-        }
-        // A SPIR-V kernel keeps the host path the program already has: no
-        // image, the host copy runs, and the warning names the reason in the
-        // same words the check before the conversion uses.
-        //
-        // That is safe only while the kernel's operands are host memory. A
-        // value transferred into a space declared `managed: explicit` is not,
-        // and running on it would read device memory where the host cannot.
-        // The spawn is a `vx.launch` by now, so the check asks the launch's
-        // operands -- every launch of the kernel, because inlining can copy a
-        // function that holds one.
-        llvm::StringMap<SmallVector<vx::LaunchOp>> launchesByName;
-        module.walk([&](vx::LaunchOp l) {
-          launchesByName[l.getCalleeAttr().getValue()].push_back(l);
-        });
-        // The kernels share one image, so all of them lose it when one fails.
-        // Each kernel that fails gets its own reason, and each other kernel is
-        // told about the first one that failed.
-        llvm::StringMap<std::string> reasons;
-        for (const SpirvKernelRefusal &r : refused)
-          reasons[r.kernel] = r.reason;
-        vx::KernelOp firstFailed;
-        if (!refused.empty()) {
-          firstFailed = kernelsByName.lookup(refused.front().kernel);
-          assert(firstFailed && "every gpu.func here has a vx.kernel");
-        }
-        auto cannotBecomeAnImage = [&](vx::KernelOp kernel) {
-          std::string text = regionInWords(kernel) + " cannot become a `" +
-                             archNameOfPipeline(*pipeline).str() +
-                             "` device image";
-          if (!firstFailed)
-            return text + ": " + error;
-          auto own = reasons.find(kernel.getSymName());
-          if (own != reasons.end())
-            return text + ": " + own->second;
-          return text + ". It shares one image with " +
-                 regionInWords(firstFailed) +
-                 ". That region cannot become one: " +
-                 reasons.lookup(firstFailed.getSymName());
-        };
-        bool unreadableOperands = false;
-        m.walk([&](gpu::GPUFuncOp f) {
-          vx::KernelOp kernel = kernelsByName.lookup(f.getName());
-          if (!kernel)
-            return;
-          vx::TransferOp xfer = nullptr;
-          for (vx::LaunchOp launch : launchesByName.lookup(f.getName()))
-            if ((xfer = captureTheHostCannotRead(kernel.getBody(),
-                                                 launch.getOperands())))
-              break;
-          if (!xfer)
-            return;
-          kernel.emitError()
-              << cannotBecomeAnImage(kernel)
-              << ".\n  This region's operands are in '" << spaceOfTransfer(xfer)
-              << "', declared `managed: explicit` -- memory the host cannot "
-                 "read, so running the region on the host instead would read "
-                 "device memory there.\n"
-              << "  Either every region in the image must be one the target "
-                 "can compile, or this region's operands must stay in a space "
-                 "the host can read.";
-          unreadableOperands = true;
-        });
-        if (unreadableOperands) {
-          signalPassFailure();
-          return;
-        }
-        m.walk([&](gpu::GPUFuncOp f) {
-          vx::KernelOp kernel = kernelsByName.lookup(f.getName());
-          if (!kernel)
-            return;
-          kernel.emitWarning() << cannotBecomeAnImage(kernel)
-                               << ". It will run on the host instead.";
-        });
-        continue;
+      // An NVPTX or Apple GPU refusal is fatal, and so is one that
+      // `--emit-ptx` or `--emit-msl` asked for. The program placed a kernel
+      // on that device, and carrying on produces a program that compiles,
+      // dispatches, and is then refused at the far end for a reason that
+      // does not name the cause -- the kernel is missing. The compile is the
+      // place where the cause is still legible.
+      if (image.bytes.empty() && *pipeline != DevicePipeline::Spirv) {
+        m.emitError("cannot compile ") << namedKernels(m) << ": " << error;
+        signalPassFailure();
+        return;
       }
-      // Each `gpu.func` maps to the same image, and the kernel name -- already
-      // the payload blob's first field -- is what selects the entry.
+      // A SPIR-V kernel that is not in the image keeps the host path the
+      // program already has: the host copy runs, and the warning names the
+      // reason in the same words the check before the conversion uses. A
+      // kernel in `refused` is left out of the image, and when there is no
+      // image, every kernel is left out.
+      llvm::StringMap<std::string> reasons;
+      for (const SpirvKernelRefusal &r : refused)
+        reasons[r.kernel] = r.reason;
+      auto inImage = [&](gpu::GPUFuncOp f) {
+        return !image.bytes.empty() && !reasons.contains(f.getName());
+      };
+      auto cannotBecomeAnImage = [&](vx::KernelOp kernel) {
+        std::string text = regionInWords(kernel) + " cannot become a `" +
+                           archNameOfPipeline(*pipeline).str() +
+                           "` device image: ";
+        auto own = reasons.find(kernel.getSymName());
+        if (own != reasons.end())
+          return text + own->second;
+        assert(!error.empty() && "a kernel with no image has a reason");
+        return text + error;
+      };
+      // The host path is safe only while the kernel's operands are host
+      // memory. A value transferred into a space declared `managed: explicit`
+      // is not, and running on it would read device memory where the host
+      // cannot. The spawn is a `vx.launch` by now, so the check asks the
+      // launch's operands -- every launch of the kernel, because inlining can
+      // copy a function that holds one.
+      llvm::StringMap<SmallVector<vx::LaunchOp>> launchesByName;
+      module.walk([&](vx::LaunchOp l) {
+        launchesByName[l.getCalleeAttr().getValue()].push_back(l);
+      });
+      bool unreadableOperands = false;
+      m.walk(
+          [&](gpu::GPUFuncOp f) {
+            vx::KernelOp kernel = kernelsByName.lookup(f.getName());
+            if (!kernel || inImage(f))
+              return;
+            vx::TransferOp xfer = nullptr;
+            for (vx::LaunchOp launch : launchesByName.lookup(f.getName()))
+              if ((xfer = captureTheHostCannotRead(kernel.getBody(),
+                                                   launch.getOperands())))
+                break;
+            if (!xfer)
+              return;
+            kernel.emitError()
+                << cannotBecomeAnImage(kernel)
+                << ".\n  This region's operands are in '"
+                << spaceOfTransfer(xfer)
+                << "', declared `managed: explicit` -- memory the host cannot "
+                   "read, so running the region on the host instead would read "
+                   "device memory there.\n"
+                << "  Change the region so that the target can compile it, or "
+                   "keep its operands in a space the host can read.";
+            unreadableOperands = true;
+          });
+      if (unreadableOperands) {
+        signalPassFailure();
+        return;
+      }
+      // Each kernel in the image maps to the same image, and the kernel name
+      // -- already the payload blob's first field -- is what selects the
+      // entry.
       m.walk([&](gpu::GPUFuncOp f) {
+        if (!inImage(f)) {
+          if (vx::KernelOp kernel = kernelsByName.lookup(f.getName()))
+            kernel.emitWarning() << cannotBecomeAnImage(kernel)
+                                 << ". It will run on the host instead.";
+          return;
+        }
         deviceImages[f.getName()] = image;
         if (auto bytes = f->getAttrOfType<IntegerAttr>("vx.dynamic_shared"))
           dynamicShared[f.getName()] = bytes.getInt();
       });
+      if (image.bytes.empty())
+        continue;
       if (*pipeline == DevicePipeline::Metal)
         appleGpuTopologies.insert(topologies.begin(), topologies.end());
       if (exportingText) {
