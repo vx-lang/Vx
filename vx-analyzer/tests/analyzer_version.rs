@@ -88,12 +88,13 @@ fn help_lists_the_binary_without_advertising_stdio() {
 fn the_hidden_stdio_flag_is_accepted() {
     // An editor that passes `--stdio` must be served, not stopped by an unknown-argument error.
     let (status, _stdout, stderr) = run(&["--stdio"]);
-    let status = status.expect("`vx-analyzer --stdio` did not exit in 30s: it hung");
+    // With stdin closed, the server gets no `initialize` message and exits with 1, so the exit
+    // status says nothing about the flag.
+    status.expect("`vx-analyzer --stdio` did not exit in 30s: it hung");
     assert!(
         !stderr.contains("unexpected argument") && !stderr.contains("--stdio"),
         "the hidden flag was rejected: {stderr:?}"
     );
-    assert!(status.success(), "exit {status}: stderr was {stderr:?}");
 }
 
 #[test]
