@@ -3309,8 +3309,12 @@ pub(crate) fn placed_attr(space: &syntax::MemorySpace, on_chip: bool) -> String 
 
 /// The tensor a value of type `ty` is, seen through `Verified<..>` and `Pinned<..>`, which add a
 /// proof or a location to the same buffer: `Some(None)` for host memory, `Some(Some(p))` for one
-/// placed by `p`, `None` for a type that is not a tensor.
+/// placed by `p`, `None` for a type that is not a tensor. A token of `transfer_async` is its
+/// tensor.
 pub(crate) fn owned_tensor(ty: &syntax::Type) -> Option<Option<syntax::Placement>> {
+    if let Some(inner) = syntax::types::transfer_token_inner(ty) {
+        return owned_tensor(inner);
+    }
     match ty {
         syntax::Type::Tensor(_, _, placement) => Some(placement.clone()),
         syntax::Type::Verified(inner) => owned_tensor(inner),

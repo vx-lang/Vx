@@ -1,0 +1,70 @@
+//===- a_tensor_from_transfer_is_passed_by_value_and_freed_once.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each case passes a tensor from `transfer`, or the token of a `transfer_async`, by value to a
+// function. That function frees the tensor, so the caller must not free it again. A second free,
+// or a free of a stack buffer, stops the program. The compiler used to refuse the call with "is
+// not a heap buffer this function owns", or the program stopped with `munmap_chunk(): invalid
+// pointer`. tests/optimizations/pass/a_tensor_from_gpu_memory_is_passed_by_value_and_freed_once.vx
+// passes a tensor that comes back from GPU memory.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}1 2 3 4{{$}}
+
+fn filled(v : f32) -> Tensor<f32, [4]> {
+  let mut t = unsafe { Tensor<f32, [4]>::uninit() };
+  t[0] = v;
+  return t;
+}
+
+fn first_of(t : Tensor<f32, [4]>) -> f32 {
+  return t[0];
+}
+
+// The function moves the tensor to a new name before it reads it.
+fn first_of_after_let(t : Tensor<f32, [4]>) -> f32 {
+  let x = t;
+  return x[0];
+}
+
+fn first_of_placed(t : Tensor<f32, [4], Memory::CPU_DRAM>) -> f32 {
+  let x = t;
+  return x[0];
+}
+
+fn first_of_token(token : Token<Tensor<f32, [4], Memory::CPU_DRAM>>) -> f32 {
+  let x = token.wait();
+  return x[0];
+}
+
+// Each case is in a function of its own. With all cases in `main`, the compiler kept each tensor
+// on the heap, and a wrong free of a stack buffer did not show.
+fn pass_from_transfer(v : f32) -> f32 {
+  let t = transfer(filled(v), Memory::CPU_DRAM);
+  return first_of(t);
+}
+
+fn pass_from_transfer_then_let(v : f32) -> f32 {
+  let t = transfer(filled(v), Memory::CPU_DRAM);
+  return first_of_after_let(t);
+}
+
+fn pass_to_a_placed_parameter(v : f32) -> f32 {
+  let t = transfer(filled(v), Memory::CPU_DRAM);
+  return first_of_placed(t);
+}
+
+fn pass_a_token(v : f32) -> f32 {
+  let token = transfer_async(filled(v), Memory::CPU_DRAM);
+  return first_of_token(token);
+}
+
+fn main() -> i32 {
+  println!("{} {} {} {}", pass_from_transfer(1.0), pass_from_transfer_then_let(2.0), pass_to_a_placed_parameter(3.0), pass_a_token(4.0));
+  return 0;
+}
