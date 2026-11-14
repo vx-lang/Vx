@@ -3248,6 +3248,24 @@ static void laneCopyLoop(OpBuilder &b, Location loc, const LaneCopy &op,
                     l, nb.create<memref::DimOp>(l, op.source, d), index),
                 nb.create<arith::ConstantIndexOp>(l, v));
         }
+        if (v * tile.getElementTypeBitWidth() < 32) {
+          // `cp.async` copies 4 bytes or more, so a narrower element goes with
+          // a load and a store, which end before the wait.
+          Type elem = tile.getElementType();
+          auto pick = nb.create<scf::IfOp>(l, TypeRange{elem}, in,
+                                           /*withElseRegion=*/true);
+          OpBuilder::InsertionGuard guard(nb);
+          nb.setInsertionPointToStart(&pick.getThenRegion().front());
+          nb.create<scf::YieldOp>(
+              l, ValueRange{nb.create<memref::LoadOp>(l, op.source, from)});
+          nb.setInsertionPointToStart(&pick.getElseRegion().front());
+          nb.create<scf::YieldOp>(l, ValueRange{nb.create<arith::ConstantOp>(
+                                         l, nb.getZeroAttr(elem))});
+          nb.setInsertionPointAfter(pick);
+          nb.create<memref::StoreOp>(l, pick.getResult(0), op.tile, to);
+          nb.create<scf::YieldOp>(l);
+          return;
+        }
         Value srcElements = nb.create<arith::SelectOp>(l, in, count, zero);
         nb.create<nvgpu::DeviceAsyncCopyOp>(
             l, nvgpu::DeviceAsyncTokenType::get(nb.getContext()), op.tile, to,

@@ -227,6 +227,28 @@ pub fn eight_byte_tile(out : &mut Tensor<i64, [?], Memory::HBM>, x : &Tensor<i64
   return;
 }
 
+// Elements of 2 bytes go 8 at a time. `cp.async` copies at least 4 bytes, so one element at a time
+// is a load and a store, which end before the wait.
+// CHECK-LABEL: .entry two_byte_tile(
+// CHECK: min.u64 %rd{{[0-9]+}}, %rd{{[0-9]+}}, 8;
+// CHECK: cp.async.cg.shared.global [%rd{{[0-9]+}}], [%rd{{[0-9]+}}], 16, %r{{[0-9]+}};
+// CHECK: st.shared.b16
+// CHECK: ld.global.nc.b16
+// CHECK-NOT: cp.async.ca
+pub fn two_byte_tile(out : &mut Tensor<bf16, [?], Memory::HBM>, x : &Tensor<bf16, [?, ?], Memory::HBM>, c : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tile = unsafe { Tensor<bf16, [4, 16], Memory::SMEM>::uninit() };
+      let copy = lanes::copy_async(&mut tile, x, [0, c]);
+      copy.wait();
+      for t in 0..16 across lanes(32) {
+        out[t] = tile[3][t];
+      }
+    }
+  }
+  return;
+}
+
 // A row of 6 elements of 4 bytes is not a multiple of 16 bytes, so each copy is one element.
 // CHECK-LABEL: .entry narrow_tile(
 // CHECK: cp.async.ca.shared.global

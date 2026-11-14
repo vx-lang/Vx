@@ -1680,8 +1680,9 @@ int64_t vx_plugin_tensor_map(int64_t base, int64_t rank, int64_t elem_bytes,
   const int64_t strides[5] = {s0, s1, s2, s3, s4};
   const int64_t box[5] = {b0, b1, b2, b3, b4};
   if (!cuda_available() || rank < 1 || rank > 5 ||
-      (elem_bytes != 4 && elem_bytes != 8) || base % 16 != 0 ||
-      strides[rank - 1] != 1 || !is_device_ptr(reinterpret_cast<void *>(base)))
+      (elem_bytes != 2 && elem_bytes != 4 && elem_bytes != 8) ||
+      base % 16 != 0 || strides[rank - 1] != 1 ||
+      !is_device_ptr(reinterpret_cast<void *>(base)))
     return 0;
   const DriverApi *api = load_driver_api();
   if (!api || !api->TensorMapEncodeTiled)
@@ -1707,8 +1708,9 @@ int64_t vx_plugin_tensor_map(int64_t base, int64_t rank, int64_t elem_bytes,
   CUtensorMap map;
   const CUresult rc = api->TensorMapEncodeTiled(
       &map,
-      elem_bytes == 4 ? CU_TENSOR_MAP_DATA_TYPE_UINT32
-                      : CU_TENSOR_MAP_DATA_TYPE_UINT64,
+      elem_bytes == 2   ? CU_TENSOR_MAP_DATA_TYPE_UINT16
+      : elem_bytes == 4 ? CU_TENSOR_MAP_DATA_TYPE_UINT32
+                        : CU_TENSOR_MAP_DATA_TYPE_UINT64,
       static_cast<cuuint32_t>(rank), reinterpret_cast<void *>(base), global_dim,
       global_strides, box_dim, element_strides, CU_TENSOR_MAP_INTERLEAVE_NONE,
       CU_TENSOR_MAP_SWIZZLE_NONE, CU_TENSOR_MAP_L2_PROMOTION_L2_128B,
