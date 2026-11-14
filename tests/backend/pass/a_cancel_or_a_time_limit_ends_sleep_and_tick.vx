@@ -1,0 +1,123 @@
+//===- a_cancel_or_a_time_limit_ends_sleep_and_tick.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `sleep` and `Interval::tick` wait for 20 s here. The limit of `within`, or a cancel of the
+// `tasks` block, must end each wait early: `sleep` gives `false` and `tick` gives `None`. Each
+// case checks that it took less than 10 s, a wide margin for a busy machine. A sleep with no
+// cancel gives `true`. The last case runs a loop of 1 ms ticks in a task, and each tick is late.
+// The cancel must end that loop too.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 VX_TASK_MAX_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}a sleep with no cancel gives true{{$}}
+// CHECK-NEXT: {{^}}within ended the sleep early: true{{$}}
+// CHECK-NEXT: {{^}}within ended the tick early: true{{$}}
+// CHECK-NEXT: {{^}}the cancel ended the sleep early: true{{$}}
+// CHECK-NEXT: {{^}}the cancel ended the tick early: true{{$}}
+// CHECK-NEXT: {{^}}the cancel ended the loop of ticks: true{{$}}
+
+import core::option;
+import core::sync::atomic;
+import core::time;
+import std::sync::wait;
+import std::time;
+
+// 1 when `tick` gave a tick, and 2 when it gave `None`.
+fn tick_once(period : Duration) -> i64 {
+  let mut iv = Interval::new(period);
+  match iv.tick() {
+    Option<Instant>::Some(_at) => {
+      return 1;
+    }
+    Option<Instant>::None => {
+      return 2;
+    }
+  }
+}
+
+// 1 when `sleep` gave `true`, and 2 when it gave `false`.
+fn sleep_once(d : Duration) -> i64 {
+  if sleep(d) {
+    return 1;
+  }
+  return 2;
+}
+
+// Ticks every 1 ms, until `tick` gives `None` or 10 s pass. Each pass works for 2 ms, so each
+// tick is late. Gives 2 when `tick` gave `None`.
+fn tick_until_none() -> i64 {
+  let start = Instant::now();
+  let mut iv = Interval::new(Duration::from_millis(1));
+  while start.elapsed() < Duration::from_secs(10) {
+    match iv.tick() {
+      Option<Instant>::Some(_at) => {
+        let work = Instant::now();
+        while work.elapsed() < Duration::from_millis(2) {}
+      }
+      Option<Instant>::None => {
+        return 2;
+      }
+    }
+  }
+  return 1;
+}
+
+// Starts a task that runs `which` (0: sleep, 1: tick, 2: a loop of ticks), and then leaves the
+// block early, which cancels the task. The task keeps its result in `got`.
+fn cancel_a_task(which : i64, got : &AtomicI64) -> i64 {
+  tasks {
+    spawn {
+      let long = Duration::from_secs(20);
+      if which == 0 {
+        got.store(sleep_once(long), AtomicOrdering::SeqCst);
+      } else if which == 1 {
+        got.store(tick_once(long), AtomicOrdering::SeqCst);
+      } else {
+        got.store(tick_until_none(), AtomicOrdering::SeqCst);
+      }
+    };
+    // Let the task start its wait first. The cancel ends the wait in either order.
+    sleep(Duration::from_millis(50));
+    return 0;
+  };
+  return 1;
+}
+
+// Whether the task that `cancel_a_task` starts gives 2, in less than 10 s.
+fn cancel_ends(which : i64) -> bool {
+  let start = Instant::now();
+  let got = AtomicI64::new(0);
+  cancel_a_task(which, &got);
+  return got.load(AtomicOrdering::SeqCst) == 2 && start.elapsed() < Duration::from_secs(10);
+}
+
+// Whether a call of `within` with a limit of 100 ms ends a 20 s `sleep` (`which` 0) or `tick`
+// (`which` 1) early, in less than 10 s.
+fn within_ends(which : i64) -> bool {
+  let start = Instant::now();
+  let long = Duration::from_secs(20);
+  let got = within(Duration::from_millis(100), || -> i64 {
+    if which == 0 {
+      return sleep_once(long);
+    }
+    return tick_once(long);
+  });
+  return got == 2 && start.elapsed() < Duration::from_secs(10);
+}
+
+fn main() -> i32 {
+  if sleep(Duration::from_millis(1)) {
+    println!("a sleep with no cancel gives true");
+  }
+  println!("within ended the sleep early: {}", within_ends(0));
+  println!("within ended the tick early: {}", within_ends(1));
+  println!("the cancel ended the sleep early: {}", cancel_ends(0));
+  println!("the cancel ended the tick early: {}", cancel_ends(1));
+  println!("the cancel ended the loop of ticks: {}", cancel_ends(2));
+  return 0;
+}
