@@ -37,6 +37,10 @@
 - [Machine files](machine-files.md)
 - [NUMA and the host's memory domains](numa.md)
 
+# Optimizations
+
+- [Loop optimizations](loop-optimizations.md)
+
 # Reference
 
 - [Vx in one page](quick-reference.md)
