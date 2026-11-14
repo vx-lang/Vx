@@ -975,6 +975,7 @@ pub(crate) fn lower_count<'c>(
             s.span,
         ))),
         space: space.clone(),
+        device: None,
         cost: None,
         lowering: None,
         is_async: false,

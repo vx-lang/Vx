@@ -656,6 +656,10 @@ pub enum DiagnosticCode {
     /// A placement, a `spawn on` or an `on` clause also gets this error when it names a device
     /// that a declared topology does not have: `X[2]` when `X` has `count: 2`, or a bare `X`
     /// when `X` has more than one device.
+    ///
+    /// Each device of such a topology has its own copy of its memory. So a placement or a
+    /// `transfer` that names that memory alone gets this error too: it does not say which copy.
+    /// Name the device instead, as in `transfer(x, Topology::X[1])`.
     E6025,
     /// A tensor whose element type the target hardware cannot represent, placed on it anyway.
     ///

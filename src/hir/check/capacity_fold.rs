@@ -90,6 +90,28 @@ pub fn fold_cross_call_capacity(
             );
         }
     }
+    // Each device of a topology with `count:` has its own copy of the memory, with the same
+    // capacity: `CARD_RAM of Card[1]` gets the budget of `CARD_RAM`.
+    let copies: Vec<&String> = summaries
+        .iter()
+        .flat_map(|s| {
+            s.self_peak
+                .keys()
+                .chain(s.calls.iter().flat_map(|c| c.live.keys()))
+        })
+        .collect();
+    for copy in copies {
+        let space = crate::hir::check_state::MemoryCopy::space_of(copy);
+        if space != copy && !budgets.contains_key(copy.as_str()) {
+            if let Some(b) = budgets.get(space) {
+                let budget = SpaceBudget {
+                    cap: b.cap,
+                    overcommit: b.overcommit,
+                };
+                budgets.insert(copy.clone(), budget);
+            }
+        }
+    }
     fold_with_budgets(summaries, &budgets, errors);
 }
 
@@ -237,14 +259,16 @@ pub(crate) fn report_task_count_not_known(
     overcommit: bool,
     spawn: &crate::syntax::Span,
 ) {
+    let quoted = crate::hir::check_state::MemoryCopy::quoted(space);
     let msg = format!(
         "this `spawn` is in a loop with a count of passes that is not known at compile time, and \
-         its tasks use memory space '{space}'. The tasks of all the passes run at the same time, \
+         its tasks use memory space {quoted}. The tasks of all the passes run at the same time, \
          so their working set has no bound. Use a `for` loop over a constant range, or join each \
          task in its pass"
     );
     let span = Some(crate::diagnostic::SourceSpan::from_ast_span(spawn));
     if overcommit {
+        let space = crate::hir::check_state::MemoryCopy::space_of(space);
         errors.warn(
             crate::diagnostic::DiagnosticCode::W1028,
             format!("{msg}. This is allowed because '{space}' is `overcommit`"),
@@ -327,10 +351,10 @@ fn report_overflow(
         nodes[terminal].self_peak.get(space).copied().unwrap_or(0)
     ));
     let msg = format!(
-        "the working set along call path '{}' in memory space '{}' peaks at {} bytes, over its {} \
+        "the working set along call path '{}' in memory space {} peaks at {} bytes, over its {} \
          byte capacity: {}",
         names.join(" -> "),
-        space,
+        crate::hir::check_state::MemoryCopy::quoted(space),
         peak,
         budget.cap,
         held.join(", ")
@@ -422,9 +446,11 @@ fn fold_cycle(
             format!("the cycle '{}' recurses", names.join(" -> "))
         };
         let msg = format!(
-            "{} and places up to {} bytes in memory space '{}' per activation; the recursion \
+            "{} and places up to {} bytes in memory space {} per activation; the recursion \
              depth is not known at compile time, so its working set is unbounded",
-            cycle, per_activation, space
+            cycle,
+            per_activation,
+            crate::hir::check_state::MemoryCopy::quoted(space)
         );
         let facts = crate::diagnostic::DiagnosticFacts::Capacity {
             space: space.to_string(),

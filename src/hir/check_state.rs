@@ -18,6 +18,37 @@ use crate::syntax::{ElementType, Expr, MemorySpace, Span, StructDecl, Topology, 
 use crate::{hir::env::Value, syntax::Function};
 use std::collections::{HashMap, HashSet};
 
+/// One copy of a memory, which the capacity check counts on its own. Each device of a topology
+/// with more than one device has its own copy of the memory of that topology, and `device` names
+/// it (`Card[1]`). Any other memory has one copy, with no device.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MemoryCopy {
+    pub space: MemorySpace,
+    pub device: Option<String>,
+}
+
+impl MemoryCopy {
+    /// `CARD_RAM`, or `CARD_RAM of Card[1]`. The cross-call check and the JSON report key on it.
+    pub fn name(&self) -> String {
+        match &self.device {
+            None => self.space.name(),
+            Some(device) => format!("{} of {device}", self.space.name()),
+        }
+    }
+
+    /// The memory that a name from [`MemoryCopy::name`] is a copy of. A memory name has no
+    /// spaces, so the first space ends it.
+    pub fn space_of(name: &str) -> &str {
+        name.split(' ').next().unwrap_or(name)
+    }
+
+    /// A name from [`MemoryCopy::name`] as a message quotes it: `'CARD_RAM' of Card[1]`.
+    pub fn quoted(name: &str) -> String {
+        let space = Self::space_of(name);
+        format!("'{space}'{}", &name[space.len()..])
+    }
+}
+
 /// Compile-time evaluation: the constant environment and the constraints gathered from it.
 /// One tile placed in a memory space: what it costs, where it lives, and when it happened.
 #[derive(Debug, Clone)]
@@ -812,7 +843,7 @@ pub struct TrafficState {
     /// The chain is what makes this a peak rather than a sum. A placed tile is released at the
     /// end of the block that placed it, so two tiles in sibling blocks never occupy the space at
     /// the same time, and adding them together describes a program that was never run.
-    pub memory_placements: HashMap<MemorySpace, HashMap<String, Placement>>,
+    pub memory_placements: HashMap<MemoryCopy, HashMap<String, Placement>>,
     /// Monotonic id for placements with no binding name, so they still count toward the sum.
     pub placement_site: usize,
     /// The *releasing* blocks currently open, outermost first.
