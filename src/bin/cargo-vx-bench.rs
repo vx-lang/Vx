@@ -428,12 +428,15 @@ mod compare {
             cmd.arg(lib);
         }
         // The dispatch runtime needs libffi, and finds outlined kernels in the executable's
-        // own symbol table, as in the `--run` link.
+        // own symbol table, as in the `--run` link. The helper writes the version script that
+        // keeps the program's other symbols, `read` included, out of that table; it lives in
+        // the benchmark's output directory, which outlives the link and the run.
         if !dispatch.is_empty() && libs.contains(&dispatch) {
             cmd.arg("-lffi");
-            if cfg!(target_os = "linux") {
-                cmd.arg("-rdynamic");
-            }
+            cmd.args(vxc::jit::outlined_kernel_link_args(
+                std::env::consts::OS,
+                out_dir,
+            )?);
         }
         cmd.arg("-lm");
         run_to_completion(cmd, &format!("{clang} linking {}", obj.display()))?;
