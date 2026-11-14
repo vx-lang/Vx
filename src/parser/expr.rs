@@ -965,9 +965,7 @@ impl<'a> Parser<'a> {
                 }
             }
             self.consume(&TokenType::RightBrace, "Expected '}'")?;
-            // Only `as` may follow the block: a `(` or `[` on the next line starts a new
-            // statement, and `as` cannot.
-            return Ok(Expr::UnsafeBlock(UnsafeBlockExpr {
+            let expr = Expr::UnsafeBlock(UnsafeBlockExpr {
                 stmts,
                 ret,
                 span: unsafe_span,
@@ -977,7 +975,8 @@ impl<'a> Parser<'a> {
                 cancels_on_err: None,
                 value_ty: None,
                 closure_body: false,
-            }));
+            });
+            return Ok(self.wrap_try(expr));
         } else if self.check(&TokenType::If) {
             // The `if` token, so a diagnostic about the `if` points at it.
             let if_span = crate::syntax::Span {
@@ -1016,13 +1015,14 @@ impl<'a> Parser<'a> {
                     else_block = Some(block);
                 }
             }
-            return Ok(Expr::If(IfExpr {
+            let expr = Expr::If(IfExpr {
                 is_comptime,
                 cond: Box::new(cond),
                 then_block,
                 else_block,
                 span: if_span,
-            }));
+            });
+            return Ok(self.wrap_try(expr));
         } else if self.check(&TokenType::Match) {
             // The `match` token, so a diagnostic about the `match` points at it.
             let match_span = Span {
@@ -1059,7 +1059,8 @@ impl<'a> Parser<'a> {
                 .iter()
                 .any(|(p, _, _)| matches!(p, tuple_match::ArmPattern::Tuple(_)))
             {
-                return self.lower_tuple_match(expr, tuple_arms, at_statement);
+                let expr = self.lower_tuple_match(expr, tuple_arms, at_statement)?;
+                return Ok(self.wrap_try(expr));
             }
             for (pattern, body, arm_token) in tuple_arms {
                 let tuple_match::ArmPattern::Plain(pattern) = pattern else {
@@ -1076,11 +1077,12 @@ impl<'a> Parser<'a> {
                     },
                 });
             }
-            return Ok(Expr::Match(MatchExpr {
+            let expr = Expr::Match(MatchExpr {
                 expr: Box::new(expr),
                 arms,
                 span: match_span,
-            }));
+            });
+            return Ok(self.wrap_try(expr));
         }
 
         let peeked_token = self.peek().clone();
@@ -1584,24 +1586,31 @@ impl<'a> Parser<'a> {
                     span: ix_span,
                 });
             } else if self.check(&TokenType::Question) {
-                let token = self.advance();
-                let span = Span {
-                    line: token.line,
-                    column: token.column,
-                    length: token.length,
-                    expansion: self.expansion(),
-                };
-                expr = Expr::UnaryOp(UnaryOpExpr {
-                    op: UnaryOp::Try,
-                    expr: Box::new(expr),
-                    span,
-                });
+                expr = self.wrap_try(expr);
             } else {
                 break;
             }
         }
 
         Ok(expr)
+    }
+
+    fn wrap_try(&mut self, mut expr: Expr) -> Expr {
+        while self.check(&TokenType::Question) {
+            let token = self.advance();
+            let span = Span {
+                line: token.line,
+                column: token.column,
+                length: token.length,
+                expansion: self.expansion(),
+            };
+            expr = Expr::UnaryOp(UnaryOpExpr {
+                op: UnaryOp::Try,
+                expr: Box::new(expr),
+                span,
+            });
+        }
+        expr
     }
 
     /// `parse_primary_expr` followed by any `as` casts and trailing `?`.
@@ -1611,20 +1620,22 @@ impl<'a> Parser<'a> {
         let mut expr = self.parse_primary_expr()?;
         loop {
             if self.check(&TokenType::As) {
-                expr = self.parse_as_casts(expr)?;
-            } else if self.check(&TokenType::Question) {
-                let token = self.advance();
-                let span = Span {
-                    line: token.line,
-                    column: token.column,
-                    length: token.length,
+                let as_span = Span {
+                    line: self.peek().line,
+                    column: self.peek().column,
+                    length: self.peek().length,
                     expansion: self.expansion(),
                 };
-                expr = Expr::UnaryOp(UnaryOpExpr {
-                    op: UnaryOp::Try,
+                self.advance();
+                let target_ty = self.parse_type()?;
+                expr = Expr::AsCast(AsCastExpr {
                     expr: Box::new(expr),
-                    span,
+                    target_ty,
+                    source_ty: None,
+                    span: as_span,
                 });
+            } else if self.check(&TokenType::Question) {
+                expr = self.wrap_try(expr);
             } else {
                 break;
             }
@@ -1668,7 +1679,6 @@ impl<'a> Parser<'a> {
         }))
     }
 
-    /// `expr as T`, any number of times.
     /// The block body of a closure, `{ ..; v }`: a plain block whose last expression with no
     /// `;` is its value.
     fn parse_closure_block(&mut self) -> ParseResult<'a, Expr> {
@@ -1701,27 +1711,6 @@ impl<'a> Parser<'a> {
         );
         block.closure_body = true;
         Ok(Expr::UnsafeBlock(block))
-    }
-
-    fn parse_as_casts(&mut self, mut expr: Expr) -> ParseResult<'a, Expr> {
-        while self.check(&TokenType::As) {
-            // The `as` token, so a diagnostic about the cast points at it.
-            let as_span = Span {
-                line: self.peek().line,
-                column: self.peek().column,
-                length: self.peek().length,
-                expansion: self.expansion(),
-            };
-            self.advance();
-            let target_ty = self.parse_type()?;
-            expr = Expr::AsCast(AsCastExpr {
-                expr: Box::new(expr),
-                target_ty,
-                source_ty: None,
-                span: as_span,
-            });
-        }
-        Ok(expr)
     }
 }
 
@@ -2757,22 +2746,208 @@ mod tests {
         // -values[0] as i64 must parse as (-values[0]) as i64
         let expr = parse_expr("-values[0] as i64");
         match expr {
-            Expr::AsCast(AsCastExpr { expr: inner, .. }) => {
-                assert!(
-                    matches!(&*inner, Expr::UnaryOp(u) if u.op == UnaryOp::Neg),
-                    "expected (-values[0]) as i64, got cast of {:?}",
-                    inner
-                );
-            }
+            Expr::AsCast(AsCastExpr { expr: inner, .. }) => match *inner {
+                Expr::UnaryOp(UnaryOpExpr {
+                    op: UnaryOp::Neg,
+                    expr: neg_inner,
+                    ..
+                }) => match *neg_inner {
+                    Expr::IndexAccess(IndexAccessExpr { base, index, .. }) => {
+                        assert!(
+                            matches!(*base, Expr::Identifier(ref id) if id.name.as_ref() == "values")
+                        );
+                        assert!(
+                            matches!(*index, Expr::Number(ref num) if num.value.as_ref() == "0")
+                        );
+                    }
+                    other => panic!("expected IndexAccess, got {:?}", other),
+                },
+                other => panic!("expected UnaryOp(Neg), got {:?}", other),
+            },
             other => panic!("expected AsCast, got {:?}", other),
         }
     }
 
     #[test]
     fn test_unsafe_block_cast() {
-        // unsafe { 7i32 } as i64 must parse correctly
+        // unsafe { 7i32 } as i64 must parse as (unsafe { 7i32 }) as i64
         let expr = parse_expr("unsafe { 7i32 } as i64");
-        assert!(matches!(expr, Expr::AsCast(_)));
+        match expr {
+            Expr::AsCast(AsCastExpr {
+                expr: inner,
+                target_ty,
+                ..
+            }) => {
+                assert!(matches!(
+                    target_ty,
+                    Type::Scalar(crate::syntax::ElementType::I64)
+                ));
+                match *inner {
+                    Expr::UnsafeBlock(ref block) => {
+                        assert!(block.stmts.is_empty());
+                        match &block.ret {
+                            Some(ret_expr) => {
+                                assert!(
+                                    matches!(**ret_expr, Expr::Number(ref num) if num.value.as_ref() == "7" && num.ty == Some(crate::syntax::ElementType::I32))
+                                );
+                            }
+                            None => panic!("expected return expression in UnsafeBlock"),
+                        }
+                    }
+                    other => panic!("expected UnsafeBlock, got {:?}", other),
+                }
+            }
+            other => panic!("expected AsCast, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_unary_not_binds_tighter_than_as() {
+        // !b as i32 must parse as (!b) as i32
+        let expr = parse_expr("!b as i32");
+        match expr {
+            Expr::AsCast(AsCastExpr { expr: inner, .. }) => match *inner {
+                Expr::UnaryOp(UnaryOpExpr {
+                    op: UnaryOp::Not,
+                    expr: not_inner,
+                    ..
+                }) => {
+                    assert!(
+                        matches!(*not_inner, Expr::Identifier(ref id) if id.name.as_ref() == "b")
+                    );
+                }
+                other => panic!("expected UnaryOp(Not), got {:?}", other),
+            },
+            other => panic!("expected AsCast, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_unary_ref_binds_tighter_than_as() {
+        // &x as *const i32 must parse as (&x) as *const i32
+        let expr = parse_expr("&x as *const i32");
+        match expr {
+            Expr::AsCast(AsCastExpr {
+                expr: inner,
+                target_ty,
+                ..
+            }) => {
+                assert!(matches!(target_ty, Type::Pointer(..)));
+                match *inner {
+                    Expr::Borrow(BorrowExpr {
+                        expr: ref_inner,
+                        is_mut,
+                        ..
+                    }) => {
+                        assert!(!is_mut);
+                        assert!(
+                            matches!(*ref_inner, Expr::Identifier(ref id) if id.name.as_ref() == "x")
+                        );
+                    }
+                    other => panic!("expected Borrow, got {:?}", other),
+                }
+            }
+            other => panic!("expected AsCast, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_try_binds_tighter_than_as() {
+        // x? as i64 must parse as (x?) as i64
+        let expr = parse_expr("x? as i64");
+        match expr {
+            Expr::AsCast(AsCastExpr { expr: inner, .. }) => match *inner {
+                Expr::UnaryOp(UnaryOpExpr {
+                    op: UnaryOp::Try,
+                    expr: try_inner,
+                    ..
+                }) => {
+                    assert!(
+                        matches!(*try_inner, Expr::Identifier(ref id) if id.name.as_ref() == "x")
+                    );
+                }
+                other => panic!("expected UnaryOp(Try), got {:?}", other),
+            },
+            other => panic!("expected AsCast, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_cast_followed_by_try() {
+        // x as i64? must parse with Try wrapping AsCast
+        let expr = parse_expr("x as i64?");
+        match expr {
+            Expr::UnaryOp(UnaryOpExpr {
+                op: UnaryOp::Try,
+                expr: inner,
+                ..
+            }) => {
+                assert!(matches!(*inner, Expr::AsCast(_)));
+            }
+            other => panic!("expected UnaryOp(Try), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_match_block_cast() {
+        // match x { _ => { 0; } } as i64 must parse as (match ...) as i64
+        let expr = parse_expr("match x { _ => { 0; } } as i64");
+        match expr {
+            Expr::AsCast(AsCastExpr {
+                expr: inner,
+                target_ty,
+                ..
+            }) => {
+                assert!(matches!(
+                    target_ty,
+                    Type::Scalar(crate::syntax::ElementType::I64)
+                ));
+                assert!(matches!(*inner, Expr::Match(_)));
+            }
+            other => panic!("expected AsCast, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_unary_neg_unsafe_block_try() {
+        // -unsafe { r }? must parse as -(unsafe { r }?)
+        let expr = parse_expr("-unsafe { r }?");
+        match expr {
+            Expr::UnaryOp(UnaryOpExpr {
+                op: UnaryOp::Neg,
+                expr: inner,
+                ..
+            }) => match *inner {
+                Expr::UnaryOp(UnaryOpExpr {
+                    op: UnaryOp::Try,
+                    expr: try_inner,
+                    ..
+                }) => {
+                    assert!(matches!(*try_inner, Expr::UnsafeBlock(_)));
+                }
+                other => panic!("expected Try wrapping UnsafeBlock, got {:?}", other),
+            },
+            other => panic!("expected Neg wrapping Try, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_unary_ref_match_try() {
+        // &match x { _ => { r; } }? must parse as &(match x { _ => { r; } }?)
+        let expr = parse_expr("&match x { _ => { r; } }?");
+        match expr {
+            Expr::Borrow(BorrowExpr { expr: inner, .. }) => match *inner {
+                Expr::UnaryOp(UnaryOpExpr {
+                    op: UnaryOp::Try,
+                    expr: try_inner,
+                    ..
+                }) => {
+                    assert!(matches!(*try_inner, Expr::Match(_)));
+                }
+                other => panic!("expected Try wrapping Match, got {:?}", other),
+            },
+            other => panic!("expected Borrow wrapping Try, got {:?}", other),
+        }
     }
 
     #[test]
