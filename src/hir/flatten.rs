@@ -2081,11 +2081,24 @@ impl<'r> Lowerer<'r> {
             // *local* that lives in a slot (`&v` where `v` is a struct slot, or `&x` where `x` is an
             // address-taken scalar demoted to a slot by the pre-pass, #230) yields the slot's
             // `!llvm.ptr` — the pointer a `&Vec<T>` method receives so `v.len()` lowers (#242), or the
-            // `&i32` a `pick(a : &i32, ..)` argument passes. Only scalars/aggregates are ever slotted,
-            // so the slot register is the pointee's address in both cases.
+            // `&i32` a `pick(a : &i32, ..)` argument passes. A tensor can be slotted too, and any
+            // tensor slot holds the tensor rather than the tensor's address; that case reads the
+            // memref out of the slot below.
             Expr::Borrow(b) => {
                 if let Expr::Identifier(id) = &*b.expr {
-                    if let Some(Binding::Slot { reg, .. }) = self.scope.get(&id.name).cloned() {
+                    if let Some(Binding::Slot { reg, ty }) = self.scope.get(&id.name).cloned() {
+                        // Every tensor slot holds the tensor's memref, not the tensor's address,
+                        // which is the only reason this read yields the tensor. A tensor local
+                        // gets a slot when the code has control flow and the local is given a new
+                        // value (see `LetDecl`), when the function is in memory mode, so
+                        // `bind_local` slots it even with no reassignment, when a `match` binds it
+                        // out of an enum's payload (see `bind_local`), and from a value-position
+                        // `let x : T = if ..`, whose `if` allocates a result slot (see `LetDecl`).
+                        // Borrowing a tensor is transparent, so the borrow is the memref read out
+                        // of the slot.
+                        if matches!(ty, LoweredTy::Tensor { .. }) {
+                            return Ok(self.emit_typed(Opcode::SlotLoad, reg, Register(0), ty, 0));
+                        }
                         return Ok(Val {
                             reg,
                             ty: LoweredTy::Ptr,
