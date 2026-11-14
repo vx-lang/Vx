@@ -1,0 +1,79 @@
+//===- book_workers_reply_on_oneshot_channels.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on tasks (www/book/src/tasks.md): three workers take jobs from
+// one work queue. Each job carries a oneshot channel, and the worker sends the answer on it.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}the squares of 1 to 5 add up to 55{{$}}
+
+// ANCHOR: program
+import std::sync::oneshot;
+import std::sync::work_queue;
+import std::vec;
+
+struct Job {
+  n : i64,
+  reply : OneshotSender<i64>,
+}
+
+fn worker(jobs : WorkReceiver<Job>) -> void {
+  let mut open = true;
+  while open {
+    match jobs.recv() {
+      Result<Job, RecvError>::Ok(job) => {
+        let _sent = job.reply.send(job.n * job.n);
+      }
+      Result<Job, RecvError>::Err(_e) => {
+        open = false;
+      }
+    }
+  }
+}
+
+fn ask(jobs : &Sender<Job>, n : i64) -> OneshotReceiver<i64> {
+  let (reply, answer) = oneshot<i64>();
+  let _sent = jobs.send(Job {
+    n : n, reply : reply
+  });
+  return answer;
+}
+
+fn main() -> i32 {
+  let (jobs, workers) = work_queue<Job>(2);
+  let mut sum : i64 = 0;
+  tasks {
+    for _w in 0..3 {
+      let mine = workers.clone();
+      spawn {
+        worker(mine);
+      };
+    }
+    drop(workers);
+    // Ask all the questions first, and then read the answers.
+    let mut answers = Vec<OneshotReceiver<i64>>::new();
+    let first : i64 = 1;
+    for n in first..6 {
+      answers.push(ask(&jobs, n));
+    }
+    // The workers stop when the last `Sender` is dropped.
+    drop(jobs);
+    for i in 0..answers.len() {
+      match answers.get_ref(i).recv() {
+        Result<i64, RecvError>::Ok(v) => {
+          sum = sum + v;
+        }
+        Result<i64, RecvError>::Err(_e) => {}
+      }
+    }
+  };
+  println!("the squares of 1 to 5 add up to {}", sum);
+  return 0;
+}
+// ANCHOR_END: program

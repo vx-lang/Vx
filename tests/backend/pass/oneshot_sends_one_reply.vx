@@ -1,0 +1,109 @@
+//===- oneshot_sends_one_reply.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A oneshot channel carries one value.
+//
+// - A task sends 42, and `recv` gives it. The `send` drops the sender, so the next `recv` gives
+//   `Closed`.
+// - `recv_for` gives `TimedOut` when no value comes. A sender dropped with no `send` gives `Closed`.
+// - The code of a `tasks` block returns early while a task waits in `recv`. The cancel ends it.
+// - A `send` after the drop of the receiver gives the value back.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_SEED=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}recv gave 42{{$}}
+// CHECK-NEXT: {{^}}recv gave Closed{{$}}
+// CHECK-NEXT: {{^}}recv gave TimedOut{{$}}
+// CHECK-NEXT: {{^}}it waited at least 0.02 seconds: true{{$}}
+// CHECK-NEXT: {{^}}recv gave Closed{{$}}
+// CHECK-NEXT: {{^}}recv gave Cancelled{{$}}
+// CHECK-NEXT: {{^}}leave_early gave 7{{$}}
+// CHECK-NEXT: {{^}}send gave back 5{{$}}
+
+import core::time;
+import std::sync::oneshot;
+import std::sync::wait;
+
+fn say(e : RecvError) -> void {
+  match e {
+    RecvError::Closed => {
+      println!("recv gave Closed");
+    }
+    RecvError::Cancelled => {
+      println!("recv gave Cancelled");
+    }
+    RecvError::TimedOut => {
+      println!("recv gave TimedOut");
+    }
+  }
+}
+
+fn show(r : Result<i64, RecvError>) -> void {
+  match r {
+    Result<i64, RecvError>::Ok(v) => {
+      println!("recv gave {}", v);
+    }
+    Result<i64, RecvError>::Err(e) => {
+      say(e);
+    }
+  }
+}
+
+fn reply(tx : OneshotSender<i64>, v : i64) -> void {
+  match tx.send(v) {
+    Result<void, SendError<i64>>::Ok() => {}
+    Result<void, SendError<i64>>::Err(e) => {
+      println!("send gave back {}", e.value);
+    }
+  }
+}
+
+fn wait_for_reply(rx : OneshotReceiver<i64>) -> void {
+  show(rx.recv());
+}
+
+fn leave_early(early : bool) -> i64 {
+  let (tx, rx) = oneshot<i64>();
+  tasks {
+    spawn {
+      wait_for_reply(rx);
+    };
+    if early {
+      return 7;
+    }
+    reply(tx, 1);
+  };
+  return 0;
+}
+
+fn main() -> i32 {
+  let (tx, rx) = oneshot<i64>();
+  tasks {
+    spawn {
+      reply(tx, 42);
+    };
+    show(rx.recv());
+  };
+  show(rx.recv());
+
+  let (never, rx2) = oneshot<i64>();
+  let start = clock_ns();
+  show(rx2.recv_for(Duration::from_millis(20)));
+  println!("it waited at least 0.02 seconds: {}", clock_ns() - start >= 20000000);
+  drop(never);
+  show(rx2.recv());
+
+  let left = leave_early(true);
+  println!("leave_early gave {}", left);
+
+  let (tx3, rx3) = oneshot<i64>();
+  drop(rx3);
+  reply(tx3, 5);
+  return 0;
+}

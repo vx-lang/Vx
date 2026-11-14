@@ -1,0 +1,120 @@
+//===- watch_gives_the_latest_value.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A watch channel holds one value, and its receivers see only the latest one.
+//
+// - The receiver saw the first value. Three sends then give one `recv` the value 3.
+// - `recv_for` gives `TimedOut` when the value does not change.
+// - A task waits in `recv` until the code of the block sends 10.
+// - After the drop of the sender, `recv` gives the last value once, and then `Closed`.
+// - The code of a `tasks` block returns early while a task waits in `recv`. The cancel ends it.
+// - A `send` with no receiver gives the value back.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_SEED=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}get gave 0, changed false{{$}}
+// CHECK-NEXT: {{^}}after three sends, changed true{{$}}
+// CHECK-NEXT: {{^}}recv gave 3{{$}}
+// CHECK-NEXT: {{^}}a clone sees 3 as new: false{{$}}
+// CHECK-NEXT: {{^}}recv gave TimedOut{{$}}
+// CHECK-NEXT: {{^}}recv gave 10{{$}}
+// CHECK-NEXT: {{^}}recv gave 11{{$}}
+// CHECK-NEXT: {{^}}recv gave Closed{{$}}
+// CHECK-NEXT: {{^}}recv gave Cancelled{{$}}
+// CHECK-NEXT: {{^}}leave_early gave 7{{$}}
+// CHECK-NEXT: {{^}}send gave back 9{{$}}
+
+import core::time;
+import std::sync::wait;
+import std::sync::watch;
+
+fn say(e : RecvError) -> void {
+  match e {
+    RecvError::Closed => {
+      println!("recv gave Closed");
+    }
+    RecvError::Cancelled => {
+      println!("recv gave Cancelled");
+    }
+    RecvError::TimedOut => {
+      println!("recv gave TimedOut");
+    }
+  }
+}
+
+fn show(r : Result<i64, RecvError>) -> void {
+  match r {
+    Result<i64, RecvError>::Ok(v) => {
+      println!("recv gave {}", v);
+    }
+    Result<i64, RecvError>::Err(e) => {
+      say(e);
+    }
+  }
+}
+
+fn send_now(tx : &WatchSender<i64>, v : i64) -> void {
+  match tx.send(v) {
+    Result<void, SendError<i64>>::Ok() => {}
+    Result<void, SendError<i64>>::Err(e) => {
+      println!("send gave back {}", e.value);
+    }
+  }
+}
+
+fn wait_for_change(rx : WatchReceiver<i64>) -> void {
+  show(rx.recv());
+}
+
+fn leave_early(early : bool) -> i64 {
+  let (tx, rx) = watch<i64>(0);
+  tasks {
+    spawn {
+      wait_for_change(rx);
+    };
+    if early {
+      return 7;
+    }
+    send_now(&tx, 1);
+  };
+  return 0;
+}
+
+fn main() -> i32 {
+  let (tx, rx) = watch<i64>(0);
+  println!("get gave {}, changed {}", rx.get(), rx.has_changed());
+  send_now(&tx, 1);
+  send_now(&tx, 2);
+  send_now(&tx, 3);
+  println!("after three sends, changed {}", rx.has_changed());
+  show(rx.recv());
+  let copy = rx.clone();
+  println!("a clone sees 3 as new: {}", copy.has_changed());
+  show(rx.recv_for(Duration::from_millis(20)));
+
+  tasks {
+    spawn {
+      wait_for_change(copy);
+    };
+    send_now(&tx, 10);
+  };
+
+  send_now(&tx, 11);
+  drop(tx);
+  show(rx.recv());
+  show(rx.recv());
+
+  let left = leave_early(true);
+  println!("leave_early gave {}", left);
+
+  let (to_none, none) = watch<i64>(0);
+  drop(none);
+  send_now(&to_none, 9);
+  return 0;
+}

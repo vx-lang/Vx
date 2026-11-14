@@ -1,0 +1,93 @@
+//===- within_ends_the_waits_of_oneshot_broadcast_watch_and_work_queue.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each wait below has no value to wait for, and runs in the body of `within` with a limit of
+// 20 ms. At the limit, each wait gives up as in a cancelled block: a `recv` gives `Cancelled`,
+// and the `send` on a full broadcast channel gives its value back with `cancelled` set.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}oneshot recv gave Cancelled{{$}}
+// CHECK-NEXT: {{^}}broadcast recv gave Cancelled{{$}}
+// CHECK-NEXT: {{^}}broadcast send gave back 2, cancelled true{{$}}
+// CHECK-NEXT: {{^}}watch recv gave Cancelled{{$}}
+// CHECK-NEXT: {{^}}work queue recv gave Cancelled{{$}}
+
+import core::time;
+import std::sync::broadcast;
+import std::sync::oneshot;
+import std::sync::wait;
+import std::sync::watch;
+import std::sync::work_queue;
+
+fn is_cancelled(r : Result<i64, RecvError>) -> bool {
+  let mut cancelled = false;
+  match r {
+    Result<i64, RecvError>::Ok(_v) => {}
+    Result<i64, RecvError>::Err(e) => {
+      match e {
+        RecvError::Cancelled => {
+          cancelled = true;
+        }
+        RecvError::Closed => {}
+        RecvError::TimedOut => {}
+      }
+    }
+  }
+  return cancelled;
+}
+
+fn say(what : *const i8, cancelled : bool) -> void {
+  if cancelled {
+    println!("{} recv gave Cancelled", what);
+  } else {
+    println!("{} recv did not give Cancelled", what);
+  }
+}
+
+fn main() -> i32 {
+  let limit = Duration::from_millis(20);
+
+  let (one_tx, one_rx) = oneshot<i64>();
+  say("oneshot", within(limit, || -> bool {
+    is_cancelled(one_rx.recv())
+  }));
+
+  let (all_tx, all_rx) = broadcast<i64>(1);
+  say("broadcast", within(limit, || -> bool {
+    is_cancelled(all_rx.recv())
+  }));
+  let _sent = all_tx.send(1);
+  // `all_rx` did not read 1, so the room is full.
+  let r = within(limit, || -> Result<void, SendError<i64>> {
+    all_tx.send(2)
+  });
+  match r {
+    Result<void, SendError<i64>>::Ok() => {
+      println!("broadcast send sent 2");
+    }
+    Result<void, SendError<i64>>::Err(e) => {
+      println!("broadcast send gave back {}, cancelled {}", e.value, e.cancelled);
+    }
+  }
+
+  let (watch_tx, watch_rx) = watch<i64>(0);
+  say("watch", within(limit, || -> bool {
+    is_cancelled(watch_rx.recv())
+  }));
+
+  let (work_tx, work_rx) = work_queue<i64>(1);
+  say("work queue", within(limit, || -> bool {
+    is_cancelled(work_rx.recv())
+  }));
+
+  drop(one_tx);
+  drop(watch_tx);
+  drop(work_tx);
+  return 0;
+}

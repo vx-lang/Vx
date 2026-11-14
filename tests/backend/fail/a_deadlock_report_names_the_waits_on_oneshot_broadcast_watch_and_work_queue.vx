@@ -1,0 +1,106 @@
+//===- a_deadlock_report_names_the_waits_on_oneshot_broadcast_watch_and_work_queue.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Two pairs of tasks wait for each other, so the program has a deadlock.
+//
+// - One task waits in `recv` on a oneshot channel. Only the other task can send on it, and that
+//   task waits in `recv` on a watch channel that only the first task can send on.
+// - One task waits in `send` on a full work queue. Only the other task can receive from it, and
+//   that task waits in `recv` on a broadcast channel that only the first task can send on.
+//
+// The report names each wait, and each cycle, as it does for `channel`.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 not vxc %s 2>&1 | FileCheck %s
+// RUN: env VX_TASK_SEED=1 not vxc %s 2>&1 | FileCheck %s
+// CHECK: vx: deadlock: each task of the program waits, and nothing can wake one. The program stops.
+// CHECK-NEXT: {{^}}  the main code waits for the end of the task from the `spawn` at {{.*}}.vx:91{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `recv` at {{.*}}.vx:50 on channel 1, made at {{.*}}.vx:86, which only the task from the `spawn` at {{.*}}.vx:94 can send on{{$}}
+// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:91{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `recv` at {{.*}}.vx:60 on channel 2, made at {{.*}}.vx:87, which only the task from the `spawn` at {{.*}}.vx:91 can send on{{$}}
+// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:94{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `send` at {{.*}}.vx:71 on channel 3, made at {{.*}}.vx:89, which only the task from the `spawn` at {{.*}}.vx:100 can receive from{{$}}
+// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:97{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `recv` at {{.*}}.vx:77 on channel 4, made at {{.*}}.vx:88, which only the task from the `spawn` at {{.*}}.vx:97 can send on{{$}}
+// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:100{{$}}
+// CHECK-NEXT: {{^}}  the waits form a cycle:{{$}}
+// CHECK-NEXT: {{^}}    the task from the `spawn` at {{.*}}.vx:91 waits in `recv` at {{.*}}.vx:50 on channel 1, made at {{.*}}.vx:86, which only the task from the `spawn` at {{.*}}.vx:94 can send on{{$}}
+// CHECK-NEXT: {{^}}    the task from the `spawn` at {{.*}}.vx:94 waits in `recv` at {{.*}}.vx:60 on channel 2, made at {{.*}}.vx:87, which only the task from the `spawn` at {{.*}}.vx:91 can send on{{$}}
+// CHECK-NEXT: {{^}}  the waits form a cycle:{{$}}
+// CHECK-NEXT: {{^}}    the task from the `spawn` at {{.*}}.vx:97 waits in `send` at {{.*}}.vx:71 on channel 3, made at {{.*}}.vx:89, which only the task from the `spawn` at {{.*}}.vx:100 can receive from{{$}}
+// CHECK-NEXT: {{^}}    the task from the `spawn` at {{.*}}.vx:100 waits in `recv` at {{.*}}.vx:77 on channel 4, made at {{.*}}.vx:88, which only the task from the `spawn` at {{.*}}.vx:97 can send on{{$}}
+// CHECK-NEXT: {{^}}  the channels of these waits:{{$}}
+// CHECK-NEXT: {{^}}    channel 1, made at {{.*}}.vx:86: 1 wait in `recv` and 0 in `send`. 1 `Sender` is not dropped.{{$}}
+// CHECK-NEXT: {{^}}    channel 2, made at {{.*}}.vx:87: 1 wait in `recv` and 0 in `send`. 1 `Sender` is not dropped.{{$}}
+// CHECK-NEXT: {{^}}    channel 3, made at {{.*}}.vx:89: 0 waits in `recv` and 1 in `send`. 1 `Sender` is not dropped.{{$}}
+// CHECK-NEXT: {{^}}    channel 4, made at {{.*}}.vx:88: 1 wait in `recv` and 0 in `send`. 1 `Sender` is not dropped.{{$}}
+// CHECK: Program was killed by signal 6 (SIGABRT
+
+import std::sync::broadcast;
+import std::sync::oneshot;
+import std::sync::watch;
+import std::sync::work_queue;
+
+// Waits for the reply, and only then changes the setting.
+fn ask(reply : OneshotReceiver<i64>, setting : WatchSender<i64>) -> void {
+  match reply.recv() {
+    Result<i64, RecvError>::Ok(v) => {
+      let _sent = setting.send(v);
+    }
+    Result<i64, RecvError>::Err(_e) => {}
+  }
+}
+
+// Waits for a change of the setting, and only then replies.
+fn answer(setting : WatchReceiver<i64>, reply : OneshotSender<i64>) -> void {
+  match setting.recv() {
+    Result<i64, RecvError>::Ok(v) => {
+      let _sent = reply.send(v);
+    }
+    Result<i64, RecvError>::Err(_e) => {}
+  }
+}
+
+// Sends two jobs on a work queue with room for one, and only then sends the news.
+fn announce(jobs : Sender<i64>, news : BroadcastSender<i64>) -> void {
+  let _first = jobs.send(1);
+  let _second = jobs.send(2);
+  let _news = news.send(3);
+}
+
+// Waits for the news, and only then takes the jobs.
+fn work(news : BroadcastReceiver<i64>, jobs : WorkReceiver<i64>) -> void {
+  match news.recv() {
+    Result<i64, RecvError>::Ok(_v) => {
+      let _job = jobs.recv();
+    }
+    Result<i64, RecvError>::Err(_e) => {}
+  }
+}
+
+fn main() -> i32 {
+  let (reply_tx, reply_rx) = oneshot<i64>();
+  let (setting_tx, setting_rx) = watch<i64>(0);
+  let (news_tx, news_rx) = broadcast<i64>(1);
+  let (jobs_tx, jobs_rx) = work_queue<i64>(1);
+  tasks {
+    let first = spawn {
+      ask(reply_rx, setting_tx);
+    };
+    spawn {
+      answer(setting_rx, reply_tx);
+    };
+    spawn {
+      announce(jobs_tx, news_tx);
+    };
+    spawn {
+      work(news_rx, jobs_rx);
+    };
+    first.join();
+  };
+  return 0;
+}

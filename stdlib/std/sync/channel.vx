@@ -71,7 +71,8 @@ const RECVS : i64 = 1;
 // The `Sender`s that are not dropped. At 0 the channel is closed for good: a new `Sender` comes
 // only from another `Sender`.
 const SENDERS : i64 = 2;
-// 1 until the `Receiver` is dropped.
+// 1 until the `Receiver` is dropped. A `work_queue`, a `broadcast` and a `watch` count their
+// receivers here.
 const RECEIVER : i64 = 3;
 // The ends that are not dropped. The last one frees the channel.
 const ENDS : i64 = 4;
@@ -183,6 +184,46 @@ fn word(words : *mut AtomicI64, i : i64) -> &AtomicI64 {
   return unsafe { &words[i] };
 }
 
+/// Take the lock of a `broadcast` or a `watch`, at the three words from `at`: a ticket lock, as
+/// in `Mutex`. The code that holds it does not wait, so a wait for it is short.
+fn lock_channel(words : *mut AtomicI64, at : i64) -> void {
+  let ticket = word(words, at).fetch_add(1, AtomicOrdering::Relaxed);
+  let serving = word(words, at + 1);
+  let mut now = serving.load(AtomicOrdering::Acquire);
+  while now != ticket {
+    word(words, at + 2).fetch_add(1, AtomicOrdering::SeqCst);
+    wait_while(serving, now);
+    word(words, at + 2).fetch_sub(1, AtomicOrdering::SeqCst);
+    now = serving.load(AtomicOrdering::Acquire);
+  }
+}
+
+/// A word on the heap that holds `v`: the place of one receiver of a `broadcast` or a `watch`.
+/// It is not a field of the receiver: the AST code generator copies a struct argument for each
+/// call of a method that takes `&self`, so a change to a field could be lost.
+fn new_receiver_word(v : i64) -> *mut AtomicI64 {
+  let w : *mut AtomicI64 = alloc(8, 8);
+  if is_null_mut(w) {
+    panic("channel: out of memory");
+  }
+  unsafe { w[0] = AtomicI64::new(v); }
+  return w;
+}
+
+/// Free a word of `new_receiver_word`.
+fn free_receiver_word(w : *mut AtomicI64) -> void {
+  let p : *mut i8 = w;
+  dealloc(p, 8);
+}
+
+/// Free the lock that `lock_channel` took.
+fn unlock_channel(words : *mut AtomicI64, at : i64) -> void {
+  word(words, at + 1).fetch_add(1, AtomicOrdering::SeqCst);
+  if word(words, at + 2).load(AtomicOrdering::SeqCst) > 0 {
+    wake_all(word(words, at + 1));
+  }
+}
+
 /// Moves the value in slot `i` out of the buffer. The caller marks the slot taken, so the
 /// buffer does not drop it again.
 unsafe fn take_slot<T>(data : *mut T, i : i64) -> T {
@@ -262,7 +303,8 @@ Sender<T> {
     let k = word(words, SENDS).fetch_add(1, AtomicOrdering::Relaxed);
     let slot = word(words, SLOTS + k % self.cap);
     let mut seen = word(words, WAKE).load(AtomicOrdering::SeqCst);
-    while word(words, RECEIVER).load(AtomicOrdering::SeqCst) == 1 {
+    // A `work_queue` has many receivers, so this counts them.
+    while word(words, RECEIVER).load(AtomicOrdering::SeqCst) > 0 {
       if slot.load(AtomicOrdering::Acquire) == 2 * k {
         let data = self.data;
         unsafe { data[k % self.cap] = v; }
