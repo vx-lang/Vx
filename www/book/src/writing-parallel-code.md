@@ -92,7 +92,8 @@ An `across` loop is easier to get right than tasks:
 - The compiler checks that two passes cannot write the same element. When they can, it gives the
   error E6032. So an `across` loop has no data race for a test to find.
 - The meaning of the program does not depend on `across`. Remove each `across`, and the loops run
-  one pass at a time with the same result.
+  one pass at a time with the same result. A `lanes::` routine such as `lanes::sum` is the
+  exception: it needs its `across` loops, and without them the program does not compile.
 - The lanes of a block can share a tile in `Memory::SMEM`. The end of each lane loop waits for all
   the lanes of the block, so the next lane loop can read what any lane wrote.
 
