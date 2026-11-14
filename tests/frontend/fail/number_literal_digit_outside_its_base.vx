@@ -1,0 +1,17 @@
+//===- number_literal_digit_outside_its_base.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A binary literal holds only `0` and `1`. The error names the digit that does not belong,
+// so the reader does not have to count.
+
+fn main() -> i32 {
+  // CHECK: '2' is not a binary digit in '0b102'
+  let a : i32 = 0b102;
+  return a;
+}

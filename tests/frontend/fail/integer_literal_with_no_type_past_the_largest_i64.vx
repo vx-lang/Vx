@@ -1,0 +1,44 @@
+//===- integer_literal_with_no_type_past_the_largest_i64.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc -j 2 %s 2>&1 | FileCheck %s
+//
+// A literal with no suffix, where nothing around it gives it a type, is at most an `i64`. A
+// literal from 2^63 up to 2^64 - 1 is an error that suggests a `u64` suffix. It used to crash
+// the code generator. A literal that needs more than 64 bits is an error, with a type or not.
+
+fn id<T>(x : T) -> T {
+  return x;
+}
+
+fn main() -> i32 {
+  // CHECK: Error[E3045] at {{.*}}.vx:[[@LINE+3]]:13: 0x8000_0000_0000_0000 does not fit `i64`, which holds -9223372036854775808 up to 9223372036854775807
+  // CHECK-NEXT: note: an integer literal with no suffix is at most an `i64`, unless the code around it gives it a type
+  // CHECK-NEXT: note: write `0x8000_0000_0000_0000u64` for a `u64`
+  let hex = 0x8000_0000_0000_0000;
+  // CHECK: Error[E3045] at {{.*}}.vx:[[@LINE+2]]:17: 18446744073709551615 does not fit `i64`
+  // CHECK: note: write `18446744073709551615u64` for a `u64`
+  let decimal = 18446744073709551615;
+  // CHECK: Error[E3045] at {{.*}}.vx:[[@LINE+2]]:15: -0x8000_0000_0000_0001 does not fit `i64`
+  // CHECK-NEXT: note: an integer literal with no suffix
+  let below = -0x8000_0000_0000_0001;
+  // A negative literal cannot be a `u64`, so the next error follows with no `u64` note.
+  // CHECK-NEXT: Error[E3045] at {{.*}}.vx:[[@LINE+1]]:9: 0xFFFF_FFFF_FFFF_FFFF does not fit `i64`
+  print(0xFFFF_FFFF_FFFF_FFFF);
+  // A type parameter and an `as` give no type to the literal.
+  // CHECK: Error[E3045] at {{.*}}.vx:[[@LINE+1]]:17: 0x8000_0000_0000_0000 does not fit `i64`
+  let same = id(0x8000_0000_0000_0000);
+  // CHECK: Error[E3045] at {{.*}}.vx:[[@LINE+1]]:14: 0xFFFF_FFFF_FFFF_FFFF does not fit `i64`
+  let mask = 0xFFFF_FFFF_FFFF_FFFF as u64;
+  // CHECK: Error[E3045] at {{.*}}.vx:[[@LINE+1]]:21: 0x1_0000_0000_0000_0000 needs more than 64 bits
+  let huge : i128 = 0x1_0000_0000_0000_0000;
+  // CHECK: Error[E3045] at {{.*}}.vx:[[@LINE+1]]:14: 0x1_0000_0000_0000_0000 needs more than 64 bits
+  let wide = 0x1_0000_0000_0000_0000;
+  return 0;
+}
+// CHECK: 8 error(s) emitted

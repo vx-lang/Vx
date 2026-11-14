@@ -2445,17 +2445,20 @@ impl<'a> TypeChecker<'a> {
     fn pinned_topology_for(space: &MemorySpace) -> Topology {
         match space {
             MemorySpace::NPUHBM => Topology::NPU(Box::new(Expr::Number(NumberExpr {
+                written: None,
                 value: "0".into(),
                 ty: Some(ElementType::I32),
                 span: Span::default(),
             }))),
             MemorySpace::LocalSRAM => Topology::AccCore(Box::new(Expr::Number(NumberExpr {
+                written: None,
                 value: "0".into(),
                 ty: Some(ElementType::I32),
                 span: Span::default(),
             }))),
             MemorySpace::NicRam | MemorySpace::RemoteHbm => {
                 Topology::NPU(Box::new(Expr::Number(NumberExpr {
+                    written: None,
                     value: "0".into(),
                     ty: Some(ElementType::I32),
                     span: Span::default(),

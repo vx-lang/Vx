@@ -1257,7 +1257,15 @@ impl<'a> TypeChecker<'a> {
                 expr: inner,
                 span,
             }) => {
-                let inner_ty = self.check_expr_type(inner);
+                let mut inner_ty = self.check_expr_type(inner);
+                // An untyped literal is past the largest `i64`, but `-9223372036854775808` is
+                // the smallest `i64`.
+                if let (UnaryOp::Neg, Expr::Number(n)) = (&*op, &mut **inner) {
+                    if n.ty.is_none() && format!("-{}", n.value).parse::<i64>().is_ok() {
+                        n.ty = Some(ElementType::I64);
+                        inner_ty = Type::Scalar(ElementType::I64);
+                    }
+                }
                 if let (UnaryOp::Neg, Expr::Number(n)) = (&*op, &**inner) {
                     if Self::scalar_elem(&inner_ty).is_some_and(|e| e.is_narrow_float()) {
                         let value = match n.value.as_ref().strip_prefix('-') {

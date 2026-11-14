@@ -229,11 +229,19 @@ impl<'a> TypeChecker<'a> {
         if let Some(el) = &n.ty {
             return Type::Scalar(el.clone());
         }
-        let elem = self
+        let expected = self
             .expected_type
             .as_ref()
-            .and_then(|t| expected_numeric_elem(t, &n.value))
+            .and_then(|t| expected_numeric_elem(t, &n.value));
+        let elem = expected
+            .clone()
             .unwrap_or_else(|| crate::parser::expr::default_number_elem(&n.value));
+        // Past the largest `i64`, the default is an `i128`, which no code generator supports.
+        // The literal stays untyped, so `check_integer_literals_fit` refuses it, unless a call
+        // gives it a type first.
+        if expected.is_none() && elem == ElementType::I128 {
+            return Type::Scalar(elem);
+        }
         n.ty = Some(elem.clone());
         Type::Scalar(elem)
     }
@@ -272,44 +280,84 @@ impl<'a> TypeChecker<'a> {
     /// checked: a literal argument takes the type of its parameter only when the call is
     /// resolved. A literal under a `-` is read with it, so `-128` fits an `i8`, though `128`
     /// does not. A `usize` never has its top bit set, which is what lets its arithmetic be
-    /// marked as never wrapping.
+    /// marked as never wrapping. A literal that is still untyped is past the largest `i64`,
+    /// and nothing gave it a type.
     pub(crate) fn check_integer_literals_fit(&mut self, body: &[Statement]) {
-        let mut found: Vec<(String, ElementType, Span)> = Vec::new();
+        // The value to test, the literal as written for the message, its type, and where it is.
+        let mut found: Vec<(String, String, Option<ElementType>, Span)> = Vec::new();
         let mut negated: std::collections::HashSet<*const NumberExpr> = Default::default();
+        let written = |n: &NumberExpr| n.written.as_ref().map_or(&n.value, |w| &w.text).to_string();
         crate::syntax::visit_exprs(body, &mut |e| match e {
             Expr::UnaryOp(u) if u.op == UnaryOp::Neg => {
                 if let Expr::Number(n) = &*u.expr {
                     negated.insert(n as *const NumberExpr);
                     // `-` on a `usize` has its own error, E3030.
-                    if let Some(ty) = n.ty.as_ref().filter(|t| **t != ElementType::USize) {
-                        found.push((format!("-{}", n.value), ty.clone(), u.span));
+                    if n.ty != Some(ElementType::USize) {
+                        let value = format!("-{}", n.value);
+                        found.push((value, format!("-{}", written(n)), n.ty.clone(), u.span));
                     }
                 }
             }
             Expr::Number(n) if !negated.contains(&(n as *const NumberExpr)) => {
-                if let Some(ty) = &n.ty {
-                    found.push((n.value.to_string(), ty.clone(), n.span));
-                }
+                let at = n.written.as_ref().map_or(n.span, |w| w.span);
+                found.push((n.value.to_string(), written(n), n.ty.clone(), at));
             }
             _ => {}
         });
-        for (text, ty, span) in found {
-            if ty.accepts_integer_literal(&text) != Some(false) {
-                continue;
-            }
-            let message = if ty == ElementType::USize {
-                format!(
-                    "{text} does not fit `usize`, which holds 0 up to {}",
-                    i64::MAX
-                )
-            } else {
-                format!("{text} does not fit `{ty}`")
+        for (value, text, ty, span) in found {
+            let integer = match &ty {
+                Some(ty) => ty.accepts_integer_literal(&value).is_some(),
+                None => !crate::parser::expr::is_float_literal_spelling(&value),
             };
-            // A number the compiler wrote has no place in the source.
+            // Both code generators hold an integer constant in 64 bits.
+            let magnitude = value.trim_start_matches('-');
+            let too_wide = integer && magnitude.parse::<u64>().is_err();
+            let mut notes = Vec::new();
+            let message = match &ty {
+                Some(ty) if ty.accepts_integer_literal(&value) == Some(false) => {
+                    if *ty == ElementType::USize {
+                        format!(
+                            "{text} does not fit `usize`, which holds 0 up to {}",
+                            i64::MAX
+                        )
+                    } else {
+                        format!("{text} does not fit `{ty}`")
+                    }
+                }
+                _ if too_wide => format!(
+                    "{text} needs more than 64 bits, and an integer literal that wide is not \
+                     supported yet"
+                ),
+                Some(_) => continue,
+                None if !integer || value.parse::<i64>().is_ok() => continue,
+                None => {
+                    notes.push(
+                        "an integer literal with no suffix is at most an `i64`, unless the code \
+                         around it gives it a type"
+                            .to_string(),
+                    );
+                    if !value.starts_with('-') {
+                        notes.push(format!("write `{text}u64` for a `u64`"));
+                    }
+                    format!(
+                        "{text} does not fit `i64`, which holds {} up to {}",
+                        i64::MIN,
+                        i64::MAX
+                    )
+                }
+            };
+            // A literal the compiler made has no position.
             let at = (span != Span::default())
                 .then(|| crate::diagnostic::SourceSpan::from_ast_span(&span));
-            self.errors
-                .error_with_code(crate::diagnostic::DiagnosticCode::E3045, message, at);
+            let diagnostic =
+                self.errors
+                    .error_with_code(crate::diagnostic::DiagnosticCode::E3045, message, at);
+            for message in notes {
+                diagnostic.notes.push(crate::diagnostic::Note {
+                    message: message.into(),
+                    span: None,
+                });
+            }
         }
     }
 

@@ -421,6 +421,7 @@ impl<'a> TypeChecker<'a> {
 
     fn number_expr(v: i64) -> Expr {
         Expr::Number(NumberExpr {
+            written: None,
             value: v.to_string().into(),
             ty: None,
             span: Span::default(),
@@ -1354,7 +1355,23 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn forget_value_facts_about(&mut self, name: &str) {
         for c in self.consteval.constraints.iter_mut() {
             if expr_mentions(c, name) {
-                *c = no_fact();
+                *c = Expr::RelationalOp(RelationalOpExpr {
+                    lhs: Box::new(Expr::Number(NumberExpr {
+                        written: None,
+                        value: "0".to_string().into(),
+                        ty: None,
+                        span: Span::default(),
+                    })),
+                    op: RelationalOp::Eq,
+                    rhs: Box::new(Expr::Number(NumberExpr {
+                        written: None,
+                        value: "0".to_string().into(),
+                        ty: None,
+                        span: Span::default(),
+                    })),
+                    span: Span::default(),
+                    operand_ty: None,
+                });
             }
         }
     }
@@ -1632,6 +1649,7 @@ pub(crate) fn no_fact() -> Expr {
             value: "0".to_string().into(),
             ty: None,
             span: Span::default(),
+            written: None,
         }))
     };
     Expr::RelationalOp(RelationalOpExpr {

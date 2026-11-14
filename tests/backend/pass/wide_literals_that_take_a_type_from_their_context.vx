@@ -1,0 +1,37 @@
+//===- wide_literals_that_take_a_type_from_their_context.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A literal past the largest `i64` works where the code around it gives it a type: a
+// parameter, the other side of `==`, a `let` type or `fill`. With no type,
+// `-0x8000_0000_0000_0000` is the smallest `i64`.
+//
+// EXPECT: 18446744073709551615 1 9223372036854775808 18446744073709551615 -9223372036854775808
+
+fn take(n : u64) -> u64 {
+  return n;
+}
+
+fn main() -> i32 {
+  print(take(0xFFFF_FFFF_FFFF_FFFF));
+  print!(" ");
+  let x : u64 = 18446744073709551615;
+  if x == 0xFFFF_FFFF_FFFF_FFFF {
+    print(1);
+  } else {
+    print(0);
+  }
+  print!(" ");
+  let typed : u64 = 0x8000_0000_0000_0000;
+  print(typed);
+  print!(" ");
+  let t = Tensor<u64, [2]>::fill(0xFFFF_FFFF_FFFF_FFFF);
+  print(t[0]);
+  print!(" ");
+  let smallest = -0x8000_0000_0000_0000;
+  print(smallest);
+  return 0;
+}

@@ -849,6 +849,7 @@ fn first_device_of(kind: &crate::syntax::TopologyKind) -> Topology {
     use crate::syntax::TopologyKind as K;
     let zero = || {
         Box::new(crate::syntax::Expr::Number(crate::syntax::NumberExpr {
+            written: None,
             value: "0".into(),
             ty: None,
             span: crate::syntax::Span::default(),
