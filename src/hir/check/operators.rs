@@ -1311,6 +1311,33 @@ impl<'a> TypeChecker<'a> {
             );
             return Type::Unknown;
         }
+        // Rust's rule: `-` takes a signed integer or a float. On another unsigned type it
+        // would wrap with no error, and on a `bool` it does nothing. A negative literal is
+        // left to the check that a literal fits its type (E3045).
+        if *op == UnaryOp::Neg && !matches!(inner, Expr::Number(_)) {
+            let elem = match &inner_ty {
+                Type::Simd(e, _) => Some(e.clone()),
+                _ => Self::scalar_elem(&inner_ty),
+            };
+            let why = match elem {
+                Some(ElementType::Bool) => {
+                    Some("`-` does not apply to a `bool`: use `!` to flip it".to_string())
+                }
+                Some(e) if e.is_unsigned_int() => Some(format!(
+                    "`-` does not apply to a `{e}`, which is never negative: cast it to a \
+                     signed type first, or call `wrapping_neg()` from `core::num`"
+                )),
+                _ => None,
+            };
+            if let Some(why) = why {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3030,
+                    why,
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                );
+                return Type::Unknown;
+            }
+        }
         let symbol = match op {
             UnaryOp::Neg => "-",
             UnaryOp::Not => "!",
