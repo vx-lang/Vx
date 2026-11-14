@@ -22,6 +22,11 @@
 // rest of the two forms always differ by less than it: `4 * j + c`, with `c` below 3, and
 // `4 * j + 3` never meet.
 //
+// `v / n` and `v % n`, where `v` is the loop's variable, are two more variables of the pass. When
+// one index fixes `v / n` and another fixes `v % n`, the two together fix `v`. `n` is a number above
+// zero, or a value from outside the loop that is a factor of the loop's end, as in `0..m * n`: when
+// `n` is zero, the loop has no passes.
+//
 // An access in `if v == c`, where `v` is the loop's variable and `c` a number, is made by one
 // pass only. Two such accesses with the same `c` are made by the same pass, so they never race.
 //
@@ -113,6 +118,8 @@ struct Proof<'c> {
     templates: &'c HashSet<String>,
     /// The key of the loop's own variable.
     own: String,
+    /// The values from outside the loop that are factors of its end, by key.
+    end_factors: HashSet<String>,
     scopes: Vec<HashMap<String, Binding>>,
     /// The ranges of the loop indices, by key.
     ranges: HashMap<String, Option<(i64, i64)>>,
@@ -173,6 +180,10 @@ pub(crate) fn across_loop_race(
             contracts,
             templates,
             own: String::new(),
+            end_factors: match &*f.iterable {
+                Expr::Range(r) => factors(&r.end),
+                _ => HashSet::new(),
+            },
             scopes: vec![HashMap::new()],
             ranges: HashMap::new(),
             type_ranges: HashMap::new(),
@@ -217,6 +228,19 @@ pub(crate) fn across_loop_race(
         .into_iter()
         .map(|(_, at, start, ty)| (at, start + ok, ty))
         .collect())
+}
+
+/// The names in a product such as `m * n`, as keys of values from outside the loop.
+fn factors(e: &Expr) -> HashSet<String> {
+    match e {
+        Expr::Identifier(id) => HashSet::from([format!("{}#outside", id.name)]),
+        Expr::BinaryOp(b) if b.op == BinaryOp::Mul => {
+            let mut all = factors(&b.lhs);
+            all.extend(factors(&b.rhs));
+            all
+        }
+        _ => HashSet::new(),
+    }
 }
 
 fn int(e: &Expr) -> Option<i64> {
@@ -773,6 +797,7 @@ impl Proof<'_> {
             }
             Expr::BinaryOp(b) => {
                 let (l, r) = (self.affine(&b.lhs)?, self.affine(&b.rhs)?);
+                let outside = |f: &Affine| f.terms.keys().all(|v| v.ends_with("#outside"));
                 let form = match b.op {
                     BinaryOp::Add => l.add(&r, 1),
                     BinaryOp::Sub => l.add(&r, -1),
@@ -781,12 +806,53 @@ impl Proof<'_> {
                         (_, Some(k)) => l.scale(k),
                         _ => None,
                     },
+                    BinaryOp::Div | BinaryOp::Rem if outside(&l) && outside(&r) => {
+                        // Made only of values from outside the loop, so the same in every pass.
+                        let op = if b.op == BinaryOp::Div { '/' } else { '%' };
+                        return Some(Affine::var(format!("({l:?}){op}({r:?})#outside")));
+                    }
+                    BinaryOp::Div | BinaryOp::Rem => self.part(&l, &r, b.op == BinaryOp::Div),
                     _ => None,
                 }?;
                 self.fits(&form, b.operand_ty.as_ref()).then_some(form)
             }
             _ => None,
         }
+    }
+
+    /// `v / n` or `v % n` as a variable of its own, when `v` is the loop's variable, `v` is never
+    /// below zero, and `n` is a number above zero or a factor of the loop's end. Its key is the key
+    /// of `v`, then `/` or `%`, then `n` in parentheses.
+    fn part(&self, v: &Affine, n: &Affine, quotient: bool) -> Option<Affine> {
+        if *v != Affine::var(self.own.clone()) || self.index_range(&self.own)?.0 < 0 {
+            return None;
+        }
+        let n = match n.as_constant() {
+            Some(c) if c > 0 => c.to_string(),
+            Some(_) => return None,
+            None => {
+                let (key, &c) = n.terms.iter().next()?;
+                if n.terms.len() != 1
+                    || c != 1
+                    || n.constant != 0
+                    || !self.end_factors.contains(key)
+                {
+                    return None;
+                }
+                key.clone()
+            }
+        };
+        let op = if quotient { '/' } else { '%' };
+        // The key cannot end with `#outside`, which marks a value from outside the loop.
+        Some(Affine::var(format!("{}{op}({n})", self.own)))
+    }
+
+    /// The key of the loop's variable, whether the key is of `v / n`, and `n`, for a key that
+    /// `part` made.
+    fn part_of(key: &str) -> Option<(&str, bool, &str)> {
+        let at = key.find(['/', '%'])?;
+        let n = key[at + 1..].strip_prefix('(')?.strip_suffix(')')?;
+        Some((&key[..at], &key[at..at + 1] == "/", n))
     }
 
     /// `c` when `cond` holds only in the pass whose variable is `c`: `v == c` or `c == v`, also
@@ -828,6 +894,16 @@ impl Proof<'_> {
 
     /// The least and the greatest value of the loop index `v`, from its range or its type.
     fn index_range(&self, v: &str) -> Option<(i128, i128)> {
+        // `v` is never below zero. A remainder is below `n`, and neither part is above `v`.
+        if let Some((own, quotient, n)) = Self::part_of(v) {
+            let (lo, hi) = self.index_range(own)?;
+            return Some(match (n.parse::<i128>(), quotient) {
+                (Ok(n), true) => (lo / n, hi / n),
+                (Ok(n), false) => (0, hi.min(n - 1)),
+                (Err(_), true) => (-hi, hi),
+                (Err(_), false) => (0, hi),
+            });
+        }
         match self.ranges.get(v).copied().flatten() {
             Some((a, b)) if b > a => Some((a as i128, b as i128 - 1)),
             _ => self.type_ranges.get(v).copied(),
@@ -889,7 +965,12 @@ impl Proof<'_> {
     /// meet when the passes and the digit together are a mixed-radix number, as for
     /// `out[2 * j]` and `out[2 * j + 1]`, or `out[j]` and `out[j + 32]` with `j` below 32.
     fn fixes_own_with(&self, form: &Affine, gap: Option<i64>) -> bool {
-        if !form.terms.contains_key(&self.own) {
+        self.fixes_with(form, &self.own, gap)
+    }
+
+    /// As `fixes_own_with`, for the variable `key` of the pass.
+    fn fixes_with(&self, form: &Affine, key: &str, gap: Option<i64>) -> bool {
+        if !form.terms.contains_key(key) {
             return false;
         }
         // A value from outside the loop is the same in both passes, so it cancels.
@@ -898,12 +979,18 @@ impl Proof<'_> {
             .iter()
             .filter(|(v, _)| !v.ends_with("#outside"))
             .map(|(v, c)| {
-                let span = self
-                    .ranges
-                    .get(v)
-                    .copied()
-                    .flatten()
-                    .map(|(lo, hi)| hi - lo);
+                let span = match Self::part_of(v) {
+                    Some((own, ..)) if self.ranges.get(own).copied().flatten().is_some() => self
+                        .index_range(v)
+                        .and_then(|(lo, hi)| i64::try_from(hi - lo).ok()),
+                    Some(_) => None,
+                    None => self
+                        .ranges
+                        .get(v)
+                        .copied()
+                        .flatten()
+                        .map(|(lo, hi)| hi - lo),
+                };
                 (c.abs(), span)
             })
             .collect();
@@ -970,6 +1057,28 @@ impl Proof<'_> {
         -a < lo && hi < a
     }
 
+    /// Whether one index of `x` and `y` fixes `v / n` and another fixes `v % n`, for one `n`, so
+    /// that the two together fix `v`.
+    fn parts_fix_own(&self, x: &[Option<Affine>], y: &[Option<Affine>]) -> bool {
+        let fixed = |key: &str| {
+            x.iter().zip(y).any(|(x, y)| match (x, y) {
+                (Some(x), Some(y)) if x == y => self.fixes_with(x, key, None),
+                (Some(x), Some(y)) if x.terms == y.terms => x
+                    .constant
+                    .checked_sub(y.constant)
+                    .and_then(i64::checked_abs)
+                    .is_some_and(|gap| self.fixes_with(x, key, Some(gap))),
+                _ => false,
+            })
+        };
+        x.iter()
+            .flatten()
+            .flat_map(|f| f.terms.keys())
+            .filter_map(|k| Self::part_of(k))
+            .filter(|(own, quotient, _)| *own == self.own && *quotient)
+            .any(|(own, _, n)| fixed(&format!("{own}/({n})")) && fixed(&format!("{own}%({n})")))
+    }
+
     fn check(&self, own: &str, level: &str) -> Option<(String, Span)> {
         for (name, accesses) in &self.accesses {
             if accesses.iter().any(|a| a.atomic) {
@@ -1024,7 +1133,8 @@ impl Proof<'_> {
                             }
                             (Some(x), Some(y)) => self.own_term_decides(x, y),
                             _ => false,
-                        });
+                        })
+                        || self.parts_fix_own(&w.indices, &other.indices);
                     if apart {
                         continue;
                     }

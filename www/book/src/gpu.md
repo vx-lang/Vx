@@ -60,6 +60,11 @@ Error[E6032]: two passes of this block loop may write the same element of `grid`
 write must fix `y`
 ```
 
+One block loop can cover a grid of tiles, with `b / n` and `b % n` as the row and the column of
+the tile. In `c[(b / n) * 64 + i][(b % n) * 64 + j]`, the first index fixes `b / n` and the second
+fixes `b % n`, so the two together fix `b`. `n` must be a number above zero, or a factor of the
+end of the loop, as in `for b in 0..m * n across blocks`. When `n` is zero, that loop has no passes.
+
 The same check refuses a read of an element that another pass writes, a write to a variable from
 outside the loop, `println!`, and a call that can write through its argument.
 
