@@ -88,9 +88,14 @@ fn lower_with_registry(src: &str, fn_name: &str) -> (bool, LocalWorkerState) {
 }
 
 fn optional_code_registry() -> ImmutableGlobalRegistry {
-    let mut lexer = crate::lexer::Lexer::new(
+    registry_of(
         "enum Maybe<T> { Some(T), None } struct Error { code: Maybe<i32> } struct Plain { value: i32 }",
-    );
+    )
+}
+
+/// The frozen registry of a module that has only these declarations.
+fn registry_of(declarations: &str) -> ImmutableGlobalRegistry {
+    let mut lexer = crate::lexer::Lexer::new(declarations);
     let tokens = lexer.tokenize();
     let mut parser = crate::parser::Parser::new(&tokens, "");
     let mut mods = vec![parser.parse().expect("parse declarations")];
@@ -183,6 +188,77 @@ fn struct_layout_reuses_generated_and_registry_layouts() {
     assert!(
         lowerer.resolving_layouts.is_empty(),
         "no layouts remain in progress after success"
+    );
+}
+
+#[test]
+fn struct_with_option_field_is_an_enum_payload() {
+    let registry = optional_code_registry();
+    let id = registry.resolve_unique_nominal(&"Error".into()).unwrap();
+    let mut lowerer = Lowerer::new(&registry);
+    let payload = lowerer
+        .payload_size_align(&Type::Struct("Error".into(), Some(id)))
+        .expect("a struct with an option field can be an enum payload");
+    let layout = lowerer
+        .generated_layout(id)
+        .expect("the payload uses the layout of this worker");
+    assert_eq!(
+        payload,
+        (layout.size_bytes, layout.align_bytes),
+        "the payload has the size and alignment of the struct layout"
+    );
+    assert_eq!(payload, (8, 4), "an i32 tag, then an i32 value");
+}
+
+// A run cannot catch a wrong alignment here: ARM64 and x86 load from a misaligned address
+// without an error. So this test checks the offsets.
+#[test]
+fn struct_with_option_field_after_a_byte_starts_at_its_alignment() {
+    let registry = registry_of(
+        "enum Maybe<T> { Some(T), None } \
+         struct Wide { code: Maybe<i64> } \
+         enum Two { Pair(u8, Wide), Number(u8) }",
+    );
+    let two = registry.resolve_unique_nominal(&"Two".into()).unwrap();
+    let mut lowerer = Lowerer::new(&registry);
+    let gid = lowerer
+        .resolve_concrete_layout(&Type::Enum("Two".into(), Some(two)))
+        .expect("an enum with a struct payload has a layout");
+    let layout = lowerer.generated_layout(gid).unwrap();
+    let slots: Vec<_> = layout
+        .fields
+        .iter()
+        .map(|field| (field.layout.offset, field.layout.size))
+        .collect();
+    // `Wide` is an i32 tag, 4 bytes of padding and an i64: 16 bytes, aligned to 8. The u8 slot
+    // ends at offset 5, so only the alignment of `Wide` moves it to 8.
+    assert_eq!(
+        slots,
+        [(0, 4), (4, 1), (8, 16)],
+        "the tag, then the u8, then `Wide` at offset 8"
+    );
+    assert_eq!(
+        (layout.size_bytes, layout.align_bytes),
+        (24, 8),
+        "the enum takes the alignment of `Wide`"
+    );
+}
+
+#[test]
+fn struct_with_unsupported_field_is_not_an_enum_payload() {
+    let mut registry = optional_code_registry();
+    let id = registry.resolve_unique_nominal(&"Error".into()).unwrap();
+    registry
+        .structs
+        .get_mut(&id)
+        .unwrap()
+        .fields
+        .push(("unsupported".into(), Type::Generic("Missing".into(), None)));
+    let mut lowerer = Lowerer::new(&registry);
+    assert_eq!(
+        lowerer.payload_size_align(&Type::Struct("Error".into(), Some(id))),
+        None,
+        "a struct with an unsupported field has no payload layout"
     );
 }
 
@@ -710,6 +786,14 @@ fn nominal_lookup_resolves_declarations_before_storage(
     let mut lowerer = Lowerer::new(&registry);
     let ty = Type::Struct(name.into(), attached.map(id));
     let expected_storage = storage.map(id);
+    // A payload without registry storage gets a layout from the declared fields. These structs
+    // have no fields, so it is (0, 1). The registry never leaves a real empty struct incomplete:
+    // these definitions do it only to test the lookup order.
+    let expected_payload = match (storage, declaration) {
+        (Some(n), _) => Some(if n == 1 { (4, 4) } else { (8, 8) }),
+        (None, Some(_)) => Some((0, 1)),
+        (None, None) => None,
+    };
     assert_eq!(
         (
             registry.nominal_layout_id(&ty),
@@ -719,16 +803,14 @@ fn nominal_lookup_resolves_declarations_before_storage(
             }),
             agg_gid_of_ty(&ty, &registry),
             lowerer.known_aggregate_id(&ty),
-            lowerer
-                .payload_field(&ty)
-                .map(|(size, align, _)| (size, align)),
+            lowerer.payload_size_align(&ty),
         ),
         (
             expected_storage,
             expected_storage.map(Some),
             expected_storage,
             declaration.map(id),
-            storage.map(|n| if n == 1 { (4, 4) } else { (8, 8) }),
+            expected_payload,
         ),
         "all typed lookups must use the same declaration before requiring storage"
     );
