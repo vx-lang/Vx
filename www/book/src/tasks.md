@@ -191,7 +191,8 @@ impl Drop for SlotGuard {
 }
 ```
 
-After the limit, a `send` or `recv` in the `drop` gives up as in a cancelled block.
+After the limit, a `send` or `recv` in the `drop` gives up as in a cancelled block. This includes
+the waits of the tasks that the `drop` spawns.
 `VX_DROP_WAIT_SECONDS` can make the limit of each `drop` shorter, for a test or to find a `drop`
 that hangs, but never longer.
 
@@ -205,7 +206,7 @@ let flushed = within(Duration::from_millis(50), || -> bool {
 });
 ```
 
-The limit also holds in the functions that `body` calls. After the limit, a wait gives up as in a
+The limit also holds in the functions that `body` calls, and in the tasks that it spawns. After the limit, a wait gives up as in a
 cancelled block, and `cancelled()` is true until `body` returns. Outside a `drop`, a cancel still
 stops the waits in `body`. A `return` in `body` ends `body`, and not the function around the call.
 
@@ -261,6 +262,8 @@ runs many tasks on a few OS threads instead. Each task then gets a stack of its 
 that waits gives its thread to another task. A program needs no change to use the shared runtime.
 Set these variables when the program starts:
 
+- `VX_TASK_RUNTIME=threads` gives the default: one OS thread for each task. A value other than
+  `shared` or `threads` stops the program with a message.
 - `VX_TASK_WORKERS=n` starts `n` threads. Without it, the runtime starts one thread for each CPU.
 - A task that blocks in a C function, or runs a long loop with no wait, holds its thread. When
   tasks are ready and each thread is busy, the runtime starts one more thread.
@@ -268,7 +271,8 @@ Set these variables when the program starts:
 - `VX_TASK_SEED=n` runs all tasks on one thread, and the seed picks the next task to run. The same
   seed gives the same order each time, so a bug that depends on the order happens again in the
   next run. Try other seeds to find such a bug. A seed cannot go with `VX_TASK_WORKERS` or
-  `VX_TASK_MAX_WORKERS`.
+  `VX_TASK_MAX_WORKERS`. Only a wait, such as `recv`, `lock` or `sleep`, lets another task run.
+  So with a seed, a task that loops with no wait until another task acts never ends.
 
 ## Finding a data race at run time
 
@@ -284,7 +288,8 @@ only when `vxc` runs the program. On Ubuntu, the runtime of ThreadSanitizer is i
 ## Why Vx has no `async`
 
 In Vx, a function that waits is a normal function. `recv`, `join`, `lock` and a network read wait
-for an event, and the task continues after it. A function that calls them is a normal function too.
+for an event, and `sleep` waits for a time. The task continues after the wait. A function that
+calls them is a normal function too.
 So Vx has no `async` and no `await`.
 
 In a language with `async`, a function that waits must be `async`, and so must each function that

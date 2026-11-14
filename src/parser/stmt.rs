@@ -550,7 +550,7 @@ impl<'a> Parser<'a> {
                         name: format!("_{temp}_size").into(),
                         is_mut: false,
                         ty_ann: None,
-                        expr: super::tuple_match::has_elements(elems.len(), &temp_expr),
+                        expr: super::tuple_match::has_elements(elems.len(), &temp_expr, span),
                         span,
                     }));
                 }

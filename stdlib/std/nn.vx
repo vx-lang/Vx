@@ -943,18 +943,20 @@ fn nn_swiglu_fp8<M : Memory>(out : &mut Tensor<f32, [?], Memory::M>, w : &Tensor
 // Q4_0 weights, as in llama.cpp. A weight is (code - 8) * scale, where the code is 0 to 15. A
 // matrix of rows x cols has cols / 8 u32 words for each row: bits 4t to 4t + 3 of word i of a row
 // hold the code of weight 8i + t. `scales` has an f16 for each 32 weights of a row, cols / 32 for
-// each row. `cols` must be a multiple of 32. `rows` must be a multiple of 8 for a product, and of
-// 4 for a SwiGLU input.
+// each row. `cols` must be a multiple of 32, and `rows` a multiple of 8.
 //
-// Each block of the GPU has 64 lanes and does 8 rows: 8 rows of a product, or 4 rows of gate and
-// the 4 rows of up that pair with them. So one load of x serves 8 rows. A lane takes 32 weights of
-// a row at a time, which have one scale.
+// The block of a product is one SIMD group of 32 lanes, and it does 8 rows. The block of a SwiGLU
+// input does 8 rows of gate and the 8 rows of up that pair with them. A sum over the lanes of one
+// SIMD group needs no barrier of the whole block. A lane takes 2 words of each row at a time, which
+// have one scale, so one load of x serves 8 or 16 rows.
+//
+// A lane takes code t of a word with a mask and no shift, which gives the code times 16^t, and
+// divides x by 16^t to match. The 8 of each code comes off once for each word, as 8 times the sum of
+// its 8 values of x.
 //
 // `nn_moe_down_q4_add` adds k experts for each row. Its block has 128 lanes in 4 groups of 32, and
 // does 8 rows. Group g takes experts g, g + 4 and so on, and a lane takes one word of each row at a
-// time. So a row of 768 weights, 96 words, keeps all 32 lanes of a group busy. It takes code t of a
-// word with a mask and no shift, which gives the code times 16^t, and divides x by 16^t to match.
-// The 8 of each code comes off once for each word, as 8 times the sum of its 8 values of x.
+// time. So a row of 768 weights, 96 words, keeps all 32 lanes of a group busy.
 
 /// y[r] = (row r of the Q4_0 matrix w) . x, for r below `rows`.
 fn nn_matvec_q4<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
@@ -964,56 +966,75 @@ fn nn_matvec_q4<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u3
   let groups = cols / 32;
   spawn on(Topology::Device) {
     for rb in 0..rows / 8 across blocks {
-      let mut part = unsafe { Tensor<f32, [8, 64], Memory::SMEM>::uninit() };
-      for l in 0..64 across lanes {
-        let mut acc = unsafe { Tensor<f32, [8]>::uninit() };
-        for j in 0..8 {
-          acc[j] = 0.0;
-        }
-        let mut i = l * 4;
-        while i < words {
-          let c = i * 8;
-          let mut xs = unsafe { Tensor<f32, [32]>::uninit() };
-          for t in 0..32 {
-            xs[t] = x[c + t];
-          }
+      let mut part = unsafe {
+        Tensor<f32, [1, 8, 32], Memory::SMEM>::uninit()
+      };
+      // One SIMD group, so that the sums over its lanes need no barrier of the whole block.
+      for s in 0..1 across subgroups {
+        for l in 0..32 across lanes(32) {
+          let first = rb * 8 + s * 8;
+          let mut acc = unsafe { Tensor<f32, [8]>::uninit() };
           for j in 0..8 {
-            let row = rb * 8 + j;
-            let at = row * words + i;
-            let w0 = w[at + 0];
-            let w1 = w[at + 1];
-            let w2 = w[at + 2];
-            let w3 = w[at + 3];
-            let dot = ((((w0 >> 0u32) & 15u32) as f32) - 8.0) * xs[0] + ((((w0 >> 4u32) & 15u32) as f32) - 8.0) * xs[1] + ((((w0 >> 8u32) & 15u32) as f32) - 8.0) * xs[2] + ((((w0 >> 12u32) & 15u32) as f32) - 8.0) * xs[3] + ((((w0 >> 16u32) & 15u32) as f32) - 8.0) * xs[4] + ((((w0 >> 20u32) & 15u32) as f32) - 8.0) * xs[5] + ((((w0 >> 24u32) & 15u32) as f32) - 8.0) * xs[6] + ((((w0 >> 28u32) & 15u32) as f32) - 8.0) * xs[7] + ((((w1 >> 0u32) & 15u32) as f32) - 8.0) * xs[8] + ((((w1 >> 4u32) & 15u32) as f32) - 8.0) * xs[9] + ((((w1 >> 8u32) & 15u32) as f32) - 8.0) * xs[10] + ((((w1 >> 12u32) & 15u32) as f32) - 8.0) * xs[11] + ((((w1 >> 16u32) & 15u32) as f32) - 8.0) * xs[12] + ((((w1 >> 20u32) & 15u32) as f32) - 8.0) * xs[13] + ((((w1 >> 24u32) & 15u32) as f32) - 8.0) * xs[14] + ((((w1 >> 28u32) & 15u32) as f32) - 8.0) * xs[15] + ((((w2 >> 0u32) & 15u32) as f32) - 8.0) * xs[16] + ((((w2 >> 4u32) & 15u32) as f32) - 8.0) * xs[17] + ((((w2 >> 8u32) & 15u32) as f32) - 8.0) * xs[18] + ((((w2 >> 12u32) & 15u32) as f32) - 8.0) * xs[19] + ((((w2 >> 16u32) & 15u32) as f32) - 8.0) * xs[20] + ((((w2 >> 20u32) & 15u32) as f32) - 8.0) * xs[21] + ((((w2 >> 24u32) & 15u32) as f32) - 8.0) * xs[22] + ((((w2 >> 28u32) & 15u32) as f32) - 8.0) * xs[23] + ((((w3 >> 0u32) & 15u32) as f32) - 8.0) * xs[24] + ((((w3 >> 4u32) & 15u32) as f32) - 8.0) * xs[25] + ((((w3 >> 8u32) & 15u32) as f32) - 8.0) * xs[26] + ((((w3 >> 12u32) & 15u32) as f32) - 8.0) * xs[27] + ((((w3 >> 16u32) & 15u32) as f32) - 8.0) * xs[28] + ((((w3 >> 20u32) & 15u32) as f32) - 8.0) * xs[29] + ((((w3 >> 24u32) & 15u32) as f32) - 8.0) * xs[30] + ((((w3 >> 28u32) & 15u32) as f32) - 8.0) * xs[31];
-            acc[j] = acc[j] + dot * (scales[row * groups + i / 4] as f32);
+            acc[j] = 0.0;
           }
-          i = i + 256;
+          let mut i = l * 2;
+          while i < words {
+            let c = i * 8;
+            let mut xp = unsafe { Tensor<f32, [16]>::uninit() };
+            for t in 0..16 {
+              xp[t] = x[c + t];
+            }
+            let sum8 = 8.0 * (xp[0] + xp[1] + xp[2] + xp[3] + xp[4] + xp[5] + xp[6] + xp[7] + xp[8] + xp[9] + xp[10] + xp[11] + xp[12] + xp[13] + xp[14] + xp[15]);
+            xp[1] = xp[1] * 0.0625;
+            xp[2] = xp[2] * 0.00390625;
+            xp[3] = xp[3] * 0.000244140625;
+            xp[4] = xp[4] * 0.0000152587890625;
+            xp[5] = xp[5] * 0.00000095367431640625;
+            xp[6] = xp[6] * 0.000000059604644775390625;
+            xp[7] = xp[7] * 0.0000000037252902984619140625;
+            xp[9] = xp[9] * 0.0625;
+            xp[10] = xp[10] * 0.00390625;
+            xp[11] = xp[11] * 0.000244140625;
+            xp[12] = xp[12] * 0.0000152587890625;
+            xp[13] = xp[13] * 0.00000095367431640625;
+            xp[14] = xp[14] * 0.000000059604644775390625;
+            xp[15] = xp[15] * 0.0000000037252902984619140625;
+            for j in 0..8 {
+              let row = first + j;
+              let at = row * words + i;
+              let w0 = w[at];
+              let w1 = w[at + 1];
+              let dot = ((w0 & 15u32) as f32) * xp[0] + ((w0 & 240u32) as f32) * xp[1] + ((w0 & 3840u32) as f32) * xp[2] + ((w0 & 61440u32) as f32) * xp[3] + ((w0 & 983040u32) as f32) * xp[4] + ((w0 & 15728640u32) as f32) * xp[5] + ((w0 & 251658240u32) as f32) * xp[6] + ((w0 & 4026531840u32) as f32) * xp[7] + ((w1 & 15u32) as f32) * xp[8] + ((w1 & 240u32) as f32) * xp[9] + ((w1 & 3840u32) as f32) * xp[10] + ((w1 & 61440u32) as f32) * xp[11] + ((w1 & 983040u32) as f32) * xp[12] + ((w1 & 15728640u32) as f32) * xp[13] + ((w1 & 251658240u32) as f32) * xp[14] + ((w1 & 4026531840u32) as f32) * xp[15];
+              acc[j] = acc[j] + (dot - sum8) * (scales[row * groups + i / 4] as f32);
+            }
+            i = i + 64;
+          }
+          part[s][0][l] = acc[0];
+          part[s][1][l] = acc[1];
+          part[s][2][l] = acc[2];
+          part[s][3][l] = acc[3];
+          part[s][4][l] = acc[4];
+          part[s][5][l] = acc[5];
+          part[s][6][l] = acc[6];
+          part[s][7][l] = acc[7];
         }
-        part[0][l] = acc[0];
-        part[1][l] = acc[1];
-        part[2][l] = acc[2];
-        part[3][l] = acc[3];
-        part[4][l] = acc[4];
-        part[5][l] = acc[5];
-        part[6][l] = acc[6];
-        part[7][l] = acc[7];
+        let s0 = lanes::sum(&part[s][0], 32);
+        let s1 = lanes::sum(&part[s][1], 32);
+        let s2 = lanes::sum(&part[s][2], 32);
+        let s3 = lanes::sum(&part[s][3], 32);
+        let s4 = lanes::sum(&part[s][4], 32);
+        let s5 = lanes::sum(&part[s][5], 32);
+        let s6 = lanes::sum(&part[s][6], 32);
+        let s7 = lanes::sum(&part[s][7], 32);
+        y[rb * 8 + s * 8 + 0] = s0;
+        y[rb * 8 + s * 8 + 1] = s1;
+        y[rb * 8 + s * 8 + 2] = s2;
+        y[rb * 8 + s * 8 + 3] = s3;
+        y[rb * 8 + s * 8 + 4] = s4;
+        y[rb * 8 + s * 8 + 5] = s5;
+        y[rb * 8 + s * 8 + 6] = s6;
+        y[rb * 8 + s * 8 + 7] = s7;
       }
-      let s0 = lanes::sum(&part[0], 64);
-      let s1 = lanes::sum(&part[1], 64);
-      let s2 = lanes::sum(&part[2], 64);
-      let s3 = lanes::sum(&part[3], 64);
-      let s4 = lanes::sum(&part[4], 64);
-      let s5 = lanes::sum(&part[5], 64);
-      let s6 = lanes::sum(&part[6], 64);
-      let s7 = lanes::sum(&part[7], 64);
-      y[rb * 8] = s0;
-      y[rb * 8 + 1] = s1;
-      y[rb * 8 + 2] = s2;
-      y[rb * 8 + 3] = s3;
-      y[rb * 8 + 4] = s4;
-      y[rb * 8 + 5] = s5;
-      y[rb * 8 + 6] = s6;
-      y[rb * 8 + 7] = s7;
     }
   }
   return;
@@ -1027,56 +1048,75 @@ fn nn_matvec_q4_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tenso
   let groups = cols / 32;
   spawn on(Topology::Device) {
     for rb in 0..rows / 8 across blocks {
-      let mut part = unsafe { Tensor<f32, [8, 64], Memory::SMEM>::uninit() };
-      for l in 0..64 across lanes {
-        let mut acc = unsafe { Tensor<f32, [8]>::uninit() };
-        for j in 0..8 {
-          acc[j] = 0.0;
-        }
-        let mut i = l * 4;
-        while i < words {
-          let c = i * 8;
-          let mut xs = unsafe { Tensor<f32, [32]>::uninit() };
-          for t in 0..32 {
-            xs[t] = x[c + t];
-          }
+      let mut part = unsafe {
+        Tensor<f32, [1, 8, 32], Memory::SMEM>::uninit()
+      };
+      // One SIMD group, so that the sums over its lanes need no barrier of the whole block.
+      for s in 0..1 across subgroups {
+        for l in 0..32 across lanes(32) {
+          let first = rb * 8 + s * 8;
+          let mut acc = unsafe { Tensor<f32, [8]>::uninit() };
           for j in 0..8 {
-            let row = rb * 8 + j;
-            let at = row * words + i;
-            let w0 = w[at + 0];
-            let w1 = w[at + 1];
-            let w2 = w[at + 2];
-            let w3 = w[at + 3];
-            let dot = ((((w0 >> 0u32) & 15u32) as f32) - 8.0) * xs[0] + ((((w0 >> 4u32) & 15u32) as f32) - 8.0) * xs[1] + ((((w0 >> 8u32) & 15u32) as f32) - 8.0) * xs[2] + ((((w0 >> 12u32) & 15u32) as f32) - 8.0) * xs[3] + ((((w0 >> 16u32) & 15u32) as f32) - 8.0) * xs[4] + ((((w0 >> 20u32) & 15u32) as f32) - 8.0) * xs[5] + ((((w0 >> 24u32) & 15u32) as f32) - 8.0) * xs[6] + ((((w0 >> 28u32) & 15u32) as f32) - 8.0) * xs[7] + ((((w1 >> 0u32) & 15u32) as f32) - 8.0) * xs[8] + ((((w1 >> 4u32) & 15u32) as f32) - 8.0) * xs[9] + ((((w1 >> 8u32) & 15u32) as f32) - 8.0) * xs[10] + ((((w1 >> 12u32) & 15u32) as f32) - 8.0) * xs[11] + ((((w1 >> 16u32) & 15u32) as f32) - 8.0) * xs[12] + ((((w1 >> 20u32) & 15u32) as f32) - 8.0) * xs[13] + ((((w1 >> 24u32) & 15u32) as f32) - 8.0) * xs[14] + ((((w1 >> 28u32) & 15u32) as f32) - 8.0) * xs[15] + ((((w2 >> 0u32) & 15u32) as f32) - 8.0) * xs[16] + ((((w2 >> 4u32) & 15u32) as f32) - 8.0) * xs[17] + ((((w2 >> 8u32) & 15u32) as f32) - 8.0) * xs[18] + ((((w2 >> 12u32) & 15u32) as f32) - 8.0) * xs[19] + ((((w2 >> 16u32) & 15u32) as f32) - 8.0) * xs[20] + ((((w2 >> 20u32) & 15u32) as f32) - 8.0) * xs[21] + ((((w2 >> 24u32) & 15u32) as f32) - 8.0) * xs[22] + ((((w2 >> 28u32) & 15u32) as f32) - 8.0) * xs[23] + ((((w3 >> 0u32) & 15u32) as f32) - 8.0) * xs[24] + ((((w3 >> 4u32) & 15u32) as f32) - 8.0) * xs[25] + ((((w3 >> 8u32) & 15u32) as f32) - 8.0) * xs[26] + ((((w3 >> 12u32) & 15u32) as f32) - 8.0) * xs[27] + ((((w3 >> 16u32) & 15u32) as f32) - 8.0) * xs[28] + ((((w3 >> 20u32) & 15u32) as f32) - 8.0) * xs[29] + ((((w3 >> 24u32) & 15u32) as f32) - 8.0) * xs[30] + ((((w3 >> 28u32) & 15u32) as f32) - 8.0) * xs[31];
-            acc[j] = acc[j] + dot * (scales[row * groups + i / 4] as f32);
+            acc[j] = 0.0;
           }
-          i = i + 256;
+          let mut i = l * 2;
+          while i < words {
+            let c = i * 8;
+            let mut xp = unsafe { Tensor<f32, [16]>::uninit() };
+            for t in 0..16 {
+              xp[t] = x[c + t];
+            }
+            let sum8 = 8.0 * (xp[0] + xp[1] + xp[2] + xp[3] + xp[4] + xp[5] + xp[6] + xp[7] + xp[8] + xp[9] + xp[10] + xp[11] + xp[12] + xp[13] + xp[14] + xp[15]);
+            xp[1] = xp[1] * 0.0625;
+            xp[2] = xp[2] * 0.00390625;
+            xp[3] = xp[3] * 0.000244140625;
+            xp[4] = xp[4] * 0.0000152587890625;
+            xp[5] = xp[5] * 0.00000095367431640625;
+            xp[6] = xp[6] * 0.000000059604644775390625;
+            xp[7] = xp[7] * 0.0000000037252902984619140625;
+            xp[9] = xp[9] * 0.0625;
+            xp[10] = xp[10] * 0.00390625;
+            xp[11] = xp[11] * 0.000244140625;
+            xp[12] = xp[12] * 0.0000152587890625;
+            xp[13] = xp[13] * 0.00000095367431640625;
+            xp[14] = xp[14] * 0.000000059604644775390625;
+            xp[15] = xp[15] * 0.0000000037252902984619140625;
+            for j in 0..8 {
+              let row = first + j;
+              let at = row * words + i;
+              let w0 = w[at];
+              let w1 = w[at + 1];
+              let dot = ((w0 & 15u32) as f32) * xp[0] + ((w0 & 240u32) as f32) * xp[1] + ((w0 & 3840u32) as f32) * xp[2] + ((w0 & 61440u32) as f32) * xp[3] + ((w0 & 983040u32) as f32) * xp[4] + ((w0 & 15728640u32) as f32) * xp[5] + ((w0 & 251658240u32) as f32) * xp[6] + ((w0 & 4026531840u32) as f32) * xp[7] + ((w1 & 15u32) as f32) * xp[8] + ((w1 & 240u32) as f32) * xp[9] + ((w1 & 3840u32) as f32) * xp[10] + ((w1 & 61440u32) as f32) * xp[11] + ((w1 & 983040u32) as f32) * xp[12] + ((w1 & 15728640u32) as f32) * xp[13] + ((w1 & 251658240u32) as f32) * xp[14] + ((w1 & 4026531840u32) as f32) * xp[15];
+              acc[j] = acc[j] + (dot - sum8) * (scales[row * groups + i / 4] as f32);
+            }
+            i = i + 64;
+          }
+          part[s][0][l] = acc[0];
+          part[s][1][l] = acc[1];
+          part[s][2][l] = acc[2];
+          part[s][3][l] = acc[3];
+          part[s][4][l] = acc[4];
+          part[s][5][l] = acc[5];
+          part[s][6][l] = acc[6];
+          part[s][7][l] = acc[7];
         }
-        part[0][l] = acc[0];
-        part[1][l] = acc[1];
-        part[2][l] = acc[2];
-        part[3][l] = acc[3];
-        part[4][l] = acc[4];
-        part[5][l] = acc[5];
-        part[6][l] = acc[6];
-        part[7][l] = acc[7];
+        let s0 = lanes::sum(&part[s][0], 32);
+        let s1 = lanes::sum(&part[s][1], 32);
+        let s2 = lanes::sum(&part[s][2], 32);
+        let s3 = lanes::sum(&part[s][3], 32);
+        let s4 = lanes::sum(&part[s][4], 32);
+        let s5 = lanes::sum(&part[s][5], 32);
+        let s6 = lanes::sum(&part[s][6], 32);
+        let s7 = lanes::sum(&part[s][7], 32);
+        y[rb * 8 + s * 8 + 0] = y[rb * 8 + s * 8 + 0] + s0;
+        y[rb * 8 + s * 8 + 1] = y[rb * 8 + s * 8 + 1] + s1;
+        y[rb * 8 + s * 8 + 2] = y[rb * 8 + s * 8 + 2] + s2;
+        y[rb * 8 + s * 8 + 3] = y[rb * 8 + s * 8 + 3] + s3;
+        y[rb * 8 + s * 8 + 4] = y[rb * 8 + s * 8 + 4] + s4;
+        y[rb * 8 + s * 8 + 5] = y[rb * 8 + s * 8 + 5] + s5;
+        y[rb * 8 + s * 8 + 6] = y[rb * 8 + s * 8 + 6] + s6;
+        y[rb * 8 + s * 8 + 7] = y[rb * 8 + s * 8 + 7] + s7;
       }
-      let s0 = lanes::sum(&part[0], 64);
-      let s1 = lanes::sum(&part[1], 64);
-      let s2 = lanes::sum(&part[2], 64);
-      let s3 = lanes::sum(&part[3], 64);
-      let s4 = lanes::sum(&part[4], 64);
-      let s5 = lanes::sum(&part[5], 64);
-      let s6 = lanes::sum(&part[6], 64);
-      let s7 = lanes::sum(&part[7], 64);
-      y[rb * 8] = y[rb * 8] + s0;
-      y[rb * 8 + 1] = y[rb * 8 + 1] + s1;
-      y[rb * 8 + 2] = y[rb * 8 + 2] + s2;
-      y[rb * 8 + 3] = y[rb * 8 + 3] + s3;
-      y[rb * 8 + 4] = y[rb * 8 + 4] + s4;
-      y[rb * 8 + 5] = y[rb * 8 + 5] + s5;
-      y[rb * 8 + 6] = y[rb * 8 + 6] + s6;
-      y[rb * 8 + 7] = y[rb * 8 + 7] + s7;
     }
   }
   return;
@@ -1093,74 +1133,83 @@ fn nn_matvec_q4_heads_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : 
   let groups = cols / 32;
   spawn on(Topology::Device) {
     for rb in 0..rows / 8 across blocks {
-      let mut part = unsafe { Tensor<f32, [8, 64], Memory::SMEM>::uninit() };
-      for l in 0..64 across lanes {
-        let mut acc = unsafe { Tensor<f32, [8]>::uninit() };
-        for j in 0..8 {
-          acc[j] = 0.0;
-        }
-        let mut i = l * 4;
-        while i < words {
-          let c = i * 8;
-          let mut xs = unsafe { Tensor<f32, [32]>::uninit() };
-          // head_dim is a multiple of 8, so each run of 8 values is in one head.
-          let h0 = (c + 0) / head_dim;
-          let d0 = c + 0 - h0 * head_dim;
-          for t in 0..8 {
-            xs[0 + t] = x[h0][d0 + t];
-          }
-          let h1 = (c + 8) / head_dim;
-          let d1 = c + 8 - h1 * head_dim;
-          for t in 0..8 {
-            xs[8 + t] = x[h1][d1 + t];
-          }
-          let h2 = (c + 16) / head_dim;
-          let d2 = c + 16 - h2 * head_dim;
-          for t in 0..8 {
-            xs[16 + t] = x[h2][d2 + t];
-          }
-          let h3 = (c + 24) / head_dim;
-          let d3 = c + 24 - h3 * head_dim;
-          for t in 0..8 {
-            xs[24 + t] = x[h3][d3 + t];
-          }
+      let mut part = unsafe {
+        Tensor<f32, [1, 8, 32], Memory::SMEM>::uninit()
+      };
+      // One SIMD group, so that the sums over its lanes need no barrier of the whole block.
+      for s in 0..1 across subgroups {
+        for l in 0..32 across lanes(32) {
+          let first = rb * 8 + s * 8;
+          let mut acc = unsafe { Tensor<f32, [8]>::uninit() };
           for j in 0..8 {
-            let row = rb * 8 + j;
-            let at = row * words + i;
-            let w0 = w[at + 0];
-            let w1 = w[at + 1];
-            let w2 = w[at + 2];
-            let w3 = w[at + 3];
-            let dot = ((((w0 >> 0u32) & 15u32) as f32) - 8.0) * xs[0] + ((((w0 >> 4u32) & 15u32) as f32) - 8.0) * xs[1] + ((((w0 >> 8u32) & 15u32) as f32) - 8.0) * xs[2] + ((((w0 >> 12u32) & 15u32) as f32) - 8.0) * xs[3] + ((((w0 >> 16u32) & 15u32) as f32) - 8.0) * xs[4] + ((((w0 >> 20u32) & 15u32) as f32) - 8.0) * xs[5] + ((((w0 >> 24u32) & 15u32) as f32) - 8.0) * xs[6] + ((((w0 >> 28u32) & 15u32) as f32) - 8.0) * xs[7] + ((((w1 >> 0u32) & 15u32) as f32) - 8.0) * xs[8] + ((((w1 >> 4u32) & 15u32) as f32) - 8.0) * xs[9] + ((((w1 >> 8u32) & 15u32) as f32) - 8.0) * xs[10] + ((((w1 >> 12u32) & 15u32) as f32) - 8.0) * xs[11] + ((((w1 >> 16u32) & 15u32) as f32) - 8.0) * xs[12] + ((((w1 >> 20u32) & 15u32) as f32) - 8.0) * xs[13] + ((((w1 >> 24u32) & 15u32) as f32) - 8.0) * xs[14] + ((((w1 >> 28u32) & 15u32) as f32) - 8.0) * xs[15] + ((((w2 >> 0u32) & 15u32) as f32) - 8.0) * xs[16] + ((((w2 >> 4u32) & 15u32) as f32) - 8.0) * xs[17] + ((((w2 >> 8u32) & 15u32) as f32) - 8.0) * xs[18] + ((((w2 >> 12u32) & 15u32) as f32) - 8.0) * xs[19] + ((((w2 >> 16u32) & 15u32) as f32) - 8.0) * xs[20] + ((((w2 >> 20u32) & 15u32) as f32) - 8.0) * xs[21] + ((((w2 >> 24u32) & 15u32) as f32) - 8.0) * xs[22] + ((((w2 >> 28u32) & 15u32) as f32) - 8.0) * xs[23] + ((((w3 >> 0u32) & 15u32) as f32) - 8.0) * xs[24] + ((((w3 >> 4u32) & 15u32) as f32) - 8.0) * xs[25] + ((((w3 >> 8u32) & 15u32) as f32) - 8.0) * xs[26] + ((((w3 >> 12u32) & 15u32) as f32) - 8.0) * xs[27] + ((((w3 >> 16u32) & 15u32) as f32) - 8.0) * xs[28] + ((((w3 >> 20u32) & 15u32) as f32) - 8.0) * xs[29] + ((((w3 >> 24u32) & 15u32) as f32) - 8.0) * xs[30] + ((((w3 >> 28u32) & 15u32) as f32) - 8.0) * xs[31];
-            acc[j] = acc[j] + dot * (scales[row * groups + i / 4] as f32);
+            acc[j] = 0.0;
           }
-          i = i + 256;
+          let mut i = l * 2;
+          while i < words {
+            let c = i * 8;
+            let mut xp = unsafe { Tensor<f32, [16]>::uninit() };
+            // head_dim is a multiple of 8, so each run of 8 values is in one head.
+            let h0 = c / head_dim;
+            let d0 = c - h0 * head_dim;
+            for t in 0..8 {
+              xp[t] = x[h0][d0 + t];
+            }
+            let h1 = (c + 8) / head_dim;
+            let d1 = c + 8 - h1 * head_dim;
+            for t in 0..8 {
+              xp[8 + t] = x[h1][d1 + t];
+            }
+            let sum8 = 8.0 * (xp[0] + xp[1] + xp[2] + xp[3] + xp[4] + xp[5] + xp[6] + xp[7] + xp[8] + xp[9] + xp[10] + xp[11] + xp[12] + xp[13] + xp[14] + xp[15]);
+            xp[1] = xp[1] * 0.0625;
+            xp[2] = xp[2] * 0.00390625;
+            xp[3] = xp[3] * 0.000244140625;
+            xp[4] = xp[4] * 0.0000152587890625;
+            xp[5] = xp[5] * 0.00000095367431640625;
+            xp[6] = xp[6] * 0.000000059604644775390625;
+            xp[7] = xp[7] * 0.0000000037252902984619140625;
+            xp[9] = xp[9] * 0.0625;
+            xp[10] = xp[10] * 0.00390625;
+            xp[11] = xp[11] * 0.000244140625;
+            xp[12] = xp[12] * 0.0000152587890625;
+            xp[13] = xp[13] * 0.00000095367431640625;
+            xp[14] = xp[14] * 0.000000059604644775390625;
+            xp[15] = xp[15] * 0.0000000037252902984619140625;
+            for j in 0..8 {
+              let row = first + j;
+              let at = row * words + i;
+              let w0 = w[at];
+              let w1 = w[at + 1];
+              let dot = ((w0 & 15u32) as f32) * xp[0] + ((w0 & 240u32) as f32) * xp[1] + ((w0 & 3840u32) as f32) * xp[2] + ((w0 & 61440u32) as f32) * xp[3] + ((w0 & 983040u32) as f32) * xp[4] + ((w0 & 15728640u32) as f32) * xp[5] + ((w0 & 251658240u32) as f32) * xp[6] + ((w0 & 4026531840u32) as f32) * xp[7] + ((w1 & 15u32) as f32) * xp[8] + ((w1 & 240u32) as f32) * xp[9] + ((w1 & 3840u32) as f32) * xp[10] + ((w1 & 61440u32) as f32) * xp[11] + ((w1 & 983040u32) as f32) * xp[12] + ((w1 & 15728640u32) as f32) * xp[13] + ((w1 & 251658240u32) as f32) * xp[14] + ((w1 & 4026531840u32) as f32) * xp[15];
+              acc[j] = acc[j] + (dot - sum8) * (scales[row * groups + i / 4] as f32);
+            }
+            i = i + 64;
+          }
+          part[s][0][l] = acc[0];
+          part[s][1][l] = acc[1];
+          part[s][2][l] = acc[2];
+          part[s][3][l] = acc[3];
+          part[s][4][l] = acc[4];
+          part[s][5][l] = acc[5];
+          part[s][6][l] = acc[6];
+          part[s][7][l] = acc[7];
         }
-        part[0][l] = acc[0];
-        part[1][l] = acc[1];
-        part[2][l] = acc[2];
-        part[3][l] = acc[3];
-        part[4][l] = acc[4];
-        part[5][l] = acc[5];
-        part[6][l] = acc[6];
-        part[7][l] = acc[7];
+        let s0 = lanes::sum(&part[s][0], 32);
+        let s1 = lanes::sum(&part[s][1], 32);
+        let s2 = lanes::sum(&part[s][2], 32);
+        let s3 = lanes::sum(&part[s][3], 32);
+        let s4 = lanes::sum(&part[s][4], 32);
+        let s5 = lanes::sum(&part[s][5], 32);
+        let s6 = lanes::sum(&part[s][6], 32);
+        let s7 = lanes::sum(&part[s][7], 32);
+        y[rb * 8 + s * 8 + 0] = y[rb * 8 + s * 8 + 0] + s0;
+        y[rb * 8 + s * 8 + 1] = y[rb * 8 + s * 8 + 1] + s1;
+        y[rb * 8 + s * 8 + 2] = y[rb * 8 + s * 8 + 2] + s2;
+        y[rb * 8 + s * 8 + 3] = y[rb * 8 + s * 8 + 3] + s3;
+        y[rb * 8 + s * 8 + 4] = y[rb * 8 + s * 8 + 4] + s4;
+        y[rb * 8 + s * 8 + 5] = y[rb * 8 + s * 8 + 5] + s5;
+        y[rb * 8 + s * 8 + 6] = y[rb * 8 + s * 8 + 6] + s6;
+        y[rb * 8 + s * 8 + 7] = y[rb * 8 + s * 8 + 7] + s7;
       }
-      let s0 = lanes::sum(&part[0], 64);
-      let s1 = lanes::sum(&part[1], 64);
-      let s2 = lanes::sum(&part[2], 64);
-      let s3 = lanes::sum(&part[3], 64);
-      let s4 = lanes::sum(&part[4], 64);
-      let s5 = lanes::sum(&part[5], 64);
-      let s6 = lanes::sum(&part[6], 64);
-      let s7 = lanes::sum(&part[7], 64);
-      y[rb * 8] = y[rb * 8] + s0;
-      y[rb * 8 + 1] = y[rb * 8 + 1] + s1;
-      y[rb * 8 + 2] = y[rb * 8 + 2] + s2;
-      y[rb * 8 + 3] = y[rb * 8 + 3] + s3;
-      y[rb * 8 + 4] = y[rb * 8 + 4] + s4;
-      y[rb * 8 + 5] = y[rb * 8 + 5] + s5;
-      y[rb * 8 + 6] = y[rb * 8 + 6] + s6;
-      y[rb * 8 + 7] = y[rb * 8 + 7] + s7;
     }
   }
   return;
@@ -1180,84 +1229,102 @@ fn nn_qkv_q4<M : Memory>(q : &mut Tensor<f32, [?, ?], Memory::M>, k : &mut Tenso
   spawn on(Topology::Device) {
     for h in 0..heads across blocks {
       for d8 in 0..head_dim / 8 across blocks {
-        let mut part = unsafe { Tensor<f32, [8, 64], Memory::SMEM>::uninit() };
-        let first = h * head_dim + d8 * 8;
-        for l in 0..64 across lanes {
-          let mut acc = unsafe { Tensor<f32, [8]>::uninit() };
-          for j in 0..8 {
-            acc[j] = 0.0;
-          }
-          let mut i = l * 4;
-          while i < words {
-            let c = i * 8;
-            let mut xs = unsafe { Tensor<f32, [32]>::uninit() };
-            for t in 0..32 {
-              xs[t] = x[c + t];
-            }
+        let mut part = unsafe {
+          Tensor<f32, [1, 8, 32], Memory::SMEM>::uninit()
+        };
+        // One SIMD group, so that the sums over its lanes need no barrier of the whole block.
+        for s in 0..1 across subgroups {
+          let first = h * head_dim + d8 * 8 + s * 8;
+          for l in 0..32 across lanes(32) {
+            let mut acc = unsafe { Tensor<f32, [8]>::uninit() };
             for j in 0..8 {
-              let row = first + j;
-              let at = row * words + i;
-              let w0 = w[at + 0];
-              let w1 = w[at + 1];
-              let w2 = w[at + 2];
-              let w3 = w[at + 3];
-              let dot = ((((w0 >> 0u32) & 15u32) as f32) - 8.0) * xs[0] + ((((w0 >> 4u32) & 15u32) as f32) - 8.0) * xs[1] + ((((w0 >> 8u32) & 15u32) as f32) - 8.0) * xs[2] + ((((w0 >> 12u32) & 15u32) as f32) - 8.0) * xs[3] + ((((w0 >> 16u32) & 15u32) as f32) - 8.0) * xs[4] + ((((w0 >> 20u32) & 15u32) as f32) - 8.0) * xs[5] + ((((w0 >> 24u32) & 15u32) as f32) - 8.0) * xs[6] + ((((w0 >> 28u32) & 15u32) as f32) - 8.0) * xs[7] + ((((w1 >> 0u32) & 15u32) as f32) - 8.0) * xs[8] + ((((w1 >> 4u32) & 15u32) as f32) - 8.0) * xs[9] + ((((w1 >> 8u32) & 15u32) as f32) - 8.0) * xs[10] + ((((w1 >> 12u32) & 15u32) as f32) - 8.0) * xs[11] + ((((w1 >> 16u32) & 15u32) as f32) - 8.0) * xs[12] + ((((w1 >> 20u32) & 15u32) as f32) - 8.0) * xs[13] + ((((w1 >> 24u32) & 15u32) as f32) - 8.0) * xs[14] + ((((w1 >> 28u32) & 15u32) as f32) - 8.0) * xs[15] + ((((w2 >> 0u32) & 15u32) as f32) - 8.0) * xs[16] + ((((w2 >> 4u32) & 15u32) as f32) - 8.0) * xs[17] + ((((w2 >> 8u32) & 15u32) as f32) - 8.0) * xs[18] + ((((w2 >> 12u32) & 15u32) as f32) - 8.0) * xs[19] + ((((w2 >> 16u32) & 15u32) as f32) - 8.0) * xs[20] + ((((w2 >> 20u32) & 15u32) as f32) - 8.0) * xs[21] + ((((w2 >> 24u32) & 15u32) as f32) - 8.0) * xs[22] + ((((w2 >> 28u32) & 15u32) as f32) - 8.0) * xs[23] + ((((w3 >> 0u32) & 15u32) as f32) - 8.0) * xs[24] + ((((w3 >> 4u32) & 15u32) as f32) - 8.0) * xs[25] + ((((w3 >> 8u32) & 15u32) as f32) - 8.0) * xs[26] + ((((w3 >> 12u32) & 15u32) as f32) - 8.0) * xs[27] + ((((w3 >> 16u32) & 15u32) as f32) - 8.0) * xs[28] + ((((w3 >> 20u32) & 15u32) as f32) - 8.0) * xs[29] + ((((w3 >> 24u32) & 15u32) as f32) - 8.0) * xs[30] + ((((w3 >> 28u32) & 15u32) as f32) - 8.0) * xs[31];
-              acc[j] = acc[j] + dot * (scales[row * groups + i / 4] as f32);
+              acc[j] = 0.0;
             }
-            i = i + 256;
+            let mut i = l * 2;
+            while i < words {
+              let c = i * 8;
+              let mut xp = unsafe { Tensor<f32, [16]>::uninit() };
+              for t in 0..16 {
+                xp[t] = x[c + t];
+              }
+              let sum8 = 8.0 * (xp[0] + xp[1] + xp[2] + xp[3] + xp[4] + xp[5] + xp[6] + xp[7] + xp[8] + xp[9] + xp[10] + xp[11] + xp[12] + xp[13] + xp[14] + xp[15]);
+              xp[1] = xp[1] * 0.0625;
+              xp[2] = xp[2] * 0.00390625;
+              xp[3] = xp[3] * 0.000244140625;
+              xp[4] = xp[4] * 0.0000152587890625;
+              xp[5] = xp[5] * 0.00000095367431640625;
+              xp[6] = xp[6] * 0.000000059604644775390625;
+              xp[7] = xp[7] * 0.0000000037252902984619140625;
+              xp[9] = xp[9] * 0.0625;
+              xp[10] = xp[10] * 0.00390625;
+              xp[11] = xp[11] * 0.000244140625;
+              xp[12] = xp[12] * 0.0000152587890625;
+              xp[13] = xp[13] * 0.00000095367431640625;
+              xp[14] = xp[14] * 0.000000059604644775390625;
+              xp[15] = xp[15] * 0.0000000037252902984619140625;
+              for j in 0..8 {
+                let row = first + j;
+                let at = row * words + i;
+                let w0 = w[at];
+                let w1 = w[at + 1];
+                let dot = ((w0 & 15u32) as f32) * xp[0] + ((w0 & 240u32) as f32) * xp[1] + ((w0 & 3840u32) as f32) * xp[2] + ((w0 & 61440u32) as f32) * xp[3] + ((w0 & 983040u32) as f32) * xp[4] + ((w0 & 15728640u32) as f32) * xp[5] + ((w0 & 251658240u32) as f32) * xp[6] + ((w0 & 4026531840u32) as f32) * xp[7] + ((w1 & 15u32) as f32) * xp[8] + ((w1 & 240u32) as f32) * xp[9] + ((w1 & 3840u32) as f32) * xp[10] + ((w1 & 61440u32) as f32) * xp[11] + ((w1 & 983040u32) as f32) * xp[12] + ((w1 & 15728640u32) as f32) * xp[13] + ((w1 & 251658240u32) as f32) * xp[14] + ((w1 & 4026531840u32) as f32) * xp[15];
+                acc[j] = acc[j] + (dot - sum8) * (scales[row * groups + i / 4] as f32);
+              }
+              i = i + 64;
+            }
+            part[s][0][l] = acc[0];
+            part[s][1][l] = acc[1];
+            part[s][2][l] = acc[2];
+            part[s][3][l] = acc[3];
+            part[s][4][l] = acc[4];
+            part[s][5][l] = acc[5];
+            part[s][6][l] = acc[6];
+            part[s][7][l] = acc[7];
           }
-          part[0][l] = acc[0];
-          part[1][l] = acc[1];
-          part[2][l] = acc[2];
-          part[3][l] = acc[3];
-          part[4][l] = acc[4];
-          part[5][l] = acc[5];
-          part[6][l] = acc[6];
-          part[7][l] = acc[7];
-        }
-        let s0 = lanes::sum(&part[0], 64);
-        let s1 = lanes::sum(&part[1], 64);
-        let s2 = lanes::sum(&part[2], 64);
-        let s3 = lanes::sum(&part[3], 64);
-        let s4 = lanes::sum(&part[4], 64);
-        let s5 = lanes::sum(&part[5], 64);
-        let s6 = lanes::sum(&part[6], 64);
-        let s7 = lanes::sum(&part[7], 64);
-        let r0 = s0 + (b[first] as f32);
-        let r1 = s1 + (b[first + 1] as f32);
-        let r2 = s2 + (b[first + 2] as f32);
-        let r3 = s3 + (b[first + 3] as f32);
-        let r4 = s4 + (b[first + 4] as f32);
-        let r5 = s5 + (b[first + 5] as f32);
-        let r6 = s6 + (b[first + 6] as f32);
-        let r7 = s7 + (b[first + 7] as f32);
-        if h < q_heads {
-          q[h][d8 * 8] = r0;
-          q[h][d8 * 8 + 1] = r1;
-          q[h][d8 * 8 + 2] = r2;
-          q[h][d8 * 8 + 3] = r3;
-          q[h][d8 * 8 + 4] = r4;
-          q[h][d8 * 8 + 5] = r5;
-          q[h][d8 * 8 + 6] = r6;
-          q[h][d8 * 8 + 7] = r7;
-        } else if h < q_heads + kv_heads {
-          k[h - q_heads][d8 * 8] = r0;
-          k[h - q_heads][d8 * 8 + 1] = r1;
-          k[h - q_heads][d8 * 8 + 2] = r2;
-          k[h - q_heads][d8 * 8 + 3] = r3;
-          k[h - q_heads][d8 * 8 + 4] = r4;
-          k[h - q_heads][d8 * 8 + 5] = r5;
-          k[h - q_heads][d8 * 8 + 6] = r6;
-          k[h - q_heads][d8 * 8 + 7] = r7;
-        } else {
-          v[h - q_heads - kv_heads][d8 * 8] = r0;
-          v[h - q_heads - kv_heads][d8 * 8 + 1] = r1;
-          v[h - q_heads - kv_heads][d8 * 8 + 2] = r2;
-          v[h - q_heads - kv_heads][d8 * 8 + 3] = r3;
-          v[h - q_heads - kv_heads][d8 * 8 + 4] = r4;
-          v[h - q_heads - kv_heads][d8 * 8 + 5] = r5;
-          v[h - q_heads - kv_heads][d8 * 8 + 6] = r6;
-          v[h - q_heads - kv_heads][d8 * 8 + 7] = r7;
+          let s0 = lanes::sum(&part[s][0], 32);
+          let s1 = lanes::sum(&part[s][1], 32);
+          let s2 = lanes::sum(&part[s][2], 32);
+          let s3 = lanes::sum(&part[s][3], 32);
+          let s4 = lanes::sum(&part[s][4], 32);
+          let s5 = lanes::sum(&part[s][5], 32);
+          let s6 = lanes::sum(&part[s][6], 32);
+          let s7 = lanes::sum(&part[s][7], 32);
+          let r0 = s0 + (b[first + 0] as f32);
+          let r1 = s1 + (b[first + 1] as f32);
+          let r2 = s2 + (b[first + 2] as f32);
+          let r3 = s3 + (b[first + 3] as f32);
+          let r4 = s4 + (b[first + 4] as f32);
+          let r5 = s5 + (b[first + 5] as f32);
+          let r6 = s6 + (b[first + 6] as f32);
+          let r7 = s7 + (b[first + 7] as f32);
+          if h < q_heads {
+            q[h][d8 * 8 + s * 8 + 0] = r0;
+            q[h][d8 * 8 + s * 8 + 1] = r1;
+            q[h][d8 * 8 + s * 8 + 2] = r2;
+            q[h][d8 * 8 + s * 8 + 3] = r3;
+            q[h][d8 * 8 + s * 8 + 4] = r4;
+            q[h][d8 * 8 + s * 8 + 5] = r5;
+            q[h][d8 * 8 + s * 8 + 6] = r6;
+            q[h][d8 * 8 + s * 8 + 7] = r7;
+          } else if h < q_heads + kv_heads {
+            k[h - q_heads][d8 * 8 + s * 8 + 0] = r0;
+            k[h - q_heads][d8 * 8 + s * 8 + 1] = r1;
+            k[h - q_heads][d8 * 8 + s * 8 + 2] = r2;
+            k[h - q_heads][d8 * 8 + s * 8 + 3] = r3;
+            k[h - q_heads][d8 * 8 + s * 8 + 4] = r4;
+            k[h - q_heads][d8 * 8 + s * 8 + 5] = r5;
+            k[h - q_heads][d8 * 8 + s * 8 + 6] = r6;
+            k[h - q_heads][d8 * 8 + s * 8 + 7] = r7;
+          } else {
+            v[h - q_heads - kv_heads][d8 * 8 + s * 8 + 0] = r0;
+            v[h - q_heads - kv_heads][d8 * 8 + s * 8 + 1] = r1;
+            v[h - q_heads - kv_heads][d8 * 8 + s * 8 + 2] = r2;
+            v[h - q_heads - kv_heads][d8 * 8 + s * 8 + 3] = r3;
+            v[h - q_heads - kv_heads][d8 * 8 + s * 8 + 4] = r4;
+            v[h - q_heads - kv_heads][d8 * 8 + s * 8 + 5] = r5;
+            v[h - q_heads - kv_heads][d8 * 8 + s * 8 + 6] = r6;
+            v[h - q_heads - kv_heads][d8 * 8 + s * 8 + 7] = r7;
+          }
         }
       }
     }
@@ -1270,57 +1337,97 @@ fn nn_qkv_q4<M : Memory>(q : &mut Tensor<f32, [?, ?], Memory::M>, k : &mut Tenso
 fn nn_swiglu_q4<M : Memory>(out : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
   nn_check_q4(w.len(), scales.len(), x.len(), 2 * rows, cols);
   assert(out.len() >= rows, "nn_swiglu_q4: the output has fewer values than rows");
+  assert(rows % 8 == 0, "nn_swiglu_q4: rows must be a multiple of 8");
   let words = cols / 8;
   let groups = cols / 32;
   spawn on(Topology::Device) {
-    for rb in 0..rows / 4 across blocks {
-      let mut part = unsafe { Tensor<f32, [8, 64], Memory::SMEM>::uninit() };
-      for l in 0..64 across lanes {
-        // acc[0..4] are the gate rows, and acc[4..8] the up rows that pair with them.
-        let mut acc = unsafe { Tensor<f32, [8]>::uninit() };
-        for j in 0..8 {
-          acc[j] = 0.0;
-        }
-        let mut i = l * 4;
-        while i < words {
-          let c = i * 8;
-          let mut xs = unsafe { Tensor<f32, [32]>::uninit() };
-          for t in 0..32 {
-            xs[t] = x[c + t];
+    for rb in 0..rows / 8 across blocks {
+      let mut part = unsafe {
+        Tensor<f32, [1, 16, 32], Memory::SMEM>::uninit()
+      };
+      // One SIMD group, so that the sums over its lanes need no barrier of the whole block.
+      for s in 0..1 across subgroups {
+        for l in 0..32 across lanes(32) {
+          // acc[0..8] are the gate rows, and acc[8..16] the up rows that pair with them.
+          let first = rb * 8 + s * 8;
+          let mut acc = unsafe { Tensor<f32, [16]>::uninit() };
+          for j in 0..16 {
+            acc[j] = 0.0;
           }
-          for j in 0..8 {
-            let row = rb * 4 + j % 4 + (j / 4) * rows;
-            let at = row * words + i;
-            let w0 = w[at + 0];
-            let w1 = w[at + 1];
-            let w2 = w[at + 2];
-            let w3 = w[at + 3];
-            let dot = ((((w0 >> 0u32) & 15u32) as f32) - 8.0) * xs[0] + ((((w0 >> 4u32) & 15u32) as f32) - 8.0) * xs[1] + ((((w0 >> 8u32) & 15u32) as f32) - 8.0) * xs[2] + ((((w0 >> 12u32) & 15u32) as f32) - 8.0) * xs[3] + ((((w0 >> 16u32) & 15u32) as f32) - 8.0) * xs[4] + ((((w0 >> 20u32) & 15u32) as f32) - 8.0) * xs[5] + ((((w0 >> 24u32) & 15u32) as f32) - 8.0) * xs[6] + ((((w0 >> 28u32) & 15u32) as f32) - 8.0) * xs[7] + ((((w1 >> 0u32) & 15u32) as f32) - 8.0) * xs[8] + ((((w1 >> 4u32) & 15u32) as f32) - 8.0) * xs[9] + ((((w1 >> 8u32) & 15u32) as f32) - 8.0) * xs[10] + ((((w1 >> 12u32) & 15u32) as f32) - 8.0) * xs[11] + ((((w1 >> 16u32) & 15u32) as f32) - 8.0) * xs[12] + ((((w1 >> 20u32) & 15u32) as f32) - 8.0) * xs[13] + ((((w1 >> 24u32) & 15u32) as f32) - 8.0) * xs[14] + ((((w1 >> 28u32) & 15u32) as f32) - 8.0) * xs[15] + ((((w2 >> 0u32) & 15u32) as f32) - 8.0) * xs[16] + ((((w2 >> 4u32) & 15u32) as f32) - 8.0) * xs[17] + ((((w2 >> 8u32) & 15u32) as f32) - 8.0) * xs[18] + ((((w2 >> 12u32) & 15u32) as f32) - 8.0) * xs[19] + ((((w2 >> 16u32) & 15u32) as f32) - 8.0) * xs[20] + ((((w2 >> 20u32) & 15u32) as f32) - 8.0) * xs[21] + ((((w2 >> 24u32) & 15u32) as f32) - 8.0) * xs[22] + ((((w2 >> 28u32) & 15u32) as f32) - 8.0) * xs[23] + ((((w3 >> 0u32) & 15u32) as f32) - 8.0) * xs[24] + ((((w3 >> 4u32) & 15u32) as f32) - 8.0) * xs[25] + ((((w3 >> 8u32) & 15u32) as f32) - 8.0) * xs[26] + ((((w3 >> 12u32) & 15u32) as f32) - 8.0) * xs[27] + ((((w3 >> 16u32) & 15u32) as f32) - 8.0) * xs[28] + ((((w3 >> 20u32) & 15u32) as f32) - 8.0) * xs[29] + ((((w3 >> 24u32) & 15u32) as f32) - 8.0) * xs[30] + ((((w3 >> 28u32) & 15u32) as f32) - 8.0) * xs[31];
-            acc[j] = acc[j] + dot * (scales[row * groups + i / 4] as f32);
+          let mut i = l * 2;
+          while i < words {
+            let c = i * 8;
+            let mut xp = unsafe { Tensor<f32, [16]>::uninit() };
+            for t in 0..16 {
+              xp[t] = x[c + t];
+            }
+            let sum8 = 8.0 * (xp[0] + xp[1] + xp[2] + xp[3] + xp[4] + xp[5] + xp[6] + xp[7] + xp[8] + xp[9] + xp[10] + xp[11] + xp[12] + xp[13] + xp[14] + xp[15]);
+            xp[1] = xp[1] * 0.0625;
+            xp[2] = xp[2] * 0.00390625;
+            xp[3] = xp[3] * 0.000244140625;
+            xp[4] = xp[4] * 0.0000152587890625;
+            xp[5] = xp[5] * 0.00000095367431640625;
+            xp[6] = xp[6] * 0.000000059604644775390625;
+            xp[7] = xp[7] * 0.0000000037252902984619140625;
+            xp[9] = xp[9] * 0.0625;
+            xp[10] = xp[10] * 0.00390625;
+            xp[11] = xp[11] * 0.000244140625;
+            xp[12] = xp[12] * 0.0000152587890625;
+            xp[13] = xp[13] * 0.00000095367431640625;
+            xp[14] = xp[14] * 0.000000059604644775390625;
+            xp[15] = xp[15] * 0.0000000037252902984619140625;
+            for j in 0..16 {
+              let row = first + j % 8 + (j / 8) * rows;
+              let at = row * words + i;
+              let w0 = w[at];
+              let w1 = w[at + 1];
+              let dot = ((w0 & 15u32) as f32) * xp[0] + ((w0 & 240u32) as f32) * xp[1] + ((w0 & 3840u32) as f32) * xp[2] + ((w0 & 61440u32) as f32) * xp[3] + ((w0 & 983040u32) as f32) * xp[4] + ((w0 & 15728640u32) as f32) * xp[5] + ((w0 & 251658240u32) as f32) * xp[6] + ((w0 & 4026531840u32) as f32) * xp[7] + ((w1 & 15u32) as f32) * xp[8] + ((w1 & 240u32) as f32) * xp[9] + ((w1 & 3840u32) as f32) * xp[10] + ((w1 & 61440u32) as f32) * xp[11] + ((w1 & 983040u32) as f32) * xp[12] + ((w1 & 15728640u32) as f32) * xp[13] + ((w1 & 251658240u32) as f32) * xp[14] + ((w1 & 4026531840u32) as f32) * xp[15];
+              acc[j] = acc[j] + (dot - sum8) * (scales[row * groups + i / 4] as f32);
+            }
+            i = i + 64;
           }
-          i = i + 256;
+          part[s][0][l] = acc[0];
+          part[s][1][l] = acc[1];
+          part[s][2][l] = acc[2];
+          part[s][3][l] = acc[3];
+          part[s][4][l] = acc[4];
+          part[s][5][l] = acc[5];
+          part[s][6][l] = acc[6];
+          part[s][7][l] = acc[7];
+          part[s][8][l] = acc[8];
+          part[s][9][l] = acc[9];
+          part[s][10][l] = acc[10];
+          part[s][11][l] = acc[11];
+          part[s][12][l] = acc[12];
+          part[s][13][l] = acc[13];
+          part[s][14][l] = acc[14];
+          part[s][15][l] = acc[15];
         }
-        part[0][l] = acc[0];
-        part[1][l] = acc[1];
-        part[2][l] = acc[2];
-        part[3][l] = acc[3];
-        part[4][l] = acc[4];
-        part[5][l] = acc[5];
-        part[6][l] = acc[6];
-        part[7][l] = acc[7];
+        let g0 = lanes::sum(&part[s][0], 32);
+        let u0 = lanes::sum(&part[s][8], 32);
+        out[rb * 8 + s * 8 + 0] = g0 / (1.0 + (0.0 - g0).fast_exp()) * u0;
+        let g1 = lanes::sum(&part[s][1], 32);
+        let u1 = lanes::sum(&part[s][9], 32);
+        out[rb * 8 + s * 8 + 1] = g1 / (1.0 + (0.0 - g1).fast_exp()) * u1;
+        let g2 = lanes::sum(&part[s][2], 32);
+        let u2 = lanes::sum(&part[s][10], 32);
+        out[rb * 8 + s * 8 + 2] = g2 / (1.0 + (0.0 - g2).fast_exp()) * u2;
+        let g3 = lanes::sum(&part[s][3], 32);
+        let u3 = lanes::sum(&part[s][11], 32);
+        out[rb * 8 + s * 8 + 3] = g3 / (1.0 + (0.0 - g3).fast_exp()) * u3;
+        let g4 = lanes::sum(&part[s][4], 32);
+        let u4 = lanes::sum(&part[s][12], 32);
+        out[rb * 8 + s * 8 + 4] = g4 / (1.0 + (0.0 - g4).fast_exp()) * u4;
+        let g5 = lanes::sum(&part[s][5], 32);
+        let u5 = lanes::sum(&part[s][13], 32);
+        out[rb * 8 + s * 8 + 5] = g5 / (1.0 + (0.0 - g5).fast_exp()) * u5;
+        let g6 = lanes::sum(&part[s][6], 32);
+        let u6 = lanes::sum(&part[s][14], 32);
+        out[rb * 8 + s * 8 + 6] = g6 / (1.0 + (0.0 - g6).fast_exp()) * u6;
+        let g7 = lanes::sum(&part[s][7], 32);
+        let u7 = lanes::sum(&part[s][15], 32);
+        out[rb * 8 + s * 8 + 7] = g7 / (1.0 + (0.0 - g7).fast_exp()) * u7;
       }
-      let s0 = lanes::sum(&part[0], 64);
-      let s1 = lanes::sum(&part[1], 64);
-      let s2 = lanes::sum(&part[2], 64);
-      let s3 = lanes::sum(&part[3], 64);
-      let s4 = lanes::sum(&part[4], 64);
-      let s5 = lanes::sum(&part[5], 64);
-      let s6 = lanes::sum(&part[6], 64);
-      let s7 = lanes::sum(&part[7], 64);
-      out[rb * 4] = s0 / (1.0 + (0.0 - s0).fast_exp()) * s4;
-      out[rb * 4 + 1] = s1 / (1.0 + (0.0 - s1).fast_exp()) * s5;
-      out[rb * 4 + 2] = s2 / (1.0 + (0.0 - s2).fast_exp()) * s6;
-      out[rb * 4 + 3] = s3 / (1.0 + (0.0 - s3).fast_exp()) * s7;
     }
   }
   return;
@@ -1329,62 +1436,101 @@ fn nn_swiglu_q4<M : Memory>(out : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<
 /// The SwiGLU input of the k experts that a token uses, with Q4_0 weights, as `nn_moe_swiglu`.
 fn nn_moe_swiglu_q4<M : Memory>(out : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, ids : &Tensor<i32, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, k : i32, rows : i32, cols : i32, experts : i32) -> void {
   assert(k > 0 && ids.len() >= k && out.extent(0) >= k && out.extent(1) >= rows, "nn_moe_swiglu_q4: `ids` needs k values, and `out` a row of rows values for each");
+  assert(rows % 8 == 0, "nn_moe_swiglu_q4: rows must be a multiple of 8");
   nn_check_q4(w.len(), scales.len(), x.len(), experts * 2 * rows, cols);
   let words = cols / 8;
   let groups = cols / 32;
   spawn on(Topology::Device) {
     for e in 0..k across blocks {
-      for rb in 0..rows / 4 across blocks {
-        let mut part = unsafe { Tensor<f32, [8, 64], Memory::SMEM>::uninit() };
-        for l in 0..64 across lanes {
-          // acc[0..4] are the gate rows, and acc[4..8] the up rows that pair with them.
-          let mut acc = unsafe { Tensor<f32, [8]>::uninit() };
-          for j in 0..8 {
-            acc[j] = 0.0;
-          }
-          let id = ids[e];
-          assert(id >= 0 && id < experts, "nn_moe_swiglu_q4: an id is not the number of an expert");
-          let first = id * 2 * rows + rb * 4;
-          let mut i = l * 4;
-          while i < words {
-            let c = i * 8;
-            let mut xs = unsafe { Tensor<f32, [32]>::uninit() };
-            for t in 0..32 {
-              xs[t] = x[c + t];
+      for rb in 0..rows / 8 across blocks {
+        let mut part = unsafe {
+          Tensor<f32, [1, 16, 32], Memory::SMEM>::uninit()
+        };
+        // One SIMD group, so that the sums over its lanes need no barrier of the whole block.
+        for s in 0..1 across subgroups {
+          for l in 0..32 across lanes(32) {
+            // acc[0..8] are the gate rows, and acc[8..16] the up rows that pair with them.
+            let mut acc = unsafe { Tensor<f32, [16]>::uninit() };
+            for j in 0..16 {
+              acc[j] = 0.0;
             }
-            for j in 0..8 {
-              let row = first + j % 4 + (j / 4) * rows;
-              let at = row * words + i;
-              let w0 = w[at + 0];
-              let w1 = w[at + 1];
-              let w2 = w[at + 2];
-              let w3 = w[at + 3];
-              let dot = ((((w0 >> 0u32) & 15u32) as f32) - 8.0) * xs[0] + ((((w0 >> 4u32) & 15u32) as f32) - 8.0) * xs[1] + ((((w0 >> 8u32) & 15u32) as f32) - 8.0) * xs[2] + ((((w0 >> 12u32) & 15u32) as f32) - 8.0) * xs[3] + ((((w0 >> 16u32) & 15u32) as f32) - 8.0) * xs[4] + ((((w0 >> 20u32) & 15u32) as f32) - 8.0) * xs[5] + ((((w0 >> 24u32) & 15u32) as f32) - 8.0) * xs[6] + ((((w0 >> 28u32) & 15u32) as f32) - 8.0) * xs[7] + ((((w1 >> 0u32) & 15u32) as f32) - 8.0) * xs[8] + ((((w1 >> 4u32) & 15u32) as f32) - 8.0) * xs[9] + ((((w1 >> 8u32) & 15u32) as f32) - 8.0) * xs[10] + ((((w1 >> 12u32) & 15u32) as f32) - 8.0) * xs[11] + ((((w1 >> 16u32) & 15u32) as f32) - 8.0) * xs[12] + ((((w1 >> 20u32) & 15u32) as f32) - 8.0) * xs[13] + ((((w1 >> 24u32) & 15u32) as f32) - 8.0) * xs[14] + ((((w1 >> 28u32) & 15u32) as f32) - 8.0) * xs[15] + ((((w2 >> 0u32) & 15u32) as f32) - 8.0) * xs[16] + ((((w2 >> 4u32) & 15u32) as f32) - 8.0) * xs[17] + ((((w2 >> 8u32) & 15u32) as f32) - 8.0) * xs[18] + ((((w2 >> 12u32) & 15u32) as f32) - 8.0) * xs[19] + ((((w2 >> 16u32) & 15u32) as f32) - 8.0) * xs[20] + ((((w2 >> 20u32) & 15u32) as f32) - 8.0) * xs[21] + ((((w2 >> 24u32) & 15u32) as f32) - 8.0) * xs[22] + ((((w2 >> 28u32) & 15u32) as f32) - 8.0) * xs[23] + ((((w3 >> 0u32) & 15u32) as f32) - 8.0) * xs[24] + ((((w3 >> 4u32) & 15u32) as f32) - 8.0) * xs[25] + ((((w3 >> 8u32) & 15u32) as f32) - 8.0) * xs[26] + ((((w3 >> 12u32) & 15u32) as f32) - 8.0) * xs[27] + ((((w3 >> 16u32) & 15u32) as f32) - 8.0) * xs[28] + ((((w3 >> 20u32) & 15u32) as f32) - 8.0) * xs[29] + ((((w3 >> 24u32) & 15u32) as f32) - 8.0) * xs[30] + ((((w3 >> 28u32) & 15u32) as f32) - 8.0) * xs[31];
-              acc[j] = acc[j] + dot * (scales[row * groups + i / 4] as f32);
+            let id = ids[e];
+            assert(id >= 0 && id < experts, "nn_moe_swiglu_q4: an id is not the number of an expert");
+            let first = id * 2 * rows + rb * 8 + s * 8;
+            let mut i = l * 2;
+            while i < words {
+              let c = i * 8;
+              let mut xp = unsafe { Tensor<f32, [16]>::uninit() };
+              for t in 0..16 {
+                xp[t] = x[c + t];
+              }
+              let sum8 = 8.0 * (xp[0] + xp[1] + xp[2] + xp[3] + xp[4] + xp[5] + xp[6] + xp[7] + xp[8] + xp[9] + xp[10] + xp[11] + xp[12] + xp[13] + xp[14] + xp[15]);
+              xp[1] = xp[1] * 0.0625;
+              xp[2] = xp[2] * 0.00390625;
+              xp[3] = xp[3] * 0.000244140625;
+              xp[4] = xp[4] * 0.0000152587890625;
+              xp[5] = xp[5] * 0.00000095367431640625;
+              xp[6] = xp[6] * 0.000000059604644775390625;
+              xp[7] = xp[7] * 0.0000000037252902984619140625;
+              xp[9] = xp[9] * 0.0625;
+              xp[10] = xp[10] * 0.00390625;
+              xp[11] = xp[11] * 0.000244140625;
+              xp[12] = xp[12] * 0.0000152587890625;
+              xp[13] = xp[13] * 0.00000095367431640625;
+              xp[14] = xp[14] * 0.000000059604644775390625;
+              xp[15] = xp[15] * 0.0000000037252902984619140625;
+              for j in 0..16 {
+                let row = first + j % 8 + (j / 8) * rows;
+                let at = row * words + i;
+                let w0 = w[at];
+                let w1 = w[at + 1];
+                let dot = ((w0 & 15u32) as f32) * xp[0] + ((w0 & 240u32) as f32) * xp[1] + ((w0 & 3840u32) as f32) * xp[2] + ((w0 & 61440u32) as f32) * xp[3] + ((w0 & 983040u32) as f32) * xp[4] + ((w0 & 15728640u32) as f32) * xp[5] + ((w0 & 251658240u32) as f32) * xp[6] + ((w0 & 4026531840u32) as f32) * xp[7] + ((w1 & 15u32) as f32) * xp[8] + ((w1 & 240u32) as f32) * xp[9] + ((w1 & 3840u32) as f32) * xp[10] + ((w1 & 61440u32) as f32) * xp[11] + ((w1 & 983040u32) as f32) * xp[12] + ((w1 & 15728640u32) as f32) * xp[13] + ((w1 & 251658240u32) as f32) * xp[14] + ((w1 & 4026531840u32) as f32) * xp[15];
+                acc[j] = acc[j] + (dot - sum8) * (scales[row * groups + i / 4] as f32);
+              }
+              i = i + 64;
             }
-            i = i + 256;
+            part[s][0][l] = acc[0];
+            part[s][1][l] = acc[1];
+            part[s][2][l] = acc[2];
+            part[s][3][l] = acc[3];
+            part[s][4][l] = acc[4];
+            part[s][5][l] = acc[5];
+            part[s][6][l] = acc[6];
+            part[s][7][l] = acc[7];
+            part[s][8][l] = acc[8];
+            part[s][9][l] = acc[9];
+            part[s][10][l] = acc[10];
+            part[s][11][l] = acc[11];
+            part[s][12][l] = acc[12];
+            part[s][13][l] = acc[13];
+            part[s][14][l] = acc[14];
+            part[s][15][l] = acc[15];
           }
-          part[0][l] = acc[0];
-          part[1][l] = acc[1];
-          part[2][l] = acc[2];
-          part[3][l] = acc[3];
-          part[4][l] = acc[4];
-          part[5][l] = acc[5];
-          part[6][l] = acc[6];
-          part[7][l] = acc[7];
+          let g0 = lanes::sum(&part[s][0], 32);
+          let u0 = lanes::sum(&part[s][8], 32);
+          out[e][rb * 8 + s * 8 + 0] = g0 / (1.0 + (0.0 - g0).fast_exp()) * u0;
+          let g1 = lanes::sum(&part[s][1], 32);
+          let u1 = lanes::sum(&part[s][9], 32);
+          out[e][rb * 8 + s * 8 + 1] = g1 / (1.0 + (0.0 - g1).fast_exp()) * u1;
+          let g2 = lanes::sum(&part[s][2], 32);
+          let u2 = lanes::sum(&part[s][10], 32);
+          out[e][rb * 8 + s * 8 + 2] = g2 / (1.0 + (0.0 - g2).fast_exp()) * u2;
+          let g3 = lanes::sum(&part[s][3], 32);
+          let u3 = lanes::sum(&part[s][11], 32);
+          out[e][rb * 8 + s * 8 + 3] = g3 / (1.0 + (0.0 - g3).fast_exp()) * u3;
+          let g4 = lanes::sum(&part[s][4], 32);
+          let u4 = lanes::sum(&part[s][12], 32);
+          out[e][rb * 8 + s * 8 + 4] = g4 / (1.0 + (0.0 - g4).fast_exp()) * u4;
+          let g5 = lanes::sum(&part[s][5], 32);
+          let u5 = lanes::sum(&part[s][13], 32);
+          out[e][rb * 8 + s * 8 + 5] = g5 / (1.0 + (0.0 - g5).fast_exp()) * u5;
+          let g6 = lanes::sum(&part[s][6], 32);
+          let u6 = lanes::sum(&part[s][14], 32);
+          out[e][rb * 8 + s * 8 + 6] = g6 / (1.0 + (0.0 - g6).fast_exp()) * u6;
+          let g7 = lanes::sum(&part[s][7], 32);
+          let u7 = lanes::sum(&part[s][15], 32);
+          out[e][rb * 8 + s * 8 + 7] = g7 / (1.0 + (0.0 - g7).fast_exp()) * u7;
         }
-        let s0 = lanes::sum(&part[0], 64);
-        let s1 = lanes::sum(&part[1], 64);
-        let s2 = lanes::sum(&part[2], 64);
-        let s3 = lanes::sum(&part[3], 64);
-        let s4 = lanes::sum(&part[4], 64);
-        let s5 = lanes::sum(&part[5], 64);
-        let s6 = lanes::sum(&part[6], 64);
-        let s7 = lanes::sum(&part[7], 64);
-        out[e][rb * 4] = s0 / (1.0 + (0.0 - s0).fast_exp()) * s4;
-        out[e][rb * 4 + 1] = s1 / (1.0 + (0.0 - s1).fast_exp()) * s5;
-        out[e][rb * 4 + 2] = s2 / (1.0 + (0.0 - s2).fast_exp()) * s6;
-        out[e][rb * 4 + 3] = s3 / (1.0 + (0.0 - s3).fast_exp()) * s7;
       }
     }
   }

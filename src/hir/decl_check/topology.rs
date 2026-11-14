@@ -45,7 +45,9 @@ impl TypeChecker<'_> {
         // registers as Custom("GPU") and is unreachable from every use site. Found by review on
         // Vx#352: `Topology GPU { arch: applegpu }` still produced an NVPTX image via the band,
         // the machine file's word silently discarded.
+        let outside = self.errors.here();
         for decl in declared {
+            self.errors.point_at(&decl.place, &outside);
             if !matches!(TopologyKind::from_name(&decl.name), TopologyKind::Custom(_)) {
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E6016,
@@ -58,6 +60,29 @@ impl TypeChecker<'_> {
                     None,
                 );
             }
+            // A transfer into `GPU_HBM` goes to the built-in NVIDIA GPU, whatever topology holds
+            // the memory. So a topology of another arch would have its kernels in one place and
+            // its tensors in another.
+            if let Some(arch) = decl
+                .descriptor
+                .arch
+                .as_ref()
+                .filter(|a| a.as_ref() != "nvptx64")
+            {
+                if decl.descriptor.default_space == crate::syntax::MemorySpace::GpuHbm {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E6016,
+                        format!(
+                            "topology '{name}' has `arch: {arch}`, but its memory is \
+                             `Memory::GPU_HBM`, the memory of the built-in NVIDIA GPU. Its \
+                             tensors would go to the NVIDIA GPU, where its kernels cannot run. \
+                             Give the memory of '{name}' another name",
+                            name = decl.name
+                        ),
+                        None,
+                    );
+                }
+            }
             if decl.name.as_ref() == crate::syntax::ANY_TOPOLOGY {
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E6016,
@@ -68,29 +93,39 @@ impl TypeChecker<'_> {
                 );
             }
         }
+        self.errors.point_back(outside.clone());
         // Dispatch-id collision: the id is a hash of the name, so two names can share one id.
         // Everything keyed by the id -- spawn dispatch,
         // seam identity, and now the declared-arch table -- then depends on hash-iteration order
         // for which declaration wins; measured as the same program getting a device image on some
         // runs and not others. Refused, because a coin-flip identity is not an identity.
+        // Each device of a topology with `count:` has an id of its own, so every one is checked.
         {
-            let mut by_id: std::collections::HashMap<i32, &crate::symbol::Symbol> =
+            let mut by_id: std::collections::HashMap<i32, (&crate::symbol::Symbol, usize)> =
                 std::collections::HashMap::new();
             let mut sorted: Vec<&crate::arch::TopologyDecl> = declared.iter().collect();
             sorted.sort_by(|a, b| a.name.as_ref().cmp(b.name.as_ref()));
+            let device = |name: &crate::symbol::Symbol, i: usize| match i {
+                0 => format!("{name}"),
+                _ => format!("{name}[{i}]"),
+            };
             for decl in sorted {
-                let id = crate::arch::topology_dispatch_id(&crate::syntax::Topology::Custom(
-                    decl.name.clone(),
-                ));
-                if let Some(prev) = by_id.insert(id, &decl.name) {
-                    if prev != &decl.name {
+                self.errors.point_at(&decl.place, &outside);
+                let ids = crate::arch::declared_dispatch_ids(&decl.name, decl.descriptor.count);
+                for (i, id) in ids.into_iter().enumerate() {
+                    let Some(prev) = by_id.insert(id, (&decl.name, i)) else {
+                        continue;
+                    };
+                    if prev != (&decl.name, i) {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E6016,
                             format!(
                                 "topologies '{}' and '{}' collide on dispatch id {} (custom ids \
                                  are derived from the name by hashing); which declaration is in \
                                  force would be hash order -- rename one",
-                                prev, decl.name, id
+                                device(prev.0, prev.1),
+                                device(&decl.name, i),
+                                id
                             ),
                             None,
                         );
@@ -98,7 +133,9 @@ impl TypeChecker<'_> {
                 }
             }
         }
+        self.errors.point_back(outside.clone());
         for decl in declared {
+            self.errors.point_at(&decl.place, &outside);
             let name = &decl.name;
             for issue in
                 crate::arch::descriptor_coherence(&decl.descriptor, self.transfer_cost_graph)
@@ -226,6 +263,7 @@ impl TypeChecker<'_> {
                 }
             }
         }
+        self.errors.point_back(outside);
     }
 
     /// Structural checks on transfer lowerings
@@ -282,7 +320,9 @@ impl TypeChecker<'_> {
                 }
             })
             .collect();
+        let outside = self.errors.here();
         for (i, t) in self.env.transfer_impls.clone().iter().enumerate() {
+            self.errors.point_at(&t.place, &outside);
             let (standing, edge_declared) = topo_facts[i];
             let header = format!(
                 "`impl Transfer<Memory::{}, Memory::{}> for Topology::{}`",
@@ -324,15 +364,17 @@ impl TypeChecker<'_> {
                 );
             }
         }
+        self.errors.point_back(outside.clone());
         let mut seen: std::collections::HashMap<
             (
                 crate::syntax::MemorySpace,
                 crate::syntax::MemorySpace,
                 String,
             ),
-            usize,
+            (usize, crate::syntax::DeclPlace),
         > = std::collections::HashMap::new();
         for t in &self.env.transfer_impls {
+            self.errors.point_at(&t.place, &outside);
             // A generic fn inside a lowering can never be checked: generic bodies are checked at
             // instantiation, and a lowering fn is not callable, so it is never instantiated -- its
             // body would escape the checker forever. That silently reopens, for generics only, the
@@ -371,16 +413,21 @@ impl TypeChecker<'_> {
                     None,
                 );
             }
-            *seen
+            // The error for two lowerings of one edge points at the last one.
+            let entry = seen
                 .entry((
                     t.from.clone(),
                     t.to.clone(),
                     t.topology.display_name().to_string(),
                 ))
-                .or_insert(0) += 1;
+                .or_insert((0, t.place.clone()));
+            entry.0 += 1;
+            entry.1 = t.place.clone();
         }
-        for ((from, to, topo), n) in seen {
+        self.errors.point_back(outside.clone());
+        for ((from, to, topo), (n, place)) in seen {
             if n > 1 {
+                self.errors.point_at(&place, &outside);
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E6015,
                     format!(
@@ -397,5 +444,6 @@ impl TypeChecker<'_> {
                 );
             }
         }
+        self.errors.point_back(outside);
     }
 }

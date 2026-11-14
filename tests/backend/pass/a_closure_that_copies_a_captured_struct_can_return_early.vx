@@ -1,0 +1,57 @@
+//===- a_closure_that_copies_a_captured_struct_can_return_early.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A closure copies a captured `Copy` struct, such as an `Instant`. A `return` in an `if` of the
+// closure leaves the call early, and the default code generator must compile it.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}a point with x above 0: 2{{$}}
+// CHECK-NEXT: {{^}}a point with x of 0: 1{{$}}
+// CHECK-NEXT: {{^}}an hour passed: false{{$}}
+
+import core::time;
+import std::time;
+
+struct Point {
+  x : i64,
+}
+
+impl Copy for Point {}
+
+fn main() -> i32 {
+  let p = Point {
+    x : 5
+  };
+  let above_0 = || -> i64 {
+    if p.x > 0 {
+      return 2;
+    }
+    return 1;
+  };
+  println!("a point with x above 0: {}", above_0());
+  let q = Point {
+    x : 0
+  };
+  let at_0 = || -> i64 {
+    if q.x > 0 {
+      return 2;
+    }
+    return 1;
+  };
+  println!("a point with x of 0: {}", at_0());
+
+  let start = Instant::now();
+  let an_hour_passed = || -> bool {
+    if start.elapsed() >= Duration::from_secs(3600) {
+      return true;
+    }
+    return false;
+  };
+  println!("an hour passed: {}", an_hour_passed());
+  return 0;
+}

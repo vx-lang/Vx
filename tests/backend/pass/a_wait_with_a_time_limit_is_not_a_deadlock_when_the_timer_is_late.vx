@@ -1,0 +1,62 @@
+//===- a_wait_with_a_time_limit_is_not_a_deadlock_when_the_timer_is_late.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A task waits in `recv_for`, and no value comes. Only the timer can end the wait. The timer
+// thread takes the deadline off its list, and VX_TEST_TIMER_PAUSE_MS holds it there for 0.3
+// seconds before the wake. The deadlock watcher looks every 0.1 seconds, and sees no progress
+// in that time. The wake is still to come, so the program must not report a deadlock.
+// A pause that is not a number stops the program at the first deadline.
+//
+// NO_EXEC
+// RUN: env VX_TEST_TIMER_PAUSE_MS=300 VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=deadlock
+// CHECK: {{^}}round 1: TimedOut{{$}}
+// CHECK-NEXT: {{^}}round 2: TimedOut{{$}}
+// CHECK-NEXT: {{^}}round 3: TimedOut{{$}}
+// RUN: env VX_TEST_TIMER_PAUSE_MS=soon VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 not vxc %s 2>&1 | FileCheck %s --check-prefix=WORD --implicit-check-not=round
+// WORD: {{^}}vx: VX_TEST_TIMER_PAUSE_MS must be a number, not 'soon'{{$}}
+
+import core::time;
+import std::sync::channel;
+
+fn name(e : RecvError) -> *const i8 {
+  match e {
+    RecvError::Closed => {
+      return "Closed";
+    }
+    RecvError::Cancelled => {
+      return "Cancelled";
+    }
+    RecvError::TimedOut => {
+      return "TimedOut";
+    }
+  }
+}
+
+fn wait_for_no_value(rx : Receiver<i64>, round : i32) -> void {
+  match rx.recv_for(Duration::from_millis(10)) {
+    Result<i64, RecvError>::Ok(v) => {
+      println!("round {}: got {}", round, v);
+    }
+    Result<i64, RecvError>::Err(e) => {
+      println!("round {}: {}", round, name(e));
+    }
+  }
+}
+
+fn main() -> i32 {
+  for round in 1..4 {
+    // The Sender stays alive, so the `recv_for` gives `TimedOut`, not `Closed`.
+    let (tx, rx) = channel<i64>(1);
+    tasks {
+      spawn {
+        wait_for_no_value(rx, round);
+      };
+    };
+    drop(tx);
+  }
+  return 0;
+}

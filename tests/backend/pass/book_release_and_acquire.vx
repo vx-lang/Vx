@@ -9,6 +9,7 @@
 // sets a flag with `Release`. The other waits for the flag with `Acquire`, and then reads the
 // value. With `-fweak-relaxed-atomics` the `Relaxed` accesses stay relaxed, and it still prints 42.
 //
+// NO-SEED-SWEEP: a task loops with no wait until another task acts, and one thread cannot run the other task.
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: vxc -fweak-relaxed-atomics %s 2>&1 | FileCheck %s --implicit-check-not=Error

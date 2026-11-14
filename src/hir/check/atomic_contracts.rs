@@ -38,6 +38,15 @@ pub(crate) fn is_prover_clause(e: &Expr) -> bool {
         && super::pointer_clauses::first_frees_call(e).is_none()
 }
 
+/// The name of the function `name` in a message. An instance of a generic function is named by
+/// its template, which `is_template` knows.
+pub(crate) fn shown_function(name: &str, is_template: impl Fn(&str) -> bool) -> &str {
+    match name.split_once('$') {
+        Some((template, _)) if is_template(template) => template,
+        _ => name,
+    }
+}
+
 /// Whether `e` is a `reads_only` clause, well formed or not.
 fn is_reads_only(e: &Expr) -> bool {
     matches!(e, Expr::FunctionCall(fc) if fc.name.as_ref() == "reads_only")
@@ -219,11 +228,7 @@ impl crate::hir::TypeChecker<'_> {
         if self.speculating || !f.ensures.iter().any(is_access_clause) {
             return;
         }
-        // An instance of a generic function is named by its template in a message.
-        let shown = match f.name.split_once('$') {
-            Some((template, _)) if self.env.generic_functions.contains_key(template) => template,
-            _ => f.name.as_ref(),
-        };
+        let shown = shown_function(&f.name, |t| self.env.generic_functions.contains_key(t));
         for clause in f.ensures.iter().filter(|e| is_writes_only(e)) {
             if is_writes_nothing(clause) {
                 self.check_writes_nothing(f, shown, clause.span());

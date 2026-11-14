@@ -184,7 +184,7 @@ impl<'a> Parser<'a> {
         }
         // `on Topology::Any` is short for `<D : Topology> .. on Topology::D` with a `D` that no
         // parameter names.
-        if topology == Topology::Custom(crate::syntax::ANY_TOPOLOGY.into()) {
+        if topology == Topology::Custom(crate::syntax::ANY_TOPOLOGY.into(), None) {
             generics.push(GenericParam::Type {
                 name: crate::syntax::ANY_TOPOLOGY_PARAM.into(),
                 bounds: vec![crate::syntax::TraitBound::named("Topology")],
@@ -192,7 +192,7 @@ impl<'a> Parser<'a> {
             // The end of this function pops one name for each generic.
             self.generic_params
                 .push(crate::syntax::ANY_TOPOLOGY_PARAM.to_string());
-            topology = Topology::Custom(crate::syntax::ANY_TOPOLOGY_PARAM.into());
+            topology = Topology::Custom(crate::syntax::ANY_TOPOLOGY_PARAM.into(), None);
         }
 
         if !self.match_token(&TokenType::Arrow) {
@@ -315,9 +315,10 @@ impl<'a> Parser<'a> {
     ///
     /// The whole effect is registering the descriptor in the global topology registry
     /// (`crate::arch`), so nothing is stored in the AST. `Topology::<Name>` uses elsewhere
-    /// then resolve to `Topology::Custom(<Name>)` and pick up this description.
+    /// then resolve to `Topology::Custom(<Name>, ..)` and pick up this description.
     pub(crate) fn parse_topology_decl(&mut self) -> ParseResult<'a, crate::arch::TopologyDecl> {
         self.consume(&TokenType::Topology, "Expected 'Topology'")?;
+        let place_span = self.next_span();
         let name = match &self.advance().kind {
             TokenType::Identifier(s) => crate::symbol::Symbol::from(*s),
             _ => return Err(self.error("Expected a name after 'Topology'")),
@@ -337,6 +338,7 @@ impl<'a> Parser<'a> {
         let mut chip: Option<crate::symbol::Symbol> = None;
         let mut offload = false;
         let mut levels: Option<Vec<crate::arch::Level>> = None;
+        let mut count: Option<u64> = None;
 
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
             // `transfer Memory::<From> -> Memory::<To> : <cost> [relaxed|sync]` -- a declared
@@ -481,6 +483,19 @@ impl<'a> Parser<'a> {
                     });
                 }
                 "levels" => levels = Some(self.parse_levels()?),
+                // How many devices of this kind the machine has. `Topology::<Name>[i]` names one.
+                // The compiler gives each device its own dispatch id and checks each for a
+                // collision, so the count has a limit.
+                "count" => {
+                    let n = self.parse_level_count("count")?;
+                    if n > crate::arch::MAX_TOPOLOGY_COUNT {
+                        return Err(self.error(&format!(
+                            "`count:` is at most {}, got {n}",
+                            crate::arch::MAX_TOPOLOGY_COUNT
+                        )));
+                    }
+                    count = Some(n);
+                }
                 "offload" => {
                     offload = match &self.advance().kind {
                         TokenType::Identifier(s) if &**s == "true" => true,
@@ -522,6 +537,10 @@ impl<'a> Parser<'a> {
         // Carry the descriptor on the AST (no global registration): the caller pushes it onto
         // `Program.topologies`, and sema seeds the per-compilation cost graph from there.
         Ok(crate::arch::TopologyDecl {
+            place: crate::syntax::DeclPlace {
+                file: None,
+                span: place_span,
+            },
             name,
             descriptor: crate::arch::TopologyDescriptor {
                 arch,
@@ -532,6 +551,7 @@ impl<'a> Parser<'a> {
                 chip,
                 levels,
                 offload,
+                count,
             },
         })
     }
@@ -701,6 +721,7 @@ impl<'a> Parser<'a> {
     /// `MemoryDecl` on the AST (no global registration, unlike `parse_topology_decl`).
     pub(crate) fn parse_memory_decl(&mut self) -> ParseResult<'a, crate::syntax::MemoryDecl> {
         self.consume(&TokenType::Memory, "Expected 'Memory'")?;
+        let place_span = self.next_span();
         let name = match &self.advance().kind {
             TokenType::Identifier(s) => crate::symbol::Symbol::from(*s),
             _ => return Err(self.error("Expected a name after 'Memory'")),
@@ -829,6 +850,10 @@ impl<'a> Parser<'a> {
         )?;
 
         Ok(crate::syntax::MemoryDecl {
+            place: crate::syntax::DeclPlace {
+                file: None,
+                span: place_span,
+            },
             name,
             parent,
             capacity,
@@ -1054,15 +1079,18 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// The name of a declared struct, enum or trait. `void` is the built-in type with one
-    /// value, and the compiler recognizes it by name, so a program cannot declare its own.
+    /// The name of a declared struct, enum or trait. The compiler reads the name of a built-in
+    /// type, such as `void` or `Matrix`, as that type, so a program cannot declare its own.
     fn expect_type_name(&mut self, msg: &str) -> ParseResult<'a, String> {
         let token = self.peek().clone();
         let name = self.expect_identifier(msg)?;
-        if name == "void" {
+        if super::types::is_builtin_type_name(&name) {
             return Err(self.error_at(
                 &token,
-                "`void` is a built-in type and cannot be declared; choose another name",
+                &format!(
+                    "`{name}` is a built-in type, so a program cannot declare a type with this \
+                     name. Choose another name."
+                ),
             ));
         }
         Ok(name)
@@ -1088,6 +1116,7 @@ impl<'a> Parser<'a> {
 
     pub(crate) fn parse_struct_decl(&mut self) -> ParseResult<'a, StructDecl> {
         self.consume(&TokenType::Struct, "Expected 'struct'")?;
+        let place_span = self.next_span();
 
         let name = self.expect_type_name("Expected struct name")?;
 
@@ -1118,17 +1147,21 @@ impl<'a> Parser<'a> {
         }
 
         Ok(StructDecl {
+            place: crate::syntax::DeclPlace {
+                file: None,
+                span: place_span,
+            },
             name: name.into(),
             generics,
             fields,
             invariants,
-            file: None,
             doc_comment: None,
         })
     }
 
     pub(crate) fn parse_enum_decl(&mut self) -> ParseResult<'a, EnumDecl> {
         self.consume(&TokenType::Enum, "Expected 'enum'")?;
+        let place_span = self.next_span();
 
         let name = self.expect_type_name("Expected enum name")?;
 
@@ -1171,6 +1204,10 @@ impl<'a> Parser<'a> {
         }
 
         Ok(EnumDecl {
+            place: crate::syntax::DeclPlace {
+                file: None,
+                span: place_span,
+            },
             name: name.into(),
             generics,
             variants,
@@ -1272,6 +1309,7 @@ impl<'a> Parser<'a> {
 
     pub(crate) fn parse_trait_decl(&mut self) -> ParseResult<'a, TraitDecl> {
         self.consume(&TokenType::Trait, "Expected 'trait'")?;
+        let place_span = self.next_span();
         let name = self.expect_type_name("Expected trait name")?;
         let generics = self.parse_generic_params()?;
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
@@ -1371,6 +1409,10 @@ impl<'a> Parser<'a> {
         }
 
         Ok(TraitDecl {
+            place: crate::syntax::DeclPlace {
+                file: None,
+                span: place_span,
+            },
             name: name.into(),
             generics,
             methods,
@@ -1379,6 +1421,7 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn parse_impl_block(&mut self) -> ParseResult<'a, ImplBlock> {
+        let place_span = self.next_span();
         self.consume(&TokenType::Impl, "Expected 'impl'")?;
 
         let generics = self.parse_generic_params()?;
@@ -1491,6 +1534,10 @@ impl<'a> Parser<'a> {
         }
 
         Ok(ImplBlock {
+            place: crate::syntax::DeclPlace {
+                file: None,
+                span: place_span,
+            },
             generics,
             trait_name,
             trait_args,
@@ -1856,6 +1903,7 @@ impl<'a> Parser<'a> {
     /// edge. Two parts can declare the same edge and move it with different instructions
     /// (`cp.async` on Ampere, TMA on Hopper), and before Vx#353 only one of them could say so.
     pub(crate) fn parse_transfer_impl(&mut self) -> ParseResult<'a, TransferImplDecl> {
+        let place_span = self.next_span();
         self.consume(&TokenType::Impl, "Expected 'impl'")?;
         // The old spelling, `impl transfer Memory::A -> Memory::B`, used the lowercase keyword.
         // It has no place to name a topology, which is the whole reason for the change, so it
@@ -1934,6 +1982,10 @@ impl<'a> Parser<'a> {
             "Expected '}' to close 'impl Transfer'",
         )?;
         Ok(TransferImplDecl {
+            place: crate::syntax::DeclPlace {
+                file: None,
+                span: place_span,
+            },
             from,
             to,
             topology,

@@ -64,6 +64,7 @@ mod integration_test {
     mod runtime_test_build;
     mod shipped_programs_compile;
     mod solver_policy_test;
+    mod solver_questions_of_raw_pointer_writes;
     mod tensors_with_gaps_from_c;
     mod time_limit;
     mod traffic_test;

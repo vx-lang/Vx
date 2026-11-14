@@ -22,15 +22,15 @@
 // it: f32 f16 i8 u8 i16 u16 i32 u32 i64 u64 i4 u4 bool.
 
 Memory CPU_DRAM {}
-Memory GPU_HBM {
+Memory DEV_HBM {
   within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
 }
 Topology Dev {
   arch: spirv64,
-  memory: Memory::GPU_HBM,
-  visible: [Memory::GPU_HBM],
-  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s,
-  transfer Memory::GPU_HBM -> Memory::CPU_DRAM : 60 GB/s
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 63 GB/s,
+  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 60 GB/s
 }
 
 fn main() -> i32 {
@@ -46,10 +46,10 @@ fn main() -> i32 {
       o0[i][j] = 0 as f32;
     }
   }
-  let ga0 = transfer(a0, Memory::GPU_HBM);
-  let gb0 = transfer(b0, Memory::GPU_HBM);
-  let gc0 = transfer(c0, Memory::GPU_HBM);
-  let mut go0 = transfer(o0, Memory::GPU_HBM);
+  let ga0 = transfer(a0, Memory::DEV_HBM);
+  let gb0 = transfer(b0, Memory::DEV_HBM);
+  let gc0 = transfer(c0, Memory::DEV_HBM);
+  let mut go0 = transfer(o0, Memory::DEV_HBM);
   spawn on(Topology::Dev) {
     for i in 0..32 {
       let ar = ga0[i];
@@ -86,10 +86,10 @@ fn main() -> i32 {
       o1[i][j] = 0 as f16;
     }
   }
-  let ga1 = transfer(a1, Memory::GPU_HBM);
-  let gb1 = transfer(b1, Memory::GPU_HBM);
-  let gc1 = transfer(c1, Memory::GPU_HBM);
-  let mut go1 = transfer(o1, Memory::GPU_HBM);
+  let ga1 = transfer(a1, Memory::DEV_HBM);
+  let gb1 = transfer(b1, Memory::DEV_HBM);
+  let gc1 = transfer(c1, Memory::DEV_HBM);
+  let mut go1 = transfer(o1, Memory::DEV_HBM);
   spawn on(Topology::Dev) {
     for i in 0..32 {
       let ar = ga1[i];
@@ -126,10 +126,10 @@ fn main() -> i32 {
       o2[i][j] = 0 as i8;
     }
   }
-  let ga2 = transfer(a2, Memory::GPU_HBM);
-  let gb2 = transfer(b2, Memory::GPU_HBM);
-  let gc2 = transfer(c2, Memory::GPU_HBM);
-  let mut go2 = transfer(o2, Memory::GPU_HBM);
+  let ga2 = transfer(a2, Memory::DEV_HBM);
+  let gb2 = transfer(b2, Memory::DEV_HBM);
+  let gc2 = transfer(c2, Memory::DEV_HBM);
+  let mut go2 = transfer(o2, Memory::DEV_HBM);
   spawn on(Topology::Dev) {
     for i in 0..32 {
       let ar = ga2[i];
@@ -166,10 +166,10 @@ fn main() -> i32 {
       o3[i][j] = 0 as u8;
     }
   }
-  let ga3 = transfer(a3, Memory::GPU_HBM);
-  let gb3 = transfer(b3, Memory::GPU_HBM);
-  let gc3 = transfer(c3, Memory::GPU_HBM);
-  let mut go3 = transfer(o3, Memory::GPU_HBM);
+  let ga3 = transfer(a3, Memory::DEV_HBM);
+  let gb3 = transfer(b3, Memory::DEV_HBM);
+  let gc3 = transfer(c3, Memory::DEV_HBM);
+  let mut go3 = transfer(o3, Memory::DEV_HBM);
   spawn on(Topology::Dev) {
     for i in 0..32 {
       let ar = ga3[i];
@@ -206,10 +206,10 @@ fn main() -> i32 {
       o4[i][j] = 0 as i16;
     }
   }
-  let ga4 = transfer(a4, Memory::GPU_HBM);
-  let gb4 = transfer(b4, Memory::GPU_HBM);
-  let gc4 = transfer(c4, Memory::GPU_HBM);
-  let mut go4 = transfer(o4, Memory::GPU_HBM);
+  let ga4 = transfer(a4, Memory::DEV_HBM);
+  let gb4 = transfer(b4, Memory::DEV_HBM);
+  let gc4 = transfer(c4, Memory::DEV_HBM);
+  let mut go4 = transfer(o4, Memory::DEV_HBM);
   spawn on(Topology::Dev) {
     for i in 0..32 {
       let ar = ga4[i];
@@ -246,10 +246,10 @@ fn main() -> i32 {
       o5[i][j] = 0 as u16;
     }
   }
-  let ga5 = transfer(a5, Memory::GPU_HBM);
-  let gb5 = transfer(b5, Memory::GPU_HBM);
-  let gc5 = transfer(c5, Memory::GPU_HBM);
-  let mut go5 = transfer(o5, Memory::GPU_HBM);
+  let ga5 = transfer(a5, Memory::DEV_HBM);
+  let gb5 = transfer(b5, Memory::DEV_HBM);
+  let gc5 = transfer(c5, Memory::DEV_HBM);
+  let mut go5 = transfer(o5, Memory::DEV_HBM);
   spawn on(Topology::Dev) {
     for i in 0..32 {
       let ar = ga5[i];
@@ -286,10 +286,10 @@ fn main() -> i32 {
       o6[i][j] = 0 as i32;
     }
   }
-  let ga6 = transfer(a6, Memory::GPU_HBM);
-  let gb6 = transfer(b6, Memory::GPU_HBM);
-  let gc6 = transfer(c6, Memory::GPU_HBM);
-  let mut go6 = transfer(o6, Memory::GPU_HBM);
+  let ga6 = transfer(a6, Memory::DEV_HBM);
+  let gb6 = transfer(b6, Memory::DEV_HBM);
+  let gc6 = transfer(c6, Memory::DEV_HBM);
+  let mut go6 = transfer(o6, Memory::DEV_HBM);
   spawn on(Topology::Dev) {
     for i in 0..32 {
       let ar = ga6[i];
@@ -326,10 +326,10 @@ fn main() -> i32 {
       o7[i][j] = 0 as u32;
     }
   }
-  let ga7 = transfer(a7, Memory::GPU_HBM);
-  let gb7 = transfer(b7, Memory::GPU_HBM);
-  let gc7 = transfer(c7, Memory::GPU_HBM);
-  let mut go7 = transfer(o7, Memory::GPU_HBM);
+  let ga7 = transfer(a7, Memory::DEV_HBM);
+  let gb7 = transfer(b7, Memory::DEV_HBM);
+  let gc7 = transfer(c7, Memory::DEV_HBM);
+  let mut go7 = transfer(o7, Memory::DEV_HBM);
   spawn on(Topology::Dev) {
     for i in 0..32 {
       let ar = ga7[i];
@@ -366,10 +366,10 @@ fn main() -> i32 {
       o8[i][j] = 0 as i64;
     }
   }
-  let ga8 = transfer(a8, Memory::GPU_HBM);
-  let gb8 = transfer(b8, Memory::GPU_HBM);
-  let gc8 = transfer(c8, Memory::GPU_HBM);
-  let mut go8 = transfer(o8, Memory::GPU_HBM);
+  let ga8 = transfer(a8, Memory::DEV_HBM);
+  let gb8 = transfer(b8, Memory::DEV_HBM);
+  let gc8 = transfer(c8, Memory::DEV_HBM);
+  let mut go8 = transfer(o8, Memory::DEV_HBM);
   spawn on(Topology::Dev) {
     for i in 0..32 {
       let ar = ga8[i];
@@ -406,10 +406,10 @@ fn main() -> i32 {
       o9[i][j] = 0 as u64;
     }
   }
-  let ga9 = transfer(a9, Memory::GPU_HBM);
-  let gb9 = transfer(b9, Memory::GPU_HBM);
-  let gc9 = transfer(c9, Memory::GPU_HBM);
-  let mut go9 = transfer(o9, Memory::GPU_HBM);
+  let ga9 = transfer(a9, Memory::DEV_HBM);
+  let gb9 = transfer(b9, Memory::DEV_HBM);
+  let gc9 = transfer(c9, Memory::DEV_HBM);
+  let mut go9 = transfer(o9, Memory::DEV_HBM);
   spawn on(Topology::Dev) {
     for i in 0..32 {
       let ar = ga9[i];
@@ -446,10 +446,10 @@ fn main() -> i32 {
       o10[i][j] = 0 as i4;
     }
   }
-  let ga10 = transfer(a10, Memory::GPU_HBM);
-  let gb10 = transfer(b10, Memory::GPU_HBM);
-  let gc10 = transfer(c10, Memory::GPU_HBM);
-  let mut go10 = transfer(o10, Memory::GPU_HBM);
+  let ga10 = transfer(a10, Memory::DEV_HBM);
+  let gb10 = transfer(b10, Memory::DEV_HBM);
+  let gc10 = transfer(c10, Memory::DEV_HBM);
+  let mut go10 = transfer(o10, Memory::DEV_HBM);
   spawn on(Topology::Dev) {
     for i in 0..32 {
       let ar = ga10[i];
@@ -486,10 +486,10 @@ fn main() -> i32 {
       o11[i][j] = 0 as u4;
     }
   }
-  let ga11 = transfer(a11, Memory::GPU_HBM);
-  let gb11 = transfer(b11, Memory::GPU_HBM);
-  let gc11 = transfer(c11, Memory::GPU_HBM);
-  let mut go11 = transfer(o11, Memory::GPU_HBM);
+  let ga11 = transfer(a11, Memory::DEV_HBM);
+  let gb11 = transfer(b11, Memory::DEV_HBM);
+  let gc11 = transfer(c11, Memory::DEV_HBM);
+  let mut go11 = transfer(o11, Memory::DEV_HBM);
   spawn on(Topology::Dev) {
     for i in 0..32 {
       let ar = ga11[i];
@@ -526,10 +526,10 @@ fn main() -> i32 {
       o12[i][j] = 0 as bool;
     }
   }
-  let ga12 = transfer(a12, Memory::GPU_HBM);
-  let gb12 = transfer(b12, Memory::GPU_HBM);
-  let gc12 = transfer(c12, Memory::GPU_HBM);
-  let mut go12 = transfer(o12, Memory::GPU_HBM);
+  let ga12 = transfer(a12, Memory::DEV_HBM);
+  let gb12 = transfer(b12, Memory::DEV_HBM);
+  let gc12 = transfer(c12, Memory::DEV_HBM);
+  let mut go12 = transfer(o12, Memory::DEV_HBM);
   spawn on(Topology::Dev) {
     for i in 0..32 {
       let ar = ga12[i];

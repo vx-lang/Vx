@@ -1,0 +1,30 @@
+//===- a_float_arm_in_a_match_on_an_integer.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A float arm in a `match` on an integer is an error. Such a program used to stop the compiler.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+fn pick(x : i32) -> i32 {
+  let mut found = 0;
+  match x {
+    // CHECK: Error[E3051] at {{.*}}a_float_arm_in_a_match_on_an_integer.vx:[[@LINE+1]]:5: `1.5` is a float, but the value matched has the type `i32`{{$}}
+    1.5 => {
+      found = 1;
+    }
+    _ => {
+      found = 0;
+    }
+  }
+  return found;
+}
+
+fn main() -> i32 {
+  print(pick(1));
+  return 0;
+}
+// CHECK: 1 error(s) emitted

@@ -2509,7 +2509,7 @@ impl<'a> TypeChecker<'a> {
                 let _ = self.unify_types(&ret_ty, &expected, &mut mapping);
             }
             // `on Topology::D` with no argument that binds `D` runs where it is called.
-            if let Topology::Custom(d) = &generic_func.topology {
+            if let Topology::Custom(d, None) = &generic_func.topology {
                 if self.mono.pending_topo_vars.contains(d)
                     && !self.mono.pending_topo_bindings.contains_key(d)
                 {
@@ -3864,10 +3864,15 @@ impl<'a> TypeChecker<'a> {
                         && base_ty.is_linear()
                         && !self.is_copy(&base_ty)
                     {
-                        if let Expr::Identifier(id) = &**obj {
-                            if !self.refuse_move_behind_ref(&id.name, &id.name, &id.span) {
+                        match &**obj {
+                            Expr::Identifier(id)
+                                if !self.refuse_move_behind_ref(&id.name, &id.name, &id.span) =>
+                            {
                                 self.consume(&id.name);
                             }
+                            // `p.a.take()` moves `p.a` out of `p`, as `take(p.a)` does.
+                            Expr::MemberAccess(_) => self.move_field_out(obj, &base_ty),
+                            _ => {}
                         }
                     }
                     let method_params = generic_method.params.clone();
@@ -3991,6 +3996,7 @@ impl<'a> TypeChecker<'a> {
                     *expr = Expr::Transfer(TransferExpr {
                         expr: obj.clone(),
                         space: target_mem,
+                        device: None,
                         cost: None,
                         lowering: None,
                         is_async: false,
@@ -4007,6 +4013,7 @@ impl<'a> TypeChecker<'a> {
                     *expr = Expr::Transfer(TransferExpr {
                         expr: obj.clone(),
                         space: target_mem,
+                        device: None,
                         cost: None,
                         lowering: None,
                         is_async: false,

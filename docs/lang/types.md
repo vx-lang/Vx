@@ -456,10 +456,10 @@ no run-time check.
 In a contract, the prover reads a cast to `usize` as its value only for a value in range. So
 `requires (x as usize) < 10` holds only when `x` is in 0..10.
 
-### Arrays, Tensors, and Matrices
+### Arrays and Tensors
 
 - **Arrays**: Fixed-size arrays are supported using the `[T; N]` syntax.
-- **Tensors and Matrices**: Built-in `Tensor<T, Shape>` and `Matrix` types are first-class constructs natively understood by the compiler for high-performance algebraic operations.
+- **Tensors**: The built-in `Tensor<T, Shape>` type is a first-class construct that the compiler understands, for high-performance algebraic operations. A matrix is a tensor of rank 2.
 - **Vectors**: `<N x T>` is N lanes of a scalar type `T` (`<4 x f32>`): one value, lowered to `vector<NxT>`. Arithmetic between two `<N x T>` values is lane-wise. A vector is loaded and stored through a pointer to the vector type (`*mut <4 x f32>`). There is no implicit conversion between `<N x T>` and `T`: an `f32` is not a `<1 x f32>`, and a `*mut f32` dereferences to one `f32`.
 
 ## 9. Linear (Affine) Types vs. Copyable Types
@@ -480,7 +480,6 @@ visits every position `t[i]` accepts. A rank-0 tensor has no `len()`.
 |------|---------|
 | `Tensor<T, Shape>` | `let a : Tensor<f32, []> = 1.0;` |
 | `Tensor<T, Shape, Memory>` | `let d = unsafe { Tensor<f32, [4, 4], Memory::NPU_HBM>::uninit() };` |
-| `Matrix` | `let m : Matrix = ...;` |
 | `Verified<T>` | `let v : Verified<Tensor<f32, [4, 4]>> = ...;` |
 | `Pinned<T, Topology>` | `let p : Pinned<Tensor<f32, [4, 4]>, Topology::NPU[0]> = ...;` |
 | `struct` instances | `let cfg = Config { value: 1.0 };` |

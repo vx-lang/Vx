@@ -335,6 +335,55 @@ pub fn two_steps_of_lanes(out : &mut Tensor<u8, [?, 260], Memory::HBM>, n : i32)
   return;
 }
 
+// `blk / k` and `blk % k` fix `blk` only when `k` is not zero. `k` is not a factor of the loop's
+// end, so the loop can have passes when `k` is zero.
+pub fn divisor_not_a_factor_of_the_end(c : &mut Tensor<f32, [?, ?], Memory::HBM>, n : i32, k : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..n across blocks {
+      // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:[[# @LINE + 1]]:{{.*}}two passes of this block loop may write the same element of `c`: an index of the write must fix `blk`
+      c[blk / k][blk % k] = 0.0;
+    }
+  }
+  return;
+}
+
+// `blk / nt` alone is the same for `nt` passes.
+pub fn quotient_without_the_remainder(c : &mut Tensor<f32, [?], Memory::HBM>, mt : i32, nt : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..mt * nt across blocks {
+      // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:[[# @LINE + 1]]:{{.*}}two passes of this block loop may write the same element of `c`: an index of the write must fix `blk`
+      c[blk / nt] = 0.0;
+    }
+  }
+  return;
+}
+
+// A quotient and a remainder by two different numbers do not fix `blk`.
+pub fn quotient_and_remainder_of_two_numbers(c : &mut Tensor<f32, [?, ?], Memory::HBM>, mt : i32, nt : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..mt * nt across blocks {
+      // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:[[# @LINE + 1]]:{{.*}}two passes of this block loop may write the same element of `c`: an index of the write must fix `blk`
+      c[blk / nt][blk % mt] = 0.0;
+    }
+  }
+  return;
+}
+
+// `w % 4` can be 2, so subgroup 2 writes `64 + j`, the same elements as subgroup 4.
+pub fn remainder_too_wide_for_its_digit(c : &mut Tensor<f32, [?, ?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for w in 0..8 across subgroups {
+        for j in 0..32 across lanes {
+          // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:[[# @LINE + 1]]:{{.*}}two passes of this subgroup loop may write the same element of `c`: an index of the write must fix `w`
+          c[b][(w / 4) * 64 + (w % 4) * 32 + j] = 0.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
 fn main() -> i32 {
   return 0;
 }

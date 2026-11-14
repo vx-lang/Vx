@@ -637,6 +637,29 @@ fn parse_scalar_type(text: &str) -> Option<syntax::Type> {
     }
 }
 
+/// The value of an integer constant of type `ty`, from its decimal text. MLIR reads the text at
+/// the width of `ty`: a `u64` above `i64::MAX` keeps its 64 bits, and an `i128` keeps its value.
+/// The checker refuses a value that `ty` cannot hold, so such a value is a compiler bug.
+pub(crate) fn integer_constant<'c>(
+    context: &'c Context,
+    ty: melior::ir::Type<'c>,
+    text: &str,
+) -> Attribute<'c> {
+    // A loop counter is an `index`.
+    assert!(
+        melior::ir::TypeLike::is_integer(&ty) || melior::ir::TypeLike::is_index(&ty),
+        "an integer constant of the type {ty}: {text}"
+    );
+    // MLIR fills the upper bits of a type wider than 64 bits with zeroes, so -5 would turn
+    // into 2^64 - 5 in an `i128`.
+    let wide = melior::ir::r#type::IntegerType::try_from(ty).is_ok_and(|t| t.width() > 64);
+    if let (false, Ok(value)) = (wide, text.parse::<i64>()) {
+        return IntegerAttribute::new(ty, value).into();
+    }
+    Attribute::parse(context, &format!("{text} : {ty}"))
+        .unwrap_or_else(|| panic!("integer literal out of range for {ty}: {text}"))
+}
+
 pub fn generate_match_chain<'c>(
     gen: &mut MeliorGenerator<'c>,
     arms: &[MatchArm],
@@ -742,34 +765,53 @@ pub fn generate_match_chain<'c>(
             );
             cmp_op.result(0)?.into()
         }
-        // A scalar literal arm (`0 => …`, `1 => …`) over an integer scrutinee: compare the
+        // A scalar literal arm (`0 => …`, `1 => …`) over a number scrutinee: compare the
         // scrutinee against the literal with the same `arith.cmpi eq` shape as the enum-tag path,
         // but against `match_val` directly (no tag extraction). Without this, an integer `match`
         // ICE'd here — `Unsupported pattern in codegen` (#263).
         Pattern::Literal(lit) => {
+            let float = crate::codegen::generator::is_float_text(&_match_ty.to_string());
             let lit_val = match &**lit {
-                Expr::Number(n) => n.value.as_ref().parse::<i64>().unwrap_or(0),
+                // A number arm of a float `match`, `2` or `0.1`, is a float of that type.
+                Expr::Number(n) if float => {
+                    let v = n.value.as_ref();
+                    let v = v
+                        .parse::<f64>()
+                        .unwrap_or_else(|_| panic!("float match arm that does not parse: {v}"));
+                    melior::ir::attribute::FloatAttribute::new(gen.context, _match_ty, v).into()
+                }
+                // E3019 refuses an arm that the type of the match cannot hold.
+                Expr::Number(n) => integer_constant(gen.context, _match_ty, n.value.as_ref()),
+                Expr::Identifier(id) if id.name.as_ref() == "true" => {
+                    IntegerAttribute::new(_match_ty, 1).into()
+                }
+                Expr::Identifier(id) if id.name.as_ref() == "false" => {
+                    IntegerAttribute::new(_match_ty, 0).into()
+                }
                 other => panic!("Unsupported literal pattern in codegen: {:?}", other),
             };
             let const_op = block.append_operation(
                 OperationBuilder::new("arith.constant", gen.loc())
                     .add_results(&[_match_ty])
-                    .add_attributes(&[(
-                        Identifier::new(gen.context, "value"),
-                        IntegerAttribute::new(_match_ty, lit_val).into(),
-                    )])
+                    .add_attributes(&[(Identifier::new(gen.context, "value"), lit_val)])
                     .build()?,
             );
             let const_val = const_op.result(0)?.into();
+            // `oeq` for a float and `eq` for an integer: each has the number 1 and 0.
+            let (cmp, predicate) = if float {
+                ("arith.cmpf", 1)
+            } else {
+                ("arith.cmpi", 0)
+            };
             let cmp_op = block.append_operation(
-                OperationBuilder::new("arith.cmpi", gen.loc())
+                OperationBuilder::new(cmp, gen.loc())
                     .add_operands(&[match_val, const_val])
                     .add_results(&[melior::ir::r#type::IntegerType::new(gen.context, 1).into()])
                     .add_attributes(&[(
                         Identifier::new(gen.context, "predicate"),
                         IntegerAttribute::new(
                             melior::ir::r#type::IntegerType::new(gen.context, 64).into(),
-                            0, // eq
+                            predicate,
                         )
                         .into(),
                     )])
@@ -800,6 +842,11 @@ pub fn generate_match_chain<'c>(
         for (position, pattern) in payloads.iter().enumerate() {
             let Pattern::Identifier(name) = pattern else {
                 continue;
+            };
+            // The Vx type of the name, so a later `transfer` of it knows where its data is.
+            match crate::codegen::lower::expr::variant_payload_type(gen, en, vn, position, None) {
+                Some(ty) => gen.ast_env.insert(name.to_string().into(), ty),
+                None => gen.ast_env.remove(name.as_ref()),
             };
             let Some(slot_text) = slots.get(position) else {
                 continue;

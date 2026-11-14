@@ -999,8 +999,8 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
           "reads it as device memory. Host memory here would run the "
           "region on the host, or let the device read bytes nothing "
           "wrote.\n"
-          "          Spell the space `Memory::GPU_HBM`, or make it the "
-          "topology's `memory:`, so the compiler sends the pair.\n",
+          "          Make the space the topology's `memory:`, so the "
+          "compiler sends the pair.\n",
           bytes, requested);
       abort();
     }

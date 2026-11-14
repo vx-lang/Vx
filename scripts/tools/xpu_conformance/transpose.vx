@@ -14,15 +14,15 @@
 // two results element by element. Every value is a small integer, exact in f32.
 
 Memory CPU_DRAM {}
-Memory GPU_HBM {
+Memory DEV_HBM {
   within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
 }
 Topology Dev {
   arch: spirv64,
-  memory: Memory::GPU_HBM,
-  visible: [Memory::GPU_HBM],
-  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s,
-  transfer Memory::GPU_HBM -> Memory::CPU_DRAM : 60 GB/s
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 63 GB/s,
+  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 60 GB/s
 }
 
 fn main() -> i32 {
@@ -35,8 +35,8 @@ fn main() -> i32 {
     }
   }
 
-  let ga = transfer(a, Memory::GPU_HBM);
-  let mut go = transfer(o, Memory::GPU_HBM);
+  let ga = transfer(a, Memory::DEV_HBM);
+  let mut go = transfer(o, Memory::DEV_HBM);
   spawn on(Topology::Dev) {
     for i in 0..48 {
       let arow = ga[i];

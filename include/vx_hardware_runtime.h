@@ -422,6 +422,10 @@ vx_payload_field(const void *payload, size_t payload_size, const char *key) {
 
   const char *base = (const char *)payload;
   size_t key_len = strlen(key);
+  /* When the last byte is NUL, a NUL ends each entry inside the blob. Then a
+     match can return before the walk finds the end of its entry, and finding
+     `image=` does not read the whole image. */
+  const int terminated = base[payload_size - 1] == '\0';
 
   /* Skip the kernel name, then walk the remaining NUL-terminated entries. memchr rather
      than a byte loop: an `image=` entry holds a whole module's PTX, and looking up a field
@@ -435,6 +439,9 @@ vx_payload_field(const void *payload, size_t payload_size, const char *key) {
   while (pos < payload_size) {
     const char *entry = base + pos;
     size_t remaining = payload_size - pos;
+    if (terminated && remaining > key_len && memcmp(entry, key, key_len) == 0) {
+      return entry + key_len;
+    }
     const char *end = (const char *)memchr(entry, '\0', remaining);
     if (!end) {
       /* Unterminated: refuse rather than read past the blob. */

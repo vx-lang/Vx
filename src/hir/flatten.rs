@@ -1130,7 +1130,10 @@ impl<'r> Lowerer<'r> {
     fn lower_block(&mut self, stmts: &[Statement]) -> Lowered<()> {
         self.scoped(|me| {
             if let Some(level) = me.across.level {
-                me.lower_stretches(stmts, level)?;
+                let lane0 = me.across.lane0.clone();
+                let lowered = me.lower_stretches(stmts, level);
+                me.across.lane0 = lane0;
+                lowered?;
             } else {
                 for s in stmts {
                     me.lower_stmt(s)?;
@@ -1472,6 +1475,42 @@ impl<'r> Lowerer<'r> {
         }
     }
 
+    /// A number literal of type `elem`. A constant holds 64 bits, so an `i128` outside the
+    /// range of `i64`, or a `u128` above `u64::MAX`, is built as `(high << 64) | low`.
+    fn lower_number_literal(&mut self, text: &str, elem: &ElementType) -> Lowered<Val> {
+        let declined = || Decline::TypeNotModelled {
+            what: "a literal that does not encode",
+        };
+        if let Some(imm) = encode_imm(text, elem) {
+            return Ok(self.emit_value(Opcode::Const, Register(0), Register(0), elem.clone(), imm));
+        }
+        if elem.int_bits() != Some(128) {
+            return Err(declined());
+        }
+        let bits = text
+            .parse::<i128>()
+            .map(|v| v as u128)
+            .or_else(|_| text.parse::<u128>())
+            .map_err(|_| declined())?;
+        // A `u128` constant fills its upper 64 bits with zeroes.
+        let mut half = |imm: u64| {
+            self.emit_value(
+                Opcode::Const,
+                Register(0),
+                Register(0),
+                ElementType::U128,
+                imm,
+            )
+        };
+        let low = half(bits as u64);
+        let high = half((bits >> 64) as u64);
+        let shift = half(64);
+        let high = self.emit_value(Opcode::Shl, high.reg, shift.reg, ElementType::U128, 0);
+        let value = self.emit_value(Opcode::BitOr, high.reg, low.reg, ElementType::U128, 0);
+        // A `u128` and an `i128` are the same MLIR type, so this cast writes no code.
+        Ok(self.emit_value(Opcode::Cast, value.reg, Register(0), elem.clone(), 0))
+    }
+
     /// Lower an expression to the register holding its result (emitting instructions as needed).
     /// Returns `None` for anything outside the current subset — the caller then aborts.
     fn lower_expr(&mut self, e: &Expr) -> Lowered<Val> {
@@ -1480,10 +1519,7 @@ impl<'r> Lowerer<'r> {
                 let elem = number_elem(n).ok_or(Decline::TypeNotModelled {
                     what: "a numeric literal with no element type",
                 })?;
-                let imm = encode_imm(n.value.as_ref(), &elem).ok_or(Decline::TypeNotModelled {
-                    what: "a literal that does not encode",
-                })?;
-                Ok(self.emit_value(Opcode::Const, Register(0), Register(0), elem, imm))
+                self.lower_number_literal(n.value.as_ref(), &elem)
             }
             // A name read: an SSA alias (no instruction) or a `SlotLoad` from its memory slot. A name
             // that isn't a local but names a registered function is a *function pointer* value (a bare
@@ -1544,15 +1580,15 @@ impl<'r> Lowerer<'r> {
                 // carries the left operand's type. When either operand is a tensor the op is
                 // *elementwise* and the result is the tensor type (a scalar operand broadcasts) -- an
                 // arith opcode with a tensor result type is the flat HIR's elementwise form, mirroring
-                // `arith.mulf` on a vector in codegen. A HALF tensor operand widens the result to
-                // f32 (Vx#320): the checker already typed the expression so, and codegen loads the
-                // half row through an extf -- arithmetic is always f32, storage is what varies.
+                // `arith.mulf` on a vector in codegen. A rank-1 HALF tensor operand widens the
+                // result to f32 (Vx#320): the checker types it so, and codegen loads the half row
+                // through an extf. The checker keeps the half type from rank 2 up, so this does too.
                 let widen = |t: &LoweredTy| -> LoweredTy {
                     match t {
                         LoweredTy::Tensor {
                             elem: ElementType::F16 | ElementType::BF16,
                             shape,
-                        } => LoweredTy::Tensor {
+                        } if shape.len() == 1 => LoweredTy::Tensor {
                             elem: ElementType::F32,
                             shape: shape.clone(),
                         },
@@ -1780,18 +1816,10 @@ impl<'r> Lowerer<'r> {
                     }
                 };
                 let mem_id = crate::arch::memory_space_dispatch_id(&t.space) as u32 as u64;
-                // Where the value is now, which its type says when it is pinned to a topology. A
-                // borrowed tensor says it with its placement, and no transfer made it here.
-                let source = match self.infer_ast_type(&t.expr) {
-                    Some(Type::Pinned(_, top)) => crate::arch::topology_dispatch_id(&top) as u32,
-                    Some(Type::Borrow { inner, .. }) => match *inner {
-                        Type::Tensor(_, _, Some(p)) => {
-                            crate::arch::topology_dispatch_id(&p.topology) as u32
-                        }
-                        _ => 0,
-                    },
-                    _ => 0,
-                };
+                // Where the value is now, which its type says.
+                let source = self
+                    .infer_ast_type(&t.expr)
+                    .map_or(0, |ty| crate::arch::source_topology_id(&ty) as u32);
                 let shared = if t.shared {
                     crate::bytecode::TRANSFER_SHARED
                 } else {
@@ -2528,6 +2556,9 @@ impl<'r> Lowerer<'r> {
             // `Closure_N` struct), so a closure local passed to `.map` is recognized as a closure. (#242)
             Expr::StructInit(si) => Some(Type::Struct(si.name.clone(), si.type_id)),
             Expr::UnsafeBlock(u) => self.infer_ast_type(u.ret.as_deref()?),
+            // The value of a `spawn` region is its tail. The checker moves a `let` of the region
+            // to before it, so a local of the region already has its type here.
+            Expr::SpawnOn(sp) => self.infer_ast_type(sp.ret.as_deref()?),
             Expr::AsCast(c) => Some(c.target_ty.clone()),
             // `&e` has a borrow type over `e`'s type (`&x` where `x : i32` -> `&i32`), so an
             // unannotated `let r = &x` types `r` as `&i32` and a later `*r` recovers `i32`. (#230)
@@ -2544,6 +2575,16 @@ impl<'r> Lowerer<'r> {
             // A named function's return type, else a function-typed local's (`let f = probe;`).
             Expr::FunctionCall(_) if crate::syntax::task_join_handle(e).is_some() => {
                 self.infer_ast_type(crate::syntax::task_join_handle(e)?)
+            }
+            // `Tensor<f32, [4], Memory::GPU_HBM>::uninit()` writes the whole type, placement
+            // included. A transfer home of the tensor needs the placement.
+            Expr::FunctionCall(fc)
+                if matches!(
+                    fc.name.as_ref(),
+                    "Tensor::new" | "Tensor::uninit" | "Tensor::fill"
+                ) =>
+            {
+                fc.type_args.as_ref().and_then(|a| a.first()).cloned()
             }
             Expr::FunctionCall(fc) => self
                 .registry
@@ -2892,14 +2933,17 @@ impl<'r> Lowerer<'r> {
                 crate::syntax::Pattern::Wildcard | crate::syntax::Pattern::Identifier(_)
             )
         });
-        // The arms compare the subject with `==`: an enum tag, an integer of any width, or a
-        // `bool`.
+        // The arms compare the subject with `==`: an enum tag, a number, or a `bool`.
         let subj_elem = match &subj.ty {
-            LoweredTy::Scalar(e) if e.int_bits().is_some() || *e == ElementType::Bool => e.clone(),
+            LoweredTy::Scalar(e)
+                if e.int_bits().is_some() || e.is_float() || *e == ElementType::Bool =>
+            {
+                e.clone()
+            }
             _ if binds_only => ElementType::I32,
             _ => {
                 return Err(Decline::Unsupported {
-                    what: "a match subject that is not an integer or a bool",
+                    what: "a match subject that is not a number or a bool",
                 })
             }
         };
@@ -2945,7 +2989,14 @@ impl<'r> Lowerer<'r> {
                 }
                 // A literal arm (`0 => ..`): the same chain, with the literal as the tag.
                 crate::syntax::Pattern::Literal(lit) => {
-                    let mut lit_v = self.lower_expr(lit)?;
+                    let mut lit_v = match &**lit {
+                        // A number arm of a float `match` has the float's type: `0.1` read as
+                        // an `f32` and then widened is not the `f64` 0.1.
+                        Expr::Number(n) if subj_elem.is_float() => {
+                            self.lower_number_literal(n.value.as_ref(), &subj_elem)?
+                        }
+                        _ => self.lower_expr(lit)?,
+                    };
                     match &lit_v.ty {
                         LoweredTy::Scalar(e) if *e == subj_elem => {}
                         // A literal with no suffix, at the width of the subject.
@@ -6988,8 +7039,13 @@ impl<'r> Lowerer<'r> {
         let outer = std::mem::replace(&mut self.value_drops, mine);
         let outer_temps = std::mem::take(&mut self.temps);
         let lowered = self.lower_stmt_inner(s);
-        let left = std::mem::replace(&mut self.value_drops, outer);
+        let mut left = std::mem::replace(&mut self.value_drops, outer);
         lowered?;
+        // `return <block>` whose every path returns, as in the call function of a closure: each
+        // inner `return` left the function. The end of a slot's lifetime adds nothing then.
+        if self.block_terminated() {
+            left.retain(|d| !matches!(d, PendingDrop::LifetimeEnd { .. }));
+        }
         if !left.is_empty() {
             assert!(
                 !self.block_terminated(),
@@ -7496,8 +7552,7 @@ impl<'r> Lowerer<'r> {
                 }
                 self.lower_assign(&a.lhs, &a.rhs)
             }
-            // Compound assignment `lhs op= rhs` desugars to `lhs = (lhs op rhs)`: read the current
-            // value of the place, combine it with the right side, and store back.
+            // Read the place, combine its value with the right side, and store the result back.
             Statement::CompoundAssign(a) => {
                 // `p.x += n` and `*r += n` are `p.x = p.x + n` and `*r = *r + n`, which
                 // `lower_assign` already handles. The place is named twice, so only a variable
@@ -7514,7 +7569,24 @@ impl<'r> Lowerer<'r> {
                     });
                     return self.lower_assign(&a.lhs, &value);
                 }
-                let cur = self.lower_expr(&a.lhs)?;
+                // Save the base and index registers so the read and write share one evaluation.
+                let indexed_place = if matches!(&a.lhs, Expr::IndexAccess(_)) {
+                    Some(self.lower_place(&a.lhs)?)
+                } else {
+                    None
+                };
+                let cur = if let Some(place) = &indexed_place {
+                    let index = &self.code[place.reg.0 as usize];
+                    self.emit_typed(
+                        index.opcode,
+                        index.operand1,
+                        index.operand2,
+                        place.ty.clone(),
+                        0,
+                    )
+                } else {
+                    self.lower_expr(&a.lhs)?
+                };
                 let rhs = self.lower_expr(&a.rhs)?;
                 let op = binop_opcode(&a.op).ok_or(Decline::Unsupported {
                     what: "this compound-assignment operator",
@@ -7529,15 +7601,12 @@ impl<'r> Lowerer<'r> {
                 // Both scalar operands already share a type (`x += 1` types `1` to `x`'s type; a
                 // genuine mismatch is rejected, #240), so they combine directly.
                 let combined = self.emit_typed(op, cur.reg, rhs.reg, result_ty, 0);
-                if matches!(&a.lhs, Expr::IndexAccess(_)) {
-                    let place = self.lower_place(&a.lhs)?;
-                    // `p[i] += v` through a raw pointer stores through the element pointer.
-                    let store =
-                        if matches!(self.code[place.reg.0 as usize].opcode, Opcode::PtrIndex) {
-                            Opcode::PtrStore
-                        } else {
-                            Opcode::TensorStore
-                        };
+                if let Some(place) = indexed_place {
+                    let store = match self.code[place.reg.0 as usize].opcode {
+                        Opcode::PtrIndex => Opcode::PtrStore,
+                        Opcode::TensorIndex => Opcode::TensorStore,
+                        _ => unreachable!("an indexed place comes from a tensor or pointer index"),
+                    };
                     self.emit_effect(store, place.reg, combined.reg, 0);
                     Ok(())
                 } else {
@@ -7618,6 +7687,10 @@ impl<'r> Lowerer<'r> {
                         "the checker waits for tasks only in a tasks block"
                     );
                     self.emit_effect(Opcode::TasksWait, Register(0), Register(0), 0);
+                    Ok(())
+                }
+                expr if crate::syntax::is_tasks_join(expr) => {
+                    self.emit_effect(Opcode::TasksWait, Register(0), Register(0), 1);
                     Ok(())
                 }
                 Expr::FunctionCall(fc) if crate::syntax::is_abort_or_panic(fc) => {
@@ -8913,6 +8986,10 @@ fn encode_imm(s: &str, elem: &ElementType) -> Option<u64> {
         }
     } else if let Ok(i) = s.parse::<i64>() {
         Some(i as u64)
+    } else if elem.is_signed_int() && elem.int_bits().is_some_and(|b| b > 64) {
+        // The emitter widens these 64 bits as signed, so an `i128` above `i64::MAX` would
+        // turn negative.
+        None
     } else {
         s.parse::<u64>().ok()
     }

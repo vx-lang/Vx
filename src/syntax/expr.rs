@@ -91,11 +91,18 @@ impl EnumVariantExpr {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+/// A number compares by its value and type, not its place: a number can be a tensor dimension,
+/// and `[4]` written in two places is one type.
+#[derive(Debug, Clone)]
 pub struct NumberExpr {
     pub value: Symbol,
     pub ty: Option<ElementType>,
     pub span: Span,
+}
+impl PartialEq for NumberExpr {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value && self.ty == other.ty
+    }
 }
 impl NumberExpr {
     pub fn new(value: String, ty: Option<ElementType>, span: Span) -> Self {
@@ -151,6 +158,9 @@ impl SpawnOnExpr {
 pub struct TransferExpr {
     pub expr: Box<Expr>,
     pub space: MemorySpace,
+    /// The device of `transfer(x, Topology::X[i])`, which moves `x` into the memory of that
+    /// device. The checker sets `space` to that memory. `None` when the transfer names a memory.
+    pub device: Option<crate::syntax::Topology>,
     /// The bandwidth-derived roofline cost, filled in by sema. Cycles for a `B/cyc` hop,
     /// picoseconds for a `B/s` one — `u64` because picoseconds overflow `u32` at 4.3 ms.
     pub cost: Option<u64>,
@@ -191,6 +201,7 @@ impl TransferExpr {
         Self {
             expr,
             space,
+            device: None,
             cost: None,
             lowering: None,
             is_async: false,
@@ -775,6 +786,30 @@ pub fn tasks_wait_stmt(span: Span) -> super::Statement {
         has_semi: true,
         span,
     })
+}
+
+/// The callee of the statement the checker puts at the end of the body of a `tasks` block, before
+/// the drops of what its tasks use. No program can name it. It joins each task of the block that
+/// is not joined yet, as the end of the block does, and cancels none of them.
+pub const TASKS_JOIN: &str = "$tasks_join";
+
+/// `$tasks_join();`, at the end of a body whose last statement is at `span`.
+pub fn tasks_join_stmt(span: Span) -> super::Statement {
+    super::Statement::ExprStmt(super::ExprStmtStmt {
+        expr: Expr::FunctionCall(FunctionCallExpr::new(
+            TASKS_JOIN.into(),
+            None,
+            Vec::new(),
+            span,
+        )),
+        has_semi: true,
+        span,
+    })
+}
+
+/// Whether `e` is the call of [`tasks_join_stmt`].
+pub fn is_tasks_join(e: &Expr) -> bool {
+    matches!(e, Expr::FunctionCall(c) if c.name.as_ref() == TASKS_JOIN)
 }
 
 /// The callee that `h.join()` becomes, with `h` as its argument. No program can name it. The
@@ -1647,6 +1682,7 @@ impl Expr {
             Expr::Transfer(e) => Expr::Transfer(TransferExpr {
                 expr: Box::new(e.expr.substitute(mapping)),
                 space: e.space.clone(),
+                device: e.device.as_ref().map(|d| d.substitute(mapping)),
                 cost: e.cost,
                 lowering: e.lowering.clone(),
                 is_async: e.is_async,

@@ -11,7 +11,7 @@
 // CHECK-NEXT: pick_mut 1 7.5
 // CHECK-NEXT: output 4
 // RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx 2>&1 | FileCheck %s --implicit-check-not=Error
-// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR # flat-codegen
 // MLIR: func.func @FixedPair$pick_mut({{.*}}) -> (memref<4xf32> {vx.reference})
 
 struct Pair {

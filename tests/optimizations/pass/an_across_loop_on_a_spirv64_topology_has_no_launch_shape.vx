@@ -26,17 +26,17 @@ Memory CPU_DRAM {
   capacity: 16 GiB, bandwidth: 50 GB/s, managed: cached
 }
 
-Memory GPU_HBM {
+Memory DEV_HBM {
   capacity: 8 GiB, bandwidth: 400 GB/s, managed: cached, scope: device
 }
 
 Topology Simd {
   arch: spirv64,
   levels: [blocks(max_lanes: 1024), lanes],
-  memory: Memory::GPU_HBM,
-  visible: [Memory::GPU_HBM],
-  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 60 GB/s,
-  transfer Memory::GPU_HBM -> Memory::CPU_DRAM : 60 GB/s
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 60 GB/s,
+  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 60 GB/s
 }
 
 fn add_one(out : &mut Tensor<f32, [64]>, x : &Tensor<f32, [64]>, n : i32) -> void {

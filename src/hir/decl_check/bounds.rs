@@ -18,40 +18,47 @@ impl TypeChecker<'_> {
     /// A bound is otherwise only asked when a call binds the parameter, so a misspelled one
     /// on a function nobody calls, or on a struct, was never reported.
     pub fn check_bounds_name_a_trait(&mut self) {
-        // (where the bound is written, the parameter, the trait it names)
-        let mut unknown: Vec<(String, String, String)> = Vec::new();
+        // (where the bound is written, the parameter, the trait it names, the place of the owner)
+        let mut unknown: Vec<(String, String, String, decl::DeclPlace)> = Vec::new();
         let traits = &self.env.traits;
-        let mut collect = |owner: &str, generics: &[decl::GenericParam]| {
-            for param in generics {
-                if let decl::GenericParam::Type { name, bounds } = param {
-                    for bound in bounds {
-                        // `D : Topology` and `M : Memory` mark a topology and a memory
-                        // parameter. They are keywords, not traits.
-                        if matches!(bound.trait_name.as_ref(), "Topology" | "Memory") {
-                            continue;
-                        }
-                        if !traits.contains_key(&bound.trait_name) {
-                            unknown.push((
-                                owner.to_string(),
-                                name.to_string(),
-                                bound.trait_name.to_string(),
-                            ));
+        let mut collect =
+            |owner: &str, generics: &[decl::GenericParam], place: &decl::DeclPlace| {
+                for param in generics {
+                    if let decl::GenericParam::Type { name, bounds } = param {
+                        for bound in bounds {
+                            // `D : Topology` and `M : Memory` mark a topology and a memory
+                            // parameter. They are keywords, not traits.
+                            if matches!(bound.trait_name.as_ref(), "Topology" | "Memory") {
+                                continue;
+                            }
+                            if !traits.contains_key(&bound.trait_name) {
+                                unknown.push((
+                                    owner.to_string(),
+                                    name.to_string(),
+                                    bound.trait_name.to_string(),
+                                    place.clone(),
+                                ));
+                            }
                         }
                     }
                 }
-            }
-        };
+            };
 
         for s in self.env.structs.values() {
-            collect(&format!("struct {}", s.name), &s.generics);
+            collect(&format!("struct {}", s.name), &s.generics, &s.place);
         }
         for e in self.env.enums.values() {
-            collect(&format!("enum {}", e.name), &e.generics);
+            collect(&format!("enum {}", e.name), &e.generics, &e.place);
         }
         for t in self.env.traits.values() {
-            collect(&format!("trait {}", t.name), &t.generics);
+            collect(&format!("trait {}", t.name), &t.generics, &t.place);
+            // A method signature has no place of its own, so its trait's is used.
             for m in &t.methods {
-                collect(&format!("method {}::{}", t.name, m.name), &m.generics);
+                collect(
+                    &format!("method {}::{}", t.name, m.name),
+                    &m.generics,
+                    &t.place,
+                );
             }
         }
         for block in self.env.impls.values().flatten() {
@@ -59,7 +66,7 @@ impl TypeChecker<'_> {
                 Some(t) => format!("impl {} for {}", t, block.target_type),
                 None => format!("impl {}", block.target_type),
             };
-            collect(&owner, &block.generics);
+            collect(&owner, &block.generics, &block.place);
             let impl_params: Vec<&str> = block.generics.iter().map(|g| g.name()).collect();
             // A trait default copied into the impl is reported on the trait.
             for m in block
@@ -74,18 +81,24 @@ impl TypeChecker<'_> {
                     .filter(|g| !impl_params.contains(&g.name()))
                     .cloned()
                     .collect();
-                collect(&format!("method {}::{}", block.target_type, m.name), &own);
+                collect(
+                    &format!("method {}::{}", block.target_type, m.name),
+                    &own,
+                    &function_place(m),
+                );
             }
         }
         for (f, _) in self.env.generic_functions.values() {
-            collect(&format!("fn {}", f.name), &f.generics);
+            collect(&format!("fn {}", f.name), &f.generics, &function_place(f));
         }
 
         // The tables are hash maps, and a generic method can be listed under its impl and as a
         // function, so sort for a stable order and drop the repeats.
-        unknown.sort();
-        unknown.dedup();
-        for (owner, param, trait_name) in unknown {
+        unknown.sort_by(|a, b| (&a.0, &a.1, &a.2).cmp(&(&b.0, &b.1, &b.2)));
+        unknown.dedup_by(|a, b| (&a.0, &a.1, &a.2) == (&b.0, &b.1, &b.2));
+        let outside = self.errors.here();
+        for (owner, param, trait_name, place) in unknown {
+            self.errors.point_at(&place, &outside);
             self.errors.error_with_code(
                 crate::diagnostic::DiagnosticCode::E3042,
                 format!(
@@ -95,5 +108,14 @@ impl TypeChecker<'_> {
                 None,
             );
         }
+        self.errors.point_back(outside);
+    }
+}
+
+/// Where a function is written, as a declaration's place.
+fn function_place(f: &decl::Function) -> decl::DeclPlace {
+    decl::DeclPlace {
+        file: f.file.clone(),
+        span: f.span,
     }
 }

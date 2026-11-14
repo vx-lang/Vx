@@ -1,0 +1,31 @@
+//===- book_topology_memory_parameter.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on topologies (www/book/src/heterogeneous.md): one function with
+// `<M : Memory>` adds a tensor in host memory on the host and a tensor in GPU memory on the GPU.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}host 6 gpu 30{{$}}
+
+// ANCHOR: program
+fn sum_three<M : Memory>(t : &Tensor<i32, [?], Memory::M>) on Topology::Any -> i32 {
+  return t[0] + t[1] + t[2];
+}
+
+fn main() -> i32 {
+  let h = Tensor<i32, [3]>::fill(2);
+  let g = transfer(Tensor<i32, [3]>::fill(10), Memory::GPU_HBM);
+  let mut out = transfer(Tensor<i32, [1]>::fill(0), Memory::GPU_HBM);
+  spawn on(Topology::GPU) {
+    out[0] = sum_three(&g);
+  }
+  let o = transfer(out, Memory::CPU_DRAM);
+  println!("host {} gpu {}", sum_three(&h), o[0]);
+  return 0;
+}
+// ANCHOR_END: program

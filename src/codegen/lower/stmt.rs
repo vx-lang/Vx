@@ -62,6 +62,9 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
         let (mut val, expr_ty, block) = gen.generate_expr(expr, block)?;
         gen.nrvo_slot = None;
         gen.expected_type = None;
+        if gen.current_returns_reference && !gen.in_spawn {
+            return return_reference(gen, block, val, expr_ty);
+        }
         // `return f();` in a function returning `void`, such as `apply<T>` with `T = void`:
         // the call has run, and there is no value to return.
         if !gen.in_spawn && gen.current_return_type == Some(gen.none_ty) {
@@ -405,6 +408,30 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
         }
         Ok(Some(block))
     }
+}
+
+/// `return r` in a function that returns `&Tensor` or `&mut Tensor`: give back the memref of
+/// the tensor that `r` names, never a copy. A row is a strided view, so its pointer moves to
+/// the row, as for a row passed to a `&Tensor` parameter.
+fn return_reference<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    val: Value<'c, 'c>,
+    ty: Type<'c>,
+) -> Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError> {
+    let cell_ty = gen
+        .current_return_type
+        .expect("a function has a return type");
+    let ret_ty = gen.reference_result_ty(cell_ty);
+    let mut ty = ty;
+    let mut val = super::expr::load_tensor_slot(gen, &block, val, &mut ty)?;
+    if ty != ret_ty {
+        val = super::cast_memref(gen, &block, val, ty, ret_ty)?;
+    }
+    let block = gen.run_value_drops(block)?;
+    super::expr::emit_func_return(gen, block, Some(val))?;
+    gen.has_returned = true;
+    Ok(None)
 }
 
 /// The nominal struct/enum name a type ultimately names, peeling reference/pointer wrappers and
@@ -1491,7 +1518,32 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
             };
             return assign.lower(gen, block);
         }
-        let (lhs_val, ty, block) = gen.generate_expr(lhs, block)?;
+        // Keep the array and calculated indices for both the read and the write.
+        let indexed_place = if matches!(lhs, Expr::IndexAccess(_)) {
+            Some(gen.flatten_indices(lhs, block).ok_or_else(|| {
+                LowerError::from(
+                    "cannot calculate the compound assignment's indexed location".to_string(),
+                )
+            })?)
+        } else {
+            None
+        };
+        let (lhs_val, ty, block) = if let Some((base, mem_ty, indices, block)) = &indexed_place {
+            use melior::ir::r#type::ShapedTypeLike;
+            let memref = melior::ir::r#type::MemRefType::try_from(*mem_ty).map_err(|_| {
+                LowerError::from("an indexed compound assignment needs a tensor".to_string())
+            })?;
+            let ty = memref.element();
+            let mut operands = vec![*base];
+            operands.extend(indices.iter().copied());
+            let load = OperationBuilder::new("memref.load", gen.loc())
+                .add_operands(&operands)
+                .add_results(&[ty])
+                .build()?;
+            (block.append_operation(load).result(0)?.into(), ty, *block)
+        } else {
+            gen.generate_expr(lhs, block)?
+        };
         let prev_expected = gen.expected_type;
         gen.expected_type = Some(ty);
         let (rhs_val, rhs_ty, block) = gen.generate_expr(rhs, block)?;
@@ -1541,37 +1593,14 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
                 }
                 return Ok(Some(block));
             }
-        } else if let Expr::IndexAccess(syntax::IndexAccessExpr {
-            base,
-            index: _,
-            span: _,
-        }) = lhs
-        {
-            if let Some((mem_val, mem_ty, indices, new_b)) = gen.flatten_indices(
-                &syntax::Expr::IndexAccess(syntax::IndexAccessExpr {
-                    base: base.clone(),
-                    index: match lhs {
-                        Expr::IndexAccess(i) => i.index.clone(),
-                        _ => unreachable!(),
-                    },
-                    span: match lhs {
-                        Expr::IndexAccess(i) => i.span,
-                        _ => unreachable!(),
-                    },
-                }),
-                block,
-            ) {
-                let mem_ty_str = mem_ty.to_string();
-                if mem_ty_str.starts_with("memref<") {
-                    let mut operands = vec![result_val, mem_val];
-                    operands.extend(indices);
-                    let store_op = OperationBuilder::new("memref.store", gen.loc())
-                        .add_operands(&operands)
-                        .build()?;
-                    new_b.append_operation(store_op);
-                    return Ok(Some(new_b));
-                }
-            }
+        } else if let Some((base, _, indices, _)) = indexed_place {
+            let mut operands = vec![result_val, base];
+            operands.extend(indices);
+            let store = OperationBuilder::new("memref.store", gen.loc())
+                .add_operands(&operands)
+                .build()?;
+            block.append_operation(store);
+            return Ok(Some(block));
         }
         // Computing the new value and dropping it is how `*p += 1` used to do nothing.
         Err(LowerError::from(format!(

@@ -3814,8 +3814,8 @@ fn flat_matches_ast_corpus_tensor_view_2d() {
     // yet; they are row-major, as the oracle's.)
     assert_parity(
         "extern \"C\" { fn vx_alloc_f32(n : i32) -> *mut f32; fn vx_free_f32(p : *mut f32, n : i32) -> void; }\n\
-         fn view(p : *mut f32, r : i32, c : i32) -> Tensor<f32, [?, ?]> { \
-           let v = unsafe { tensor_view_2d(p, r, c) }; return v; }\n\
+         fn view(p : *mut f32, r : i32, c : i32) -> &Tensor<f32, [?, ?]> { \
+           let v = unsafe { tensor_view_2d(p, r, c) }; return &v; }\n\
          fn main() -> i32 { let p : *mut f32 = unsafe { vx_alloc_f32(6) }; \
            unsafe { for i in 0..6 { p[i] = (i + 1) as f32; } } \
            let a = view(p, 2, 3); let x = a[1][2]; let w = a.extent(1); \
@@ -4769,4 +4769,73 @@ fn match_constructs_a_payload_free_enum_result(#[case] subject: i32, #[case] exp
     );
     assert_eq!(ast_exit_code(&src), expected);
     assert_parity(&src, expected);
+}
+
+// The index function prints 3, the right side prints 4, and the updated element prints 7.
+// A repeated index call adds an extra 3 between 4 and 7.
+const INDEXED_COMPOUND_ASSIGNMENT: &str = r#"
+    fn note(tag: i32, value: i32) -> i32 {
+        print(tag);
+        print!(" ");
+        return value;
+    }
+
+    fn main() -> i32 {
+        let mut t = Tensor<i32, [4]>::fill(0);
+        t[note(3, 1)] += note(4, 7);
+        print(t[1]);
+        return 0;
+    }
+"#;
+
+#[test]
+fn flat_indexed_compound_assignment_calls_index_once() {
+    let mlir = flat_llvm(INDEXED_COMPOUND_ASSIGNMENT)
+        .expect("the flat generator supports this indexed compound assignment");
+    let output = run_output(&mlir);
+    let values: Vec<_> = output.split_whitespace().collect();
+    assert_eq!(values, ["3", "4", "7"], "flat generator output: {output}");
+}
+
+#[test]
+fn ast_indexed_compound_assignment_calls_index_once() {
+    let output = run_output(&ast_llvm(INDEXED_COMPOUND_ASSIGNMENT));
+    let values: Vec<_> = output.split_whitespace().collect();
+    assert_eq!(values, ["3", "4", "7"], "AST generator output: {output}");
+}
+
+// The first call selects element 1. A second call would select element 2 instead.
+const COMPOUND_ASSIGNMENT_WITH_CHANGING_INDEX: &str = r#"
+    fn next_index(calls: &mut i32) -> i32 {
+        *calls += 1;
+        return *calls;
+    }
+
+    fn main() -> i32 {
+        let mut calls = 0;
+        let mut t = Tensor<i32, [4]>::fill(10);
+        t[next_index(&mut calls)] += 7;
+        print(calls);
+        print!(" ");
+        print(t[1]);
+        print!(" ");
+        print(t[2]);
+        return 0;
+    }
+"#;
+
+#[test]
+fn flat_compound_assignment_updates_the_element_it_read() {
+    let mlir = flat_llvm(COMPOUND_ASSIGNMENT_WITH_CHANGING_INDEX)
+        .expect("the flat generator supports an index that changes a counter");
+    let output = run_output(&mlir);
+    let values: Vec<_> = output.split_whitespace().collect();
+    assert_eq!(values, ["1", "17", "10"], "flat generator output: {output}");
+}
+
+#[test]
+fn ast_compound_assignment_updates_the_element_it_read() {
+    let output = run_output(&ast_llvm(COMPOUND_ASSIGNMENT_WITH_CHANGING_INDEX));
+    let values: Vec<_> = output.split_whitespace().collect();
+    assert_eq!(values, ["1", "17", "10"], "AST generator output: {output}");
 }

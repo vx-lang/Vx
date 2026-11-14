@@ -1,7 +1,8 @@
 // The Q4_0 kernels of `std::nn` on random codes and scales, against plain loops in f64. A line
 // says `ok` when the largest difference is below 1e-5 of the largest value of the loop. The loop
 // finds each weight from the definition of Q4_0. Each kernel gets a shape with rows long enough
-// that a lane takes more than one step.
+// that a lane takes more than one step. A lane of nn_matvec_q4_heads_add takes 16 values of x at a
+// time, so its second shape has heads of 40 values, and some steps take values of two heads.
 //
 // The first run uses the Apple GPU on a Mac, and the CPU copy of each kernel elsewhere. The
 // second run uses the CPU copy everywhere.
@@ -14,6 +15,7 @@
 // CHECK-NEXT: {{^}}nn_matvec_q4 64 x 4864: ok{{$}}
 // CHECK-NEXT: {{^}}nn_matvec_q4_add 64 x 4864: ok{{$}}
 // CHECK-NEXT: {{^}}nn_matvec_q4_heads_add 200 x 4096: ok{{$}}
+// CHECK-NEXT: {{^}}nn_matvec_q4_heads_add 64 x 1120, heads of 40 values: ok{{$}}
 // CHECK-NEXT: {{^}}nn_qkv_q4 q: ok{{$}}
 // CHECK-NEXT: {{^}}nn_qkv_q4 k: ok{{$}}
 // CHECK-NEXT: {{^}}nn_qkv_q4 v: ok{{$}}
@@ -179,7 +181,11 @@ fn check_heads_add(rows : i32, heads : i32, head_dim : i32) -> void {
   for r in 0..rows {
     want[r] = f64::from(random(24u32, r, 1.0)) + dot(&hw, &hs, r, &flat, cols);
   }
-  report("nn_matvec_q4_heads_add 200 x 4096", &hy, &want, rows);
+  if head_dim == 128 {
+    report("nn_matvec_q4_heads_add 200 x 4096", &hy, &want, rows);
+  } else {
+    report("nn_matvec_q4_heads_add 64 x 1120, heads of 40 values", &hy, &want, rows);
+  }
   return;
 }
 
@@ -315,6 +321,7 @@ fn main() -> i32 {
   check_matvec(296, 896);
   check_matvec(64, 4864);
   check_heads_add(200, 32, 128);
+  check_heads_add(64, 28, 40);
   check_qkv(14, 2, 64, 2560);
   check_swiglu(200, 4864);
   check_moe(32, 8, 96, 512);

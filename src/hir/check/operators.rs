@@ -409,6 +409,18 @@ impl<'a> TypeChecker<'a> {
         Some((**inner).clone())
     }
 
+    /// The value that the reference `e` points at: `x` for `&x`, and `*e` for another reference.
+    fn through_reference(e: &Expr, inner: &Type) -> Expr {
+        if let Expr::Borrow(b) = e {
+            return (*b.expr).clone();
+        }
+        Expr::Dereference(DereferenceExpr {
+            expr: Box::new(e.clone()),
+            ty: Some(inner.clone()),
+            span: e.span(),
+        })
+    }
+
     /// `a + b` on a struct or an enum whose type has the operator's trait method: the call
     /// `a.add(b)`, which `expr` becomes. `None` leaves the operator as it is.
     fn operator_method_call(
@@ -1047,6 +1059,37 @@ impl<'a> TypeChecker<'a> {
                 RelationalOp::Ge => "ge",
             };
             let span = *span;
+            // `&a == &b` compares the values, as Rust's impls for references do. Two references
+            // to numbers compare the numbers, and two references to a struct pass themselves to
+            // its `eq`.
+            if let (Type::Borrow { inner: li, .. }, Type::Borrow { inner: ri, .. }) =
+                (self.operand_type(lhs), self.operand_type(rhs))
+            {
+                if Self::is_user_type(&li)
+                    && self
+                        .resolve_method_in_impls(
+                            &li,
+                            &method.into(),
+                            &mut std::collections::HashMap::new(),
+                        )
+                        .is_some()
+                {
+                    let mut call = Expr::MethodCall(crate::syntax::MethodCallExpr {
+                        base: Box::new(Self::through_reference(lhs, &li)),
+                        method_name: method.into(),
+                        type_args: None,
+                        args: vec![(**rhs).clone()],
+                        span,
+                    });
+                    let ty = self.check_expr_type_flag(&mut call, false);
+                    *expr = call;
+                    return ty;
+                }
+                if matches!(*li, Type::Scalar(_)) && matches!(*ri, Type::Scalar(_)) {
+                    **lhs = Self::through_reference(lhs, &li);
+                    **rhs = Self::through_reference(rhs, &ri);
+                }
+            }
             let rhs_ref = Expr::Borrow(crate::syntax::expr::BorrowExpr {
                 expr: rhs.clone(),
                 is_mut: false,

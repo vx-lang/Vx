@@ -8,9 +8,9 @@
 // RUN: vxc %s --action print-ast 2>&1 | FileCheck %s
 //
 // A `match` arm with a literal pattern and an empty body, such as `2 => {}`, does nothing for
-// its case (W1008). An empty arm whose pattern is `_` or an enum variant, such as
-// `Color::Green => {}`, gets no warning: it is there so the match covers every case. Nor does
-// an arm with a statement in its body. This warning does not look at a `match` on a tuple
+// its case (W1008). An empty arm whose pattern is `_`, an enum variant or a `bool`, such as
+// `Color::Green => {}` or `false => {}`, gets no warning: it is there so the match covers every
+// case. Nor does an arm with a statement in its body. This warning does not look at a `match` on a tuple
 // yet, so the empty arm in `blue_one` gets no warning either.
 
 // CHECK-NOT: Warning[W1008]
@@ -45,6 +45,17 @@ fn is_red(c : Color) -> i32 {
   return r;
 }
 
+fn is_true(b : bool) -> i32 {
+  let mut r = 0;
+  match b {
+    true => {
+      r = 1;
+    }
+    false => {}
+  }
+  return r;
+}
+
 fn blue_one(x : i32, c : Color) -> i32 {
   let mut r = 1;
   match (x, c) {
@@ -57,5 +68,5 @@ fn blue_one(x : i32, c : Color) -> i32 {
 }
 
 fn main() -> i32 {
-  return count_ones(1) + is_red(Color::Red) + blue_one(1, Color::Blue);
+  return count_ones(1) + is_red(Color::Red) + is_true(true) + blue_one(1, Color::Blue);
 }

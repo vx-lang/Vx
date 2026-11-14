@@ -23,6 +23,9 @@
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResidentSet {
     pub space: crate::syntax::MemorySpace,
+    /// The device whose copy of the space this is (`Card[1]`), when the space is the memory of a
+    /// topology with more than one device. Each device has its own copy and its own working set.
+    pub device: Option<String>,
     /// Granule-rounded sum of tiles placed in this space by one function.
     pub total_bytes: u64,
     pub capacity_bytes: u64,

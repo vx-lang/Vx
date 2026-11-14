@@ -7,8 +7,15 @@ element, so the loops give the same result on the GPU as they do one pass at a t
 
 Each program in this chapter is also a test of the compiler. You can find it under
 `tests/optimizations/pass/` with the name that its section gives. The programs use the machine
-file of an NVIDIA H100, so run them with `--machine fleet/h100-sxm.vx`. On a computer with no GPU,
-the runtime prints `no CUDA device` and runs each kernel on the CPU. The result is the same.
+file of an NVIDIA H100, so run them with this command:
+
+```sh
+vxc program.vx --machine "$HOME/.vx/current/fleet/h100-sxm.vx" --host default
+```
+
+[Machine files](machine-files.md#using-one) says where the install puts these files. On a computer
+with no GPU, the runtime prints `no CUDA device` and runs each kernel on the CPU. The result is the
+same.
 
 ## Blocks and lanes
 
@@ -52,6 +59,11 @@ does not compile:
 Error[E6032]: two passes of this block loop may write the same element of `grid`: an index of the
 write must fix `y`
 ```
+
+One block loop can cover a grid of tiles, with `b / n` and `b % n` as the row and the column of
+the tile. In `c[(b / n) * 64 + i][(b % n) * 64 + j]`, the first index fixes `b / n` and the second
+fixes `b % n`, so the two together fix `b`. `n` must be a number above zero, or a factor of the
+end of the loop, as in `for b in 0..m * n across blocks`. When `n` is zero, that loop has no passes.
 
 The same check refuses a read of an element that another pass writes, a write to a variable from
 outside the loop, `println!`, and a call that can write through its argument.
@@ -132,6 +144,12 @@ The token holds the borrow of the tile. So a read of the tile before its `.wait(
 error, and a token with no `.wait()` gets the error E6036. On an H100 the copy uses TMA, and on an
 older NVIDIA GPU `cp.async`. Today the copy does not work on tiles of `f64` or of integers.
 `tests/optimizations/pass/lane_copies_on_the_cpu.vx` is a complete program.
+
+## Math functions in a kernel
+
+`x.exp()` and `x.tanh()` are exact, and on a GPU they compute in `f64`, which is slow. In a kernel
+where a small difference in the last bits does not matter, `x.fast_exp()` and `x.fast_tanh()` use
+a few `f32` instructions. [Exact and fast math](exact-and-fast-math.md) explains when to use which.
 
 ## What runs where
 

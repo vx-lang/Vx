@@ -1,0 +1,36 @@
+//===- match_arm_above_the_largest_i64.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `match` on a `u64` can have an arm above the largest `i64`. Each arm is selected by its
+// own value. Such an arm used to be compared with 0, so `pick(0)` gave 1.
+//
+// EXPECT: 0 1 2
+
+fn pick(x : u64) -> i32 {
+  let mut found = 0;
+  match x {
+    18446744073709551615 => {
+      found = 1;
+    }
+    9223372036854775808 => {
+      found = 2;
+    }
+    _ => {
+      found = 0;
+    }
+  }
+  return found;
+}
+
+fn main() -> i32 {
+  print(pick(0));
+  print(" ");
+  print(pick(18446744073709551615));
+  print(" ");
+  print(pick(9223372036854775808));
+  return 0;
+}

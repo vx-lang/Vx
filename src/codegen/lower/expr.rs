@@ -151,7 +151,7 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
             let (ret_ty, arg_tys) = gen.functions.get(name).unwrap();
             // The address of a function has to name the signature it was emitted with, return
             // slot and all, or an indirect call through it disagrees with the body.
-            let (abi_ret, abi_args) = gen.abi_signature(*ret_ty, arg_tys);
+            let (abi_ret, abi_args) = gen.abi_signature(name, *ret_ty, arg_tys);
             let abi_rets: Vec<_> = abi_ret.into_iter().collect();
             let func_ty = melior::ir::r#type::FunctionType::new(gen.context, &abi_args, &abi_rets);
             let const_op = OperationBuilder::new("func.constant", gen.loc())
@@ -4566,7 +4566,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             // A callee returning a statically shaped tensor writes into a buffer we allocate and
             // pass as its first argument, and the call itself produces nothing -- the result is
             // that buffer (#643).
-            let ret_slot = if returns_through_slot(&ret_ty.to_string()) {
+            let ret_slot = if gen.uses_return_slot(name, ret_ty) {
                 let alloc_op = OperationBuilder::new("memref.alloca", gen.loc())
                     .add_attributes(&[(
                         Identifier::new(gen.context, "operandSegmentSizes"),
@@ -4645,7 +4645,15 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 current_b.append_operation(builder.build()?);
                 return Ok((slot, ret_ty, current_b));
             }
-            if ret_ty.to_string() != "none" {
+            if gen.returns_reference(name) {
+                // The callee gives back the descriptor of the tensor it names. A reference is a
+                // cell that holds a descriptor, so the result goes into a cell here.
+                let desc_ty = gen.reference_result_ty(ret_ty);
+                let call_ref = current_b.append_operation(builder.add_results(&[desc_ty]).build()?);
+                let desc = call_ref.result(0)?.into();
+                let cell = tensor_in_a_slot(gen, &current_b, desc, desc_ty, ret_ty)?;
+                Ok((cell, ret_ty, current_b))
+            } else if ret_ty.to_string() != "none" {
                 builder = builder.add_results(&[ret_ty]);
                 let call_op = builder.build()?;
                 let call_ref = current_b.append_operation(call_op);
@@ -5211,20 +5219,11 @@ impl<'c> LowerToMelior<'c> for NumberExpr {
             let op_ref = block.append_operation(op);
             Ok((op_ref.result(0)?.into(), ty, block))
         } else {
-            // A `u64` above `i64::MAX` is a legitimate literal that does not parse as one:
-            // MLIR's integer types are signless, so it goes in as the same 64 bits read as
-            // signed. The flat path's `encode_imm` falls back the same way, and the two
-            // backends have to agree on a constant.
-            let bits = val_str
-                .parse::<i64>()
-                .or_else(|_| val_str.parse::<u64>().map(|v| v as i64))
-                .unwrap_or_else(|_| panic!("integer literal out of range: {val_str}"));
+            // The flat path builds the same value in `lower_number_literal`.
+            let value = super::integer_constant(gen.context, ty, val_str);
             let op = OperationBuilder::new("arith.constant", gen.loc())
                 .add_results(&[ty])
-                .add_attributes(&[(
-                    Identifier::new(gen.context, "value"),
-                    IntegerAttribute::new(ty, bits).into(),
-                )])
+                .add_attributes(&[(Identifier::new(gen.context, "value"), value)])
                 .build()?;
             let op_ref = block.append_operation(op);
             Ok((op_ref.result(0)?.into(), ty, block))
@@ -5248,6 +5247,18 @@ fn payload_binding_type(
     let position = pats
         .iter()
         .position(|p| matches!(p, syntax::Pattern::Identifier(n) if *n == id.name))?;
+    variant_payload_type(gen, en, vn, position, scrutinee_ty)
+}
+
+/// The type of the payload at `position` of the variant `vn` of `en`, with the type arguments
+/// that `en` names, such as `T` of `Result<T, E>::Ok`.
+pub(crate) fn variant_payload_type(
+    gen: &MeliorGenerator<'_>,
+    en: &str,
+    vn: &str,
+    position: usize,
+    scrutinee_ty: Option<&syntax::Type>,
+) -> Option<syntax::Type> {
     let (base, args) = match crate::parser::types::parse_type_text(en)? {
         syntax::Type::GenericInstance(base, args) => (base.to_string(), args),
         other => {
@@ -5263,7 +5274,7 @@ fn payload_binding_type(
         .enums
         .get(&base)?
         .iter()
-        .find(|(v, _)| v.as_ref() == vn.as_ref())?
+        .find(|(v, _)| v.as_ref() == vn)?
         .1
         .as_ref()?
         .get(position)?
@@ -5917,7 +5928,12 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintExpr {
             switch_print_stream(gen, block, true)?;
         }
         for arg in &self.args {
-            let (arg_val, arg_ty, next) = gen.generate_expr(arg, block)?;
+            // A `println!(..);` statement expects no value, but each argument gives one. Without
+            // this reset, an `if` or a `match` argument takes the `none` type of the statement.
+            let prev_expected = gen.expected_type.take();
+            let lowered = gen.generate_expr(arg, block);
+            gen.expected_type = prev_expected;
+            let (arg_val, arg_ty, next) = lowered?;
             block = next;
             if let Some((fn_name, arg_val, arg_ty_str)) =
                 super::pick_scalar_print(gen, block, arg, arg_val, arg_ty)?
@@ -6183,7 +6199,7 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
 
             // The type of the call function's address, as its definition has it: no result for a
             // `void` closure.
-            let (ret, args) = gen.abi_signature(ret_ty, &orig_arg_types);
+            let (ret, args) = gen.abi_signature(&call_fn_name, ret_ty, &orig_arg_types);
             let fn_ty = melior::ir::r#type::FunctionType::new(gen.context, &args, ret.as_slice());
             let const_op = OperationBuilder::new("func.constant", gen.loc())
                 .add_attributes(&[(

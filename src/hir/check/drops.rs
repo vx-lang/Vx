@@ -36,6 +36,18 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 /// generic instantiation can be checked again from a copy of it.
 pub(crate) const DROP_MARK: &str = "\u{1}drop";
 
+/// The marker traits of `Sender` and `Receiver` in `stdlib/std/sync/channel.vx`.
+const SENDER_OF_A_CHANNEL: &str = "SenderOfAChannel";
+const RECEIVER_OF_A_CHANNEL: &str = "ReceiverOfAChannel";
+
+/// The runtime call that says the task that runs holds an end of the channel with these words:
+/// a `Sender` for 1, the `Receiver` for 0. `stdlib/std/sync/channel.vx` declares it.
+const TASK_HOLDS_AN_END: &str = "vx_task_holds_an_end";
+
+/// A channel end in a value: the fields to it, each with the type of its struct, the type of the
+/// end, and whether it is a `Sender`.
+type ChannelEndPath = (Vec<(crate::symbol::Symbol, String)>, String, bool);
+
 /// The default of `Drop::wait_limit` in `stdlib/core/ops.vx`, in seconds.
 pub(crate) const DEFAULT_WAIT_LIMIT_SECS: u64 = 10;
 
@@ -235,7 +247,13 @@ enum FrameKind {
     Tasks,
     /// The body of a task. A `return` in it leaves the task, so it drops only the owners of the
     /// task. A move in it still reaches the owners outside, which the task takes.
-    Task,
+    Task {
+        /// The owners from outside that the task takes, whose channel ends it tells the runtime
+        /// about.
+        holds: Vec<String>,
+        /// The calls that tell it, for the start of the task body.
+        calls: Vec<Statement>,
+    },
     Block {
         owners: Vec<Owner>,
         /// What each statement of the block uses, and where each name has a `let`.
@@ -311,6 +329,9 @@ pub(crate) struct DropFrames {
     moved_now: HashSet<String>,
     /// Makes the names of the locals the rewrite adds unique.
     counter: usize,
+    /// For each open `tasks` block, the statement of its body that joins its tasks before the
+    /// drops of what they use, if it has one.
+    tasks_joins: Vec<Option<usize>>,
 }
 
 impl DropFrames {
@@ -320,7 +341,7 @@ impl DropFrames {
         for f in self.frames.iter().rev() {
             match f {
                 FrameKind::Function { .. } | FrameKind::Spawn => return false,
-                FrameKind::Loop | FrameKind::Tasks | FrameKind::Task => {}
+                FrameKind::Loop | FrameKind::Tasks | FrameKind::Task { .. } => {}
                 FrameKind::Block { owners, .. } => {
                     if let Some(o) = owners.iter().rev().find(|o| o.name == name) {
                         return o.drop_reads_borrows && o.moved != Moved::Yes;
@@ -835,6 +856,91 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// A task that takes `name`, an owner of the block of frame `k`, holds each channel end in
+    /// it from its start. So the task tells the runtime at its start, for the deadlock report
+    /// (docs/discussions/deadlock_report_cycle_of_waits.md, option B).
+    fn drops_task_holds_ends(&mut self, name: &str, k: usize, top: usize) {
+        let frames = &self.borrow.drops.frames;
+        let Some(t) = (k + 1..top).find(|&i| matches!(frames[i], FrameKind::Task { .. })) else {
+            return;
+        };
+        let ty = match &frames[k] {
+            FrameKind::Block { owners, .. } => owners.iter().rev().find(|o| o.name == name),
+            _ => None,
+        }
+        .expect("a moved owner is in the block of its frame")
+        .ty
+        .clone();
+        let mut paths = Vec::new();
+        self.drops_channel_end_paths(&ty, &mut Vec::new(), &mut paths, 0);
+        let frames = &mut self.borrow.drops.frames;
+        let FrameKind::Task { holds, calls } = &mut frames[t] else {
+            unreachable!("frame {t} is a task");
+        };
+        if paths.is_empty() || holds.iter().any(|h| h == name) {
+            return;
+        }
+        holds.push(name.to_string());
+        calls.extend(paths.into_iter().map(|(path, end_ty, sender)| {
+            let mut place = ident(name);
+            for (field, struct_ty) in path {
+                let mut access = MemberAccessExpr::new(Box::new(place), field, Span::default());
+                access.struct_name = Some(struct_ty.as_str().into());
+                place = Expr::MemberAccess(access);
+            }
+            let mut words = MemberAccessExpr::new(Box::new(place), "words".into(), Span::default());
+            words.struct_name = Some(end_ty.as_str().into());
+            let kind = NumberExpr::new(
+                i32::from(sender).to_string(),
+                Some(ElementType::I32),
+                Span::default(),
+            );
+            Statement::ExprStmt(ExprStmtStmt::new(
+                Expr::FunctionCall(FunctionCallExpr::new(
+                    TASK_HOLDS_AN_END.into(),
+                    None,
+                    vec![Expr::MemberAccess(words), Expr::Number(kind)],
+                    Span::default(),
+                )),
+                true,
+                Span::default(),
+            ))
+        }));
+    }
+
+    /// Each `Sender` and `Receiver` in a value of type `ty`, through the fields of structs: the
+    /// path of fields to it, each with the type of its struct, the type of the end, and whether
+    /// it is a `Sender`. An end in an enum, behind a pointer or in a collection is not found.
+    fn drops_channel_end_paths(
+        &mut self,
+        ty: &Type,
+        path: &mut Vec<(crate::symbol::Symbol, String)>,
+        found: &mut Vec<ChannelEndPath>,
+        depth: usize,
+    ) {
+        assert!(depth < 64, "a struct that holds itself: {ty:?}");
+        if !matches!(ty, Type::Struct(..) | Type::GenericInstance(..))
+            || self.drops_enum_decl(ty).is_some()
+        {
+            return;
+        }
+        for (marker, sender) in [(SENDER_OF_A_CHANNEL, true), (RECEIVER_OF_A_CHANNEL, false)] {
+            let blocks = self.env.impls.get(marker).cloned().unwrap_or_default();
+            if blocks
+                .iter()
+                .any(|ib| self.unify_types(&ib.target_type, ty, &mut HashMap::new()))
+            {
+                found.push((path.clone(), ty.to_string(), sender));
+                return;
+            }
+        }
+        for (field, field_ty) in self.drops_struct_fields(ty).unwrap_or_default() {
+            path.push((field, ty.to_string()));
+            self.drops_channel_end_paths(&field_ty, path, found, depth + 1);
+            path.pop();
+        }
+    }
+
     /// The declaration of the enum `ty` names, and its type arguments.
     fn drops_enum_decl(&self, ty: &Type) -> Option<(decl::EnumDecl, Vec<Type>)> {
         let (name, args): (&crate::symbol::Symbol, Vec<Type>) = match ty {
@@ -1064,27 +1170,39 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub(crate) fn drops_enter_task(&mut self) {
-        self.borrow.drops.frames.push(FrameKind::Task);
+        self.borrow.drops.frames.push(FrameKind::Task {
+            holds: Vec::new(),
+            calls: Vec::new(),
+        });
     }
 
-    pub(crate) fn drops_exit_task(&mut self) {
-        let popped = self.borrow.drops.frames.pop();
-        assert!(
-            matches!(popped, Some(FrameKind::Task)),
-            "a task frame closes a task body"
-        );
+    /// Closes the task body, and gives the calls for its start that `drops_task_holds_ends`
+    /// made. The move may be in the last value of the body, which is checked after its block
+    /// closes, so the caller puts them in the body.
+    pub(crate) fn drops_exit_task(&mut self) -> Vec<Statement> {
+        match self.borrow.drops.frames.pop() {
+            Some(FrameKind::Task { calls, .. }) => calls,
+            _ => unreachable!("a task frame closes a task body"),
+        }
     }
 
     pub(crate) fn drops_enter_tasks(&mut self) {
         self.borrow.drops.frames.push(FrameKind::Tasks);
+        self.borrow.drops.tasks_joins.push(None);
     }
 
-    pub(crate) fn drops_exit_tasks(&mut self) {
+    /// Returns the statement of the block's body that joins its tasks, if it has one.
+    pub(crate) fn drops_exit_tasks(&mut self) -> Option<usize> {
         let popped = self.borrow.drops.frames.pop();
         assert!(
             matches!(popped, Some(FrameKind::Tasks)),
             "a tasks frame closes a tasks block"
         );
+        self.borrow
+            .drops
+            .tasks_joins
+            .pop()
+            .expect("each tasks block has an entry")
     }
 
     pub(crate) fn drops_exit_loop(&mut self) {
@@ -1159,10 +1277,15 @@ impl<'a> TypeChecker<'a> {
     /// `tensor_view_2d(..)`, also as the value of an `unsafe` block: a view of memory the
     /// program got from elsewhere, which no drop frees.
     pub(crate) fn views_foreign_memory(expr: &Expr) -> bool {
+        Self::foreign_view_pointer(expr).is_some()
+    }
+
+    /// The pointer that `tensor_view_2d(p, ..)` views, also as the value of an `unsafe` block.
+    pub(crate) fn foreign_view_pointer(expr: &Expr) -> Option<&Expr> {
         match expr {
-            Expr::FunctionCall(c) => c.name.as_ref() == "tensor_view_2d",
-            Expr::UnsafeBlock(u) => u.ret.as_deref().is_some_and(Self::views_foreign_memory),
-            _ => false,
+            Expr::FunctionCall(c) if c.name.as_ref() == "tensor_view_2d" => c.args.first(),
+            Expr::UnsafeBlock(u) => u.ret.as_deref().and_then(Self::foreign_view_pointer),
+            _ => None,
         }
     }
 
@@ -1306,7 +1429,7 @@ impl<'a> TypeChecker<'a> {
         for (k, f) in self.borrow.drops.frames.iter_mut().enumerate().rev() {
             match f {
                 FrameKind::Function { .. } | FrameKind::Spawn => return,
-                FrameKind::Loop | FrameKind::Tasks | FrameKind::Task => {}
+                FrameKind::Loop | FrameKind::Tasks | FrameKind::Task { .. } => {}
                 FrameKind::Block { owners, stmt, .. } => {
                     if let Some(o) = owners.iter_mut().rev().find(|o| o.name == name) {
                         let (scope, decl) = (o.scope, o.decl);
@@ -1337,6 +1460,9 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
+        }
+        if let (Some((k, ..)), false, None, true) = (&found, again, field, rewriting) {
+            self.drops_task_holds_ends(name, *k, top);
         }
         let Some((k, Moved::Maybe, flag, decl, moved_at, needs_no_flag)) = found else {
             return;
@@ -1381,7 +1507,7 @@ impl<'a> TypeChecker<'a> {
         // block around it. In the task the flag would be set too late, or not at all when the
         // move is in the task's last value, which is checked after the task's block closes.
         let first_task =
-            (k + 1..top).find(|&i| matches!(self.borrow.drops.frames[i], FrameKind::Task));
+            (k + 1..top).find(|&i| matches!(self.borrow.drops.frames[i], FrameKind::Task { .. }));
         let at = match first_task {
             Some(t) => (k..t)
                 .rev()
@@ -1437,7 +1563,7 @@ impl<'a> TypeChecker<'a> {
             match f {
                 FrameKind::Function { .. } => return false,
                 FrameKind::Spawn => crossed = true,
-                FrameKind::Loop | FrameKind::Tasks | FrameKind::Task => {}
+                FrameKind::Loop | FrameKind::Tasks | FrameKind::Task { .. } => {}
                 FrameKind::Block { owners, .. } => {
                     // A struct with nothing to drop is not dropped twice.
                     if owners
@@ -1471,7 +1597,7 @@ impl<'a> TypeChecker<'a> {
             match f {
                 FrameKind::Function { .. } => return,
                 // A raw pointer taken inside a region still points into the owner outside it.
-                FrameKind::Loop | FrameKind::Spawn | FrameKind::Tasks | FrameKind::Task => {}
+                FrameKind::Loop | FrameKind::Spawn | FrameKind::Tasks | FrameKind::Task { .. } => {}
                 FrameKind::Block { owners, .. } => {
                     for o in owners.iter_mut().filter(|o| names.contains(&o.name)) {
                         o.to_block_end = true;
@@ -1526,7 +1652,7 @@ impl<'a> TypeChecker<'a> {
         for f in self.borrow.drops.frames.iter_mut().rev() {
             match f {
                 FrameKind::Function { .. } | FrameKind::Spawn => return,
-                FrameKind::Loop | FrameKind::Tasks | FrameKind::Task => {}
+                FrameKind::Loop | FrameKind::Tasks | FrameKind::Task { .. } => {}
                 FrameKind::Block { owners, .. } => {
                     if let Some(o) = owners.iter_mut().rev().find(|o| o.name == name) {
                         o.fields.clear();
@@ -1555,7 +1681,7 @@ impl<'a> TypeChecker<'a> {
         for f in self.borrow.drops.frames.iter().rev() {
             match f {
                 FrameKind::Function { .. } | FrameKind::Spawn => return None,
-                FrameKind::Loop | FrameKind::Tasks | FrameKind::Task => {}
+                FrameKind::Loop | FrameKind::Tasks | FrameKind::Task { .. } => {}
                 FrameKind::Block { owners, .. } => {
                     if let Some(o) = owners.iter().rev().find(|o| o.name == name) {
                         return Some(o);
@@ -1822,12 +1948,15 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// `name` and everything that borrows it, or borrows something that does.
+    /// `name` and everything that borrows it, or borrows something that does. A task holds its
+    /// borrows until its join, so the handle of a task counts as well.
     fn drops_users(&self, name: &str) -> Vec<String> {
         let mut seen = vec![name.to_string()];
         let mut i = 0;
         while i < seen.len() {
-            for b in self.borrow.borrowers_of(&seen[i]) {
+            let mut next = self.borrow.borrowers_of(&seen[i]);
+            next.extend(self.tasks.handles_of(&seen[i]));
+            for b in next {
                 if !seen.contains(&b) {
                     seen.push(b);
                 }
@@ -1835,6 +1964,13 @@ impl<'a> TypeChecker<'a> {
             i += 1;
         }
         seen
+    }
+
+    /// Whether a task that is still running borrows `owner`, or something that borrows it.
+    fn drops_held_by_running_task(&self, owner: &Owner) -> bool {
+        self.drops_users(&owner.name)
+            .iter()
+            .any(|u| self.borrow.is_running_task(u))
     }
 
     /// The last statement of a block that uses `owner` or what borrows it. A later `let` of
@@ -1906,8 +2042,20 @@ impl<'a> TypeChecker<'a> {
             lets.splice(0..0, moves);
         }
         let raw_pointers = self.borrow.drops.uses_raw_pointers();
+        // The body of a `tasks` block: a task that runs until the block ends can use its owners.
+        let tasks_body = matches!(self.borrow.drops.frames.last(), Some(FrameKind::Tasks));
+        let mut after_tasks = Vec::new();
         for owner in owners.iter().rev() {
             if owner.moved == Moved::Yes {
+                continue;
+            }
+            if tasks_body && self.drops_held_by_running_task(owner) {
+                // An exit waited for the tasks and then dropped it.
+                if terminated_at.is_some() {
+                    continue;
+                }
+                self.drops_print(owner, "once the tasks of its `tasks` block end".to_string());
+                after_tasks.extend(owner_drop(owner, raw_pointers));
                 continue;
             }
             let at = if waits_for_block_end(owner, raw_pointers) {
@@ -1975,6 +2123,21 @@ impl<'a> TypeChecker<'a> {
                 after_the_value.extend(edits.after.remove(&v).unwrap_or_default());
             }
             self.drops_apply(body, *edits);
+            if !after_tasks.is_empty() {
+                let span = body.last().map_or_else(Span::default, |s| s.span());
+                *self
+                    .borrow
+                    .drops
+                    .tasks_joins
+                    .last_mut()
+                    .expect("a tasks block is open") = Some(body.len());
+                body.push(crate::syntax::tasks_join_stmt(span));
+                if value_at.is_some() {
+                    after_the_value.extend(after_tasks);
+                } else {
+                    body.extend(after_tasks);
+                }
+            }
             body.extend(after_the_value.into_iter().map(after_value));
         }
     }
@@ -2328,7 +2491,9 @@ impl<'a> TypeChecker<'a> {
         'frames: for f in d.frames.iter().rev() {
             match f {
                 // A `return` inside a region leaves the region, not the function.
-                FrameKind::Function { .. } | FrameKind::Spawn | FrameKind::Task => break 'frames,
+                FrameKind::Function { .. } | FrameKind::Spawn | FrameKind::Task { .. } => {
+                    break 'frames
+                }
                 FrameKind::Loop if to == ExitTo::Loop => break 'frames,
                 FrameKind::Loop => {}
                 FrameKind::Tasks if to == ExitTo::TasksBlock => {
@@ -2345,6 +2510,7 @@ impl<'a> TypeChecker<'a> {
                         }
                         // Not used from this statement on, or never: dropped already.
                         if !waits_for_block_end(owner, raw_pointers)
+                            && !self.drops_held_by_running_task(owner)
                             && self.drops_last_use(owner, uses).is_none_or(|i| i < *stmt)
                         {
                             continue;

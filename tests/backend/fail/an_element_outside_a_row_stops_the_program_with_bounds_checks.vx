@@ -1,0 +1,33 @@
+//===- an_element_outside_a_row_stops_the_program_with_bounds_checks.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A function reads `t[i][j]` from an `[8, 64]` tensor. The first read is the last element of the
+// tensor. The second read has `j = 64`, one past the end of a row.
+//
+// With `-fbounds-checks`, the second read stops the program with an error, on both code
+// generators and at -O2.
+//
+// RUN: not vxc %s -fbounds-checks 2>&1 | FileCheck %s
+// RUN: not vxc %s -fbounds-checks --legacy-codegen 2>&1 | FileCheck %s
+// RUN: not vxc %s -fbounds-checks -O2 2>&1 | FileCheck %s
+//
+// CHECK: {{^}}t[7][63] is 2{{$}}
+// CHECK-NEXT: {{^}}index out of bounds: an index is outside the shape of the tensor{{$}}
+// CHECK-NOT: t[0][64]
+
+fn read(t : &Tensor<f32, [8, 64]>, i : i64, j : i64) -> f32 {
+  return t[i][j];
+}
+
+fn main() -> i32 {
+  let t = Tensor<f32, [8, 64]>::fill(2.0);
+  let last = read(&t, 7, 63);
+  println!("t[7][63] is {}", last);
+  let past = read(&t, 0, 64);
+  println!("t[0][64] is {}", past);
+  return 0;
+}

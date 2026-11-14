@@ -1,0 +1,68 @@
+//===- a_deadlock_report_prints_the_cycle_of_two_tasks_that_send_on_full_channels.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each task sends two values on a channel with room for one, and only then receives. The other
+// task holds the `Receiver` of that channel, so each second `send` waits for the other task. Each
+// task moves a struct with its two ends at its `spawn`, so the report knows who holds each
+// `Receiver` and prints the cycle.
+//
+// RUN: not vxc %s --run 2>&1 | FileCheck %s
+// RUN: not vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+// RUN: env VX_TASK_RUNTIME=shared not vxc %s --run 2>&1 | FileCheck %s
+
+// CHECK: vx: deadlock: each task of the program waits, and nothing can wake one. The program stops.
+// CHECK: {{^}}  the waits form a cycle:{{$}}
+// CHECK-NEXT: {{^}}    the task from the `spawn` at {{.*}}.vx:60 waits in `send` at {{.*}}.vx:28 on channel 1, made at {{.*}}.vx:52, which only the task from the `spawn` at {{.*}}.vx:63 can receive from{{$}}
+// CHECK-NEXT: {{^}}    the task from the `spawn` at {{.*}}.vx:63 waits in `send` at {{.*}}.vx:28 on channel 2, made at {{.*}}.vx:51, which only the task from the `spawn` at {{.*}}.vx:60 can receive from{{$}}
+// CHECK-NEXT: {{^}}  the channels of these waits:{{$}}
+// CHECK-NEXT: {{^}}    channel 1, made at {{.*}}.vx:52: 0 waits in `recv` and 1 in `send`. 1 `Sender` is not dropped.{{$}}
+// CHECK-NEXT: {{^}}    channel 2, made at {{.*}}.vx:51: 0 waits in `recv` and 1 in `send`. 1 `Sender` is not dropped.{{$}}
+
+import std::sync::channel;
+
+fn send_on(tx : &Sender<i64>, v : i64) -> void {
+  match tx.send(v) {
+    Result<void, SendError<i64>>::Ok() => {}
+    Result<void, SendError<i64>>::Err(_e) => {}
+  }
+}
+
+// The two ends of one task.
+struct Ends {
+  tx : Sender<i64>,
+  rx : Receiver<i64>,
+}
+
+// Sends two values on `e.tx`, and then receives from `e.rx`.
+fn send_two_then_receive(e : Ends) -> void {
+  send_on(&e.tx, 1);
+  send_on(&e.tx, 2);
+  match e.rx.recv() {
+    Result<i64, RecvError>::Ok(_v) => {}
+    Result<i64, RecvError>::Err(_e) => {}
+  }
+}
+
+fn main() -> i32 {
+  let (to_a, a_in) = channel<i64>(1);
+  let (to_b, b_in) = channel<i64>(1);
+  let a = Ends {
+    tx : to_b, rx : a_in
+  };
+  let b = Ends {
+    tx : to_a, rx : b_in
+  };
+  tasks {
+    spawn {
+      send_two_then_receive(a);
+    };
+    spawn {
+      send_two_then_receive(b);
+    };
+  };
+  return 0;
+}

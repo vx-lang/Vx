@@ -30,6 +30,6 @@ fn main() -> i32 {
   print(a.next());
   return 0;
 }
-// CHECK: Error[E3061]{{.*}}`impl Counter for i32` does not write the method 'other' that trait Counter requires
+// CHECK: Error[E3061] at {{.*}}an_impl_must_write_each_required_method.vx:22:1: `impl Counter for i32` does not write the method 'other' that trait Counter requires
 // CHECK-NOT: 'reset'
 // CHECK: 1 error(s) emitted

@@ -689,7 +689,7 @@ if [ "$declared_status" = 0 ]; then
   echo "       those are the host fallback's numbers." >&2
   exit 1
 fi
-grep -h "asks for memory space\|Spell the space" "$declared_stderr" |
+grep -h "asks for memory space\|Make the space the topology's" "$declared_stderr" |
   sed 's/^/    /'
 if ! grep -q "asks for memory space $declared_space_id" "$declared_stderr"; then
   echo "error: the refusal does not name the space id $declared_space_id," >&2
@@ -698,9 +698,9 @@ if ! grep -q "asks for memory space $declared_space_id" "$declared_stderr"; then
   exit 1
 fi
 if ! grep -q "managed: explicit" "$declared_stderr" ||
-  ! grep -q "Spell the space \`Memory::GPU_HBM\`" "$declared_stderr"; then
-  echo "error: the refusal does not say why host memory is wrong or what to" >&2
-  echo "       change" >&2
+  ! grep -q "Make the space the topology's \`memory:\`" "$declared_stderr"; then
+  echo "error: the refusal does not say why host memory is wrong, or does not" >&2
+  echo "       say to make the space the topology's memory" >&2
   head -8 "$declared_stderr" >&2
   exit 1
 fi

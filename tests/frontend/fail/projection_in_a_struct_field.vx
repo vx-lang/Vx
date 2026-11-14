@@ -11,5 +11,5 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: E3041
+// CHECK: E3041] at {{.*}}projection_in_a_struct_field.vx:5:8:
 // CHECK-SAME: field 'last' of struct 'Holder' names `I::Item`
