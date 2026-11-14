@@ -24,6 +24,7 @@
 // RUN: env -u VX_GPU_CHIP vxc %s --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ptx
 // RUN: FileCheck %s --implicit-check-not=local_depot < %t.ptx
 // RUN: FileCheck %s --check-prefix=LDM < %t.ptx
+// RUN: env -u VX_GPU_CHIP vxc %s --host default --machine fleet/a100-80.vx --emit-mlir 2>/dev/null | vx-opt --pass-pipeline="builtin.module(convert-vx-to-standard)" | FileCheck %s --check-prefix=MLIR
 // RUN: env VX_GPU_CHIP=sm_75 vxc %s --host default --machine fleet/a100-80.vx --emit-ptx -o %t.sm75.ptx
 // RUN: FileCheck %s --check-prefix=SM75 --implicit-check-not=mma.sync < %t.sm75.ptx
 // RUN: env -u VX_GPU_CHIP vxc %s --legacy-codegen --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ast.ptx
@@ -75,6 +76,9 @@
 // CHECK: mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32
 // CHECK: st.shared.{{b32|v2.b32}}
 // CHECK: bar.warp.sync
+// The lowering alone, with `vx-opt`, builds `ldmatrix` from a tile and the indices of a row.
+// MLIR: nvgpu.ldmatrix {{.*}} {numTiles = 4 : i32, transpose = false} : memref<32x32xbf16
+// MLIR: nvgpu.ldmatrix {{.*}} {numTiles = 2 : i32, transpose = true} : memref<32x16xbf16
 // A lane loads no single 16-bit element of the tiles: `ldmatrix` loads them for `mma.sync`.
 // LDM-LABEL: .entry bf16_tiles(
 // LDM-NOT: ld.shared.b16
