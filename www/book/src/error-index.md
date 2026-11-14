@@ -22,7 +22,7 @@ the test suite has one, a program that triggers it.
 - [Type Errors](#type-errors) — `E3001`–`E3064` (63 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4016` (16 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
-- [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6041` (41 codes)
+- [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6042` (42 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
 - [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8014` (14 codes)
 
@@ -243,6 +243,7 @@ Raised by the placement and capacity rules — the checks that make Vx different
 | [`E6039`](/errors/E6039/) | A `spawn` in a loop of its `tasks` block, with a count of passes that is not known at compile time, and tasks that use a memory with a capacity. Each pass starts a task, and the tasks run at the same time, so their working set has no bound. Use a `for` loop over a constant range, or join each task in its pass. Downgraded to W1028 when the space is declared `overcommit`. |
 | [`E6040`](/errors/E6040/) | A channel of tensors in a memory with a capacity, with a room that is not known at compile time. The channel can hold that many tensors at once, so the working set has no bound. Downgraded to W1028 when the space is declared `overcommit`. |
 | [`E6041`](/errors/E6041/) | A function that makes a channel of tensors in a memory with a capacity, and returns an end of that channel. The room of the channel is counted in the function that calls `channel`, only until that function returns. |
+| [`E6042`](/errors/E6042/) | Code on device 1 or a later device of a declared GPU (`arch: nvptx64` with `count:`). The CUDA runtime gets only device 0 of a declared GPU, and the memory of every device is on GPU 0, so the code has no GPU to run on yet. Run it on device 0. |
 
 ## Tensor/Math Errors
 
@@ -278,4 +279,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-187 diagnostics.
+188 diagnostics.

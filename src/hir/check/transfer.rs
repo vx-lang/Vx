@@ -2603,6 +2603,12 @@ impl<'a> TypeChecker<'a> {
                         format!("`spawn on({actual_top})` names no device: {why}"),
                         Some(crate::diagnostic::SourceSpan::from_ast_span(&spawn_span)),
                     );
+                } else if let Some(why) = self.device_with_no_gpu(&actual_top) {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E6042,
+                        format!("`spawn on({actual_top})`: {why}"),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&spawn_span)),
+                    );
                 }
 
                 // Typo-safety for the open topology set: a user-defined topology with no

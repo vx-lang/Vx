@@ -90,30 +90,53 @@ impl TypeChecker<'_> {
             // so it takes the per-tile verdict and stays out of any function's working set.
             self.check_declared_type_placement(&site.ty, &site.context, &site.place.span);
         }
-        // The device in `on Topology::X[i]` names one device of a declared topology too.
+        // The device in `on Topology::X[i]` names one device of a declared topology too, and one
+        // that can run code.
+        use crate::diagnostic::DiagnosticCode::{E6025, E6042};
         let mut on_clauses: Vec<_> = self
             .env
             .syntax_functions
             .iter()
             .filter_map(|(name, f)| {
-                let why = self.declared_device_problem(&f.topology)?;
+                let on = format!("`on {}` of function '{name}'", f.topology);
+                let (code, message) = match self.declared_device_problem(&f.topology) {
+                    Some(why) => (E6025, format!("{on} names no device: {why}")),
+                    None => (
+                        E6042,
+                        format!("{on}: {}", self.device_with_no_gpu(&f.topology)?),
+                    ),
+                };
                 let place = crate::syntax::DeclPlace {
                     file: f.file.clone(),
                     span: f.span,
                 };
-                Some((name.to_string(), f.topology.to_string(), why, place))
+                Some((name.to_string(), code, message, place))
             })
             .collect();
         on_clauses.sort_by(|a, b| a.0.cmp(&b.0));
-        for (name, written, why, place) in on_clauses {
+        for (_, code, message, place) in on_clauses {
             self.errors.point_at(&place, &outside);
-            self.errors.error_with_code(
-                crate::diagnostic::DiagnosticCode::E6025,
-                format!("`on {written}` of function '{name}' names no device: {why}"),
-                None,
-            );
+            self.errors.error_with_code(code, message, None);
         }
         self.errors.point_back(outside);
+    }
+
+    /// Why code cannot run on `top` yet, when it is device 1 or a later device of a declared GPU.
+    /// The CUDA runtime gets only device 0 of a declared GPU, and the memory of every device is
+    /// on GPU 0.
+    pub(crate) fn device_with_no_gpu(&self, top: &crate::syntax::Topology) -> Option<String> {
+        let crate::syntax::Topology::Custom(name, Some(index)) = top else {
+            return None;
+        };
+        let i = crate::arch::const_topology_index(index).filter(|i| *i >= 1)?;
+        let decl = self.env.topologies.get(name)?;
+        if decl.descriptor.arch.as_ref().map(|a| a.as_ref()) != Some("nvptx64") {
+            return None;
+        }
+        Some(format!(
+            "device {i} of '{name}' has no GPU to run on yet, because the CUDA runtime gets only \
+             device 0 of a declared GPU. Run the code on `Topology::{name}[0]`"
+        ))
     }
 
     /// Why `top` names no device of a declared topology, or `None` when it names one. A topology

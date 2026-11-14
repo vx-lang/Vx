@@ -1,0 +1,45 @@
+//===- code_on_device_1_of_a_declared_gpu.vx -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Gpus` is a GPU with two devices. For now the CUDA runtime gets only device 0,
+// so code on device 1 is error E6042, in an `on` clause and in a `spawn`. Code
+// on device 0 and a tensor placed on device 1 are fine.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+Memory GPU_RAM {
+  scope: device, capacity: 1 GB, bandwidth: 1 TB/s
+}
+
+Topology Gpus {
+  count: 2,
+  arch: nvptx64,
+  memory: Memory::GPU_RAM,
+  visible: [Memory::GPU_RAM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_RAM : 100,
+}
+
+fn placed(_t : Tensor<f32, [4], Topology::Gpus[1]>) -> i32 {
+  return 0;
+}
+
+// CHECK: Error[E6042] at {{.*}}.vx:[[@LINE+1]]:{{[0-9]+}}: `on Topology::Gpus[1]` of function 'runs': device 1 of 'Gpus' has no GPU to run on yet, because the CUDA runtime gets only device 0 of a declared GPU. Run the code on `Topology::Gpus[0]`
+fn runs() on Topology::Gpus[1] -> i32 {
+  return 0;
+}
+
+fn main() -> i32 {
+  spawn on(Topology::Gpus[0]) {
+    let _a = 1;
+  }
+  // CHECK: Error[E6042] at {{.*}}.vx:[[@LINE+1]]:3: `spawn on(Topology::Gpus[1])`: device 1 of 'Gpus' has no GPU to run on yet
+  spawn on(Topology::Gpus[1]) {
+    let _a = 2;
+  }
+  // CHECK: 2 error(s) emitted
+  return 0;
+}

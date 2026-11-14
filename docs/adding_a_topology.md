@@ -182,6 +182,7 @@ These are the errors a first attempt actually hits, in the order you are likely 
 | `W1026` | The topology's memory has no transfer edge from the host, so nothing can reach it. |
 | `E6037` | A type places a tensor in the memory, and the memory has no `scope:`. |
 | `E6025` | A use names a device that the topology does not have, such as `X[2]` with `count: 2`, or a bare `X` with more than one device. |
+| `E6042` | Code runs on device 1 or a later device of a declared GPU. For now, only device 0 of an `nvptx64` topology can run code. |
 
 Declaring `scope:` on the memory fixes E6037. A space with no `scope:` has no address space on
 the target, and a default would put the data somewhere the program did not ask for. A memory with

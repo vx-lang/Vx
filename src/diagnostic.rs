@@ -739,6 +739,10 @@ pub enum DiagnosticCode {
     /// of that channel. The room of the channel is counted in the function that calls `channel`,
     /// only until that function returns.
     E6041,
+    /// Code on device 1 or a later device of a declared GPU (`arch: nvptx64` with `count:`). The
+    /// CUDA runtime gets only device 0 of a declared GPU, and the memory of every device is on
+    /// GPU 0, so the code has no GPU to run on yet. Run it on device 0.
+    E6042,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

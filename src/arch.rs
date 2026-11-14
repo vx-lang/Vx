@@ -540,9 +540,11 @@ pub fn memory_space_dispatch_id(mem: &MemorySpace) -> i32 {
 ///
 /// A declared id is a hash of the name, so a backend cannot tell from it that `Device` in
 /// fleet/h100-sxm.vx is a GPU, and it allocated that memory on the host. The program sends
-/// these pairs to the backend at startup (`VX_CTRL_LOCAL_DEVICE`). Device `i` of a declared GPU
-/// is GPU `i`, and its memory is on GPU 0 for now; a name the fleet manifest lists is still sent
-/// to its remote machine.
+/// these pairs to the backend at startup (`VX_CTRL_LOCAL_DEVICE`). Every declared GPU is GPU 0
+/// for now; a name the fleet manifest lists is still sent to its remote machine.
+///
+/// Only device 0 of a topology with `count:` is sent, because the memory of every device is on
+/// GPU 0. Code on a later device is E6042.
 pub fn local_device_aliases<'a>(
     decls: impl Iterator<Item = (&'a crate::symbol::Symbol, &'a TopologyDescriptor)>,
 ) -> Vec<(i32, i32)> {
@@ -552,11 +554,10 @@ pub fn local_device_aliases<'a>(
         if desc.arch.as_ref().map(|a| a.as_ref()) != Some("nvptx64") {
             continue;
         }
-        // The built-in GPU ids are 500 to 599, so only the first 100 devices have one.
-        let ids = declared_dispatch_ids(name, desc.count);
-        for (i, id) in ids.into_iter().enumerate().take(100) {
-            out.push((id, topology_dispatch_id(&Topology::gpu(i as i64))));
-        }
+        out.push((
+            topology_dispatch_id(&Topology::Custom(name.clone(), None)),
+            gpu0,
+        ));
         if matches!(desc.default_space, MemorySpace::Custom(_)) {
             out.push((memory_space_dispatch_id(&desc.default_space), gpu0));
         }
@@ -1734,9 +1735,10 @@ mod tests {
         assert_eq!(declared_dispatch_ids(&name, None), vec![bare]);
     }
 
-    /// Device `i` of a declared NVIDIA topology runs on CUDA device `i`. Its memory is on GPU 0.
+    /// Only device 0 of a declared NVIDIA topology, and its memory, go to the CUDA runtime: both
+    /// are GPU 0. Device 1 has no GPU yet.
     #[test]
-    fn device_i_of_a_declared_gpu_is_cuda_device_i() {
+    fn only_device_0_of_a_declared_gpu_has_a_cuda_device() {
         let name = crate::symbol::Symbol::from("Dev");
         let desc = TopologyDescriptor {
             default_space: MemorySpace::Custom("HBM".into()),
@@ -1752,7 +1754,7 @@ mod tests {
         let ids = declared_dispatch_ids(&name, Some(2));
         let gpu = |i| topology_dispatch_id(&Topology::gpu(i));
         let hbm = memory_space_dispatch_id(&MemorySpace::Custom("HBM".into()));
-        let mut want = vec![(ids[0], gpu(0)), (ids[1], gpu(1)), (hbm, gpu(0))];
+        let mut want = vec![(ids[0], gpu(0)), (hbm, gpu(0))];
         want.sort_unstable();
         assert_eq!(local_device_aliases(std::iter::once((&name, &desc))), want);
     }
