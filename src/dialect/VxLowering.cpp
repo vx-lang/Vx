@@ -2,6 +2,7 @@
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 #include "SpirvKernelArgs.h"
 #include "VxDialect.h"
+#include "mlir/Analysis/CFGLoopInfo.h"
 #include "mlir/Analysis/CallGraph.h"
 #include "mlir/Analysis/Liveness.h"
 #include "mlir/CAPI/IR.h"
@@ -3618,7 +3619,7 @@ static bool fitsSimdgroupMatrices(vx::LaneMatmulOp op) {
 /// products in an order of its own, so the last bits can differ from the
 /// expansion on the host.
 static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
-                                    Type elem) {
+                                    Type elem, Value fragments = {}) {
   Location loc = op.getLoc();
   MLIRContext *ctx = b.getContext();
   Type f32 = b.getF32Type(), i16 = b.getI16Type(), i32 = b.getI32Type();
@@ -3662,19 +3663,28 @@ static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
   std::array<NVVM::MMALayout, 2> layouts = {NVVM::MMALayout::row,
                                             NVVM::MMALayout::col};
 
-  auto piece = [&](OpBuilder &nb, Location l, Value top, Value left) {
+  // With `fragments`, piece `p` keeps its 4 elements in `fragments[4 * p]`
+  // and the 3 after it, and the pieces are unrolled.
+  auto piece = [&](OpBuilder &nb, Location l, Value top, Value left,
+                   int64_t p) {
     Value row0 = add(nb, l, top, group), row1 = add(nb, l, row0, eight);
     Value col0 = add(nb, l, left, pair), col1 = add(nb, l, col0, one);
     Value col = add(nb, l, left, group);
     SmallVector<std::pair<Value, Value>> place = {
         {row0, col0}, {row0, col1}, {row1, col0}, {row1, col1}};
     SmallVector<Value> start;
-    for (auto [i, j] : place)
-      start.push_back(
-          op.getAccumulate()
-              ? nb.create<memref::LoadOp>(l, op.getAcc(), ValueRange{i, j})
-                    .getResult()
-              : zeroF);
+    for (auto [e, ij] : llvm::enumerate(place)) {
+      auto [i, j] = ij;
+      if (fragments)
+        start.push_back(nb.create<memref::LoadOp>(
+            l, fragments, ValueRange{index(4 * p + e)}));
+      else
+        start.push_back(
+            op.getAccumulate()
+                ? nb.create<memref::LoadOp>(l, op.getAcc(), ValueRange{i, j})
+                      .getResult()
+                : zeroF);
+    }
     auto chain = nb.create<scf::ForOp>(
         l, zero, index(k), index(16), start,
         [&](OpBuilder &kb, Location kl, Value depth, ValueRange c) {
@@ -3701,21 +3711,209 @@ static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
             d.push_back(kb.create<LLVM::ExtractValueOp>(kl, mma.getRes(), e));
           kb.create<scf::YieldOp>(kl, d);
         });
-    for (auto [e, ij] : llvm::enumerate(place))
-      nb.create<memref::StoreOp>(l, chain.getResult(e), op.getAcc(),
-                                 ValueRange{ij.first, ij.second});
+    for (auto [e, ij] : llvm::enumerate(place)) {
+      if (fragments)
+        nb.create<memref::StoreOp>(l, chain.getResult(e), fragments,
+                                   ValueRange{index(4 * p + e)});
+      else
+        nb.create<memref::StoreOp>(l, chain.getResult(e), op.getAcc(),
+                                   ValueRange{ij.first, ij.second});
+    }
   };
+  if (fragments) {
+    for (int64_t top = 0; top < m; top += 16)
+      for (int64_t left = 0; left < n; left += 8)
+        piece(b, loc, index(top), index(left), (top / 16) * (n / 8) + left / 8);
+    return;
+  }
   b.create<scf::ForOp>(loc, zero, index(m), index(16), ValueRange{},
                        [&](OpBuilder &nb, Location l, Value top, ValueRange) {
                          nb.create<scf::ForOp>(l, zero, index(n), index(8),
                                                ValueRange{},
                                                [&](OpBuilder &cb, Location cl,
                                                    Value left, ValueRange) {
-                                                 piece(cb, cl, top, left);
+                                                 piece(cb, cl, top, left, 0);
                                                  cb.create<scf::YieldOp>(cl);
                                                });
                          nb.create<scf::YieldOp>(l);
                        });
+}
+
+/// The most f32 registers that a lane gives to the accumulator of one lane
+/// matmul in registers: a 64 x 64 tile in a subgroup.
+constexpr int64_t laneMatmulFragmentRegisters = 128;
+
+/// The ops that use `v` or a view of it, other than the views themselves.
+static void accessesOf(Value v, SmallVectorImpl<Operation *> &out) {
+  for (Operation *user : v.getUsers()) {
+    if (isa<memref::ReinterpretCastOp, memref::SubViewOp, memref::CastOp>(user))
+      accessesOf(user->getResult(0), out);
+    else
+      out.push_back(user);
+  }
+}
+
+/// Moves the lane's elements of `acc` between the tile and `fragments`, in the
+/// order of `expandLaneMatmulWithMma`: into `fragments` with `fill`, and back
+/// to the tile otherwise.
+static void moveLaneFragments(OpBuilder &b, Location loc, Value acc,
+                              Value fragments, bool fill) {
+  auto type = cast<MemRefType>(acc.getType());
+  int64_t m = type.getDimSize(0), n = type.getDimSize(1);
+  auto index = [&](int64_t v) -> Value {
+    return b.create<arith::ConstantIndexOp>(loc, v);
+  };
+  Value tid =
+      b.create<gpu::ThreadIdOp>(loc, b.getIndexType(), gpu::Dimension::x);
+  Value lane = b.create<arith::RemUIOp>(loc, tid, index(32));
+  Value group = b.create<arith::DivUIOp>(loc, lane, index(4));
+  Value pair = b.create<arith::MulIOp>(
+      loc, b.create<arith::RemUIOp>(loc, lane, index(4)), index(2));
+  int64_t p = 0;
+  for (int64_t top = 0; top < m; top += 16)
+    for (int64_t left = 0; left < n; left += 8, ++p) {
+      Value row0 = b.create<arith::AddIOp>(loc, index(top), group);
+      Value row1 = b.create<arith::AddIOp>(loc, row0, index(8));
+      Value col0 = b.create<arith::AddIOp>(loc, index(left), pair);
+      Value col1 = b.create<arith::AddIOp>(loc, col0, index(1));
+      std::pair<Value, Value> place[] = {
+          {row0, col0}, {row0, col1}, {row1, col0}, {row1, col1}};
+      for (auto [e, ij] : llvm::enumerate(place)) {
+        Value slot = index(4 * p + e);
+        if (fill)
+          b.create<memref::StoreOp>(
+              loc,
+              b.create<memref::LoadOp>(loc, acc,
+                                       ValueRange{ij.first, ij.second}),
+              fragments, slot);
+        else
+          b.create<memref::StoreOp>(
+              loc, b.create<memref::LoadOp>(loc, fragments, slot), acc,
+              ValueRange{ij.first, ij.second});
+      }
+    }
+}
+
+/// Keeps the accumulator of a tensor-core lane matmul in registers through
+/// the loop around it, when nothing else in that loop reads or writes the
+/// tile. Each lane holds its elements of the tile in `fragments` while
+/// `valid` is set, for the view of the tile that starts at `start`. The
+/// matmul fills `fragments` when they are not valid, or hold another view. On
+/// each edge out of the loop, each lane writes its elements back, and the
+/// block waits at a barrier, because the code after the loop may read the
+/// elements of other lanes. The loop has a block barrier, so every lane of
+/// the block leaves it at the same time. Returns false, and changes nothing,
+/// when the matmul does not fit.
+static bool expandLaneMatmulInRegisters(gpu::GPUFuncOp func,
+                                        vx::LaneMatmulOp op, Type elem) {
+  Region &body = func.getBody();
+  auto acc = cast<MemRefType>(op.getAcc().getType());
+  memref::AllocaOp tile = laneCopyTileAlloca(op.getAcc());
+  SmallVector<int64_t> strides;
+  int64_t offset;
+  if (!op.getAccumulate() || op->getBlock()->getParent() != &body ||
+      body.hasOneBlock() || !tile || acc.getRank() != 2 ||
+      acc.getNumElements() / 32 > laneMatmulFragmentRegisters ||
+      failed(acc.getStridesAndOffset(strides, offset)) ||
+      llvm::any_of(strides, ShapedType::isDynamic))
+    return false;
+  // The loop: the outermost one around the matmul with no other access to
+  // the tile, and with a block barrier somewhere in it.
+  SmallVector<Operation *> others;
+  accessesOf(tile.getResult(), others);
+  llvm::erase(others, op.getOperation());
+  DominanceInfo dominance(func);
+  CFGLoopInfo loops(dominance.getDomTree(&body));
+  auto touches = [&](CFGLoop *loop) {
+    return llvm::any_of(others, [&](Operation *other) {
+      Operation *top = body.findAncestorOpInRegion(*other);
+      return !top || loop->contains(top->getBlock());
+    });
+  };
+  CFGLoop *loop = nullptr;
+  for (CFGLoop *l = loops.getLoopFor(op->getBlock()); l && !touches(l);
+       l = l->getParentLoop())
+    loop = l;
+  auto blockBarrier = [](Operation &o) {
+    return isa<gpu::BarrierOp>(o) ||
+           (isa<vx::BarrierOp>(o) && !o.hasAttr("subgroup"));
+  };
+  if (!loop || llvm::none_of(loop->getBlocks(), [&](Block *block) {
+        return llvm::any_of(*block, blockBarrier);
+      }))
+    return false;
+
+  Location loc = op.getLoc();
+  OpBuilder b(&body.front(), body.front().begin());
+  int64_t count = acc.getNumElements() / 32;
+  Value fragments =
+      b.create<memref::AllocaOp>(loc, MemRefType::get({count}, b.getF32Type()));
+  Value valid =
+      b.create<memref::AllocaOp>(loc, MemRefType::get({}, b.getI1Type()));
+  Value start =
+      b.create<memref::AllocaOp>(loc, MemRefType::get({}, b.getIndexType()));
+  b.create<memref::StoreOp>(
+      loc, b.create<arith::ConstantIntOp>(loc, b.getI1Type(), 0), valid);
+  // The view of the tile at `at`, as the matmul's.
+  auto view = [&](OpBuilder &vb, Value at) -> Value {
+    SmallVector<OpFoldResult> sizes, steps;
+    for (int64_t d = 0; d < acc.getRank(); ++d) {
+      sizes.push_back(vb.getIndexAttr(acc.getDimSize(d)));
+      steps.push_back(vb.getIndexAttr(strides[d]));
+    }
+    return vb.create<memref::ReinterpretCastOp>(loc, acc, tile.getResult(), at,
+                                                sizes, steps);
+  };
+  // Writes the elements back when they are valid, and clears `valid`.
+  auto writeBack = [&](OpBuilder &wb) {
+    auto held = wb.create<scf::IfOp>(loc, wb.create<memref::LoadOp>(loc, valid),
+                                     /*withElseRegion=*/false);
+    OpBuilder::InsertionGuard guard(wb);
+    wb.setInsertionPoint(held.getThenRegion().front().getTerminator());
+    moveLaneFragments(wb, loc, view(wb, wb.create<memref::LoadOp>(loc, start)),
+                      fragments, /*fill=*/false);
+    wb.create<memref::StoreOp>(
+        loc, wb.create<arith::ConstantIntOp>(loc, wb.getI1Type(), 0), valid);
+  };
+
+  b.setInsertionPoint(op);
+  Value here =
+      b.create<memref::ExtractStridedMetadataOp>(loc, op.getAcc()).getOffset();
+  Value held = b.create<memref::LoadOp>(loc, valid);
+  Value same =
+      b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
+                              b.create<memref::LoadOp>(loc, start), here);
+  Value ready = b.create<arith::AndIOp>(loc, held, same);
+  auto fill = b.create<scf::IfOp>(loc, ready, /*withElseRegion=*/true);
+  {
+    OpBuilder::InsertionGuard guard(b);
+    b.setInsertionPoint(fill.getElseRegion().front().getTerminator());
+    writeBack(b);
+    moveLaneFragments(b, loc, op.getAcc(), fragments, /*fill=*/true);
+    b.create<memref::StoreOp>(
+        loc, b.create<arith::ConstantIntOp>(loc, b.getI1Type(), 1), valid);
+    b.create<memref::StoreOp>(loc, here, start);
+  }
+  expandLaneMatmulWithMma(b, op, elem, fragments);
+
+  SmallVector<std::pair<Block *, Block *>> exits;
+  loop->getExitEdges(exits);
+  for (auto [from, to] : exits) {
+    Block *edge = new Block();
+    body.getBlocks().insert(to->getIterator(), edge);
+    SmallVector<Value> args;
+    for (BlockArgument a : to->getArguments())
+      args.push_back(edge->addArgument(a.getType(), a.getLoc()));
+    Operation *branch = from->getTerminator();
+    for (unsigned i = 0; i < branch->getNumSuccessors(); ++i)
+      if (branch->getSuccessor(i) == to)
+        branch->setSuccessor(edge, i);
+    OpBuilder eb = OpBuilder::atBlockEnd(edge);
+    writeBack(eb);
+    eb.create<vx::BarrierOp>(loc);
+    eb.create<cf::BranchOp>(loc, to, args);
+  }
+  return true;
 }
 
 /// Replaces a lane matmul with its expansion: the host's loops with `serial`,
@@ -5898,6 +6096,12 @@ struct ConvertVxToStandardPass
                            chipHasMmaSync(deviceChip(gpuModule));
         bool simdgroupMatrices = pipeline == DevicePipeline::Metal;
         for (vx::LaneMatmulOp op : matmuls) {
+          Type elem =
+              tensorCores && !op.getSerial() ? mmaElementOf(op) : Type();
+          if (elem && expandLaneMatmulInRegisters(gpuFunc, op, elem)) {
+            op.erase();
+            continue;
+          }
           OpBuilder b(op);
           expandLaneMatmul(b, op, /*device=*/true, tensorCores,
                            simdgroupMatrices);
