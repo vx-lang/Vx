@@ -224,7 +224,7 @@ fn main() -> i32 {
 }
 ```
 
-For a full real-world demonstration, explore [`examples/llama.vx`](examples/llama.vx), which implements a complete, clean Llama 2 forward pass with tensor abstractions. [`apps/qwen`](apps/qwen) runs Qwen2.5 and Qwen3 coder models on the GPU of an Apple Silicon Mac, with the GPU kernels of `std::nn`.
+For a full real-world demonstration, explore [`examples/llama.vx`](examples/llama.vx), which implements a complete, clean Llama 2 forward pass with tensor abstractions. [qwen-vx](https://github.com/vx-lang/qwen-vx) runs Qwen2.5 and Qwen3 coder models on the GPU of an Apple Silicon Mac, with the GPU kernels of `std::nn`.
 
 ______________________________________________________________________
 
@@ -308,7 +308,6 @@ runtime/              Dispatch runtimes (Host CPU, NVIDIA CUDA, Apple Metal, App
 fleet/                Declarative machine descriptions (A100, H100, B200, MI300X, M4, etc.)
 stdlib/               Standard library modules (tensor, simd, vec, io, math, fs, etc.)
 examples/             Example programs (including Llama 2 forward pass in llama.vx)
-apps/                 Applications written in Vx (a runner for Qwen models)
 docs/                 Language specification, tutorials, and architecture designs
 vx-analyzer/          Language server (LSP)
 vscode-vx/            VS Code extension
