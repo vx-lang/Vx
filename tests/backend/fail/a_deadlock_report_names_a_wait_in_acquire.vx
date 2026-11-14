@@ -1,0 +1,39 @@
+//===- a_deadlock_report_names_a_wait_in_acquire.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The main code holds the only permit of a `Semaphore`, and waits for the end of a task. The
+// task waits in `acquire` for that permit. The report names the `acquire`, its line, and the
+// line that made the `Semaphore`.
+//
+// RUN: not vxc %s --run 2>&1 | FileCheck %s
+// RUN: not vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+// RUN: env VX_TASK_RUNTIME=shared not vxc %s --run 2>&1 | FileCheck %s
+
+// CHECK: vx: deadlock: each task of the program waits, and nothing can wake one. The program stops.
+// CHECK-NEXT: {{^}}  the main code waits for the end of the task from the `spawn` at {{.*}}.vx:33{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `acquire` at {{.*}}.vx:25 on semaphore 1, made at {{.*}}.vx:30{{$}}
+// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:33{{$}}
+
+import core::mem;
+import std::sync::semaphore;
+
+fn take_a_permit(s : &Semaphore) -> void {
+  let permit = s.acquire();
+  drop(permit);
+}
+
+fn main() -> i32 {
+  let s = Semaphore::new(1);
+  let held = s.acquire();
+  tasks {
+    spawn {
+      take_a_permit(&s);
+    };
+  };
+  drop(held);
+  return 0;
+}

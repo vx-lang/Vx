@@ -1,0 +1,41 @@
+//===- book_run_jobs_gives_results_in_job_order.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on tasks (www/book/src/tasks.md): `run_jobs` scales eight
+// numbers with at most 3 tasks, and gives the results in the order of the numbers.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_SEED=3 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}scaled 10 20 30 40 50 60 70 80{{$}}
+
+// ANCHOR: program
+import core::option;
+import std::sync::jobs;
+import std::vec;
+
+// The work for one job. `factor` is the data that each job shares.
+fn scale(factor : &i64, job : &i64) -> i64 {
+  return *job * *factor;
+}
+
+fn main() -> i32 {
+  let mut numbers = Vec<i64>::new();
+  for i in 1..9 {
+    numbers.push(i64::from(i));
+  }
+  let factor : i64 = 10;
+  // At most 3 tasks. The call returns after each task ends.
+  let scaled = run_jobs(&factor, &numbers, 3, scale).unwrap();
+  print!("scaled");
+  for i in 0..scaled.len() {
+    print!(" {}", scaled.get(i));
+  }
+  println!("");
+  return 0;
+}
+// ANCHOR_END: program

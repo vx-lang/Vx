@@ -73,6 +73,8 @@ enum What {
     /// A `lock`, with the address of the holder word of its `Mutex`, or 0 when it is not known.
     Lock(usize),
     Select,
+    /// An `acquire` on a `Semaphore`.
+    Acquire,
     /// The join of the task with this site, or of a task with no site.
     Join(Option<crate::ffi::tasks::Site>),
 }
@@ -276,8 +278,8 @@ thread_local! {
     static WHAT: std::cell::RefCell<Waiting> = const { std::cell::RefCell::new(NOT_SAID) };
 }
 
-/// Says what the next wait of this thread is for: 1 for a `send`, 2 for a `recv` and 4 for a
-/// `select`. The deadlock report prints it, with the line of the wait at `at_file:at_line`, and
+/// Says what the next wait of this thread is for: 1 for a `send`, 2 for a `recv`, 4 for a
+/// `select` and 8 for an `acquire`. The deadlock report prints it, with the line of the wait at `at_file:at_line`, and
 /// the line that made the channel at `made_file:made_line`. A null file means that the line is
 /// not known. For a `send` and a `recv`, `channel` is the words of the channel, and the report
 /// counts the ends of the channel there. A `lock` uses `vx_waiting_for_lock`.
@@ -299,6 +301,7 @@ pub unsafe extern "C" fn vx_waiting_for(
         1 => What::Send(channel as usize),
         2 => What::Recv(channel as usize),
         4 => What::Select,
+        8 => What::Acquire,
         _ => What::Word,
     };
     let waiting = Waiting {
@@ -854,7 +857,7 @@ fn report() -> String {
             _ => None,
         })
         .collect();
-    let (mut channels, mut locks) = (Vec::new(), Vec::new());
+    let (mut channels, mut locks, mut semaphores) = (Vec::new(), Vec::new(), Vec::new());
     let number = |list: &mut Vec<usize>, word: usize| match list.iter().position(|&w| w == word) {
         Some(i) => i + 1,
         None => {
@@ -897,6 +900,10 @@ fn report() -> String {
                 )
             }
             What::Select => format!("waits in `select`{at}"),
+            What::Acquire => format!(
+                "waits in `acquire`{at} on semaphore {}{made}",
+                number(&mut semaphores, *word)
+            ),
             What::Join(Some(task)) => format!(
                 "waits for the end of the task from the `spawn` at {}",
                 crate::ffi::tasks::spawn_line(task)

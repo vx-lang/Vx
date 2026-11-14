@@ -2291,6 +2291,9 @@ impl<'c> MeliorGenerator<'c> {
         if depth > 32 {
             return None; // guard against a pathological/cyclic nesting
         }
+        if let Some(size_align) = self.enum_size_align(ty) {
+            return Some(size_align);
+        }
         match ty {
             syntax::Type::Scalar(e) => scalar_size_align(e),
             syntax::Type::Pointer(..) | syntax::Type::Borrow { .. } | syntax::Type::Ref(..) => {
@@ -2341,6 +2344,23 @@ impl<'c> MeliorGenerator<'c> {
             }
             _ => None,
         }
+    }
+
+    /// Byte size and alignment of an enum: the size of the type that it lowers to, a tag and a
+    /// payload slot. `None` when `ty` is not an enum.
+    fn enum_size_align(&self, ty: &syntax::Type) -> Option<(usize, usize)> {
+        let name = match ty {
+            syntax::Type::GenericInstance(base, _) => match &**base {
+                syntax::Type::Struct(name, _) => name.to_string(),
+                _ => return None,
+            },
+            syntax::Type::Struct(name, _) => name.split('<').next()?.to_string(),
+            _ => return None,
+        };
+        if !self.enums.contains_key(name.as_str()) {
+            return None;
+        }
+        llvm_type_size_align(&self.lower_type_str(ty).ok()?)
     }
 
     /// Byte size and alignment of a struct with these field types, in order.

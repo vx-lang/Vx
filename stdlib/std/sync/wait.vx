@@ -51,6 +51,7 @@ extern {
 const WAIT_IN_SEND : i32 = 1;
 const WAIT_IN_RECV : i32 = 2;
 const WAIT_IN_SELECT : i32 = 4;
+const WAIT_IN_ACQUIRE : i32 = 8;
 
 /// Say what the next wait of this task is for, `WAIT_IN_SEND` or `WAIT_IN_RECV` on the channel
 /// with the words `channel`. When the program stops on a deadlock, the report says it for each
@@ -80,6 +81,14 @@ fn lock_taken(holder : &AtomicI64) -> void {
 /// The lock with the word `holder` is free. Only the code that took it calls this.
 fn lock_released(holder : &AtomicI64) -> void {
   unsafe { vx_lock_released(holder.as_ptr()); }
+}
+
+/// `waiting_for` an `acquire` at the line `at`, on a `Semaphore` that the line `made` made.
+fn waiting_for_acquire(at : Caller, made : Location) -> void {
+  let l = at.location;
+  unsafe {
+    vx_waiting_for(WAIT_IN_ACQUIRE, l.file, l.line, made.file, made.line, null_mut<AtomicI64>());
+  }
 }
 
 /// `waiting_for` a `select` at the line `at`. It waits on many channels, so it has no `made`.

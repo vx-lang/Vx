@@ -1,0 +1,39 @@
+//===- sizeof_an_enum_is_its_tag_and_its_payload.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An enum with a payload holds an `i32` tag and then the payload. So `Option<i64>` takes 16
+// bytes, `Option<i32>` takes 8, and a struct with an `Option<i64>` and an `i64` takes 24. A
+// `Vec` sizes its buffer with `sizeof`, so with a size that is too small, the pushes below
+// write past the end of the buffer.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}sizes 16 8 24{{$}}
+// CHECK-NEXT: {{^}}sum of 100 values 4950{{$}}
+
+import core::convert;
+import core::option;
+import std::vec;
+
+struct Entry {
+  value : Option<i64>,
+  count : i64,
+}
+
+fn main() -> i32 {
+  println!("sizes {} {} {}", sizeof<Option<i64>>(), sizeof<Option<i32>>(), sizeof<Entry>());
+  let mut v = Vec<Option<i64>>::new();
+  for i in 0..100 {
+    v.push(Option<i64>::Some(i64::from(i)));
+  }
+  let mut sum : i64 = 0;
+  for i in 0..v.len() {
+    sum = sum + v.get(i).unwrap();
+  }
+  println!("sum of 100 values {}", sum);
+  return 0;
+}
