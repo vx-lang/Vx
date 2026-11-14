@@ -430,24 +430,16 @@ impl TypeChecker<'_> {
             self.pointer_facts_enter_body()
         });
         let running = self.pointer_facts_running_tasks();
-        let mut ty = match (*kind, ret.as_deref_mut()) {
-            // The last value of a `tasks` block is checked in the block, as in an `unsafe` block.
-            // So a task that it starts, or a `return` in it, is known when the drops are placed.
-            (TaskBlockKind::Tasks, Some(r)) => {
+        // The last value of the block is checked in the block, as in an `unsafe` block. So a task
+        // that it starts, or a `return` in it, is known when the drops are placed.
+        let ty = match ret.as_deref_mut() {
+            Some(r) => {
+                // A `return` of a task gives the type of its last value, as in a closure.
+                self.closure_body_next = *kind == TaskBlockKind::Spawn;
                 self.check_expr_block_with_value(stmts, r, unused, consume)
             }
-            _ => self.check_expr_block(stmts, ret.as_deref(), consume),
+            None => self.check_expr_block(stmts, None, consume),
         };
-        if let (TaskBlockKind::Spawn, Some(r)) = (*kind, ret) {
-            self.value_unused = unused;
-            // A `return` of the task gives the type of its last value, as the return type of a
-            // function does.
-            let returned = self.current_return_type.clone();
-            let outer = self.expected_type.take();
-            self.expected_type = returned.filter(|t| *t != Type::Unknown).or(outer.clone());
-            ty = self.check_expr_type_flag(r, consume);
-            self.expected_type = outer;
-        }
         match outer_pointers {
             Some(outer) => {
                 self.pointer_facts_leave_body(outer);
