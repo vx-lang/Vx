@@ -1,0 +1,57 @@
+//===- a_return_in_the_last_if_of_a_task_drops_its_values.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The last `if` of a `spawn` body is the value of the task. A `return` in that `if` must drop
+// the tensor `b` and the `Loud` `l` that the task made. `l` prints when it is dropped.
+//
+// Only the default code generator runs this program. The AST code generator crashes on a
+// `return` in the last value of a task.
+//
+// REQUIRES: flat-codegen
+// RUN: env VX_PRINT_DROPS=1 vxc %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s --check-prefix=DROPS
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// DROPS-DAG: drop in leaves: b, before the return on line 44
+// DROPS-DAG: drop in leaves: l, before the return on line 44
+//
+// CHECK: {{^}}task sees 6{{$}}
+// CHECK-NEXT: {{^}}drop loud 2{{$}}
+// CHECK-NEXT: {{^}}returned 2{{$}}
+
+struct Loud {
+  id : i32,
+}
+
+impl Drop for Loud {
+  fn drop(self : &mut Loud) -> void {
+    println!("drop loud {}", self.id);
+  }
+}
+
+fn leaves(leave : bool) -> i32 {
+  return tasks {
+    let h = spawn {
+      let b = Tensor<f32, [4]>::fill(6.0);
+      let l = Loud {
+        id: 2
+      };
+      if leave {
+        println!("task sees {}", b[0]);
+        return l.id;
+      } else {
+        3
+      }
+    };
+    h.join()
+  };
+}
+
+fn main() -> i32 {
+  let r = leaves(true);
+  println!("returned {}", r);
+  return 0;
+}
