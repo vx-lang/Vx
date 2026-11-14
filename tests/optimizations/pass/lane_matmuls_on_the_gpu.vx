@@ -9,7 +9,8 @@
 // or both are f16, the sizes are multiples of 16 x 8 x 16 and the chip is sm_80 or later, each
 // 16 x 8 piece of the result is a chain of `mma.sync` on the tensor cores. `bf16_tiles` has
 // 2 x 2 pieces of `acc` and 2 chunks of 16 columns of `sa`: each piece gets a chain of two
-// `mma.sync`, and then the lanes store it. Other matmuls use
+// `mma.sync`, and then the lanes store it. `ldmatrix` loads the inputs of each `mma.sync` from the
+// tiles, with `.trans` for `sb`, whose rows are rows of K. Other matmuls use
 // the lanes of the subgroup: each lane widens its elements to f32, and multiplies and adds them.
 // `mixed_tiles` has a bf16 and an f16 tile, and an sm_75 chip has no bf16 `mma.sync`. A subgroup
 // barrier comes before each matmul and after it.
@@ -22,10 +23,12 @@
 //
 // RUN: env -u VX_GPU_CHIP vxc %s --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ptx
 // RUN: FileCheck %s --implicit-check-not=local_depot < %t.ptx
+// RUN: FileCheck %s --check-prefix=LDM < %t.ptx
 // RUN: env VX_GPU_CHIP=sm_75 vxc %s --host default --machine fleet/a100-80.vx --emit-ptx -o %t.sm75.ptx
 // RUN: FileCheck %s --check-prefix=SM75 --implicit-check-not=mma.sync < %t.sm75.ptx
 // RUN: env -u VX_GPU_CHIP vxc %s --legacy-codegen --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ast.ptx
 // RUN: FileCheck %s --implicit-check-not=local_depot < %t.ast.ptx
+// RUN: FileCheck %s --check-prefix=LDM < %t.ast.ptx
 // RUN: env VX_GPU_CHIP=sm_75 vxc %s --legacy-codegen --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ast.sm75.ptx
 // RUN: FileCheck %s --check-prefix=SM75 --implicit-check-not=mma.sync < %t.ast.sm75.ptx
 // CHECK-LABEL: .entry bf16_tiles(
@@ -72,6 +75,37 @@
 // CHECK: mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32
 // CHECK: st.shared.{{b32|v2.b32}}
 // CHECK: bar.warp.sync
+// A lane loads no single 16-bit element of the tiles: `ldmatrix` loads them for `mma.sync`.
+// LDM-LABEL: .entry bf16_tiles(
+// LDM-NOT: ld.shared.b16
+// LDM: ldmatrix.sync.aligned.m8n8.x4.shared.b16
+// LDM-NOT: ld.shared.b16
+// LDM: ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16
+// LDM-NOT: ld.shared.b16
+// LDM: mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32
+// LDM-NOT: ld.shared.b16
+// LDM-LABEL: .entry f16_tiles(
+// LDM-NOT: ld.shared.b16
+// LDM: ldmatrix.sync.aligned.m8n8.x4.shared.b16
+// LDM-NOT: ld.shared.b16
+// LDM: ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16
+// LDM-NOT: ld.shared.b16
+// LDM: mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32
+// LDM-NOT: ld.shared.b16
+// LDM-LABEL: .entry mixed_tiles(
+// LDM-NOT: ldmatrix
+// LDM: ld.shared.b16
+// LDM-NOT: ldmatrix
+// LDM-LABEL: .entry k_loop(
+// `sa[1][w]` is a view of the view `sa[1]`, and `ldmatrix` still loads it.
+// LDM-LABEL: .entry tile_of_a_tile(
+// LDM-NOT: ld.shared.b16
+// LDM: ldmatrix.sync.aligned.m8n8.x4.shared.b16
+// LDM-NOT: ld.shared.b16
+// LDM: ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16
+// LDM-NOT: ld.shared.b16
+// LDM: mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32
+// LDM-NOT: ld.shared.b16
 // SM75-LABEL: .entry bf16_tiles(
 // SM75: mul.rn.f32
 // SM75: add.rn.f32
@@ -281,6 +315,41 @@ pub fn k_loop_that_reads_acc(c : &mut Tensor<f32, [?, 2, 16, 16], Memory::HBM>, 
         for j in 0..32 across lanes {
           if j < 16 {
             for i in 0..16 {
+              c[blk][w][i][j] = acc[w][i][j];
+            }
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn tile_of_a_tile(c : &mut Tensor<f32, [?, 2, 16, 8], Memory::HBM>, a : &Tensor<bf16, [?, 16], Memory::HBM>, b : &Tensor<bf16, [16, 8], Memory::HBM>, blocks : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..blocks across blocks {
+      let mut sa = unsafe {
+        Tensor<bf16, [2, 2, 16, 16], Memory::SMEM>::uninit()
+      };
+      let mut sb = unsafe { Tensor<bf16, [16, 8], Memory::SMEM>::uninit() };
+      let mut acc = unsafe { Tensor<f32, [2, 16, 8], Memory::SMEM>::uninit() };
+      for i in 0..16 across lanes {
+        for j in 0..8 {
+          sb[i][j] = b[i][j];
+        }
+      }
+      for w in 0..2 across subgroups {
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for k in 0..16 {
+              sa[1][w][i][k] = a[blk * 32 + w * 16 + i][k];
+            }
+          }
+        }
+        acc[w] = (sa[1][w] as f32) @ (sb as f32);
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for j in 0..8 {
               c[blk][w][i][j] = acc[w][i][j];
             }
           }
