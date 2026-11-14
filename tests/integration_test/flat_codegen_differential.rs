@@ -1619,6 +1619,18 @@ fn result_holds_an_error_from_another_module(#[case] jobs: Option<usize>) {
     );
 }
 
+// Only the last line of the fixture is read: the `Result<Option<i32>, Error>` and `Pair` cases.
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn enum_inside_an_enum_payload_runs(#[case] jobs: Option<usize>) {
+    assert_generated_aggregate_runs(
+        "enum_inside_an_enum_payload.vx",
+        &["303", "-9", "-1011", "31", "-13", "-47", "99"],
+        jobs,
+    );
+}
+
 #[rstest::rstest]
 #[case::normal(None)]
 #[case::parallel(Some(2))]
@@ -1809,9 +1821,11 @@ fn assert_generated_aggregate_runs_at_optimization(
     };
     assert!(log.contains(marker), "flat path with jobs={jobs:?}: {log}");
     // Native compilation prints progress before the program's final output line.
+    // A program that ends with `println!` leaves an empty line after it.
     let values = stdout
         .lines()
-        .last()
+        .rev()
+        .find(|line| !line.trim().is_empty())
         .expect("program prints its payload values");
     let actual: Vec<_> = values.split_whitespace().collect();
     assert_eq!(
