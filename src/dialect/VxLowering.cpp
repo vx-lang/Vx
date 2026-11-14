@@ -4072,6 +4072,123 @@ static void expandLaneMatmul(OpBuilder &b, vx::LaneMatmulOp op, bool device,
   op.erase();
 }
 
+/// Whether `v` only goes into arithmetic that ends in comparisons, as in the
+/// alignment test of a lane copy, and never into an address.
+static bool onlyCompared(Value v) {
+  return llvm::all_of(v.getUsers(), [](Operation *user) {
+    if (isa<arith::CmpIOp>(user))
+      return true;
+    return isa<arith::AddIOp, arith::MulIOp, arith::RemUIOp, arith::AndIOp,
+               arith::IndexCastOp>(user) &&
+           onlyCompared(user->getResult(0));
+  });
+}
+
+/// Collects the loads, stores, `cp.async`s and `ldmatrix`s of `buffer`,
+/// through its views. Returns false when `buffer` has another use, such as a
+/// raw address.
+static bool tileAccesses(Value buffer, SmallVectorImpl<Operation *> &out) {
+  for (OpOperand &use : buffer.getUses()) {
+    Operation *user = use.getOwner();
+    if (isa<memref::ReinterpretCastOp, memref::SubViewOp, memref::CastOp>(
+            user)) {
+      if (!tileAccesses(user->getResult(0), out))
+        return false;
+    } else if (auto meta = dyn_cast<memref::ExtractStridedMetadataOp>(user)) {
+      if (!tileAccesses(meta.getBaseBuffer(), out))
+        return false;
+    } else if (auto base =
+                   dyn_cast<memref::ExtractAlignedPointerAsIndexOp>(user)) {
+      // The layout moves whole 16-byte chunks, so a test of alignment to 16
+      // bytes gives the same answer.
+      if (!onlyCompared(base.getResult()))
+        return false;
+    } else if (isa<memref::LoadOp, nvgpu::LdMatrixOp, memref::DimOp>(user) ||
+               (isa<memref::StoreOp>(user) &&
+                cast<memref::StoreOp>(user).getMemRef() == buffer) ||
+               (isa<nvgpu::DeviceAsyncCopyOp>(user) &&
+                cast<nvgpu::DeviceAsyncCopyOp>(user).getDst() == buffer)) {
+      if (!isa<memref::DimOp>(user))
+        out.push_back(user);
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// Lays out each shared-memory tile that `ldmatrix` reads so that the 8 rows
+/// of one `ldmatrix` are in 8 different groups of banks. The 16-byte chunk
+/// `c` of each 128-byte line `l` of the tile moves to chunk `c ^ (l % 8)`,
+/// with rows in place of lines when a row is longer than 128 bytes. Each
+/// access then reads the element at its new place in a flat view of the tile.
+/// A tile with another use, such as a TMA copy, keeps its layout.
+static void swizzleLdmatrixTiles(gpu::GPUFuncOp func) {
+  llvm::SetVector<memref::AllocaOp> tiles;
+  func.walk([&](nvgpu::LdMatrixOp op) {
+    if (memref::AllocaOp tile = allocaBehind(op.getSrcMemref()))
+      tiles.insert(tile);
+  });
+  for (memref::AllocaOp tile : tiles) {
+    auto type = tile.getType();
+    int64_t rowBytes = type.getDimSize(type.getRank() - 1) * 2;
+    SmallVector<Operation *> accesses;
+    if (!type.hasStaticShape() || type.getElementTypeBitWidth() != 16 ||
+        rowBytes < 32 || !llvm::isPowerOf2_64(rowBytes) ||
+        type.getNumElements() * 2 % 128 ||
+        !tileAccesses(tile.getResult(), accesses))
+      continue;
+    // In elements: the line or row number starts at bit `shift`, and the
+    // chunk number at bit 3.
+    int64_t shift = llvm::Log2_64(std::max<int64_t>(128, rowBytes)) - 1;
+    Location loc = tile.getLoc();
+    OpBuilder b(tile->getBlock(), std::next(tile->getIterator()));
+    Value flat = b.create<memref::ReinterpretCastOp>(
+        loc,
+        MemRefType::get({type.getNumElements()}, type.getElementType(), nullptr,
+                        type.getMemorySpace()),
+        tile.getResult(), 0, ArrayRef<int64_t>{type.getNumElements()},
+        ArrayRef<int64_t>{1});
+    // The new place of element `indices` of `view`.
+    auto place = [&](OpBuilder &ab, Value view, ValueRange indices) -> Value {
+      auto meta = ab.create<memref::ExtractStridedMetadataOp>(loc, view);
+      Value at = meta.getOffset();
+      for (auto [i, stride] : llvm::zip(indices, meta.getStrides()))
+        at = ab.create<arith::AddIOp>(loc, at,
+                                      ab.create<arith::MulIOp>(loc, i, stride));
+      auto constant = [&](int64_t v) -> Value {
+        return ab.create<arith::ConstantIndexOp>(loc, v);
+      };
+      Value line = ab.create<arith::AndIOp>(
+          loc, ab.create<arith::ShRUIOp>(loc, at, constant(shift)),
+          constant(7));
+      return ab.create<arith::XOrIOp>(
+          loc, at, ab.create<arith::ShLIOp>(loc, line, constant(3)));
+    };
+    for (Operation *access : accesses) {
+      OpBuilder ab(access);
+      if (auto load = dyn_cast<memref::LoadOp>(access)) {
+        Value at = place(ab, load.getMemRef(), load.getIndices());
+        load.getMemrefMutable().assign(flat);
+        load.getIndicesMutable().assign(at);
+      } else if (auto store = dyn_cast<memref::StoreOp>(access)) {
+        Value at = place(ab, store.getMemRef(), store.getIndices());
+        store.getMemrefMutable().assign(flat);
+        store.getIndicesMutable().assign(at);
+      } else if (auto ld = dyn_cast<nvgpu::LdMatrixOp>(access)) {
+        Value at = place(ab, ld.getSrcMemref(), ld.getIndices());
+        ld.getSrcMemrefMutable().assign(flat);
+        ld.getIndicesMutable().assign(at);
+      } else {
+        auto copy = cast<nvgpu::DeviceAsyncCopyOp>(access);
+        Value at = place(ab, copy.getDst(), copy.getDstIndices());
+        copy.getDstMutable().assign(flat);
+        copy.getDstIndicesMutable().assign(at);
+      }
+    }
+  }
+}
+
 /// The memref that the row `row` is cut from: the source of a cast, or the
 /// memref whose strided metadata the cast starts from. `t[w][c]` is a cast of
 /// the metadata of the cast `t[w]`.
@@ -6268,6 +6385,7 @@ struct ConvertVxToStandardPass
           else
             expandLaneReduction(b, cast<vx::LaneArgmaxOp>(op), /*device=*/true);
         }
+        swizzleLdmatrixTiles(gpuFunc);
       }
 
       // Every launch has the block of a `vx.launch_block` that is a number, so
