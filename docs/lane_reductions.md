@@ -185,7 +185,7 @@ for k in 0..steps / 2 {
 ```
 
 - `tile` is a tensor in shared memory with a size that is a number, such as a row of a rank-3
-  tensor. Its elements have 4 or 8 bytes. `x` has the same element type and the same number of
+  tensor. Its elements have 2, 4 or 8 bytes. `x` has the same element type and the same number of
   dimensions. The place is a list of integers, one for each dimension.
 
 - An element of the tile past the end of `x`, or before its start, is zero.
