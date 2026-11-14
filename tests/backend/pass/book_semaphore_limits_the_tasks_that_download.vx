@@ -1,0 +1,48 @@
+//===- book_semaphore_limits_the_tasks_that_download.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on tasks (www/book/src/tasks.md): ten tasks share a `Semaphore`
+// with 2 permits, so at most 2 of them "download" at the same time.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_SEED=3 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}10 downloads, at most 2 at once{{$}}
+
+// ANCHOR: program
+import core::mem;
+import core::sync::atomic;
+import core::time;
+import std::sync::semaphore;
+import std::time;
+
+fn download(s : &Semaphore, active : &AtomicI64, most : &AtomicI64) -> void {
+  // `acquire` waits while 2 tasks hold a permit.
+  let permit = s.acquire().unwrap();
+  let now = active.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+  most.fetch_max(now, AtomicOrdering::SeqCst);
+  sleep(Duration::from_millis(5));
+  active.fetch_sub(1, AtomicOrdering::SeqCst);
+  // The drop gives the permit back.
+  drop(permit);
+}
+
+fn main() -> i32 {
+  let s = Semaphore::new(2);
+  let active = AtomicI64::new(0);
+  let most = AtomicI64::new(0);
+  tasks {
+    for _i in 0..10 {
+      spawn {
+        download(&s, &active, &most);
+      };
+    }
+  };
+  println!("10 downloads, at most {} at once", most.load(AtomicOrdering::SeqCst));
+  return 0;
+}
+// ANCHOR_END: program

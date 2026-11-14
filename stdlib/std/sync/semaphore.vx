@@ -1,0 +1,132 @@
+//===- semaphore.vx - Vx Standard Library -------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `Semaphore` holds a number of permits. An `acquire` takes one, and waits while none is free.
+// The drop of the `Permit` gives it back. So at most that number of tasks hold a permit at once.
+//
+// The word `permits` holds the free permits. An `acquire` takes one with a compare-exchange, and
+// sleeps on `permits` while it holds 0 (`std::sync::wait`). The drop of a `Permit` adds 1, and
+// wakes the sleepers. All accesses are `SeqCst`, as in the `Mutex`: with release and acquire, a
+// drop could miss a sleeper while the sleeper misses the new permit, and the wake would be lost.
+//
+// The tasks do not get the permits in the order of their `acquire` calls.
+//===----------------------------------------------------------------------===//
+import core::marker;
+import core::option;
+import core::panic;
+import core::result;
+import core::sync::atomic;
+import core::time;
+import std::sync::wait;
+import std::time;
+
+/// Why an `acquire` gave no `Permit`.
+enum AcquireError {
+  // The `tasks` block of this task was cancelled.
+  Cancelled,
+  // The time limit of `acquire_for` ran out.
+  TimedOut,
+}
+
+/// A number of permits that tasks share. Share it with `&` between tasks.
+struct Semaphore {
+  // The permits that no `Permit` holds now.
+  permits : AtomicI64,
+  // The threads that sleep on `permits`, so that a drop with no sleeper costs no call.
+  sleepers : AtomicI64,
+  // The line that made the `Semaphore`, for the deadlock report.
+  made : Location,
+}
+
+// A `Semaphore` is only atomics and a line of the program, so tasks can share it.
+unsafe impl Send for Semaphore {}
+unsafe impl Sync for Semaphore {}
+
+// An `acquire` can wait for another task on the host, and the drop of a `Permit` wakes one.
+impl HostOnly for Semaphore {}
+impl HostOnly for Permit {}
+
+/// One permit of a `Semaphore`. Its drop gives the permit back.
+struct Permit {
+  permits : &AtomicI64,
+  sleepers : &AtomicI64,
+}
+
+impl Semaphore {
+  /// A new `Semaphore` with `n` permits. `n` must not be negative.
+  fn new(n : i64, at : Caller) -> Semaphore {
+    assert(n >= 0, "Semaphore::new: the number of permits must not be negative");
+    return Semaphore {
+      permits : AtomicI64::new(n), sleepers : AtomicI64::new(0), made : at.location
+    };
+  }
+
+  /// Take a permit. Wait while no permit is free. When the `tasks` block of this task was
+  /// cancelled, give `Cancelled`.
+  fn acquire(self : &Semaphore, at : Caller) -> Result<Permit, AcquireError> {
+    return self.acquire_until(Instant::never(), at);
+  }
+
+  /// `acquire`, and give `TimedOut` when it waited `limit` for a permit.
+  fn acquire_for(self : &Semaphore, limit : Duration, at : Caller) -> Result<Permit, AcquireError> {
+    return self.acquire_until(deadline_after(limit), at);
+  }
+
+  /// `acquire` until the clock reaches `deadline`.
+  fn acquire_until(self : &Semaphore, deadline : Instant, at : Caller) -> Result<Permit, AcquireError> {
+    let mut why = AcquireError::Cancelled;
+    let mut now = self.permits.load(AtomicOrdering::SeqCst);
+    while !cancelled_at(at) {
+      if now > 0 {
+        if self.permits.compare_exchange(now, now - 1, AtomicOrdering::SeqCst, AtomicOrdering::SeqCst).is_ok() {
+          return Result<Permit, AcquireError>::Ok(Permit {
+            permits : &self.permits, sleepers : &self.sleepers
+          });
+        }
+      } else {
+        if past_deadline(deadline) {
+          why = AcquireError::TimedOut;
+          break;
+        }
+        self.sleepers.fetch_add(1, AtomicOrdering::SeqCst);
+        waiting_for_acquire(at, self.made);
+        wait_while_until(&self.permits, 0, deadline, true);
+        self.sleepers.fetch_sub(1, AtomicOrdering::SeqCst);
+      }
+      now = self.permits.load(AtomicOrdering::SeqCst);
+    }
+    return Result<Permit, AcquireError>::Err(why);
+  }
+
+  /// A permit, if one is free now. It does not wait.
+  fn try_acquire(self : &Semaphore) -> Option<Permit> {
+    let mut now = self.permits.load(AtomicOrdering::SeqCst);
+    while now > 0 {
+      if self.permits.compare_exchange(now, now - 1, AtomicOrdering::SeqCst, AtomicOrdering::SeqCst).is_ok() {
+        return Option<Permit>::Some(Permit {
+          permits : &self.permits, sleepers : &self.sleepers
+        });
+      }
+      now = self.permits.load(AtomicOrdering::SeqCst);
+    }
+    return Option<Permit>::None;
+  }
+
+  /// The permits that are free now. Another task can take one at any time.
+  fn available_permits(self : &Semaphore) -> i64 {
+    return self.permits.load(AtomicOrdering::SeqCst);
+  }
+}
+
+impl Drop for Permit {
+  fn drop(self : &mut Permit) -> void {
+    self.permits.fetch_add(1, AtomicOrdering::SeqCst);
+    if self.sleepers.load(AtomicOrdering::SeqCst) > 0 {
+      wake_all(self.permits);
+    }
+  }
+}

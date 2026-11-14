@@ -1,0 +1,194 @@
+//===- jobs.vx - Vx Standard Library ------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `run_jobs` and `try_run_jobs` run a function on each job of a list, with at most `n` tasks.
+//
+// They start `n` worker tasks in a `tasks` block. Each worker takes the next job number from an
+// atomic counter, and sends the result with its number on a channel. The code of the block puts
+// each result in its place. So the results come in the order of the jobs, and the call returns
+// only after each worker ends.
+//
+// The function is a `fn`, not a closure, and gets the data that it needs as `context`. A closure
+// type does not say what the closure captures, so the compiler cannot check that tasks can share
+// it.
+//===----------------------------------------------------------------------===//
+import core::marker;
+import core::option;
+import core::panic;
+import core::result;
+import core::sync::atomic;
+import std::sync::channel;
+import std::sync::wait;
+import std::vec;
+
+/// Why `try_run_jobs` gave no results.
+enum JobsError<E> {
+  // A job gave this error. The jobs that did not start then do not run.
+  Failed(E),
+  // The `tasks` block around the call was cancelled. The jobs that did not start do not run.
+  Cancelled,
+}
+
+/// A result, and the number of its job.
+struct JobResult<R> {
+  job : i32,
+  value : R,
+}
+
+/// One worker of `run_jobs`. It stops when no job is left, or when its block is cancelled.
+fn run_jobs_worker<C, J, R : Send + Owned>(context : &C, jobs : &Vec<J>, next : &AtomicI64, work : fn(&C, &J) -> R, tx : Sender<JobResult<R>>) -> void {
+  while !cancelled() {
+    let i = next.fetch_add(1, AtomicOrdering::Relaxed);
+    if i >= i64::from(jobs.len()) {
+      return;
+    }
+    let job = i as i32;
+    let value = work(context, jobs.get_ref(job));
+    if tx.send(JobResult<R> {
+      job : job, value : value
+    }).is_err() {
+      return;
+    }
+  }
+}
+
+/// One worker of `try_run_jobs`. A job that fails sends its error, and the code of the block then
+/// cancels the block.
+fn try_run_jobs_worker<C, J, R : Send + Owned, E : Send + Owned>(context : &C, jobs : &Vec<J>, next : &AtomicI64, work : fn(&C, &J) -> Result<R, E>, tx : Sender<JobResult<Result<R, E>>>) -> void {
+  while !cancelled() {
+    let i = next.fetch_add(1, AtomicOrdering::Relaxed);
+    if i >= i64::from(jobs.len()) {
+      return;
+    }
+    let job = i as i32;
+    let value = work(context, jobs.get_ref(job));
+    if tx.send(JobResult<Result<R, E>> {
+      job : job, value : value
+    }).is_err() {
+      return;
+    }
+  }
+}
+
+/// The number of workers for `jobs` jobs and at most `n` tasks.
+fn worker_count(jobs : i32, n : i32) -> i32 {
+  assert(n >= 1, "run_jobs: the number of tasks must be at least 1");
+  if jobs < n {
+    return jobs;
+  }
+  return n;
+}
+
+/// The results in the order of the jobs. Each slot holds a result.
+fn results_in_order<R>(slots : Vec<Option<R>>) -> Vec<R> {
+  let mut out = Vec<R>::with_capacity(slots.len());
+  for slot in slots.into_iter() {
+    out.push(slot.expect("run_jobs: each job has a result"));
+  }
+  return out;
+}
+
+/// An empty slot for each of `n` jobs.
+fn empty_slots<R>(n : i32) -> Vec<Option<R>> {
+  let mut slots = Vec<Option<R>>::with_capacity(n);
+  for _i in 0..n {
+    slots.push(Option<R>::None);
+  }
+  return slots;
+}
+
+/// Run `work(context, job)` on each job of `jobs`, with at most `n` tasks at the same time, and
+/// give the results in the order of the jobs. `n` must be at least 1.
+///
+/// The call returns after each task ends. The tasks borrow `context` and `jobs`, so their types
+/// must be `Sync`. When the `tasks` block around the call is cancelled, the jobs that did not
+/// start do not run, and the call gives `None`.
+fn run_jobs<C : Sync, J : Sync, R : Send + Owned>(context : &C, jobs : &Vec<J>, n : i32, work : fn(&C, &J) -> R) -> Option<Vec<R>> {
+  let workers = worker_count(jobs.len(), n);
+  let next = AtomicI64::new(0);
+  let (tx, rx) = channel<JobResult<R>>(i64::from(n));
+  let mut slots = empty_slots<R>(jobs.len());
+  let mut arrived : i32 = 0;
+  tasks {
+    for _w in 0..workers {
+      let mine = tx.clone();
+      spawn {
+        run_jobs_worker(context, jobs, &next, work, mine);
+      };
+    }
+    drop(tx);
+    while arrived < jobs.len() {
+      match rx.recv() {
+        Result<JobResult<R>, RecvError>::Ok(r) => {
+          slots.set(r.job, Option<R>::Some(r.value));
+          arrived = arrived + 1;
+        }
+        Result<JobResult<R>, RecvError>::Err(_e) => {
+          // A cancel from outside: the workers stop by themselves.
+          break;
+        }
+      }
+    }
+  };
+  if arrived < jobs.len() {
+    return Option<Vec<R>>::None;
+  }
+  return Option<Vec<R>>::Some(results_in_order(slots));
+}
+
+/// The `tasks` block of `try_run_jobs`. It puts each result in `slots`, and gives true when each
+/// job gave one. It gives false on the first error, which it puts in `failure`, and on a cancel.
+/// Its `return` leaves the block, so the block cancels the workers.
+fn run_until_a_failure<C : Sync, J : Sync, R : Send + Owned, E : Send + Owned>(context : &C, jobs : &Vec<J>, n : i32, work : fn(&C, &J) -> Result<R, E>, slots : &mut Vec<Option<R>>, failure : &mut Option<E>) -> bool {
+  let workers = worker_count(jobs.len(), n);
+  let next = AtomicI64::new(0);
+  let (tx, rx) = channel<JobResult<Result<R, E>>>(i64::from(n));
+  let mut arrived : i32 = 0;
+  tasks {
+    for _w in 0..workers {
+      let mine = tx.clone();
+      spawn {
+        try_run_jobs_worker(context, jobs, &next, work, mine);
+      };
+    }
+    drop(tx);
+    while arrived < jobs.len() {
+      match rx.recv() {
+        Result<JobResult<Result<R, E>>, RecvError>::Ok(r) => {
+          match r.value {
+            Result<R, E>::Ok(v) => {
+              slots.set(r.job, Option<R>::Some(v));
+              arrived = arrived + 1;
+            }
+            Result<R, E>::Err(e) => {
+              *failure = Option<E>::Some(e);
+              return false;
+            }
+          }
+        }
+        Result<JobResult<Result<R, E>>, RecvError>::Err(_e) => {
+          return false;
+        }
+      }
+    }
+  };
+  return true;
+}
+
+/// As `run_jobs`, for a `work` that can fail. The first error that arrives cancels the tasks, so
+/// the jobs that did not start do not run, and the call gives `Failed` with that error.
+fn try_run_jobs<C : Sync, J : Sync, R : Send + Owned, E : Send + Owned>(context : &C, jobs : &Vec<J>, n : i32, work : fn(&C, &J) -> Result<R, E>) -> Result<Vec<R>, JobsError<E>> {
+  let mut slots = empty_slots<R>(jobs.len());
+  let mut failure = Option<E>::None;
+  if run_until_a_failure(context, jobs, n, work, &mut slots, &mut failure) {
+    return Result<Vec<R>, JobsError<E>>::Ok(results_in_order(slots));
+  }
+  if failure.is_some() {
+    return Result<Vec<R>, JobsError<E>>::Err(JobsError<E>::Failed(failure.unwrap()));
+  }
+  return Result<Vec<R>, JobsError<E>>::Err(JobsError<E>::Cancelled);
+}

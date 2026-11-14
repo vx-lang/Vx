@@ -128,7 +128,7 @@ operating system. `std::<name>` holds the rest. Every type and function is liste
 | **core** | `option`, `result`, `iter`, `ops`, `cmp`, `clone`, `convert`, `default`, `hash`, `marker`, `mem`, `fmt`, `num`, `cell`, `ptr`, `tuple`, `time` |
 | **Collections** | `std::vec`, `std::string`, `std::box`, `std::alloc` |
 | **Numerics** | `std::tensor`, `std::simd`, `std::rand`, `std::nn` |
-| **Tasks** | `std::sync::channel`, `std::sync::mutex`, `std::sync::arc`, `std::sync::wait`, `std::collective` |
+| **Tasks** | `std::sync::channel`, `std::sync::mutex`, `std::sync::arc`, `std::sync::semaphore`, `std::sync::jobs`, `std::sync::wait`, `std::collective` |
 | **System** | `std::io`, `std::fs`, `std::net`, `std::mmap`, `std::time`, `std::libc` |
 | **Testing** | `std::googletest` |
 

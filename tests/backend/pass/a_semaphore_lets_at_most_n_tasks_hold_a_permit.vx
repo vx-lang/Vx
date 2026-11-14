@@ -1,0 +1,55 @@
+//===- a_semaphore_lets_at_most_n_tasks_hold_a_permit.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Eight tasks share a `Semaphore` with 3 permits. Each task takes a permit 20 times, sleeps a
+// little while it holds it, and drops it. The counter `inside` counts the tasks that hold a
+// permit, and `most` keeps its highest value. It must be 3: never more, and the sleeps let 3
+// tasks hold one at the same time. After the block, each permit is back.
+//
+// The RUN lines with `env` run the same program on the shared runtime: with one worker thread,
+// and with a seed that picks the order of the tasks.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_SEED=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_SEED=2 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}most tasks with a permit at once: 3{{$}}
+// CHECK-NEXT: {{^}}free permits after the block: 3{{$}}
+
+import core::mem;
+import core::sync::atomic;
+import core::time;
+import std::sync::semaphore;
+import std::time;
+
+fn use_a_permit(s : &Semaphore, inside : &AtomicI64, most : &AtomicI64) -> void {
+  for _i in 0..20 {
+    let permit = s.acquire().unwrap();
+    let now = inside.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+    most.fetch_max(now, AtomicOrdering::SeqCst);
+    sleep(Duration::from_millis(1));
+    inside.fetch_sub(1, AtomicOrdering::SeqCst);
+    drop(permit);
+  }
+}
+
+fn main() -> i32 {
+  let s = Semaphore::new(3);
+  let inside = AtomicI64::new(0);
+  let most = AtomicI64::new(0);
+  tasks {
+    for _t in 0..8 {
+      spawn {
+        use_a_permit(&s, &inside, &most);
+      };
+    }
+  };
+  println!("most tasks with a permit at once: {}", most.load(AtomicOrdering::SeqCst));
+  println!("free permits after the block: {}", s.available_permits());
+  return 0;
+}

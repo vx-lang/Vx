@@ -240,6 +240,68 @@ unlocks the `Mutex` (`book_mutex_guards_a_total.vx`):
 It prints `total 20000`. Use an atomic for one number, and a `Mutex` when a change touches more
 than one number.
 
+## `Semaphore`
+
+A `Semaphore` from `std::sync::semaphore` limits how many tasks do a thing at the same time.
+`Semaphore::new(n)` makes `n` permits. `acquire()` takes a permit, and waits while none is
+free. It gives a `Permit`, and the drop of the `Permit` gives the permit back. In this program,
+at most 2 of 10 tasks "download" at the same time (`book_semaphore_limits_the_tasks_that_download.vx`):
+
+```rust
+{{#include ../../../tests/backend/pass/book_semaphore_limits_the_tasks_that_download.vx:program}}
+```
+
+It prints `10 downloads, at most 2 at once`.
+
+An `acquire` can be cancelled, as a `recv` can. It gives `Cancelled` when the `tasks` block of
+the task was cancelled. `acquire_for(limit)` also gives `TimedOut` after the time limit, and
+`acquire_until(deadline)` at a deadline. `try_acquire()` does not wait: it gives `None` when no
+permit is free. The tasks do not get the permits in the order of their `acquire` calls.
+
+## Run jobs with at most `n` tasks
+
+`run_jobs(context, jobs, n, work)` from `std::sync::jobs` calls `work(context, job)` for each
+job in the vector `jobs`. It starts at most `n` tasks, and gives the results in the order of the
+jobs (`book_run_jobs_gives_results_in_job_order.vx`):
+
+```rust
+{{#include ../../../tests/backend/pass/book_run_jobs_gives_results_in_job_order.vx:program}}
+```
+
+It prints `scaled 10 20 30 40 50 60 70 80`.
+
+`run_jobs` starts its tasks in a `tasks` block, so the call returns only after each task ends.
+The tasks borrow `context` and `jobs`, so their types must be `Sync`. Each task takes the next
+job from a counter, so a slow job does not hold up the other tasks.
+
+`work` is a function, not a closure. A closure type does not say what the closure captures, so
+the compiler cannot check that two tasks can call it at the same time. Put the data that the
+jobs share in `context`.
+
+When the `tasks` block around the call is cancelled, the jobs that did not start do not run, and
+`run_jobs` gives `None`. `try_run_jobs` takes a `work` that gives a `Result`. The first `Err`
+cancels the tasks, so the jobs that did not start do not run. The call then gives
+`Failed` with that error.
+
+### Compared with tokio
+
+tokio has a `Semaphore`, and a `JoinSet` that holds many tasks. Vx is better in these ways:
+
+- The tasks of `run_jobs` borrow the data of the caller. A task of `tokio::spawn` and of a
+  `JoinSet` must own its data, so a program clones it or puts it in an `Arc`.
+- `run_jobs` gives the results in the order of the jobs. A `JoinSet` gives them in the order in
+  which the tasks end.
+- `run_jobs` returns after each task ends, also after a failure or a cancel. A dropped
+  `JoinSet` asks its tasks to stop, but it does not wait for them.
+- A cancel of the `tasks` block also stops a task that waits in `acquire`. In tokio, a program
+  puts a `CancellationToken` and a `select!` around each wait to stop it.
+- When each task waits and nothing can wake one, the runtime stops the program. Its report names
+  each `acquire` that waits, its line, and the line that made the `Semaphore`. A tokio program
+  hangs with no message.
+
+tokio's `Semaphore` gives the permits in the order of the `acquire` calls, and the Vx
+`Semaphore` does not.
+
 ## `Arc`
 
 A task can borrow the locals of its parent, so most programs need no `Arc`. Use an `Arc<T>` when a
@@ -311,3 +373,4 @@ tasks. The language is the same for both runtimes.
 | Cancel the other tasks | When the block leaves or a task fails | Each program writes it | `context`, by hand |
 | Functions that wait | Normal functions | `async fn`, or a blocked thread | Normal functions |
 | Wait on many channels | `select` over a list of receivers | A crate, such as `crossbeam` | `select` statement |
+| Run jobs with at most `n` tasks | `run_jobs`, results in job order | A `JoinSet` and a `Semaphore` | Each program writes it |

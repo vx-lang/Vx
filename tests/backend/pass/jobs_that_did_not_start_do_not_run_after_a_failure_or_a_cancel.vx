@@ -1,0 +1,92 @@
+//===- jobs_that_did_not_start_do_not_run_after_a_failure_or_a_cancel.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each job sleeps 10 ms, and counts itself in `started` before the sleep. There are 20 jobs and
+// 2 tasks, so all the jobs take about 100 ms.
+//
+// `try_run_jobs`: job 2 fails at once. The call gives `Failed` with its error, and the jobs that
+// did not start then do not run. So fewer than 20 jobs start.
+//
+// `run_jobs`: a task calls it, and after 30 ms the code of the `tasks` block around the task
+// returns. That cancels the task, so `run_jobs` gives `None`, and fewer than 20 jobs start.
+//
+// The RUN lines with `env` run the same program on the shared runtime: with one worker thread,
+// and with a seed that picks the order of the tasks.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_SEED=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}try_run_jobs failed with 2{{$}}
+// CHECK-NEXT: {{^}}fewer than 20 jobs started: true{{$}}
+// CHECK-NEXT: {{^}}run_jobs gave None: true{{$}}
+// CHECK-NEXT: {{^}}fewer than 20 jobs started: true{{$}}
+
+import core::option;
+import core::result;
+import core::sync::atomic;
+import core::time;
+import std::sync::jobs;
+import std::time;
+import std::vec;
+
+fn slow(started : &AtomicI64, job : &i64) -> i64 {
+  started.fetch_add(1, AtomicOrdering::SeqCst);
+  sleep(Duration::from_millis(10));
+  return *job;
+}
+
+fn slow_or_fail(started : &AtomicI64, job : &i64) -> Result<i64, i64> {
+  if *job == 2 {
+    started.fetch_add(1, AtomicOrdering::SeqCst);
+    return Result<i64, i64>::Err(*job);
+  }
+  return Result<i64, i64>::Ok(slow(started, job));
+}
+
+fn report_failure(r : Result<Vec<i64>, JobsError<i64>>) -> void {
+  if r.is_ok() {
+    println!("try_run_jobs gave each result");
+    return;
+  }
+  match r.unwrap_err() {
+    JobsError<i64>::Failed(job) => {
+      println!("try_run_jobs failed with {}", job);
+    }
+    JobsError<i64>::Cancelled => {
+      println!("try_run_jobs gave Cancelled");
+    }
+  }
+}
+
+// Starts `run_jobs` in a task, and leaves the `tasks` block after 30 ms.
+fn run_and_leave(started : &AtomicI64, jobs : &Vec<i64>) -> i32 {
+  tasks {
+    spawn {
+      let results = run_jobs(started, jobs, 2, slow);
+      println!("run_jobs gave None: {}", results.is_none());
+    };
+    sleep(Duration::from_millis(30));
+    return 1;
+  };
+  return 0;
+}
+
+fn main() -> i32 {
+  let mut jobs = Vec<i64>::new();
+  for i in 0..20 {
+    jobs.push(i64::from(i));
+  }
+  let started = AtomicI64::new(0);
+  report_failure(try_run_jobs(&started, &jobs, 2, slow_or_fail));
+  println!("fewer than 20 jobs started: {}", started.load(AtomicOrdering::SeqCst) < 20);
+
+  let started_too = AtomicI64::new(0);
+  run_and_leave(&started_too, &jobs);
+  println!("fewer than 20 jobs started: {}", started_too.load(AtomicOrdering::SeqCst) < 20);
+  return 0;
+}
