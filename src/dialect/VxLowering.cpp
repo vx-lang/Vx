@@ -3699,21 +3699,19 @@ static bool startsAtMultipleOf(Value tile, int64_t n) {
   return false;
 }
 
-/// The row stride of `tile` when `ldmatrix` can read it: a 2-D tile of 16-bit
-/// elements in shared memory, in rows of 16-byte multiples that start at a
-/// multiple of 16 bytes. Otherwise 0.
-static int64_t ldmatrixRowStride(Value tile) {
+/// Whether `ldmatrix` can read `tile`: a 2-D tile of 16-bit elements in
+/// shared memory, in rows of 16-byte multiples that start at a multiple of 16
+/// bytes.
+static bool ldmatrixFits(Value tile) {
   auto type = cast<MemRefType>(tile.getType());
   auto space = dyn_cast_or_null<IntegerAttr>(type.getMemorySpace());
   SmallVector<int64_t> strides;
   int64_t offset;
-  if (type.getRank() != 2 || type.getElementTypeBitWidth() != 16 || !space ||
-      space.getInt() != 3 ||
-      failed(type.getStridesAndOffset(strides, offset)) || strides[1] != 1 ||
-      ShapedType::isDynamic(strides[0]) || strides[0] % 8 ||
-      !startsAtMultipleOf(tile, 8))
-    return 0;
-  return strides[0];
+  return type.getRank() == 2 && type.getElementTypeBitWidth() == 16 && space &&
+         space.getInt() == 3 &&
+         succeeded(type.getStridesAndOffset(strides, offset)) &&
+         strides[1] == 1 && !ShapedType::isDynamic(strides[0]) &&
+         strides[0] % 8 == 0 && startsAtMultipleOf(tile, 8);
 }
 
 /// A lane matmul on the tensor cores. Each 16 x 8 piece of `acc` is one chain
@@ -3765,45 +3763,21 @@ static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
   // For `ldmatrix`, lane `l` gives the address of row `l % 16` of a 16 x 16
   // part of `lhs`, at column 8 for the lanes from 16 on. In `rhs` it gives
   // the same row, and `.trans` turns the rows of K into the columns of B.
-  int64_t lhsStride = ldmatrixRowStride(op.getLhs());
-  int64_t rhsStride = ldmatrixRowStride(op.getRhs());
+  bool lhsLdmatrix = ldmatrixFits(op.getLhs());
+  bool rhsLdmatrix = ldmatrixFits(op.getRhs());
   Value row16 = b.create<arith::RemUIOp>(loc, lane, index(16));
   Value half8 = b.create<arith::MulIOp>(
       loc, b.create<arith::DivUIOp>(loc, lane, index(16)), index(8));
-  // The byte address of element [0, 0] of `tile`.
-  auto startOf = [&](Value tile) -> Value {
-    auto meta = b.create<memref::ExtractStridedMetadataOp>(loc, tile);
-    Value base = b.create<memref::ExtractAlignedPointerAsIndexOp>(loc, tile);
-    return add(b, loc, base,
-               b.create<arith::MulIOp>(loc, meta.getOffset(), index(2)));
-  };
-  Value lhsStart = lhsStride ? startOf(op.getLhs()) : Value();
-  Value rhsStart = rhsStride ? startOf(op.getRhs()) : Value();
-  auto ldmatrix = [&](OpBuilder &nb, Location l, Value start, int64_t stride,
-                      Value i, Value j, int32_t num,
-                      NVVM::MMALayout layout) -> SmallVector<Value> {
-    Value at = nb.create<arith::MulIOp>(
-        l,
-        add(nb, l,
-            nb.create<arith::MulIOp>(
-                l, i, nb.create<arith::ConstantIndexOp>(l, stride)),
-            j),
-        nb.create<arith::ConstantIndexOp>(l, 2));
-    Value ptr = nb.create<LLVM::IntToPtrOp>(
-        l, LLVM::LLVMPointerType::get(ctx, 3),
-        nb.create<arith::IndexCastOp>(l, b.getI64Type(), add(nb, l, start, at))
-            .getResult());
-    Type words =
-        LLVM::LLVMStructType::getLiteral(ctx, SmallVector<Type>(num, i32));
-    Value loaded = nb.create<NVVM::LdMatrixOp>(
-        l, words, ptr, num, layout, NVVM::LdStMatrixShapeAttr::get(ctx, 8, 8),
-        NVVM::LdStMatrixEltType::B16);
+  auto ldmatrix = [&](OpBuilder &nb, Location l, Value tile, Value i, Value j,
+                      int32_t num, bool transpose) -> SmallVector<Value> {
+    Value loaded =
+        nb.create<nvgpu::LdMatrixOp>(l, VectorType::get({num, 2}, elem), tile,
+                                     ValueRange{i, j}, transpose, num);
     SmallVector<Value> regs;
-    for (int32_t r = 0; r < num; ++r) {
-      Value word = nb.create<LLVM::ExtractValueOp>(l, loaded, r);
-      regs.push_back(elem.isF16() ? nb.create<LLVM::BitcastOp>(
-                                        l, VectorType::get({2}, elem), word)
-                                  : word);
+    for (int64_t r = 0; r < num; ++r) {
+      Value pair = nb.create<vector::ExtractOp>(l, loaded, r);
+      regs.push_back(elem.isF16() ? pair
+                                  : nb.create<LLVM::BitcastOp>(l, i32, pair));
     }
     return regs;
   };
@@ -3849,21 +3823,20 @@ static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
                                              ValueRange{i, col});
           };
           SmallVector<Value> a =
-              lhsStride
-                  ? ldmatrix(kb, kl, lhsStart, lhsStride,
-                             add(kb, kl, top, row16), add(kb, kl, depth, half8),
-                             4, NVVM::MMALayout::row)
+              lhsLdmatrix
+                  ? ldmatrix(kb, kl, op.getLhs(), add(kb, kl, top, row16),
+                             add(kb, kl, depth, half8), 4, /*transpose=*/false)
                   : SmallVector<Value>{
                         pack(kb, kl, lhs(row0, k0), lhs(row0, k1)),
                         pack(kb, kl, lhs(row1, k0), lhs(row1, k1)),
                         pack(kb, kl, lhs(row0, k8), lhs(row0, k9)),
                         pack(kb, kl, lhs(row1, k8), lhs(row1, k9))};
           SmallVector<Value> bv =
-              rhsStride ? ldmatrix(kb, kl, rhsStart, rhsStride,
-                                   add(kb, kl, depth, row16), left, 2,
-                                   NVVM::MMALayout::col)
-                        : SmallVector<Value>{pack(kb, kl, rhs(k0), rhs(k1)),
-                                             pack(kb, kl, rhs(k8), rhs(k9))};
+              rhsLdmatrix ? ldmatrix(kb, kl, op.getRhs(),
+                                     add(kb, kl, depth, row16), left, 2,
+                                     /*transpose=*/true)
+                          : SmallVector<Value>{pack(kb, kl, rhs(k0), rhs(k1)),
+                                               pack(kb, kl, rhs(k8), rhs(k9))};
           auto mma = kb.create<NVVM::MmaOp>(
               kl, result, a, bv, c, ArrayRef<int64_t>{16, 8, 16}, std::nullopt,
               std::nullopt, types, layouts);
