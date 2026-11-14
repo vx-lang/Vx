@@ -942,19 +942,6 @@ pub(crate) fn builtin_descriptors() -> HashMap<crate::syntax::TopologyKind, Topo
     use crate::syntax::TopologyKind as K;
     use MemorySpace::*;
 
-    let d = |default_space: MemorySpace, visibility: &[MemorySpace]| TopologyDescriptor {
-        arch: None,
-        default_space,
-        visibility: visibility.to_vec(),
-        transfers: Vec::new(), // built-in transfer edges live in TransferCostGraph::default
-        // The built-ins describe a class of device rather than a part, and which element types a
-        // GPU has is a property of the part. Undeclared, so they constrain nothing.
-        dtypes: None,
-        chip: None,
-        levels: None,
-        offload: false,
-        count: None,
-    };
     let mut m = HashMap::new();
 
     let d = |default_space: MemorySpace,
@@ -970,6 +957,7 @@ pub(crate) fn builtin_descriptors() -> HashMap<crate::syntax::TopologyKind, Topo
             chip: None,
             levels: None,
             offload,
+            count: None,
         }
     };
 
@@ -2902,6 +2890,7 @@ mod tests {
                 chip: None,
                 levels: None,
                 offload: false,
+                count: None,
             },
         };
 
