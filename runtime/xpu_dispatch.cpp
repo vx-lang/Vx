@@ -24,9 +24,9 @@
 // can address and the host can read, so no program is wrong on it. Device-only
 // memory is faster for a large staged tensor and is not used yet -- the reason
 // is at the allocation. A declared space the program did not alias to this
-// device is refused when the program declared a local device and the space says
-// the host cannot read it, because host memory there is memory a kernel would
-// read as the device's.
+// device is refused when the program declared this device one of its own and
+// the space says the host cannot read it, because host memory there is memory a
+// kernel would read as the device's.
 //
 // Routing. This library serves one device, the Intel GPU, whose dispatch id is
 // the SPIR-V band's `VX_TOPO_SPIRV_BASE` (1000). That id is not the CUDA
@@ -154,12 +154,18 @@ sycl::queue &xpu_queue() {
   return *queue;
 }
 
-/// Allocate on the device, reporting a refusal rather than letting a SYCL
-/// exception cross the plugin ABI, which is a C boundary.
-void *device_alloc(size_t bytes, bool host_visible) {
+/// Allocate memory the device can address and the host can read.
+///
+/// Shared USM is the only kind this library allocates, so every pointer it
+/// hands a program is memory both sides can use. Device-only memory is the
+/// faster choice for a large staged tensor and is not used yet: the reason is
+/// at `vx_plugin_alloc_and_transfer`.
+///
+/// The refusal is reported here because a SYCL exception must not cross the
+/// plugin ABI, which is a C boundary.
+void *device_alloc(size_t bytes) {
   try {
-    return host_visible ? sycl::malloc_shared(bytes, xpu_queue())
-                        : sycl::malloc_device(bytes, xpu_queue());
+    return sycl::malloc_shared(bytes, xpu_queue());
   } catch (const sycl::exception &e) {
     fprintf(stderr,
             "[Vx XPU] FATAL: could not allocate %zu bytes on the device: %s\n",
@@ -185,8 +191,9 @@ ze_device_handle_t ze_device() {
 /// Whether a pointer is a USM allocation in this library's context, and if so
 /// what kind -- device memory the host cannot read, or memory it can.
 ///
-/// The answer decides two things: how a copy is made, and whether an outlined
-/// kernel that has to run on the host can read its operands at all.
+/// The kind decides whether an outlined kernel that has to run on the host can
+/// read its operands. Every allocation this library makes is memory it can, so
+/// the device-memory answer is only ever a check that fails loudly.
 ze_memory_type_t usm_type(const void *ptr) {
   if (!ptr || !xpu_available()) {
     return ZE_MEMORY_TYPE_UNKNOWN;
@@ -206,7 +213,7 @@ bool is_device_ptr(const void *ptr) {
 }
 
 /// Whether a pointer is any USM allocation of this library's, device, shared or
-/// host -- which is what decides whether a `queue::memcpy` can name it at all.
+/// host -- which is what decides whether the device can address it.
 bool is_usm(const void *ptr) { return usm_type(ptr) != ZE_MEMORY_TYPE_UNKNOWN; }
 
 /// Runs before the one-rank collective of `vx_collective_cpu.h` copies its
@@ -241,46 +248,19 @@ void xpu_collective_before_copy(const void *input, const void *output,
   }
 }
 
-/// Copy host bytes into memory on the device.
+/// Copy bytes between host memory and this device's memory, either direction.
 ///
-/// `queue::memcpy` needs USM at both ends, and a program's tensors are ordinary
-/// host memory, so a device destination is reached through a USM host buffer.
-/// A shared allocation is host-accessible already and needs no middle man.
-void copy_into(void *dst, const void *src, size_t bytes) {
-  if (!src || !dst || bytes == 0) {
-    return;
-  }
-  if (!is_device_ptr(dst)) {
-    memcpy(dst, src, bytes);
-    return;
-  }
-  if (is_usm(src)) {
-    xpu_queue().memcpy(dst, src, bytes).wait();
-    return;
-  }
-  void *staging = sycl::malloc_host(bytes, xpu_queue());
-  memcpy(staging, src, bytes);
-  xpu_queue().memcpy(dst, staging, bytes).wait();
-  sycl::free(staging, xpu_queue());
-}
-
-/// Copy bytes back out of memory on the device, the same way round.
-void copy_out(void *dst, const void *src, size_t bytes) {
+/// Every allocation this library makes is shared USM, which the host can read
+/// and write, so a copy in either direction is a `memcpy`. This used to have a
+/// second path for device-only memory: a `malloc_host` staging buffer with a
+/// `queue::memcpy` on each side. Nothing allocates device-only memory, so no
+/// run reached it, and the path also dereferenced the staging pointer without
+/// checking it, which an out-of-memory machine would have found first.
+void copy_bytes(void *dst, const void *src, size_t bytes) {
   if (!dst || !src || bytes == 0) {
     return;
   }
-  if (!is_device_ptr(src)) {
-    memcpy(dst, src, bytes);
-    return;
-  }
-  if (is_usm(dst)) {
-    xpu_queue().memcpy(dst, src, bytes).wait();
-    return;
-  }
-  void *staging = sycl::malloc_host(bytes, xpu_queue());
-  xpu_queue().memcpy(staging, src, bytes).wait();
-  memcpy(dst, staging, bytes);
-  sycl::free(staging, xpu_queue());
+  memcpy(dst, src, bytes);
 }
 
 /// The Level Zero command list a launch is recorded into, and the queue it
@@ -320,16 +300,30 @@ int32_t builtin_topology(int32_t topology_id) {
   return topology_id;
 }
 
-/// Whether the program declared any topology as a local device, aliased or not.
+/// Whether the program said that one of its topologies, or one of its memory
+/// spaces, is the device this library serves.
 ///
 /// This separates a program that means a device from one that only wrote a
 /// `Memory` block: a declared topology with no `arch:` sends no pair, its
 /// kernels run on the host, and its memories are a model of a machine rather
 /// than this card's (`a_shared_edge_lets_the_cpu_read_a_borrowed_gpu_tensor` in
 /// tests/optimizations is that shape).
-bool any_local_device_declared() {
+///
+/// Which device a pair stands for is the second number: 1000 for a `spirv64`
+/// topology and 500 for an `nvptx64` one, and a program sends every pair to
+/// whichever library it runs with. Only a pair in the SPIR-V band is this card.
+/// A program that declared an `nvptx64` topology declared another backend's
+/// device, so its spaces are host memory here, which is what the CPU backends
+/// answer with.
+bool declared_this_device() {
   std::lock_guard<std::mutex> lock(local_devices_mutex);
-  return local_device_count != 0;
+  for (size_t i = 0; i < local_device_count; ++i) {
+    if (vx_topology_device_index(local_devices[i].builtin,
+                                 VX_TOPO_SPIRV_BASE) >= 0) {
+      return true;
+    }
+  }
+  return false;
 }
 
 LaunchQueue &launch_queue() {
@@ -353,17 +347,24 @@ LaunchQueue &launch_queue() {
 struct LoadedKernel {
   ze_module_handle_t module = nullptr;
   ze_kernel_handle_t kernel = nullptr;
+  /// How many parameters the image declares.
+  ///
+  /// Reading it means walking the whole SPIR-V module, and it is a property of
+  /// the kernel, so it is read once here and kept. The cache key holds the
+  /// kernel's name and the library its payload came from, so two launches that
+  /// find the same entry have the same image and the same count.
+  int param_count = -1;
 };
 
-ze_kernel_handle_t load_kernel(const std::string &key, const char *name,
-                               const void *image, size_t image_size) {
+LoadedKernel load_kernel(const std::string &key, const char *name,
+                         const void *image, size_t image_size) {
   /* The caller holds the launch lock for the whole call, which is what keeps
      this map safe. */
   static std::unordered_map<std::string, LoadedKernel> loaded;
 
   auto found = loaded.find(key);
   if (found != loaded.end()) {
-    return found->second.kernel;
+    return found->second;
   }
 
   ze_module_desc_t mdesc = {};
@@ -412,8 +413,11 @@ ze_kernel_handle_t load_kernel(const std::string &key, const char *name,
     zeModuleBuildLogDestroy(log);
   }
 
+  entry.param_count =
+      vx_launch_entry_param_count_spirv(image, image_size, name);
+
   loaded.emplace(key, entry);
-  return entry.kernel;
+  return entry;
 }
 
 /// The byte width of each parameter the flattened argument list produced, in
@@ -543,22 +547,6 @@ bool run_device_image(const void *payload, size_t payload_size,
     return false;
   }
 
-  /* The signature is right here in the image, so there is no reason to launch
-     on faith. The flattened count is what the compiler's ABI promises and the
-     image is what the driver will enter, and Level Zero cannot check one
-     against the other: too few parameters and the kernel reads arguments that
-     were never written. */
-  const int declared =
-      vx_launch_entry_param_count_spirv(image, (size_t)image_size, kernel_name);
-  if (declared != params.count) {
-    fprintf(stderr,
-            "[Vx XPU] FATAL: %s declares %d parameters and its arguments "
-            "produced %d.\n"
-            "          Launching would read past what was supplied.\n",
-            kernel_name, declared, params.count);
-    abort();
-  }
-
   size_t widths[VX_LAUNCH_MAX_PARAMS];
   int width_count = 0;
   if (!parameter_widths(arg_tags, num_args, widths, &width_count) ||
@@ -591,42 +579,70 @@ bool run_device_image(const void *payload, size_t payload_size,
     }
   }
 
-  ze_kernel_handle_t kernel =
+  /* The signature is right here in the image, so there is no reason to launch
+     on faith. The flattened count is what the compiler's ABI promises and the
+     image is what the driver will enter, and Level Zero cannot check one
+     against the other: too few parameters and the kernel reads arguments that
+     were never written. The count is a property of the kernel, so the load
+     reads it once and this reads it from the cache entry: doing the scan here
+     instead walked the whole image on every launch, inside the lock a launch
+     holds. */
+  LoadedKernel loaded =
       load_kernel(key, kernel_name, image, (size_t)image_size);
+  ze_kernel_handle_t kernel = loaded.kernel;
+  if (loaded.param_count != params.count) {
+    fprintf(stderr,
+            "[Vx XPU] FATAL: %s declares %d parameters and its arguments "
+            "produced %d.\n"
+            "          Launching would read past what was supplied.\n",
+            kernel_name, loaded.param_count, params.count);
+    abort();
+  }
 
-  /* The launch geometry. `grid=` and `block=` are the shape a placed region's
-     `across` loop asked for, so they are read first: they are the sizes the
-     program gave. `launch=` is something else -- the trip count of one loop the
-     frontend proved stridable, a sizing hint with a correctness floor -- and a
-     region with blocks that do not stride would compute part of its answer, or
-     none, at a shape it did not ask for. A missing `grid=` means one group of
-     one thread, which is what a serial region compiled against. */
-  unsigned groups = 1, group_size = 1;
-  unsigned shape[3] = {1, 1, 1};
+  /* The launch geometry, all three axes. `grid=` and `block=` are the shape a
+     placed region's `across` loop asked for, so they are read first: they are
+     the sizes the program gave. `launch=` is something else -- the trip count
+     of one loop the frontend proved stridable, a sizing hint with a correctness
+     floor -- and a region with blocks that do not stride would compute part of
+     its answer, or none, at a shape it did not ask for. A missing `grid=` means
+     one group of one thread, which is what a serial region compiled against.
+
+     All three axes go to the launch because the payload can name all three.
+     This used to keep only the first, so `grid=8,4,1` ran eight groups instead
+     of thirty-two and left part of the output unwritten without a word.
+
+     No `spirv64` program writes `grid=` today: only an `across` loop does, and
+     the compiler refuses that loop on this arch
+     (tests/frontend/fail/an_across_loop_on_a_spirv64_topology_is_refused.vx).
+     A hand-written payload is the only way to reach a three-axis grid, and the
+     launch prints the axes it used, so a run that gets one says so. */
+  unsigned grid[3] = {1, 1, 1};
+  unsigned group_size = 1;
   char why[160];
   const int set_by_program =
       vx_launch_shape(payload, payload_size, device_args, arg_tags, num_args,
-                      shape, &group_size, why, sizeof why);
+                      grid, &group_size, why, sizeof why);
   if (set_by_program < 0) {
     fprintf(stderr, "[Vx XPU] FATAL: %s: %s\n", kernel_name, why);
     abort();
   }
-  if (set_by_program) {
-    groups = shape[0];
-  } else if (const char *launch =
-                 vx_payload_field(payload, payload_size, "launch=")) {
-    char *rest = nullptr;
-    long trip = strtol(launch, &rest, 10);
-    if (rest && *rest == ',') {
-      long threads = strtol(rest + 1, nullptr, 10);
-      if (trip > 0 && threads > 0) {
-        groups = trip > 4096 ? 4096u : (uint32_t)trip;
-        group_size = threads > 1024 ? 1024u : (uint32_t)threads;
+  if (!set_by_program) {
+    if (const char *launch =
+            vx_payload_field(payload, payload_size, "launch=")) {
+      char *rest = nullptr;
+      long trip = strtol(launch, &rest, 10);
+      if (rest && *rest == ',') {
+        long threads = strtol(rest + 1, nullptr, 10);
+        if (trip > 0 && threads > 0) {
+          grid[0] = trip > 4096 ? 4096u : (uint32_t)trip;
+          group_size = threads > 1024 ? 1024u : (uint32_t)threads;
+        }
+      } else if (trip > 1) {
+        group_size = trip < 128 ? (uint32_t)trip : 128u;
+        unsigned long need =
+            ((unsigned long)trip + group_size - 1) / group_size;
+        grid[0] = need > 4096 ? 4096u : (uint32_t)need;
       }
-    } else if (trip > 1) {
-      group_size = trip < 128 ? (uint32_t)trip : 128u;
-      unsigned long need = ((unsigned long)trip + group_size - 1) / group_size;
-      groups = need > 4096 ? 4096u : (uint32_t)need;
     }
   }
   VX_XPU_CHECK(zeKernelSetGroupSize(kernel, group_size, 1, 1));
@@ -638,17 +654,19 @@ bool run_device_image(const void *payload, size_t payload_size,
 
   LaunchQueue &lq = launch_queue();
   VX_XPU_CHECK(zeCommandListReset(lq.list));
-  ze_group_count_t grid = {groups, 1, 1};
-  VX_XPU_CHECK(zeCommandListAppendLaunchKernel(lq.list, kernel, &grid, nullptr,
-                                               0, nullptr));
+  ze_group_count_t group_count = {grid[0], grid[1], grid[2]};
+  VX_XPU_CHECK(zeCommandListAppendLaunchKernel(lq.list, kernel, &group_count,
+                                               nullptr, 0, nullptr));
   VX_XPU_CHECK(zeCommandListClose(lq.list));
   VX_XPU_CHECK(
       zeCommandQueueExecuteCommandLists(lq.queue, 1, &lq.list, nullptr));
   VX_XPU_CHECK(zeCommandQueueSynchronize(lq.queue, UINT64_MAX));
 
   if (announce) {
-    fprintf(stderr, "[Vx XPU] %s ran from its own image (%d params, %ux%u)\n",
-            kernel_name, params.count, groups, group_size);
+    fprintf(stderr,
+            "[Vx XPU] %s ran from its own image (%d params, %ux%ux%u groups "
+            "of %u)\n",
+            kernel_name, params.count, grid[0], grid[1], grid[2], group_size);
   }
   return true;
 }
@@ -728,12 +746,11 @@ StagedBuffer stage(const void *host_data, int64_t rows, int64_t cols,
 
   size_t width = (size_t)cols * elem_bytes;
   buf.bytes = (size_t)rows * width;
-  /* Host-visible rather than device-only. A program's tensor is ordinary host
-     memory, and there is no USM copy that reaches it: `queue::memcpy` needs USM
-     at both ends. An operand that was transferred into a device space is USM
-     already and took the road above, so this is the tensor a program never
-     moved -- usually the small one. */
-  buf.ptr = device_alloc(buf.bytes, /*host_visible=*/true);
+  /* A program's tensor is ordinary host memory, and there is no USM copy that
+     reaches it: `queue::memcpy` needs USM at both ends. An operand that was
+     transferred into a device space is USM already and took the road above, so
+     this is the tensor a program never moved -- usually the small one. */
+  buf.ptr = device_alloc(buf.bytes);
   if (!buf.ptr) {
     fprintf(stderr,
             "[Vx XPU] FATAL: out of device memory staging %zu bytes "
@@ -761,12 +778,23 @@ bool run_gemm(const vx_gemm_plan &plan) {
   size_t elem_bytes = vx_dtype_bytes(plan.dtype);
   switch (plan.dtype) {
   case VX_DTYPE_F32:
+    break;
   case VX_DTYPE_F16:
+    /* A half-precision GEMM needs fp16 arithmetic on the device. On a device
+       without it oneMKL refuses the call, and the outlined kernel computes the
+       same answer on the host, so this does not make the call at all. */
+    if (!xpu_device()->has(sycl::aspect::fp16)) {
+      if (verbose()) {
+        fprintf(stderr, "[Vx XPU] this device has no fp16; not routing the "
+                        "GEMM\n");
+      }
+      return false;
+    }
     break;
   case VX_DTYPE_F64:
-    /* An fp64 GEMM needs a device that has fp64 at all. The Arc does not, and
-       asking oneMKL anyway kills the process with `unsupported_device`. The
-       outlined kernel computes it correctly on the host instead. */
+    /* An fp64 GEMM needs a device that has fp64 at all. The Arc does not, so
+       the call is not made: the outlined kernel computes it correctly on the
+       host instead. */
     if (!xpu_device()->has(sycl::aspect::fp64)) {
       if (verbose()) {
         fprintf(stderr, "[Vx XPU] this device has no fp64; not routing the "
@@ -800,16 +828,23 @@ bool run_gemm(const vx_gemm_plan &plan) {
   bool out_is_slot = plan.out_kind == VX_GEMM_OUT_SLOT;
   bool out_is_usm = !out_is_slot && is_usm(plan.out_data);
 
-  /* A USM destination is written where it lies -- `ldc` carries its row stride.
+  /* Where the GEMM writes.
+     A USM destination is written where it lies -- `ldc` carries its row stride.
      A host tensor is not USM, so the result lands in a host-visible buffer
-     first and is copied back row by row. */
+     first and is copied back row by row. A slot is a published allocation, so
+     the buffer the GEMM writes is the one the program receives: this used to
+     allocate `c`, run the GEMM into it, allocate a second buffer of the same
+     size and copy `c` across, which doubled the peak and copied every result
+     byte once more for nothing. It is shared USM rather than `malloc` because
+     the descriptor is memory a later placed kernel may read: a host pointer in
+     it is an address the GPU cannot reach. */
   StagedBuffer c;
   if (out_is_usm) {
     c.ptr = plan.out_data;
     c.row_stride = plan.out_row_stride;
   } else {
     c.bytes = (size_t)plan.m * (size_t)plan.n * elem_bytes;
-    c.ptr = device_alloc(c.bytes, /*host_visible=*/true);
+    c.ptr = device_alloc(c.bytes);
     if (!c.ptr) {
       fprintf(stderr,
               "[Vx XPU] FATAL: out of device memory for a %lldx%lld result\n",
@@ -847,32 +882,30 @@ bool run_gemm(const vx_gemm_plan &plan) {
        and the caller runs the host copy. */
     fprintf(stderr, "[Vx XPU] oneMKL could not run this GEMM: %s\n", e.what());
     return false;
+  } catch (const std::exception &e) {
+    /* The other refusal oneMKL makes is `oneapi::mkl::exception`, which
+       derives from `std::exception` and not from SYCL's. It used to escape
+       `vx_plugin_dispatch_async`, which is a C function, and an exception that
+       crosses one calls `std::terminate`: the program died instead of running
+       the host copy. Anything standard that reaches here is a refusal to run
+       this GEMM, so it takes the same answer. */
+    fprintf(stderr, "[Vx XPU] oneMKL could not run this GEMM: %s\n", e.what());
+    return false;
   }
 
   if (out_is_usm) {
     return true;
   }
 
-  size_t width = (size_t)plan.n * elem_bytes;
   if (out_is_slot) {
-    /* Standing in for a kernel that publishes an allocation means allocating
-       one and writing the descriptor. The allocation is shared USM rather than
-       `malloc` because the descriptor is memory a later placed kernel may read:
-       a host pointer in it is an address the GPU cannot reach, and the fault
-       names nothing. Shared USM is also readable by the host, which is the
-       other reader of a published tensor. */
-    void *result = device_alloc((size_t)plan.m * width,
-                                /*host_visible=*/true);
-    if (!result) {
-      fprintf(stderr, "[Vx XPU] FATAL: out of memory for a %lldx%lld result\n",
-              (long long)plan.m, (long long)plan.n);
-      abort();
-    }
-    memcpy(result, c.ptr, (size_t)plan.m * width);
-    vx_gemm_publish_slot(&plan, result);
+    /* The buffer the GEMM wrote is the allocation the program receives, so its
+       ownership moves to the program with the descriptor. */
+    c.owned = false;
+    vx_gemm_publish_slot(&plan, c.ptr);
     return true;
   }
 
+  size_t width = (size_t)plan.n * elem_bytes;
   /* Row by row, because the destination's row stride need not be `n`. */
   for (int64_t r = 0; r < plan.m; ++r) {
     memcpy((char *)plan.out_data + (size_t)r * plan.out_row_stride * elem_bytes,
@@ -975,11 +1008,13 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
        zeros. Refuse by name instead of guessing, because the table that would
        map the hash lives in the compiler.
 
-       Only when the program declared a local device. A program that declared
-       none is modelling a machine with no accelerator on this side: its
-       kernels run on the host and its memories are a description, so host
-       memory answers it correctly. That is also the shape of a program written
-       for another backend's device, which sends no pair here.
+       Only when the program said this device is one of its own. A program that
+       declared none is modelling a machine with no accelerator on this side:
+       its kernels run on the host and its memories are a description, so host
+       memory answers it correctly. A program written for another backend's
+       device has the same shape, and it does send pairs: `nvptx64` sends 500,
+       the NVIDIA GPU. So this asks whether a pair names the SPIR-V band, not
+       whether the program sent any pair at all.
 
        CUDA reports the mirror case -- device memory where the model promised
        the host could read -- the same way: the topology, the bytes, what the
@@ -987,8 +1022,7 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
        memory the program cannot use, so it is fatal rather than a warning. */
     const bool declared = requested >= VX_TOPO_NAME_BASE;
     if (xpu_available() && declared && builtin == requested &&
-        any_local_device_declared() &&
-        space_access == VX_SPACE_ACCESS_EXPLICIT) {
+        declared_this_device() && space_access == VX_SPACE_ACCESS_EXPLICIT) {
       fprintf(
           stderr,
           "[Vx XPU] FATAL: a transfer of %zu bytes asks for memory space "
@@ -1023,13 +1057,13 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
      Until the space itself says which kind it wants, the permissive allocation
      is the one that keeps every program correct. */
   (void)space_access;
-  void *ptr = device_alloc(bytes, /*host_visible=*/true);
+  void *ptr = device_alloc(bytes);
   if (!ptr) {
     fprintf(stderr, "[Vx XPU] FATAL: out of device memory for %zu bytes\n",
             bytes);
     abort();
   }
-  copy_into(ptr, host_ptr, bytes);
+  copy_bytes(ptr, host_ptr, bytes);
 
   if (verbose()) {
     fprintf(stderr, "[Vx XPU] staged %zu bytes on topology %u (host-visible)\n",
@@ -1145,7 +1179,7 @@ int32_t vx_plugin_transfer_device_to_host(void *device_ptr, void *host_ptr,
     return 1;
   }
   vx_routing_refuse_handle("a read-back", device_ptr, topology_id);
-  copy_out(host_ptr, device_ptr, bytes);
+  copy_bytes(host_ptr, device_ptr, bytes);
   return 1;
 }
 
@@ -1168,10 +1202,9 @@ void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
       xpu_available() &&
       vx_topology_device_index(builtin_topology((int32_t)dst_topology_id),
                                VX_TOPO_SPIRV_BASE) >= 0;
-  void *dst =
-      to_device ? device_alloc(bytes, /*host_visible=*/true) : malloc(bytes);
+  void *dst = to_device ? device_alloc(bytes) : malloc(bytes);
   if (dst && src_device_ptr) {
-    copy_out(dst, src_device_ptr, bytes);
+    copy_bytes(dst, src_device_ptr, bytes);
   }
   return dst;
 }
