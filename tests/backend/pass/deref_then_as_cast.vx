@@ -1,0 +1,17 @@
+//===- deref_then_as_cast.vx - Vx Compiler ------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `*p as i64` is `(*p) as i64`, so the pointer is loaded before the cast.
+//
+// EXPECT: 7
+fn main() -> i32 {
+  let x : i32 = 7;
+  let p = &x;
+  let y : i64 = *p as i64;
+  println!(y);
+  return 0;
+}

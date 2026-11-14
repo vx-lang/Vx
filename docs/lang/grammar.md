@@ -145,7 +145,10 @@ binary_expr ::=
     | binary_expr "|" binary_expr
     | binary_expr "@" binary_expr
     | binary_expr ".." binary_expr
-    | primary_expr
+    | cast_expr
+
+// A prefix `-`, `!`, `*`, `&` or `&&` applies first: `-x as T` is `(-x) as T`, `*p as T` is `(*p) as T`.
+cast_expr ::= primary_expr ( "as" type )*
 
 primary_expr ::= 
     | "!" primary_expr
