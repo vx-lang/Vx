@@ -26,7 +26,9 @@ echo "======================================"
 
 # Rule 1: Markdown Formatting
 echo "[1/6] Checking Markdown Formatting (mdformat)..."
-STAGED_MD=$(git diff --cached --name-only --diff-filter=ACM | grep '\.md$' || true)
+# The skills in .claude/skills/ keep their upstream form. mdformat would turn a skill's front
+# matter into a heading, and Claude Code would then not load the skill.
+STAGED_MD=$(git diff --cached --name-only --diff-filter=ACM | grep '\.md$' | grep -v '^\.claude/skills/' || true)
 if [ -n "$STAGED_MD" ]; then
     if git diff --name-only | grep -q '\.md$'; then
         echo "⚠️  Unstaged Markdown changes detected. Skipping mdformat to prevent accidental data loss."

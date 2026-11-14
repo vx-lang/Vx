@@ -1,0 +1,445 @@
+// Each kernel of `std::nn` on random data, against a plain loop on the CPU in f64. A line says
+// `ok` when the largest difference is below 1e-5 of the largest value of the loop. The shapes
+// come from Qwen2.5-Coder-0.5B, and some from 7B. nn_attention also gets the shape of
+// Qwen3-Coder-30B-A3B, and shapes with 16 heads of Q for each head of K and V. It splits the
+// positions into blocks of 32 below position 640, and of 64 from there on, so it gets both. A
+// lane of a block of 64 takes one position in each half of the block. The shape of 656 positions
+// ends in the first half of its last block, and those of 1001 and 700 end in the second half.
+//
+// The first run uses the Apple GPU on a Mac, and the CPU copy of each kernel elsewhere. The
+// second run uses the CPU copy everywhere.
+//
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx | FileCheck %s
+// RUN: env VX_METAL=0 vxc %s --host default --machine fleet/m4-uma.vx | FileCheck %s
+//
+// CHECK: {{^}}nn_matvec 300 x 896: ok{{$}}
+// CHECK-NEXT: {{^}}nn_matvec_add 300 x 896: ok{{$}}
+// CHECK-NEXT: {{^}}nn_matvec 64 x 4864: ok{{$}}
+// CHECK-NEXT: {{^}}nn_matvec_add 64 x 4864: ok{{$}}
+// CHECK-NEXT: {{^}}nn_qkv q: ok{{$}}
+// CHECK-NEXT: {{^}}nn_qkv k: ok{{$}}
+// CHECK-NEXT: {{^}}nn_qkv v: ok{{$}}
+// CHECK-NEXT: {{^}}nn_matvec_heads_add 200 x 896: ok{{$}}
+// CHECK-NEXT: {{^}}nn_swiglu 200 x 896: ok{{$}}
+// CHECK-NEXT: {{^}}nn_rms_norm 896: ok{{$}}
+// CHECK-NEXT: {{^}}nn_rms_norm 3584: ok{{$}}
+// CHECK-NEXT: {{^}}nn_rope_and_store q, head_dim 64: ok{{$}}
+// CHECK-NEXT: {{^}}nn_rope_and_store k cache, head_dim 64: ok{{$}}
+// CHECK-NEXT: {{^}}nn_rope_and_store v cache, head_dim 64: ok{{$}}
+// CHECK-NEXT: {{^}}nn_rope_and_store q, head_dim 128: ok{{$}}
+// CHECK-NEXT: {{^}}nn_rope_and_store k cache, head_dim 128: ok{{$}}
+// CHECK-NEXT: {{^}}nn_rope_and_store v cache, head_dim 128: ok{{$}}
+// CHECK-NEXT: {{^}}nn_attention 14 heads of 64, 38 positions: ok{{$}}
+// CHECK-NEXT: {{^}}nn_attention 28 heads of 128, 301 positions: ok{{$}}
+// CHECK-NEXT: {{^}}nn_attention 14 heads of 64, 1 positions: ok{{$}}
+// CHECK-NEXT: {{^}}nn_attention 32 heads of 64, 2 heads of K and V, 200 positions: ok{{$}}
+// CHECK-NEXT: {{^}}nn_attention 32 heads of 128, 4 heads of K and V, 1001 positions: ok{{$}}
+// CHECK-NEXT: {{^}}nn_attention 28 heads of 128, 4 heads of K and V, 700 positions: ok{{$}}
+// CHECK-NEXT: {{^}}nn_attention 32 heads of 64, 2 heads of K and V, 656 positions: ok{{$}}
+// CHECK-NEXT: {{^}}nn_argmax of 151936: 50645{{$}}
+// CHECK-NEXT: {{^}}nn_embed row 7 of 896: ok{{$}}
+import core::convert;
+import core::num;
+import std::nn;
+
+fn mix(x : u32) on Topology::Any -> u32
+ensures writes_only()
+{
+  let mut h = x * 2654435761u32;
+  h = h ^ (h >> 15u32);
+  h = h * 2246822519u32;
+  h = h ^ (h >> 13u32);
+  return h;
+}
+
+// A value in [-scale, scale) for index i of the random tensor `seed`.
+fn random(seed : u32, i : i32, scale : f32) on Topology::Any -> f32
+ensures writes_only()
+{
+  return (((mix(seed * 7919u32 + (i as u32)) >> 8u32) as f32) * 0.00000011920929 - 1.0) * scale;
+}
+
+fn random_f32(n : i32, seed : u32, scale : f32) -> Tensor<f32, [?], Memory::HBM> {
+  let mut t = Tensor<f32>([n]);
+  for i in 0..n {
+    t[i] = random(seed, i, scale);
+  }
+  return transfer(t, Memory::HBM);
+}
+
+fn random_bf16(n : i32, seed : u32, scale : f32) -> Tensor<bf16, [?], Memory::HBM> {
+  let mut t = Tensor<bf16>([n]);
+  for i in 0..n {
+    t[i] = random(seed, i, scale) as bf16;
+  }
+  return transfer(t, Memory::HBM);
+}
+
+fn random_heads(heads : i32, head_dim : i32, seed : u32, scale : f32) -> Tensor<f32, [?, ?]> {
+  let mut t = Tensor<f32>([heads, head_dim]);
+  for h in 0..heads {
+    for d in 0..head_dim {
+      t[h][d] = random(seed, h * head_dim + d, scale);
+    }
+  }
+  return t;
+}
+
+fn random_cache(rows : i32, heads : i32, head_dim : i32, seed : u32, scale : f32) -> Tensor<f32, [?, ?, ?]> {
+  let mut t = Tensor<f32>([rows, heads, head_dim]);
+  for p in 0..rows {
+    for h in 0..heads {
+      for d in 0..head_dim {
+        t[p][h][d] = random(seed, (p * heads + h) * head_dim + d, scale);
+      }
+    }
+  }
+  return t;
+}
+
+// `ok`, or the largest difference between got and want, over the largest |want|.
+fn report(name : *const i8, got : &Tensor<f32, [?]>, want : &Tensor<f64, [?]>, n : i32) -> void {
+  let mut worst : f64 = 0.0;
+  let mut biggest : f64 = 0.0;
+  for i in 0..n {
+    worst = f64::max(worst, f64::abs(f64::from(got[i]) - want[i]));
+    biggest = f64::max(biggest, f64::abs(want[i]));
+  }
+  if worst <= 0.00001 * biggest {
+    println!("{}: ok", name);
+  } else {
+    println!("{}: error {}", name, worst / biggest);
+  }
+  return;
+}
+
+fn dot(w : &Tensor<bf16, [?]>, base : i32, x : &Tensor<f32, [?]>, cols : i32) -> f64 {
+  let mut s : f64 = 0.0;
+  for c in 0..cols {
+    s = s + f64::from(w[base + c] as f32) * f64::from(x[c]);
+  }
+  return s;
+}
+
+fn check_matvec(rows : i32, cols : i32) -> void {
+  let w = random_bf16(rows * cols, 1u32, 1.0);
+  let x = random_f32(cols, 2u32, 1.0);
+  let mut y = transfer(Tensor<f32>([rows]), Memory::HBM);
+  let mut ya = random_f32(rows, 3u32, 1.0);
+  nn_matvec(&mut y, &w, &x, rows, cols);
+  nn_matvec_add(&mut ya, &w, &x, rows, cols);
+  let hw = transfer(&w, Memory::CPU_DRAM);
+  let hx = transfer(&x, Memory::CPU_DRAM);
+  let mut want = Tensor<f64>([rows]);
+  let mut want_add = Tensor<f64>([rows]);
+  for r in 0..rows {
+    want[r] = dot(&hw, r * cols, &hx, cols);
+    want_add[r] = f64::from(random(3u32, r, 1.0)) + want[r];
+  }
+  let hy = transfer(&y, Memory::CPU_DRAM);
+  let hya = transfer(&ya, Memory::CPU_DRAM);
+  if rows == 300 {
+    report("nn_matvec 300 x 896", &hy, &want, rows);
+    report("nn_matvec_add 300 x 896", &hya, &want_add, rows);
+  } else {
+    report("nn_matvec 64 x 4864", &hy, &want, rows);
+    report("nn_matvec_add 64 x 4864", &hya, &want_add, rows);
+  }
+  return;
+}
+
+fn check_qkv(q_heads : i32, kv_heads : i32, head_dim : i32, cols : i32) -> void {
+  let rows = (q_heads + 2 * kv_heads) * head_dim;
+  let w = random_bf16(rows * cols, 11u32, 1.0);
+  let b = random_bf16(rows, 12u32, 4.0);
+  let x = random_f32(cols, 13u32, 1.0);
+  let mut q = transfer(Tensor<f32>([q_heads, head_dim]), Memory::HBM);
+  let mut k = transfer(Tensor<f32>([kv_heads, head_dim]), Memory::HBM);
+  let mut v = transfer(Tensor<f32>([kv_heads, head_dim]), Memory::HBM);
+  nn_qkv(&mut q, &mut k, &mut v, &w, &b, &x, q_heads, kv_heads, head_dim, cols);
+  let hw = transfer(&w, Memory::CPU_DRAM);
+  let hb = transfer(&b, Memory::CPU_DRAM);
+  let hx = transfer(&x, Memory::CPU_DRAM);
+  let hq = transfer(&q, Memory::CPU_DRAM);
+  let hk = transfer(&k, Memory::CPU_DRAM);
+  let hv = transfer(&v, Memory::CPU_DRAM);
+  // Row r of w is value r % head_dim of head r / head_dim, of Q, then K, then V.
+  let mut want = Tensor<f64>([rows]);
+  let mut got = Tensor<f32>([rows]);
+  for r in 0..rows {
+    want[r] = dot(&hw, r * cols, &hx, cols) + f64::from(hb[r] as f32);
+    let h = r / head_dim;
+    let d = r % head_dim;
+    if h < q_heads {
+      got[r] = hq[h][d];
+    } else if h < q_heads + kv_heads {
+      got[r] = hk[h - q_heads][d];
+    } else {
+      got[r] = hv[h - q_heads - kv_heads][d];
+    }
+  }
+  let nq = q_heads * head_dim;
+  let nkv = kv_heads * head_dim;
+  let mut got_k = Tensor<f32>([nkv]);
+  let mut want_k = Tensor<f64>([nkv]);
+  let mut got_v = Tensor<f32>([nkv]);
+  let mut want_v = Tensor<f64>([nkv]);
+  for i in 0..nkv {
+    got_k[i] = got[nq + i];
+    want_k[i] = want[nq + i];
+    got_v[i] = got[nq + nkv + i];
+    want_v[i] = want[nq + nkv + i];
+  }
+  report("nn_qkv q", &got, &want, nq);
+  report("nn_qkv k", &got_k, &want_k, nkv);
+  report("nn_qkv v", &got_v, &want_v, nkv);
+  return;
+}
+
+fn check_matvec_heads_add(rows : i32, heads : i32, head_dim : i32) -> void {
+  let cols = heads * head_dim;
+  let w = random_bf16(rows * cols, 21u32, 1.0);
+  let x = transfer(random_heads(heads, head_dim, 22u32, 1.0), Memory::HBM);
+  let mut y = random_f32(rows, 23u32, 1.0);
+  nn_matvec_heads_add(&mut y, &w, &x, rows, heads, head_dim);
+  let hw = transfer(&w, Memory::CPU_DRAM);
+  let mut flat = Tensor<f32>([cols]);
+  for c in 0..cols {
+    flat[c] = random(22u32, c, 1.0);
+  }
+  let mut want = Tensor<f64>([rows]);
+  for r in 0..rows {
+    want[r] = f64::from(random(23u32, r, 1.0)) + dot(&hw, r * cols, &flat, cols);
+  }
+  let hy = transfer(&y, Memory::CPU_DRAM);
+  report("nn_matvec_heads_add 200 x 896", &hy, &want, rows);
+  return;
+}
+
+fn check_swiglu(rows : i32, cols : i32) -> void {
+  let w = random_bf16(2 * rows * cols, 31u32, 0.1);
+  let x = random_f32(cols, 32u32, 1.0);
+  let mut out = transfer(Tensor<f32>([rows]), Memory::HBM);
+  nn_swiglu(&mut out, &w, &x, rows, cols);
+  let hw = transfer(&w, Memory::CPU_DRAM);
+  let hx = transfer(&x, Memory::CPU_DRAM);
+  let mut want = Tensor<f64>([rows]);
+  for r in 0..rows {
+    let g = dot(&hw, r * cols, &hx, cols);
+    let u = dot(&hw, (rows + r) * cols, &hx, cols);
+    want[r] = g / (1.0 + f64::exp(0.0 - g)) * u;
+  }
+  let ho = transfer(&out, Memory::CPU_DRAM);
+  report("nn_swiglu 200 x 896", &ho, &want, rows);
+  return;
+}
+
+fn check_rms_norm(n : i32) -> void {
+  let x = random_f32(n, 41u32, 3.0);
+  let w = random_bf16(n, 42u32, 2.0);
+  let mut y = transfer(Tensor<f32>([n]), Memory::HBM);
+  nn_rms_norm(&mut y, &x, &w, n, 0.000001);
+  let hx = transfer(&x, Memory::CPU_DRAM);
+  let hw = transfer(&w, Memory::CPU_DRAM);
+  let mut ss : f64 = 0.0;
+  for i in 0..n {
+    ss = ss + f64::from(hx[i]) * f64::from(hx[i]);
+  }
+  let inv = 1.0 / f64::sqrt(ss / f64::from(n) + 0.000001);
+  let mut want = Tensor<f64>([n]);
+  for i in 0..n {
+    want[i] = f64::from(hx[i]) * inv * f64::from(hw[i] as f32);
+  }
+  let hy = transfer(&y, Memory::CPU_DRAM);
+  if n == 896 {
+    report("nn_rms_norm 896", &hy, &want, n);
+  } else {
+    report("nn_rms_norm 3584", &hy, &want, n);
+  }
+  return;
+}
+
+fn check_rope(q_heads : i32, kv_heads : i32, head_dim : i32, pos : i32, max_seq : i32) -> void {
+  let half = head_dim / 2;
+  let mut hcos = Tensor<f32>([max_seq, half]);
+  let mut hsin = Tensor<f32>([max_seq, half]);
+  for p in 0..max_seq {
+    for i in 0..half {
+      let angle = f64::from(p) / f64::powf(1000000.0, f64::from(2 * i) / f64::from(head_dim));
+      hcos[p][i] = f64::cos(angle) as f32;
+      hsin[p][i] = f64::sin(angle) as f32;
+    }
+  }
+  let cos = transfer(hcos, Memory::HBM);
+  let sin = transfer(hsin, Memory::HBM);
+  let hq = random_heads(q_heads, head_dim, 51u32, 1.0);
+  let hk = random_heads(kv_heads, head_dim, 52u32, 1.0);
+  let hv = random_heads(kv_heads, head_dim, 53u32, 1.0);
+  let q = transfer(random_heads(q_heads, head_dim, 51u32, 1.0), Memory::HBM);
+  let k = transfer(random_heads(kv_heads, head_dim, 52u32, 1.0), Memory::HBM);
+  let v = transfer(random_heads(kv_heads, head_dim, 53u32, 1.0), Memory::HBM);
+  let mut q_out = transfer(Tensor<f32>([q_heads, head_dim]), Memory::HBM);
+  let mut k_cache = transfer(random_cache(max_seq, kv_heads, head_dim, 54u32, 1.0), Memory::HBM);
+  let mut v_cache = transfer(random_cache(max_seq, kv_heads, head_dim, 55u32, 1.0), Memory::HBM);
+  nn_rope_and_store(&mut q_out, &mut k_cache, &mut v_cache, &q, &k, &v, &cos, &sin, pos, q_heads, kv_heads, head_dim);
+  let hc = transfer(&cos, Memory::CPU_DRAM);
+  let hs = transfer(&sin, Memory::CPU_DRAM);
+  let hqo = transfer(&q_out, Memory::CPU_DRAM);
+  let hkc = transfer(&k_cache, Memory::CPU_DRAM);
+  let hvc = transfer(&v_cache, Memory::CPU_DRAM);
+  let nq = q_heads * head_dim;
+  let mut got_q = Tensor<f32>([nq]);
+  let mut want_q = Tensor<f64>([nq]);
+  for h in 0..q_heads {
+    for i in 0..half {
+      let c = f64::from(hc[pos][i]);
+      let s = f64::from(hs[pos][i]);
+      let a = f64::from(hq[h][i]);
+      let b = f64::from(hq[h][i + half]);
+      want_q[h * head_dim + i] = a * c - b * s;
+      want_q[h * head_dim + i + half] = b * c + a * s;
+      got_q[h * head_dim + i] = hqo[h][i];
+      got_q[h * head_dim + i + half] = hqo[h][i + half];
+    }
+  }
+  // Row `pos` of the cache gets the new K and V, and every other row keeps its values.
+  let n = max_seq * kv_heads * head_dim;
+  let mut got_k = Tensor<f32>([n]);
+  let mut got_v = Tensor<f32>([n]);
+  let mut want_k = Tensor<f64>([n]);
+  let mut want_v = Tensor<f64>([n]);
+  for p in 0..max_seq {
+    for g in 0..kv_heads {
+      for i in 0..head_dim {
+        let at = (p * kv_heads + g) * head_dim + i;
+        got_k[at] = hkc[p][g][i];
+        got_v[at] = hvc[p][g][i];
+        want_k[at] = f64::from(random(54u32, at, 1.0));
+        want_v[at] = f64::from(random(55u32, at, 1.0));
+      }
+    }
+  }
+  for g in 0..kv_heads {
+    for i in 0..half {
+      let c = f64::from(hc[pos][i]);
+      let s = f64::from(hs[pos][i]);
+      let a = f64::from(hk[g][i]);
+      let b = f64::from(hk[g][i + half]);
+      let at = (pos * kv_heads + g) * head_dim + i;
+      want_k[at] = a * c - b * s;
+      want_k[at + half] = b * c + a * s;
+      want_v[at] = f64::from(hv[g][i]);
+      want_v[at + half] = f64::from(hv[g][i + half]);
+    }
+  }
+  if head_dim == 64 {
+    report("nn_rope_and_store q, head_dim 64", &got_q, &want_q, nq);
+    report("nn_rope_and_store k cache, head_dim 64", &got_k, &want_k, n);
+    report("nn_rope_and_store v cache, head_dim 64", &got_v, &want_v, n);
+  } else {
+    report("nn_rope_and_store q, head_dim 128", &got_q, &want_q, nq);
+    report("nn_rope_and_store k cache, head_dim 128", &got_k, &want_k, n);
+    report("nn_rope_and_store v cache, head_dim 128", &got_v, &want_v, n);
+  }
+  return;
+}
+
+fn check_attention(name : *const i8, q_heads : i32, kv_heads : i32, head_dim : i32, pos : i32, max_seq : i32) -> void {
+  let group = q_heads / kv_heads;
+  let hq = random_heads(q_heads, head_dim, 61u32, 2.0);
+  let hk = random_cache(max_seq, kv_heads, head_dim, 62u32, 2.0);
+  let hv = random_cache(max_seq, kv_heads, head_dim, 63u32, 1.0);
+  let q = transfer(random_heads(q_heads, head_dim, 61u32, 2.0), Memory::HBM);
+  let k_cache = transfer(random_cache(max_seq, kv_heads, head_dim, 62u32, 2.0), Memory::HBM);
+  let v_cache = transfer(random_cache(max_seq, kv_heads, head_dim, 63u32, 1.0), Memory::HBM);
+  let mut part = transfer(nn_attention_scratch(max_seq, q_heads, kv_heads, head_dim), Memory::HBM);
+  let mut out = transfer(Tensor<f32>([q_heads, head_dim]), Memory::HBM);
+  nn_attention(&mut out, &mut part, &q, &k_cache, &v_cache, pos, q_heads, kv_heads, head_dim);
+  let ho = transfer(&out, Memory::CPU_DRAM);
+  let mut got = Tensor<f32>([q_heads * head_dim]);
+  let mut want = Tensor<f64>([q_heads * head_dim]);
+  let mut p = Tensor<f64>([max_seq]);
+  let scale = 1.0 / f64::sqrt(f64::from(head_dim));
+  for h in 0..q_heads {
+    let g = h / group;
+    let mut m : f64 = -1.0e300;
+    for t in 0..pos + 1 {
+      let mut s : f64 = 0.0;
+      for d in 0..head_dim {
+        s = s + f64::from(hq[h][d]) * f64::from(hk[t][g][d]);
+      }
+      p[t] = s * scale;
+      m = f64::max(m, p[t]);
+    }
+    let mut total : f64 = 0.0;
+    for t in 0..pos + 1 {
+      p[t] = f64::exp(p[t] - m);
+      total = total + p[t];
+    }
+    for d in 0..head_dim {
+      let mut acc : f64 = 0.0;
+      for t in 0..pos + 1 {
+        acc = acc + p[t] * f64::from(hv[t][g][d]);
+      }
+      want[h * head_dim + d] = acc / total;
+      got[h * head_dim + d] = ho[h][d];
+    }
+  }
+  report(name, &got, &want, q_heads * head_dim);
+  return;
+}
+
+fn check_argmax(n : i32) -> void {
+  let mut h = Tensor<f32>([n]);
+  for i in 0..n {
+    h[i] = random(71u32, i, 1.0);
+  }
+  // Two equal largest values: the lower index must win.
+  h[n - 7] = 3.0;
+  h[n / 3] = 3.0;
+  let logits = transfer(h, Memory::HBM);
+  let mut out = transfer(Tensor<i32>([1]), Memory::HBM);
+  nn_argmax(&mut out, &logits, n);
+  let ho = transfer(&out, Memory::CPU_DRAM);
+  println!("nn_argmax of {}: {}", n, ho[0]);
+  return;
+}
+
+fn check_embed(rows : i32, dim : i32, token : i32) -> void {
+  let table = random_bf16(rows * dim, 81u32, 1.0);
+  let mut ht = Tensor<i32>([1]);
+  ht[0] = token;
+  let tok = transfer(ht, Memory::HBM);
+  let mut x = transfer(Tensor<f32>([dim]), Memory::HBM);
+  nn_embed(&mut x, &table, &tok, dim);
+  let htab = transfer(&table, Memory::CPU_DRAM);
+  let mut want = Tensor<f64>([dim]);
+  for i in 0..dim {
+    want[i] = f64::from(htab[token * dim + i] as f32);
+  }
+  let hx = transfer(&x, Memory::CPU_DRAM);
+  report("nn_embed row 7 of 896", &hx, &want, dim);
+  return;
+}
+
+fn main() -> i32 {
+  check_matvec(300, 896);
+  check_matvec(64, 4864);
+  check_qkv(14, 2, 64, 896);
+  check_matvec_heads_add(200, 14, 64);
+  check_swiglu(200, 896);
+  check_rms_norm(896);
+  check_rms_norm(3584);
+  check_rope(14, 2, 64, 5, 16);
+  check_rope(28, 4, 128, 300, 400);
+  check_attention("nn_attention 14 heads of 64, 38 positions", 14, 2, 64, 37, 64);
+  check_attention("nn_attention 28 heads of 128, 301 positions", 28, 4, 128, 300, 400);
+  check_attention("nn_attention 14 heads of 64, 1 positions", 14, 2, 64, 0, 8);
+  check_attention("nn_attention 32 heads of 64, 2 heads of K and V, 200 positions", 32, 2, 64, 199, 256);
+  check_attention("nn_attention 32 heads of 128, 4 heads of K and V, 1001 positions", 32, 4, 128, 1000, 1024);
+  check_attention("nn_attention 28 heads of 128, 4 heads of K and V, 700 positions", 28, 4, 128, 699, 768);
+  check_attention("nn_attention 32 heads of 64, 2 heads of K and V, 656 positions", 32, 2, 64, 655, 704);
+  check_argmax(151936);
+  check_embed(10, 896, 7);
+  return 0;
+}

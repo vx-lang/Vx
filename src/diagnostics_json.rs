@@ -34,6 +34,7 @@ use crate::report::{ResidentSet, SpawnRegionTraffic, StagingRoute};
 ///       "level": "error" | "warning",
 ///       "code": "E6009",                // null for an uncoded diagnostic
 ///       "message": "...",
+///       "file": "lib.vx",               // the file the diagnostic is about; omitted when unknown
 ///       "line": 12, "column": 5,        // omitted when the diagnostic carries no span
 ///       "capacity": {                   // present on E6009 / E6010 / W1028
 ///         "space": "SMEM",
@@ -54,7 +55,7 @@ use crate::report::{ResidentSet, SpawnRegionTraffic, StagingRoute};
 ///       "bytes": 16384,                 // what moved; null for a dynamic shape
 ///       "derived_cost": 128,            // bandwidth roofline, null when not computable
 ///       "derived_unit": "cyc",          // "cyc" | "ps"; null iff derived_cost is null
-///       "cost_source": "containment",   // "link_rate" | "containment"; null iff no cost
+///       "cost_source": "containment",   // "link_rate" | "containment" | "shared"; null iff no cost
 ///       "composition": "sum",           // "sum" | "bottleneck"; null for a link-rate hop
 ///       "traffic": [                    // bytes DERIVED from code; null when uncountable
 ///         {"space": "GPU_HBM", "read_bytes": 16, "written_bytes": 0},
@@ -68,6 +69,7 @@ use crate::report::{ResidentSet, SpawnRegionTraffic, StagingRoute};
 ///   "resident_sets": [                  // working set per space, emitted even when admitted
 ///     {
 ///       "space": "HBM",
+///       "device": "GPU[1]",             // only for one device's copy of a `count:` topology's memory
 ///       "total_bytes": 139653545984,
 ///       "capacity_bytes": 206158430208,
 ///       "utilization": 0.6774,          // total / capacity, rounded to 4 dp
@@ -175,6 +177,9 @@ fn diagnostic_json(d: &Diagnostic) -> String {
         format!("\"code\": {}", opt_str(code.as_deref())),
         format!("\"message\": \"{}\"", esc(&d.message)),
     ];
+    if let Some(file) = &d.file {
+        fields.push(format!("\"file\": \"{}\"", esc(file)));
+    }
     if let Some(sp) = &d.source_span {
         fields.push(format!("\"line\": {}", sp.line));
         fields.push(format!("\"column\": {}", sp.column));
@@ -303,9 +308,15 @@ fn resident_set_json(r: &ResidentSet) -> String {
     } else {
         (r.total_bytes as f64 / r.capacity_bytes as f64 * 10_000.0).round() / 10_000.0
     };
+    // The device appears only for a copy of the memory of one device, so the other entries keep
+    // the keys they always had.
+    let device = match &r.device {
+        Some(d) => format!(", \"device\": \"{}\"", esc(d)),
+        None => String::new(),
+    };
     format!(
-        "{{\"space\": \"{}\", \"total_bytes\": {}, \"capacity_bytes\": {}, \"utilization\": {}, \
-         \"tiles\": {}, \"overcommit\": {}}}",
+        "{{\"space\": \"{}\"{device}, \"total_bytes\": {}, \"capacity_bytes\": {}, \
+         \"utilization\": {}, \"tiles\": {}, \"overcommit\": {}}}",
         esc(&r.space.name()),
         r.total_bytes,
         r.capacity_bytes,

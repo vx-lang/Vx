@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stack coloring enabled by lifetime markers</title>
+<meta name="author" content="Aditya Kumar">
+<meta name="description" content="LLVM gives two local arrays one stack slot when lifetime markers show that they are not in use at the same time. C++ and Rust end each lifetime at the end of a scope. Vx ends it at the last use of a tensor, so the same function needs 4 KB of stack in Vx and 8 KB in C++ and Rust.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="Stack coloring enabled by lifetime markers">
+<meta property="og:description" content="The pass that merges stack slots is the same in clang, rustc and vxc. The difference is where each lifetime ends: at the end of a scope, or after the last use.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-11-02T18:00:00Z">
+<meta property="og:url" content="https://vxlang.org/blog/two-tensors-one-stack-slot.html">
+<meta property="og:image" content="https://vxlang.org/cards/blog-two-tensors-one-stack-slot.png">
+<meta property="og:image:alt" content="Stack coloring enabled by lifetime markers.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://vxlang.org/cards/blog-two-tensors-one-stack-slot.png">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>Stack coloring enabled by lifetime markers</h1>
+<p class="post-meta">Aditya Kumar &middot; 2 November 2026 &middot; updated 7 November 2026, for
+structs and enums</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> — A function needs one stack slot for each local
+array. Two arrays can share a slot only when the compiler knows that they are not in use at the same
+time. LLVM merges two slots when lifetime markers show that their lifetimes do not overlap. Clang and
+rustc end each lifetime at the end of a scope, so two arrays in one scope never share a slot. Clang
+also emits no markers at <code>-O0</code>, or for a variable when a jump enters its scope after its
+declaration. Vx frees a tensor after its last use. Since
+<a href="https://github.com/vx-lang/Vx/pull/2507">#2507</a>, the lifetime of each tensor ends there
+too. For the same function, C++ and Rust use 8 KB of stack, and Vx uses 4 KB. On an H100, the
+stack of each GPU thread is in HBM. Since <a href="https://github.com/vx-lang/Vx/pull/2587">#2587</a>, a Vx
+kernel gives two tensors one slot there too.</blockquote>
+
+<p class="lede">A task in Vx runs on a stack of fixed size, so each frame on that stack must be
+small. vxc puts a small tensor on the stack. Until #2507, it gave each tensor its own slot for the
+whole call. This post shows how Vx now gives two tensors one slot, in a function where C++ and Rust
+use two slots.</p>
+
+<h2 id="what-a-lifetime-marker-tells-llvm"><a href="#what-a-lifetime-marker-tells-llvm">What a lifetime marker tells LLVM</a></h2>
+
+<p>A front end such as clang, rustc or vxc puts each local array in an <code>alloca</code>: a stack
+slot of the function. Two LLVM intrinsics mark when a slot is in use:</p>
+
+<pre><code><span class="f">call void @llvm.lifetime.start.p0</span>(ptr %first)   <span class="c">; the slot is in use from here</span>
+<span class="f">call void @llvm.lifetime.end.p0</span>(ptr %first)     <span class="c">; the slot is free from here</span></code></pre>
+
+<p>A pass named <a href="https://github.com/llvm/llvm-project/blob/main/llvm/lib/CodeGen/StackColoring.cpp">StackColoring</a>
+reads these markers. Its own description says that it &ldquo;attempts to merge disjoint stack slots
+and reduce the used stack space&rdquo;. When the marked lifetimes of two slots do not overlap,
+StackColoring gives them one address.</p>
+
+<p>StackColoring runs on machine instructions, after instruction selection. At that point there are
+no variables and no scopes, only stack slots. So the pass learns from the markers when a slot becomes
+free. How much stack the pass saves depends on what the front end knows about the values.</p>
+
+<p>This pass is not shrink wrapping. LLVM's
+<a href="https://github.com/llvm/llvm-project/blob/main/llvm/lib/CodeGen/ShrinkWrap.cpp">ShrinkWrap</a>
+pass &ldquo;looks for safe point where the prologue and epilogue can be inserted&rdquo;. It moves the
+code that creates the frame and saves registers. It does not merge stack slots.</p>
+
+<h2 id="one-program-in-three-languages"><a href="#one-program-in-three-languages">One program in three languages</a></h2>
+
+<p>Each program below fills an array of 500 integers, reads it backwards, and then does the same
+with a second array. The backward read keeps the arrays in memory. In a version that read forward,
+LLVM at <code>-O2</code> kept no tensor in memory, and the function had no frame to compare. Here is
+the Vx program:</p>
+
+<pre><code><span class="k">import</span> core::convert;
+
+<span class="k">fn</span> <span class="f">one_after_the_other</span>(n : <span class="t">i64</span>) -&gt; <span class="t">i64</span> {
+  <span class="k">let mut</span> first : <span class="t">Tensor</span>&lt;<span class="t">i64</span>, [<span class="n">500</span>]&gt; = <span class="t">Tensor</span>&lt;<span class="t">i64</span>, [<span class="n">500</span>]&gt;::<span class="f">fill</span>(<span class="n">0i64</span>);
+  <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">500</span> {
+    first[i] = n * <span class="t">i64</span>::<span class="f">from</span>(i) % <span class="n">7</span>;
+  }
+  <span class="k">let mut</span> sum : <span class="t">i64</span> = <span class="n">0</span>;
+  <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">500</span> {
+    sum = sum * <span class="n">3</span> + first[<span class="n">499</span> - i];
+  }
+  <span class="k">let mut</span> second : <span class="t">Tensor</span>&lt;<span class="t">i64</span>, [<span class="n">500</span>]&gt; = <span class="t">Tensor</span>&lt;<span class="t">i64</span>, [<span class="n">500</span>]&gt;::<span class="f">fill</span>(<span class="n">0i64</span>);
+  <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">500</span> {
+    second[i] = sum * <span class="t">i64</span>::<span class="f">from</span>(i) % <span class="n">11</span>;
+  }
+  <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">500</span> {
+    sum = sum * <span class="n">5</span> + second[<span class="n">499</span> - i];
+  }
+  <span class="k">return</span> sum;
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="f">println!</span>(<span class="n">"sum {}"</span>, <span class="f">one_after_the_other</span>(<span class="n">1</span>));
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>The C++ program does the same work. A signed overflow is undefined behavior in C++, so this
+program wraps through <code>uint64_t</code>, as the Vx and Rust programs wrap. It needs C++20, which
+defines the conversion back to <code>int64_t</code>.</p>
+
+<pre><code><span class="k">#include</span> &lt;cstdint&gt;
+<span class="k">#include</span> &lt;cstdio&gt;
+
+<span class="c">// Wrapping arithmetic, as in Vx and Rust. Signed overflow is undefined in C++.</span>
+<span class="t">int64_t</span> <span class="f">mul</span>(<span class="t">int64_t</span> a, <span class="t">int64_t</span> b) { <span class="k">return</span> <span class="t">int64_t</span>(<span class="t">uint64_t</span>(a) * <span class="t">uint64_t</span>(b)); }
+<span class="t">int64_t</span> <span class="f">add</span>(<span class="t">int64_t</span> a, <span class="t">int64_t</span> b) { <span class="k">return</span> <span class="t">int64_t</span>(<span class="t">uint64_t</span>(a) + <span class="t">uint64_t</span>(b)); }
+
+<span class="t">int64_t</span> <span class="f">one_after_the_other</span>(<span class="t">int64_t</span> n) {
+  <span class="t">int64_t</span> first[<span class="n">500</span>];
+  <span class="k">for</span> (<span class="t">int64_t</span> i = <span class="n">0</span>; i &lt; <span class="n">500</span>; i++)
+    first[i] = <span class="f">mul</span>(n, i) % <span class="n">7</span>;
+  <span class="t">int64_t</span> sum = <span class="n">0</span>;
+  <span class="k">for</span> (<span class="t">int64_t</span> i = <span class="n">0</span>; i &lt; <span class="n">500</span>; i++)
+    sum = <span class="f">add</span>(<span class="f">mul</span>(sum, <span class="n">3</span>), first[<span class="n">499</span> - i]);
+  <span class="t">int64_t</span> second[<span class="n">500</span>];
+  <span class="k">for</span> (<span class="t">int64_t</span> i = <span class="n">0</span>; i &lt; <span class="n">500</span>; i++)
+    second[i] = <span class="f">mul</span>(sum, i) % <span class="n">11</span>;
+  <span class="k">for</span> (<span class="t">int64_t</span> i = <span class="n">0</span>; i &lt; <span class="n">500</span>; i++)
+    sum = <span class="f">add</span>(<span class="f">mul</span>(sum, <span class="n">5</span>), second[<span class="n">499</span> - i]);
+  <span class="k">return</span> sum;
+}
+
+<span class="t">int</span> <span class="f">main</span>() {
+  std::<span class="f">printf</span>(<span class="n">"sum %lld\n"</span>, (<span class="t">long long</span>)<span class="f">one_after_the_other</span>(<span class="n">1</span>));
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>The Rust program uses <code>wrapping_mul</code> and <code>wrapping_add</code> for the same
+reason:</p>
+
+<pre><code><span class="k">#[no_mangle]</span>
+<span class="k">pub fn</span> <span class="f">one_after_the_other</span>(n: <span class="t">i64</span>) -&gt; <span class="t">i64</span> {
+    <span class="k">let mut</span> first = [<span class="n">0i64</span>; <span class="n">500</span>];
+    <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">500</span> {
+        first[i] = n.<span class="f">wrapping_mul</span>(i <span class="k">as</span> <span class="t">i64</span>) % <span class="n">7</span>;
+    }
+    <span class="k">let mut</span> sum: <span class="t">i64</span> = <span class="n">0</span>;
+    <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">500</span> {
+        sum = sum.<span class="f">wrapping_mul</span>(<span class="n">3</span>).<span class="f">wrapping_add</span>(first[<span class="n">499</span> - i]);
+    }
+    <span class="k">let mut</span> second = [<span class="n">0i64</span>; <span class="n">500</span>];
+    <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">500</span> {
+        second[i] = sum.<span class="f">wrapping_mul</span>(i <span class="k">as</span> <span class="t">i64</span>) % <span class="n">11</span>;
+    }
+    <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">500</span> {
+        sum = sum.<span class="f">wrapping_mul</span>(<span class="n">5</span>).<span class="f">wrapping_add</span>(second[<span class="n">499</span> - i]);
+    }
+    sum
+}
+
+<span class="k">fn</span> <span class="f">main</span>() {
+    <span class="f">println!</span>(<span class="n">"sum {}"</span>, <span class="f">one_after_the_other</span>(<span class="n">1</span>));
+}</code></pre>
+
+<p>The three programs are equivalent. Each one prints <code>sum -3181038691461447954</code>.</p>
+
+<p>The table gives the frame size of <code>one_after_the_other</code> in each program: the bytes that
+the <code>sub sp, sp, ...</code> instructions at its start subtract. In the rows with an inner scope,
+braces enclose each array and its two loops.</p>
+
+<div class="table-scroll">
+<table>
+<thead><tr><th>Program</th><th>Compiler</th><th>Lowest level</th><th><code>-O2</code></th></tr></thead>
+<tbody>
+<tr><td>C++: both arrays in one scope</td><td>clang 22.1.4</td><td>8064 bytes</td><td>8016 bytes</td></tr>
+<tr><td>C++: each array in its own scope</td><td>clang 22.1.4</td><td>8064 bytes</td><td>4016 bytes</td></tr>
+<tr><td>Rust: both arrays in one scope</td><td>rustc 1.95.0</td><td>8208 bytes</td><td>8000 bytes</td></tr>
+<tr><td>Rust: each array in its own scope</td><td>rustc 1.95.0</td><td>8224 bytes</td><td>4000 bytes</td></tr>
+<tr><td>Rust: <code>drop(first)</code> before <code>second</code></td><td>rustc 1.95.0</td><td>12224 bytes</td><td>8000 bytes</td></tr>
+<tr><td>Vx: before #2507</td><td>vxc at e66345d3</td><td>8016 bytes</td><td>8000 bytes</td></tr>
+<tr><td>Vx: with #2507</td><td>vxc at e299ee96</td><td>4016 bytes</td><td>4000 bytes</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>The lowest level is <code>-O0</code> for clang and vxc, and <code>-C opt-level=0</code> for
+rustc. I measured on an arm64 Mac with macOS 27. For Rust, I measured the function in a library
+object, because the optimized executable keeps no separate copy of it. Each array or tensor holds
+4000 bytes. So one slot needs about 4 KB, and two slots need about 8 KB.</p>
+
+<h2 id="c-plus-plus-a-lifetime-ends-at-the-end-of-a-scope"><a href="#c-plus-plus-a-lifetime-ends-at-the-end-of-a-scope">C++: a lifetime ends at the end of a scope</a></h2>
+
+<p>Clang starts the lifetime of a local variable at its declaration, and ends it at the end of its
+scope. Here are the markers that clang emits at <code>-O2</code> for the C++ function:</p>
+
+<pre><code><span class="f">call void @llvm.lifetime.start.p0</span>(ptr nonnull %2)   <span class="c">; first</span>
+<span class="f">call void @llvm.lifetime.start.p0</span>(ptr nonnull %3)   <span class="c">; second</span>
+<span class="f">call void @llvm.lifetime.end.p0</span>(ptr nonnull %3)
+<span class="f">call void @llvm.lifetime.end.p0</span>(ptr nonnull %2)</code></pre>
+
+<p>The function stops using <code>first</code> before it declares <code>second</code>. But both
+arrays are in the scope of the function body. So both lifetimes end at the end of the function, the
+two lifetimes overlap, and StackColoring keeps two slots.</p>
+
+<p>A C++ programmer can fix this by hand: put each array in its own inner scope, with braces.</p>
+
+<pre><code><span class="t">int64_t</span> <span class="f">one_after_the_other</span>(<span class="t">int64_t</span> n) {
+  <span class="t">int64_t</span> sum = <span class="n">0</span>;
+  {
+    <span class="t">int64_t</span> first[<span class="n">500</span>];
+    <span class="k">for</span> (<span class="t">int64_t</span> i = <span class="n">0</span>; i &lt; <span class="n">500</span>; i++)
+      first[i] = <span class="f">mul</span>(n, i) % <span class="n">7</span>;
+    <span class="k">for</span> (<span class="t">int64_t</span> i = <span class="n">0</span>; i &lt; <span class="n">500</span>; i++)
+      sum = <span class="f">add</span>(<span class="f">mul</span>(sum, <span class="n">3</span>), first[<span class="n">499</span> - i]);
+  }
+  {
+    <span class="t">int64_t</span> second[<span class="n">500</span>];
+    <span class="k">for</span> (<span class="t">int64_t</span> i = <span class="n">0</span>; i &lt; <span class="n">500</span>; i++)
+      second[i] = <span class="f">mul</span>(sum, i) % <span class="n">11</span>;
+    <span class="k">for</span> (<span class="t">int64_t</span> i = <span class="n">0</span>; i &lt; <span class="n">500</span>; i++)
+      sum = <span class="f">add</span>(<span class="f">mul</span>(sum, <span class="n">5</span>), second[<span class="n">499</span> - i]);
+  }
+  <span class="k">return</span> sum;
+}</code></pre>
+
+<p>Then the frame size is 4016 bytes at <code>-O2</code>. But the fix depends on the programmer, and
+it does not help at <code>-O0</code>. At that level, clang emits no lifetime markers, and LLVM does
+not run StackColoring. So a debug build always keeps both slots.</p>
+
+<p>Clang also emits no markers for a variable when a jump enters its scope after its declaration. In
+this <code>switch</code>, the jump to <code>case 1</code> enters the scope of <code>a</code> after the
+declaration of <code>a</code>:</p>
+
+<pre><code><span class="t">int64_t</span> <span class="f">by_kind</span>(<span class="t">int</span> kind, <span class="t">int64_t</span> n) {
+  <span class="k">switch</span> (kind) {
+  <span class="k">case</span> <span class="n">0</span>:
+    <span class="t">int64_t</span> a[<span class="n">500</span>];
+    <span class="f">fill</span>(a, n);
+    <span class="k">return</span> <span class="f">total</span>(a);
+  <span class="k">case</span> <span class="n">1</span>:
+    <span class="t">int64_t</span> b[<span class="n">500</span>];
+    <span class="f">fill</span>(b, n);
+    <span class="k">return</span> <span class="f">total</span>(b);
+  }
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>Here <code>fill</code> and <code>total</code> are in another file. At <code>-O2</code>, clang
+marks <code>b</code> but not <code>a</code>, and the frame size is 8016 bytes. With braces around
+each case, clang marks both arrays, and the frame size is 4016 bytes. A comment in
+<a href="https://github.com/llvm/llvm-project/blob/main/clang/lib/CodeGen/CGDecl.cpp">clang's
+source</a> gives the reason. With a jump into its scope, the lifetime of the variable &ldquo;gets
+broken up into several regions in IR&rdquo;, and that &ldquo;requires more work to handle
+correctly&rdquo;. So clang omits the markers.</p>
+
+<h2 id="rust-the-same-rule"><a href="#rust-the-same-rule">Rust: the same rule</a></h2>
+
+<p>rustc also ends the lifetime of a local variable at the end of its scope. In its markers for the
+Rust program, both starts come before both ends, as in the markers of clang. The frame size is 8000
+bytes at <code>-C opt-level=2</code>, and the second array is at <code>sp + 4000</code>, in its own
+slot.</p>
+
+<p>The fix is the same as in C++. With an inner scope around each array, the frame size is 4000
+bytes at <code>-C opt-level=2</code>. It stays at 8224 bytes at <code>-C opt-level=0</code>.</p>
+
+<p>A call to <code>drop(first)</code> before <code>second</code> does not help. An array of
+<code>i64</code> is <code>Copy</code>, so <code>drop</code> gets a copy, and rustc warns: &ldquo;calls
+to <code>std::mem::drop</code> with a value that implements <code>Copy</code> does nothing&rdquo;. At
+<code>-C opt-level=0</code>, the frame size grows to 12224 bytes, probably for the copy that the call
+gets.</p>
+
+<h2 id="vx-a-lifetime-ends-after-the-last-use"><a href="#vx-a-lifetime-ends-after-the-last-use">Vx: a lifetime ends after the last use</a></h2>
+
+<p>Vx frees a tensor after its last use, as the post
+<a href="/blog/how-vx-frees-memory.html">How Vx frees memory</a> describes. The type checker writes
+these drops. The compiler prints them when you set <code>VX_PRINT_DROPS=1</code>:</p>
+
+<pre><code>drop in one_after_the_other: second, after the statement on line 16
+drop in one_after_the_other: first, after the statement on line 9</code></pre>
+
+<p>Line 9 is the loop that reads <code>first</code> for the last time. Line 16 is the loop that reads
+<code>second</code> for the last time. Since #2507, each drop is also the end of a lifetime:</p>
+
+<pre><code><span class="f">llvm.intr.lifetime.start</span> %13 : !llvm.ptr   <span class="c">// first</span>
+<span class="f">llvm.intr.lifetime.end</span> %13 : !llvm.ptr     <span class="c">// first, after the loop on line 9</span>
+<span class="f">llvm.intr.lifetime.start</span> %11 : !llvm.ptr   <span class="c">// second</span>
+<span class="f">llvm.intr.lifetime.end</span> %11 : !llvm.ptr     <span class="c">// second, after the loop on line 16</span></code></pre>
+
+<p>The lifetime of <code>first</code> ends before the lifetime of <code>second</code> starts. So
+StackColoring gives the two tensors one slot, and the frame size is 4000 bytes at <code>-O2</code>.
+The program needs no inner scope, and vxc gives the two tensors one slot at <code>-O0</code> too.
+With the compiler from before #2507, the program printed the same sum, and the frame size was 8000
+bytes at <code>-O2</code>.</p>
+
+<h2 id="how-pr-2507-does-it"><a href="#how-pr-2507-does-it">How #2507 does it</a></h2>
+
+<p>The change is about 80 lines of C++ in two MLIR passes:</p>
+
+<ol>
+<li><strong>The markers.</strong> The pass <code>vx-promote-buffers-to-stack</code> moves a small
+tensor from the heap to the stack. It adds a lifetime start for each tensor where the heap
+allocation was. Each drop, which freed the heap buffer before, becomes a lifetime end.</li>
+<li><strong>The alloca.</strong> At that point, the stack slot is a memref and not an
+<code>llvm.alloca</code> yet. So the marker names the pointer of the buffer. A second pass,
+<code>vx-lifetime-markers-on-allocas</code>, runs after the lowering to the LLVM dialect. It traces
+the pointer through the memref descriptor to the alloca, because LLVM accepts a marker only on an
+alloca.</li>
+<li><strong>The safe default.</strong> When the second pass cannot trace a pointer, it erases the
+marker. The tensor then keeps its slot for the whole call, as before.</li>
+</ol>
+
+<p>When a loop body creates a tensor, the lifetime of that tensor starts and ends in each iteration.
+The test <code>two_tensors_used_one_after_the_other_share_a_stack_slot.vx</code> checks the markers
+in the IR, the frame size in the machine code, and the result.</p>
+
+<h2 id="on-an-h100-the-stack-is-in-hbm"><a href="#on-an-h100-the-stack-is-in-hbm">On an H100, the stack is in HBM</a></h2>
+
+<p>A GPU thread has a stack too. NVIDIA calls it local memory, and its guide says that &ldquo;local
+memory is off-chip&rdquo;. So the stack is in the device memory of the GPU, with the tensors of the
+program. On an H100, device memory is HBM (high-bandwidth memory). The driver makes the stack of
+each thread larger for a launch of a kernel that needs more. It does not make the stack smaller after
+the launch.</p>
+
+<p>Before <a href="https://github.com/vx-lang/Vx/pull/2587">#2587</a>, vxc gave a stack slot only
+to a tensor that a kernel makes before its first loop or <code>if</code>. That slot lived until the
+kernel returned. vxc took each other tensor from device <code>malloc</code>: a <code>malloc</code>
+that a kernel calls on the GPU.
+#2587 gives the tensors of a kernel stack slots and lifetime markers, as #2507 does for a
+function.</p>
+
+<p>Here is the program as a kernel. Each block has 256 lanes, and each lane makes its own two
+tensors. A lane in Vx is one thread of a block, which CUDA calls a thread. vxc does not accept a
+call such as <code>i64::from</code> in a lane loop, so the loop index cannot become an
+<code>i64</code>. So each tensor holds 1000 <code>i32</code> values: 4000 bytes, as in the CPU
+program.</p>
+
+<pre><code><span class="k">pub fn</span> <span class="f">in_each_lane</span>(out : &amp;<span class="k">mut</span> <span class="t">Tensor</span>&lt;<span class="t">i32</span>, [?], Memory::HBM&gt;, blocks : <span class="t">i32</span>) -&gt; <span class="t">void</span> {
+  <span class="k">spawn on</span>(Topology::Device) {
+    <span class="k">for</span> b <span class="k">in</span> <span class="n">0</span>..blocks <span class="k">across</span> blocks {
+      <span class="k">for</span> l <span class="k">in</span> <span class="n">0</span>..<span class="n">256</span> <span class="k">across</span> lanes {
+        <span class="k">let</span> t = b * <span class="n">256</span> + l;
+        <span class="k">let mut</span> first : <span class="t">Tensor</span>&lt;<span class="t">i32</span>, [<span class="n">1000</span>]&gt; = <span class="t">Tensor</span>&lt;<span class="t">i32</span>, [<span class="n">1000</span>]&gt;::<span class="f">fill</span>(<span class="n">0</span>);
+        <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">1000</span> {
+          first[i] = t * i % <span class="n">7</span>;
+        }
+        <span class="k">let mut</span> sum : <span class="t">i32</span> = <span class="n">0</span>;
+        <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">1000</span> {
+          sum = sum * <span class="n">3</span> + first[<span class="n">999</span> - i];
+        }
+        <span class="k">let mut</span> second : <span class="t">Tensor</span>&lt;<span class="t">i32</span>, [<span class="n">1000</span>]&gt; = <span class="t">Tensor</span>&lt;<span class="t">i32</span>, [<span class="n">1000</span>]&gt;::<span class="f">fill</span>(<span class="n">0</span>);
+        <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">1000</span> {
+          second[i] = sum * i % <span class="n">11</span>;
+        }
+        <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">1000</span> {
+          sum = sum * <span class="n">5</span> + second[<span class="n">999</span> - i];
+        }
+        out[t] = sum;
+      }
+    }
+  }
+  <span class="k">return</span>;
+}</code></pre>
+
+<p>The CUDA kernel does the same work:</p>
+
+<pre><code><span class="k">#include</span> &lt;cstdint&gt;
+
+<span class="c">// Wrapping arithmetic, as in Vx. Signed overflow is undefined in C++.</span>
+<span class="k">__device__</span> <span class="t">int32_t</span> <span class="f">mul</span>(<span class="t">int32_t</span> a, <span class="t">int32_t</span> b) { <span class="k">return</span> <span class="t">int32_t</span>(<span class="t">uint32_t</span>(a) * <span class="t">uint32_t</span>(b)); }
+<span class="k">__device__</span> <span class="t">int32_t</span> <span class="f">add</span>(<span class="t">int32_t</span> a, <span class="t">int32_t</span> b) { <span class="k">return</span> <span class="t">int32_t</span>(<span class="t">uint32_t</span>(a) + <span class="t">uint32_t</span>(b)); }
+
+<span class="c">// The host launches it with blocks of 256 threads: in_each_lane&lt;&lt;&lt;blocks, 256&gt;&gt;&gt;(out).</span>
+<span class="k">__global__</span> <span class="t">void</span> <span class="f">in_each_lane</span>(<span class="t">int32_t</span> *out) {
+  <span class="t">int32_t</span> t = blockIdx.x * <span class="n">256</span> + threadIdx.x;
+  <span class="t">int32_t</span> first[<span class="n">1000</span>] = {};
+  <span class="k">for</span> (<span class="t">int32_t</span> i = <span class="n">0</span>; i &lt; <span class="n">1000</span>; i++)
+    first[i] = <span class="f">mul</span>(t, i) % <span class="n">7</span>;
+  <span class="t">int32_t</span> sum = <span class="n">0</span>;
+  <span class="k">for</span> (<span class="t">int32_t</span> i = <span class="n">0</span>; i &lt; <span class="n">1000</span>; i++)
+    sum = <span class="f">add</span>(<span class="f">mul</span>(sum, <span class="n">3</span>), first[<span class="n">999</span> - i]);
+  <span class="t">int32_t</span> second[<span class="n">1000</span>] = {};
+  <span class="k">for</span> (<span class="t">int32_t</span> i = <span class="n">0</span>; i &lt; <span class="n">1000</span>; i++)
+    second[i] = <span class="f">mul</span>(sum, i) % <span class="n">11</span>;
+  <span class="k">for</span> (<span class="t">int32_t</span> i = <span class="n">0</span>; i &lt; <span class="n">1000</span>; i++)
+    sum = <span class="f">add</span>(<span class="f">mul</span>(sum, <span class="n">5</span>), second[<span class="n">999</span> - i]);
+  out[t] = sum;
+}</code></pre>
+
+<p>The table gives the local memory of each thread. That is the size of the <code>.local</code> array
+that holds the stack of a thread in PTX, the assembly language of NVIDIA GPUs. The PTX is for an
+H100 (<code>sm_90</code>). I compiled each kernel to PTX but did not run it, because I have no
+GPU.</p>
+
+<div class="table-scroll">
+<table>
+<thead><tr><th>Kernel</th><th>Compiler</th><th><code>-O0</code></th><th><code>-O2</code></th></tr></thead>
+<tbody>
+<tr><td>CUDA: both arrays in one scope</td><td>clang 22.1.4</td><td>8032 bytes</td><td>8000 bytes</td></tr>
+<tr><td>CUDA: each array in its own scope</td><td>clang 22.1.4</td><td>8032 bytes</td><td>4000 bytes</td></tr>
+<tr><td>Vx: before #2587</td><td>vxc at 4ce0ffc4</td><td>none: <code>malloc</code> and <code>free</code> for each tensor</td><td>none: <code>malloc</code> and <code>free</code> for each tensor</td></tr>
+<tr><td>Vx: with #2587</td><td>vxc at 05bb8e7d</td><td>4000 bytes</td><td>4000 bytes</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Clang ends each lifetime at the end of a scope in CUDA too. So the two arrays share a slot only
+with an inner scope for each, and only at <code>-O2</code>. vxc compiles the device code at LLVM's
+<code>-O2</code> for each vxc level, so both of its columns are the same. HIP is the version of
+CUDA for AMD GPUs. For an AMD MI300 (<code>gfx942</code>), clang gives the HIP versions of the two
+CUDA kernels 8004 and 4004 bytes of scratch memory at <code>-O2</code>. Scratch memory is the name
+that AMD uses for local memory.</p>
+
+<p>Before #2587, each lane freed <code>first</code> before it allocated <code>second</code>, so a
+lane held 4000 bytes of the heap at a time. NVIDIA's guide says that the heap for device
+<code>malloc</code> holds 8 MB by default. When the heap has too little memory, <code>malloc</code>
+returns null. The Vx runtime does not set a larger heap. So at most about 2000 lanes can hold a
+tensor at the same time. An H100 runs up to 2048 threads on each of its 132 streaming
+multiprocessors (SMs).</p>
+
+<p>With #2587, the two tensors of a lane use the same 4000 bytes of local memory, one after the
+other. The lane calls no <code>malloc</code>. The test
+<code>two_tensors_in_a_gpu_kernel_share_local_memory.vx</code> checks this in the PTX.</p>
+
+<h2 id="what-it-does-not-do-yet"><a href="#what-it-does-not-do-yet">What it does not do yet</a></h2>
+
+<ul>
+<li>Since <a href="https://github.com/vx-lang/Vx/pull/2639">#2639</a>, a struct or an enum gets
+lifetime markers too. Its lifetime ends after its last use, as the lifetime of a tensor does. But Vx
+drops a value whose type implements <code>Drop</code> at the end of its block, as Rust does. The
+drop can have effects, such as releasing a lock. So the lifetime of that value ends at the end of
+its block. A raw pointer keeps no borrow. So in a function that uses raw pointers, a
+struct can keep its slot until the end of its block, or for the whole call.</li>
+<li>A struct that a call returns goes through an extra slot that LLVM makes for the call, and that
+slot has no markers (<a href="https://github.com/vx-lang/Vx/issues/2642">#2642</a>).</li>
+<li>When a function passes a tensor by value to a call, that tensor stays on the heap.</li>
+<li>The older AST code generator keeps each tensor on the heap, so this change does not affect
+it.</li>
+<li>vxc generates device code only for NVIDIA GPUs (<code>nvptx64</code>). So the HIP kernels above
+have no Vx version yet.</li>
+</ul>
+
+<h2 id="the-pass-is-the-same"><a href="#the-pass-is-the-same">The pass is the same</a></h2>
+
+<p>Clang, rustc and vxc all use the same StackColoring pass. The pass keeps a slot reserved until
+the end of its marked lifetime. Clang and rustc end the lifetime of a local variable at the end of
+its scope. vxc ends the lifetime of a tensor at its last use, where its type checker already puts the
+drop. So a function needs fewer stack slots, and the stack of each task stays smaller. On an NVIDIA GPU,
+the same markers make the local memory of each thread smaller. On an H100, that memory is HBM.</p>
+
+<h2 id="sources"><a href="#sources">Sources</a></h2>
+
+<ul>
+<li><a href="https://github.com/vx-lang/Vx/pull/2507">vx-lang/Vx#2507</a>: the change, its test,
+and the checks that each part of it needs</li>
+<li><a href="https://github.com/vx-lang/Vx/pull/2587">vx-lang/Vx#2587</a>: the same change for
+a GPU kernel, and its test</li>
+<li><a href="https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html">CUDA C++ Best
+Practices Guide</a>, section 10.2.4: local memory is off-chip</li>
+<li><a href="https://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__CTX.html">CUDA Driver API,
+<code>cuCtxSetLimit</code></a>: the driver makes the stack of each thread larger for a launch, and
+does not make it smaller after the launch</li>
+<li><a href="https://docs.nvidia.com/cuda/cuda-c-programming-guide/">CUDA C++ Programming Guide
+(legacy)</a>: the default heap of 8 MB for device <code>malloc</code></li>
+<li><a href="https://github.com/llvm/llvm-project/blob/main/llvm/lib/CodeGen/StackColoring.cpp">llvm/lib/CodeGen/StackColoring.cpp</a>:
+the pass that merges stack slots</li>
+<li><a href="https://github.com/llvm/llvm-project/blob/main/llvm/lib/CodeGen/TargetPassConfig.cpp">llvm/lib/CodeGen/TargetPassConfig.cpp</a>:
+LLVM adds StackColoring only when the optimization level is not <code>-O0</code></li>
+<li><a href="https://github.com/llvm/llvm-project/blob/main/llvm/lib/CodeGen/ShrinkWrap.cpp">llvm/lib/CodeGen/ShrinkWrap.cpp</a>:
+the pass that places the prologue and the epilogue</li>
+<li><a href="https://github.com/llvm/llvm-project/blob/main/clang/lib/CodeGen/CGDecl.cpp">clang/lib/CodeGen/CGDecl.cpp</a>:
+the rule that omits markers when a jump enters the scope of a variable</li>
+<li><a href="https://llvm.org/docs/LangRef.html#int-lifestart">LLVM Language Reference: llvm.lifetime.start</a></li>
+<li><a href="/blog/how-vx-frees-memory.html">How Vx frees memory</a>: where Vx drops each value</li>
+</ul>
+
+<p class="post-foot">Vx is Apache 2.0 with the LLVM exception &mdash;
+<a href="/docs/getting-started.html">install it</a> and try the examples.</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
+</footer>
+
+<script src="/blog/copy-code.js" defer></script>
+</body>
+</html>

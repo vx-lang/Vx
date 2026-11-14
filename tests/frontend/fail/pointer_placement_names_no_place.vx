@@ -17,10 +17,10 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s --check-prefix=COUNT
 // CHECK-DAG: E6025
 // CHECK-DAG: `Memory::Nowhere` in field 'absent' of struct 'Holder'
-// CHECK-DAG: `Topology::Nowhere` in function 'as_a_device'
+// CHECK-DAG: `Topology::Nowhere` in parameter '_p' of function 'as_a_device'
 // The parameter and the return type of `in_every_position` are reported separately.
-// CHECK-DAG: `Memory::Nowhere` in function 'in_every_position'
-// CHECK-DAG: `Memory::Nowhere` in function 'in_every_position'
+// CHECK-DAG: `Memory::Nowhere` in parameter 'p' of function 'in_every_position'
+// CHECK-DAG: `Memory::Nowhere` in the return type of function 'in_every_position'
 // CHECK-DAG: `Memory::Nowhere` in variable 'annotated'
 //
 // Five diagnostics, one per bad placement, and none for the good ones.

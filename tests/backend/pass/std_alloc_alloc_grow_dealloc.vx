@@ -1,0 +1,83 @@
+//===- std_alloc_alloc_grow_dealloc.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `alloc`, `grow` and `dealloc` from `std::alloc`, at the alignment `malloc` gives (16) and at a
+// larger one (64). The two take different C functions: `malloc` and `realloc`, or
+// `aligned_alloc` and a copy into a new block. For each, a block is written, grown to ten times
+// its size, and read back: the contents stay, and the address is a multiple of the alignment.
+// `grow` of a null pointer makes a new block, and `dealloc` of a null pointer does nothing.
+import core::ptr;
+import std::alloc;
+
+/// The address in a pointer, which Vx cannot cast to an integer.
+fn address(p : *mut i8) -> i64 {
+  return mlir!( inputs : (%p = p : !llvm.ptr), returns : i64, dialects : ["llvm"]) {
+    %a = llvm.ptrtoint %p : !llvm.ptr to i64
+    macro.yield %a : i64
+  };
+}
+
+/// Whether 8 blocks of 40 bytes each have the alignment. One block could have it by chance.
+fn eight_aligned(align : i64) -> bool {
+  let mut all : bool = true;
+  let mut k : i32 = 0;
+  while k < 8 {
+    let b : *mut i8 = alloc(40, align);
+    if address(b) % align != 0 {
+      all = false;
+    }
+    dealloc(b, align);
+    k = k + 1;
+  }
+  return all;
+}
+
+/// Writes 10 numbers, grows the block, and answers 1 when they stayed and when the blocks have
+/// the alignment.
+fn check(align : i64) -> i32 {
+  let p : *mut i32 = alloc(40, align);
+  let mut i : i64 = 0;
+  while i < 10 {
+    unsafe { p[i] = 7 * (i as i32); }
+    i = i + 1;
+  }
+  let before : *mut i8 = p;
+  let first_aligned = address(before) % align == 0;
+  let q : *mut i32 = grow(before, 40, 400, align);
+  let mut kept : bool = true;
+  let mut j : i64 = 0;
+  while j < 10 {
+    if unsafe { q[j] } != 7 * (j as i32) {
+      kept = false;
+    }
+    j = j + 1;
+  }
+  unsafe { q[99] = 1; }
+  let after : *mut i8 = q;
+  let second_aligned = address(after) % align == 0;
+  dealloc(after, align);
+  if first_aligned && second_aligned && kept && eight_aligned(align) {
+    return 1;
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  print(check(16));
+  print!(" ");
+  print(check(64));
+  print!(" ");
+  let fresh : *mut i64 = grow(null_mut<i8>(), 0, 32, 16);
+  unsafe { fresh[3] = 42; }
+  print(unsafe { fresh[3] });
+  let fresh_i8 : *mut i8 = fresh;
+  dealloc(fresh_i8, 16);
+  dealloc(null_mut<i8>(), 16);
+  return 0;
+}
+
+// EXPECT: 1 1 42

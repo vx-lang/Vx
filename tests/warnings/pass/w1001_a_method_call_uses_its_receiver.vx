@@ -1,0 +1,19 @@
+// W1001: a variable whose only uses are method calls counts as used.
+//
+// A `Vec` used only through `push` and `len` was once reported unused, because the scan that
+// finds unused variables did not look at the receiver of a method call. This pins the fix:
+// `v` is used, and only the variable that is really unused is reported.
+// WARN: Unused variable 'unused'
+// NO-WARN: Unused variable 'v'
+// NO-WARN: Unused variable 'n'
+import std::vec;
+
+fn main() -> i32 {
+  let mut v : Vec<i32> = Vec<i32>::new();
+  v.push(10);
+  v.push(20);
+  let n = v.len();
+  let unused = 1;
+  println!("len={}", n);
+  return 0;
+}

@@ -1,0 +1,74 @@
+//===- reference_into_an_unnamed_value_within_its_statement.vx --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// A value with no name that is dropped at the end of its statement can be borrowed within
+// that statement. A borrowed value with nothing to drop, such as a struct of numbers, keeps
+// its place in the function's memory, so a reference into it can be kept.
+//
+// CHECK-NOT: Error
+// CHECK-LABEL: func.func @main
+import std::vec;
+
+struct Holder {
+  v : Vec<f32>,
+}
+
+impl Holder {
+  fn first(self : &mut Holder) -> &mut f32 {
+    return self.v.as_mut_slice();
+  }
+}
+
+fn make_holder() -> Holder {
+  let mut v = Vec<f32>::with_capacity(8);
+  v.push(1.0);
+  return Holder {
+    v : v
+  };
+}
+
+struct Point {
+  x : f32,
+  y : f32,
+}
+
+fn make_point() -> Point {
+  return Point {
+    x : 1.0,
+    y : 2.0
+  };
+}
+
+fn read_in_the_same_statement() -> f32 {
+  let x = *make_holder().first();
+  return x;
+}
+
+fn length_of_a_new_vec() -> i32 {
+  let n = Vec<f32>::with_capacity(8).len();
+  return n;
+}
+
+fn named_vec_then_slice() -> f32 {
+  let mut v = Vec<f32>::with_capacity(8);
+  v.push(1.0);
+  let s = v.as_mut_slice();
+  *s = 2.5;
+  return *s;
+}
+
+fn borrow_of_a_returned_point() -> f32 {
+  let p = &make_point();
+  return p.x + p.y;
+}
+
+fn main() -> i32 {
+  let total = read_in_the_same_statement() + named_vec_then_slice() + borrow_of_a_returned_point();
+  return (total as i32) + length_of_a_new_vec();
+}

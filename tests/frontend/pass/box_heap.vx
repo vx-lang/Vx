@@ -1,4 +1,4 @@
-// RUN: vxc %s --emit-mlir | FileCheck %s
+// RUN: vxc %s --emit-mlir | FileCheck %s # flat-codegen
 
 import std::box;
 
@@ -8,4 +8,5 @@ fn main() -> i32 {
 }
 
 // CHECK: func.func @"Box::new
-// CHECK: call @malloc
+// CHECK: call @alloc(
+// CHECK: vx.heap_alloc

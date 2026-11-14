@@ -5,8 +5,107 @@
   <link href="https://vxlang.org/blog/feed.xml" rel="self"/>
   <link href="https://vxlang.org/blog/"/>
   <id>https://vxlang.org/blog/</id>
-  <updated>2026-10-09T18:00:00Z</updated>
+  <updated>2026-11-13T18:00:00Z</updated>
   <author><name>Aditya Kumar</name></author>
+
+  <entry>
+    <title>Plain loops at the speed of CUDA</title>
+    <link href="https://vxlang.org/blog/plain-loops-at-the-speed-of-cuda.html"/>
+    <id>https://vxlang.org/blog/plain-loops-at-the-speed-of-cuda.html</id>
+    <updated>2026-11-13T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>In Vx, a GPU kernel is two nested for loops, one across blocks and one across lanes. On an NVIDIA A100, a loop that scales a 4096 by 16384 grid ran in 0.343 ms, and the same loop in CUDA took 0.388 ms. Three kernels from llm.c, written as across loops, came within 5% of llm.c's own CUDA, and the softmax was faster. Two changes were in the programs: lanes::sum in place of a serial loop, and fast_tanh and fast_exp in place of the exact functions, which compute in f64. One was in the compiler: it now writes the block size into the GPU code, and every kernel got 4% to 10% faster. We also read the GPU code that nvc++ makes from the same loops in OpenMP, OpenACC and C++ parallel algorithms. OpenACC can come close to Vx in the right form, OpenMP built kernels of over a thousand instructions, and none of them refused a loop with a race. The post says how each number was measured, and where the methods differ.</summary>
+  </entry>
+
+  <entry>
+    <title>What compiling against z3 taught us about trusting provers</title>
+    <link href="https://vxlang.org/blog/what-compiling-against-z3-taught-us-about-trusting-provers.html"/>
+    <id>https://vxlang.org/blog/what-compiling-against-z3-taught-us-about-trusting-provers.html</id>
+    <updated>2026-11-13T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>Since June, the Vx compiler asks the z3 solver to prove contracts while it compiles. It writes each question as SMT-LIB text and sends it to a new z3 process. In five months we found no wrong answer from z3, and every bug was on our side of the pipe. For ten weeks a machine without z3 passed every proof, until a missing solver began to stop the build. Every name was declared as an integer, so z3 skipped each fact that used a bool, in about 23,000 of 26,000 queries, and the tests still passed. Facts that outlived their variables let z3 prove false contracts, and the programs printed wrong answers. And a function with 64 writes through a raw pointer asked z3 16,128 questions, one process each, and a file of GPU kernels did not compile in six hours. The fix asks 492 for that function.</summary>
+  </entry>
+
+  <entry>
+    <title>The promise of Vx</title>
+    <link href="https://vxlang.org/blog/the-promise-of-vx.html"/>
+    <id>https://vxlang.org/blog/the-promise-of-vx.html</id>
+    <updated>2026-11-09T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>The computer on your desk has many cores, memory in banks and a GPU. The apps you download use little of it, because most of them were written for one core, long before LLMs could help anyone write code. The promise of Vx is that you write the small app you need, and the compiler spreads it over the machine you have: its cores, its memories and its GPU. Three small programs show how: two tasks that share the work with no locks, a blur that runs on the Apple GPU through Metal and on an NVIDIA GPU as PTX, and tensors placed on the NUMA node of the cores that read them. A table says what works today: a Mac and Linux with an NVIDIA GPU work, and AMD, Intel and Windows do not yet.</summary>
+  </entry>
+
+  <entry>
+    <title>Checking the deadlock watcher</title>
+    <link href="https://vxlang.org/blog/checking-the-deadlock-watcher.html"/>
+    <id>https://vxlang.org/blog/checking-the-deadlock-watcher.html</id>
+    <updated>2026-11-03T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>When each task of a Vx program waits and nothing can wake one, a watcher thread in the runtime stops the program and names each wait. It reports only when two looks in a row see every fiber parked, every thread asleep, no deadline pending and no progress. Its four reads are not atomic, so we wrote a TLA+ model of the wait protocol and the watcher, and TLC checked every order of the steps. Sixteen mistakes put into the model, two of them bugs fixed earlier, each break the claim they should. The first run found a new bug: the timer thread took a deadline off its heap and woke the word only after it let go of the lock, so in that gap the watcher could see no pending deadline and no progress, and report a deadlock that did not exist. A flag now covers the deadline until its wake ends. The watcher made the model ten times larger, so only models with one fiber and one thread turn it on. A Lean proof also showed that select could pass over a channel forever, and select now starts after its last choice.</summary>
+  </entry>
+
+  <entry>
+    <title>Stack coloring enabled by lifetime markers</title>
+    <link href="https://vxlang.org/blog/two-tensors-one-stack-slot.html"/>
+    <id>https://vxlang.org/blog/two-tensors-one-stack-slot.html</id>
+    <updated>2026-11-02T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>A function needs one stack slot for each local array. Two arrays can share a slot only when the compiler knows that they are not in use at the same time. LLVM's StackColoring pass merges two slots when lifetime markers show that their lifetimes do not overlap. Clang and rustc end each lifetime at the end of a scope, so two arrays in one scope never share a slot. Clang also emits no markers at -O0, or for a variable when a jump enters its scope after its declaration. Vx frees a tensor after its last use, and since #2507 the lifetime of each tensor ends there too. For the same function, C++ and Rust use 8 KB of stack, and Vx uses 4 KB. A task in Vx runs on a stack of fixed size, so this keeps each frame small.</summary>
+  </entry>
+
+  <entry>
+    <title>Design visibility, builds and versions together</title>
+    <link href="https://vxlang.org/blog/design-visibility-builds-and-versions-together.html"/>
+    <id>https://vxlang.org/blog/design-visibility-builds-and-versions-together.html</id>
+    <updated>2026-10-27T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>Three tools in a programming language depend on the public interface of a package: the visibility rules, the build system and the package manager. When a language designs them separately, they disagree. In C++, a private field makes other files rebuild. In Rust, splitting a slow crate makes private items public, and the package manager must then version them. Swift added a package keyword nine years after 1.0 to match its package manager. The idea is to define the interface once and let all three tools read it. That needs a signature that holds the whole interface, and visibility levels that match the units of the build system and the package manager. In Vx, the planned levels private, pkg, ws and pub each answer three questions: who can call this, what rebuilds when it changes, and which version bump the change needs. Today vxc writes interface files and vx-api diff computes the version bump, but pkg and ws do not exist yet, so vx-api treats every item as public.</summary>
+  </entry>
+
+  <entry>
+    <title>Two bugs the H100 did not show</title>
+    <link href="https://vxlang.org/blog/two-bugs-the-h100-did-not-show.html"/>
+    <id>https://vxlang.org/blog/two-bugs-the-h100-did-not-show.html</id>
+    <updated>2026-10-27T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>Vx's memory model forbids load buffering with relaxed atomics, as RC11 does, so that no value comes out of thin air. herd7, memalloy and Lean check the model, but nothing checked the GPU code that vxc generates. Five of the model's litmus tests, written as Vx programs, ran 11 times each on an H100, with 100,000 rounds per run and a stress version of each. Every run printed 0, also the two controls whose result the model allows, so this setup showed no weak result at all. Reading the PTX found two bugs. vxc generated ld.relaxed then st.relaxed, which the PTX model may reorder, so vxc now makes each relaxed atomic read an acquire read, unless a program asks for -fweak-relaxed-atomics. And LLVM 22's NVPTX back end gave every atomicrmw the same relaxed atom, whatever its order. vxc now puts the order in fences around a relaxed atom, as NVIDIA's mapping for C++ allows. LLVM fixed this upstream in LLVM 23. We have not measured the cost of either fix on a GPU yet.</summary>
+  </entry>
+
+  <entry>
+    <title>GLM on an A100, in Vx</title>
+    <link href="https://vxlang.org/blog/glm-on-an-a100.html"/>
+    <id>https://vxlang.org/blog/glm-on-an-a100.html</id>
+    <updated>2026-10-20T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>The decoder of GLM-5, a mixture-of-experts model of about 750 billion parameters with sparse attention and 256 experts per layer, runs on an NVIDIA A100 through 28 GPU kernels written in Vx and compiled to PTX through LLVM. No small trained GLM-5 exists, so every check uses random weights in the model's real shapes against the unmodified Hugging Face implementation: logits agree to within 1e-5 at every stage of every layer, up to 78 layers deep and 2,300 tokens long, with no sparse-attention selection differing, and 16 greedy tokens are identical. A decode path that keeps the weights on the GPU is bit-identical at full width, 10.8 ms per token for 4 layers against 29 s when weights are re-sent each token, and runs INT4, FP8 and BF16 weights as stored: FP8 and BF16 bit-identical to float32, INT4 top-1 equal. The GPU runs found a race that CPU tests could not: a kernel launched after an upload could read stale memory when several processes shared the GPU. The trained model has not run yet; the next step is a hybrid with experts in host memory.</summary>
+  </entry>
+
+  <entry>
+    <title>Optimizing for the common case, in language design</title>
+    <link href="https://vxlang.org/blog/optimizing-for-the-common-case.html"/>
+    <id>https://vxlang.org/blog/optimizing-for-the-common-case.html</id>
+    <updated>2026-10-20T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>Hardware designers make the common case fast. A language can make the common case need no extra words. The most common parallel loop starts one task per index. Go, C# and JavaScript first made that loop a trap, and later changed their loops so that each iteration gets its own variable. Rust makes it correct with move, which takes every variable at once, so shared data needs let v = &amp;v; first. In Vx, a task takes each variable the way it uses it (borrow, copy or move) with no move keyword, and a copy can never go stale: the code around a task may not write a variable that the task copied, until the join. The loop needs nothing extra, the stop flag that a silent copy gets wrong is a compile error with a hint, and each rare case needs one line. Closures get the same rule next.</summary>
+  </entry>
+
+  <entry>
+    <title>Breaking the borrow checker on purpose</title>
+    <link href="https://vxlang.org/blog/breaking-the-borrow-checker-on-purpose.html"/>
+    <id>https://vxlang.org/blog/breaking-the-borrow-checker-on-purpose.html</id>
+    <updated>2026-10-15T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>In five days, Vx's borrow checker had twelve fixes for programs it accepted and should have refused, and five for correct programs it refused. Then we tested the tests: each part of the checker was broken on purpose, behind a switch, and the tests ran once per break, 108 times. They caught 93. Of the 15 they missed, 11 were rules no test checked, and those tests are now added; three changed code that no Vx program reaches today; and one led to a real bug. A borrow given to a variable declared outside an if, match, unsafe, while or for block was forgotten when the block ended, and a program read freed memory. This method cannot find a rule that was never written, so we then translated 78 of Rust's borrow checker bug reports into Vx. Vx was right on 38, could not express 15, refused 13 correct programs, and accepted programs it should refuse for 12, which led to 14 new issues. Two correct programs that rustc 1.95 still refuses compile in Vx.</summary>
+  </entry>
+
+  <entry>
+    <title>What the borrow checker let through</title>
+    <link href="https://vxlang.org/blog/what-the-borrow-checker-let-through.html"/>
+    <id>https://vxlang.org/blog/what-the-borrow-checker-let-through.html</id>
+    <updated>2026-10-14T20:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>A review of Vx's borrow checker found eleven programs that compiled and then did something they should not, and all are now fixed. Two of them get most of the post. One gave 2 without optimization and 1 with it, because two &amp;mut to one variable inside an if arm were not checked against each other, and LLVM trusted the noalias marking. The other, sent by a reader, changed a variable not declared mut, because the checker let the inside of a &amp;mut change type the way the inside of a &amp; may; &amp;mut T must be invariant in T. Both are fixed. Rust's checker has open bugs of the same two kinds: rust-lang/rust#164250, reported on 13 October and eleven years old, gets past a struct's lifetime bounds by assigning to a field, and three 2026 bugs put a borrow where the checker seldom looks. Vx had a bug of the same shape as #164250, with a different cause, fixed on 14 October. A reference into a value with no name, which Rust refuses as E0716, read freed memory in Vx until the same day.</summary>
+  </entry>
 
   <entry>
     <title>When the build order changes the program</title>
@@ -66,9 +165,9 @@
     <title>Vx fully embraces {ML, IR, MLIR}</title>
     <link href="https://vxlang.org/blog/vx-fully-embraces-ml-ir-mlir.html"/>
     <id>https://vxlang.org/blog/vx-fully-embraces-ml-ir-mlir.html</id>
-    <updated>2026-10-03T18:00:00Z</updated>
+    <updated>2026-10-24T18:00:00Z</updated>
     <author><name>Aditya Kumar</name></author>
-    <summary>Vx compiles tensor programs through its own flat intermediate representation, which a library can ship as instead of source, and its own MLIR dialect, defined in TableGen, which keeps where data lives and where code runs. Vx's passes lower that into the upstream gpu, linalg and llvm dialects, and MLIR's NVVM path turns a GPU region into PTX. Autodiff runs through Enzyme on scalars, the Neural Engine uses prebuilt CoreML models, and general GPU kernels on declared machines are not finished.</summary>
+    <summary>Vx compiles tensor programs through its own intermediate representation and its own MLIR dialect. A GPU loop with across blocks, across lanes and lanes::sum goes through the vx dialect and the gpu dialect to a PTX kernel with shared memory and warp shuffles. Inside Vx source, mlir! blocks write the core library, its atomics and GPU instructions such as a warp ballot. Each block states what it writes, the race proof uses that, and the compiler checks it against the MLIR. Kernels run on no GPU in the test suite, and there are no tensor cores yet.</summary>
   </entry>
 
   <entry>

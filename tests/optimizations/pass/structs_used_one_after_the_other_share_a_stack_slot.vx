@@ -1,0 +1,180 @@
+//===- structs_used_one_after_the_other_share_a_stack_slot.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The stack slot of a struct lives from its `let` to its last use. So two structs that are not
+// used at the same time can share one slot.
+//
+// The IR checks: in `two_blocks`, the lifetime of `a` ends in its `if` block, before the
+// lifetime of `b` starts. In `one_block`, `a` ends after its last use, before `b` starts. In
+// `a_raw_pointer`, `keep` stores a raw pointer to `a` in `h`, and `read(&h)` reads `a` through
+// it later. A raw pointer keeps no borrow, so `a` lives to the end of its block, as in Rust.
+// The ASM checks: in `two_blocks`, the two calls of `total` get the same address with each code
+// generator, so `b` uses the same bytes as `a`. The OUT checks: the sums are right, with each
+// code generator.
+//
+// REQUIRES: x86_64
+// REQUIRES: aarch64
+// Only because the ASM checks name the registers of these two machines.
+//
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s --check-prefix=IR # flat-codegen
+// RUN: vxc %s --action emit-obj -o %t.o
+// macOS adds `_` to each symbol name.
+// RUN: llvm-objdump -d --no-show-raw-insn --disassemble-symbols=two_blocks,_two_blocks %t.o | FileCheck %s --check-prefixes=ASM,ASM-%arch
+// RUN: vxc %s --legacy-codegen --action emit-obj -o %t.ast.o
+// RUN: llvm-objdump -d --no-show-raw-insn --disassemble-symbols=two_blocks,_two_blocks %t.ast.o | FileCheck %s --check-prefixes=ASM,ASM-%arch
+// RUN: vxc %s 2>&1 | FileCheck %s --check-prefix=OUT
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --check-prefix=OUT
+//
+// IR-LABEL: llvm.func hidden @two_blocks(
+// IR: llvm.intr.lifetime.start %[[A:[0-9]+]] : !llvm.ptr
+// IR: llvm.call @total(%[[A]])
+// IR: llvm.intr.lifetime.end %[[A]] : !llvm.ptr
+// IR: llvm.intr.lifetime.start %[[B:[0-9]+]] : !llvm.ptr
+// IR: llvm.call @total(%[[B]])
+// IR: llvm.intr.lifetime.end %[[B]] : !llvm.ptr
+// The closing brace of the function:
+// IR: {{^  \}$}}
+//
+// IR-LABEL: llvm.func hidden @one_block(
+// IR: llvm.intr.lifetime.start %[[A:[0-9]+]] : !llvm.ptr
+// `a.a + a.b`, the last use of `a`:
+// IR: llvm.add
+// IR: llvm.intr.lifetime.end %[[A]] : !llvm.ptr
+// IR: llvm.intr.lifetime.start %[[B:[0-9]+]] : !llvm.ptr
+// IR: llvm.call @sum_of(%[[B]])
+// IR: llvm.intr.lifetime.end %[[B]] : !llvm.ptr
+// IR: {{^  \}$}}
+//
+// IR-LABEL: llvm.func hidden @a_raw_pointer(
+// IR: llvm.call @keep(%{{[0-9]+}}, %[[A:[0-9]+]])
+// IR-NOT: llvm.intr.lifetime.end %[[A]] :
+// IR: llvm.call @read(
+// IR: llvm.intr.lifetime.end %[[A]] : !llvm.ptr
+// IR: {{^  \}$}}
+//
+// The address of `a`, then the same address for `b`, and no other address between them.
+// ASM-LABEL: <{{_?}}two_blocks>:
+// ASM-x86_64: leaq [[SLOT:.*]](%rsp), %rdi
+// ASM-x86_64-NOT: (%rsp), %rdi
+// ASM-x86_64: leaq [[SLOT]](%rsp), %rdi
+// ASM-aarch64: [[SLOT:(mov x0, sp|add x0, sp, #0x[0-9a-f]+)]]{{$}}
+// ASM-aarch64-NOT: x0, sp
+// ASM-aarch64: [[SLOT]]{{$}}
+//
+// OUT: {{^}}two 808{{$}}
+// OUT: {{^}}one 73{{$}}
+// OUT: {{^}}raw 72{{$}}
+
+import core::ops;
+
+struct Big {
+  f0 : i64,
+  f1 : i64,
+  f2 : i64,
+  f3 : i64,
+  f4 : i64,
+  f5 : i64,
+  f6 : i64,
+  f7 : i64,
+}
+
+struct Pair {
+  a : i64,
+  b : i64,
+}
+
+struct Holder {
+  p : *const Pair,
+}
+
+fn total(g : &Big) -> i64 {
+  return g.f0 + g.f1 + g.f2 + g.f3 + g.f4 + g.f5 + g.f6 + g.f7;
+}
+
+fn sum_of(p : &Pair) -> i64 {
+  return p.a + p.b;
+}
+
+fn two_blocks(c : bool) -> i64 {
+  let mut sum : i64 = 0;
+  if c {
+    let a = Big {
+      f0: 1,
+      f1: 1,
+      f2: 1,
+      f3: 1,
+      f4: 1,
+      f5: 1,
+      f6: 1,
+      f7: 1,
+    };
+    sum = sum + total(&a);
+  }
+  if c {
+    let b = Big {
+      f0: 100,
+      f1: 100,
+      f2: 100,
+      f3: 100,
+      f4: 100,
+      f5: 100,
+      f6: 100,
+      f7: 100,
+    };
+    sum = sum + total(&b);
+  }
+  return sum;
+}
+
+fn one_block() -> i64 {
+  let a = Pair {
+    a: 1,
+    b: 2
+  };
+  let first = a.a + a.b;
+  let b = Pair {
+    a: 30,
+    b: 40
+  };
+  return first + sum_of(&b);
+}
+
+fn no_pair() -> Holder {
+  return Holder {
+    p: unsafe { 0 as *const Pair }
+  };
+}
+
+fn keep(h : &mut Holder, p : *const Pair) -> void {
+  h.p = p;
+}
+
+fn read(h : &Holder) -> i64 {
+  return unsafe { (*h.p).b };
+}
+
+fn a_raw_pointer() -> i64 {
+  let mut h = no_pair();
+  let a = Pair {
+    a: 1,
+    b: 2
+  };
+  keep(&mut h, &a);
+  let b = Pair {
+    a: 30,
+    b: 40
+  };
+  let second = sum_of(&b);
+  return second + read(&h);
+}
+
+fn main() -> i32 {
+  println!("two {}", two_blocks(true));
+  println!("one {}", one_block());
+  println!("raw {}", a_raw_pointer());
+  return 0;
+}

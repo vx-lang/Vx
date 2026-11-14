@@ -1,0 +1,54 @@
+//===- a_task_sleeps_until_another_sets_a_flag.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// One task waits for a flag with `wait_while`, which blocks its OS thread. The other task
+// writes a value, sets the flag, and wakes it with `wake_all`. The waiter then reads the value.
+// Each of 200 rounds uses a new flag, so a lost wake would hang the test.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}sum 20100{{$}}
+
+import core::sync::atomic;
+import std::sync::wait;
+
+fn wait_for(flag : &AtomicI64) -> void {
+  let mut seen = flag.load(AtomicOrdering::Acquire);
+  while seen == 0 {
+    wait_while(flag, seen);
+    seen = flag.load(AtomicOrdering::Acquire);
+  }
+}
+
+fn set(flag : &AtomicI64) -> void {
+  flag.store(1, AtomicOrdering::Release);
+  wake_all(flag);
+}
+
+fn main() -> i32 {
+  let mut sum : i64 = 0;
+  let mut round : i64 = 1;
+  while round <= 200 {
+    let flag = AtomicI64::new(0);
+    let value = AtomicI64::new(0);
+    let got = tasks {
+      let waiter = spawn {
+        wait_for(&flag);
+        value.load(AtomicOrdering::Relaxed)
+      };
+      spawn {
+        value.store(round, AtomicOrdering::Relaxed);
+        set(&flag);
+      };
+      waiter.join()
+    };
+    sum = sum + got;
+    round = round + 1;
+  }
+  println!("sum {}", sum);
+  return 0;
+}

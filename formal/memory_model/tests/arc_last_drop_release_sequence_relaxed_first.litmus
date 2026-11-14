@@ -1,0 +1,14 @@
+LISA arc_last_drop_release_sequence_relaxed_first
+(* As arc_last_drop_release_sequence, but P0 drops with a relaxed decrement. Then nothing orders
+   P0's read before P2's free, and the two race.
+   Expect: sometimes, a data race. *)
+{ count = 3; value = 0; }
+ P0                            | P1                            | P2                            ;
+ r[plain] r2 value             | rmw[rlx] r0 (add r0 -1) count | rmw[rel] r0 (add r0 -1) count ;
+ rmw[rlx] r0 (add r0 -1) count |                               | mov r3 (neq r0 1)             ;
+                               |                               | b[] r3 LC00                   ;
+                               |                               | f[acq]                        ;
+                               |                               | w[plain] value 9              ;
+                               |                               | LC00:                         ;
+scopes: (system P0 P1 P2)
+exists (0:r0 = 3 /\ 1:r0 = 2 /\ 2:r0 = 1)

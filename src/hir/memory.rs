@@ -135,14 +135,15 @@ pub fn element_bytes(elem: &ElementType) -> Option<u64> {
 /// What a statically written tensor shape comes to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StaticSize {
-    /// Every extent is a compile-time constant, and the size in bytes fits a `u64`.
+    /// Every extent is a compile-time constant, and the size in bytes is at most `i64::MAX`.
     Bytes(u64),
     /// Some extent is not a compile-time constant: a run-time value, `?`, or a call. The caller
     /// reports such a shape as unverified (W1029) rather than inventing a size.
     NotConstant,
     /// Every extent is a constant, but one of them is negative.
     NegativeExtent,
-    /// Every extent is a constant, but the size in bytes does not fit a `u64`.
+    /// Every extent is a constant, but the size in bytes is more than an allocation can ask
+    /// for: `i64::MAX`, since the size reaches `malloc` as a signed 64-bit `index`.
     Overflows,
 }
 
@@ -201,6 +202,7 @@ fn const_dim(e: &Expr) -> Result<i128, Unfolded> {
             };
             folded.ok_or(Unfolded::Overflows)
         }
+        Expr::UnaryOp(u) if u.op == crate::syntax::UnaryOp::Neg => Ok(-const_dim(&u.expr)?),
         _ => Err(Unfolded::NotConstant),
     }
 }
@@ -211,7 +213,7 @@ fn const_dim(e: &Expr) -> Result<i128, Unfolded> {
 /// is arithmetic -- a KV cache is `2 * layers * context` by `heads * head_dim` -- and requiring a
 /// bare literal meant every such placement was silently reported "unverified" (W1029) instead of
 /// admitted or rejected, which would have made an admission matrix over realistic configs vacuous.
-/// A shape that does fold, but to a negative extent or a size past `u64`, is an error the caller
+/// A shape that does fold, but to a negative extent or a size past `i64::MAX`, is an error the caller
 /// reports, not an unknown size.
 pub fn static_tensor_size(elem: &ElementType, dims: &[Dim]) -> StaticSize {
     if dims.is_empty() {
@@ -243,8 +245,8 @@ pub fn static_tensor_size(elem: &ElementType, dims: &[Dim]) -> StaticSize {
         bytes = bytes.and_then(|b| u64::try_from(v).ok().and_then(|v| b.checked_mul(v)));
     }
     match bytes {
-        Some(b) => StaticSize::Bytes(b),
-        None => StaticSize::Overflows,
+        Some(b) if b <= i64::MAX as u64 => StaticSize::Bytes(b),
+        _ => StaticSize::Overflows,
     }
 }
 
@@ -292,6 +294,11 @@ pub enum MemoryCoherenceIssue {
         parent: MemorySpace,
         child_scope: Scope,
         parent_scope: Scope,
+    },
+    /// `within:` names a space that is not built in, and that no declaration declares.
+    UndeclaredParent {
+        child: MemorySpace,
+        parent: MemorySpace,
     },
 }
 
@@ -617,6 +624,15 @@ impl<'a> MemoryHierarchy<'a> {
     pub fn coherence_issues(&self) -> Vec<MemoryCoherenceIssue> {
         let mut issues = Vec::new();
         for (space, decl) in &self.spaces {
+            // A built-in space exists without a declaration.
+            if let Some(parent @ MemorySpace::Custom(_)) = &decl.parent {
+                if !self.spaces.contains_key(parent) {
+                    issues.push(MemoryCoherenceIssue::UndeclaredParent {
+                        child: space.clone(),
+                        parent: parent.clone(),
+                    });
+                }
+            }
             let cyclic = self.in_cycle(space);
             if cyclic {
                 issues.push(MemoryCoherenceIssue::Cycle {
@@ -696,10 +712,12 @@ mod tests {
             replicas: None,
             managed: Management::default(),
             granule: None,
+            alignment: None,
             scope: None,
             overcommit: false,
             crossing: crate::syntax::Crossing::default(),
             numa_node: None,
+            place: Default::default(),
             doc_comment: None,
         }
     }
@@ -726,6 +744,23 @@ mod tests {
         assert!(h.contains(&space("SMEM"), &space("TMEM")));
         assert!(!h.contains(&space("TMEM"), &space("HBM")));
         assert!(!h.contains(&space("HBM"), &space("HBM"))); // not self
+    }
+
+    #[test]
+    fn within_an_undeclared_space_is_an_issue() {
+        // Nothing declares `NOPE`. `SMEM` is declared, and `GPU_HBM` is built in.
+        let decls = vec![
+            mem("L2", Some("NOPE"), Some(64)),
+            mem("SMEM", Some("GPU_HBM"), Some(64)),
+            mem("TILE", Some("SMEM"), Some(32)),
+        ];
+        assert_eq!(
+            MemoryHierarchy::build(&decls).coherence_issues(),
+            vec![MemoryCoherenceIssue::UndeclaredParent {
+                child: space("L2"),
+                parent: space("NOPE"),
+            }]
+        );
     }
 
     #[test]

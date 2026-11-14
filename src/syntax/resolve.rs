@@ -202,7 +202,7 @@ impl Type {
                 ret_ty.resolve_names(scope);
             }
             Type::Const(_) => {}
-            Type::Matrix | Type::Scalar(_) | Type::Simd(_, _) => {}
+            Type::Scalar(_) | Type::Simd(_, _) => {}
             Type::Unknown => {}
         }
     }
@@ -235,12 +235,23 @@ impl Topology {
 impl Expr {
     pub fn resolve_names(&mut self, scope: &ResolutionScope) {
         match self {
+            Expr::EnumVariant(e) => {
+                for arg in e.type_args.iter_mut().flatten() {
+                    arg.resolve_names(scope);
+                }
+                for value in e.payload.iter_mut().flatten() {
+                    value.resolve_names(scope);
+                }
+            }
             Expr::Transfer(e) => e.expr.resolve_names(scope),
             Expr::MemberAccess(e) => e.base.resolve_names(scope),
             Expr::UnaryOp(e) => e.expr.resolve_names(scope),
             Expr::Borrow(e) => e.expr.resolve_names(scope),
             Expr::Dereference(e) => e.expr.resolve_names(scope),
             Expr::FunctionCall(e) => {
+                for arg in e.owner_type_args.iter_mut().flatten() {
+                    arg.resolve_names(scope);
+                }
                 for a in &mut e.args {
                     a.resolve_names(scope);
                 }
@@ -270,6 +281,14 @@ impl Expr {
                 }
             }
             Expr::UnsafeBlock(e) => {
+                for s in &mut e.stmts {
+                    s.resolve_names(scope);
+                }
+                if let Some(r) = &mut e.ret {
+                    r.resolve_names(scope);
+                }
+            }
+            Expr::TaskBlock(e) => {
                 for s in &mut e.stmts {
                     s.resolve_names(scope);
                 }

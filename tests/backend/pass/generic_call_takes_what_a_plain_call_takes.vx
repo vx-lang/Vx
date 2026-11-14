@@ -1,0 +1,36 @@
+//===- generic_call_takes_what_a_plain_call_takes.vx - Vx -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --run 2>&1 | FileCheck %s --implicit-check-not="Error["
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not="Error["
+//
+// Where the parameter's type is already fixed, a call to a generic function takes the same
+// arguments as a call to a plain function: a number literal takes the parameter's type, and a
+// `*mut u8` is passed for a `*const u8`.
+
+fn first<T>(_x : T, p : *const u8, n : i64) -> i64 {
+  return n + unsafe { p[0] as i64 };
+}
+
+// `b` has the type `a` gave `T`.
+fn second<T>(_a : T, b : T) -> T {
+  return b;
+}
+
+fn main() -> i32 {
+  let buf : Tensor<u8, [4]> = Tensor<u8, [4]>::new();
+  let p = buf.as_mut_ptr();
+  unsafe { p[0] = 1; }
+  // CHECK: 8
+  println!(first(true, p, 7));
+
+  // `7` is an i64 here, since `big` made `T` an i64.
+  let big : i64 = 5;
+  // CHECK-NEXT: 7
+  println!(second(big, 7));
+  return 0;
+}

@@ -1,0 +1,49 @@
+//===- a_tasks_block_with_a_value_that_a_return_leaves.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The `tasks` block in `doubled` has a value, and a `return` can leave it. The first task waits
+// until the second task sets a flag, so the two tasks must run at the same time, or the program
+// hangs. After the block, the value or the `return` must take effect.
+//
+// NO-SEED-SWEEP: a task loops with no wait until another task acts, and one thread cannot run the other task.
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}doubled 7 -1{{$}}
+
+import core::sync::atomic;
+
+// The two tasks must run at the same time: the first waits for the second.
+fn handshake(flag : &AtomicI64) -> void {
+  let mut seen = flag.load(AtomicOrdering::Acquire);
+  while seen == 0 {
+    seen = flag.load(AtomicOrdering::Acquire);
+  }
+}
+
+fn doubled(n : i64) -> i64 {
+  let flag = AtomicI64::new(0);
+  let v = tasks {
+    let h = spawn {
+      handshake(&flag);
+      n * 2
+    };
+    spawn {
+      flag.store(1, AtomicOrdering::Release);
+    };
+    let r = h.join();
+    if n < 0 {
+      return -1;
+    }
+    r
+  };
+  return v + 1;
+}
+
+fn main() -> i32 {
+  println!("doubled {} {}", doubled(3), doubled(-5));
+  return 0;
+}

@@ -49,6 +49,7 @@ Data movement across distinct memory hierarchies is explicit.
 1. Evaluates to a target reference $T$ in space $M_2$.
 1. The runtime schedules an asynchronous or synchronous DMA transfer from $M_1$ to $M_2$.
 1. Linearity: If $S$ represents uniquely owned data, the `transfer` consumes $S$. Future use of $S$ in space $M_1$ is invalid.
+1. Borrowed source: If $S$ is a borrowed tensor (`&` or `&mut`), the `transfer` copies it. $T$ is a new tensor that the caller owns, and the owner of $S$ keeps $S$. Over a `: shared` edge, the compiler may skip the copy of a `&` parameter when every use of $T$ only reads it. The program gives the same values either way.
 
 ### 2.3 Declared Memory Spaces & Sub-space Scheduling
 
@@ -84,6 +85,123 @@ Memory SMEM {
 > [`hosts_and_machines.md`](hosts_and_machines.md). No host is assumed — a program that stages
 > through `Memory::CPU_DRAM` while a machine model is in force must name one (`E6014`), because
 > `--machine` describes an accelerator and says nothing about the machine it hangs off.
+
+### 2.4 Data races
+
+A data race is two accesses to one place from two tasks at the same time. At least one of them writes, and at least one of them is not atomic.
+
+- Safe code has no data races. The borrow checker and the `Send` and `Sync` rules refuse a program that can have one.
+- A data race in `unsafe` code is undefined behavior. The compiler may assume that it does not occur, so the program can give any result.
+
+Tasks that must write one place share an atomic, such as `AtomicI32` in `core::sync::atomic`. The rules are S5, S6 and U1 to U4 in [`cpu_tasks_send_sync_and_shared_atomics.md`](../discussions/cpu_tasks_send_sync_and_shared_atomics.md).
+
+### 2.5 Atomic orders
+
+Each operation on an atomic takes an `AtomicOrdering`. The orders are those of C++ and Rust, with one exception for `Relaxed` reads.
+
+| Order | Meaning |
+|---|---|
+| `Relaxed` | Only the operation itself is atomic. It orders no other access. The compiler makes a `Relaxed` read an `Acquire` read (see below). |
+| `Release` | For a store, or the write of a read-modify-write. The accesses before it in its task happen before the accesses after an `Acquire` read that reads its value. |
+| `Acquire` | For a load, or the read of a read-modify-write. It is the other half of `Release`. |
+| `AcqRel` | `Acquire` for the read and `Release` for the write of a read-modify-write. |
+| `SeqCst` | `AcqRel`, and all tasks see the `SeqCst` operations in one order. |
+
+**A `Relaxed` read is an `Acquire` read.** C++ and Rust allow load buffering. In it, a relaxed read takes its value from a write that comes later in its own thread, through a cycle with another thread. In such a cycle a value can come "out of thin air", and no known proof method rules it out. The Vx memory model forbids the cycle, as RC11 does. AArch64 and PTX allow it. So the compiler makes these reads `Acquire` reads, in host code and in device code:
+
+- a `Relaxed` load,
+- the read of a `Relaxed` read-modify-write (a `Release` one becomes `AcqRel`),
+- both the success and the failure read of a `Relaxed` compare-exchange.
+
+A `Relaxed` store stays relaxed. On x86 the change costs nothing, because each load there is already an acquire load. On AArch64 and on GPUs, a `Relaxed` read costs as much as an `Acquire` read. Metal atomics on the Apple GPU take only `memory_order_relaxed`, so there the read stays relaxed and an acquire fence follows it.
+
+**`-fweak-relaxed-atomics`** keeps `Relaxed` reads relaxed, for the whole program. A program compiled with it may show load buffering (`formal/memory_model/tests/load_buffering_relaxed.litmus`). The default is `-fno-weak-relaxed-atomics`. When a command has both, the last one wins.
+
+**Do not rely on a `Relaxed` read for order.** The compiler adds the `Acquire` only to rule out values out of thin air. A program that needs an access to happen before another must ask for `Acquire` and `Release`. Such a program is correct with and without the flag. The proofs in `formal/memory_model` also treat `rlx` as relaxed, so they hold in both cases.
+
+**ThreadSanitizer cannot find a missing `Acquire` on a `Relaxed` read** in a default compile, because the read is an `Acquire` read in the program. To check that code does not depend on it, compile with both options: `vxc -fweak-relaxed-atomics --sanitize=thread`.
+
+Other rules:
+
+- An order that Rust panics on fails an `assert`. These are `Release` or `AcqRel` for a load, and `Acquire` or `AcqRel` for a store. They are also `Release` or `AcqRel` as the failure order of a compare-exchange, and `Relaxed` for a fence.
+- `compare_exchange` may run with a stronger order than the one asked for. `compare_exchange_weak` is `compare_exchange`, and it never fails spuriously.
+- On a GPU, an atomic has a scope. Two atomics race unless the scope of each one includes the thread of the other, as in the PTX model.
+
+The model is `formal/memory_model/vx.cat`. [`formal/memory_model/README.md`](../../formal/memory_model/README.md) has its litmus tests and Lean proofs.
+
+### 2.6 Drops
+
+When its owner goes away, a value is *dropped*: the drop releases what the value owns. A moved value is not dropped, because its new owner drops it. An assignment drops the old value of the variable. The checker writes each drop into the program, so both code generators drop a value at the same point.
+
+- A value that only holds memory, such as a tensor or a `Vec` of numbers, drops after its last use.
+- A value whose type implements `Drop` waits for the end of its block. The values of one block drop in reverse order of declaration. The `drop` method of a value runs first, and then its fields drop in the order of their declaration. An enum drops the payload of the variant that it holds.
+- `core::mem::drop(x)` drops `x` at once.
+
+**A pattern that takes a value owns all of it.** At the end of its scope, the pattern drops the names that it binds. Then it drops the parts that it does not name, such as a `_` part.
+
+- A `match` arm takes the value when its pattern moves a part out of it. `match t { Two::Pair(a, _) => .. }` moves all of `t` into the arm. At its end, the arm drops `a` and then the `_` part.
+- An arm that moves no part, such as `Two::Pair(_, _) => ..` or `Two::Nothing => ..`, leaves `t` as it is. When such an arm runs, `t` drops at the end of its block.
+- Code after the `match` cannot use `t` when an arm can move it, as after an `if` that moves `t` in one branch.
+- Each arm of a `match` on a value with no name, such as `match make() { .. }`, takes the value.
+- In a `let`, `_` is a name like any other, and its scope is the rest of the block. `let _ = e;` drops the value at the same point as `let _x = e;`. `let _ = a;` moves `a`.
+
+<!-- vx-doctest: run -->
+
+```rust
+import core::mem;
+
+struct Noisy {
+    id : i32,
+}
+
+impl Drop for Noisy {
+    fn drop(self : &mut Noisy) -> void {
+        println!("drop {}", self.id);
+    }
+}
+
+enum Two {
+    Pair(Noisy, Noisy),
+    Nothing,
+}
+
+fn main() -> i32 {
+    let t = Two::Pair(Noisy { id : 1 }, Noisy { id : 2 });
+    match t {
+        Two::Pair(a, _) => {
+            println!("the arm uses {}", a.id);
+        }
+        Two::Nothing => {}
+    }
+    let _ = Noisy { id : 3 };
+    let _x = Noisy { id : 4 };
+    drop(Noisy { id : 5 });
+    println!("end");
+    return 0;
+}
+```
+
+It prints:
+
+```text
+the arm uses 1
+drop 1
+drop 2
+drop 5
+end
+drop 4
+drop 3
+```
+
+**Rust decides by the place that a pattern reads.** In Rust, `_` never moves a value. So the time of a drop depends on whether the pattern reads a variable or a value with no name:
+
+- `match t { Pair(a, _) => .. }` leaves the `_` part in `t`. The `_` part drops at the end of the block of `t`.
+- `match make() { Pair(a, _) => .. }` drops the `_` part at the end of the `match`.
+- `let _ = make();` drops the value at the end of the statement, and `let _ = a;` moves nothing.
+
+Thus `let _ = m.lock();` releases a lock at once, and `let _g = m.lock();` holds it to the end of the block. `rustc` refuses the first form by default, with the `let_underscore_lock` lint. In Vx, the pattern and its scope decide when a value drops. A `_` part and a named part drop at the same point.
+
+[`drop_semantics.md`](../implementation_plans/drop_semantics.md) has the design of drops.
 
 ______________________________________________________________________
 
@@ -128,6 +246,21 @@ code, which is what used to happen:
   disappears, so the write would disappear with it.
 - A block inside another block is an error (E3034). The outer block already runs while
   compiling, so the inner one asks for nothing more.
+- A block may read a value known only when the program runs, when neither its value nor its
+  effects depend on that value.
+- The compiler decides, while compiling, every check that the program makes while it runs: an
+  `assert`, and an integer `/` or `%`. The division stops the program on a divisor of zero,
+  and on the minimum value divided by -1. A check left for run time would never run, because
+  the block disappears.
+  - A false `assert` on a path that always runs is an error (E8002).
+  - Any other check that the compiler cannot show to pass is an error (E3033). This is a check
+    that fails on a path that runs only for some run-time values, such as one branch of an
+    `if` on a run-time value. It is also a check that depends on a run-time value.
+- An integer result outside its type has no compile-time value, so a block whose value depends
+  on it is an error (E3033). At run time the program wraps the result and does not stop, so a
+  block whose value does not depend on it still folds.
+- The evaluator runs at most 1,000,000 loop iterations in a block, in all, and at most 256
+  nested calls. More is an error (E8005, E8004).
 
 **Comptime lambdas.** `comptime { .. }` is also Vx's block-expression form, so it is how a
 closure with more than one statement is written. Such a lambda is a function that runs while

@@ -6,7 +6,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s
 // CHECK-LABEL: func.func @main() -> i32 {
 // CHECK: %[[C:.*]] = llvm.mlir.undef : !llvm.struct<"Config", (i32, i32, i32, i32, i32, i32, i32)>
 // CHECK: llvm.insertvalue %{{.*}}, %[[C]][0] : !llvm.struct<"Config", (i32, i32, i32, i32, i32, i32, i32)>

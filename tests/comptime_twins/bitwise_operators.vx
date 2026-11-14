@@ -1,0 +1,80 @@
+//===- bitwise_operators.vx - Vx Compiler ------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The bit operators `&`, `|`, `^`, `<<` and `>>`, in a block and in a function that a block
+// calls. A `>>` keeps the sign of a negative signed value, and an unsigned value above the
+// signed range shifts as a positive number.
+
+fn shr(k : i64) -> i64 {
+  return k >> 1;
+}
+
+fn xor(k : i64) -> i64 {
+  return k ^ 5;
+}
+
+// One entry of the CRC-32 table that zlib uses: shift right 8 times, and XOR in the
+// polynomial each time the bit that falls out is 1.
+fn crc_entry(n : u32) -> u32 {
+  let mut c = n;
+  for _k in 0..8 {
+    if (c & 1u32) == 1u32 {
+      c = 3988292384u32 ^ (c >> 1u32);
+    } else {
+      c = c >> 1u32;
+    }
+  }
+  return c;
+}
+
+fn main() -> i32 {
+  let a : i64 = comptime {
+    shr(10)
+  };
+  println!("{}", a);
+  let b : i64 = comptime {
+    xor(10)
+  };
+  println!("{}", b);
+  let and : i32 = comptime {
+    12i32 & 10i32
+  };
+  println!("{}", and);
+  let or : i32 = comptime {
+    12i32 | 10i32
+  };
+  println!("{}", or);
+  let negative_and : i32 = comptime {
+    (0i32 - 8i32) & 15i32
+  };
+  println!("{}", negative_and);
+  let flip : u8 = comptime {
+    200u8 ^ 255u8
+  };
+  println!("{}", flip);
+  let top_bit : u32 = comptime {
+    1u32 << 31u32
+  };
+  println!("{}", top_bit);
+  let mask : i64 = comptime {
+    (1i64 << 40i64) | 255i64
+  };
+  println!("{}", mask);
+  let halved : i32 = comptime {
+    (0i32 - 7i32) >> 1i32
+  };
+  println!("{}", halved);
+  let big : u32 = comptime {
+    4000000000u32 >> 1u32
+  };
+  println!("{}", big);
+  let crc : u32 = comptime {
+    crc_entry(1u32)
+  };
+  println!("{}", crc);
+  return 0;
+}

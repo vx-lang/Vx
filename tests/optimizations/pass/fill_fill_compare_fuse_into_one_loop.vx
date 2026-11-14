@@ -29,8 +29,8 @@ fn same_after_fill(a : &mut Tensor<f32, [64, 64]>, b : &mut Tensor<f32, [64, 64]
 }
 
 fn main() -> i32 {
-  let mut a = Tensor<f32, [64, 64]>::uninit();
-  let mut b = Tensor<f32, [64, 64]>::uninit();
+  let mut a = unsafe { Tensor<f32, [64, 64]>::uninit() };
+  let mut b = unsafe { Tensor<f32, [64, 64]>::uninit() };
   if same_after_fill(&mut a, &mut b) {
     print!("ok");
   } else {

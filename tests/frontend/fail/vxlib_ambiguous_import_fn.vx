@@ -15,7 +15,7 @@
 // RUN: printf 'fn dup(x : i32) -> i32 { return x + 100; }\n' > %t.d/fb.vx
 // RUN: vxc %t.d/fb.vx --action emit-interface -o %t.d/fb.vxlib
 // RUN: rm %t.d/fa.vx %t.d/fb.vx
-// RUN: VX_STD_PATH=%t.d not vxc %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s
+// RUN: not vxc %s --std-path %t.d --action emit-mlir -o /dev/null 2>&1 | FileCheck %s
 
 import fa;
 import fb;

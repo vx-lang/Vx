@@ -11,7 +11,7 @@
 // position of its own, so this one is reported at the `comptime` keyword.
 fn main() -> i32 {
   let mut outer = 1i32;
-  // CHECK: Error[E3033] at [[@LINE+1]]:15:{{.*}}writes to 'outer'
+  // CHECK: Error[E3033] at {{.*}}comptime_error_at_a_number_literal.vx:[[@LINE+1]]:15:{{.*}}writes to 'outer'
   let value = comptime {
     outer = 2i32;
     7i32

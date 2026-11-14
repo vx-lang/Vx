@@ -1,0 +1,67 @@
+//===- comptime_check_that_depends_on_an_overflow.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// A `comptime` block cannot be evaluated when an assert or a division in it has no value
+// (E3033). In the first five functions, an operation on known numbers gives a result outside
+// its type, so the error says that. The compiler used to say that each one depends on a value
+// known only when the program runs. The last function does depend on such a value, and keeps
+// that error.
+
+fn sum_overflows() -> i32 {
+  comptime {
+    // CHECK: Error[E3033] at {{.*}}.vx:[[@LINE+1]]:5: this `comptime` block cannot be evaluated: this assert has no value, because an operation it depends on gives a result outside its type, such as an overflow{{$}}
+    assert(9223372036854775807i64 + 1i64 > 0i64, "positive");
+  }
+  return 0;
+}
+
+fn sum_in_a_let_overflows() -> i32 {
+  comptime {
+    let x = 9223372036854775807i64 + 1i64;
+    // CHECK: Error[E3033] at {{.*}}.vx:[[@LINE+1]]:5: this `comptime` block cannot be evaluated: this assert has no value, because an operation it depends on gives a result outside its type, such as an overflow{{$}}
+    assert(x > 0i64, "positive");
+  }
+  return 0;
+}
+
+fn negating_the_minimum_overflows() -> i32 {
+  comptime {
+    // CHECK: Error[E3033] at {{.*}}.vx:[[@LINE+1]]:5: this `comptime` block cannot be evaluated: this assert has no value, because an operation it depends on gives a result outside its type, such as an overflow{{$}}
+    assert(-(0i32 - 2147483647i32 - 1i32) > 0i32, "negated");
+  }
+  return 0;
+}
+
+fn shift_is_too_wide() -> i32 {
+  comptime {
+    // CHECK: Error[E3033] at {{.*}}.vx:[[@LINE+1]]:5: this `comptime` block cannot be evaluated: this assert has no value, because an operation it depends on gives a result outside its type, such as an overflow{{$}}
+    assert((1i32 << 40i32) > 0i32, "shifted");
+  }
+  return 0;
+}
+
+fn divides_by_an_overflow() -> i32 {
+  let q = comptime {
+    // CHECK: Error[E3033] at {{.*}}.vx:[[@LINE+1]]:12: this `comptime` block cannot be evaluated: this division has no value, because an operation it depends on gives a result outside its type, such as an overflow{{$}}
+    100i32 / (2147483647i32 + 1i32)
+  };
+  return q;
+}
+
+fn uses_a_run_time_value(n : i64) -> i32 {
+  comptime {
+    // CHECK: Error[E3033] at {{.*}}.vx:[[@LINE+1]]:5: this `comptime` block cannot be evaluated: this assert depends on a value known only when the program runs{{$}}
+    assert(n > 0i64, "positive");
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  return sum_overflows() + sum_in_a_let_overflows() + negating_the_minimum_overflows() + shift_is_too_wide() + divides_by_an_overflow() + uses_a_run_time_value(1i64);
+}

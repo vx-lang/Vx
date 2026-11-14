@@ -62,7 +62,9 @@
 
 fn main() -> i32 {
   // 2097152 x 1024 x 4 B = 8 GiB, which fits either 30 GiB node.
-  let t : Tensor<f32, [2097152, 1024]> = Tensor<f32, [2097152, 1024]>::uninit();
+  let t : Tensor<f32, [2097152, 1024]> = unsafe {
+    Tensor<f32, [2097152, 1024]>::uninit()
+  };
   let local = transfer(t, Memory::HBM);
   let _remote = transfer(local, Memory::PEER_HBM);
   return 0;

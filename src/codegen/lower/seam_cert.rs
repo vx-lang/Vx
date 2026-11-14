@@ -197,6 +197,7 @@ mod tests {
             line: 1,
             column: 1,
             length: 1,
+            expansion: 0,
         }
     }
     fn id(name: &str) -> Expr {

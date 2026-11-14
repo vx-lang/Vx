@@ -1,0 +1,24 @@
+//===- print_argument_with_and_or.vx - Vx Compiler ---------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An argument of `print!` or `println!` can be `a && b` or `a || b`, which evaluate `b` only
+// when they need it. The arguments after it are still printed.
+//
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s
+// The default code generator does not support a logical operator yet, so only the AST one runs this.
+// CHECK: print true 7
+// CHECK-NEXT: println false 7
+// CHECK-NEXT: done
+
+fn main() -> i32 {
+  let a = true;
+  let n = 7;
+  print!("print ", a && n > 3, " ", n, "\n");
+  println!("println {} {}", !a || n > 9, n);
+  println!("done");
+  return 0;
+}

@@ -4,13 +4,23 @@ mod integration_test {
     // helpers behind as dead code everywhere else.
     #[cfg(target_os = "macos")]
     mod ane_device_test;
+    // It runs kernels on the Apple GPU through Metal.
+    #[cfg(target_os = "macos")]
+    mod apple_gpu_functions_called_from_two_c_threads;
+    #[cfg(target_os = "macos")]
+    mod apple_gpu_kernels_called_from_c;
     mod architecture_test;
+    mod arrival_counts_test;
     mod assert_codegen_test;
     mod basic_integration;
     mod benchmarks_report_metrics;
     mod borrow_test;
+    mod build_commit_in_the_version;
     mod codegen_determinism;
+    mod collective_test;
     mod compile_test;
+    mod compile_time_of_vec_calls;
+    mod comptime_twins;
     mod cross_call_capacity_test;
     mod device_image_test;
     mod device_pool_test;
@@ -24,6 +34,7 @@ mod integration_test {
     mod gemm_plan_test;
     mod graph_workload_test;
     mod kernel_launch_test;
+    mod library_model_check;
     mod lint_test;
     mod loopback_test;
     mod manifest_test;
@@ -33,15 +44,32 @@ mod integration_test {
     mod missing_solver_test;
     mod mlir_diagnostic_test;
     mod module_api_test;
+    // It builds the Mac dispatcher, which needs CoreML.
+    #[cfg(target_os = "macos")]
+    mod npu_affine_views_test;
+    #[cfg(target_os = "macos")]
+    mod objects_need_the_macos_of_the_host;
+    mod output_does_not_depend_on_the_current_directory;
+    mod payload_test;
     mod pipeline_scale_test;
     mod registry_test;
     mod remote_client_test;
+    mod remote_kernel_output_test;
     mod remote_region_test;
     mod resolution_test;
+    mod runtime_test_build;
     mod shipped_programs_compile;
     mod solver_policy_test;
+    mod solver_questions_of_raw_pointer_writes;
+    mod tensors_with_gaps_from_c;
+    mod time_limit;
     mod traffic_test;
     mod transport_test;
+    // It links with `cc -shared` and loads `.so` files.
+    #[cfg(target_os = "linux")]
+    mod two_kernel_libraries_in_one_process;
+    mod view_copy_test;
+    mod vx_api_diff;
     mod wire_test;
     mod working_set_peak_test;
 }

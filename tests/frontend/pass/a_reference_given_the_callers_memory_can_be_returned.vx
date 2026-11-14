@@ -1,0 +1,45 @@
+//===- a_reference_given_the_callers_memory_can_be_returned.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s
+//
+// `r` first points at the local `x`, then at memory the caller owns. Returning `r` after
+// that is fine. Each function gives `r` its new value a different way.
+
+struct Holder {
+  p : &i32,
+}
+
+fn from_a_parameter(p : &i32) -> &i32 {
+  let x = 1;
+  let mut r = &x;
+  print(*r);
+  r = p;
+  return r;
+}
+
+fn from_a_field_of_a_parameter(h : Holder) -> &i32 {
+  let x = 2;
+  let mut r = &x;
+  print(*r);
+  r = h.p;
+  return r;
+}
+
+fn main() -> i32 {
+  let v = 7;
+  // CHECK-NOT: Error
+  // CHECK: {{^}}17{{$}}
+  print(*from_a_parameter(&v));
+  print!("\n");
+  // CHECK-NEXT: {{^}}27{{$}}
+  print(*from_a_field_of_a_parameter(Holder {
+    p : &v
+  }));
+  print!("\n");
+  return 0;
+}

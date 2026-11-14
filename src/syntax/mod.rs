@@ -12,6 +12,7 @@
 
 pub mod decl;
 pub mod expr;
+pub(crate) mod identity;
 pub mod macro_rules;
 pub mod resolve;
 pub mod stmt;

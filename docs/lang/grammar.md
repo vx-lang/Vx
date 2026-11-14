@@ -31,7 +31,8 @@ extern_fn ::= "safe"? "fn" identifier "(" param_list? ")" "->" type ";"
 trait_decl ::= "trait" identifier generic_params? "{" trait_method* "}"
 trait_method  ::= "fn" identifier "(" param_list? ")" "->" type ( ";" | "{" statement* "}" )
 
-impl_block ::= "impl" generic_params? ( type "for" )? type "{" function_decl* "}"
+// `unsafe impl` is valid only for `Send` and `Sync` (E3053, E3054).
+impl_block ::= "unsafe"? "impl" generic_params? ( type "for" )? type "{" function_decl* "}"
 
 // A custom lowering for one machine's memory edge: the code that moves the bytes from A to B
 // on that machine. It is not an ordinary `impl_block` -- it is stored separately on the AST,
@@ -46,6 +47,8 @@ struct_decl ::= "struct" identifier generic_params? "{" ( identifier ":" type ",
 enum_decl ::= "enum" identifier generic_params? "{" ( identifier ( "(" type ( "," type )* ")" )? ","? )* "}"
 
 function_decl ::= "fn" identifier generic_params? "(" param_list? ")" ( "on" topology )? "->" type where_clause? ( "requires" expr )* ( "ensures" expr )* "{" statement* "}"
+// `on Topology::Any` says that the function runs where it is called. `Topology::Any` can
+// appear only here.
 
 // `Reachable<A, B>` asks whether a transfer path exists between two topologies. It was
 // spelled `Transfer<A, B>` until Vx#353; the old name now names an edge lowering instead
@@ -74,7 +77,8 @@ topology_field ::=
     | "arch" ":" identifier
     | "transfer" memory_space "->" memory_space ( ":" edge_cost )? transfer_marker*
 transfer_marker ::= "relaxed" | "sync" | "copy_engine"
-edge_cost ::= number | rate_literal        // a unitless relative cost, or a link bandwidth
+edge_cost ::= number | rate_literal | "shared"  // a unitless relative cost, a link bandwidth,
+                                                // or a memory that both sides address
 
 // A first-class memory space (all fields optional except the name). Unlike a topology, the
 // descriptor is stored on the AST, not a global registry. `within:` forms the hierarchy tree.
@@ -152,6 +156,8 @@ primary_expr ::=
     | "if" "comptime"? expr "{" statement* "}" ( "else" ( "if" primary_expr | "{" statement* "}" ) )?
     | "match" expr "{" ( pattern "=>" ( "{" statement* "}" | statement ) ","? )* "}"
     | "spawn" "on" "(" topology ")" "{" statement* "}"   // routes its body to a topology; yields Pinned<T, topology>
+    | "tasks" "{" statement* "}"                         // waits at its end for each task that it started
+    | "spawn" "{" statement* "}"                         // a task, only in a `tasks` block; yields Task<T>
     | "transfer" "(" expr "," memory_space ")"
     | "Reachable" "<" topology "," topology ">"           // comptime transferability predicate (a bool)
     | "[" ( expr ","? )* "]"
@@ -177,8 +183,9 @@ primary_expr ::=
 
 pattern ::= 
     | "_"
-    | number_literal
+    | "-"? number_literal
     | string_literal
+    | "true" | "false"
     | identifier ( "<" identifier ">" )? "::" identifier ( "(" ( pattern ","? )* ")" )?
     | identifier
 ```
@@ -205,7 +212,6 @@ type ::=
 // written (see types.md).
 named_type ::= 
     | "Tensor" "<" element_type "," "[" ( shape_dim ","? )* "]" ( "," placement )? ">"
-    | "Matrix"
     | element_type
     | identifier ( "<" type ( "," type )* ">" )?
 

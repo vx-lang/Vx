@@ -1,0 +1,42 @@
+//===- called_function_widths.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Arithmetic in functions that a `comptime` block calls, at several integer widths, with each
+// result inside its type.
+
+fn half_of_next(a : i32) -> i32 {
+  return (a + 1i32) / 2i32;
+}
+
+fn small_steps(a : i8, b : i8) -> i8 {
+  return (a - b) * 2i8 + (a % 5i8);
+}
+
+fn unsigned_mix(a : u16, b : u16) -> u16 {
+  return a * b / 3u16 + 65000u16 % b;
+}
+
+fn main() -> i32 {
+  let x = comptime {
+    half_of_next(2147483645i32)
+  };
+  println!("{}", x);
+  let y = comptime {
+    small_steps(40i8, 3i8)
+  };
+  println!("{}", y);
+  let z = comptime {
+    unsigned_mix(200u16, 300u16)
+  };
+  println!("{}", z);
+  let w = comptime {
+    let m : i32 = 0i32 - 2147483647i32;
+    -m
+  };
+  println!("{}", w);
+  return 0;
+}

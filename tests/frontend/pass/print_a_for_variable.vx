@@ -1,0 +1,21 @@
+//===- print_a_for_variable.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `print!` prints the variable of a `for` loop over a range. The program prints 0 1 2.
+//
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s
+// RUN: vxc %s 2>&1 | FileCheck %s
+// CHECK: 0 1 2
+
+fn main() -> i32 {
+  for k in 0..3 {
+    print!(k);
+    print!(" ");
+  }
+  print!("\n");
+  return 0;
+}

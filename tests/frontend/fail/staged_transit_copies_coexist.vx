@@ -49,9 +49,9 @@ Topology Dev {
 
 fn main() -> i32 {
   // 384*384*4 = 589824 each; two of them do not fit the transit space.
-  let p = Tensor<f32, [384, 384]>::uninit();
+  let p = unsafe { Tensor<f32, [384, 384]>::uninit() };
   let _sp = transfer(p, Memory::Dest);
-  let q = Tensor<f32, [384, 384]>::uninit();
+  let q = unsafe { Tensor<f32, [384, 384]>::uninit() };
   let _sq = transfer(q, Memory::Dest);
   return 0;
 }

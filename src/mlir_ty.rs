@@ -31,15 +31,17 @@ pub fn mlir_scalar(elem: &ElementType) -> Option<&'static str> {
         I64 | U64 | USize => "i64",
         I128 | U128 => "i128",
         Bool => "i1",
-        // fp8 is capacity/declaration-only for now: the JIT has no fp8 arithmetic,
-        // so the flat path declines. Compute support is #249.
-        F8E4M3 | F8E5M2 | F4E2M1 => return None,
+        // LLVM has no type for these. The `vx-expand-narrow-floats` pass writes their
+        // conversions as integer operations.
+        F8E4M3 => "f8E4M3FN",
+        F8E5M2 => "f8E5M2",
+        F4E2M1 => "f4E2M1FN",
         Generic(_) => return None,
     })
 }
 
 /// The MLIR spelling of `<N x T>`: `vector<NxT>`. `None` when the element has no MLIR spelling
-/// (fp8, a generic), which is the same condition that makes a scalar of it decline.
+/// (a generic), which is the same condition that makes a scalar of it decline.
 pub fn mlir_vector(elem: &ElementType, lanes: usize) -> Option<String> {
     Some(format!("vector<{lanes}x{}>", mlir_scalar(elem)?))
 }

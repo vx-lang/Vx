@@ -1,6 +1,6 @@
 //===- parser_enum_missing_comma.vx - Vx Compiler -------------------*- Vx
 //-*-===//
-// CHECK: Error at 13:13: {{.*}}Expected '}'
+// CHECK: Error at {{.*}}parser_enum_missing_comma.vx:13:13: {{.*}}Expected '}'
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.

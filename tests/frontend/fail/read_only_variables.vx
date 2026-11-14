@@ -85,13 +85,13 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK-DAG: Error[E4010] at 28:3: `x` is not declared `mut`, so it cannot be assigned; declare it `let mut x`
-// CHECK-DAG: Error[E4010] at 34:3: `x` is not declared `mut`, so it cannot be assigned
-// CHECK-DAG: Error[E4010] at 42:5: `c` is not declared `mut`, so it cannot be assigned
-// CHECK-DAG: Error[E4010] at 48:4: `t` is not declared `mut`, so it cannot be assigned
-// CHECK-DAG: Error[E4010] at 54:11: `x` is not declared `mut`, so it cannot be borrowed `&mut`
-// CHECK-DAG: Error[E4010] at 63:5: `c` is not declared `mut`, so `bump`, which takes `&mut self`, cannot change it
-// CHECK-DAG: Error[E4010] at 68:3: `n` is not declared `mut`, so it cannot be assigned; write the parameter as `mut n`
-// CHECK-DAG: Error[E4006] at 75:11: this borrows `&mut` through a shared reference
-// CHECK-DAG: Error[E4006] at 80:5: `bump` takes `&mut self`, and this calls it through a shared reference
+// CHECK-DAG: Error[E4010] at {{.*}}read_only_variables.vx:28:3: `x` is not declared `mut`, so it cannot be assigned; declare it `let mut x`
+// CHECK-DAG: Error[E4010] at {{.*}}read_only_variables.vx:34:3: `x` is not declared `mut`, so it cannot be assigned
+// CHECK-DAG: Error[E4010] at {{.*}}read_only_variables.vx:42:5: `c` is not declared `mut`, so it cannot be assigned
+// CHECK-DAG: Error[E4010] at {{.*}}read_only_variables.vx:48:4: `t` is not declared `mut`, so it cannot be assigned
+// CHECK-DAG: Error[E4010] at {{.*}}read_only_variables.vx:54:11: `x` is not declared `mut`, so it cannot be borrowed `&mut`
+// CHECK-DAG: Error[E4010] at {{.*}}read_only_variables.vx:63:5: `c` is not declared `mut`, so `bump`, which takes `&mut self`, cannot change it
+// CHECK-DAG: Error[E4010] at {{.*}}read_only_variables.vx:68:3: `n` is not declared `mut`, so it cannot be assigned; write the parameter as `mut n`
+// CHECK-DAG: Error[E4006] at {{.*}}read_only_variables.vx:75:11: this borrows `&mut` through a shared reference
+// CHECK-DAG: Error[E4006] at {{.*}}read_only_variables.vx:80:5: `bump` takes `&mut self`, and this calls it through a shared reference
 // CHECK: 9 error(s) emitted

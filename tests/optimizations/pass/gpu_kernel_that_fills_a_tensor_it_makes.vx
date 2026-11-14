@@ -1,0 +1,28 @@
+//===- gpu_kernel_that_fills_a_tensor_it_makes.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `spawn` makes a tensor with `fill`, copies it into a tensor in GPU memory,
+// and drops it at its end. The compiler makes a PTX kernel for it, which stores
+// 3.0 (bits 1077936128) into global memory.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s
+// CHECK: toponame=Device{{.*}}image={{.*}}.entry vx_npu_kernel_0({{.*}}1077936128
+
+fn main() -> i32 {
+  let h = Tensor<f32, [4]>::fill(2.0);
+  let mut d = transfer(h, Memory::HBM);
+  spawn on(Topology::Device) {
+    let t = Tensor<f32, [4]>::fill(3.0);
+    for i in 0..4 {
+      d[i] = t[i];
+    }
+  }
+  let back = transfer(d, Memory::CPU_DRAM);
+  print(back[0]);
+  return 0;
+}

@@ -1,0 +1,130 @@
+//===- lane_copies_with_tma.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `lanes::copy_async` with TMA, on an `sm_90a` GPU. Element `[r][c]` of `x` is `100 * r + c + 1`.
+// A block copies two 4x8 tiles of `x`, and the host prints the first and the last element of
+// some rows. A row of a tile is 128 bytes, so each tile starts at a multiple of 128 bytes, as TMA
+// needs.
+//
+// The first three RUN lines run the CPU copy of the kernel (`CUDA_VISIBLE_DEVICES=`), with a
+// normal compile, a parallel compile (`-j`) and the AST code generator. The host asks for a
+// tensor map of `x`, gets 0 with no GPU, and the CPU copies the tiles.
+//
+// The last RUN line checks the PTX of the kernel, which `--emit-llvm` shows as a string.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s -j 2 --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-llvm 2>/dev/null | FileCheck %s --check-prefix=PTX
+
+// The tile at `[2, 3]`: column 10 is past the end.
+// OUT: tile 0 row 0: 204 0
+// OUT-NEXT: tile 0 row 3: 504 0
+// The tile at `[8, 2]`: rows 10 and 11 are past the end.
+// OUT-NEXT: tile 1 row 0: 803 810
+// OUT-NEXT: tile 1 row 1: 903 910
+// OUT-NEXT: tile 1 row 2: 0 0
+
+// The PTX. The tile starts at a multiple of 128 bytes. Thread 0 makes 8 mbarriers, and every
+// thread waits for it.
+// PTX: vx_npu_kernel_0_str
+// PTX-SAME: .target sm_90a
+// PTX-SAME: .shared .align 128 .b8 vx_npu_kernel_0_smem_1[256];
+// PTX-SAME: .shared .align 8 .b8 vx_npu_kernel_0_smem_0[64];
+// PTX-SAME: mbarrier.init.shared::cta.b64
+// PTX-SAME: mbarrier.init.shared::cta.b64
+// PTX-SAME: mbarrier.init.shared::cta.b64
+// PTX-SAME: mbarrier.init.shared::cta.b64
+// PTX-SAME: mbarrier.init.shared::cta.b64
+// PTX-SAME: mbarrier.init.shared::cta.b64
+// PTX-SAME: mbarrier.init.shared::cta.b64
+// PTX-SAME: mbarrier.init.shared::cta.b64
+// PTX-SAME: fence.mbarrier_init.release.cluster;
+// PTX-SAME: bar.sync
+// If the map is not 0, thread 0 copies the first tile with TMA: 128 bytes from column 3 and row 2
+// (the innermost dimension first), into `tiles[0]`, on mbarrier 0.
+// PTX-SAME: ld.param.b64 \09%rd[[MAP1:[0-9]+]], [vx_npu_kernel_0_param_7];
+// PTX-SAME: setp.eq.b64 \09%p{{[0-9]+}}, %rd[[MAP1]], 0;
+// The address of the tiles comes once, before the test of the map.
+// PTX-SAME: mov.b64 \09%rd[[TILES:[0-9]+]], vx_npu_kernel_0_smem_1;
+// PTX-SAME: fence.proxy.tensormap::generic.acquire.sys [%rd[[MAP1]]], 128;
+// PTX-SAME: fence.proxy.async.shared::cta;
+// PTX-SAME: mov.b64 \09%rd[[BAR0:[0-9]+]], vx_npu_kernel_0_smem_0;
+// PTX-SAME: mov.b32 \09%r[[BYTES:[0-9]+]], 128;
+// PTX-SAME: mbarrier.arrive.expect_tx.shared::cta.b64 st, [%rd[[BAR0]]], %r[[BYTES]];
+// PTX-SAME: mov.b32 \09%r[[C0:[0-9]+]], 3;
+// PTX-SAME: mov.b32 \09%r[[R0:[0-9]+]], 2;
+// PTX-SAME: cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%rd[[TILES]]], [%rd[[MAP1]], {%r[[C0]], %r[[R0]]}], [%rd[[BAR0]]];
+// Otherwise the lanes copy it with `cp.async`, and thread 0 ends the phase of mbarrier 0.
+// PTX-SAME: cp.async.ca.shared.global
+// PTX-SAME: mbarrier.arrive.shared::cta.b64
+// PTX-SAME: cp.async.commit_group;
+// The second tile goes to `tiles[1]`, 128 bytes on, on mbarrier 1.
+// PTX-SAME: mov.b64 \09%rd[[RING:[0-9]+]], vx_npu_kernel_0_smem_0;
+// PTX-SAME: add.s64 \09%rd[[BAR1:[0-9]+]], %rd[[RING]], 8;
+// PTX-SAME: mbarrier.arrive.expect_tx.shared::cta.b64 st, [%rd[[BAR1]]], %r{{[0-9]+}};
+// PTX-SAME: add.s64 \09%rd[[TILE1:[0-9]+]], %rd[[TILES]], 128;
+// PTX-SAME: mov.b32 \09%r[[C1:[0-9]+]], 2;
+// PTX-SAME: mov.b32 \09%r[[R1:[0-9]+]], 8;
+// PTX-SAME: cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%rd[[TILE1]]], [%rd{{[0-9]+}}, {%r[[C1]], %r[[R1]]}], [%rd[[BAR1]]];
+// PTX-SAME: cp.async.commit_group;
+// The wait for a TMA copy: thread 0 waits for the phase of each mbarrier up to the copy, and then
+// every thread waits for it. The wait for a `cp.async` copy waits for its group.
+// PTX-SAME: mbarrier.try_wait.parity.shared::cta.b64
+// PTX-SAME: cp.async.wait_group \091;
+// PTX-SAME: bar.sync
+// PTX-SAME: mbarrier.try_wait.parity.shared::cta.b64
+// PTX-SAME: cp.async.wait_group \090;
+// PTX-SAME: bar.sync
+
+// The host makes a tensor map of `x`: its address, 2 dimensions of 4 bytes, its sizes (10 and
+// 10) and strides (10 and 1), and the box of the tile, 4 by 8. 0 fills the 3 dimensions that `x`
+// does not have. The kernel takes the map as one more parameter.
+// PTX: llvm.func @vx_plugin_tensor_map(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> i64
+// PTX-LABEL: llvm.func @main(
+// PTX-DAG: %[[TWO:[0-9]+]] = llvm.mlir.constant(2 : i64) : i64
+// PTX-DAG: %[[FOUR:[0-9]+]] = llvm.mlir.constant(4 : i64) : i64
+// PTX-DAG: %[[EIGHT:[0-9]+]] = llvm.mlir.constant(8 : i64) : i64
+// PTX-DAG: %[[TEN:[0-9]+]] = llvm.mlir.constant(10 : i64) : i64
+// PTX-DAG: %[[ZERO:[0-9]+]] = llvm.mlir.constant(0 : i64) : i64
+// PTX: %[[MAP:[0-9]+]] = llvm.call @vx_plugin_tensor_map(%{{[0-9]+}}, %[[TWO]], %[[FOUR]], %[[TEN]], %[[TEN]], %[[ZERO]], %[[ZERO]], %[[ZERO]], %[[TEN]], %{{[0-9]+}}, %[[ZERO]], %[[ZERO]], %[[ZERO]], %[[FOUR]], %[[EIGHT]], %[[ZERO]], %[[ZERO]], %[[ZERO]])
+// PTX: llvm.store %[[MAP]], %{{[0-9]+}} : i64, !llvm.ptr
+// PTX: llvm.call @vx_plugin_dispatch_async(
+
+fn main() -> i32 {
+  let mut src = Tensor<f32, [10, 10]>::fill(0.0);
+  for r in 0..10 {
+    for c in 0..10 {
+      src[r][c] = (100 * r + c + 1) as f32;
+    }
+  }
+  let x = transfer(src, Memory::HBM);
+  let mut out = transfer(Tensor<f32, [64]>::fill(-1.0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tiles = unsafe {
+        Tensor<f32, [2, 4, 8], Memory::SMEM>::uninit()
+      };
+      let first = lanes::copy_async(&mut tiles[0], &x, [2, 3]);
+      let second = lanes::copy_async(&mut tiles[1], &x, [8, 2]);
+      first.wait();
+      second.wait();
+      for t in 0..32 across lanes(32) {
+        out[t] = tiles[0][t / 8][t % 8];
+        out[32 + t] = tiles[1][t / 8][t % 8];
+      }
+    }
+  }
+  let o = transfer(out, Memory::CPU_DRAM);
+  println!("tile 0 row 0: {} {}", o[0], o[7]);
+  println!("tile 0 row 3: {} {}", o[24], o[31]);
+  for row in 0..3 {
+    let at = 32 + row * 8;
+    println!("tile 1 row {}: {} {}", row, o[at], o[at + 7]);
+  }
+  return 0;
+}

@@ -1,0 +1,29 @@
+//===- functions_generic_over_memory_on_the_host.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program with no machine file has no memory called `M`. `Memory::M` in a function with
+// `<M : Memory>` names a parameter, not a memory, so the function compiles, and the calls give
+// it host memory.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: sum 6 last 9
+
+fn sum_two<M : Memory>(t : &Tensor<i32, [?], Memory::M>) -> i32 {
+  return t[0] + t[1];
+}
+
+fn last<M : Memory>(t : &Tensor<i32, [?], Memory::M>, n : i32) -> i32 {
+  return t[n - 1];
+}
+
+fn main() -> i32 {
+  let h = Tensor<i32, [2]>::fill(3);
+  let k = Tensor<i32, [5]>::fill(9);
+  println!("sum {} last {}", sum_two(&h), last(&k, 5));
+  return 0;
+}

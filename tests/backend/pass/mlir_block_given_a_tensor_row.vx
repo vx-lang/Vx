@@ -7,10 +7,8 @@
 //===----------------------------------------------------------------------===//
 // A row of a tensor, `q[i]`, given to an `mlir!` block that declares it `memref<?xf32>`. Row 0
 // holds 1s and row 1 holds 100 to 103, so a block that wrongly reads row 0 prints 1.
+// The test runs on both code generators.
 //
-// The AST code generator cannot compile a row given to an `mlir!` block yet.
-//
-// REQUIRES: flat-codegen
 // EXPECT: 100
 fn first_of_row(q : &Tensor<f32, [2, 4]>, i : i32) -> f32 {
   return mlir!(inputs : (%a = q[i] : memref<?xf32>), returns : f32, dialects : ["arith", "memref"]) {

@@ -1,0 +1,92 @@
+//===- lane_sorts_on_the_gpu.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The PTX of the lane sorts. Each lane holds its keys in registers. A step of the sorting network
+// with a distance below 32 takes the other key with two 32-bit butterfly shuffles. A step with a
+// distance of at least the lanes of the block uses another register of the lane. Only the steps
+// between go through shared memory, with a barrier after the stores and one after the loads.
+//
+// A block of 1024 lanes sorts 2048 keys, two in each lane. The network has 66 steps: 45 with
+// shuffles, 1 in registers, and 20 in shared memory. The only shared memory is the tensor itself.
+// In the code of a subgroup, every step stays in its warp, so no step needs a barrier.
+//
+// The manifest next to the PTX describes each parameter of a kernel. A reference to a tensor is a
+// tensor of rank 1, on both code generators.
+//
+// RUN: vxc %s --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s < %t.ptx --implicit-check-not=local_depot
+// RUN: FileCheck %s --check-prefix=JSON < %t.json
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ast.ptx
+// RUN: FileCheck %s < %t.ast.ptx --implicit-check-not=local_depot
+// RUN: FileCheck %s --check-prefix=JSON < %t.ast.json
+
+// JSON: "name": "sort_2048",
+// JSON-NEXT: "params": [
+// JSON-NEXT: {
+// JSON-NEXT: "element": "i64",
+// JSON-NEXT: "kind": "tensor",
+// JSON-NEXT: "mutable": true,
+// JSON-NEXT: "name": "out",
+// JSON-NEXT: "rank": 1,
+// JSON: "element": "i64",
+// JSON-NEXT: "kind": "tensor",
+// JSON-NEXT: "mutable": false,
+// JSON-NEXT: "name": "x",
+// JSON-NEXT: "rank": 1,
+// JSON: "kind": "scalar",
+// JSON-NEXT: "mutable": false,
+// JSON-NEXT: "name": "n",
+
+// CHECK-LABEL: .entry sort_2048(
+// CHECK: .shared .align 16 .b8 {{.*}}[16384];
+// CHECK-NOT: .shared .align
+// CHECK-COUNT-180: shfl.sync.bfly.b32
+// CHECK-NOT: shfl.sync
+// CHECK-LABEL: .entry sort_rows(
+pub fn sort_2048(out : &mut Tensor<i64, [?], Memory::HBM>, x : &Tensor<i64, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut keys = unsafe { Tensor<i64, [2048], Memory::SMEM>::uninit() };
+      for t in 0..2048 across lanes(1024) {
+        keys[t] = x[t];
+      }
+      lanes::sort_descending(&mut keys, n);
+      for t in 0..2048 across lanes(1024) {
+        out[t] = keys[t];
+      }
+    }
+  }
+  return;
+}
+
+// Rows of 64 keys, two in each lane: 21 steps, 20 with shuffles and 1 in registers. The step in
+// registers is the one of distance 32, after the merges of runs up to 32 (60 shuffles).
+// CHECK: bar.warp.sync -1;
+// CHECK-NOT: bar.sync
+// CHECK-COUNT-60: shfl.sync.bfly.b32
+// CHECK-NOT: bar.sync
+// CHECK-COUNT-20: shfl.sync.bfly.b32
+// CHECK-NOT: shfl.sync
+// CHECK-NOT: bar.sync
+// CHECK: bar.warp.sync -1;
+pub fn sort_rows(out : &mut Tensor<i64, [?], Memory::HBM>, x : &Tensor<i64, [?], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..rows across blocks {
+      let mut part = unsafe { Tensor<i64, [4, 64], Memory::SMEM>::uninit() };
+      for w in 0..4 across subgroups {
+        for t in 0..64 across lanes(32) {
+          part[w][t] = x[(b * 4 + w) * 64 + t];
+        }
+        lanes::sort(&mut part[w], 64);
+        for t in 0..64 across lanes(32) {
+          out[(b * 4 + w) * 64 + t] = part[w][t];
+        }
+      }
+    }
+  }
+  return;
+}

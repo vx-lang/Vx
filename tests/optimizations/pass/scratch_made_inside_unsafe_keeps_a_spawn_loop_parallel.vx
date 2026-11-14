@@ -1,0 +1,32 @@
+//===- scratch_made_inside_unsafe_keeps_a_spawn_loop_parallel.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A scratch tile made with `::uninit()` inside `unsafe { .. }`, where it belongs, before a
+// `spawn on` loop is the same thread-private scratch as one made without it, so the loop still
+// runs in parallel.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s
+// CHECK: launch=64
+
+fn probe() -> f32 {
+  let mut o = Tensor<f32, [64, 4], Memory::GPU_HBM>::new();
+  spawn on(Topology::GPU) {
+    let mut s = unsafe { Tensor<f32, [1, 4]>::uninit() };
+    for r in 0..64 {
+      s[0][0] = 1.0;
+      o[r][0] = s[0][0];
+    }
+  }
+  let h = transfer(o, Memory::CPU_DRAM);
+  return h[0][0];
+}
+
+fn main() -> i32 {
+  print(probe());
+  return 0;
+}

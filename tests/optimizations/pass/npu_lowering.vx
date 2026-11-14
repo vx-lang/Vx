@@ -7,7 +7,7 @@ fn dummy(x : i32) on Topology::NPU[0] -> i32 {
 }
 
 fn process(t : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]> {
-  let mut res = Tensor<i32, [4, 4], Memory::NPU_HBM>::uninit();
+  let mut res = unsafe { Tensor<i32, [4, 4], Memory::NPU_HBM>::uninit() };
   let val = spawn on(Topology::NPU[0]) {
     dummy(0)
   };
@@ -34,9 +34,14 @@ fn process(t : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]> {
 // vx-to-llvm replaces the launch with the vendor-neutral plugin call, passing a descriptor
 // string that carries the kernel name, its topology id and the topology's name -- the ABI a
 // worker reads. The kernel itself becomes an ordinary exported function.
-// VXLLVM: llvm.func @vx_plugin_dispatch_async(!llvm.ptr, i64, !llvm.ptr, !llvm.ptr, i64) -> i64
-// VXLLVM: llvm.mlir.global internal constant @[[S:[a-z0-9_]+]]_str("vx_npu_kernel_0\00topo=100\00toponame=NPU[0]\00")
+// VXLLVM: llvm.func {{(hidden )?}}@vx_plugin_dispatch_async(!llvm.ptr, i64, !llvm.ptr, !llvm.ptr, i64) -> i64
+// The keys the dispatch ABI is built on, not the whole entry list. The payload grows by design
+// -- a version key, a kernel kind, an image format (docs/gpu_backends.md, "Shared work before a
+// second backend", item 2) -- so a byte-exact check here goes red on each addition while
+// asserting nothing this fixture is about, which is that the name, the topology id and the
+// topology's name reach the worker.
+// VXLLVM: llvm.mlir.global internal constant @[[S:[a-z0-9_]+]]_str("vx_npu_kernel_0\00{{[^"]*}}topo=100\00toponame=NPU[0]\00")
 // VXLLVM: %[[D:.*]] = llvm.mlir.addressof @[[S]]_str : !llvm.ptr
 // VXLLVM: llvm.call @vx_plugin_dispatch_async(%[[D]], %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i64, !llvm.ptr, !llvm.ptr, i64) -> i64
-// VXLLVM: @vx_npu_kernel_0(%arg0: {{.*}}) attributes {llvm.emit_c_interface}
+// VXLLVM: @vx_npu_kernel_0(%arg0: {{.*}}) attributes {{.*}}llvm.emit_c_interface{{(, passthrough = \[\["probe-stack", "inline-asm"\]\])?}}}
 // VXLLVM-NOT: vx.launch

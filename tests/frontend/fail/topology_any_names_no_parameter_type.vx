@@ -1,0 +1,20 @@
+//===- topology_any_names_no_parameter_type.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Topology::Any` means only that a function runs where it is called, so it can follow `on`
+// and nothing else. Here it is the placement of a parameter.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: :[[# @LINE + 2]]:{{[0-9]+}}: `Topology::Any` can only follow `on` in a function signature, where it means that the function runs where it is called
+
+fn first(t : &Tensor<i32, [?], Topology::Any>) on Topology::Any -> i32 {
+  return t[0];
+}
+
+fn main() -> i32 {
+  return 0;
+}

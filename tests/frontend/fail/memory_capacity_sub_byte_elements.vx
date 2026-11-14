@@ -22,10 +22,10 @@ Topology Npu {
 }
 
 fn main() -> i32 {
-  let flags = transfer(Tensor<bool, [1100]>::uninit(), Memory::NPU_SRAM);
-  let weights = transfer(Tensor<i4, [30, 40]>::uninit(), Memory::NPU_SRAM);
-  let codes = transfer(Tensor<u4, [1300]>::uninit(), Memory::NPU_SRAM);
-  let scales = transfer(Tensor<f4e2m1, [1400]>::uninit(), Memory::NPU_SRAM);
+  let flags = transfer(unsafe { Tensor<bool, [1100]>::uninit() }, Memory::NPU_SRAM);
+  let weights = transfer(unsafe { Tensor<i4, [30, 40]>::uninit() }, Memory::NPU_SRAM);
+  let codes = transfer(unsafe { Tensor<u4, [1300]>::uninit() }, Memory::NPU_SRAM);
+  let scales = transfer(unsafe { Tensor<f4e2m1, [1400]>::uninit() }, Memory::NPU_SRAM);
   return 0;
 }
 

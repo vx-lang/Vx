@@ -1,0 +1,21 @@
+//===- element_atomic_index_outside_the_tensor.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An element atomic writes through a pointer, so it checks the index itself. Index 3 of a tensor
+// of 3 elements stops the program.
+//
+// RUN: not vxc %s --run 2>&1 | FileCheck %s
+// CHECK: atomic read-modify-write: the index is outside the tensor
+// CHECK-NOT: after
+import core::sync::atomic;
+
+fn main() -> i32 {
+  let h = Tensor<u32, [3]>::fill(0u32);
+  let _old = atomic_fetch_add_u32(&h, 3, 1u32, AtomicOrdering::Relaxed);
+  println!("after {}", h[0]);
+  return 0;
+}

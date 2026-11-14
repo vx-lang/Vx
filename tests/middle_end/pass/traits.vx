@@ -23,7 +23,7 @@ fn process<T : Dimension>(val : T) -> i32 {
 }
 
 fn main() -> i32 {
-  let t = Tensor<f32, [2, 2]>::uninit();
+  let t = unsafe { Tensor<f32, [2, 2]>::uninit() };
   let res = process(t);
   return 0;
 }

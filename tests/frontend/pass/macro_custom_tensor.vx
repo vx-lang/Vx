@@ -1,4 +1,4 @@
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: %[[V0:.*]] = memref.alloc() : memref<10x20xf32>
 // CHECK: %[[V1:.*]] = arith.constant 0 : i32
@@ -13,7 +13,7 @@ macro_rules shape_zero { ($t : expr) => {
     $t.extent(0)
   }; }
 fn main() -> i32 {
-  let t = Tensor<f32, [10, 20]>::uninit();
+  let t = unsafe { Tensor<f32, [10, 20]>::uninit() };
   let s = shape_zero!(t);
   return s;
 }

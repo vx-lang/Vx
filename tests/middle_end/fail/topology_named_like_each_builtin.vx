@@ -1,0 +1,66 @@
+//===- topology_named_like_each_builtin.vx ----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// Every name the parser reads as a built-in topology is refused as the name of a
+// declared one, the second spelling of `CpuAvx512` and `CpuNeon` included: a use
+// of that name would always mean the built-in, so the declaration would be ignored.
+// topology_shadows_builtin.vx shows what goes wrong when it is not refused.
+// CHECK-DAG: topology 'CPU' shadows the built-in
+// CHECK-DAG: topology 'Current' shadows the built-in
+// CHECK-DAG: topology 'NPU' shadows the built-in
+// CHECK-DAG: topology 'AccCore' shadows the built-in
+// CHECK-DAG: topology 'AMX' shadows the built-in
+// CHECK-DAG: topology 'ANE' shadows the built-in
+// CHECK-DAG: topology 'GPU' shadows the built-in
+// CHECK-DAG: topology 'CpuAvx512' shadows the built-in
+// CHECK-DAG: topology 'CPU_AVX512' shadows the built-in
+// CHECK-DAG: topology 'CpuNeon' shadows the built-in
+// CHECK-DAG: topology 'CPU_Neon' shadows the built-in
+
+Memory CHIP_RAM {
+  capacity: 1 GB, bandwidth: 1 TB/s
+}
+
+Topology CPU {
+  memory: Memory::CHIP_RAM, transfer Memory::CPU_DRAM -> Memory::CHIP_RAM : 100
+}
+Topology Current {
+  memory: Memory::CHIP_RAM, transfer Memory::CPU_DRAM -> Memory::CHIP_RAM : 100
+}
+Topology NPU {
+  memory: Memory::CHIP_RAM, transfer Memory::CPU_DRAM -> Memory::CHIP_RAM : 100
+}
+Topology AccCore {
+  memory: Memory::CHIP_RAM, transfer Memory::CPU_DRAM -> Memory::CHIP_RAM : 100
+}
+Topology AMX {
+  memory: Memory::CHIP_RAM, transfer Memory::CPU_DRAM -> Memory::CHIP_RAM : 100
+}
+Topology ANE {
+  memory: Memory::CHIP_RAM, transfer Memory::CPU_DRAM -> Memory::CHIP_RAM : 100
+}
+Topology GPU {
+  memory: Memory::CHIP_RAM, transfer Memory::CPU_DRAM -> Memory::CHIP_RAM : 100
+}
+Topology CpuAvx512 {
+  memory: Memory::CHIP_RAM, transfer Memory::CPU_DRAM -> Memory::CHIP_RAM : 100
+}
+Topology CPU_AVX512 {
+  memory: Memory::CHIP_RAM, transfer Memory::CPU_DRAM -> Memory::CHIP_RAM : 100
+}
+Topology CpuNeon {
+  memory: Memory::CHIP_RAM, transfer Memory::CPU_DRAM -> Memory::CHIP_RAM : 100
+}
+Topology CPU_Neon {
+  memory: Memory::CHIP_RAM, transfer Memory::CPU_DRAM -> Memory::CHIP_RAM : 100
+}
+
+fn main() -> i32 {
+  return 0;
+}

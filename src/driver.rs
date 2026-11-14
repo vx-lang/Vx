@@ -46,14 +46,28 @@ pub enum Action {
     /// Serialize this module's import interface (frozen registry + flat-HIR bodies) to a `.vxlib`
     /// artifact, so a downstream compile can import it without re-parsing the source (#220).
     EmitInterface,
+    /// Write the program's GPU kernels as one PTX file, and a `.json` file beside it that
+    /// gives each kernel's parameters (docs/lang/abi.md, section 3.5)
+    EmitPtx,
+    /// Write the program's Apple GPU kernels as one Metal Shading Language file, and a `.json`
+    /// file beside it that gives each kernel's parameters
+    EmitMsl,
+    /// Parse and typecheck the program, then print each fact that the compiler trusts without a
+    /// proof: each `assume`, each pointer clause that a call in `unsafe` code trusts, each
+    /// `ensures` of an `extern` function, and each pointer `requires` of a `pub fn`
+    Audit,
 }
 
+/// What `vxc --version` prints after the name: the package version, then the commit the
+/// compiler was built from when the build set `VX_VERSION_WITH_COMMIT=1`, as `0.0.3 (f1fb0333)`.
+pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), vx_build_commit::commit_suffix!());
+
 #[derive(Parser, Debug, Clone)]
-#[command(author, version, about, long_about = None)]
+#[command(author, version = VERSION, about, long_about = None)]
 pub struct DriverOptions {
     /// Action to perform
     #[arg(short = 'a', long = "action", value_enum, default_value_t = Action::RunJit)]
-    #[arg(overrides_with_all = ["compile", "parse_only", "print_ast", "emit_mlir", "emit_llvm", "run_jit", "emit_interface"])]
+    #[arg(overrides_with_all = ["compile", "parse_only", "print_ast", "emit_mlir", "emit_llvm", "run_jit", "emit_interface", "emit_ptx", "emit_msl", "audit"])]
     pub action: Action,
 
     /// Output file. With several inputs, a directory that receives one output per input
@@ -89,6 +103,18 @@ pub struct DriverOptions {
     #[arg(long = "emit-interface", overrides_with = "action")]
     pub emit_interface: bool,
 
+    /// Write the GPU kernels as PTX (alias for --action emit-ptx)
+    #[arg(long = "emit-ptx", overrides_with = "action")]
+    pub emit_ptx: bool,
+
+    /// Write the Apple GPU kernels as Metal Shading Language (alias for --action emit-msl)
+    #[arg(long = "emit-msl", overrides_with = "action")]
+    pub emit_msl: bool,
+
+    /// Print the facts that the compiler trusts without a proof (alias for --action audit)
+    #[arg(long = "audit", overrides_with = "action")]
+    pub audit: bool,
+
     /// Link a precompiled `.vxlib` module interface: its function signatures resolve imported calls in
     /// the frontend (type + borrow check, incl. cross-module return provenance) and its portable
     /// flat-HIR bodies link in the flat codegen — all without parsing the library's source (#265 step
@@ -109,6 +135,11 @@ pub struct DriverOptions {
     /// imports that start with `name`. Can be given more than once.
     #[arg(long = "package", value_name = "NAME=DIR", value_parser = parse_package)]
     pub packages: Vec<(String, PathBuf)>,
+
+    /// Read the standard library from DIR instead of from beside the compiler. Can be given more
+    /// than once; the directories are searched in order.
+    #[arg(long = "std-path", value_name = "DIR")]
+    pub std_paths: Vec<PathBuf>,
 
     /// The host the program runs on: a file declaring `Memory::CPU_DRAM`, or
     /// `default` for the machine compiling it.
@@ -182,6 +213,12 @@ pub struct DriverOptions {
     #[arg(long = "verify-seams")]
     pub verify_seams: bool,
 
+    /// Print, for each function of the file, the borrow clauses that the checker can prove from
+    /// its body, such as `ensures !reaches(return, *key)`. A clause can be copied into the
+    /// signature to make it part of the contract.
+    #[arg(long = "print-borrow-clauses")]
+    pub print_borrow_clauses: bool,
+
     /// Transport host-proven `assert` facts across a host->device `spawn` seam as
     /// `llvm.intr.assume` certificates at the kernel entry, so the device backend's
     /// `-O3` can fold on a relation that would otherwise be opaque past the launch
@@ -200,6 +237,27 @@ pub struct DriverOptions {
     /// Disable LLVM optimizations
     #[arg(long = "disable-llvm-optimizations")]
     pub disable_llvm_optimizations: bool,
+
+    /// `--sanitize=thread`: build the program with LLVM's ThreadSanitizer, which reports each
+    /// data race when the program runs. Only when `vxc` runs the program (`run-jit`).
+    #[arg(long = "sanitize", value_name = "SANITIZER", value_parser = ["thread"])]
+    pub sanitize: Option<String>,
+
+    /// `-fauto-schedule-levels`: an `across` loop on an arch that cannot launch its levels runs
+    /// as a plain `for` that carries its level as metadata for MLIR and LLVM. The default,
+    /// `-fno-auto-schedule-levels`, makes such a loop an error.
+    ///
+    /// `-fweak-relaxed-atomics`: a relaxed atomic read stays relaxed, so a program may see load
+    /// buffering, which the memory model otherwise forbids. The default,
+    /// `-fno-weak-relaxed-atomics`, makes each relaxed read an acquire read.
+    ///
+    /// `-fbounds-checks`: an index outside the shape of a tensor stops the program with an
+    /// error. The check is in CPU code, not in a GPU kernel. The default, `-fno-bounds-checks`,
+    /// does not check indices.
+    ///
+    /// For each feature, the last one wins
+    #[arg(short = 'f', value_name = "FEATURE", value_parser = ["auto-schedule-levels", "no-auto-schedule-levels", "weak-relaxed-atomics", "no-weak-relaxed-atomics", "bounds-checks", "no-bounds-checks"])]
+    pub features: Vec<String>,
 
     /// Optimization level (-O0 to -O3)
     #[arg(short = 'O', num_args = 0..=1, default_missing_value = "3", default_value_t = 0)]
@@ -220,6 +278,37 @@ pub struct DriverOptions {
     /// Arguments to pass to the running program
     #[arg(last = true)]
     pub program_args: Vec<String>,
+}
+
+impl DriverOptions {
+    /// Whether `-f<name>` is on: the last of it and `-fno-<name>`.
+    fn feature(&self, name: &str) -> bool {
+        self.features
+            .iter()
+            .rev()
+            .find(|f| f.strip_prefix("no-").unwrap_or(f) == name)
+            .is_some_and(|f| f == name)
+    }
+
+    /// Whether `-fauto-schedule-levels` is on.
+    pub fn auto_schedule_levels(&self) -> bool {
+        self.feature("auto-schedule-levels")
+    }
+
+    /// Whether `-fweak-relaxed-atomics` is on.
+    pub fn weak_relaxed_atomics(&self) -> bool {
+        self.feature("weak-relaxed-atomics")
+    }
+
+    /// Whether `-fbounds-checks` is on.
+    pub fn bounds_checks(&self) -> bool {
+        self.feature("bounds-checks")
+    }
+
+    /// Whether `--sanitize=thread` is on.
+    pub fn thread_sanitizer(&self) -> bool {
+        self.sanitize.as_deref() == Some("thread")
+    }
 }
 
 /// `name=dir` for `--package`.
@@ -280,6 +369,12 @@ impl CompilerDriver {
             options.action = Action::RunJit;
         } else if options.emit_interface {
             options.action = Action::EmitInterface;
+        } else if options.emit_ptx {
+            options.action = Action::EmitPtx;
+        } else if options.emit_msl {
+            options.action = Action::EmitMsl;
+        } else if options.audit {
+            options.action = Action::Audit;
         } else if options.compile {
             options.action = Action::EmitObj;
         }
@@ -290,6 +385,26 @@ impl CompilerDriver {
     pub fn execute(&self) -> Result<(), String> {
         if self.options.inputs.is_empty() {
             return Err("No input files provided".to_string());
+        }
+        if self.options.thread_sanitizer() && self.options.action != Action::RunJit {
+            return Err(
+                "--sanitize=thread works only when vxc runs the program. Remove --action, or \
+                 use --action run-jit"
+                    .to_string(),
+            );
+        }
+        // run-jit builds and runs in one step. It never writes `-o`. Saying nothing
+        // made readers think `vxc prog.vx -o out` produced an executable.
+        if self.options.action == Action::RunJit {
+            if let Some(out) = &self.options.output {
+                return Err(format!(
+                    "-o '{}' has no effect with run-jit, the default action. \
+                     run-jit runs the program and writes no file. \
+                     To write an object file, use --action emit-obj. \
+                     To run the program, remove -o.",
+                    out.display()
+                ));
+            }
         }
         if self.options.inputs.len() == 1 {
             return self.execute_one();
@@ -336,6 +451,8 @@ impl CompilerDriver {
         let extension = match self.options.action {
             Action::EmitObj => "o",
             Action::EmitInterface => "vxlib",
+            Action::EmitPtx => "ptx",
+            Action::EmitMsl => "metal",
             _ => return Ok(None),
         };
         if !out.is_dir() {
@@ -422,6 +539,7 @@ impl CompilerDriver {
             ),
             (self.options.verify_seams, "--verify-seams"),
             (self.options.emit_seam_certs, "--emit-seam-certs"),
+            (self.options.print_borrow_clauses, "--print-borrow-clauses"),
         ];
         if let Some((_, flag)) = unsupported.iter().find(|(given, _)| *given) {
             return Err(format!(
@@ -461,17 +579,23 @@ impl CompilerDriver {
             let host_arch = Self::host_arch_of(programs.iter());
             // Only the file the user named reports its diagnostics, matching what the
             // sequential driver keeps from its own import pass.
-            let reported = crate::pipeline::Reported::OnlyEntry(filename.into());
+            let reported =
+                crate::pipeline::Reported::OnlyEntry(self.module_loader().root_name(filename));
             // A failed check ends with the line the sequential driver prints, with the file.
-            let text =
-                crate::pipeline::compile_modules_mlir_in(programs, sched, intern_mode, reported)
-                    .map_err(|e| match e {
-                        crate::pipeline::PipelineError::Failed { count, .. } => format!(
-                            "Semantic check failed on '{}': {} error(s) emitted",
-                            filename, count
-                        ),
-                        other => other.to_string(),
-                    })?;
+            let text = crate::pipeline::compile_modules_mlir_in(
+                programs,
+                sched,
+                intern_mode,
+                self.options.auto_schedule_levels(),
+                reported,
+            )
+            .map_err(|e| match e {
+                crate::pipeline::PipelineError::Failed { count, .. } => format!(
+                    "Semantic check failed on '{}': {} error(s) emitted",
+                    filename, count
+                ),
+                other => other.to_string(),
+            })?;
             let Some(text) = text else {
                 // Worded so it cannot be mistaken for the flat emitter's own decline, which
                 // `flat_corpus_sweep` classifies a program by: the two say different things
@@ -602,6 +726,7 @@ impl CompilerDriver {
                 self.options.program_args.clone(),
                 self.options.opt_level,
                 self.options.disable_llvm_optimizations,
+                self.options.thread_sanitizer(),
             )
             .map_err(|e| e.to_string())?;
             print_program_output(&out);
@@ -651,6 +776,9 @@ impl CompilerDriver {
             AstPrinter::print_program(&main_ast, &mut std::io::stdout()).unwrap();
             return Ok(());
         }
+        if self.options.action == Action::Audit {
+            return Ok(());
+        }
 
         self.run_codegen(
             main_ast,
@@ -662,9 +790,13 @@ impl CompilerDriver {
         )
     }
 
-    /// A loader that reads the `--package` directories.
+    /// A loader that reads the `--std-path` and `--package` directories.
     fn module_loader(&self) -> ModuleLoader {
-        let mut loader = ModuleLoader::new();
+        let mut loader = if self.options.std_paths.is_empty() {
+            ModuleLoader::new()
+        } else {
+            ModuleLoader::with_std_paths(self.options.std_paths.clone())
+        };
         for (name, dir) in &self.options.packages {
             loader.add_package(name, dir);
         }
@@ -738,6 +870,7 @@ impl CompilerDriver {
                 return Err(format!("Macro expansion failed: {}", e));
             }
         }
+        crate::resolver::fold_const_extents(&mut program_arr);
         Ok((program_arr, auto_interfaces))
     }
 
@@ -753,6 +886,7 @@ impl CompilerDriver {
     fn native_host_program() -> crate::syntax::Program {
         crate::syntax::Program {
             module_path: crate::symbol::Symbol::from(NATIVE_HOST_MODULE),
+            file: None,
             item_macros: Vec::new(),
             memories: vec![crate::syntax::MemoryDecl {
                 name: crate::symbol::Symbol::from("CPU_DRAM"),
@@ -769,6 +903,7 @@ impl CompilerDriver {
                 replicas: None,
                 managed: crate::syntax::Management::Explicit,
                 granule: None,
+                alignment: None,
                 scope: None,
                 overcommit: false,
                 crossing: crate::syntax::Crossing::default(),
@@ -777,6 +912,7 @@ impl CompilerDriver {
                 // property of an allocation nobody has made yet. A host file that wants
                 // to name its domains declares them itself.
                 numa_node: None,
+                place: Default::default(),
                 doc_comment: Some("the machine this was compiled on (--host default)".to_string()),
             }],
             // The compiling machine's own architecture, so `--host default`
@@ -791,7 +927,12 @@ impl CompilerDriver {
                     visibility: vec![crate::syntax::MemorySpace::CPUDRAM],
                     transfers: Vec::new(),
                     dtypes: None,
+                    chip: None,
+                    levels: None,
+                    offload: false,
+                    count: None,
                 },
+                place: Default::default(),
             }],
             imports: Vec::new(),
             macros: Vec::new(),
@@ -820,9 +961,12 @@ impl CompilerDriver {
     /// With no interfaces, an empty registry — the AST env resolves everything, as before.
     fn session_with_interfaces(
         interfaces: &[Vec<u8>],
+        auto_schedule_levels: bool,
     ) -> Result<std::sync::Arc<GlobalSession>, String> {
         if interfaces.is_empty() {
-            return Ok(std::sync::Arc::new(GlobalSession::new(1)));
+            return Ok(std::sync::Arc::new(
+                GlobalSession::new(1).auto_schedule_levels(auto_schedule_levels),
+            ));
         }
         let load = |b: &[u8]| {
             crate::metadata::deserialize_registry_interface(b)
@@ -836,7 +980,9 @@ impl CompilerDriver {
         for bytes in interfaces {
             reg.merge_from(load(bytes)?);
         }
-        Ok(std::sync::Arc::new(GlobalSession::with_registry(1, reg)))
+        Ok(std::sync::Arc::new(
+            GlobalSession::with_registry(1, reg).auto_schedule_levels(auto_schedule_levels),
+        ))
     }
 
     fn handle_parse_only(
@@ -846,9 +992,7 @@ impl CompilerDriver {
     ) -> Result<(), String> {
         let ast = program_arr
             .iter()
-            .find(|p| {
-                p.module_path == <std::string::String as Clone>::clone(&filename.to_string()).into()
-            })
+            .find(|p| p.module_path == self.module_loader().root_name(filename))
             .unwrap();
         println!("{:#?}", ast);
         Ok(())
@@ -922,9 +1066,7 @@ impl CompilerDriver {
     > {
         let syntax_idx = program_arr
             .iter()
-            .position(|p| {
-                p.module_path == <std::string::String as Clone>::clone(&filename.to_string()).into()
-            })
+            .position(|p| p.module_path == self.module_loader().root_name(filename))
             .unwrap();
         let ast = program_arr.remove(syntax_idx);
 
@@ -939,6 +1081,52 @@ impl CompilerDriver {
         Ok((ast, module_syntaxes))
     }
 
+    /// The enums of the loaded `.vxlib` files, as declarations the type checker can look up. A
+    /// `.vxlib` is never parsed, so without these `Color::Green` is an unknown enum. A `.vxlib`
+    /// saves only enums whose variants hold no data.
+    fn interface_enums(
+        registry: &crate::registry::ImmutableGlobalRegistry,
+        programs: &[crate::syntax::Program],
+    ) -> Option<crate::syntax::Program> {
+        let defined: std::collections::HashSet<&crate::symbol::Symbol> = programs
+            .iter()
+            .flat_map(|p| p.enums.iter().map(|e| &e.name))
+            .collect();
+        let mut enums: Vec<crate::syntax::EnumDecl> = registry
+            .enum_variants
+            .iter()
+            .filter(|(name, _)| !defined.contains(name))
+            .map(|(name, variants)| crate::syntax::EnumDecl {
+                name: name.clone(),
+                generics: Vec::new(),
+                variants: variants.iter().map(|v| (v.clone(), None)).collect(),
+                place: Default::default(),
+                doc_comment: None,
+            })
+            .collect();
+        if enums.is_empty() {
+            return None;
+        }
+        enums.sort_by(|a, b| a.name.as_ref().cmp(b.name.as_ref()));
+        Some(crate::syntax::Program {
+            item_macros: Vec::new(),
+            module_path: "<interfaces>".into(),
+            file: None,
+            imports: Vec::new(),
+            macros: Vec::new(),
+            externs: Vec::new(),
+            structs: Vec::new(),
+            enums,
+            traits: Vec::new(),
+            impls: Vec::new(),
+            functions: Vec::new(),
+            consts: Vec::new(),
+            topologies: Vec::new(),
+            memories: Vec::new(),
+            transfer_impls: Vec::new(),
+        })
+    }
+
     fn run_semantic_analysis(
         &self,
         ast: &mut crate::syntax::Program,
@@ -949,7 +1137,18 @@ impl CompilerDriver {
         // Imported calls whose module resolved to a `.vxlib` (auto-loaded or `--link-interface`) are
         // never parsed; the session carries the merged interface registry so those calls resolve
         // against it. With no interfaces, an empty registry — the AST env resolves everything (#219).
-        let global_session = Self::session_with_interfaces(interfaces)?;
+        let global_session =
+            Self::session_with_interfaces(interfaces, self.options.auto_schedule_levels())?;
+
+        // Every function names its file, so a diagnostic found while checking it names the
+        // file too, wherever the check runs from. A struct names its file, because only that
+        // file can change the fields of a type with an invariant. Before the env takes its
+        // clones, since a generic instance is built from the env's copy of the function. After
+        // macro expansion, which adds functions.
+        ast.name_file_on_items();
+        for p in other_asts.values_mut() {
+            p.name_file_on_items();
+        }
 
         // Build the resolution env from *owned* clones: full bodies for the imported modules (so
         // their methods/generics can be instantiated) plus the entry module's signature. Owning the
@@ -958,6 +1157,9 @@ impl CompilerDriver {
         // monomorphized instance names.
         let mut env_progs: Vec<crate::syntax::Program> = other_asts.values().cloned().collect();
         env_progs.push(ast.clone_signature());
+        if let Some(p) = Self::interface_enums(&global_session.registry, &env_progs) {
+            env_progs.push(p);
+        }
         let mut env = GlobalAstEnv::build(&env_progs);
         // The entry module was pushed signature-stripped; refill its return-provenance summaries
         // from the full module so intra-module calls get per-parameter precision (#243). The
@@ -971,9 +1173,24 @@ impl CompilerDriver {
         let mut worker = LocalWorkerState::new(global_session.clone());
         let mut checker = TypeChecker::new(&env, &mut worker);
         checker.seam.verify = self.options.verify_seams;
+        if self.options.print_borrow_clauses {
+            checker.print_borrow_clauses = ast.file.clone();
+        }
+        if self.options.action == Action::Audit {
+            checker.trusted = Some(std::collections::BTreeSet::new());
+        }
+
+        // The checks that look at the whole program's declarations at once can only name a
+        // file when the program is one file; a `--host default` module was read from none.
+        let whole_program_file = if other_asts.values().all(|p| p.file.is_none()) {
+            ast.file.clone()
+        } else {
+            None
+        };
 
         // Everything that is about the program as a whole rather than one function, before any
         // body is checked. Shared with the parallel pipeline so the two frontends cannot drift.
+        checker.errors.file = whole_program_file;
         checker.check_whole_program_declarations();
         // Found before the checks rename calls to generic instances, reported after them.
         let mut unused_functions = crate::diagnostic::DiagnosticsVec::new();
@@ -1029,7 +1246,11 @@ impl CompilerDriver {
         // and space obligations resolve against THIS compilation's machine file, which
         // the library never saw. Reviewed and reproduced: an imported lowering that
         // fails every lowering check compiled clean before this loop.
-        for p in other_asts.values_mut() {
+        // The modules in the order of their paths, not the hash order of `other_asts`: the order of
+        // the checks is the order of the generic instances, and so of the generated functions.
+        let mut modules: Vec<&mut crate::syntax::Program> = other_asts.values_mut().collect();
+        modules.sort_by(|a, b| a.module_path.cmp(&b.module_path));
+        for p in modules.iter_mut() {
             for t in &mut p.transfer_impls {
                 checker.seam.lowering_edge = Some((
                     t.from.clone(),
@@ -1042,7 +1263,7 @@ impl CompilerDriver {
                 checker.seam.lowering_edge = None;
             }
         }
-        for p in other_asts.values() {
+        for p in &modules {
             checker.check_transfer_impl_bodies(&p.transfer_impls);
         }
 
@@ -1060,7 +1281,7 @@ impl CompilerDriver {
             String,
             (String, Vec<crate::diagnostic::Diagnostic>),
         > = std::collections::BTreeMap::new();
-        for p in other_asts.values_mut() {
+        for p in modules.iter_mut() {
             for f in &mut p.functions {
                 if f.generics.is_empty() {
                     let before = checker.errors.len();
@@ -1117,6 +1338,7 @@ impl CompilerDriver {
         if !has_errors {
             checker.errors.inner.extend(unused_functions.inner);
         }
+        checker.errors.drop_repeats();
 
         // The machine-readable verdict, before the human-readable rendering below: one record on
         // stdout carrying every diagnostic plus the resolved staging routes, so an admission
@@ -1180,6 +1402,15 @@ impl CompilerDriver {
                 "Semantic check failed on '{}': {} error(s) emitted",
                 filename, error_count
             ));
+        }
+
+        if let Some(mut trusted) = checker.trusted.take() {
+            for p in std::iter::once(&*ast).chain(other_asts.values()) {
+                trusted.extend(crate::hir::check::audit::trusted_declarations(p));
+            }
+            for item in &trusted {
+                println!("{item}");
+            }
         }
 
         let mut orig_functions = ast.functions.clone();
@@ -1246,7 +1477,8 @@ impl CompilerDriver {
         let context = melior::Context::new();
         let emit_diagnostics = self.options.emit_backend_diagnostics;
         context.attach_diagnostic_handler(move |diagnostic| {
-            // Errors always; anything quieter only when asked for.
+            // Errors and warnings always. Notes and remarks only when asked
+            // for.
             //
             // This dropped everything unless `--emit-backend-diagnostics` was
             // passed, which is right for the notes and remarks a pass pipeline
@@ -1256,13 +1488,25 @@ impl CompilerDriver {
             // program and *why* was written, handed to this closure, and
             // discarded. A backend error is a compile error and belongs on
             // stderr on the same terms as any other.
+            // A warning too: the lowering warns when a GPU region falls back to the CPU.
             if emit_diagnostics
                 || matches!(
                     diagnostic.severity(),
                     melior::diagnostic::DiagnosticSeverity::Error
+                        | melior::diagnostic::DiagnosticSeverity::Warning
                 )
             {
-                eprintln!("{}", diagnostic);
+                // MLIR's C printer writes the message alone -- no location, no
+                // severity -- so a warning would arrive looking exactly like an
+                // error. Say which it is. Errors keep the text they had.
+                if matches!(
+                    diagnostic.severity(),
+                    melior::diagnostic::DiagnosticSeverity::Warning
+                ) {
+                    eprintln!("Warning: {}", diagnostic);
+                } else {
+                    eprintln!("{}", diagnostic);
+                }
             }
             true
         });
@@ -1289,8 +1533,9 @@ impl CompilerDriver {
         mlir_args: &[String],
     ) -> Result<Option<()>, String> {
         let context = self.backend_context();
-        let parsed =
-            crate::intern_mode::timed("mlir_parse", || melior::ir::Module::parse(&context, text));
+        let parsed = crate::intern_mode::timed("mlir_parse", || {
+            crate::codegen::flat::parse_emitted_module(&context, text)
+        })?;
         let Some(module) = parsed else {
             // Loud in a debug build, where the corpus and the fallback both exist, so the gap is
             // found here rather than by whoever consumes a `.vxlib` built from this module.
@@ -1337,7 +1582,14 @@ impl CompilerDriver {
         let flat_module = if self.options.legacy_codegen {
             None
         } else {
-            Self::build_flat_module(&context, &monomorphized_ast, &module_syntaxes, interfaces)
+            Self::build_flat_module(
+                &context,
+                &monomorphized_ast,
+                &module_syntaxes,
+                interfaces,
+                matches!(self.options.action, Action::EmitPtx | Action::EmitMsl),
+                self.options.auto_schedule_levels(),
+            )?
         };
 
         let module = match flat_module {
@@ -1354,21 +1606,39 @@ impl CompilerDriver {
                 // is a hard, clean error — never an AST-fallback ICE ("Function … not found"). The
                 // frontend type/borrow check (incl. cross-module provenance) already succeeded; only
                 // codegen is blocked, by the flat subset's current coverage.
+                if self.options.legacy_codegen {
+                    return Err(format!(
+                        "Cannot compile '{filename}' with `--legacy-codegen`, because it imports a \
+                         `.vxlib`. Only the default code generator can link the functions of a \
+                         `.vxlib`. Compile it without `--legacy-codegen`."
+                    ));
+                }
                 return Err(format!(
-                    "Cannot codegen '{}' with a linked module interface: it uses constructs outside \
-                     the flat-codegen subset, and an imported body links only on the flat path (the \
-                     AST codegen has no AST for it). The frontend check passed; this is a flat-coverage \
-                     limit.",
-                    filename
+                    "Cannot compile '{filename}': it imports a `.vxlib`, and it uses a construct \
+                     that the default code generator does not support yet. Only that code \
+                     generator can link the functions of a `.vxlib`. The `[flat-codegen]` line above \
+                     names the construct."
                 ));
             }
             None => {
+                // The test runner sets this, so that a RUN line without `--legacy-codegen`
+                // never tests the AST code generator by accident.
+                if !self.options.legacy_codegen && std::env::var("VX_NO_AST_FALLBACK").is_ok() {
+                    return Err(format!(
+                        "Cannot compile '{filename}' with the default code generator. The \
+                         `[flat-codegen]` line above names the construct it does not support \
+                         yet. VX_NO_AST_FALLBACK is set, so the AST code generator is not used \
+                         in its place. Add `--legacy-codegen` to use the AST code generator."
+                    ));
+                }
                 if !self.options.legacy_codegen {
                     eprintln!("[flat-codegen] program outside the flat subset; using the AST path");
                 }
                 let mut codegen =
                     MeliorGenerator::new(&context, monomorphized_ast.module_path.to_string());
                 codegen.emit_seam_certs = self.options.emit_seam_certs;
+                codegen.describe_params =
+                    matches!(self.options.action, Action::EmitPtx | Action::EmitMsl);
                 codegen
                     .generate(&monomorphized_ast, &module_syntaxes)
                     .map_err(|e| format!("Codegen Error: {:?}", e))?;
@@ -1398,12 +1668,13 @@ impl CompilerDriver {
 
         let llvm_lower = matches!(
             self.options.action,
-            Action::EmitLlvm | Action::RunJit | Action::EmitObj
+            Action::EmitLlvm | Action::RunJit | Action::EmitObj | Action::EmitPtx | Action::EmitMsl
         );
         let pipeline_str = get_optimization_pipeline(
             self.options.opt_level,
             llvm_lower,
             self.options.disable_mlir_optimizations,
+            self.options.bounds_checks(),
         );
 
         let pass_manager = melior::pass::PassManager::new(context);
@@ -1427,6 +1698,28 @@ impl CompilerDriver {
             }
         }
 
+        if matches!(self.options.action, Action::EmitPtx | Action::EmitMsl) {
+            use melior::ir::operation::OperationMutLike;
+            module
+                .as_operation_mut()
+                .set_attribute("vx.export_kernels", melior::ir::Attribute::unit(context));
+        }
+        if llvm_lower {
+            // The file that a `spawn` is in, for the line that an abort in a task prints. Only the
+            // lowering to LLVM reads it, so the MLIR that `--emit-mlir` prints does not show it.
+            use melior::ir::operation::OperationMutLike;
+            module.as_operation_mut().set_attribute(
+                "vx.source",
+                melior::ir::attribute::StringAttribute::new(context, filename).into(),
+            );
+        }
+        if self.options.weak_relaxed_atomics() {
+            use melior::ir::operation::OperationMutLike;
+            module.as_operation_mut().set_attribute(
+                "vx.weak_relaxed_atomics",
+                melior::ir::Attribute::unit(context),
+            );
+        }
         let ran = crate::intern_mode::timed("mlir_passes", || pass_manager.run(&mut module));
         if let Err(e) = ran {
             return Err(format!("MLIR passes failed for {}: {}", filename, e));
@@ -1481,11 +1774,67 @@ impl CompilerDriver {
                     self.options.program_args.clone(),
                     self.options.opt_level,
                     self.options.disable_llvm_optimizations,
+                    self.options.thread_sanitizer(),
                 )
                 .map_err(|e| e.to_string())?;
                 print_program_output(&out);
             }
+            Action::EmitPtx | Action::EmitMsl => {
+                let msl = self.options.action == Action::EmitMsl;
+                let ptx_path = self.options.output.clone().unwrap_or_else(|| {
+                    let mut p = main_file.to_path_buf();
+                    p.set_extension(if msl { "metal" } else { "ptx" });
+                    p
+                });
+                let read = |name: &str| {
+                    let attr = module.as_operation().attribute(name).ok()?;
+                    melior::ir::attribute::StringAttribute::try_from(attr)
+                        .ok()
+                        .map(|s| s.value().to_string())
+                };
+                let image = if msl {
+                    "vx.exported_msl"
+                } else {
+                    "vx.exported_ptx"
+                };
+                let (Some(ptx), Some(manifest)) = (read(image), read("vx.exported_kernels")) else {
+                    return Err(format!(
+                        "{filename} has no GPU kernel to write. A GPU kernel is a `spawn on` \
+                         region whose topology has `arch: {}`, and that can run on the GPU",
+                        if msl { "applegpu" } else { "nvptx64" }
+                    ));
+                };
+                let json_path = ptx_path.with_extension("json");
+                std::fs::write(&ptx_path, ptx)
+                    .map_err(|e| format!("could not write '{}': {e}", ptx_path.display()))?;
+                std::fs::write(&json_path, manifest + "\n")
+                    .map_err(|e| format!("could not write '{}': {e}", json_path.display()))?;
+            }
             Action::EmitObj => {
+                let output_path = self.options.output.clone().unwrap_or_else(|| {
+                    let mut p = main_file.to_path_buf();
+                    p.set_extension("o");
+                    p
+                });
+
+                // `grad`, `vjp` and `jvp` are calls that the Enzyme pass in `opt` fills in.
+                // The execution engine below never runs it, so such a program is built the
+                // way `run-jit` builds one.
+                let mlir_str = format!("{}", module.as_operation());
+                if mlir_str.contains("__enzyme_") {
+                    let temp_dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+                    let obj = crate::jit::compile_mlir_to_object(
+                        &mlir_str,
+                        temp_dir.path(),
+                        self.options.opt_level,
+                        self.options.disable_llvm_optimizations,
+                        false,
+                    )?;
+                    std::fs::copy(&obj, &output_path)
+                        .map_err(|e| format!("could not write '{}': {e}", output_path.display()))?;
+                    return Ok(());
+                }
+
                 // One resolution, shared with the JIT. This arm used to build its own list from
                 // bare filenames, which MLIR resolves against the process CWD, so it looked for
                 // `libmlir_runner_utils` in the repo root; and for the dispatch plugin under
@@ -1493,12 +1842,6 @@ impl CompilerDriver {
                 // and producing no object.
                 let engine =
                     crate::jit::ObjectEmitter::new(&module, self.options.opt_level as usize)?;
-
-                let output_path = self.options.output.clone().unwrap_or_else(|| {
-                    let mut p = main_file.to_path_buf();
-                    p.set_extension("o");
-                    p
-                });
 
                 // Whether an object was actually written is the only thing that says this
                 // succeeded. `dump_to_object_file` returns nothing and the arm returned `Ok(())`
@@ -1521,6 +1864,7 @@ impl CompilerDriver {
                         output_path.display()
                     ));
                 }
+                crate::jit::set_macos_minimum_version(output_path.to_str().unwrap())?;
             }
             _ => {}
         }
@@ -1528,8 +1872,9 @@ impl CompilerDriver {
         Ok(())
     }
 
-    /// Build the MLIR module via the flat-array codegen path, or `None` if any function is outside the
-    /// flat subset (the caller then falls back to the AST path). Resolves names, freezes the registry,
+    /// Build the MLIR module, or return `Ok(None)` if a function needs AST fallback.
+    /// Conflicting generated layouts return an error and stop compilation.
+    /// Resolves names, freezes the registry,
     /// lowers every non-generic function across all modules to flat HIR, and emits one module via
     /// `flat::emit_module_mlir` — mirroring the differential harness (#201). Programs whose structs need
     /// a registry-backed `StructInit` GID annotation (the driver type-checks against an empty registry)
@@ -1539,7 +1884,9 @@ impl CompilerDriver {
         main_ast: &crate::syntax::Program,
         module_syntaxes: &std::collections::HashMap<crate::symbol::Symbol, crate::syntax::Program>,
         interfaces: &[Vec<u8>],
-    ) -> Option<melior::ir::Module<'c>> {
+        describe_params: bool,
+        auto_schedule_levels: bool,
+    ) -> Result<Option<melior::ir::Module<'c>>, String> {
         // The main module first (its monomorphs win any name collision), then the imports; resolve
         // names so the registry freeze sees settled struct/enum GIDs.
         let mut mods: Vec<crate::syntax::Program> = vec![main_ast.clone()];
@@ -1549,16 +1896,22 @@ impl CompilerDriver {
         for m in &mut mods {
             m.resolve_names(&symbol_map, &topologies);
         }
-        let mut registry = crate::pipeline::build_frozen_registry(&mods).ok()?;
+        let Ok(mut registry) = crate::pipeline::build_frozen_registry(&mods) else {
+            return Ok(None);
+        };
         // Fold each precompiled interface's signatures + portable flat-HIR bodies into this compile's
         // registry (a `.vxlib` import auto-loaded from `import`, or an explicit `--link-interface`), so
         // an imported call resolves (`fn_sigs`) and its body links (`body_of`) with no parse of the
         // library (#219 / #265 step 7 / #220). Own entries win on collision.
         for bytes in interfaces {
-            let imported = crate::metadata::deserialize_registry_interface(bytes).ok()?;
+            let Ok(imported) = crate::metadata::deserialize_registry_interface(bytes) else {
+                return Ok(None);
+            };
             registry.merge_from(imported);
         }
-        let session = std::sync::Arc::new(GlobalSession::with_registry(1, registry));
+        let session = std::sync::Arc::new(
+            GlobalSession::with_registry(1, registry).auto_schedule_levels(auto_schedule_levels),
+        );
 
         // Re-run the type checker against the *frozen registry* purely to annotate each `StructInit`
         // with its struct GID (the driver's own semantic analysis ran against an empty registry, so
@@ -1571,7 +1924,7 @@ impl CompilerDriver {
         // `space`/`within`/`granule`/`capacity`/`scope` + bump-allocated `offset`/`slots` attrs the AST
         // path emits (otherwise dropped on the default path).
         let subspaces: Vec<crate::codegen::flat::SubspaceInfo>;
-        let topo_archs: Vec<(i64, String)>;
+        let topo_archs: Vec<(i64, crate::codegen::flat::DeclaredArch)>;
         let local_devices: Vec<(i32, i32)>;
         {
             let env_mods = mods.clone();
@@ -1613,6 +1966,23 @@ impl CompilerDriver {
             .collect();
         // A BTreeSet, not a HashSet: this drives the order imported bodies are appended in
         // below, and a HashSet iterates in whatever order the process's random hash seed gives.
+        // The `impl Transfer` bodies, keyed as the checker keys a transfer site's lowering.
+        let mut transfer_lowerings = crate::session::TransferLowerings::new();
+        for m in &mods {
+            for li in &m.transfer_impls {
+                if let [body] = li.methods.as_slice() {
+                    transfer_lowerings.insert(
+                        (
+                            li.from.name(),
+                            li.to.name(),
+                            li.topology.display_name().to_string(),
+                        ),
+                        body.clone(),
+                    );
+                }
+            }
+        }
+        let transfer_lowerings = std::sync::Arc::new(transfer_lowerings);
         let mut lowered_names = std::collections::BTreeSet::new();
         let mut entries: Vec<(crate::syntax::Function, LocalWorkerState)> = Vec::new();
         while let Some(name) = worklist.pop() {
@@ -1623,6 +1993,7 @@ impl CompilerDriver {
                 continue; // an extern or a non-function name use -> not lowered here
             };
             let mut worker = LocalWorkerState::new(session.clone());
+            worker.transfer_lowerings = transfer_lowerings.clone();
             if let Err(why) = crate::hir::flatten::lower_function_to_hir(f, &mut worker) {
                 // The reason is printed unconditionally, not behind VX_FLAT_DBG: "which construct
                 // is the flat path missing" is the number that steers the backend work, and a
@@ -1636,7 +2007,7 @@ impl CompilerDriver {
                 if std::env::var("VX_FLAT_DBG").is_ok() {
                     eprintln!("[flat-dbg] HIR lowering declined: {}", f.name);
                 }
-                return None;
+                return Ok(None);
             }
             let mut uses = std::collections::HashSet::new();
             for s in &f.body {
@@ -1693,6 +2064,7 @@ impl CompilerDriver {
             }
             let synth = crate::syntax::Function {
                 is_unsafe: false,
+                is_pub: false,
                 name: body.name.clone(),
                 generics: vec![],
                 params: body
@@ -1714,6 +2086,8 @@ impl CompilerDriver {
                 where_transfers: vec![],
                 body: vec![],
                 doc_comment: None,
+                span: crate::syntax::Span::default(),
+                file: None,
             };
             imported_entries.push((synth, body.hir.clone(), body.types.clone()));
         }
@@ -1746,7 +2120,7 @@ impl CompilerDriver {
             .iter()
             .map(|(_, w)| w.local_inline_blocks.as_slice())
             .collect();
-        let agg_layouts: Vec<_> = entries
+        let agg_layouts: Vec<crate::layout::GeneratedAggregateLayout> = entries
             .iter()
             .flat_map(|(_, w)| w.local_agg_layouts.iter().cloned())
             .collect();
@@ -1768,9 +2142,10 @@ impl CompilerDriver {
             &topo_archs,
             &local_devices,
             crate::config::Schedule::Parallel,
+            describe_params,
         ) {
             Ok(t) => t,
-            Err(why) => {
+            Err(crate::codegen::flat::ModuleEmitError::Declined(why)) => {
                 // Same reasoning as the flattener's decline: printed unconditionally, because the
                 // emitter's gaps are a different backlog from the flattener's and a histogram that
                 // shows only one of them under-reports.
@@ -1782,13 +2157,14 @@ impl CompilerDriver {
                 if std::env::var("VX_FLAT_DBG").is_ok() {
                     eprintln!("[flat-dbg] emit declined (a function outside the emitter subset)");
                 }
-                return None;
+                return Ok(None);
             }
+            Err(error) => return Err(error.to_string()),
         };
 
         // `emit_module_mlir` returns a complete `module { … }`; wrapping it here would copy the
         // whole body again (#311).
-        let parsed = melior::ir::Module::parse(context, &text);
+        let parsed = crate::codegen::flat::parse_emitted_module(context, &text)?;
         if parsed.is_none() {
             // `emit_module_mlir` returned `Some(text)` — it *claimed* to handle this module — yet the
             // text does not parse. That is an emitter **bug** (a construct emitted invalid MLIR, e.g.
@@ -1808,7 +2184,7 @@ impl CompilerDriver {
                  emitted unparseable text instead of declining in emit_module_mlir.\n{text}"
             );
         }
-        parsed
+        Ok(parsed)
     }
 }
 
@@ -1816,11 +2192,23 @@ fn get_optimization_pipeline(
     opt_level: u8,
     llvm_lower: bool,
     disable_mlir_optimizations: bool,
+    bounds_checks: bool,
 ) -> String {
     let mut passes = vec![];
 
     if opt_level > 0 || llvm_lower {
+        // Before the task lowering takes the address of each task body. See the pass.
+        passes.push("vx-count-callbacks".to_string());
+        // Before the lowerings, so that they reuse a program's own `malloc` and `free` rather
+        // than declare a second one. See the pass.
+        passes.push("vx-libc-externs-to-llvm".to_string());
         passes.push("convert-vx-to-standard".to_string());
+        // Before any optimization, so none can remove or move a division before it is checked.
+        passes.push("vx-check-integer-division".to_string());
+        // Before inlining, while each row of a tensor is still its own view.
+        if bounds_checks {
+            passes.push("vx-check-tensor-indices".to_string());
+        }
         // Before linalg is lowered, while each reduce is still one `linalg.generic`.
         passes.push("vx-reorderable-reductions".to_string());
     }
@@ -1828,12 +2216,15 @@ fn get_optimization_pipeline(
     if opt_level > 0 && !disable_mlir_optimizations {
         // Inlining puts each `mlir!` block in its caller, and lowering linalg to affine loops
         // lets the affine passes below fuse the library's linalg code with what is around it.
-        // Fusion and tiling run only where no two buffers can alias; see the pass.
-        passes.push("inline".to_string());
+        // The frontend writes counted loops as affine loops too, and `vx-raise-loop-accesses`
+        // makes their loads and stores affine.
+        // Fusion and tiling run only where no two buffers can alias; see the pass. Only small
+        // functions are inlined, so deeply nested calls do not multiply the code.
+        passes.push("vx-inline".to_string());
         passes.push("canonicalize".to_string());
         passes.push("cse".to_string());
         passes.push(
-            "func.func(convert-linalg-to-affine-loops,vx-fuse-and-tile-loops,affine-loop-unroll,affine-scalrep)"
+            "func.func(vx-linalg-to-affine-loops,vx-raise-loop-accesses,vx-fuse-and-tile-loops,affine-loop-unroll,affine-scalrep)"
                 .to_string(),
         );
         passes.push("lower-affine".to_string());
@@ -1842,6 +2233,12 @@ fn get_optimization_pipeline(
     }
 
     if llvm_lower {
+        // LLVM has no fp8 or fp4 type, so their conversions become integer operations first.
+        passes.push("vx-expand-narrow-floats".to_string());
+        // A conversion to bf16 becomes integer operations that round exactly. Left to LLVM, an
+        // x86 CPU with AVX512-BF16 converts with `vcvtneps2bf16`, which flushes a subnormal to
+        // zero.
+        passes.push("arith-expand{include-bf16=true include-f8e8m0=true}".to_string());
         passes.push("vx-to-llvm".to_string());
         passes.push("func.func(convert-linalg-to-loops,lower-affine)".to_string());
         passes.push("convert-scf-to-cf".to_string());
@@ -1864,11 +2261,9 @@ fn get_optimization_pipeline(
         // `expand-strided-metadata` writes some offsets as `affine.apply`, so `lower-affine`
         // runs again. After the buffer passes, so they see the module as they always have.
         passes.push("func.func(lower-affine)".to_string());
-        // Must precede finalize-memref-to-llvm: an unused `extern` lands as
-        // `func.func private @malloc`, which memref finalization cannot reuse
-        // (it looks for an llvm.func), so it creates its own and the symbol
-        // table uniques the name -- one dangling `@malloc_N` per allocation
-        // site. Keep in sync with the pipeline in src/codegen/mod.rs.
+        // Drops the declarations that nothing calls. `vx-libc-externs-to-llvm` already made a
+        // program's `malloc` and `free` the `llvm.func` that finalize-memref-to-llvm reuses.
+        // Keep in sync with the pipeline in src/codegen/mod.rs.
         passes.push("symbol-dce".to_string());
         passes.push("finalize-memref-to-llvm".to_string());
         passes.push("convert-vector-to-llvm".to_string());
@@ -1883,11 +2278,22 @@ fn get_optimization_pipeline(
         // math passes ahead of the first one instead changed how the deallocation helper's
         // arguments were lowered, and a program freed a buffer twice.
         passes.push("convert-func-to-llvm".to_string());
+        // Before `convert-cf-to-llvm`, which would print a failed assert to standard output.
+        passes.push("vx-lower-host-asserts".to_string());
         passes.push("convert-cf-to-llvm".to_string());
         passes.push("convert-arith-to-llvm".to_string());
         // `lift-cf-to-scf` leaves `ub.poison` placeholders behind; nothing else lowers them.
         passes.push("convert-ub-to-llvm".to_string());
         passes.push("reconcile-unrealized-casts".to_string());
+        // After the memref descriptors are LLVM values. See the pass.
+        passes.push("vx-lifetime-markers-on-allocas".to_string());
+        // A function the program defines is not exported, so a `fn write` cannot replace
+        // libc's `write` for the runtime library. See the pass.
+        passes.push("vx-hide-program-symbols".to_string());
+        // A frame larger than a page cannot reach past the guard page of a stack.
+        passes.push("vx-probe-stack".to_string());
+        // Each relaxed atomic read becomes an acquire read, unless `-fweak-relaxed-atomics`.
+        passes.push("vx-order-relaxed-reads".to_string());
     }
 
     format!("builtin.module({})", passes.join(","))
@@ -2058,14 +2464,22 @@ mod flat_codegen_tests {
             "fn add(a: i32, b: i32) -> i32 { return a + b; }\n\
              fn main() -> i32 { return add(3, 4) * 5; }",
         );
-        assert!(CompilerDriver::build_flat_module(&context, &prog, &empty, &[]).is_some());
+        assert!(
+            CompilerDriver::build_flat_module(&context, &prog, &empty, &[], false, false)
+                .expect("no compiler error")
+                .is_some()
+        );
 
         // In subset: a libm extern call (declared `func.func private`, linked by the JIT).
         let ext = parse(
             "extern { safe fn sqrtf(x: f32) -> f32; }\n\
              fn main() -> i32 { print(sqrtf(16.0)); return 0; }",
         );
-        assert!(CompilerDriver::build_flat_module(&context, &ext, &empty, &[]).is_some());
+        assert!(
+            CompilerDriver::build_flat_module(&context, &ext, &empty, &[], false, false)
+                .expect("no compiler error")
+                .is_some()
+        );
 
         // In subset: structs (including a struct return) now build through the flat path -- the flat
         // build runs a registry-backed type-check to annotate `StructInit` GIDs (#215).
@@ -2074,18 +2488,52 @@ mod flat_codegen_tests {
              fn mk() -> P { return P { x: 1, y: 2 }; }\n\
              fn main() -> i32 { let p = mk(); return p.x + p.y; }",
         );
-        assert!(CompilerDriver::build_flat_module(&context, &strukt, &empty, &[]).is_some());
+        assert!(
+            CompilerDriver::build_flat_module(&context, &strukt, &empty, &[], false, false)
+                .expect("no compiler error")
+                .is_some()
+        );
 
         // Outside the subset: a bare call to an *undefined* Vx function has no body to lower -> the
         // whole program declines -> AST fallback (never a wrong result).
         let unknown = parse("fn main() -> i32 { return mystery(1); }");
-        assert!(CompilerDriver::build_flat_module(&context, &unknown, &empty, &[]).is_none());
+        assert!(
+            CompilerDriver::build_flat_module(&context, &unknown, &empty, &[], false, false)
+                .expect("no compiler error")
+                .is_none()
+        );
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each `-f` feature takes the last of its own two spellings. Giving another feature after
+    /// it does not turn it off.
+    #[test]
+    fn each_feature_takes_the_last_of_its_own_flags() {
+        let parse = |args: &[&str]| {
+            let mut all = vec!["vxc", "a.vx"];
+            all.extend_from_slice(args);
+            DriverOptions::try_parse_from(all).expect("the flags parse")
+        };
+        let o = parse(&["-fweak-relaxed-atomics", "-fauto-schedule-levels"]);
+        assert!(o.weak_relaxed_atomics() && o.auto_schedule_levels());
+        let o = parse(&["-fweak-relaxed-atomics", "-fno-weak-relaxed-atomics"]);
+        assert!(!o.weak_relaxed_atomics());
+        let o = parse(&[
+            "-fno-auto-schedule-levels",
+            "-fauto-schedule-levels",
+            "-fno-weak-relaxed-atomics",
+        ]);
+        assert!(o.auto_schedule_levels() && !o.weak_relaxed_atomics());
+        assert!(!parse(&[]).weak_relaxed_atomics());
+        let o = parse(&["-fbounds-checks", "-fno-weak-relaxed-atomics"]);
+        assert!(o.bounds_checks());
+        assert!(!parse(&["-fbounds-checks", "-fno-bounds-checks"]).bounds_checks());
+        assert!(!parse(&[]).bounds_checks());
+    }
 
     /// Two modules can declare a host topology at once -- `--machine fleet/h100.vx --host default`
     /// gives exactly that -- so which one answers must not depend on the order the caller happened
@@ -2153,6 +2601,40 @@ mod tests {
             declined,
             Ok(None),
             "unparseable MLIR did not hand the compile back to the sequential driver"
+        );
+    }
+
+    /// `run-jit` (the default) never writes `-o`. Refusing it beats silently
+    /// ignoring the flag.
+    #[test]
+    fn run_jit_refuses_minus_o() {
+        // Use a path the message cannot contain by chance ("out" sits inside "without").
+        let driver = driver_for(&["vxc", "prog.vx", "-o", "not_written.bin"]);
+        let err = driver.execute().expect_err("run-jit must refuse -o");
+        assert!(
+            err.contains("has no effect with run-jit"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.contains("not_written.bin"),
+            "error should name the path: {err}"
+        );
+    }
+
+    /// With several inputs, `-o` must still be refused before each unit runs.
+    #[test]
+    fn run_jit_refuses_minus_o_with_two_inputs() {
+        let driver = driver_for(&["vxc", "one.vx", "two.vx", "-o", "not_written.bin"]);
+        let err = driver
+            .execute()
+            .expect_err("run-jit must refuse -o with two inputs");
+        assert!(
+            err.contains("has no effect with run-jit"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.contains("not_written.bin"),
+            "error should name the path: {err}"
         );
     }
 }

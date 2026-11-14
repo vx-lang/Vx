@@ -10,7 +10,7 @@
 // shaped tensor -- passing one forgets the shape, which is the whole point of
 // keeping the two spellings apart.
 //
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 
 // The declared parameter is dynamic, so the callee takes a fully dynamic memref, and the
 // shaped argument is accepted there -- passing it forgets the shape, which is the point.
@@ -27,7 +27,7 @@ fn takes_dyn(t : Tensor<f32, [?, ?]>) -> i32 {
 }
 
 fn main() -> i32 {
-  let mut a : Tensor<f32, [2, 3]> = Tensor<f32, [2, 3]>::uninit();
+  let mut a : Tensor<f32, [2, 3]> = unsafe { Tensor<f32, [2, 3]>::uninit() };
   a[0][0] = 1.0;
   let r = takes_dyn(a);
   return r;

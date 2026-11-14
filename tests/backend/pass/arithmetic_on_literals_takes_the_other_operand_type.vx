@@ -1,0 +1,36 @@
+//===- arithmetic_on_literals_takes_the_other_operand_type.vx - Vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --run 2>&1 | FileCheck %s --implicit-check-not="Error["
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not="Error["
+//
+// A number literal takes its type from the other operand: `b + 6` is an i64 add when `b` is
+// an i64. Arithmetic made only of literals, `2 * 3`, does the same instead of being an i32.
+
+fn main() -> i32 {
+  let b : i64 = 2;
+  let sum = b + 2 * 3;
+  // CHECK: 8
+  println!(sum);
+
+  let x : f64 = 3.0;
+  if x > 2.0 * 1.0 {
+    // CHECK-NEXT: 1
+    println!(1);
+  }
+
+  // Through a reference: the number `r` points at is the other operand.
+  let r = &b;
+  // CHECK-NEXT: -1
+  println!(r - (4 - 1));
+
+  // 250 + 3 + 3 wraps around in a u8.
+  let c : u8 = 250;
+  // CHECK-NEXT: 0
+  println!(c + (1 + 2) * 2);
+  return 0;
+}

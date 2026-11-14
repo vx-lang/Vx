@@ -1,0 +1,27 @@
+//===- tasks_block_in_a_for_loop.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `for` loop over a range runs a `tasks` block in each pass. Each pass starts a task that
+// gives the number of its pass, and the loop adds them: 1 + 2 + 3 = 6.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}sum 6{{$}}
+
+fn main() -> i32 {
+  let mut sum = 0;
+  for round in 1..4 {
+    let got = tasks {
+      let w = spawn {
+        round
+      };
+      w.join()
+    };
+    sum = sum + got;
+  }
+  println!("sum {}", sum);
+  return 0;
+}

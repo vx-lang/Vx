@@ -1,0 +1,65 @@
+//===- pointer_facts_that_do_not_join.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Two facts prove a range only when they join. Two `initialized` ranges with a gap do not. Two
+// `valid` ranges that only touch do not, because they can be in two allocations. A negative
+// length needs a fact. After an `if`, a write that only one branch made gives no fact.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+import core::ptr;
+
+fn need_valid(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  return n;
+}
+
+fn need_initialized(p : *const i64, n : i64) -> i64
+requires initialized(p, n)
+{
+  return n;
+}
+
+fn a_gap(p : *mut i64) -> i64
+requires valid(p, 3i64)
+{
+  unsafe { p[0] = 1i64; p[2] = 3i64; }
+  // CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+1]]:10: this call to 'need_initialized' may not meet its precondition `initialized(p, n)`
+  return need_initialized(p as *const i64, 3i64);
+}
+
+// `valid(p, 2)` and `valid(q, 2)` meet between `p[1]` and `p[2]`, and share no element.
+fn valid_facts_that_only_touch(p : *const i64) -> i64
+requires valid(p, 2i64)
+{
+  let q = offset(p, 2i64);
+  unsafe { assume valid(q, 2i64); }
+  // CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+1]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+  return need_valid(p, 4i64);
+}
+
+fn a_negative_length(p : *const i64) -> i64 {
+  // CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+1]]:10: this call to 'need_initialized' may not meet its precondition `initialized(p, n)`
+  return need_initialized(p, 0i64 - 1i64);
+}
+
+fn write_in_one_branch(p : *mut i64, n : i64, c : bool) -> i64
+requires valid(p, n + 1i64)
+requires initialized(p, n)
+requires 0i64 <= n
+{
+  if c {
+    unsafe { p[n] = 1i64; }
+  }
+  // CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+1]]:10: this call to 'need_initialized' may not meet its precondition `initialized(p, n)`
+  return need_initialized(p as *const i64, n + 1i64);
+}
+
+fn main() -> i32 {
+  return 0;
+}

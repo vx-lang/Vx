@@ -119,6 +119,93 @@ fn host_target_triple() -> Result<String, String> {
     Ok(triple)
 }
 
+/// The oldest macOS that an object needs, as `LC_BUILD_VERSION` writes it: the major version in
+/// the high 16 bits, then the minor and the patch in 8 bits each. It is `MACOSX_DEPLOYMENT_TARGET`,
+/// as for clang, or else the major and minor version of the running macOS, which clang links for.
+fn macos_minimum_version() -> Option<u32> {
+    let text = match std::env::var("MACOSX_DEPLOYMENT_TARGET") {
+        Ok(v) if !v.is_empty() => v,
+        _ => {
+            let out = Command::new("sw_vers")
+                .arg("-productVersion")
+                .output()
+                .ok()?;
+            let full = String::from_utf8(out.stdout).ok()?;
+            full.trim().split('.').take(2).collect::<Vec<_>>().join(".")
+        }
+    };
+    let mut parts = text.split('.');
+    let mut next = || -> Option<u32> { parts.next().map_or(Some(0), |p| p.parse().ok()) };
+    let (major, minor, patch) = (next()?, next()?, next()?);
+    (major <= 0xffff && minor <= 0xff && patch <= 0xff)
+        .then_some((major << 16) | (minor << 8) | patch)
+}
+
+/// Sets the oldest macOS that the 64-bit Mach-O object in `bytes` needs, in each macOS
+/// `LC_BUILD_VERSION`. Returns whether it found one.
+fn set_build_version(bytes: &mut [u8], version: u32) -> bool {
+    const MH_MAGIC_64: u32 = 0xfeed_facf;
+    const LC_BUILD_VERSION: u32 = 0x32;
+    const PLATFORM_MACOS: u32 = 1;
+    let word = |b: &[u8], at: usize| {
+        b.get(at..at + 4)
+            .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
+    };
+    if word(bytes, 0) != Some(MH_MAGIC_64) {
+        return false;
+    }
+    let Some(count) = word(bytes, 16) else {
+        return false;
+    };
+    let mut at = 32;
+    let mut set = false;
+    for _ in 0..count {
+        let (Some(cmd), Some(size)) = (word(bytes, at), word(bytes, at + 4)) else {
+            break;
+        };
+        if cmd == LC_BUILD_VERSION
+            && word(bytes, at + 8) == Some(PLATFORM_MACOS)
+            && bytes.len() >= at + 16
+        {
+            bytes[at + 12..at + 16].copy_from_slice(&version.to_le_bytes());
+            set = true;
+        }
+        if size < 8 {
+            break;
+        }
+        at += size as usize;
+    }
+    set
+}
+
+/// Sets the oldest macOS that the object at `path` needs. LLVM takes that version from the
+/// kernel's, and on macOS 27 its `darwin27` gave macOS 28. Each link then warned that the object
+/// was built for a newer macOS. Nothing changes on another host.
+pub fn set_macos_minimum_version(path: &str) -> Result<(), String> {
+    if !cfg!(target_os = "macos") {
+        return Ok(());
+    }
+    let Some(version) = macos_minimum_version() else {
+        return Ok(());
+    };
+    let mut bytes =
+        std::fs::read(path).map_err(|e| format!("could not read the object '{path}': {e}"))?;
+    if set_build_version(&mut bytes, version) {
+        std::fs::write(path, bytes)
+            .map_err(|e| format!("could not write the object '{path}': {e}"))?;
+    }
+    Ok(())
+}
+
+/// The `-mattr` that leaves off the x86 features with which LLVM converts to bf16 through
+/// `vcvtneps2bf16`. That instruction reads a subnormal input as zero and flushes a subnormal
+/// result to zero, and LLVM uses it even where a bf16 is only passed to a function. Without
+/// them it rounds exactly, with integer operations. Nothing for another target.
+pub(crate) fn no_bf16_convert(triple: &str) -> Option<String> {
+    (triple.starts_with("x86_64") || triple.starts_with("i686"))
+        .then(|| "-mattr=-avx512bf16,-avxneconvert".to_string())
+}
+
 /// The Enzyme plugin `opt` should load for this LLVM IR, given `ENZYME_LIB`. Only a program that
 /// uses `grad`, `vjp` or `jvp` calls an `__enzyme_` function, so no other program loads the plugin.
 fn enzyme_plugin_for(llvm_ir: &[u8], enzyme_lib: Option<String>) -> Result<Option<String>, String> {
@@ -179,8 +266,7 @@ pub fn shared_library_paths() -> Result<Vec<String>, String> {
         ),
         runtime_library_path()?,
     ];
-    let npu = std::env::var("VX_DISPATCH_LIB")
-        .unwrap_or_else(|_| std::env!("NPU_SHARED_LIB_PATH").to_string());
+    let npu = dispatch_library_path();
     if !npu.is_empty() && std::path::Path::new(&npu).exists() {
         libs.push(npu);
     }
@@ -231,6 +317,38 @@ pub fn mlir_shims_path() -> String {
         return built.to_string();
     }
     String::new()
+}
+
+/// The dispatch library that GPU programs link: `VX_DISPATCH_LIB`, else the toolchain's own copy
+/// next to the compiler, else the one the build made in its OUT_DIR. The last one is a path on
+/// the build machine, so a vxc copied to a GPU pod needs one of the first two. The path may not
+/// exist, and the callers check that.
+pub fn dispatch_library_path() -> String {
+    dispatch_library_in(
+        std::env::var("VX_DISPATCH_LIB").ok(),
+        std::env::current_exe().ok().as_deref(),
+        std::env!("NPU_SHARED_LIB_PATH"),
+    )
+}
+
+fn dispatch_library_in(
+    named: Option<String>,
+    exe: Option<&std::path::Path>,
+    built: &str,
+) -> String {
+    if let Some(named) = named {
+        return named;
+    }
+    let file_name = std::path::Path::new(built).file_name();
+    if let (Some(file_name), Some(bin_dir)) = (file_name, exe.and_then(|e| e.parent())) {
+        for relative in ["../lib", "."] {
+            let path = bin_dir.join(relative).join(file_name);
+            if path.exists() {
+                return path.to_string_lossy().into_owned();
+            }
+        }
+    }
+    built.to_string()
 }
 
 /// linker without it and clang reports a missing file with no hint of which build produces it.
@@ -343,28 +461,42 @@ pub fn execute_mlir(
         program_args,
         opt_level,
         disable_llvm_optimizations,
+        false,
     )?;
     Ok(format!("{}{}", out.stdout, out.stderr))
 }
 
-pub fn execute_mlir_streams(
+/// The LLVM IR with each defined function marked `sanitize_thread`. The ThreadSanitizer pass
+/// checks only the functions that carry the mark, and the code generators set no marks.
+fn mark_for_thread_sanitizer(llvmir: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(llvmir);
+    let mut out = String::with_capacity(text.len() + 1024);
+    for line in text.lines() {
+        match line.strip_suffix(" {") {
+            Some(head) if line.starts_with("define ") => {
+                out.push_str(head);
+                out.push_str(" sanitize_thread {");
+            }
+            _ => out.push_str(line),
+        }
+        out.push('\n');
+    }
+    out.into_bytes()
+}
+
+/// Compile MLIR text to a native object file in `temp_dir`, the way `run-jit` builds a program:
+/// `mlir-translate`, then `opt` (with the Enzyme plugin when the program calls `grad`, `vjp`
+/// or `jvp`), then `llc`. Answers the object's path. With `thread_sanitizer`, `opt` also adds
+/// the checks of ThreadSanitizer, and the program must be linked with `-fsanitize=thread`.
+pub fn compile_mlir_to_object(
     mlir_src: &str,
-    program_args: Vec<String>,
+    temp_dir: &std::path::Path,
     opt_level: u8,
     disable_llvm_optimizations: bool,
-) -> Result<ProgramOutput, String> {
-    let temp_dir = tempfile::tempdir().map_err(|e| e.to_string())?;
-
-    let temp_mlir = temp_dir
-        .path()
-        .join("input.mlir")
-        .to_string_lossy()
-        .into_owned();
-    let temp_ll = temp_dir
-        .path()
-        .join("input.ll")
-        .to_string_lossy()
-        .into_owned();
+    thread_sanitizer: bool,
+) -> Result<String, String> {
+    let temp_mlir = temp_dir.join("input.mlir").to_string_lossy().into_owned();
+    let temp_ll = temp_dir.join("input.ll").to_string_lossy().into_owned();
 
     // 1. Write MLIR to temp file
     let mut mlir_file = File::create(&temp_mlir).map_err(|e| e.to_string())?;
@@ -374,14 +506,6 @@ pub fn execute_mlir_streams(
 
     // Runtime functions are now loaded via libvx_std_core.dylib
 
-    // The dispatch backend built alongside this compiler, overridable at run
-    // time. The compile-time path names a file in the build machine's OUT_DIR,
-    // which is the right answer when the compiler runs where it was built and
-    // no answer at all when it does not: a vxc copied onto a rented GPU box has
-    // to be pointed at a backend built there, against that box's CUDA.
-    let lib_npu = std::env::var("VX_DISPATCH_LIB")
-        .unwrap_or_else(|_| std::env!("NPU_SHARED_LIB_PATH").to_string());
-
     let mlir_translate_path =
         std::env::var("MLIR_TRANSLATE_PATH").unwrap_or_else(|_| "mlir-translate".to_string());
     println!("[JIT] Translating to LLVM IR...");
@@ -389,16 +513,14 @@ pub fn execute_mlir_streams(
     mlir_translate_cmd.args(["--mlir-to-llvmir", &temp_mlir]);
     let mlir_translate_out = run_cmd(mlir_translate_cmd, "mlir-translate")?;
 
+    let mut llvmir = mlir_translate_out.stdout;
+    if thread_sanitizer {
+        llvmir = mark_for_thread_sanitizer(&llvmir);
+    }
     let mut llvmir_file = File::create(&temp_ll).map_err(|e| e.to_string())?;
-    llvmir_file
-        .write_all(&mlir_translate_out.stdout)
-        .map_err(|e| e.to_string())?;
+    llvmir_file.write_all(&llvmir).map_err(|e| e.to_string())?;
 
-    let temp_opt_ll = temp_dir
-        .path()
-        .join("opt.ll")
-        .to_string_lossy()
-        .into_owned();
+    let temp_opt_ll = temp_dir.join("opt.ll").to_string_lossy().into_owned();
     let mut opt_args = vec![];
     let actual_opt_level = if disable_llvm_optimizations {
         0
@@ -411,16 +533,19 @@ pub fn execute_mlir_streams(
     let triple = host_target_triple()?;
     opt_args.push(format!("-mtriple={triple}"));
     opt_args.push("-mcpu=native".to_string());
+    let mattr = no_bf16_convert(&triple);
+    opt_args.extend(mattr.clone());
 
     let mut passes = format!("default<O{}>", actual_opt_level);
 
-    if let Some(enzyme_lib) =
-        enzyme_plugin_for(&mlir_translate_out.stdout, std::env::var("ENZYME_LIB").ok())?
-    {
+    if let Some(enzyme_lib) = enzyme_plugin_for(&llvmir, std::env::var("ENZYME_LIB").ok())? {
         opt_args.push(format!("-load-pass-plugin={}", enzyme_lib));
         passes.push_str(",enzyme");
     }
 
+    if thread_sanitizer {
+        passes.push_str(",tsan-module,function(tsan)");
+    }
     opt_args.push(format!("-passes={}", passes));
     opt_args.push("-S".to_string());
     opt_args.push(temp_ll.clone());
@@ -438,7 +563,7 @@ pub fn execute_mlir_streams(
         "[JIT] Compiling to native object (-O{})...",
         actual_opt_level
     );
-    let temp_obj = temp_dir.path().join("opt.o").to_string_lossy().into_owned();
+    let temp_obj = temp_dir.join("opt.o").to_string_lossy().into_owned();
     let mut llc_cmd = Command::new(&llc_path);
     llc_cmd.args([
         &format!("-O={}", actual_opt_level),
@@ -450,7 +575,29 @@ pub fn execute_mlir_streams(
         "-o",
         &temp_obj,
     ]);
+    llc_cmd.args(&mattr);
     run_cmd(llc_cmd, "llc")?;
+    Ok(temp_obj)
+}
+
+pub fn execute_mlir_streams(
+    mlir_src: &str,
+    program_args: Vec<String>,
+    opt_level: u8,
+    disable_llvm_optimizations: bool,
+    thread_sanitizer: bool,
+) -> Result<ProgramOutput, String> {
+    let temp_dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+
+    let temp_obj = compile_mlir_to_object(
+        mlir_src,
+        temp_dir.path(),
+        opt_level,
+        disable_llvm_optimizations,
+        thread_sanitizer,
+    )?;
+
+    let lib_npu = dispatch_library_path();
 
     println!("[JIT] Linking native executable...");
     let temp_exe = temp_dir
@@ -559,7 +706,7 @@ pub fn execute_mlir_streams(
         clang_cmd.arg("-lffi");
 
         // The dispatcher resolves the outlined kernel with
-        // dlsym(RTLD_DEFAULT, "_mlir_ciface_..."), which searches the running
+        // dlsym(RTLD_DEFAULT, "_vx_ciface_..."), which searches the running
         // executable's dynamic symbol table. Mach-O exports those symbols
         // anyway; ELF does not unless asked, so without this the lookup fails
         // at run time on Linux.
@@ -581,6 +728,9 @@ pub fn execute_mlir_streams(
     }
 
     clang_cmd.arg("-lm");
+    if thread_sanitizer {
+        clang_cmd.arg("-fsanitize=thread");
+    }
 
     run_cmd(clang_cmd, "clang")?;
 
@@ -589,6 +739,16 @@ pub fn execute_mlir_streams(
     exe_cmd.args(program_args);
     if std::env::var("RUST_BACKTRACE").is_err() {
         exe_cmd.env("RUST_BACKTRACE", "1");
+    }
+    if thread_sanitizer {
+        // The Rust runtime has no checks of ThreadSanitizer, and orders its own memory with locks
+        // that ThreadSanitizer does not see. So its `memcpy` and `malloc` calls report races in
+        // the runtime, not in the program. The user's own TSAN_OPTIONS come after, and win.
+        let user = std::env::var("TSAN_OPTIONS").unwrap_or_default();
+        exe_cmd.env(
+            "TSAN_OPTIONS",
+            format!("ignore_noninstrumented_modules=1 {user}"),
+        );
     }
 
     let exe_out = exe_cmd.output().map_err(|e| e.to_string())?;
@@ -613,15 +773,15 @@ pub fn execute_mlir_streams(
                 exe_out.status.code().unwrap_or(-1)
             ),
         }
-        if !out_str.is_empty() {
-            println!("{}", out_str);
-        }
+        // As the program wrote it, with no newline added, so that an error that follows it comes
+        // where it would on a terminal.
+        print!("{}", out_str);
+        // The program's standard error goes to ours, as it does when the program succeeds. A
+        // panic and a failed assert write there.
         if !err_str.is_empty() {
-            println!(
-                "[JIT] Error output:
-{}",
-                err_str
-            );
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+            eprint!("{}", err_str);
         }
         return Err(match killed {
             Some(how) => format!("Program {how}"),
@@ -671,6 +831,29 @@ mod tests {
 
     /// Without the shared library every test that runs a program fails, and each one reports
     /// only a clang error naming a file it has never heard of. This one names the cause.
+    /// A toolchain unpacked anywhere, `bin/vxc` and `lib/<dispatch library>`, finds its own
+    /// dispatch library. `VX_DISPATCH_LIB` still wins, and with neither the build's path is used.
+    #[test]
+    fn the_dispatch_library_is_found_next_to_the_compiler() {
+        let root = std::env::temp_dir().join(format!("vx-dispatch-{}", std::process::id()));
+        let (bin, lib) = (root.join("bin"), root.join("lib"));
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&lib).unwrap();
+        let exe = bin.join("vxc");
+        let built = "/build/out/libvx_cuda_dispatch.so";
+
+        assert_eq!(dispatch_library_in(None, Some(&exe), built), built);
+        std::fs::write(lib.join("libvx_cuda_dispatch.so"), b"").unwrap();
+        let found = dispatch_library_in(None, Some(&exe), built);
+        assert!(
+            found.ends_with("bin/../lib/libvx_cuda_dispatch.so"),
+            "{found}"
+        );
+        let named = dispatch_library_in(Some("/x/libmine.so".into()), Some(&exe), built);
+        assert_eq!(named, "/x/libmine.so");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn the_runtime_library_the_jit_links_is_present() {
         if let Err(why) = runtime_library_path() {

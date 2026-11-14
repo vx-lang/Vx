@@ -16,10 +16,10 @@
 //===----------------------------------------------------------------------===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // RUN: not vxc %s 2>&1 | FileCheck %s --check-prefix=COUNT
-// CHECK-DAG: Error[E6030] at 29:5:
-// CHECK-DAG: Error[E6030] at 39:5:
-// CHECK-DAG: Error[E6030] at 48:5:
-// CHECK-DAG: Error[E6030] at 56:5:
+// CHECK-DAG: Error[E6030] at {{.*}}device_region_hands_out_a_tensor_it_computes.vx:29:5:
+// CHECK-DAG: Error[E6030] at {{.*}}device_region_hands_out_a_tensor_it_computes.vx:39:5:
+// CHECK-DAG: Error[E6030] at {{.*}}device_region_hands_out_a_tensor_it_computes.vx:48:5:
+// CHECK-DAG: Error[E6030] at {{.*}}device_region_hands_out_a_tensor_it_computes.vx:56:5:
 // COUNT-COUNT-4: Error[E6030]
 // COUNT-NOT: Error[
 

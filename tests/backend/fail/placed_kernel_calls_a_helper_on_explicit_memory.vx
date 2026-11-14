@@ -1,0 +1,64 @@
+//===- placed_kernel_calls_a_helper_on_explicit_memory.vx ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Two placed regions use tensors in `managed: explicit` memory. The second
+// region calls a helper that takes a tensor. A SPIR-V image cannot pass a
+// tensor into a call, and the host cannot read that memory either, so the
+// program does not compile. The error names only the second region. The first
+// region makes no call, so it gets its image.
+//
+// RUN: not vxc %s --action emit-llvm 2>&1 | FileCheck %s # flat-codegen
+// CHECK-NOT: in `main` (kernel `{{[a-z0-9_]+}}`) cannot become
+// CHECK: the region placed on `Topology::Dev` in `main` (kernel `{{[a-z0-9_]+}}`) cannot become a `spirv64` device image: it passes a tensor to `first`
+// CHECK: This region's operands are in 'DEV_HBM', declared `managed: explicit`
+// CHECK: Change the region so that the target can compile it, or keep its operands in a space the host can read.
+// CHECK-NOT: cannot become
+// CHECK-NOT: will run on the host instead
+
+Memory CPU_DRAM {}
+Memory DEV_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: explicit, scope: device
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 63 GB/s,
+  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 63 GB/s
+}
+
+// `on Topology::Dev` is what lets the kernel call it at all.
+fn first(a: &Tensor<f32, [4], Memory::DEV_HBM>) on Topology::Dev -> f32 {
+  return a[0];
+}
+
+fn main() -> i32 {
+  let mut h = unsafe { Tensor<f32, [4]>::uninit() };
+  let mut o_h = unsafe { Tensor<f32, [4]>::uninit() };
+  for i in 0..4 {
+    h[i] = i as f32;
+    o_h[i] = 0.0;
+  }
+  let d = transfer(h, Memory::DEV_HBM);
+  let mut o = transfer(o_h, Memory::DEV_HBM);
+
+  spawn on(Topology::Dev) {
+    for i in 0..4 {
+      o[i] = d[i] + 1.0;
+    }
+  }
+
+  spawn on(Topology::Dev) {
+    for i in 0..4 {
+      o[i] = first(&d) + 1.0;
+    }
+  }
+
+  let back = transfer(o, Memory::CPU_DRAM);
+  print(back);
+  return 0;
+}

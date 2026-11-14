@@ -13,7 +13,7 @@
 // The borrow checker's guarantee still rides on the parameter -- `&mut` is exclusive, `&` is
 // never written through -- which is the whole reason to keep the two spellings apart.
 //
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // CHECK-LABEL: func.func @total(%arg0: memref<2x2xf32> {llvm.readonly}) -> f32
 // CHECK: memref.load
 // CHECK: arith.addf
@@ -31,7 +31,7 @@ fn total(t : &Tensor<f32, [2, 2]>) -> f32 {
 }
 
 fn main() -> i32 {
-  let mut a = Tensor<f32, [2, 2]>::uninit();
+  let mut a = unsafe { Tensor<f32, [2, 2]>::uninit() };
   let _r = fill(&mut a, 3.0);
   print(total(&a));
   return 0;

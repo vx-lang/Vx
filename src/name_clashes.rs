@@ -14,6 +14,10 @@
 // direct imports see; if they see different declarations, the name is ambiguous there, and an
 // error if that module uses it. This is how a local item shadows a glob import in Rust.
 //
+// A C function in an `extern` block cannot be renamed, so a Vx function with its name is renamed
+// in every module, and the modules that see only the C function call it. A `pub fn` with the
+// name of a C function is an error, because the object file must export it under its own name.
+//
 //===----------------------------------------------------------------------===//
 use crate::lexer::{Token, TokenTypeBase};
 use crate::symbol::Symbol;
@@ -31,6 +35,10 @@ pub enum Rename {
 
 /// The renames each module needs, by module name. A module missing here is parsed as written.
 pub type Plan = HashMap<Symbol, HashMap<Symbol, Rename>>;
+
+/// C functions that the lowering calls for a heap block or a task. A Vx function with one of
+/// these names is renamed, as if an `extern` block declared the name.
+const C_FUNCTIONS_THE_COMPILER_CALLS: &[&str] = &["malloc", "realloc", "aligned_alloc", "free"];
 
 /// Names the compiler looks up by spelling, so the stdlib's declaration cannot be renamed.
 const NAMES_THE_COMPILER_USES: &[&str] = &[
@@ -56,8 +64,17 @@ fn declared_names(p: &Program) -> impl Iterator<Item = &Symbol> {
 }
 
 /// The renamed spelling: the declaring module, then the name. It is still one identifier.
+/// A program file's module name is its path, so only the file name without its extension is used.
 fn renamed(module: &Symbol, name: &Symbol) -> String {
-    format!("{}__{}", module.as_ref().replace("::", "_"), name)
+    let module = module.as_ref().replace("::", "_");
+    let stem = std::path::Path::new(&module)
+        .file_stem()
+        .map_or(module.as_str(), |s| s.to_str().unwrap_or(&module));
+    let stem: String = stem
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .collect();
+    format!("{stem}__{name}")
 }
 
 /// Which modules need re-parsing, and with what. `roots` are the modules nobody imports (the
@@ -71,7 +88,38 @@ pub fn plan(programs: &[Program], roots: &[Symbol]) -> Result<Plan, String> {
             declarers.entry(name).or_default().push(&p.module_path);
         }
     }
-    let clashes = declarers.into_iter().filter(|(_, mods)| mods.len() > 1);
+    let c_functions: BTreeSet<&Symbol> = programs
+        .iter()
+        .flat_map(|p| p.externs.iter().map(|e| &e.name))
+        .chain(
+            programs
+                .iter()
+                .flat_map(|p| p.functions.iter().map(|f| &f.name))
+                .filter(|name| C_FUNCTIONS_THE_COMPILER_CALLS.contains(&name.as_ref())),
+        )
+        .filter(|name| {
+            programs
+                .iter()
+                .any(|p| p.functions.iter().any(|f| &f.name == *name))
+        })
+        .collect();
+    // A C program calls a `pub fn` by its name, so the compiler cannot rename it.
+    for p in programs {
+        for f in &p.functions {
+            if f.is_pub && c_functions.contains(&f.name) {
+                let file = f.file.as_ref().unwrap_or(&p.module_path);
+                return Err(format!(
+                    "{file}:{}: `pub fn {name}` cannot keep its name, because the C function \
+                     `{name}` has that name. Choose another name",
+                    f.span.line,
+                    name = f.name
+                ));
+            }
+        }
+    }
+    let clashes = declarers
+        .into_iter()
+        .filter(|(name, mods)| mods.len() > 1 || c_functions.contains(name));
 
     let by_name: HashMap<&Symbol, &Program> =
         programs.iter().map(|p| (&p.module_path, p)).collect();
@@ -79,16 +127,20 @@ pub fn plan(programs: &[Program], roots: &[Symbol]) -> Result<Plan, String> {
     for (name, mut mods) in clashes {
         mods.sort();
         let root_declarers: Vec<&&Symbol> = mods.iter().filter(|m| roots.contains(m)).collect();
-        if root_declarers.len() > 1 {
+        let keeper = if c_functions.contains(name) {
+            None
+        } else if root_declarers.len() > 1 {
             // Peer inputs, such as a `--machine` file and the program; the declaration check
             // reports those.
             continue;
-        }
-        let keeper = root_declarers.first().map_or(mods[0], |m| **m);
-        if let Some(lost) = mods.iter().find(|m| **m != keeper) {
+        } else {
+            Some(root_declarers.first().map_or(mods[0], |m| **m))
+        };
+        if let Some(lost) = mods.iter().find(|m| Some(**m) != keeper) {
+            let keeper = keeper.map_or("an `extern` block".to_string(), |k| format!("`{k}`"));
             if NAMES_THE_COMPILER_USES.contains(&name.as_ref()) {
                 return Err(format!(
-                    "`{name}` is declared by both `{keeper}` and `{lost}`; the compiler looks up \
+                    "`{name}` is declared by both {keeper} and `{lost}`; the compiler looks up \
                      the standard library's `{name}` by name, so no other module may declare one"
                 ));
             }
@@ -106,7 +158,7 @@ pub fn plan(programs: &[Program], roots: &[Symbol]) -> Result<Plan, String> {
                 0 => continue,
                 1 => {
                     let d = *declarers.iter().next().unwrap();
-                    if d == keeper {
+                    if Some(d) == keeper {
                         continue;
                     }
                     Rename::To(renamed(d, name))
@@ -141,6 +193,9 @@ fn sees<'p>(
     }
     let out = if declared_names(p).any(|n| n == name) {
         BTreeSet::from([&p.module_path])
+    } else if p.externs.iter().any(|e| &e.name == name) {
+        // The C function, which keeps its name.
+        BTreeSet::new()
     } else {
         let mut out = BTreeSet::new();
         for import in &p.imports {
@@ -164,6 +219,8 @@ enum Scope {
     EnumBody,
     /// An `impl` or `trait` body: `fn name` here is a method.
     ItemBody,
+    /// A `macro_rules` body. An `impl` or `trait` that it writes is an item of the file.
+    Macro,
 }
 
 fn is_trivia<S, C>(kind: &TokenTypeBase<S, C>) -> bool {
@@ -189,11 +246,13 @@ pub fn rename_tokens<'a>(
             continue;
         }
         let top_level = scopes.is_empty();
+        let item_level = top_level || scopes == [Scope::Macro, Scope::Block];
         match &tokens[i].kind {
             TokenTypeBase::Import => in_import = true,
             TokenTypeBase::Semicolon => in_import = false,
+            TokenTypeBase::MacroRules if top_level => next_brace = Some(Scope::Macro),
             TokenTypeBase::Enum if top_level => next_brace = Some(Scope::EnumBody),
-            TokenTypeBase::Impl | TokenTypeBase::Trait if top_level => {
+            TokenTypeBase::Impl | TokenTypeBase::Trait if item_level => {
                 next_brace = Some(Scope::ItemBody)
             }
             TokenTypeBase::LeftBrace => scopes.push(next_brace.take().unwrap_or(Scope::Block)),

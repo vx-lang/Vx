@@ -1,0 +1,43 @@
+//===- borrow_of_a_placed_tensor_passed_to_a_function.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --legacy-codegen --action emit-llvm 2>&1 | FileCheck %s
+//
+// `&mut d` of a tensor moved into GPU memory is passed to a function whose parameter names that
+// memory. The legacy code generator types the parameter with the memory's address space and the
+// local without one, so the borrow is cast across address spaces before the call.
+//
+// CHECK-NOT: cast incompatible
+// CHECK: llvm.addrspacecast
+// CHECK: llvm.call @fill(
+
+Memory CPU_DRAM {}
+Memory HBM {
+  within: Memory::CPU_DRAM, capacity: 1 GiB, managed: explicit, scope: device
+}
+Topology Device {
+  arch: nvptx64,
+  memory: Memory::HBM,
+  visible: [Memory::HBM],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 10
+}
+
+fn fill(out : &mut Tensor<f32, [1024], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for i in 0..1024 {
+      out[i] = 1.0;
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let h = Tensor<f32, [1024]>::new();
+  let mut d = transfer(h, Memory::HBM);
+  fill(&mut d);
+  return 0;
+}

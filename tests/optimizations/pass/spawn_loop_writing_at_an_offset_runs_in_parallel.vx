@@ -20,7 +20,7 @@
 // ANSWER: sum=2048;
 
 fn probe() -> f32 {
-  let mut o = Tensor<f32, [1024, 1]>::new();
+  let mut o = Tensor<f32, [1024, 1], Memory::GPU_HBM>::new();
   let lo = 512;
   spawn on(Topology::GPU) {
     for r in 0..1024 {
@@ -32,9 +32,10 @@ fn probe() -> f32 {
       o[lo + r][0] = o[lo + r][0] + 2.0;
     }
   }
+  let back = transfer(o, Memory::CPU_DRAM);
   let mut sum = 0.0;
   for r in 0..1024 {
-    sum = sum + o[r][0];
+    sum = sum + back[r][0];
   }
   return sum;
 }

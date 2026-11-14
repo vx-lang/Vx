@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plain loops at the speed of CUDA</title>
+<meta name="author" content="Aditya Kumar">
+<meta name="description" content="On an A100, Vx across loops—checked schedule annotations on plain for loops—ran 12% faster than a standard CUDA scaling loop and came within 5% of llm.c's fastest CUDA kernels. The static checks, MLIR lowerings, PTX comparisons with nvc++, and measurement methodology.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="Plain loops at the speed of CUDA">
+<meta property="og:description" content="On an A100, Vx across loops matched hand-written CUDA and three of llm.c's kernels. The static proofs, MLIR constant propagation, nvc++ PTX comparison, and how we measured.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-11-13T18:00:00Z">
+<meta property="og:url" content="https://vxlang.org/blog/plain-loops-at-the-speed-of-cuda.html">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>Plain loops at the speed of CUDA</h1>
+<p class="post-meta">Aditya Kumar &middot; 13 November 2026</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> — In Vx, a GPU kernel is a nested pair of structured
+<code>for</code> loops annotated with <code>across blocks</code> and <code>across lanes</code>
+inside a <code>spawn on</code> region. Semantically, <code>across</code> is a checked schedule
+annotation: the loop nest means what it means when each loop runs one pass at a time, and the frontend rejects races and non-uniform barrier control flow at compile time
+(<code>E6032</code>). We timed these loops on an NVIDIA A100 against CUDA. A loop scaling a
+4096 &times; 16384 grid ran in 0.343 ms versus 0.388 ms in CUDA. Three kernels from
+<code>llm.c</code>—GELU, layernorm, and softmax—written as <code>across</code> loops came within
+5% of <code>llm.c</code>'s fastest CUDA kernels, and softmax was faster. Closing the gap took
+two source-level primitives (<code>lanes::sum</code> and <code>fast_tanh</code>/<code>fast_exp</code>)
+and one MLIR lowering change that propagates the static block size into device IR. We also
+inspected the <code>sm_80</code> PTX emitted by <code>nvc++ 26.9</code> for OpenMP, OpenACC, and
+C++17 <code>stdpar</code> on the same loops. Every timing is from one A100; "How we measured"
+documents the exact harnesses and caveats.</blockquote>
+
+<p class="lede">Most GPU languages bake the hardware's SIMT execution model into the dynamic
+semantics: you write a single-thread body, index manually with <code>blockIdx</code> and
+<code>threadIdx</code>, place <code>__syncthreads()</code> by hand, and hope no data race or
+divergent barrier slips past review. Vx keeps the structured loop nest and treats parallelism as a
+statically checked schedule annotation. A promise like that only matters to compiler and PL people
+if the lowered machine code matches hand-tuned CUDA—so we rented an A100 and measured.</p>
+
+<h2 id="semantics-preserving-schedules"><a href="#semantics-preserving-schedules">Schedules that preserve sequential semantics</a></h2>
+
+<p>In Vx, <code>across blocks</code>, <code>across subgroups</code>, and
+<code>across lanes(N)</code> attach hardware-mapping metadata to ordinary <code>for</code> loops
+inside a <code>spawn on(Topology::Device)</code> region. Before lowering to MLIR, the HIR checker
+discharges three obligations under diagnostic <code>E6032</code> so that parallel execution agrees
+with sequential execution:</p>
+
+<ul>
+<li><strong>Level nesting and structured exits</strong> (<code>src/hir/check/across.rs</code>):
+<code>blocks</code> loops sit directly inside <code>spawn on</code>, <code>subgroups</code> inside
+<code>blocks</code>, and <code>lanes</code> inside <code>blocks</code> or <code>subgroups</code>, up
+to three axes per level. A lane count is a compile-time constant up to 1024, and
+<code>break</code>, <code>continue</code>, and <code>return</code> cannot escape an
+<code>across</code> loop.</li>
+<li><strong>Disjointness via affine mixed-radix forms</strong>
+(<code>src/hir/check/across_proof.rs</code>): Rather than running a general polyhedral solver on
+arbitrary heap graphs, the checker represents tensor indices as affine forms
+<code>&Sigma; c_i &middot; v_i + c_0</code> over loop induction variables and region-uniform
+values. For every tensor written in an <code>across</code> loop, every conflicting access pair must
+fix the loop variable in a mixed-radix sense (each coefficient strictly exceeds the maximum sum of
+lower-order terms), separate by constant remainders (e.g., <code>2 * j</code> vs
+<code>2 * j + 1</code>), or be guarded by <code>if v == c</code>. Shared writes require explicit
+effect contracts such as <code>ensures atomic(t)</code>.</li>
+<li><strong>Uniformity and barrier convergence</strong>
+(<code>src/hir/check/across_lanes.rs</code>): Each <code>across lanes</code> loop ends with an
+implicit block barrier. Code in a block body outside lane loops that writes memory or mutates outer
+state runs on lane 0 only; the checker tracks <code>uniform</code> and <code>lane0</code>-defined
+bindings and refuses any lane loop or enclosing branch whose condition depends on non-uniform or
+lane-0-private values.</li>
+</ul>
+
+<p>Removing every <code>across</code> modifier leaves an ordinary sequential loop nest with the
+same denotational meaning (up to explicit <code>atomic</code> interleavings or unordered
+reductions). The exception is a <code>lanes::</code> collective such as <code>lanes::sum</code>: it
+must sit in an <code>across blocks</code> loop, so a kernel that calls one does not compile
+without its <code>across</code> loops. Its sequential meaning is a reduction in a fixed order. The
+compiler emits a host CPU copy from the same IR when no GPU is present, and that copy computes the
+reduction in the same order, with the same bits.</p>
+
+<h2 id="one-loop"><a href="#one-loop">One loop: why knowing the block size matters</a></h2>
+
+<p>Here is the first <code>across</code> example from the Vx book, scaled to a 4096 &times; 16384
+grid. Each block owns a row and 256 lanes stride across its 16,384 columns:</p>
+
+<pre><code><span class="k">spawn on</span>(Topology::Device) {
+  <span class="k">for</span> y <span class="k">in</span> <span class="n">0</span>..<span class="n">4096</span> <span class="k">across blocks</span> {
+    <span class="k">for</span> x <span class="k">in</span> <span class="n">0</span>..<span class="n">16384</span> <span class="k">across lanes</span>(<span class="n">256</span>) {
+      grid[y][x] = grid[y][x] * <span class="n">2.0</span> + (y <span class="k">as</span> <span class="t">f32</span>);
+    }
+  }
+}</code></pre>
+
+<p>The idiomatic CUDA equivalent maps one block per row and steps each thread by
+<code>blockDim.x</code>:</p>
+
+<pre><code><span class="k">__global__ void</span> <span class="f">scale_rows</span>(<span class="t">float</span> *grid) {
+  <span class="t">int</span> y = blockIdx.x;
+  <span class="k">for</span> (<span class="t">int</span> x = threadIdx.x; x &lt; COLS; x += blockDim.x) {
+    <span class="t">size_t</span> i = (<span class="t">size_t</span>)y * COLS + x;
+    grid[i] = grid[i] * <span class="n">2.0f</span> + (<span class="t">float</span>)y;
+  }
+}
+<span class="c">// scale_rows&lt;&lt;&lt;4096, 256&gt;&gt;&gt;(grid);</span></code></pre>
+
+<div class="table-scroll">
+<table>
+<thead><tr><th>The loop</th><th>Time</th><th>Memory speed</th></tr></thead>
+<tbody>
+<tr><td>Vx</td><td>0.343 ms</td><td>1.57 TB/s</td></tr>
+<tr><td>CUDA, nvcc 12.8 <code>-O3</code></td><td>0.388 ms</td><td>1.38 TB/s</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>The kernel reads and writes 512 MiB, so it is purely memory-bound. Vx ran 12% faster because the
+launch configuration is part of the source syntax rather than an opaque runtime parameter at the
+<code>&lt;&lt;&lt;...&gt;&gt;&gt;</code> call site. In the CUDA version, <code>nvcc</code> must emit a
+runtime read of <code>%ntid.x</code> (<code>blockDim.x</code>) and maintain an induction step that
+is unknown at compile time. Because Vx fixes the block width at 256 in the <code>across</code>
+clause, the device lowering folds the block dimension to a constant, letting LLVM unroll 4
+elements per loop iteration at fixed byte offsets with fewer address-calculation instructions. A
+CUDA programmer who hardcodes <code>256</code> in place of <code>blockDim.x</code> gives the
+compiler the same information; we did not time that variant.</p>
+
+<h2 id="three-kernels-from-llm-c"><a href="#three-kernels-from-llm-c">Three kernels from llm.c</a></h2>
+
+<p>A bandwidth-bound scaling loop is a modest test. <a href="https://github.com/karpathy/llm.c">llm.c</a>
+provides a progressively tuned suite of GPT-2 CUDA kernels along with a timing harness. We ported
+three of them—GELU, layernorm, and softmax—into Vx at <code>llm.c</code>'s shapes. Here is
+<code>llm.c</code>'s baseline GELU kernel:</p>
+
+<pre><code><span class="k">__global__ void</span> <span class="f">gelu_forward_kernel1</span>(<span class="t">floatX</span>* out, <span class="k">const</span> <span class="t">floatX</span>* inp, <span class="t">int</span> N) {
+    <span class="t">int</span> i = blockIdx.x * blockDim.x + threadIdx.x;
+    <span class="k">if</span> (i &lt; N) {
+        <span class="t">float</span> xi = inp[i];
+        <span class="t">float</span> cube = <span class="n">0.044715f</span> * xi * xi * xi;
+        out[i] = <span class="n">0.5f</span> * xi * (<span class="n">1.0f</span> + <span class="f">tanhf</span>(GELU_SCALING_FACTOR * (xi + cube)));
+    }
+}</code></pre>
+
+<p>And the Vx version:</p>
+
+<pre><code><span class="k">pub fn</span> <span class="f">gelu_forward</span>(out : &amp;<span class="k">mut</span> <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [?], Memory::HBM&gt;, inp : &amp;<span class="t">Tensor</span>&lt;<span class="t">f32</span>, [?], Memory::HBM&gt;, n : <span class="t">i32</span>) -&gt; <span class="t">void</span> {
+  <span class="k">spawn on</span>(Topology::Device) {
+    <span class="k">for</span> b <span class="k">in</span> <span class="n">0</span>..(n + <span class="n">255</span>) / <span class="n">256</span> <span class="k">across blocks</span> {
+      <span class="k">for</span> l <span class="k">in</span> <span class="n">0</span>..<span class="n">256</span> <span class="k">across lanes</span> {
+        <span class="k">let</span> i = b * <span class="n">256</span> + l;
+        <span class="k">if</span> i &lt; n {
+          <span class="k">let</span> x = inp[i];
+          <span class="k">let</span> cube = <span class="n">0.044715</span> * x * x * x;
+          out[i] = <span class="n">0.5</span> * x * (<span class="n">1.0</span> + (<span class="n">0.7978846</span> * (x + cube)).<span class="f">fast_tanh</span>());
+        }
+      }
+    }
+  }
+  <span class="k">return</span>;
+}</code></pre>
+
+<p>Notice two properties that matter for static verification. First, the loop bound
+<code>(n + 255) / 256</code> combined with <code>b * 256 + l</code> is proven non-wrapping by
+<code>across_proof.rs</code> without needing a runtime overflow guard at launch (whereas an unbounded
+<code>0..n</code> with <code>i32</code> indexing emits a host guard before dispatch). Second,
+<code>gelu_forward</code> is an ordinary public function: the borrow checker verifies memory access
+and the same source executes sequentially on the CPU when no GPU is attached.</p>
+
+<p>On an A100, comparing Vx against the fastest version of each kernel in <code>llm.c</code>:</p>
+
+<div class="table-scroll">
+<table>
+<thead><tr><th>Kernel</th><th>Vx</th><th>llm.c</th></tr></thead>
+<tbody>
+<tr><td>GELU, 6.3 M floats</td><td>0.047 ms</td><td>0.046 ms</td></tr>
+<tr><td>GELU, the same, 1000 launches in a row</td><td>0.0376 ms</td><td>0.0368 ms</td></tr>
+<tr><td>layernorm, 8192 rows of 768</td><td>0.043 ms</td><td>0.041 ms (version 6)</td></tr>
+<tr><td>softmax, 8192 rows of 1024</td><td>0.050 ms</td><td>0.055 ms (version 7), 0.050 ms with <code>--use_fast_math</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Every Vx output matched a sequential CPU run of the same function; the <code>llm.c</code> harness
+validated its own outputs.</p>
+
+<h2 id="what-it-took"><a href="#what-it-took">What it took: primitives and one MLIR lowering fix</a></h2>
+
+<p>Our initial Vx ports were roughly 2&times; slower. Closing the gap required two changes in the
+source programs and one compiler optimization.</p>
+
+<p><strong>1. Structured collective reductions (<code>lanes::sum</code>, <code>lanes::max</code>).</strong>
+In layernorm and softmax, each lane computes partial accumulators across a row before collapsing them
+into a scalar. Our first versions wrote that reduction as a plain sequential loop after the lane
+loop—which under Vx's barrier semantics runs on lane 0 alone, serializing a 256-way reduction.
+<code>llm.c</code> uses a warp-shuffle and shared-memory tree, and Vx provides
+<code>lanes::sum</code> and <code>lanes::max</code> as compiler-recognized collectives with a fixed
+two-level reduction order (<code>shfl.sync.bfly.b32</code> / <code>shfl.sync.down</code> across
+32-lane warps, followed by a cross-warp step). Because the tree is deterministic, every lane
+receives identical bits and the result is typed as <code>uniform</code>. Replacing the scalar loop
+with <code>lanes::sum</code> cut layernorm from 0.088 ms to 0.043 ms, and together with
+<code>fast_exp</code> cut softmax from 0.130 ms to 0.050 ms.</p>
+
+<p><strong>2. Separating IEEE-exact math from fast device approximations (<code>fast_tanh</code>,
+<code>fast_exp</code>).</strong> Vx's default <code>tanh</code> and <code>exp</code> are specified to
+return the exact nearest <code>f32</code> on both CPU and GPU. To guarantee bit-identical rounding,
+the standard implementation promotes internally to <code>f64</code>, which hits a hardware throughput
+wall on GPUs where <code>f64</code> issue rate is a fraction of <code>f32</code>. Rather than
+exposing a global <code>-ffast-math</code> flag that silently alters floating-point semantics across
+an entire compilation unit, Vx makes the precision trade-off explicit at the call site via
+<code>fast_tanh</code> and <code>fast_exp</code>, which lower to short <code>f32</code> GPU
+sequences like CUDA's intrinsics. Switching GELU to <code>fast_tanh</code> dropped its runtime from
+0.060 ms to 0.047 ms (see <a href="/docs/exact-and-fast-math.html">Exact and fast math</a>).</p>
+
+<p><strong>3. Propagating the static block size and thread upper bound in MLIR
+(<a href="https://github.com/vx-lang/Vx/pull/3354">#3354</a>).</strong> Every kernel lowered by Vx
+already carries its static thread count in <code>vx.launch_block</code>, and the ABI guarantees
+the kernel is launched with exactly that block size. However, the MLIR-to-LLVM device lowering
+(<code>ConvertVxToStandardPass</code> in <code>src/dialect/VxLowering.cpp</code>) previously stepped
+each <code>across lanes(W)</code> loop by <code>min(W, gpu.block_dim)</code>. Even when
+<code>W == 256</code> matched the 256-thread block—as in GELU, where every lane executes exactly one
+iteration—LLVM saw an opaque <code>gpu.block_dim</code>, could not fold the trip count to 1,
+preserved the loop backedge, and strength-reduced the index into a separate 64-bit byte offset,
+costing two extra instructions per load and store.</p>
+
+<p>In #3354, when <code>vx.launch_block</code> is a compile-time integer, the GPU device clone
+replaces <code>gpu.block_dim</code> with that constant and attaches it as the upper-bound attribute
+on <code>gpu.thread_id</code> (without emitting <code>nvvm.maxntid</code> for blocks of 256 threads
+or fewer, since <code>.maxntid</code> alters <code>ptxas</code> register allocation). On the CPU
+fallback clone, <code>gpu.thread_id</code> and <code>gpu.block_dim</code> still fold to
+<code>0</code> and <code>1</code>. With that single change, LLVM sees that a lane loop as wide as its
+block runs once, removes the loop and its bounds check against 256, and computes element addresses directly. Every benchmarked
+kernel sped up by 4% to 10% with identical output bits:</p>
+
+<div class="table-scroll">
+<table>
+<thead><tr><th>Kernel</th><th>Before #3354</th><th>After #3354</th></tr></thead>
+<tbody>
+<tr><td>GELU with <code>fast_tanh</code></td><td>0.051 ms</td><td>0.047 ms</td></tr>
+<tr><td>GELU with exact <code>tanh</code></td><td>0.064 ms</td><td>0.060 ms</td></tr>
+<tr><td>layernorm with <code>lanes::sum</code></td><td>0.046 ms</td><td>0.043 ms</td></tr>
+<tr><td>softmax with <code>fast_exp</code> and <code>lanes::</code></td><td>0.052 ms</td><td>0.050 ms</td></tr>
+<tr><td>4096 &times; 16384 scaling loop</td><td>0.383 ms</td><td>0.343 ms</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>This optimization is on <code>main</code> and will ship in the next release (Vx 0.0.4 reflects
+the "Before" column).</p>
+
+<h2 id="and-c-or-c-plus-plus"><a href="#and-c-or-c-plus-plus">Comparison with OpenMP, OpenACC, and C++ stdpar</a></h2>
+
+<p>C and C++ programmers already have three standard ways to annotate plain loops or algorithms for
+a GPU: OpenMP target offload, OpenACC directives, and C++17 parallel algorithms
+(<code>std::for_each(std::execution::par_unseq, ...)</code>, or <code>stdpar</code>). We wrote the
+scaling loop, GELU, and layernorm in all three and compiled them with <code>nvc++ 26.9</code>
+(NVIDIA HPC SDK) at <code>-O3</code> targeting <code>sm_80</code>. We did not execute these binaries;
+instead, we inspected the emitted PTX to compare the generated instruction shapes.</p>
+
+<p><strong>The 4096 &times; 16384 scaling loop.</strong> The conventional pragma style uses
+<code>collapse(2)</code>:</p>
+
+<pre><code><span class="k">#pragma omp target teams distribute parallel for collapse(2)</span>
+<span class="k">for</span> (<span class="t">int</span> y = <span class="n">0</span>; y &lt; ROWS; y++)
+  <span class="k">for</span> (<span class="t">int</span> x = <span class="n">0</span>; x &lt; COLS; x++)
+    grid[(<span class="t">long</span>)y * COLS + x] = grid[(<span class="t">long</span>)y * COLS + x] * <span class="n">2.0f</span> + (<span class="t">float</span>)y;</code></pre>
+
+<p>With <code>collapse(2)</code>, both OpenMP and OpenACC flatten the nest into a 67-million-trip
+1D loop. On every iteration, the PTX reconstructs <code>y</code> and <code>x</code> from the linear
+index via 64-bit shifts and masks—roughly 15 instructions of index arithmetic per load-store pair—and
+marks the loop un-unrollable. If we instead write the two-level decomposition explicitly (rows on
+blocks/gangs, columns on threads/vectors), the generated PTX diverges sharply across compilers:</p>
+
+<div class="table-scroll">
+<table>
+<thead><tr><th>Rows on blocks, columns on threads</th><th>Generated PTX (<code>sm_80</code>)</th></tr></thead>
+<tbody>
+<tr><td>Vx</td><td>4 elements per loop iteration at fixed offsets, with no per-element bounds test</td></tr>
+<tr><td>OpenACC, <code>gang</code> and <code>vector_length(256)</code></td><td>16 elements per iteration at fixed offsets, plus a 3-instruction bounds test per element</td></tr>
+<tr><td>OpenMP, <code>teams distribute</code> + <code>parallel for</code></td><td>1,188 instructions, a call into the OpenMP device runtime, a local-memory stack, and a shared-memory state machine</td></tr>
+<tr><td><code>stdpar</code>, <code>std::for_each</code> over flat index</td><td>2 elements per thread at fixed offsets (the underlying CUB dispatch fixes 256 threads)</td></tr>
+<tr><td>CUDA, using <code>blockDim.x</code></td><td>1 element per iteration with 4 instructions to form the 64-bit address because <code>blockDim.x</code> is opaque</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>OpenMP's 1,188-instruction kernel reflects its fork-join execution model: nesting
+<code>parallel for</code> inside <code>teams distribute</code> emits a dynamic parallel region per
+team. As far as we can tell from the PTX, a single thread of each team starts the region and wakes
+the worker threads via a shared-memory state machine.</p>
+
+<p><strong>GELU.</strong> Vx, OpenMP, OpenACC, and <code>stdpar</code> all emit the same instruction
+sequence for <code>tanh</code>: <code>ex2.approx</code>, <code>rcp.approx</code>, and a polynomial
+evaluation. Only <code>nvcc --use_fast_math</code> improves on it by lowering directly to the single
+hardware instruction <code>tanh.approx.f32</code>, which Vx's <code>fast_tanh</code> does not yet
+emit (<a href="https://github.com/vx-lang/Vx/issues/3359">#3359</a>).</p>
+
+<p><strong>Layernorm.</strong> Each row requires two reductions. Vx lowers <code>lanes::sum</code> to
+warp shuffles, with one exchange of the per-warp results through shared memory. The kernel is a
+self-contained 168 instructions with zero runtime calls. In C++ with <code>nvc++</code>:</p>
+
+<ul>
+<li><strong>OpenACC</strong> (<code>loop vector reduction(+: s)</code> inside a <code>gang</code>
+loop) lowers to a shared-memory reduction tree in 188 instructions and 12 barriers—close to Vx.</li>
+<li><strong>OpenMP</strong> (<code>parallel for reduction(+: s)</code> inside <code>teams
+distribute</code>) expands to 3,657 instructions and accumulates per-thread partials into shared
+memory using atomic adds, serializing threads within each block.</li>
+<li><strong><code>stdpar</code></strong> forbids nested parallel algorithms inside a device kernel. The
+natural formulation assigns one thread per row to reduce 768 elements sequentially—launching only
+8,192 threads on a GPU capable of 221,184 resident threads, with neighboring threads striding 3 KB
+apart (uncoalesced global loads). The alternative, dispatching <code>std::reduce</code> per row,
+incurs 16,384 separate kernel launches.</li>
+</ul>
+
+<p><strong>Soundness on racy loops.</strong> Pragmas are unchecked hints. When we fed
+<code>nvc++</code> a loop with a cross-iteration write collision—<code>out[i / 2] = inp[i]</code>—under
+both OpenACC and OpenMP, it compiled silently into a data race. Vx's affine proof rejects the same
+loop at compile time because <code>i / 2</code> does not fix the loop variable:</p>
+
+<pre><code>Error[E6032]: two passes of this block loop may write the same element of `out`: an index of the write must fix `b`</code></pre>
+
+<p>A disciplined C++ programmer using OpenACC can obtain code nearly as clean as Vx by picking the
+right pragma nest and verifying non-interference by hand. Vx's contribution is making that
+well-structured, two-level form the only form, keeping reductions in <code>lanes::</code>, and
+proving disjointness and barrier convergence statically.</p>
+
+<h2 id="how-we-measured"><a href="#how-we-measured">How we measured</a></h2>
+
+<p>Microbenchmark methodology shapes GPU numbers, so here are the exact conditions and limits:</p>
+
+<ul>
+<li><strong>Hardware and toolchain:</strong> One NVIDIA A100-SXM4-80GB, CUDA 12.8, driver 595.91.
+Each kernel ran at one fixed problem size on an otherwise idle GPU.</li>
+<li><strong>Single-launch timing:</strong> With <code>VX_TIME_KERNEL=1</code>, Vx brackets each
+individual launch with CUDA events. Tables report the median of 50 launches (10 launches for the
+4096 &times; 16384 scaling loop). The baseline CUDA scaling kernel was timed with the identical
+single-launch event harness.</li>
+<li><strong><code>llm.c</code>'s own harness:</strong> <code>llm.c</code> times a back-to-back stream
+of launches and divides by the count. On this A100, back-to-back averaging shaves roughly
+4 &micro;s of launch overhead relative to single-launch event timing, which biases the layernorm
+and softmax rows in <code>llm.c</code>'s favor. For GELU, we timed <code>llm.c</code>'s kernel with
+the same single-launch harness as Vx (0.046 ms).</li>
+<li><strong>1000 back-to-back launches:</strong> To control for harness differences on GELU, we
+loaded Vx's generated GPU code and <code>nvcc</code>'s GPU code into a single binary and executed
+each 1000 times consecutively across 7 trials. Variance was under 1%, with Vx 2% slower.</li>
+<li><strong>Fast math:</strong> <code>llm.c</code> baselines were compiled without
+<code>--use_fast_math</code> unless noted. Enabling <code>--use_fast_math</code> sped up
+<code>llm.c</code> by up to 9%. Vx restricts fast approximations to explicit <code>fast_*</code>
+calls.</li>
+<li><strong>L2 cache residency:</strong> Layernorm's input tensor is 25 MB, which fits inside the
+A100's 40 MB L2 cache; this favors implementations like our Vx port that read the row three times.</li>
+</ul>
+
+<h2 id="what-is-left"><a href="#what-is-left">What is left</a></h2>
+
+<ul>
+<li><strong>Half-precision math intrinsics:</strong> <code>across</code> loops do not yet support
+<code>tanh</code> or <code>fast_tanh</code> on <code>f16</code> or <code>bf16</code>
+(<a href="https://github.com/vx-lang/Vx/issues/3353">#3353</a>). <code>llm.c</code>'s highest-throughput
+kernels run in <code>bf16</code>.</li>
+<li><strong>Other GPU architectures:</strong> All timings are from an A100. GPUs with lower
+<code>f64</code> throughput (such as an NVIDIA L4) will exhibit a much steeper penalty when using
+exact <code>tanh</code>/<code>exp</code> instead of <code>fast_*</code>.</li>
+<li><strong>Richer kernels:</strong> Matrix multiplications in <code>llm.c</code> dispatch to cuBLAS,
+and so do the matrix products in its attention, unless it calls cuDNN's fused attention. Comparing
+those takes more than simple <code>across lanes</code> loops.</li>
+</ul>
+
+<p>The profiling notes behind #3354 are tracked in
+<a href="https://github.com/vx-lang/Vx/issues/3352">#3352</a>. For language rules and examples of
+<code>across</code> loops, shared tiles, and <code>lanes::</code> collectives, see the
+<a href="/docs/writing-parallel-code.html">Writing parallel code</a> chapter.</p>
+
+<p class="post-foot">Vx is Apache 2.0 with the LLVM exception &mdash;
+<a href="/docs/getting-started.html">install it</a> and try the examples.</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
+</footer>
+
+<script src="/blog/copy-code.js" defer></script>
+</body>
+</html>

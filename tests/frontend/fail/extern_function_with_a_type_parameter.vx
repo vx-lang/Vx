@@ -1,0 +1,20 @@
+//===- extern_function_with_a_type_parameter.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An extern function can take memory parameters only. A type parameter `T` would give one C
+// function many machine types, which no C function has.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: An extern function can only take memory parameters, as in `<M : Memory>`
+
+extern "C" {
+  fn vendor_copy<T>(from : *const T, to : *mut T, n : i64) -> void;
+}
+
+fn main() -> i32 {
+  return 0;
+}

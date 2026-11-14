@@ -121,7 +121,9 @@ Each tool's path can be overridden by an environment variable — `MLIR_TRANSLAT
 whatever is on `PATH`.
 
 `--action emit-obj` does not use that chain. It builds an MLIR execution engine in process and asks
-it to write an object file (`ObjectEmitter` in `src/jit.rs`).
+it to write an object file (`ObjectEmitter` in `src/jit.rs`). A program that calls `grad`, `vjp` or
+`jvp` is the exception: those calls are filled in by the Enzyme pass in `opt`, so its object is built
+by the chain up to `llc`.
 
 ## What `vxc` can be asked to do
 
@@ -183,7 +185,12 @@ Markers a fixture can carry:
 | `// REQUIRES: ane` | Skipped without Apple Neural Engine models. |
 | `// REQUIRES: z3` | Skipped without the z3 prover. |
 | `// REQUIRES: flat-codegen` | Only meaningful on the flat path. |
+| `# flat-codegen` at the end of a `// RUN:` line | The line checks text that only the flat code generator writes, such as its MLIR. The parity mode runs it unchanged. |
 | `// XFAIL: *` | Known to fail because the compiler is wrong. The command still runs, and the day it passes the test reports that the marker should go. |
+
+`VX_LEGACY_PARITY=1 cargo test --test integration_test compile_test` is the parity mode. After
+the RUN lines of a file pass, it runs them again in order, with `--legacy-codegen` added to each
+`vxc` command. A failure in this second pass is a file that fails only on the AST code generator.
 
 One trap: `FileCheck` reads `CHECK:` **anywhere** on a line, including inside prose. Do not write
 the word followed by a colon in a comment unless you mean it.
@@ -215,8 +222,8 @@ The path through the compiler, in order. A new statement or expression usually t
    grammar is not in the language.
 1. **Tests** — a `pass` fixture for the feature working, and a `fail` fixture for each way it can
    be used wrongly.
-1. **Documentation** — the book under `www/book/src/` teaches the language. CI compiles every
-   example in it, so an example that does not build fails the build.
+1. **Documentation** — the book under `www/book/src/` teaches the language. Keep each example
+   that is a whole program (a code block with `fn main`) compiling. No CI job checks this yet.
 
 Prefer an `assert` over a silent fallback. This is a compiler: crashing is better than emitting
 wrong code quietly.

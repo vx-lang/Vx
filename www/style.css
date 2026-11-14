@@ -469,6 +469,15 @@ footer > p {
   position: relative;
 }
 
+/* Heading text is itself the permalink (no glyph). Inherit the accent; the global
+ * `a` rule already drops the underline and restores it on hover.
+ */
+.post h2 a,
+.post h3 a {
+  color: inherit;
+  text-underline-offset: 0.15em;
+}
+
 .post h2::before {
   content: "";
   position: absolute;
@@ -567,6 +576,34 @@ footer > p {
   overflow-x: visible;
   white-space: pre-wrap;
   overflow-wrap: break-word;
+}
+
+/* Copy button on blog code blocks (injected by /blog/copy-code.js). */
+.post .code-block {
+  position: relative;
+}
+.post .code-block .copy-code {
+  position: absolute;
+  top: 0.55rem;
+  right: 0.55rem;
+  z-index: 1;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-raised);
+  color: var(--fg-muted);
+  font-family: var(--sans);
+  font-size: 0.78rem;
+  line-height: 1;
+  padding: 0.4rem 0.7rem;
+  cursor: pointer;
+}
+.post .code-block .copy-code:hover {
+  color: var(--fg);
+  border-color: var(--fg-faint);
+}
+.post .code-block .copy-code:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .post-foot {

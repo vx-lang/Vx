@@ -1,0 +1,389 @@
+//===- across_loops_whose_passes_race.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The passes of an `across` loop run at the same time, so no pass may touch a place that another
+// pass writes (#252, L4). In each function below, two passes may touch one place, or the
+// checker cannot see what a pass writes, so the loop gets E6032. An index changed by a narrowing
+// cast, or by a product that wraps, does not keep two passes apart.
+//
+// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6032
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:35:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:45:{{.*}}a pass of this lane loop may read an element of `a` that another pass writes
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:57:{{.*}}each pass writes `total`, which is declared outside the loop
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:71:{{.*}}two passes of this lane loop may write the same element of `y`: an index of the write must fix `l`
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:84:{{.*}}two passes of this lane loop may write the same element of `o`: the writes must use the same index
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:100:{{.*}}the call to `scale` may write through an argument
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:110:{{.*}}printing in an `across` loop
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:122:{{.*}}a `&mut` borrow in an `across` loop may write any element
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:134:{{.*}}a pass uses all of `o`, which the passes of this {{block|lane}} loop write
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:146:{{.*}}`barrier()` may not be in an `across` loop
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:157:{{.*}}an `mlir!` block in an `across` loop may write memory that the checker cannot see
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:172:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:183:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:193:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:203:{{.*}}two passes of this lane loop may write the same element of `out`: an index of the write must fix `l`
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:214:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:224:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
+
+pub fn every_block_adds_to_one_element(out : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      out[0] = out[0] + 1.0;
+    }
+  }
+  return;
+}
+
+pub fn reads_the_next_element(a : &mut Tensor<f32, [?, 64], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for i in 0..32 across lanes {
+        a[b][i] = a[b][i + 1];
+      }
+    }
+  }
+  return;
+}
+
+pub fn every_lane_adds_to_one_value(y : &mut Tensor<f32, [?, 1], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      let mut total : f32 = 0.0;
+      for t in 0..64 across lanes {
+        total = total + 1.0;
+      }
+      y[b][0] = total;
+    }
+  }
+  return;
+}
+
+// `k * 32 + l` gives two lanes one element when there are 64 lanes.
+pub fn columns_overlap(y : &mut Tensor<f32, [?, 1024], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for l in 0..64 across lanes {
+        for k in 0..16 {
+          y[b][k * 32 + l] = 1.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn two_indices(o : &mut Tensor<f32, [?, 64], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for t in 0..32 across lanes {
+        o[b][t] = 1.0;
+        o[b][t + 1] = 2.0;
+      }
+    }
+  }
+  return;
+}
+
+fn scale(o : &mut Tensor<f32, [?, 32], Memory::HBM>, b : i32, t : i32) on Topology::Device -> void {
+  o[b][t] = o[b][t] * 2.0;
+  return;
+}
+
+pub fn calls_a_helper(o : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for t in 0..32 across lanes {
+        scale(o, b, t);
+      }
+    }
+  }
+  return;
+}
+
+pub fn prints(o : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for t in 0..32 across lanes {
+        println!("{}", t);
+      }
+    }
+  }
+  return;
+}
+
+pub fn borrows(o : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for t in 0..32 across lanes {
+        let r = &mut o[b];
+      }
+    }
+  }
+  return;
+}
+
+pub fn uses_all_of_it(o : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for t in 0..32 across lanes {
+        o[b][t] = 1.0;
+        let r = &o;
+      }
+    }
+  }
+  return;
+}
+
+pub fn has_a_barrier(o : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for t in 0..32 across lanes {
+        o[b][t] = 1.0;
+        barrier();
+      }
+    }
+  }
+  return;
+}
+
+pub fn has_mlir(o : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for t in 0..32 across lanes {
+        let v = mlir!( inputs : (), returns : i32, dialects : ["arith"]) {
+          %v = arith.constant 1 : i32
+          macro.yield %v : i32
+        };
+      }
+    }
+  }
+  return;
+}
+
+// `b + t` gives blocks 0 and 1 one element when there are 2 lanes.
+pub fn blocks_overlap_by_one(out : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for t in 0..2 across lanes {
+        out[b + t] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+// `b as u8` drops the high bits, so blocks 0 and 256 write one element.
+pub fn narrowing_cast(out : &mut Tensor<f32, [512], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..512 across blocks {
+      out[(b as u8) as i32] = 1.0;
+    }
+  }
+  return;
+}
+
+pub fn narrowing_cast_in_a_let(out : &mut Tensor<f32, [512], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..512 across blocks {
+      let k = (b as u8) as i32;
+      out[k] = 1.0;
+    }
+  }
+  return;
+}
+
+pub fn narrowing_cast_in_lanes(out : &mut Tensor<f32, [512], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..512 across lanes {
+        out[(l as u8) as i32] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+// `4 * 1073741824` is 0 in `i32`, so blocks 0 and 4 write one element.
+pub fn product_that_wraps(out : &mut Tensor<f32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..8 across blocks {
+      out[b * 1073741824] = 1.0;
+    }
+  }
+  return;
+}
+
+// `65536 * 65536` is 0 in `i32`, so every block writes `out[0]`, whatever `n` is.
+pub fn coefficient_that_wraps(out : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      out[b * 65536 * 65536] = 1.0;
+    }
+  }
+  return;
+}
+
+// Only lane 0 writes `out[b]`, but every lane reads it, so a lane may read it while lane 0 writes.
+pub fn lane_zero_writes_and_every_lane_reads(out : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for l in 0..32 across lanes {
+        if l == 0 {
+          out[b] = 1.0;
+        }
+        // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:[[# @LINE + 1]]:{{.*}}a pass of this lane loop may read an element of `out` that another pass writes
+        let _y = out[b];
+      }
+    }
+  }
+  return;
+}
+
+// Lane 0 and lane 1 both write `out[b]`.
+pub fn two_lanes_write_one_element(out : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for l in 0..32 across lanes {
+        if l == 0 {
+          out[b] = 1.0;
+        }
+        if l == 1 {
+          // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:[[# @LINE + 1]]:{{.*}}two passes of this lane loop may write the same element of `out`: the writes must use the same index
+          out[b] = 2.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+// Lane `j` writes `j + 16`, which lane `j + 16` also writes.
+pub fn halves_that_overlap(out : &mut Tensor<f32, [?, 64], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for j in 0..32 across lanes {
+        out[b][j] = 1.0;
+        // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:[[# @LINE + 1]]:{{.*}}two passes of this lane loop may write the same element of `out`: the writes must use the same index that fixes `j`, or indices that no two passes make equal
+        out[b][j + 16] = 2.0;
+      }
+    }
+  }
+  return;
+}
+
+// Lane `j` writes `2 * j + 2`, which lane `j + 1` writes as `2 * j`.
+pub fn pairs_that_overlap(out : &mut Tensor<f32, [?, 66], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for j in 0..32 across lanes {
+        out[b][2 * j] = 1.0;
+        // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:[[# @LINE + 1]]:{{.*}}two passes of this lane loop may write the same element of `out`
+        out[b][2 * j + 2] = 2.0;
+      }
+    }
+  }
+  return;
+}
+
+// Lane `x` writes `x * 4 + 4`, which lane `x + 1` writes as `x * 4 + c` with `c` 0.
+pub fn alpha_in_the_next_pixel(out : &mut Tensor<u8, [?, 260], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for x in 0..64 across lanes {
+        for c in 0..4 {
+          out[b][x * 4 + c] = 128;
+        }
+        // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:[[# @LINE + 1]]:{{.*}}two passes of this lane loop may write the same element of `out`: the writes must use the same index that fixes `x`
+        out[b][x * 4 + 4] = 255;
+      }
+    }
+  }
+  return;
+}
+
+// With `k` 4, lane `x` writes `x * 4 + 4`, which lane `x + 1` writes as `x * 4`.
+pub fn offset_from_the_host(out : &mut Tensor<u8, [?, 512], Memory::HBM>, n : i32, k : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for x in 0..64 across lanes {
+        out[b][x * 4] = 128;
+        // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:[[# @LINE + 1]]:{{.*}}two passes of this lane loop may write the same element of `out`: the writes must use the same index that fixes `x`
+        out[b][x * 4 + k] = 255;
+      }
+    }
+  }
+  return;
+}
+
+// Lane 2 writes `2 * 4 + 1`, which lane 3 writes as `3 * 2 + 3`.
+pub fn two_steps_of_lanes(out : &mut Tensor<u8, [?, 260], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for x in 0..64 across lanes {
+        for c in 0..3 {
+          out[b][x * 4 + c] = 128;
+        }
+        // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:[[# @LINE + 1]]:{{.*}}two passes of this lane loop may write the same element of `out`: the writes must use the same index that fixes `x`
+        out[b][x * 2 + 3] = 255;
+      }
+    }
+  }
+  return;
+}
+
+// `blk / k` and `blk % k` fix `blk` only when `k` is not zero. `k` is not a factor of the loop's
+// end, so the loop can have passes when `k` is zero.
+pub fn divisor_not_a_factor_of_the_end(c : &mut Tensor<f32, [?, ?], Memory::HBM>, n : i32, k : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..n across blocks {
+      // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:[[# @LINE + 1]]:{{.*}}two passes of this block loop may write the same element of `c`: an index of the write must fix `blk`
+      c[blk / k][blk % k] = 0.0;
+    }
+  }
+  return;
+}
+
+// `blk / nt` alone is the same for `nt` passes.
+pub fn quotient_without_the_remainder(c : &mut Tensor<f32, [?], Memory::HBM>, mt : i32, nt : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..mt * nt across blocks {
+      // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:[[# @LINE + 1]]:{{.*}}two passes of this block loop may write the same element of `c`: an index of the write must fix `blk`
+      c[blk / nt] = 0.0;
+    }
+  }
+  return;
+}
+
+// A quotient and a remainder by two different numbers do not fix `blk`.
+pub fn quotient_and_remainder_of_two_numbers(c : &mut Tensor<f32, [?, ?], Memory::HBM>, mt : i32, nt : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..mt * nt across blocks {
+      // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:[[# @LINE + 1]]:{{.*}}two passes of this block loop may write the same element of `c`: an index of the write must fix `blk`
+      c[blk / nt][blk % mt] = 0.0;
+    }
+  }
+  return;
+}
+
+// `w % 4` can be 2, so subgroup 2 writes `64 + j`, the same elements as subgroup 4.
+pub fn remainder_too_wide_for_its_digit(c : &mut Tensor<f32, [?, ?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for w in 0..8 across subgroups {
+        for j in 0..32 across lanes {
+          // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:[[# @LINE + 1]]:{{.*}}two passes of this subgroup loop may write the same element of `c`: an index of the write must fix `w`
+          c[b][(w / 4) * 64 + (w % 4) * 32 + j] = 0.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

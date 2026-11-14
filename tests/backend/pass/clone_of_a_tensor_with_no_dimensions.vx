@@ -1,0 +1,24 @@
+//===- clone_of_a_tensor_with_no_dimensions.vx -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A tensor with no dimensions, `Tensor<f32, []>`, holds one element. Its clone holds the same
+// value.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: the clone holds 1.5
+
+fn main() -> i32 {
+  let t : Tensor<f32, []> = 1.5;
+  let c = t.clone();
+  if c == 1.5 {
+    print!("the clone holds 1.5");
+  } else {
+    print!("the clone holds another value");
+  }
+  return 0;
+}

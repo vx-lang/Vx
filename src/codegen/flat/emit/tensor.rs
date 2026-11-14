@@ -16,6 +16,21 @@ fn memref_element(memty: &str) -> Option<&str> {
 }
 
 impl FnEmit<'_> {
+    /// The shared-memory address-space number for the device the surrounding code runs on:
+    /// the `arch:` the innermost open `vx.spawn` declared (`EmitCtx::topo_archs`). No open
+    /// spawn (host code), or a topology that declares none (every built-in), names no
+    /// target, and the answer is today's NVPTX 3 so the emitted MLIR does not change.
+    pub(crate) fn shared_addrspace(&self) -> i32 {
+        // Read only the frame's first field, the topology, so a new field in the frame does not
+        // break this lookup.
+        let arch = self
+            .spawn_stack
+            .last()
+            .and_then(|open| self.ctx.topo_archs.get(&open.0))
+            .map(|a| a.arch.as_str());
+        crate::arch::address_space_for_arch(arch, crate::arch::AddressSpace::Workgroup)
+    }
+
     /// Give `val`, of memref type `src_ty`, the type `dst_ty`, and return the new value's name.
     ///
     /// A `memref.cast` is enough unless `val` is a strided view (a row, `memref<4xf32,
@@ -34,6 +49,21 @@ impl FnEmit<'_> {
         if src_ty == dst_ty {
             return Ok(val.to_string());
         }
+        // A plain cast cannot change the memory space, so that comes first.
+        use crate::codegen::lower::{memref_in_space_of, memref_space};
+        let spaced;
+        let (val, src_ty) = if memref_space(src_ty) != memref_space(dst_ty) {
+            let ty = memref_in_space_of(src_ty, dst_ty).ok_or(crate::emitter_gap!())?;
+            let c = format!("%{tag}_space");
+            self.body += &format!("  {c} = memref.memory_space_cast {val} : {src_ty} to {ty}\n");
+            spaced = (c, ty);
+            if spaced.1 == dst_ty {
+                return Ok(spaced.0);
+            }
+            (spaced.0.as_str(), spaced.1.as_str())
+        } else {
+            (val, src_ty)
+        };
         if !src_ty.contains("strided<") || dst_ty.contains("strided<") {
             let c = format!("%{tag}");
             self.body += &format!("  {c} = memref.cast {val} : {src_ty} to {dst_ty}\n");
@@ -116,7 +146,12 @@ impl FnEmit<'_> {
         let bytes = crate::codegen::generator::scalar_type_bits(et)
             .ok_or(crate::emitter_gap!())?
             .div_ceil(8);
-        let space_sfx = if src_mem.ends_with(", 3>") { ", 3" } else { "" };
+        let shared = self.shared_addrspace();
+        let space_sfx = if src_mem.ends_with(&format!(", {shared}>")) {
+            format!(", {shared}")
+        } else {
+            String::new()
+        };
         let buf = format!("%dp{idx}_b");
         let off = format!("%dp{idx}_o");
         let rest: Vec<String> = (0..2 * rank).map(|k| format!("%dp{idx}_r{k}")).collect();
@@ -162,10 +197,11 @@ impl FnEmit<'_> {
         } else {
             String::new()
         };
-        let field = if ins.imm & crate::bytecode::TENSOR_DROP_FIELD != 0 {
-            " {field}"
-        } else {
-            ""
+        let placed = ins.imm >> crate::bytecode::TENSOR_DROP_PLACED_SHIFT;
+        let field = match super::super::placed_device(placed, self.ctx) {
+            _ if ins.imm & crate::bytecode::TENSOR_DROP_FIELD == 0 => String::new(),
+            Some(device) => format!(" {{field, placed = {device} : i32}}"),
+            None => " {field}".to_string(),
         };
         self.body += &format!("  vx.drop {name}{unless}{field} : {ty}\n");
         Ok(())
@@ -268,6 +304,23 @@ impl FnEmit<'_> {
                 .get(&(ins.operand2.0 as u64))
                 .and_then(|s| s.scope.as_deref())
                 == Some("sm");
+        let thread = ins.operand2.0 != 0
+            && self
+                .ctx
+                .subspaces
+                .get(&(ins.operand2.0 as u64))
+                .and_then(|s| s.scope.as_deref())
+                == Some("thread");
+        // A `scope: thread` tensor is a stack slot, and every index into it is a constant (E6033),
+        // so LLVM keeps its elements in registers.
+        if thread && dyn_count == 0 {
+            self.emit_slot(&format!(
+                "  {n} = memref.alloca() {{alignment = 16 : i64, vx.registers}} : {memty}\n"
+            ));
+            self.names[idx] = n;
+            self.mem_of[idx] = Some(memty);
+            return Ok(());
+        }
         if sm {
             // Shared storage is packed by the driver from static sizes; a run-time one has none.
             if dyn_count > 0 {
@@ -276,8 +329,9 @@ impl FnEmit<'_> {
                 });
             }
             let smty = format!(
-                "{}, 3>",
-                memty.strip_suffix('>').ok_or(crate::emitter_gap!())?
+                "{}, {}>",
+                memty.strip_suffix('>').ok_or(crate::emitter_gap!())?,
+                self.shared_addrspace()
             );
             // alignment 16, explicitly. The alloca becomes a `.shared` global under
             // convert-gpu-to-nvvm, and the DRIVER packs those globals by their declared
@@ -288,8 +342,17 @@ impl FnEmit<'_> {
             // compute-sanitizer on the block-per-row softmax (Vx#379 R3).
             // Entry block: a tensor declared inside a loop would otherwise take a
             // fresh stack slot per iteration and never give one back.
+            // At least 16, the `alignment:` of the space, and the `aligned(N)` of the type.
+            let align = self
+                .ctx
+                .subspaces
+                .get(&(ins.operand2.0 as u64))
+                .and_then(|s| s.alignment)
+                .unwrap_or(0)
+                .max(ins.operand1.0 as u64)
+                .max(16);
             self.emit_slot(&format!(
-                "  {n} = memref.alloca() {{alignment = 16 : i64}} : {smty}\n"
+                "  {n} = memref.alloca() {{alignment = {align} : i64}} : {smty}\n"
             ));
             self.names[idx] = n;
             self.mem_of[idx] = Some(smty);
@@ -605,6 +668,94 @@ impl FnEmit<'_> {
         Ok(())
     }
 
+    // `TensorCast`: a fresh buffer of the source's shape, each element of the source cast to the
+    // result's element type, as a `linalg.generic`. A `?` extent is read off the source.
+    pub(crate) fn op_tensor_cast(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let gid = *self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let (elem, shape) = self
+            .ctx
+            .tensors
+            .get(&gid)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let memty = tensor_memref_ty(&elem, &shape).ok_or(crate::emitter_gap!())?;
+        let dst = mlir_scalar(&elem).ok_or(crate::emitter_gap!())?;
+        let s = ins.operand1.0 as usize;
+        // A slice value from an elementwise operation is a vector, not a buffer.
+        if let Some(src_vec) = self.vec_of.get(s).cloned().flatten() {
+            return self.cast_vector(idx, ins, &elem, &src_vec);
+        }
+        let src = self.names.get(s).ok_or(crate::emitter_gap!())?.clone();
+        let src_mem = self
+            .mem_of
+            .get(s)
+            .cloned()
+            .flatten()
+            .ok_or(crate::emitter_gap!())?;
+        // The element type is the last part of the memref's shape: `memref<2x4xbf16, ...>`.
+        let src_el = src_mem
+            .strip_prefix("memref<")
+            .and_then(|t| t.split([',', '>']).next())
+            .and_then(|t| t.rsplit('x').next())
+            .ok_or(crate::emitter_gap!())?
+            .to_string();
+        let src_ty = crate::mlir_ty::float_elem_of_mlir(&src_el).ok_or(crate::emitter_gap!())?;
+        let (src_bits, dst_bits) = (
+            src_ty.bits().ok_or(crate::emitter_gap!())?,
+            elem.bits().ok_or(crate::emitter_gap!())?,
+        );
+        let mut sizes: Vec<String> = Vec::new();
+        for (k, d) in shape.iter().enumerate() {
+            if d == DYN_DIM {
+                let c = format!("%tcc{idx}_{k}");
+                let sz = format!("%tcs{idx}_{k}");
+                self.body += &format!("  {c} = arith.constant {k} : index\n");
+                self.body += &format!("  {sz} = memref.dim {src}, {c} : {src_mem}\n");
+                sizes.push(sz);
+            }
+        }
+        let n = match self.nrvo_slot(idx, &memty) {
+            Some(slot) => slot,
+            None => {
+                let n = format!("%v{idx}");
+                self.body += &format!("  {n} = memref.alloc({}) : {memty}\n", sizes.join(", "));
+                n
+            }
+        };
+        let dims: Vec<String> = (0..shape.len()).map(|i| format!("d{i}")).collect();
+        let map = format!("affine_map<({0}) -> ({0})>", dims.join(", "));
+        let iters: Vec<&str> = shape.iter().map(|_| "\"parallel\"").collect();
+        self.body += &format!(
+            "  linalg.generic {{indexing_maps = [{map}, {map}], iterator_types = [{}]}} ins({src} : {src_mem}) outs({n} : {memty}) {{\n",
+            iters.join(", ")
+        );
+        let (i, r) = (format!("%tci{idx}"), format!("%tcr{idx}"));
+        self.body += &format!("  ^bb0({i}: {src_el}, %tco{idx}: {dst}):\n");
+        let out = if src_el == dst {
+            i
+        } else if src_bits < dst_bits {
+            self.body += &format!("    {r} = arith.extf {i} : {src_el} to {dst}\n");
+            r
+        } else if src_bits > dst_bits {
+            self.body += &format!("    {r} = arith.truncf {i} : {src_el} to {dst}\n");
+            r
+        } else {
+            // Two float types of one width (`f16` and `bf16`): neither `extf` nor `truncf`
+            // converts between them. f32 holds every value of both, so this rounds once.
+            let w = format!("%tcw{idx}");
+            self.body += &format!("    {w} = arith.extf {i} : {src_el} to f32\n");
+            self.body += &format!("    {r} = arith.truncf {w} : f32 to {dst}\n");
+            r
+        };
+        self.body += &format!("    linalg.yield {out} : {dst}\n  }}\n");
+        self.names[idx] = n;
+        self.mem_of[idx] = Some(memty);
+        Ok(())
+    }
+
     // `TensorReduce`: every element combined with the closure adapter into one scalar, starting
     // from the preceding `Arg`. The accumulator is a rank-0 buffer the `linalg.generic` reduces
     // into. `vx.reassoc` marks it for `vx-reorderable-reductions`, which lets the closure's
@@ -885,6 +1036,56 @@ impl FnEmit<'_> {
     // *place* (`imm = 1` → recorded for the following `TensorStore`). A sub-view result (a
     // tensor GID) rank-reduces the base to a row via `memref.reinterpret_cast` (contiguous
     // base only; a further sub-view of a strided row is deferred).
+    /// `&t[i]`: the element's address. A rank-1 memref puts element `i` at
+    /// `aligned + (offset + i * stride) * size`, which covers a strided row as well.
+    pub(crate) fn op_tensor_element_address(
+        &mut self,
+        idx: usize,
+        ins: &HirInstruction,
+    ) -> Lowered<()> {
+        let (base, ic, memty) = self
+            .place_of
+            .get(ins.operand1.0 as usize)
+            .cloned()
+            .flatten()
+            .ok_or(crate::emitter_gap!())?;
+        let (_, et) =
+            crate::codegen::flat::memref_lead_dims_and_elem(&memty).ok_or(crate::emitter_gap!())?;
+        let et = et.to_string();
+        let bytes = match et.as_str() {
+            "i8" | "i1" => 1,
+            "i16" | "f16" | "bf16" => 2,
+            "i32" | "f32" => 4,
+            "i64" | "f64" => 8,
+            _ => return Err(crate::emitter_gap!()),
+        };
+        let aligned = format!("%ea{idx}");
+        let meta = format!("%em{idx}");
+        let scaled = format!("%es{idx}");
+        let at = format!("%eo{idx}");
+        let size = format!("%ez{idx}");
+        let byte_offset = format!("%eb{idx}");
+        let address = format!("%ed{idx}");
+        let as_int = format!("%ei{idx}");
+        let n = format!("%v{idx}");
+        self.body += &format!(
+            "  {aligned} = memref.extract_aligned_pointer_as_index {base} : {memty} -> index\n"
+        );
+        self.body += &format!(
+            "  {meta}:4 = memref.extract_strided_metadata {base} : {memty} -> memref<{et}>, index, index, index\n"
+        );
+        self.body += &format!("  {scaled} = arith.muli {ic}, {meta}#3 : index\n");
+        self.body += &format!("  {at} = arith.addi {meta}#1, {scaled} : index\n");
+        self.body += &format!("  {size} = arith.constant {bytes} : index\n");
+        self.body += &format!("  {byte_offset} = arith.muli {at}, {size} : index\n");
+        self.body += &format!("  {address} = arith.addi {aligned}, {byte_offset} : index\n");
+        self.body += &format!("  {as_int} = arith.index_cast {address} : index to i64\n");
+        self.body += &format!("  {n} = llvm.inttoptr {as_int} : i64 to !llvm.ptr\n");
+        self.names[idx] = n;
+        self.ptr_of[idx] = true;
+        Ok(())
+    }
+
     pub(crate) fn op_tensor_index(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let result_gid = *self
             .types
@@ -995,10 +1196,11 @@ impl FnEmit<'_> {
             // A sub-view of shared storage stays in its space: dropping the `, 3` here
             // would make the row a generic pointer and the PTX would address `.shared`
             // data with global loads.
-            let space_sfx = if base_memty.ends_with(", 3>") {
-                ", 3"
+            let shared = self.shared_addrspace();
+            let space_sfx = if base_memty.ends_with(&format!(", {shared}>")) {
+                format!(", {shared}")
             } else {
-                ""
+                String::new()
             };
             let result_ty =
                 format!("memref<{dimx}{et}, strided<[{strides_s}], offset: ?>{space_sfx}>");
@@ -1091,10 +1293,11 @@ impl FnEmit<'_> {
         if rank < 2 || strides.len() != rank {
             return Err(crate::emitter_gap!());
         }
-        let space_sfx = if base_memty.ends_with(", 3>") {
-            ", 3"
+        let shared = self.shared_addrspace();
+        let space_sfx = if base_memty.ends_with(&format!(", {shared}>")) {
+            format!(", {shared}")
         } else {
-            ""
+            String::new()
         };
         let buf = format!("%srb{idx}");
         let off = format!("%sro{idx}");
@@ -1328,7 +1531,22 @@ impl FnEmit<'_> {
                     }
                 }
             }
-            self.body += &format!("  memref.store {val}, {base}[{ic}] : {memty}\n");
+            // docs/lane_reductions.md: the device copy of a kernel keeps this lane's element in a
+            // register.
+            let row = ins.imm >> crate::bytecode::LANE_ROW_SHIFT;
+            let lane = match ins.imm & ((1 << crate::bytecode::LANE_ROW_SHIFT) - 1) {
+                crate::bytecode::TENSOR_STORE_BLOCK_LANE_ELEMENT => {
+                    " {vx.lane_element = \"block\"}".to_string()
+                }
+                crate::bytecode::TENSOR_STORE_SUBGROUP_LANE_ELEMENT if row > 0 => {
+                    format!(" {{vx.lane_element = \"subgroup\", vx.lane_row = {row} : i64}}")
+                }
+                crate::bytecode::TENSOR_STORE_SUBGROUP_LANE_ELEMENT => {
+                    " {vx.lane_element = \"subgroup\"}".to_string()
+                }
+                _ => String::new(),
+            };
+            self.body += &format!("  memref.store {val}, {base}[{ic}]{lane} : {memty}\n");
         } else if let Some(rowty) = self
             .mem_of
             .get(ins.operand1.0 as usize)
@@ -1385,6 +1603,12 @@ impl FnEmit<'_> {
                 .ok_or(crate::emitter_gap!())?
                 .clone()
             {
+                // A tile into a row of a larger tensor, `acc[w] = acc[w] + p`: a copy into the
+                // row's view. The checker matched the shapes and the element types.
+                if memref_lead_dims_and_elem(&srcty).is_some_and(|(d, _)| d.len() >= 2) {
+                    self.body += &format!("  memref.copy {vecname}, {dst} : {srcty} to {rowty}\n");
+                    return Ok(());
+                }
                 // The stored value is a rank-1 tensor, not a vector -- `m[0] = [10.0, ..]`, a row
                 // written from an array literal's buffer. Read the whole source row as a vector
                 // and store it; the checker already matched the two lengths.

@@ -9,8 +9,8 @@
 // which this file never mentions. Both reach the output, and `main` runs to the value only
 // the deepest module can produce: wave_a(20) = wave_b(20) + 1 = 41, which the JIT reports.
 //
-// RUN: vxc -j 4 --emit-mlir %s 2>&1 | FileCheck %s
-// RUN: (vxc -j 4 --run %s 2>&1; echo "exit=$?") | FileCheck --check-prefix=JIT %s
+// RUN: vxc --package tests=tests -j 4 --emit-mlir %s 2>&1 | FileCheck %s
+// RUN: (vxc --package tests=tests -j 4 --run %s 2>&1; echo "exit=$?") | FileCheck --check-prefix=JIT %s
 
 import tests::modules::jobs_wave_a;
 

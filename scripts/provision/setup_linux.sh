@@ -23,11 +23,11 @@ export DEBIAN_FRONTEND=noninteractive
 LLVM_VERSION="${LLVM_VERSION:-22}"
 
 echo "=== [1/3] build dependencies ==="
-# z3 is the *binary*, not just libz3-dev. Seam verification shells out to it
-# (Command::new("z3") in src/hir/seam.rs) to discharge `relaxed` transfer-edge
-# obligations in QF_BV. Without it four test suites fail in ways that read as
-# compiler regressions -- a missing W1027, an expected-failure that passes --
-# rather than as a missing tool.
+# z3 is the *binary*, not just libz3-dev. The proof tests shell out to it
+# (Command::new("z3") in src/hir/seam.rs and src/hir/prover.rs). Without it they
+# fail with E6024. Do not leave the version unrecorded: a solver bump surfaces
+# as a compiler regression, not as "z3 disagreed". The version floor lives in
+# setup.sh (Z3_MIN_VERSION). Ubuntu 24.04's apt package matches that floor.
 #
 # libffi is needed by the dispatch runtime, which calls outlined kernels through
 # their MLIR C-interface (runtime/host_dispatch.cpp).
@@ -62,7 +62,7 @@ fi
 echo
 echo "Provisioned:"
 echo "  llvm-config : $("llvm-config-${LLVM_VERSION}" --version)"
-echo "  z3          : $(z3 --version)"
+echo "  z3          : $(z3 --version)  (floor: see Z3_MIN_VERSION in setup.sh)"
 echo "  rustc       : $("$HOME/.cargo/bin/rustc" --version 2>/dev/null || rustc --version)"
 echo
 echo "The LLVM tools are under /usr/lib/llvm-${LLVM_VERSION}/bin, which must come"

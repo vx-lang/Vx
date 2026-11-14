@@ -12,6 +12,7 @@
 // RUN: not vxc %s --legacy-codegen 2>&1 | FileCheck %s
 // CHECK: 5
 // CHECK-NEXT: panic: minus one is not positive
+// CHECK-NEXT: {{^}}  at {{.*}}panic_with_a_message_from_a_parameter.vx:21{{$}}
 // CHECK-NOT: after the panic
 fn check_positive(x : i32, msg : *const i8) -> i32 {
   if x > 0 {

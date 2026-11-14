@@ -1,0 +1,13 @@
+//===- plus.vx - Vx Compiler -------------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// A function named like C's `abs`. Compiled alone, nothing else has the name, so it keeps it.
+// CHECK: func.func @abs(
+fn abs(x : i32) -> i32 {
+  return x + 100;
+}

@@ -14,7 +14,7 @@
 fn two_constants() -> i32 {
   let mut arr = Tensor<i32>([4]);
   let a = &mut arr[0];
-  // CHECK: Error[E4004] at [[@LINE+1]]:{{.*}}another element of it is borrowed as mutable
+  // CHECK: Error[E4004] at {{.*}}two_mutable_borrows_of_elements_of_one_tensor.vx:[[@LINE+1]]:{{.*}}another element of it is borrowed as mutable
   let b = &mut arr[1];
   *a = 1;
   *b = 2;
@@ -24,7 +24,7 @@ fn two_constants() -> i32 {
 fn two_rows_of_a_grid() -> i32 {
   let mut m = Tensor<i32>([2, 2]);
   let a = &mut m[0][1];
-  // CHECK: Error[E4004] at [[@LINE+1]]:{{.*}}another element of it is borrowed as mutable
+  // CHECK: Error[E4004] at {{.*}}two_mutable_borrows_of_elements_of_one_tensor.vx:[[@LINE+1]]:{{.*}}another element of it is borrowed as mutable
   let b = &mut m[1][0];
   *a = 1;
   *b = 2;
@@ -35,7 +35,7 @@ fn two_rows_of_a_grid() -> i32 {
 fn constant_and_variable(i : i32) -> i32 {
   let mut arr = Tensor<i32>([4]);
   let a = &mut arr[0];
-  // CHECK: Error[E4004] at [[@LINE+1]]:{{.*}}already borrowed as mutable
+  // CHECK: Error[E4004] at {{.*}}two_mutable_borrows_of_elements_of_one_tensor.vx:[[@LINE+1]]:{{.*}}already borrowed as mutable
   let b = &mut arr[i];
   *a = 1;
   *b = 2;
@@ -46,7 +46,7 @@ fn checked_different(i : i32, j : i32) -> i32 {
   let mut arr = Tensor<i32>([4]);
   if i != j {
     let a = &mut arr[i];
-    // CHECK: Error[E4004] at [[@LINE+1]]:
+    // CHECK: Error[E4004] at {{.*}}two_mutable_borrows_of_elements_of_one_tensor.vx:[[@LINE+1]]:
     let b = &mut arr[j];
     *a = 1;
     *b = 2;

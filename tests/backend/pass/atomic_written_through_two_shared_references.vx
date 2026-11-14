@@ -1,0 +1,33 @@
+//===- atomic_written_through_two_shared_references.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An atomic writes through a shared reference `&`, so two shared references to one atomic
+// can both change it. `add_to` takes `&AtomicI32`, so the compiler must not tell LLVM that
+// the reference is read-only (`llvm.readonly`): LLVM may then drop a write through it.
+//
+// RUN: vxc %s --emit-mlir 2>&1 | FileCheck %s
+// EXPECT: 0 5 12 12
+// CHECK: func.func @add_to(%arg0: !llvm.ptr, %arg1: i32) {
+
+import core::sync::atomic;
+
+fn add_to(a : &AtomicI32, n : i32) -> void {
+  a.fetch_add(n, AtomicOrdering::Relaxed);
+}
+
+fn main() -> i32 {
+  let a = AtomicI32::new(0);
+  let first = &a;
+  let second = &a;
+  let before = first.load(AtomicOrdering::SeqCst);
+  first.store(5, AtomicOrdering::Release);
+  let after_store = second.load(AtomicOrdering::Acquire);
+  add_to(first, 3);
+  add_to(second, 4);
+  println!("{} {} {} {}", before, after_store, first.load(AtomicOrdering::SeqCst), a.into_inner());
+  return 0;
+}

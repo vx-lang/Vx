@@ -1,0 +1,39 @@
+//===- bf16_conversions_use_integer_operations.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s -a emit-llvm 2>&1 | FileCheck %s --check-prefix=NARROW
+// RUN: vxc %s -a emit-llvm 2>&1 | FileCheck %s --check-prefix=WIDEN
+// RUN: vxc %s -O2 -a emit-llvm 2>&1 | FileCheck %s --check-prefix=NARROW
+// RUN: vxc %s -O2 -a emit-llvm 2>&1 | FileCheck %s --check-prefix=WIDEN
+// RUN: vxc %s --legacy-codegen -a emit-llvm 2>&1 | FileCheck %s --check-prefix=NARROW
+// RUN: vxc %s --legacy-codegen -a emit-llvm 2>&1 | FileCheck %s --check-prefix=WIDEN
+//
+// A conversion to and from bf16 reaches LLVM as integer operations on the bits, not as
+// `fptrunc` or `fpext`. LLVM converts those with `vcvtneps2bf16` on an x86 CPU with AVX512-BF16,
+// which turns a subnormal into zero.
+
+fn narrow(x : f32) -> bf16 {
+  return x as bf16;
+}
+
+fn widen(x : bf16) -> f32 {
+  return x as f32;
+}
+
+fn main() -> i32 {
+  return (widen(narrow(1.5f32)) as i32) - 1;
+}
+
+// NARROW-LABEL: llvm.func {{(hidden )?}}@narrow(
+// NARROW-NOT: llvm.fptrunc
+// NARROW: llvm.bitcast %{{.*}} : i16 to bf16
+// NARROW-NEXT: llvm.return
+
+// WIDEN-LABEL: llvm.func {{(hidden )?}}@widen(
+// WIDEN-NOT: llvm.fpext
+// WIDEN: llvm.bitcast %{{.*}} : i32 to f32
+// WIDEN-NEXT: llvm.return

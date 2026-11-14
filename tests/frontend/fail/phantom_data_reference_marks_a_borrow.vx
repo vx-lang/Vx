@@ -36,7 +36,7 @@ fn tagged_of(x : &i32) -> Tagged {
   };
 }
 
-// CHECK: Error[E4005] at 42:{{.*}}this returns a value that points into this function's stack frame
+// CHECK: Error[E4005] at {{.*}}phantom_data_reference_marks_a_borrow.vx:42:{{.*}}this returns a value that points into this function's stack frame
 fn span_over_a_local() -> Span<i32> {
   let x = 5i32;
   return span_of(&x);

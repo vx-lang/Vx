@@ -1,0 +1,48 @@
+//===- return_that_leaves_two_tasks_blocks_and_drops_a_value.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `return` inside a `tasks` block waits for the tasks of that block before it drops
+// anything. A `return` that also leaves an outer `tasks` block does not wait for the tasks
+// of the outer block. So it cannot drop a value from outside the inner block yet.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    println!("dropped {}", self.id);
+  }
+}
+
+fn look(n : &Noisy) -> void {
+  println!("{}", n.id);
+}
+
+// CHECK: Error[E4014] at {{.*}}.vx:[[@LINE+11]]:{{[0-9]+}}: this `return` leaves two `tasks` blocks, and it drops 'n' first
+fn leave_two(stop : bool) -> i32 {
+  let n = Noisy {
+    id: 1
+  };
+  tasks {
+    spawn {
+      look(&n);
+    };
+    tasks {
+      if stop {
+        return 1;
+      }
+    }
+  }
+  return n.id;
+}
+
+fn main() -> i32 {
+  return leave_two(true);
+}

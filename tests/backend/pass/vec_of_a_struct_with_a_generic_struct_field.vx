@@ -1,0 +1,41 @@
+//===- vec_of_a_struct_with_a_generic_struct_field.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `Vec<Mixed>` sizes its buffer by the size of `Mixed`, and `Mixed` holds `Holder<i64>` by
+// value. If the compiler gets the size of `Holder<i64>` wrong, the pushes write past the
+// buffer. The AST code generator also corrupts the heap on this program, so only the default
+// code generator runs it.
+//
+// REQUIRES: flat-codegen
+// EXPECT: 103
+
+import std::vec;
+
+struct Holder<T> {
+  x : T,
+}
+
+struct Mixed {
+  a : i8,
+  h : Holder<i64>,
+}
+
+fn main() -> i32 {
+  let mut v = Vec<Mixed>::new();
+  let mut i : i64 = 0;
+  while i < 4 {
+    v.push(Mixed {
+      a : 1, h : Holder<i64> {
+        x : 100 + i
+      }
+    });
+    i = i + 1;
+  }
+  let m = v.get_ref(3);
+  println!("{}", m.h.x);
+  return 0;
+}

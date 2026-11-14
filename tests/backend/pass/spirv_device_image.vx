@@ -1,0 +1,55 @@
+//===- spirv_device_image.vx - a spirv64 topology gets a SPIR-V image -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// A topology whose machine model says `arch: spirv64` gets its kernel compiled
+// to a SPIR-V module. The dispatch payload carries that image in its section,
+// after the entries, because the module's first word holds NUL bytes and would
+// end a text entry there.
+//
+// This file checks the source: the spawn carries the declared arch, and the
+// program computes the same answer locally. device_image_test.rs checks the
+// image itself.
+//
+// CHECK: vx.spawn topology({{[0-9]+}}) {
+// CHECK: } {arch = "spirv64"
+// EXPECT: [[0,   1],
+// EXPECT: [1,   2]]
+
+Memory CPU_DRAM {}
+Memory DEV_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 63 GB/s
+}
+
+fn main() -> i32 {
+  let mut a = unsafe { Tensor<f32, [2, 2]>::uninit() };
+  let mut o = unsafe { Tensor<f32, [2, 2]>::uninit() };
+  for i in 0..2 {
+    for d in 0..2 {
+      a[i][d] = ((i + d) as f32) * 0.5;
+      o[i][d] = 0.0;
+    }
+  }
+  let ad = transfer(a, Memory::DEV_HBM);
+  let mut od = transfer(o, Memory::DEV_HBM);
+  spawn on(Topology::Dev) {
+    for i in 0..2 {
+      for d in 0..2 {
+        od[i][d] = ad[i][d] * 2.0;
+      }
+    }
+  }
+  let home = transfer(od, Memory::CPU_DRAM);
+  print(home);
+  return 0;
+}

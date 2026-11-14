@@ -1,0 +1,113 @@
+//===- mutex.vx - Vx Standard Library -----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `Mutex` lets one task at a time use a value that tasks share
+// (docs/discussions/waiting_tasks_channels_and_task_errors.md, M4 and M7).
+//
+// It is a ticket lock. A `lock` takes the next ticket from `next`, and waits until `serving`
+// holds that ticket. The drop of the guard adds 1 to `serving`. So the tasks get the lock in the
+// order of their `lock` calls, and none waits forever while others keep taking it.
+//
+// A wait blocks the OS thread of the task (`std::sync::wait`) on the word `serving`. A ticket is
+// `Relaxed`: a read-modify-write gives each `lock` its own ticket with any order. A `lock` reads
+// `serving` with `Acquire`, so an unlock happens before the next lock (M4). The other accesses are
+// `SeqCst`. With release and acquire, an unlock could miss a sleeper while the sleeper misses the
+// new `serving`, and the wake would be lost. formal/memory_model/lean has the proofs
+// (`MutexOrders.lean`).
+//===----------------------------------------------------------------------===//
+import core::cell;
+import core::marker;
+import core::panic;
+import core::sync::atomic;
+import std::sync::wait;
+
+/// A value that one task at a time can use. Share it with `&` between tasks.
+struct Mutex<T> {
+  // The next ticket that a `lock` takes.
+  next : AtomicI64,
+  // The ticket that has the lock.
+  serving : AtomicI64,
+  // The threads that sleep on `serving`, so that an unlock with no sleeper costs no call.
+  sleepers : AtomicI64,
+  value : SharedCell<T>,
+  // The line that made the `Mutex`, and who holds its lock, for the deadlock report.
+  made : Location,
+  holder : AtomicI64,
+}
+
+// Only the task that holds the lock reaches the value. So tasks can share a `Mutex` when its
+// value can move between tasks.
+unsafe impl<T : Send> Send for Mutex<T> {}
+unsafe impl<T : Send> Sync for Mutex<T> {}
+
+// A `lock` can wait for another task on the host, and the drop of a guard wakes one.
+impl<T> HostOnly for Mutex<T> {}
+impl<T> HostOnly for MutexGuard<T> {}
+
+/// The lock on a `Mutex`. Its drop unlocks the `Mutex`.
+struct MutexGuard<T> {
+  serving : &AtomicI64,
+  sleepers : &AtomicI64,
+  holder : &AtomicI64,
+  value : *mut T,
+}
+
+impl<T>
+Mutex<T> {
+  /// A new `Mutex` that holds `v`.
+  fn new(v : T, at : Caller) -> Mutex<T> {
+    return Mutex<T> {
+      next : AtomicI64::new(0),
+      serving : AtomicI64::new(0),
+      sleepers : AtomicI64::new(0),
+      value : SharedCell<T>::new(v),
+      made : at.location,
+      holder : AtomicI64::new(0),
+    };
+  }
+
+  /// Wait until no other task holds the lock, and take it.
+  fn lock(self : &Mutex<T>, at : Caller) -> MutexGuard<T> {
+    let ticket = self.next.fetch_add(1, AtomicOrdering::Relaxed);
+    let mut now = self.serving.load(AtomicOrdering::Acquire);
+    while now != ticket {
+      self.sleepers.fetch_add(1, AtomicOrdering::SeqCst);
+      waiting_for_lock(at, self.made, &self.holder);
+      wait_while(&self.serving, now);
+      self.sleepers.fetch_sub(1, AtomicOrdering::SeqCst);
+      now = self.serving.load(AtomicOrdering::Acquire);
+    }
+    lock_taken(&self.holder);
+    return MutexGuard<T> {
+      serving : &self.serving, sleepers : &self.sleepers, holder : &self.holder, value : self.value.get()
+    };
+  }
+
+  /// The value, out of the `Mutex`.
+  fn into_inner(self : Mutex<T>) -> T {
+    return self.value.into_inner();
+  }
+}
+
+impl<T>
+MutexGuard<T> {
+  /// The value in the `Mutex`.
+  fn get(self : &mut MutexGuard<T>) -> &mut T {
+    let p = self.value;
+    return unsafe { &mut *p };
+  }
+}
+
+impl<T> Drop for MutexGuard<T> {
+  fn drop(self : &mut MutexGuard<T>) -> void {
+    lock_released(self.holder);
+    self.serving.fetch_add(1, AtomicOrdering::SeqCst);
+    if self.sleepers.load(AtomicOrdering::SeqCst) > 0 {
+      wake_all(self.serving);
+    }
+  }
+}

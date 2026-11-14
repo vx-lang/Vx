@@ -1,0 +1,34 @@
+//===- comptime_division_that_cannot_stop_the_program.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// These divisions cannot stop the program, so each `comptime` block folds to 3. A float
+// division gives infinity for a divisor of zero, also for a divisor `x` known only at run
+// time. `argc / 2` cannot divide by zero, and an unsigned value divided by 7 cannot overflow.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK-LABEL: func.func @main
+// CHECK: arith.constant 3 : i32
+// CHECK-LABEL: func.func @ratio
+// CHECK: arith.constant 3 : i32
+
+fn ratio(x : f64) -> i32 {
+  let v = comptime {
+    let _r : f64 = 1.0f64 / x;
+    3i32
+  };
+  return v;
+}
+
+fn main(argc : i32) -> i32 {
+  let x = comptime {
+    let _inf : f64 = 1.0f64 / 0.0f64;
+    let _half : i32 = argc / 2i32;
+    let _big : u32 = 4000000000u32 / 7u32;
+    3i32
+  };
+  return x + ratio(2.0f64);
+}

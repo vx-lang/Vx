@@ -1,0 +1,114 @@
+//===- self_inside_an_impl.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Inside an impl, `Self` is the impl's type: in a receiver, a parameter, a return type, a `let`,
+// a struct literal, a static call, an enum variant and a match pattern.
+//
+//   2   `&mut Self` and `&Self` receivers: `bump`, then `get`
+//   6   `Self::new` and `let p : Self` inside `twice`
+//   2   a generic impl: `Self` is `Pair<T>`, and `swap` calls `Self::make`
+//   5   `Self::Blue(5)` built, then matched by `Self::Blue(n)`
+//   20  a trait impl's `self : &Self`
+//   40  a trait default written after the impls: its `Self` is still each impl's own type
+//
+// EXPECT: 2 6 2 5 20 40
+import core::option;
+
+struct P {
+  a : i64,
+}
+
+impl P {
+  fn new(a : i64) -> Self {
+    return Self {
+      a : a
+    };
+  }
+  fn get(self : &Self) -> i64 {
+    return self.a;
+  }
+  fn bump(self : &mut Self) -> void {
+    self.a = self.a + 1;
+  }
+  fn take(self : Self) -> i64 {
+    return self.a;
+  }
+  fn twice(a : i64) -> Self {
+    let p : Self = Self::new(a * 2);
+    return p;
+  }
+}
+
+struct Pair<T> {
+  x : T,
+  y : T,
+}
+
+impl<T> Pair<T> {
+  fn make(x : T, y : T) -> Self {
+    return Self {
+      x : x, y : y
+    };
+  }
+  fn swap(self : Self) -> Self {
+    return Self::make(self.y, self.x);
+  }
+}
+
+enum Color {
+  Red,
+  Blue(i64),
+}
+
+impl Color {
+  fn blue() -> Self {
+    return Self::Blue(5);
+  }
+  fn code(self : &Self) -> i64 {
+    match *self {
+      Self::Red => {
+        return 1;
+      },
+      Self::Blue(n) => {
+        return n;
+      }
+    }
+  }
+}
+
+trait Get {
+  fn value(self : &Self) -> i64;
+
+  fn doubled(self : &Self) -> i64 {
+    return self.value() * 2;
+  }
+}
+
+impl Get for P {
+  fn value(self : &Self) -> i64 {
+    return self.a * 10;
+  }
+}
+
+fn main() -> i32 {
+  let mut p = P::new(1);
+  p.bump();
+  print(p.get());
+  print!(" ");
+  print(P::twice(3).take());
+  print!(" ");
+  let q = Pair<i64>::make(1, 2).swap();
+  print(q.x);
+  print!(" ");
+  let c : Color = Color::blue();
+  print(c.code());
+  print!(" ");
+  print(p.value());
+  print!(" ");
+  print(p.doubled());
+  return 0;
+}

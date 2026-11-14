@@ -1,0 +1,32 @@
+//===- panic_names_the_caller_of_a_wrapper.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `must_be_positive` gives its `Caller` to `panic`. So the panic names the line that called
+// `must_be_positive`, not the line of the `panic` inside it.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: 1
+// CHECK-NEXT: panic: the number is not positive
+// CHECK-NEXT: {{^}}  at {{.*}}panic_names_the_caller_of_a_wrapper.vx:29{{$}}
+// CHECK-NOT: after the panic
+import core::panic;
+
+fn must_be_positive(n : i32, at : Caller) -> i32 {
+  if n <= 0 {
+    panic("the number is not positive", at);
+  }
+  return n;
+}
+
+fn main() -> i32 {
+  print(must_be_positive(1));
+  println!("");
+  print(must_be_positive(0));
+  println!("after the panic");
+  return 0;
+}

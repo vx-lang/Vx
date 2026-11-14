@@ -9,8 +9,8 @@
 //
 // `for x in &b` calls `b.iter()`, and `Bag` has no such method, so the loop is refused.
 // The same through a variable that holds the reference.
-// CHECK: Error[E3043] at 24:13: a `for` loop over a reference to Bag calls its `iter()` method, and Bag has none
-// CHECK-NEXT: Error[E3043] at 31:12: a `for` loop over a reference to Bag calls its `iter_mut()` method, and Bag has none
+// CHECK: Error[E3043] at {{.*}}for_loop_over_a_reference_without_iter.vx:24:13: a `for` loop over a reference to Bag calls its `iter()` method, and Bag has none
+// CHECK-NEXT: Error[E3043] at {{.*}}for_loop_over_a_reference_without_iter.vx:31:12: a `for` loop over a reference to Bag calls its `iter_mut()` method, and Bag has none
 
 struct Bag {
   n : i64,

@@ -1,0 +1,51 @@
+//===- a_task_takes_a_let_mut_tensor_whose_scope_ends_first.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The scope of a `let mut` tensor ends before its `tasks` block does, so the task takes the
+// tensor and frees it. In the loop, the next turn puts a new tensor in the same variable. Each
+// task must still read the tensor of its own turn. With a seed, the tasks run after the loop.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_SEED=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_SEED=1 vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}the task in the if sees 3{{$}}
+// CHECK-DAG: {{^}}the task of turn 0 sees 0{{$}}
+// CHECK-DAG: {{^}}the task of turn 1 sees 10{{$}}
+// CHECK-DAG: {{^}}the task of turn 2 sees 20{{$}}
+// CHECK: {{^}}end{{$}}
+
+fn in_an_if(go : bool) -> void {
+  tasks {
+    if go {
+      let mut b = Tensor<f32, [4]>::fill(2.0);
+      b[0] = 3.0;
+      spawn {
+        println!("the task in the if sees {}", b[0]);
+      };
+    }
+  };
+}
+
+fn in_a_loop() -> void {
+  tasks {
+    for i in 0..3 {
+      let mut b = Tensor<f32, [4]>::fill(2.0);
+      b[0] = (i * 10) as f32;
+      spawn {
+        println!("the task of turn {} sees {}", i, b[0]);
+      };
+    }
+  };
+}
+
+fn main() -> i32 {
+  in_an_if(true);
+  in_a_loop();
+  println!("end");
+  return 0;
+}

@@ -1,0 +1,22 @@
+//===- describe_shape.vx - Vx Compiler ---------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A struct and a trait that describe_left.vx and describe_right.vx both implement for it.
+
+struct Point {
+  x : i32,
+}
+
+trait Describe {
+  fn describe(self : &Self) -> i32;
+}
+
+fn make() -> Point {
+  return Point {
+    x: 1
+  };
+}

@@ -1,0 +1,53 @@
+//===- static_method_result_keeps_its_argument_borrowed.vx - Vx ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `Unit::same(r)` returns its argument, so its result borrows what `r` borrows. Each case
+// calls a method that no earlier code calls. The first call to a method used to keep no
+// borrow, so these programs compiled.
+
+import std::vec;
+
+struct Unit {
+  n : i32,
+}
+
+impl Unit {
+  fn same(y : &Vec<i32>) -> &Vec<i32> {
+    return y;
+  }
+
+  fn also_same(y : &Vec<i32>) -> &Vec<i32> {
+    return y;
+  }
+}
+
+fn push_while_the_result_is_used() -> i32 {
+  let mut v = Vec<i32>::new();
+  v.push(11);
+  let r = &v;
+  let s = Unit::same(r);
+  // CHECK: Error[E4003]{{.*}}Cannot borrow 'v' as mutable because it is also borrowed as immutable
+  v.push(5);
+  return s.len();
+}
+
+fn drop_while_the_result_is_used() -> i32 {
+  let mut v = Vec<i32>::new();
+  v.push(11);
+  let r = &v;
+  let s = Unit::also_same(r);
+  // CHECK: Error[E4007]{{.*}}`v` is moved while it is borrowed
+  drop(v);
+  return s.len();
+}
+
+fn main() -> i32 {
+  return push_while_the_result_is_used() + drop_while_the_result_is_used();
+}
+// CHECK: 2 error(s) emitted

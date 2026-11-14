@@ -18,8 +18,15 @@ impl TypeChecker<'_> {
     /// they would simply be trusted. This is the only place that sees both halves.
     pub fn check_associated_type_bindings(&mut self) {
         // Collected before reporting, which borrows the checker mutably.
-        let mut missing: Vec<(crate::symbol::Symbol, crate::symbol::Symbol, String)> = Vec::new();
-        let mut unknown: Vec<(crate::symbol::Symbol, crate::symbol::Symbol, String)> = Vec::new();
+        // Each one keeps the place of its impl, which its error points at.
+        type Found = (
+            crate::symbol::Symbol,
+            crate::symbol::Symbol,
+            String,
+            crate::syntax::DeclPlace,
+        );
+        let mut missing: Vec<Found> = Vec::new();
+        let mut unknown: Vec<Found> = Vec::new();
 
         for (trait_name, blocks) in &self.env.impls {
             let Some(decl) = self.env.traits.get(trait_name) else {
@@ -33,7 +40,12 @@ impl TypeChecker<'_> {
                         .iter()
                         .any(|(bound, _)| bound.as_ref() == declared.as_ref())
                     {
-                        missing.push((trait_name.clone(), declared.clone(), target.clone()));
+                        missing.push((
+                            trait_name.clone(),
+                            declared.clone(),
+                            target.clone(),
+                            block.place.clone(),
+                        ));
                     }
                 }
                 for (bound, _) in &block.assoc_bindings {
@@ -42,7 +54,12 @@ impl TypeChecker<'_> {
                         .iter()
                         .any(|declared| declared.as_ref() == bound.as_ref())
                     {
-                        unknown.push((trait_name.clone(), bound.clone(), target.clone()));
+                        unknown.push((
+                            trait_name.clone(),
+                            bound.clone(),
+                            target.clone(),
+                            block.place.clone(),
+                        ));
                     }
                 }
             }
@@ -50,10 +67,12 @@ impl TypeChecker<'_> {
 
         // `env.impls` is a hash map, so a program with two faults would report them in a
         // different order on every run without this.
-        missing.sort();
-        unknown.sort();
+        missing.sort_by(|a, b| (&a.0, &a.1, &a.2).cmp(&(&b.0, &b.1, &b.2)));
+        unknown.sort_by(|a, b| (&a.0, &a.1, &a.2).cmp(&(&b.0, &b.1, &b.2)));
 
-        for (trait_name, assoc, target) in missing {
+        let outside = self.errors.here();
+        for (trait_name, assoc, target, place) in missing {
+            self.errors.point_at(&place, &outside);
             self.errors.error_with_code(
                 crate::diagnostic::DiagnosticCode::E3037,
                 format!(
@@ -63,7 +82,9 @@ impl TypeChecker<'_> {
                 None,
             );
         }
-        for (trait_name, assoc, target) in unknown {
+        self.errors.point_back(outside.clone());
+        for (trait_name, assoc, target, place) in unknown {
+            self.errors.point_at(&place, &outside);
             self.errors.error_with_code(
                 crate::diagnostic::DiagnosticCode::E3038,
                 format!(
@@ -73,6 +94,51 @@ impl TypeChecker<'_> {
                 None,
             );
         }
+        self.errors.point_back(outside);
+    }
+
+    /// Every impl of a trait writes each method that the trait declares with no default body.
+    /// Without this check, the impl compiles, and a call to the missing method fails at the
+    /// call with "method not found".
+    pub fn check_impls_write_required_methods(&mut self) {
+        let mut missing: Vec<(
+            crate::symbol::Symbol,
+            String,
+            crate::symbol::Symbol,
+            crate::syntax::DeclPlace,
+        )> = Vec::new();
+        for (trait_name, blocks) in &self.env.impls {
+            let Some(decl) = self.env.traits.get(trait_name) else {
+                continue;
+            };
+            for block in blocks {
+                for required in decl.methods.iter().filter(|m| m.default_body.is_none()) {
+                    if !block.methods.iter().any(|m| m.name == required.name) {
+                        missing.push((
+                            trait_name.clone(),
+                            block.target_type.to_string(),
+                            required.name.clone(),
+                            block.place.clone(),
+                        ));
+                    }
+                }
+            }
+        }
+        // `env.impls` is a hash map: sort, so that the errors come in the same order every run.
+        missing.sort_by(|a, b| (&a.0, &a.1, &a.2).cmp(&(&b.0, &b.1, &b.2)));
+        let outside = self.errors.here();
+        for (trait_name, target, method, place) in missing {
+            self.errors.point_at(&place, &outside);
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3061,
+                format!(
+                    "`impl {trait_name} for {target}` does not write the method '{method}' that \
+                     trait {trait_name} requires. Write `fn {method}(..)` in the impl"
+                ),
+                None,
+            );
+        }
+        self.errors.point_back(outside);
     }
 
     /// No struct field names `I::Item`. A field's type is read from the struct's own parameters
@@ -80,18 +146,25 @@ impl TypeChecker<'_> {
     /// of them selects an impl. Rust's `Map<I, F>` takes the closure as a parameter for the
     /// same reason, and that shape works here.
     pub fn check_no_projections_in_fields(&mut self) {
-        let mut found: Vec<(String, String, String)> = Vec::new();
+        let mut found: Vec<(String, String, String, crate::syntax::DeclPlace)> = Vec::new();
         for (name, decl) in &self.env.structs {
             for (field, ty) in &decl.fields {
                 let mut written = Vec::new();
                 crate::hir::check::projection::projections_in(ty, &mut written);
                 if let Some(p) = written.first() {
-                    found.push((name.to_string(), field.to_string(), p.to_string()));
+                    found.push((
+                        name.to_string(),
+                        field.to_string(),
+                        p.to_string(),
+                        decl.place.clone(),
+                    ));
                 }
             }
         }
-        found.sort();
-        for (name, field, projection) in found {
+        found.sort_by(|a, b| (&a.0, &a.1, &a.2).cmp(&(&b.0, &b.1, &b.2)));
+        let outside = self.errors.here();
+        for (name, field, projection, place) in found {
+            self.errors.point_at(&place, &outside);
             self.errors.error_with_code(
                 crate::diagnostic::DiagnosticCode::E3041,
                 format!(
@@ -101,5 +174,6 @@ impl TypeChecker<'_> {
                 None,
             );
         }
+        self.errors.point_back(outside);
     }
 }

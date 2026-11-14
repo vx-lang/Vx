@@ -1,0 +1,150 @@
+//===- counted_loops_become_affine_loops.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `for i in a..b` loop that nothing leaves becomes an `affine.for`, so the MLIR loop passes
+// can fuse it with the loop after it. A loop that `break` leaves keeps its branches.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --emit-mlir > %t.mlir 2>&1
+// RUN: FileCheck %s --check-prefix=TRI < %t.mlir
+// RUN: FileCheck %s --check-prefix=IF < %t.mlir
+// RUN: FileCheck %s --check-prefix=BRK < %t.mlir
+// RUN: FileCheck %s --check-prefix=INNER < %t.mlir
+// RUN: vxc %s -O2 --action emit-llvm 2>&1 | FileCheck %s --check-prefix=FUSED
+// RUN: vxc %s 2>/dev/null | FileCheck %s --check-prefix=ANSWER
+// RUN: vxc %s -O2 2>/dev/null | FileCheck %s --check-prefix=ANSWER
+
+// At -O2 the two loops become one: the square reads the sum it just computed, with no load.
+// FUSED-LABEL: llvm.func hidden @add_then_square
+// FUSED: [[SUM:%[0-9]+]] = llvm.fadd
+// FUSED-NOT: llvm.load
+// FUSED: llvm.fmul [[SUM]], [[SUM]]
+fn add_then_square(a: &Tensor<f32, [64]>, b: &mut Tensor<f32, [64]>, c: &mut Tensor<f32, [64]>) -> i32 {
+  for i in 0..64 {
+    b[i] = a[i] + 1.0;
+  }
+  for i in 0..64 {
+    c[i] = b[i] * b[i];
+  }
+  return 0;
+}
+
+// The inner loop starts at the outer loop's index.
+// TRI: #map = affine_map<(d0) -> (d0)>
+// TRI-LABEL: func.func @triangle
+// TRI: affine.for %[[I:[^ ]*]] = 0 to %{{.*}} {
+// TRI: affine.for %{{.*}} = #map(%[[I]]) to %{{.*}} {
+fn triangle(n: i32) -> i32 {
+  let mut s = 0;
+  for i in 0..n {
+    for j in i..n {
+      s = s + j;
+    }
+  }
+  return s;
+}
+
+// A body with an `if` has blocks, so it goes in a region of its own.
+// IF-LABEL: func.func @with_if
+// IF: affine.for
+// IF-NEXT: arith.index_cast
+// IF-NEXT: scf.execute_region {
+fn with_if(n: i32) -> i32 {
+  let mut s = 0;
+  for i in 0..n {
+    if i % 2 == 0 {
+      s = s + i;
+    } else {
+      s = s - 1;
+    }
+  }
+  return s;
+}
+
+// BRK-LABEL: func.func @with_break
+// BRK-NOT: affine.for
+// BRK: cf.cond_br
+// BRK-NOT: affine.for
+// BRK: return
+fn with_break(n: i32) -> i32 {
+  let mut s = 0;
+  for i in 0..n {
+    if i == 5 {
+      break;
+    }
+    s = s + i;
+  }
+  return s;
+}
+
+// The outer loop computes the bound of the inner loop, so that bound is not an affine bound,
+// and the inner loop keeps its branches.
+// INNER-LABEL: func.func @inner_bound_in_body
+// INNER: affine.for
+// INNER-NOT: affine.for
+// INNER: scf.execute_region {
+// INNER-NOT: affine.for
+// INNER: cf.cond_br
+// INNER-NOT: affine.for
+// INNER: return
+fn inner_bound_in_body(n: i32) -> i32 {
+  let mut s = 0;
+  for i in 0..n {
+    let m = i + 1;
+    for j in 0..m {
+      s = s + j;
+    }
+  }
+  return s;
+}
+
+// The loop reads `b`, may change it in a branch, and reads it again. The second read must see
+// the change. At -O2 an affine pass once reused the first read here and printed 198, not 238.
+fn read_change_read(n: i32) -> i32 {
+  let mut h = 0;
+  let mut b = 0;
+  for i in 0..n {
+    let a = b;
+    if i % 3 == 0 {
+      b = b + 1;
+    }
+    h = h + b * 10 + a;
+  }
+  return h;
+}
+
+fn wide(a: i64, b: i64) -> i64 {
+  let mut s: i64 = 0;
+  for i in a..b {
+    s = s + i;
+  }
+  return s;
+}
+
+// ANSWER: 9
+// ANSWER-NEXT: 330
+// ANSWER-NEXT: 15
+// ANSWER-NEXT: 10
+// ANSWER-NEXT: 165
+// ANSWER-NEXT: 238
+// ANSWER-NEXT: 6
+// ANSWER-NEXT: 0
+fn main() -> i32 {
+  let a = Tensor<f32, [64]>::fill(2.0);
+  let mut b = Tensor<f32, [64]>::new();
+  let mut c = Tensor<f32, [64]>::new();
+  add_then_square(&a, &mut b, &mut c);
+  println!("{}", c[3]);
+  println!("{}", triangle(10));
+  println!("{}", with_if(10));
+  println!("{}", with_break(10));
+  println!("{}", inner_bound_in_body(10));
+  println!("{}", read_change_read(10));
+  println!("{}", wide(-5, 7));
+  println!("{}", wide(7, -5));
+  return 0;
+}

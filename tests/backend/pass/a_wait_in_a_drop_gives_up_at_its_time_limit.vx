@@ -1,0 +1,60 @@
+//===- a_wait_in_a_drop_gives_up_at_its_time_limit.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `drop` runs with cancellation off, so a wait in it cannot give `Cancelled` at once. It has a
+// time limit: its type's `Drop::wait_limit`, 10 seconds by default. `VX_DROP_WAIT_SECONDS` can
+// make the limit shorter. After the limit, a wait that can be cancelled gives up as in a
+// cancelled block. Here the `drop` of a `Waiter` waits in `recv` for a value that never comes,
+// because `main` still holds the `Sender`.
+//
+// The first RUN line sets `VX_DROP_WAIT_SECONDS` to 0.2 seconds, so the `recv` gives up soon,
+// and not after the 10 seconds of the default. The second one gives the variable a word, which
+// stops the program with a message when it starts, before `main` prints anything.
+//
+// RUN: env VX_DROP_WAIT_SECONDS=0.2 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_DROP_WAIT_SECONDS=soon not vxc %s 2>&1 | FileCheck %s --check-prefix=WORD --implicit-check-not="the program started"
+// CHECK: {{^}}the program started{{$}}
+// CHECK-NEXT: {{^}}the drop gave up, cancelled true{{$}}
+// CHECK-NEXT: {{^}}the drop took less than 5 seconds: true{{$}}
+// CHECK-NEXT: {{^}}after the drop, cancelled false{{$}}
+// WORD: vx: VX_DROP_WAIT_SECONDS must be a number of seconds, not 'soon'
+
+import core::time;
+import std::sync::channel;
+import std::sync::wait;
+import std::time;
+
+struct Waiter {
+  rx : Receiver<i64>,
+}
+
+impl Drop for Waiter {
+  fn drop(self : &mut Waiter) -> void {
+    match self.rx.recv() {
+      Result<i64, RecvError>::Ok(v) => {
+        println!("the drop got {}", v);
+      }
+      Result<i64, RecvError>::Err(_e) => {
+        println!("the drop gave up, cancelled {}", cancelled());
+      }
+    }
+  }
+}
+
+fn main() -> i32 {
+  println!("the program started");
+  let (tx, rx) = channel<i64>(1);
+  let w = Waiter {
+    rx : rx
+  };
+  let start = Instant::now();
+  drop(w);
+  println!("the drop took less than 5 seconds: {}", start.elapsed() < Duration::from_secs(5));
+  println!("after the drop, cancelled {}", cancelled());
+  drop(tx);
+  return 0;
+}

@@ -23,7 +23,7 @@
 // [a, b, c, d] as a rank-1 tensor. Each expression builds its own, because an
 // operator consumes both its operands.
 fn v4(a : f32, b : f32, c : f32, d : f32) -> Tensor<f32, [4]> {
-  let mut v = Tensor<f32, [4]>::uninit();
+  let mut v = unsafe { Tensor<f32, [4]>::uninit() };
   v[0] = a;
   v[1] = b;
   v[2] = c;

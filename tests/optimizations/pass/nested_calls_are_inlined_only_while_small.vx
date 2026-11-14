@@ -1,0 +1,68 @@
+//===- nested_calls_are_inlined_only_while_small.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s -O1 --emit-mlir | FileCheck %s
+// RUN: vxc %s -O1 --run | FileCheck %s --check-prefix=OUT
+//
+// Each function calls the one before it three times, so inlining every call would put
+// 3^6 = 729 copies of `f0` in `f6`, and compile time grows the same way with depth. At -O1 the
+// compiler inlines a function only while it is small, so `f6` still makes a call before its body
+// ends.
+//
+// CHECK-LABEL: func.func @f6(
+// CHECK-NOT: {{^  [}]$}}
+// CHECK: call @f{{[0-9]}}(
+//
+// OUT: {{^}}147{{$}}
+
+struct P {
+  a : i64,
+  b : i64,
+}
+
+impl Copy for P {}
+
+fn f0(x : P, y : P) -> P {
+  return P {
+    a: (x.a + 2 * y.b) % 1000, b: (3 * x.b + y.a) % 1000
+  };
+}
+
+fn f1(x : P, y : P) -> P {
+  return f0(f0(x, y), f0(y, x));
+}
+
+fn f2(x : P, y : P) -> P {
+  return f1(f1(x, y), f1(y, x));
+}
+
+fn f3(x : P, y : P) -> P {
+  return f2(f2(x, y), f2(y, x));
+}
+
+fn f4(x : P, y : P) -> P {
+  return f3(f3(x, y), f3(y, x));
+}
+
+fn f5(x : P, y : P) -> P {
+  return f4(f4(x, y), f4(y, x));
+}
+
+fn f6(x : P, y : P) -> P {
+  return f5(f5(x, y), f5(y, x));
+}
+
+fn main() -> i32 {
+  let p = f6(P {
+    a: 3, b: 5
+  }, P {
+    a: 7, b: 2
+  });
+  print!(p.a);
+  print!("\n");
+  return 0;
+}

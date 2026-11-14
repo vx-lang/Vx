@@ -33,6 +33,7 @@ pub enum PipelineError {
     IO(String),
     Parse(String),
     Semantic(String),
+    Codegen(String),
     /// Checking found `count` errors, which it has printed. `in_declarations` says the check of
     /// the whole program's declarations found them, before any body was checked. The driver
     /// ends a failed compile with the same line whether it ran in parallel or not.
@@ -48,6 +49,7 @@ impl std::fmt::Display for PipelineError {
             PipelineError::IO(msg) => write!(f, "IO Error: {}", msg),
             PipelineError::Parse(msg) => write!(f, "Parse Error: {}", msg),
             PipelineError::Semantic(msg) => write!(f, "Semantic Error: {}", msg),
+            PipelineError::Codegen(msg) => write!(f, "{msg}"),
             PipelineError::Failed { count, .. } => {
                 write!(f, "Semantic check failed: {count} error(s) emitted")
             }
@@ -103,7 +105,7 @@ struct Frontend {
     subspaces: Vec<crate::codegen::flat::SubspaceInfo>,
     /// Same travel pattern as `subspaces`: the declared-arch table for `vx.spawn` stamping
     /// (Vx#352), extracted from the env because the env cannot leave the frontend.
-    topo_archs: Vec<(i64, String)>,
+    topo_archs: Vec<(i64, crate::codegen::flat::DeclaredArch)>,
     /// Same again: `arch::local_device_aliases`, for the `vx.local_devices` module attribute.
     local_devices: Vec<(i32, i32)>,
     checks: Vec<FunctionCheck>,
@@ -130,7 +132,7 @@ fn run_frontend(
     // than inferring it from a plateau.
     let modules = crate::intern_mode::timed("parse", || parse_phase(file_paths, sched))?;
     // Every file here was named by the caller, so every file's diagnostics are its concern.
-    let frontend = run_frontend_on(modules, sched, intern_mode, Reported::EveryModule)?;
+    let frontend = run_frontend_on(modules, sched, intern_mode, false, Reported::EveryModule)?;
     // Nothing declines on this path, so there is no second compile to print them again.
     report_warnings(&frontend.warnings);
     Ok(frontend)
@@ -143,12 +145,19 @@ fn run_frontend_on(
     mut modules: Vec<VxModule>,
     sched: Schedule,
     intern_mode: crate::intern_mode::InternMode,
+    auto_schedule_levels: bool,
     reported: Reported,
 ) -> Result<Frontend, PipelineError> {
     use crate::intern_mode::timed;
     timed("macro_expand", || {
         macro_expansion_phase(&mut modules, sched)
     })?;
+    // Every function names its file, so a diagnostic found while checking it names the file
+    // too, wherever the check runs from. A struct names its file, because only that file can
+    // change the fields of a type with an invariant. After expansion, which adds functions.
+    for m in &mut modules {
+        m.name_file_on_items();
+    }
     // `name_resolution_phase` hands back the symbol map so the freeze point can reuse it instead of
     // rebuilding it (c4c35e31); the timing wrapper carries the value through.
     let symbol_map = timed("name_resolution", || {
@@ -165,8 +174,11 @@ fn run_frontend_on(
         "Built Global Immutable Registry ({} types)",
         registry.layouts.len()
     );
-    let session =
-        std::sync::Arc::new(GlobalSession::with_registry(1, registry).in_intern_mode(intern_mode));
+    let session = std::sync::Arc::new(
+        GlobalSession::with_registry(1, registry)
+            .in_intern_mode(intern_mode)
+            .auto_schedule_levels(auto_schedule_levels),
+    );
     #[cfg(debug_assertions)]
     verify_phase_2_registry(&session.registry);
 
@@ -198,7 +210,18 @@ fn run_frontend_on(
 
     // Before any body: a body checked against an ambiguous declaration table has been checked
     // against a coin flip.
-    let mut warnings = timed("decl_check", || declaration_check_phase(&session, &env))?;
+    // One file among the modules: a module read from none, such as the native host, does not
+    // make the program several files.
+    let whole_program_file = {
+        let mut files = modules.iter().filter_map(|m| m.file.as_deref());
+        match (files.next(), files.next()) {
+            (Some(only), None) => Some(only),
+            _ => None,
+        }
+    };
+    let mut warnings = timed("decl_check", || {
+        declaration_check_phase(&session, &env, whole_program_file)
+    })?;
     // Found before the checks rename calls to generic instances, and reported after them only if
     // they found no error, as in the driver.
     let mut unused_functions = crate::diagnostic::DiagnosticsVec::new();
@@ -255,6 +278,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), PipelineError> {
     let _epoch_2_session = std::sync::Arc::new(crate::session::GlobalSession {
         epoch: 2,
         intern_mode: session.intern_mode,
+        auto_schedule_levels: session.auto_schedule_levels,
         registry: session.registry.clone(),
         slow_path_arena: std::sync::Arc::new(merged_slow),
         generics_arena: std::sync::Arc::new(merged_gen),
@@ -358,7 +382,7 @@ pub fn compile_pipeline_mlir_in(
     intern_mode: crate::intern_mode::InternMode,
 ) -> Result<Option<String>, PipelineError> {
     let modules = crate::intern_mode::timed("parse", || parse_phase(file_paths, sched))?;
-    compile_modules_mlir_in(modules, sched, intern_mode, Reported::EveryModule)
+    compile_modules_mlir_in(modules, sched, intern_mode, false, Reported::EveryModule)
 }
 
 /// [`compile_pipeline_mlir_in`] for modules a caller has already parsed and not yet expanded:
@@ -368,6 +392,7 @@ pub fn compile_modules_mlir_in(
     modules: Vec<VxModule>,
     sched: Schedule,
     intern_mode: crate::intern_mode::InternMode,
+    auto_schedule_levels: bool,
     reported: Reported,
 ) -> Result<Option<String>, PipelineError> {
     let Frontend {
@@ -380,7 +405,7 @@ pub fn compile_modules_mlir_in(
         warnings,
         type_streams,
         merged_arenas,
-    } = run_frontend_on(modules, sched, intern_mode, reported)?;
+    } = run_frontend_on(modules, sched, intern_mode, auto_schedule_levels, reported)?;
     let text = crate::intern_mode::timed("codegen", || {
         codegen_mlir_phase(
             &modules,
@@ -392,7 +417,7 @@ pub fn compile_modules_mlir_in(
             merged_arenas,
             sched,
         )
-    });
+    })?;
     // Only now, once codegen has answered, are the warnings this frontend found printed. A
     // decline means the driver recompiles the program through the sequential path, which finds
     // them again -- printing here as well would show every one of them twice.
@@ -482,10 +507,12 @@ fn parse_phase(file_paths: &[String], sched: Schedule) -> Result<Vec<VxModule>, 
         let mut lexer = Lexer::new(&source);
         let tokens = lexer.tokenize();
         let mut parser = Parser::new(&tokens, &source);
-        let mut program = parser.parse().map_err(|e| {
-            PipelineError::Parse(format!("Failed to parse {}:\n{}", path, e.format(&source)))
-        })?;
+        // The error names the file itself, so nothing is added around it.
+        let mut program = parser
+            .parse()
+            .map_err(|e| PipelineError::Parse(e.format(&source, Some(path))))?;
         program.module_path = module_path_of(path).into();
+        program.file = Some(path.as_str().into());
         Ok(program)
     };
     let parsed_modules: Vec<VxModule> = if sched.is_seq() {
@@ -516,20 +543,23 @@ fn macro_expansion_phase(
             global_macros.insert(mac.name.clone(), mac.rules.clone());
         }
     }
-    // Expansion is per-module and shares nothing. `MacroExpander` holds a single `&HashMap` and no
-    // mutable state, so its methods took `&mut self` without ever being able to use it; now that
-    // they take `&self`, one expander is shared across the parallel-for and the borrow checker
-    // proves the isolation rather than a comment asserting it.
+    // Expansion is per-module and shares nothing. Each module gets its own expander, because
+    // an expander counts the expansions it makes.
     // Collected here for the same reason the macro table is: both have to be complete before
     // any module is expanded, because a trait and an impl of it need not share a module.
     let trait_defaults = crate::resolver::collect_trait_defaults(parsed_modules.iter());
-    let expander = MacroExpander::new(&global_macros, &trait_defaults);
-    let expand = |m: &mut VxModule| expander.expand_module(m).map_err(PipelineError::Parse);
+    let expand = |m: &mut VxModule| {
+        MacroExpander::new(&global_macros, &trait_defaults)
+            .expand_module(m)
+            .map_err(PipelineError::Parse)
+    };
     if sched.is_seq() {
-        parsed_modules.iter_mut().try_for_each(expand)
+        parsed_modules.iter_mut().try_for_each(expand)?;
     } else {
-        parsed_modules.par_iter_mut().try_for_each(expand)
+        parsed_modules.par_iter_mut().try_for_each(expand)?;
     }
+    crate::resolver::fold_const_extents(parsed_modules);
+    Ok(())
 }
 
 /// Resolve names, and hand back the symbol map so the freeze point does not rebuild it.
@@ -716,12 +746,6 @@ fn nominal_gid(ty: &syntax::Type) -> Option<crate::gid::TypeId> {
             id.words[2] = crate::gid::ESCAPE_HATCH_MASK | crate::gid::generic_digest(&ids);
             Some(id)
         }
-        Type::Matrix => Some(crate::gid::TypeId::new(
-            0,
-            crate::hash::DefPath::Named("$matrix").compute_symbol_hash(),
-            0,
-            0,
-        )),
         // `Module` and `Unknown` genuinely have no type identity. They should not reach a generic
         // argument position; `emit_type_gid` now declines the whole instantiation rather than
         // silently interning it with the argument missing.
@@ -898,6 +922,19 @@ pub fn build_frozen_registry_with(
         }
     }
 
+    // The generic struct instances that the layouts above hold by value (`SharedCell<i32>`), so
+    // a field naming one resolves like a field naming a plain struct.
+    for (id, name, l) in layout.instance_layouts() {
+        defs.push(TypeDefinition {
+            id,
+            name: name.to_string(),
+            size_bytes: l.size,
+            align_bytes: l.align,
+            fields: l.fields.clone(),
+            by_value_dependencies: Vec::new(),
+        });
+    }
+
     let mut registry = crate::registry::ImmutableGlobalRegistry::build_and_validate(defs)
         .map_err(PipelineError::Semantic)?;
 
@@ -951,6 +988,9 @@ pub fn build_frozen_registry_with(
                     fields: s.fields.clone(),
                 },
             );
+            if !s.invariants.is_empty() {
+                registry.structs_with_invariants.insert(gid);
+            }
         }
         // Data-carrying enum decls, so the flat path can synthesize a monomorphized instance's
         // `{ tag, payload }` layout by substituting its type args into the variant payload types
@@ -1022,6 +1062,11 @@ pub fn build_frozen_registry_with(
                                 &crate::hir::provenance::ReturnProvenance::AnyParam,
                             ),
                             is_unsafe: !ext.is_safe,
+                            ret_valid: crate::hir::check::pointer_clauses::valid_result_length(
+                                &ext.params,
+                                &ext.return_type,
+                                &ext.ensures,
+                            ),
                         },
                     );
                 }
@@ -1076,6 +1121,11 @@ pub fn build_frozen_registry_with(
                                     &crate::hir::provenance::compute_return_provenance(m),
                                 ),
                                 is_unsafe: m.is_unsafe,
+                                ret_valid: crate::hir::check::pointer_clauses::valid_result_length(
+                                    &m.params,
+                                    &m.return_type,
+                                    &m.ensures,
+                                ),
                             },
                         );
                     }
@@ -1110,6 +1160,11 @@ pub fn fn_sig_of(module_hash: u64, f: &syntax::Function) -> crate::registry::FnS
             &crate::hir::provenance::compute_return_provenance(f),
         ),
         is_unsafe: f.is_unsafe,
+        ret_valid: crate::hir::check::pointer_clauses::valid_result_length(
+            &f.params,
+            &f.return_type,
+            &f.ensures,
+        ),
     }
 }
 
@@ -1292,12 +1347,17 @@ fn check_one_function(
 /// are the one part of the frontend this path used to skip entirely: a corpus whose declared
 /// spaces collided onto shared dispatch ids compiled here without a diagnostic while the driver
 /// refused it.
+///
+/// `file` is the one file of a one-file program. These checks look at every module at once, so
+/// a position in one of them can only be named when there is only one.
 fn declaration_check_phase(
     global_session: &std::sync::Arc<GlobalSession>,
     global_env: &GlobalAstEnv,
+    file: Option<&str>,
 ) -> Result<Vec<crate::diagnostic::Diagnostic>, PipelineError> {
     let mut worker = LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(global_env, &mut worker);
+    checker.errors.file = file.map(Into::into);
     checker.check_whole_program_declarations();
 
     let found: Vec<&crate::diagnostic::Diagnostic> = checker.errors.iter().collect();
@@ -1535,6 +1595,12 @@ fn type_check_phase(
         })
         .flat_map(|c| c.diagnostics.iter())
         .chain(imported_errors.iter())
+        .collect();
+    // Two checks can read one body, such as a method that a call checks again.
+    let mut seen = std::collections::HashSet::new();
+    let reported: Vec<&crate::diagnostic::Diagnostic> = reported
+        .into_iter()
+        .filter(|d| d.repeat_key().is_none_or(|key| seen.insert(key)))
         .collect();
     let mut warnings: Vec<crate::diagnostic::Diagnostic> = reported
         .iter()
@@ -1820,6 +1886,7 @@ fn epoch_2_session(
     std::sync::Arc::new(GlobalSession {
         epoch: 2,
         intern_mode: epoch_1.intern_mode,
+        auto_schedule_levels: epoch_1.auto_schedule_levels,
         registry: std::sync::Arc::new(epoch_2_registry(&epoch_1.registry, monomorphs)),
         slow_path_arena: std::sync::Arc::new(merged_slow),
         generics_arena: std::sync::Arc::new(merged_gen),
@@ -1917,12 +1984,12 @@ fn codegen_mlir_phase(
     parsed_modules: &[VxModule],
     check_results: &mut [FunctionCheck],
     subspaces: &[crate::codegen::flat::SubspaceInfo],
-    topo_archs: &[(i64, String)],
+    topo_archs: &[(i64, crate::codegen::flat::DeclaredArch)],
     local_devices: &[(i32, i32)],
     global_session: &std::sync::Arc<GlobalSession>,
     merged_arenas: MergedArenas,
     sched: Schedule,
-) -> Option<String> {
+) -> Result<Option<String>, PipelineError> {
     let (module_buckets, _struct_buckets) = route_monomorphs(parsed_modules, check_results, sched);
     let monos: Vec<syntax::Function> = module_buckets.into_iter().flatten().collect();
     let session2 = epoch_2_session(global_session, merged_arenas, &monos);
@@ -1941,7 +2008,7 @@ fn codegen_mlir_phase(
                     func.name
                 );
             }
-            return None;
+            return Ok(None);
         }
     }
 
@@ -1981,12 +2048,12 @@ fn codegen_mlir_phase(
         .iter()
         .flat_map(|(w, _)| w.local_tensor_types.iter().cloned())
         .collect();
-    let agg_layouts: Vec<_> = workers
+    let agg_layouts: Vec<crate::layout::GeneratedAggregateLayout> = workers
         .iter()
         .flat_map(|(w, _)| w.local_agg_layouts.iter().cloned())
         .collect();
 
-    let text = crate::codegen::flat::emit_module_mlir(
+    let text = match crate::codegen::flat::emit_module_mlir(
         &funcs,
         &session2.registry,
         &tensor_types,
@@ -1998,15 +2065,19 @@ fn codegen_mlir_phase(
         topo_archs,
         local_devices,
         sched,
-    )
-    .ok()?;
+        false,
+    ) {
+        Ok(text) => text,
+        Err(crate::codegen::flat::ModuleEmitError::Declined(_)) => return Ok(None),
+        Err(error) => return Err(PipelineError::Codegen(error.to_string())),
+    };
     chatter!(
         "Emitted MLIR for {} functions ({} monomorphized, {} shadowed by an earlier definition)",
         funcs.len(),
         monos.len(),
         shadowed
     );
-    Some(text)
+    Ok(Some(text))
 }
 
 fn codegen_and_metadata_phase(
@@ -2342,6 +2413,55 @@ mod gid_stream_tests {
             .resolve_unique_nominal(&crate::symbol::Symbol::from("Only"))
             .expect("Only is unambiguous");
         assert_eq!(mi.layout_of(only).unwrap().name, "Only");
+    }
+
+    #[rstest::rstest]
+    fn generic_struct_layouts_keep_module_identity(
+        #[values(false, true)] reverse: bool,
+        #[values(false, true)] attached: bool,
+    ) {
+        use crate::syntax::Type;
+        let first = parse_and_resolve(
+            "crate::first",
+            "struct Shared<T> { value: T } struct First { nested: Shared<i32> }",
+        );
+        let second = parse_and_resolve(
+            "crate::second",
+            "struct Shared<T> { value: T, tail: i64 } struct Second { nested: Shared<i32> }",
+        );
+        let mut modules = vec![first, second];
+        if !attached {
+            for module in &mut modules {
+                let Type::GenericInstance(base, _) = &mut module.structs[1].fields[0].1 else {
+                    panic!("generic field");
+                };
+                let Type::Struct(_, id) = base.as_mut() else {
+                    panic!("nominal base");
+                };
+                *id = None;
+            }
+        }
+        if reverse {
+            modules.reverse();
+        }
+        let registry = build_frozen_registry(&modules).unwrap();
+        let layout = |name: &str| {
+            let definition = registry
+                .layouts
+                .values()
+                .find(|definition| definition.name == name)
+                .unwrap();
+            (definition.size_bytes, definition.align_bytes)
+        };
+        assert_eq!(
+            (layout("First"), layout("Second")),
+            if attached {
+                ((4, 4), (16, 8))
+            } else {
+                ((0, 0), (0, 0))
+            },
+            "module order must not choose a same-named generic declaration"
+        );
     }
 
     /// End-to-end for the #219 dual-run gate: freeze the registry over a module with a concrete scalar
@@ -2977,6 +3097,22 @@ fn main() -> i32 { return 0; }
             .collect()
     }
 
+    /// A parse error names its file once, in the `Error at FILE:LINE:COL:` header.
+    #[test]
+    fn a_parse_error_names_its_file_once() {
+        let bad = scratch_modules(
+            "parse_error_once",
+            &[("bad.vx", "fn main() -> i32 { let x = 10 return x; }\n")],
+        );
+        let err = compile_pipeline_mlir(&bad).expect_err("a missing `;` must be refused");
+        let text = err.to_string();
+        assert!(
+            text.contains("Error at ") && text.contains("bad.vx:1:"),
+            "{text}"
+        );
+        assert_eq!(text.matches("bad.vx").count(), 1, "{text}");
+    }
+
     /// The pipeline refuses a machine model whose declarations contradict each other.
     ///
     /// The point is that it refuses at all. These checks read the whole program rather than one
@@ -3241,6 +3377,33 @@ fn main() -> i32 { return 0; }
             "the sequential schedule produces a different type stream than the parallel one"
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A module `const` in a parameter's tensor type is the number it stands for here as well as
+    /// in `vxc`: this entry point expands macros itself, so it folds the `const`s itself.
+    #[test]
+    fn pipeline_folds_a_module_const_in_a_signature() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("vx_const_extent_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("extent.vx");
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(
+                b"const N : i32 = 4;\n\
+                  fn first(t : &Tensor<f32, [N]>) -> f32 { return t[0]; }\n\
+                  fn main() -> i32 { return 0; }\n",
+            )
+            .unwrap();
+        let text = compile_pipeline_mlir(&[path.to_string_lossy().to_string()])
+            .expect("pipeline")
+            .expect("the program is inside the flat subset");
+        assert!(
+            text.contains("func.func @first(%arg0: memref<4xf32>"),
+            "`[N]` did not become `[4]`:\n{text}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

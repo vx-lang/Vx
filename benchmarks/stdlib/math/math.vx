@@ -32,9 +32,9 @@ macro_rules unary_bench {
       let mut best : f32 = 1000.0;
       let mut total : f64 = 0.0;
       for rep in 0..5 {
-        let t0 = now();
+        let t0 = Instant::now();
         let r = $kernel(1000000, rep);
-        let dt = now() - t0;
+        let dt = t0.elapsed().as_secs_f32();
         total += r as f64;
         if dt < best {
           best = dt;
@@ -69,9 +69,9 @@ macro_rules binary_bench {
       let mut best : f32 = 1000.0;
       let mut total : f64 = 0.0;
       for rep in 0..5 {
-        let t0 = now();
+        let t0 = Instant::now();
         let r = $kernel(1000000, rep);
-        let dt = now() - t0;
+        let dt = t0.elapsed().as_secs_f32();
         total += r as f64;
         if dt < best {
           best = dt;
@@ -118,9 +118,9 @@ fn run_mul_add_f32() -> i32 {
   let mut best : f32 = 1000.0;
   let mut total : f64 = 0.0;
   for rep in 0..5 {
-    let t0 = now();
+    let t0 = Instant::now();
     let r = mul_add_f32(1000000, rep);
-    let dt = now() - t0;
+    let dt = t0.elapsed().as_secs_f32();
     total += r as f64;
     if dt < best {
       best = dt;
@@ -137,9 +137,9 @@ fn run_clamp_f32() -> i32 {
   let mut best : f32 = 1000.0;
   let mut total : f64 = 0.0;
   for rep in 0..5 {
-    let t0 = now();
+    let t0 = Instant::now();
     let r = clamp_f32(1000000, rep);
-    let dt = now() - t0;
+    let dt = t0.elapsed().as_secs_f32();
     total += r as f64;
     if dt < best {
       best = dt;
@@ -181,9 +181,9 @@ fn run_mul_add_f64() -> i32 {
   let mut best : f32 = 1000.0;
   let mut total : f64 = 0.0;
   for rep in 0..5 {
-    let t0 = now();
+    let t0 = Instant::now();
     let r = mul_add_f64(1000000, rep);
-    let dt = now() - t0;
+    let dt = t0.elapsed().as_secs_f32();
     total += r as f64;
     if dt < best {
       best = dt;
@@ -200,9 +200,9 @@ fn run_clamp_f64() -> i32 {
   let mut best : f32 = 1000.0;
   let mut total : f64 = 0.0;
   for rep in 0..5 {
-    let t0 = now();
+    let t0 = Instant::now();
     let r = clamp_f64(1000000, rep);
-    let dt = now() - t0;
+    let dt = t0.elapsed().as_secs_f32();
     total += r as f64;
     if dt < best {
       best = dt;

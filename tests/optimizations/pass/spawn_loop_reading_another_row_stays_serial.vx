@@ -26,22 +26,24 @@
 // ANSWER: wrong=0{{$}}
 
 fn count_wrong_rows() -> i32 {
-  let mut o = Tensor<f32, [65537, 8]>::uninit();
+  let mut o = unsafe { Tensor<f32, [65537, 8]>::uninit() };
   for i in 0..65537 {
     for j in 0..8 {
       o[i][j] = (i as f32);
     }
   }
+  let mut d = transfer(o, Memory::GPU_HBM);
   spawn on(Topology::GPU) {
     for i in 0..65536 {
       for j in 0..8 {
-        o[i][j] = o[i + 1][j];
+        d[i][j] = d[i + 1][j];
       }
     }
   }
+  let back = transfer(d, Memory::CPU_DRAM);
   let mut wrong = 0;
   for i in 0..65536 {
-    if o[i][0] != ((i + 1) as f32) {
+    if back[i][0] != ((i + 1) as f32) {
       wrong = wrong + 1;
     }
   }

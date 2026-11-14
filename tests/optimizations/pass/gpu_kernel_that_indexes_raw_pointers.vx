@@ -1,0 +1,25 @@
+//===- gpu_kernel_that_indexes_raw_pointers.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A GPU region indexes raw pointers. That lowers to the `llvm` ops `getelementptr` and `load`,
+// which the GPU code generator takes. So the region gets a PTX kernel that loads and stores
+// through the pointers, and it does not run on the CPU.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not='runs on the CPU' --implicit-check-not=Error
+// CHECK: image={{.*}}.entry vx_npu_kernel_0({{.*}}ld.global.b32{{.*}}st.global.b32
+
+pub fn saxpy(y : *mut f32, x : *const f32) -> void {
+  spawn on(Topology::GPU) {
+    unsafe { for i in 0..1024 { y[i] = 2.0 * x[i] + y[i]; } }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

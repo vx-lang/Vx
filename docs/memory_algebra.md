@@ -377,8 +377,8 @@ Roughly in dependency order, what is left:
    compare index *values* rather than AST nodes (Vx#355) fixed the symptom and exposed the shape
    of the problem: five consumers in the compiler derive "which topology is this" independently,
    with different fidelity each time, and an identity that crosses a worker boundary has to be
-   canonical, context-free, schedule-deterministic and totally ordered all at once. Written up in
-   [`discussions/brainstorming/topology_identity_parallel_compilation.md`](discussions/brainstorming/topology_identity_parallel_compilation.md).
+   canonical, context-free, schedule-deterministic and totally ordered all at once
+   (see [Vx#355](https://github.com/vx-lang/Vx/issues/355)).
    The symbolic tier — `GPU[i]` compared against `GPU[j]` where `i == j` only at run time — is
    parked deliberately; it is a real gap and not the one blocking anything.
 1. **Close the coverage backlog** ([Vx#358](https://github.com/vx-lang/Vx/issues/358)). Several

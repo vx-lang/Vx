@@ -1,0 +1,41 @@
+//===- mutex_counter_from_many_tasks.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Eight tasks share one `Mutex` that holds a plain `i64`. Each task locks it 10000 times and
+// adds 1. The read and the write of the counter are not atomic, so without the lock two tasks
+// would read the same value and one add would get lost. The count must be 80000.
+//
+// The third RUN line runs the same program on the shared runtime, with one worker thread
+// for all the tasks.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}count 80000{{$}}
+
+import std::sync::mutex;
+
+fn add_many(m : &Mutex<i64>) -> void {
+  for i in 0..10000 {
+    let mut g = m.lock();
+    let v = g.get();
+    *v = *v + 1;
+  }
+}
+
+fn main() -> i32 {
+  let m = Mutex<i64>::new(0);
+  tasks {
+    for t in 0..8 {
+      spawn {
+        add_many(&m);
+      };
+    }
+  };
+  println!("count {}", m.into_inner());
+  return 0;
+}

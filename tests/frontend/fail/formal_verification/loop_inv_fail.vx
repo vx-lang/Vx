@@ -1,11 +1,11 @@
 //===- loop_inv_fail.vx ---------------------------------===//
-// RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Loop invariant cannot be proven on entry
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 
 fn test_loop_increment_fail(N : i32) -> i32
 requires N == 0
 ensures return == 0 {
   // FAILS because the invariant demands N == 1, which is not true initially.
+  // CHECK: Error[E8008] at {{.*}}loop_inv_fail.vx:[[@LINE+1]]:30: this loop invariant `N == 1` may not hold when the loop starts
   for i in 0..10 invariant(N == 1) {
     let x = N;
   }
@@ -16,6 +16,7 @@ fn test_loop_range_fail(N : i32) -> i32
 requires N > 5 && N < 15 ensures return > 5
 {
   // FAILS because invariant N > 10 is not guaranteed initially.
+  // CHECK: Error[E8008] at {{.*}}loop_inv_fail.vx:[[@LINE+1]]:29: this loop invariant `N > 10` may not hold when the loop starts
   for i in 0..5 invariant(N > 10) {
     let dummy = N;
   }

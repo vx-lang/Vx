@@ -1,0 +1,32 @@
+//===- vec_negative_index_stops_the_program.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Vec::set` with index 0 writes the element. With a negative index, it prints the index and the
+// length to standard error, and stops the program. What the program printed before stays on
+// standard output.
+//
+// RUN: not vxc %s 2>&1 >/dev/null | FileCheck %s --check-prefix=ERR
+// RUN: not vxc %s 2>/dev/null | FileCheck %s --check-prefix=OUT
+// ERR: Vec: index -1 is out of bounds for length 2
+// ERR-NEXT: panic: Vec: index out of bounds
+// ERR-NOT: after the failure
+// OUT: 7
+// OUT-NOT: out of bounds
+// OUT-NOT: after the failure
+import std::vec;
+
+fn main() -> i32 {
+  let mut v = Vec<i32>::new();
+  v.push(1);
+  v.push(2);
+  v.set(0, 7);
+  print(v.get(0));
+  println!("");
+  v.set(-1, 9);
+  println!("after the failure");
+  return 0;
+}

@@ -38,6 +38,6 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK-DAG: Error[E4002] at 24:3: Cannot access 'b' because it is mutably borrowed.
-// CHECK-DAG: Error[E4002] at 32:3: Cannot access 'c' because it is mutably borrowed.
+// CHECK-DAG: Error[E4002] at {{.*}}raw_pointer_returned_by_a_call_keeps_its_source_borrowed.vx:24:3: Cannot access 'b' because it is mutably borrowed.
+// CHECK-DAG: Error[E4002] at {{.*}}raw_pointer_returned_by_a_call_keeps_its_source_borrowed.vx:32:3: Cannot access 'c' because it is mutably borrowed.
 // CHECK: 2 error(s) emitted

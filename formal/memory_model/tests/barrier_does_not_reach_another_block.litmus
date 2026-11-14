@@ -1,0 +1,10 @@
+LISA barrier_does_not_reach_another_block
+(* A barrier of block scope does not order a lane of another block (C5). P2 is in another
+   block, so its read races with the write.
+   Expect: sometimes, a data race. *)
+{ x = 0; }
+ P0                  | P1                   | P2                   ;
+ w[plain] x 1        | f[barrier,block]     | f[barrier,block]     ;
+ f[barrier,block]    | r[plain] r0 x        | r[plain] r1 x        ;
+scopes: (device (block P0 P1) (block P2))
+exists (2:r1 = 0)

@@ -1,0 +1,65 @@
+//===- generic_struct_field_on_the_ast_code_generator.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A struct that holds a generic struct by value, `Mixed { h : Holder<i64> }`, on the AST code
+// generator. It used to size `Mixed` as 8 bytes instead of 16, so a `Vec<Mixed>` corrupted the
+// heap. A write to `m.h.x` used to crash the compiler.
+//
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: {{^}}sum 856{{$}}
+// CHECK-NEXT: {{^}}local 5 4{{$}}
+// CHECK-NEXT: {{^}}through a reference 6 4{{$}}
+
+import std::vec;
+
+struct Holder<T> {
+  x : T,
+  y : T,
+}
+
+struct Mixed {
+  a : i8,
+  h : Holder<i64>,
+}
+
+fn set_x(m : &mut Mixed) -> void {
+  m.h.x = 6;
+}
+
+fn main() -> i32 {
+  // Each element reads back its own values only if the element size is right.
+  let mut v = Vec<Mixed>::new();
+  let mut i : i64 = 0;
+  while i < 8 {
+    v.push(Mixed {
+      a : 1, h : Holder<i64> {
+        x : 100 + i, y : i
+      }
+    });
+    i = i + 1;
+  }
+  let mut sum : i64 = 0;
+  let mut j : i32 = 0;
+  while j < 8 {
+    let m = v.get_ref(j);
+    sum = sum + m.h.x;
+    sum = sum + m.h.y;
+    j = j + 1;
+  }
+  println!("sum {}", sum);
+
+  let mut o = Mixed {
+    a : 1, h : Holder<i64> {
+      x : 3, y : 4
+    }
+  };
+  o.h.x = 5;
+  println!("local {} {}", o.h.x, o.h.y);
+  set_x(&mut o);
+  println!("through a reference {} {}", o.h.x, o.h.y);
+  return 0;
+}

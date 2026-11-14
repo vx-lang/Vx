@@ -1,0 +1,35 @@
+//===- raw_pointer_to_a_struct.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A field of a struct is read and written through a raw pointer, `(*p).field`, and two raw
+// pointers are compared by address with `==` and `!=`. Both code generators run it.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}read 2, then 40{{$}}
+// CHECK: {{^}}same true, other false, not other true, not same false{{$}}
+
+import std::alloc;
+
+struct Pair {
+  a : i64,
+  b : i64,
+}
+
+fn main() -> i32 {
+  let p : *mut Pair = alloc(sizeof<Pair>(), 16);
+  unsafe { *p = Pair { a : 1, b : 2 }; }
+  let b = unsafe { (*p).b };
+  unsafe { (*p).a = 40; }
+  println!("read {}, then {}", b, unsafe { (*p).a });
+
+  let first : *mut i8 = alloc(8, 8);
+  let second : *mut i8 = alloc(8, 8);
+  let again = first;
+  println!("same {}, other {}, not other {}, not same {}", first == again, first == second, first != second, again != first);
+  return 0;
+}

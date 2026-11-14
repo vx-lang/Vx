@@ -1,0 +1,89 @@
+//===- bool_and_negative_patterns_the_checker_refuses.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// A `match` on a `bool` must have an arm for `true` and one for `false`, or a `_` arm, as a
+// `match` on an enum must name every variant. `true` in a `match` on a number, a number in a
+// `match` on a `bool`, and `-1` in a `match` on a `u8` are errors. `Some(true)` is an error too:
+// the compiler does not test a value inside a payload.
+
+import core::option;
+
+// CHECK: Error[E3020] at {{.*}}bool_and_negative_patterns_the_checker_refuses.vx:[[@LINE+2]]:10: this `match` does not cover false; add an arm for each, or a `_` arm
+fn only_true(b : bool) -> i32 {
+  return match b {
+    true => {
+      1
+    }
+  };
+}
+
+// CHECK: Error[E3020] at {{.*}}bool_and_negative_patterns_the_checker_refuses.vx:[[@LINE+3]]:3: this `match` does not cover true; add an arm for each, or a `_` arm
+fn only_false(b : bool) -> i32 {
+  let mut r = 1;
+  match b {
+    false => {
+      r = 0;
+    }
+  }
+  return r;
+}
+
+fn true_on_a_number(n : i32) -> i32 {
+  match n {
+    // CHECK: Error[E3051] at {{.*}}bool_and_negative_patterns_the_checker_refuses.vx:[[@LINE+1]]:5: `true` is a `bool`, but the value matched has the type `i32`
+    true => {
+      return 1;
+    }
+    _ => {
+      return 0;
+    }
+  }
+}
+
+fn number_on_a_bool(b : bool) -> i32 {
+  match b {
+    // CHECK: Error[E3051] at {{.*}}bool_and_negative_patterns_the_checker_refuses.vx:[[@LINE+1]]:5: `1` is a number, but the value matched is a `bool`; write `true` or `false`
+    1 => {
+      return 1;
+    }
+    _ => {
+      return 0;
+    }
+  }
+}
+
+fn minus_one_on_a_u8(n : u8) -> i32 {
+  match n {
+    // CHECK: Error[E3019] at {{.*}}bool_and_negative_patterns_the_checker_refuses.vx:[[@LINE+1]]:5: match arm literal '-1' is not representable in the scrutinee's type 'u8', so the arm can never be selected
+    -1 => {
+      return 1;
+    }
+    _ => {
+      return 0;
+    }
+  }
+}
+
+fn true_in_a_payload(o : Option<bool>) -> i32 {
+  match o {
+    // CHECK: Error[E3050] at {{.*}}bool_and_negative_patterns_the_checker_refuses.vx:[[@LINE+1]]:5: a payload of `Some` can be matched only by a name or `_`
+    Option::Some(true) => {
+      return 1;
+    }
+    _ => {
+      return 0;
+    }
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: 6 error(s) emitted

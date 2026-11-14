@@ -7,11 +7,6 @@
 //===----------------------------------------------------------------------===//
 // The value an array held before a mutable borrow is refused afterwards.
 //
-// This is the half that a pass fixture cannot cover. An assert the evaluator does not
-// run is silently accepted, so pass/comptime_array_mut_borrow.vx keeps compiling if the
-// evaluator stops following the write -- or stops evaluating at all. Here the error
-// disappearing is the failure, which is what catches that.
-//
 // `touch` sets element 0 to 9. Asserting it is still 1 is asking for the value from
 // before the call, and that has to be refused.
 //

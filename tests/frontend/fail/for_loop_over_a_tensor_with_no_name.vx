@@ -6,11 +6,14 @@
 //
 //===----------------------------------------------------------------------===//
 // A `for` loop reads a tensor by index, so it needs the tensor in a variable or a flat array
-// literal. A tensor a function returns, and a nested array literal, get E3046.
+// literal. A tensor a function returns, and a nested array literal, get E3046. The loop gives
+// copies of the elements, so a loop over `&mut t` also gets E3046.
 //===----------------------------------------------------------------------===//
-// RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK-DAG: Error[E3046] at 22:12: a `for` loop over a tensor reads it by index
-// CHECK-DAG: Error[E3046] at 25:3: a `for` loop cannot go over a nested array literal
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK-DAG: Error[E3046] at {{.*}}for_loop_over_a_tensor_with_no_name.vx:25:12: a `for` loop over a tensor reads it by index
+// CHECK-DAG: Error[E3046] at {{.*}}for_loop_over_a_tensor_with_no_name.vx:28:3: a `for` loop cannot go over a nested array literal
+// CHECK-DAG: Error[E3046] at {{.*}}for_loop_over_a_tensor_with_no_name.vx:32:12: a `for` loop over a tensor gives copies of its elements
+// CHECK: {{^}}Semantic check failed on {{.*}}: 3 error(s) emitted
 
 fn make() -> Tensor<i32, [3]> {
   let t = Tensor<i32, [3]>::new();
@@ -24,6 +27,10 @@ fn main() -> i32 {
   }
   for r in [[1, 2], [3, 4]] {
     s = s + r[1];
+  }
+  let mut t = Tensor<i32, [3]>::new();
+  for x in &mut t {
+    s = s + x;
   }
   return s;
 }

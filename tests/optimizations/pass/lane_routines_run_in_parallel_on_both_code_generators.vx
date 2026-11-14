@@ -1,0 +1,133 @@
+//===- lane_routines_run_in_parallel_on_both_code_generators.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Both code generators give the lane routines of a GPU kernel to the lanes of the block, or of
+// the subgroup in the code of a subgroup. No routine is `serial`. A sort gets the lanes that
+// share it. Each store of `part[t]` in a lane loop over all the lanes says that only lane `t`
+// writes the element, so the GPU keeps it in a register. A reduction of the row of a subgroup
+// says `own_row`. A subgroup barrier follows a matmul of tiles.
+//
+// The kernels run on the CPU here. The inputs are small integers, so each expected value is a
+// short sum of them, which I computed by hand.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/a100-80.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/a100-80.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --host default --machine fleet/a100-80.vx --emit-mlir -o - 2>/dev/null | FileCheck %s --check-prefix=MLIR --implicit-check-not=serial
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/a100-80.vx --emit-mlir -o - 2>/dev/null | FileCheck %s --check-prefix=MLIR --implicit-check-not=serial
+// CHECK: sums 2016 6112
+// CHECK: maxes 31 63 95 127
+// CHECK: sorted 0 1 63
+// CHECK: matmul 1 17 33
+//
+// MLIR-LABEL: func.func @tile_matmul(
+// MLIR: "vx.lane_matmul"({{.*}}) <{accumulate, subgroup}>
+// MLIR-NEXT: vx.barrier {subgroup}
+// MLIR-LABEL: func.func @sorted(
+// MLIR: memref.store {{.*}} {vx.lane_element = "block"} : memref<64xi64, 3>
+// MLIR: "vx.lane_sort"({{.*}}) <{lanes = 64 : i64}>
+// MLIR-LABEL: func.func @row_max(
+// MLIR: memref.store {{.*}} {vx.lane_element = "subgroup"}
+// MLIR: "vx.lane_reduce"({{.*}}) <{kind = "max", ordered, own_row, subgroup}>
+// MLIR-LABEL: func.func @block_sum(
+// MLIR: memref.store {{.*}} {vx.lane_element = "block"} : memref<64xf32, 3>
+// MLIR: "vx.lane_reduce"({{.*}}) <{kind = "sum", ordered}>
+
+pub fn block_sum(out : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      let mut part = unsafe { Tensor<f32, [64], Memory::SMEM>::uninit() };
+      for t in 0..64 across lanes {
+        part[t] = (b * 64 + t) as f32;
+      }
+      let s = lanes::sum(&part, 64);
+      out[b] = s;
+    }
+  }
+  return;
+}
+
+pub fn row_max(out : &mut Tensor<f32, [?, 2], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      let mut rows = unsafe { Tensor<f32, [2, 32], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        for t in 0..32 across lanes {
+          rows[w][t] = (b * 64 + w * 32 + t) as f32;
+        }
+        let m = lanes::max(&rows[w], 32);
+        out[b][w] = m;
+      }
+    }
+  }
+  return;
+}
+
+pub fn sorted(out : &mut Tensor<i64, [?, 64], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      let mut tile = unsafe { Tensor<i64, [64], Memory::SMEM>::uninit() };
+      for t in 0..64 across lanes {
+        tile[t] = ((t * 37 + b) % 64) as i64;
+      }
+      lanes::sort(&mut tile, 64);
+      for t in 0..64 across lanes {
+        out[b][t] = tile[t];
+      }
+    }
+  }
+  return;
+}
+
+pub fn tile_matmul(out : &mut Tensor<f32, [?, 2], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      let mut sa = unsafe { Tensor<f32, [2, 16, 16], Memory::SMEM>::uninit() };
+      let mut sb = unsafe { Tensor<f32, [2, 16, 8], Memory::SMEM>::uninit() };
+      let mut acc = unsafe { Tensor<f32, [2, 16, 8], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for k in 0..16 {
+              sa[w][i][k] = 1.0;
+            }
+            for j in 0..8 {
+              sb[w][i][j] = (b + w) as f32;
+              acc[w][i][j] = 1.0;
+            }
+          }
+        }
+        acc[w] = acc[w] + sa[w] @ sb[w];
+        for i in 0..32 across lanes {
+          if i == 0 {
+            out[b][w] = acc[w][3][5];
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut sums = transfer(Tensor<f32, [2]>::fill(0.0), Memory::HBM);
+  block_sum(&mut sums, 2);
+  let s = transfer(sums, Memory::CPU_DRAM);
+  let mut maxes = transfer(Tensor<f32, [2, 2]>::fill(0.0), Memory::HBM);
+  row_max(&mut maxes, 2);
+  let m = transfer(maxes, Memory::CPU_DRAM);
+  let mut tiles = transfer(Tensor<i64, [2, 64]>::fill(0i64), Memory::HBM);
+  sorted(&mut tiles, 2);
+  let t = transfer(tiles, Memory::CPU_DRAM);
+  let mut prods = transfer(Tensor<f32, [2, 2]>::fill(0.0), Memory::HBM);
+  tile_matmul(&mut prods, 2);
+  let p = transfer(prods, Memory::CPU_DRAM);
+  println!("sums {} {}", s[0], s[1]);
+  println!("maxes {} {} {} {}", m[0][0], m[0][1], m[1][0], m[1][1]);
+  println!("sorted {} {} {}", t[1][0], t[1][1], t[1][63]);
+  println!("matmul {} {} {}", p[0][0], p[1][0], p[1][1]);
+  return 0;
+}

@@ -43,11 +43,11 @@ Topology Dev {
 fn main() -> i32 {
   // 3 MiB, released when the block closes.
   if true {
-    let x = Tensor<f32, [1024, 768]>::uninit();
+    let x = unsafe { Tensor<f32, [1024, 768]>::uninit() };
     let _sx = transfer(x, Memory::W);
   }
   // 3 MiB, allocated after that one is gone. 6 MiB never coexists in a 4 MiB space.
-  let y = Tensor<f32, [1024, 768]>::uninit();
+  let y = unsafe { Tensor<f32, [1024, 768]>::uninit() };
   let _sy = transfer(y, Memory::W);
   print(3);
   return 0;

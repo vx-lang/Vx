@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // The flat path compiles this now: the result buffer is sized from the operands'
 // extents, and the three loops bound themselves the same way.
 // CHECK-LABEL: func.func @distributed_matmul(%arg0: memref<?x?xf32> {vx.owned}, %arg1: memref<?x?xf32> {vx.owned}) -> memref<?x?xf32>
@@ -14,9 +14,15 @@
 // CHECK: memref.dim %arg0
 // CHECK: memref.dim %arg1
 // CHECK: memref.alloc(%{{.*}}, %{{.*}}) : memref<?x?xf32>
-// CHECK-COUNT-3: cf.cond_br
+// The outer loop is an affine loop. The inner loops compute their bounds in the loop
+// around them, so they keep their branches.
+// CHECK: affine.for
+// CHECK: scf.execute_region {
+// CHECK-COUNT-2: cf.cond_br
 fn custom_matmul(a : Tensor<f32, [?, ?]>, b : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]> {
-  let mut result : Tensor<f32, [?, ?]> = Tensor<f32, [?, ?]>::uninit([a.extent(0), b.extent(1)]);
+  let mut result : Tensor<f32, [?, ?]> = unsafe {
+    Tensor<f32, [?, ?]>::uninit([a.extent(0), b.extent(1)])
+  };
   for i in 0..a.extent(0) {
     for j in 0..b.extent(1) {
       result[i][j] = 0.0;
@@ -32,7 +38,7 @@ fn distributed_matmul(a : Tensor<f32, [?, ?]>, b : Tensor<f32, [?, ?]>) -> Tenso
   let local_a = transfer(a, Memory::NPU_HBM);
   let local_b = transfer(b, Memory::NPU_HBM);
   spawn on(Topology::NPU[0]) {
-    let result = local_a;
+    let result = local_a.clone();
     // Testing the compiler frontend syntax parsing and typechecking without
     // custom_matmul to avoid cross-device implicit coercion errors.
   }

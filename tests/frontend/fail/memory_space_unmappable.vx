@@ -5,12 +5,12 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// A declared space with no `scope:` has no honest target address space. It must
-// be reported, not silently lowered into NVPTX address space 4 -- constant,
-// read-only memory -- which is what every declared space used to get (#258).
-// TMEM is the motivating case: Blackwell tensor memory has no plain GPU
-// analogue, so it needs an explicit decision rather than a default.
+// A declared memory with no `scope:` has no address space on the target. A
+// tensor placed there is an error on both code generators, whether the type
+// names the device or the memory. TMEM is the motivating case: Blackwell
+// tensor memory has no plain GPU analogue, so it needs an explicit decision.
 //
+// RUN: not vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // RUN: not vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
 
 Memory TMEM {
@@ -21,13 +21,16 @@ Topology TmemDev {
   visible: [Memory::TMEM]
 }
 
-fn f_tmem(p : Tensor<f32, [4, 4], Topology::TmemDev>) -> i32 {
+// CHECK: Error[E6037] at {{.*}}memory_space_unmappable.vx:[[@LINE+1]]:4: `Topology::TmemDev` in parameter 'p' of function 'by_device' has no address space on the target: `Memory::TMEM` has no `scope:`
+fn by_device(p : Tensor<f32, [4, 4], Topology::TmemDev>) -> i32 {
+  return 0;
+}
+
+// CHECK: Error[E6037] at {{.*}}memory_space_unmappable.vx:[[@LINE+1]]:4: `Memory::TMEM` in parameter 'p' of function 'by_memory' has no address space on the target: `Memory::TMEM` has no `scope:`
+fn by_memory(p : Tensor<f32, [4, 4], Memory::TMEM>) -> i32 {
   return 0;
 }
 
 fn main() -> i32 {
   return 0;
 }
-
-// CHECK: no memory space that maps to this target's address spaces
-// CHECK-SAME: declare its memory with a `scope:`

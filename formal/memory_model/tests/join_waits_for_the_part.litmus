@@ -1,0 +1,11 @@
+LISA join_waits_for_the_part
+(* A join is a sequence point (C2). The part writes x before it ends, so the host reads the new
+   x after the join. P0 is the part, and the release and acquire of done are the join.
+   Expect: never, no data race. *)
+{ x = 0; done = 0; }
+ P0                  | P1                   ;
+ w[plain] x 1        | r[acq] r0 done       ;
+ w[rel] done 1       | r[plain] r1 x        ;
+scopes: (system P0 P1)
+filter (1:r0 = 1)
+exists (1:r1 = 0)

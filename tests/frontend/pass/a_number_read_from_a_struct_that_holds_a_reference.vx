@@ -1,0 +1,38 @@
+//===- a_number_read_from_a_struct_that_holds_a_reference.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s
+//
+// `h` holds a reference to `y`, a variable of the inner block. `h.v` is an `i32`, so it
+// can be stored in the field of a struct that outlives the block.
+
+struct H {
+  p : &i32,
+  v : i32,
+}
+
+struct S {
+  n : i32,
+}
+
+fn main() -> i32 {
+  let mut s = S {
+    n : 0
+  };
+  if true {
+    let y = 7;
+    let h = H {
+      p : &y, v : 3
+    };
+    s.n = h.v;
+  }
+  // CHECK-NOT: Error
+  // CHECK: {{^}}3{{$}}
+  print(s.n);
+  print!("\n");
+  return 0;
+}

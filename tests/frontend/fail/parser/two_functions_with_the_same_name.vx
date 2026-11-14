@@ -12,7 +12,7 @@
 // the second one, in a normal and a parallel (`-j`) compile. It used to replace the first
 // without a word.
 //
-// CHECK: Error at 21:1: `foo` is already defined at 17:1
+// CHECK: Error at {{.*}}two_functions_with_the_same_name.vx:21:1: `foo` is already defined at 17:1
 
 fn foo(x : i32) -> i32 {
   return x + 1;

@@ -5,7 +5,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// The default code generator does not support a pointer whose type it cannot infer yet, so this uses the AST one.
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s
 //
 // A `for` loop's iterator borrows the vector until the loop ends, and no longer: the vector
 // can be changed after the loop, and read inside a loop over `v.iter()`.

@@ -9,7 +9,7 @@ fn reduce_all(m : Tensor<f32, [2, 2, 2]>) -> f32 {
 }
 
 fn main() -> i32 {
-  let mut t = Tensor<f32, [2, 2, 2]>::uninit();
+  let mut t = unsafe { Tensor<f32, [2, 2, 2]>::uninit() };
   t[0][0][0] = 1.0;
   let s : f32 = reduce_all(t);
   print(s);

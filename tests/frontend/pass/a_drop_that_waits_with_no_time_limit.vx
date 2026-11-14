@@ -1,0 +1,71 @@
+//===- a_drop_that_waits_with_no_time_limit.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `drop` runs with cancellation off, so a `send` or `recv` in it can wait until the limit of the
+// drop. The compiler warns about each one (W1036). `send_for` and `recv_for` have a time limit, and
+// the same `send` in a normal method gets no warning. A wait in a closure literal written as the
+// body of `within` has the limit of the call, so it gets no warning. A closure in a variable
+// gets the warning, because the compiler cannot see that it goes to `within`. `wait_limit` should only return a time, so a wait in it gets
+// the warning too.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not='Warning[' --implicit-check-not='Error['
+// CHECK: Warning[W1036] at {{.*}}a_drop_that_waits_with_no_time_limit.vx:[[@LINE+18]]:{{[0-9]+}}: 'send' waits with no time limit of its own in a 'drop'. A drop runs with cancellation off, so if the other end of the channel never acts, this wait holds up the drop until the limit of the drop: its type's 'wait_limit', 10 seconds by default. Use 'send_for' with a time limit, or put the wait in the body of 'within'
+// CHECK: Warning[W1036] at {{.*}}a_drop_that_waits_with_no_time_limit.vx:[[@LINE+18]]:{{[0-9]+}}: 'recv' waits with no time limit of its own in a 'drop'. {{.*}} Use 'recv_for' with a time limit
+// CHECK: Warning[W1036] at {{.*}}a_drop_that_waits_with_no_time_limit.vx:[[@LINE+27]]:{{[0-9]+}}: 'recv' waits with no time limit of its own in a 'drop'. {{.*}} Use 'recv_for' with a time limit
+// CHECK: Warning[W1036] at {{.*}}a_drop_that_waits_with_no_time_limit.vx:[[@LINE+33]]:{{[0-9]+}}: 'recv' waits in 'wait_limit'. 'wait_limit' runs before the drop, to say how long its waits can take, so it should return a time and not wait
+
+import core::time;
+import std::sync::channel;
+import std::sync::wait;
+
+struct SlotGuard {
+  slot : i64,
+  to_pool : Sender<i64>,
+  from_pool : Receiver<i64>,
+}
+
+impl Drop for SlotGuard {
+  fn drop(self : &mut SlotGuard) -> void {
+    // Each of these two calls waits with no time limit.
+    let _sent = self.to_pool.send(self.slot);
+    let _got = self.from_pool.recv();
+    // These two calls have a time limit.
+    let _sent_for = self.to_pool.send_for(self.slot, Duration::from_millis(100));
+    let _got_for = self.from_pool.recv_for(Duration::from_millis(100));
+    // So does this one: the limit of the call of `within`.
+    let _got_within = within(Duration::from_millis(100), || -> void {
+      let _got = self.from_pool.recv();
+    });
+    // This one waits with no time limit as far as the compiler can see.
+    let later = || -> void {
+      let _got = self.from_pool.recv();
+    };
+    within(Duration::from_millis(100), later as || -> void);
+  }
+
+  fn wait_limit(self : &SlotGuard) -> Duration {
+    // This call waits before the drop starts.
+    let _got = self.from_pool.recv();
+    return Duration::from_millis(500);
+  }
+}
+
+impl SlotGuard {
+  fn give_back(self : &SlotGuard) -> void {
+    // Not a drop, so a cancel can stop this wait.
+    let _sent = self.to_pool.send(self.slot);
+  }
+}
+
+fn main() -> i32 {
+  let (tx, rx) = channel<i64>(4);
+  let g = SlotGuard {
+    slot: 1, to_pool: tx, from_pool: rx
+  };
+  g.give_back();
+  return 0;
+}

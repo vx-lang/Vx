@@ -1,8 +1,9 @@
 # `spawn on`: sequential meaning, overlapped execution
 
 > **Status.** Decided 2026-09-25. The language rules in §2 are what the checker and the
-> lowering implement today. The overlap in §3 is designed and still to be built: every runtime
-> blocks inside dispatch, and the compiler never emits a wait. §6 lists that work.
+> lowering implement today. The overlap in §3 is designed and only partly built: the `cuda`
+> runtime returns once a launch is queued, the other runtimes block inside dispatch, and the
+> compiler never emits a wait. §6 lists that work.
 >
 > An earlier version of this file proposed `spawn on` returning `Future<Pinned<T, τ>>` with an
 > explicit `.await`. §4 says why that was rejected. The old text is in git history.
@@ -66,9 +67,10 @@ Concretely:
   the value — the region wrote through memory it shares with the host and the recorded region
   traffic does not name it — it joins at region exit. The answer stays right; only the overlap
   is lost.
-- **CPU regions stay inlined.** There is nothing to dispatch to. If the host should ever run
-  two regions at the same time, that is a separate keyword; `unroll across` is reserved for
-  that shape.
+- **CPU regions stay inlined.** There is nothing to dispatch to. Host work that runs at the
+  same time is a `tasks` block
+  ([`waiting_tasks_channels_and_task_errors.md`](discussions/waiting_tasks_channels_and_task_errors.md)),
+  not a `spawn on`.
 
 Why the wait points are complete: the host cannot compute with a `Pinned<T, τ>` (E3004),
 cannot read a tensor in an `explicit` space without `transfer` (E6003), and every allowed read
@@ -147,11 +149,18 @@ decision.
 | --- | --- | --- |
 | Result type `Pinned<T, τ>`, index in caller scope, region joined at exit | built | unchanged |
 | CPU region | inlined in place | unchanged |
-| Runtime dispatch (`cuda`, `npu`, host) | blocks before returning | returns a future id |
-| `vx_plugin_await_future` | no-op in every backend | blocks on that id |
+| Runtime dispatch (`cuda`, `npu`, host) | `cuda` returns once the launch is queued (#25); the others block before returning | returns a future id |
+| `vx_plugin_await_future` | `cuda` waits for every kernel that a GPU started; a no-op in the other backends | blocks on that id |
 | Wait insertion in the compiler | none | at first host use (§3) |
 | Value of a device spawn | the kernel stores it in a host slot and the host loads it after the launch; such a kernel gets no GPU device image and runs on the host | the slot staged to device memory, so the GPU twin can run |
 | Runtime device index `NPU[i]` | W1030, device 0 | separate issue |
+| `for i in a..b across <level>` (#252) | §8 | lane loops fuse, and per-lane arrays go in registers |
+
+The `cuda` backend puts every launch and copy on the default stream, so the GPU runs them in
+program order, and a copy to the host waits for the kernels before it. A fault shows at the next
+wait: a copy to the host, a free, or the end of the program. That message names the last kernel
+that the GPU started. `VX_CUDA_SYNC=1` waits after each launch, so that the message names the
+kernel that faulted.
 
 Order of work: the value stub first, since any model needs it; then non-blocking dispatch plus
 a real `await_future` in the runtimes, with the wait emitted at region exit so nothing
@@ -171,3 +180,75 @@ tracks the runtime wiring.
 
 Precedent: X10 `at`, Chapel `on`, CUDA streams, and PyTorch's eager mode, which is
 asynchronous under the hood while the program reads as sequential.
+
+## 8. The launch shape (#252)
+
+A region on a GPU gets its launch shape from its loops:
+
+<!-- vx-doctest: skip (needs a GPU topology) -->
+
+```vx
+spawn on(Topology::Gpu) {
+  for row in 0..rows across blocks {
+    for t in 0..256 across lanes { .. }
+  }
+}
+```
+
+- Each loop of blocks is a grid axis, and the lane and subgroup loops give the lanes of a
+  block. The host computes each bound before the region. The levels come from the topology's
+  `levels:` in the fleet file, and the NVIDIA files give `blocks`, `subgroups` and `lanes`.
+- `nvptx64` and `applegpu` launch the levels. On another arch, `-fauto-schedule-levels` runs
+  each `across` loop as a plain `for` that carries its level as metadata (`fleet/README.md`).
+- E6032 checks the place and the size of each `across` loop. It also checks that no pass
+  touches what another pass writes (L4), and that every lane reaches the end of each lane loop
+  (L5, L8, L10).
+- An index of a loop whose size is not a number can wrap. In `for b in 0..n across blocks`,
+  `b * 256 + l` is an `i32`, and blocks `b` and `b + 2^24` write the same element. So the host
+  checks `n <= 8388608` before the launch, and the program stops when `n` is larger. The proof
+  bounds the end of the loop by its type, so `0..(n + 255) / 256` needs no check. An index from
+  `i64` arithmetic needs no check either.
+- An atomic operation races with no other one. It is a call to a function that says
+  `ensures atomic(t)`, or an `mlir!` block with `ensures : [atomic(t)]`. Every access to `t` in
+  the loop must then be atomic (#2139, `discussions/mlir_declared_writes_in_across.md`).
+  `core::sync::atomic` has these functions for an integer or float element of a tensor in any
+  memory, such as `atomic_fetch_add_u32(&counts, i, 1u32, AtomicOrdering::Relaxed)`.
+- A write at a slot from a counter races with no other write at such a slot.
+  `let at = atomic_fetch_add_u32(&count, i, k, ..)`, with a number `k` above 0, gives each call
+  the slots `at` to `at + k - 1`. Then `out[at + c]` with `c` below `k` is a place that no other
+  call gets. That holds when `i` is the same in every pass, and only such calls change `count` in
+  the loop.
+- A call to a function that says `ensures writes_only()` accesses no memory, so it races with
+  nothing. `scoped_fence(order, FenceScope::Device)` is one.
+- A call to a function that says `ensures reads_only(t)`, or an `mlir!` block with
+  `ensures : [reads_only(t)]`, reads all of `t` and writes none of it. It races with no other
+  read. The function may only read elements of `t`, ask for its length, or pass it to code that
+  says `reads_only` for it.
+- Each lane loop ends with a barrier. Lane 0 runs the code between lane loops that writes
+  memory or changes a variable from outside it. A lane loop may not read a value that only lane 0
+  has. In the body of a loop, that includes a value that later code sets for the next turn.
+- A condition or a bound around a lane loop may read an element of a `&` tensor parameter. Only
+  an atomic operation can change one, and then every access must be atomic. So every lane reads
+  the same value. A replayed CUDA graph gets a value such as the number of splits this way.
+- `lanes::sum`, `lanes::max` and their `_unordered` versions combine a tensor over the lanes of
+  a block or a subgroup, and every lane gets the result (`docs/lane_reductions.md`).
+- Code after the nest of blocks runs once, after every pass, in the same kernel. Each pass ends
+  with an atomic add to a count that the compiler makes, between two fences for the device. The
+  block of the pass that sees the last count runs the code as the body of a block, so it may hold
+  lane loops. A nest with no passes runs no such code, and a nest with two axes of blocks cannot
+  have it yet (`discussions/last_arriver_in_across_loops.md`).
+- Code in the outer loop of two axes of blocks, after the inner loop, is the code of a group. It
+  runs once for each pass of the outer loop, in the block of the last inner pass of that group,
+  with a count for each group. A split attention merges each head this way. The last pass of a
+  group sets its count back to 0. So the program makes the count at the first launch and keeps
+  it for the later launches of that `spawn` on the same stream (`lang/abi.md` §3.6). A kernel
+  that `--emit-ptx` writes gets the count as its last parameter (`lang/abi.md` §3.5).
+- Delete each `across` and the program means the same. The CPU copy of the region runs each
+  block with one lane, and a loop steps over the passes of the other lanes. The host's workers
+  share the blocks of the first axis: worker w of W runs blocks w, w + W, and so on. A block
+  runs on one worker, so its lane loops still run in order. `VX_HOST_THREADS` sets W.
+- A size is not a kernel argument. The launch passes each size that is not a number after the
+  kernel's arguments, and the payload names the sizes in `grid=` and `block=`.
+- `--emit-ptx` gives the shape in its `.json` file (`lang/abi.md` §3.5).
+- The rules L1 to L10 and N1 to N4 are in the design on
+  [#252](https://github.com/vx-lang/Vx/issues/252#issuecomment-6321577866).

@@ -138,6 +138,9 @@ pub enum EdgeCost {
     /// not scale with transfer size; kept for edges no bandwidth figure describes, and reported as
     /// such rather than quoted as a time.
     Fixed(u32),
+    /// `transfer A -> B : shared` -- both sides address the same memory, as on a Mac with unified
+    /// memory. The hop moves no bytes: the program only waits for the GPU.
+    Shared,
 }
 
 impl EdgeCost {
@@ -151,12 +154,13 @@ impl EdgeCost {
     /// hops instead picked a route 3.57x slower than one the same graph already contained.
     pub fn routing_weight(self) -> u32 {
         match self {
-            EdgeCost::Derived | EdgeCost::Rate(_) => 1,
+            EdgeCost::Derived | EdgeCost::Rate(_) | EdgeCost::Shared => 1,
             EdgeCost::Fixed(c) => c,
         }
     }
 
-    /// This edge's own cost per byte in attoseconds, when the edge declares a link rate.
+    /// This edge's own cost per byte in attoseconds, when the edge declares a link rate. A
+    /// `Shared` edge costs 0, because it copies nothing.
     ///
     /// `None` for `Derived` (the containment tree prices it -- see `resolve_derived_route_costs`),
     /// for `Fixed` (a relative latency is not a time), and for a link declared in `B/cyc`, which
@@ -168,6 +172,7 @@ impl EdgeCost {
             EdgeCost::Rate(bw) if bw.per == crate::syntax::RatePer::Second && bw.bytes > 0 => {
                 u64::try_from(ATTOS_PER_SEC / bw.bytes as u128).ok()
             }
+            EdgeCost::Shared => Some(0),
             _ => None,
         }
     }
@@ -210,6 +215,65 @@ pub struct TopologyDescriptor {
     /// there. That is answerable here, before anything is emitted, because the placement is in the
     /// type and the machine is a declaration the compiler already reads.
     pub dtypes: Option<Vec<crate::syntax::ElementType>>,
+    /// The GPU generation that kernels for this topology are compiled for -- `chip: sm_90a` in
+    /// the declaration. `arch:` names the instruction set and not the part, and code for a newer
+    /// part does not load on an older one. `None` compiles for `sm_80`.
+    pub chip: Option<crate::symbol::Symbol>,
+    /// The levels of a launch that `across` loops name -- `levels: [..]` in the declaration,
+    /// outside in. `None` when the fleet file gives none: an `across` loop on it is E6032.
+    pub levels: Option<Vec<Level>>,
+    /// The fleet may run this topology on a worker of another node -- `offload: true` in the
+    /// declaration. Such a worker does not share the memory of this node, so a host tensor in its
+    /// region needs a `transfer`, also from `managed: cached` memory. False by default.
+    pub offload: bool,
+    /// How many devices the topology has -- `count: 2` in the declaration. `Topology::X[i]` names
+    /// device `i`. `None` is one device. The built-in topologies have none, and their own index
+    /// rules.
+    pub count: Option<u64>,
+}
+
+/// The largest `count:` a topology can declare.
+pub const MAX_TOPOLOGY_COUNT: u64 = 65536;
+
+/// What a level of a launch is, given by its place in `levels:`: the first is a block, the last
+/// a lane, and a middle one a subgroup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LevelKind {
+    /// Lanes that share a memory with `scope: cta` and can wait for each other.
+    Blocks,
+    /// Lanes that the hardware runs together: a warp.
+    Subgroups,
+    /// One thread.
+    Lanes,
+}
+
+/// One entry of `levels:`, such as `blocks(max_lanes: 1024, memory: cta)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Level {
+    /// The word after `across`.
+    pub name: crate::symbol::Symbol,
+    pub kind: LevelKind,
+    /// For a block: the most lanes that one block can have.
+    pub max_lanes: Option<u64>,
+    /// For a subgroup: its size in lanes.
+    pub lanes: Option<u64>,
+    /// The scope whose memory has one copy for each pass of this level.
+    pub memory: Option<crate::syntax::Scope>,
+}
+
+impl TopologyDescriptor {
+    /// Whether the code generator of this topology's arch can launch the levels of `across`
+    /// loops. The built-in GPU, which has no `arch:`, is `nvptx64`.
+    pub fn launches_levels(&self, kind: &crate::syntax::TopologyKind) -> bool {
+        let arch = match (&self.arch, kind) {
+            (Some(a), _) => Some(a.as_ref()),
+            (None, crate::syntax::TopologyKind::GPU) => Some("nvptx64"),
+            (None, _) => None,
+        };
+        arch.and_then(DeviceTarget::from_arch)
+            .and_then(DeviceTarget::launch_limits)
+            .is_some()
+    }
 }
 
 /// A user-declared topology: its name plus its descriptor. Carried on the AST
@@ -219,6 +283,7 @@ pub struct TopologyDescriptor {
 pub struct TopologyDecl {
     pub name: crate::symbol::Symbol,
     pub descriptor: TopologyDescriptor,
+    pub place: crate::syntax::DeclPlace,
 }
 
 /// A way a declared topology fails its coherence obligations. Graph-decidable here; the
@@ -369,9 +434,10 @@ pub fn non_constant_index(top: &Topology) -> Option<&crate::syntax::Expr> {
         // Every indexed kind, and the list must stay that way: an omission here is not a missing
         // warning but a wrong placement reported as a right one. GPU was omitted while the comment
         // above used `GPU[i]` as its example (#345).
-        Topology::NPU(e) | Topology::AccCore(e) | Topology::GPU(e) => {
-            const_topology_index(e).is_none().then_some(&**e)
-        }
+        Topology::NPU(e)
+        | Topology::AccCore(e)
+        | Topology::GPU(e)
+        | Topology::Custom(_, Some(e)) => const_topology_index(e).is_none().then_some(&**e),
         Topology::Slice(base, start, end) => non_constant_index(base)
             .or_else(|| const_topology_index(start).is_none().then_some(&**start))
             .or_else(|| const_topology_index(end).is_none().then_some(&**end)),
@@ -386,6 +452,11 @@ fn topology_index(expr: &crate::syntax::Expr) -> i32 {
 }
 
 /// Dispatch id for a topology (`vx.spawn topology(N)`). Single source of truth.
+/// The `vx.spawn` topology of a `tasks` block, and of a task in it. No declared topology has
+/// these ids. `VxLowering` runs each task on a thread of its own (TasksBlockId, TaskId there).
+pub const TASKS_BLOCK_DISPATCH_ID: i32 = 10;
+pub const TASK_DISPATCH_ID: i32 = 11;
+
 pub fn topology_dispatch_id(top: &Topology) -> i32 {
     match top {
         Topology::CPU | Topology::Current => 0,
@@ -410,7 +481,31 @@ pub fn topology_dispatch_id(top: &Topology) -> i32 {
             );
             2000 + (fnv32(&key) % 1000) as i32
         }
-        Topology::Custom(name) => fnv_dispatch_id(name),
+        // Device 0 keeps the id of the name, so a topology with no `count:` is unchanged. A name
+        // cannot contain `[`, so `X[1]` collides with no declared name by its spelling.
+        Topology::Custom(name, index) => match index.as_deref().map(topology_index) {
+            None | Some(0) => fnv_dispatch_id(name),
+            Some(i) => fnv_dispatch_id(&format!("{name}[{i}]")),
+        },
+    }
+}
+
+/// The dispatch ids of every device of a declared topology, in device order.
+pub fn declared_dispatch_ids(name: &crate::symbol::Symbol, count: Option<u64>) -> Vec<i32> {
+    (0..count.unwrap_or(1))
+        .map(|i| topology_dispatch_id(&Topology::declared_device(name.clone(), i as i64)))
+        .collect()
+}
+
+/// The dispatch id of the topology that holds a value of type `ty`, the `source_topology` of a
+/// `transfer` of it, or 0 for host memory. A tensor parameter, owned or borrowed, says it with
+/// its placement, and no transfer in the function put it there.
+pub fn source_topology_id(ty: &Type) -> i32 {
+    let placed = |t: &Type| t.topology().map_or(0, |top| topology_dispatch_id(&top));
+    match ty {
+        Type::Pinned(_, top) => topology_dispatch_id(top),
+        Type::Borrow { inner, .. } => placed(inner),
+        _ => placed(ty),
     }
 }
 
@@ -447,6 +542,9 @@ pub fn memory_space_dispatch_id(mem: &MemorySpace) -> i32 {
 /// fleet/h100-sxm.vx is a GPU, and it allocated that memory on the host. The program sends
 /// these pairs to the backend at startup (`VX_CTRL_LOCAL_DEVICE`). Every declared GPU is GPU 0
 /// for now; a name the fleet manifest lists is still sent to its remote machine.
+///
+/// Only device 0 of a topology with `count:` is sent, because the memory of every device is on
+/// GPU 0. Code on a later device is E6042.
 pub fn local_device_aliases<'a>(
     decls: impl Iterator<Item = (&'a crate::symbol::Symbol, &'a TopologyDescriptor)>,
 ) -> Vec<(i32, i32)> {
@@ -456,7 +554,10 @@ pub fn local_device_aliases<'a>(
         if desc.arch.as_ref().map(|a| a.as_ref()) != Some("nvptx64") {
             continue;
         }
-        out.push((topology_dispatch_id(&Topology::Custom(name.clone())), gpu0));
+        out.push((
+            topology_dispatch_id(&Topology::Custom(name.clone(), None)),
+            gpu0,
+        ));
         if matches!(desc.default_space, MemorySpace::Custom(_)) {
             out.push((memory_space_dispatch_id(&desc.default_space), gpu0));
         }
@@ -483,9 +584,10 @@ pub fn builtin_memory_space_name(id: u64) -> Option<String> {
 }
 
 /// A target-independent address space: what the memory *is*, not what number a particular GPU
-/// ISA gives it. Codegen maps this to a concrete annotation per target (`nvptx_addrspace` today;
-/// the `#gpu.address_space<..>` attribute spelling when a GPU backend lands, #251), so the
-/// numbering lives in exactly one place instead of being hardcoded at every use.
+/// ISA gives it. Codegen maps this to a concrete annotation per target
+/// ([`DeviceTarget::address_space`], or the `#gpu.address_space<..>` attribute spelling when a GPU
+/// backend lands), so the numbering lives in exactly one place instead of being hardcoded at
+/// every use.
 ///
 /// Previously codegen emitted raw integers keyed only on the built-in `MemorySpace` variant, which
 /// was wrong twice over: on-chip scratchpad was given NVPTX 2 (reserved, not shared), and *every*
@@ -505,8 +607,9 @@ pub enum AddressSpace {
 }
 
 impl AddressSpace {
-    /// The NVPTX numbering (0 generic, 1 global, 3 shared, 5 local). Only this function knows the
-    /// target's numbers; everything upstream reasons in terms of the enum.
+    /// The NVPTX numbering (0 generic, 1 global, 3 shared, 5 local). NVPTX's numbers live only
+    /// here -- [`DeviceTarget::address_space`] routes its NVPTX arm through this function --
+    /// and everything upstream reasons in terms of the enum.
     pub fn nvptx_addrspace(self) -> i32 {
         match self {
             AddressSpace::Host => 0,
@@ -526,6 +629,98 @@ impl AddressSpace {
             AddressSpace::Workgroup => Some("#gpu.address_space<workgroup>"),
             AddressSpace::Private => Some("#gpu.address_space<private>"),
         }
+    }
+}
+
+/// The device target a machine file's `arch:` declares (`arch: nvptx64`), so each target's
+/// address-space numbers sit behind one table instead of being hardcoded at every use.
+///
+/// Every target here is one this compiler knows. Only NVPTX has a pipeline today, so only its
+/// arm carries that target's own numbers. The rest answer with the numbers the compiler has
+/// always emitted, because a number guessed before the target's pipeline exists would land
+/// wrong code silently. A name no target has is not one of these arms --
+/// [`address_space_for_arch`] refuses it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceTarget {
+    X86_64,
+    Aarch64,
+    Nvptx64,
+    AmdGcn,
+    /// The Intel XPU route (SPIR-V + Level Zero). Its storage-class numbering comes from
+    /// MLIR's `SPIRVTypeConverter` and is added with the pipeline, not guessed here first.
+    Spirv64,
+    /// The Apple GPU. Vx writes Metal Shading Language for it, and the MSL printer reads the
+    /// NVPTX numbers: 3 is `threadgroup` memory.
+    AppleGpu,
+}
+
+impl DeviceTarget {
+    /// The target an `arch:` declaration names, `None` for a name no target has: this compiler
+    /// has no address-space numbering for such a name, and [`address_space_for_arch`] refuses
+    /// it rather than answering with NVPTX's.
+    pub fn from_arch(name: &str) -> Option<DeviceTarget> {
+        match name {
+            "x86_64" => Some(DeviceTarget::X86_64),
+            "aarch64" => Some(DeviceTarget::Aarch64),
+            "nvptx64" => Some(DeviceTarget::Nvptx64),
+            "amdgcn" => Some(DeviceTarget::AmdGcn),
+            "spirv64" => Some(DeviceTarget::Spirv64),
+            "applegpu" => Some(DeviceTarget::AppleGpu),
+            _ => None,
+        }
+    }
+
+    /// The most lanes in a block and the lanes in a subgroup, on a target whose code generator
+    /// can launch the levels of `across` loops.
+    pub fn launch_limits(self) -> Option<(u64, u64)> {
+        match self {
+            DeviceTarget::Nvptx64 => Some((1024, 32)),
+            // spec: Metal Feature Set Tables: at most 1024 threads in a threadgroup, and a
+            // SIMD-group of 32 threads on Apple GPUs.
+            DeviceTarget::AppleGpu => Some((1024, 32)),
+            DeviceTarget::X86_64
+            | DeviceTarget::Aarch64
+            | DeviceTarget::AmdGcn
+            | DeviceTarget::Spirv64 => None,
+        }
+    }
+
+    /// The number `space` carries on this target.
+    pub fn address_space(self, space: AddressSpace) -> i32 {
+        match self {
+            // NVPTX: 0 generic, 1 global, 3 shared, 5 local.
+            DeviceTarget::Nvptx64 | DeviceTarget::AppleGpu => space.nvptx_addrspace(),
+            // No other target's pipeline exists yet, so today's numbers stand in until that
+            // target's own table replaces this arm. An `arch:` naming nothing never becomes a
+            // `DeviceTarget`: `from_arch` returns `None` and the caller refuses it, so no arm
+            // here can answer for a target this compiler does not know.
+            DeviceTarget::X86_64
+            | DeviceTarget::Aarch64
+            | DeviceTarget::AmdGcn
+            | DeviceTarget::Spirv64 => space.nvptx_addrspace(),
+        }
+    }
+}
+
+/// The number for `space` under a declared `arch:`, for callers that may have no declaration
+/// in hand at all.
+///
+/// No arch (a built-in topology declares none, and the flat path must keep emitting today's
+/// numbers for it) answers with today's numbers. An `arch:` naming no target this compiler
+/// knows is a panic rather than an answer: NVPTX's numbers are the only ones it could hand
+/// back, and nothing downstream could tell that from a real mapping of the target the machine
+/// file meant.
+pub fn address_space_for_arch(arch: Option<&str>, space: AddressSpace) -> i32 {
+    match arch {
+        Some(name) => DeviceTarget::from_arch(name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "machine file declares `arch: {name}`, which names no target this compiler \
+                     knows; it has no address-space numbering for that name"
+                )
+            })
+            .address_space(space),
+        None => space.nvptx_addrspace(),
     }
 }
 
@@ -598,11 +793,11 @@ pub fn topology_default_space(
         .get(&top.kind())
         .map(|d| d.default_space.clone())
         .or_else(|| match top {
-            Topology::Custom(name) => topologies.get(name).map(|d| d.default_space.clone()),
+            Topology::Custom(name, _) => topologies.get(name).map(|d| d.default_space.clone()),
             _ => None,
         })
         .unwrap_or_else(|| match top {
-            Topology::Custom(name) => MemorySpace::from_name(name.as_ref()),
+            Topology::Custom(name, _) => MemorySpace::from_name(name.as_ref()),
             _ => MemorySpace::CPUDRAM,
         })
 }
@@ -668,7 +863,7 @@ fn first_device_of(kind: &crate::syntax::TopologyKind) -> Topology {
         K::GPU => Topology::GPU(zero()),
         K::NPU | K::Slice => Topology::NPU(zero()),
         K::AccCore => Topology::AccCore(zero()),
-        K::Custom(name) => Topology::Custom(name.clone()),
+        K::Custom(name) => Topology::Custom(name.clone(), None),
         K::Current => Topology::Current,
     }
 }
@@ -750,10 +945,14 @@ fn builtin_descriptors() -> HashMap<crate::syntax::TopologyKind, TopologyDescrip
         // The built-ins describe a class of device rather than a part, and which element types a
         // GPU has is a property of the part. Undeclared, so they constrain nothing.
         dtypes: None,
+        chip: None,
+        levels: None,
+        offload: false,
+        count: None,
     };
     let mut m = HashMap::new();
     m.insert(K::CPU, d(CPUDRAM, &[CPUDRAM, NPUHBM]));
-    m.insert(K::GPU, d(GpuHbm, &[GpuHbm, CPUDRAM]));
+    m.insert(K::GPU, d(GpuHbm, &[GpuHbm]));
     m.insert(K::NPU, d(NPUHBM, &[NPUHBM]));
     m.insert(K::ANE, d(NPUHBM, &[NPUHBM, CPUDRAM]));
     m.insert(K::AMX, d(CPUDRAM, &[CPUDRAM]));
@@ -954,6 +1153,60 @@ impl TransferCostGraph {
         }
     }
 
+    /// Let a built-in topology see the on-chip memories that a machine file declares inside its
+    /// memory, such as `Memory SMEM { within: Memory::GPU_HBM, scope: sm }` for `Topology::GPU`.
+    ///
+    /// Only a memory private to a part of the device (`scope: sm`, `cta` or `thread`) counts.
+    /// `within:` alone does not put a memory on the same device: a machine file puts GPU_HBM
+    /// within CPU_DRAM. A declared topology lists what it sees itself, so it is not changed.
+    pub fn add_on_chip_memories<'a, I>(&mut self, memories: I)
+    where
+        I: IntoIterator<Item = &'a crate::syntax::MemoryDecl>,
+    {
+        use crate::syntax::Scope;
+        let memories: Vec<&crate::syntax::MemoryDecl> = memories.into_iter().collect();
+        let parent_of = |space: &MemorySpace| {
+            memories
+                .iter()
+                .find(|m| MemorySpace::from_name(m.name.as_ref()) == *space)
+                .and_then(|m| m.parent.clone())
+        };
+        for mem in &memories {
+            if !matches!(mem.scope, Some(Scope::Sm | Scope::Cta | Scope::Thread)) {
+                continue;
+            }
+            let space = MemorySpace::from_name(mem.name.as_ref());
+            // Walk out to the nearest memory that is some topology's own memory.
+            let mut seen = vec![space.clone()];
+            let mut up = mem.parent.clone();
+            while let Some(p) = up {
+                if seen.contains(&p) {
+                    break;
+                }
+                let owners: Vec<crate::syntax::TopologyKind> = self
+                    .descriptors
+                    .iter()
+                    .filter(|(_, d)| d.default_space == p)
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                if !owners.is_empty() {
+                    for kind in owners {
+                        if matches!(kind, crate::syntax::TopologyKind::Custom(_)) {
+                            continue;
+                        }
+                        let desc = self.descriptors.get_mut(&kind).expect("owner was found");
+                        if !desc.visibility.contains(&space) {
+                            desc.visibility.push(space.clone());
+                        }
+                    }
+                    break;
+                }
+                up = parent_of(&p);
+                seen.push(p);
+            }
+        }
+    }
+
     /// Returns the default memory space for a given topology, from its registered
     /// descriptor (see `topology_descriptor`).
     /// The descriptor for a topology kind (built-in or a topology declared in this compilation),
@@ -1000,7 +1253,7 @@ impl TransferCostGraph {
                 // records residence as `Pinned<_, Topology::Foo>`, so an *undeclared* custom
                 // topology's memory is the like-named space — not host DRAM, which made every
                 // custom-space value look CPU-resident to the visibility check (#253).
-                Topology::Custom(name) => MemorySpace::from_name(name.as_ref()),
+                Topology::Custom(name, _) => MemorySpace::from_name(name.as_ref()),
                 _ => MemorySpace::CPUDRAM,
             })
     }
@@ -1100,9 +1353,27 @@ impl TransferCostGraph {
             if *var_topology == Topology::CPU && desc.visibility.contains(&MemorySpace::CPUDRAM) {
                 return true;
             }
+            // A GPU kernel launch copies a host number or pointer into the kernel's arguments,
+            // so the GPU does not read host memory to use it.
+            if *var_topology == Topology::CPU
+                && active_kind == crate::syntax::TopologyKind::GPU
+                && Self::passed_by_value(ty)
+            {
+                return true;
+            }
         }
 
         false
+    }
+
+    /// Whether a value of type `ty` is all in its bits, so a copy of it is the value: a number,
+    /// a pointer or a function. A tensor, a borrow or a struct can hold data in memory.
+    fn passed_by_value(ty: &Type) -> bool {
+        match ty {
+            Type::Scalar(_) | Type::Pointer(..) | Type::Simd(..) | Type::Function(..) => true,
+            Type::Verified(inner) => Self::passed_by_value(inner),
+            _ => false,
+        }
     }
 
     /// The memory space where a value of type `ty` owned by `var_topology` lives.
@@ -1175,6 +1446,15 @@ impl TransferCostGraph {
             d.transfers
                 .iter()
                 .any(|e| &e.from == from && &e.to == to && !e.sync)
+        })
+    }
+
+    /// Whether a machine file declares `from -> to` as `: shared`, a hop that moves no bytes.
+    pub fn is_shared_edge(&self, from: &MemorySpace, to: &MemorySpace) -> bool {
+        self.descriptors.values().any(|d| {
+            d.transfers
+                .iter()
+                .any(|e| &e.from == from && &e.to == to && e.cost == EdgeCost::Shared)
         })
     }
 
@@ -1440,6 +1720,45 @@ mod tests {
         ))))
     }
 
+    /// Device 0 of a declared topology keeps the id of its name, and each other device gets an
+    /// id of its own.
+    #[test]
+    fn each_device_of_a_declared_topology_has_its_own_id() {
+        let name = crate::symbol::Symbol::from("Dev");
+        let bare = topology_dispatch_id(&Topology::Custom(name.clone(), None));
+        let ids = declared_dispatch_ids(&name, Some(3));
+        assert_eq!(ids.len(), 3);
+        assert_eq!(ids[0], bare);
+        assert_ne!(ids[1], ids[0]);
+        assert_ne!(ids[2], ids[0]);
+        assert_ne!(ids[2], ids[1]);
+        assert_eq!(declared_dispatch_ids(&name, None), vec![bare]);
+    }
+
+    /// Only device 0 of a declared NVIDIA topology, and its memory, go to the CUDA runtime: both
+    /// are GPU 0. Device 1 has no GPU yet.
+    #[test]
+    fn only_device_0_of_a_declared_gpu_has_a_cuda_device() {
+        let name = crate::symbol::Symbol::from("Dev");
+        let desc = TopologyDescriptor {
+            default_space: MemorySpace::Custom("HBM".into()),
+            visibility: vec![MemorySpace::Custom("HBM".into())],
+            transfers: Vec::new(),
+            arch: Some("nvptx64".into()),
+            dtypes: None,
+            chip: None,
+            levels: None,
+            offload: false,
+            count: Some(2),
+        };
+        let ids = declared_dispatch_ids(&name, Some(2));
+        let gpu = |i| topology_dispatch_id(&Topology::gpu(i));
+        let hbm = memory_space_dispatch_id(&MemorySpace::Custom("HBM".into()));
+        let mut want = vec![(ids[0], gpu(0)), (hbm, gpu(0))];
+        want.sort_unstable();
+        assert_eq!(local_device_aliases(std::iter::once((&name, &desc))), want);
+    }
+
     fn mem_decl(name: &str, scope: Option<crate::syntax::Scope>) -> crate::syntax::MemoryDecl {
         crate::syntax::MemoryDecl {
             name: name.into(),
@@ -1450,10 +1769,12 @@ mod tests {
             replicas: None,
             managed: Default::default(),
             granule: None,
+            alignment: None,
             scope,
             overcommit: false,
             crossing: crate::syntax::Crossing::default(),
             numa_node: None,
+            place: Default::default(),
             doc_comment: None,
         }
     }
@@ -1546,6 +1867,79 @@ mod tests {
         assert_eq!(builtin_address_space(&MemorySpace::RemoteHbm), None);
     }
 
+    /// One table, one entry per target. What this checks: the NVPTX arm carries that target's
+    /// real numbering. A target whose pipeline does not exist yet, and no declared arch at all,
+    /// answer with the numbers the compiler has always emitted, so the emit cannot change while
+    /// those arms are still unwritten.
+    #[test]
+    fn address_space_numbers_come_from_the_declared_arch() {
+        let spaces = [
+            AddressSpace::Host,
+            AddressSpace::Global,
+            AddressSpace::Workgroup,
+            AddressSpace::Private,
+        ];
+        let today = [0, 1, 3, 5];
+
+        // The NVPTX arm is the real table: 0 generic, 1 global, 3 shared, 5 local.
+        for (space, n) in spaces.iter().zip(today) {
+            assert_eq!(DeviceTarget::Nvptx64.address_space(*space), n);
+        }
+
+        // The arch strings a machine file may declare.
+        assert_eq!(
+            DeviceTarget::from_arch("x86_64"),
+            Some(DeviceTarget::X86_64)
+        );
+        assert_eq!(
+            DeviceTarget::from_arch("aarch64"),
+            Some(DeviceTarget::Aarch64)
+        );
+        assert_eq!(
+            DeviceTarget::from_arch("nvptx64"),
+            Some(DeviceTarget::Nvptx64)
+        );
+        assert_eq!(
+            DeviceTarget::from_arch("amdgcn"),
+            Some(DeviceTarget::AmdGcn)
+        );
+        assert_eq!(
+            DeviceTarget::from_arch("spirv64"),
+            Some(DeviceTarget::Spirv64)
+        );
+        assert_eq!(
+            DeviceTarget::from_arch("applegpu"),
+            Some(DeviceTarget::AppleGpu)
+        );
+        assert_eq!(DeviceTarget::from_arch("riscv64"), None);
+
+        // No declared arch at all gives today's numbers -- the flat path has no arch for a
+        // built-in topology and must not change because of it.
+        for (space, n) in spaces.iter().zip(today) {
+            assert_eq!(address_space_for_arch(None, *space), n);
+        }
+
+        // Every arch this compiler knows answers today's numbers too: the SPIR-V arm in
+        // particular gets its storage classes from the pipeline, not a constant guessed here.
+        for arch in [
+            "x86_64", "aarch64", "nvptx64", "amdgcn", "spirv64", "applegpu",
+        ] {
+            for (space, n) in spaces.iter().zip(today) {
+                assert_eq!(address_space_for_arch(Some(arch), *space), n);
+            }
+        }
+    }
+
+    /// An `arch:` naming no target this compiler knows is refused instead of answered. The
+    /// fall-through here used to return `nvptx_addrspace` for it, so a machine file declaring
+    /// `arch: thumbv7em` -- which `fleet/cortex-m7.vx` does -- read as NVPTX global memory, and
+    /// no later pass could tell that from a real mapping.
+    #[test]
+    #[should_panic(expected = "arch: thumbv7em")]
+    fn an_arch_this_compiler_does_not_know_has_no_address_space() {
+        address_space_for_arch(Some("thumbv7em"), AddressSpace::Private);
+    }
+
     /// #258's more serious defect: every user-declared space used to become address space 4.
     /// The `scope:` facet now distinguishes them, and an unscoped/undeclared one declines.
     #[test]
@@ -1617,11 +2011,14 @@ mod tests {
     fn test_accessibility_host_unified_memory() {
         let graph = TransferCostGraph::default();
         let ty = make_tensor();
-        // AMX, ANE, GPU can read variables stored in Host topology (unified-memory
-        // fallback: each has a visibility edge to CPUDRAM).
+        // AMX and ANE can read a host tensor: each has a visibility edge to CPUDRAM.
         assert!(graph.is_type_accessible(&Topology::AMX, &Topology::CPU, &ty));
         assert!(graph.is_type_accessible(&Topology::ANE, &Topology::CPU, &ty));
-        assert!(graph.is_type_accessible(&Topology::gpu(0), &Topology::CPU, &ty));
+        // The built-in GPU is a discrete GPU, which cannot read host memory.
+        assert!(!graph.is_type_accessible(&Topology::gpu(0), &Topology::CPU, &ty));
+        // A host number is copied to the GPU, so the GPU can use it.
+        let scalar = Type::Scalar(syntax::ElementType::F32);
+        assert!(graph.is_type_accessible(&Topology::gpu(0), &Topology::CPU, &scalar));
 
         // ANE defaults to NPUHBM, which Host can see, so Host can read an ANE var.
         assert!(graph.is_type_accessible(&Topology::CPU, &Topology::ANE, &ty));
@@ -1656,10 +2053,10 @@ mod tests {
         assert!(graph.is_type_accessible(&Topology::CPU, &Topology::CPU, &ref_hbm));
         assert!(!graph.is_type_accessible(&make_acc_core(), &Topology::CPU, &ref_hbm)); // AccCore has LocalSRAM
 
-        // DRAM reachable by Host, AMX, GPU, ANE
+        // DRAM reachable by Host, AMX, ANE, but not by the GPU
         assert!(graph.is_type_accessible(&Topology::CPU, &Topology::ANE, &ref_dram));
         assert!(graph.is_type_accessible(&Topology::AMX, &Topology::ANE, &ref_dram));
-        assert!(graph.is_type_accessible(&Topology::gpu(0), &Topology::ANE, &ref_dram));
+        assert!(!graph.is_type_accessible(&Topology::gpu(0), &Topology::ANE, &ref_dram));
         assert!(graph.is_type_accessible(&Topology::ANE, &Topology::CPU, &ref_dram));
         // NPU doesn't directly reach DRAM in this default unified memory model
         assert!(!graph.is_type_accessible(&make_npu(), &Topology::CPU, &ref_dram));
@@ -1810,6 +2207,10 @@ mod tests {
             ],
             arch: None,
             dtypes: None,
+            chip: None,
+            levels: None,
+            offload: false,
+            count: None,
         };
         let mut g = TransferCostGraph::default();
         g.apply_descriptor_edges(&desc);
@@ -1843,6 +2244,10 @@ mod tests {
             ],
             arch: None,
             dtypes: None,
+            chip: None,
+            levels: None,
+            offload: false,
+            count: None,
         };
         let mut g = TransferCostGraph::default();
         g.apply_descriptor_edges(&desc);
@@ -1881,6 +2286,10 @@ mod tests {
             ],
             arch: None,
             dtypes: None,
+            chip: None,
+            levels: None,
+            offload: false,
+            count: None,
         };
         let mut g = TransferCostGraph::default();
         g.apply_descriptor_edges(&desc);
@@ -2112,7 +2521,7 @@ mod tests {
         let gpu = g.descriptor(&syntax::TopologyKind::GPU).unwrap();
         assert_eq!(gpu.default_space, MemorySpace::GpuHbm);
         assert!(gpu.visibility.contains(&MemorySpace::GpuHbm)); // its own device memory
-        assert!(gpu.visibility.contains(&MemorySpace::CPUDRAM)); // unified-memory reach
+        assert!(!gpu.visibility.contains(&MemorySpace::CPUDRAM)); // a discrete GPU
 
         let npu = g.descriptor(&syntax::TopologyKind::NPU).unwrap();
         assert_eq!(npu.default_space, MemorySpace::NPUHBM);
@@ -2130,7 +2539,12 @@ mod tests {
                 visibility: vec![default_space],
                 transfers: Vec::new(),
                 dtypes: None,
+                chip: None,
+                levels: None,
+                offload: false,
+                count: None,
             },
+            place: Default::default(),
         }
     }
 
@@ -2155,7 +2569,7 @@ mod tests {
         // A user-defined topology, seeded into a graph: the enum identity `Topology::Custom(name)`
         // flows through default_memory_for + is_type_accessible with no hardcoded arm.
         let decl = topo_decl("MyTPU", MemorySpace::LocalSRAM);
-        let top = Topology::Custom("MyTPU".into());
+        let top = Topology::Custom("MyTPU".into(), None);
         let mut graph = TransferCostGraph::default();
         graph.seed_from_topologies(std::slice::from_ref(&decl));
 
@@ -2211,6 +2625,10 @@ mod tests {
                 copy_engine: false,
             }],
             dtypes: None,
+            chip: None,
+            levels: None,
+            offload: false,
+            count: None,
         };
         graph.apply_descriptor_edges(&desc);
         graph.precompute_costs();
@@ -2242,6 +2660,10 @@ mod tests {
                 copy_engine: false,
             }],
             dtypes: None,
+            chip: None,
+            levels: None,
+            offload: false,
+            count: None,
         };
         graph.apply_descriptor_edges(&desc);
         graph.precompute_costs();
@@ -2261,6 +2683,10 @@ mod tests {
             visibility: vec![island.clone()],
             transfers: Vec::new(),
             dtypes: None,
+            chip: None,
+            levels: None,
+            offload: false,
+            count: None,
         };
         assert!(
             descriptor_coherence(&bad, &graph).contains(&CoherenceIssue::MemoryUnreachableFromHost)
@@ -2273,6 +2699,10 @@ mod tests {
             visibility: vec![MemorySpace::CPUDRAM],
             transfers: Vec::new(),
             dtypes: None,
+            chip: None,
+            levels: None,
+            offload: false,
+            count: None,
         };
         assert!(descriptor_coherence(&bad2, &graph).contains(&CoherenceIssue::DefaultNotVisible));
 
@@ -2283,6 +2713,10 @@ mod tests {
             visibility: vec![MemorySpace::NPUHBM],
             transfers: Vec::new(),
             dtypes: None,
+            chip: None,
+            levels: None,
+            offload: false,
+            count: None,
         };
         assert!(descriptor_coherence(&good, &graph).is_empty());
     }
@@ -2386,6 +2820,10 @@ mod tests {
                     visibility: vec![shared.clone()],
                     transfers: Vec::new(),
                     dtypes: None,
+                    chip: None,
+                    levels: None,
+                    offload: false,
+                    count: None,
                 },
             );
         }

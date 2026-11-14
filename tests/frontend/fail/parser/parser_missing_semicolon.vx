@@ -1,6 +1,6 @@
 //===- parser_missing_semicolon.vx - Vx Compiler -------------------*- Vx
 //-*-===//
-// CHECK: Error at 13:14: {{.*}}Expected ';'
+// CHECK: Error at {{.*}}parser_missing_semicolon.vx:13:14: {{.*}}Expected ';'
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.

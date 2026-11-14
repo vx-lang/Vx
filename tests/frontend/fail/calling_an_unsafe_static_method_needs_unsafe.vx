@@ -10,8 +10,8 @@
 // Calling an `unsafe fn` through its type's name, `Cell::make(..)`, needs an `unsafe` block
 // (E5001). The second call is checked differently from the first, so both are tested.
 
-// CHECK: Error[E5001] at 30:11: Call to unsafe function 'Cell::make'
-// CHECK: Error[E5001] at 31:11: Call to unsafe function 'Cell::make'
+// CHECK: Error[E5001] at {{.*}}calling_an_unsafe_static_method_needs_unsafe.vx:30:11: Call to unsafe function 'Cell::make'
+// CHECK: Error[E5001] at {{.*}}calling_an_unsafe_static_method_needs_unsafe.vx:31:11: Call to unsafe function 'Cell::make'
 // CHECK-NOT: Error[E5001]
 
 struct Cell {

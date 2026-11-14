@@ -4,9 +4,8 @@
 told.*
 
 Related: [`fleet/README.md`](../../fleet/README.md) (SKU vocabulary and provenance),
-[`semantics.md`](semantics.md) (placement and memory spaces), [`abi.md`](abi.md)
-(the plugin boundary), and
-[`first_class_memory_spaces.md`](../discussions/implementation_plans/first_class_memory_spaces.md).
+[`semantics.md`](semantics.md) (placement and memory spaces), and [`abi.md`](abi.md)
+(the plugin boundary).
 
 ______________________________________________________________________
 

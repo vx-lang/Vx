@@ -1,0 +1,42 @@
+//===- tensor_field_stored_without_a_bitcast.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s
+//
+// A tensor stored into a struct field whose type spells the same extents is cast to the field's
+// type with `memref.cast`. The legacy code generator used to fall back to a bitcast, and print a
+// warning and a backtrace for it. Printed: a field of a generic struct read through a borrow,
+// and the sum of two fields of a plain struct.
+//
+// CHECK-NOT: Falling back
+// CHECK: 9 5
+
+struct Buf<const K : i32> {
+  data : Tensor<f32, [K]>,
+}
+
+struct Pair {
+  a : Tensor<f32, [4]>,
+  b : Tensor<f32, [8]>,
+}
+
+fn first(b : &Buf<4>) -> f32 {
+  return b.data[0];
+}
+
+fn main() -> i32 {
+  let g = Buf<4> {
+    data: Tensor<f32, [4]>::fill(9.0)
+  };
+  print(first(&g));
+  print!(" ");
+  let p = Pair {
+    a: Tensor<f32, [4]>::fill(2.0), b: Tensor<f32, [8]>::fill(3.0)
+  };
+  print(p.a[3] + p.b[7]);
+  return 0;
+}

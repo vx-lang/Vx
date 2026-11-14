@@ -1,0 +1,70 @@
+//===- a_block_value_is_dropped_once.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A value that nothing takes is dropped, and a value that something takes is dropped once,
+// by its new owner. The compiler used to drop the value of `unsafe { make(1) };` never, and
+// the value of an `if` branch twice when a `let` took it.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+//
+// CHECK: start
+// CHECK-NEXT: drop 1
+// CHECK-NEXT: drop 2
+// CHECK-NEXT: drop 3
+// CHECK-NEXT: drop 4
+// CHECK-NEXT: taken
+// CHECK-NEXT: drop 6
+// CHECK-NEXT: drop 5
+// CHECK-NEXT: end
+
+import core::ops;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print!("drop ");
+    print(self.id);
+    println!("");
+  }
+}
+
+fn make(id : i32) -> Noisy {
+  return Noisy {
+    id: id
+  };
+}
+
+fn run(c : bool) -> void {
+  println!("start");
+  unsafe { make(1) };
+  unsafe { make(2) }
+  unsafe { let v = make(3); v };
+  if c {
+    unsafe { make(4) }
+  } else {
+    make(40)
+  };
+  let _k = if c {
+    make(5)
+  } else {
+    make(50)
+  };
+  let v = make(6);
+  v;
+  println!("taken");
+  return;
+}
+
+fn main() -> i32 {
+  run(true);
+  println!("end");
+  return 0;
+}

@@ -1,0 +1,12 @@
+LISA atomic_of_block_scope_across_blocks
+(* An atomic of block scope does not synchronize with a lane of another block (C7). The flag
+   does not publish the data, and the threads race. This is why the scope of an atomic must come
+   from its memory space, and not from the programmer.
+   Expect: sometimes, a data race. *)
+{ data = 0; flag = 0; }
+ P0                     | P1                     ;
+ w[plain] data 1        | r[acq,block] r0 flag   ;
+ w[rel,block] flag 1    | r[plain] r1 data       ;
+scopes: (device (block P0) (block P1))
+filter (1:r0 = 1)
+exists (1:r1 = 0)

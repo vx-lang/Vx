@@ -185,6 +185,10 @@ struct Tokenizer {
   ptr : *mut i8,
 }
 
+// The handle may move to another task. It is not `Sync` until the Rust side is known to
+// need no lock.
+unsafe impl Send for Tokenizer {}
+
 impl Tokenizer {
   /// Read a tokenizer file. `vocab_size` must match the checkpoint's.
   fn load(filepath: *const i8, vocab_size: i32) -> Tokenizer {

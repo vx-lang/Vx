@@ -1,0 +1,11 @@
+LISA host_write_after_the_wait
+(* The host waits for the region before it writes the input (C4). The region never sees the new
+   value, and nothing races. P0 is the region and P1 is the host.
+   Expect: never, no data race. *)
+{ input = 0; done = 0; }
+ P0                  | P1                   ;
+ r[plain] r0 input   | r[acq] r1 done       ;
+ w[rel] done 1       | w[plain] input 1     ;
+scopes: (system P0 P1)
+filter (1:r1 = 1)
+exists (0:r0 = 1)

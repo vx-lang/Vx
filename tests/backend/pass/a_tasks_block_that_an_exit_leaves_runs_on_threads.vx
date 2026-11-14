@@ -1,0 +1,125 @@
+//===- a_tasks_block_that_an_exit_leaves_runs_on_threads.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The code of each `tasks` block leaves it with `return`, `break` or `continue`. In `find`,
+// `first_big` and `say`, the first task waits until the second task sets a flag. So the two
+// tasks must run at the same time, or the program hangs. In `total`, a `return` leaves two
+// nested blocks at once. Each exit must still do what it says after its blocks end.
+//
+// NO-SEED-SWEEP: a task loops with no wait until another task acts, and one thread cannot run the other task.
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}find 0 16{{$}}
+// CHECK: {{^}}first_big 36{{$}}
+// CHECK: {{^}}positive{{$}}
+// CHECK-NEXT: {{^}}not positive{{$}}
+// CHECK-NEXT: {{^}}after the block{{$}}
+// CHECK: {{^}}nested 40 -1 -2{{$}}
+
+import core::sync::atomic;
+
+// The two tasks must run at the same time: the first waits for the second.
+fn handshake(flag : &AtomicI64) -> void {
+  let mut seen = flag.load(AtomicOrdering::Acquire);
+  while seen == 0 {
+    seen = flag.load(AtomicOrdering::Acquire);
+  }
+}
+
+fn find(n : i64) -> i64 {
+  let flag = AtomicI64::new(0);
+  tasks {
+    let h = spawn {
+      handshake(&flag);
+      n * 2
+    };
+    spawn {
+      flag.store(1, AtomicOrdering::Release);
+    };
+    let v = h.join();
+    if v > 10 {
+      return v;
+    }
+  };
+  return 0;
+}
+
+fn first_big(limit : i64) -> i64 {
+  let mut i : i64 = 0;
+  let mut found : i64 = -1;
+  loop {
+    i = i + 1;
+    if i > 10 {
+      break;
+    }
+    let flag = AtomicI64::new(0);
+    tasks {
+      let h = spawn {
+        handshake(&flag);
+        i * i
+      };
+      spawn {
+        flag.store(1, AtomicOrdering::Release);
+      };
+      let sq = h.join();
+      if sq < limit {
+        continue;
+      }
+      found = sq;
+      break;
+    };
+  }
+  return found;
+}
+
+fn say(n : i64) -> void {
+  let flag = AtomicI64::new(0);
+  tasks {
+    spawn {
+      handshake(&flag);
+    };
+    spawn {
+      flag.store(1, AtomicOrdering::Release);
+    };
+    if n > 0 {
+      println!("positive");
+      return;
+    }
+    println!("not positive");
+  };
+  println!("after the block");
+}
+
+fn total(a : i64, b : i64) -> i64 {
+  let mut sum : i64 = 0;
+  tasks {
+    if a < 0 {
+      return -1;
+    }
+    tasks {
+      let h = spawn {
+        b + 1
+      };
+      let y = h.join();
+      if y < 0 {
+        return -2;
+      }
+      sum = a + y;
+    };
+    sum = sum * 10;
+  };
+  return sum;
+}
+
+fn main() -> i32 {
+  println!("find {} {}", find(3), find(8));
+  println!("first_big {}", first_big(30));
+  say(1);
+  say(0);
+  println!("nested {} {} {}", total(1, 2), total(-4, 2), total(1, -9));
+  return 0;
+}

@@ -27,9 +27,35 @@ fn lower_spawn_region<'c>(
     gen: &mut MeliorGenerator<'c>,
     block: melior::ir::BlockRef<'c, 'c>,
 ) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    // A region whose `across` loops run on blocks and lanes. The host computes its launch shape
+    // before the region starts.
+    gen.spawns += 1;
+    let mapped = super::across::mapped_lanes(this);
+    let (shape, tail, block) = match mapped {
+        Some(lanes) => {
+            let (shape, block) = super::across::launch_shape(gen, &this.stmts, lanes, block)?;
+            // The count of the passes of a nest of blocks with code after it.
+            let (tail, block) = super::across::lower_count(gen, this, block)?;
+            (Some(shape), tail, block)
+        }
+        None => (None, None, block),
+    };
+    let count = tail.as_ref().map(|t| t.count);
     let location = gen.loc();
     let region = melior::ir::Region::new();
     let mut body_block = region.append_block(melior::ir::Block::new(&[]));
+    let outer_map = std::mem::replace(
+        &mut gen.across_map,
+        mapped.map(|lanes| super::across::AcrossMap {
+            lanes,
+            tail,
+            ..Default::default()
+        }),
+    );
+    super::across::alloc_flag(gen, body_block)?;
+    if let Some(shape) = &shape {
+        super::across::emit_launch_shape(gen, body_block, shape)?;
+    }
     let prev_in_spawn = gen.in_spawn;
     gen.in_spawn = true;
 
@@ -54,11 +80,85 @@ fn lower_spawn_region<'c>(
             super::seam_cert::emit_seam_certificates(gen, &this.stmts, &this.ret, body_block)?;
     }
 
-    for stmt in &this.stmts {
+    // The same two proofs as the flat code generator, in the same order: one loop whose passes
+    // run on threads or host workers, else a loop of blocks with loops of threads in it. A
+    // region with `across` loops maps its work to lanes itself.
+    let offer = crate::hir::flatten::across::across_block_lanes(&this.stmts).is_none();
+    let one_loop = offer
+        .then(|| crate::hir::check::parallel::parallel_outer_for(&this.stmts))
+        .flatten();
+    let two_level = (offer && one_loop.is_none())
+        .then(|| crate::hir::check::parallel::parallel_two_level(&this.stmts))
+        .flatten();
+    let outer_plan = std::mem::take(&mut gen.two_level_plan);
+    let two_level_trip = two_level.map(|(trip, plan)| {
+        gen.two_level_plan = Some(plan);
+        trip
+    });
+    let arch = match &this.top {
+        syntax::Topology::Custom(name, _) => gen
+            .topologies
+            .get(name)
+            .and_then(|d| d.arch.as_ref())
+            .map(|a| a.to_string()),
+        _ => None,
+    };
+    gen.spawn_arches.push(arch);
+    // A `&mut Tensor` parameter is a slot that holds the tensor. A SPIR-V kernel cannot take a
+    // memref of memrefs or a memref with a memory space. So the region reads the tensor, loaded
+    // here, before the region, with no memory space, as the flat code generator gives it. Every
+    // device kernel takes the tensor, so that it gets the marks of the tensor and its manifest
+    // describes the tensor and not the slot.
+    let spirv = gen.in_spirv_region();
+    let mut outer_slots = Vec::new();
+    if spirv || is_device {
+        let params: Vec<_> = gen
+            .env
+            .iter()
+            .filter(|(_, (v, t))| {
+                melior::ir::ValueLike::is_block_argument(v)
+                    && t.to_string().starts_with("memref<memref<")
+            })
+            .map(|(name, entry)| (name.clone(), *entry))
+            .collect();
+        for (name, (slot, slot_ty)) in params {
+            let slot_memref = melior::ir::r#type::MemRefType::try_from(slot_ty)
+                .map_err(|_| LowerError::from(format!("not a memref: {slot_ty}")))?;
+            let inner = melior::ir::r#type::ShapedTypeLike::element(&slot_memref);
+            let loaded: Value = block
+                .append_operation(
+                    OperationBuilder::new("memref.load", location)
+                        .add_operands(&[slot])
+                        .add_results(&[inner])
+                        .build()?,
+                )
+                .result(0)?
+                .into();
+            let plain_str = memref_in_space_of(&inner.to_string(), "memref<f32>")
+                .ok_or_else(|| LowerError::from(format!("not a memref: {inner}")))?;
+            let plain = Type::parse(gen.context, &plain_str)
+                .ok_or_else(|| LowerError::ParseType(plain_str.clone()))?;
+            let (loaded, ty) = if spirv {
+                (cast_memref(gen, &block, loaded, inner, plain)?, plain)
+            } else {
+                (loaded, inner)
+            };
+            gen.env.insert(name.clone(), (loaded, ty));
+            outer_slots.push((name, (slot, slot_ty)));
+        }
+    }
+    for (i, stmt) in this.stmts.iter().enumerate() {
+        // The last pass of the nest of blocks runs the code after the nest.
+        if super::across::runs_after_the_nest(gen, stmt) {
+            continue;
+        }
+        gen.mark_next_for = one_loop.is_some_and(|(loop_at, _)| loop_at == i);
         if let Some(b) = gen.generate_statement(stmt, body_block)? {
             body_block = b;
         }
     }
+    gen.mark_next_for = false;
+    gen.two_level_plan = outer_plan;
 
     let mut result_types = vec![];
     let mut ret_val = None;
@@ -98,6 +198,11 @@ fn lower_spawn_region<'c>(
     }
 
     gen.in_spawn = prev_in_spawn;
+    gen.spawn_arches.pop();
+    gen.across_map = outer_map;
+    for (name, entry) in outer_slots {
+        gen.env.insert(name, entry);
+    }
 
     let topology_id = topology_to_i32(&this.top);
     let top_attr = IntegerAttribute::new(gen.i32_ty, topology_id as i64).into();
@@ -124,12 +229,48 @@ fn lower_spawn_region<'c>(
         ])
         .add_regions([region]);
 
+    // What the proofs found, as the flat code generator writes it: the trip of the loop, and for
+    // a loop of blocks, the widest loop of threads and whether a barrier is in a thread loop.
+    let unit = melior::ir::Attribute::unit(gen.context);
+    if shape.is_some() {
+        spawn_builder =
+            spawn_builder.add_attributes(&[(Identifier::new(gen.context, "vx.across"), unit)]);
+    }
+    let trip_attr = |n: u64| IntegerAttribute::new(gen.i64_ty, n as i64).into();
+    if let Some((_, trip)) = one_loop {
+        spawn_builder = spawn_builder.add_attributes(&[(
+            Identifier::new(gen.context, "vx_parallel_trip"),
+            trip_attr(trip),
+        )]);
+    }
+    if let Some(imm) = two_level_trip.filter(|imm| imm & 0xffff_ffff > 0) {
+        let threads = match (imm >> 32) & 0xffff {
+            0 => 128,
+            n => n,
+        };
+        spawn_builder = spawn_builder.add_attributes(&[
+            (
+                Identifier::new(gen.context, "vx_parallel_trip"),
+                trip_attr(imm & 0xffff_ffff),
+            ),
+            (Identifier::new(gen.context, "vx_parallel_two_level"), unit),
+            (
+                Identifier::new(gen.context, "vx_parallel_threads"),
+                trip_attr(threads),
+            ),
+        ]);
+        if imm & crate::hir::flatten::SPAWN_COOP != 0 {
+            spawn_builder = spawn_builder
+                .add_attributes(&[(Identifier::new(gen.context, "vx_parallel_coop"), unit)]);
+        }
+    }
+
     // The declared arch travels on the spawn here exactly as on the flat path (Vx#352):
     // without it, the same source lost its device image whenever flat codegen declined and
     // this path took over -- silently, since the eligibility gate saw no attribute and a
     // custom topology's id cannot enter the band fallback. Custom topologies only: built-ins
     // declare no arch and ride the band, same asymmetry as the flat emitter.
-    if let syntax::Topology::Custom(name) = &this.top {
+    if let syntax::Topology::Custom(name, _) = &this.top {
         if let Some(desc) = gen.topologies.get(name) {
             if let Some(arch) = &desc.arch {
                 let arch_attr =
@@ -137,6 +278,16 @@ fn lower_spawn_region<'c>(
                 spawn_builder = spawn_builder
                     .add_attributes(&[(Identifier::new(gen.context, "arch"), arch_attr)]);
             }
+            if let Some(chip) = &desc.chip {
+                let chip_attr =
+                    melior::ir::attribute::StringAttribute::new(gen.context, chip.as_ref()).into();
+                spawn_builder = spawn_builder
+                    .add_attributes(&[(Identifier::new(gen.context, "chip"), chip_attr)]);
+            }
+            // Whether the fleet may run it on a worker of another node. A built-in has no mark.
+            let offload_attr = melior::ir::attribute::BoolAttribute::new(gen.context, desc.offload);
+            spawn_builder = spawn_builder
+                .add_attributes(&[(Identifier::new(gen.context, "offload"), offload_attr.into())]);
         }
     }
 
@@ -157,6 +308,9 @@ fn lower_spawn_region<'c>(
 
     let spawn_op = spawn_builder.build()?;
     let spawn_ref = block.append_operation(spawn_op);
+    if let Some(count) = count {
+        gen.emit_drop(count, None, None, block)?;
+    }
 
     if !needs_yield {
         let mut ret_builder = OperationBuilder::new("func.return", location);
@@ -190,8 +344,26 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
         gen: &mut MeliorGenerator<'c>,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
-        let (src_val, src_ty, block) = gen.generate_expr(&self.expr, block)?;
+        let (mut src_val, mut src_ty, block) = gen.generate_expr(&self.expr, block)?;
         let location = gen.loc();
+        // `&g` is the slot that holds g's memref, so the transfer reads the tensor out of it.
+        if matches!(
+            gen.infer_ast_type(&self.expr),
+            Some(syntax::Type::Borrow { .. })
+        ) {
+            if let Ok(outer) = melior::ir::r#type::MemRefType::try_from(src_ty) {
+                use melior::ir::r#type::ShapedTypeLike;
+                let inner = outer.element();
+                if melior::ir::r#type::MemRefType::try_from(inner).is_ok() {
+                    let load = OperationBuilder::new("memref.load", location)
+                        .add_operands(&[src_val])
+                        .add_results(&[inner])
+                        .build()?;
+                    src_val = block.append_operation(load).result(0)?.into();
+                    src_ty = inner;
+                }
+            }
+        }
 
         // Static byte size of the transferred tile, for the SS2 sub-space bump allocator.
         let tile_bytes = gen.infer_ast_type(&self.expr).and_then(|ty| {
@@ -232,10 +404,9 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
         // at the first variable the value was bound to -- every `let` is an `alloca` and a store,
         // and the read is a load whose operand is the slot. The way home was compiled into a
         // `memcpy` from device memory for exactly that reason (#321, #348).
-        let source_topology_id = match gen.infer_ast_type(&self.expr) {
-            Some(syntax::Type::Pinned(_, top)) => crate::arch::topology_dispatch_id(&top),
-            _ => 0,
-        };
+        let source_topology_id = gen
+            .infer_ast_type(&self.expr)
+            .map_or(0, |ty| crate::arch::source_topology_id(&ty));
 
         use melior::ir::operation::OperationLike;
         let mut target_ty = src_ty;
@@ -304,7 +475,6 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
         // Reconcile the operand with the static result: `memref.cast` is exactly the
         // dynamic-to-static reconciliation, and the AST type is the authority for the
         // shape it asserts.
-        let mut src_val = src_val;
         if let Some(t) = static_target {
             if src_ty != t {
                 src_val = crate::codegen::lower::cast_memref(gen, &block, src_val, src_ty, t)?;
@@ -329,6 +499,11 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
             let cost_attr = IntegerAttribute::new(gen.i64_ty, cost as i64).into();
             transfer_builder = transfer_builder
                 .add_attributes(&[(Identifier::new(gen.context, "cost"), cost_attr)]);
+        }
+        if self.shared {
+            let unit = melior::ir::attribute::Attribute::unit(gen.context);
+            transfer_builder =
+                transfer_builder.add_attributes(&[(Identifier::new(gen.context, "shared"), unit)]);
         }
 
         // Sub-space descriptor as IR metadata (SS1, subspace_scheduling.md): the target space name
@@ -501,6 +676,35 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
     }
 }
 
+/// Lowers the arguments of `grad`, `vjp` or `jvp`. Each scalar argument takes the type of its
+/// parameter, as in an ordinary call, because Enzyme does not convert them.
+fn lower_autodiff_args<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    args: &[Expr],
+    param_tys: &[Type<'c>],
+    block: melior::ir::BlockRef<'c, 'c>,
+    arg_vals: &mut Vec<Value<'c, 'c>>,
+    enzyme_arg_types: &mut Vec<Type<'c>>,
+) -> Result<melior::ir::BlockRef<'c, 'c>, LowerError> {
+    assert_eq!(args.len(), param_tys.len());
+    let mut current_b = block;
+    for (arg, &param_ty) in args.iter().zip(param_tys) {
+        let prev_expected = gen.expected_type;
+        gen.expected_type = Some(param_ty);
+        let (mut v, ty, new_b) = gen.generate_expr(arg, current_b)?;
+        gen.expected_type = prev_expected;
+        current_b = new_b;
+        if ty != param_ty && !gen.is_memref(&ty) && !gen.is_memref(&param_ty) {
+            v = gen.coerce_type(&current_b, v, ty, param_ty)?;
+            enzyme_arg_types.push(param_ty);
+        } else {
+            enzyme_arg_types.push(ty);
+        }
+        arg_vals.push(v);
+    }
+    Ok(current_b)
+}
+
 impl<'c> LowerToMelior<'c> for GradExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
     fn lower(
@@ -533,13 +737,14 @@ impl<'c> LowerToMelior<'c> for GradExpr {
         let mut arg_vals = vec![target_fn_val];
         let mut enzyme_arg_types = vec![fn_ty.into()];
 
-        let mut current_b = block;
-        for arg in args {
-            let (v, ty, new_b) = gen.generate_expr(arg, current_b)?;
-            arg_vals.push(v);
-            enzyme_arg_types.push(ty);
-            current_b = new_b;
-        }
+        let current_b = lower_autodiff_args(
+            gen,
+            args,
+            &orig_arg_types,
+            block,
+            &mut arg_vals,
+            &mut enzyme_arg_types,
+        )?;
 
         let enzyme_name = emit_enzyme_decl(gen, "grad", target_fn, &enzyme_arg_types, ret_ty);
 
@@ -588,13 +793,14 @@ impl<'c> LowerToMelior<'c> for VjpExpr {
         let mut arg_vals = vec![target_fn_val];
         let mut enzyme_arg_types = vec![fn_ty.into()];
 
-        let mut current_b = block;
-        for arg in args {
-            let (v, ty, new_b) = gen.generate_expr(arg, current_b)?;
-            arg_vals.push(v);
-            enzyme_arg_types.push(ty);
-            current_b = new_b;
-        }
+        let current_b = lower_autodiff_args(
+            gen,
+            args,
+            &orig_arg_types,
+            block,
+            &mut arg_vals,
+            &mut enzyme_arg_types,
+        )?;
 
         // For a scalar VJP in Enzyme, we just compute the gradient (implicitly seed=1.0)
         // and then multiply by the cotangent seed.
@@ -661,13 +867,14 @@ impl<'c> LowerToMelior<'c> for JvpExpr {
         let mut arg_vals = vec![target_fn_val];
         let mut enzyme_arg_types = vec![fn_ty.into()];
 
-        let mut current_b = block;
-        for arg in args {
-            let (v, ty, new_b) = gen.generate_expr(arg, current_b)?;
-            arg_vals.push(v);
-            enzyme_arg_types.push(ty);
-            current_b = new_b;
-        }
+        let current_b = lower_autodiff_args(
+            gen,
+            args,
+            &orig_arg_types,
+            block,
+            &mut arg_vals,
+            &mut enzyme_arg_types,
+        )?;
 
         let (t_val, t_ty, current_b) = gen.generate_expr(tangent, current_b)?;
         arg_vals.push(t_val);

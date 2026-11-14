@@ -1,0 +1,47 @@
+//===- nvptx_conversion_failure_stops_the_compile.mlr -----------*- MLIR -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// When the NVPTX pipeline cannot make a kernel's image, the compile stops and
+// says why. There is no PTX to carry and no quiet host run.
+//
+// The kernel reads an element of a `tensor` value (`tensor.extract`). The
+// NVPTX pipeline has no conversion for the `tensor` dialect, so the module
+// cannot be translated. That is the same shape as
+// `spirv_conversion_failure_keeps_the_host_path.mlr`: a kernel the backend
+// cannot express, in a program whose host copy could run. The two differ on
+// purpose, because the backends do.
+//
+// RUN: not vx-opt %s --vx-to-llvm 2>&1 | FileCheck %s
+// CHECK: cannot compile kernel `k`: the NVPTX pipeline failed
+// CHECK-NOT: will run on the host instead
+// A device image would name its target. None is emitted, because the compile
+// stopped first.
+// CHECK-NOT: .target sm_
+// CHECK-NOT: image=
+
+module {
+  func.func @main() -> i32 {
+    %c0 = arith.constant 0 : i32
+    %buf = memref.alloc() : memref<4xf32>
+    vx.launch @k(%buf) {topology = 100 : i32} : (memref<4xf32>) -> ()
+    memref.dealloc %buf : memref<4xf32>
+    return %c0 : i32
+  }
+  vx.kernel @k(100) {arch = "nvptx64"} : (memref<4xf32>) -> () {
+  ^bb0(%src: memref<4xf32>):
+    vx.return
+  }
+  gpu.module @kernels {
+    gpu.func @k(%src: memref<4xf32>) kernel {
+      %c0 = arith.constant 0 : index
+      %t = tensor.empty() : tensor<4xf32>
+      %e = tensor.extract %t[%c0] : tensor<4xf32>
+      memref.store %e, %src[%c0] : memref<4xf32>
+      gpu.return
+    }
+  }
+}

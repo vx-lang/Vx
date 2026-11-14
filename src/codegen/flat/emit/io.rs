@@ -23,12 +23,17 @@ impl FnEmit<'_> {
         {
             let et = memref_elem(&memty).ok_or(crate::emitter_gap!())?;
             // MLIR integers carry no sign, so the tensor's own element type says whether an
-            // `i32` memref holds `u32`s.
+            // `i8` memref holds `u8`s.
             let unsigned = self
                 .types
                 .get(ins.type_idx.0 as usize)
                 .and_then(|gid| self.ctx.tensors.get(gid))
-                .is_some_and(|(elem, _)| matches!(elem, ElementType::U32 | ElementType::U64));
+                .is_some_and(|(elem, _)| {
+                    matches!(
+                        elem,
+                        ElementType::U8 | ElementType::U16 | ElementType::U32 | ElementType::U64
+                    )
+                });
             let helper = match (et, unsigned) {
                 ("f32", _) => "printMemrefF32",
                 ("f64", _) => "printMemrefF64",
@@ -37,6 +42,10 @@ impl FnEmit<'_> {
                 ("i32", false) => "printMemrefI32",
                 ("i64", false) => "printMemrefI64",
                 ("bf16", _) => "printMemrefBF16",
+                ("i8", true) => "printMemrefU8",
+                ("i16", true) => "printMemrefU16",
+                ("i8", false) => "printMemrefI8",
+                ("i16", false) => "printMemrefI16",
                 _ => return Err(crate::emitter_gap!()),
             };
             let c = format!("%pc{idx}");
@@ -64,7 +73,7 @@ impl FnEmit<'_> {
                     self.body += &format!("  {n} = func.call @print_bool({w}) : (i32) -> i32\n");
                     return Ok(());
                 }
-                "f16" | "bf16" => {
+                "f4E2M1FN" | "f8E4M3FN" | "f8E5M2" | "f16" | "bf16" => {
                     let w = format!("%pw{idx}");
                     self.body += &format!("  {w} = arith.extf {arg} : {et} to f32\n");
                     (w, "f32")
@@ -118,8 +127,20 @@ impl FnEmit<'_> {
             .get(ins.imm as usize)
             .map(|s| s.as_str())
             .unwrap_or("assertion failed");
-        let escaped = msg.replace('\\', "\\\\").replace('"', "\\\"");
+        let escaped = msg
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\0A");
         self.body += &format!("  cf.assert {cond}, \"{escaped}\"\n");
+        Ok(())
+    }
+
+    /// The prints that follow go to standard error (`imm` 1) or back to standard output (0).
+    pub(crate) fn op_print_stream(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let on = format!("%pstreamc{idx}");
+        let r = format!("%pstream{idx}");
+        self.body += &format!("  {on} = arith.constant {} : i32\n", ins.imm);
+        self.body += &format!("  {r} = func.call @vx_print_to_stderr({on}) : (i32) -> i32\n");
         Ok(())
     }
 

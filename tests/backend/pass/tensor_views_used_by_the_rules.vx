@@ -15,9 +15,10 @@ fn take(t : Tensor<f32, [2, 4]>) -> f32 {
   return t[1][0];
 }
 
-// A tensor taken by reference belongs to the caller, so its row can be returned.
-fn second_row(q : &Tensor<f32, [2, 4]>) -> Tensor<f32, [4]> {
-  return q[1];
+// A tensor taken by reference belongs to the caller, so a reference to its row can be
+// returned.
+fn second_row(q : &Tensor<f32, [2, 4]>) -> &Tensor<f32, [4]> {
+  return &q[1];
 }
 
 fn main() -> i32 {

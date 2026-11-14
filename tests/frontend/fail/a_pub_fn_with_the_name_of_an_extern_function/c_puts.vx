@@ -1,0 +1,18 @@
+//===- c_puts.vx - Vx Compiler ---------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A module that declares C's `puts`. Compiled alone, it has no error.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: func.func private @puts(
+extern "C" {
+  fn puts(s : *const i8) -> i32;
+}
+
+fn say(s : *const i8) -> i32 {
+  return unsafe { puts(s) };
+}

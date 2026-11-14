@@ -73,7 +73,30 @@ pub struct ForLoopStmt {
     /// The `next` the checker resolved for this loop's iterator, by its instance name. Two
     /// instances of one generic iterator have two `next`s, and only the checker knows which.
     pub next_fn: Option<crate::symbol::Symbol>,
+    /// The bounds of a loop that the code generator writes out once for each pass, set by the
+    /// checker when the loop variable indexes a tensor that must stay in registers.
+    pub unroll: Option<(i64, i64)>,
+    /// `across <level>` or `across <level>(n)`: the loop is one axis of a GPU launch.
+    pub across: Option<AcrossClause>,
 }
+
+/// `across lanes` or `across lanes(n)` on a `for`. `level` is a level of the region's
+/// topology, and `share` is the `n` that the passes are shared among.
+#[derive(Debug, PartialEq, Clone)]
+pub struct AcrossClause {
+    pub level: Symbol,
+    pub share: Option<Box<Expr>>,
+    pub span: Span,
+    /// What the checker found: the kind of the level, and the lanes of a subgroup of the
+    /// topology. The code generator reads them. `None` before the check.
+    pub kind: Option<crate::arch::LevelKind>,
+    pub subgroup_lanes: Option<u64>,
+    /// Set by the checker under `-fauto-schedule-levels`, when the code generator of the
+    /// region's arch cannot launch the levels. The loop runs as a plain `for` that carries its
+    /// level as metadata.
+    pub auto_schedule: bool,
+}
+
 impl ForLoopStmt {
     pub fn new(
         iter: String,
@@ -89,6 +112,8 @@ impl ForLoopStmt {
             body,
             span,
             next_fn: None,
+            unroll: None,
+            across: None,
         }
     }
 }
@@ -127,15 +152,39 @@ impl CompoundAssignStmt {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, Clone)]
 pub struct AssertStmt {
     pub expr: Box<Expr>,
     pub msg: Option<String>,
     pub span: Span,
+    /// `<file>:<line>` of the assert, which a failed assert prints. The checker sets it.
+    pub at: Option<String>,
+}
+
+// `at` comes from `span`, so two asserts are equal without it. The checker can walk a function
+// twice, and it finds the asserts that it added the first time by equality.
+impl PartialEq for AssertStmt {
+    fn eq(&self, other: &Self) -> bool {
+        self.expr == other.expr && self.msg == other.msg && self.span == other.span
+    }
 }
 impl AssertStmt {
     pub fn new(expr: Box<Expr>, msg: Option<String>, span: Span) -> Self {
-        Self { expr, msg, span }
+        Self {
+            expr,
+            msg,
+            span,
+            at: None,
+        }
+    }
+
+    /// What a failed assert prints: its message, and `  at <file>:<line>` on the next line.
+    pub fn failure_message(&self) -> String {
+        let msg = self.msg.as_deref().unwrap_or("assertion failed");
+        match &self.at {
+            Some(at) => format!("{msg}\n  at {at}"),
+            None => msg.to_string(),
+        }
     }
 }
 
@@ -158,10 +207,16 @@ impl LoopStmt {
 #[derive(Debug, PartialEq, Clone)]
 pub struct BreakStmt {
     pub span: Span,
+    /// Set by the checker for the `join()` of a task that failed: then this leaves the innermost
+    /// `tasks` block, not a loop, and this `Err` is the value of the block. No program writes it.
+    pub tasks_value: Option<Box<super::Expr>>,
 }
 impl BreakStmt {
     pub fn new(span: Span) -> Self {
-        Self { span }
+        Self {
+            span,
+            tasks_value: None,
+        }
     }
 }
 
@@ -201,6 +256,14 @@ impl MacroCallStmt {
     }
 }
 
+/// The call that turns cancellation off before a `drop`, with the drop's time limit in seconds.
+pub const CANCEL_OFF: &str = "vx::cancel_off";
+/// The call that turns cancellation back on after a `drop`.
+pub const CANCEL_ON: &str = "vx::cancel_on";
+/// `assume e;`: the checker adds the fact `e` without a proof. Only an `unsafe` block can hold
+/// it, and it generates no code.
+pub const ASSUME: &str = "vx::assume";
+
 /// `Statement::Drop`: the tensor named here is freed at this point.
 #[derive(Debug, PartialEq, Clone)]
 pub struct DropStmt {
@@ -219,13 +282,34 @@ pub struct DropStmt {
     /// Freed only once the next statement has computed its value: a `return`'s, a block's last
     /// expression, or an assignment's right-hand side, which may still read the tensor.
     pub after_value: bool,
+    /// Frees nothing: the struct or enum `name` is no longer used, so its stack slot can hold
+    /// another value. It comes after the other drops of `name`.
+    pub ends_lifetime: bool,
     pub span: Span,
+    /// With `call`: how long the waits in the `drop` can take, in nanoseconds. The call
+    /// `wait_limit_nanos(&name.path)`, or the default when the impl has no copy of it.
+    pub limit: Option<Box<super::Expr>>,
+    /// The memory of the tensor freed, when the type names one. Its plugin frees it.
+    pub placement: Option<crate::syntax::Placement>,
 }
 
 impl DropStmt {
-    /// For a drop that calls a `Drop` impl, or drops an enum's payload: the statement that
-    /// does it, inside `if !moved { .. }` when the value may have been moved.
-    pub fn call_statement(&self) -> Option<Statement> {
+    /// For a drop that calls a `Drop` impl, or drops an enum's payload: the statements that do
+    /// it, inside `if !moved { .. }` when the value may have been moved.
+    ///
+    /// A `Drop` impl's `drop` runs with cancellation off (F6), so that a wait in it can finish,
+    /// until its time limit (F6a): `vx::cancel_off(wait_limit_nanos(&x)); drop(&mut x);
+    /// vx::cancel_on();`. The code generators lower the two `vx::` calls to the runtime.
+    pub fn call_statements(&self) -> Option<Vec<Statement>> {
+        let stmt = |e: Expr| Statement::ExprStmt(ExprStmtStmt::new(e, true, Span::default()));
+        let runtime = |name: &str, args: Vec<Expr>| {
+            stmt(Expr::FunctionCall(FunctionCallExpr::new(
+                name.into(),
+                None,
+                args,
+                Span::default(),
+            )))
+        };
         let payload = matches!(self.expr.as_deref(), Some(Expr::Match(_)));
         if self.call.is_none() && !payload {
             return None;
@@ -235,9 +319,18 @@ impl DropStmt {
             .as_deref()
             .expect("a drop that runs code has it")
             .clone();
-        let call = Statement::ExprStmt(ExprStmtStmt::new(call, true, Span::default()));
+        let mut body = vec![stmt(call)];
+        if self.call.is_some() {
+            let limit = self
+                .limit
+                .as_deref()
+                .expect("a drop that calls `Drop::drop` asks `wait_limit`")
+                .clone();
+            body.insert(0, runtime(CANCEL_OFF, vec![limit]));
+            body.push(runtime(CANCEL_ON, Vec::new()));
+        }
         let Some(flag) = &self.flag else {
-            return Some(call);
+            return Some(body);
         };
         let not_moved = Expr::UnaryOp(UnaryOpExpr::new(
             UnaryOp::Not,
@@ -247,17 +340,17 @@ impl DropStmt {
             ))),
             Span::default(),
         ));
-        Some(Statement::ExprStmt(ExprStmtStmt::new(
+        Some(vec![Statement::ExprStmt(ExprStmtStmt::new(
             Expr::If(IfExpr::new(
                 false,
                 Box::new(not_moved),
-                vec![call],
+                body,
                 None,
                 Span::default(),
             )),
             true,
             Span::default(),
-        )))
+        ))])
     }
 }
 
@@ -333,6 +426,15 @@ impl Statement {
                 body: e.body.iter().map(|s| s.substitute(mapping)).collect(),
                 span: e.span,
                 next_fn: e.next_fn.clone(),
+                unroll: e.unroll,
+                across: e.across.as_ref().map(|a| AcrossClause {
+                    level: a.level.clone(),
+                    share: a.share.as_ref().map(|n| Box::new(n.substitute(mapping))),
+                    span: a.span,
+                    kind: a.kind,
+                    subgroup_lanes: a.subgroup_lanes,
+                    auto_schedule: a.auto_schedule,
+                }),
             }),
             Statement::Assign(e) => Statement::Assign(AssignStmt {
                 lhs: e.lhs.substitute(mapping),
@@ -350,6 +452,7 @@ impl Statement {
                 expr: Box::new(e.expr.substitute(mapping)),
                 msg: e.msg.clone(),
                 span: e.span,
+                at: e.at.clone(),
             }),
             Statement::Loop(e) => Statement::Loop(LoopStmt {
                 invariants: e

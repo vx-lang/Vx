@@ -1,0 +1,58 @@
+//===- match_arm_that_names_the_value.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A match arm that is only a name (`other => ..`) matches every value and gives it that
+// name inside the arm. The AST code generator used to crash on such an arm with
+// "Unsupported pattern in codegen".
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+//
+// CHECK: twice 12
+// CHECK-NEXT: color 2
+// CHECK-NEXT: outer 100
+
+enum Color {
+  Red,
+  Green,
+  Blue,
+}
+
+fn main() -> i32 {
+  let other = 100;
+  let n = 6;
+  match n {
+    0 => {
+      println!("zero");
+    }
+    other => {
+      print!("twice ");
+      print(other * 2);
+      println!("");
+    }
+  }
+  match Color::Green {
+    Color::Red => {
+      println!("color 1");
+    }
+    c => {
+      match c {
+        Color::Green => {
+          println!("color 2");
+        }
+        _ => {
+          println!("color 3");
+        }
+      }
+    }
+  }
+  // The arm's name ended with the arm, so this is the outer `other` again.
+  print!("outer ");
+  print(other);
+  println!("");
+  return 0;
+}

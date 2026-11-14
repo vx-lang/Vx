@@ -1,0 +1,16 @@
+//===- self_needs_a_type_in_a_trait.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// A trait method's `self` needs a type too. The message must name `Self`, not a
+// placeholder like `T`.
+
+trait Get {
+  // CHECK: Error at {{.*}}self_needs_a_type_in_a_trait.vx:[[@LINE+1]]:10: `self` needs a type. Write `self : &Self`, `self : &mut Self` or `self : Self`.
+  fn get(self) -> i64;
+}

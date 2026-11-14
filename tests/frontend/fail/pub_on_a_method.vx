@@ -1,0 +1,19 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// Only a top-level function can be `pub` for now. A method is refused with a message rather
+// than accepted with a `pub` that does nothing.
+
+struct Counter {
+  n : i32,
+}
+
+impl Counter {
+  pub fn get(self : Counter) -> i32 {
+    return self.n;
+  }
+}
+// CHECK: `pub` on a method is not supported yet
+
+fn main() -> i32 {
+  return 0;
+}

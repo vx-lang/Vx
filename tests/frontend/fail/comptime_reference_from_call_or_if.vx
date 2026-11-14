@@ -23,7 +23,7 @@ fn argument_from_call() -> i32 {
   return comptime {
     let mut x = 1i32;
     let _result = touch(pass(&mut x));
-    // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}cannot be evaluated
+    // CHECK: Error[E3033] at {{.*}}comptime_reference_from_call_or_if.vx:[[@LINE+1]]:{{.*}}cannot be evaluated
     x
   };
 }
@@ -36,7 +36,7 @@ fn argument_from_if() -> i32 {
     } else {
       &mut x
     });
-    // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}cannot be evaluated
+    // CHECK: Error[E3033] at {{.*}}comptime_reference_from_call_or_if.vx:[[@LINE+1]]:{{.*}}cannot be evaluated
     x
   };
 }
@@ -46,7 +46,7 @@ fn variable_from_call() -> i32 {
     let mut x = 1i32;
     let r = pass(&mut x);
     *r = 4i32;
-    // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}cannot be evaluated
+    // CHECK: Error[E3033] at {{.*}}comptime_reference_from_call_or_if.vx:[[@LINE+1]]:{{.*}}cannot be evaluated
     x
   };
 }
@@ -60,7 +60,7 @@ fn variable_from_if_passed_on() -> i32 {
       &mut x
     };
     let _result = touch(r);
-    // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}cannot be evaluated
+    // CHECK: Error[E3033] at {{.*}}comptime_reference_from_call_or_if.vx:[[@LINE+1]]:{{.*}}cannot be evaluated
     x
   };
 }
@@ -76,7 +76,7 @@ fn outer_reference_from_if() -> i32 {
     } else {
       p
     });
-    // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}cannot be evaluated
+    // CHECK: Error[E3033] at {{.*}}comptime_reference_from_call_or_if.vx:[[@LINE+1]]:{{.*}}cannot be evaluated
     seven
   };
   return y * 10i32 + value;

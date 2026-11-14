@@ -79,13 +79,19 @@ impl<'a> Parser<'a> {
             ));
         };
 
-        let arity = arms
+        let (arity, first_tuple) = arms
             .iter()
-            .find_map(|(p, _, _)| match p {
-                ArmPattern::Tuple(e) => Some(e.len()),
+            .find_map(|(p, _, token)| match p {
+                ArmPattern::Tuple(e) => Some((e.len(), token)),
                 ArmPattern::Plain(_) => None,
             })
             .expect("a tuple match has a tuple pattern");
+        let first_tuple = Span {
+            line: first_tuple.line,
+            column: first_tuple.column,
+            length: first_tuple.length,
+            expansion: self.expansion(),
+        };
         // The number of elements is checked once, before the first test: by counting a tuple
         // literal here, or by `core::tuple`'s `has_N_elements`, which only that size of tuple fits.
         let size_check = match &value {
@@ -101,7 +107,7 @@ impl<'a> Parser<'a> {
                 }
                 None
             }
-            _ => Some(has_elements(arity, &value)),
+            _ => Some(has_elements(arity, &value, first_tuple)),
         };
         let mut lowered = Vec::new();
         let last = arms.len() - 1;
@@ -174,9 +180,6 @@ impl<'a> Parser<'a> {
             ArmPattern::Plain(plain) => match plain.as_ref() {
                 Pattern::Wildcard => {}
                 Pattern::Literal(lit) => steps.push(Step::Test(equals(value, lit))),
-                Pattern::Identifier(name) if is_bool(name) => {
-                    steps.push(Step::Test(equals(value, &identifier(name.as_ref()))))
-                }
                 Pattern::Identifier(name) => binds.push(Statement::LetDecl(LetDeclStmt {
                     name: name.clone(),
                     is_mut: false,
@@ -193,7 +196,7 @@ impl<'a> Parser<'a> {
                             .iter()
                             .map(|p| match p {
                                 Pattern::Wildcard => Pattern::Wildcard,
-                                Pattern::Identifier(n) if !is_bool(n) => p.clone(),
+                                Pattern::Identifier(_) => p.clone(),
                                 _ => {
                                     let temp = format!("$payload{}", self.tuple_lets);
                                     self.tuple_lets += 1;
@@ -323,10 +326,6 @@ fn build_steps(
     vec![stmt]
 }
 
-fn is_bool(name: &Symbol) -> bool {
-    name.as_ref() == "true" || name.as_ref() == "false"
-}
-
 impl IfExpr {
     /// `if cond { then_block } else { else_block }`.
     fn new_value(cond: Expr, then_block: Vec<Statement>, else_block: Vec<Statement>) -> Self {
@@ -369,17 +368,17 @@ fn element(value: &Expr, i: usize) -> Expr {
 }
 
 /// `has_N_elements(&value)`, from `core::tuple`: `true`, and a type error unless `value` is a
-/// tuple of `n` elements.
-pub(crate) fn has_elements(n: usize, value: &Expr) -> Expr {
+/// tuple of `n` elements. The error is at `span`, the pattern's place.
+pub(crate) fn has_elements(n: usize, value: &Expr, span: Span) -> Expr {
     Expr::FunctionCall(FunctionCallExpr::new(
         format!("has_{n}_elements").into(),
         None,
         vec![Expr::Borrow(BorrowExpr::new(
             Box::new(value.clone()),
             false,
-            Span::default(),
+            span,
         ))],
-        Span::default(),
+        span,
     ))
 }
 

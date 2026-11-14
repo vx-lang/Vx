@@ -1,0 +1,33 @@
+//===- call_given_a_mut_reference_to_a_reference_variable.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s
+//
+// `set(&mut r, &y)` stores `&y` into `r`, as `r = &y` would. `x`, `y` and `r` are in the
+// same block, so `r` never outlives what it points at. A closure call is the same.
+
+fn set(slot : &mut &i32, v : &i32) -> i32 {
+  *slot = v;
+  return 0;
+}
+
+fn main() -> i32 {
+  let x = 1;
+  let y = 2;
+  let mut r = &x;
+  set(&mut r, &y);
+  // CHECK-NOT: Error
+  // CHECK: {{^}}2{{$}}
+  print(*r);
+  print!("\n");
+  let read = |s : &mut &i32| **s;
+  let mut rx = &x;
+  // CHECK-NEXT: {{^}}1{{$}}
+  print(read(&mut rx));
+  print!("\n");
+  return 0;
+}

@@ -1,0 +1,164 @@
+//===- fp8_and_fp4_arithmetic.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Arithmetic on f8e4m3, f8e5m2 and f4e2m1 values needs a written result type. The compiler
+// computes the whole expression in f32, and rounds once, to that type.
+//
+// `once` and `steps` compute 1.5 * 1.5 + 0.5 in f4e2m1. Rounded once, 2.75 gives 3. Rounded after
+// the multiply, 2.25 gives 2, and 2 + 0.5 = 2.5 is a tie that gives 2.
+// EXPECT: once 3 steps 2
+//
+// Each operator on x = 2.75 (f8e4m3) and y = 1.5 (f4e2m1), for each result type, in the order
+// + - * / %. The exact answers are 4.25, 1.25, 4.125, 1.8333.. and 1.25.
+// EXPECT: f32 4.25 1.25 4.125 1.8333334 1.25
+// EXPECT: f16 4.25 1.25 4.125 1.8330078 1.25
+// EXPECT: bf16 4.25 1.25 4.125 1.8359375 1.25
+// EXPECT: f8e4m3 4 1.25 4 1.875 1.25
+// EXPECT: f8e5m2 4 1.25 4 1.75 1.25
+// EXPECT: f4e2m1 4 1 4 2 1
+//
+// A literal operand stays f32, so 0.3 is not first rounded to the f4e2m1 value 0.5. Then
+// negation, an f64 result, a tensor element, a return value, and two comparisons, which need no
+// result type.
+// EXPECT: 0.45000002 -1.5 2.25 5 0.75 true true
+
+fn times(p : f4e2m1, q : f4e2m1) -> f8e4m3 {
+  return p * q;
+}
+
+fn main() -> i32 {
+  let a : f4e2m1 = 1.5;
+  let d : f4e2m1 = 0.5;
+  let once : f4e2m1 = a * a + d;
+  let product : f4e2m1 = a * a;
+  let steps : f4e2m1 = product + d;
+  print!("once ");
+  print(once);
+  print!(" steps ");
+  print(steps);
+  print!("\n");
+
+  let x : f8e4m3 = 2.75;
+  let y : f4e2m1 = 1.5;
+  let s1 : f32 = x + y;
+  let s2 : f32 = x - y;
+  let s3 : f32 = x * y;
+  let s4 : f32 = x / y;
+  let s5 : f32 = x % y;
+  print!("f32 ");
+  print(s1);
+  print!(" ");
+  print(s2);
+  print!(" ");
+  print(s3);
+  print!(" ");
+  print(s4);
+  print!(" ");
+  print(s5);
+  print!("\n");
+  let h1 : f16 = x + y;
+  let h2 : f16 = x - y;
+  let h3 : f16 = x * y;
+  let h4 : f16 = x / y;
+  let h5 : f16 = x % y;
+  print!("f16 ");
+  print(h1);
+  print!(" ");
+  print(h2);
+  print!(" ");
+  print(h3);
+  print!(" ");
+  print(h4);
+  print!(" ");
+  print(h5);
+  print!("\n");
+  let b1 : bf16 = x + y;
+  let b2 : bf16 = x - y;
+  let b3 : bf16 = x * y;
+  let b4 : bf16 = x / y;
+  let b5 : bf16 = x % y;
+  print!("bf16 ");
+  print(b1);
+  print!(" ");
+  print(b2);
+  print!(" ");
+  print(b3);
+  print!(" ");
+  print(b4);
+  print!(" ");
+  print(b5);
+  print!("\n");
+  let e1 : f8e4m3 = x + y;
+  let e2 : f8e4m3 = x - y;
+  let e3 : f8e4m3 = x * y;
+  let e4 : f8e4m3 = x / y;
+  let e5 : f8e4m3 = x % y;
+  print!("f8e4m3 ");
+  print(e1);
+  print!(" ");
+  print(e2);
+  print!(" ");
+  print(e3);
+  print!(" ");
+  print(e4);
+  print!(" ");
+  print(e5);
+  print!("\n");
+  let m1 : f8e5m2 = x + y;
+  let m2 : f8e5m2 = x - y;
+  let m3 : f8e5m2 = x * y;
+  let m4 : f8e5m2 = x / y;
+  let m5 : f8e5m2 = x % y;
+  print!("f8e5m2 ");
+  print(m1);
+  print!(" ");
+  print(m2);
+  print!(" ");
+  print(m3);
+  print!(" ");
+  print(m4);
+  print!(" ");
+  print(m5);
+  print!("\n");
+  let f1 : f4e2m1 = x + y;
+  let f2 : f4e2m1 = x - y;
+  let f3 : f4e2m1 = x * y;
+  let f4 : f4e2m1 = x / y;
+  let f5 : f4e2m1 = x % y;
+  print!("f4e2m1 ");
+  print(f1);
+  print!(" ");
+  print(f2);
+  print!(" ");
+  print(f3);
+  print!(" ");
+  print(f4);
+  print!(" ");
+  print(f5);
+  print!("\n");
+
+  let lit : f32 = a * 0.3;
+  let neg : f32 = -a;
+  let wide : f64 = a * a;
+  let mut t = Tensor<f8e5m2, [2]>::new();
+  t[1] = a * x + d;
+  print(lit);
+  print!(" ");
+  print(neg);
+  print!(" ");
+  print(wide);
+  print!(" ");
+  print(t[1]);
+  print!(" ");
+  print(times(a, d));
+  print!(" ");
+  print(a < x);
+  print!(" ");
+  print(x == 2.75);
+  print!("\n");
+  return 0;
+}

@@ -1,0 +1,18 @@
+# Link checker for markdown outside www/. Companion to .github/workflows/docs-links.yml.
+# www/ is validated by pages.yml (site-relative hrefs, different shape).
+
+exclude_path = ["www", "target"]
+
+# GitHub rate-limits anonymous requests; the workflow passes GITHUB_TOKEN.
+accept = ["100..=103", "200..=299", "429"]
+
+# Remotes that flake from CI (TLS or long redirect chains) without meaning the doc is wrong.
+# Literal TOML strings: a single \ is enough for the regex escape.
+exclude = [
+  '^https://www\.reddit\.com/',
+  '^https://wg21\.link/',
+  '^https://www\.cs\.umd\.edu/',
+]
+
+max_concurrency = 14
+timeout = 20

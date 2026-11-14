@@ -1,0 +1,22 @@
+// A `let` of a tensor made inside `unsafe { .. }` gives the prover the same fact as one made
+// without it, so a later proof does not drop it with "the prover ignores a condition". The
+// one warning is that `t` is not used.
+// WARN: Unused variable 't'
+// NO-WARN: the prover ignores a condition
+
+fn get(i : i64) -> i64 requires i >= 0 {
+  return i;
+}
+
+fn pick(n : i64) -> i64 {
+  let t = unsafe { Tensor<f32, [4]>::uninit() };
+  if n >= 0 {
+    return get(n);
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  print(pick(3));
+  return 0;
+}

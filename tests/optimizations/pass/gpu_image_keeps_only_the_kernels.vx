@@ -1,0 +1,42 @@
+//===- gpu_image_keeps_only_the_kernels.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The kernel calls `scale`, which calls `add_one`. The GPU code inlines both into the kernel, so
+// the PTX holds only the kernel: no copy of a function and no C wrapper for one.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s --check-prefix=PTX < %t.ptx
+// CHECK: out 3 5 129
+// PTX-NOT: .func
+// PTX: .entry
+// PTX-NOT: .func
+
+fn add_one(x : i32) on Topology::Device -> i32 {
+  return x + 1;
+}
+
+fn scale(x : i32) on Topology::Device -> i32 {
+  return add_one(2 * x);
+}
+
+pub fn fill(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    out[0] = scale(1);
+    out[1] = scale(2);
+    out[2] = add_one(128);
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut out = transfer(Tensor<i32, [3]>::fill(0), Memory::HBM);
+  fill(&mut out);
+  let o = transfer(out, Memory::CPU_DRAM);
+  println!("out {} {} {}", o[0], o[1], o[2]);
+  return 0;
+}

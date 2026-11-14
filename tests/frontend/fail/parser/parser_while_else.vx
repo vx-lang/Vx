@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 // `while ... else` is not a construct: the `else` after the loop body is an error.
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Error at 16:5: {{.*}}Expected expression, found Else
+// CHECK: Error at {{.*}}parser_while_else.vx:16:5: {{.*}}Expected expression, found Else
 
 fn main() -> i32 {
   let c : bool = false;

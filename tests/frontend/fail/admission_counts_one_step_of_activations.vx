@@ -1,0 +1,32 @@
+//===- admission_counts_one_step_of_activations.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `fleet/admit.vx` counts the activations of the tokens one step works on, not of every token
+// of every request. Qwen2.5-7B at 32k context and batch 36 fits an H100 with 16384 tokens a
+// step, vLLM's default bound, and does not fit if all 36 x 32768 tokens are in one step.
+//
+// The program is the shipped one, with only the configuration in `main` changed, which is how
+// it is meant to be used. This file's own body is inert; it lives in `fail/` because that is
+// the directory whose harness executes RUN lines.
+//
+//   admit<LAYERS, HEADS, KVHEADS, HDIM, FFN, VOCAB, CTX, BATCH, STEP, TP>
+//
+// RUN: mkdir -p %t.d
+// RUN: sed 's/return admit<[^>]*>();/return admit<28, 28, 4, 128, 18944, 152064, 32768, 36, 16384, 1>();/' fleet/admit.vx > %t.d/one_step.vx
+// RUN: sed 's/return admit<[^>]*>();/return admit<28, 28, 4, 128, 18944, 152064, 32768, 36, 1179648, 1>();/' fleet/admit.vx > %t.d/every_token.vx
+// RUN: vxc --host default --machine fleet/h100-sxm.vx %t.d/one_step.vx --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck --check-prefix=ONE_STEP %s
+// RUN: not vxc --host default --machine fleet/h100-sxm.vx %t.d/every_token.vx --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck --check-prefix=EVERY_TOKEN %s
+
+fn main() -> i32 {
+  return 0;
+}
+
+// ONE_STEP: "verdict": "admitted"
+
+// EVERY_TOKEN: "verdict": "rejected"
+// EVERY_TOKEN: "code": "E6010"
+// EVERY_TOKEN-SAME: "required_bytes": 91332018176

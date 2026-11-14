@@ -1,0 +1,243 @@
+//===- lane_copies_in_wrong_places.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Every lane of the block must get to a lane copy and to its wait. The token of the copy holds
+// the tile as `&mut` until its wait, and the copy must be waited. A token variable can get a new
+// copy, but only after the wait of the old one. Each function below breaks one rule.
+//
+// RUN: not vxc %s --host default --machine fleet/a100-80.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: Error[E4002] at {{.*}}lane_copies_in_wrong_places.vx:39:{{.*}}Cannot access 'tiles' because it is mutably borrowed.
+// CHECK: Error[E6036] at {{.*}}lane_copies_in_wrong_places.vx:54:{{.*}}the copy token 'copy' is dropped with no `.wait()` when its scope ends, so the copy may not be done. Call `copy.wait()`
+// CHECK: Error[E4004] at {{.*}}lane_copies_in_wrong_places.vx:71:{{.*}}Cannot borrow 'tiles' because it is already borrowed as mutable.
+// CHECK: Error[E6032] at {{.*}}lane_copies_in_wrong_places.vx:90:{{.*}}two passes of this lane loop may write the same element of `tiles`: an index of the write must fix `t`
+// CHECK: Error[E6032] at {{.*}}lane_copies_in_wrong_places.vx:90:{{.*}}`lanes::copy_async` must be the whole value of a `let` in the code of a loop of blocks or subgroups, outside its lane loops.
+// CHECK: Error[E6032] at {{.*}}lane_copies_in_wrong_places.vx:91:{{.*}}the `.wait()` of a copy token must be a statement of its own in the code of a loop of blocks or subgroups, outside its lane
+// CHECK: Error[E4001] at {{.*}}lane_copies_in_wrong_places.vx:109:{{.*}}`copy` is moved inside this loop and not given a new value before the loop goes round again, so the next pass uses it after
+// CHECK: Error[E6032] at {{.*}}lane_copies_in_wrong_places.vx:110:{{.*}}the `.wait()` of a copy token must be a statement of its own in the code of a loop of blocks or subgroups, outside its lane
+// CHECK: Error[E6032] at {{.*}}lane_copies_in_wrong_places.vx:128:{{.*}}two passes of this subgroup loop may write the same element of `tiles`: an index of the write must fix `w`
+// CHECK: Error[E3003] at {{.*}}lane_copies_in_wrong_places.vx:144:{{.*}}the first argument of `lanes::copy_async` must borrow a tile in shared memory as `&mut`, with a size that is a number and
+// CHECK: Error[E6032] at {{.*}}lane_copies_in_wrong_places.vx:143:{{.*}}the lanes of a block share a tensor that the code of the block makes outside its lane loops, so it goes in a memory with
+// CHECK: Error[E3003] at {{.*}}lane_copies_in_wrong_places.vx:161:{{.*}}the third argument of `lanes::copy_async` is the place of the tile, written as a list of 2 integers such as `[r, c]`
+// CHECK: Error[E4002] at {{.*}}lane_copies_in_wrong_places.vx:186:{{.*}}Cannot access 'tiles' because it is mutably borrowed.
+// CHECK: Error[E6036] at {{.*}}lane_copies_in_wrong_places.vx:202:{{.*}}the copy token 'copy' is dropped with no `.wait()` when this assignment gives it a new value, so the copy may not be done.
+// CHECK: Error[E6036] at {{.*}}lane_copies_in_wrong_places.vx:218:{{.*}}the copy token 'copy' is dropped with no `.wait()` when this assignment gives it a new value, so the copy may not be done.
+// CHECK: Error[E4002] at {{.*}}lane_copies_in_wrong_places.vx:237:{{.*}}Cannot access 'tiles' because it is mutably borrowed.
+
+// The lanes read the tile before the copy ends.
+pub fn read_before_the_wait(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tiles = unsafe {
+        Tensor<f32, [2, 4, 32], Memory::SMEM>::uninit()
+      };
+      let copy = lanes::copy_async(&mut tiles[0], x, [0, 0]);
+      for t in 0..32 across lanes(32) {
+        out[t] = tiles[0][0][t];
+      }
+      copy.wait();
+    }
+  }
+  return;
+}
+
+// No wait for the token.
+pub fn never_waited(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tiles = unsafe {
+        Tensor<f32, [2, 4, 32], Memory::SMEM>::uninit()
+      };
+      let copy = lanes::copy_async(&mut tiles[0], x, [0, 0]);
+      for t in 0..32 across lanes(32) {
+        out[t] = tiles[1][0][t];
+      }
+    }
+  }
+  return;
+}
+
+// Two copies into the same tile at once.
+pub fn same_tile_twice(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tiles = unsafe {
+        Tensor<f32, [2, 4, 32], Memory::SMEM>::uninit()
+      };
+      let first = lanes::copy_async(&mut tiles[0], x, [0, 0]);
+      let second = lanes::copy_async(&mut tiles[0], x, [4, 0]);
+      first.wait();
+      second.wait();
+      for t in 0..32 across lanes(32) {
+        out[t] = tiles[0][0][t];
+      }
+    }
+  }
+  return;
+}
+
+// A copy in a lane loop, where each lane would start its own copy.
+pub fn copy_in_a_lane_loop(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tiles = unsafe {
+        Tensor<f32, [2, 4, 32], Memory::SMEM>::uninit()
+      };
+      for t in 0..32 across lanes(32) {
+        let copy = lanes::copy_async(&mut tiles[0], x, [0, 0]);
+        copy.wait();
+      }
+      for t in 0..32 across lanes(32) {
+        out[t] = tiles[0][0][t];
+      }
+    }
+  }
+  return;
+}
+
+// A wait in a lane loop.
+pub fn wait_in_a_lane_loop(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tiles = unsafe {
+        Tensor<f32, [2, 4, 32], Memory::SMEM>::uninit()
+      };
+      let copy = lanes::copy_async(&mut tiles[0], x, [0, 0]);
+      for t in 0..32 across lanes(32) {
+        copy.wait();
+      }
+      for t in 0..32 across lanes(32) {
+        out[t] = tiles[0][0][t];
+      }
+    }
+  }
+  return;
+}
+
+// Two subgroups copy into the same tile.
+pub fn two_subgroups_copy_into_one_tile(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tiles = unsafe {
+        Tensor<f32, [2, 4, 32], Memory::SMEM>::uninit()
+      };
+      for w in 0..2 across subgroups {
+        let copy = lanes::copy_async(&mut tiles[0], x, [4 * w, 0]);
+        copy.wait();
+        for t in 0..32 across lanes(32) {
+          out[w * 32 + t] = tiles[0][0][t];
+        }
+      }
+    }
+  }
+  return;
+}
+
+// A tile that is not in shared memory.
+pub fn tile_in_hbm(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tile = unsafe { Tensor<f32, [4, 32], Memory::HBM>::uninit() };
+      let copy = lanes::copy_async(&mut tile, x, [0, 0]);
+      copy.wait();
+      for t in 0..32 across lanes(32) {
+        out[t] = tile[0][t];
+      }
+    }
+  }
+  return;
+}
+
+// A place with one number for a tile with two dimensions.
+pub fn place_of_one_number(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tiles = unsafe {
+        Tensor<f32, [2, 4, 32], Memory::SMEM>::uninit()
+      };
+      let copy = lanes::copy_async(&mut tiles[0], x, [0]);
+      copy.wait();
+      for t in 0..32 across lanes(32) {
+        out[t] = tiles[0][0][t];
+      }
+    }
+  }
+  return;
+}
+
+// A token gets a new copy, and the lanes read the tile before the wait of the new copy.
+pub fn read_before_the_wait_of_a_new_copy(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tiles = unsafe {
+        Tensor<f32, [2, 4, 32], Memory::SMEM>::uninit()
+      };
+      let mut copy = lanes::copy_async(&mut tiles[0], x, [0, 0]);
+      copy.wait();
+      copy = lanes::copy_async(&mut tiles[0], x, [4, 0]);
+      // A statement between: the end of the first wait must not end the new copy's borrow.
+      if b == 0 {
+        out[0] = 0.0;
+      }
+      for t in 0..32 across lanes(32) {
+        out[t] = tiles[0][0][t];
+      }
+      copy.wait();
+    }
+  }
+  return;
+}
+
+// A token gets a new copy before the wait of the old one, so the old copy has no wait.
+pub fn a_new_copy_before_the_wait(x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tiles = unsafe {
+        Tensor<f32, [2, 4, 32], Memory::SMEM>::uninit()
+      };
+      let mut copy = lanes::copy_async(&mut tiles[0], x, [0, 0]);
+      copy = lanes::copy_async(&mut tiles[1], x, [4, 0]);
+      copy.wait();
+    }
+  }
+  return;
+}
+
+// The same in a loop: each pass gives the token a new copy, and only the last one has a wait.
+pub fn a_new_copy_in_each_pass(x : &Tensor<f32, [?, ?], Memory::HBM>, steps : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tiles = unsafe {
+        Tensor<f32, [2, 4, 32], Memory::SMEM>::uninit()
+      };
+      let mut copy = lanes::copy_async(&mut tiles[0], x, [0, 0]);
+      for k in 0..steps {
+        copy = lanes::copy_async(&mut tiles[1], x, [4 * k, 0]);
+      }
+      copy.wait();
+    }
+  }
+  return;
+}
+
+// The wait of one copy does not end the other one: the lanes read `tiles[1]` before its wait.
+pub fn read_a_tile_that_another_copy_fills(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tiles = unsafe {
+        Tensor<f32, [2, 4, 32], Memory::SMEM>::uninit()
+      };
+      let first = lanes::copy_async(&mut tiles[0], x, [0, 0]);
+      let second = lanes::copy_async(&mut tiles[1], x, [4, 0]);
+      first.wait();
+      for t in 0..32 across lanes(32) {
+        out[t] = tiles[1][0][t];
+      }
+      second.wait();
+    }
+  }
+  return;
+}

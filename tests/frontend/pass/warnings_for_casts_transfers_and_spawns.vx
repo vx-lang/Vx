@@ -14,9 +14,9 @@
 // - a transfer into the memory the tensor is already in only copies it (W1022);
 // - `spawn on(Topology::Current)` runs where the code around it runs (W1023).
 
-// CHECK-DAG: Warning[W1014] at 24:22: 100000 does not fit in i8
-// CHECK-DAG: Warning[W1022] at 27:11: the value is already in CPU_DRAM
-// CHECK-DAG: Warning[W1023] at 28:3: `spawn on(Topology::Current)`
+// CHECK-DAG: Warning[W1014] at {{.*}}warnings_for_casts_transfers_and_spawns.vx:24:22: 100000 does not fit in i8
+// CHECK-DAG: Warning[W1022] at {{.*}}warnings_for_casts_transfers_and_spawns.vx:27:11: the value is already in CPU_DRAM
+// CHECK-DAG: Warning[W1023] at {{.*}}warnings_for_casts_transfers_and_spawns.vx:28:3: `spawn on(Topology::Current)`
 // ONCE-COUNT-1: Warning[W1014]
 // ONCE-NOT: Warning[W1014]
 

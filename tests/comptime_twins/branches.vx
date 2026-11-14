@@ -1,0 +1,49 @@
+//===- branches.vx - Vx Compiler ---------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Branches: an `if` and a `match` on known values, `&&` and `||`, and an early `return`.
+
+fn sign(x : i64) -> i64 {
+  if x < 0i64 {
+    return 0i64 - 1i64;
+  }
+  if x == 0i64 {
+    return 0i64;
+  }
+  return 1i64;
+}
+
+fn main() -> i32 {
+  let a = comptime {
+    sign(0i64 - 5i64) * 100i64 + sign(0i64) * 10i64 + sign(7i64)
+  };
+  println!("{}", a);
+  let b = comptime {
+    match 3i64 {
+      1 => {
+        10i64
+      }
+      3 => {
+        30i64
+      }
+      _ => {
+        0i64
+      }
+    }
+  };
+  println!("{}", b);
+  let c = comptime {
+    let x : i64 = 4i64;
+    if x > 3i64 && x < 10i64 || x == 0i64 {
+      1i64
+    } else {
+      2i64
+    }
+  };
+  println!("{}", c);
+  return 0;
+}

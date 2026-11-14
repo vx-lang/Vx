@@ -36,7 +36,7 @@ extern {
   fn vx_file_seek(ptr : *mut i8, offset : i64, whence : i32) -> i64;
   fn vx_file_drop(ptr : *mut i8) -> void;
   fn malloc(size : i64)->*mut u8;
-  fn free(ptr : *mut u8) -> i32;
+  fn free(ptr : *mut u8) -> void;
   fn remove(filename : *const i8) -> i32;
   fn vx_get_temp_file(filename : *const i8) -> *mut i8;
   fn vx_free_temp_file(ptr : *mut i8) -> i32;

@@ -23,11 +23,14 @@
 // RUN: vxc --host default --machine %t.d/big.vx %s --action emit-mlir -o /dev/null
 
 fn main() -> i32 {
-  let kv : Tensor<f32, [1024, 1024]> = Tensor<f32, [1024, 1024]>::uninit();
+  let kv : Tensor<f32, [1024, 1024]> = unsafe {
+    Tensor<f32, [1024, 1024]>::uninit()
+  };
   let _staged = transfer(kv, Memory::HBM);
   return 0;
 }
 
-// CHECK: E6009
+// The error names this file even though the host module was read from none.
+// CHECK: Error[E6009] at {{.*}}machine_flag_capacity_reject.vx:29:3: transferred tensor
 // CHECK-SAME: needs 4194304 bytes
 // CHECK-SAME: 'HBM' has capacity 1048576 bytes

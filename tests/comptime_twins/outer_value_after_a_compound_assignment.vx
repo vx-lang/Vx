@@ -1,0 +1,28 @@
+//===- outer_value_after_a_compound_assignment.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `comptime` block reads variables after `+=`, `-=`, `*=`, `/=` and `%=`. The checker knows
+// `x op v` as the new value of each one, so the block folds to 157702. It used to take `v`,
+// and the block folded to 53344.
+
+fn main() -> i32 {
+  let mut a : i32 = 10i32;
+  a += 5i32;
+  let mut b : i32 = 10i32;
+  b -= 3i32;
+  let mut c : i32 = 10i32;
+  c *= 4i32;
+  let mut d : i32 = 10i32;
+  d /= 3i32;
+  let mut e : i32 = 10i32;
+  e %= 4i32;
+  let y = comptime {
+    a * 10000i32 + b * 1000i32 + c * 10i32 + d * 100i32 + e
+  };
+  println!("{}", y);
+  return 0;
+}

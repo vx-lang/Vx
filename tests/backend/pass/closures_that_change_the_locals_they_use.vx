@@ -1,0 +1,126 @@
+//===- closures_that_change_the_locals_they_use.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A closure that changes a local of its function changes that local, and not a copy. A closure
+// that only reads a struct borrows it, so the function can use the struct after the closure's
+// last use. A closure that only reads a number still copies it.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s -j 2 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}doubled twice 4{{$}}
+// CHECK: {{^}}log 209{{$}}
+// CHECK: {{^}}peek 209{{$}}
+// CHECK: {{^}}count after peek 2{{$}}
+// CHECK: {{^}}steps 11{{$}}
+// CHECK: {{^}}two calls 3{{$}}
+// CHECK: {{^}}k 2{{$}}
+// CHECK: {{^}}two calls 6{{$}}
+// CHECK: {{^}}m 5{{$}}
+// CHECK: {{^}}copy 42{{$}}
+// CHECK: {{^}}read x 1{{$}}
+// CHECK: {{^}}r 7 x 2{{$}}
+
+struct Log {
+  count : i64,
+  last : i64,
+}
+
+impl Log {
+  fn add(self : &mut Log, v : i64) -> void {
+    self.count = self.count + 1;
+    self.last = v;
+  }
+
+  fn total(self : &Log) -> i64 {
+    return self.count * 100 + self.last;
+  }
+}
+
+fn call_twice(f : || -> i64) -> i64 {
+  let a = f();
+  return a + f();
+}
+
+fn main() -> i32 {
+  // `*=` in the body changes `n`.
+  let mut n : i64 = 1;
+  let double = || -> void {
+    n *= 2;
+  };
+  double();
+  double();
+  println!("doubled twice {}", n);
+
+  // A method call and a field write in the body change `log`.
+  let mut log = Log {
+    count: 0, last: 0
+  };
+  let note = |v : i64| -> void {
+    log.add(v);
+    log.last = log.last + 1;
+  };
+  note(7 as i64);
+  note(8 as i64);
+  println!("log {}", log.total());
+
+  // This body only reads `log`, so `log` is not moved into the closure.
+  let peek = || -> i64 {
+    log.total()
+  };
+  println!("peek {}", peek());
+  println!("count after peek {}", log.count);
+
+  // A closure in a closure: both change `steps`.
+  let mut steps : i64 = 0;
+  let outer = || -> void {
+    steps += 1;
+    let inner = || -> void {
+      steps += 10;
+    };
+    inner();
+  };
+  outer();
+  println!("steps {}", steps);
+
+  // A closure given as `|| -> i64` changes `k` on each call.
+  let mut k : i64 = 0;
+  let next = || -> i64 {
+    k += 1;
+    k
+  };
+  println!("two calls {}", call_twice(next as || -> i64));
+  println!("k {}", k);
+
+  // A closure in a call holds `m` until the end of the statement.
+  let mut m : i64 = 0;
+  println!("two calls {}", call_twice((|| -> i64 {
+    m += 2;
+    m
+  }) as || -> i64));
+  m += 1;
+  println!("m {}", m);
+
+  // A number that the body only reads is copied.
+  let base : i64 = 40;
+  let plus = |x : i64| -> i64 {
+    base + x
+  };
+  println!("copy {}", plus(2 as i64));
+
+  // A borrow made in the body ends with the call. The `r` outside is another local.
+  let mut x : i64 = 1;
+  let r : i64 = 7;
+  let read_x = || -> i64 {
+    let r = &x;
+    *r
+  };
+  println!("read x {}", read_x());
+  x = 2;
+  println!("r {} x {}", r, x);
+  return 0;
+}

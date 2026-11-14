@@ -85,11 +85,13 @@ pub enum Opcode {
     /// schedule, so the host refuses the region instead of running it.
     SpawnEnd = 21,
     /// Load a struct field: `operand1` is the aggregate's slot handle (from `Alloca`), `imm` the
-    /// field's byte offset (from the registry layout), and `type_idx` the field's type. The result
+    /// encoded field index (`encode_field_index`), and `type_idx` the field's type. The result
     /// is the loaded field value — the field-addressed counterpart of `SlotLoad`.
+    /// Enum tags use this operation. Enum payloads use `EnumPayloadLoad` instead.
+    /// `operand2` is unused and must be zero.
     FieldLoad = 22,
     /// Store into a struct field (no result): `operand1` is the aggregate's slot handle, `operand2`
-    /// the value to store, and `imm` the field's byte offset. Used to initialize a struct field by
+    /// the value to store, and `imm` the encoded field index. Used to initialize a struct field by
     /// field — the field-addressed counterpart of `Store`.
     FieldStore = 23,
     /// Index a tensor along its outermost dimension: `operand1` is the base tensor, `operand2` the
@@ -114,7 +116,8 @@ pub enum Opcode {
     /// Move a tensor to a memory space: `operand1` is the source, `type_idx` the result tensor (same
     /// element + shape, so the destination is sized to hold it). The low 32 bits of `imm` are the
     /// target space's dispatch id (`arch::memory_space_dispatch_id`); the high 32 bits are the
-    /// topology id of where the source is now, when its type is `Pinned`, and 0 otherwise. Backs
+    /// topology id of where the source is now, when its type is `Pinned`, and 0 otherwise. A
+    /// topology id is a positive `i32`, so bit 63 is free: it is [`TRANSFER_SHARED`]. Backs
     /// `transfer(src, Memory::X)`.
     Transfer = 28,
     /// One argument of the following `Call`: `operand1` is the argument's value register. The N-ary
@@ -160,7 +163,7 @@ pub enum Opcode {
     /// emits `call_indirect`. Backs `Closure1`'s `f_ptr(env, item)` and bare-fn-pointer calls. (#242)
     CallIndirect = 36,
     /// The address of a *by-value nested-aggregate field* (`&outer.inner`): `operand1` is the enclosing
-    /// aggregate's slot/pointer, `imm` the field's byte offset, and this instruction's own `type_idx`
+    /// aggregate's slot/pointer, `imm` the encoded field index, and this instruction's own `type_idx`
     /// the nested aggregate's layout GID. Codegen GEPs to the field and yields the pointer, tracked as an
     /// aggregate slot so a chained access (`outer.inner.a`) or a method receiver (`self.iter.next()`)
     /// addresses through it. The nested-aggregate analogue of `FieldLoad` that stops at the pointer. (#242)
@@ -286,7 +289,186 @@ pub enum Opcode {
     /// elements in row order and then zeros. With `TENSOR_PAD_EACH_AXIS` in `imm` it is
     /// `t.pad(shape)` instead: each element keeps its index, and the zeros follow on every axis.
     TensorPad = 63,
+    /// The first instructions of a `spawn` region with `across` loops (#252): one for each grid
+    /// axis, `imm` 0 to 2, then one for the block, `imm` 3. `operand1` is the value, which the
+    /// host computed before the region. The region takes it, and the runtime reads it to launch
+    /// the kernel.
+    LaunchDim = 64,
+    /// Where this lane is in the launch, an `i32`: one of the `ACROSS_*` kinds in the low two
+    /// bits of `imm`, and the grid axis or the lanes in `imm >> 2`. On the CPU copy of the region
+    /// an index is 0 and a count is 1.
+    AcrossId = 65,
+    /// The first instruction of a region with `across` loops, after `Spawn`. The stack slots of
+    /// the region go in its first block, so that code that lane 0 alone runs can declare a value
+    /// that later code reads.
+    AcrossRegion = 66,
+    /// Opens a counted loop that the code generator writes as `affine.for`, from `operand1` to
+    /// `operand2` with step 1. The result is the loop variable, of the range's type. With
+    /// `AFFINE_FOR_BRANCHES` in `imm`, the body has blocks of its own. `AffineForEnd` closes it.
+    AffineFor = 67,
+    /// Closes the innermost open `AffineFor`.
+    AffineForEnd = 68,
+    /// Just before the `Br` back to the header of a loop that `-fauto-schedule-levels` made a
+    /// plain loop: `imm` is the kind of its `across` level, one of `LOOP_HINT_*`. The code
+    /// generator puts the level on that `Br` as metadata.
+    LoopHint = 69,
+    /// Load an enum payload: `operand1` is the enum slot, `type_idx` the payload's result type.
+    /// `imm` encodes an `EnumPayloadIndex`. The layout supplies the field's address and metadata.
+    /// `operand2` is unused and must be zero.
+    EnumPayloadLoad = 70,
+    /// A lane reduction (`lanes::sum` and the others) of the tensor `operand1` over its first
+    /// `operand2` elements, an `f32` that every lane gets. `imm` holds `LANE_REDUCE_*`.
+    LaneReduce = 71,
+    /// The stream that `Print` and `PrintStr` write to, from here on in this thread: standard error
+    /// when `imm` is 1, standard output when it is 0. An `eprint!` and a `panic` are between two.
+    PrintStream = 72,
+    /// In a `tasks` block, before the drops of a `return`, `break` or `continue` that leaves it:
+    /// waits until each task of the block ends. With `imm` 1, at the end of the block's body,
+    /// before the drops of what its tasks use: it joins the tasks and cancels none of them.
+    TasksWait = 73,
+    /// Leaves the innermost `Spawn` region from its middle, with no value. It ends its block, as
+    /// `Ret` does.
+    RegionExit = 74,
+    /// At the end of a task whose value is an `Err`: cancels the `tasks` block of the task (F3).
+    TaskFailed = 75,
+    /// Before the call of a `Drop` impl: turns cancellation off for this thread until `CancelOn`
+    /// (F6). A wait in the `drop` then cannot give `Cancelled`, until the time limit in
+    /// `operand1`, an `i64` in nanoseconds from the type's `Drop::wait_limit` (F6a).
+    CancelOff = 76,
+    /// After the call of a `Drop` impl: turns cancellation back on.
+    CancelOn = 77,
+    /// `h.join()`: waits for the task whose value is `operand1`, or is in the slot `operand1`.
+    TaskJoin = 78,
+    /// The `let` of a struct or enum: the lifetime of its slot `operand1` (from `Alloca`)
+    /// starts, before the first store into it.
+    LifetimeStart = 79,
+    /// After the last use of a struct or enum: the lifetime of its slot `operand1` ends, so
+    /// LLVM can give the slot's memory to another value.
+    LifetimeEnd = 80,
+    /// The address of one tensor element, as a raw pointer: `&t[i]`. `operand1` is the element
+    /// place, a `TensorIndex` with `imm = 1`. The pointer points into the tensor's own buffer.
+    TensorElementAddress = 81,
+    /// Check that operand1 addresses the aggregate identified by type_idx. Generates no code.
+    CheckAggregate = 84,
+    /// `t as f32`: a fresh tensor of the result type, each element of `operand1` cast to the
+    /// result's element type.
+    TensorCast = 85,
 }
+
+/// A zero-based variant and payload field, stored entirely in an instruction's immediate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EnumPayloadIndex {
+    pub variant: u32,
+    pub field: u32,
+}
+
+/// Mark explicit field indices in field instructions.
+pub const FIELD_INDEX_FLAG: u64 = 1 << 63;
+
+/// Field identity belongs in the immediate, never in a register operand.
+pub fn encode_field_index(index: usize) -> u64 {
+    FIELD_INDEX_FLAG | u64::from(u32::try_from(index).expect("a field index must fit in u32"))
+}
+
+/// Decode a field index. A missing flag indicates a compiler bug.
+pub fn decode_field_index(imm: u64) -> usize {
+    assert_ne!(
+        imm & FIELD_INDEX_FLAG,
+        0,
+        "a field instruction must carry FIELD_INDEX_FLAG"
+    );
+    usize::try_from(imm & !FIELD_INDEX_FLAG).expect("a field index must fit in usize")
+}
+
+impl EnumPayloadIndex {
+    pub fn encode(self) -> u64 {
+        u64::from(self.variant) | (u64::from(self.field) << 32)
+    }
+
+    pub fn decode(imm: u64) -> Self {
+        Self {
+            variant: imm as u32,
+            field: (imm >> 32) as u32,
+        }
+    }
+}
+
+/// `Opcode::LaneReduce`: the larger value, not the sum.
+pub const LANE_REDUCE_MAX: u64 = 1;
+/// `Opcode::LaneReduce`: in the order that docs/lane_reductions.md gives.
+pub const LANE_REDUCE_ORDERED: u64 = 2;
+/// `Opcode::LaneReduce`: over the lanes of a subgroup, not of a block.
+pub const LANE_REDUCE_SUBGROUP: u64 = 4;
+/// `Opcode::LaneReduce`: the index of the larger value. `operand1` is the tensor of values,
+/// `operand2` the tensor of indices, and the `Arg` just before is the count. The result is an
+/// `i32`.
+pub const LANE_REDUCE_ARGMAX: u64 = 8;
+/// `Opcode::LaneReduce` in the code of a subgroup: each tensor is `&tile[w]`, with `w` the index
+/// of the subgroup loop. So it is the row that a `TENSOR_STORE_LANE_ELEMENT` store of the
+/// subgroup writes.
+pub const LANE_REDUCE_OWN_ROW: u64 = 16;
+/// `Opcode::LaneReduce`: `lanes::sort`, an effect with no result. `operand1` is the tensor and
+/// `operand2` the count. The lanes of the block or the subgroup are in `imm >> 32`.
+pub const LANE_REDUCE_SORT: u64 = 32;
+/// `Opcode::LaneReduce` with `LANE_REDUCE_SORT`: from the largest value down.
+pub const LANE_REDUCE_DESCENDING: u64 = 64;
+/// `Opcode::LaneReduce`: `lanes::copy_async`. `operand1` is the tile in shared memory and
+/// `operand2` the tensor. The `Arg`s just before are the place of the tile, one for each of the
+/// `(imm >> 16) & 0xff` dimensions. The lanes of the block or the subgroup are in `imm >> 32`.
+/// The result is the `i32` token.
+pub const LANE_REDUCE_COPY: u64 = 128;
+/// `Opcode::LaneReduce`: the wait for the copy of the token `operand1`, an effect with no result.
+pub const LANE_REDUCE_COPY_WAIT: u64 = 256;
+/// `Opcode::LaneReduce`: `acc = acc + (a as f32) @ (b as f32)` in the code of a subgroup, an
+/// effect with no result. `operand1` is `acc` and `operand2` is `a`. The `Arg` just before is `b`.
+pub const LANE_REDUCE_MATMUL: u64 = 512;
+/// `Opcode::LaneReduce` with `LANE_REDUCE_MATMUL`: the products are added to the old `acc`.
+pub const LANE_REDUCE_ACCUMULATE: u64 = 1024;
+
+/// `Opcode::TensorStore`: the place is `tile[t]` in a lane loop of the code of a block, with `t`
+/// the index of the loop. The loop goes from 0 over all of its lanes, so only lane `t` writes the
+/// element.
+pub const TENSOR_STORE_BLOCK_LANE_ELEMENT: u64 = 1;
+/// `Opcode::TensorStore`: as `TENSOR_STORE_BLOCK_LANE_ELEMENT`, but `tile[w][t]` in the code of a
+/// subgroup, with `w` the index of the subgroup loop.
+pub const TENSOR_STORE_SUBGROUP_LANE_ELEMENT: u64 = 2;
+/// The bits of a lane-element store's or an `own_row` reduction's `imm` from here up give the row
+/// of the subgroup: 0 for `t[w]`, and `c + 1` for `t[w][c]`.
+pub const LANE_ROW_SHIFT: u64 = 32;
+
+/// `Opcode::LoopHint`: the loop was `across` a level of blocks.
+pub const LOOP_HINT_BLOCKS: u64 = 0;
+/// `Opcode::LoopHint`: the loop was `across` a level of subgroups.
+pub const LOOP_HINT_SUBGROUPS: u64 = 1;
+/// `Opcode::LoopHint`: the loop was `across` a level of lanes.
+pub const LOOP_HINT_LANES: u64 = 2;
+
+/// `Opcode::AffineFor`'s `imm`: the body branches, so it goes in an `scf.execute_region`.
+pub const AFFINE_FOR_BRANCHES: u64 = 1;
+
+/// `Opcode::AcrossId`: the index of this lane in its block.
+pub const ACROSS_LANE: u64 = 0;
+/// `Opcode::AcrossId`: the step of a lane loop that shares its passes among the `imm >> 2` lanes:
+/// that number on the GPU, and 1 on the CPU copy, which has one lane.
+pub const ACROSS_STRIDE: u64 = 1;
+/// `Opcode::AcrossId`: the number of lanes in the block (`raw::lanes()`). It is the step of a
+/// lane loop that shares its passes among the most lanes an `i32` can count.
+pub const ACROSS_EVERY_LANE: u64 = ACROSS_STRIDE | (0x7fff_ffff << 2);
+/// `Opcode::AcrossId`: the index of this block on a grid axis.
+pub const ACROSS_BLOCK: u64 = 2;
+/// `Opcode::AcrossId`: the blocks on a grid axis.
+pub const ACROSS_BLOCKS: u64 = 3;
+
+/// `Opcode::Barrier`'s `imm`: the lanes of one subgroup wait for each other, not the block.
+pub const BARRIER_SUBGROUP: u64 = 1;
+/// `Opcode::Barrier`'s `imm`: a `raw::barrier()` of a user transfer lowering. It is a
+/// `gpu.barrier` at once, as on the AST path.
+pub const BARRIER_GPU: u64 = 2;
+
+/// A bit of `Opcode::Transfer`'s `operand2`: a user `impl Transfer` lowering does the copy. The
+/// body follows the transfer, and the transfer only places the tile. The other bits are the
+/// string index of the arrival count, plus 1.
+pub const TRANSFER_USER_LOWERED: u32 = 1 << 31;
 
 /// `Opcode::TensorPad`'s `imm`: pad each axis (`t.pad(shape)`), not the flat row order.
 pub const TENSOR_PAD_EACH_AXIS: u64 = 1;
@@ -295,6 +477,9 @@ pub const TENSOR_PAD_EACH_AXIS: u64 = 1;
 pub const TENSOR_DROP_FLAG: u64 = 1;
 /// `Opcode::TensorDrop`'s `imm`: the tensor is a field of a struct being dropped.
 pub const TENSOR_DROP_FIELD: u64 = 2;
+/// `Opcode::TensorDrop`'s `imm`: the bits from here up hold the dispatch id of the device memory
+/// of a field, or zero.
+pub const TENSOR_DROP_PLACED_SHIFT: u32 = 32;
 
 /// Reverse mode for `Opcode::AutoDiff`: the gradient, through `__enzyme_autodiff_grad_*`.
 pub const AUTODIFF_REVERSE: u64 = 0;
@@ -329,6 +514,18 @@ impl Opcode {
             60 => ConstTable,
             61 => TensorDataPtr,
             62 => TensorDrop,
+            64 => LaunchDim,
+            65 => AcrossId,
+            66 => AcrossRegion,
+            67 => AffineFor,
+            68 => AffineForEnd,
+            69 => LoopHint,
+            70 => EnumPayloadLoad,
+            71 => LaneReduce,
+            79 => LifetimeStart,
+            80 => LifetimeEnd,
+            84 => CheckAggregate,
+            85 => TensorCast,
             8 => Call,
             9 => Ret,
             10 => Matmul,
@@ -371,6 +568,7 @@ impl Opcode {
             49 => TensorReshape,
             50 => TensorTranspose,
             51 => TensorMap,
+            81 => TensorElementAddress,
             _ => return None,
         })
     }
@@ -381,6 +579,9 @@ pub struct Register(pub u32);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TypeIdx(pub u32);
+
+/// Bit 63 of a `Transfer`'s `imm`: the source is a `&` tensor and the edge is `: shared`.
+pub const TRANSFER_SHARED: u64 = 1 << 63;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C)]
@@ -452,3 +653,34 @@ pub const IMM_PARALLEL_BOUND: u64 = 4;
 /// no bound tag: on the host a block's thread loops run serially inside one worker, which is the
 /// schedule the erased barriers already assume.
 pub const IMM_BLOCK_BOUND: u64 = 5;
+
+#[cfg(test)]
+mod enum_payload_tests {
+    use super::*;
+
+    #[rstest::rstest]
+    #[case::first(0, 0, 0)]
+    #[case::different_indices(7, 11, 0x0000_000b_0000_0007)]
+    #[case::largest(u32::MAX, u32::MAX, u64::MAX)]
+    fn enum_payload_indices_keep_both_immediates(
+        #[case] variant: u32,
+        #[case] field: u32,
+        #[case] encoded: u64,
+    ) {
+        let index = EnumPayloadIndex { variant, field };
+        assert_eq!(
+            (index.encode(), EnumPayloadIndex::decode(encoded)),
+            (encoded, index),
+            "variant and field must occupy separate halves of the immediate"
+        );
+    }
+
+    #[test]
+    fn enum_payload_load_has_a_distinct_wire_opcode() {
+        assert_eq!(
+            (Opcode::EnumPayloadLoad as u32, Opcode::from_u32(70)),
+            (70, Some(Opcode::EnumPayloadLoad)),
+            "enum payload loads must retain their own wire opcode"
+        );
+    }
+}

@@ -22,9 +22,13 @@ Add that line to `~/.zshrc` or `~/.bashrc` to make it permanent.
 | Platform | Status |
 | --- | --- |
 | macOS on Apple Silicon (M1–M4) | Supported. Apple accelerator dispatch available. |
-| Linux x86_64 (glibc 2.35+) | Supported. CUDA dispatch when a toolkit is present. |
+| Linux x86_64 (glibc 2.35+) | Supported. CUDA dispatch needs the NVIDIA driver and CUDA 12. |
 | Intel macOS | Not supported — the runtime assumes Apple Silicon. |
 | Linux arm64, Windows | No prebuilt toolchain. [Build from source](building.md). |
+
+On a machine with the NVIDIA driver, the installer takes the CUDA build. That build needs the
+CUDA 12 runtime and cuBLAS 12. When they are missing, the installer takes the build without CUDA
+and says so. `VX_NO_CUDA=1` always takes the build without CUDA.
 
 ## Prerequisites
 
@@ -55,12 +59,10 @@ On macOS, Homebrew's LLVM is keg-only, so it is deliberately not on your `PATH`.
 change that — the installer records where it found LLVM, and the `vxc` wrapper points the compiler
 at it directly.
 
-### z3 (optional)
+### z3
 
-Seam verification — proving that an asynchronous `transfer` has been made visible before the buffer
-is read — is discharged by shelling out to `z3`. It is opt-in behind `--verify-seams`, so a
-toolchain without z3 compiles and runs everything else normally; you only need it when you turn that
-flag on.
+The compiler runs `z3` to prove contracts: `requires`, `ensures`, `invariant` and `Verified<T>`.
+`--verify-seams` uses it too. Without z3, a program with a contract does not compile.
 
 The **binary** is executed, so installing `libz3-dev` alone is not enough.
 
@@ -78,8 +80,13 @@ complaint you are already working. To check by hand:
 vxc --version
 ```
 
-Then compile something. Note that `--run` propagates *the program's own* exit code, so a non-zero
-exit status here is your program's return value rather than a failure:
+This prints the version, and for a release build also the commit it was built from, such as
+`vxc 0.0.3 (f1fb0333)`. To get the commit in a build of your own, set `VX_VERSION_WITH_COMMIT=1`
+when you run `cargo build`. Keep that line with anything you report: two builds of the same
+version can generate different code.
+
+Then compile something. A program that returns a value other than 0 makes `vxc` exit with status
+1 and print the value. Here that is the program's return value, not a failure:
 
 ```bash
 cat > hello.vx <<'EOF'
@@ -92,16 +99,17 @@ EOF
 vxc --run hello.vx
 ```
 
-The last line should read:
+The last two lines should read:
 
 ```
 [JIT] Program exited with code: 42
+Program exited with non-zero code: 42
 ```
 
 ## Installing a specific version
 
 ```bash
-curl -fsSL https://vxlang.org/install.sh | VX_VERSION=v0.0.3 sh
+curl -fsSL https://vxlang.org/install.sh | VX_VERSION=v0.0.4 sh
 ```
 
 `VX_VERSION` goes after the `|`, so that it is set for the `sh` that runs the installer.

@@ -20,7 +20,7 @@ use super::*;
 /// keeps implicit numeric conversion out of the language: the literal is born at the right type
 /// rather than silently coerced.
 pub(crate) fn infer_number_literal(s: &str) -> Result<(&str, Option<ElementType>), String> {
-    let idx = s.find(|c: char| c.is_alphabetic() || c == '_');
+    let idx = number_suffix_start(s);
     let (num_part, suffix_part) = match idx {
         Some(i) => (&s[..i], &s[i..]),
         None => (s, ""),
@@ -34,6 +34,40 @@ pub(crate) fn infer_number_literal(s: &str) -> Result<(&str, Option<ElementType>
     Ok((num_part, el_ty))
 }
 
+/// Byte index where a type suffix begins (`i32`, `f64`, …), or `None` when the whole
+/// spelling is the number. An `e`/`E` that starts a scientific exponent (`1e-15`, `3.4E39`)
+/// stays in the number; only a letter that is not part of an exponent is the suffix.
+fn number_suffix_start(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i] as char;
+        if c.is_ascii_digit() || c == '_' || c == '.' || c == '+' || c == '-' {
+            i += 1;
+            continue;
+        }
+        if c == 'e' || c == 'E' {
+            let mut rest = s[i + 1..].chars();
+            let exp_ok = match rest.next() {
+                Some('+') | Some('-') => rest.next().is_some_and(|d| d.is_ascii_digit()),
+                Some(d) if d.is_ascii_digit() => true,
+                _ => false,
+            };
+            if exp_ok {
+                i += 1;
+                continue;
+            }
+        }
+        if c.is_alphabetic() {
+            return Some(i);
+        }
+        return Some(i);
+    }
+    None
+}
+
+pub(crate) use crate::syntax::types::is_float_literal_spelling;
+
 /// The spelling-based default element type for an *untyped* numeric literal — used when no
 /// context supplies an expected type (a bare `42` or `3.14`). Reproduces the historical parser
 /// defaults so an un-annotated literal keeps the type it always had: a decimal is `f32` (`f64`
@@ -43,7 +77,7 @@ pub(crate) fn infer_number_literal(s: &str) -> Result<(&str, Option<ElementType>
 /// arm and the flat lowerer's `infer_elem`, so both backends agree on an un-annotated literal's
 /// type (a differential-parity requirement). `num_part` is already suffix-stripped.
 pub(crate) fn default_number_elem(num_part: &str) -> ElementType {
-    if num_part.contains('.') {
+    if crate::syntax::types::is_float_literal_spelling(num_part) {
         if let Ok(f32_val) = num_part.parse::<f32>() {
             if f32_val.is_infinite() {
                 if let Ok(f64_val) = num_part.parse::<f64>() {
@@ -154,6 +188,7 @@ impl<'a> Parser<'a> {
                 line: self.peek().line,
                 column: self.peek().column,
                 length: self.peek().length,
+                expansion: self.expansion(),
             };
             // A shift is checked first: on its own, the leading `<` or `>` would read as
             // a comparison, which binds looser and would take the second bracket as the
@@ -401,11 +436,39 @@ impl<'a> Parser<'a> {
         match token.kind {
             TokenType::Number(_) | TokenType::StringLiteral(_) => {
                 let expr = self.parse_primary_expr()?; // parses number or string
-                Ok(Pattern::Literal(expr))
+                Ok(Pattern::Literal(Box::new(expr)))
+            }
+            TokenType::Minus if matches!(self.peek_n(1).kind, TokenType::Number(_)) => {
+                self.advance();
+                let mut expr = self.parse_primary_expr()?;
+                if let Expr::Number(n) = &mut expr {
+                    n.value = format!("-{}", n.value).into();
+                }
+                Ok(Pattern::Literal(Box::new(expr)))
+            }
+            // `true` and `false` are the two values of a `bool`, not names that bind it.
+            TokenType::Identifier(s) if s == "true" || s == "false" => {
+                self.advance();
+                Ok(Pattern::Literal(Box::new(Expr::Identifier(
+                    IdentifierExpr {
+                        name: s.into(),
+                        span: Span {
+                            line: token.line,
+                            column: token.column,
+                            length: token.length,
+                            expansion: self.expansion(),
+                        },
+                    },
+                ))))
             }
             TokenType::Identifier(s) => {
                 let mut enum_name = s.to_string();
                 self.advance();
+                if enum_name == "Self" {
+                    if let Some(target) = &self.impl_self {
+                        enum_name = target.to_string();
+                    }
+                }
                 if self.check(&TokenType::LeftAngle) {
                     // A list, not one argument: `Result<T, E>::Ok(v)` has two. Each is a whole
                     // type, so `Option<Pair<i64, i64>>::Some(p)` parses; it is printed back the
@@ -453,11 +516,40 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// After a name, `::Item::` follows when the name owns an associated type.
+    fn is_associated_type_path(&self) -> bool {
+        matches!(
+            (
+                self.tokens.get(self.pos).map(|t| &t.kind),
+                self.tokens.get(self.pos + 1).map(|t| &t.kind),
+                self.tokens.get(self.pos + 2).map(|t| &t.kind),
+            ),
+            (
+                Some(TokenType::DoubleColon),
+                Some(TokenType::Identifier(_)),
+                Some(TokenType::DoubleColon)
+            )
+        )
+    }
+
     pub(crate) fn parse_identifier_expr(
         &mut self,
         mut call_name: String,
         span: Span,
     ) -> ParseResult<'a, Expr> {
+        // In an impl, `Self { .. }`, `Self::new()` and `Self::Variant` name the impl's type,
+        // spelled as the type prints: `Pair<T>`. `Self::Item::default()` keeps its `Self`.
+        let mut self_type_args = None;
+        if call_name == "Self" && !self.is_associated_type_path() {
+            if let Some(target) = &self.impl_self {
+                if let Type::GenericInstance(base, args) = target {
+                    call_name = base.to_string();
+                    self_type_args = Some(args.clone());
+                } else {
+                    call_name = target.to_string();
+                }
+            }
+        }
         if call_name == "sizeof" {
             self.consume(&TokenType::LeftAngle, "Expected '<' after sizeof")?;
             let target_ty = self.parse_type()?;
@@ -489,9 +581,16 @@ impl<'a> Parser<'a> {
                 // the shape from the arguments and so built a tensor with no dimensions.
                 Ok(ty) if self.check(&TokenType::LeftParen) => {
                     return Err(self.error(&format!(
-                        "`{ty}` is built with `{ty}::new()` for zeroed storage or `{ty}::uninit()` \
-                         for storage left as it was found"
+                        "`{ty}` is built with `{ty}::new()` for zeroed storage, or \
+                         `unsafe {{ {ty}::uninit() }}` for storage left as it was found"
                     )));
+                }
+                // The older spelling has no `aligned(N)`, so its error is the one to give.
+                Err(e @ ParserError::Custom { .. })
+                    if matches!(&e, ParserError::Custom { message, .. }
+                        if message.contains("`aligned(N)`")) =>
+                {
+                    return Err(e);
                 }
                 _ => self.pos = saved,
             }
@@ -513,7 +612,7 @@ impl<'a> Parser<'a> {
             }));
         }
 
-        let mut parsed_type_args = None;
+        let mut parsed_type_args = self_type_args;
         if self.check(&TokenType::LeftAngle) {
             let saved_pos = self.pos;
             self.advance(); // consume '<'
@@ -547,6 +646,7 @@ impl<'a> Parser<'a> {
             let assoc = self.expect_identifier("Expected an associated type name")?;
             call_name = format!("{call_name}::{assoc}");
         }
+        let mut owner_type_args = None;
         if self.check(&TokenType::DoubleColon) {
             let t1 = self.tokens.get(self.pos + 1).map(|t| &t.kind);
             let t2 = self.tokens.get(self.pos + 2).map(|t| &t.kind);
@@ -557,7 +657,8 @@ impl<'a> Parser<'a> {
             );
 
             if has_paren {
-                Self::apply_type_args(&mut call_name, parsed_type_args.take());
+                owner_type_args = parsed_type_args.take();
+                Self::apply_type_args(&mut call_name, owner_type_args.clone());
 
                 self.advance(); // consume '::'
                 if let TokenType::Identifier(method_name) = self.peek().kind.clone() {
@@ -590,6 +691,7 @@ impl<'a> Parser<'a> {
             }
             self.consume(&TokenType::RightParen, "Expected ')'")?;
             Ok(Expr::FunctionCall(FunctionCallExpr {
+                owner_type_args,
                 name: call_name.into(),
                 type_args: parsed_type_args,
                 args,
@@ -637,7 +739,7 @@ impl<'a> Parser<'a> {
                     name: call_name.into(),
                     fields,
                     type_id: None,
-                    span: Span::default(),
+                    span,
                 }))
             } else if self.match_token(&TokenType::DoubleColon) {
                 self.parse_enum_variant_expr(&mut call_name, parsed_type_args)
@@ -673,8 +775,8 @@ impl<'a> Parser<'a> {
         let ctor = self.expect_identifier("Expected a constructor after a tensor type")?;
         if ctor != "new" && ctor != "uninit" && ctor != "fill" {
             return Err(self.error(
-                "A tensor type is built with `::new()` for zeroed storage or `::uninit()` for \
-                 storage left as it was found",
+                "A tensor type is built with `::new()` for zeroed storage, or with `::uninit()` \
+                 inside `unsafe` for storage left as it was found",
             ));
         }
         let head = "Tensor";
@@ -690,6 +792,7 @@ impl<'a> Parser<'a> {
         }
         self.consume(&TokenType::RightParen, "Expected ')' after the constructor")?;
         Ok(Expr::FunctionCall(FunctionCallExpr {
+            owner_type_args: None,
             name: format!("{head}::{ctor}").into(),
             type_args: Some(vec![ty]),
             args,
@@ -736,15 +839,17 @@ impl<'a> Parser<'a> {
             self.consume(&TokenType::RightParen, "Expected ')' after enum payload")?;
             payload = Some(args);
         }
-        Self::apply_type_args(call_name, parsed_type_args);
+        Self::apply_type_args(call_name, parsed_type_args.clone());
         Ok(Expr::EnumVariant(EnumVariantExpr {
             enum_name: call_name.clone().into(),
+            type_args: parsed_type_args,
             variant_name: variant.to_string().into(),
             payload,
             span: Span {
                 line: variant_line,
                 column: variant_column,
                 length: 0,
+                expansion: self.expansion(),
             },
         }))
     }
@@ -761,6 +866,7 @@ impl<'a> Parser<'a> {
                     line: bang_line,
                     column: bang_column,
                     length: 1,
+                    expansion: self.expansion(),
                 },
             }));
         } else if self.match_token(&TokenType::Minus) {
@@ -772,6 +878,7 @@ impl<'a> Parser<'a> {
                     line: bang_line,
                     column: bang_column,
                     length: 1,
+                    expansion: self.expansion(),
                 },
             }));
         } else if self.check(&TokenType::Ampersand) {
@@ -780,6 +887,7 @@ impl<'a> Parser<'a> {
                 line: self.peek().line,
                 column: self.peek().column,
                 length: self.peek().length,
+                expansion: self.expansion(),
             };
             self.advance();
             let is_mut = self.match_token(&TokenType::Mut);
@@ -804,6 +912,7 @@ impl<'a> Parser<'a> {
                         line,
                         column: column + 1,
                         length: 1,
+                        expansion: self.expansion(),
                     },
                 })),
                 is_mut: false,
@@ -811,6 +920,7 @@ impl<'a> Parser<'a> {
                     line,
                     column,
                     length: 1,
+                    expansion: self.expansion(),
                 },
             }));
         } else if self.check(&TokenType::Star) {
@@ -819,6 +929,7 @@ impl<'a> Parser<'a> {
                 line: self.peek().line,
                 column: self.peek().column,
                 length: self.peek().length,
+                expansion: self.expansion(),
             };
             self.advance();
             let inner = self.parse_primary_expr()?;
@@ -827,7 +938,15 @@ impl<'a> Parser<'a> {
                 ty: None,
                 span: star_span,
             }));
-        } else if self.match_token(&TokenType::Unsafe) {
+        } else if self.check(&TokenType::Unsafe) {
+            // The `unsafe` token, so a warning about the block points at it.
+            let unsafe_span = crate::syntax::Span {
+                line: self.peek().line,
+                column: self.peek().column,
+                length: self.peek().length,
+                expansion: self.expansion(),
+            };
+            self.advance();
             self.consume(&TokenType::LeftBrace, "Expected '{' after unsafe")?;
             let mut stmts = Vec::new();
             while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
@@ -851,7 +970,13 @@ impl<'a> Parser<'a> {
             return self.parse_as_casts(Expr::UnsafeBlock(UnsafeBlockExpr {
                 stmts,
                 ret,
-                span: Span::default(),
+                span: unsafe_span,
+                generated: false,
+                task: None,
+                fails_as: None,
+                cancels_on_err: None,
+                value_ty: None,
+                closure_body: false,
             }));
         } else if self.check(&TokenType::If) {
             // The `if` token, so a diagnostic about the `if` points at it.
@@ -859,6 +984,7 @@ impl<'a> Parser<'a> {
                 line: self.peek().line,
                 column: self.peek().column,
                 length: self.peek().length,
+                expansion: self.expansion(),
             };
             self.advance();
             let is_comptime = self.match_token(&TokenType::Comptime);
@@ -897,7 +1023,15 @@ impl<'a> Parser<'a> {
                 else_block,
                 span: if_span,
             }));
-        } else if self.match_token(&TokenType::Match) {
+        } else if self.check(&TokenType::Match) {
+            // The `match` token, so a diagnostic about the `match` points at it.
+            let match_span = Span {
+                line: self.peek().line,
+                column: self.peek().column,
+                length: self.peek().length,
+                expansion: self.expansion(),
+            };
+            self.advance();
             let at_statement = std::mem::take(&mut self.match_is_statement);
             let expr = self.parse_expr()?;
             self.consume(&TokenType::LeftBrace, "Expected '{' after match expr")?;
@@ -938,39 +1072,60 @@ impl<'a> Parser<'a> {
                         line: arm_token.line,
                         column: arm_token.column,
                         length: arm_token.length,
+                        expansion: self.expansion(),
                     },
                 });
             }
             return Ok(Expr::Match(MatchExpr {
                 expr: Box::new(expr),
                 arms,
-                span: Span::default(),
+                span: match_span,
             }));
         }
 
         let peeked_token = self.peek().clone();
         let mut expr = match peeked_token.kind {
-            TokenType::Transfer => {
-                self.advance();
+            TokenType::Transfer | TokenType::TransferAsync => {
+                let is_async = self.advance().kind == TokenType::TransferAsync;
                 self.consume(&TokenType::LeftParen, "Expected '(' after transfer")?;
                 let inner = self.parse_expr()?;
                 self.consume(&TokenType::Comma, "Expected ','")?;
-                let mem = self.parse_memory_space()?;
+                // `transfer(x, Topology::X[i])` names a device. The checker replaces this space
+                // with the memory that the declaration of the device gives.
+                let (mem, device) = if self.check(&TokenType::Topology) {
+                    let device = self.parse_topology()?;
+                    (
+                        crate::arch::builtin_default_space(&device.kind()),
+                        Some(device),
+                    )
+                } else {
+                    (self.parse_memory_space()?, None)
+                };
                 self.consume(&TokenType::RightParen, "Expected ')'")?;
                 Expr::Transfer(TransferExpr {
                     expr: Box::new(inner),
                     space: mem,
+                    device,
                     cost: None,
                     lowering: None,
+                    is_async,
+                    shared: false,
                     span: Span {
                         line: peeked_token.line,
                         column: peeked_token.column,
                         length: peeked_token.length,
+                        expansion: self.expansion(),
                     },
                 })
             }
             TokenType::LeftBracket => {
                 self.advance();
+                let span = Span {
+                    line: peeked_token.line,
+                    column: peeked_token.column,
+                    length: peeked_token.length,
+                    expansion: self.expansion(),
+                };
                 let mut elements = Vec::new();
                 if !self.check(&TokenType::RightBracket) {
                     loop {
@@ -981,10 +1136,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 self.consume(&TokenType::RightBracket, "Expected ']'")?;
-                Expr::Array(ArrayExpr {
-                    elements,
-                    span: Span::default(),
-                })
+                Expr::Array(ArrayExpr { elements, span })
             }
             TokenType::Memory => Expr::MemorySpace(MemorySpaceExpr {
                 space: self.parse_memory_space()?,
@@ -1000,6 +1152,7 @@ impl<'a> Parser<'a> {
                 let inner = self.parse_expr()?;
                 self.consume(&TokenType::RightParen, "Expected ')'")?;
                 Expr::FunctionCall(FunctionCallExpr {
+                    owner_type_args: None,
                     name: "Verified".to_string().into(),
                     type_args: None,
                     args: vec![inner],
@@ -1148,8 +1301,10 @@ impl<'a> Parser<'a> {
                         if is_macro {
                             self.advance(); // consume Bang
                             let token_tree = self.parse_token_tree()?;
+                            // Only `mlir!` has a `{ .. }` block after its arguments. After any
+                            // other macro the `{` is not its own, as in `if x == m!(a) {`.
                             let mut block_tree = None;
-                            if self.check(&TokenType::LeftBrace) {
+                            if s == "mlir" && self.check(&TokenType::LeftBrace) {
                                 block_tree = Some(self.parse_token_tree()?);
                             }
                             Expr::MacroCall(MacroCallExpr {
@@ -1163,6 +1318,7 @@ impl<'a> Parser<'a> {
                                 line: token.line,
                                 column: token.column,
                                 length: token.length,
+                                expansion: self.expansion(),
                             };
                             self.parse_identifier_expr(s.to_string(), span)?
                         }
@@ -1173,6 +1329,7 @@ impl<'a> Parser<'a> {
                             line: token.line,
                             column: token.column,
                             length: token.length,
+                            expansion: self.expansion(),
                         },
                     )?,
                     TokenType::Number(s) => {
@@ -1182,7 +1339,12 @@ impl<'a> Parser<'a> {
                         Expr::Number(NumberExpr {
                             value: num_str.into(),
                             ty: el_ty,
-                            span: Span::default(),
+                            span: crate::syntax::Span {
+                                line: token.line,
+                                column: token.column,
+                                length: token.length,
+                                expansion: self.expansion(),
+                            },
                         })
                     }
                     TokenType::StringLiteral(s) => Expr::StringLiteral(StringLiteralExpr {
@@ -1196,16 +1358,16 @@ impl<'a> Parser<'a> {
                         let mut ret_expr = None;
                         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
                             let stmt = self.parse_statement()?;
+                            // Only a last expression with no `;` is the block's value. A last
+                            // statement that ends with `;` stays one of the block's statements.
                             if self.check(&TokenType::RightBrace) {
                                 if let Statement::ExprStmt(ExprStmtStmt {
                                     expr: e,
-                                    has_semi,
+                                    has_semi: false,
                                     span: _,
                                 }) = stmt
                                 {
-                                    if !has_semi {
-                                        ret_expr = Some(Box::new(e));
-                                    }
+                                    ret_expr = Some(Box::new(e));
                                     break;
                                 }
                             }
@@ -1220,6 +1382,7 @@ impl<'a> Parser<'a> {
                                 line: token.line,
                                 column: token.column,
                                 length: token.length,
+                                expansion: self.expansion(),
                             },
                         })
                     }
@@ -1249,17 +1412,40 @@ impl<'a> Parser<'a> {
                             }
                             self.consume(&TokenType::Pipe, "Expected '|' after closure params")?;
                         }
-                        let body = Box::new(self.parse_expr()?);
+                        // `|x| -> T { .. }`: a closure with a return type has a block body.
+                        let ret_ty = if self.match_token(&TokenType::Arrow) {
+                            Some(self.parse_type()?)
+                        } else {
+                            None
+                        };
+                        let body = if self.check(&TokenType::LeftBrace) {
+                            Box::new(self.parse_closure_block()?)
+                        } else if ret_ty.is_some() {
+                            return Err(self.error(
+                                "A closure with a return type needs a block body: `|x| -> T { .. }`",
+                            ));
+                        } else {
+                            Box::new(self.parse_expr()?)
+                        };
                         Expr::Closure(ClosureExpr {
                             params,
                             body,
-                            ret_ty: None,
+                            ret_ty,
                             captures: vec![],
-                            span: Span::default(),
+                            span: Span {
+                                line: token.line,
+                                column: token.column,
+                                length: token.length,
+                                expansion: self.expansion(),
+                            },
                         })
                     }
+                    TokenType::Tasks => self.parse_task_block(TaskBlockKind::Tasks, &token)?,
+                    TokenType::Spawn if self.check(&TokenType::LeftBrace) => {
+                        self.parse_task_block(TaskBlockKind::Spawn, &token)?
+                    }
                     TokenType::Spawn => {
-                        self.consume(&TokenType::On, "Expected 'on' after 'spawn'")?;
+                        self.consume(&TokenType::On, "Expected 'on' or '{' after 'spawn'")?;
                         self.consume(&TokenType::LeftParen, "Expected '('")?;
                         let top = self.parse_topology()?;
                         self.consume(&TokenType::RightParen, "Expected ')'")?;
@@ -1293,7 +1479,9 @@ impl<'a> Parser<'a> {
                                 line: token.line,
                                 column: token.column,
                                 length: token.length,
+                                expansion: self.expansion(),
                             },
+                            arrivals: None,
                         })
                     }
                     TokenType::Unknown('"') => {
@@ -1309,7 +1497,7 @@ impl<'a> Parser<'a> {
             }
         };
 
-        // Postfix operators: .member, .method(), [index]
+        // Postfix operators: .member, .method(), [index], ?
         loop {
             if self.match_token(&TokenType::Dot) {
                 // The method name's own token, so a diagnostic about the call points at it.
@@ -1317,6 +1505,7 @@ impl<'a> Parser<'a> {
                     line: self.peek().line,
                     column: self.peek().column,
                     length: self.peek().length,
+                    expansion: self.expansion(),
                 };
                 let ident = match self.advance().kind.clone() {
                     TokenType::Identifier(s) => s.to_string(),
@@ -1384,6 +1573,7 @@ impl<'a> Parser<'a> {
                     line: self.peek().line,
                     column: self.peek().column,
                     length: self.peek().length,
+                    expansion: self.expansion(),
                 };
                 self.advance();
                 let index = self.parse_expr()?;
@@ -1395,6 +1585,19 @@ impl<'a> Parser<'a> {
                 });
             } else if self.check(&TokenType::As) {
                 expr = self.parse_as_casts(expr)?;
+            } else if self.check(&TokenType::Question) {
+                let token = self.advance();
+                let span = Span {
+                    line: token.line,
+                    column: token.column,
+                    length: token.length,
+                    expansion: self.expansion(),
+                };
+                expr = Expr::UnaryOp(UnaryOpExpr {
+                    op: UnaryOp::Try,
+                    expr: Box::new(expr),
+                    span,
+                });
             } else {
                 break;
             }
@@ -1403,7 +1606,77 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
+    /// The body of `tasks { .. }` or `spawn { .. }`, after the keyword `token`. A last
+    /// expression with no `;` is the value of the block.
+    fn parse_task_block(
+        &mut self,
+        kind: TaskBlockKind,
+        token: &Token<'a>,
+    ) -> ParseResult<'a, Expr> {
+        self.consume(&TokenType::LeftBrace, "Expected '{'")?;
+        let mut stmts = Vec::new();
+        while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+            self.parse_statement_into(&mut stmts)?;
+        }
+        let mut ret = None;
+        if let Some(Statement::ExprStmt(ExprStmtStmt {
+            expr,
+            has_semi: false,
+            span: _,
+        })) = stmts.last().cloned()
+        {
+            stmts.pop();
+            ret = Some(Box::new(expr));
+        }
+        self.consume(&TokenType::RightBrace, "Expected '}'")?;
+        Ok(Expr::TaskBlock(TaskBlockExpr {
+            kind,
+            stmts,
+            ret,
+            span: Span {
+                line: token.line,
+                column: token.column,
+                length: token.length,
+                expansion: self.expansion(),
+            },
+        }))
+    }
+
     /// `expr as T`, any number of times.
+    /// The block body of a closure, `{ ..; v }`: a plain block whose last expression with no
+    /// `;` is its value.
+    fn parse_closure_block(&mut self) -> ParseResult<'a, Expr> {
+        let brace = self.peek().clone();
+        self.consume(&TokenType::LeftBrace, "Expected '{'")?;
+        let mut stmts = Vec::new();
+        while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+            self.parse_statement_into(&mut stmts)?;
+        }
+        let mut ret = None;
+        if let Some(Statement::ExprStmt(ExprStmtStmt {
+            has_semi: false, ..
+        })) = stmts.last()
+        {
+            let Some(Statement::ExprStmt(e)) = stmts.pop() else {
+                unreachable!("matched above")
+            };
+            ret = Some(Box::new(e.expr));
+        }
+        self.consume(&TokenType::RightBrace, "Expected '}'")?;
+        let mut block = UnsafeBlockExpr::new(
+            stmts,
+            ret,
+            crate::syntax::Span {
+                line: brace.line,
+                column: brace.column,
+                length: brace.length,
+                expansion: self.expansion(),
+            },
+        );
+        block.closure_body = true;
+        Ok(Expr::UnsafeBlock(block))
+    }
+
     fn parse_as_casts(&mut self, mut expr: Expr) -> ParseResult<'a, Expr> {
         while self.check(&TokenType::As) {
             // The `as` token, so a diagnostic about the cast points at it.
@@ -1411,6 +1684,7 @@ impl<'a> Parser<'a> {
                 line: self.peek().line,
                 column: self.peek().column,
                 length: self.peek().length,
+                expansion: self.expansion(),
             };
             self.advance();
             let target_ty = self.parse_type()?;
@@ -1446,6 +1720,7 @@ mod tests {
             variant_name,
             payload,
             span: _,
+            type_args: _,
         }) = expr
         {
             assert_eq!(enum_name.as_ref(), "Option");
@@ -1463,6 +1738,7 @@ mod tests {
         // Enum variants with payloads are parsed as FunctionCall in the parser phase.
         // They are later rewritten to EnumVariant by Sema.
         if let Expr::FunctionCall(FunctionCallExpr {
+            owner_type_args: _,
             name,
             args,
             span: _,
@@ -1482,11 +1758,39 @@ mod tests {
     }
 
     #[test]
+    fn self_enum_constructions_keep_the_impl_type_arguments() {
+        let argument =
+            crate::parser::types::parse_type_text("*const Tensor<f32, [4], Memory::GPU_HBM>")
+                .unwrap();
+        for input in ["Self::None", "Self::Some(p)"] {
+            let mut lexer = Lexer::new(input);
+            let tokens = lexer.tokenize();
+            let mut parser = Parser::new(&tokens, input);
+            parser.impl_self = Some(Type::GenericInstance(
+                Box::new(Type::Enum("Opt".into(), None)),
+                vec![argument.clone()],
+            ));
+            let expr = parser.parse_expr().expect("enum construction");
+            let arguments = match &expr {
+                Expr::EnumVariant(expr) => &expr.type_args,
+                Expr::FunctionCall(expr) => &expr.owner_type_args,
+                _ => panic!("expected enum construction"),
+            };
+            assert_eq!(
+                arguments.as_deref(),
+                Some(std::slice::from_ref(&argument)),
+                "{input} retains its structural type arguments"
+            );
+        }
+    }
+
+    #[test]
     fn test_parse_generic_enum_variant() {
         let input = "Option<i32>::Some(x)";
         let expr = parse_expr(input);
         // Similarly, generic enum variants with payloads are FunctionCalls initially.
         if let Expr::FunctionCall(FunctionCallExpr {
+            owner_type_args: _,
             name,
             args,
             span: _,
@@ -1505,6 +1809,7 @@ mod tests {
         let input = "Vec<i32>::new()";
         let expr = parse_expr(input);
         if let Expr::FunctionCall(FunctionCallExpr {
+            owner_type_args: _,
             name,
             args,
             span: _,
@@ -1620,13 +1925,29 @@ mod tests {
     }
 
     #[test]
-    fn test_infer_scientific_notation_is_suffix_split() {
-        // infer_number_literal splits at first alphabetic char.
-        // "1e10" → num_part="1", suffix="e10" → Err (e10 is not a valid ElementType)
-        // This is a known limitation: scientific notation is not supported directly.
-        assert!(infer_number_literal("1e10").is_err());
-        // "3.4e39" → num_part="3.4", suffix="e39" → Err
-        assert!(infer_number_literal("3.4e39").is_err());
+    fn test_infer_scientific_notation() {
+        let (num, ty) = infer_number_literal("1e10").unwrap();
+        assert_eq!(num, "1e10");
+        assert_eq!(ty, None);
+        let (num, ty) = infer_number_literal("1.0e-15").unwrap();
+        assert_eq!(num, "1.0e-15");
+        assert_eq!(ty, None);
+        let (num, ty) = infer_number_literal("3.4E39").unwrap();
+        assert_eq!(num, "3.4E39");
+        assert_eq!(ty, None);
+        let (num, ty) = infer_number_literal("1e-15f64").unwrap();
+        assert_eq!(num, "1e-15");
+        assert_eq!(ty, Some(ElementType::F64));
+        let (num, ty) = infer_number_literal("1.5E3f32").unwrap();
+        assert_eq!(num, "1.5E3");
+        assert_eq!(ty, Some(ElementType::F32));
+    }
+
+    #[test]
+    fn test_default_scientific_is_float() {
+        assert_eq!(default_number_elem("1e-15"), ElementType::F32);
+        // 3.4e39 overflows f32 but fits f64
+        assert_eq!(default_number_elem("3.4e39"), ElementType::F64);
     }
 
     #[test]
@@ -1970,12 +2291,32 @@ mod tests {
             assert_eq!(arms.len(), 2);
             assert!(matches!(
                 &arms[0].pattern,
-                Pattern::Literal(Expr::Number(_))
+                Pattern::Literal(lit) if matches!(**lit, Expr::Number(_))
             ));
             assert!(matches!(&arms[1].pattern, Pattern::Identifier(_)));
         } else {
             panic!("Expected Match, got {:?}", expr);
         }
+    }
+
+    #[test]
+    fn test_parse_match_with_bool_and_negative_literals() {
+        let expr = parse_expr("match x { true => { a; } false => { b; } -1 => { c; } }");
+        let Expr::Match(MatchExpr { arms, .. }) = expr else {
+            panic!("Expected Match, got {:?}", expr);
+        };
+        let literal = |i: usize| match &arms[i].pattern {
+            Pattern::Literal(lit) => match &**lit {
+                Expr::Identifier(id) => id.name.to_string(),
+                Expr::Number(n) => n.value.to_string(),
+                other => panic!("Expected true, false or a number, got {:?}", other),
+            },
+            other => panic!("Expected a literal pattern, got {:?}", other),
+        };
+        assert_eq!(
+            (literal(0), literal(1), literal(2)),
+            ("true".into(), "false".into(), "-1".into())
+        );
     }
 
     #[test]
@@ -2167,6 +2508,38 @@ mod tests {
         } else {
             panic!("Expected Closure, got {:?}", expr);
         }
+    }
+
+    #[test]
+    fn a_closure_has_a_block_body_and_a_written_type() {
+        let expr = parse_expr("|x : i32| -> i32 { let y = x; y }");
+        let Expr::Closure(ClosureExpr { body, ret_ty, .. }) = expr else {
+            panic!("expected a closure, got {expr:?}");
+        };
+        assert_eq!(ret_ty, Some(Type::Scalar(ElementType::I32)));
+        let Expr::UnsafeBlock(block) = &*body else {
+            panic!("expected a block body, got {body:?}");
+        };
+        assert!(
+            block.closure_body,
+            "the body is not marked as the body of a closure"
+        );
+        assert_eq!(block.stmts.len(), 1);
+        assert!(block.ret.is_some(), "the block has no last value");
+    }
+
+    #[test]
+    fn a_closure_with_a_written_type_needs_a_block() {
+        let input = "|x : i32| -> i32 x";
+        let tokens = Lexer::new(input).tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        let error = parser
+            .parse_expr()
+            .expect_err("a body that is not a block parsed");
+        assert!(
+            format!("{error:?}").contains("needs a block body"),
+            "another error: {error:?}"
+        );
     }
 
     #[test]

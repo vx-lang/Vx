@@ -1,0 +1,35 @@
+//===- eprint_and_a_failed_check_go_to_stderr.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `eprint!` and `eprintln!` write to standard error, and `print!` and `println!` to standard
+// output. A failed check, here a division by zero, writes its message to standard error too. So
+// what the program prints stays apart from its errors.
+//
+// RUN: not vxc %s 2>&1 >/dev/null | FileCheck %s --check-prefix=ERR
+// RUN: not vxc %s --legacy-codegen 2>&1 >/dev/null | FileCheck %s --check-prefix=ERR
+// RUN: not vxc %s 2>/dev/null | FileCheck %s --check-prefix=OUT
+// ERR: to standard error 2
+// ERR-NEXT: partial line
+// ERR-NEXT: attempt to divide by zero
+// ERR-NOT: to standard output
+// OUT: to standard output 1
+// OUT-NOT: standard error
+// OUT-NOT: partial line
+// OUT-NOT: divide by zero
+
+fn divide(a : i32, b : i32) -> i32 {
+  return a / b;
+}
+
+fn main() -> i32 {
+  println!("to standard output {}", 1);
+  eprintln!("to standard error {}", 2);
+  eprint!("partial ");
+  eprintln!("line");
+  println!("{}", divide(10, 0));
+  return 0;
+}

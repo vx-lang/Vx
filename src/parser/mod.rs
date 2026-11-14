@@ -39,11 +39,14 @@ pub enum ParserError<'a> {
 }
 
 impl<'a> ParserError<'a> {
-    pub fn format(&self, source: &str) -> String {
+    /// Render the error with the source line it points at. `file` is the file the source came
+    /// from, printed before the line and column; `None` for source that has no file.
+    pub fn format(&self, source: &str, file: Option<&str>) -> String {
         match self {
             ParserError::UnexpectedToken { expected, found } => {
                 crate::error::format_compiler_error(
                     source,
+                    file,
                     found.line,
                     found.column,
                     found.length.max(1),
@@ -54,14 +57,16 @@ impl<'a> ParserError<'a> {
             }
             ParserError::Custom { message, token } => crate::error::format_compiler_error(
                 source,
+                file,
                 token.line,
                 token.column,
                 token.length.max(1),
                 message,
             ),
-            ParserError::EndOfFile { expected } => {
-                format!("Unexpected end of file. {}", expected)
-            }
+            ParserError::EndOfFile { expected } => match file {
+                Some(file) => format!("Unexpected end of file in {}. {}", file, expected),
+                None => format!("Unexpected end of file. {}", expected),
+            },
         }
     }
 }
@@ -93,6 +98,8 @@ pub struct Parser<'a> {
     /// Set by `parse_statement_into` when the statement starts with `match`, and taken by that
     /// `match`: only a `match` that is a whole statement may put a temporary before it.
     match_is_statement: bool,
+    /// Inside an impl block, the type the impl is for: what `Self` means there.
+    impl_self: Option<crate::syntax::Type>,
 }
 
 impl<'a> Parser<'a> {
@@ -103,7 +110,7 @@ impl<'a> Parser<'a> {
         let mut parser = Parser::new(&tokens, cleaned_source);
         parser
             .parse_function()
-            .map_err(|e| e.format(cleaned_source))
+            .map_err(|e| e.format(cleaned_source, None))
             .expect("Failed to parse function source")
     }
     pub fn new(tokens: &'a [Token<'a>], source: &'a str) -> Self {
@@ -118,6 +125,7 @@ impl<'a> Parser<'a> {
             tuple_lets: 0,
             prefix_stmts: Vec::new(),
             match_is_statement: false,
+            impl_self: None,
         }
     }
 
@@ -147,6 +155,23 @@ impl<'a> Parser<'a> {
         out.push(stmt);
         out.append(&mut self.pending_stmts);
         Ok(())
+    }
+
+    /// The macro expansion these tokens came from, or 0 for source code. One parser reads one
+    /// expansion, so every span it makes carries the same id.
+    pub(crate) fn expansion(&self) -> u32 {
+        self.tokens.first().map_or(0, |t| t.expansion)
+    }
+
+    /// The place of the next token, the one that `advance` reads next.
+    pub(crate) fn next_span(&self) -> crate::syntax::Span {
+        let token = self.peek();
+        crate::syntax::Span {
+            line: token.line,
+            column: token.column,
+            length: token.length,
+            expansion: self.expansion(),
+        }
     }
 
     pub(crate) fn peek(&self) -> &'a Token<'a> {
@@ -281,7 +306,7 @@ mod tests {
             _ => panic!("Expected UnexpectedToken error, got {:?}", err),
         }
 
-        let formatted = err.format(input);
+        let formatted = err.format(input, None);
         assert!(formatted.contains("("));
         assert!(formatted.contains("fn foo +"));
     }
@@ -303,7 +328,7 @@ mod tests {
             _ => panic!("Expected EndOfFile error, got {:?}", err),
         }
 
-        let formatted = err.format(input);
+        let formatted = err.format(input, None);
         assert!(formatted.contains("Unexpected end of file"));
         assert!(formatted.contains("("));
     }
@@ -398,7 +423,31 @@ mod tests {
         // Any identifier that is not a built-in is a user-defined topology.
         assert_eq!(
             parse_topology("Topology::MyTPU"),
-            Topology::Custom(crate::symbol::Symbol::from("MyTPU"))
+            Topology::Custom(crate::symbol::Symbol::from("MyTPU"), None)
+        );
+    }
+
+    #[test]
+    fn a_declared_topology_takes_an_index_or_a_slice() {
+        assert_eq!(
+            parse_topology("Topology::Dev[1]"),
+            Topology::declared_device("Dev".into(), 1)
+        );
+        assert_eq!(
+            parse_topology("Topology::Dev[0..2]"),
+            Topology::Slice(
+                Box::new(Topology::declared_device("Dev".into(), 0)),
+                Box::new(Expr::Number(NumberExpr::new(
+                    "0".to_string(),
+                    None,
+                    Span::default()
+                ))),
+                Box::new(Expr::Number(NumberExpr::new(
+                    "2".to_string(),
+                    None,
+                    Span::default()
+                ))),
+            )
         );
     }
 
@@ -427,6 +476,27 @@ mod tests {
             .descriptor
             .visibility
             .contains(&crate::syntax::MemorySpace::LocalSRAM));
+    }
+
+    /// `count:` is a number of devices from 1 to `MAX_TOPOLOGY_COUNT`. No `count:` is one device.
+    #[test]
+    fn a_topology_count_is_from_1_to_the_limit() {
+        let count = |field: &str| {
+            let input = format!("Topology Dev {{ memory: Memory::Local_SRAM, {field} }}");
+            let mut lexer = Lexer::new(&input);
+            let tokens = lexer.tokenize();
+            let mut parser = Parser::new(&tokens, &input);
+            // `None` when the parser refuses the declaration.
+            parser
+                .parse_topology_decl()
+                .ok()
+                .map(|d| d.descriptor.count)
+        };
+        assert_eq!(count("count: 2"), Some(Some(2)));
+        assert_eq!(count("count: 65536"), Some(Some(65536)));
+        assert_eq!(count("visible: [Memory::Local_SRAM]"), Some(None));
+        assert_eq!(count("count: 0"), None);
+        assert_eq!(count("count: 65537"), None);
     }
 
     #[test]
@@ -476,12 +546,12 @@ mod tests {
         );
     }
 
-    /// The three edge-cost forms. An edge carries exactly one cost source, so the
+    /// The four edge-cost forms. An edge carries exactly one cost source, so the
     /// grammar has to be able to express "no cost declared" — otherwise a hop whose cost is
     /// derivable from its endpoints' bandwidths has no legal spelling, and every `fleet/` file was
     /// forced to declare a second one (E6013).
     #[test]
-    fn transfer_edges_carry_one_of_three_cost_forms() {
+    fn transfer_edges_carry_one_of_four_cost_forms() {
         use crate::arch::EdgeCost;
         use crate::syntax::{Bandwidth, RatePer};
         let edges = |src: &str| {
@@ -513,6 +583,10 @@ mod tests {
         let e = edges("Topology T { memory: Memory::GPU_HBM, transfer Memory::GPU_HBM -> Memory::Local_SRAM : 300 relaxed }");
         assert_eq!(e[0].cost, EdgeCost::Fixed(300));
         assert!(!e[0].sync);
+
+        // `shared`: both sides address one memory, so the hop copies nothing.
+        let e = edges("Topology T { memory: Memory::GPU_HBM, transfer Memory::GPU_HBM -> Memory::CPU_DRAM : shared }");
+        assert_eq!(e[0].cost, EdgeCost::Shared);
     }
 
     #[test]
@@ -681,7 +755,7 @@ mod tests {
         // topology rather than erroring (its memory model comes from the registry).
         assert_eq!(
             parse_topology("Topology::Quantum"),
-            Topology::Custom(crate::symbol::Symbol::from("Quantum"))
+            Topology::Custom(crate::symbol::Symbol::from("Quantum"), None)
         );
     }
 
@@ -693,7 +767,7 @@ mod tests {
         let tokens = lexer.tokenize();
         let mut parser = Parser::new(&tokens, input);
         let err = parser.parse_topology().unwrap_err();
-        let msg = err.format(input);
+        let msg = err.format(input, None);
         assert!(msg.contains("Expected index for NPU"), "Got: {}", msg);
     }
 

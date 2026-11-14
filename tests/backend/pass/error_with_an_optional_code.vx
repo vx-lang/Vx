@@ -1,0 +1,45 @@
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// Both option states survive struct returns, by-value extraction, and borrowed access.
+// EXPECT: -7 99 -7 99
+
+import core::option;
+
+struct Error {
+  code: Option<i32>,
+}
+
+fn with_code() -> Error {
+  return Error {
+    code: Option<i32>::Some(-7)
+  };
+}
+
+fn without_code() -> Error {
+  return Error {
+    code: Option<i32>::None()
+  };
+}
+
+fn take_code(error: Error) -> Option<i32> {
+  return error.code;
+}
+
+fn borrowed_code(error: &Error) -> i32 {
+  return error.code.unwrap_or(99);
+}
+
+fn main() -> i32 {
+  print(take_code(with_code()).unwrap_or(99));
+  print!(" ");
+  print(take_code(without_code()).unwrap_or(99));
+  print!(" ");
+  let present = with_code();
+  let absent = without_code();
+  print(borrowed_code(&present));
+  print!(" ");
+  print(borrowed_code(&absent));
+  return 0;
+}

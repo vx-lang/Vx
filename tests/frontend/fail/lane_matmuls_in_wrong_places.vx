@@ -1,0 +1,90 @@
+//===- lane_matmuls_in_wrong_places.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A region with `across` loops that launches allows a matmul of tiles only as the statement
+// `c = c + a @ b` or `c = a @ b` in the code of a subgroup loop. Each other `@` gets E6032: in the
+// code of a block, in a lane loop, and as the value of a `let`.
+//
+// RUN: not vxc %s --host default --machine fleet/a100-80.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6032
+// CHECK: Error[E6032] at {{.*}}lane_matmuls_in_wrong_places.vx:30:31:{{.*}}only as a statement `c = c + a @ b` or `c = a @ b` in the code of a subgroup loop
+// Each lane of the lane loop would write all of `acc[w]`.
+// CHECK: Error[E6032] at {{.*}}lane_matmuls_in_wrong_places.vx:51:11:{{.*}}two passes of this lane loop may write the same element of `acc`
+// CHECK: Error[E6032] at {{.*}}lane_matmuls_in_wrong_places.vx:51:44:{{.*}}only as a statement
+// CHECK: Error[E6032] at {{.*}}lane_matmuls_in_wrong_places.vx:74:32:{{.*}}only as a statement
+
+pub fn in_the_code_of_a_block(out : &mut Tensor<f32, [?, 16, 8], Memory::HBM>, blocks : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..blocks across blocks {
+      let mut sa = unsafe { Tensor<bf16, [16, 16], Memory::SMEM>::uninit() };
+      let mut sb = unsafe { Tensor<bf16, [16, 8], Memory::SMEM>::uninit() };
+      let mut acc = unsafe { Tensor<f32, [16, 8], Memory::SMEM>::uninit() };
+      for i in 0..16 across lanes {
+        for k in 0..16 {
+          sa[i][k] = 1.0;
+        }
+      }
+      acc = acc + (sa as f32) @ (sb as f32);
+      for i in 0..16 across lanes {
+        for j in 0..8 {
+          out[blk][i][j] = acc[i][j];
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn in_a_lane_loop(out : &mut Tensor<f32, [?, 2, 16, 8], Memory::HBM>, blocks : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..blocks across blocks {
+      let mut sa = unsafe {
+        Tensor<bf16, [2, 16, 16], Memory::SMEM>::uninit()
+      };
+      let mut sb = unsafe { Tensor<bf16, [2, 16, 8], Memory::SMEM>::uninit() };
+      let mut acc = unsafe { Tensor<f32, [2, 16, 8], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        for t in 0..32 across lanes {
+          acc[w] = acc[w] + (sa[w] as f32) @ (sb[w] as f32);
+        }
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for j in 0..8 {
+              out[blk][w][i][j] = acc[w][i][j];
+            }
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn as_a_value(out : &mut Tensor<f32, [?, 2, 16, 8], Memory::HBM>, blocks : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..blocks across blocks {
+      let mut sa = unsafe {
+        Tensor<bf16, [2, 16, 16], Memory::SMEM>::uninit()
+      };
+      let mut sb = unsafe { Tensor<bf16, [2, 16, 8], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        let p = (sa[w] as f32) @ (sb[w] as f32);
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for j in 0..8 {
+              out[blk][w][i][j] = p[i][j];
+            }
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

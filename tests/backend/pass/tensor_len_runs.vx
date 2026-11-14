@@ -34,11 +34,11 @@ fn fill(t : &mut Tensor<f32, [?]>, v : f32) -> i32 {
 }
 
 fn main() -> i32 {
-  let a = Tensor<f32, [4]>::uninit();
+  let a = unsafe { Tensor<f32, [4]>::uninit() };
   expect_eq(a.len(), 4);
 
   // The outermost axis, not the element count.
-  let m = Tensor<f32, [2, 3]>::uninit();
+  let m = unsafe { Tensor<f32, [2, 3]>::uninit() };
   expect_eq(m.len(), 2);
   expect_eq(m.extent(1), 3);
 

@@ -12,7 +12,7 @@ fn main() -> i32 {
   spawn on(Topology::ANE) {
     // CHECK-NOT: error
     // Pinned to NPU/ANE is accessible from ANE natively
-    let valid = t_ane;
+    let valid = t_ane.clone();
   }
 
   return 0;

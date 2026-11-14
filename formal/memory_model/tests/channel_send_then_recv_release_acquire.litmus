@@ -1,0 +1,11 @@
+LISA channel_send_then_recv_release_acquire
+(* A send (P0) writes its value, then a release store sets the slot to 1 (full). The recv (P1)
+   waits for 1 with an acquire load, then reads the value. The value reaches P1, with no race.
+   Expect: never, no data race. *)
+{ slot = 0; value = 0; }
+ P0                  | P1                   ;
+ w[plain] value 1    | r[acq] r0 slot       ;
+ w[rel] slot 1       | r[plain] r1 value    ;
+scopes: (system P0 P1)
+filter (1:r0 = 1)
+exists (1:r1 = 0)

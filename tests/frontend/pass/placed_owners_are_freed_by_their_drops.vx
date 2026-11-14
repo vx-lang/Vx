@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s # flat-codegen
 //
 // A tensor placed in GPU memory is freed by the drop of whoever owns it last, through the
 // plugin that allocated it (`vx.free` on its topology, 500 for the GPU):
@@ -46,14 +46,14 @@ fn sum(d : Tensor<f32, [4], Memory::GPU_HBM>) -> f32 {
 }
 
 fn main() -> i32 {
-  let mut h = Tensor<f32, [4]>::uninit();
+  let mut h = unsafe { Tensor<f32, [4]>::uninit() };
   for i in 0..4 {
     h[i] = i as f32;
   }
   let given = place(h);
   print(sum(given));
   print!(" ");
-  let mut h2 = Tensor<f32, [4]>::uninit();
+  let mut h2 = unsafe { Tensor<f32, [4]>::uninit() };
   for i in 0..4 {
     h2[i] = 1.5;
   }

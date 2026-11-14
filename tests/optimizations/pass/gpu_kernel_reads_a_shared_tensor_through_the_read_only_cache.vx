@@ -1,0 +1,46 @@
+//===- gpu_kernel_reads_a_shared_tensor_through_the_read_only_cache.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Nothing writes a `&` tensor while the kernel runs, so the GPU reads it through the read-only
+// cache: `ld.global.nc`. The kernel writes a `&mut` tensor, so its reads stay `ld.global`.
+//
+// REQUIRES: flat-codegen
+// RUN: env -u VX_GPU_CHIP vxc %s --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s < %t.ptx
+//
+// CHECK-LABEL: .entry read_shared(
+// CHECK:       ld.global.nc.b32
+// CHECK-LABEL: .entry add_one(
+// CHECK-NOT:   ld.global.nc
+// CHECK:       ld.global.b32
+// CHECK-NOT:   ld.global.nc
+
+pub fn read_shared(out : &mut Tensor<u32, [?], Memory::HBM>, w : &Tensor<u32, [?], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for row in 0..rows across blocks {
+      for lane in 0..32 across lanes {
+        out[row * 32 + lane] = w[row * 32 + lane] + 1;
+      }
+    }
+  }
+  return;
+}
+
+pub fn add_one(t : &mut Tensor<u32, [?], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for row in 0..rows across blocks {
+      for lane in 0..32 across lanes {
+        t[row * 32 + lane] = t[row * 32 + lane] + 1;
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

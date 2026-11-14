@@ -98,6 +98,9 @@ pub struct Span {
     pub line: usize,
     pub column: usize,
     pub length: usize,
+    /// Which macro expansion made this node, or 0 for source code. Two expansions of one
+    /// macro share positions, so this is what tells their nodes apart.
+    pub expansion: u32,
 }
 
 /// Do two topology indices denote the same device?
@@ -129,6 +132,20 @@ fn topology_index_eq(a: &Expr, b: &Expr) -> bool {
         };
     }
     a == b
+}
+
+/// The index of a declared topology. A bare name is device 0, so `X` and `X[0]` are one device.
+/// Constant indices compare by value, also with a bare name, so the relation stays transitive.
+fn declared_index_eq(a: &Option<Box<Expr>>, b: &Option<Box<Expr>>) -> bool {
+    let value = |e: &Option<Box<Expr>>| match e {
+        None => Some(0),
+        Some(e) => crate::arch::const_topology_index(e),
+    };
+    match (value(a), value(b), a, b) {
+        (Some(x), Some(y), _, _) => x == y,
+        (_, _, Some(x), Some(y)) => topology_index_eq(x, y),
+        _ => false,
+    }
 }
 
 /// Two topologies are equal when they name the SAME DEVICE.
@@ -183,7 +200,9 @@ impl PartialEq for Topology {
             (Topology::NPU(a), Topology::NPU(b))
             | (Topology::AccCore(a), Topology::AccCore(b))
             | (Topology::GPU(a), Topology::GPU(b)) => topology_index_eq(a, b),
-            (Topology::Custom(a), Topology::Custom(b)) => a == b,
+            (Topology::Custom(a, ia), Topology::Custom(b, ib)) => {
+                a == b && declared_index_eq(ia, ib)
+            }
             (Topology::Slice(ba, sa, ea), Topology::Slice(bb, sb, eb)) => {
                 ba == bb && topology_index_eq(sa, sb) && topology_index_eq(ea, eb)
             }
@@ -228,6 +247,9 @@ pub struct Placement {
     /// topology whose memory is not its like-named space are indistinguishable from the pair
     /// alone.
     stated: Stated,
+    /// `aligned(N)` in the tensor type: the tensor starts at a multiple of N bytes. `None` is the
+    /// least alignment of the space.
+    pub alignment: Option<u64>,
 }
 
 /// Which half of a [`Placement`] the source wrote.
@@ -245,10 +267,12 @@ pub enum Written {
 }
 
 /// Two spellings of one location are one type, so which projection the source happened to write
-/// is not part of equality -- that is the whole point of carrying both.
+/// is not part of equality -- that is the whole point of carrying both. The alignment is.
 impl PartialEq for Placement {
     fn eq(&self, other: &Self) -> bool {
-        self.topology == other.topology && self.space == other.space
+        self.topology == other.topology
+            && self.space == other.space
+            && self.alignment == other.alignment
     }
 }
 
@@ -260,6 +284,7 @@ impl Placement {
             topology,
             space,
             stated: Stated::Device,
+            alignment: None,
         }
     }
 
@@ -271,11 +296,12 @@ impl Placement {
     /// other direction -- and `complete` replaces it.
     pub fn at(space: MemorySpace) -> Self {
         let topology = crate::arch::owning_topology_in(&space, &Default::default())
-            .unwrap_or_else(|_| Topology::Custom(Symbol::from(space.name().as_str())));
+            .unwrap_or_else(|_| Topology::Custom(Symbol::from(space.name().as_str()), None));
         Self {
             topology,
             space,
             stated: Stated::Space,
+            alignment: None,
         }
     }
 
@@ -290,6 +316,7 @@ impl Placement {
             topology,
             space,
             stated: Stated::Space,
+            alignment: None,
         }
     }
 
@@ -333,7 +360,7 @@ impl Placement {
     pub fn as_written(&self) -> String {
         match self.stated {
             Stated::Device => match self.topology.kind() {
-                TopologyKind::Custom(name) => format!("Topology::{name}"),
+                TopologyKind::Custom(_) => self.topology.to_string(),
                 builtin => format!("Topology::{builtin:?}"),
             },
             Stated::Space => format!("Memory::{}", self.space.name()),
@@ -363,7 +390,10 @@ pub enum Topology {
     /// A user-defined topology, identified by name and described in the topology
     /// registry (`crate::arch::topology_descriptor`). This is the open identity that
     /// lets users add their own topologies without editing the language.
-    Custom(Symbol),
+    ///
+    /// The index picks one device of a topology that declares `count:`. A bare name has
+    /// `None`, and it means device 0.
+    Custom(Symbol, Option<Box<Expr>>),
     Current,
 }
 
@@ -409,6 +439,12 @@ impl MemorySpace {
         }
     }
 }
+
+/// `on Topology::Any` says that a function runs where it is called. The parser writes it as a
+/// generic topology parameter named `ANY_TOPOLOGY_PARAM`. No program can write that name, so no
+/// parameter type can bind it.
+pub const ANY_TOPOLOGY: &str = "Any";
+pub const ANY_TOPOLOGY_PARAM: &str = "$Any";
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum TopologyKind {
@@ -460,7 +496,10 @@ impl std::fmt::Display for Topology {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Topology::")?;
         match self {
-            Topology::NPU(e) | Topology::AccCore(e) | Topology::GPU(e) => {
+            Topology::NPU(e)
+            | Topology::AccCore(e)
+            | Topology::GPU(e)
+            | Topology::Custom(_, Some(e)) => {
                 write!(f, "{}[", self.kind())?;
                 write_index(f, e)?;
                 write!(f, "]")
@@ -473,6 +512,24 @@ impl std::fmt::Display for Topology {
                 write!(f, "]")
             }
             _ => write!(f, "{}", self.kind()),
+        }
+    }
+}
+
+impl TopologyKind {
+    /// The built-in topology a name means, or `Custom` for any other name.
+    pub fn from_name(name: &str) -> TopologyKind {
+        match name {
+            "CPU" => TopologyKind::CPU,
+            "NPU" => TopologyKind::NPU,
+            "AccCore" => TopologyKind::AccCore,
+            "AMX" => TopologyKind::AMX,
+            "ANE" => TopologyKind::ANE,
+            "GPU" => TopologyKind::GPU,
+            "CpuAvx512" | "CPU_AVX512" => TopologyKind::CpuAvx512,
+            "CpuNeon" | "CPU_Neon" => TopologyKind::CpuNeon,
+            "Current" => TopologyKind::Current,
+            other => TopologyKind::Custom(crate::symbol::Symbol::from(other)),
         }
     }
 }
@@ -492,6 +549,18 @@ impl Topology {
         ))))
     }
 
+    /// `Topology::<name>[index]`, device `index` of a declared topology.
+    pub fn declared_device(name: Symbol, index: i64) -> Topology {
+        Topology::Custom(
+            name,
+            Some(Box::new(Expr::Number(crate::syntax::NumberExpr::new(
+                index.to_string(),
+                None,
+                crate::syntax::Span::default(),
+            )))),
+        )
+    }
+
     pub fn kind(&self) -> TopologyKind {
         match self {
             Topology::CPU => TopologyKind::CPU,
@@ -502,8 +571,13 @@ impl Topology {
             Topology::GPU(_) => TopologyKind::GPU,
             Topology::CpuAvx512 => TopologyKind::CpuAvx512,
             Topology::CpuNeon => TopologyKind::CpuNeon,
-            Topology::Slice(..) => TopologyKind::Slice,
-            Topology::Custom(name) => TopologyKind::Custom(name.clone()),
+            // A slice of a declared topology is devices of that topology, with its memory and its
+            // element types. The built-in `Slice` kind is a range of NPUs.
+            Topology::Slice(base, ..) => match base.kind() {
+                declared @ TopologyKind::Custom(_) => declared,
+                _ => TopologyKind::Slice,
+            },
+            Topology::Custom(name, _) => TopologyKind::Custom(name.clone()),
             Topology::Current => TopologyKind::Current,
         }
     }
@@ -519,7 +593,10 @@ impl Topology {
             _ => None,
         };
         match self {
-            Topology::NPU(e) | Topology::AccCore(e) | Topology::GPU(e) => literal(e),
+            Topology::NPU(e)
+            | Topology::AccCore(e)
+            | Topology::GPU(e)
+            | Topology::Custom(_, Some(e)) => literal(e),
             _ => None,
         }
     }
@@ -557,6 +634,9 @@ impl Topology {
             Topology::NPU(e) => Topology::NPU(Box::new(e.substitute(mapping))),
             Topology::GPU(e) => Topology::GPU(Box::new(e.substitute(mapping))),
             Topology::AccCore(e) => Topology::AccCore(Box::new(e.substitute(mapping))),
+            Topology::Custom(name, Some(e)) => {
+                Topology::Custom(name.clone(), Some(Box::new(e.substitute(mapping))))
+            }
             Topology::Slice(base, start, end) => Topology::Slice(
                 Box::new(base.substitute(mapping)),
                 Box::new(start.substitute(mapping)),
@@ -590,7 +670,8 @@ impl Topology {
             Topology::Slice(base, start, end) => {
                 format!("{}[{}..{}]", base.display_name(), idx(start), idx(end))
             }
-            Topology::Custom(name) => name.to_string(),
+            Topology::Custom(name, None) => name.to_string(),
+            Topology::Custom(name, Some(e)) => format!("{name}[{}]", idx(e)),
             Topology::Current => "Current".to_string(),
         }
     }
@@ -700,9 +781,10 @@ pub fn substitute_type_name(
     name: &str,
     mapping: &std::collections::HashMap<Symbol, Type>,
 ) -> String {
-    // `&T` and `&mut T`: the reference stays, what it refers to is substituted.
+    // `&T`, `&mut T`, `*mut T` and `*const T`: the reference or pointer stays, what it refers
+    // to is substituted.
     let trimmed = name.trim();
-    for prefix in ["&mut ", "&"] {
+    for prefix in ["&mut ", "&", "*mut ", "*const "] {
         if let Some(rest) = trimmed.strip_prefix(prefix) {
             return format!("{prefix}{}", substitute_type_name(rest, mapping));
         }
@@ -744,13 +826,37 @@ pub fn substitute_type_name(
     )
 }
 
+/// The memory variable that a tensor's placement names: `M` in `Tensor<f32, [4], Memory::M>`, where
+/// `M` may be a `<M : Memory>` parameter. Only a written memory can be one.
+pub fn memory_variable(p: &Placement) -> Option<&Symbol> {
+    match (&p.space, p.written()) {
+        (MemorySpace::Custom(name), Written::Space) => Some(name),
+        _ => None,
+    }
+}
+
+/// `place`, with a memory variable replaced by the memory that `mapping` binds it to.
+pub(crate) fn substitute_memory(
+    place: &Option<Placement>,
+    mapping: &std::collections::HashMap<Symbol, Type>,
+) -> Option<Placement> {
+    let bound = place
+        .as_ref()
+        .and_then(memory_variable)
+        .and_then(|name| mapping.get(name))
+        .and_then(Type::as_memory_argument);
+    match bound {
+        Some(memory) => memory.clone(),
+        None => place.clone(),
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum Type {
     /// A shaped tensor. Its extents are part of the type, so `[2, 3]` and `[4, 5]` are
     /// different types and get different monomorphs (Vx#401); each is a [`Dim`], so a
     /// run-time extent is spelled per position rather than by a different type.
     Tensor(ElementType, Vec<Dim>, Option<Placement>),
-    Matrix,
     Ref(Box<Type>, MemorySpace),
     Borrow {
         inner: Box<Type>,
@@ -849,7 +955,6 @@ impl Type {
         match self {
             Type::Ref(_, _)
             | Type::Tensor(_, _, _)
-            | Type::Matrix
             | Type::Verified(_)
             | Type::Pinned(_, _)
             | Type::Enum(_, _) => true,
@@ -863,6 +968,10 @@ impl Type {
 
     pub fn substitute(&self, mapping: &std::collections::HashMap<Symbol, Type>) -> Type {
         match self {
+            // A trait's `Self` has no concrete target while the parser reads its body.
+            Type::Struct(name, None) if name.as_ref() == "Self" => {
+                mapping.get(name).cloned().unwrap_or_else(|| self.clone())
+            }
             Type::Generic(name, _) => {
                 if let Some(concrete) = mapping.get(name) {
                     concrete.clone()
@@ -887,9 +996,11 @@ impl Type {
                 is_mut: *is_mut,
                 region_id: *region_id,
             },
-            Type::Pointer(inner, mem, is_mut) => {
-                Type::Pointer(Box::new(inner.substitute(mapping)), mem.clone(), *is_mut)
-            }
+            Type::Pointer(inner, mem, is_mut) => Type::Pointer(
+                Box::new(inner.substitute(mapping)),
+                substitute_memory(mem, mapping),
+                *is_mut,
+            ),
             Type::Tensor(el_ty, dims, top) => {
                 let new_el_ty = if let ElementType::Generic(ref name) = el_ty {
                     if let Some(Type::Scalar(concrete_el)) = mapping.get(name) {
@@ -901,7 +1012,7 @@ impl Type {
                     el_ty.clone()
                 };
                 let new_dims = dims.iter().map(|d| d.substitute(mapping)).collect();
-                Type::Tensor(new_el_ty, new_dims, top.clone())
+                Type::Tensor(new_el_ty, new_dims, substitute_memory(top, mapping))
             }
             Type::Ref(inner, mem) => Type::Ref(Box::new(inner.substitute(mapping)), mem.clone()),
             Type::Verified(inner) => Type::Verified(Box::new(inner.substitute(mapping))),
@@ -989,8 +1100,7 @@ impl Type {
                 params.iter().any(Type::mentions_tensor) || ret.mentions_tensor()
             }
             Type::Module(_, exports) => exports.values().any(Type::mentions_tensor),
-            Type::Matrix
-            | Type::Scalar(_)
+            Type::Scalar(_)
             | Type::Struct(..)
             | Type::Enum(..)
             | Type::Generic(..)
@@ -1018,14 +1128,27 @@ impl Type {
                 params.iter().any(Type::states_a_location) || ret.states_a_location()
             }
             Type::Module(_, exports) => exports.values().any(Type::states_a_location),
-            Type::Matrix
-            | Type::Scalar(_)
+            Type::Scalar(_)
             | Type::Struct(..)
             | Type::Enum(..)
             | Type::Generic(..)
             | Type::Simd(..)
             | Type::Const(_)
             | Type::Unknown => false,
+        }
+    }
+
+    /// The memory that a `<M : Memory>` parameter is bound to, as the mapping of an instance holds
+    /// it: a pointer of unknown type into that memory. `None` inside is host memory.
+    pub fn memory_argument(memory: Option<Placement>) -> Type {
+        Type::Pointer(Box::new(Type::Unknown), memory, false)
+    }
+
+    /// The memory of a [`Type::memory_argument`].
+    pub fn as_memory_argument(&self) -> Option<&Option<Placement>> {
+        match self {
+            Type::Pointer(inner, memory, false) if **inner == Type::Unknown => Some(memory),
+            _ => None,
         }
     }
 
@@ -1068,7 +1191,7 @@ impl Type {
 
 /// The value of a const generic argument written with numbers and `+ - * /`, as text: `3.14`,
 /// `-2`, or `3` for `1 + 2`. `None` for anything else.
-fn const_value_text(e: &crate::syntax::Expr) -> Option<String> {
+pub(crate) fn const_value_text(e: &crate::syntax::Expr) -> Option<String> {
     use crate::syntax::expr::{BinaryOp, UnaryOp};
     use crate::syntax::Expr;
     #[derive(Clone, Copy)]
@@ -1148,6 +1271,12 @@ impl ElementType {
         matches!(self, I4 | I8 | I16 | I32 | I64 | I128)
     }
 
+    /// Whether this is an unsigned integer, `usize` included. `bool` is not.
+    pub fn is_unsigned_int(&self) -> bool {
+        use ElementType::*;
+        matches!(self, U4 | U8 | U16 | U32 | U64 | U128 | USize)
+    }
+
     /// Whether this is a floating-point element type (`f16`/`f32`/`f64`/`bf16`/`f8e4m3`/`f8e5m2`).
     pub fn is_float(&self) -> bool {
         matches!(
@@ -1168,6 +1297,50 @@ impl ElementType {
     /// 4 dense bits vs 1 padded byte, both from independent tables). `None` for an un-instantiated
     /// generic. Adding a numeric format sets its width here, in one place. (See the
     /// heterogeneous gap analysis §9.8.1.)
+    /// Whether this is one of the fp8 or fp4 types, which have conversions but no arithmetic yet.
+    pub fn is_narrow_float(&self) -> bool {
+        matches!(
+            self,
+            ElementType::F8E4M3 | ElementType::F8E5M2 | ElementType::F4E2M1
+        )
+    }
+
+    /// The value of this fp8 or fp4 type nearest to `x`. A tie goes to the value whose encoding
+    /// ends in 0, and a value too large for the type gives its largest one. These are the rules
+    /// of the `vx-expand-narrow-floats` pass, for a constant that never reaches it: MLIR would
+    /// fold a literal too large for `f8e4m3` to NaN. `None` for any other type.
+    pub fn nearest_narrow_value(&self, x: f64) -> Option<f64> {
+        let (mant_bits, bias, max_finite): (i32, i32, u32) = match self {
+            ElementType::F8E4M3 => (3, 7, 0x7E),
+            ElementType::F8E5M2 => (2, 15, 0x7B),
+            ElementType::F4E2M1 => (1, 1, 0x7),
+            _ => return None,
+        };
+        assert!(!x.is_nan(), "a narrow float literal is never NaN");
+        let value = |enc: u32| {
+            let exp = (enc >> mant_bits) as i32;
+            let mant = f64::from(enc & ((1 << mant_bits) - 1));
+            if exp == 0 {
+                mant * 2f64.powi(1 - bias - mant_bits)
+            } else {
+                (1.0 + mant / f64::from(1u32 << mant_bits)) * 2f64.powi(exp - bias)
+            }
+        };
+        let a = x.abs();
+        let enc = (0..max_finite)
+            .find(|&k| a < value(k + 1))
+            .map(|k| {
+                let mid = (value(k) + value(k + 1)) / 2.0;
+                if a < mid || (a == mid && k % 2 == 0) {
+                    k
+                } else {
+                    k + 1
+                }
+            })
+            .unwrap_or(max_finite);
+        Some(value(enc).copysign(x))
+    }
+
     pub fn bits(&self) -> Option<u32> {
         Some(match self {
             ElementType::Bool => 1,
@@ -1187,7 +1360,7 @@ impl ElementType {
     /// with a fractional part -- those are type errors reported elsewhere, and answering
     /// "out of range" for them would name the wrong defect).
     pub fn accepts_integer_literal(&self, text: &str) -> Option<bool> {
-        if text.contains('.') {
+        if is_float_literal_spelling(text) {
             return None;
         }
         if *self == ElementType::USize {
@@ -1255,6 +1428,12 @@ impl std::fmt::Display for ElementType {
             ElementType::Generic(g) => write!(f, "{}", g),
         }
     }
+}
+
+/// Whether a numeric spelling denotes a float: a decimal point, or a scientific exponent
+/// (`1e-15` has no `.` but is still a float).
+pub fn is_float_literal_spelling(s: &str) -> bool {
+    s.contains('.') || s.contains('e') || s.contains('E')
 }
 
 impl std::str::FromStr for ElementType {
@@ -1352,6 +1531,9 @@ impl std::fmt::Display for Type {
                 // The placement as the program writes it in a tensor type, `Memory::GPU_HBM`.
                 if let Some(p) = top {
                     write!(f, ", {}", p.as_written())?;
+                    if let Some(n) = p.alignment {
+                        write!(f, ", aligned({n})")?;
+                    }
                 }
                 write!(f, ">")
             }
@@ -1383,7 +1565,6 @@ impl std::fmt::Display for Type {
             Type::Verified(inner) => write!(f, "Verified<{inner}>"),
             Type::Ref(inner, space) => write!(f, "Ref<{inner}, Memory::{}>", space.name()),
             Type::Pinned(inner, topo) => write!(f, "Pinned<{inner}, {topo}>"),
-            Type::Matrix => write!(f, "Matrix"),
             Type::Module(path, _) => write!(f, "module {path}"),
         }
     }
@@ -1419,7 +1600,7 @@ impl Mangle for Type {
             // Extents are part of the identity: `[2, 3]` and `[4, 5]` are different types that
             // lower to different memrefs, so a generic instantiated at both needs two symbols
             // rather than one body serving both (Vx#401). Rank alone was too coarse to separate
-            // them. Topology stays excluded. A dimension the canonical forms below cannot spell
+            // them. Function specializations add placement separately. A dimension these forms cannot spell
             // contributes `d`, which is why two such dimensions can still share a name. `?` is
             // `_`, a character a symbol may carry.
             Type::Tensor(el, dims, _) => {
@@ -1436,7 +1617,6 @@ impl Mangle for Type {
                 }
                 Ok(())
             }
-            Type::Matrix => write!(w, "Matrix"),
             Type::Struct(name, _) => write!(w, "{}", name),
             Type::Enum(name, _) => write!(w, "{}", name),
             Type::Generic(name, _) => write!(w, "{}", name),
@@ -1481,6 +1661,24 @@ impl Mangle for ElementType {
             _ => write!(w, "{}", self),
         }
     }
+}
+
+/// The placed tensor of the type of `transfer_async(x, M)`, `T` in `Token<T>`. A type that the
+/// program declares has a declaration, so a `struct Token` of the program is not a token. The
+/// code generators lower a token as its tensor.
+pub fn transfer_token_inner(ty: &Type) -> Option<&Type> {
+    match ty {
+        Type::GenericInstance(base, args) if args.len() == 1 => match base.as_ref() {
+            Type::Struct(name, None) if name.as_ref() == "Token" => args.first(),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether `ty` is the token of a `lanes::copy_async`, `Token<void>`.
+pub fn is_copy_token(ty: &Type) -> bool {
+    matches!(transfer_token_inner(ty), Some(Type::Struct(name, None)) if name.as_ref() == "void")
 }
 
 #[cfg(test)]
@@ -1653,7 +1851,6 @@ mod tests {
     #[test]
     fn test_type_is_linear_true_cases() {
         assert!(Type::Tensor(ElementType::F32, vec![], None).is_linear());
-        assert!(Type::Matrix.is_linear());
         assert!(Type::Ref(
             Box::new(Type::Scalar(ElementType::I32)),
             MemorySpace::CPUDRAM
@@ -1732,6 +1929,12 @@ mod tests {
             make_npu_expr("4"),
         );
         assert_eq!(slice.kind(), TopologyKind::Slice);
+        let declared = Topology::Slice(
+            Box::new(Topology::Custom("Dev".into(), Some(make_npu_expr("0")))),
+            make_npu_expr("0"),
+            make_npu_expr("2"),
+        );
+        assert_eq!(declared.kind(), TopologyKind::Custom("Dev".into()));
     }
 
     #[test]
@@ -1785,14 +1988,14 @@ mod tests {
     }
 
     #[test]
-    fn test_mangle_tensor_ignores_topology_and_shape() {
+    fn legacy_type_mangle_omits_tensor_placement() {
         let ty_with = Type::Tensor(
             ElementType::F32,
             vec![],
             Some(Placement::on(Topology::gpu(0))),
         );
         let ty_without = Type::Tensor(ElementType::F32, vec![], None);
-        // Topology is intentionally not included in mangling
+        // Function specializations add placement to this legacy name separately.
         assert_eq!(ty_with.mangle(), ty_without.mangle());
         assert_eq!(ty_with.mangle(), "Tensor$f32");
     }
@@ -1898,6 +2101,7 @@ mod tests {
             line: 7,
             column: 3,
             length: 1,
+            expansion: 0,
         };
         assert_eq!(
             Topology::GPU(Box::new(Expr::Number(spanned))),
@@ -1946,7 +2150,8 @@ mod tests {
             Topology::CpuAvx512,
             Topology::CpuNeon,
             Topology::Slice(Box::new(Topology::CPU), idx(), idx()),
-            Topology::Custom("Dev".into()),
+            Topology::Custom("Dev".into(), None),
+            Topology::Custom("Dev".into(), Some(idx())),
             Topology::Current,
         ];
         for t in &all {
@@ -1960,6 +2165,49 @@ mod tests {
                     assert_ne!(a, b, "distinct topologies compared equal: {a:?} vs {b:?}");
                 }
             }
+        }
+    }
+
+    /// A declared topology with no index is its device 0, and no other device.
+    #[test]
+    fn a_bare_declared_topology_is_its_device_0() {
+        let at = |i: &str| {
+            Topology::Custom(
+                "Dev".into(),
+                Some(Box::new(Expr::Number(NumberExpr::new(
+                    i.to_string(),
+                    None,
+                    Span::default(),
+                )))),
+            )
+        };
+        let bare = Topology::Custom("Dev".into(), None);
+        assert_eq!(bare, at("0"));
+        assert_eq!(at("0"), bare);
+        assert_ne!(bare, at("1"));
+        assert_ne!(at("1"), bare);
+        assert_ne!(bare, Topology::Custom("Other".into(), None));
+    }
+
+    /// `Display` and `from_name` each list the built-in names, so the two lists must agree:
+    /// the printed name of a built-in reads back as the same kind. `Slice` is left out because
+    /// no program writes it, so `from_name("Slice")` is `Custom`.
+    #[test]
+    fn builtin_topology_names_read_back_as_the_same_kind() {
+        let builtins = [
+            TopologyKind::CPU,
+            TopologyKind::NPU,
+            TopologyKind::AccCore,
+            TopologyKind::AMX,
+            TopologyKind::ANE,
+            TopologyKind::GPU,
+            TopologyKind::CpuAvx512,
+            TopologyKind::CpuNeon,
+            TopologyKind::Current,
+        ];
+        for kind in builtins {
+            let name = kind.to_string();
+            assert_eq!(TopologyKind::from_name(&name), kind, "name {name:?}");
         }
     }
 }

@@ -11,8 +11,8 @@
 // so (W1007). Casts that can lose a value get no W1007: `i64` to `f64` and `i32` to `f32` can
 // round, and a narrowing can cut. A cast of a literal gets none either.
 
-// CHECK: Warning[W1007] at 20:16: this cast only widens, so it cannot lose a value; `i64::from(..)`
-// CHECK: Warning[W1007] at 22:18: this cast only widens, so it cannot lose a value; `f64::from(..)`
+// CHECK: Warning[W1007] at {{.*}}warning_for_a_widening_cast.vx:20:16: this cast only widens, so it cannot lose a value; `i64::from(..)`
+// CHECK: Warning[W1007] at {{.*}}warning_for_a_widening_cast.vx:22:18: this cast only widens, so it cannot lose a value; `f64::from(..)`
 // CHECK-NOT: Warning[W1007]
 
 fn main() -> i32 {

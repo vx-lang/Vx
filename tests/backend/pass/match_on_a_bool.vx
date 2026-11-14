@@ -1,0 +1,87 @@
+//===- match_on_a_bool.vx - Vx Compiler ----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `true` and `false` in a `match` arm are the two values of a `bool`, and each arm is taken only
+// for its own value. A negative number is a pattern too. Both code generators run it.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}true 50 false 51{{$}}
+// CHECK-NEXT: {{^}}false first 1 0{{$}}
+// CHECK-NEXT: {{^}}with _ 7 8{{$}}
+// CHECK-NEXT: {{^}}negative 10 20 30 40{{$}}
+// CHECK-NEXT: {{^}}wide 1 2{{$}}
+
+fn value_of_a_match(b : bool) -> i32 {
+  return match b {
+    true => {
+      50
+    }
+    false => {
+      51
+    }
+  };
+}
+
+fn false_first(b : bool) -> i32 {
+  match b {
+    false => {
+      return 0;
+    }
+    true => {
+      return 1;
+    }
+  }
+}
+
+fn false_then_any(b : bool) -> i32 {
+  match b {
+    false => {
+      return 7;
+    }
+    _ => {
+      return 8;
+    }
+  }
+}
+
+fn sign(n : i32) -> i32 {
+  return match n {
+    -1 => {
+      10
+    }
+    0 => {
+      20
+    }
+    1 => {
+      30
+    }
+    _ => {
+      40
+    }
+  };
+}
+
+fn below_i32(n : i64) -> i64 {
+  match n {
+    -5000000000 => {
+      return 1;
+    }
+    _ => {
+      return 2;
+    }
+  }
+}
+
+fn main() -> i32 {
+  println!("true {} false {}", value_of_a_match(true), value_of_a_match(false));
+  println!("false first {} {}", false_first(true), false_first(false));
+  println!("with _ {} {}", false_then_any(false), false_then_any(true));
+  println!("negative {} {} {} {}", sign(-1), sign(0), sign(1), sign(-2));
+  println!("wide {} {}", below_i32(-5000000000), below_i32(5000000000));
+  return 0;
+}

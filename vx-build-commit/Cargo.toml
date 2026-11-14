@@ -1,0 +1,14 @@
+#===- vx-build-commit/Cargo.toml - Vx Compiler -----------------*- TOML -*-===#
+#
+# Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+# See LICENSE for license information.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
+#===----------------------------------------------------------------------===#
+[package]
+name = "vx-build-commit"
+version = "0.1.0"
+edition = "2021"
+description = "The git commit that vxc --version names."
+license = "Apache-2.0 WITH LLVM-exception"
+build = "build.rs"

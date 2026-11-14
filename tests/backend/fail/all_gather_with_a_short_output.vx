@@ -1,0 +1,24 @@
+//===- all_gather_with_a_short_output.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The output of `all_gather_f32` holds the input of every rank. In a job of one rank, an
+// output shorter than the input stops the program, before the copy can write past its end.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: all_gather needs an output of the input's length times the number of ranks
+// CHECK-NOT: copied
+
+import std::collective;
+
+fn main() -> i32 {
+  join_job(0, 1);
+  let input = Tensor<f32, [4]>::fill(1.0);
+  let mut output = Tensor<f32, [2]>::fill(0.0);
+  all_gather_f32(&input, &mut output);
+  println!("copied");
+  return 0;
+}

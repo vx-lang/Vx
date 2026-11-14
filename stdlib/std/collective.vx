@@ -1,0 +1,79 @@
+//===- collective.vx - All-reduce and all-gather across GPUs ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A job runs one process per GPU, and each process is one rank. `join_job` joins it to the
+// others. Then `all_reduce_sum_f32(&mut t)` and `all_gather_f32(&t, &mut out)` combine a tensor
+// across the ranks, and the `_bf16` forms do the same for `bf16`.
+// docs/lang/abi.md section 3.7 has the rules: NCCL, the id file, and the stream.
+//===----------------------------------------------------------------------===//
+
+extern "C" {
+  /// The dispatch library behind `join_job`.
+  fn vx_collective_init(rank : i32, ranks : i32) -> void;
+  /// The dispatch library behind `leave_job`.
+  fn vx_collective_finish() -> void;
+  /// The dispatch library behind `job_rank`.
+  fn vx_collective_rank() -> i32;
+  /// The dispatch library behind `job_ranks`.
+  fn vx_collective_ranks() -> i32;
+  /// The dispatch library behind `all_reduce_sum` on an `f32` tensor.
+  fn vx_collective_all_reduce_sum_f32<M : Memory>(input : *const f32 in Memory::M, output : *mut f32 in Memory::M, count : i64) -> void;
+  /// The dispatch library behind `all_reduce_sum` on a `bf16` tensor.
+  fn vx_collective_all_reduce_sum_bf16<M : Memory>(input : *const bf16 in Memory::M, output : *mut bf16 in Memory::M, count : i64) -> void;
+  /// The dispatch library behind `all_gather` on an `f32` tensor.
+  fn vx_collective_all_gather_f32<M : Memory>(input : *const f32 in Memory::M, output : *mut f32 in Memory::M, count : i64) -> void;
+  /// The dispatch library behind `all_gather` on a `bf16` tensor.
+  fn vx_collective_all_gather_bf16<M : Memory>(input : *const bf16 in Memory::M, output : *mut bf16 in Memory::M, count : i64) -> void;
+}
+
+/// Joins this process to a job of `ranks` processes, as rank `rank`. Each rank uses the GPU
+/// that is current when it joins. The program stops if it cannot join.
+fn join_job(rank : i32, ranks : i32) -> void {
+  unsafe { vx_collective_init(rank, ranks); }
+}
+
+/// Leaves the job. A later `join_job` can join another one.
+fn leave_job() -> void {
+  unsafe { vx_collective_finish(); }
+}
+
+/// The rank of this process in its job, or -1 before `join_job`.
+fn job_rank() -> i32 {
+  return unsafe { vx_collective_rank() };
+}
+
+/// The number of ranks in the job, or 0 before `join_job`.
+fn job_ranks() -> i32 {
+  return unsafe { vx_collective_ranks() };
+}
+
+/// Stamps `all_reduce_sum_<t>` and `all_gather_<t>` for one element type. They are free
+/// functions, not methods, because host code can pass a tensor in GPU memory by reference
+/// but cannot call a method on it.
+macro_rules stamp_collectives {
+  ($t : ident, $all_reduce : ident, $all_gather : ident, $c_all_reduce : ident, $c_all_gather : ident) => {
+    /// Each element of `t` becomes its sum over all ranks. Every rank must call this with a
+    /// tensor of the same length. The tensor must be in GPU memory when the job has more
+    /// than one rank.
+    fn $all_reduce<M : Memory>(t : &mut Tensor<$t, [?], Memory::M>) -> void {
+      unsafe { $c_all_reduce(t.as_ptr(), t.as_mut_ptr(), t.len() as i64); }
+    }
+
+    /// `output` becomes `input` of rank 0, then of rank 1, and so on. Every rank must call
+    /// this with an input of the same length, and `output` must hold that length times the
+    /// number of ranks.
+    fn $all_gather<M : Memory>(input : &Tensor<$t, [?], Memory::M>, output : &mut Tensor<$t, [?], Memory::M>) -> void {
+      assert(output.len() == input.len() * job_ranks(), "all_gather needs an output of the input's length times the number of ranks");
+      unsafe {
+        $c_all_gather(input.as_ptr(), output.as_mut_ptr(), input.len() as i64);
+      }
+    }
+  };
+}
+
+stamp_collectives!(f32, all_reduce_sum_f32, all_gather_f32, vx_collective_all_reduce_sum_f32, vx_collective_all_gather_f32);
+stamp_collectives!(bf16, all_reduce_sum_bf16, all_gather_bf16, vx_collective_all_reduce_sum_bf16, vx_collective_all_gather_bf16);

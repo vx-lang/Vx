@@ -11,7 +11,7 @@
 // A compile with errors ends with the same line in a normal and a parallel (`-j`) compile,
 // naming the file and how many errors it found.
 //
-// CHECK: Error[E2001] at 18:10: Undefined variable 'y'
+// CHECK: Error[E2001] at {{.*}}parallel_compile_ends_with_the_same_summary.vx:18:10: Undefined variable 'y'
 // CHECK: Semantic check failed on '{{.*}}parallel_compile_ends_with_the_same_summary.vx': 1 error(s) emitted
 
 fn main() -> i32 {

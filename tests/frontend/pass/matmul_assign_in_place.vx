@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // `c = a @ b` fills the buffer `c` already names. It used to allocate a second one and rebind
 // `c` to it, leaving the declared buffer written by nothing and freed by nothing (Vx#391).
 //
@@ -21,9 +21,9 @@
 // CHECK: linalg.matmul ins(%[[A]], %[[B]] : memref<2x3xf32>, memref<3x4xf32>) outs(%[[C]] : memref<2x4xf32>)
 
 fn main() -> i32 {
-  let mut a = Tensor<f32, [2, 3]>::uninit();
-  let mut b = Tensor<f32, [3, 4]>::uninit();
-  let mut c = Tensor<f32, [2, 4]>::uninit();
+  let mut a = unsafe { Tensor<f32, [2, 3]>::uninit() };
+  let mut b = unsafe { Tensor<f32, [3, 4]>::uninit() };
+  let mut c = unsafe { Tensor<f32, [2, 4]>::uninit() };
   for i in 0..2 {
     for k in 0..3 {
       a[i][k] = ((i * 3 + k) as f32);

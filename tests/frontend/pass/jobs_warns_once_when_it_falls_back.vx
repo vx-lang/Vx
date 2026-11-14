@@ -10,14 +10,15 @@
 // must be reported once. The parallel frontend used to print its warnings as it found them, so
 // every warning in a declining program appeared twice.
 //
-// The `match` whose arms give the returned value is what puts it outside the flat subset; the
-// unused binding is what warns.
+// VX_FLAT_DECLINE makes the flat code generator decline `seven_or_nine`. The unused binding
+// produces the warning.
 //
-// RUN: (vxc -j 2 --emit-mlir %s 2>&1; echo "exit=$?") | FileCheck %s
+// This test checks the fallback, so it unsets VX_NO_AST_FALLBACK, which the test runner sets.
+// RUN: (env -u VX_NO_AST_FALLBACK VX_FLAT_DECLINE=seven_or_nine vxc -j 2 --emit-mlir %s 2>&1; echo "exit=$?") | FileCheck %s
 
-fn seven_or_nine(n : i32) -> i32 {
+fn seven_or_nine(n : i64) -> i32 {
   return match n {
-    0 => {
+    0i64 => {
       7
     }
     _ => {
@@ -28,7 +29,7 @@ fn seven_or_nine(n : i32) -> i32 {
 
 fn main() -> i32 {
   let unused_here = 5;
-  return seven_or_nine(0);
+  return seven_or_nine(0i64);
 }
 
 // Reported once. The sequential driver is what prints it on this path -- it re-checks the whole
@@ -36,6 +37,8 @@ fn main() -> i32 {
 // Whether the parallel frontend prints the warnings it holds is a different program's to state,
 // because this one never uses that frontend's output: see
 // `jobs_warns_on_the_path_it_took.vx`.
+// The parallel frontend declined, so the sequential driver compiled the program.
+// CHECK: [parallel-frontend] the flat emitter did not take this program
 // CHECK: W1001
 // CHECK-NOT: W1001
 // The fallback still compiled the program, so the warning was not silenced by dropping it.

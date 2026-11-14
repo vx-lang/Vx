@@ -1,5 +1,5 @@
 //===- parser_missing_colon.vx - Vx Compiler -------------------*- Vx -*-===//
-// CHECK: Error at 12:13: {{.*}}Expected '='
+// CHECK: Error at {{.*}}parser_missing_colon.vx:12:13: {{.*}}Expected '='
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.

@@ -1,0 +1,23 @@
+//===- const_overflow_literal.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A const whose initializer is a literal that does not fit its type is reported
+// once at the declaration. A unary minus on a literal (`-129`) is checked too.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+// CHECK: Error[E3044] at {{.*}}const_overflow_literal.vx:[[@LINE+1]]:1: const 'D' has a value that does not fit its declared type
+const D : u8 = 300;
+
+// CHECK: Error[E3044] at {{.*}}const_overflow_literal.vx:[[@LINE+1]]:1: const 'H' has a value that does not fit its declared type
+const H : i8 = -129;
+
+fn main() -> i32 {
+  println!(D);
+  println!(H);
+  return 0;
+}

@@ -36,6 +36,8 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /// Enough for eight rank-3 memrefs, or the four rank-2 ones a four-operand
@@ -159,24 +161,23 @@ static inline int vx_launch_build_params(void *const *device_args,
 /// `.param` in the file also counts each `ld.param` and every extern's return
 /// slot, which turned 28 into 36 when the emitted PTX was first
 /// tried it.
-static inline int vx_launch_entry_param_count(const char *ptx,
-                                              const char *entry) {
+/// The signature of an entry point in this PTX: `*open` at its `(` and
+/// `*close` at its `)`. Returns 0 when the entry is not found.
+static inline int vx_launch_entry_signature(const char *ptx, const char *entry,
+                                            const char **open,
+                                            const char **close) {
   const char *p = ptx;
   size_t entry_len;
 
   if (!ptx || !entry) {
-    return -1;
+    return 0;
   }
   entry_len = strlen(entry);
 
   for (;;) {
-    const char *open;
-    const char *close;
-    int count;
-
     p = strstr(p, ".entry ");
     if (!p) {
-      return -1;
+      return 0;
     }
     p += 7;
     while (*p == ' ' || *p == '\t') {
@@ -193,23 +194,160 @@ static inline int vx_launch_entry_param_count(const char *ptx,
       continue;
     }
 
-    open = strchr(p, '(');
-    if (!open) {
-      return -1;
+    *open = strchr(p, '(');
+    if (!*open) {
+      return 0;
     }
-    close = strchr(open, ')');
-    if (!close) {
-      return -1;
-    }
-
-    count = 0;
-    for (p = open; p < close; ++p) {
-      if (strncmp(p, ".param", 6) == 0) {
-        ++count;
-      }
-    }
-    return count;
+    *close = strchr(*open, ')');
+    return *close != NULL;
   }
+}
+
+static inline int vx_launch_entry_param_count(const char *ptx,
+                                              const char *entry) {
+  const char *open;
+  const char *close;
+  const char *p;
+  int count = 0;
+
+  if (!vx_launch_entry_signature(ptx, entry, &open, &close)) {
+    return -1;
+  }
+  for (p = open; p < close; ++p) {
+    if (strncmp(p, ".param", 6) == 0) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+/// The alignment that each parameter of an entry point says it has, from its
+/// `.ptr .align N`, into `align[0..max)`: 0 for a parameter that is not such a
+/// pointer. Returns 0 when the entry is not found.
+///
+/// The compiler puts `.align N` on the pointer of a buffer whose memory space
+/// has `alignment: N` in the machine file. The kernel can load it with vector
+/// loads of that width, and a pointer with less alignment faults there.
+static inline int vx_launch_param_aligns(const char *ptx, const char *entry,
+                                         long *align, int max) {
+  const char *open;
+  const char *close;
+  const char *p;
+  int k = -1;
+
+  if (!align || !vx_launch_entry_signature(ptx, entry, &open, &close)) {
+    return 0;
+  }
+  for (p = open; p < close; ++p) {
+    const char *end;
+    const char *at;
+    const char *ptr;
+    if (strncmp(p, ".param", 6) != 0) {
+      continue;
+    }
+    if (++k >= max) {
+      break;
+    }
+    align[k] = 0;
+    end = strchr(p + 6, ',');
+    if (!end || end > close) {
+      end = close;
+    }
+    ptr = strstr(p, ".ptr");
+    at = strstr(p, ".align ");
+    if (ptr && ptr < end && at && at < end) {
+      align[k] = strtol(at + 7, NULL, 10);
+    }
+  }
+  return 1;
+}
+
+/// The first parameter whose pointer has less alignment than `align` says, or
+/// -1 when there is none. A view over memory from elsewhere can start at any
+/// address, so this is checked before each launch.
+static inline int vx_launch_misaligned(const vx_launch_params *params,
+                                       const long *align, int count) {
+  int k;
+  for (k = 0; k < count && k < params->count; ++k) {
+    uintptr_t v;
+    if (align[k] <= 1) {
+      continue;
+    }
+    memcpy(&v, params->params[k], sizeof v);
+    if (v % (uintptr_t)align[k] != 0) {
+      return k;
+    }
+  }
+  return -1;
+}
+
+/* One size of a launch shape, from `text`: `$j` is the `i32` launch value j,
+   which the compiled code puts after the kernel's `num_args` arguments, and a
+   number is that size. Moves `*text` past the entry and its comma. Returns -1
+   when launch value j is not an `i32`. */
+static inline long vx_launch_size(const char **text, void *const *device_args,
+                                  const int32_t *arg_tags, int64_t num_args) {
+  char *end = NULL;
+  long value;
+  if (**text == '$') {
+    long j = strtol(*text + 1, &end, 10);
+    /* A shape has at most four sizes. */
+    if (j < 0 || j > 3 || arg_tags[num_args + j] != 4) {
+      return -1;
+    }
+    value = *(const int32_t *)device_args[num_args + j];
+  } else {
+    value = strtol(*text, &end, 10);
+  }
+  *text = end;
+  if (**text == ',') {
+    ++*text;
+  }
+  return value;
+}
+
+/* The launch shape of a region, from the payload's `grid=` and `block=`
+   entries, which the `across` loops give (#252). Returns 1 and fills `grid` and
+   `block`, 0 when the payload has no shape, or -1 with the reason in `why` when
+   a size is not one a GPU can launch. A smaller launch would skip work, so the
+   caller stops the program on -1. With `grid_loops=1`, a loop of blocks steps
+   over the blocks of the grid, so any grid covers its passes: a grid size below
+   1 is 1, and one above what the GPU launches on that axis is that limit. */
+static inline int vx_launch_shape(const void *payload, size_t payload_size,
+                                  void *const *device_args,
+                                  const int32_t *arg_tags, int64_t num_args,
+                                  unsigned grid[3], unsigned *block, char *why,
+                                  size_t why_size) {
+  static const long limits[3] = {2147483647L, 65535L, 65535L};
+  const char *at = vx_payload_field(payload, payload_size, "grid=");
+  const char *block_text = vx_payload_field(payload, payload_size, "block=");
+  if (!at || !block_text) {
+    return 0;
+  }
+  const int loops =
+      vx_payload_field(payload, payload_size, "grid_loops=") != NULL;
+  for (int axis = 0; axis < 3; ++axis) {
+    long n = *at ? vx_launch_size(&at, device_args, arg_tags, num_args) : 1;
+    if (loops) {
+      n = n < 1 ? 1 : n > limits[axis] ? limits[axis] : n;
+    } else if (n < 1 || n > limits[axis]) {
+      snprintf(why, why_size,
+               "grid axis %d has %ld blocks, and a GPU launches 1 to %ld on "
+               "that axis",
+               axis, n, limits[axis]);
+      return -1;
+    }
+    grid[axis] = (unsigned)n;
+  }
+  long threads = vx_launch_size(&block_text, device_args, arg_tags, num_args);
+  if (threads < 1 || threads > 1024) {
+    snprintf(why, why_size,
+             "a block of %ld threads, and a block holds 1 to 1024 threads",
+             threads);
+    return -1;
+  }
+  *block = (unsigned)threads;
+  return 1;
 }
 
 #endif /* VX_KERNEL_LAUNCH_H */

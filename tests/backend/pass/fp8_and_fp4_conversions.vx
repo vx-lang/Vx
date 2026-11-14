@@ -1,0 +1,162 @@
+//===- fp8_and_fp4_conversions.vx - Vx Compiler -----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `as` to and from f8e4m3, f8e5m2 and f4e2m1. For each type, `sweep` builds every value the
+// type holds from its exponent and mantissa, and counts the conversions that give a wrong
+// answer:
+//   - a value the type holds converts to itself,
+//   - a value halfway between two neighbours goes to the one whose encoding ends in 0,
+//   - a value a little above or below halfway goes to the nearer neighbour,
+//   - a value too large for the type gives its largest value.
+//
+// EXPECT: f8e4m3 0 wrong
+// EXPECT: f8e5m2 0 wrong
+// EXPECT: f4e2m1 0 wrong
+// The other lines check one case each, against values worked out by hand.
+// EXPECT: 448 57344 6 -448 -6
+// EXPECT: NaN NaN 6
+// EXPECT: 3 4 288 -6 2
+// EXPECT: 0.3125 2.75 6
+
+fn to_e4m3(x : f32) -> f32 {
+  return (x as f8e4m3) as f32;
+}
+
+fn to_e5m2(x : f32) -> f32 {
+  return (x as f8e5m2) as f32;
+}
+
+fn to_e2m1(x : f32) -> f32 {
+  return (x as f4e2m1) as f32;
+}
+
+fn pow2(p : i32) -> f32 {
+  let mut v : f32 = 1.0;
+  let mut i = 0;
+  while i < p {
+    v = v * 2.0;
+    i = i + 1;
+  }
+  while i > p {
+    v = v / 2.0;
+    i = i - 1;
+  }
+  return v;
+}
+
+// The value of the encoding `enc`, with its sign bit 0.
+fn value(enc : i32, mant_bits : i32, bias : i32) -> f32 {
+  let e = enc >> mant_bits;
+  let m = enc - (e << mant_bits);
+  if e == 0 {
+    return (m as f32) * pow2(1 - bias - mant_bits);
+  }
+  return ((m + (1 << mant_bits)) as f32) * pow2(e - bias - mant_bits);
+}
+
+fn check(round : fn(f32) -> f32, x : f32, want : f32) -> i32 {
+  if round(x) == want && round(-x) == -want {
+    return 0;
+  }
+  return 1;
+}
+
+fn sweep(round : fn(f32) -> f32, mant_bits : i32, bias : i32, max_enc : i32) -> i32 {
+  let mut wrong = 0;
+  for k in 0..max_enc {
+    let lo = value(k, mant_bits, bias);
+    let hi = value(k + 1, mant_bits, bias);
+    let mid = (lo + hi) / 2.0;
+    let step = (hi - lo) / 1024.0;
+    let mut even = hi;
+    if k % 2 == 0 {
+      even = lo;
+    }
+    wrong = wrong + check(round, lo, lo);
+    wrong = wrong + check(round, mid, even);
+    wrong = wrong + check(round, mid - step, lo);
+    wrong = wrong + check(round, mid + step, hi);
+  }
+  let max = value(max_enc, mant_bits, bias);
+  wrong = wrong + check(round, max, max);
+  wrong = wrong + check(round, max * 1.5, max);
+  wrong = wrong + check(round, pow2(100), max);
+  return wrong;
+}
+
+fn main() -> i32 {
+  print!("f8e4m3 ");
+  print(sweep(to_e4m3, 3, 7, 126));
+  print!(" wrong\n");
+  print!("f8e5m2 ");
+  print(sweep(to_e5m2, 2, 15, 123));
+  print!(" wrong\n");
+  print!("f4e2m1 ");
+  print(sweep(to_e2m1, 1, 1, 7));
+  print!(" wrong\n");
+
+  // Literals clamp like conversions do. MLIR alone would fold the first one to NaN.
+  let a : f8e4m3 = 1000.0;
+  let b : f8e5m2 = 100000.0;
+  let c : f4e2m1 = 7.0;
+  let d : f8e4m3 = -1000.0;
+  let mut big : f64 = -1.0;
+  for i in 0..1000 {
+    big = big * 2.0;
+  }
+  print(a as f32);
+  print!(" ");
+  print(b as f32);
+  print!(" ");
+  print(c as f32);
+  print!(" ");
+  print(d as f32);
+  print!(" ");
+  print((big as f4e2m1) as f32);
+  print!("\n");
+
+  // NaN stays NaN where the type has one. f4e2m1 has none, and gives 6.
+  let inf = pow2(200);
+  let nan = inf - inf;
+  print((nan as f8e4m3) as f32);
+  print!(" ");
+  print((nan as f8e5m2) as f32);
+  print!(" ");
+  print((nan as f4e2m1) as f32);
+  print!("\n");
+
+  // From one narrow type to another, and to and from integers. 2.75 is halfway between the
+  // f8e5m2 values 2.5 and 3, and 5 is halfway between the f4e2m1 values 4 and 6.
+  let x : f8e4m3 = 2.75;
+  let y : f8e5m2 = 5.0;
+  print((x as f8e5m2) as f32);
+  print!(" ");
+  print((y as f4e2m1) as f32);
+  print!(" ");
+  print((300 as f8e4m3) as i32);
+  print!(" ");
+  print(((0 - 7) as f4e2m1) as i32);
+  print!(" ");
+  print(x as i32);
+  print!("\n");
+
+  // Function arguments, return values and tensor elements keep the type.
+  let mut t = Tensor<f8e5m2, [2, 2]>::new();
+  let z : f64 = 0.3;
+  t[1][0] = z as f8e5m2;
+  print(t[1][0] as f32);
+  print!(" ");
+  print(pass_through(x));
+  print!(" ");
+  print(c);
+  print!("\n");
+  return 0;
+}
+
+fn pass_through(v : f8e4m3) -> f8e4m3 {
+  return v;
+}

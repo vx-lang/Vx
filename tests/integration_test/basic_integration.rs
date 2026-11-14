@@ -26,7 +26,7 @@ fn distributed_matmul(a: Tensor<f32, [?, ?]>, b: Tensor<f32, [?, ?]>) -> Pinned<
     let local_a = a.to_device();
     let local_b = b.to_device();
     spawn on(Topology::NPU[0]) {
-        let result = custom_matmul(local_a, local_b);
+        let result = custom_matmul(local_a.clone(), local_b.clone());
         result
     }
 }
@@ -80,7 +80,7 @@ fn run_pipeline(input: &str) -> Result<vxc::syntax::Program, Vec<vxc::diagnostic
     let mut parser = Parser::new(&tokens, input);
     let mut program = parser
         .parse()
-        .map_err(|e| vec![vxc::diagnostic::Diagnostic::error(e.format(input))])?;
+        .map_err(|e| vec![vxc::diagnostic::Diagnostic::error(e.format(input, None))])?;
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let program_arr = [program.clone()];
     let env = vxc::hir::GlobalAstEnv::build(&program_arr);
@@ -175,7 +175,7 @@ fn test_integration_arrays_and_indexing() -> Result<(), String> {
 fn a_placed_tensor_round_trips_through_the_pipeline() -> Result<(), String> {
     let input = r#"
     fn memory_test() -> Tensor<f32, [10], Memory::NPU_HBM> {
-        let mut mem = Tensor<f32, [10], Memory::NPU_HBM>::uninit();
+        let mut mem = unsafe { Tensor<f32, [10], Memory::NPU_HBM>::uninit() };
         return mem;
     }
     "#;

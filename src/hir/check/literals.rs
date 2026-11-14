@@ -18,9 +18,8 @@ use crate::hir::expr::expected_numeric_elem;
 use std::collections::HashMap;
 
 impl<'a> TypeChecker<'a> {
-    /// An enum expression's name read back as a type. The parser re-serializes the turbofish
-    /// arguments into the name (`Option<*mut i8>`), so recovering them needs the type parser
-    /// (Vx#415). `None` when the name carries no arguments.
+    /// Recover arguments for compiler-generated enum expressions that carry only a name.
+    /// Parsed enum expressions retain structural arguments instead.
     fn enum_name_as_type(&self, enum_name: &str) -> Option<Type> {
         match crate::parser::types::parse_type_text(enum_name)? {
             Type::GenericInstance(base, args) => Some(Type::GenericInstance(
@@ -30,14 +29,6 @@ impl<'a> TypeChecker<'a> {
                     .collect(),
             )),
             _ => None,
-        }
-    }
-
-    /// The type arguments that name carries, empty when it carries none.
-    fn enum_name_type_args(&self, enum_name: &str) -> Vec<Type> {
-        match self.enum_name_as_type(enum_name) {
-            Some(Type::GenericInstance(_, args)) => args,
-            _ => Vec::new(),
         }
     }
 
@@ -61,10 +52,19 @@ impl<'a> TypeChecker<'a> {
         match expr {
             Expr::EnumVariant(EnumVariantExpr {
                 enum_name,
+                type_args,
                 variant_name: variant,
                 payload,
                 span,
             }) => {
+                let args =
+                    type_args.get_or_insert_with(|| match self.enum_name_as_type(enum_name) {
+                        Some(Type::GenericInstance(_, args)) => args,
+                        _ => Vec::new(),
+                    });
+                for arg in args.iter_mut() {
+                    *arg = self.as_scoped_generic(arg.clone());
+                }
                 let actual_enum_name = if let Some(idx) = enum_name.find('<') {
                     &enum_name[..idx]
                 } else {
@@ -79,7 +79,7 @@ impl<'a> TypeChecker<'a> {
                         // argument, as Rust's `Ok(())` holds nothing.
                         let void_payload = expected_payload.as_ref().is_some_and(|exp_types| {
                             let mut mapping = HashMap::new();
-                            let ty_args = self.enum_name_type_args(enum_name);
+                            let ty_args = args.as_slice();
                             for (param, ty_arg) in enum_decl.generics.iter().zip(ty_args.iter()) {
                                 mapping.insert(param.name().into(), ty_arg.clone());
                             }
@@ -100,7 +100,7 @@ impl<'a> TypeChecker<'a> {
                                     }
                                 } else {
                                     let mut mapping = HashMap::new();
-                                    let ty_args = self.enum_name_type_args(enum_name);
+                                    let ty_args = args.as_slice();
                                     for (param, ty_arg) in
                                         enum_decl.generics.iter().zip(ty_args.iter())
                                     {
@@ -111,30 +111,30 @@ impl<'a> TypeChecker<'a> {
                                         // An untyped literal takes the payload's type:
                                         // `Pair<i32, f64>::Of(1, 2.5)` holds an `f64`.
                                         let expected_ty = exp_types[i].substitute(&mapping);
-                                        let expr_ty = if matches!(
+                                        let generic = matches!(
                                             expected_ty,
                                             Type::Generic(..)
                                                 | Type::Scalar(ElementType::Generic(_))
-                                        ) {
-                                            self.check_expr_type_flag(expr, consume)
-                                        } else {
-                                            self.check_expr_expecting(
-                                                expr,
-                                                Some(expected_ty.clone()),
-                                                consume,
-                                            )
-                                        };
-                                        // A tensor payload has no lowering: the variant's slot is
-                                        // built with `llvm.insertvalue`, which takes primitives,
-                                        // and the AST path emitted the tag and dropped the tensor
-                                        // without saying so.
-                                        if Self::is_tensor_payload(&expected_ty) {
+                                        );
+                                        let expr_ty = self.check_whole_value(expr, |c, e| {
+                                            if generic {
+                                                c.check_expr_type_flag(e, consume)
+                                            } else {
+                                                c.check_expr_expecting(
+                                                    e,
+                                                    Some(expected_ty.clone()),
+                                                    consume,
+                                                )
+                                            }
+                                        });
+                                        if Self::is_located_tensor_payload(&expected_ty) {
                                             if !self.speculating {
                                                 self.errors.error_with_code(
                                                     crate::diagnostic::DiagnosticCode::E3021,
                                                     format!(
-                                                        "payload argument {} of {}::{} is {}; an \
-                                                         enum variant cannot carry a tensor",
+                                                        "payload argument {} of {}::{} is {}. An \
+                                                         enum variant cannot carry a `Pinned` or \
+                                                         `Ref` tensor yet",
                                                         i + 1,
                                                         actual_enum_name,
                                                         variant,
@@ -192,17 +192,28 @@ impl<'a> TypeChecker<'a> {
                         );
                     }
                 } else if !self.speculating {
+                    let poisoned = self.worker.global.registry.poisoned_reason(enum_name)
+                        == Some(crate::registry::PoisonKind::EnumVariant);
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E2003,
-                        format!("Unknown enum {}", enum_name),
+                        if poisoned {
+                            crate::registry::ambiguous_import_message("Enum", enum_name)
+                        } else {
+                            format!("Unknown enum {}", enum_name)
+                        },
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                     );
                 }
 
-                if let Some(ty) = self.enum_name_as_type(enum_name) {
-                    return ty;
+                if args.is_empty() {
+                    Type::Enum(actual_enum_name.into(), None)
+                } else {
+                    // Generic annotations use `Struct` for a nominal base, including enum declarations.
+                    Type::GenericInstance(
+                        Box::new(Type::Struct(actual_enum_name.into(), None)),
+                        args.clone(),
+                    )
                 }
-                Type::Enum(enum_name.clone(), None)
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
@@ -216,9 +227,7 @@ impl<'a> TypeChecker<'a> {
     /// type. A suffixed literal already carries its type and is returned unchanged.
     pub(crate) fn check_number_literal(&mut self, n: &mut NumberExpr) -> Type {
         if let Some(el) = &n.ty {
-            let el = el.clone();
-            self.check_usize_literal(n, &el);
-            return Type::Scalar(el);
+            return Type::Scalar(el.clone());
         }
         let elem = self
             .expected_type
@@ -226,30 +235,82 @@ impl<'a> TypeChecker<'a> {
             .and_then(|t| expected_numeric_elem(t, &n.value))
             .unwrap_or_else(|| crate::parser::expr::default_number_elem(&n.value));
         n.ty = Some(elem.clone());
-        self.check_usize_literal(n, &elem);
         Type::Scalar(elem)
     }
 
-    /// A `usize` never has its top bit set, which is what lets its arithmetic be marked as
-    /// never wrapping, so a literal past the largest `i64` is refused rather than stored.
-    pub(crate) fn check_usize_literal(&mut self, n: &NumberExpr, elem: &ElementType) {
-        if *elem != ElementType::USize
-            || self.speculating
-            || elem.accepts_integer_literal(n.value.as_ref()) != Some(false)
-        {
-            return;
-        }
-        self.errors.error_with_code(
-            crate::diagnostic::DiagnosticCode::E3045,
+    /// A note for a type error on a variable whose `let` has no type and starts from a bare
+    /// number literal, when `wanted` is a number of the same kind. The literal took its default
+    /// type, and the fix is to write the type on the `let`.
+    pub(crate) fn literal_default_note(
+        &self,
+        e: &Expr,
+        got: &Type,
+        wanted: &Type,
+    ) -> Option<String> {
+        let Expr::Identifier(id) = e else {
+            return None;
+        };
+        let (Type::Scalar(g), Type::Scalar(w)) = (got, wanted) else {
+            return None;
+        };
+        let is_int = |t: &ElementType| *t != ElementType::Bool && t.int_bits().is_some();
+        let same_kind = (g.is_float() && w.is_float()) || (is_int(g) && is_int(w));
+        let depth = self.literal_typed_lets.get(id.name.as_ref())?;
+        (same_kind && *depth == self.scope_depth_of(&id.name)).then(|| {
             format!(
-                "{} does not fit `usize`, which holds 0 up to {}",
-                n.value,
-                i64::MAX
-            ),
-            // A number literal has no span of its own: spans take part in comparing types,
-            // and a literal is also a tensor dimension.
-            None,
-        );
+                "`{0}` is {g} because its `let` has no type and starts from a literal; write \
+                 `let {0} : {w} = ...`",
+                id.name
+            )
+        })
+    }
+
+    /// E3045 for each integer literal in `body` that its type cannot hold. Without it, the
+    /// code generators kept the low bits, so `let x : i32 = 3000000000` held -1294967296.
+    ///
+    /// It runs once the body is checked, because a literal can change type after it is first
+    /// checked: a literal argument takes the type of its parameter only when the call is
+    /// resolved. A literal under a `-` is read with it, so `-128` fits an `i8`, though `128`
+    /// does not. A `usize` never has its top bit set, which is what lets its arithmetic be
+    /// marked as never wrapping.
+    pub(crate) fn check_integer_literals_fit(&mut self, body: &[Statement]) {
+        let mut found: Vec<(String, ElementType, Span)> = Vec::new();
+        let mut negated: std::collections::HashSet<*const NumberExpr> = Default::default();
+        crate::syntax::visit_exprs(body, &mut |e| match e {
+            Expr::UnaryOp(u) if u.op == UnaryOp::Neg => {
+                if let Expr::Number(n) = &*u.expr {
+                    negated.insert(n as *const NumberExpr);
+                    // `-` on a `usize` has its own error, E3030.
+                    if let Some(ty) = n.ty.as_ref().filter(|t| **t != ElementType::USize) {
+                        found.push((format!("-{}", n.value), ty.clone(), u.span));
+                    }
+                }
+            }
+            Expr::Number(n) if !negated.contains(&(n as *const NumberExpr)) => {
+                if let Some(ty) = &n.ty {
+                    found.push((n.value.to_string(), ty.clone(), n.span));
+                }
+            }
+            _ => {}
+        });
+        for (text, ty, span) in found {
+            if ty.accepts_integer_literal(&text) != Some(false) {
+                continue;
+            }
+            let message = if ty == ElementType::USize {
+                format!(
+                    "{text} does not fit `usize`, which holds 0 up to {}",
+                    i64::MAX
+                )
+            } else {
+                format!("{text} does not fit `{ty}`")
+            };
+            // A number the compiler wrote has no place in the source.
+            let at = (span != Span::default())
+                .then(|| crate::diagnostic::SourceSpan::from_ast_span(&span));
+            self.errors
+                .error_with_code(crate::diagnostic::DiagnosticCode::E3045, message, at);
+        }
     }
 
     /// The tensor an operand denotes, seen through the wrappers that do not
@@ -414,21 +475,19 @@ impl<'a> TypeChecker<'a> {
         )
     }
 
-    /// A short human name for a type, for diagnostics that only need to say what KIND of thing
-    /// the programmer wrote. The `{:?}` rendering used elsewhere prints the whole AST of every
-    /// dimension expression, which buries the one word the reader needs.
-    /// Whether a payload type is a tensor, through the wrappers that restate where it lives
-    /// without changing how it is represented.
-    fn is_tensor_payload(t: &Type) -> bool {
+    /// Whether a payload type is a tensor that `Pinned` or `Ref` gives a location. The drop of
+    /// such a payload does not know where the tensor lives.
+    fn is_located_tensor_payload(t: &Type) -> bool {
         match t {
-            Type::Tensor(..) => true,
-            Type::Verified(inner) | Type::Pinned(inner, _) | Type::Ref(inner, _) => {
-                Self::is_tensor_payload(inner)
-            }
+            Type::Pinned(inner, _) | Type::Ref(inner, _) => matches!(**inner, Type::Tensor(..)),
+            Type::Verified(inner) => Self::is_located_tensor_payload(inner),
             _ => false,
         }
     }
 
+    /// A short human name for a type, for diagnostics that only need to say what KIND of thing
+    /// the programmer wrote. The `{:?}` rendering used elsewhere prints the whole AST of every
+    /// dimension expression, which buries the one word the reader needs.
     pub(crate) fn short_type_name(t: &Type) -> String {
         match t {
             Type::Scalar(e) => format!("a scalar {e:?}"),
@@ -494,11 +553,23 @@ impl<'a> TypeChecker<'a> {
                         .unwrap_or(0)
                 };
                 let order = std::iter::once(lead).chain((0..elements.len()).filter(|&i| i != lead));
+                // An annotation such as `Tensor<f64, [2]>` gives the literals their element type.
+                let wanted = match &self.expected_type {
+                    Some(Type::Tensor(e, dims, _)) if nested && dims.len() > 1 => {
+                        Some(Type::Tensor(e.clone(), dims[1..].to_vec(), None))
+                    }
+                    Some(Type::Tensor(e, _, _)) if !nested => Some(Type::Scalar(e.clone())),
+                    _ => None,
+                };
                 let mut elem_ty = ElementType::F32;
+                let mut first_row = Type::Unknown;
                 for i in order {
                     let el = &mut elements[i];
                     if i == lead {
+                        let prev = std::mem::replace(&mut self.expected_type, wanted.clone());
                         let first = self.check_expr_type(el);
+                        self.expected_type = prev;
+                        first_row = first.clone();
                         match (first, nested) {
                             (Type::Scalar(e), false) => elem_ty = e,
                             // A nested row reports `Tensor<e, [?, ?]>`; the initializer's element type
@@ -533,7 +604,20 @@ impl<'a> TypeChecker<'a> {
                             );
                             return Type::Unknown;
                         }
-                        self.check_expr_type(el);
+                        // Later rows take the first row's type, so their literals adopt its
+                        // element type. A row of another length or type has no place in the shape.
+                        let row = self.check_expr_expecting(el, Some(first_row.clone()), true);
+                        if row != Type::Unknown && row != first_row {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E3018,
+                                format!(
+                                    "the rows of a nested array literal must all have the same \
+                                     type; the first row is {first_row}, but this one is {row}"
+                                ),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&el.span())),
+                            );
+                            return Type::Unknown;
+                        }
                     } else {
                         let ty = self.check_expr_expecting(
                             el,
@@ -572,7 +656,8 @@ impl<'a> TypeChecker<'a> {
                             crate::syntax::expr::NumberExpr::new(
                                 n.to_string(),
                                 Some(ElementType::I32),
-                                span,
+                                // No span: spans take part in comparing types.
+                                crate::syntax::Span::default(),
                             ),
                         ))
                     })
@@ -589,8 +674,9 @@ impl<'a> TypeChecker<'a> {
                 name,
                 fields,
                 type_id,
-                span: _,
+                span: literal_span,
             }) => {
+                let literal_span = *literal_span;
                 let resolved_name = name.clone();
                 let mut base_name = resolved_name.clone();
                 let mut generic_args = Vec::new();
@@ -601,6 +687,7 @@ impl<'a> TypeChecker<'a> {
                     }
                     generic_args = args;
                 }
+                self.check_struct_literal_module(base_name.as_ref(), &literal_span);
 
                 // Attach the struct's resolved GID so downstream consumers (the flat-HIR lowerer)
                 // reach its registry layout without re-resolving the name (#199). Resolved through the
@@ -711,46 +798,12 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
 
-                    // Check missing fields and type mismatch
-                    for (expected_name, raw_expected_type) in &struct_fields {
-                        let expected_type = &raw_expected_type.substitute(&mapping);
-                        let mut found = false;
-                        for (f_name, f_expr) in fields.iter_mut() {
-                            if f_name == expected_name {
-                                found = true;
-                                // The field's type is the expected type of what initializes it,
-                                // so `Counter { n : 0 }` writes a `u64` zero into a `u64` field
-                                // rather than an `i32` one the field then refuses.
-                                let f_type = self.check_expr_expecting(
-                                    f_expr,
-                                    Some(expected_type.clone()),
-                                    consume,
-                                );
-                                self.check_view_stored(
-                                    &format!("the field `{expected_name}`"),
-                                    f_expr,
-                                    &f_type,
-                                );
-                                if !self.is_assignable(expected_type, &f_type) && !self.speculating
-                                {
-                                    self.errors.push(format!(
-                                            "Type mismatch in struct initialization for field '{}'. Expected {}, got {}",
-                                            expected_name, expected_type, f_type
-                                        ));
-                                }
-                                break;
-                            }
-                        }
-                        if !found && !self.speculating {
-                            self.errors.push(format!(
-                                "Missing field '{}' in initialization of struct '{}'",
-                                expected_name, resolved_name
-                            ));
-                        }
-                    }
-                    // Check extra fields
+                    // The fields run in the order the source writes them, so they are checked in
+                    // that order. That order must also be the declaration order (E3062).
+                    let mut previous: Option<usize> = None;
                     for (f_name, f_expr) in fields.iter_mut() {
-                        if !struct_fields.iter().any(|(n, _)| n == f_name) {
+                        let Some(index) = struct_fields.iter().position(|(n, _)| n == f_name)
+                        else {
                             if !self.speculating {
                                 self.errors.push(format!(
                                     "Struct '{}' has no field '{}'",
@@ -758,6 +811,67 @@ impl<'a> TypeChecker<'a> {
                                 ));
                             }
                             self.check_expr_type_flag(f_expr, consume); // evaluate to find errors
+                            continue;
+                        };
+                        if let Some(prev) = previous.filter(|&p| index < p) {
+                            if !self.speculating {
+                                let order: Vec<&str> =
+                                    struct_fields.iter().map(|(n, _)| n.as_ref()).collect();
+                                self.errors.error_with_code(
+                                    crate::diagnostic::DiagnosticCode::E3062,
+                                    format!(
+                                        "the field `{f_name}` comes after `{}`, but \
+                                         `{base_name}` declares `{f_name}` first. Write the \
+                                         fields in the order of the declaration: {}",
+                                        struct_fields[prev].0,
+                                        order.join(", ")
+                                    ),
+                                    // At the field's value, or at the struct literal when the
+                                    // value has no place.
+                                    Some(crate::diagnostic::SourceSpan::from_ast_span(
+                                        &Some(f_expr.span())
+                                            .filter(|s| s.line > 0)
+                                            .unwrap_or(literal_span),
+                                    )),
+                                );
+                            }
+                        }
+                        previous = Some(previous.map_or(index, |p| p.max(index)));
+                        let expected_type = &struct_fields[index].1.substitute(&mapping);
+                        // `&mut a` stored as a raw pointer keeps no borrow of `a`.
+                        if Self::is_raw_pointer(expected_type) {
+                            self.borrow.drops.note_raw_pointer();
+                        }
+                        // The field's type is the expected type of what initializes it, so
+                        // `Counter { n : 0 }` writes a `u64` zero into a `u64` field rather than
+                        // an `i32` one the field then refuses.
+                        let f_type = self.check_whole_value(f_expr, |c, e| {
+                            c.check_expr_expecting(e, Some(expected_type.clone()), consume)
+                        });
+                        self.check_view_stored(&format!("the field `{f_name}`"), f_expr, &f_type);
+                        if let (Expr::Identifier(id), Some(holder)) =
+                            (&*f_expr, self.current_assignment_target.clone())
+                        {
+                            self.borrow
+                                .copy_borrows(id.name.as_ref(), &holder, self.scopes.len());
+                            self.reborrow_mut_variable(id.name.as_ref(), &holder);
+                        }
+                        if f_type != Type::Unknown
+                            && !self.is_assignable(expected_type, &f_type)
+                            && !self.speculating
+                        {
+                            self.errors.push(format!(
+                                "Type mismatch in struct initialization for field '{}'. Expected {}, got {}",
+                                f_name, expected_type, f_type
+                            ));
+                        }
+                    }
+                    for (expected_name, _) in &struct_fields {
+                        if !fields.iter().any(|(n, _)| n == expected_name) && !self.speculating {
+                            self.errors.push(format!(
+                                "Missing field '{}' in initialization of struct '{}'",
+                                expected_name, resolved_name
+                            ));
                         }
                     }
                 } else {
@@ -845,8 +959,10 @@ impl<'a> TypeChecker<'a> {
                 let ret_expr =
                     Expr::Identifier(IdentifierExpr::new(var_name.clone().into(), *span));
 
-                let block =
-                    Expr::UnsafeBlock(UnsafeBlockExpr::new(stmts, Some(Box::new(ret_expr)), *span));
+                let block = Expr::UnsafeBlock(UnsafeBlockExpr {
+                    generated: true,
+                    ..UnsafeBlockExpr::new(stmts, Some(Box::new(ret_expr)), *span)
+                });
 
                 *expr = block;
                 self.check_expr_type(expr)

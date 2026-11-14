@@ -16,11 +16,25 @@
 // The three residents of device memory during decode, each derived from the
 // configuration by const-generic arithmetic rather than written as a literal:
 //
-//   weights      12 * LAYERS * DIM^2 / TP               (attn qkvo 4d^2 + mlp 8d^2)
+//   weights      (2 * VOCAB + LAYERS * (2 * DIM + 2 * KVDIM + 3 * FFN)) * DIM / TP
 //   KV cache     2 * LAYERS * BATCH * CTX * KVDIM / TP   (K and V)
-//   activations  BATCH * CTX * DIM
+//   activations  STEP * DIM
 //
 // where DIM = HEADS * HDIM and KVDIM = KVHEADS * HDIM.
+//
+// The weights are the whole checkpoint: the embedding table and the output
+// layer (VOCAB * DIM each), and per layer the attention projections (Q and O
+// are DIM * DIM, K and V are DIM * KVDIM) and a gated MLP of width FFN (gate,
+// up and down, DIM * FFN each). Norms and biases are left out; they are under
+// 0.1%. This gives each Qwen2.5 checkpoint's size to within 0.1%, where the
+// 12 * LAYERS * DIM^2 an earlier version used gave 57% of the 7B's and 61% of
+// the 32B's. A model whose output layer is its embedding table stores that
+// table once: halve VOCAB for it.
+//
+// STEP is how many tokens one step works on. A serving engine bounds it: vLLM's
+// `max_num_batched_tokens` is 16384 by default. An earlier version used
+// BATCH * CTX, as if every token of every request were in the step at once,
+// and rejected configurations vLLM serves. Set STEP to the smaller of the two.
 //
 // KVHEADS IS SEPARATE FROM HEADS, AND THAT IS THE WHOLE POINT. Every current
 // production model uses grouped-query attention: Llama-3.1-70B has 64 query
@@ -66,10 +80,10 @@
 
 // One serving configuration, one verdict. Every resident is placed here so the
 // working-set check sees them together.
-fn admit<const LAYERS : i32, const HEADS : i32, const KVHEADS : i32, const HDIM : i32, const CTX : i32, const BATCH : i32, const TP : i32>() -> i32 {
+fn admit<const LAYERS : i32, const HEADS : i32, const KVHEADS : i32, const HDIM : i32, const FFN : i32, const VOCAB : i32, const CTX : i32, const BATCH : i32, const STEP : i32, const TP : i32>() -> i32 {
   // Weights: the parameter matrices, resident for the whole run. Sharded across
   // TP ranks, so the per-GPU share is 1/TP of the total.
-  let w : Tensor<f16, [12 * LAYERS * HEADS * HDIM / TP, HEADS * HDIM]> = Tensor<f16>([12 * LAYERS * HEADS * HDIM / TP, HEADS * HDIM]);
+  let w : Tensor<f16, [(2 * VOCAB + LAYERS * (2 * HEADS * HDIM + 2 * KVHEADS * HDIM + 3 * FFN)) / TP, HEADS * HDIM]> = Tensor<f16>([(2 * VOCAB + LAYERS * (2 * HEADS * HDIM + 2 * KVHEADS * HDIM + 3 * FFN)) / TP, HEADS * HDIM]);
   let _weights = transfer(w, Memory::HBM);
 
   // KV cache: K and V per layer, growing with batch x context, and sized by the
@@ -79,8 +93,8 @@ fn admit<const LAYERS : i32, const HEADS : i32, const KVHEADS : i32, const HDIM 
   let kv : Tensor<f16, [2 * LAYERS * BATCH * CTX / TP, KVHEADS * HDIM]> = Tensor<f16>([2 * LAYERS * BATCH * CTX / TP, KVHEADS * HDIM]);
   let _kv_cache = transfer(kv, Memory::HBM);
 
-  // Activations: the working tensor for the current step.
-  let a : Tensor<f16, [BATCH * CTX, HEADS * HDIM]> = Tensor<f16>([BATCH * CTX, HEADS * HDIM]);
+  // Activations: the working tensor for the tokens of the current step.
+  let a : Tensor<f16, [STEP, HEADS * HDIM]> = Tensor<f16>([STEP, HEADS * HDIM]);
   let _activations = transfer(a, Memory::HBM);
 
   // The step reads all three together, which is what makes them co-resident.
@@ -99,10 +113,10 @@ fn admit<const LAYERS : i32, const HEADS : i32, const KVHEADS : i32, const HDIM 
 }
 
 fn main() -> i32 {
-  // Configuration under test: a 70B-class model (80 layers, 64 query heads and
-  // 8 KV heads x 128 = 8192 hidden), 4096-token context, batch 1, no tensor
-  // parallelism. The 64/8 split is Llama-3.1-70B's grouped-query attention.
+  // Configuration under test: Llama-3.1-70B (80 layers, 64 query heads and
+  // 8 KV heads x 128 = 8192 hidden, MLP width 28672, vocabulary 128256),
+  // 4096-token context, batch 1, so 4096 tokens a step, no tensor parallelism.
   //
-  //   admit<LAYERS, HEADS, KVHEADS, HDIM, CTX, BATCH, TP>
-  return admit<80, 64, 8, 128, 4096, 1, 1>();
+  //   admit<LAYERS, HEADS, KVHEADS, HDIM, FFN, VOCAB, CTX, BATCH, STEP, TP>
+  return admit<80, 64, 8, 128, 28672, 128256, 4096, 1, 4096, 1>();
 }

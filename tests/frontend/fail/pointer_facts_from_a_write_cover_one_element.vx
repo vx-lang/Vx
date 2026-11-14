@@ -1,0 +1,56 @@
+//===- pointer_facts_from_a_write_cover_one_element.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A write through a raw pointer gives a value to the element that it writes, and to no other
+// element. So each call below needs a value in an element that no code wrote.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+import core::ptr;
+
+fn first(p : *const i64) -> i64
+requires valid(p, 1i64)
+requires initialized(p, 1i64)
+{
+  return unsafe { p[0] };
+}
+
+fn two(p : *const i64) -> i64
+requires valid(p, 2i64)
+requires initialized(p, 2i64)
+{
+  return unsafe { p[0] + p[1] };
+}
+
+fn wrote_the_second(p : *mut i64) -> i64
+requires valid(p, 2i64)
+{
+  unsafe { p[1] = 1i64; }
+  // CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+1]]:10: this call to 'first' may not meet its precondition `initialized(p, 1)`
+  return first(p as *const i64);
+}
+
+fn wrote_one_of_two(p : *mut i64) -> i64
+requires valid(p, 2i64)
+{
+  unsafe { p[0] = 1i64; }
+  // CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+1]]:10: this call to 'two' may not meet its precondition `initialized(p, 2)`
+  return two(p as *const i64);
+}
+
+fn next_to_the_write(p : *mut i64) -> i64
+requires valid(p, 2i64)
+{
+  let q = offset_mut(p, 1i64);
+  unsafe { *p = 1i64; }
+  // CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+1]]:10: this call to 'first' may not meet its precondition `initialized(p, 1)`
+  return first(q as *const i64);
+}
+
+fn main() -> i32 {
+  return 0;
+}

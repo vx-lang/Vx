@@ -25,7 +25,9 @@
 
 fn main() -> i32 {
   // 2621440 x 4096 x 4 B = 40 GiB.
-  let t : Tensor<f32, [2621440, 4096]> = Tensor<f32, [2621440, 4096]>::uninit();
+  let t : Tensor<f32, [2621440, 4096]> = unsafe {
+    Tensor<f32, [2621440, 4096]>::uninit()
+  };
   let _staged = transfer(t, Memory::HBM);
   return 0;
 }

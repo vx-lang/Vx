@@ -1,0 +1,49 @@
+//===- an_iterator_item_does_not_keep_the_iterator_borrowed.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The default code generator does not compile `Option<&i64>::unwrap` yet, so this uses the AST one.
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+//
+// An item that an adapter such as `filter` or `take` hands out points into the vector, not into
+// the adapter. So `last`, which keeps one item while it asks the adapter for the next one, works
+// on every adapter, and `next` can run while an item of `nth` is in use, as in Rust.
+import core::iter;
+import std::vec;
+
+fn three() -> Vec<i64> {
+  let mut a = Vec<i64>::new();
+  a.push(3i64);
+  a.push(1i64);
+  a.push(4i64);
+  return a;
+}
+
+fn last_of_each_adapter() -> i64 {
+  let a = three();
+  let f = a.iter().filter(|x : &&i64| **x > 2i64).last().unwrap();
+  let t = a.iter().take(2i64).last().unwrap();
+  let s = a.iter().skip(1i64).last().unwrap();
+  let r = a.iter().rev().last().unwrap();
+  return *f * 1000i64 + *t * 100i64 + *s * 10i64 + *r;
+}
+
+// `x` holds the borrow of `a` that `it` holds, and not `it`.
+fn next_while_an_item_is_used() -> i64 {
+  let a = three();
+  let mut it = a.iter().skip(1i64);
+  let x = it.nth(0i64).unwrap();
+  let y = it.next().unwrap();
+  return *x * 10i64 + *y;
+}
+
+fn main() -> i32 {
+  let a = last_of_each_adapter();
+  let b = next_while_an_item_is_used();
+  // CHECK: {{^}}4143 14{{$}}
+  println!("{} {}", a, b);
+  return 0;
+}

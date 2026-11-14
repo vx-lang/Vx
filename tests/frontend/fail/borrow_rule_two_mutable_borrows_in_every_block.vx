@@ -27,7 +27,7 @@ fn function_body(k : i32) -> i32 {
   let mut x = 1;
   let mut y = 0;
   let a = &mut x;
-  // CHECK: Error[E4004] at [[@LINE+1]]:
+  // CHECK: Error[E4004] at {{.*}}borrow_rule_two_mutable_borrows_in_every_block.vx:[[@LINE+1]]:
   let b = &mut x;
   *b = 2;
   *a = 3;
@@ -39,7 +39,7 @@ fn if_arm(k : i32) -> i32 {
   let mut y = 0;
   if k > 0 {
     let a = &mut x;
-    // CHECK: Error[E4004] at [[@LINE+1]]:
+    // CHECK: Error[E4004] at {{.*}}borrow_rule_two_mutable_borrows_in_every_block.vx:[[@LINE+1]]:
     let b = &mut x;
     *b = 2;
     *a = 3;
@@ -53,7 +53,7 @@ fn if_arm_borrowed_outside(k : i32) -> i32 {
   let mut y = 0;
   let a = &mut x;
   if k > 0 {
-    // CHECK: Error[E4004] at [[@LINE+1]]:
+    // CHECK: Error[E4004] at {{.*}}borrow_rule_two_mutable_borrows_in_every_block.vx:[[@LINE+1]]:
     let b = &mut x;
     *b = 2;
   }
@@ -68,7 +68,7 @@ fn else_arm(k : i32) -> i32 {
     y = 1;
   } else {
     let a = &mut x;
-    // CHECK: Error[E4004] at [[@LINE+1]]:
+    // CHECK: Error[E4004] at {{.*}}borrow_rule_two_mutable_borrows_in_every_block.vx:[[@LINE+1]]:
     let b = &mut x;
     *b = 2;
     *a = 3;
@@ -84,7 +84,7 @@ fn else_arm_borrowed_outside(k : i32) -> i32 {
   if k > 0 {
     y = 1;
   } else {
-    // CHECK: Error[E4004] at [[@LINE+1]]:
+    // CHECK: Error[E4004] at {{.*}}borrow_rule_two_mutable_borrows_in_every_block.vx:[[@LINE+1]]:
     let b = &mut x;
     *b = 2;
   }
@@ -98,7 +98,7 @@ fn match_arm(k : i32) -> i32 {
   match k {
     0 => {
       let a = &mut x;
-      // CHECK: Error[E4004] at [[@LINE+1]]:
+      // CHECK: Error[E4004] at {{.*}}borrow_rule_two_mutable_borrows_in_every_block.vx:[[@LINE+1]]:
       let b = &mut x;
       *b = 2;
       *a = 3;
@@ -117,7 +117,7 @@ fn match_arm_borrowed_outside(k : i32) -> i32 {
   let a = &mut x;
   match k {
     0 => {
-      // CHECK: Error[E4004] at [[@LINE+1]]:
+      // CHECK: Error[E4004] at {{.*}}borrow_rule_two_mutable_borrows_in_every_block.vx:[[@LINE+1]]:
       let b = &mut x;
       *b = 2;
     }
@@ -135,7 +135,7 @@ fn while_body(k : i32) -> i32 {
   let mut i = 0;
   while i < k {
     let a = &mut x;
-    // CHECK: Error[E4004] at [[@LINE+1]]:
+    // CHECK: Error[E4004] at {{.*}}borrow_rule_two_mutable_borrows_in_every_block.vx:[[@LINE+1]]:
     let b = &mut x;
     *b = 2;
     *a = 3;
@@ -151,7 +151,7 @@ fn while_body_borrowed_outside(k : i32) -> i32 {
   let a = &mut x;
   let mut i = 0;
   while i < k {
-    // CHECK: Error[E4004] at [[@LINE+1]]:
+    // CHECK: Error[E4004] at {{.*}}borrow_rule_two_mutable_borrows_in_every_block.vx:[[@LINE+1]]:
     let b = &mut x;
     *b = 2;
     i = i + 1;
@@ -165,7 +165,7 @@ fn for_body(k : i32) -> i32 {
   let mut y = 0;
   for _i in 0..k {
     let a = &mut x;
-    // CHECK: Error[E4004] at [[@LINE+1]]:
+    // CHECK: Error[E4004] at {{.*}}borrow_rule_two_mutable_borrows_in_every_block.vx:[[@LINE+1]]:
     let b = &mut x;
     *b = 2;
     *a = 3;
@@ -179,7 +179,7 @@ fn for_body_borrowed_outside(k : i32) -> i32 {
   let mut y = 0;
   let a = &mut x;
   for _i in 0..k {
-    // CHECK: Error[E4004] at [[@LINE+1]]:
+    // CHECK: Error[E4004] at {{.*}}borrow_rule_two_mutable_borrows_in_every_block.vx:[[@LINE+1]]:
     let b = &mut x;
     *b = 2;
   }
@@ -192,7 +192,7 @@ fn loop_body(k : i32) -> i32 {
   let mut y = 0;
   loop {
     let a = &mut x;
-    // CHECK: Error[E4004] at [[@LINE+1]]:
+    // CHECK: Error[E4004] at {{.*}}borrow_rule_two_mutable_borrows_in_every_block.vx:[[@LINE+1]]:
     let b = &mut x;
     *b = 2;
     *a = 3;
@@ -207,7 +207,7 @@ fn loop_body_borrowed_outside(k : i32) -> i32 {
   let mut y = 0;
   let a = &mut x;
   loop {
-    // CHECK: Error[E4004] at [[@LINE+1]]:
+    // CHECK: Error[E4004] at {{.*}}borrow_rule_two_mutable_borrows_in_every_block.vx:[[@LINE+1]]:
     let b = &mut x;
     *b = 2;
     break;
@@ -219,7 +219,7 @@ fn loop_body_borrowed_outside(k : i32) -> i32 {
 fn unsafe_block(k : i32) -> i32 {
   let mut x = 1;
   let mut y = 0;
-  // CHECK: Error[E4004] at [[@LINE+1]]:
+  // CHECK: Error[E4004] at {{.*}}borrow_rule_two_mutable_borrows_in_every_block.vx:[[@LINE+1]]:
   unsafe { let a = &mut x; let b = &mut x; *b = 2; *a = 3; }
   return x + y;
 }
@@ -229,7 +229,7 @@ fn unsafe_block_borrowed_outside(k : i32) -> i32 {
   let mut x = 1;
   let mut y = 0;
   let a = &mut x;
-  // CHECK: Error[E4004] at [[@LINE+1]]:
+  // CHECK: Error[E4004] at {{.*}}borrow_rule_two_mutable_borrows_in_every_block.vx:[[@LINE+1]]:
   unsafe { let b = &mut x; *b = 2; }
   *a = 3;
   return x + y;
@@ -242,7 +242,7 @@ fn closure_body(k : i32) -> i32 {
     let mut x = n;
     let mut y = 0;
     let a = &mut x;
-    // CHECK: Error[E4004] at [[@LINE+1]]:
+    // CHECK: Error[E4004] at {{.*}}borrow_rule_two_mutable_borrows_in_every_block.vx:[[@LINE+1]]:
     let b = &mut x;
     *b = 2;
     *a = 3;
@@ -257,7 +257,7 @@ fn closure_body_borrowed_outside(k : i32) -> i32 {
   let mut x = 1;
   let mut y = 0;
   let a = &mut x;
-  // CHECK: Error[E4004] at [[@LINE+1]]:
+  // CHECK: Error[E4004] at {{.*}}borrow_rule_two_mutable_borrows_in_every_block.vx:[[@LINE+1]]:
   let f = |n : i32| unsafe { let b = &mut x; *b = 2; n };
   y = y + f(k);
   *a = 3;
@@ -270,7 +270,7 @@ fn if_inside_a_loop(k : i32) -> i32 {
   for i in 0..k {
     if i > 0 {
       let a = &mut x;
-      // CHECK: Error[E4004] at [[@LINE+1]]:
+      // CHECK: Error[E4004] at {{.*}}borrow_rule_two_mutable_borrows_in_every_block.vx:[[@LINE+1]]:
       let b = &mut x;
       *b = 2;
       *a = 3;
@@ -286,7 +286,7 @@ fn if_inside_a_loop_borrowed_outside(k : i32) -> i32 {
   let a = &mut x;
   for i in 0..k {
     if i > 0 {
-      // CHECK: Error[E4004] at [[@LINE+1]]:
+      // CHECK: Error[E4004] at {{.*}}borrow_rule_two_mutable_borrows_in_every_block.vx:[[@LINE+1]]:
       let b = &mut x;
       *b = 2;
     }

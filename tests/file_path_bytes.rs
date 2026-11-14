@@ -3,7 +3,12 @@
 
 // A Unix filename is a byte sequence; opening it must not change invalid UTF-8 bytes.
 include!("../stdlib/rust_core/src/ffi/macros.rs");
-instantiate_file_ffi!();
+// These tests run no tasks, so a call runs where it is.
+fn run_here<T>(call: impl FnOnce() -> T) -> T {
+    call()
+}
+
+instantiate_file_ffi!(run_here);
 
 #[test]
 fn file_open_rejects_unknown_modes() -> Result<(), String> {

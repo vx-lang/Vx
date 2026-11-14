@@ -1,0 +1,40 @@
+(* The CPU part of ../vx.cat, in the cat dialect of memalloy: no scopes and no barriers. *)
+
+"C"
+
+include "basic.cat"
+
+let rs = [W]; poloc?; [W & A]; (rf; atom)*
+let sw = [REL]; ([F]; sb)?; rs; rf; [R & A]; (sb; [F])?; [ACQ]
+let hb = (sb | sw)+
+
+let cnf = ((W * EV) | (EV * W)) & sloc \ id
+let dr = (cnf & ext) \ hb \ (hb^-1) \ (A * A)
+undefined_unless empty dr as DataRace
+
+let eco = (rf | co | fr)+
+irreflexive hb; eco? as Coherence
+irreflexive atom; eco as CoherenceRmw
+empty atom & (fr; co) as Atomicity
+
+let sbl = sb \ sloc
+let hbl = hb & sloc
+let scb = sb | sbl; hb; sbl | hbl | co | fr
+let pscb = ([SC] | [F & SC]; hb?); scb; ([SC] | hb?; [F & SC])
+let pscf = [F & SC]; (hb | hb; eco; hb); [F & SC]
+acyclic pscb | pscf as SeqCst
+
+acyclic sb | rf as NoThinAir
+
+(* Deadness, from Wickerson et al., "Automatically Comparing Memory Consistency Models"
+   (POPL 2017), as in c11_lahav.cat of memalloy. A compiler check uses these rules to keep
+   only programs without a data race: a racy program has no meaning, so any result is
+   correct for it. *)
+deadness_requires empty if_zero as No_If_Zero
+deadness_requires empty unforced_co as Forced_Co
+let cde = ((rf \ thd) | ctrl)*; ctrl
+let drs = rs \ ([R]; !cde)
+let dsw = sw & (((([F]; sb)?; [REL]; drs?) \ (!ctrl; !cde)); rf)
+let dhb = po?; (dsw; ctrl)*
+let pdr = cnf \ (A * A)
+deadness_requires empty pdr \ (dhb | dhb^-1) as Dead_Pdr

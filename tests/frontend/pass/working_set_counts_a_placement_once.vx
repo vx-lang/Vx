@@ -31,7 +31,7 @@ fn main() -> i32 {
   // identifier takes its position from that identifier and is stable across the
   // second visit on its own; this shape has no such position, which is the case
   // the fallback exists for and the one that actually double-counted.
-  let _s = Tensor<f32, [1024, 768]>::uninit().to_sram_relaxed();
+  let _s = unsafe { Tensor<f32, [1024, 768]>::uninit().to_sram_relaxed() };
   print(5);
   return 0;
 }

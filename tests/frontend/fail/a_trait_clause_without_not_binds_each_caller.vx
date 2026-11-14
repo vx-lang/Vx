@@ -1,0 +1,47 @@
+//===- a_trait_clause_without_not_binds_each_caller.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `ensures points_into(return, *self)` on a trait method keeps the default for each impl, so the
+// trait keeps the freedom to change. The body of `next` lets the result point only where
+// `self.data` points, but a caller still keeps `c` borrowed while `a` is in use.
+
+import std::vec;
+
+trait Walk {
+  fn next(self : &mut Self) -> &i64
+  ensures points_into(return, *self);
+}
+
+struct Cursor {
+  data : &Vec<i64>,
+  pos : i32,
+}
+
+impl Walk for Cursor {
+  fn next(self : &mut Cursor) -> &i64 {
+    let r = self.data.get_ref(self.pos);
+    self.pos = self.pos + 1;
+    return r;
+  }
+}
+
+fn main() -> i32 {
+  let mut v = Vec<i64>::new();
+  v.push(10i64);
+  v.push(20i64);
+  let mut c = Cursor {
+    data : &v, pos : 0
+  };
+  let a = c.next();
+  // CHECK: Error[E4003] at {{.*}}.vx:[[@LINE+1]]:13: Cannot borrow 'c' as mutable because it is also borrowed as immutable
+  let b = c.next();
+  return (*a + *b) as i32;
+}
+
+// CHECK: 1 error(s) emitted

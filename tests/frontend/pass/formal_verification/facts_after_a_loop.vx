@@ -1,0 +1,110 @@
+//===- facts_after_a_loop.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// After a loop, each invariant that holds at each place where the loop ends is a fact. A
+// `for i in a..b` loop ends at its head with `i == b`, and a `while c` loop with `!c`. So each
+// call after a loop below proves its `requires`.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
+
+import core::ptr;
+
+fn sum(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  let mut total = 0i64;
+  for i in 0i64..n {
+    total = total + unsafe { p[i] };
+  }
+  return total;
+}
+
+fn need_equal(x : i64, y : i64) -> i64
+requires x == y
+{
+  return x;
+}
+
+fn need_at_most(x : i64, y : i64) -> i64
+requires x <= y
+{
+  return x;
+}
+
+// The loop gives each element a value, so the call after it can read all of them.
+fn fill_then_sum(p : *mut i64, n : i64) -> i64
+requires valid(p, n)
+{
+  for i in 0i64..n invariant initialized(p, i) {
+    unsafe { p[i] = 2i64; }
+  }
+  return sum(p as *const i64, n);
+}
+
+fn count(n : i64) -> i64
+requires 0i64 <= n
+{
+  let mut total = 0i64;
+  for i in 0i64..n invariant total == i {
+    total = total + 1i64;
+  }
+  return need_equal(total, n);
+}
+
+// The loop ends where `i < n` is false, and the invariant says `i <= n`.
+fn count_with_while(n : i64) -> i64
+requires 0i64 <= n
+{
+  let mut i = 0i64;
+  while i < n invariant i <= n {
+    i = i + 1i64;
+  }
+  return need_equal(i, n);
+}
+
+// The `break` keeps the invariant, so it holds after the loop. The value of `i` there has its own
+// name, between 0 and `n`.
+fn stop_early(n : i64) -> i64
+requires 0i64 <= n
+{
+  let mut total = 0i64;
+  for i in 0i64..n invariant total == i {
+    if total == 5i64 {
+      break;
+    }
+    total = total + 1i64;
+  }
+  return need_at_most(total, n);
+}
+
+// Each loop over `i` has its own name for the value of `i` where it ends.
+fn two_loops(n : i64, m : i64) -> i64
+requires 0i64 <= n
+requires 0i64 <= m
+{
+  let mut a = 0i64;
+  for i in 0i64..n invariant a == i {
+    a = a + 1i64;
+  }
+  let mut b = 0i64;
+  for i in 0i64..m invariant b == i {
+    b = b + 1i64;
+  }
+  return need_equal(a, n) + need_equal(b, m);
+}
+
+fn main() -> i32 {
+  let mut x = 0i64;
+  let p : *mut i64 = &mut x;
+  // CHECK: 2 3 3 3 5{{$}}
+  println!(
+  "{} {} {} {} {}", fill_then_sum(p, 1i64), count(3i64), count_with_while(3i64), stop_early(3i64),
+  two_loops(2i64, 3i64)
+  );
+  return 0;
+}

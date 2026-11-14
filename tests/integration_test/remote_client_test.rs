@@ -20,8 +20,11 @@
 //! collide, and the worker is killed on the way out whether the test passed or
 //! not.
 
+use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Child, Command};
+
+use crate::integration_test::runtime_test_build;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -38,8 +41,7 @@ impl Drop for Worker {
 }
 
 fn compile(cxx: &str, sources: &[PathBuf], out: &PathBuf, extra: &[String]) {
-    let mut cmd = Command::new(cxx);
-    cmd.args(["-std=c++17", "-O1", "-Wall", "-Werror"]);
+    let mut cmd = runtime_test_build::command(cxx, "c++17");
     for s in sources {
         cmd.arg(s);
     }
@@ -107,7 +109,7 @@ fn ffi_flags() -> Vec<String> {
 fn a_dispatch_reaches_a_worker_process_over_tcp() {
     let root = repo_root();
     let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
-    let cxx = std::env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
+    let cxx = runtime_test_build::cxx();
 
     let worker_bin = tmp.join("vx-worker-test");
     compile(
@@ -132,7 +134,7 @@ fn a_dispatch_reaches_a_worker_process_over_tcp() {
     // backend is the device here; worker id 2 so a handle it mints is visibly
     // not the default.
     let port = 20000 + (std::process::id() % 10000) as u16;
-    let worker = Worker(
+    let mut worker = Worker(
         Command::new(&worker_bin)
             .args([
                 "--port",
@@ -142,6 +144,7 @@ fn a_dispatch_reaches_a_worker_process_over_tcp() {
                 "--worker-id",
                 "2",
             ])
+            .stderr(std::process::Stdio::piped())
             .spawn()
             .expect("failed to start the worker"),
     );
@@ -150,19 +153,433 @@ fn a_dispatch_reaches_a_worker_process_over_tcp() {
     // has to get there.
     std::thread::sleep(std::time::Duration::from_millis(300));
 
-    let run = Command::new(&client_bin)
-        .args(["127.0.0.1", &port.to_string()])
-        .output()
-        .expect("failed to run the client");
+    // The client does not free its two input buffers. The worker must free them
+    // when the first client disconnects, before it accepts the second client.
+    for attempt in ["first", "second"] {
+        let run = Command::new(&client_bin)
+            .args(["127.0.0.1", &port.to_string()])
+            .output()
+            .expect("failed to run the client");
+        assert!(
+            run.status.success(),
+            "the dispatch of the {attempt} client did not survive the trip:\n{}{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
 
+    let mut stderr = worker.0.stderr.take().expect("the worker has no stderr");
     drop(worker);
+    let mut log = String::new();
+    stderr
+        .read_to_string(&mut log)
+        .expect("failed to read the worker's log");
+    assert!(
+        log.contains("freed 2 buffer(s) that the host left"),
+        "the worker did not free the buffers of the first client:\n{log}"
+    );
+}
 
+/// Two hosts use two workers in opposite order, and both finish. Host A holds
+/// worker 1 and then asks worker 2, while host B holds worker 2 and then asks
+/// worker 1. A worker that served one host until it disconnected left both
+/// hosts waiting forever.
+#[test]
+fn two_hosts_that_use_two_workers_in_opposite_order_both_finish() {
+    let root = repo_root();
+    let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    let cxx = runtime_test_build::cxx();
+
+    let worker_bin = tmp.join("vx-worker-two-hosts");
+    compile(
+        &cxx,
+        &[
+            root.join("runtime/vx_worker_main.cpp"),
+            root.join("runtime/host_dispatch.cpp"),
+        ],
+        &worker_bin,
+        &ffi_flags(),
+    );
+    let client_bin = tmp.join("two_workers_client");
+    compile(
+        &cxx,
+        &[root.join("tests/runtime/two_workers_client.cpp")],
+        &client_bin,
+        &[],
+    );
+
+    let port_1 = 20000 + ((std::process::id() + 4) % 10000) as u16;
+    let port_2 = 20000 + ((std::process::id() + 5) % 10000) as u16;
+    let mut workers = Vec::new();
+    for (port, id) in [(port_1, "1"), (port_2, "2")] {
+        workers.push(Worker(
+            Command::new(&worker_bin)
+                .args([
+                    "--port",
+                    &port.to_string(),
+                    "--topology",
+                    "0",
+                    "--worker-id",
+                    id,
+                ])
+                .spawn()
+                .expect("failed to start a worker"),
+        ));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(400));
+
+    // Each host makes its file when it holds its first worker.
+    let file_a = tmp.join("two-hosts-a-ready");
+    let file_b = tmp.join("two-hosts-b-ready");
+    let _ = std::fs::remove_file(&file_a);
+    let _ = std::fs::remove_file(&file_b);
+    let start = |first: u16, second: u16, mine: &PathBuf, other: &PathBuf| {
+        Command::new(&client_bin)
+            .args([
+                "127.0.0.1",
+                &first.to_string(),
+                &second.to_string(),
+                mine.to_str().unwrap(),
+                other.to_str().unwrap(),
+            ])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("failed to start a host")
+    };
+    let mut hosts = [
+        ("A", start(port_1, port_2, &file_a, &file_b)),
+        ("B", start(port_2, port_1, &file_b, &file_a)),
+    ];
+
+    // A deadlock does not fail, it waits. So stop the hosts after 30 s.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while hosts
+        .iter_mut()
+        .any(|(_, h)| h.try_wait().expect("failed to poll a host").is_none())
+    {
+        if std::time::Instant::now() > deadline {
+            for (_, h) in hosts.iter_mut() {
+                let _ = h.kill();
+            }
+            panic!("the two hosts did not finish in 30 s: a deadlock across the two workers");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    drop(workers);
+    for (name, h) in hosts {
+        let out = h.wait_with_output().expect("failed to collect a host");
+        assert!(
+            out.status.success(),
+            "host {name} failed:\n{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+/// One host gets stuck in the middle of a message in `mode`. The worker must
+/// drop it after its time limit of 2 s, and then serve a second host.
+fn a_stuck_host_does_not_stop_the_worker(mode: &str, logged: &str) {
+    let root = repo_root();
+    let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    let cxx = runtime_test_build::cxx();
+
+    let worker_bin = tmp.join(format!("vx-worker-stuck-{mode}"));
+    compile(
+        &cxx,
+        &[
+            root.join("runtime/vx_worker_main.cpp"),
+            root.join("runtime/host_dispatch.cpp"),
+        ],
+        &worker_bin,
+        &ffi_flags(),
+    );
+    let stuck_bin = tmp.join(format!("stuck_host-{mode}"));
+    compile(
+        &cxx,
+        &[root.join("tests/runtime/stuck_host.cpp")],
+        &stuck_bin,
+        &[],
+    );
+    let client_bin = tmp.join(format!("remote_client_after_{mode}"));
+    compile(
+        &cxx,
+        &[root.join("tests/runtime/remote_client_test.cpp")],
+        &client_bin,
+        &[],
+    );
+
+    let offset = if mode == "half" { 6 } else { 7 };
+    let port = 20000 + ((std::process::id() + offset) % 10000) as u16;
+    let mut worker = Worker(
+        Command::new(&worker_bin)
+            .args([
+                "--port",
+                &port.to_string(),
+                "--topology",
+                "0",
+                "--io-timeout",
+                "2",
+            ])
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("failed to start the worker"),
+    );
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    let mut stuck = Worker(
+        Command::new(&stuck_bin)
+            .args(["127.0.0.1", &port.to_string(), mode])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("failed to start the stuck host"),
+    );
+    let mut said = [0u8; 6];
+    stuck
+        .0
+        .stdout
+        .take()
+        .expect("the stuck host has no stdout")
+        .read_exact(&mut said)
+        .expect("the stuck host did not get stuck");
+    assert_eq!(&said, b"stuck\n");
+
+    let run = run_bounded(
+        Command::new(&client_bin).args(["127.0.0.1", &port.to_string()]),
+        20,
+    );
     assert!(
         run.status.success(),
-        "the dispatch did not survive the trip:\n{}{}",
+        "the second host did not finish while the first host was stuck:\n{}{}",
         String::from_utf8_lossy(&run.stdout),
         String::from_utf8_lossy(&run.stderr)
     );
+
+    drop(stuck);
+    let mut stderr = worker.0.stderr.take().expect("the worker has no stderr");
+    drop(worker);
+    let mut log = String::new();
+    stderr
+        .read_to_string(&mut log)
+        .expect("failed to read the worker's log");
+    assert!(
+        log.contains(logged),
+        "the worker did not drop the stuck host for its time limit:\n{log}"
+    );
+}
+
+#[test]
+fn a_host_that_sends_half_a_request_does_not_stop_the_worker() {
+    a_stuck_host_does_not_stop_the_worker(
+        "half",
+        "the host sent part of a request and then nothing for 2 s; dropping the host",
+    );
+}
+
+#[test]
+fn a_host_that_does_not_read_its_reply_does_not_stop_the_worker() {
+    a_stuck_host_does_not_stop_the_worker(
+        "no-read",
+        "the host did not read its reply for 2 s; dropping the host",
+    );
+}
+
+/// The worker process dies while a host waits for its reply. The operating
+/// system closes the connection, so the host must stop at once, with an error.
+/// The link check is set to 120 s, so only the closed connection can end the
+/// wait in the 10 s that the test gives.
+#[test]
+fn a_host_stops_with_an_error_when_its_worker_dies() {
+    use std::io::{BufRead, Write};
+    let root = repo_root();
+    let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    let cxx = runtime_test_build::cxx();
+
+    let worker_bin = tmp.join("vx-worker-that-dies");
+    compile(
+        &cxx,
+        &[
+            root.join("runtime/vx_worker_main.cpp"),
+            root.join("runtime/host_dispatch.cpp"),
+        ],
+        &worker_bin,
+        &ffi_flags(),
+    );
+    let client_bin = tmp.join("worker_dies_client");
+    compile(
+        &cxx,
+        &[root.join("tests/runtime/worker_dies_client.cpp")],
+        &client_bin,
+        &[],
+    );
+
+    let port = 20000 + ((std::process::id() + 8) % 10000) as u16;
+    let mut worker = Worker(
+        Command::new(&worker_bin)
+            .args(["--port", &port.to_string(), "--topology", "0"])
+            .spawn()
+            .expect("failed to start the worker"),
+    );
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    let mut host = Worker(
+        Command::new(&client_bin)
+            .args(["127.0.0.1", &port.to_string()])
+            .env("VX_REMOTE_LINK_TIMEOUT", "120")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("failed to start the host"),
+    );
+    let mut said = String::new();
+    std::io::BufReader::new(host.0.stdout.take().expect("the host has no stdout"))
+        .read_line(&mut said)
+        .expect("the host did not connect");
+    assert_eq!(said, "connected\n");
+
+    // Stop the worker, so that the host surely waits when the worker dies.
+    let pid = worker.0.id().to_string();
+    let stopped = Command::new("kill").args(["-STOP", &pid]).status();
+    assert!(stopped.is_ok_and(|s| s.success()), "cannot stop the worker");
+    host.0
+        .stdin
+        .take()
+        .expect("the host has no stdin")
+        .write_all(b"go\n")
+        .expect("cannot tell the host to send");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    worker.0.kill().expect("cannot kill the worker");
+    let _ = worker.0.wait();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let status = loop {
+        if let Some(s) = host.0.try_wait().expect("failed to poll the host") {
+            break s;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the host still waits 10 s after its worker died"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let mut log = String::new();
+    host.0
+        .stderr
+        .take()
+        .expect("the host has no stderr")
+        .read_to_string(&mut log)
+        .expect("failed to read the host's log");
+    assert_eq!(
+        status.code(),
+        Some(3),
+        "the TRANSFER to a dead worker did not fail:\n{log}"
+    );
+}
+
+/// Two hosts use one worker at the same time. Each host has its own table of
+/// buffers on the worker. So when host A leaves, the worker frees only the
+/// buffers of A, and host B can still read its own.
+#[test]
+fn two_hosts_on_one_worker_each_get_their_own_buffers() {
+    use std::io::{BufRead, Write};
+    let root = repo_root();
+    let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    let cxx = runtime_test_build::cxx();
+
+    let worker_bin = tmp.join("vx-worker-two-hosts-one-worker");
+    compile(
+        &cxx,
+        &[
+            root.join("runtime/vx_worker_main.cpp"),
+            root.join("runtime/host_dispatch.cpp"),
+        ],
+        &worker_bin,
+        &ffi_flags(),
+    );
+    let client_bin = tmp.join("two_hosts_one_worker_client");
+    compile(
+        &cxx,
+        &[root.join("tests/runtime/two_hosts_one_worker_client.cpp")],
+        &client_bin,
+        &[],
+    );
+
+    let port = 20000 + ((std::process::id() + 9) % 10000) as u16;
+    let mut worker = Worker(
+        Command::new(&worker_bin)
+            .args(["--port", &port.to_string(), "--topology", "0"])
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("failed to start the worker"),
+    );
+    // Send each line of the worker's log to the test.
+    let worker_log = std::io::BufReader::new(worker.0.stderr.take().expect("no worker stderr"));
+    let (log_tx, log_rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for line in worker_log.lines().map_while(Result::ok) {
+            if log_tx.send(line).is_err() {
+                return;
+            }
+        }
+    });
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    let mut host = Worker(
+        Command::new(&client_bin)
+            .args(["127.0.0.1", &port.to_string()])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("failed to start the hosts"),
+    );
+    let mut said = String::new();
+    std::io::BufReader::new(host.0.stdout.take().expect("the hosts have no stdout"))
+        .read_line(&mut said)
+        .expect("host A did not leave");
+    assert_eq!(said, "A left\n");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut seen = Vec::new();
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        match log_rx.recv_timeout(left) {
+            Ok(line) if line.contains("that the host left") => break,
+            Ok(line) => seen.push(line),
+            Err(_) => panic!(
+                "the worker did not free the buffers of host A in 10 s:\n{}",
+                seen.join("\n")
+            ),
+        }
+    }
+    host.0
+        .stdin
+        .take()
+        .expect("the hosts have no stdin")
+        .write_all(b"go\n")
+        .expect("cannot tell host B to read");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let status = loop {
+        if let Some(s) = host.0.try_wait().expect("failed to poll the hosts") {
+            break s;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "host B did not finish in 10 s"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let mut log = String::new();
+    host.0
+        .stderr
+        .take()
+        .expect("the hosts have no stderr")
+        .read_to_string(&mut log)
+        .expect("failed to read the log of the hosts");
+    assert!(status.success(), "two hosts on one worker failed:\n{log}");
 }
 
 /// A Vx program placing its data on a worker, computing there, and reading the
@@ -184,7 +601,7 @@ fn a_dispatch_reaches_a_worker_process_over_tcp() {
 fn a_placed_tensor_can_be_read_home_from_a_worker() {
     let root = repo_root();
     let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
-    let cxx = std::env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
+    let cxx = runtime_test_build::cxx();
 
     let worker_bin = tmp.join("vx-worker-readback");
     compile(
@@ -332,7 +749,7 @@ fn main() -> i32 {
 fn a_handoff_between_two_workers_moves_the_data() {
     let root = repo_root();
     let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
-    let cxx = std::env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
+    let cxx = runtime_test_build::cxx();
 
     let worker_bin = tmp.join("vx-worker-handoff");
     compile(
@@ -484,7 +901,7 @@ fn main() -> i32 {
 fn a_backend_refuses_an_address_that_belongs_to_another_machine() {
     let root = repo_root();
     let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
-    let cxx = std::env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
+    let cxx = runtime_test_build::cxx();
 
     let bin = tmp.join("routing_refusal_test");
     compile(
@@ -516,5 +933,104 @@ fn a_backend_refuses_an_address_that_belongs_to_another_machine() {
     assert!(
         said.contains("worker 3") && said.contains("a read-back"),
         "the refusal did not name the worker and the operation:\n{said}"
+    );
+}
+
+/// The machine description and the kernel of a GPU that shares host memory, with its
+/// `offload:` field. Without the mark, CPU_DRAM is `managed: cached`, so the kernel reads the
+/// host tensors with no `transfer`. With it, the program moves them with `transfer`.
+fn shared_gpu_program(offload: bool) -> String {
+    let machine = format!(
+        "Memory CPU_DRAM {{\n  capacity: 480 GiB, bandwidth: 500 GB/s, managed: cached\n}}\n\
+         Memory HBM {{\n  capacity: 96 GiB, bandwidth: 4 TB/s, managed: explicit, scope: device\n}}\n\
+         Topology SharedGpu {{\n  arch: nvptx64,\n  levels: [blocks(max_lanes: 1024, memory: cta), \
+         subgroups(lanes: 32), lanes(memory: thread)],\n  chip: sm_90,\n  offload: {offload},\n  \
+         memory: Memory::HBM,\n  visible: [Memory::HBM],\n  \
+         transfer Memory::CPU_DRAM -> Memory::HBM : 450 GB/s,\n  \
+         transfer Memory::HBM -> Memory::CPU_DRAM : 450 GB/s\n}}\n"
+    );
+    let kernel = if offload {
+        "fn main() -> i32 {\n  let x = transfer(Tensor<f32, [4]>::fill(3.0), Memory::HBM);\n  \
+         let mut out = transfer(Tensor<f32, [4]>::fill(0.0), Memory::HBM);\n  \
+         spawn on(Topology::SharedGpu) {\n    for i in 0..4 across blocks {\n      \
+         out[i] = 2.0 * x[i];\n    }\n  }\n  let home = transfer(out, Memory::CPU_DRAM);\n  \
+         println!(\"{}\", home[0]);\n  return 0;\n}\n"
+    } else {
+        "fn double(out : &mut Tensor<f32, [?]>, x : &Tensor<f32, [?]>, n : i32) -> void {\n  \
+         spawn on(Topology::SharedGpu) {\n    for i in 0..n across blocks {\n      \
+         out[i] = 2.0 * x[i];\n    }\n  }\n  return;\n}\n\
+         fn main() -> i32 {\n  let x = Tensor<f32, [4]>::fill(3.0);\n  \
+         let mut out = Tensor<f32, [4]>::fill(0.0);\n  double(&mut out, &x, 4);\n  \
+         println!(\"{}\", out[0]);\n  return 0;\n}\n"
+    };
+    machine + kernel
+}
+
+/// A manifest that sends the topology to a worker of another node. Without `offload: true`, the
+/// runtime refuses: the kernel reads host memory that such a worker does not share. With it, the
+/// kernel goes to the worker, and the run stops only because no worker listens there. Port 1 is
+/// a port where nothing listens, and the refusal comes before any connection.
+#[test]
+fn a_remote_worker_takes_only_a_topology_marked_offload() {
+    let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    let manifest = tmp.join("offload-manifest");
+    std::fs::write(&manifest, "SharedGpu  127.0.0.1  1\n").expect("failed to write the manifest");
+    let vxc = env!("CARGO_BIN_EXE_vxc");
+    let refusal = "does not say `offload: true`";
+    // Each code generator carries the mark to the payload of the kernel.
+    for (offload, codegen) in [
+        (false, None),
+        (true, None),
+        (false, Some("--legacy-codegen")),
+    ] {
+        let prog = tmp.join(format!("offload-{offload}.vx"));
+        std::fs::write(&prog, shared_gpu_program(offload)).expect("failed to write the program");
+        let run = run_bounded(
+            Command::new(vxc)
+                .args([prog.to_str().unwrap(), "--run"])
+                .args(codegen)
+                .env("VX_FLEET_MANIFEST", &manifest),
+            120,
+        );
+        let stderr = String::from_utf8_lossy(&run.stderr);
+        assert!(
+            !run.status.success(),
+            "the run with offload: {offload} worked:\n{stderr}"
+        );
+        if offload {
+            assert!(
+                !stderr.contains(refusal) && stderr.contains("cannot reach SharedGpu"),
+                "the marked topology did not go to the worker:\n{stderr}"
+            );
+        } else {
+            assert!(
+                stderr.contains(refusal),
+                "the runtime sent a topology with no mark to the worker:\n{stderr}"
+            );
+        }
+    }
+}
+
+/// A lost machine or link sends no EOF, so a host connection turns on TCP
+/// keepalive with VX_REMOTE_LINK_TIMEOUT as the limit. Losing a link needs
+/// root, so the test checks the options on the socket.
+#[test]
+fn a_host_connection_watches_its_link() {
+    let root = repo_root();
+    let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    let cxx = runtime_test_build::cxx();
+    let bin = tmp.join("link_watch_test");
+    compile(
+        &cxx,
+        &[root.join("tests/runtime/link_watch_test.cpp")],
+        &bin,
+        &[],
+    );
+    let run = run_bounded(&mut Command::new(&bin), 20);
+    assert!(
+        run.status.success(),
+        "the host connection does not watch its link:\n{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
     );
 }

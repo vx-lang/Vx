@@ -70,9 +70,9 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK-DAG: Error[E4002] at 19:9: Cannot access 'x' because it is mutably borrowed.
-// CHECK-DAG: Error[E4003] at 27:11: Cannot borrow 'x' as mutable because it is also borrowed as immutable.
-// CHECK-DAG: Error[E4004] at 36:11: Cannot borrow 'x' because it is already borrowed as mutable.
-// CHECK-DAG: Error[E4004] at 45:11: Cannot borrow 'x' because it is already borrowed as mutable.
-// CHECK-DAG: Error[E4004] at 64:3: Cannot borrow 'm' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4002] at {{.*}}borrow_conflicts_are_refused.vx:19:9: Cannot access 'x' because it is mutably borrowed.
+// CHECK-DAG: Error[E4003] at {{.*}}borrow_conflicts_are_refused.vx:27:11: Cannot borrow 'x' as mutable because it is also borrowed as immutable.
+// CHECK-DAG: Error[E4004] at {{.*}}borrow_conflicts_are_refused.vx:36:11: Cannot borrow 'x' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4004] at {{.*}}borrow_conflicts_are_refused.vx:45:11: Cannot borrow 'x' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4004] at {{.*}}borrow_conflicts_are_refused.vx:64:3: Cannot borrow 'm' because it is already borrowed as mutable.
 // CHECK: 5 error(s) emitted

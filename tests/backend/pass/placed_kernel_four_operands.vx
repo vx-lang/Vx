@@ -22,14 +22,14 @@
 
 Memory CPU_DRAM {}
 Memory GPU_HBM {
-  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: explicit
 }
 
 fn main() -> i32 {
-  let mut a_h = Tensor<f32, [8, 4]>::uninit();
-  let mut b_h = Tensor<f32, [8, 4]>::uninit();
-  let mut c_h = Tensor<f32, [8, 4]>::uninit();
-  let mut o_h = Tensor<f32, [8, 4]>::uninit();
+  let mut a_h = unsafe { Tensor<f32, [8, 4]>::uninit() };
+  let mut b_h = unsafe { Tensor<f32, [8, 4]>::uninit() };
+  let mut c_h = unsafe { Tensor<f32, [8, 4]>::uninit() };
+  let mut o_h = unsafe { Tensor<f32, [8, 4]>::uninit() };
 
   // Values that vary along both axes, so no operand can be dropped without
   // changing the result.
@@ -55,7 +55,9 @@ fn main() -> i32 {
     }
   }
 
-  // Row 0 is 2*(0+j) + (j+2), so 2, 5, 8, 11.
-  print(o);
+  // Row 0 is 2*(0+j) + (j+2), so 2, 5, 8, 11. The host cannot read GPU memory, so the
+  // result comes back first.
+  let o_back = transfer(o, Memory::CPU_DRAM);
+  print(o_back);
   return 0;
 }

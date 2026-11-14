@@ -1,0 +1,95 @@
+//===- two_tensors_in_a_gpu_kernel_share_local_memory.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// In a GPU kernel, a small tensor is in local memory: memory of one thread, which the GPU keeps
+// in HBM. `first` and `second` hold 4000 bytes each. Each kernel drops `first` before it makes
+// `second`, so one slot of 4000 bytes can hold both. Two slots would need 8000 bytes.
+//
+// `one_tensor` has only `first`, so its local memory is one slot. The local memory of
+// `one_after_the_other` and of `in_each_lane` has the same size, so `second` uses the bytes of
+// `first`. In `in_each_lane`, each lane has its own two tensors. No tensor comes from device
+// `malloc`.
+//
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s --input-file=%t.ptx --implicit-check-not=malloc
+// RUN: vxc %s -O2 --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.O2.ptx
+// RUN: FileCheck %s --input-file=%t.O2.ptx --implicit-check-not=malloc
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ast.ptx
+// RUN: FileCheck %s --input-file=%t.ast.ptx --implicit-check-not=malloc
+// RUN: vxc %s --legacy-codegen -O2 --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ast.O2.ptx
+// RUN: FileCheck %s --input-file=%t.ast.O2.ptx --implicit-check-not=malloc
+//
+// CHECK-LABEL: .entry one_tensor(
+// CHECK: .local .align {{[0-9]+}} .b8 __local_depot{{[0-9]+}}{{\[}}[[SLOT:40[0-9][0-9]]]{{\]}};
+// CHECK-LABEL: .entry one_after_the_other(
+// CHECK: .local .align {{[0-9]+}} .b8 __local_depot{{[0-9]+}}{{\[}}[[SLOT]]{{\]}};
+// CHECK-LABEL: .entry in_each_lane(
+// CHECK: .local .align {{[0-9]+}} .b8 __local_depot{{[0-9]+}}{{\[}}[[SLOT]]{{\]}};
+
+pub fn one_tensor(out : &mut Tensor<i32, [1], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    let mut first : Tensor<i32, [1000]> = Tensor<i32, [1000]>::fill(0);
+    for i in 0..1000 {
+      first[i] = n * i % 7;
+    }
+    let mut sum : i32 = 0;
+    for i in 0..1000 {
+      sum = sum * 3 + first[999 - i];
+    }
+    out[0] = sum;
+  }
+  return;
+}
+
+pub fn one_after_the_other(out : &mut Tensor<i32, [1], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    let mut first : Tensor<i32, [1000]> = Tensor<i32, [1000]>::fill(0);
+    for i in 0..1000 {
+      first[i] = n * i % 7;
+    }
+    let mut sum : i32 = 0;
+    for i in 0..1000 {
+      sum = sum * 3 + first[999 - i];
+    }
+    let mut second : Tensor<i32, [1000]> = Tensor<i32, [1000]>::fill(0);
+    for i in 0..1000 {
+      second[i] = sum * i % 11;
+    }
+    for i in 0..1000 {
+      sum = sum * 5 + second[999 - i];
+    }
+    out[0] = sum;
+  }
+  return;
+}
+
+pub fn in_each_lane(out : &mut Tensor<i32, [?], Memory::HBM>, blocks : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..blocks across blocks {
+      for l in 0..256 across lanes {
+        let t = b * 256 + l;
+        let mut first : Tensor<i32, [1000]> = Tensor<i32, [1000]>::fill(0);
+        for i in 0..1000 {
+          first[i] = t * i % 7;
+        }
+        let mut sum : i32 = 0;
+        for i in 0..1000 {
+          sum = sum * 3 + first[999 - i];
+        }
+        let mut second : Tensor<i32, [1000]> = Tensor<i32, [1000]>::fill(0);
+        for i in 0..1000 {
+          second[i] = sum * i % 11;
+        }
+        for i in 0..1000 {
+          sum = sum * 5 + second[999 - i];
+        }
+        out[t] = sum;
+      }
+    }
+  }
+  return;
+}

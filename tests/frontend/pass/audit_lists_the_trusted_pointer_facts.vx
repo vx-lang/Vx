@@ -1,0 +1,75 @@
+//===- audit_lists_the_trusted_pointer_facts.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `vxc --audit` prints each fact that the compiler trusts without a proof, one line each, in the
+// order of the file and the line. Here: the `ensures` of an `extern` function, the pointer
+// `requires` of a `pub fn`, each `assume`, the `assume`s of `Vec::as_mut_ptr`, and the clauses
+// that a call in `unsafe` code trusts. A call in `unsafe` code whose clauses the compiler proves
+// is not in the list, and its `unsafe` block gets W1010. The block of the other call does not.
+//
+// RUN: vxc %s --audit 2>&1 | FileCheck %s
+//
+// CHECK: W1010] at {{.*}}audit_lists_the_trusted_pointer_facts.vx:[[@LINE+48]]:16: this `unsafe` block holds nothing
+// CHECK-NOT: W1010
+// CHECK: std/vec.vx:{{[0-9]+}}:{{[0-9]+}}: an `assume` trusts `valid(p, self.len)`
+// CHECK-NEXT: std/vec.vx:{{[0-9]+}}:{{[0-9]+}}: an `assume` trusts `initialized(p, self.len)`
+// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:[[@LINE+15]]:11: the `extern` function `c_length` ensures `!frees(s)`, and the compiler trusts it
+// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:[[@LINE+16]]:11: the `extern` function `c_buffer` ensures `valid(return, n)`, and the compiler trusts it
+// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:[[@LINE+30]]:10: `pub fn fill` requires `valid(p, n)`, and a call from C proves nothing
+// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:[[@LINE+38]]:12: an `assume` trusts `valid(p, 4)`
+// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:[[@LINE+39]]:12: an `assume` trusts `initialized(p, 4)`
+// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:[[@LINE+40]]:26: a call in `unsafe` code trusts `initialized(p, n)` of `sum`, which the compiler cannot prove
+// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:[[@LINE+39]]:26: a call in `unsafe` code trusts `valid(p, n)` of `sum`, which the compiler cannot prove
+// CHECK-NOT: {{.}}
+
+import core::ptr;
+import std::alloc;
+import std::vec;
+
+extern "C" {
+  safe fn c_length(s : *const i8) -> i64
+  ensures !frees(s);
+  safe fn c_buffer(n : i64) -> *mut i8
+  ensures valid(return, n);
+}
+
+fn sum(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  let mut total = 0i64;
+  for i in 0i64..n {
+    total = total + unsafe { p[i] };
+  }
+  return total;
+}
+
+pub fn fill(p : *mut i64, n : i64) -> void
+requires valid(p, n)
+{
+  for i in 0i64..n {
+    unsafe { p[i] = 0i64; }
+  }
+}
+
+fn main() -> i32 {
+  let p : *mut i64 = alloc(32i64, 16i64);
+  unsafe { assume valid(p, 4i64); }
+  fill(p, 4i64);
+  unsafe { assume initialized(p, 4i64); }
+  let proved = unsafe { sum(p as *const i64, 4i64) };
+  let trusted = unsafe { sum(p as *const i64, 8i64) };
+  let v = Vec<i64>::new();
+  let first = v.as_mut_ptr();
+  let buffer = c_buffer(1i64);
+  let bytes : *mut i8 = p;
+  dealloc(bytes, 16i64);
+  if is_null_mut(first) || is_null_mut(buffer) {
+    return 1;
+  }
+  return (proved + trusted + c_length("abc")) as i32;
+}

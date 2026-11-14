@@ -1,0 +1,166 @@
+//===- a_channel_carries_tensors_in_gpu_memory.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A channel can carry tensors that live in the GPU memory `W`. The host code only moves the
+// handle of each tensor, and the receiver brings the tensor back to host memory to read it.
+//
+// - `pipeline`: a task sends 5 tensors through a channel with room for 2: 0+1+2+3+4 = 10.
+// - `on_the_host`: the same with tensors in host memory.
+// - `given_back`: `send_for` on a full channel gives its tensor back when the time runs out.
+// - `try_twice`: `try_recv` takes the one tensor, and then finds the channel empty.
+// - `dropped_full`: the last end to drop frees the 2 tensors that no `recv` took.
+// - `selected`: `select` takes the tensor 8 from channel 1: 8 + 1 = 9.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}10 10 7 3 2 9{{$}}
+//===----------------------------------------------------------------------===//
+
+import std::sync::channel;
+import std::vec;
+import core::mem;
+import core::time;
+
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 4 MiB, managed: explicit, scope: device
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10,
+  transfer Memory::W -> Memory::CPU_DRAM : 10
+}
+
+fn on_gpu(x : f32) -> Tensor<f32, [4], Memory::W> {
+  return transfer(Tensor<f32, [4]>::fill(x), Memory::W);
+}
+
+fn first(t : Tensor<f32, [4], Memory::W>) -> f32 {
+  let h = transfer(t, Memory::CPU_DRAM);
+  return h[0];
+}
+
+// A field of a struct is read in place, through a reference.
+fn first_of(t : &Tensor<f32, [4], Memory::W>) -> f32 {
+  let h = transfer(t, Memory::CPU_DRAM);
+  return h[0];
+}
+
+// A full channel gives the tensor back when the time limit runs out.
+fn given_back() -> f32 {
+  let (tx, _rx) = channel<Tensor<f32, [4], Memory::W>>(1);
+  let _ = tx.send(on_gpu(1.0));
+  match tx.send_for(on_gpu(7.0), Duration::from_millis(10)) {
+    Result<void, SendError<Tensor<f32, [4], Memory::W>>>::Ok() => {
+      return 0.0;
+    }
+    Result<void, SendError<Tensor<f32, [4], Memory::W>>>::Err(e) => {
+      return first_of(&e.value);
+    }
+  }
+}
+
+// `try_recv` takes a value that is there, and gives an error on an empty channel.
+fn try_twice() -> f32 {
+  let (tx, rx) = channel<Tensor<f32, [4], Memory::W>>(2);
+  let _ = tx.send(on_gpu(3.0));
+  let mut got = 0.0;
+  match rx.try_recv() {
+    Result<Tensor<f32, [4], Memory::W>, TryRecvError>::Ok(t) => {
+      got = got + first(t);
+    }
+    Result<Tensor<f32, [4], Memory::W>, TryRecvError>::Err(_e) => {}
+  }
+  match rx.try_recv() {
+    Result<Tensor<f32, [4], Memory::W>, TryRecvError>::Ok(t) => {
+      got = got + 100.0 + first(t);
+    }
+    Result<Tensor<f32, [4], Memory::W>, TryRecvError>::Err(_e) => {}
+  }
+  return got;
+}
+
+// The last end to drop frees the two tensors that no `recv` took.
+fn dropped_full() -> i32 {
+  let (tx, rx) = channel<Tensor<f32, [4], Memory::W>>(2);
+  let _ = tx.send(on_gpu(4.0));
+  let _ = tx.send(on_gpu(5.0));
+  drop(rx);
+  drop(tx);
+  return 2;
+}
+
+fn selected() -> f32 {
+  let (tx0, rx0) = channel<Tensor<f32, [4], Memory::W>>(1);
+  let (tx1, rx1) = channel<Tensor<f32, [4], Memory::W>>(1);
+  let mut rs = Vec<Receiver<Tensor<f32, [4], Memory::W>>>::new();
+  rs.push(rx0);
+  rs.push(rx1);
+  let mut sel = Selector<Tensor<f32, [4], Memory::W>>::new(rs);
+  let _ = tx1.send(on_gpu(8.0));
+  let mut got = 0.0;
+  match sel.select() {
+    Result<Selected<Tensor<f32, [4], Memory::W>>, RecvError>::Ok(s) => {
+      got = first_of(&s.value) + s.index as f32;
+    }
+    Result<Selected<Tensor<f32, [4], Memory::W>>, RecvError>::Err(_e) => {}
+  }
+  drop(tx0);
+  return got;
+}
+
+fn pipeline() -> f32 {
+  let (tx, rx) = channel<Tensor<f32, [4], Memory::W>>(2);
+  let mut total = 0.0;
+  tasks {
+    spawn {
+      for i in 0..5 {
+        let _ = tx.send(on_gpu(i as f32));
+      }
+      drop(tx);
+    };
+    for i in 0..5 {
+      match rx.recv() {
+        Result<Tensor<f32, [4], Memory::W>, RecvError>::Ok(b) => {
+          total = total + first(b);
+        }
+        Result<Tensor<f32, [4], Memory::W>, RecvError>::Err(_e) => {}
+      }
+    }
+  }
+  return total;
+}
+
+fn on_the_host() -> f32 {
+  let (tx, rx) = channel<Tensor<f32, [4]>>(2);
+  let mut total = 0.0;
+  tasks {
+    spawn {
+      for i in 0..5 {
+        let _ = tx.send(Tensor<f32, [4]>::fill(i as f32));
+      }
+      drop(tx);
+    };
+    for i in 0..5 {
+      match rx.recv() {
+        Result<Tensor<f32, [4]>, RecvError>::Ok(b) => {
+          let h = b;
+          total = total + h[3];
+        }
+        Result<Tensor<f32, [4]>, RecvError>::Err(_e) => {}
+      }
+    }
+  }
+  return total;
+}
+
+fn main() -> i32 {
+  print!("{} {} {} {} {} {}", pipeline(), on_the_host(), given_back(), try_twice(), dropped_full(), selected());
+  return 0;
+}

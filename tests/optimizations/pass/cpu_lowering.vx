@@ -7,7 +7,7 @@ fn dummy(x : i32) on Topology::CPU -> i32 {
 }
 
 fn process(t : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]> {
-  let mut res = Tensor<i32, [4, 4], Memory::CPU_DRAM>::uninit();
+  let mut res = unsafe { Tensor<i32, [4, 4], Memory::CPU_DRAM>::uninit() };
   let val = spawn on(Topology::CPU) {
     dummy(0)
   };

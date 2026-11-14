@@ -120,13 +120,13 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK-DAG: Error[E4004] at 17:13: Cannot borrow 'v' because it is already borrowed as mutable.
-// CHECK-DAG: Error[E4004] at 30:13: Cannot borrow 'v' because it is already borrowed as mutable.
-// CHECK-DAG: Error[E4004] at 42:15: Cannot borrow 'v' because it is already borrowed as mutable.
-// CHECK-DAG: Error[E4004] at 57:13: Cannot borrow 'v' because it is already borrowed as mutable.
-// CHECK-DAG: Error[E4004] at 66:36: Cannot borrow 'v' because it is already borrowed as mutable.
-// CHECK-DAG: Error[E4004] at 73:44: Cannot borrow 'v' because it is already borrowed as mutable.
-// CHECK-DAG: Error[E4002] at 82:12: Cannot access 'v' because it is mutably borrowed.
-// CHECK-DAG: Error[E4004] at 93:13: Cannot borrow 'v' because it is already borrowed as mutable.
-// CHECK-DAG: Error[E4004] at 113:13: Cannot borrow 'v' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4004] at {{.*}}borrows_inside_branches_and_blocks.vx:17:13: Cannot borrow 'v' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4004] at {{.*}}borrows_inside_branches_and_blocks.vx:30:13: Cannot borrow 'v' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4004] at {{.*}}borrows_inside_branches_and_blocks.vx:42:15: Cannot borrow 'v' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4004] at {{.*}}borrows_inside_branches_and_blocks.vx:57:13: Cannot borrow 'v' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4004] at {{.*}}borrows_inside_branches_and_blocks.vx:66:36: Cannot borrow 'v' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4004] at {{.*}}borrows_inside_branches_and_blocks.vx:73:44: Cannot borrow 'v' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4002] at {{.*}}borrows_inside_branches_and_blocks.vx:82:12: Cannot access 'v' because it is mutably borrowed.
+// CHECK-DAG: Error[E4004] at {{.*}}borrows_inside_branches_and_blocks.vx:93:13: Cannot borrow 'v' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4004] at {{.*}}borrows_inside_branches_and_blocks.vx:113:13: Cannot borrow 'v' because it is already borrowed as mutable.
 // CHECK: 9 error(s) emitted

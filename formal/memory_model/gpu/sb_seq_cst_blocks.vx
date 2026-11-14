@@ -1,0 +1,49 @@
+//===- sb_seq_cst_blocks.vx - Vx Compiler ------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Store buffering between two blocks: litmus test store_buffering_seq_cst. In each round k, block
+// 0 writes x[k] and reads y[k], and block 1 writes y[k] and reads x[k]. Expect: no round where
+// both read 0. `go` starts each round in both blocks at about the same time.
+import core::sync::atomic;
+
+fn main() -> i32 {
+  let x = transfer(Tensor<i32, [100000]>::fill(0), Memory::HBM);
+  let y = transfer(Tensor<i32, [100000]>::fill(0), Memory::HBM);
+  let go = transfer(Tensor<i32, [2]>::fill(0), Memory::HBM);
+  let mut seen = transfer(Tensor<i32, [200000]>::fill(-1), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..2 across blocks {
+      for l in 0..1 across lanes {
+        for k in 0..100000 {
+          // Both blocks arrive at round k before either one starts it.
+          let _a = atomic_fetch_add_i32(&go, b, 1, AtomicOrdering::Relaxed);
+          loop {
+            if atomic_load_i32(&go, 1 - b, AtomicOrdering::Relaxed) > k {
+              break;
+            }
+          }
+          if b == 0 {
+            atomic_store_i32(&x, k, 1, AtomicOrdering::SeqCst);
+            seen[b * 100000 + k + l] = atomic_load_i32(&y, k, AtomicOrdering::SeqCst);
+          } else {
+            atomic_store_i32(&y, k, 1, AtomicOrdering::SeqCst);
+            seen[b * 100000 + k + l] = atomic_load_i32(&x, k, AtomicOrdering::SeqCst);
+          }
+        }
+      }
+    }
+  }
+  let s = transfer(seen, Memory::CPU_DRAM);
+  let mut both = 0;
+  for k in 0..100000 {
+    if s[k] == 0 && s[100000 + k] == 0 {
+      both = both + 1;
+    }
+  }
+  println!("sb_seq_cst_blocks: {} of 100000 rounds read 0 in both blocks", both);
+  return 0;
+}

@@ -1,0 +1,53 @@
+//===- spawn_region_borrows_the_values_it_uses.vx ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `spawn` region borrows the values that it uses from the code around it. The function drops
+// each one once, after the region. A clone made in the region is dropped at the end of the
+// region.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    println!("dropped {}", self.id);
+  }
+}
+
+impl Clone for Noisy {
+  fn clone(self : &Noisy) -> Noisy {
+    return Noisy {
+      id: self.id + 10
+    };
+  }
+}
+
+fn look(n : &Noisy) -> i32 {
+  return n.id;
+}
+
+fn main() -> i32 {
+  let n = Noisy {
+    id: 1
+  };
+  spawn on(Topology::Current) {
+    println!("saw {}", look(&n));
+    let _c = n.clone();
+  }
+  println!("after the region");
+  return 0;
+}
+
+// CHECK:      saw 1
+// CHECK-NEXT: dropped 11
+// CHECK-NEXT: after the region
+// CHECK-NEXT: dropped 1
+// CHECK-NOT:  dropped

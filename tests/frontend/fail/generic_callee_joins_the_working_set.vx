@@ -29,13 +29,13 @@ Topology Dev {
 }
 
 fn stage<T>(_t: T) -> i32 {
-  let y = Tensor<f32, [1024, 768]>::uninit();
+  let y = unsafe { Tensor<f32, [1024, 768]>::uninit() };
   let _sy = transfer(y, Memory::W);
   return 1;
 }
 
 fn main() -> i32 {
-  let x = Tensor<f32, [1024, 768]>::uninit();
+  let x = unsafe { Tensor<f32, [1024, 768]>::uninit() };
   let sx = transfer(x, Memory::W);
   let r = stage(7);
   let _back = transfer(sx, Memory::CPU_DRAM);

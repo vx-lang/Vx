@@ -1,0 +1,79 @@
+//===- pointer_facts_from_a_write.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A write through a raw pointer gives the element a value. So after `p[k] = x` or `*q = x`, the
+// compiler knows that the element is initialized, and each call below proves its `requires`.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-NOT: E8006
+// CHECK: func.func @main
+
+import core::ptr;
+import std::vec;
+
+fn first(p : *const i64) -> i64
+requires valid(p, 1i64)
+requires initialized(p, 1i64)
+{
+  return unsafe { p[0] };
+}
+
+fn write_one(p : *mut i64) -> i64
+requires valid(p, 1i64)
+{
+  unsafe { p[0] = 1i64; }
+  return first(p as *const i64);
+}
+
+// `q` is `p` moved by one element, so `*q = 2` writes the second element.
+fn write_through_a_moved_pointer(p : *mut i64) -> i64
+requires valid(p, 2i64)
+{
+  let q = offset_mut(p, 1i64);
+  unsafe { *q = 2i64; }
+  return first(q as *const i64);
+}
+
+fn write_at(p : *mut i64, k : i64) -> i64
+requires valid(p, k + 1i64)
+requires 0i64 <= k
+{
+  unsafe { p[k] = 3i64; }
+  let q = offset_mut(p, k);
+  return first(q as *const i64);
+}
+
+// A write keeps the other facts about the buffer.
+fn write_keeps_the_other_facts(p : *mut i64) -> i64
+requires valid(p, 2i64)
+requires initialized(p, 1i64)
+{
+  unsafe { p[1] = 4i64; }
+  return first(p as *const i64);
+}
+
+fn holds_a_value(p : *const Vec<i64>) -> i64
+requires initialized(p, 1i64)
+{
+  return 0i64;
+}
+
+// The write drops the old `Vec`, which can free memory, so it ends the facts about memory. The
+// fact about the new value comes after that.
+fn write_a_value_with_a_drop(p : *mut Vec<i64>) -> i64
+requires valid(p, 1i64)
+requires initialized(p, 1i64)
+{
+  unsafe { *p = Vec<i64>::new(); }
+  return holds_a_value(p as *const Vec<i64>);
+}
+
+fn main() -> i32 {
+  let mut x = 0i64;
+  let p : *mut i64 = &mut x;
+  return write_one(p) as i32;
+}

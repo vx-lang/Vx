@@ -1,0 +1,26 @@
+//===- region_that_ends_in_two_ifs.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `spawn on` region ends in two `if`s with no `else`. The first `if` is a statement, so it
+// needs no `else`. The compiler gave error E3048 for it.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: region 5
+
+fn main() -> i32 {
+  let t = 32;
+  spawn on(Topology::CPU) {
+    let mut i = 0;
+    if t == 32 {
+      i = 5;
+    }
+    if t > 0 {
+      println!("region {}", i);
+    }
+  }
+  return 0;
+}

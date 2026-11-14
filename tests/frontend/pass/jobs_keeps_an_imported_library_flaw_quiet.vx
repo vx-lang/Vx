@@ -13,8 +13,8 @@
 // used to walk every module and report all of it, which refused this program while the default
 // driver built it.
 //
-// RUN: vxc -j 4 --emit-mlir %s 2>&1 | FileCheck %s
-// RUN: vxc --emit-mlir %s 2>&1 | FileCheck %s
+// RUN: vxc --package tests=tests -j 4 --emit-mlir %s 2>&1 | FileCheck %s
+// RUN: vxc --package tests=tests --emit-mlir %s 2>&1 | FileCheck %s
 
 import tests::modules::jobs_library_with_a_flaw;
 

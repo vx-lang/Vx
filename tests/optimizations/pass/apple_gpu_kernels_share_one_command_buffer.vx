@@ -1,0 +1,188 @@
+// Kernels on the Apple GPU go into one batch until a wait, and the GPU runs them in order.
+// Each part of `main` ends at a different kind of wait:
+//
+// - `fill`, `add_one` and `add` run one after another, and each reads what the ones before it
+//   wrote. One wait runs all three, at the copy of `c` to host memory.
+// - `add_one_to_a_temporary` frees `tmp` before its two kernels ran, so the free waits for
+//   them. The next `add_one` then runs alone. With no wait at the free, it would join them.
+// - `first_and_last` reads `d` in place, after a wait through `vx_plugin_control`.
+// - `all_gather_f32` reads `g`, so it waits for the `fill_row` that writes `g`.
+// - The CPU copy of `add_one` reads `e`, so it waits for the `fill` that writes `e`. This part
+//   is last, because `vx_metal_set_enabled(0)` keeps the rest of `main` on the CPU.
+//
+// The GPU run, the CPU copy of each kernel (VX_METAL=0), and a run that waits after each
+// launch (VX_METAL_SYNC=1) print the same numbers.
+//
+// REQUIRES: macos
+// RUN: env VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/m4-uma.vx 2>%t.gpu | FileCheck %s --check-prefix=OUT
+// RUN: FileCheck %s --check-prefix=GPU --input-file=%t.gpu
+// RUN: env VX_METAL=0 vxc %s --host default --machine fleet/m4-uma.vx | FileCheck %s --check-prefix=OUT
+// RUN: env VX_METAL_SYNC=1 VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/m4-uma.vx 2>%t.sync | FileCheck %s --check-prefix=OUT
+// RUN: FileCheck %s --check-prefix=SYNC --input-file=%t.sync --implicit-check-not="kernels,"
+//
+// c = 2 * position + 1, so its sum is 2 * (0 + 1 + ... + 63999) + 64000.
+// OUT: {{^}}chain 4096000000{{$}}
+// OUT-NEXT: {{^}}inputs 63999 64000{{$}}
+// The last tensor is 2 * position + 2.
+// OUT-NEXT: {{^}}freed 4 128000{{$}}
+// d = 3 * position, and 3 * 1 + 3 * 63999 = 192000.
+// OUT-NEXT: {{^}}in place 192000{{$}}
+// OUT-NEXT: {{^}}gathered 5{{$}}
+// OUT-NEXT: {{^}}cpu copy 255997{{$}}
+//
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 64 x 1 x 1, block 256
+// GPU-NOT: waited
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 64 x 1 x 1, block 256
+// GPU-NOT: waited
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 64 x 1 x 1, block 256
+// GPU-NOT: grid
+// GPU: [Vx Metal] waited for 3 kernels, {{[0-9.]+}} ms on the GPU
+// GPU-NOT: waited
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 64 x 1 x 1, block 256
+// GPU-NOT: waited
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 64 x 1 x 1, block 256
+// GPU-NOT: grid
+// GPU: [Vx Metal] waited for 2 kernels, {{[0-9.]+}} ms on the GPU
+// GPU-NOT: waited
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 64 x 1 x 1, block 256
+// GPU-NOT: grid
+// GPU: [Vx Metal] waited for 1 kernel, {{[0-9.]+}} ms on the GPU
+// GPU-NOT: waited
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 64 x 1 x 1, block 256
+// GPU-NOT: grid
+// GPU: [Vx Metal] waited for 1 kernel, {{[0-9.]+}} ms on the GPU
+// GPU-NOT: waited
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 4 x 1 x 1, block 256
+// GPU-NOT: grid
+// GPU: [Vx Metal] waited for 1 kernel, {{[0-9.]+}} ms on the GPU
+// GPU-NOT: waited
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 64 x 1 x 1, block 256
+// GPU-NOT: grid
+// GPU: [Vx Metal] waited for 1 kernel, {{[0-9.]+}} ms on the GPU
+// GPU-NOT: grid
+// GPU: Falling back to CPU libffi dispatch
+//
+// SYNC-COUNT-9: [Vx Metal] waited for 1 kernel,
+
+import core::convert;
+import std::collective;
+
+// dst = position * scale
+fn fill(dst : &mut Tensor<f32, [?, ?], Memory::HBM>, h : i32, w : i32, scale : f32) -> void {
+  spawn on(Topology::Device) {
+    for y in 0..h across blocks {
+      for x in 0..w across lanes(256) {
+        dst[y][x] = ((y * w + x) as f32) * scale;
+      }
+    }
+  }
+  return;
+}
+
+// dst[i] = value
+fn fill_row(dst : &mut Tensor<f32, [?], Memory::HBM>, n : i32, value : f32) -> void {
+  spawn on(Topology::Device) {
+    for g in 0..(n + 255) / 256 across blocks {
+      for l in 0..256 across lanes(256) {
+        let i = g * 256 + l;
+        if i < n {
+          dst[i] = value;
+        }
+      }
+    }
+  }
+  return;
+}
+
+// dst = src + 1
+fn add_one(dst : &mut Tensor<f32, [?, ?], Memory::HBM>, src : &Tensor<f32, [?, ?], Memory::HBM>, h : i32, w : i32) -> void {
+  spawn on(Topology::Device) {
+    for y in 0..h across blocks {
+      for x in 0..w across lanes(256) {
+        dst[y][x] = src[y][x] + 1.0;
+      }
+    }
+  }
+  return;
+}
+
+// dst = x + y
+fn add(dst : &mut Tensor<f32, [?, ?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>, y : &Tensor<f32, [?, ?], Memory::HBM>, h : i32, w : i32) -> void {
+  spawn on(Topology::Device) {
+    for i in 0..h across blocks {
+      for j in 0..w across lanes(256) {
+        dst[i][j] = x[i][j] + y[i][j];
+      }
+    }
+  }
+  return;
+}
+
+// out = 2 * position + 1. The program frees `tmp` when this function returns.
+fn add_one_to_a_temporary(out : &mut Tensor<f32, [?, ?], Memory::HBM>, h : i32, w : i32) -> void {
+  let mut tmp = transfer(Tensor<f32, [64, 1000]>::fill(0.0), Memory::HBM);
+  fill(&mut tmp, h, w, 2.0);
+  add_one(out, &tmp, h, w);
+  return;
+}
+
+// Reads `t` in place, after a wait through `vx_plugin_control`.
+fn first_and_last(t : &Tensor<f32, [?, ?], Memory::HBM>) -> f32 {
+  let host = transfer(t, Memory::CPU_DRAM);
+  return host[0][1] + host[63][999];
+}
+
+extern "C" {
+  fn vx_metal_set_enabled(enabled : i32) -> void;
+}
+
+fn main() -> i32 {
+  join_job(0, 1);
+  let h : i32 = 64;
+  let w : i32 = 1000;
+  let mut a = transfer(Tensor<f32, [64, 1000]>::fill(0.0), Memory::HBM);
+  let mut b = transfer(Tensor<f32, [64, 1000]>::fill(0.0), Memory::HBM);
+  let mut c = transfer(Tensor<f32, [64, 1000]>::fill(0.0), Memory::HBM);
+  fill(&mut a, h, w, 1.0);
+  add_one(&mut b, &a, h, w);
+  add(&mut c, &a, &b, h, w);
+  let host = transfer(c, Memory::CPU_DRAM);
+  let mut sum : f64 = 0.0;
+  for y in 0..64 {
+    for x in 0..1000 {
+      sum = sum + f64::from(host[y][x]);
+    }
+  }
+  println!("chain {}", sum);
+  let a_host = transfer(a, Memory::CPU_DRAM);
+  let b_host = transfer(b, Memory::CPU_DRAM);
+  println!("inputs {} {}", a_host[63][999], b_host[63][999]);
+
+  let mut out = transfer(Tensor<f32, [64, 1000]>::fill(0.0), Memory::HBM);
+  add_one_to_a_temporary(&mut out, h, w);
+  let mut last = transfer(Tensor<f32, [64, 1000]>::fill(0.0), Memory::HBM);
+  add_one(&mut last, &out, h, w);
+  let last_host = transfer(last, Memory::CPU_DRAM);
+  println!("freed {} {}", last_host[0][1], last_host[63][999]);
+
+  let mut d = transfer(Tensor<f32, [64, 1000]>::fill(0.0), Memory::HBM);
+  fill(&mut d, h, w, 3.0);
+  println!("in place {}", first_and_last(&d));
+
+  let mut g = transfer(Tensor<f32, [1000]>::fill(0.0), Memory::HBM);
+  let mut gathered = transfer(Tensor<f32, [1000]>::fill(0.0), Memory::HBM);
+  fill_row(&mut g, 1000, 5.0);
+  all_gather_f32(&g, &mut gathered);
+  let gathered_host = transfer(gathered, Memory::CPU_DRAM);
+  println!("gathered {}", gathered_host[999]);
+  leave_job();
+
+  let mut e = transfer(Tensor<f32, [64, 1000]>::fill(0.0), Memory::HBM);
+  let mut f = transfer(Tensor<f32, [64, 1000]>::fill(0.0), Memory::HBM);
+  fill(&mut e, h, w, 4.0);
+  unsafe { vx_metal_set_enabled(0); }
+  add_one(&mut f, &e, h, w);
+  let f_host = transfer(f, Memory::CPU_DRAM);
+  println!("cpu copy {}", f_host[63][999]);
+  return 0;
+}

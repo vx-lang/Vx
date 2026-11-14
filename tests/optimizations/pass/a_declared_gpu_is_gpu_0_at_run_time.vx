@@ -15,7 +15,7 @@
 // REQUIRES: flat-codegen
 // RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s
 // RUN: vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s
-// CHECK-LABEL: llvm.func @main()
+// CHECK-LABEL: llvm.func {{(hidden )?}}@main()
 // CHECK-DAG: %[[HBM:.*]] = llvm.mlir.constant(1855308478 : i32) : i32
 // CHECK-DAG: %[[GPU0:.*]] = llvm.mlir.constant(500 : i32) : i32
 // CHECK-DAG: %[[DEVICE:.*]] = llvm.mlir.constant(1036766083 : i32) : i32

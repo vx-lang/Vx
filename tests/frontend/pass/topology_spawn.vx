@@ -6,23 +6,26 @@
 //
 //===----------------------------------------------------------------------===//
 // Unified topology spawn tests: exercises every topology variant, unified
-// memory access from GPU/ANE, nested spawn, and ISA-extension spawn blocks.
+// memory access from ANE, a transfer to the GPU, nested spawn, and
+// ISA-extension spawn blocks.
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
-// --- GPU and ANE have unified memory access to Host DRAM ---
+// --- The GPU sees only its own memory, so the tensor goes there first ---
+// --- ANE has unified memory access to Host DRAM ---
 fn test_unified_host_access() -> i32 {
   let t_host : Tensor<f32, []> = 1.0;
   let t_host2 : Tensor<f32, []> = 1.0;
+  let t_gpu = transfer(t_host, Memory::GPU_HBM);
 
   spawn on(Topology::GPU) {
     // CHECK-NOT: error
-    let valid_gpu = t_host;
+    let valid_gpu = t_gpu.clone();
   }
 
   spawn on(Topology::ANE) {
     // CHECK-NOT: error
-    let valid_ane = t_host2;
+    let valid_ane = t_host2.clone();
   }
 
   return 0;
@@ -34,7 +37,7 @@ fn test_spawn_amx() -> i32 {
 
   spawn on(Topology::AMX) {
     // CHECK-NOT: error
-    let valid_amx = t_host;
+    let valid_amx = t_host.clone();
   }
 
   return 0;
@@ -62,7 +65,7 @@ fn test_nested_spawn() -> i32 {
 
   spawn on(Topology::NPU[0]) {
     // CHECK-NOT: error
-    let local = t_npu;
+    let local = t_npu.clone();
 
     spawn on(Topology::CPU) {
       let cpu_val : i32 = 42;

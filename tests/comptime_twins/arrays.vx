@@ -1,0 +1,48 @@
+//===- arrays.vx - Vx Compiler -----------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Arrays: a sort, a write through a borrow kept in a variable, and an i64 tensor built in a
+// loop with no type on its `let`.
+
+fn sort(a : &mut Tensor<i64, [5]>) -> void {
+  for i in 0..5 {
+    for j in 0..4 {
+      if a[j] > a[j + 1] {
+        let t : i64 = a[j];
+        a[j] = a[j + 1];
+        a[j + 1] = t;
+      }
+    }
+  }
+}
+
+fn main() -> i32 {
+  let sorted : Tensor<i64, [5]> = comptime {
+    let mut a : Tensor<i64, [5]> = [ 5i64, 3i64, 9i64, 1i64, 7i64 ];
+    sort(&mut a);
+    a
+  };
+  println!("{} {} {} {} {}", sorted[0], sorted[1], sorted[2], sorted[3], sorted[4]);
+  let first = comptime {
+    let mut d : Tensor<i64, [3]> = [ 1i64, 2i64, 3i64 ];
+    let r : &mut Tensor<i64, [3]> = &mut d;
+    r[0] = 9i64;
+    d[0] + d[1]
+  };
+  println!("{}", first);
+  let t = comptime {
+    let mut a : Tensor<i64, [4]> = [ 0i64, 0i64, 0i64, 0i64 ];
+    let mut v : i64 = 100000i64;
+    for i in 0..4 {
+      a[i] = v;
+      v = v + 1i64;
+    }
+    a
+  };
+  println!("{}", t[1] * t[3]);
+  return 0;
+}

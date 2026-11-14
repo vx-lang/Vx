@@ -15,13 +15,13 @@ fn main() -> i32 {
   let d : f64 = 2.5;
   let i : i32 = 3;
   let l : i64 = 4;
-  // CHECK: Error[E3018] at [[@LINE+1]]:15: this array literal's elements are f64, but one is f32
+  // CHECK: Error[E3018] at {{.*}}typed_numbers_need_as_in_arrays_and_fill.vx:[[@LINE+1]]:15: this array literal's elements are f64, but one is f32
   let a = [d, f];
-  // CHECK: Error[E3018] at [[@LINE+1]]:15: this array literal's elements are i64, but one is i32
+  // CHECK: Error[E3018] at {{.*}}typed_numbers_need_as_in_arrays_and_fill.vx:[[@LINE+1]]:15: this array literal's elements are i64, but one is i32
   let b = [l, i];
-  // CHECK: Error[E3003] at [[@LINE+1]]:34: 'Tensor::fill' fills a tensor of f64, but the value is f32
+  // CHECK: Error[E3003] at {{.*}}typed_numbers_need_as_in_arrays_and_fill.vx:[[@LINE+1]]:34: 'Tensor::fill' fills a tensor of f64, but the value is f32
   let t = Tensor<f64, [2]>::fill(f);
-  // CHECK: Error[E3003] at [[@LINE+1]]:34: 'Tensor::fill' fills a tensor of i64, but the value is i32
+  // CHECK: Error[E3003] at {{.*}}typed_numbers_need_as_in_arrays_and_fill.vx:[[@LINE+1]]:34: 'Tensor::fill' fills a tensor of i64, but the value is i32
   let u = Tensor<i64, [2]>::fill(i);
   return 0;
 }

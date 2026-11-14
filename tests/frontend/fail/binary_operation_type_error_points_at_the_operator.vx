@@ -16,4 +16,4 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: Error[E3004] at 15:13: Type mismatch in binary operation: i64 vs bool
+// CHECK: Error[E3004] at {{.*}}binary_operation_type_error_points_at_the_operator.vx:15:13: Type mismatch in binary operation: i64 vs bool

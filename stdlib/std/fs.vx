@@ -54,6 +54,10 @@ struct File {
   ptr : *mut i8,
 }
 
+// The handle may move to another task. It is not `Sync`, because each method takes
+// `*mut File`, so a shared `&File` has no use yet.
+unsafe impl Send for File {}
+
 impl File {
   /// Open `path` with a named mode.
   ///

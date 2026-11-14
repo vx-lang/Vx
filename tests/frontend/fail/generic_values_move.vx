@@ -11,9 +11,9 @@
 // type is `Copy`. So it cannot be used after it is moved, and a `match` on what a reference
 // points at cannot take a payload out of it.
 
-// CHECK-DAG: Error[E4001] at 40:9: Use of moved or consumed linear variable: g
-// CHECK-DAG: Error[E4001] at 55:14: Use of moved or consumed linear variable: w
-// CHECK-DAG: Error[E4008] at 59:9: this moves a value of type `Opt<Pair>` out from behind a reference
+// CHECK-DAG: Error[E4001] at {{.*}}generic_values_move.vx:40:9: Use of moved or consumed linear variable: g
+// CHECK-DAG: Error[E4001] at {{.*}}generic_values_move.vx:55:14: Use of moved or consumed linear variable: w
+// CHECK-DAG: Error[E4008] at {{.*}}generic_values_move.vx:59:9: this moves a value of type `Opt<Pair>` out from behind a reference
 
 enum Opt<T> {
   Some(T),

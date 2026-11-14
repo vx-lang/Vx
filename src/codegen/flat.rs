@@ -26,7 +26,7 @@
 // subset, so nothing half-lowered is ever emitted.
 //
 //===----------------------------------------------------------------------===//
-use crate::bytecode::{HirInstruction, Opcode};
+use crate::bytecode::{HirInstruction, Opcode, AFFINE_FOR_BRANCHES};
 use crate::decline::{Decline, Lowered};
 use crate::gid::TypeId;
 use crate::hir::flatten::{ptr_gid, scalar_gid, tensor_gid_of, DYN_DIM};
@@ -39,15 +39,80 @@ use std::collections::HashMap;
 
 mod emit;
 
+/// An unsupported construct permits AST fallback. Conflicting layouts stop compilation.
+#[derive(Debug)]
+pub enum ModuleEmitError {
+    Declined(Decline),
+    ConflictingLayouts {
+        first: Box<crate::layout::GeneratedAggregateLayout>,
+        second: Box<crate::layout::GeneratedAggregateLayout>,
+    },
+    RegistryLayoutConflict {
+        registry: Box<crate::registry::TypeDefinition>,
+        generated: Box<crate::layout::GeneratedAggregateLayout>,
+    },
+}
+
+impl From<Decline> for ModuleEmitError {
+    fn from(why: Decline) -> Self {
+        Self::Declined(why)
+    }
+}
+
+impl std::fmt::Display for ModuleEmitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Declined(why) => write!(f, "{why}"),
+            Self::ConflictingLayouts { first, second } => write!(
+                f,
+                "Internal compiler error: generated layouts disagree for type {:?}.\n\
+                 First layout:\n{first:#?}\nSecond layout:\n{second:#?}",
+                first.type_id
+            ),
+            Self::RegistryLayoutConflict {
+                registry,
+                generated,
+            } => write!(
+                f,
+                "Internal compiler error: registry and generated layouts disagree for type {:?}.\n\
+                 Registry layout:\n{registry:#?}\nGenerated layout:\n{generated:#?}",
+                generated.type_id
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ModuleEmitError {}
+
 /// The MLIR type string for a scalar element type. Integers are signless (signedness lives in the
 /// op, e.g. `divsi`/`divui`); `bool` is `i1`.
 /// Format a float so MLIR can parse it back: Rust's `{:?}` prints `0.00001` as `1e-5`,
-/// and MLIR needs a decimal point before the exponent (Vx#384).
-fn mlir_float_literal(value: f64) -> String {
+/// and MLIR needs a decimal point before the exponent (Vx#384). A non-finite value is written
+/// as its bit pattern in hex at `bits` width — MLIR does not accept `inf` / `-inf` / `NaN`
+/// as float attribute text (Vx#2081).
+fn mlir_float_literal(value: f64, elem: &ElementType) -> String {
+    if !value.is_finite() {
+        // Bit patterns differ by type. f16 and bf16 are both 16 bits, but infinity and NaN
+        // use different encodings, so the element type is required (not only the width).
+        return match elem {
+            ElementType::F16 => {
+                let sign = ((value.to_bits() >> 63) as u16) << 15;
+                let mag = if value.is_nan() { 0x7E00u16 } else { 0x7C00u16 };
+                format!("0x{:04X}", sign | mag)
+            }
+            ElementType::BF16 => {
+                let sign = ((value.to_bits() >> 63) as u16) << 15;
+                let mag = if value.is_nan() { 0x7FC0u16 } else { 0x7F80u16 };
+                format!("0x{:04X}", sign | mag)
+            }
+            ElementType::F32 => format!("0x{:08X}", (value as f32).to_bits()),
+            ElementType::F64 => format!("0x{:016X}", value.to_bits()),
+            other => panic!("mlir_float_literal: non-finite float for unexpected type {other:?}"),
+        };
+    }
     let text = format!("{value:?}");
     match text.split_once(['e', 'E']) {
-        // `1e-5` -> `1.0e-5`. A mantissa that already has a point, and anything without an
-        // exponent at all (`288.0`, `inf`, `NaN`), is left exactly as Rust printed it.
+        // `1e-5` -> `1.0e-5`. A mantissa that already has a point is left as Rust printed it.
         Some((mantissa, exponent)) if !mantissa.contains('.') => format!("{mantissa}.0e{exponent}"),
         _ => text,
     }
@@ -64,6 +129,9 @@ fn elem_from_mlir_scalar(s: &str) -> Option<ElementType> {
         "bf16" => BF16,
         "f32" => F32,
         "f64" => F64,
+        "f8E4M3FN" => F8E4M3,
+        "f8E5M2" => F8E5M2,
+        "f4E2M1FN" => F4E2M1,
         "i1" => Bool,
         "i4" => I4,
         "i8" => I8,
@@ -97,6 +165,8 @@ fn int_bits(e: &ElementType) -> Option<u32> {
 fn float_bits(e: &ElementType) -> Option<u32> {
     use ElementType::*;
     Some(match e {
+        F4E2M1 => 4,
+        F8E4M3 | F8E5M2 => 8,
         F16 | BF16 => 16,
         F32 => 32,
         F64 => 64,
@@ -149,7 +219,8 @@ fn cast_op(src: &ElementType, tgt: &ElementType) -> Option<&'static str> {
 fn elem_of_gid(gid: TypeId) -> Option<ElementType> {
     use ElementType::*;
     [
-        F16, F32, F64, BF16, I4, U4, I8, U8, I16, U16, I32, U32, I64, U64, I128, U128, USize, Bool,
+        F16, F32, F64, BF16, F8E4M3, F8E5M2, F4E2M1, I4, U4, I8, U8, I16, U16, I32, U32, I64, U64,
+        I128, U128, USize, Bool,
     ]
     .into_iter()
     .find(|e| scalar_gid(e) == gid)
@@ -205,6 +276,15 @@ fn tensor_memref_of_type(ty: &Type) -> Option<String> {
     }
 }
 
+/// The memref of the tensor that a `&Tensor` or `&mut Tensor` names. A function that returns
+/// such a reference returns the memref, as a parameter of that type is the memref.
+pub(crate) fn borrowed_tensor_memref(ty: &Type) -> Option<String> {
+    match peel_wrappers(ty) {
+        Type::Borrow { inner, .. } => tensor_memref_of_type(inner),
+        _ => None,
+    }
+}
+
 /// The memref spelling of a return type that travels through a caller-allocated slot: a tensor
 /// whose extents are all known at compile time.
 ///
@@ -254,7 +334,7 @@ fn nrvo_candidate(hir: &[HirInstruction]) -> Option<usize> {
 fn is_ptr_ty(ty: &Type) -> bool {
     matches!(
         ty,
-        Type::Pointer(..) | Type::Borrow { .. } | Type::Function(..) | Type::Closure(..)
+        Type::Pointer(..) | Type::Borrow { .. } | Type::Function(..)
     )
 }
 
@@ -302,9 +382,118 @@ pub(crate) fn placed_device(id: u64, ctx: &EmitCtx) -> Option<i32> {
     Some(id as i32)
 }
 
+/// The size and alignment in bytes of a scalar element, for the facts `valid(p, n)` gives LLVM.
+fn scalar_bytes(ty: &Type) -> Option<u64> {
+    match ty {
+        Type::Scalar(e) => match e {
+            ElementType::I8 | ElementType::U8 | ElementType::Bool => Some(1),
+            ElementType::I16 | ElementType::U16 | ElementType::F16 | ElementType::BF16 => Some(2),
+            ElementType::I32 | ElementType::U32 | ElementType::F32 => Some(4),
+            ElementType::I64 | ElementType::U64 | ElementType::USize | ElementType::F64 => Some(8),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The attributes of a raw pointer parameter that `requires valid(p, n)` names: it is not null,
+/// and aligned for its element.
+fn valid_pointer_attrs(ty: &Type) -> String {
+    match ty {
+        Type::Pointer(inner, ..) => match scalar_bytes(inner) {
+            Some(align) => format!(" {{llvm.nonnull, llvm.align = {align} : i64}}"),
+            None => " {llvm.nonnull}".to_string(),
+        },
+        _ => String::new(),
+    }
+}
+
+/// An `llvm.intr.assume` for each `valid(p, n)` of `func`, at the start of its body: `p` points at
+/// `n` elements. A length that is not a parameter or a number gives none.
+fn valid_pointer_assumes(
+    func: &Function,
+    valid: &[(usize, crate::hir::check::pointer_clauses::Length)],
+    arg_offset: u32,
+) -> String {
+    use crate::hir::check::pointer_clauses::Length;
+    let mut out = String::new();
+    for (k, (p, len)) in valid.iter().enumerate() {
+        let Type::Pointer(inner, ..) = &func.params[*p].1 else {
+            continue;
+        };
+        let Some(size) = scalar_bytes(inner) else {
+            continue;
+        };
+        let count = match len {
+            Length::Constant(c) => {
+                out += &format!("  %vx_valid{k}_n = arith.constant {c} : i64\n");
+                format!("%vx_valid{k}_n")
+            }
+            Length::Param(j) => {
+                let arg = format!("%arg{}", *j as u32 + arg_offset);
+                match &func.params[*j].1 {
+                    Type::Scalar(ElementType::I64 | ElementType::U64 | ElementType::USize) => arg,
+                    Type::Scalar(e @ (ElementType::I32 | ElementType::I16 | ElementType::I8)) => {
+                        let from = mlir_scalar(e).unwrap_or("i32");
+                        out += &format!("  %vx_valid{k}_n = arith.extsi {arg} : {from} to i64\n");
+                        format!("%vx_valid{k}_n")
+                    }
+                    Type::Scalar(e @ (ElementType::U32 | ElementType::U16 | ElementType::U8)) => {
+                        let from = mlir_scalar(e).unwrap_or("i32");
+                        out += &format!("  %vx_valid{k}_n = arith.extui {arg} : {from} to i64\n");
+                        format!("%vx_valid{k}_n")
+                    }
+                    _ => continue,
+                }
+            }
+            Length::Other => continue,
+        };
+        let ptr = format!("%arg{}", *p as u32 + arg_offset);
+        out += &format!(
+            "  %vx_valid{k}_t = arith.constant true\n  \
+             %vx_valid{k}_s = arith.constant {size} : i64\n  \
+             %vx_valid{k}_b = arith.muli {count}, %vx_valid{k}_s : i64\n  \
+             llvm.intr.assume %vx_valid{k}_t [\"dereferenceable\"({ptr}, %vx_valid{k}_b : \
+             !llvm.ptr, i64)] : i1\n"
+        );
+    }
+    out
+}
+
 fn param_alias_attrs(ty: &Type, ctx: &EmitCtx) -> String {
+    let alias = borrow_alias_attr(ty, ctx);
+    // A borrowed tensor has the `alignment:` of its space. A GPU kernel puts it on the pointer.
+    let align = match ty {
+        Type::Borrow { inner, .. } => match inner.as_ref() {
+            Type::Tensor(_, _, Some(p)) => ctx
+                .subspaces
+                .get(&(crate::arch::memory_space_dispatch_id(&p.space) as u64))
+                .and_then(|s| s.alignment),
+            _ => None,
+        },
+        _ => None,
+    };
+    match (alias.as_str(), align) {
+        (_, None) => alias,
+        ("", Some(n)) => format!(" {{vx.align = {n} : i64}}"),
+        (a, Some(n)) => format!("{}, vx.align = {n} : i64}}", a.trim_end_matches('}')),
+    }
+}
+
+fn borrow_alias_attr(ty: &Type, ctx: &EmitCtx) -> String {
     match ty {
         Type::Borrow { is_mut: true, .. } => " {llvm.noalias}".to_string(),
+        // A `SharedCell` in the value lets code write through the `&`.
+        Type::Borrow {
+            is_mut: false,
+            inner,
+            ..
+        } if ctx
+            .shared_cell_types
+            .contains(&crate::syntax::types::Mangle::mangle(&**inner)) =>
+        {
+            String::new()
+        }
         Type::Borrow { is_mut: false, .. } => " {llvm.readonly}".to_string(),
         // A tensor taken by value belongs to the function, which frees it. One placed in
         // another memory names the topology its plugin frees it on.
@@ -485,12 +674,20 @@ pub struct Callee {
     /// The memref spelling when the callee returns a statically shaped tensor (wrappers peeled) --
     /// the call's result is then a memref value tracked in `mem_of`.
     pub ret_tensor: Option<String>,
+    /// The `vector<NxT>` a callee returning `<N x T>` gives back.
+    pub ret_vec: Option<String>,
     /// Whether the returned tensor is placed in another memory. Such a result is handed back
     /// as a buffer, never through a slot on the caller's stack.
     pub ret_placed: bool,
+    /// The callee returns a reference to a tensor. The call returns the memref of a tensor that
+    /// already exists, so the caller makes no slot for it.
+    pub ret_reference: bool,
     /// The memref spelling of each tensor parameter, by value or by reference; `None` for any
     /// other parameter. A row passed in is a strided view, and is cast to this at the call.
     pub param_tensors: Vec<Option<String>>,
+    /// For `ensures valid(return, n)`: the length `n` and the size of an element in bytes. After
+    /// the call, an `llvm.intr.assume` says that `n` elements at the result can be read.
+    pub ret_valid: Option<(crate::hir::check::pointer_clauses::Length, u64)>,
 }
 
 /// GID → callee: the reverse of the registry's name-keyed `fn_sigs`. A `Call`'s `type_idx` resolves
@@ -498,28 +695,35 @@ pub struct Callee {
 /// (for the call's result type) without a name→AST walk.
 pub type CalleeMap = HashMap<TypeId, Callee>;
 
-/// Resolve a nominal type to a *modelled* aggregate layout GID: the attached GID when name resolution
-/// set it (present in `aggs`), else the base name's GID (`agg_names`) — a monomorphized cross-module
-/// signature carries an unresolved base (`GenericInstance(Struct("Vec", None), ..)` / `Struct("Vec",
-/// None)`), so the layout must be recovered by name. Resolves a generic instance through its base.
-/// (#242)
+/// Resolve an aggregate layout by declaration identity.
+/// Complete generic declarations share storage. Other generic instances use generated layout IDs.
+/// A missing attached ID permits an unambiguous name lookup. An unknown attached ID does not.
 fn resolve_agg_gid(
     ty: &Type,
     aggs: &AggMap,
     agg_names: &HashMap<String, TypeId>,
+    identities: &crate::layout::identity::AggregateIdentities,
 ) -> Option<TypeId> {
-    // A data-carrying enum instance (`Option<i32>`) has a *synthesized* per-instance layout keyed by
-    // `enum_instance_gid` (the lowerer recorded it in the side table now folded into `aggs`); try that
-    // first. Its `gid` is distinct from any registry layout, so a struct instance (`Vec<i32>`) misses
-    // here and falls through to the nominal resolution below. (#242)
+    // A closure value (`||->i32`) is the `{ env, func }` pair that the lowerer made.
+    if matches!(ty, Type::Closure(..)) {
+        let gid = crate::hir::flatten::closure_pair_gid();
+        return aggs.contains_key(&gid).then_some(gid);
+    }
+    // Prefer the lowerer's complete declaration layout, then try generated instance layouts.
     if let Type::GenericInstance(base, args) = ty {
-        if let Type::Enum(name, _) | Type::Struct(name, _) = base.as_ref() {
-            let gid = crate::hir::flatten::enum_instance_gid(name.as_ref(), args);
+        if matches!(base.as_ref(), Type::Enum(..) | Type::Struct(..)) {
+            // Use the same complete declaration layout that the lowerer uses.
+            // Generic structs with argument-dependent storage have no complete declaration layout.
+            let (_, declaration) = identities.resolve_base(base.as_ref().into())?;
+            if aggs.contains_key(&declaration) {
+                return Some(declaration);
+            }
+            let gid = crate::hir::flatten::enum_instance_gid(base.as_ref(), args, identities)?;
             if aggs.contains_key(&gid) {
                 return Some(gid);
             }
             // A generic struct instance whose layout the lowerer synthesized (`Array<f32, 10>`).
-            let gid = crate::hir::flatten::struct_instance_gid(name.as_ref(), args);
+            let gid = crate::hir::flatten::struct_instance_gid(base.as_ref(), args, identities)?;
             if aggs.contains_key(&gid) {
                 return Some(gid);
             }
@@ -532,12 +736,14 @@ fn resolve_agg_gid(
     match nominal {
         Type::Struct(name, id) | Type::Enum(name, id) => {
             // A data-carrying enum with no generics is the instance with no arguments.
-            let bare = crate::hir::flatten::enum_instance_gid(name.as_ref(), &[]);
+            let bare = crate::hir::flatten::enum_instance_gid(nominal, &[], identities)?;
             if aggs.contains_key(&bare) {
                 return Some(bare);
             }
-            id.filter(|g| aggs.contains_key(g))
-                .or_else(|| agg_names.get(name.as_ref()).copied())
+            match id {
+                Some(id) => aggs.contains_key(id).then_some(*id),
+                None => agg_names.get(name.as_ref()).copied(),
+            }
         }
         _ => None,
     }
@@ -601,17 +807,28 @@ pub fn build_callee_map(
                         _ => None,
                     }
                 }),
-                ret_agg: resolve_agg_gid(&sig.ret_ty, aggs, agg_names),
-                ret_ptr: is_ptr_ty(&sig.ret_ty),
+                ret_agg: resolve_agg_gid(
+                    &sig.ret_ty,
+                    aggs,
+                    agg_names,
+                    registry.aggregate_identities(),
+                ),
+                ret_ptr: is_ptr_ty(&sig.ret_ty) && borrowed_tensor_memref(&sig.ret_ty).is_none(),
                 ret_pointee: match peel_wrappers(&sig.ret_ty) {
                     Type::Borrow { inner, .. } | Type::Pointer(inner, ..) => {
-                        resolve_agg_gid(inner, aggs, agg_names)
+                        resolve_agg_gid(inner, aggs, agg_names, registry.aggregate_identities())
                     }
                     _ => None,
                 },
                 ret_void: is_void_ty(&sig.ret_ty),
-                ret_tensor: tensor_memref_of_type(&sig.ret_ty),
+                ret_tensor: tensor_memref_of_type(&sig.ret_ty)
+                    .or_else(|| borrowed_tensor_memref(&sig.ret_ty)),
+                ret_vec: match peel_wrappers(&sig.ret_ty) {
+                    Type::Simd(e, lanes) => mlir_vector(e, *lanes),
+                    _ => None,
+                },
                 ret_placed: crate::codegen::generator::written_placement(&sig.ret_ty).is_some(),
+                ret_reference: borrowed_tensor_memref(&sig.ret_ty).is_some(),
                 param_tensors: sig
                     .params
                     .iter()
@@ -620,6 +837,10 @@ pub fn build_callee_map(
                         other => tensor_memref_of_type(other),
                     })
                     .collect(),
+                ret_valid: match &sig.ret_ty {
+                    Type::Pointer(inner, ..) => sig.ret_valid.clone().zip(scalar_bytes(inner)),
+                    _ => None,
+                },
             },
         )
     };
@@ -631,15 +852,12 @@ pub fn build_callee_map(
 }
 
 /// The MLIR shape of an aggregate (struct) whose fields are all scalar or pointer: the
-/// `!llvm.struct<(...)>` type (for the slot `llvm.alloca` and field `getelementptr`), each field's
-/// byte offset in declaration order — so a `FieldLoad`/`FieldStore`, which carries a byte offset,
-/// recovers the GEP field index by `offsets.position(|o| o == offset)` — and each field's MLIR type
-/// string, so a field op prints the right load/store type (a scalar's element or `!llvm.ptr`).
+/// `!llvm.struct<(...)>` type and each field's MLIR type in declaration order.
+/// Field instructions select fields by index.
 pub struct AggLayout {
     pub struct_ty: String,
-    pub offsets: Vec<u64>,
     /// Each field's MLIR type (`"i32"`, `"!llvm.ptr"`, …) in declaration order, index-aligned with
-    /// `offsets`. A field op loads/stores at `field_tys[field_idx]`.
+    /// the other field metadata. A field op uses `field_tys[field_idx]`.
     pub field_tys: Vec<String>,
     /// For each pointer field, the layout GID of the aggregate it points *to*, when that pointee's
     /// layout is instance-independent (`VecIter`'s `vec : *const Vec<T>` -> the `Vec` layout GID, the
@@ -652,6 +870,38 @@ pub struct AggLayout {
     /// a field loads the whole `!llvm.struct` value (tracked in `agg_val_of`), a `FieldStore` stores it,
     /// and taking its address (`&self.iter` for a method receiver) GEPs to it as an aggregate slot. (#242)
     pub field_agg: Vec<Option<TypeId>>,
+    /// Actual payload metadata for each variant, separate from shared storage fields.
+    pub variant_payloads: Vec<Vec<crate::layout::GeneratedPayloadLayout>>,
+}
+
+/// Build an LLVM struct type from the generated fields in declaration order.
+pub(crate) fn generated_storage_type(layout: &crate::layout::GeneratedAggregateLayout) -> String {
+    let types: Vec<&str> = layout.fields.iter().map(|f| f.mlir_type.as_str()).collect();
+    format!("!llvm.struct<({})>", types.join(", "))
+}
+
+impl AggLayout {
+    /// Select a physical field by its encoded index.
+    fn field_index(&self, imm: u64) -> Lowered<usize> {
+        let index = crate::bytecode::decode_field_index(imm);
+        if index >= self.field_tys.len() {
+            return Err(Decline::TypeNotModelled {
+                what: "a field index outside the aggregate layout",
+            });
+        }
+        Ok(index)
+    }
+
+    /// Derive the emitter's storage view from the shared generated layout.
+    fn from_generated(layout: &crate::layout::GeneratedAggregateLayout) -> Self {
+        Self {
+            struct_ty: generated_storage_type(layout),
+            field_tys: layout.fields.iter().map(|f| f.mlir_type.clone()).collect(),
+            field_pointee: layout.fields.iter().map(|f| f.pointer_target_id).collect(),
+            field_agg: layout.fields.iter().map(|f| f.aggregate_id).collect(),
+            variant_payloads: layout.variant_payloads.clone(),
+        }
+    }
 }
 
 /// GID → aggregate layout, for the structs a stream constructs/reads. Structs whose fields are all
@@ -666,18 +916,8 @@ pub type AggMap = HashMap<TypeId, AggLayout>;
 /// field is modelled as `!llvm.ptr`.
 pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::Schedule) -> AggMap {
     use crate::layout::FieldTy;
-    // Name -> layout GID for every modelled nominal, to resolve a pointer field's pointee aggregate
-    // (its layout is instance-independent when the field is behind a pointer, so the base name suffices
-    // — `VecIter`'s `vec : *const Vec<T>` resolves to the `Vec` layout GID for any `T`).
-    let name_to_gid: HashMap<&str, TypeId> = registry
-        .layouts
-        .iter()
-        .filter(|(_, d)| d.align_bytes != 0 && !d.fields.is_empty())
-        .map(|(g, d)| (d.name.as_str(), *g))
-        .collect();
-    // Each layout's entry depends only on the registry and `name_to_gid`, and the key is the layout's
-    // own GID, so the map is the same whatever order the entries are produced in. (See
-    // `build_callee_map` for why this is worth parallelising.)
+    // Pointer targets retain declaration IDs. Names alone cannot distinguish modules.
+    let identities = registry.aggregate_identities();
     let layout_of = |(gid, def): (&TypeId, &crate::registry::TypeDefinition)| {
         if def.align_bytes == 0 {
             return None; // an unmodelled stub
@@ -693,10 +933,10 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
                 *gid,
                 AggLayout {
                     struct_ty: "!llvm.struct<()>".to_string(),
-                    offsets: Vec::new(),
                     field_tys: Vec::new(),
                     field_pointee: Vec::new(),
                     field_agg: Vec::new(),
+                    variant_payloads: Vec::new(),
                 },
             ));
         }
@@ -705,7 +945,6 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
         // the definition's own GID is the key.
         let decl_fields = registry.structs.get(gid);
         let mut field_tys = Vec::with_capacity(def.fields.len());
-        let mut offsets = Vec::with_capacity(def.fields.len());
         let mut field_pointee = Vec::with_capacity(def.fields.len());
         let mut field_agg: Vec<Option<TypeId>> = Vec::with_capacity(def.fields.len());
         let mut modelled = true;
@@ -740,8 +979,7 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
                     field_tys.push("!llvm.ptr".to_string());
                     let pointee = decl_fields
                         .and_then(|sf| sf.fields.get(fi))
-                        .and_then(|(_, ft)| pointer_pointee_name(ft))
-                        .and_then(|n| name_to_gid.get(n.as_str()).copied());
+                        .and_then(|(_, ft)| pointer_pointee_layout(ft, registry, identities));
                     field_pointee.push(pointee);
                     field_agg.push(None);
                 }
@@ -774,7 +1012,6 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
                     }
                 }
             }
-            offsets.push(f.offset as u64);
         }
         if !modelled {
             return None;
@@ -783,10 +1020,10 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
             *gid,
             AggLayout {
                 struct_ty: format!("!llvm.struct<({})>", field_tys.join(", ")),
-                offsets,
                 field_tys,
                 field_pointee,
                 field_agg,
+                variant_payloads: Vec::new(),
             },
         ))
     };
@@ -806,7 +1043,6 @@ pub(crate) fn agg_struct_ty_of(
     registry: &ImmutableGlobalRegistry,
     visiting: &mut Vec<TypeId>,
 ) -> Lowered<String> {
-    use crate::layout::FieldTy;
     if visiting.contains(&gid) {
         return Err(Decline::TypeNotModelled {
             what: "an aggregate whose layout is cyclic",
@@ -826,37 +1062,68 @@ pub(crate) fn agg_struct_ty_of(
     visiting.push(gid);
     let mut field_tys = Vec::with_capacity(def.fields.len());
     for f in &def.fields {
-        let ft = match &f.ty {
-            FieldTy::Scalar(e) => mlir_scalar(e).ok_or(crate::emitter_gap!())?.to_string(),
-            FieldTy::Opaque => "!llvm.ptr".to_string(),
-            FieldTy::Tensor(_, rank) => memref_descriptor_ty(*rank),
-            FieldTy::Nominal(n) if registry.is_payload_free_enum(*n) => "i32".to_string(),
-            FieldTy::Nominal(n) => agg_struct_ty_of(*n, registry, visiting)?,
-            FieldTy::Vector(e, lanes) => mlir_vector(e, *lanes).ok_or(crate::emitter_gap!())?,
-        };
+        let ft = registry_field_storage_type(&f.ty, registry, visiting)?;
         field_tys.push(ft);
     }
     visiting.pop();
     Ok(format!("!llvm.struct<({})>", field_tys.join(", ")))
 }
 
-/// The base nominal name a pointer/borrow points *to* (`*const Vec<T>` -> `"Vec"`), for resolving a
-/// pointer field's pointee aggregate. `None` for a pointer to a non-nominal (a scalar, `*mut T`). (#242)
-fn pointer_pointee_name(ty: &Type) -> Option<String> {
+/// Recover a registry field's storage type without reinterpreting its declared source type.
+pub(crate) fn registry_field_storage_type(
+    field: &crate::layout::FieldTy,
+    registry: &ImmutableGlobalRegistry,
+    visiting: &mut Vec<TypeId>,
+) -> Lowered<String> {
+    use crate::layout::FieldTy;
+    Ok(match field {
+        FieldTy::Scalar(e) => mlir_scalar(e).ok_or(crate::emitter_gap!())?.to_string(),
+        FieldTy::Opaque => "!llvm.ptr".to_string(),
+        FieldTy::Tensor(_, rank) => memref_descriptor_ty(*rank),
+        FieldTy::Nominal(n) if registry.is_payload_free_enum(*n) => "i32".to_string(),
+        FieldTy::Nominal(n) => agg_struct_ty_of(*n, registry, visiting)?,
+        FieldTy::Vector(e, lanes) => mlir_vector(e, *lanes).ok_or(crate::emitter_gap!())?,
+    })
+}
+
+/// Resolve a pointer target by declaration identity, including concrete generic arguments.
+fn pointer_pointee_layout(
+    ty: &Type,
+    registry: &ImmutableGlobalRegistry,
+    identities: &crate::layout::identity::AggregateIdentities,
+) -> Option<TypeId> {
     let inner = match ty {
         Type::Pointer(inner, ..) | Type::Borrow { inner, .. } | Type::Ref(inner, ..) => {
             inner.as_ref()
         }
         _ => return None,
     };
-    match inner {
-        Type::GenericInstance(base, _) => match base.as_ref() {
-            Type::Struct(n, _) | Type::Enum(n, _) => Some(n.as_ref().to_string()),
-            _ => None,
-        },
-        Type::Struct(n, _) | Type::Enum(n, _) => Some(n.as_ref().to_string()),
-        _ => None,
+    let (base, args) = match inner {
+        Type::GenericInstance(base, args) => (base.as_ref(), args.as_slice()),
+        other => (other, &[][..]),
+    };
+    let (_, declaration) = identities.resolve_base(base.into())?;
+    if args.is_empty() {
+        return registry
+            .layouts
+            .get(&declaration)
+            .filter(|def| def.align_bytes != 0)
+            .map(|_| declaration);
     }
+    let instance = crate::hir::flatten::struct_instance_gid(declaration, args, identities)?;
+    if registry
+        .layouts
+        .get(&instance)
+        .is_some_and(|def| def.align_bytes != 0)
+    {
+        return Some(instance);
+    }
+    // A generic declaration's complete storage can be shared when its fields do not depend on its arguments.
+    registry
+        .layouts
+        .get(&declaration)
+        .filter(|def| def.align_bytes != 0)
+        .map(|_| declaration)
 }
 
 /// A tensor type recovered by GID: its element and shape (dim expressions, numeric or symbolic).
@@ -870,6 +1137,10 @@ pub type TensorMap = HashMap<TypeId, (ElementType, Vec<String>)>;
 /// reference none (scalar/control-flow-only functions).
 #[derive(Default)]
 pub struct EmitCtx {
+    identities: std::sync::Arc<crate::layout::identity::AggregateIdentities>,
+    /// Record the Vx name and type of each parameter of a function that holds a `spawn`, for
+    /// `--emit-ptx` to describe the parameters of a GPU kernel.
+    pub describe_params: bool,
     pub callees: CalleeMap,
     pub aggs: AggMap,
     /// Base struct/enum name → modelled layout GID, for resolving a monomorphized cross-module
@@ -895,10 +1166,28 @@ pub struct EmitCtx {
     /// band -- which a custom topology can never enter (declared ids start at 3000 by
     /// construction, and the GPU band is [500, 600)). Built-in topologies are not in this map and
     /// keep riding the band.
-    pub topo_archs: HashMap<i64, String>,
+    pub topo_archs: HashMap<i64, DeclaredArch>,
     /// The program's `const` tables as (global name, memref type), in the registry's order, which
     /// is what a `ConstTable` instruction's `imm` counts in.
     pub const_tables: Vec<(String, String)>,
+    /// The mangled types, among those that a parameter's `&` points to, that hold a
+    /// `SharedCell`. A `&` to one of them is not `llvm.readonly`.
+    pub shared_cell_types: std::collections::HashSet<String>,
+    /// The start of the name of each function that holds an `mlir!` block.
+    pub mlir_wrapper_prefix: String,
+}
+
+/// `base`, with `_` added until no name in `names` starts with it. The functions that hold
+/// `mlir!` blocks are named from it, so no function of the program can have their names.
+pub(crate) fn mlir_wrapper_prefix<'a>(
+    base: &str,
+    names: impl Iterator<Item = &'a str> + Clone,
+) -> String {
+    let mut prefix = base.to_string();
+    while names.clone().any(|n| n.starts_with(prefix.as_str())) {
+        prefix.push('_');
+    }
+    prefix
 }
 
 /// The declared properties of a memory sub-space the flat emitter re-attaches to a `vx.transfer`,
@@ -911,6 +1200,8 @@ pub struct SubspaceInfo {
     pub name: String,
     pub within: Option<String>,
     pub granule: Option<u64>,
+    /// `alignment:`, the least alignment of a tensor in the space, in bytes.
+    pub alignment: Option<u64>,
     pub capacity: Option<u64>,
     pub scope: Option<String>,
     /// "explicit" or "cached". Decides whether the host may read this space, and
@@ -932,7 +1223,7 @@ pub struct SubspaceInfo {
 /// `func.func private` declaration prepended. Order is load-bearing — the emit records which of
 /// these a function called as a bitmask over this array's indices, so inserting in the middle
 /// renumbers existing entries.
-const RUNTIME_HELPERS: [(&str, &str); 18] = [
+const RUNTIME_HELPERS: [(&str, &str); 26] = [
     ("printMemrefF32", "(memref<*xf32>)"),
     ("printMemrefF64", "(memref<*xf64>)"),
     ("printMemrefI32", "(memref<*xi32>)"),
@@ -947,11 +1238,22 @@ const RUNTIME_HELPERS: [(&str, &str); 18] = [
     ("print_u32", "(i32) -> i32"),
     ("print_u64", "(i64) -> i32"),
     ("print_str", "(!llvm.ptr) -> i32"),
+    ("vx_print_to_stderr", "(i32) -> i32"),
     ("vx_init_signals", "()"),
     ("print_bool", "(i32) -> i32"),
     ("printMemrefU32", "(memref<*xi32>)"),
     ("printMemrefU64", "(memref<*xi64>)"),
+    ("printMemrefI8", "(memref<*xi8>)"),
+    ("printMemrefI16", "(memref<*xi16>)"),
+    ("printMemrefU8", "(memref<*xi8>)"),
+    ("printMemrefU16", "(memref<*xi16>)"),
+    ("vx_task_failed", "()"),
+    ("vx_cancel_off", "(i64)"),
+    ("vx_cancel_on", "()"),
 ];
+
+// The helper mask is a `u64`, so the table must not grow past 64 entries.
+const _: () = assert!(RUNTIME_HELPERS.len() <= 64);
 
 /// Recover the declared memory sub-spaces from a compilation's env, in the shape
 /// [`emit_module_mlir`] wants.
@@ -979,21 +1281,37 @@ pub fn local_devices_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i32, i32)>
     crate::arch::local_device_aliases(env.topologies.values().map(|d| (&d.name, &d.descriptor)))
 }
 
+/// A declared topology's `arch:`, its `chip:` when it gives one, and its `offload:`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DeclaredArch {
+    pub arch: String,
+    pub chip: Option<String>,
+    pub offload: bool,
+}
+
 /// The declared-arch table for `EmitCtx::topo_archs`, from the per-compilation env: one entry per
-/// user-declared topology that states an `arch:`. A topology that declines to declare one gets no
-/// entry, no `arch` attribute, and therefore no device compilation -- refusing to guess is the
-/// same policy `fleet/m4-uma.vx` documents for its own arch field.
-pub fn topo_archs_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i64, String)> {
-    let mut out: Vec<(i64, String)> = env
+/// device of each user-declared topology that states an `arch:`. A topology that declines to
+/// declare one gets no entry, no `arch` attribute, and therefore no device compilation -- refusing
+/// to guess is the same policy `fleet/m4-uma.vx` documents for its own arch field.
+pub fn topo_archs_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i64, DeclaredArch)> {
+    let mut out: Vec<(i64, DeclaredArch)> = env
         .topologies
         .values()
         .filter_map(|decl| {
             let arch = decl.descriptor.arch.as_ref()?;
-            let id = crate::arch::topology_dispatch_id(&crate::syntax::Topology::Custom(
-                decl.name.clone(),
-            ));
-            Some((id as i64, arch.as_ref().to_string()))
+            let declared = DeclaredArch {
+                arch: arch.as_ref().to_string(),
+                chip: decl
+                    .descriptor
+                    .chip
+                    .as_ref()
+                    .map(|c| c.as_ref().to_string()),
+                offload: decl.descriptor.offload,
+            };
+            let ids = crate::arch::declared_dispatch_ids(&decl.name, decl.descriptor.count);
+            Some(ids.into_iter().map(move |id| (id as i64, declared.clone())))
         })
+        .flatten()
         .collect();
     // Sorted, because `env.topologies` is a HashMap and iteration order would otherwise decide
     // which entry wins an id collision -- the coin-flip E6016 refuses upstream, kept impossible
@@ -1013,6 +1331,7 @@ pub fn subspaces_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<SubspaceInfo> {
                 name: space.name(),
                 within: decl.parent.as_ref().map(|p| p.name()),
                 granule: decl.granule.as_ref().map(|g| g.0),
+                alignment: decl.alignment.as_ref().map(|a| a.0),
                 capacity: decl.capacity.as_ref().map(|c| c.0),
                 scope: decl.scope.as_ref().map(|s| {
                     match s {
@@ -1043,6 +1362,106 @@ pub fn subspaces_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<SubspaceInfo> {
 }
 
 impl EmitCtx {
+    fn registry_layout_agrees(
+        registry: &ImmutableGlobalRegistry,
+        definition: &crate::registry::TypeDefinition,
+        generated: &crate::layout::GeneratedAggregateLayout,
+    ) -> bool {
+        use crate::layout::FieldTy;
+        definition.id == generated.type_id
+            && definition.size_bytes as u64 == generated.size_bytes
+            && definition.align_bytes as u64 == generated.align_bytes
+            && definition.fields.len() == generated.fields.len()
+            && generated.variant_payloads.is_empty()
+            && definition
+                .fields
+                .iter()
+                .zip(&generated.fields)
+                .enumerate()
+                .all(|(index, (expected, actual))| {
+                    let aggregate = match &expected.ty {
+                        FieldTy::Nominal(id) if !registry.is_payload_free_enum(*id) => Some(*id),
+                        _ => None,
+                    };
+                    // Enum instances use generated IDs, so their declaration IDs cannot identify pointer targets here.
+                    let known_pointee = registry
+                        .structs
+                        .get(&definition.id)
+                        .and_then(|declaration| declaration.fields.get(index))
+                        .and_then(|(_, ty)| match ty {
+                            Type::Pointer(inner, ..)
+                            | Type::Borrow { inner, .. }
+                            | Type::Ref(inner, ..) => match inner.as_ref() {
+                                Type::Struct(name, id) | Type::Enum(name, id) => registry
+                                    .aggregate_identities()
+                                    .resolve(name, *id)
+                                    .map(|(_, id)| id)
+                                    .filter(|id| registry.structs.contains_key(id)),
+                                _ => None,
+                            },
+                            _ => None,
+                        });
+                    expected == &actual.layout
+                        && registry_field_storage_type(&expected.ty, registry, &mut Vec::new())
+                            .is_ok_and(|ty| ty == actual.mlir_type)
+                        && actual.aggregate_id == aggregate
+                        && if matches!(expected.ty, FieldTy::Opaque) {
+                            known_pointee.is_none() || actual.pointer_target_id == known_pointee
+                        } else {
+                            actual.pointer_target_id.is_none()
+                        }
+                })
+    }
+
+    fn install_generated_layouts(
+        &mut self,
+        registry: &ImmutableGlobalRegistry,
+        layouts: &[crate::layout::GeneratedAggregateLayout],
+        sched: crate::config::Schedule,
+    ) -> Result<(), ModuleEmitError> {
+        let mut generated: HashMap<TypeId, &crate::layout::GeneratedAggregateLayout> =
+            HashMap::new();
+        // Validate every record before changing storage or metadata in the emitter context.
+        for layout in layouts {
+            if let Some(definition) = registry
+                .layouts
+                .get(&layout.type_id)
+                .filter(|def| def.align_bytes != 0)
+            {
+                if !Self::registry_layout_agrees(registry, definition, layout) {
+                    return Err(ModuleEmitError::RegistryLayoutConflict {
+                        registry: Box::new(definition.clone()),
+                        generated: Box::new(layout.clone()),
+                    });
+                }
+            }
+            if let Some(previous) = generated.get(&layout.type_id) {
+                if !previous.semantically_eq(layout, registry.aggregate_identities()) {
+                    return Err(ModuleEmitError::ConflictingLayouts {
+                        first: Box::new((**previous).clone()),
+                        second: Box::new(layout.clone()),
+                    });
+                }
+            } else {
+                generated.insert(layout.type_id, layout);
+            }
+        }
+        let mut registry_storage_added = false;
+        for (id, layout) in generated {
+            registry_storage_added |=
+                !self.aggs.contains_key(&id) && registry.layouts.contains_key(&id);
+            self.aggs.insert(id, AggLayout::from_generated(layout));
+        }
+        // Names change only when a registry ID gains usable storage.
+        if registry_storage_added {
+            self.agg_names = build_agg_names(registry, &self.aggs);
+        }
+        if !layouts.is_empty() {
+            self.callees = build_callee_map(registry, &self.aggs, &self.agg_names, sched);
+        }
+        Ok(())
+    }
+
     /// Build the callee + struct-layout maps from the registry. The tensor map is *not* in the
     /// registry (tensor types are structural); populate it separately from the lowerer's side table.
     pub fn from_registry(
@@ -1053,6 +1472,7 @@ impl EmitCtx {
         let agg_names = build_agg_names(registry, &aggs);
         let callees = build_callee_map(registry, &aggs, &agg_names, sched);
         Self {
+            identities: registry.aggregate_identities().clone(),
             callees,
             aggs,
             agg_names,
@@ -1070,6 +1490,12 @@ impl EmitCtx {
                 .iter()
                 .map(|t| (t.symbol(), t.memref_type()))
                 .collect(),
+            shared_cell_types: std::collections::HashSet::new(),
+            describe_params: false,
+            mlir_wrapper_prefix: mlir_wrapper_prefix(
+                "vx_flat_mlir_",
+                registry.fn_sigs.keys().map(|n| n.as_ref()),
+            ),
         }
     }
 
@@ -1077,7 +1503,7 @@ impl EmitCtx {
     /// monomorphized cross-module signature left it unresolved, the base name's GID (`agg_names`).
     /// (#242)
     fn agg_gid(&self, ty: &Type) -> Option<TypeId> {
-        resolve_agg_gid(ty, &self.aggs, &self.agg_names)
+        resolve_agg_gid(ty, &self.aggs, &self.agg_names, &self.identities)
     }
 }
 
@@ -1116,7 +1542,14 @@ fn static_tile_bytes(elem: &ElementType, shape: &[String]) -> Option<u64> {
 /// tensor's memref, or a by-value aggregate's `!llvm.struct`. `None` for a void / unmodelled type.
 /// The single source of truth shared by the `func.func` header and a `FuncConst`'s `func.constant`
 /// signature, so a materialized function pointer's type matches its callee's header exactly. (#242)
-fn ty_mlir(ty: &Type, ctx: &EmitCtx) -> Lowered<String> {
+pub(crate) fn ty_mlir(ty: &Type, ctx: &EmitCtx) -> Lowered<String> {
+    // A token of `transfer_async` is spelled as its tensor, and a token of a lane copy as `i32`.
+    if crate::syntax::types::is_copy_token(ty) {
+        return Ok("i32".to_string());
+    }
+    if let Some(inner) = crate::syntax::types::transfer_token_inner(ty) {
+        return ty_mlir(inner, ctx);
+    }
     let ty = peel_wrappers(ty); // Verified/Ref/Pinned spell as their runtime inner type
                                 // A borrowed tensor is spelled as the tensor. A memref is already a reference, and a call
                                 // site hands over the memref itself; `!llvm.ptr` gave the signature a type nothing passes
@@ -1145,9 +1578,25 @@ fn ty_mlir(ty: &Type, ctx: &EmitCtx) -> Lowered<String> {
         let (elem, shape) = ctx.tensors.get(&gid).ok_or(Decline::TypeNotModelled {
             what: "a tensor with no recorded shape",
         })?;
-        tensor_memref_ty(elem, shape).ok_or(Decline::TypeNotModelled {
+        let memty = tensor_memref_ty(elem, shape).ok_or(Decline::TypeNotModelled {
             what: "a tensor with no memref spelling",
-        })
+        })?;
+        // A tensor in a `scope: sm` space is in shared memory, as where it is made, so a
+        // function can take it.
+        let shared = ty
+            .placement()
+            .map(|p| crate::arch::memory_space_dispatch_id(&p.space) as u64)
+            .and_then(|id| ctx.subspaces.get(&id))
+            .and_then(|s| s.scope.as_deref())
+            == Some("sm");
+        if !shared {
+            return Ok(memty);
+        }
+        let space = crate::arch::address_space_for_arch(None, crate::arch::AddressSpace::Workgroup);
+        Ok(format!(
+            "{}, {space}>",
+            memty.strip_suffix('>').ok_or(crate::emitter_gap!())?
+        ))
     } else if let Some(gid) = ctx.agg_gid(ty) {
         Ok(ctx
             .aggs
@@ -1164,11 +1613,76 @@ fn ty_mlir(ty: &Type, ctx: &EmitCtx) -> Lowered<String> {
     }
 }
 
-/// Emit a whole module — every function as a concatenated bare `func.func` — or `None` if *any*
-/// function is outside the current subset (module-level keep-green atomicity: a partially lowered
-/// module is never emitted, so the AST path stays the oracle for the whole program). Callees + struct
-/// layouts resolve through the frozen registry; `tensor_types` is the concatenation of each function's
-/// lowerer side table (`LocalWorkerState::local_tensor_types`). Wrap the result in `module { … }`.
+/// The comment before the wrapper of an `mlir!` block, followed by the block's line and column.
+pub(crate) const MLIR_BLOCK_START: &str = "// mlir! block at ";
+/// The comment after the wrapper of an `mlir!` block.
+pub(crate) const MLIR_BLOCK_END: &str = "// end of the mlir! block";
+
+/// Parses the text that `emit_module_mlir` returned. `Ok(None)` when it does not parse because
+/// of an emitter bug: the MLIR errors are printed. `Err` when it does not parse because an
+/// `mlir!` block of the program is not valid MLIR: the error names the block.
+pub fn parse_emitted_module<'c>(
+    context: &'c melior::Context,
+    text: &str,
+) -> Result<Option<melior::ir::Module<'c>>, String> {
+    let errors = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let seen = errors.clone();
+    let id = context.attach_diagnostic_handler(move |d| {
+        seen.borrow_mut()
+            .push((d.location().to_string(), d.to_string()));
+        true
+    });
+    let parsed = melior::ir::Module::parse(context, text);
+    context.detach_diagnostic_handler(id);
+    if parsed.is_some() {
+        return Ok(parsed);
+    }
+    let errors = errors.borrow();
+    if let Some((location, message)) = errors.first() {
+        if let Some(why) = mlir_block_error(text, location, message) {
+            return Err(why);
+        }
+    }
+    for (_, message) in errors.iter() {
+        eprintln!("{message}");
+    }
+    Ok(None)
+}
+
+/// The error for an MLIR error at `location`, such as `loc("-":4:5)` in `text`, when it is in
+/// the code of an `mlir!` block: its wrapper, or the cast of one of its inputs.
+fn mlir_block_error(text: &str, location: &str, message: &str) -> Option<String> {
+    let mut parts = location.trim_end_matches(')').rsplit(':');
+    let _column = parts.next()?;
+    let line: usize = parts.next()?.parse().ok()?;
+    let before: Vec<&str> = text.lines().take(line.checked_sub(1)?).collect();
+    for l in before.into_iter().rev() {
+        if l.starts_with(MLIR_BLOCK_END) {
+            return None;
+        }
+        let Some(at) = l.strip_prefix(MLIR_BLOCK_START) else {
+            continue;
+        };
+        let (line, rest) = at.split_once(' ')?;
+        let (column, input) = rest.split_once(' ').unwrap_or((rest, ""));
+        let block = format!("The `mlir!` block at line {line}, column {column}");
+        let Some(input) = input.strip_prefix("input ") else {
+            return Some(format!("{block} is not valid MLIR: {message}"));
+        };
+        let mut fields = input.split(" | ");
+        let (name, actual, declared) = (fields.next()?, fields.next()?, fields.next()?);
+        return Some(format!(
+            "{block} takes its input `{name}` as `{declared}`, but the value is a `{actual}`: \
+             {message}"
+        ));
+    }
+    None
+}
+
+/// Generate MLIR for all functions, wrapped in `module { … }`.
+/// Unsupported constructs permit AST fallback. Conflicting layouts stop compilation and report both records.
+/// Callees and declared layouts resolve through the frozen registry.
+/// `tensor_types` combines each function's `LocalWorkerState::local_tensor_types` table.
 #[allow(clippy::too_many_arguments)]
 pub fn emit_module_mlir(
     funcs: &[(&Function, &[HirInstruction], &[TypeId])],
@@ -1176,15 +1690,27 @@ pub fn emit_module_mlir(
     tensor_types: &[(TypeId, ElementType, Vec<String>)],
     string_tables: &[&[String]],
     inline_tables: &[&[crate::hir::flatten::InlineBlock]],
-    agg_layouts: &[(TypeId, Vec<u64>, Vec<String>)],
+    agg_layouts: &[crate::layout::GeneratedAggregateLayout],
     alias_tables: &[&[(usize, usize, Vec<usize>)]],
     subspaces: &[SubspaceInfo],
-    topo_archs: &[(i64, String)],
+    topo_archs: &[(i64, DeclaredArch)],
     local_devices: &[(i32, i32)],
     sched: crate::config::Schedule,
-) -> Lowered<String> {
+    describe_params: bool,
+) -> Result<String, ModuleEmitError> {
     let setup = std::time::Instant::now();
     let mut ctx = EmitCtx::from_registry(registry, sched);
+    ctx.describe_params = describe_params;
+    for (func, ..) in funcs {
+        for (_, ty) in &func.params {
+            if let Type::Borrow { inner, .. } = ty {
+                if registry.holds_shared_cell(inner) {
+                    ctx.shared_cell_types
+                        .insert(crate::syntax::types::Mangle::mangle(&**inner));
+                }
+            }
+        }
+    }
     for s in subspaces {
         ctx.subspaces.insert(s.dispatch_id, s.clone());
     }
@@ -1196,26 +1722,9 @@ pub fn emit_module_mlir(
             .entry(*gid)
             .or_insert_with(|| (elem.clone(), shape.clone()));
     }
-    // Synthesized data-carrying enum-instance layouts (`Option<i32>` -> `{ i32, i32 }`): fold each into
-    // the aggregate map so a `FieldStore`/`FieldLoad`/`Alloca` on its GID resolves like any struct.
-    // Instance-dependent, so they aren't in the frozen registry (the lowerer synthesized them). (#242)
-    for (gid, offsets, field_tys) in agg_layouts {
-        ctx.aggs.entry(*gid).or_insert_with(|| AggLayout {
-            struct_ty: format!("!llvm.struct<({})>", field_tys.join(", ")),
-            offsets: offsets.clone(),
-            field_tys: field_tys.clone(),
-            // A synthesized enum instance carries no pointer-to-aggregate fields (its payload is a
-            // scalar/pointer-to-scalar), so no chained field access resolves through it.
-            field_pointee: vec![None; field_tys.len()],
-            field_agg: vec![None; field_tys.len()],
-        });
-    }
-    // Rebuild the callee map now that the synthesized enum-instance layouts are in `aggs`: a callee
-    // returning `Option<i32>` (a data enum) resolves its `ret_agg` only once its layout is present,
-    // which happens above — `EmitCtx::from_registry` built the callees before it (#242).
-    if !agg_layouts.is_empty() {
-        ctx.callees = build_callee_map(registry, &ctx.aggs, &ctx.agg_names, sched);
-    }
+    // Generated struct and enum instance layouts are local to the lowerer, outside the frozen registry.
+    // Install their storage shapes so aggregate allocation and field access can find them.
+    ctx.install_generated_layouts(registry, agg_layouts, sched)?;
     // Function GID → (param MLIR types, ret MLIR type), for a `FuncConst`'s `func.constant @name : sig`.
     // Built from the module's own functions (each `Function` carries its params); the target must be a
     // function whose whole signature is modelled (else the FuncConst declines at emit). (#242)
@@ -1275,7 +1784,7 @@ pub fn emit_module_mlir(
     {
         let mut str_base = 0usize;
         let mut distinct_ctr: u32 = 1;
-        for fi in 0..funcs.len() {
+        for (fi, (_, hir, _)) in funcs.iter().enumerate() {
             str_bases.push(str_base);
             str_base += string_tables.get(fi).copied().unwrap_or(&[]).len();
             distinct_bases.push(distinct_ctr);
@@ -1287,6 +1796,8 @@ pub fn emit_module_mlir(
                 .map(|(_, g, _)| *g as u32 + 1)
                 .max()
                 .unwrap_or(0);
+            // One access group for each loop hint, which keeps each loop's metadata its own.
+            distinct_ctr += hir.iter().filter(|i| i.opcode == Opcode::LoopHint).count() as u32;
         }
     }
 
@@ -1302,7 +1813,7 @@ pub fn emit_module_mlir(
         .map(|(name, _)| format!("@{name}("))
         .collect();
 
-    type FnEmission = (String, Vec<(String, Vec<String>, String)>, u32);
+    type FnEmission = (String, Vec<(String, Vec<String>, String)>, u64);
     // An inline block's wrapper is named from a module-wide base, so two functions' do not collide.
     let inline_bases: Vec<usize> = {
         let mut bases = Vec::with_capacity(funcs.len());
@@ -1330,9 +1841,9 @@ pub fn emit_module_mlir(
                 alias_tables.get(fi).copied().unwrap_or(&[]),
                 &mut distinct_ctr,
             )?;
-            let helpers = helper_pats.iter().enumerate().fold(0u32, |m, (i, pat)| {
+            let helpers = helper_pats.iter().enumerate().fold(0u64, |m, (i, pat)| {
                 if text.contains(pat.as_str()) {
-                    m | (1 << i)
+                    m | (1u64 << i)
                 } else {
                     m
                 }
@@ -1370,7 +1881,7 @@ pub fn emit_module_mlir(
     //
     // A decline is reported for the *first* declining function rather than whichever thread noticed
     // first, so `VX_FLAT_DBG` says the same thing it always did.
-    let mut helper_mask = 0u32;
+    let mut helper_mask = 0u64;
     for (fi, emission) in emitted.iter_mut().enumerate() {
         let (_, fn_calls, helpers) = match emission {
             Ok(e) => e,
@@ -1381,7 +1892,7 @@ pub fn emit_module_mlir(
                         funcs[fi].0.name.as_ref()
                     );
                 }
-                return Err(why.clone());
+                return Err(why.clone().into());
             }
         };
         calls.append(fn_calls);
@@ -1428,8 +1939,18 @@ pub fn emit_module_mlir(
         } else {
             format!(" -> {ret}")
         };
+        let mark = match registry.fn_sigs.get(name.as_str()) {
+            Some(sig)
+                if crate::codegen::generator::gets_device_pointer(
+                    sig.params.iter().map(peel_wrappers),
+                ) =>
+            {
+                " attributes {vx.gets_device_pointer}"
+            }
+            _ => "",
+        };
         decls += &format!(
-            "  func.func private {}({}){ret_sig}\n",
+            "  func.func private {}({}){ret_sig}{mark}\n",
             sym_ref(name),
             arg_types.join(", ")
         );
@@ -1530,7 +2051,7 @@ fn memref_elem(memty: &str) -> Option<&str> {
 
 /// The dims prefix (`2x4x`) and element (`f32`) of a memref type string. `memref<2x4xf32> ->
 /// ("2x4x", "f32")`; a layout suffix (`, strided<…>`) is dropped.
-fn memref_lead_dims_and_elem(memty: &str) -> Option<(&str, &str)> {
+pub(crate) fn memref_lead_dims_and_elem(memty: &str) -> Option<(&str, &str)> {
     let inner = memty.strip_prefix("memref<")?;
     let inner = inner.split(',').next()?.trim_end_matches('>');
     let elem_start = inner.rfind('x').map(|i| i + 1).unwrap_or(0);
@@ -1752,6 +2273,8 @@ pub(crate) struct FnEmit<'a> {
     /// `StringConst` reach their bytes through a module-level global; `Abort` needs the text
     /// itself, because `cf.assert` carries its message as an inline attribute.
     pub(crate) strings: &'a [String],
+    /// The file the function is written in, which each `spawn` of a task in it names.
+    pub(crate) file: Option<&'a str>,
     /// This function's inline `mlir!` blocks and the base their wrappers are numbered from.
     pub(crate) inline_base: usize,
     pub(crate) inline_blocks: &'a [crate::hir::flatten::InlineBlock],
@@ -1803,7 +2326,7 @@ pub(crate) struct FnEmit<'a> {
     pub(crate) etypes: Vec<Option<ElementType>>,
     /// The aggregate GID for each register that is a struct-slot pointer (from an aggregate
     /// `Alloca`), so a `FieldLoad`/`FieldStore` on that slot recovers the struct's `!llvm.struct`
-    /// type + field offsets. The aggregate analogue of `etypes` (kept separate: struct slots are
+    /// type and field indices. The aggregate analogue of `etypes` (kept separate: struct slots are
     /// pointers, not scalar values).
     pub(crate) agg_of: Vec<Option<TypeId>>,
     /// The aggregate GID for each register that holds a struct *value* (not a slot pointer): an
@@ -1840,6 +2363,9 @@ pub(crate) struct FnEmit<'a> {
     /// of the element type rather than the rank-0 `memref` a never-borrowed scalar local uses. The
     /// scalar analogue of `pslot_of`, carrying the element so the load/store types match.
     pub(crate) sslot_of: Vec<Option<ElementType>>,
+    /// The memref type a *tensor slot* holds (a `memref<memref<..>>` alloca), for a tensor local
+    /// given a new value in a branch.
+    pub(crate) tslot_of: Vec<Option<String>>,
     /// The function body's MLIR text, appended to as the walk proceeds.
     /// The function's entry block, for allocations that must happen once.
     ///
@@ -1865,6 +2391,13 @@ pub(crate) struct FnEmit<'a> {
     /// value can be given its result name when the value is known. Empty outside a spawn.
     /// The third field is the spawn's name index, as its `imm` carries it.
     pub(crate) spawn_stack: Vec<(i64, usize, u64)>,
+    /// For each open `vx.spawn`, where its stack slots go: the end of the slots in its first
+    /// block for a region with `across` loops, and `None` for another region.
+    pub(crate) region_slots: Vec<Option<usize>>,
+    /// The attributes of the next `cf.br`, from a `LoopHint` just before it.
+    pub(crate) loop_hint: Option<String>,
+    /// The next `distinct[]` id of this function's block, after its alias scopes.
+    pub(crate) next_distinct: u32,
     /// Per-function sub-space bump allocator (space dispatch id -> next free byte), mirroring the
     /// AST path's `MeliorGenerator::subspace_offsets`: each `Transfer` into a granule'd space
     /// claims the next granule-rounded `offset` and advances the cursor, so both paths assign
@@ -1874,6 +2407,22 @@ pub(crate) struct FnEmit<'a> {
     pub(crate) filled: std::collections::HashSet<usize>,
     /// A filled tensor placed on a device: filled on the host, then copied to this topology.
     pub(crate) copy_after_fill: HashMap<usize, i32>,
+    /// The open `affine.for` loops, outermost first.
+    pub(crate) affine_loops: Vec<AffineLoop>,
+    /// The value of each integer `Const`, so that a loop bound can be a number.
+    pub(crate) int_consts: HashMap<usize, i64>,
+}
+
+/// An open `affine.for`.
+pub(crate) struct AffineLoop {
+    /// Where the loop's text starts in `body`.
+    pub(crate) at: usize,
+    /// The loop's index, of type `index`.
+    pub(crate) index: String,
+    /// The register of the loop variable.
+    pub(crate) var: usize,
+    /// The body is in an `scf.execute_region`.
+    pub(crate) branches: bool,
 }
 
 impl<'a> FnEmit<'a> {
@@ -1915,6 +2464,13 @@ impl<'a> FnEmit<'a> {
     /// scratch. So a region keeps its slots, and a `let` in a loop *inside* a
     /// spawn still allocates per iteration.
     pub(crate) fn emit_slot(&mut self, text: &str) {
+        // A region with `across` loops keeps its slots in its own first block, which every
+        // block of the region is under.
+        if let Some(Some(at)) = self.region_slots.last_mut() {
+            self.body.insert_str(*at, text);
+            *at += text.len();
+            return;
+        }
         match self.spawn_stack.last() {
             // A device region is outlined into its own function, so a slot
             // lifted out of it stops being the kernel's own scratch and becomes
@@ -1973,6 +2529,8 @@ impl<'a> FnEmit<'a> {
             // Block markers → MLIR blocks. Block 0 is the func's entry block (implicit; it carries the
             // params), so it gets no label; every other id opens `^bbN:`.
             Opcode::BlockStart => self.op_block_start(idx, ins),
+            Opcode::AffineFor => self.op_affine_for(idx, ins),
+            Opcode::AffineForEnd => self.op_affine_for_end(idx, ins),
             Opcode::Br => self.op_br(idx, ins),
             // `imm` packs the two targets as `then | (else << 32)` (see `flatten::pack_targets`).
             Opcode::CondBr => self.op_cond_br(idx, ins),
@@ -1993,18 +2551,29 @@ impl<'a> FnEmit<'a> {
             // the scalar return type. Reconstruct the function type `(arg types)->ret` from the actual
             // args, cast the pointer to it, and `func.call_indirect`. (#242)
             Opcode::CallIndirect => self.op_call_indirect(idx, ins),
+            Opcode::TensorElementAddress => self.op_tensor_element_address(idx, ins),
             Opcode::AutoDiff => self.op_autodiff(idx, ins),
             Opcode::TensorLoad => self.op_tensor_load(idx, ins),
             Opcode::TensorDim => self.op_tensor_dim(idx, ins),
-            // Store a scalar into a struct field (no result). `operand1` is the struct slot pointer,
-            // `operand2` the value, `imm` the field's byte offset. GEP to the field, then `llvm.store`;
-            // the field index comes from matching the offset against the layout, the value type from
-            // the stored register's tracked type.
+            Opcode::CheckAggregate => {
+                let expected = self.types.get(ins.type_idx.0 as usize).copied();
+                let actual = self.agg_of.get(ins.operand1.0 as usize).copied().flatten();
+                if expected.is_none() || actual != expected {
+                    if std::env::var_os("VX_FLAT_DBG").is_some() {
+                        eprintln!(
+                            "[flat-dbg] aggregate check expected {expected:?}, actual {actual:?}"
+                        );
+                    }
+                    return Err(Decline::TypeNotModelled {
+                        what: "an aggregate base whose layout does not match its declared type",
+                    });
+                }
+                Ok(())
+            }
+            // Store a field by explicit index, with the stored value in operand2.
             Opcode::FieldStore => self.op_field_store(idx, ins),
-            // Load a scalar struct field. `operand1` is the struct slot, `imm` the field's byte offset,
-            // and this instruction's own `type_idx` the field's scalar type. GEP to the field, then
-            // `llvm.load`.
-            Opcode::FieldLoad => self.op_field_load(idx, ins),
+            // Load a field by index, or an enum payload by variant and payload position.
+            Opcode::FieldLoad | Opcode::EnumPayloadLoad => self.op_field_load(idx, ins),
             // The address of a by-value nested-aggregate field (`&outer.inner`): GEP to the field and
             // yield the pointer, tracked as an aggregate slot (its layout GID from `type_idx`), so a
             // chained field access or a method receiver addresses through it. (#242)
@@ -2024,6 +2593,7 @@ impl<'a> FnEmit<'a> {
             Opcode::TensorTranspose => self.op_tensor_transpose(idx, ins),
             Opcode::TensorPad => self.op_tensor_pad(idx, ins),
             Opcode::TensorMap => self.op_tensor_map(idx, ins),
+            Opcode::TensorCast => self.op_tensor_cast(idx, ins),
             Opcode::TensorReduce => self.op_tensor_reduce(idx, ins),
             Opcode::TensorClone => self.op_tensor_clone(idx, ins),
             Opcode::TensorDataPtr => self.op_tensor_data_ptr(idx, ins),
@@ -2071,6 +2641,48 @@ impl<'a> FnEmit<'a> {
             // terminator already ended it), stamp the `topology` attribute, and resume emitting into
             // the enclosing block (which the spawn op did not terminate).
             Opcode::SpawnEnd => self.op_spawn_end(idx, ins),
+            Opcode::TasksWait => {
+                let join = if ins.imm == 1 { " {join}" } else { "" };
+                self.body += &format!("  \"vx.tasks_wait\"(){join} : () -> ()\n");
+                Ok(())
+            }
+            Opcode::TaskFailed => {
+                self.body += "  func.call @vx_task_failed() : () -> ()\n";
+                Ok(())
+            }
+            Opcode::CancelOff => {
+                let limit = self
+                    .names
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
+                self.body += &format!("  func.call @vx_cancel_off({limit}) : (i64) -> ()\n");
+                Ok(())
+            }
+            Opcode::CancelOn => {
+                self.body += "  func.call @vx_cancel_on() : () -> ()\n";
+                Ok(())
+            }
+            // `VxLowering` waits for the task before this use of its value, and erases it.
+            Opcode::TaskJoin => {
+                let r = ins.operand1.0 as usize;
+                let v = self.names.get(r).ok_or(crate::emitter_gap!())?.clone();
+                let ty = self.value_mlir_ty(r)?;
+                self.body += &format!("  \"vx.task_join\"({v}) : ({ty}) -> ()\n");
+                Ok(())
+            }
+            // A way out of the region before its end. `VxLowering` sends each `vx.yield` of a
+            // `tasks` block to the code after the block. An exit from a task gives the value of
+            // the task, and the task stores it and ends.
+            Opcode::RegionExit => {
+                if self.types.get(ins.type_idx.0 as usize).is_some() {
+                    self.yield_value(idx, ins.operand1.0 as usize)?;
+                } else {
+                    self.body += "  \"vx.yield\"() : () -> ()\n";
+                }
+                self.terminated = true;
+                Ok(())
+            }
             // Print a string literal (no result): take the address of the module-level global emitted
             // for this string (`@".str.<n>"`, `n = str_base + imm`) and call the `@print_str` runtime
             // helper. `emit_module_mlir` emits the global's bytes and the helper's `private` decl.
@@ -2083,9 +2695,17 @@ impl<'a> FnEmit<'a> {
             // the greedy folder cannot erase it before the device clone rewrites it to
             // `gpu.barrier`; the host lowering erases it instead (a serial loop IS the barrier).
             Opcode::Barrier => self.op_barrier(idx, ins),
+            Opcode::LaunchDim => self.op_launch_dim(idx, ins),
+            Opcode::LoopHint => self.op_loop_hint(idx, ins),
+            Opcode::LaneReduce => self.op_lane_reduce(idx, ins),
+            Opcode::AcrossId => self.op_across_id(idx, ins),
+            Opcode::AcrossRegion => self.op_across_region(idx, ins),
             Opcode::TensorDrop => self.op_tensor_drop(idx, ins),
+            Opcode::LifetimeStart => self.op_lifetime(ins, "start"),
+            Opcode::LifetimeEnd => self.op_lifetime(ins, "end"),
             Opcode::Abort => self.op_abort(idx, ins),
             Opcode::PrintStr => self.op_print_str(idx, ins),
+            Opcode::PrintStream => self.op_print_stream(idx, ins),
             // A string literal in value position (#231): take the address of the module-level global
             // (`@".str.<n>"`, `n = str_base + imm`, the same numbering as `PrintStr`) as a first-class
             // `!llvm.ptr` value — what a `let s = "…"` binds or a string argument passes. The global's
@@ -2148,12 +2768,20 @@ pub fn emit_function_mlir(
     if let Some((slot, memty)) = &ret_slot {
         params.push(format!("{slot}: {memty}"));
     }
+    // `requires valid(p, n)`: a call in safe code proves it, and the author of `unsafe` code keeps
+    // the promise.
+    let valid = crate::hir::check::pointer_clauses::valid_params(func);
     for (i, (_, ty)) in func.params.iter().enumerate() {
         // Signature-position MLIR type: scalar, payload-free enum `i32`, `!llvm.ptr` (pointer /
         // fn-pointer), tensor memref, or by-value aggregate `!llvm.struct`; else the function declines.
         let pty = ty_mlir(ty, ctx)?;
         let n = i as u32 + arg_offset;
-        params.push(format!("%arg{n}: {pty}{}", param_alias_attrs(ty, ctx)));
+        let attrs = if valid.iter().any(|(p, _)| *p == i) {
+            valid_pointer_attrs(ty)
+        } else {
+            param_alias_attrs(ty, ctx)
+        };
+        params.push(format!("%arg{n}: {pty}{attrs}"));
     }
     // A `Pinned<i32, ..>` return is the scalar it wraps, as at a call site.
     let ret_elem = match peel_wrappers(&func.return_type) {
@@ -2161,7 +2789,7 @@ pub fn emit_function_mlir(
         Type::Scalar(_) => {
             return Err(Decline::TypeNotModelled {
                 what: "a generic scalar return type",
-            })
+            });
         }
         _ => None, // non-scalar: a struct return is handled below; anything else is void
     };
@@ -2174,6 +2802,8 @@ pub fn emit_function_mlir(
         Some(mlir_scalar(e).ok_or(crate::emitter_gap!())?.to_string())
     } else if let Some(et) = enum_scalar(&func.return_type, ctx) {
         Some(et.to_string())
+    } else if let Some(mt) = borrowed_tensor_memref(&func.return_type) {
+        Some(mt)
     } else if is_ptr_ty(&func.return_type) {
         Some("!llvm.ptr".to_string()) // a pointer-returning function (#235)
     } else if let Some(gid) = ctx.agg_gid(&func.return_type) {
@@ -2236,6 +2866,7 @@ pub fn emit_function_mlir(
         ctx,
         str_base,
         strings,
+        file: func.file.as_deref(),
         inline_base,
         inline_blocks,
         wrappers: String::new(),
@@ -2256,11 +2887,15 @@ pub fn emit_function_mlir(
         ptr_of: vec![false; hir.len()],
         pslot_of: vec![false; hir.len()],
         sslot_of: vec![None; hir.len()],
+        tslot_of: vec![None; hir.len()],
         entry: String::new(),
         body: String::new(),
         terminated: false,
         pending_args: Vec::new(),
         spawn_stack: Vec::new(),
+        region_slots: Vec::new(),
+        loop_hint: None,
+        next_distinct: *distinct_ctr,
         subspace_offsets: HashMap::new(),
         filled: hir
             .iter()
@@ -2268,6 +2903,8 @@ pub fn emit_function_mlir(
             .map(|i| i.operand1.0 as usize)
             .collect(),
         copy_after_fill: HashMap::new(),
+        affine_loops: Vec::new(),
+        int_consts: HashMap::new(),
     };
     // `main` installs the runtime crash handler first, exactly as the AST codegen does (`is_main` ->
     // `func.call @vx_init_signals`), so a wild memory access is caught + backtraced rather than exiting
@@ -2276,6 +2913,7 @@ pub fn emit_function_mlir(
     if func.name.as_ref() == "main" {
         em.entry += "  func.call @vx_init_signals() : () -> ()\n";
     }
+    em.entry += &valid_pointer_assumes(func, &valid, arg_offset);
 
     for (idx, ins) in hir.iter().enumerate() {
         em.step(idx, ins)?;
@@ -2299,6 +2937,8 @@ pub fn emit_function_mlir(
         Some(Some(p)) if returns_through_slot(&func.return_type).is_none() => {
             format!(" {}", placed_attr(&p, ctx))
         }
+        // A returned reference names a tensor that the caller does not own, so it is not freed.
+        _ if borrowed_tensor_memref(&func.return_type).is_some() => " {vx.reference}".to_string(),
         _ => String::new(),
     };
     let mut ret_sig = match &ret_mlir {
@@ -2306,9 +2946,34 @@ pub fn emit_function_mlir(
         Some(t) => format!(" -> {t}"),
         None => String::new(),
     };
-    // A function declared `-> !` is `noreturn` to LLVM.
+    // A function declared `-> !` is `noreturn` to LLVM. A `pub fn` stays exported:
+    // `vx-hide-program-symbols` skips a function with `vx.pub`.
+    let mut attrs = Vec::new();
     if crate::syntax::is_never_ty(&func.return_type) {
-        ret_sig += " attributes {passthrough = [\"noreturn\"]}";
+        attrs.push("passthrough = [\"noreturn\"]".to_string());
+    }
+    if func.is_pub {
+        attrs.push("vx.pub".to_string());
+    }
+    // A function that holds a `spawn` keeps the Vx name and type of each parameter, so the
+    // compiler can describe the parameters of a GPU kernel that `--emit-ptx` writes.
+    if ctx.describe_params && hir.iter().any(|i| matches!(i.opcode, Opcode::Spawn)) {
+        let quoted = |s: String| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
+        let names: Vec<String> = func
+            .params
+            .iter()
+            .map(|(n, _)| quoted(n.to_string()))
+            .collect();
+        let types: Vec<String> = func
+            .params
+            .iter()
+            .map(|(_, t)| quoted(t.to_string()))
+            .collect();
+        attrs.push(format!("vx.param_names = [{}]", names.join(", ")));
+        attrs.push(format!("vx.param_types = [{}]", types.join(", ")));
+    }
+    if !attrs.is_empty() {
+        ret_sig += &format!(" attributes {{{}}}", attrs.join(", "));
     }
     let mut out = format!(
         "func.func {}({}){} {{\n",
@@ -2329,6 +2994,146 @@ mod tests {
     use crate::hir::flatten::lower_function_to_hir;
     use crate::session::{GlobalSession, LocalWorkerState};
     use std::sync::Arc;
+
+    /// The prefix for an `mlir!` block's function grows until no function starts with it.
+    #[test]
+    fn mlir_wrapper_prefix_avoids_every_function_name() {
+        let base = "vx_flat_mlir_";
+        assert_eq!(mlir_wrapper_prefix(base, ["main"].into_iter()), base);
+        let names = ["main", "vx_flat_mlir_0", "vx_flat_mlir__wrap"];
+        assert_eq!(
+            mlir_wrapper_prefix(base, names.into_iter()),
+            "vx_flat_mlir___"
+        );
+    }
+
+    // These LLVM target-layout functions are not included in mlir-sys's generated bindings.
+    unsafe extern "C" {
+        fn LLVMCreateTargetData(layout: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+        fn LLVMDisposeTargetData(data: *mut std::ffi::c_void);
+        fn LLVMABISizeOfType(data: *mut std::ffi::c_void, ty: mlir_sys::LLVMTypeRef) -> u64;
+        fn LLVMABIAlignmentOfType(data: *mut std::ffi::c_void, ty: mlir_sys::LLVMTypeRef) -> u32;
+        fn LLVMOffsetOfElement(
+            data: *mut std::ffi::c_void,
+            ty: mlir_sys::LLVMTypeRef,
+            field: u32,
+        ) -> u64;
+    }
+
+    fn llvm_storage_layout(storage: &str, data_layout: &str) -> (u64, u64, Vec<u64>) {
+        let registry = melior::dialect::DialectRegistry::new();
+        melior::utility::register_all_dialects(&registry);
+        let context = melior::Context::new();
+        context.append_dialect_registry(&registry);
+        context.load_all_available_dialects();
+        melior::utility::register_all_llvm_translations(&context);
+        let text = format!("module {{ llvm.func @inspect({storage}) }}");
+        let module = melior::ir::Module::parse(&context, &text).expect("storage type parses");
+        let data_layout = std::ffi::CString::new(data_layout).unwrap();
+        // SAFETY: the parsed module owns valid types. LLVM objects remain live until all queries finish.
+        unsafe {
+            let llvm_context = mlir_sys::LLVMContextCreate();
+            let llvm_module =
+                mlir_sys::mlirTranslateModuleToLLVMIR(module.as_operation().to_raw(), llvm_context);
+            assert!(!llvm_module.is_null(), "storage translates to LLVM");
+            let function = mlir_sys::LLVMGetNamedFunction(llvm_module, c"inspect".as_ptr());
+            let ty = mlir_sys::LLVMTypeOf(mlir_sys::LLVMGetParam(function, 0));
+            let data = LLVMCreateTargetData(data_layout.as_ptr());
+            let offsets = (0..mlir_sys::LLVMCountStructElementTypes(ty))
+                .map(|i| LLVMOffsetOfElement(data, ty, i))
+                .collect();
+            let result = (
+                LLVMABISizeOfType(data, ty),
+                u64::from(LLVMABIAlignmentOfType(data, ty)),
+                offsets,
+            );
+            LLVMDisposeTargetData(data);
+            mlir_sys::LLVMDisposeModule(llvm_module);
+            mlir_sys::LLVMContextDispose(llvm_context);
+            result
+        }
+    }
+
+    #[rstest::rstest]
+    #[case::byte(1, 1)]
+    #[case::two_byte_alignment(4, 2)]
+    #[case::four_byte_alignment(8, 4)]
+    #[case::eight_byte_alignment(16, 8)]
+    #[case::sixteen_byte_alignment(32, 16)]
+    fn enum_layout_storage_agrees_with_llvm(
+        #[case] size: u64,
+        #[case] align: u64,
+        #[values(
+            "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128",
+            "e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128"
+        )]
+        target: &str,
+    ) {
+        let slot = crate::layout::EnumPayloadSlot {
+            offset: 0,
+            size,
+            align,
+        };
+        let field = crate::layout::enum_slot_storage(&slot).expect("supported slot");
+        let outer = format!("!llvm.struct<(i32, {field}, i8)>");
+        let expected = crate::layout::enum_storage_layout(&[vec![(size, align), (1, 1)]]).unwrap();
+        assert_eq!(
+            llvm_storage_layout(&outer, target),
+            (
+                expected.size,
+                expected.align,
+                vec![0, expected.slots[0].offset, expected.slots[1].offset]
+            ),
+            "LLVM must provide the slot's size, alignment, and offsets for {size}/{align}"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::larger_first("Big(Wide), Small(Aligned)")]
+    #[case::aligned_first("Small(Aligned), Big(Wide)")]
+    fn enum_layout_generated_storage_has_both_size_and_alignment(#[case] variants: &str) {
+        let source = format!("struct Wide {{ a: i32, b: i32, c: i32 }}
+            struct Aligned {{ value: i64 }}
+            enum Choice {{ {variants} }}
+            fn read(value: Choice) -> i64 {{ match value {{ Choice::Big(v) => {{ return (v.a + v.b + v.c) as i64; }}, Choice::Small(v) => {{ return v.value; }} }} }}
+            fn main() -> i32 {{ return read(Choice::Big(Wide {{ a: 1, b: 2, c: 3 }})) as i32; }}");
+        emit_module_with_layouts_and_verify(&source, |layouts| {
+            let layout = layouts
+                .iter()
+                .find(|l| l.name == "Choice")
+                .expect("Choice layout");
+            assert_eq!(
+                (
+                    layout.size_bytes,
+                    layout.align_bytes,
+                    layout.field_offsets(),
+                    layout.fields[1].layout.size
+                ),
+                (24, 8, vec![0, 8], 16),
+                "generated enum metadata must retain maximum size and maximum alignment"
+            );
+            assert_eq!(
+                llvm_storage_layout(&generated_storage_type(layout), "e-i64:64"),
+                (24, 8, vec![0, 8]),
+                "generated LLVM storage must supply the promised capacity and alignment"
+            );
+        });
+    }
+
+    #[rstest::rstest]
+    fn enum_layout_zero_sized_storage_agrees_with_llvm(#[values(1, 2, 4, 8, 16)] align: u64) {
+        let slot = crate::layout::EnumPayloadSlot {
+            offset: 0,
+            size: 0,
+            align,
+        };
+        let field = crate::layout::enum_slot_storage(&slot).unwrap();
+        assert_eq!(
+            llvm_storage_layout(&format!("!llvm.struct<({field}, i8)>"), "e-i64:64"),
+            (align, align, vec![0, 0]),
+            "zero-sized integer carriers must retain alignment and field identity"
+        );
+    }
 
     #[test]
     fn memref_lead_dim_answers_only_for_rank_one() {
@@ -2395,6 +3200,43 @@ mod tests {
     /// real MLIR context — proving the module emitter (calls included) produces valid MLIR end to
     /// end. Mirrors the pipeline's registry build so callees resolve through `fn_sigs`.
     fn emit_module_and_verify(src: &str) -> String {
+        emit_module_with_layouts_and_verify(src, |_| {})
+    }
+
+    fn emit_module_with_layouts_and_verify(
+        src: &str,
+        change_layouts: impl FnOnce(&mut Vec<crate::layout::GeneratedAggregateLayout>),
+    ) -> String {
+        let mlir = emit_module_with_layouts(src, change_layouts).expect("emits flat module");
+
+        use melior::ir::operation::OperationLike;
+        let dialects = melior::dialect::DialectRegistry::new();
+        melior::utility::register_all_dialects(&dialects);
+        let context = melior::Context::new();
+        context.append_dialect_registry(&dialects);
+        context.load_all_available_dialects();
+        crate::codegen::register_vx_dialect(&context); // for `vx.transfer`
+        let module = melior::ir::Module::parse(&context, &mlir)
+            .unwrap_or_else(|| panic!("emitted MLIR failed to parse:\n{mlir}"));
+        assert!(
+            module.as_operation().verify(),
+            "emitted MLIR failed to verify:\n{mlir}"
+        );
+        mlir
+    }
+
+    fn emit_module_with_layouts(
+        src: &str,
+        change_layouts: impl FnOnce(&mut Vec<crate::layout::GeneratedAggregateLayout>),
+    ) -> Result<String, ModuleEmitError> {
+        emit_module_with_field_instructions(src, change_layouts, |_, _| {})
+    }
+
+    fn emit_module_with_field_instructions(
+        src: &str,
+        change_layouts: impl FnOnce(&mut Vec<crate::layout::GeneratedAggregateLayout>),
+        change_instruction: impl Fn(&mut HirInstruction, &ImmutableGlobalRegistry),
+    ) -> Result<String, ModuleEmitError> {
         let mut lexer = crate::lexer::Lexer::new(src);
         let tokens = lexer.tokenize();
         let mut parser = crate::parser::Parser::new(&tokens, src);
@@ -2416,12 +3258,17 @@ mod tests {
             for f in &mut mods[0].functions {
                 checker.check_function(f);
             }
+            assert_eq!(checker.errors.error_count(), 0, "program type-checks");
         }
 
         let mut lowered = Vec::new();
         for f in &mods[0].functions {
             let mut w = LocalWorkerState::new(session.clone());
-            assert!(lower_function_to_hir(f, &mut w).is_ok(), "function lowers");
+            let result = lower_function_to_hir(f, &mut w);
+            assert!(result.is_ok(), "function {} lowers: {result:?}", f.name);
+            for instruction in &mut w.local_hir_stream {
+                change_instruction(instruction, &session.registry);
+            }
             lowered.push(w);
         }
         let funcs: Vec<(&Function, &[HirInstruction], &[TypeId])> = mods[0]
@@ -2448,15 +3295,16 @@ mod tests {
             .iter()
             .map(|w| w.local_inline_blocks.as_slice())
             .collect();
-        let agg_layouts: Vec<_> = lowered
+        let mut agg_layouts: Vec<crate::layout::GeneratedAggregateLayout> = lowered
             .iter()
             .flat_map(|w| w.local_agg_layouts.iter().cloned())
             .collect();
+        change_layouts(&mut agg_layouts);
         let alias_tables: Vec<&[(usize, usize, Vec<usize>)]> = lowered
             .iter()
             .map(|w| w.local_place_alias_stores.as_slice())
             .collect();
-        let mlir = emit_module_mlir(
+        emit_module_mlir(
             &funcs,
             &session.registry,
             &tensor_types,
@@ -2468,23 +3316,1026 @@ mod tests {
             &[],
             &[],
             crate::config::Schedule::Parallel,
+            false,
         )
-        .expect("emits flat module");
+    }
 
+    #[rstest::rstest]
+    #[case::load("fn inspect(a: &First, b: &Second) -> i32 { return b.value; }")]
+    #[case::store("fn inspect(a: &First, b: &mut Second) -> void { b.value = 7; }")]
+    #[case::address("fn inspect(a: &First, b: &Second) -> &i32 { return &b.value; }")]
+    fn field_access_rejects_a_different_aggregate_with_an_in_bounds_index(#[case] function: &str) {
+        let source =
+            format!("struct First {{ value: i32 }} struct Second {{ value: i32 }} {function}");
+        let result = emit_module_with_field_instructions(
+            &source,
+            |_| {},
+            |instruction, _| {
+                if instruction.opcode == Opcode::CheckAggregate {
+                    // Register zero is the first parameter, but the access expects Second.
+                    instruction.operand1 = crate::bytecode::Register(0);
+                }
+            },
+        );
+        assert!(
+            matches!(
+                result,
+                Err(ModuleEmitError::Declined(Decline::TypeNotModelled {
+                    what: "an aggregate base whose layout does not match its declared type",
+                }))
+            ),
+            "a different aggregate must decline before field access: {result:?}"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::normal(crate::config::Schedule::Sequential)]
+    #[case::parallel(crate::config::Schedule::Parallel)]
+    fn pointer_fields_keep_same_named_declarations_separate(
+        #[case] schedule: crate::config::Schedule,
+    ) {
+        let mut modules = Vec::new();
+        for (name, source) in [
+            (
+                "crate::left",
+                "struct Node { count: i32, value: i64 } struct Left { node: *const Node }",
+            ),
+            (
+                "crate::right",
+                "struct Node { count: i32, value: i32 } struct Right { node: *const Node }",
+            ),
+        ] {
+            let mut lexer = crate::lexer::Lexer::new(source);
+            let tokens = lexer.tokenize();
+            let mut parser = crate::parser::Parser::new(&tokens, source);
+            let mut module = parser.parse().unwrap();
+            module.module_path = name.into();
+            modules.push(module);
+        }
+        let symbols = crate::resolver::build_symbol_map(&modules);
+        for module in &mut modules {
+            module.resolve_names(&symbols, &[]);
+        }
+        let registry = crate::pipeline::build_frozen_registry(&modules).unwrap();
+        let aggs = build_agg_map(&registry, schedule);
+        for module in &modules {
+            let node = symbols[&module.module_path][&crate::symbol::Symbol::from("Node")];
+            let holder = module
+                .structs
+                .iter()
+                .find(|decl| decl.name.as_ref() != "Node")
+                .unwrap();
+            let holder_id = symbols[&module.module_path][&holder.name];
+            assert_eq!(
+                aggs[&holder_id].field_pointee[0],
+                Some(node),
+                "a pointer must use its own module's Node layout"
+            );
+        }
+        let bare = Type::Pointer(Box::new(Type::Struct("Node".into(), None)), None, false);
+        assert_eq!(
+            pointer_pointee_layout(&bare, &registry, registry.aggregate_identities()),
+            None,
+            "an ambiguous name must not select either Node"
+        );
+        let missing = Type::Pointer(
+            Box::new(Type::Struct("Left".into(), Some(TypeId::new(99, 1, 0, 0)))),
+            None,
+            false,
+        );
+        assert_eq!(
+            pointer_pointee_layout(&missing, &registry, registry.aggregate_identities()),
+            None,
+            "an unknown attached ID must not fall back to a known name"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "a field instruction must carry FIELD_INDEX_FLAG")]
+    fn a_raw_field_index_is_a_compiler_error() {
+        fields_with_empty_values_and_padding()
+            .field_index(0)
+            .unwrap();
+    }
+
+    fn fields_with_empty_values_and_padding() -> AggLayout {
+        AggLayout {
+            struct_ty:
+                "!llvm.struct<(!llvm.struct<()>, !llvm.struct<()>, i8, !llvm.array<7 x i8>, i64)>"
+                    .into(),
+            field_tys: vec![
+                "!llvm.struct<()>".into(),
+                "!llvm.struct<()>".into(),
+                "i8".into(),
+                "!llvm.array<7 x i8>".into(),
+                "i64".into(),
+            ],
+            field_pointee: vec![None; 5],
+            field_agg: vec![None; 5],
+            variant_payloads: vec![],
+        }
+    }
+
+    #[test]
+    fn field_indices_distinguish_empty_fields_and_explicit_padding() {
+        let layout = fields_with_empty_values_and_padding();
+        for index in 0..5 {
+            assert_eq!(
+                layout.field_index(crate::bytecode::encode_field_index(index)),
+                Ok(index),
+                "physical field {index} retains its identity"
+            );
+        }
+        assert!(
+            layout
+                .field_index(crate::bytecode::encode_field_index(5))
+                .is_err(),
+            "an index outside the layout must decline"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::load(
+        Opcode::FieldLoad,
+        "fn read(fields: &Fields) -> i64 { return fields.number; }"
+    )]
+    #[case::store(
+        Opcode::FieldStore,
+        "fn write(fields: &mut Fields) -> void { fields.number = 7; }"
+    )]
+    #[case::address(
+        Opcode::FieldAddr,
+        "fn address(fields: &Fields) -> &i64 { return &fields.number; }"
+    )]
+    fn direct_field_operations_use_indices_after_explicit_padding(
+        #[case] opcode: Opcode,
+        #[case] source: &str,
+    ) {
+        use crate::bytecode::{encode_field_index, Register, TypeIdx};
+        let gid = TypeId::new(1, 1, 0, 0);
+        let mut function = parse_fn(source);
+        if let Type::Borrow { inner, .. } = &mut function.params[0].1 {
+            **inner = Type::Struct("Fields".into(), Some(gid));
+        }
+        let mut context = EmitCtx {
+            identities: Arc::new(crate::layout::identity::AggregateIdentities::new([(
+                gid,
+                "Fields".into(),
+            )])),
+            ..EmitCtx::default()
+        };
+        context.agg_names.insert("Fields".into(), gid);
+        context
+            .aggs
+            .insert(gid, fields_with_empty_values_and_padding());
+        let types = [ptr_gid(), scalar_gid(&ElementType::I64)];
+        let mut code = vec![HirInstruction::new(
+            Opcode::Load,
+            Register(0),
+            Register(0),
+            TypeIdx(0),
+            0,
+        )];
+        if opcode == Opcode::FieldStore {
+            code.push(HirInstruction::new(
+                Opcode::Const,
+                Register(0),
+                Register(0),
+                TypeIdx(1),
+                7,
+            ));
+        }
+        let result = Register(code.len() as u32);
+        code.push(HirInstruction::new(
+            opcode,
+            Register(0),
+            if opcode == Opcode::FieldStore {
+                Register(1)
+            } else {
+                Register(0)
+            },
+            TypeIdx(1),
+            encode_field_index(4),
+        ));
+        code.push(HirInstruction::new(
+            Opcode::Ret,
+            result,
+            Register(0),
+            TypeIdx(match opcode {
+                Opcode::FieldStore => u32::MAX,
+                Opcode::FieldAddr => 0,
+                _ => 1,
+            }),
+            0,
+        ));
+        let mlir = emit_function_mlir(
+            &function,
+            &code,
+            &types,
+            &context,
+            &mut Vec::new(),
+            0,
+            &[],
+            0,
+            &[],
+            &[],
+            &mut 1,
+        )
+        .expect("direct field operation emits MLIR");
+        assert!(
+            mlir.lines()
+                .any(|line| line.contains("llvm.getelementptr") && line.contains("[0, 4]")),
+            "the number follows explicit padding at physical field 4: {mlir}"
+        );
         use melior::ir::operation::OperationLike;
         let dialects = melior::dialect::DialectRegistry::new();
         melior::utility::register_all_dialects(&dialects);
-        let context = melior::Context::new();
-        context.append_dialect_registry(&dialects);
-        context.load_all_available_dialects();
-        crate::codegen::register_vx_dialect(&context); // for `vx.transfer`
-        let module = melior::ir::Module::parse(&context, &mlir)
-            .unwrap_or_else(|| panic!("emitted MLIR failed to parse:\n{mlir}"));
+        let mlir_context = melior::Context::new();
+        mlir_context.append_dialect_registry(&dialects);
+        mlir_context.load_all_available_dialects();
+        let module = melior::ir::Module::parse(&mlir_context, &mlir)
+            .unwrap_or_else(|| panic!("padded field access parses: {mlir}"));
         assert!(
             module.as_operation().verify(),
-            "emitted MLIR failed to verify:\n{mlir}"
+            "padded field access verifies: {mlir}"
         );
-        mlir
+    }
+
+    // Empty fields share the number's offset. Nonempty fields provide a control with distinct offsets.
+    #[rstest::rstest]
+    #[case::load("fn read(fields: &Fields) -> i32 { return fields.number; }")]
+    #[case::store("fn write(fields: &mut Fields) -> void { fields.number = 7; }")]
+    #[case::address("fn address(fields: &Fields) -> &i32 { return &fields.number; }")]
+    fn field_access_after_empty_fields_keeps_its_field_index(
+        #[case] function: &str,
+        #[values("Empty", "i8")] preceding_type: &str,
+    ) {
+        let source = format!(
+            "struct Empty {{}}\nstruct Fields {{ first: {preceding_type}, second: {preceding_type}, number: i32 }}\n{function}"
+        );
+        let mlir = emit_module_with_layouts(&source, |_| {}).expect("field access emits MLIR");
+        let accesses: Vec<_> = mlir
+            .lines()
+            .filter(|line| line.contains("llvm.getelementptr"))
+            .collect();
+        assert_eq!(accesses.len(), 1, "the function accesses exactly one field");
+        assert!(
+            accesses[0].contains("[0, 2]"),
+            "access to number must select field 2, even when empty fields share its offset:\n{mlir}"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::load("fn read(fields: &Fields) -> *const i32 { return fields.pointer; }")]
+    fn pointer_field_after_empty_fields_lowers(
+        #[case] function: &str,
+        #[values("Empty", "i8")] preceding_type: &str,
+    ) {
+        let source = format!(
+            "struct Empty {{}}\nstruct Fields {{ first: {preceding_type}, second: {preceding_type}, pointer: *const i32 }}\n{function}"
+        );
+        emit_module_and_verify(&source);
+    }
+
+    #[rstest::rstest]
+    #[case::load("fn read(fields: &Fields) -> Second { return fields.second; }")]
+    #[case::store("fn write(fields: &mut Fields) -> void { fields.second = Second {}; }")]
+    #[case::address("fn address(fields: &Fields) -> &Second { return &fields.second; }")]
+    fn second_empty_field_keeps_its_identity(#[case] function: &str) {
+        let source = format!("struct First {{}}\nstruct Second {{}}\nstruct Fields {{ first: First, second: Second, number: i32 }}\n{function}");
+        let mlir = emit_module_with_layouts_and_verify(&source, |_| {});
+        let accesses: Vec<_> = mlir
+            .lines()
+            .filter(|line| line.contains("llvm.getelementptr"))
+            .collect();
+        assert_eq!(accesses.len(), 1, "one empty field is accessed");
+        assert!(
+            accesses[0].contains("[0, 1]"),
+            "the second empty field must retain index 1: {mlir}"
+        );
+    }
+
+    #[test]
+    fn enum_payload_with_an_empty_field_before_a_pointer_lowers() {
+        emit_module_and_verify(
+            "struct Empty {}\n\
+             struct Fields { marker: Empty, pointer: *const i32 }\n\
+             enum Value { Wrapped(Fields), Direct(*const i32) }\n\
+             fn read(value: Value, fallback: *const i32) -> *const i32 {\n\
+               match value {\n\
+                 Value::Wrapped(fields) => { return fields.pointer; },\n\
+                 Value::Direct(pointer) => { return pointer; }\n\
+               }\n\
+               return fallback;\n\
+             }",
+        );
+    }
+
+    #[test]
+    fn repeated_enum_layouts_compile() {
+        emit_module_with_layouts_and_verify(
+            "enum Value { Number(i64), Empty }\n\
+             fn main() -> i32 { let value = Value::Number(5); return 0; }",
+            |layouts| layouts.push(layouts[0].clone()),
+        );
+    }
+
+    #[test]
+    fn equivalent_enum_layout_metadata_is_accepted() {
+        let result = emit_module_with_layouts(
+            "struct Node { value: i32 } enum Choice<T> { Some(T), None } \
+             fn read(x: Choice<&Node>) -> i32 { match x { \
+               Choice::Some(node) => { return node.value; }, Choice::None => { return 0; } } }",
+            |layouts| {
+                let original = layouts
+                    .iter()
+                    .find(|l| l.name == "Choice")
+                    .expect("Choice layout");
+                let mut equivalent = original.clone();
+                equivalent.name = "module::Choice".into();
+                let Type::Borrow {
+                    inner, region_id, ..
+                } = &mut equivalent.variant_payloads[0][0].ty
+                else {
+                    panic!("Choice retains its borrowed payload");
+                };
+                *region_id = 99;
+                let Type::Struct(_, Some(id)) = inner.as_ref() else {
+                    panic!("Node has an attached declaration ID");
+                };
+                **inner = Type::Enum("module::Node".into(), Some(*id));
+                layouts.push(equivalent);
+            },
+        );
+        assert!(
+            result.is_ok(),
+            "semantically equivalent records must emit a module: {result:?}"
+        );
+    }
+
+    #[test]
+    fn conflicting_enum_layouts_return_both_records_without_panicking() {
+        let result = std::panic::catch_unwind(|| {
+            emit_module_with_layouts(
+                "struct Node { value: i64 }\n\
+                 enum Value { Number(i64), Pointer(*const Node) }\n\
+                 fn main() -> i32 { let value = Value::Number(5); return 0; }",
+                |layouts| {
+                    let mut conflicting = layouts
+                        .iter()
+                        .find(|layout| layout.name == "Value")
+                        .expect("the enum has a generated layout")
+                        .clone();
+                    // Keep the same storage and ID, but describe a different pointer target.
+                    conflicting.variant_payloads[1][0].ty = Type::Pointer(
+                        Box::new(Type::Struct("OtherNode".into(), None)),
+                        None,
+                        false,
+                    );
+                    layouts.push(conflicting);
+                },
+            )
+        });
+        assert!(
+            result.is_ok(),
+            "conflicting layouts must return an error without panicking"
+        );
+        let error = result
+            .unwrap()
+            .expect_err("conflicting layouts stop code generation");
+        let ModuleEmitError::ConflictingLayouts { first, second } = &error else {
+            panic!("expected a layout conflict, got {error:?}");
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("Internal compiler error: generated layouts disagree"),
+            "the message must identify a compiler error: {message}"
+        );
+        assert!(
+            message.contains(&format!("First layout:\n{first:#?}")),
+            "the message must include the first complete layout: {message}"
+        );
+        assert!(
+            message.contains(&format!("Second layout:\n{second:#?}")),
+            "the message must include the second complete layout: {message}"
+        );
+    }
+
+    fn registry_overlap_fixture() -> (
+        ImmutableGlobalRegistry,
+        crate::layout::GeneratedAggregateLayout,
+    ) {
+        let source = "struct Node { value: i32 } struct Holder { number: i32, pointer: *const Node, nested: Node } fn make() -> Holder { return Holder { number: 5, pointer: 0 as *const Node, nested: Node { value: 3 } }; }";
+        let mut lexer = crate::lexer::Lexer::new(source);
+        let tokens = lexer.tokenize();
+        let mut parser = crate::parser::Parser::new(&tokens, source);
+        let mut modules = vec![parser.parse().expect("program parses")];
+        modules[0].module_path = "crate::overlap".into();
+        let symbols = crate::resolver::build_symbol_map(&modules);
+        modules[0].resolve_names(&symbols, &[]);
+        let registry = crate::pipeline::build_frozen_registry(&modules).expect("registry builds");
+        let definition = registry
+            .layouts
+            .values()
+            .find(|d| d.name == "Holder")
+            .unwrap();
+        let ctx = EmitCtx::from_registry(&registry, crate::config::Schedule::Sequential);
+        let storage = &ctx.aggs[&definition.id];
+        let layout = crate::layout::GeneratedAggregateLayout {
+            type_id: definition.id,
+            name: definition.name.clone(),
+            size_bytes: definition.size_bytes as u64,
+            align_bytes: definition.align_bytes as u64,
+            fields: definition
+                .fields
+                .iter()
+                .enumerate()
+                .map(|(index, field)| crate::layout::GeneratedFieldLayout {
+                    layout: field.clone(),
+                    mlir_type: storage.field_tys[index].clone(),
+                    aggregate_id: storage.field_agg[index],
+                    pointer_target_id: storage.field_pointee[index],
+                })
+                .collect(),
+            variant_payloads: vec![],
+        };
+        (registry, layout)
+    }
+
+    #[rstest::rstest]
+    #[case("size")]
+    #[case("alignment")]
+    #[case("field_count")]
+    #[case("field_name")]
+    #[case("field_offset")]
+    #[case("field_size")]
+    #[case("field_kind")]
+    #[case("llvm_type")]
+    #[case("missing_aggregate")]
+    #[case("different_aggregate")]
+    #[case("unexpected_aggregate")]
+    #[case("missing_pointer_target")]
+    #[case("different_pointer_target")]
+    #[case("unexpected_pointer_target")]
+    #[case("variants")]
+    #[case("definition_id")]
+    #[case("unsupported_storage")]
+    #[case("attached_pointer_id")]
+    fn registry_overlap_conflicts_stop_installation(#[case] difference: &str) {
+        let (mut registry, mut layout) = registry_overlap_fixture();
+        match difference {
+            "size" => layout.size_bytes += 8,
+            "alignment" => layout.align_bytes *= 2,
+            "field_count" => {
+                layout.fields.pop();
+            }
+            "field_name" => layout.fields[0].layout.name = "other".into(),
+            "field_offset" => layout.fields[1].layout.offset += 8,
+            "field_size" => layout.fields[1].layout.size += 8,
+            "field_kind" => layout.fields[0].layout.ty = crate::layout::FieldTy::Opaque,
+            "llvm_type" => layout.fields[1].mlir_type = "i64".into(),
+            "missing_aggregate" => layout.fields[2].aggregate_id = None,
+            "different_aggregate" => layout.fields[2].aggregate_id = Some(layout.type_id),
+            "unexpected_aggregate" => layout.fields[0].aggregate_id = Some(layout.type_id),
+            "missing_pointer_target" => layout.fields[1].pointer_target_id = None,
+            "different_pointer_target" => layout.fields[1].pointer_target_id = Some(layout.type_id),
+            "unexpected_pointer_target" => {
+                layout.fields[0].pointer_target_id = Some(layout.type_id)
+            }
+            "variants" => layout.variant_payloads.push(vec![]),
+            "definition_id" => {
+                registry.layouts.get_mut(&layout.type_id).unwrap().id = TypeId::new(99, 1, 0, 0)
+            }
+            "attached_pointer_id" => {
+                let node = layout.fields[1].pointer_target_id.unwrap();
+                registry.structs.get_mut(&layout.type_id).unwrap().fields[1].1 = Type::Pointer(
+                    Box::new(Type::Struct("module::Node".into(), Some(node))),
+                    None,
+                    false,
+                );
+                layout.fields[1].pointer_target_id = Some(layout.type_id);
+            }
+            "unsupported_storage" => {
+                let field = &mut registry.layouts.get_mut(&layout.type_id).unwrap().fields[0];
+                field.ty = crate::layout::FieldTy::Scalar(ElementType::Generic("T".into()));
+                layout.fields[0].layout = field.clone();
+            }
+            _ => unreachable!(),
+        }
+        let mut ctx = EmitCtx::from_registry(&registry, crate::config::Schedule::Sequential);
+        let result = ctx.install_generated_layouts(
+            &registry,
+            &[layout],
+            crate::config::Schedule::Sequential,
+        );
+        assert!(
+            matches!(result, Err(ModuleEmitError::RegistryLayoutConflict { .. })),
+            "registry overlap must report a storage or metadata conflict: {difference}"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case("display_name")]
+    #[case("registry_stub")]
+    #[case("missing_registry_record")]
+    #[case("unknown_pointer_target")]
+    fn compatible_registry_overlap_allows_installation(#[case] condition: &str) {
+        let (mut registry, mut layout) = registry_overlap_fixture();
+        match condition {
+            "display_name" => layout.name = "module::Holder".into(),
+            "registry_stub" => {
+                let def = registry.layouts.get_mut(&layout.type_id).unwrap();
+                def.align_bytes = 0;
+                def.fields.clear();
+            }
+            "missing_registry_record" => layout.type_id = TypeId::new(99, 1, 0, 0),
+            "unknown_pointer_target" => {
+                registry.structs.remove(&layout.type_id);
+            }
+            _ => unreachable!(),
+        }
+        let mut ctx = EmitCtx::from_registry(&registry, crate::config::Schedule::Sequential);
+        let result = ctx.install_generated_layouts(
+            &registry,
+            std::slice::from_ref(&layout),
+            crate::config::Schedule::Sequential,
+        );
+        assert!(
+            result.is_ok(),
+            "compatible storage must permit generated metadata: {condition}: {result:?}"
+        );
+        assert_eq!(
+            ctx.aggs[&layout.type_id].field_pointee,
+            layout
+                .fields
+                .iter()
+                .map(|field| field.pointer_target_id)
+                .collect::<Vec<_>>(),
+            "accepted records install their pointer metadata: {condition}"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
+    fn layout_conflicts_leave_the_emitter_context_unchanged(#[case] registry_conflict: bool) {
+        let (registry, layout) = registry_overlap_fixture();
+        let mut ctx = EmitCtx::from_registry(&registry, crate::config::Schedule::Sequential);
+        let snapshot = |ctx: &EmitCtx| {
+            (
+                ctx.aggs
+                    .iter()
+                    .map(|(id, record)| {
+                        (
+                            *id,
+                            (
+                                record.struct_ty.clone(),
+                                record.field_tys.clone(),
+                                record.field_agg.clone(),
+                                record.field_pointee.clone(),
+                                record.variant_payloads.clone(),
+                            ),
+                        )
+                    })
+                    .collect::<HashMap<_, _>>(),
+                ctx.agg_names.clone(),
+                ctx.callees
+                    .iter()
+                    .map(|(id, callee)| {
+                        (
+                            *id,
+                            (callee.name.clone(), callee.ret_agg, callee.ret_pointee),
+                        )
+                    })
+                    .collect::<HashMap<_, _>>(),
+            )
+        };
+        let before = snapshot(&ctx);
+        let mut first = layout.clone();
+        first.type_id = TypeId::new(99, 1, 0, 0);
+        let mut bad = if registry_conflict {
+            layout
+        } else {
+            first.clone()
+        };
+        bad.size_bytes += 8;
+        let result = ctx.install_generated_layouts(
+            &registry,
+            &[first, bad],
+            crate::config::Schedule::Sequential,
+        );
+        assert!(result.is_err(), "the batch contains a conflict");
+        assert_eq!(
+            snapshot(&ctx),
+            before,
+            "a failed batch must preserve all existing emitter storage and metadata"
+        );
+    }
+
+    #[test]
+    fn registry_overlap_error_retains_both_complete_records() {
+        let (registry, mut layout) = registry_overlap_fixture();
+        layout.size_bytes += 8;
+        let mut ctx = EmitCtx::from_registry(&registry, crate::config::Schedule::Sequential);
+        let result = ctx.install_generated_layouts(
+            &registry,
+            std::slice::from_ref(&layout),
+            crate::config::Schedule::Sequential,
+        );
+        let error = result.expect_err("a registry disagreement stops code generation");
+        let ModuleEmitError::RegistryLayoutConflict {
+            registry: original,
+            generated,
+        } = &error
+        else {
+            panic!("expected a registry overlap error");
+        };
+        assert_eq!(
+            format!("{original:#?}"),
+            format!("{:#?}", registry.layouts[&layout.type_id]),
+            "the diagnostic preserves the complete registry record"
+        );
+        assert_eq!(
+            **generated, layout,
+            "the diagnostic preserves the complete generated record"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("Internal compiler error: registry and generated layouts disagree"),
+            "the diagnostic identifies the registry overlap error"
+        );
+        assert!(
+            message.contains(&format!("Registry layout:\n{original:#?}")),
+            "the diagnostic prints the complete registry record"
+        );
+        assert!(
+            message.contains(&format!("Generated layout:\n{generated:#?}")),
+            "the diagnostic prints the complete generated record"
+        );
+    }
+
+    #[test]
+    fn registry_overlap_rejects_pointer_sized_tensor_descriptors() {
+        let result = emit_module_with_layouts(
+            "struct Holder<T> { value: T, tensor: &Tensor<f32,[4]>, tail: i64 } \
+             struct Outer { inner: Holder<i32> } \
+             fn make(tensor: &Tensor<f32,[4]>) -> i32 { \
+               let holder = Holder<i32> { value: 5, tensor: tensor, tail: 41 }; return holder.value; }",
+            |layouts| {
+                let layout = layouts
+                    .iter_mut()
+                    .find(|layout| layout.name == "Holder")
+                    .expect("Holder layout");
+                // Reproduce the former descriptor-as-pointer record while keeping its registry ID.
+                layout.size_bytes = 24;
+                layout.fields[1].layout.size = 8;
+                layout.fields[1].layout.ty = crate::layout::FieldTy::Opaque;
+                layout.fields[1].mlir_type = "!llvm.ptr".into();
+                layout.fields[2].layout.offset = 16;
+            },
+        );
+        assert!(
+            matches!(result, Err(ModuleEmitError::RegistryLayoutConflict { .. })),
+            "a pointer-sized tensor descriptor must conflict with registry storage"
+        );
+    }
+
+    #[test]
+    fn generated_layout_metadata_survives_emission() {
+        emit_module_with_layouts_and_verify(
+            "struct Item { value: i32 }\n\
+             struct Holder<T> { value: T, pointer: *const Item }\n\
+             fn main() -> i32 { let item = Item { value: 7 }; let target = Item { value: 9 }; \
+               let h: Holder<Item> = Holder<Item> { value: item, pointer: &target }; return h.value.value + unsafe { (*h.pointer).value }; }",
+            |layouts| {
+                let layout = layouts
+                    .iter()
+                    .find(|l| l.name == "Holder")
+                    .expect("Holder layout");
+                let emitter = AggLayout::from_generated(layout);
+                let item = layout.fields[0].aggregate_id.expect("Item aggregate ID");
+                assert_eq!(
+                    emitter.field_agg[0],
+                    Some(item),
+                    "nested aggregate metadata survives"
+                );
+                assert_eq!(
+                    emitter.field_pointee[1],
+                    Some(item),
+                    "pointer target metadata survives"
+                );
+            },
+        );
+    }
+
+    #[rstest::rstest]
+    fn existing_registry_storage_keeps_the_name_map(
+        #[values(crate::config::Schedule::Sequential, crate::config::Schedule::Parallel)]
+        schedule: crate::config::Schedule,
+    ) {
+        let (registry, layout) = registry_overlap_fixture();
+        let mut ctx = EmitCtx::from_registry(&registry, schedule);
+        let names = ctx.agg_names.clone();
+        let name_buffer = ctx.agg_names.get_key_value("Holder").unwrap().0.as_ptr();
+        ctx.install_generated_layouts(&registry, &[layout], schedule)
+            .unwrap();
+        assert_eq!(
+            ctx.agg_names, names,
+            "existing registry storage keeps name resolution"
+        );
+        assert_eq!(
+            ctx.agg_names.get_key_value("Holder").unwrap().0.as_ptr(),
+            name_buffer,
+            "existing registry storage must not rebuild names"
+        );
+    }
+
+    #[rstest::rstest]
+    fn new_enum_storage_refreshes_callees_without_rebuilding_names(
+        #[values(crate::config::Schedule::Sequential, crate::config::Schedule::Parallel)]
+        schedule: crate::config::Schedule,
+    ) {
+        let source = "struct Item { value: i32 } enum Choice<T> { Some(T), None } \
+            fn make() -> Choice<i32> { return Choice<i32>::Some(7); } \
+            fn address(p: *const Choice<i32>) -> *const Choice<i32> { return p; }";
+        let mut lexer = crate::lexer::Lexer::new(source);
+        let tokens = lexer.tokenize();
+        let mut parser = crate::parser::Parser::new(&tokens, source);
+        let mut modules = vec![parser.parse().unwrap()];
+        modules[0].module_path = "crate::names".into();
+        let symbols = crate::resolver::build_symbol_map(&modules);
+        modules[0].resolve_names(&symbols, &[]);
+        let registry = crate::pipeline::build_frozen_registry(&modules).unwrap();
+        let session = Arc::new(GlobalSession::with_registry(1, registry));
+        let registry = &session.registry;
+        let env_modules = modules.clone();
+        let env = crate::hir::GlobalAstEnv::build(&env_modules);
+        {
+            let mut scratch = LocalWorkerState::new(session.clone());
+            let mut checker = crate::hir::TypeChecker::new(&env, &mut scratch);
+            for function in &mut modules[0].functions {
+                checker.check_function(function);
+            }
+            assert_eq!(checker.errors.error_count(), 0, "enum program type-checks");
+        }
+        let make = modules[0]
+            .functions
+            .iter()
+            .find(|function| function.name.as_ref() == "make")
+            .unwrap();
+        let mut worker = LocalWorkerState::new(session.clone());
+        lower_function_to_hir(make, &mut worker).expect("enum construction lowers");
+        let enum_id = worker
+            .local_agg_layouts
+            .iter()
+            .find(|layout| layout.name == "Choice")
+            .unwrap()
+            .type_id;
+        let mut ctx = EmitCtx::from_registry(registry, schedule);
+        let names = ctx.agg_names.clone();
+        let name_buffer = ctx.agg_names.get_key_value("Item").unwrap().0.as_ptr();
+        let return_metadata = |ctx: &EmitCtx| {
+            let make = ctx
+                .callees
+                .values()
+                .find(|callee| callee.name == "make")
+                .unwrap();
+            let address = ctx
+                .callees
+                .values()
+                .find(|callee| callee.name == "address")
+                .unwrap();
+            (make.ret_agg, address.ret_pointee)
+        };
+        assert_eq!(
+            return_metadata(&ctx),
+            (None, None),
+            "callee metadata starts without enum storage"
+        );
+        ctx.install_generated_layouts(registry, &worker.local_agg_layouts, schedule)
+            .unwrap();
+        assert_eq!(
+            ctx.agg_names, names,
+            "new enum storage keeps nominal names unchanged"
+        );
+        assert_eq!(
+            ctx.agg_names.get_key_value("Item").unwrap().0.as_ptr(),
+            name_buffer,
+            "new enum storage must not rebuild names"
+        );
+        assert_eq!(
+            return_metadata(&ctx),
+            (Some(enum_id), Some(enum_id)),
+            "callee results and pointer targets must use new enum storage"
+        );
+    }
+
+    #[rstest::rstest]
+    fn newly_completed_registry_storage_can_make_a_name_ambiguous(
+        #[values(crate::config::Schedule::Sequential, crate::config::Schedule::Parallel)]
+        schedule: crate::config::Schedule,
+    ) {
+        let (mut registry, layout) = registry_overlap_fixture();
+        let definitions = registry
+            .layouts
+            .values()
+            .cloned()
+            .map(|mut definition| {
+                if definition.id == layout.type_id {
+                    definition.name = "Node".into();
+                    definition.align_bytes = 0;
+                    definition.fields.clear();
+                }
+                definition
+            })
+            .collect();
+        let mut rebuilt = ImmutableGlobalRegistry::build_and_validate(definitions).unwrap();
+        rebuilt.structs = std::mem::take(&mut registry.structs);
+        rebuilt.fn_sigs = std::mem::take(&mut registry.fn_sigs);
+        let registry = rebuilt;
+        let mut ctx = EmitCtx::from_registry(&registry, schedule);
+        assert!(
+            ctx.agg_names.contains_key("Node"),
+            "one usable Node layout starts with a name"
+        );
+        ctx.install_generated_layouts(&registry, &[layout], schedule)
+            .unwrap();
+        assert!(
+            !ctx.agg_names.contains_key("Node"),
+            "two usable Node layouts must remove the ambiguous name"
+        );
+    }
+
+    #[test]
+    fn generated_layout_rebuilds_names_before_callee_signatures() {
+        let src = "struct Item { value: i32 } fn make() -> Item { return Item { value: 7 }; }";
+        let mut lexer = crate::lexer::Lexer::new(src);
+        let tokens = lexer.tokenize();
+        let mut parser = crate::parser::Parser::new(&tokens, src);
+        let mut modules = vec![parser.parse().expect("program parses")];
+        modules[0].module_path = "crate::t".into();
+        let symbols = crate::resolver::build_symbol_map(&modules);
+        modules[0].resolve_names(&symbols, &[]);
+        let mut registry =
+            crate::pipeline::build_frozen_registry(&modules).expect("registry builds");
+        // An imported signature can name a nominal type without an attached declaration ID.
+        for signature in registry.fn_sigs.values_mut() {
+            signature.ret_ty = Type::Struct("Item".into(), None);
+        }
+        let def = registry
+            .layouts
+            .values()
+            .find(|d| d.name == "Item")
+            .expect("Item layout");
+        let layout = crate::layout::GeneratedAggregateLayout {
+            type_id: def.id,
+            name: def.name.clone(),
+            size_bytes: 4,
+            align_bytes: 4,
+            fields: vec![crate::layout::GeneratedFieldLayout {
+                layout: def.fields[0].clone(),
+                mlir_type: "i32".into(),
+                aggregate_id: None,
+                pointer_target_id: None,
+            }],
+            variant_payloads: vec![],
+        };
+        let mut ctx = EmitCtx::from_registry(&registry, crate::config::Schedule::Sequential);
+        // Model a nominal layout that becomes complete only during function lowering.
+        ctx.aggs.remove(&def.id);
+        ctx.agg_names = build_agg_names(&registry, &ctx.aggs);
+        ctx.callees = build_callee_map(
+            &registry,
+            &ctx.aggs,
+            &ctx.agg_names,
+            crate::config::Schedule::Sequential,
+        );
+        assert!(!ctx.agg_names.contains_key("Item"));
+        assert!(
+            ctx.callees.values().all(|c| c.ret_agg.is_none()),
+            "callee starts without a layout"
+        );
+        ctx.install_generated_layouts(&registry, &[layout], crate::config::Schedule::Sequential)
+            .expect("the generated layout is consistent");
+        assert_eq!(
+            ctx.agg_names.get("Item"),
+            Some(&def.id),
+            "completed nominal name is available"
+        );
+        assert!(
+            ctx.callees.values().any(|c| c.ret_agg == Some(def.id)),
+            "callee signatures use the completed layout"
+        );
+    }
+
+    #[test]
+    fn generated_layout_variant_aggregate_ids_survive_emission() {
+        emit_module_with_layouts_and_verify(
+            "struct First { value: i32 }\n\
+             struct Second { prefix: i32, value: i32 }\n\
+             enum Choice { First(First), Second(Second) }\n\
+             fn read(c: Choice) -> i32 { match c { \
+               Choice::First(v) => { return v.value; } \
+               Choice::Second(v) => { return v.value; } } return 0; }\n\
+             fn main() -> i32 { return read(Choice::First(First { value: 17 })) \
+               + read(Choice::Second(Second { prefix: 99, value: 25 })); }",
+            |layouts| {
+                let layout = layouts
+                    .iter()
+                    .find(|l| l.name == "Choice")
+                    .expect("Choice layout");
+                let emitter = AggLayout::from_generated(layout);
+                for variant in 0..2 {
+                    let expected = layout.variant_payloads[variant][0].aggregate_id;
+                    assert!(expected.is_some(), "variant has an aggregate ID");
+                    assert_eq!(
+                        emitter.variant_payloads[variant][0].aggregate_id, expected,
+                        "each variant retains its own aggregate ID"
+                    );
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn generated_layout_equal_duplicates_are_accepted() {
+        emit_module_with_layouts_and_verify(
+            "struct Holder<T> { value: T }\n\
+             fn main() -> i32 { let h = Holder<i32> { value: 7 }; return h.value; }",
+            |layouts| {
+                layouts.push(layouts[0].clone());
+            },
+        );
+    }
+
+    #[test]
+    fn conflicting_struct_alignment_returns_an_error() {
+        let result = emit_module_with_layouts(
+            "struct Holder<T> { value: T }\n\
+             fn main() -> i32 { let h = Holder<i32> { value: 7 }; return h.value; }",
+            |layouts| {
+                let mut conflict = layouts[0].clone();
+                conflict.align_bytes *= 2;
+                layouts.push(conflict);
+            },
+        );
+        assert!(
+            matches!(&result, Err(ModuleEmitError::ConflictingLayouts { .. })),
+            "different alignments must return a layout conflict: {result:?}"
+        );
+    }
+
+    #[test]
+    fn conflicting_struct_pointer_targets_return_an_error() {
+        let result = emit_module_with_layouts(
+            "struct Item { value: i32 }\n\
+             struct Holder<T> { value: T, pointer: *const Item }\n\
+             fn main() -> i32 { let target = Item { value: 9 }; \
+               let h = Holder<i32> { value: 7, pointer: &target }; return h.value; }",
+            |layouts| {
+                let mut conflict = layouts
+                    .iter()
+                    .find(|l| l.name == "Holder")
+                    .expect("Holder layout")
+                    .clone();
+                assert!(conflict.fields[1].pointer_target_id.take().is_some());
+                layouts.push(conflict);
+            },
+        );
+        assert!(
+            matches!(&result, Err(ModuleEmitError::ConflictingLayouts { .. })),
+            "different pointer targets must return a layout conflict: {result:?}"
+        );
+    }
+
+    #[test]
+    fn generated_layout_variant_pointer_targets_survive_emission() {
+        emit_module_with_layouts_and_verify(
+            "struct First { value: i32 }\n\
+             struct Second { prefix: i32, value: i32 }\n\
+             enum Choice { First(*const First), Second(*const Second) }\n\
+             fn read(c: Choice) -> i32 { match c { \
+               Choice::First(p) => { return unsafe { (*p).value }; } \
+               Choice::Second(p) => { return unsafe { (*p).value }; } } return 0; }\n\
+             fn main() -> i32 { let a = First { value: 17 }; \
+               let b = Second { prefix: 99, value: 25 }; \
+               return read(Choice::First(&a)) + read(Choice::Second(&b)); }",
+            |layouts| {
+                let layout = layouts
+                    .iter()
+                    .find(|l| l.name == "Choice")
+                    .expect("Choice layout");
+                let emitter = AggLayout::from_generated(layout);
+                for variant in 0..2 {
+                    let expected = layout.variant_payloads[variant][0].pointer_target_id;
+                    assert!(expected.is_some(), "variant has a pointer target");
+                    assert_eq!(
+                        emitter.variant_payloads[variant][0].pointer_target_id, expected,
+                        "each variant retains its own pointer target"
+                    );
+                }
+            },
+        );
     }
 
     #[test]
@@ -2742,14 +4593,33 @@ mod tests {
     #[test]
     fn emits_verifiable_for_loop() {
         // A `for` range loop: header (compare + cond_br), body, increment latch, exit — all wired
-        // through slots for the induction variable and accumulator.
+        // through slots for the induction variable and accumulator. An unsigned range is not an
+        // affine loop, so it keeps this form.
         let mlir = emit_and_verify(
-            "fn sum(n: i32) -> i32 { let mut s = 0; for i in 0..n { s = s + i; } return s; }",
+            "fn sum(n: u32) -> u32 { let mut s = 0u32; for i in 0u32..n { s = s + i; } return s; }",
         );
-        assert!(mlir.contains("arith.cmpi slt, "), "{mlir}");
+        assert!(mlir.contains("arith.cmpi ult, "), "{mlir}");
         assert!(mlir.contains("memref.load "), "{mlir}");
         assert!(mlir.contains("memref.store "), "{mlir}");
         assert!(mlir.contains("cf.cond_br "), "{mlir}");
+        assert!(!mlir.contains("affine.for"), "{mlir}");
+    }
+
+    #[test]
+    fn emits_verifiable_affine_for_loop() {
+        // A signed range that nothing leaves is an `affine.for`. The bound `n` is cast to `index`
+        // before the loop, and the loop variable is cast back to `i32`.
+        let mlir = emit_and_verify(
+            "fn sum(n: i32) -> i32 { let mut s = 0; for i in 0..n { s = s + i; } return s; }",
+        );
+        assert!(
+            mlir.contains("arith.index_cast %arg0 : i32 to index"),
+            "{mlir}"
+        );
+        assert!(mlir.contains("affine.for "), "{mlir}");
+        assert!(mlir.contains(" : index to i32"), "{mlir}");
+        assert!(!mlir.contains("cf.cond_br "), "{mlir}");
+        assert!(!mlir.contains("scf.execute_region"), "{mlir}");
     }
 
     #[test]
@@ -2776,17 +4646,54 @@ mod tests {
     #[test]
     fn float_literals_keep_a_decimal_point_before_the_exponent() {
         // The exact case that broke `struct_codegen.vx`.
-        assert_eq!(super::mlir_float_literal(1e-5), "1.0e-5");
+        assert_eq!(
+            super::mlir_float_literal(1e-5, &crate::syntax::ElementType::F64),
+            "1.0e-5"
+        );
 
         // The property, over a spread of magnitudes: whatever Rust chooses to print, the
         // mantissa always carries a point.
         for value in [1e-5, 1e-7, 2.5e-9, 288.0, 0.5, -0.25, 1.0, 3.4e38] {
-            let text = super::mlir_float_literal(value);
+            let text = super::mlir_float_literal(value, &crate::syntax::ElementType::F64);
             let mantissa = text.split(['e', 'E']).next().unwrap();
             assert!(
                 mantissa.contains('.'),
                 "{value} formatted as {text}, whose mantissa has no decimal point"
             );
         }
+    }
+
+    /// MLIR rejects `inf` / `-inf` / `NaN` as float attribute text. Non-finite constants must
+    /// be the bit pattern in hex, at the width of the type (Vx#2081).
+    #[test]
+    fn float_literals_write_non_finite_as_hex_bits() {
+        use crate::syntax::ElementType::{BF16, F16, F32, F64};
+        assert_eq!(
+            super::mlir_float_literal(f64::INFINITY, &F64),
+            "0x7FF0000000000000"
+        );
+        assert_eq!(
+            super::mlir_float_literal(f64::NEG_INFINITY, &F64),
+            "0xFFF0000000000000"
+        );
+        assert_eq!(
+            super::mlir_float_literal(f64::NAN, &F64),
+            "0x7FF8000000000000"
+        );
+        assert_eq!(super::mlir_float_literal(f64::INFINITY, &F32), "0x7F800000");
+        assert_eq!(
+            super::mlir_float_literal(f64::NEG_INFINITY, &F32),
+            "0xFF800000"
+        );
+        assert_eq!(super::mlir_float_literal(f64::NAN, &F32), "0x7FC00000");
+        assert_eq!(super::mlir_float_literal(f64::INFINITY, &F16), "0x7C00");
+        assert_eq!(super::mlir_float_literal(f64::NEG_INFINITY, &F16), "0xFC00");
+        assert_eq!(super::mlir_float_literal(f64::NAN, &F16), "0x7E00");
+        assert_eq!(super::mlir_float_literal(f64::INFINITY, &BF16), "0x7F80");
+        assert_eq!(
+            super::mlir_float_literal(f64::NEG_INFINITY, &BF16),
+            "0xFF80"
+        );
+        assert_eq!(super::mlir_float_literal(f64::NAN, &BF16), "0x7FC0");
     }
 }

@@ -1,0 +1,31 @@
+//===- extern_runtime_function_used_by_transfer.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The program declares `vx_plugin_alloc_and_transfer` and calls it, and a
+// `transfer` calls the same runtime function. The two uses share one
+// declaration, so the program compiles and runs.
+//
+// EXPECT: 3 5
+
+extern "C" {
+  fn vx_plugin_alloc_and_transfer(bytes : i64, host_ptr : *mut f32,
+  topology_id : i32, space_access : i32) -> *mut f32;
+}
+
+fn main() -> i32 {
+  let mut h = Tensor<f32, [2]>::fill(3.0);
+  let staged : *mut f32 = unsafe {
+    vx_plugin_alloc_and_transfer(8, h.as_mut_ptr(), 0, 0)
+  };
+  let d = transfer(Tensor<f32, [2]>::fill(5.0), Memory::GPU_HBM);
+  let back = transfer(d, Memory::CPU_DRAM);
+  print(unsafe { *staged });
+  print!(" ");
+  print(back[1]);
+  print!("\n");
+  return 0;
+}

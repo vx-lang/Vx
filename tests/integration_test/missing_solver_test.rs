@@ -235,3 +235,95 @@ fn a_transfer_site_obligation_also_fails_the_build() {
         present.stdout
     );
 }
+
+/// A function with two `requires` and one `ensures` is the contracts path into the prover.
+/// With no z3, the warning must not advertise `VX_ALLOW_UNVERIFIED` — that variable does not
+/// apply here.
+const CONTRACTS: &str = "tests/integration_test/fixtures/contract_missing_solver.vx";
+
+#[test]
+fn a_contract_without_z3_does_not_advertise_the_transfer_opt_out() {
+    // Fixture: two requires and one ensures; the prover must spawn z3 to discharge them.
+    let none = compile_file(CONTRACTS, &[], false, false);
+    assert!(
+        none.stdout.contains("no SMT solver available"),
+        "missing z3 must surface through the contracts prover, got:\n{}",
+        none.stdout
+    );
+    assert!(
+        !none.stdout.contains("VX_ALLOW_UNVERIFIED"),
+        "contracts must not name the transfer-only opt-out:\n{}",
+        none.stdout
+    );
+    assert!(
+        none.stdout.contains("brew install z3") || none.stdout.contains("apt install z3"),
+        "contracts must still say how to install z3:\n{}",
+        none.stdout
+    );
+
+    // Setting the variable must not change the contracts outcome (still errors, still no
+    // opt-out advice).
+    let allowed = compile_file(CONTRACTS, &[], false, true);
+    assert!(
+        !allowed.stdout.contains("VX_ALLOW_UNVERIFIED"),
+        "even with the variable set, contracts must not advertise it:\n{}",
+        allowed.stdout
+    );
+    assert!(
+        !allowed.ok,
+        "VX_ALLOW_UNVERIFIED must not let unproved contracts build:\n{}",
+        allowed.stdout
+    );
+
+    // With z3 present the fixture builds and prints 4095 with no missing-solver warning.
+    // Without this control, a suite that never finds z3 can pass while proving nothing.
+    if !z3_on_path() {
+        eprintln!("skipping the z3-present control: no z3 on PATH");
+        return;
+    }
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let out = Command::new(env!("CARGO_BIN_EXE_vxc"))
+        .current_dir(&root)
+        .args([CONTRACTS, "--action", "run-jit"])
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env_remove("VX_ALLOW_UNVERIFIED")
+        .output()
+        .expect("failed to run vxc");
+    let stdout = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.status.success(),
+        "with z3 the contracts fixture must build and run:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("4095"),
+        "with z3 the fixture must print 4095:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("no SMT solver available"),
+        "with z3 there must be no missing-solver warning:\n{stdout}"
+    );
+}
+
+/// A program that uses `Vec::len` and `Vec::as_mut_ptr`, and has no contract of its own.
+const VEC_WITHOUT_CONTRACTS: &str = "tests/frontend/pass/method_call_borrow_ends_at_last_use.vx";
+
+#[test]
+fn a_program_that_uses_vec_needs_no_solver() {
+    // The checker proves the `ensures` of the `Vec` methods in each program that calls them.
+    // They hold by their form, so the proof needs no solver, and the program builds without z3.
+    let none = compile_file(VEC_WITHOUT_CONTRACTS, &[], false, false);
+    assert!(
+        none.ok,
+        "without z3, a program with no contract of its own must build:\n{}",
+        none.stdout
+    );
+    assert!(
+        !none.stdout.contains("no SMT solver available"),
+        "the proofs of `Vec` must not need the solver:\n{}",
+        none.stdout
+    );
+}

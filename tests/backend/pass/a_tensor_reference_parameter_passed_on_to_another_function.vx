@@ -1,0 +1,63 @@
+//===- a_tensor_reference_parameter_passed_on_to_another_function.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A function passes its `&Tensor` or `&mut Tensor` parameter on to another function,
+// which gets the same tensor.
+//
+// EXPECT: sum 24
+// EXPECT: first 7.5
+// EXPECT: fixed 60
+fn total(a : &Tensor<f64, [?]>) -> f64 {
+  let mut s : f64 = 0.0;
+  for i in 0..a.len() {
+    s += a[i];
+  }
+  return s;
+}
+
+fn twice(a : &Tensor<f64, [?]>) -> f64 {
+  return total(a) + total(a);
+}
+
+fn four_times(a : &Tensor<f64, [?]>) -> f64 {
+  return twice(a) + twice(a);
+}
+
+fn set_first(a : &mut Tensor<f64, [?]>) -> i32 {
+  a[0] = 7.5;
+  return 0;
+}
+
+fn set_first_through(a : &mut Tensor<f64, [?]>) -> i32 {
+  return set_first(a);
+}
+
+fn total_fixed(a : &Tensor<f64, [3]>) -> f64 {
+  return total(a);
+}
+
+fn main() -> i32 {
+  let mut t = Tensor<f64>([3]);
+  t[0] = 1.0;
+  t[1] = 2.0;
+  t[2] = 3.0;
+  print!("sum ");
+  print(four_times(&t));
+  print!("\n");
+  set_first_through(&mut t);
+  print!("first ");
+  print(t[0]);
+  print!("\n");
+  let mut u = Tensor<f64, [3]>::new();
+  u[0] = 10.0;
+  u[1] = 20.0;
+  u[2] = 30.0;
+  print!("fixed ");
+  print(total_fixed(&u));
+  print!("\n");
+  return 0;
+}

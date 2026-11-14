@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build a redistributable Vx toolchain tarball for the host platform.
 #
-#   ./scripts/release/package.sh v0.0.3
+#   ./scripts/release/package.sh v0.0.4
 #
 # Produces  dist/vx-<version>-<target>.tar.gz  and its .sha256.
 #
@@ -30,7 +30,7 @@ set -euo pipefail
 
 VERSION="${1:-}"
 if [ -z "$VERSION" ]; then
-    echo "usage: $0 <version>        e.g. $0 v0.0.3" >&2
+    echo "usage: $0 <version>        e.g. $0 v0.0.4" >&2
     exit 1
 fi
 
@@ -48,7 +48,7 @@ case "$os/$arch" in
 esac
 
 # A CUDA build is a separate toolchain, not a variant of the portable one, and its name has to say
-# so. The dispatch backend links -lcudart, -lcublas and -lcuda and carries an rpath into the build
+# so. The dispatch backend links -lcudart and -lcublas and carries an rpath into the build
 # host's toolkit, so this tarball cannot even be loaded on a machine with no CUDA -- it is for
 # NVIDIA hosts and nothing else. The portable tarball keeps the plain triple and runs anywhere.
 #
@@ -86,7 +86,7 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE"/{bin,libexec,lib,etc}
 
 echo "==> Staging binaries"
-for tool in vxc vx-format vx-opt vx-analyzer; do
+for tool in vxc vx-format vx-opt vx-analyzer vx-api; do
     if [ -x "$TARGET_DIR/$tool" ]; then
         cp "$TARGET_DIR/$tool" "$STAGE/libexec/$tool"
     else
@@ -107,7 +107,8 @@ cp "$TARGET_DIR/libvx_std_core.${DLL}" "$STAGE/lib/"
 # lying around for the glob to find. A clean runner had only vxc-*, shipped no dispatch library,
 # and every program containing `spawn on` failed to link with undefined vx_plugin_* symbols.
 # The filenames below are specific enough to select on their own.
-for out_dir in "$TARGET_DIR"/build/*/out; do
+# Cargo 1.100 moved the output of a build script from build/vxc-<hash>/out to build/vxc/<hash>/out.
+for out_dir in "$TARGET_DIR"/build/*/out "$TARGET_DIR"/build/*/*/out; do
     [ -d "$out_dir" ] || continue
     for lib in "$out_dir"/*dispatch."${DLL}" "$out_dir"/*dispatch.a "$out_dir"/libvx_mlir_shims."${DLL}"; do
         [ -f "$lib" ] && cp "$lib" "$STAGE/lib/"
@@ -124,7 +125,7 @@ ls "$STAGE/lib/"
 set -- "$STAGE"/lib/*dispatch."${DLL}"
 if [ ! -e "$1" ]; then
     echo "error: no shared dispatch library staged into lib/." >&2
-    echo "  Looked in $TARGET_DIR/build/*/out for *dispatch.$DLL." >&2
+    echo "  Looked in $TARGET_DIR/build/*/out and $TARGET_DIR/build/*/*/out for *dispatch.$DLL." >&2
     echo "  Without it every program using 'spawn on' fails to link." >&2
     exit 1
 fi
@@ -272,7 +273,7 @@ fi
 # "Failed to run mlir-translate: No such file or directory" -- naming a binary the user has never
 # heard of rather than the toolchain they are missing.
 echo "==> Writing wrappers"
-for tool in vxc vx-format vx-opt vx-analyzer; do
+for tool in vxc vx-format vx-opt vx-analyzer vx-api; do
     [ -f "$STAGE/libexec/$tool" ] || continue
     cat > "$STAGE/bin/$tool" <<WRAPPER
 #!/bin/sh
@@ -328,7 +329,6 @@ if [ -n "\${VX_LLVM_BIN:-}" ] && [ -d "\$VX_LLVM_BIN" ]; then
 fi
 
 export VX_RUNTIME_LIB_DIR="\${VX_RUNTIME_LIB_DIR:-\$PREFIX/lib}"
-export VX_STD_PATH="\${VX_STD_PATH:-\$PREFIX/stdlib/std:\$PREFIX/stdlib}"
 
 # The dispatch backend and the print shims, as shipped in this toolchain rather than wherever they
 # sat on the machine that built it. Each is set only if the file is actually present, so a

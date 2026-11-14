@@ -1,0 +1,29 @@
+//===- nested_array_literal_is_a_matrix.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A nested array literal is a tensor with one dimension per level: `[[1, 2], [3, 4]]` is a
+// `Tensor<i32, [2, 2]>`. The program prints 3, 5 and 6.
+//
+// RUN: vxc %s --emit-mlir 2>&1 | FileCheck %s --implicit-check-not=declined
+// CHECK-LABEL: func.func @main() -> i32
+// EXPECT: 3
+// EXPECT: 5
+// EXPECT: 6
+
+fn trace(m : Tensor<i32, [2, 2]>) -> i32 {
+  return m[0][0] + m[1][1];
+}
+
+fn main() -> i32 {
+  let m : Tensor<f32, [2, 2]> = [[1.0, 2.0], [3.0, 4.0]];
+  println!("{}", m[1][0]);
+  let k = [[1, 2], [3, 4]];
+  println!("{}", trace(k));
+  let c = [[[1, 2]], [[3, 4]], [[5, 6]]];
+  println!("{}", c[2][0][1]);
+  return 0;
+}

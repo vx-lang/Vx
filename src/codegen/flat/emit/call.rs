@@ -9,7 +9,7 @@ impl FnEmit<'_> {
     /// Whether register `r` is passed as a bare `!llvm.ptr`: a pointer value, a pointer local's
     /// slot handed out by `&mut p` (the slot's address is the pointer the callee wants), or an
     /// aggregate slot passed by reference.
-    fn is_pointer_value(&self, r: usize) -> Lowered<bool> {
+    pub(super) fn is_pointer_value(&self, r: usize) -> Lowered<bool> {
         Ok(*self.ptr_of.get(r).ok_or(crate::emitter_gap!())?
             || self.pslot_of.get(r).copied().unwrap_or(false)
             || self.agg_of.get(r).copied().flatten().is_some())
@@ -46,6 +46,8 @@ impl FnEmit<'_> {
             mt.clone() // a `?`-shaped tensor return: the result is a memref value the callee made
         } else if callee.ret_ptr {
             "!llvm.ptr".to_string() // an FFI pointer-returning callee (#235)
+        } else if let Some(v) = &callee.ret_vec {
+            v.clone()
         } else if callee.ret_void {
             "()".to_string()
         } else {
@@ -83,6 +85,8 @@ impl FnEmit<'_> {
                     .clone()
             } else if self.is_pointer_value(*a as usize)? {
                 "!llvm.ptr".to_string()
+            } else if let Some(v) = self.vec_of.get(*a as usize).cloned().flatten() {
+                v
             } else {
                 self.mem_of
                     .get(*a as usize)
@@ -97,7 +101,11 @@ impl FnEmit<'_> {
         let param_tensors = callee.param_tensors.clone();
         for (k, declared) in param_tensors.iter().enumerate().take(n) {
             if let Some(declared) = declared {
-                if arg_types[k].starts_with("memref<") && arg_types[k] != *declared {
+                // A tensor in shared memory: the callee's header has the same memory space.
+                let shared = declared
+                    .strip_suffix('>')
+                    .is_some_and(|d| arg_types[k] == format!("{d}, {}>", self.shared_addrspace()));
+                if arg_types[k].starts_with("memref<") && arg_types[k] != *declared && !shared {
                     arg_names[k] = self.cast_memref_value(
                         &format!("pc{idx}_{k}"),
                         &arg_names[k],
@@ -115,7 +123,7 @@ impl FnEmit<'_> {
         let ret_slot_ty = callee
             .ret_tensor
             .as_ref()
-            .filter(|mt| !mt.contains(DYN_DIM) && !callee.ret_placed)
+            .filter(|mt| !mt.contains(DYN_DIM) && !callee.ret_placed && !callee.ret_reference)
             .cloned();
         if let Some(slot_ty) = &ret_slot_ty {
             let slot = format!("%rs{idx}");
@@ -158,6 +166,9 @@ impl FnEmit<'_> {
                 if let Some(pointee) = callee.ret_pointee {
                     self.agg_of[idx] = Some(pointee);
                 }
+                if let Some((len, size)) = callee.ret_valid.clone() {
+                    self.assume_valid_result(idx, &len, size, &args, &arg_names);
+                }
             } else if let Some(agg_gid) = callee.ret_agg {
                 // A struct-returning call result is a struct *value*; tracked so it can be
                 // spilled to a slot (`Store`), returned (`Ret`), or passed by value to another
@@ -165,9 +176,58 @@ impl FnEmit<'_> {
                 self.agg_val_of[idx] = Some(agg_gid);
             } else if let Some(mt) = &callee.ret_tensor {
                 self.mem_of[idx] = Some(mt.clone()); // a tensor result: downstream ops index it
+            } else if let Some(v) = &callee.ret_vec {
+                self.vec_of[idx] = Some(v.clone());
             }
         }
         Ok(())
+    }
+
+    /// `ensures valid(return, n)` of a callee: an `llvm.intr.assume` that `n` elements of `size`
+    /// bytes at the result `%v{idx}` can be read. `args` and `names` are the arguments of the
+    /// call. A length of a type that is not an integer gives none.
+    fn assume_valid_result(
+        &mut self,
+        idx: usize,
+        len: &crate::hir::check::pointer_clauses::Length,
+        size: u64,
+        args: &[u32],
+        names: &[String],
+    ) {
+        use crate::hir::check::pointer_clauses::Length;
+        let k = format!("%vx_rv{idx}");
+        let count = match len {
+            Length::Constant(c) => {
+                self.body += &format!("  {k}_n = arith.constant {c} : i64\n");
+                format!("{k}_n")
+            }
+            Length::Param(j) => {
+                let (Some(&arg), Some(name)) = (args.get(*j), names.get(*j)) else {
+                    return;
+                };
+                match self.elem_at(arg) {
+                    Some(ElementType::I64 | ElementType::U64 | ElementType::USize) => name.clone(),
+                    Some(e @ (ElementType::I32 | ElementType::I16 | ElementType::I8)) => {
+                        let from = mlir_scalar(&e).unwrap_or("i32");
+                        self.body += &format!("  {k}_n = arith.extsi {name} : {from} to i64\n");
+                        format!("{k}_n")
+                    }
+                    Some(e @ (ElementType::U32 | ElementType::U16 | ElementType::U8)) => {
+                        let from = mlir_scalar(&e).unwrap_or("i32");
+                        self.body += &format!("  {k}_n = arith.extui {name} : {from} to i64\n");
+                        format!("{k}_n")
+                    }
+                    _ => return,
+                }
+            }
+            Length::Other => return,
+        };
+        self.body += &format!(
+            "  {k}_t = arith.constant true\n  \
+             {k}_s = arith.constant {size} : i64\n  \
+             {k}_b = arith.muli {count}, {k}_s : i64\n  \
+             llvm.intr.assume {k}_t [\"dereferenceable\"(%v{idx}, {k}_b : !llvm.ptr, i64)] : i1\n"
+        );
     }
 
     // An inline `mlir!` block: a call to a private wrapper whose parameters are the block's
@@ -200,14 +260,28 @@ impl FnEmit<'_> {
             };
             let same = actual.replace(' ', "") == declared.replace(' ', "");
             if !same && actual.starts_with("memref<") {
+                // The comments let `parse_emitted_module` name this input when the cast fails.
+                let input = &blk.inputs[k].0;
+                self.body += &format!(
+                    "{}{} {} input {input} | {actual} | {declared}\n",
+                    crate::codegen::flat::MLIR_BLOCK_START,
+                    blk.line,
+                    blk.column
+                );
                 let c =
                     self.cast_memref_value(&format!("imc{idx}_{k}"), &name, &actual, declared)?;
+                self.body += &format!("{}\n", crate::codegen::flat::MLIR_BLOCK_END);
                 operands.push(c);
             } else {
                 operands.push(name);
             }
         }
-        let fname = format!("vx_flat_mlir_{}", self.inline_base + ins.imm as usize);
+        let prefix = &self.ctx.mlir_wrapper_prefix;
+        assert!(
+            !prefix.is_empty(),
+            "an mlir! block needs EmitCtx::from_registry"
+        );
+        let fname = format!("{prefix}{}", self.inline_base + ins.imm as usize);
         let tys: Vec<&str> = blk.inputs.iter().map(|(_, t)| t.as_str()).collect();
         let params: Vec<String> = blk
             .inputs
@@ -232,6 +306,9 @@ impl FnEmit<'_> {
             } else if let Some(agg) = self.ctx.aggs.get(&gid) {
                 self.agg_val_of[idx] = Some(gid);
                 Some(agg.struct_ty.clone())
+            } else if gid == ptr_gid() {
+                self.ptr_of[idx] = true;
+                Some("!llvm.ptr".to_string())
             } else {
                 return Err(crate::emitter_gap!());
             }
@@ -255,10 +332,15 @@ impl FnEmit<'_> {
             }
         }
         let ret_sig = ret.map(|rt| format!(" -> {rt}")).unwrap_or_default();
+        // The comments let `parse_emitted_module` find the block that an MLIR error is in.
         self.wrappers += &format!(
-            "func.func private @{fname}({}){ret_sig} {{\n{}\n}}\n",
+            "{}{} {}\nfunc.func private @{fname}({}){ret_sig} {{\n{}\n}}\n{}\n",
+            crate::codegen::flat::MLIR_BLOCK_START,
+            blk.line,
+            blk.column,
             params.join(", "),
-            blk.body.replace("macro.yield", "return")
+            blk.body.replace("macro.yield", "return"),
+            crate::codegen::flat::MLIR_BLOCK_END,
         );
         Ok(())
     }
@@ -320,6 +402,12 @@ impl FnEmit<'_> {
                     .ok_or(crate::emitter_gap!())?
                     .clone(),
             );
+            // A struct is passed by value, as in a call. It is not differentiated.
+            if let Some(agg_gid) = self.agg_val_of.get(*a as usize).copied().flatten() {
+                let agg = self.ctx.aggs.get(&agg_gid).ok_or(crate::emitter_gap!())?;
+                arg_types.push(agg.struct_ty.clone());
+                continue;
+            }
             let e = self.elem_at(*a).ok_or(Decline::TypeNotModelled {
                 what: "an autodiff argument that is not a scalar",
             })?;
@@ -348,23 +436,34 @@ impl FnEmit<'_> {
     // the scalar return type. Reconstruct the function type `(arg types)->ret` from the actual
     // args, cast the pointer to it, and `func.call_indirect`. (#242)
     pub(crate) fn op_call_indirect(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
-        // The result is a scalar, or a pointer when the type is the pointer GID.
+        // The result is a scalar, a pointer (the pointer GID), a struct or enum by value, or
+        // nothing for a `void` callee.
         let ret_gid = *self
             .types
             .get(ins.type_idx.0 as usize)
             .ok_or(crate::emitter_gap!())?;
-        let ret_ptr = ret_gid == crate::hir::flatten::ptr_gid();
-        let ret_elem = if ret_ptr {
+        let void = ins.imm & crate::hir::flatten::CALL_INDIRECT_VOID != 0;
+        let ret_ptr = !void && ret_gid == crate::hir::flatten::ptr_gid();
+        let ret_agg = (!void && self.ctx.aggs.contains_key(&ret_gid)).then_some(ret_gid);
+        let ret_elem = if void || ret_ptr || ret_agg.is_some() {
             None
         } else {
             self.ty_at(ins.type_idx.0)
         };
-        let rt = match &ret_elem {
-            Some(e) => mlir_scalar(e).ok_or(crate::emitter_gap!())?.to_string(),
-            None if ret_ptr => "!llvm.ptr".to_string(),
-            None => return Err(crate::emitter_gap!()),
+        let rt = match (&ret_elem, ret_agg) {
+            _ if void => "()".to_string(),
+            (Some(e), _) => mlir_scalar(e).ok_or(crate::emitter_gap!())?.to_string(),
+            (None, Some(gid)) => self
+                .ctx
+                .aggs
+                .get(&gid)
+                .ok_or(crate::emitter_gap!())?
+                .struct_ty
+                .clone(),
+            (None, None) if ret_ptr => "!llvm.ptr".to_string(),
+            (None, None) => return Err(crate::emitter_gap!()),
         };
-        let n = ins.imm as usize;
+        let n = (ins.imm & !crate::hir::flatten::CALL_INDIRECT_VOID) as usize;
         if self.pending_args.len() < n {
             return Err(crate::emitter_gap!());
         }
@@ -389,6 +488,8 @@ impl FnEmit<'_> {
                     .clone()
             } else if self.is_pointer_value(*a as usize)? {
                 "!llvm.ptr".to_string()
+            } else if let Some(v) = self.vec_of.get(*a as usize).cloned().flatten() {
+                v
             } else {
                 self.mem_of
                     .get(*a as usize)
@@ -408,6 +509,14 @@ impl FnEmit<'_> {
         let nm = format!("%v{idx}");
         self.body +=
             &format!("  {fc} = builtin.unrealized_conversion_cast {fnptr} : !llvm.ptr to {fnty}\n");
+        if void {
+            // MLIR forbids a result name on a call that returns nothing.
+            self.body += &format!(
+                "  func.call_indirect {fc}({}) : {fnty}\n",
+                arg_names.join(", ")
+            );
+            return Ok(());
+        }
         self.body += &format!(
             "  {nm} = func.call_indirect {fc}({}) : {fnty}\n",
             arg_names.join(", ")
@@ -415,6 +524,8 @@ impl FnEmit<'_> {
         self.names[idx] = nm;
         if ret_ptr {
             self.ptr_of[idx] = true;
+        } else if ret_agg.is_some() {
+            self.agg_val_of[idx] = ret_agg;
         } else {
             self.etypes[idx] = ret_elem;
         }

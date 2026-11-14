@@ -93,8 +93,19 @@ pub struct Function {
     /// unsafe context. The body is not itself one (Rust 2024): an unsafe operation inside still
     /// needs its own `unsafe` block.
     pub is_unsafe: bool,
+    /// `pub fn`: the object file exports the function under its own name. Any other function
+    /// the program defines is hidden (docs/lang/abi.md, section 4).
+    pub is_pub: bool,
     pub body: Vec<Statement>,
     pub doc_comment: Option<String>,
+    /// Where the function's name is written. A diagnostic about the function as a whole, such
+    /// as an unused parameter, points here.
+    pub span: Span,
+    /// The file the function is written in, as the compiler was given it. Every diagnostic
+    /// found while checking the function names it, wherever the check runs from: a generic
+    /// instance checked from its caller still names the file it was written in. `None` for a
+    /// function built in memory.
+    pub file: Option<Symbol>,
 }
 
 impl Function {
@@ -110,21 +121,45 @@ impl Function {
             ensures: self.ensures.clone(),
             where_transfers: self.where_transfers.clone(),
             is_unsafe: self.is_unsafe,
+            is_pub: self.is_pub,
             body: if preserve_body || !self.generics.is_empty() {
                 self.body.clone()
             } else {
                 Vec::new()
             },
             doc_comment: self.doc_comment.clone(),
+            span: self.span,
+            file: self.file.clone(),
         }
     }
 }
+
+/// Where a declaration is written: its file, and the place of its name there. A diagnostic about
+/// the declaration points at it. Two declarations compare equal whatever their places: one
+/// machine file that a program reaches twice declares one memory space.
+#[derive(Debug, Clone, Default)]
+pub struct DeclPlace {
+    pub file: Option<Symbol>,
+    pub span: Span,
+}
+
+impl PartialEq for DeclPlace {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for DeclPlace {}
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct StructDecl {
     pub name: Symbol,
     pub generics: Vec<GenericParam>,
     pub fields: Vec<(Symbol, Type)>,
+    /// The `invariant` clauses, in which `self` is a value of the type. Only the module that
+    /// declares a type with an invariant can change its fields.
+    pub invariants: Vec<crate::syntax::Expr>,
+    pub place: DeclPlace,
     pub doc_comment: Option<String>,
 }
 
@@ -133,6 +168,7 @@ pub struct EnumDecl {
     pub name: Symbol,
     pub generics: Vec<GenericParam>,
     pub variants: Vec<(Symbol, Option<Vec<Type>>)>,
+    pub place: DeclPlace,
     pub doc_comment: Option<String>,
 }
 
@@ -140,8 +176,14 @@ pub struct EnumDecl {
 pub struct ExternDecl {
     pub name: Symbol,
     pub is_safe: bool,
+    /// The memory parameters, the `M` of `fn f<M : Memory>(p : *mut f32 in Memory::M)`. Each
+    /// call binds them to the memories of its pointer arguments.
+    pub memories: Vec<Symbol>,
     pub params: Vec<(Symbol, Type)>,
     pub return_type: Type,
+    /// The `ensures` clauses. The compiler trusts them, because it cannot read the body. Each one
+    /// is a `frees` clause, a pointer clause or a clause about numbers.
+    pub ensures: Vec<crate::syntax::Expr>,
     /// Where the declaration was written, so a diagnostic about the signature can point at it.
     pub span: Span,
     /// The `///` lines above the declaration. Six library modules are nothing but an extern
@@ -158,6 +200,8 @@ pub struct MethodSignature {
     /// The parameters written `mut`, as for a [`Function`].
     pub mut_params: Vec<Symbol>,
     pub return_type: Type,
+    /// The `ensures` clauses. Each impl of the method gets them too, so each impl must keep them.
+    pub ensures: Vec<crate::syntax::Expr>,
     /// The default body, when the trait writes one instead of a `;`. An impl that does not
     /// provide the method gets a copy of this, with `Self` replaced by the type it is
     /// implemented for. `None` means the method is required.
@@ -175,6 +219,7 @@ pub struct TraitDecl {
     /// `type Item;`. A name the trait's signatures may write as `Self::Item`, which every
     /// impl binds to a type of its own.
     pub assoc_types: Vec<Symbol>,
+    pub place: DeclPlace,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -193,6 +238,11 @@ pub struct ImplBlock {
     /// default's bounds only at the call: `Iterator::sum` needs `Sum` on the item type, and an
     /// iterator over structs must still compile when it never calls `sum`.
     pub copied_defaults: Vec<Symbol>,
+    /// `unsafe impl`: the programmer states a fact that the compiler cannot check. Only
+    /// `Send` and `Sync` take it.
+    pub is_unsafe: bool,
+    /// At the `impl` keyword.
+    pub place: DeclPlace,
 }
 
 impl ImplBlock {
@@ -204,6 +254,8 @@ impl ImplBlock {
             target_type: self.target_type.clone(),
             assoc_bindings: self.assoc_bindings.clone(),
             copied_defaults: self.copied_defaults.clone(),
+            is_unsafe: self.is_unsafe,
+            place: self.place.clone(),
             // Always preserve method bodies: methods only exist in impl blocks, so
             // method-call monomorphization clones the body from the type-check env
             // (env.impls). Dropping it (as the signature clone does for free
@@ -334,6 +386,9 @@ pub struct MemoryDecl {
     pub clock_hz: Option<u64>,
     pub managed: Management,
     pub granule: Option<ByteSize>,
+    /// `alignment: 128 B` -- the least alignment of a tensor in this space. A tensor can ask
+    /// for more with `.aligned(N)`.
+    pub alignment: Option<ByteSize>,
     /// The execution level this space is private to (`scope: sm` etc.); `None` = unscoped.
     pub scope: Option<Scope>,
     /// `replicas: 132` — how many instances of this space the device contains.
@@ -363,6 +418,7 @@ pub struct MemoryDecl {
     /// `None` means the space is not a NUMA domain, which is every space on every accelerator
     /// in fleet/ -- a GPU has one memory and nothing to choose between.
     pub numa_node: Option<u64>,
+    pub place: DeclPlace,
     pub doc_comment: Option<String>,
 }
 
@@ -397,6 +453,8 @@ pub struct TransferImplDecl {
     /// an alias returns a view) is sema's question, not the parser's, so the parser accepts any
     /// `fn` items here.
     pub methods: Vec<Function>,
+    /// At the `impl` keyword.
+    pub place: DeclPlace,
     pub doc_comment: Option<String>,
 }
 
@@ -418,6 +476,9 @@ pub struct Program {
     /// it produced and empties this list.
     pub item_macros: Vec<crate::syntax::stmt::MacroCallStmt>,
     pub module_path: Symbol,
+    /// The path this module was read from, as the compiler was given it or as the import
+    /// search found it. Diagnostics name it. `None` for a program built in memory.
+    pub file: Option<Symbol>,
     pub imports: Vec<ImportDecl>,
     pub macros: Vec<MacroDefDecl>,
     pub externs: Vec<ExternDecl>,
@@ -451,9 +512,35 @@ impl Program {
         self.functions.push(func);
     }
 
+    /// Give every function and declaration in the program the program's file. Run after macro
+    /// expansion, which can add items the parser never saw.
+    pub fn name_file_on_items(&mut self) {
+        let file = self.file.clone();
+        let functions = self.functions.iter_mut();
+        let methods = self.impls.iter_mut().flat_map(|i| i.methods.iter_mut());
+        let lowerings = self
+            .transfer_impls
+            .iter_mut()
+            .flat_map(|t| t.methods.iter_mut());
+        for f in functions.chain(methods).chain(lowerings) {
+            f.file = file.clone();
+        }
+        let places = self.structs.iter_mut().map(|s| &mut s.place);
+        let places = places.chain(self.enums.iter_mut().map(|e| &mut e.place));
+        let places = places.chain(self.traits.iter_mut().map(|t| &mut t.place));
+        let places = places.chain(self.impls.iter_mut().map(|i| &mut i.place));
+        let places = places.chain(self.memories.iter_mut().map(|m| &mut m.place));
+        let places = places.chain(self.topologies.iter_mut().map(|t| &mut t.place));
+        let places = places.chain(self.transfer_impls.iter_mut().map(|t| &mut t.place));
+        for place in places {
+            place.file = file.clone();
+        }
+    }
+
     pub fn clone_signature(&self) -> Self {
         Self {
             module_path: self.module_path.clone(),
+            file: self.file.clone(),
             // Not carried: a signature-only copy is taken after expansion, when the list is
             // already empty, and carrying it would expand the same call a second time.
             item_macros: Vec::new(),
@@ -488,6 +575,7 @@ impl Program {
                     to: t.to.clone(),
                     topology: t.topology.clone(),
                     methods: t.methods.iter().map(|f| f.clone_signature(true)).collect(),
+                    place: t.place.clone(),
                     doc_comment: t.doc_comment.clone(),
                 })
                 .collect(),

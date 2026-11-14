@@ -19,11 +19,11 @@
 //===----------------------------------------------------------------------===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // RUN: not vxc %s 2>&1 | FileCheck %s --check-prefix=COUNT
-// CHECK-DAG: E4004] at 35:3: Cannot borrow 'q' because it is already borrowed as mutable.
-// CHECK-DAG: E4004] at 44:3: Cannot borrow 'q' because it is already borrowed as mutable.
-// CHECK-DAG: E4002] at 53:11: Cannot access 'q' because it is mutably borrowed.
-// CHECK-DAG: E4002] at 61:3: Cannot access 'q' because it is mutably borrowed.
-// CHECK-DAG: E4009] at 69:7: `q[0][1]` is assigned while it is borrowed
+// CHECK-DAG: E4004] at {{.*}}rows_that_may_overlap_are_one_borrow.vx:35:3: Cannot borrow 'q' because it is already borrowed as mutable.
+// CHECK-DAG: E4004] at {{.*}}rows_that_may_overlap_are_one_borrow.vx:44:3: Cannot borrow 'q' because it is already borrowed as mutable.
+// CHECK-DAG: E4002] at {{.*}}rows_that_may_overlap_are_one_borrow.vx:53:11: Cannot access 'q' because it is mutably borrowed.
+// CHECK-DAG: E4002] at {{.*}}rows_that_may_overlap_are_one_borrow.vx:61:3: Cannot access 'q' because it is mutably borrowed.
+// CHECK-DAG: E4009] at {{.*}}rows_that_may_overlap_are_one_borrow.vx:69:7: `q[0][1]` is assigned while it is borrowed
 //
 // Five refusals, one per function.
 // COUNT-COUNT-5: Error[E400

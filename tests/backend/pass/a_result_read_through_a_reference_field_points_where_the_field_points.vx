@@ -1,0 +1,71 @@
+//===- a_result_read_through_a_reference_field_points_where_the_field_points.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The default code generator does not compile `Option<&i64>::unwrap` yet, so this uses the AST one.
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+//
+// A function that returns a reference it read from a `&` field returns where that field points.
+// The result does not point into the argument, so the argument can change while the result is
+// in use. `next` reads an item of `v.iter()` through the iterator's `&Vec` field, so two items of
+// one iterator can be in use at once, as in Rust. A generic function's result keeps only the
+// arguments it can point into.
+import std::vec;
+
+struct Holder {
+  r : &i64,
+}
+
+fn get(h : &Holder) -> &i64 {
+  return h.r;
+}
+
+fn second<T>(a : &T, b : &T) -> &T {
+  return b;
+}
+
+// `x` points into `a`, and `next` borrows `it` only while it runs.
+fn two_items_at_once() -> i64 {
+  let mut a = Vec<i64>::new();
+  a.push(1i64);
+  a.push(5i64);
+  let mut it = a.iter();
+  let x = it.next().unwrap();
+  let y = it.next().unwrap();
+  return *x * 10i64 + *y;
+}
+
+// `r` points at `one`, not into `h`, so `h` can get a new value while `r` is in use.
+fn new_holder_while_the_result_is_used() -> i64 {
+  let one = 1i64;
+  let two = 2i64;
+  let mut h = Holder {
+    r : &one
+  };
+  let r = get(&h);
+  h = Holder {
+    r : &two
+  };
+  return *r * 10i64 + *h.r;
+}
+
+// `r` points at `two`, so `one` can change while `r` is in use.
+fn change_the_other_argument_of_a_generic_function() -> i64 {
+  let mut one = 1i64;
+  let two = 2i64;
+  let r = second(&one, &two);
+  one = 3i64;
+  return *r * 10i64 + one;
+}
+
+fn main() -> i32 {
+  let a = two_items_at_once();
+  let b = new_holder_while_the_result_is_used();
+  let c = change_the_other_argument_of_a_generic_function();
+  // CHECK: {{^}}15 12 23{{$}}
+  println!("{} {} {}", a, b, c);
+  return 0;
+}

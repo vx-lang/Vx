@@ -1,0 +1,43 @@
+//===- comptime_inf_nan_on_flat_path.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A comptime division by zero yields inf / -inf / NaN. The flat code generator
+// must write those as hex bit patterns so MLIR can parse them (Vx#2081).
+//
+// EXPECT: inf -inf NaN | inf -inf NaN
+fn main() -> i32 {
+  let a : f64 = comptime {
+    1.0f64 / 0.0f64
+  };
+  let b : f64 = comptime {
+    -1.0f64 / 0.0f64
+  };
+  let c : f64 = comptime {
+    0.0f64 / 0.0f64
+  };
+  print(a);
+  print!(" ");
+  print(b);
+  print!(" ");
+  print(c);
+  print!(" | ");
+  let d : f32 = comptime {
+    1.0f32 / 0.0f32
+  };
+  let e : f32 = comptime {
+    -1.0f32 / 0.0f32
+  };
+  let f : f32 = comptime {
+    0.0f32 / 0.0f32
+  };
+  print(d);
+  print!(" ");
+  print(e);
+  print!(" ");
+  print(f);
+  return 0;
+}

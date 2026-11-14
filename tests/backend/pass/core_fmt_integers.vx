@@ -199,7 +199,7 @@ fn show(b : &mut ByteBuf, label : *const i8) -> i32 {
 }
 
 fn main() -> i32 {
-  let mem = unsafe { malloc(128i64) };
+  let mem = alloc(128, 16);
   let mut b = unsafe { ByteBuf::new(mem, 128i64) };
   (0i8).fmt_decimal(&mut b, &FormatSpec::new());
   show(&mut b, "case 0 : 0i8");
@@ -537,7 +537,7 @@ fn main() -> i32 {
   show(&mut b, "write_c_str");
 
   // Four bytes of memory hold three bytes and the NUL.
-  let small_mem = unsafe { malloc(4i64) };
+  let small_mem = alloc(4, 16);
   let mut small = unsafe { ByteBuf::new(small_mem, 4i64) };
   let refused : bool = (1234i32).fmt_decimal(&mut small, &FormatSpec::new()).is_err();
   if refused {
@@ -549,6 +549,6 @@ fn main() -> i32 {
   print(small.byte(2i64));
   print!(" ");
   show(&mut small, "full buffer");
-  unsafe { free(small_mem); free(mem); }
+  dealloc(small_mem, 16); dealloc(mem, 16);
   return 0;
 }

@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // The same program as custom_topology_device_image.vx with the ONE difference
 // that the topology declares no `arch:`. No device image is produced -- the
 // compiler refuses to guess what code to emit for a machine that did not say --
@@ -38,8 +38,8 @@ Topology Dev {
 }
 
 fn main() -> i32 {
-  let mut a = Tensor<f32, [2, 2]>::uninit();
-  let mut o = Tensor<f32, [2, 2]>::uninit();
+  let mut a = unsafe { Tensor<f32, [2, 2]>::uninit() };
+  let mut o = unsafe { Tensor<f32, [2, 2]>::uninit() };
   for i in 0..2 {
     for d in 0..2 {
       a[i][d] = ((i + d) as f32) * 0.5;

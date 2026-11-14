@@ -8,7 +8,7 @@
 // A `while` with no condition is a parse error at the `{` where the condition
 // belongs.
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Error at 14:9: {{.*}}Expected expression, found LeftBrace
+// CHECK: Error at {{.*}}parser_invalid_while_condition.vx:14:9: {{.*}}Expected expression, found LeftBrace
 
 fn main() -> i32 {
   while {

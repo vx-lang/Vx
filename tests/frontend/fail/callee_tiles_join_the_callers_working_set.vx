@@ -15,7 +15,7 @@
 // holds when it calls, and the callee's own peak.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: E6027
+// CHECK: Error[E6027] at {{.*}}callee_tiles_join_the_callers_working_set.vx:{{[0-9]+:[0-9]+}}:
 // CHECK-SAME: call path 'f -> g'
 // CHECK-SAME: peaks at 6291456 bytes, over its 4194304 byte capacity
 // CHECK-SAME: 'f' holds 3145728 bytes across its call
@@ -34,13 +34,13 @@ Topology Dev {
 }
 
 fn g() -> i32 {
-  let y = Tensor<f32, [1024, 768]>::uninit();
+  let y = unsafe { Tensor<f32, [1024, 768]>::uninit() };
   let _sy = transfer(y, Memory::W);
   return 1;
 }
 
 fn f() -> i32 {
-  let x = Tensor<f32, [1024, 768]>::uninit();
+  let x = unsafe { Tensor<f32, [1024, 768]>::uninit() };
   let sx = transfer(x, Memory::W);
   let r = g();
   let _back = transfer(sx, Memory::CPU_DRAM);

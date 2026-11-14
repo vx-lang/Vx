@@ -15,12 +15,12 @@ callee's budget:
 
 ```
 fn g() -> i32 {                     // peak 3 MiB: fits a 4 MiB space
-  let y  = Tensor<f32, [1024, 768]>::uninit();
+  let y  = unsafe { Tensor<f32, [1024, 768]>::uninit() };
   let _s = transfer(y, Memory::W);
   return 1;
 }
 fn f() -> i32 {                     // peak 3 MiB: fits
-  let x  = Tensor<f32, [1024, 768]>::uninit();
+  let x  = unsafe { Tensor<f32, [1024, 768]>::uninit() };
   let sx = transfer(x, Memory::W);
   let r  = g();                     // sx is read below, so it is resident here
   let _b = transfer(sx, Memory::CPU_DRAM);

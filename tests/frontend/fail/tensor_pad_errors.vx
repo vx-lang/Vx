@@ -10,12 +10,12 @@
 // supported yet.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Error[E3047] at 23:14: pad keeps the number of axes: Tensor<f32, [2, 2]> has 2, the new shape has 1
-// CHECK: Error[E3047] at 29:14: pad cannot make an axis smaller: axis 1 of Tensor<f32, [2, 3]> has 3, the new shape has 2
-// CHECK: Error[E3047] at 35:14: pad takes the new shape as an array of sizes, such as [4, 4]
-// CHECK: Error[E3047] at 41:14: pad needs a new shape whose sizes are known while compiling
+// CHECK: Error[E3047] at {{.*}}tensor_pad_errors.vx:23:14: pad keeps the number of axes: Tensor<f32, [2, 2]> has 2, the new shape has 1
+// CHECK: Error[E3047] at {{.*}}tensor_pad_errors.vx:29:14: pad cannot make an axis smaller: axis 1 of Tensor<f32, [2, 3]> has 3, the new shape has 2
+// CHECK: Error[E3047] at {{.*}}tensor_pad_errors.vx:35:14: pad takes the new shape as an array of sizes, such as [4, 4]
+// CHECK: Error[E3047] at {{.*}}tensor_pad_errors.vx:41:14: pad needs a new shape whose sizes are known while compiling
 // CHECK-NOT: Error
-// CHECK: Error[E3047] at 60:21: pad of a tensor placed in a memory space is not supported yet: Tensor<f32, [2, 2]
+// CHECK: Error[E3047] at {{.*}}tensor_pad_errors.vx:60:21: pad of a tensor placed in a memory space is not supported yet: Tensor<f32, [2, 2]
 // CHECK: 5 error(s) emitted
 
 fn fewer_axes() -> i32 {

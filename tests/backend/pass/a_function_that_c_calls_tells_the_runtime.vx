@@ -1,0 +1,84 @@
+//===- a_function_that_c_calls_tells_the_runtime.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// C's `qsort` calls the Vx function `smaller_first`. A task that waits in such a function must
+// stay on its thread, because the C code under it can keep state that belongs to the thread.
+//
+// So `qsort` gets a wrapper, which tells the runtime when `smaller_first` starts and returns.
+// The IR checks, with each code generator:
+// - The WRAP lines: the wrapper calls the runtime before and after `smaller_first`.
+// - The MAIN lines: the direct call in `main` does not use a wrapper, and neither does the task
+//   body that `main` gives to the runtime.
+// - The TASK lines: the task gives `qsort` the wrapper.
+// The OUT checks: the sort works on both runtimes.
+//
+// RUN: vxc %s --action emit-llvm > %t.flat 2>&1
+// RUN: vxc %s --legacy-codegen --action emit-llvm > %t.ast 2>&1
+// RUN: FileCheck %s --input-file=%t.flat --check-prefix=WRAP
+// RUN: FileCheck %s --input-file=%t.ast --check-prefix=WRAP
+// RUN: FileCheck %s --input-file=%t.flat --check-prefix=MAIN --implicit-check-not=vx_task_0.from_foreign
+// RUN: FileCheck %s --input-file=%t.ast --check-prefix=MAIN --implicit-check-not=vx_task_0.from_foreign
+// RUN: FileCheck %s --input-file=%t.flat --check-prefix=TASK
+// RUN: FileCheck %s --input-file=%t.ast --check-prefix=TASK
+// RUN: vxc %s 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
+//
+// WRAP-LABEL: llvm.func hidden @smaller_first.from_foreign(
+// WRAP-NEXT: llvm.call @vx_callback_enter()
+// WRAP-NEXT: llvm.call @smaller_first(
+// WRAP-NEXT: llvm.call @vx_callback_exit()
+//
+// MAIN-LABEL: llvm.func @main()
+// MAIN: llvm.mlir.addressof @vx_task_0 :
+// MAIN-NOT: from_foreign
+// MAIN: llvm.call @smaller_first(
+//
+// TASK-LABEL: llvm.func hidden @vx_task_0(
+// TASK: llvm.mlir.addressof @smaller_first.from_foreign :
+//
+// OUT: {{^}}direct -1{{$}}
+// OUT: {{^}}sorted 1 2 3{{$}}
+
+extern "C" {
+  fn malloc(n : i64) -> *mut i32;
+  fn free(p : *mut i32) -> void;
+  fn qsort(base : *mut i32, n : i64, size : i64, compare : fn(*const i32, *const i32) -> i32) -> void;
+}
+
+fn smaller_first(a : *const i32, b : *const i32) -> i32 {
+  unsafe { return *a - *b; }
+}
+
+fn main() -> i32 {
+  unsafe {
+    let one = malloc(4);
+    let two = malloc(4);
+    one[0] = 1;
+    two[0] = 2;
+    let d : i32 = smaller_first(one, two);
+    println!("direct {}", d);
+    free(one);
+    free(two);
+  }
+  tasks {
+    spawn {
+      unsafe {
+        let v = malloc(12);
+        v[0] = 3;
+        v[1] = 1;
+        v[2] = 2;
+        qsort(v, 3, 4, smaller_first);
+        let a : i32 = v[0];
+        let b : i32 = v[1];
+        let c : i32 = v[2];
+        println!("sorted {} {} {}", a, b, c);
+        free(v);
+      }
+    };
+  };
+  return 0;
+}

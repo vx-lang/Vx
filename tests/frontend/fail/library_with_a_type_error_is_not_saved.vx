@@ -11,7 +11,7 @@
 // RUN: rm -f %t.vxlib
 // RUN: not vxc %s --action emit-interface -o %t.vxlib 2>&1 | FileCheck %s
 // RUN: not test -e %t.vxlib
-// CHECK: Error[E3002] at {{[0-9]+}}:{{[0-9]+}}: Type mismatch on return. Expected i32, got bool
+// CHECK: Error[E3002] at {{.*}}library_with_a_type_error_is_not_saved.vx:{{[0-9]+}}:{{[0-9]+}}: Type mismatch on return. Expected i32, got bool
 // CHECK-NOT: Wrote module interface
 
 fn wrong() -> i32 {

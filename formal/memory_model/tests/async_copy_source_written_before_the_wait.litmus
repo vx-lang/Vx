@@ -1,0 +1,14 @@
+LISA async_copy_source_written_before_the_wait
+(* A copy engine reads the source of raw::async_copy until raw::async_wait (C6). A lane that
+   writes the source before the wait races with the engine. P0 is the lane: the release of go
+   starts the copy. P1 is the copy engine.
+   Expect: sometimes, a data race. *)
+{ src = 1; dst = 0; go = 0; done = 0; }
+ P0                  | P1                   ;
+ w[rel] go 1         | r[acq] r0 go         ;
+ w[plain] src 2      | r[plain] r1 src      ;
+                     | w[plain] dst r1      ;
+                     | w[rel] done 1        ;
+scopes: (device (block P0) (block P1))
+filter (1:r0 = 1)
+exists (1:r1 = 2)

@@ -1,39 +1,49 @@
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK-LABEL: func.func @Closure_1_call(%arg0: !llvm.ptr) -> i32
-// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"Closure_1", (i32)>
-// CHECK: llvm.load %[[V0]] : !llvm.ptr -> i32
-// CHECK: memref.alloca() : memref<i32>
-// CHECK: %[[V1:.*]] = memref.load %{{.*}}[] : memref<i32>
-// CHECK: %[[V2:.*]] = arith.constant 1 : i32
-// CHECK: %[[V3:.*]] = arith.addi %[[V1]], %[[V2]] : i32
-// CHECK: return %[[V3]] : i32
-// CHECK-LABEL: func.func @Closure_2_call(%arg0: !llvm.ptr) -> i32
-// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"Closure_2", (i32)>
-// CHECK: llvm.load %[[V0]] : !llvm.ptr -> i32
-// CHECK: memref.alloca() : memref<i32>
-// CHECK: %[[V1:.*]] = memref.load %{{.*}}[] : memref<i32>
-// CHECK: return %[[V1]] : i32
-// CHECK-LABEL: func.func @Closure_3_call(%arg0: !llvm.ptr) -> i32
-// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"Closure_3", (i32)>
-// CHECK: llvm.load %[[V0]] : !llvm.ptr -> i32
-// CHECK: memref.alloca() : memref<i32>
-// CHECK: %[[V1:.*]] = memref.load %{{.*}}[] : memref<i32>
-// CHECK: %[[V2:.*]] = arith.constant 1 : i32
-// CHECK: %[[V3:.*]] = arith.addi %[[V1]], %[[V2]] : i32
-// CHECK: return %[[V3]] : i32
-// CHECK-LABEL: func.func @Closure_4_call(%arg0: !llvm.ptr) -> i32
-// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"Closure_4", (i32)>
-// CHECK: llvm.load %[[V0]] : !llvm.ptr -> i32
-// CHECK: memref.alloca() : memref<i32>
-// CHECK: %[[V1:.*]] = memref.load %{{.*}}[] : memref<i32>
-// CHECK: %[[V2:.*]] = arith.constant 2 : i32
-// CHECK: %[[V3:.*]] = arith.addi %[[V1]], %[[V2]] : i32
-// CHECK: return %[[V3]] : i32
+// `my_closure as ||->i32` makes the pair `{ env, func }`. A call through the pair passes `env` to `func`.
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=FLAT # flat-codegen
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s
+// FLAT-LABEL: func.func @main() -> i32
+// FLAT: %[[ENVSTRUCT:.*]] = llvm.alloca %{{.*}} x !llvm.struct<(i32)>
+// FLAT: %[[PAIR:.*]] = llvm.alloca %{{.*}} x !llvm.struct<(ptr, ptr)>
+// FLAT: %[[LOCAL:.*]] = llvm.alloca %{{.*}} x !llvm.struct<(ptr, ptr)>
+// FLAT: %[[FN:.*]] = constant @Closure_1_call : (!llvm.ptr) -> i32
+// FLAT: %[[FNPTR:.*]] = builtin.unrealized_conversion_cast %[[FN]]
+// FLAT: %[[ENVADDR:.*]] = llvm.getelementptr %[[PAIR]][0, 0]
+// FLAT: llvm.store %[[ENVSTRUCT]], %[[ENVADDR]]
+// FLAT: %[[FUNCADDR:.*]] = llvm.getelementptr %[[PAIR]][0, 1]
+// FLAT: llvm.store %[[FNPTR]], %[[FUNCADDR]]
+// FLAT: %[[LOCALENV:.*]] = llvm.getelementptr %[[LOCAL]][0, 0]
+// FLAT: %[[ENV:.*]] = llvm.load %[[LOCALENV]] : !llvm.ptr -> !llvm.ptr
+// FLAT: %[[LOCALFUNC:.*]] = llvm.getelementptr %[[LOCAL]][0, 1]
+// FLAT: %[[FUNC:.*]] = llvm.load %[[LOCALFUNC]] : !llvm.ptr -> !llvm.ptr
+// FLAT: %[[CALLEE:.*]] = builtin.unrealized_conversion_cast %[[FUNC]] : !llvm.ptr to (!llvm.ptr) -> i32
+// FLAT: call_indirect %[[CALLEE]](%[[ENV]]) : (!llvm.ptr) -> i32
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: call_indirect %{{.*}}(%{{.*}}) : (!llvm.ptr) -> i32
 // CHECK: call @Closure_2_call(%{{.*}}) : (!llvm.ptr) -> i32
 // CHECK: call @Closure_3_call(%{{.*}}) : (!llvm.ptr) -> i32
 // CHECK: call @Closure_4_call(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK-LABEL: func.func @Closure_4_call(%arg0: !llvm.ptr) -> i32
+// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"Closure_4", (i32)>
+// CHECK: %[[V1:.*]] = llvm.load %[[V0]] : !llvm.ptr -> i32
+// CHECK: %[[V2:.*]] = arith.constant 2 : i32
+// CHECK: %[[V3:.*]] = arith.addi %[[V1]], %[[V2]] : i32
+// CHECK: return %[[V3]] : i32
+// CHECK-LABEL: func.func @Closure_3_call(%arg0: !llvm.ptr) -> i32
+// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"Closure_3", (i32)>
+// CHECK: %[[V1:.*]] = llvm.load %[[V0]] : !llvm.ptr -> i32
+// CHECK: %[[V2:.*]] = arith.constant 1 : i32
+// CHECK: %[[V3:.*]] = arith.addi %[[V1]], %[[V2]] : i32
+// CHECK: return %[[V3]] : i32
+// CHECK-LABEL: func.func @Closure_2_call(%arg0: !llvm.ptr) -> i32
+// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"Closure_2", (i32)>
+// CHECK: %[[V1:.*]] = llvm.load %[[V0]] : !llvm.ptr -> i32
+// CHECK: return %[[V1]] : i32
+// CHECK-LABEL: func.func @Closure_1_call(%arg0: !llvm.ptr) -> i32
+// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"Closure_1", (i32)>
+// CHECK: %[[V1:.*]] = llvm.load %[[V0]] : !llvm.ptr -> i32
+// CHECK: %[[V2:.*]] = arith.constant 1 : i32
+// CHECK: %[[V3:.*]] = arith.addi %[[V1]], %[[V2]] : i32
+// CHECK: return %[[V3]] : i32
 fn main() -> i32 {
   let mut x = 10;
 

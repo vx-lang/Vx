@@ -1835,6 +1835,24 @@ macro_rules stamp_float {
         };
       }
 
+      /// e raised to this, by the target's own `exp`: on a GPU, a few fast instructions in
+      /// the type's own width. Not correctly rounded, as `exp` is; a `spawn` loop calling it
+      /// still runs in parallel.
+      fn fast_exp(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.exp %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// The hyperbolic tangent, by the target's own `tanh`, as `fast_exp` is to `exp`.
+      fn fast_tanh(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.tanh %a : $t
+          macro.yield %r : $t
+        };
+      }
+
 
 
 

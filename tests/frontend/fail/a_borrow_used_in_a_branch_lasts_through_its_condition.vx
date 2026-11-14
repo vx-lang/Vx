@@ -1,0 +1,59 @@
+//===- a_borrow_used_in_a_branch_lasts_through_its_condition.vx - Vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `m` is a `&mut s` that a branch uses, so it is in use while the condition runs, and the
+// condition cannot borrow `s`. Both functions used to compile. `in_match` then returned 5
+// through `r`, a shared reference whose value changed while it was in use.
+
+struct S {
+  x : i32,
+}
+
+enum Held {
+  R(&i32),
+}
+
+fn get(s : &S) -> Held {
+  return Held::R(&s.x);
+}
+
+fn get_ref(s : &S) -> &i32 {
+  return &s.x;
+}
+
+fn in_match() -> i32 {
+  let mut s = S {
+    x : 1
+  };
+  let m = &mut s;
+  // CHECK: Error[E4004] at {{.*}}a_borrow_used_in_a_branch_lasts_through_its_condition.vx:[[@LINE+1]]:{{.*}}Cannot borrow 's' because it is already borrowed as mutable
+  match get(&s) {
+    Held::R(r) => {
+      m.x = 5;
+      return *r;
+    }
+  }
+}
+
+fn in_if() -> i32 {
+  let mut s = S {
+    x : 1
+  };
+  let m = &mut s;
+  // CHECK: Error[E4004] at {{.*}}a_borrow_used_in_a_branch_lasts_through_its_condition.vx:[[@LINE+1]]:{{.*}}Cannot borrow 's' because it is already borrowed as mutable
+  if *get_ref(&s) == 1 {
+    m.x = 5;
+  }
+  return s.x;
+}
+
+fn main() -> i32 {
+  return in_match() + in_if();
+}
+// CHECK: 2 error(s) emitted

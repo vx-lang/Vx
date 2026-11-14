@@ -5,17 +5,18 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// `unreachable()` from `core::panic` stops the program with its message. `pick` ends with the call and
-// needs no `return` after it.
+// `unreachable()` from `core::panic` stops the program with its message and the line of the call.
+// `pick` ends with the call and needs no `return` after it.
 //
 // The first run also checks that the flat code generator, the default, compiled the program
 // rather than handing it to the AST code generator.
 //
-// RUN: VX_FLAT_DBG=1 not vxc %s 2>&1 | FileCheck %s --check-prefixes=FLAT,CHECK
+// RUN: VX_FLAT_DBG=1 not vxc %s 2>&1 | FileCheck %s --check-prefixes=FLAT,CHECK # flat-codegen
 // RUN: not vxc %s --legacy-codegen 2>&1 | FileCheck %s
 // FLAT: [flat-codegen] emitted module via the flat path
 // CHECK: 1
 // CHECK-NEXT: panic: internal error: entered unreachable code
+// CHECK-NEXT: {{^}}  at {{.*}}core_panic_unreachable.vx:27{{$}}
 // CHECK-NOT: after the panic
 import core::panic;
 

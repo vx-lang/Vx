@@ -1,0 +1,45 @@
+//===- cell.vx - Vx Standard Library ------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `SharedCell<T>`: a value that code can write through a shared reference `&`.
+//
+// A `&T` is read-only, and the compiler tells LLVM so (`llvm.readonly`). A `&T` whose `T`
+// holds a `SharedCell`, in a field at any depth, does not get that mark. That is why the
+// compiler knows this type by its name. It is Rust's `UnsafeCell` with another name.
+//
+// Writing through the pointer from `get` needs `unsafe`, and the caller must make sure
+// that nothing reads or writes the value at the same time. The atomics in `core::sync::atomic`
+// are the safe types built on it.
+
+/// A `T` that a shared reference can write through.
+struct SharedCell<T> {
+  v : T,
+}
+
+impl<T> SharedCell<T> {
+  /// A new cell holding `v`.
+  fn new(v : T) -> SharedCell<T> {
+    return SharedCell<T> {
+      v : v
+    };
+  }
+
+  /// The value, out of the cell.
+  fn into_inner(self : SharedCell<T>) -> T {
+    return self.v;
+  }
+
+  /// A pointer to the value. A write through it needs `unsafe`.
+  fn get(self : &SharedCell<T>) -> *mut T {
+    return (&self.v) as *const T as *mut T;
+  }
+
+  /// The value, through a `&mut`, which rules out any other access at the same time.
+  fn get_mut(self : &mut SharedCell<T>) -> &mut T {
+    return &mut self.v;
+  }
+}

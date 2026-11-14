@@ -52,7 +52,7 @@ fn moved_twice() -> i32 {
     }
   };
   let x = p.a;
-  // CHECK: Error[E4001] at [[@LINE+1]]:{{.*}}`p.a` was moved out of `p`
+  // CHECK: Error[E4001] at {{.*}}fields_moved_out_of_a_struct.vx:[[@LINE+1]]:{{.*}}`p.a` was moved out of `p`
   let y = p.a;
   return 0;
 }
@@ -66,7 +66,7 @@ fn read_inside_a_moved_field() -> i32 {
     }
   };
   let x = p.b;
-  // CHECK: Error[E4001] at [[@LINE+1]]:{{.*}}`p.b` was moved out of `p`
+  // CHECK: Error[E4001] at {{.*}}fields_moved_out_of_a_struct.vx:[[@LINE+1]]:{{.*}}`p.b` was moved out of `p`
   return p.b.id;
 }
 
@@ -79,7 +79,7 @@ fn used_whole_after() -> i32 {
     }
   };
   let x = p.a;
-  // CHECK: Error[E4001] at [[@LINE+1]]:{{.*}}`p` is used whole, but `p.a` was moved out of it
+  // CHECK: Error[E4001] at {{.*}}fields_moved_out_of_a_struct.vx:[[@LINE+1]]:{{.*}}`p` is used whole, but `p.a` was moved out of it
   let q = p;
   return 0;
 }
@@ -93,7 +93,7 @@ fn borrowed_whole_after() -> i32 {
     }
   };
   let x = p.a;
-  // CHECK: Error[E4001] at [[@LINE+1]]:{{.*}}`p` is used whole, but `p.a` was moved out of it
+  // CHECK: Error[E4001] at {{.*}}fields_moved_out_of_a_struct.vx:[[@LINE+1]]:{{.*}}`p` is used whole, but `p.a` was moved out of it
   let r = &p;
   return 0;
 }
@@ -106,7 +106,7 @@ fn moved_in_a_loop() -> i32 {
       id: 2
     }
   };
-  // CHECK: Error[E4001] at [[@LINE+1]]:{{.*}}`p.a` is moved inside this loop
+  // CHECK: Error[E4001] at {{.*}}fields_moved_out_of_a_struct.vx:[[@LINE+1]]:{{.*}}`p.a` is moved inside this loop
   for _i in 0..2 {
     print(take(p.a));
   }
@@ -114,7 +114,7 @@ fn moved_in_a_loop() -> i32 {
 }
 
 fn through_a_reference(p : &Pair) -> i32 {
-  // CHECK: Error[E4008] at [[@LINE+1]]:{{.*}}`p.a` cannot be moved out: `p` is a reference
+  // CHECK: Error[E4008] at {{.*}}fields_moved_out_of_a_struct.vx:[[@LINE+1]]:{{.*}}`p.a` cannot be moved out: `p` is a reference
   return take(p.a);
 }
 
@@ -124,7 +124,7 @@ fn out_of_a_type_with_drop() -> i32 {
       id: 1
     }
   };
-  // CHECK: Error[E4013] at [[@LINE+1]]:{{.*}}`g.a` cannot be moved out: `Guarded` implements `Drop`
+  // CHECK: Error[E4013] at {{.*}}fields_moved_out_of_a_struct.vx:[[@LINE+1]]:{{.*}}`g.a` cannot be moved out: `Guarded` implements `Drop`
   return take(g.a);
 }
 

@@ -1,0 +1,11 @@
+LISA atomic_read_of_a_plain_write
+(* One place with a plain write and atomic accesses. A sequentially consistent read of `x` that
+   reads the plain write does not synchronize with it, so the two race (C7). Program.drf_sc in
+   the Lean model covers such a race.
+   Expect: sometimes, a data race. *)
+{ x = 0; }
+ P0                  | P1                   ;
+ w[plain] x 1        | r[sc] r0 x           ;
+ w[sc] x 2           |                      ;
+scopes: (system P0 P1)
+exists (1:r0 = 1)

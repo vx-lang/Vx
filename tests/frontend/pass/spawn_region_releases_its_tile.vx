@@ -46,10 +46,10 @@ Topology Dev {
 
 fn main() -> i32 {
   spawn on(Topology::CPU) {
-    let a = Tensor<f32, [1024, 768]>::uninit();
+    let a = unsafe { Tensor<f32, [1024, 768]>::uninit() };
     let _sa = transfer(a, Memory::W);
   }
-  let b = Tensor<f32, [1024, 768]>::uninit();
+  let b = unsafe { Tensor<f32, [1024, 768]>::uninit() };
   let _sb = transfer(b, Memory::W);
   return 0;
 }

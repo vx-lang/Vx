@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ main ]
 
+# `vxc --version` names the commit it was built from. See vx-build-commit/build.rs.
+env:
+  VX_VERSION_WITH_COMMIT: 1
+
 jobs:
   # Vx is built and tested against its own LLVM, from scripts/provision/build_llvm.sh, kept in
   # the GitHub Actions cache. This job builds it only when the cache does not have it; the test
@@ -19,13 +23,41 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Build LLVM if the cache does not have it
         id: llvm
         uses: ./.github/actions/build-own-llvm
         with:
           restore: 'false'
+
+  # build.rs compiles runtime/cuda_dispatch.cpp only on a machine with a CUDA toolkit, and the
+  # test jobs have none. So this job installs the toolkit and compiles the plugin. It needs no GPU.
+  cuda-plugin:
+    name: Compile the CUDA plugin
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # The packages of the CUDA job in release.yml, which says why cuda-nvcc is needed.
+      - name: Install the CUDA toolkit
+        run: |
+          set -euo pipefail
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            cuda-cudart-dev-12-6 libcublas-dev-12-6 cuda-driver-dev-12-6 cuda-nvcc-12-6
+          test -f /usr/local/cuda/include/cuda_runtime.h || sudo ln -sfn /usr/local/cuda-12.6 /usr/local/cuda
+
+      # The command of build.rs, with warnings as errors.
+      - name: Compile runtime/cuda_dispatch.cpp
+        run: |
+          clang++ -std=c++17 -O3 -Wall -Wextra -Werror -shared -fPIC runtime/cuda_dispatch.cpp \
+            -I/usr/local/cuda/include -L/usr/local/cuda/lib64 -lffi -lcudart -lcublas -ldl \
+            -o "$RUNNER_TEMP/libvx_cuda_dispatch.so"
 
   test:
     name: Run Tests
@@ -38,7 +70,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -60,6 +92,16 @@ jobs:
             echo "Error: Locking primitives or thread-parking mechanisms are not allowed in the Vx compiler!"
             exit 1
           fi
+
+      # Blog section headings need a stable id and an in-page permalink so deep links
+      # keep working. Only needs python3 and the checkout.
+      - name: Check blog headings have ids
+        run: python3 scripts/tools/check_blog_heading_ids.py
+
+      # The outcome classifier of the admission-matrix harness, against the pilot run's strings.
+      # Only needs python3 and the checkout.
+      - name: Test the admission matrix harness
+        run: python3 -m unittest discover -s utils/campaign -p 'test_*.py'
 
       # Process-global atomics are banned for the same reason as locks: a compilation must be
       # isolated, and a static a worker thread can write is shared mutable state whether or not
@@ -90,8 +132,8 @@ jobs:
       - name: Check Vx Formatting (vx-format)
         run: |
           cargo build --release --bin vx-format
-          find tests stdlib -name "*.vx" -exec ./target/release/vx-format {} +
-          git diff --exit-code || (echo "Vx files are not formatted properly. Run vx-format locally." && exit 1)
+          # Discover the same repository configuration as scripts/pre-commit.sh.
+          find tests stdlib -name "*.vx" -exec ./target/release/vx-format --check {} +
 
       - name: Check Markdown Formatting (mdformat)
         run: |
@@ -119,6 +161,15 @@ jobs:
       - name: Check documentation examples compile
         run: python3 scripts/tools/check_doc_examples.py
 
+      # The Qwen app keeps its tests in apps/qwen/tests, so that they move with it to its own
+      # repository later. Its scripts need NumPy, and ml_dtypes checks its fp8 codes. The system
+      # Python of the runner takes no packages, so they go in a venv of their own.
+      - name: Qwen app tests
+        run: |
+          python3 -m venv "$RUNNER_TEMP/qwen-venv"
+          "$RUNNER_TEMP/qwen-venv/bin/pip" install --quiet numpy ml_dtypes
+          PATH="$RUNNER_TEMP/qwen-venv/bin:$PWD/target/release:$PATH" apps/qwen/tests/run.sh
+
       # The diagnostic reference is generated from the source it describes. Regenerating and
       # diffing catches the case where someone adds a diagnostic and the published reference
       # silently stops being complete. mdformat is already on PATH from the markdown-formatting
@@ -133,6 +184,8 @@ jobs:
           python3 scripts/tools/gen_stdlib_reference.py
 
       - name: Run tests
+        env:
+          VX_TESTS_NEED_THREAD_SANITIZER: 1
         run: cargo test --release --workspace --verbose
 
       # Generated programs, each run on both code generators and as a Rust twin. A program
@@ -198,6 +251,18 @@ jobs:
             echo "Skipping stress tests. They run every 10th commit (current run: $GITHUB_RUN_NUMBER)."
           fi
 
+      # Each test of tasks again, under other orders of its tasks: 3 seeds on each run, and 20
+      # on every 10th run. "1 passed" fails the step if the test was renamed or did not run.
+      - name: Run the tests of tasks under many schedules
+        run: |
+          seeds=3
+          if [ $((GITHUB_RUN_NUMBER % 10)) -eq 0 ]; then seeds=20; fi
+          echo "Running the tests of tasks with $seeds seeds"
+          out=$(VX_TEST_TASK_SEEDS=$seeds cargo test --release --test integration_test -- \
+            --ignored --exact integration_test::compile_test::test_tasks_under_many_schedules 2>&1) \
+            || { echo "$out"; exit 1; }
+          grep -q "1 passed" <<<"$out" || { echo "$out"; echo "The test did not run"; exit 1; }
+
       - name: Run benchmarks (Every 10th Commit, offset by 1)
         run: |
           if [ $(((GITHUB_RUN_NUMBER + 1) % 10)) -eq 0 ]; then
@@ -223,7 +288,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -250,5 +315,74 @@ jobs:
       - name: Build
         run: cargo build --verbose
 
+      # The C and C++ programs in tests/runtime/ get AddressSanitizer and UndefinedBehaviorSanitizer
+      # here. Our LLVM has no sanitizer runtimes, so they use GCC.
       - name: Run tests (debug)
+        env:
+          VX_TEST_SANITIZERS: 1
+          VX_TEST_CXX: g++
+          VX_TEST_CC: gcc
         run: cargo test --workspace --verbose
+
+  # The task stack switch in stdlib/rust_core is assembly, one version for each CPU. This job
+  # runs the Rust core tests for aarch64 under qemu-user, and builds the macOS aarch64 library,
+  # so that a change to the aarch64 version cannot pass unseen. It needs no LLVM.
+  #
+  # The tests with shadow stacks need QEMU 10.1 or later, which emulates arm64's Guarded Control
+  # Stack. The runner's own QEMU is older, so this job builds one and caches it.
+  # VX_REQUIRE_SHADOW_STACKS makes those tests fail when they find no shadow stacks.
+  # docs/testing_shadow_stacks_with_qemu.md says more.
+  rust-core-aarch64:
+    name: Rust core tests on aarch64 (qemu)
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+      # Not QEMU_VERSION: qemu-aarch64 reads that as -version, prints it and runs no test.
+      VX_QEMU_RELEASE: 10.2.1
+      VX_REQUIRE_SHADOW_STACKS: 1
+    defaults:
+      run:
+        working-directory: stdlib/rust_core
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu, aarch64-apple-darwin
+
+      - name: Install the aarch64 linker
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Cache QEMU
+        id: qemu-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/qemu
+          key: qemu-aarch64-linux-user-${{ env.VX_QEMU_RELEASE }}-${{ runner.os }}
+
+      - name: Build QEMU
+        if: steps.qemu-cache.outputs.cache-hit != 'true'
+        working-directory: ${{ runner.temp }}
+        run: |
+          sudo apt-get install -y ninja-build libglib2.0-dev
+          curl -fsSL "https://download.qemu.org/qemu-${VX_QEMU_RELEASE}.tar.xz" | tar -xJ
+          cd "qemu-${VX_QEMU_RELEASE}"
+          ./configure --target-list=aarch64-linux-user --prefix="$HOME/qemu" --disable-docs --disable-tools
+          make -j"$(nproc)" install
+
+      - name: Use the built QEMU
+        run: |
+          "$HOME/qemu/bin/qemu-aarch64" --version
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER=$HOME/qemu/bin/qemu-aarch64 -L /usr/aarch64-linux-gnu" >> "$GITHUB_ENV"
+
+      - name: Run tests (aarch64 Linux)
+        shell: bash
+        run: |
+          cargo test --target aarch64-unknown-linux-gnu --verbose 2>&1 | tee "$RUNNER_TEMP/tests.log"
+          grep -q "tasks_switch_with_shadow_stacks_on ... ok" "$RUNNER_TEMP/tests.log"
+
+      - name: Build the library (aarch64 macOS)
+        run: cargo rustc --lib --target aarch64-apple-darwin --crate-type staticlib --verbose

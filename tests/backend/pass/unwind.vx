@@ -88,9 +88,16 @@ fn main() -> i32 {
 
 // Each panicking body reaches vx_catch_unwind as its own symbol -- the two closure cases as
 // generated Closure_N_call thunks -- so a caught panic returns to the next call, not past it.
-// MLIR: func.func private @vx_catch_unwind
-// MLIR-DAG: func.func @Closure_1_call
-// MLIR-DAG: func.func @Closure_2_call
-// MLIR: call @vx_catch_unwind
-// MLIR: call @vx_catch_unwind
-// MLIR: call @vx_catch_unwind
+// MLIR: func.func private @vx_catch_unwind(!llvm.ptr) -> i32
+// MLIR-LABEL: func.func @main() -> i32 {
+// MLIR: %[[F1:.*]] = constant @do_test_chain : () -> i32
+// MLIR: %[[P1:[0-9]+]] = builtin.unrealized_conversion_cast %[[F1]]
+// MLIR: call @vx_catch_unwind(%[[P1]])
+// MLIR: %[[F2:.*]] = constant @do_test_lambda : () -> i32
+// MLIR: %[[P2:[0-9]+]] = builtin.unrealized_conversion_cast %[[F2]]
+// MLIR: call @vx_catch_unwind(%[[P2]])
+// MLIR: %[[F3:.*]] = constant @do_test_direct_panic_lambda : () -> i32
+// MLIR: %[[P3:[0-9]+]] = builtin.unrealized_conversion_cast %[[F3]]
+// MLIR: call @vx_catch_unwind(%[[P3]])
+// MLIR-DAG: func.func @Closure_1_call(
+// MLIR-DAG: func.func @Closure_2_call(

@@ -5,11 +5,11 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // main calls each function in order; the assertion is that the chain survives to codegen
 // rather than being folded away.
 // CHECK-LABEL: func.func @main() -> i32
-// CHECK: call @mutate_config(%{{.*}}) : (!llvm.struct<"Config", (i32, i32, i32, i32, i32, i32, i32)>) -> !llvm.struct<"Config", (i32, i32, i32, i32, i32, i32, i32)>
+// CHECK: call @mutate_config(%{{.*}}) : (!llvm.struct<(i32, i32, i32, i32, i32, i32, i32)>) -> !llvm.struct<(i32, i32, i32, i32, i32, i32, i32)>
 struct Config {
   dim : i32,
   hidden_dim : i32,

@@ -1,0 +1,100 @@
+//===- a_tasks_block_with_a_tensor_value_can_be_left_early.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The value of each `tasks` block here is a tensor, and a `return` or a `break` can leave the
+// block before it has that value. In each block, the first task waits until the second task
+// sets a flag, so the two tasks must run at the same time, or the program hangs. `sized`
+// gives a tensor whose length is known only when it runs.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}return: 8 9{{$}}
+// CHECK: {{^}}break: 3 0{{$}}
+// CHECK: {{^}}sized: 5 9{{$}}
+
+import core::convert;
+import core::sync::atomic;
+import std::sync::wait;
+
+fn wait_for(flag : &AtomicI64) -> void {
+  let mut seen = flag.load(AtomicOrdering::Acquire);
+  while seen == 0 {
+    wait_while(flag, seen);
+    seen = flag.load(AtomicOrdering::Acquire);
+  }
+}
+
+fn set(flag : &AtomicI64) -> void {
+  flag.store(1, AtomicOrdering::Release);
+  wake_all(flag);
+}
+
+fn returned_early(early : bool) -> i64 {
+  let flag = AtomicI64::new(0);
+  let t = tasks {
+    spawn {
+      wait_for(&flag);
+    };
+    spawn {
+      set(&flag);
+    };
+    if early {
+      return 9;
+    }
+    Tensor<i64, [2]>::fill(4)
+  };
+  return t[0] + t[1];
+}
+
+fn left_a_loop(stop : i64) -> i64 {
+  let mut total = 0i64;
+  for i in 0..3 {
+    let flag = AtomicI64::new(0);
+    let t = tasks {
+      spawn {
+        wait_for(&flag);
+      };
+      spawn {
+        set(&flag);
+      };
+      if i64::from(i) == stop {
+        break;
+      }
+      Tensor<i64, [2]>::fill(i64::from(i))
+    };
+    total = total + t[1];
+  }
+  return total;
+}
+
+fn sized(early : bool, n : i32) -> i64 {
+  let flag = AtomicI64::new(0);
+  let t = tasks {
+    spawn {
+      wait_for(&flag);
+    };
+    spawn {
+      set(&flag);
+    };
+    if early {
+      return 9;
+    }
+    let mut v = Tensor<i64>([n]);
+    v[n - 1] = 5;
+    v
+  };
+  return t[n - 1];
+}
+
+fn main() -> i32 {
+  println!("return: {} {}", returned_early(false), returned_early(true));
+  println!("break: {} {}", left_a_loop(5i64), left_a_loop(1i64));
+  println!("sized: {} {}", sized(false, 3), sized(true, 3));
+  return 0;
+}

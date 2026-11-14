@@ -41,13 +41,14 @@
 <article class="post">
 
 <h1>Tiles, without a tile type</h1>
-<p class="post-meta">Aditya Kumar &middot; 21 September 2026</p>
+<p class="post-meta">Aditya Kumar &middot; 21 September 2026 &middot; updated 9 November 2026, for
+tensor cores, grid axes, run-time bounds and asynchronous copies</p>
 
-<blockquote class="tldr"><strong>TL;DR</strong> — Tile-based GPU programming structures kernels around sub-arrays of a tensor. Vx has no built-in tile type, yet nested loops over a <code>Tensor&lt;T, [..], Memory::SMEM&gt;</code> compile to PTX: 8 bytes of <code>.shared</code> storage, <code>bar.sync</code> instructions, and grid-strided execution over <code>%ctaid.x</code> and <code>%tid.x</code>. Tracking memory space in types turns shared-memory overcommit into a compile-time error. What Vx still lacks is a dedicated tile abstraction: there are no tile arithmetic operations, no tensor-core instructions, only one grid dimension, and loop bounds must be static literals.</blockquote>
+<blockquote class="tldr"><strong>TL;DR</strong> — Tile-based GPU programming structures kernels around sub-arrays of a tensor. Vx has no built-in tile type, yet nested loops over a <code>Tensor&lt;T, [..], Memory::SMEM&gt;</code> compile to PTX: 8 bytes of <code>.shared</code> storage, <code>bar.sync</code> instructions, and grid-strided execution over <code>%ctaid.x</code> and <code>%tid.x</code>. Tracking memory space in types turns shared-memory overcommit into a compile-time error. What Vx still lacks is a dedicated tile abstraction: there is no tile type, and no autotuning. Since this post, the compiler gained tensor-core instructions, three grid axes, run-time loop bounds and asynchronous copies.</blockquote>
 
 <p class="lede">A developer recently asked if Vx could support tile-based GPU programming like NVIDIA's cuTile. To find out, I wrote a shared-memory staging kernel in Vx and examined the compiler's PTX output.</p>
 
-<h2>Tiles versus threads</h2>
+<h2 id="tiles-versus-threads"><a href="#tiles-versus-threads">Tiles versus threads</a></h2>
 
 <p>In standard CUDA programming, you write code from the perspective of an individual thread. The programmer coordinates the entire cooperative thread group: computing array offsets with <code>threadIdx</code> and <code>blockIdx</code>, staging data into <code>__shared__</code> memory, synchronizing threads with <code>__syncthreads()</code>, and loading elements back out.</p>
 
@@ -57,7 +58,7 @@
 
 <p>Vx takes a different angle by placing memory hierarchies directly into the type system. Every tensor type tracks which physical memory space holds it and which processor can access it. Can this same placement system compile a working tile-style kernel?</p>
 
-<h2>The staging kernel</h2>
+<h2 id="the-staging-kernel"><a href="#the-staging-kernel">The staging kernel</a></h2>
 
 <p>To test this question, I wrote a minimal staging kernel. It copies slices of an array from GPU global memory (HBM) into shared memory (SMEM), synchronizes, and writes the results back to global memory. The arithmetic is intentionally simple so the memory patterns and loop structures remain easy to follow:</p>
 
@@ -114,7 +115,7 @@
   <li>Two <code>barrier()</code> calls to coordinate thread synchronization.</li>
 </ul>
 
-<h2>How the compiler maps loops to PTX</h2>
+<h2 id="how-the-compiler-maps-loops-to-ptx"><a href="#how-the-compiler-maps-loops-to-ptx">How the compiler maps loops to PTX</a></h2>
 
 <p>To compile this kernel, the compiler must determine which loop runs over thread blocks and which loop runs over individual threads. It does this through a check called <code>parallel_two_level</code>. To guarantee that threads never race or leave unwritten gaps, the analysis verifies every index expression that writes to a captured array.</p>
 
@@ -170,7 +171,7 @@
 
 <p>There is one case where this equivalence breaks down: placing a <code>barrier()</code> inside a thread loop. No serial execution order can satisfy a barrier within a single thread's loop iterations. In that scenario, the compiler marks the payload with <code>coop=1</code>, instructing the runtime to reject host fallback and avoid returning corrupted data.</p>
 
-<h2>Two compile-time checks CUDA lacks</h2>
+<h2 id="two-compile-time-checks-cuda-lacks"><a href="#two-compile-time-checks-cuda-lacks">Two compile-time checks CUDA lacks</a></h2>
 
 <p>Writing this kernel triggered two compiler errors that have no direct equivalents in traditional GPU programming.</p>
 
@@ -188,25 +189,25 @@
 
 <p>This message comes from <code>tests/frontend/fail/three_dtcm_tiles_do_not_fit_a_cortex_m7.vx</code>. That test targets the tightly-coupled memory of an ARM Cortex-M7 microcontroller, not a GPU. The check keys on the declared capacity of a space rather than on what kind of part holds it, which is the point: it runs on a laptop, with no device toolchain involved.</p>
 
-<h2>What is still missing</h2>
+<h2 id="what-is-still-missing"><a href="#what-is-still-missing">What is still missing</a></h2>
 
-<p>The kernel above demonstrates that Vx can compile the physical mechanics of a shared-memory staging pipeline. However, Vx does not yet provide a complete tile programming model. Five major features remain unimplemented:</p>
+<p>The kernel above demonstrates that Vx can compile the physical mechanics of a shared-memory staging pipeline. However, Vx does not yet provide a complete tile programming model. When this post was written, five major features were missing. The update of 9 November 2026 marks the four that now exist.</p>
 
 <ul>
-  <li><strong>No tile type and no tile operators.</strong> Vx has no dedicated tile primitives. There is no tile-level matrix multiply, reduction, or broadcast. A tile is simply a <code>Tensor&lt;T, [..], Memory::SMEM&gt;</code>, and you manipulate its contents by writing scalar loops element by element. (The custom-transfer design document used <code>Tile&lt;f32&gt;</code> in an example snippet, but no such type exists in the language; test fixtures use tensors.)</li>
+  <li><strong>No tile type and no tile operators.</strong> Vx has no dedicated tile primitives. There is no tile-level matrix multiply, reduction, or broadcast. <em>Update:</em> there is still no tile type, but lane routines such as <code>lanes::sum</code>, <code>lanes::max</code> and <code>lanes::sort</code> now reduce and sort a tile with all the lanes of a block (<code>docs/lane_reductions.md</code>). A tile is simply a <code>Tensor&lt;T, [..], Memory::SMEM&gt;</code>, and you manipulate its contents by writing scalar loops element by element. (The custom-transfer design document used <code>Tile&lt;f32&gt;</code> in an example snippet, but no such type exists in the language; test fixtures use tensors.)</li>
 
-  <li><strong>No tensor core instructions.</strong> The compiler never emits PTX <code>mma</code> or <code>wmma</code> instructions. Matrix operations reach tensor cores only through vendor libraries: when an entire placed region consists of a <code>linalg.matmul</code>, the runtime dispatches it directly to cuBLAS. General user-written kernels receive scalar PTX instructions.</li>
+  <li><strong>No tensor core instructions.</strong> The compiler never emits PTX <code>mma</code> or <code>wmma</code> instructions. Matrix operations reach tensor cores only through vendor libraries: when an entire placed region consists of a <code>linalg.matmul</code>, the runtime dispatches it directly to cuBLAS. General user-written kernels receive scalar PTX instructions. <em>Update:</em> a matmul of <code>bf16</code> or <code>f16</code> tiles in the code of a subgroup now compiles to <code>mma.sync</code> on sm_80 and later (<code>tests/optimizations/pass/lane_matmuls_on_the_gpu.vx</code>).</li>
 
-  <li><strong>A single grid dimension.</strong> The loop lowering pass only generates block and thread coordinates along <code>Dimension::x</code> (<code>%ctaid.x</code> and <code>%tid.x</code>). Multi-dimensional tile grids must be linearized into 1D indexing in source code.</li>
+  <li><strong>A single grid dimension.</strong> The loop lowering pass only generates block and thread coordinates along <code>Dimension::x</code> (<code>%ctaid.x</code> and <code>%tid.x</code>). Multi-dimensional tile grids must be linearized into 1D indexing in source code. <em>Update:</em> each <code>across blocks</code> loop of a nest is now a grid axis, up to three (<code>tests/optimizations/pass/across_loops_give_the_launch_shape.vx</code>).</li>
 
-  <li><strong>Static shapes only.</strong> The affine loop prover requires literal integer bounds. The number of tiles and the dimensions of each tile must be known constants at compile time. Loops with dynamic runtime bounds fail verification and fall back to serial lowering.</li>
+  <li><strong>Static shapes only.</strong> The affine loop prover requires literal integer bounds. The number of tiles and the dimensions of each tile must be known constants at compile time. Loops with dynamic runtime bounds fail verification and fall back to serial lowering. <em>Update:</em> <code>for b in 0..n across blocks</code> now takes a run-time <code>n</code>. When an index of the loop can wrap, the host checks <code>n</code> before the launch.</li>
 
-  <li><strong>No hardware scheduling or pipelining.</strong> Block dimensions match the thread loop trip count, and grid dimensions match the block loop trip count. The compiler offers no autotuning, software pipelining, or double buffering. It does not generate asynchronous copy instructions (such as <code>cp.async</code> or Hopper TMA) inside kernel bodies; asynchronous copies exist only during transfers managed by a declared hardware <code>copy_engine</code>.</li>
+  <li><strong>No hardware scheduling or pipelining.</strong> Block dimensions match the thread loop trip count, and grid dimensions match the block loop trip count. The compiler offers no autotuning, software pipelining, or double buffering. It does not generate asynchronous copy instructions (such as <code>cp.async</code> or Hopper TMA) inside kernel bodies; asynchronous copies exist only during transfers managed by a declared hardware <code>copy_engine</code>. <em>Update:</em> <code>lanes::copy_async</code> now copies a tile in the background with <code>cp.async</code>, and with TMA on sm_90a. Two tiles give double buffering. There is still no autotuning.</li>
 </ul>
 
-<h2>Where this leaves us</h2>
+<h2 id="where-this-leaves-us"><a href="#where-this-leaves-us">Where this leaves us</a></h2>
 
-<p>Vx can already lower a shared-memory staging pattern to a functional GPU device image. It does so by using static analysis to prove properties of nested loops. The developer still writes explicit element loops, and hardware tensor instructions remain unavailable.</p>
+<p>Vx can already lower a shared-memory staging pattern to a functional GPU device image. It does so by using static analysis to prove properties of nested loops. The developer still writes explicit element loops. (When this post was written, hardware tensor instructions were unavailable too. The update above lists what changed.)</p>
 
 <p>Tile frameworks and Vx address complementary concerns:</p>
 
@@ -234,5 +235,6 @@ the type in the first place.</p>
   <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>.</p>
 </footer>
 
+<script src="/blog/copy-code.js" defer></script>
 </body>
 </html>

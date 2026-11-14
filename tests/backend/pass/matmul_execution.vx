@@ -6,7 +6,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s
 // The externs this program pulls in are declared, and main calls them in order with the
 // values threaded between them -- the dataflow the run below scores, stated in the IR.
 // CHECK-DAG: func.func private @printMemrefF64(
@@ -29,7 +29,7 @@
 fn custom_matmul(a : Pinned<Tensor<f64, [ 4, 4 ]>, Topology::NPU[0]>,
 b : Pinned<Tensor<f64, [ 4, 4 ]>, Topology::NPU[0]>)
 -> Verified<Tensor<f64, [ 4, 4 ], Memory::NPU_HBM>> {
-  let mut result = Tensor<f64, [4, 4], Memory::NPU_HBM>::uninit();
+  let mut result = unsafe { Tensor<f64, [4, 4], Memory::NPU_HBM>::uninit() };
   spawn on(Topology::NPU[0]) {
     for i in 0..4 {
       for j in 0..4 {
@@ -44,8 +44,8 @@ b : Pinned<Tensor<f64, [ 4, 4 ]>, Topology::NPU[0]>)
 }
 
 fn main() -> i32 {
-  let mut a_host = Tensor<f64, [4, 4]>::uninit(); // Defaults to CPU_DRAM
-  let mut b_host = Tensor<f64, [4, 4]>::uninit();
+  let mut a_host = unsafe { Tensor<f64, [4, 4]>::uninit() }; // Defaults to CPU_DRAM
+  let mut b_host = unsafe { Tensor<f64, [4, 4]>::uninit() };
 
   for i in 0..4 {
     for j in 0..4 {

@@ -40,6 +40,10 @@ struct String {
   ptr : *mut i8,
 }
 
+// The Rust core owns the text, and no method changes it through `&String`.
+unsafe impl Send for String {}
+unsafe impl Sync for String {}
+
 impl String {
   /// An empty string.
   fn new ()->String {

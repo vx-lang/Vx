@@ -71,9 +71,9 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK-DAG: Error[E4002] at 20:5: Cannot access 'v' because it is mutably borrowed.
-// CHECK-DAG: Error[E4002] at 31:13: Cannot access 'v' because it is mutably borrowed.
-// CHECK-DAG: Error[E4002] at 41:5: Cannot access 'v' because it is mutably borrowed.
-// CHECK-DAG: Error[E4002] at 54:5: Cannot access 'v' because it is mutably borrowed.
-// CHECK-DAG: Error[E4003] at 65:7: Cannot borrow 'v' as mutable because it is also borrowed as immutable.
+// CHECK-DAG: Error[E4002] at {{.*}}borrows_held_across_a_loop.vx:20:5: Cannot access 'v' because it is mutably borrowed.
+// CHECK-DAG: Error[E4002] at {{.*}}borrows_held_across_a_loop.vx:31:13: Cannot access 'v' because it is mutably borrowed.
+// CHECK-DAG: Error[E4002] at {{.*}}borrows_held_across_a_loop.vx:41:5: Cannot access 'v' because it is mutably borrowed.
+// CHECK-DAG: Error[E4002] at {{.*}}borrows_held_across_a_loop.vx:54:5: Cannot access 'v' because it is mutably borrowed.
+// CHECK-DAG: Error[E4003] at {{.*}}borrows_held_across_a_loop.vx:65:7: Cannot borrow 'v' as mutable because it is also borrowed as immutable.
 // CHECK: 5 error(s) emitted

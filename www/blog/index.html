@@ -43,6 +43,89 @@
 
   <ul class="posts">
     <li>
+      <a href="/blog/plain-loops-at-the-speed-of-cuda.html">Plain loops at the speed of CUDA</a>
+      <time datetime="2026-11-13">13 November 2026</time>
+      <p>On an A100, a Vx <code>across</code> loop ran 12% faster than the same loop in CUDA, and
+      three of llm.c's kernels came within 5% of llm.c's own. What it took, and how we
+      measured.</p>
+    </li>
+    <li>
+      <a href="/blog/what-compiling-against-z3-taught-us-about-trusting-provers.html">What compiling against z3 taught us about trusting provers</a>
+      <time datetime="2026-11-13">13 November 2026</time>
+      <p>Vx asks the z3 solver to prove contracts while it compiles. A missing z3 that passed every
+      proof, a type error that z3 skipped in most queries, facts that proved false contracts, and
+      one function that asked z3 16,128 questions.</p>
+    </li>
+    <li>
+      <a href="/blog/the-promise-of-vx.html">The promise of Vx</a>
+      <time datetime="2026-11-09">9 November 2026</time>
+      <p>Your desktop has many cores, memory in banks and a GPU, and the apps you download use
+      little of it. Vx lets you write the app you need and use all of it. What works today, and
+      what is still a promise.</p>
+    </li>
+    <li>
+      <a href="/blog/checking-the-deadlock-watcher.html">Checking the deadlock watcher</a>
+      <time datetime="2026-11-03">3 November 2026</time>
+      <p>The Vx runtime stops a program when each task waits and nothing can wake one. A TLA+ model
+      of that watcher found a gap of three lines in the timer, where a busy machine could make the
+      watcher report a deadlock that did not exist.</p>
+    </li>
+    <li>
+      <a href="/blog/two-tensors-one-stack-slot.html">Stack coloring enabled by lifetime markers</a>
+      <time datetime="2026-11-02">2 November 2026</time>
+      <p>LLVM gives two local arrays one stack slot when lifetime markers show that they are not in
+      use at the same time. Clang and rustc end each lifetime at the end of a scope. Vx ends it after
+      the last use of a tensor, so the same function uses 4 KB of stack in Vx and 8 KB in C++ and
+      Rust.</p>
+    </li>
+    <li>
+      <a href="/blog/design-visibility-builds-and-versions-together.html">Design visibility, builds and versions together</a>
+      <time datetime="2026-10-27">27 October 2026</time>
+      <p>Visibility rules, the build system and the package manager all depend on the public
+      interface of a package. In C++, Rust and Swift they disagree, and programmers pay for it. In
+      Vx, one visibility keyword will answer three questions: who can call this, what rebuilds when
+      it changes, and which version bump the change needs.</p>
+    </li>
+    <li>
+      <a href="/blog/two-bugs-the-h100-did-not-show.html">Two bugs the H100 did not show</a>
+      <time datetime="2026-10-27">27 October 2026</time>
+      <p>Five litmus tests of Vx's memory model ran on an H100 for over a million rounds each, and
+      printed 0. So did the controls, so the runs showed nothing. Reading the PTX found two bugs: a
+      relaxed load that the GPU may move after a later store, and LLVM 22 dropping the order of
+      every read-modify-write, such as <code>fetch_add</code>, in a kernel.</p>
+    </li>
+    <li>
+      <a href="/blog/glm-on-an-a100.html">GLM on an A100, in Vx</a>
+      <time datetime="2026-10-20">20 October 2026</time>
+      <p>GLM-5's decoder, with its sparse attention and 256-expert layers, runs on an A100 through
+      28 GPU kernels written in Vx. On random weights it matches the official model to within 1e-5
+      up to 78 layers, generates the same 16 tokens, and runs INT4, FP8 and BF16 weights as stored.
+      The GPU also found a race that no CPU test could.</p>
+    </li>
+    <li>
+      <a href="/blog/optimizing-for-the-common-case.html">Optimizing for the common case, in language design</a>
+      <time datetime="2026-10-20">20 October 2026</time>
+      <p>The most common parallel loop starts one task per index. Go, C# and JavaScript first made
+      it a trap, and Rust needs <code>move</code>. In Vx, a task takes each variable the way it
+      uses it, with no <code>move</code> keyword, and a copy can never go stale.</p>
+    </li>
+    <li>
+      <a href="/blog/breaking-the-borrow-checker-on-purpose.html">Breaking the borrow checker on purpose</a>
+      <time datetime="2026-10-15">15 October 2026</time>
+      <p>We broke Vx's borrow checker 108 ways, one at a time, to see whether the tests would
+      notice. They caught 93. Of the 15 they missed, 11 were rules no test checked, and one led to
+      a program that read freed memory. Then 78 of Rust's borrow checker bug reports, run in Vx,
+      found 14 more holes.</p>
+    </li>
+    <li>
+      <a href="/blog/what-the-borrow-checker-let-through.html">What the borrow checker let through</a>
+      <time datetime="2026-10-14">14 October 2026</time>
+      <p>A review of Vx's borrow checker found eleven programs that compiled and should not have.
+      One printed a different number with optimization on, and one, sent by a reader, changed a
+      variable not declared <code>mut</code>. All are fixed. Rust's checker has open bugs of the
+      same two kinds, one of them reported this week.</p>
+    </li>
+    <li>
       <a href="/blog/build-order-should-not-change-a-program.html">When the build order changes the program</a>
       <time datetime="2026-10-09">9 October 2026</time>
       <p>C++ generates a copy assignment or a template instance only in the files that use it,
@@ -92,9 +175,10 @@
     <li>
       <a href="/blog/vx-fully-embraces-ml-ir-mlir.html">Vx fully embraces {ML, IR, MLIR}</a>
       <time datetime="2026-10-03">3 October 2026</time>
-      <p>Tensor programs, Vx's own intermediate representation, and a Vx MLIR dialect that keeps
-      where data lives and where code runs, shown stage by stage down to PTX. And the list of what
-      &ldquo;fully&rdquo; does not cover yet.</p>
+      <p>Tensor programs, Vx's own intermediate representation, and a Vx MLIR dialect, shown
+      stage by stage down to a PTX kernel with warp shuffles. Then <code>mlir!</code> blocks that
+      state what they write, so the race proof can check a GPU loop that calls them. Rewritten 24
+      October 2026.</p>
     </li>
     <li>
       <a href="/blog/can-the-borrow-checker-be-auto-vectorized.html">Can the borrow checker algorithm be auto-vectorized? The answer is yes!</a>

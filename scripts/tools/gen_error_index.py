@@ -48,7 +48,9 @@ SECTION_BLURB = {
 
 HEADER = """# Diagnostic index
 
-Every diagnostic the Vx compiler can emit, with the code it reports and what it means.
+Every code that the Vx compiler defines, and what it means. Some codes, among them the parser's
+`E1xxx` codes, do not appear in the compiler's messages yet
+([Vx#3227](https://github.com/vx-lang/Vx/issues/3227)).
 
 Codes are grouped by the compilation stage that raises them, and the group is readable off the
 number: `E1xxx` is the parser, `E3xxx` the type checker, `E6xxx` the placement and capacity rules,

@@ -15,7 +15,8 @@ let mut count = 0;     // mutable
 Bindings are immutable unless you write `mut`.
 
 The primitive types are the ones you would expect: `i8` `i16` `i32` `i64`, `u8` `u16` `u32` `u64`,
-`f16` `f32` `f64`, and `bool`.
+`f16` `f32` `f64`, and `bool`. For machine learning there are also `bf16`, the 4-bit integers `i4` and
+`u4`, and the fp8 and fp4 types in [Low-precision numbers](low-precision-numbers.md).
 
 **There are no implicit numeric conversions.** An `i32` does not become an `i64` because the context
 wants one; you write the conversion. Integer literals infer to the type the context requires, so
@@ -68,7 +69,7 @@ if x > 10 {
 }
 
 for i in 0..n {
-    // ...
+    total = total + i;
 }
 
 while i < n {
@@ -208,10 +209,12 @@ fn pick(x : i32) -> i32 {
 
 ## Stopping a program
 
-`panic(msg)` prints `panic: ` and the message, then stops the program; `abort()` stops it with no
-message. A function declared `-> !` never returns, like `core::panic`'s `unreachable()`, `todo()`
-and `unimplemented()`. A function can end with a call to one, and the call can stand where any
-value is expected:
+`panic(msg)` prints `panic: ` and the message, and the file and line of the call under it. Then it
+stops the program. `panic(msg, at)` prints the place in the `Caller` `at` instead, so a function
+that takes `at : Caller` can report the line of its own caller. `unwrap`, `expect` and `todo()` do
+this. `abort()` stops the program with no message. A function declared `-> !` never returns, like
+`core::panic`'s `unreachable()`, `todo()` and `unimplemented()`. A function can end with a call to
+one, and the call can stand where any value is expected:
 
 ```rust
 import core::panic;
@@ -239,7 +242,7 @@ A `?` marks a dimension that is only known at runtime:
 ```rust
 fn matmul(a : Tensor<f32, [?, ?]>, b : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]> {
     let mut result : Tensor<f32, [?, ?]> =
-        Tensor<f32, [?, ?]>::uninit([a.extent(0), b.extent(1)]);
+        unsafe { Tensor<f32, [?, ?]>::uninit([a.extent(0), b.extent(1)]) };
 
     for i in 0..a.extent(0) {
         for j in 0..b.extent(1) {
@@ -287,7 +290,7 @@ fn main() -> i32 {
 }
 ```
 
-Also available: `HashMap`, `HashSet`, `Option`, `Result`, `String`, `Box`, and iterator adaptors.
+Also available: `Option`, `Result`, `String`, `Box`, and iterator adaptors.
 See [the standard library](tooling.md#the-standard-library) for the full list.
 
 ## Modules
@@ -300,8 +303,10 @@ import std::io;
 import graph::traversal;
 ```
 
-`std::` resolves against the standard library shipped with your toolchain. Anything else resolves
-against the library search path and then the current directory.
+`std::` resolves against the standard library shipped with your toolchain. Any other import
+resolves against the standard library roots first, so `graph::traversal` is the library's `graph`.
+Then it resolves against the directory of the file you compile, and never against the current
+directory. `--package` adds a library in another directory ([Tooling](tooling.md)).
 
 An import brings in everything the module declares, and everything it imports. A module's own
 declaration wins over an imported one with the same name, so declaring `struct Range` does not
@@ -314,14 +319,16 @@ Raw pointers exist, and the operations that can go wrong with them require `unsa
 
 ```rust
 extern "C" {
-    fn vx_vec_new_i32() -> *mut i8;
-    fn vx_vec_push_i32(vec : *mut i8, val : i32) -> i32;
+    fn malloc(size : i64) -> *mut i8;
+    fn free(p : *mut i8) -> void;
 }
 
 fn main() -> i32 {
     unsafe {
-        let v = vx_vec_new_i32();
-        vx_vec_push_i32(v, 42);
+        let p = malloc(4);
+        p[0] = 42;
+        print(p[0]);
+        free(p);
     }
     return 0;
 }
@@ -329,8 +336,9 @@ fn main() -> i32 {
 
 Dereferencing a raw pointer, indexing through one, reading a field through one, and calling an
 `unsafe fn` all require an `unsafe` block. A function that takes a caller's raw pointer and
-dereferences it is itself `unsafe fn`, so the obligation is visible in its signature rather than
-buried in its body.
+dereferences it should be declared `unsafe fn`, so the obligation is visible in its signature
+rather than buried in its body. Marking a function `unsafe` does not allow raw pointer operations
+in its body. Each one still needs an `unsafe` block, as in [Unsafe and FFI](unsafe-and-ffi.md).
 
 `extern "C"` blocks declare foreign functions. Vx's C ABI interop is zero-overhead: there is no
 marshalling layer.

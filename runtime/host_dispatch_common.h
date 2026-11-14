@@ -28,6 +28,7 @@
 #ifndef VX_HOST_DISPATCH_COMMON_H
 #define VX_HOST_DISPATCH_COMMON_H
 
+#include "vx_arrival_counts.h"
 #include "vx_dispatch_plan.h"
 #include "vx_host_call.h"
 #include "vx_remote_routing.h"
@@ -622,9 +623,11 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
     abort();
   }
 
-  if (!vx_host_call_kernel(kernel, device_args, arg_tags, num_args,
-                           vx_host_worker_count_for(binary_payload,
-                                                    payload_size))) {
+  if (!vx_host_call_kernel(
+          kernel, device_args, arg_tags, num_args,
+          vx_host_worker_count_for(binary_payload, payload_size, device_args,
+                                   arg_tags, num_args),
+          vx_host_flushes_subnormals(binary_payload, payload_size))) {
     fprintf(stderr,
             "[Vx " VX_BACKEND_NAME "] FATAL: could not build a call for %s\n",
             kernel_name);
@@ -712,6 +715,49 @@ void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
 
 void vx_plugin_release_future(uint64_t future_id) { (void)future_id; }
 
+/// No tensor maps without a GPU: the kernel copies a tile with `cp.async`, and
+/// the CPU copy of the kernel never reads the map.
+int64_t vx_plugin_tensor_map(int64_t base, int64_t rank, int64_t elem_bytes,
+                             int64_t d0, int64_t d1, int64_t d2, int64_t d3,
+                             int64_t d4, int64_t s0, int64_t s1, int64_t s2,
+                             int64_t s3, int64_t s4, int64_t b0, int64_t b1,
+                             int64_t b2, int64_t b3, int64_t b4) {
+  (void)base, (void)rank, (void)elem_bytes, (void)d0, (void)d1, (void)d2;
+  (void)d3, (void)d4, (void)s0, (void)s1, (void)s2, (void)s3, (void)s4;
+  (void)b0, (void)b1, (void)b2, (void)b3, (void)b4;
+  return 0;
+}
+
+/// A build without CUDA has no streams. The call exists so that a host program
+/// links against every build (#1986).
+void vx_cuda_set_stream(void *stream) { (void)stream; }
+void *vx_cuda_get_stream(void) { return nullptr; }
+
+static vx::ArrivalCounts &arrival_counts() {
+  static vx::ArrivalCounts counts;
+  return counts;
+}
+
+void *vx_plugin_arrivals_take(const void *site, size_t bytes, void *zeros,
+                              uint32_t topology_id, uint32_t space_access) {
+  if (void *kept = arrival_counts().take(site, topology_id, nullptr, bytes)) {
+    return kept;
+  }
+  return vx_plugin_alloc_and_transfer(bytes, zeros, topology_id, space_access);
+}
+
+void vx_plugin_arrivals_give(const void *site, void *count, size_t bytes,
+                             uint32_t topology_id) {
+  // Keep only a count in this process. Free a count on a worker of the fleet.
+  void *spare =
+      vx_routing_worker((int32_t)topology_id)
+          ? count
+          : arrival_counts().give(site, topology_id, nullptr, count, bytes);
+  if (spare) {
+    vx_plugin_free(spare, topology_id);
+  }
+}
+
 int32_t vx_plugin_control(uint32_t opcode, void *payload) {
   (void)payload;
   if (opcode == VX_CTRL_GET_DEVICE_COUNT) {
@@ -722,5 +768,7 @@ int32_t vx_plugin_control(uint32_t opcode, void *payload) {
 }
 
 } // extern "C"
+
+#include "vx_collective_cpu.h"
 
 #endif /* VX_HOST_DISPATCH_COMMON_H */

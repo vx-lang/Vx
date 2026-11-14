@@ -1,0 +1,54 @@
+//===- type_invariants_that_are_not_well_formed.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// An invariant of a struct can use `self`, its fields at any depth, numbers, operators and the
+// pointer clauses. The first and the last invariant of `Holder` are well formed. Each other one
+// gets E8013.
+
+const LIMIT : i64 = 10;
+
+struct Pair {
+  a : i64,
+  b : i64,
+}
+
+impl Pair {
+  fn sum(self : &Pair) -> i64 {
+    return self.a + self.b;
+  }
+}
+
+fn positive(n : i64) -> bool {
+  return n > 0i64;
+}
+
+struct Holder
+invariant self.pair.a <= self.pair.b && self.size >= 0i64
+// CHECK: Error[E8013] at {{.*}}.vx:[[@LINE+1]]:21: this invariant of `Holder` is not well formed: `Pair` has no field `c`{{$}}
+invariant self.pair.c > 0i64
+// CHECK: Error[E8013] at {{.*}}.vx:[[@LINE+1]]:23: this invariant of `Holder` is not well formed: it names `LIMIT`, and an invariant can name only `self` and its fields{{$}}
+invariant self.size < LIMIT
+// CHECK: Error[E8013] at {{.*}}.vx:[[@LINE+1]]:21: this invariant of `Holder` is not well formed: `i64` is not a struct, so it has no field `bits`{{$}}
+invariant self.size.bits > 0i64
+// CHECK: Error[E8013] at {{.*}}.vx:[[@LINE+1]]:21: this invariant of `Holder` is not well formed: it calls the method `sum`, and an invariant can call only `valid`, `initialized` and `overlaps`{{$}}
+invariant self.pair.sum() > 0i64
+// CHECK: Error[E8013] at {{.*}}.vx:[[@LINE+1]]:11: this invariant of `Holder` is not well formed: it calls `positive`, and an invariant can call only `valid`, `initialized` and `overlaps`{{$}}
+invariant positive(self.size)
+// CHECK: Error[E8013] at {{.*}}.vx:[[@LINE+1]]:11: this invariant of `Holder` is not well formed: `valid` takes 2 arguments{{$}}
+invariant valid(self.data)
+invariant valid(self.data, self.size) && initialized(self.data, self.size)
+{
+  pair : Pair,
+  size : i64,
+  data : *mut i64,
+}
+
+fn main() -> i32 {
+  return 0;
+}

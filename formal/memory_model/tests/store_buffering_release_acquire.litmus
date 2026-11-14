@@ -1,0 +1,10 @@
+LISA store_buffering_release_acquire
+(* Release and acquire atomics allow each thread to miss the write of the other. AArch64 and x86
+   can both give this result, so the model must allow it.
+   Expect: sometimes, no data race. *)
+{ x = 0; y = 0; }
+ P0                  | P1                   ;
+ w[rel] x 1          | w[rel] y 1           ;
+ r[acq] r0 y         | r[acq] r1 x          ;
+scopes: (system P0 P1)
+exists (0:r0 = 0 /\ 1:r1 = 0)

@@ -54,7 +54,6 @@ Vx features a strictly verified, generic-capable type system.
 ```rust
 pub enum Type {
     Tensor(ElementType),
-    Matrix,
     Ref(Box<Type>, MemorySpace),                  // Reference bound to a specific memory space
     Borrow(Box<Type>, Option<MemorySpace>, bool), // &T or &mut T
     Pointer(Box<Type>, Option<MemorySpace>, bool),// *const T or *mut T

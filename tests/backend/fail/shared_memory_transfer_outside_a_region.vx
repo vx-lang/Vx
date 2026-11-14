@@ -31,7 +31,7 @@ Topology Dev {
 }
 
 fn main() -> i32 {
-  let mut a = Tensor<f32, [2, 2]>::uninit();
+  let mut a = unsafe { Tensor<f32, [2, 2]>::uninit() };
   a[0][0] = 1.0;
   let ad = transfer(a, Memory::GPU_HBM);
   let mut od = transfer(Tensor<f32, [2, 2]>::new(), Memory::GPU_HBM);

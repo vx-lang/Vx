@@ -12,16 +12,19 @@ runs:
   using: composite
   steps:
     - name: Restore LLVM
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v6
       with:
         path: toolchain/install
         key: ${{ inputs.key }}
         fail-on-cache-miss: true
 
     # z3 is the prover's solver, and lld links the compiler (see RUSTFLAGS). Neither comes from LLVM.
+    # Print the version: a solver change surfaces as a missing warning, not as "z3 disagreed".
     - name: Install z3 and lld
       shell: bash
-      run: sudo apt-get install -y z3 lld
+      run: |
+        sudo apt-get install -y z3 lld
+        z3 --version
 
     # The same settings setup.sh writes into config.local for this LLVM. The tools are found on
     # PATH by their plain names (llvm-config, opt, clang, FileCheck, ...).
@@ -29,7 +32,14 @@ runs:
       shell: bash
       run: |
         install="$GITHUB_WORKSPACE/toolchain/install"
-        enzyme=$(ls "$install"/lib/enzyme/LLVMEnzyme-22.*)
+        # Glob without ls so a missing file prints a clear message under -eo pipefail.
+        shopt -s nullglob
+        matches=("$install"/lib/enzyme/LLVMEnzyme-22.*)
+        if [ ${#matches[@]} -eq 0 ]; then
+          echo "Error: no LLVMEnzyme-22 library under $install/lib/enzyme" >&2
+          exit 1
+        fi
+        enzyme=${matches[0]}
         echo "$install/bin" >> "$GITHUB_PATH"
         {
           echo "MLIR_SYS_220_PREFIX=$install"

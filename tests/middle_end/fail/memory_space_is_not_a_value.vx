@@ -57,7 +57,7 @@ fn in_a_return() -> i32 {
 
 // `transfer` names a space as its destination, which is the one position that is not a value use.
 fn a_transfer_still_names_its_destination() -> i32 {
-  let mut a = Tensor<f32, [ 2, 2 ]>::uninit();
+  let mut a = unsafe { Tensor<f32, [ 2, 2 ]>::uninit() };
   a[0][0] = 1.0;
   let b = transfer(a, Memory::NPU_HBM);
   return 0;

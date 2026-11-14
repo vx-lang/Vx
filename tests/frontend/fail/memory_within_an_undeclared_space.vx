@@ -1,0 +1,31 @@
+//===- memory_within_an_undeclared_space.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `within:` must name a built-in space or a declared one (E6035). `Memory::SmemBlck` is a
+// typo for `SmemBlk`. `Inner` is within the declared `SmemBlk`, and `OnTheGpu` within the
+// built-in `GPU_HBM`, so neither gets an error.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=E6035
+
+Memory SmemBlk {
+  capacity: 228 KiB
+}
+Memory Typo {
+  within: Memory::SmemBlck, capacity: 64 KiB
+}
+Memory Inner {
+  within: Memory::SmemBlk, capacity: 64 KiB
+}
+Memory OnTheGpu {
+  within: Memory::GPU_HBM, capacity: 64 KiB
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: E6035{{.*}}memory space 'Typo' is `within: Memory::SmemBlck`, but the program and its machine files declare no memory space 'SmemBlck'

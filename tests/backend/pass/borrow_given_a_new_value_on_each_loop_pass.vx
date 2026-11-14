@@ -1,0 +1,64 @@
+//===- borrow_given_a_new_value_on_each_loop_pass.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A borrow left by one pass of a loop ends when its variable gets a new value before any read,
+// so the borrowed variable may change before that.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}last=2;{{$}}
+// CHECK-NEXT: {{^}}sum=101;{{$}}
+// CHECK-NEXT: {{^}}first=1;{{$}}
+
+import std::vec;
+
+fn written_before_the_new_borrow() -> i32 {
+  let mut x = 0;
+  let y = 100;
+  let mut last : &i32 = &y;
+  let mut i = 0;
+  while i < 3 {
+    x = i;
+    last = &x;
+    i = i + 1;
+  }
+  return *last;
+}
+
+fn read_then_written_then_borrowed() -> i32 {
+  let mut x = 0;
+  let y = 100;
+  let mut last : &i32 = &y;
+  let mut sum = 0;
+  for i in 0..2 {
+    sum = sum + *last;
+    x = i + 1;
+    last = &x;
+  }
+  return sum;
+}
+
+fn vector_borrowed_again_after_the_push() -> i64 {
+  let mut v = Vec<i64>::with_capacity(1);
+  v.push(1i64);
+  let other : i64 = 2i64;
+  let mut seen : &i64 = &other;
+  for i in 0..2 {
+    if i == 1 {
+      v.push(5i64);
+    }
+    seen = v.get_ref(0);
+  }
+  return *seen;
+}
+
+fn main() -> i32 {
+  println!("last={};", written_before_the_new_borrow());
+  println!("sum={};", read_then_written_then_borrowed());
+  println!("first={};", vector_borrowed_again_after_the_push());
+  return 0;
+}

@@ -1,0 +1,59 @@
+name: ThreadSanitizer
+
+# Runs each test program that starts tasks under ThreadSanitizer, and fails on a data race report.
+# It runs every second day, not on each pull request. The two tests with
+# `REQUIRES: thread-sanitizer` still run in ci.yml.
+on:
+  schedule:
+    # 12:00 UTC is 4am Pacific Standard Time, and 5am in summer time. Cron times are in UTC.
+    - cron: '0 12 */2 * *'
+  workflow_dispatch:
+
+jobs:
+  llvm:
+    name: Build LLVM
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    outputs:
+      key: ${{ steps.llvm.outputs.key }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Build LLVM if the cache does not have it
+        id: llvm
+        uses: ./.github/actions/build-own-llvm
+        with:
+          restore: 'false'
+
+  tsan:
+    name: Programs with tasks under ThreadSanitizer
+    needs: llvm
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ needs.llvm.outputs.key }}
+
+      - name: Use our own LLVM
+        uses: ./.github/actions/use-own-llvm
+        with:
+          key: ${{ needs.llvm.outputs.key }}
+
+      - name: Build
+        run: cargo build --release --workspace
+
+      - name: Run the programs with tasks under ThreadSanitizer
+        run: VXC=target/release/vxc python3 scripts/tools/run_task_tests_with_tsan.py

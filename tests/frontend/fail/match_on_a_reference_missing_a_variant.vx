@@ -1,0 +1,55 @@
+//===- match_on_a_reference_missing_a_variant.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A `match` on a reference to an enum needs an arm for each variant, or a `_` arm, like a
+// `match` on the enum itself (E3020). Each `match` here has no arm for `Square`.
+
+// CHECK-DAG: Error[E3020] at {{.*}}.vx:25:3: this `match` does not cover Square
+// CHECK-DAG: Error[E3020] at {{.*}}.vx:33:3: this `match` does not cover Square
+// CHECK-DAG: Error[E3020] at {{.*}}.vx:41:17: this `match` does not cover Square
+// CHECK: 3 error(s) emitted
+
+enum Shape {
+  Circle(i32),
+  Square(i32),
+}
+
+// Every arm returns, so a `Square` would run off the end of the function.
+fn size(s : &Shape) -> i32 {
+  match s {
+    Shape::Circle(r) => {
+      return r;
+    }
+  }
+}
+
+fn grow(s : &mut Shape) -> i32 {
+  match s {
+    Shape::Circle(r) => {
+      return r + 1;
+    }
+  }
+}
+
+fn size_as_a_value(s : &Shape) -> i32 {
+  let r : i32 = match s {
+    Shape::Circle(r) => {
+      r
+    }
+  };
+  return r;
+}
+
+fn main() -> i32 {
+  let mut s = Shape::Square(4);
+  print(size(&s));
+  print(grow(&mut s));
+  print(size_as_a_value(&s));
+  return 0;
+}

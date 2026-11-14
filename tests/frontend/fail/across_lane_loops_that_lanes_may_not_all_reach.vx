@@ -1,0 +1,225 @@
+//===- across_lane_loops_that_lanes_may_not_all_reach.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The end of a lane loop is a barrier that every lane of the block must reach (#252). So a
+// condition or a bound around a lane loop must be the same for every lane (L8). Code that
+// writes memory between lane loops runs on lane 0 only, so a lane loop may not read a value that
+// it sets (L5). Before the nest of blocks, every lane runs the code, so it may only declare
+// values that it does not write (L10). Each function below breaks one of these rules.
+//
+// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6032
+// CHECK: Error[E6032] at {{.*}}across_lane_loops_that_lanes_may_not_all_reach.vx:32:{{.*}}this condition decides whether the lanes reach the end of a lane loop or a lane reduction, so it must be the same for every lane of the block. {{.*}} but it reads memory
+// CHECK: Error[E6032] at {{.*}}across_lane_loops_that_lanes_may_not_all_reach.vx:46:{{.*}}this condition {{.*}} but `m` is not one of these
+// CHECK: Error[E6032] at {{.*}}across_lane_loops_that_lanes_may_not_all_reach.vx:60:{{.*}}the bound of this loop decides whether the lanes reach {{.*}} but `m` is not one of these
+// CHECK: Error[E6032] at {{.*}}across_lane_loops_that_lanes_may_not_all_reach.vx:75:{{.*}}this condition {{.*}} every lane of the subgroup. {{.*}} but `m` is not one of these
+// CHECK: Error[E6032] at {{.*}}across_lane_loops_that_lanes_may_not_all_reach.vx:90:{{.*}}this condition {{.*}} but it reads memory
+// CHECK: Error[E6032] at {{.*}}across_lane_loops_that_lanes_may_not_all_reach.vx:113:{{.*}}this lane loop reads `total`, which only lane 0 has
+// CHECK: Error[E6032] at {{.*}}across_lane_loops_that_lanes_may_not_all_reach.vx:122:{{.*}}before the `across` nest of blocks, a region may only declare values with `let`
+// CHECK: Error[E6032] at {{.*}}across_lane_loops_that_lanes_may_not_all_reach.vx:136:{{.*}}before the `across` nest of blocks, every lane runs the code, so a `let` there may only compute a value
+// CHECK: Error[E6032] at {{.*}}across_lane_loops_that_lanes_may_not_all_reach.vx:146:{{.*}}before the `across` nest of blocks, this reads `y`, which the blocks write
+// CHECK: Error[E6032] at {{.*}}across_lane_loops_that_lanes_may_not_all_reach.vx:164:{{.*}}this lane loop reads `m`, which only lane 0 has
+// CHECK: Error[E6032] at {{.*}}across_lane_loops_that_lanes_may_not_all_reach.vx:179:{{.*}}this condition decides whether the lanes reach {{.*}} but it reads memory
+// CHECK: Error[E6032] at {{.*}}across_lane_loops_that_lanes_may_not_all_reach.vx:196:{{.*}}the passes of this block loop change `c` with atomic operations
+// CHECK: Error[E6032] at {{.*}}across_lane_loops_that_lanes_may_not_all_reach.vx:213:{{.*}}this condition {{.*}} but `m` is not one of these
+
+pub fn if_on_memory(y : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      if y[b][0] > 0.0 {
+        for t in 0..32 across lanes {
+          y[b][t] = 1.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn if_on_a_mutable_value(y : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      let mut m = b;
+      if m > 2 {
+        for t in 0..32 across lanes {
+          y[b][t] = 1.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn bound_from_a_mutable_value(y : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      let mut m = b;
+      for k in 0..m {
+        for t in 0..32 across lanes {
+          y[b][t] = 1.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn if_in_a_subgroup(y : &mut Tensor<f32, [?, 4, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for w in 0..4 across subgroups {
+        let mut m = w;
+        if m > 1 {
+          for l in 0..32 across lanes {
+            y[b][w][l] = 1.0;
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+// `while` decides each pass whether to go on, and every pass of it ends at a barrier.
+pub fn while_on_memory(y : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      while y[b][0] < 4.0 {
+        for t in 0..32 across lanes {
+          y[b][t] = y[b][t] + 1.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn reads_what_lane_0_set(y : &mut Tensor<f32, [?, 256], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      let mut part = unsafe { Tensor<f32, [256], Memory::SMEM>::uninit() };
+      for t in 0..256 across lanes {
+        part[t] = 1.0;
+      }
+      let mut total : f32 = 0.0;
+      for t in 0..256 {
+        total = total + part[t];
+      }
+      part[0] = total;
+      for t in 0..256 across lanes {
+        y[b][t] = total;
+      }
+    }
+  }
+  return;
+}
+
+pub fn writes_before_the_nest(y : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    y[0][0] = 1.0;
+    for b in 0..n across blocks {
+      y[b][1] = 1.0;
+    }
+  }
+  return;
+}
+
+fn seven() on Topology::Device -> i32 {
+  return 7;
+}
+
+pub fn calls_before_the_nest(y : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    let s = seven();
+    for b in 0..n across blocks {
+      y[b][1] = 1.0;
+    }
+  }
+  return;
+}
+
+pub fn reads_before_the_nest(y : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    let first = y[0][0];
+    for b in 0..n across blocks {
+      y[b][1] = 1.0;
+    }
+  }
+  return;
+}
+
+// `m = 2.0` changes a value that the stretch did not declare, so lane 0 runs it.
+pub fn reads_a_value_lane_0_changed(y : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      let mut m : f32 = 1.0;
+      for t in 0..32 across lanes {
+        y[b][t] = m;
+      }
+      m = 2.0;
+      for t in 0..32 across lanes {
+        y[b][t] = m;
+      }
+    }
+  }
+  return;
+}
+
+// A `break` in a plain loop around a lane loop leaves the loop before the next barrier.
+pub fn breaks_on_memory(y : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for k in 0..4 {
+        for t in 0..32 across lanes {
+          y[b][t] = y[b][t] + 1.0;
+        }
+        if y[b][0] > 2.0 {
+          break;
+        }
+      }
+    }
+  }
+  return;
+}
+
+import core::sync::atomic;
+
+// An element of a `&` tensor is the same for every lane, unless an atomic operation changes it.
+// Here the code of group `g` adds to `c` while the blocks of another group read it.
+pub fn if_on_a_shared_tensor_with_an_atomic_add(c : &Tensor<u32, [4], Memory::HBM>, y : &mut Tensor<f32, [?, 4, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for g in 0..n across blocks {
+      for b in 0..4 across blocks {
+        if c[0] > 0u32 {
+          for t in 0..32 across lanes {
+            y[g][b][t] = 1.0;
+          }
+        }
+      }
+      let _old = atomic_fetch_add_u32(c, 0, 1u32, AtomicOrdering::Relaxed);
+    }
+  }
+  return;
+}
+
+// An element of a `&` tensor is the same for every lane only when its index is.
+pub fn if_on_a_shared_tensor_at_a_mutable_index(c : &Tensor<i32, [4], Memory::HBM>, y : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      let mut m = 0;
+      if c[m] > 0 {
+        for t in 0..32 across lanes {
+          y[b][t] = 1.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

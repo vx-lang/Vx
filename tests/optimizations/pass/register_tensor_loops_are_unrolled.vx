@@ -1,0 +1,47 @@
+//===- register_tensor_loops_are_unrolled.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The compiler unrolls each loop whose variable indexes a tensor in `Memory::REG`. The unrolled
+// loops give the same results as the loops: `continue` goes to the next pass, `break` ends the
+// loop, and a nested index `4 * j + q` uses the variables of two unrolled loops. The region
+// runs on the CPU here (`CUDA_VISIBLE_DEVICES=`).
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/a100-40.vx --run 2>&1 | FileCheck %s
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/a100-40.vx --run 2>&1 | FileCheck %s
+// CHECK: 21 13 3
+
+fn main() -> i32 {
+  let mut d = transfer(Tensor<f32, [3]>::fill(0.0), Memory::HBM);
+  spawn on(Topology::Device) {
+    let mut acc = Tensor<f32, [8], Memory::REG>::fill(1.0);
+    for i in 0..8 {
+      if i == 2 {
+        continue;
+      }
+      if i == 6 {
+        break;
+      }
+      acc[i] = acc[i] + (i as f32);
+    }
+    let mut all = 0.0;
+    for i in 0..8 {
+      all = all + acc[i];
+    }
+    let mut upper = 0.0;
+    for j in 1..2 {
+      for q in 0..4 {
+        upper = upper + acc[4 * j + q];
+      }
+    }
+    d[0] = all;
+    d[1] = upper;
+    d[2] = acc[2] + acc[7] + acc[0];
+  }
+  let back = transfer(d, Memory::CPU_DRAM);
+  println!("{} {} {}", back[0], back[1], back[2]);
+  return 0;
+}

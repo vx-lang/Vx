@@ -1,0 +1,38 @@
+//===- move_after_return_does_not_reach_live_code.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A move after `return` or `break` never runs, so `v` is still usable after the block.
+// RUN: vxc %s 2>&1 | FileCheck %s
+// CHECK: 00
+
+import std::vec;
+
+fn take(v : Vec<i32>) -> void {}
+
+fn after_a_return(c : bool) -> i32 {
+  let v = Vec<i32>::new();
+  if c {
+    return 1;
+    take(v);
+  }
+  return v.len();
+}
+
+fn after_a_break() -> i32 {
+  let v = Vec<i32>::new();
+  loop {
+    break;
+    take(v);
+  }
+  return v.len();
+}
+
+fn main() -> i32 {
+  print(after_a_return(false));
+  print(after_a_break());
+  return 0;
+}

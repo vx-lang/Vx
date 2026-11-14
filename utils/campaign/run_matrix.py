@@ -2,7 +2,8 @@
 """Generate the (config x SKU) admission matrix.
 
     utils/campaign/run_matrix.py --out raw/            # predict every cell
-    utils/campaign/run_matrix.py --out raw/ --execute  # + launch on hardware
+    utils/campaign/run_matrix.py --out raw/ --execute --configs 70b-ctx4k-tp2 \
+        --skus h100-sxm --epsilon 0.05                 # + launch one cell here
 
 Two phases, deliberately separable:
 
@@ -13,9 +14,13 @@ anywhere -- which is the point: the whole matrix can be dry-run locally before
 any rented time is burning, so a toolchain bug is found for free rather than at
 an hourly rate.
 
-**Execute** (needs the SKU). For each admitted cell, map the verdict to engine
-arguments and launch, capturing the outcome verbatim. Not implemented here: see
-`classify_outcome` for why the classifier is deliberately left to a pilot run.
+**Execute** (needs the SKU). For one admitted cell, on the machine the script runs on:
+get the `vllm serve` command from utils/vllm/map_admission.py, launch it, send the
+cell's requests at full length, and stop it. The engine's stdout and stderr go to
+one log per cell, verbatim and in order. `classify_outcome` maps the log to an
+outcome, with the patterns of the pilot run's real output. The record names the
+vLLM version and the GPU. Nothing here depends on where the machine is, so it runs
+the same in a container.
 
 The reference program is never edited. Only the constants in its single `admit<
 ...>` call change per cell, which is exactly the claim under test -- one program
@@ -25,14 +30,23 @@ text, N SKUs, N configs.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
+import os
 import re
+import shlex
+import signal
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
+MAP_ADMISSION = REPO / "utils" / "vllm" / "map_admission.py"
 ADMIT = REPO / "fleet" / "admit.vx"
 FLEET = REPO / "fleet"
 # The program stages every resident through host memory, so a host must be
@@ -46,6 +60,11 @@ HOST = FLEET / "host-x86-e5-2666v3.vx"
 SKUS = ["a100-40", "a100-80", "h100-sxm", "h200", "b200", "mi300x"]
 
 
+# vLLM's default `max_num_batched_tokens`, which fleet/admit.vx gives for STEP: a step works on
+# at most this many tokens.
+MAX_NUM_BATCHED_TOKENS = 16384
+
+
 @dataclass(frozen=True)
 class Config:
     """One serving configuration: the const-generic arguments of `admit`."""
@@ -54,6 +73,8 @@ class Config:
     heads: int
     kv_heads: int
     hdim: int
+    ffn: int
+    vocab: int
     ctx: int
     batch: int
     tp: int
@@ -61,6 +82,12 @@ class Config:
     @property
     def cell_id(self) -> str:
         return self.name
+
+    @property
+    def step(self) -> int:
+        """The tokens of one step, by fleet/admit.vx's rule: the smaller of vLLM's
+        `max_num_batched_tokens` default and BATCH * CTX."""
+        return min(MAX_NUM_BATCHED_TOKENS, self.batch * self.ctx)
 
 
 # The sweep. Chosen to put cells on both sides of every SKU's ceiling rather
@@ -71,33 +98,39 @@ class Config:
 #
 # KV-head counts are the checkpoints' `num_key_value_heads` (GQA), not the query
 # head count -- see the note in fleet/admit.vx. Llama-3.1 uses 8 across all sizes.
+#
+# FFN and VOCAB are each checkpoint's `intermediate_size` and `vocab_size` in its config.json:
+# 14336, 28672 and 53248, and 128256 for all three. The meta-llama repositories are gated, so
+# they were read on 2026-10-24 from public copies of the same files (unsloth and NousResearch for
+# 8B and 70B, and four quantized copies of 405B), which all agree. `tie_word_embeddings` is false
+# in each, so VOCAB is not halved.
 CONFIGS = [
-    #        name               L    H  KVH  HD    CTX  B  TP
-    Config("8b-ctx4k",         32,  32,  8, 128,   4096, 1, 1),
-    Config("8b-ctx32k",        32,  32,  8, 128,  32768, 1, 1),
-    Config("8b-ctx128k",       32,  32,  8, 128, 131072, 1, 1),
-    Config("70b-ctx4k",        80,  64,  8, 128,   4096, 1, 1),
-    Config("70b-ctx8k",        80,  64,  8, 128,   8192, 1, 1),
-    Config("70b-ctx32k",       80,  64,  8, 128,  32768, 1, 1),
-    Config("70b-ctx128k",      80,  64,  8, 128, 131072, 1, 1),
-    Config("70b-ctx4k-tp2",    80,  64,  8, 128,   4096, 1, 2),
-    Config("70b-ctx4k-tp4",    80,  64,  8, 128,   4096, 1, 4),
-    Config("70b-ctx4k-tp8",    80,  64,  8, 128,   4096, 1, 8),
-    Config("70b-ctx32k-tp4",   80,  64,  8, 128,  32768, 1, 4),
-    Config("70b-ctx32k-tp8",   80,  64,  8, 128,  32768, 1, 8),
-    Config("70b-ctx4k-batch8", 80,  64,  8, 128,   4096, 8, 1),
-    Config("405b-ctx4k-tp8",  126, 128,  8, 128,   4096, 1, 8),
-    Config("405b-ctx32k-tp8", 126, 128,  8, 128,  32768, 1, 8),
+    #        name               L    H  KVH  HD    FFN   VOCAB     CTX  B  TP
+    Config("8b-ctx4k",         32,  32,  8, 128, 14336, 128256,   4096, 1, 1),
+    Config("8b-ctx32k",        32,  32,  8, 128, 14336, 128256,  32768, 1, 1),
+    Config("8b-ctx128k",       32,  32,  8, 128, 14336, 128256, 131072, 1, 1),
+    Config("70b-ctx4k",        80,  64,  8, 128, 28672, 128256,   4096, 1, 1),
+    Config("70b-ctx8k",        80,  64,  8, 128, 28672, 128256,   8192, 1, 1),
+    Config("70b-ctx32k",       80,  64,  8, 128, 28672, 128256,  32768, 1, 1),
+    Config("70b-ctx128k",      80,  64,  8, 128, 28672, 128256, 131072, 1, 1),
+    Config("70b-ctx4k-tp2",    80,  64,  8, 128, 28672, 128256,   4096, 1, 2),
+    Config("70b-ctx4k-tp4",    80,  64,  8, 128, 28672, 128256,   4096, 1, 4),
+    Config("70b-ctx4k-tp8",    80,  64,  8, 128, 28672, 128256,   4096, 1, 8),
+    Config("70b-ctx32k-tp4",   80,  64,  8, 128, 28672, 128256,  32768, 1, 4),
+    Config("70b-ctx32k-tp8",   80,  64,  8, 128, 28672, 128256,  32768, 1, 8),
+    Config("70b-ctx4k-batch8", 80,  64,  8, 128, 28672, 128256,   4096, 8, 1),
+    Config("405b-ctx4k-tp8",  126, 128,  8, 128, 53248, 128256,   4096, 1, 8),
+    Config("405b-ctx32k-tp8", 126, 128,  8, 128, 53248, 128256,  32768, 1, 8),
 ]
 
-# `return admit<L, H, KVH, HD, CTX, B, TP>();` -- the one line a cell rewrites.
-ADMIT_CALL = re.compile(r"admit<" + r"\s*\d+\s*,"*6 + r"\s*\d+\s*>")
+# `return admit<L, H, KVH, HD, FFN, VOCAB, CTX, B, STEP, TP>();` -- the one line a cell rewrites.
+ADMIT_CALL = re.compile(r"admit<" + r"\s*\d+\s*,"*9 + r"\s*\d+\s*>")
 
 
 def program_for(cfg: Config, template: str) -> str:
     """The reference program with this cell's constants substituted."""
-    call = (f"admit<{cfg.layers}, {cfg.heads}, {cfg.kv_heads}, {cfg.hdim}, "
-            f"{cfg.ctx}, {cfg.batch}, {cfg.tp}>")
+    call = (f"admit<{cfg.layers}, {cfg.heads}, {cfg.kv_heads}, {cfg.hdim}, {cfg.ffn}, "
+            f"{cfg.vocab}, {cfg.ctx}, {cfg.batch}, {cfg.step}, {cfg.tp}>")
     out, n = ADMIT_CALL.subn(call, template)
     if n != 1:
         sys.exit(
@@ -149,7 +182,7 @@ def predict(cfg: Config, sku: str, vxc: Path, workdir: Path) -> dict:
     return {
         "cell": cfg.cell_id,
         "sku": sku,
-        "config": asdict(cfg),
+        "config": {**asdict(cfg), "step": cfg.step},
         "verdict": rec["verdict"],
         "error_codes": codes,
         "resident_bytes": resident["total_bytes"] if resident else None,
@@ -159,24 +192,233 @@ def predict(cfg: Config, sku: str, vxc: Path, workdir: Path) -> dict:
     }
 
 
-def classify_outcome(_stdout: str, _stderr: str) -> str:
-    """Map an engine launch's output to the ground-truth taxonomy.
+# Verbatim substrings of vLLM 0.31.0's output, from the pilot runs on H100, A100-80GB, H200 and
+# B200 (#289, 2026-10-05). Each outcome below names the substring that decides it.
+#
+# Printed once startup has passed: "GPU KV cache size: N tokens".
+KV_CACHE_SIZE = "GPU KV cache size:"
+# vLLM refuses a max_model_len that its KV cache cannot hold, and says how long it could be.
+ESTIMATED_MAX_LEN = "estimated maximum model length is"
+# Weights loaded; the out-of-memory error of a load comes after this, in the profiling run.
+MODEL_LOADING_TOOK = "Model loading took"
+TORCH_OOM = "torch.OutOfMemoryError: CUDA out of memory"
+# Out of memory on the first full-length prompt, after startup passed.
+PREFILL_FAILURES = ("cudaErrorMemoryAllocation", "EngineDeadError")
+# vLLM prints this on each line of its stop after SIGINT. It can print EngineDeadError during the
+# stop, after every request came back.
+SHUTDOWN = "[shutdown]"
+# Two crashes of the image, not of memory: no CUDA compiler, and no C compiler.
+SETUP_FAULTS = (
+    "Could not find nvcc and default cuda_home='/usr/local/cuda' doesn't exist",
+    "InductorError: RuntimeError: Failed to find C compiler",
+)
 
-    DELIBERATELY UNIMPLEMENTED. The taxonomy is fixed --
-    BOOT_OK_SERVE_OK / ENGINE_REFUSES / OOM_AT_LOAD / OOM_AT_PREFILL / OTHER_FAIL
-    -- but the *patterns* that map real output onto it are not, and writing them
-    from memory is how a campaign silently mislabels its own ground truth. In
-    particular ENGINE_REFUSES is the paper's most valuable category (it is vLLM
-    performing runtime admission, the very check Vx claims to do statically), and
-    a pattern that misses it would score as OTHER_FAIL and quietly discard the
-    best evidence in the dataset.
 
-    Build these from a pilot run's captured logs, not from recollection of what
-    vLLM prints. Until then `--execute` records output verbatim and classifies
-    everything as UNCLASSIFIED, which is honest and reversible: the raw logs can
-    be re-classified once the patterns are known.
+@dataclass(frozen=True)
+class Outcome:
+    """What one engine launch did."""
+    label: str
+    # The substring that decided the label, or None when none did.
+    pattern: str | None = None
+    # True when the image lacks a tool. Such a launch says nothing about memory, so it is
+    # OTHER_FAIL and must be rerun in a fixed image rather than scored.
+    setup_fault: bool = False
+
+
+def classify_outcome(log: str, served: bool | None = None) -> Outcome:
+    """Map one launch's output to BOOT_OK_SERVE_OK, ENGINE_REFUSES, OOM_AT_LOAD,
+    OOM_AT_PREFILL or OTHER_FAIL, from the pilot's verbatim patterns.
+
+    `log` is the engine's stdout and stderr in the order they were written. `served` is whether
+    the request sent after startup came back: None when no request was sent.
+
+    A log that no pattern covers is UNCLASSIFIED, not OTHER_FAIL. The raw log is kept, so it can
+    be classified once its pattern is known.
     """
-    return "UNCLASSIFIED"
+    for fault in SETUP_FAULTS:
+        if fault in log:
+            return Outcome("OTHER_FAIL", fault, setup_fault=True)
+    if ESTIMATED_MAX_LEN in log:
+        return Outcome("ENGINE_REFUSES", ESTIMATED_MAX_LEN)
+    started = log.find(KV_CACHE_SIZE)
+    oom = log.find(TORCH_OOM)
+    if oom != -1 and (started == -1 or oom < started):
+        return Outcome("OOM_AT_LOAD", TORCH_OOM)
+    if started != -1:
+        after = log[started:]
+        # When the requests came back, an error during the stop is not a prefill failure.
+        if served and SHUTDOWN in after:
+            after = after[:after.find(SHUTDOWN)]
+        for failure in PREFILL_FAILURES:
+            if failure in after:
+                return Outcome("OOM_AT_PREFILL", failure)
+        if served:
+            return Outcome("BOOT_OK_SERVE_OK", KV_CACHE_SIZE)
+        if served is False:
+            return Outcome("OTHER_FAIL")
+    return Outcome("UNCLASSIFIED")
+
+
+# One request's generated tokens. Its prompt takes the rest of the context, so each request is
+# full length, as the first full-length prompt is where the pilot saw prefill run out of memory.
+GENERATED_TOKENS = 16
+# The token id that fills a prompt. Any id below the vocabulary size would do.
+PROMPT_TOKEN = 1000
+
+
+def map_admission(cfg: Config, record: Path, epsilon: float, model: str | None,
+                  form: str, model_config: Path | None = None) -> str:
+    """The output of utils/vllm/map_admission.py for an admitted cell, in `form`."""
+    command = [
+        sys.executable, str(MAP_ADMISSION), "--cell", str(record),
+        "--layers", str(cfg.layers), "--heads", str(cfg.heads), "--kv-heads", str(cfg.kv_heads),
+        "--hdim", str(cfg.hdim), "--ctx", str(cfg.ctx), "--batch", str(cfg.batch),
+        "--tp", str(cfg.tp), "--epsilon", str(epsilon), "--format", form,
+    ]
+    if model:
+        command += ["--model", model]
+    if model_config:
+        command += ["--verify-model", str(model_config)]
+    proc = subprocess.run(command, capture_output=True, text=True)
+    if proc.returncode != 0:
+        sys.exit(f"run_matrix: map_admission.py refused the cell:\n{proc.stderr}")
+    return proc.stdout
+
+
+def model_config_for(model: str, given: Path | None) -> Path:
+    """The checkpoint's config.json: the file given, or the one huggingface_hub downloads."""
+    if given:
+        return given
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError:
+        sys.exit("run_matrix: pass --model-config, or install huggingface_hub to download it")
+    return Path(hf_hub_download(model, "config.json"))
+
+
+def engine_command(cfg: Config, record: Path, args: argparse.Namespace) -> tuple[list[str], dict]:
+    """The `vllm serve` command that map_admission.py gives for an admitted cell, after it
+    has checked the cell's geometry against the checkpoint's config.json, and the JSON form
+    of the same mapping."""
+    model = json.loads(map_admission(cfg, record, args.epsilon, args.model, "json"))
+    model = model["engine"]["model"]
+    config = model_config_for(model, args.model_config)
+    mapped = json.loads(map_admission(cfg, record, args.epsilon, model, "json", config))
+    flags = shlex.split(map_admission(cfg, record, args.epsilon, model, "args", config))
+    command = [*shlex.split(args.vllm), "serve", model, *flags,
+               "--host", "127.0.0.1", "--port", str(args.port)]
+    return command, mapped
+
+
+def ready(port: int) -> bool:
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=5) as r:
+            return r.status == 200
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def complete(port: int, model: str, ctx: int, timeout: float) -> bool:
+    """One full-length request. True when it came back with generated text."""
+    body = json.dumps({
+        "model": model,
+        "prompt": [PROMPT_TOKEN] * (ctx - GENERATED_TOKENS),
+        "max_tokens": GENERATED_TOKENS,
+        "temperature": 0,
+    }).encode()
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/v1/completions", data=body,
+        headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as r:
+            choices = json.loads(r.read()).get("choices") or []
+            return r.status == 200 and bool(choices) and "text" in choices[0]
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+
+
+def run_engine(command: list[str], log: Path, port: int, model: str, ctx: int, batch: int,
+               startup_timeout: float, request_timeout: float) -> dict:
+    """Launch the engine with its output in `log`, send `batch` full-length requests once it
+    is up, and stop it. `served` is None when it never came up."""
+    started = time.monotonic()
+    with open(log, "wb") as out:
+        proc = subprocess.Popen(command, stdout=out, stderr=subprocess.STDOUT,
+                                start_new_session=True)
+        served = None
+        try:
+            while proc.poll() is None and time.monotonic() - started < startup_timeout:
+                if ready(port):
+                    with concurrent.futures.ThreadPoolExecutor(batch) as pool:
+                        done = list(pool.map(lambda _: complete(port, model, ctx, request_timeout),
+                                             range(batch)))
+                    served = all(done)
+                    break
+                time.sleep(2)
+        finally:
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGINT)
+                try:
+                    proc.wait(timeout=60)
+                except subprocess.TimeoutExpired:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                    proc.wait()
+    return {"served": served, "returncode": proc.returncode,
+            "seconds": round(time.monotonic() - started, 1)}
+
+
+def first_line(command: list[str]) -> str | None:
+    try:
+        proc = subprocess.run(command, capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    lines = proc.stdout.strip().splitlines()
+    return lines[0].strip() if proc.returncode == 0 and lines else None
+
+
+def gpu_names() -> list[str]:
+    """What nvidia-smi, or else rocm-smi, says each GPU of this machine is called."""
+    for command in (["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                    ["rocm-smi", "--showproductname", "--csv"]):
+        try:
+            proc = subprocess.run(command, capture_output=True, text=True, timeout=120)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if proc.returncode == 0 and proc.stdout.strip():
+            return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    return []
+
+
+def execute(cfg: Config, sku: str, record: dict, args: argparse.Namespace) -> dict:
+    """Launch one predicted cell here and record what the engine did."""
+    out = {"cell": cfg.cell_id, "sku": sku, "verdict": record["verdict"],
+           "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    if record["verdict"] != "admitted":
+        # map_admission.py gives no engine arguments for a cell that Vx does not admit.
+        out["outcome"] = "NOT_LAUNCHED"
+        out["note"] = "the cell is not admitted, so map_admission.py gives no launch command"
+        return out
+    command, mapped = engine_command(cfg, Path(record["record"]), args)
+    model = mapped["engine"]["model"]
+    log = args.out / "logs" / f"{cfg.cell_id}__{sku}.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    run = run_engine(command, log, args.port, model, cfg.ctx, cfg.batch,
+                     args.startup_timeout, args.request_timeout)
+    outcome = classify_outcome(log.read_text(errors="replace"), run["served"])
+    out.update({
+        "command": command,
+        "engine": mapped["engine"],
+        "provenance": mapped["provenance"],
+        "epsilon": args.epsilon,
+        "log": str(log),
+        "vllm_version": first_line([*shlex.split(args.vllm), "--version"]),
+        "gpus": gpu_names(),
+        **run,
+        "outcome": outcome.label,
+        "pattern": outcome.pattern,
+        "setup_fault": outcome.setup_fault,
+    })
+    return out
 
 
 def main() -> int:
@@ -186,15 +428,24 @@ def main() -> int:
     p.add_argument("--skus", nargs="*", default=SKUS)
     p.add_argument("--configs", nargs="*", default=None, help="config names (default: all)")
     p.add_argument("--execute", action="store_true",
-                   help="launch admitted cells on hardware (requires the SKU; not implemented)")
+                   help="launch one cell (one --configs, one --skus) on this machine")
+    p.add_argument("--epsilon", type=float,
+                   help="headroom for map_admission.py; required with --execute, and the "
+                        "same for every cell of a campaign")
+    p.add_argument("--vllm", default="vllm", help="the command that runs vLLM (default: vllm)")
+    p.add_argument("--model", help="the checkpoint, in place of map_admission.py's table")
+    p.add_argument("--model-config", type=Path,
+                   help="the checkpoint's config.json (default: download it with huggingface_hub)")
+    p.add_argument("--port", type=int, default=8000)
+    p.add_argument("--startup-timeout", type=float, default=3600.0, help="seconds")
+    p.add_argument("--request-timeout", type=float, default=1800.0, help="seconds")
     args = p.parse_args()
 
     if args.execute:
-        sys.exit(
-            "run_matrix: --execute is not implemented. It requires the rented SKU and a "
-            "classifier built from a pilot run's real logs; see classify_outcome(). "
-            "Predict-only runs anywhere and is what this script is for today."
-        )
+        if args.epsilon is None:
+            sys.exit("run_matrix: --execute needs --epsilon, the campaign's one value")
+        if not (args.configs and len(args.configs) == 1 and len(args.skus) == 1):
+            sys.exit("run_matrix: --execute runs one cell: give one --configs and one --skus")
     if not args.vxc.exists():
         sys.exit(f"run_matrix: vxc not found at {args.vxc} (build it, or pass --vxc)")
 
@@ -217,6 +468,14 @@ def main() -> int:
             results.append(r)
             mark = {"admitted": "+", "rejected": "-"}.get(r["verdict"], "!")
             print(f"{mark} {cfg.name:<18} {sku:<10} {r['verdict']}", file=sys.stderr)
+
+    if args.execute:
+        cfg, record = configs[0], results[0]
+        outcome = execute(cfg, args.skus[0], record, args)
+        path = args.out / f"{cfg.cell_id}__{args.skus[0]}.outcome.json"
+        path.write_text(json.dumps(outcome, indent=2))
+        print(f"{outcome['outcome']} -> {path}", file=sys.stderr)
+        return 0 if record["verdict"] != "TOOLCHAIN_ERROR" else 1
 
     manifest = args.out / "predicted_matrix.json"
     manifest.write_text(json.dumps(results, indent=2))

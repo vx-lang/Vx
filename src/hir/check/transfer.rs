@@ -18,6 +18,9 @@
 //===----------------------------------------------------------------------===//
 
 use super::super::*;
+use crate::hir::check::tasks::{TaskLevel, TaskRun};
+use crate::hir::check_state::MemoryCopy;
+use crate::syntax::types::transfer_token_inner as token_inner;
 
 /// What resolving a transfer's edge produced: where the value is, where it is going, the route
 /// the hardware takes between them, and what that route costs. Every later phase reads it.
@@ -155,7 +158,10 @@ impl<'a> TypeChecker<'a> {
         out: &mut std::collections::HashMap<String, u64>,
     ) {
         match topology {
-            Topology::NPU(index) | Topology::AccCore(index) | Topology::GPU(index) => {
+            Topology::NPU(index)
+            | Topology::AccCore(index)
+            | Topology::GPU(index)
+            | Topology::Custom(_, Some(index)) => {
                 Self::scan_expr_for_asserts(index, out);
             }
             Topology::Slice(base, start, end) => {
@@ -168,7 +174,7 @@ impl<'a> TypeChecker<'a> {
             | Topology::ANE
             | Topology::CpuAvx512
             | Topology::CpuNeon
-            | Topology::Custom(_)
+            | Topology::Custom(_, None)
             | Topology::Current => {}
         }
     }
@@ -189,6 +195,12 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Expr::UnsafeBlock(b) => {
+                Self::collect_assert_contracts(&b.stmts, out);
+                if let Some(r) = &b.ret {
+                    Self::scan_expr_for_asserts(r, out);
+                }
+            }
+            Expr::TaskBlock(b) => {
                 Self::collect_assert_contracts(&b.stmts, out);
                 if let Some(r) = &b.ret {
                     Self::scan_expr_for_asserts(r, out);
@@ -394,6 +406,7 @@ impl<'a> TypeChecker<'a> {
         elem: &ElementType,
         space: &MemorySpace,
         context: &str,
+        span: Option<crate::diagnostic::SourceSpan>,
     ) {
         // An un-substituted generic is not an element type yet; the instantiated body is checked.
         if matches!(elem, ElementType::Generic(_)) {
@@ -423,8 +436,141 @@ impl<'a> TypeChecker<'a> {
                 topology.display_name(),
                 listed
             ),
-            None,
+            span,
         );
+    }
+
+    /// E6026 for an element type used *inside* the active region, asked of that region's device.
+    ///
+    /// The placement checks ask this of a space, so they only see values that were placed. A
+    /// value built inside a region reaches no space. This check asks the region's device instead.
+    pub(crate) fn check_element_type_in_active_region(
+        &mut self,
+        elem: &ElementType,
+        context: &str,
+        span: &crate::syntax::Span,
+    ) {
+        let space = self.active_memory.clone();
+        self.check_element_type(
+            elem,
+            &space,
+            context,
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+    }
+
+    /// E6026 for every element type `ty` names, reported at `span`.
+    ///
+    /// One report per statement and element type: the same expression is checked more than
+    /// once (a probe, a second look at a loop's iterable), and one mistake in one statement
+    /// should not arrive as several errors.
+    pub(crate) fn check_type_element_types_in_active_region(
+        &mut self,
+        ty: &Type,
+        context: &str,
+        span: &crate::syntax::Span,
+        statement: &crate::syntax::Span,
+    ) {
+        for elem in self.element_types_of(ty) {
+            let key = (statement.line, statement.column, elem.clone());
+            if self.region_element_reports.insert(key) {
+                self.check_element_type_in_active_region(&elem, context, span);
+            }
+        }
+    }
+
+    /// Whether the space the code being checked runs in belongs to a device that declares
+    /// `dtypes:`. The expression check skips its work otherwise.
+    pub(crate) fn space_declares_dtypes(&self, space: &MemorySpace) -> bool {
+        self.transfer_cost_graph
+            .owning_topology(space)
+            .ok()
+            .and_then(|top| self.transfer_cost_graph.descriptor(&top.kind()))
+            .and_then(|desc| desc.dtypes.as_ref())
+            .is_some()
+    }
+
+    /// The declared fields of the struct `ty` names, from this module, a generated
+    /// instantiation, or an import -- the same three places a struct literal is resolved.
+    #[allow(clippy::type_complexity)]
+    fn struct_fields_of(
+        &self,
+        ty: &Type,
+    ) -> Option<(
+        Vec<crate::symbol::Symbol>,
+        Vec<(crate::symbol::Symbol, Type)>,
+    )> {
+        let name = match ty {
+            Type::Struct(name, _) => name,
+            Type::GenericInstance(base, _) => match &**base {
+                Type::Struct(name, _) => name,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        if let Some(decl) = self.env.structs.get(name) {
+            let generics = decl.generics.iter().map(|g| g.name().into()).collect();
+            return Some((generics, decl.fields.clone()));
+        }
+        if let Some(decl) = self.mono.generated_structs.iter().find(|s| &s.name == name) {
+            let generics = decl.generics.iter().map(|g| g.name().into()).collect();
+            return Some((generics, decl.fields.clone()));
+        }
+        self.worker
+            .global
+            .registry
+            .struct_fields_of(ty)
+            .map(|fields| (fields.generics.clone(), fields.fields.clone()))
+    }
+
+    /// The data element types a type names: its own when it is a scalar, its element when it is
+    /// a tensor or vector, the types its wrappers hold, the arguments of a generic instance, and
+    /// the fields of a struct. A struct built in a region is not placed, so no placement check
+    /// sees its fields. The fields are followed here instead.
+    pub(crate) fn element_types_of(&self, ty: &Type) -> Vec<ElementType> {
+        let mut out = Vec::new();
+        let mut stack = vec![ty.clone()];
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        while let Some(t) = stack.pop() {
+            match t {
+                // `usize` is an index, not data. A region forms indices to address anything at
+                // all, and every target has them, so no `dtypes:` list answers whether a region
+                // may count or compare them. Its width is the target's, not the program's
+                // choice. A tensor or vector of `usize` is data, and stays checked below.
+                Type::Scalar(ElementType::USize) => {}
+                Type::Scalar(e) | Type::Simd(e, _) | Type::Tensor(e, _, None) => out.push(e),
+                // These name the device that holds the value, and the placement checks ask
+                // that device. Asking the region's device instead would report against a
+                // machine the value never touches.
+                Type::Tensor(_, _, Some(_)) | Type::Pinned(..) => {}
+                Type::Ref(inner, _)
+                | Type::Verified(inner)
+                | Type::Borrow { inner, .. }
+                | Type::Pointer(inner, _, _) => stack.push(*inner),
+                Type::Struct(..) | Type::GenericInstance(..) => {
+                    let args = match &t {
+                        Type::GenericInstance(_, args) => args.clone(),
+                        _ => Vec::new(),
+                    };
+                    if seen.insert(t.to_string()) {
+                        if let Some((generics, fields)) = self.struct_fields_of(&t) {
+                            let mapping: std::collections::HashMap<_, Type> =
+                                generics.into_iter().zip(args.iter().cloned()).collect();
+                            stack
+                                .extend(fields.iter().map(|(_, field)| field.substitute(&mapping)));
+                        }
+                    }
+                    if let Type::GenericInstance(base, args) = t {
+                        if !matches!(base.as_ref(), Type::Struct(..)) {
+                            stack.push(*base);
+                        }
+                        stack.extend(args);
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
     }
 
     /// If a statically-shaped `Tensor<elem, dims>` placed in `space` exceeds that space's
@@ -434,11 +580,121 @@ impl<'a> TypeChecker<'a> {
         &mut self,
         elem: &ElementType,
         dims: &[Dim],
-        space: &MemorySpace,
+        copy: &MemoryCopy,
         context: &str,
         span: &Span,
     ) {
-        self.check_capacity_of(elem, dims, space, context, span, true)
+        self.check_capacity_of(elem, dims, copy, context, span, true, 1)
+    }
+
+    /// A channel of tensors in a memory with a capacity holds up to `n` of them, from the
+    /// `channel(n)` call until both of its ends drop. The check cannot bound how many are in the
+    /// channel at a time, so it counts all `n` at the call, as a tile of the caller.
+    pub(crate) fn count_channel_room(&mut self, t: &Type, n: &Expr, span: &Span) {
+        let h = crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
+        let bounded: Vec<_> = self
+            .placed_tensors(t)
+            .into_iter()
+            .filter(|(_, _, copy)| {
+                h.descriptor(&copy.space)
+                    .is_some_and(|d| d.capacity.is_some())
+            })
+            .collect();
+        if bounded.is_empty() {
+            return;
+        }
+        if !self.traffic.channel_rooms.contains(span) {
+            self.traffic.channel_rooms.push(*span);
+        }
+        let room = match n {
+            Expr::Number(num) => num.value.parse::<i64>().ok(),
+            e => self.extent_value(e),
+        };
+        for (elem, dims, copy) in bounded {
+            match room {
+                Some(room) if room >= 1 => {
+                    let context = format!("the room of this channel, {room} of `{t}`,");
+                    self.check_capacity_of(&elem, &dims, &copy, &context, span, true, room as u64);
+                }
+                _ => self.report_channel_room_not_known(&copy.space, t, span),
+            }
+        }
+    }
+
+    /// E6040: the room of a channel of tensors in `space` is not known at compile time.
+    fn report_channel_room_not_known(&mut self, space: &MemorySpace, t: &Type, span: &Span) {
+        if self.speculating {
+            return;
+        }
+        let overcommit = self.env.memories.values().any(|m| {
+            m.overcommit && crate::syntax::MemorySpace::from_name(m.name.as_ref()) == *space
+        });
+        let msg = format!(
+            "this channel holds `{t}`, which lives in memory space '{}', and its room is not \
+             known at compile time. The channel can hold that many tensors at once, so the \
+             working set of '{}' has no bound. Give `channel` a constant room",
+            space.name(),
+            space.name()
+        );
+        let at = Some(crate::diagnostic::SourceSpan::from_ast_span(span));
+        if overcommit {
+            self.errors.warn(
+                crate::diagnostic::DiagnosticCode::W1028,
+                format!(
+                    "{msg}. This is allowed because '{}' is `overcommit`",
+                    space.name()
+                ),
+                at,
+            );
+        } else {
+            self.errors
+                .error_with_code(crate::diagnostic::DiagnosticCode::E6040, msg, at);
+        }
+    }
+
+    /// E6041: the room of a channel is counted in the function that calls `channel`, until that
+    /// function returns. So such a function cannot give an end of the channel to its caller.
+    pub(crate) fn refuse_a_returned_channel_end(&mut self, return_type: &Type) {
+        let rooms = std::mem::take(&mut self.traffic.channel_rooms);
+        if rooms.is_empty() || self.speculating || !Self::holds_a_channel_end(return_type) {
+            return;
+        }
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E6041,
+            format!(
+                "'{}' makes a channel of tensors in a memory with a capacity, and returns an \
+                 end of a channel. The room of the channel is counted in the function that calls \
+                 `channel`, only until it returns. Make the channel in the function that uses \
+                 its ends",
+                self.current_function
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(&rooms[0])),
+        );
+    }
+
+    /// Whether `ty` holds a `Sender` or a `Receiver`.
+    fn holds_a_channel_end(ty: &Type) -> bool {
+        match ty {
+            Type::GenericInstance(base, args) => {
+                Self::is_channel_end(base) || args.iter().any(Self::holds_a_channel_end)
+            }
+            Type::Struct(..) => Self::is_channel_end(ty),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn is_channel_end_type(ty: &Type) -> bool {
+        match ty {
+            Type::GenericInstance(base, _) => Self::is_channel_end(base),
+            other => Self::is_channel_end(other),
+        }
+    }
+
+    /// `Sender<T>` or `Receiver<T>` of `std::sync::channel`. Each holds a pointer to the room of
+    /// its channel, which `channel` counts, and no `T` of its own.
+    fn is_channel_end(ty: &Type) -> bool {
+        matches!(ty, Type::Struct(n, _)
+            if matches!(n.split('<').next(), Some("Sender" | "Receiver")))
     }
 
     /// E6031: a static shape that folds to a negative extent, or to more bytes than 64 bits hold.
@@ -453,7 +709,9 @@ impl<'a> TypeChecker<'a> {
         use crate::hir::memory::StaticSize;
         let why = match crate::hir::memory::static_tensor_size(elem, dims) {
             StaticSize::NegativeExtent => "one of its extents is negative",
-            StaticSize::Overflows => "its size in bytes does not fit in 64 bits",
+            StaticSize::Overflows => {
+                "its size is more than 2^63 - 1 bytes, the most an allocation can ask for"
+            }
             StaticSize::Bytes(_) | StaticSize::NotConstant => return false,
         };
         // The extents as they fold, so `[N - 2 * N]` shows the number it comes to.
@@ -480,19 +738,44 @@ impl<'a> TypeChecker<'a> {
         true
     }
 
+    /// Report an error at `span` once. The checker visits some nodes twice, such as a transfer
+    /// that a method call becomes.
+    fn report_once(
+        &mut self,
+        code: crate::diagnostic::DiagnosticCode,
+        message: String,
+        span: &Span,
+    ) {
+        let said = self
+            .errors
+            .inner
+            .iter()
+            .any(|d| d.code.as_ref() == Some(&code) && d.message == message);
+        if !self.speculating && !said {
+            self.errors.error_with_code(
+                code,
+                message,
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
+        }
+    }
+
+    /// `copies`: how many tensors of this shape the placement holds.
     #[allow(clippy::too_many_arguments)]
     fn check_capacity_of(
         &mut self,
         elem: &ElementType,
         dims: &[Dim],
-        space: &MemorySpace,
+        copy: &MemoryCopy,
         context: &str,
         span: &Span,
         record: bool,
+        copies: u64,
     ) {
         if self.refuse_unrepresentable_shape(elem, dims, span) {
             return;
         }
+        let space = &copy.space;
         let sized = {
             let h = crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
             let Some(decl) = h.descriptor(space) else {
@@ -536,7 +819,8 @@ impl<'a> TypeChecker<'a> {
                     });
                 return;
             };
-            let rounded = crate::hir::memory::granule_round(raw, decl.granule.map(|g| g.0));
+            let rounded = crate::hir::memory::granule_round(raw, decl.granule.map(|g| g.0))
+                .saturating_mul(copies);
             (rounded, cap)
         };
         let (rounded, cap) = sized;
@@ -549,7 +833,8 @@ impl<'a> TypeChecker<'a> {
                         "{context} needs {rounded} bytes but memory space '{}' has capacity {cap} bytes",
                         space.name()
                     ),
-                    None,
+                    // The room of a channel is at the `channel` call.
+                    (copies > 1).then(|| crate::diagnostic::SourceSpan::from_ast_span(span)),
                 )
                 // Machine-readable form of the same verdict, for `--diagnostics-json` (#282).
                 .facts = Some(crate::diagnostic::DiagnosticFacts::Capacity {
@@ -581,7 +866,10 @@ impl<'a> TypeChecker<'a> {
         // `check_capacity` has no guard against that, unlike `record_staging_route` beside it. A
         // counter mints a fresh key per visit and turns one 3 MiB tile into two.
         let key = if span.line != 0 || span.column != 0 {
-            format!("@{}:{}:{}", span.line, span.column, span.length)
+            format!(
+                "@{}:{}:{}:{}",
+                span.line, span.column, span.length, span.expansion
+            )
         } else if let Some(name) = &self.current_assignment_target {
             // A synthesized placement carrying no position: fall back to the binding, which is
             // what this keyed on before and is stable across the second visit. Two shadowed
@@ -610,13 +898,13 @@ impl<'a> TypeChecker<'a> {
         let tiles = self
             .traffic
             .memory_placements
-            .entry(space.clone())
+            .entry(copy.clone())
             .or_default();
-        let order = match tiles.get(&key) {
-            Some(existing) => existing.order,
+        let (order, end) = match tiles.get(&key) {
+            Some(existing) => (existing.order, existing.end),
             None => {
                 self.traffic.placement_order += 1;
-                self.traffic.placement_order
+                (self.traffic.placement_order, None)
             }
         };
         tiles.insert(
@@ -625,8 +913,32 @@ impl<'a> TypeChecker<'a> {
                 bytes: rounded,
                 scope,
                 order,
+                tasks: self.tasks.task_chain(),
+                holder: self.traffic.tile_holder.clone(),
+                end,
             },
         );
+    }
+
+    /// A statement that moves a tensor out of its variable ends the tile of the variable after
+    /// the statement. Only a move in the block of the tile ends it: a move in one arm of an `if`
+    /// leaves the tensor in place on the other arm.
+    pub(crate) fn end_moved_tiles(&mut self) {
+        let moved = std::mem::take(&mut self.traffic.moved_out);
+        let end = self.traffic.placement_order + 1;
+        for (name, scope, tasks) in moved {
+            for tiles in self.traffic.memory_placements.values_mut() {
+                let latest = tiles
+                    .values_mut()
+                    .filter(|p| p.holder.as_deref() == Some(name.as_str()))
+                    .max_by_key(|p| p.order);
+                if let Some(p) = latest {
+                    if p.end.is_none() && p.scope == scope && p.tasks == tasks {
+                        p.end = Some(end);
+                    }
+                }
+            }
+        }
     }
 
     /// Record a resolved call for the cross-call capacity fold: which function, from inside
@@ -634,7 +946,10 @@ impl<'a> TypeChecker<'a> {
     /// exactly -- no `speculating` guard, span-keyed so a node checked twice lands on the same
     /// record, first visit's program order kept.
     pub(crate) fn record_call_edge(&mut self, callee: &str, span: &crate::syntax::Span) {
-        let key = format!("@{}:{}:{}:{}", span.line, span.column, span.length, callee);
+        let key = format!(
+            "@{}:{}:{}:{}:{}",
+            span.line, span.column, span.length, span.expansion, callee
+        );
         if self.traffic.call_sites.contains_key(&key) {
             return;
         }
@@ -646,6 +961,8 @@ impl<'a> TypeChecker<'a> {
                 scope: self.traffic.scope_chain.clone(),
                 order: self.traffic.placement_order,
                 span: *span,
+                in_closure: self.traffic.closure_depth > 0,
+                tasks: self.tasks.task_chain(),
             },
         );
     }
@@ -668,6 +985,7 @@ impl<'a> TypeChecker<'a> {
         calls.sort_by_key(|c| c.order);
         let mut summary = crate::hir::check::capacity_fold::FnCapacitySummary {
             name: self.current_function.clone(),
+            file: self.errors.file.clone(),
             self_peak: std::collections::BTreeMap::new(),
             calls: calls
                 .iter()
@@ -675,12 +993,56 @@ impl<'a> TypeChecker<'a> {
                     callee: c.callee.clone(),
                     live: std::collections::BTreeMap::new(),
                     span: c.span,
+                    others: Vec::new(),
                 })
                 .collect(),
         };
+        let ended = self.ended_tasks().clone();
+        // The calls of the other tasks that run at the same time as each call, by group of tasks.
+        // In a group, the calls in one place of the nested `tasks` blocks run one after the other.
+        for (k, c) in calls.iter().enumerate() {
+            type Place = Vec<(usize, Option<usize>)>;
+            type Group = (
+                crate::hir::check::capacity_fold::TaskGroup,
+                std::collections::BTreeMap<Place, Vec<usize>>,
+            );
+            let mut groups: std::collections::BTreeMap<(usize, Option<usize>, bool), Group> =
+                Default::default();
+            for (j, other) in calls.iter().enumerate() {
+                for o in at_the_same_time(&c.tasks, c.order, &other.tasks, other.order, &ended) {
+                    let place: Place = other.tasks[o.level + 1..]
+                        .iter()
+                        .map(|l| (l.block, l.run.map(|r| r.task)))
+                        .collect();
+                    groups
+                        .entry((o.level, o.task, o.other_copies))
+                        .or_insert_with(|| {
+                            (
+                                crate::hir::check::capacity_fold::TaskGroup {
+                                    copies: o.copies,
+                                    spawn: o.spawn,
+                                    parts: Vec::new(),
+                                },
+                                Default::default(),
+                            )
+                        })
+                        .1
+                        .entry(place)
+                        .or_default()
+                        .push(j);
+                }
+            }
+            summary.calls[k].others = groups
+                .into_values()
+                .map(|(mut g, parts)| {
+                    g.parts = parts.into_values().collect();
+                    g
+                })
+                .collect();
+        }
         let h = crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
-        // (space, total, cap, tile_count, overcommit, granule)
-        let mut violations: Vec<(MemorySpace, u64, u64, usize, bool, Option<u64>)> = Vec::new();
+        // (copy of the memory, total, cap, tile_count, overcommit, granule)
+        let mut violations: Vec<(MemoryCopy, u64, u64, usize, bool, Option<u64>)> = Vec::new();
         // Sorted, because `placements` is a `HashMap` and Rust randomises its hasher per process.
         // Iterating it directly made `resident_sets` -- and therefore `--diagnostics-json` --
         // come out in a different order on every run: the same compiler on the same input emitted
@@ -688,9 +1050,12 @@ impl<'a> TypeChecker<'a> {
         // nondeterminism in the machine-readable artifact downstream tools consume, and it broke
         // byte-reproducibility of the frozen predictions, which is where it was
         // found. Diagnostics are also emitted in this order, so it decided their order too.
+        // Each device of a topology with `count:` has its own copy of the memory, so each copy
+        // has its own working set.
         let mut placements: Vec<_> = placements.iter().collect();
-        placements.sort_by_key(|(space, _)| space.name());
-        for (space, tiles) in placements {
+        placements.sort_by_key(|(copy, _)| copy.name());
+        for (copy, tiles) in placements {
+            let space = &copy.space;
             let Some(decl) = h.descriptor(space) else {
                 continue;
             };
@@ -717,44 +1082,99 @@ impl<'a> TypeChecker<'a> {
                     )
                 })
                 .collect();
+            let tile_tasks: std::collections::HashMap<usize, &Vec<TaskLevel>> =
+                tiles.values().map(|p| (p.order, &p.tasks)).collect();
+            // Whether the tile placed at `placed` is still there at `at`.
+            let ends: std::collections::HashMap<usize, usize> = tiles
+                .values()
+                .filter_map(|p| p.end.map(|e| (p.order, e)))
+                .collect();
+            let not_ended = |placed: usize, at: usize| ends.get(&placed).is_none_or(|&e| at < e);
             placed.sort_by_key(|&(_, _, order)| order);
+            // The bytes of the tiles of other tasks that run at the same time as code at `order`
+            // in `chain` and `scope`, and how many tiles that is. Each tile counts once for each
+            // copy of its task, also when its task places it after another one in the same task
+            // ends. The prefix test of the caller already counts one copy of some of them.
+            let mut not_known: Option<crate::syntax::Span> = None;
+            let mut of_other_tasks = |chain: &[TaskLevel], scope: &Vec<u32>, order: usize| {
+                let (mut bytes, mut count) = (0u64, 0usize);
+                for &(b, sc, ord) in &placed {
+                    let in_scope = ord <= order && sc.len() <= scope.len() && scope.starts_with(sc);
+                    for o in at_the_same_time(chain, order, tile_tasks[&ord], ord, &ended) {
+                        match o.copies {
+                            Some(n) => {
+                                let n = if in_scope && !o.other_copies {
+                                    n.saturating_sub(1)
+                                } else {
+                                    n
+                                };
+                                bytes = bytes.saturating_add(b.saturating_mul(n));
+                                count += n as usize;
+                            }
+                            None => not_known = not_known.or(o.spawn),
+                        }
+                    }
+                }
+                (bytes, count)
+            };
             let mut total: u64 = 0;
             let mut peak_tiles = 0usize;
-            for (i, (_, scope, _)) in placed.iter().enumerate() {
-                let live: u64 = placed[..=i]
-                    .iter()
-                    .filter(|(_, earlier, _)| {
-                        earlier.len() <= scope.len() && scope.starts_with(earlier)
-                    })
-                    .map(|&(b, _, _)| b)
-                    .sum();
+            let mut held_at_calls: Vec<u64> = Vec::new();
+            for (i, &(_, scope, ord)) in placed.iter().enumerate() {
+                let in_scope = placed[..=i].iter().filter(|(_, earlier, e_ord)| {
+                    earlier.len() <= scope.len()
+                        && scope.starts_with(earlier)
+                        && not_ended(*e_ord, ord)
+                });
+                let (others, other_count) = of_other_tasks(tile_tasks[&ord], scope, ord);
+                let live: u64 = in_scope.clone().map(|&(b, _, _)| b).sum::<u64>() + others;
                 if live > total {
                     total = live;
-                    peak_tiles = placed[..=i]
-                        .iter()
-                        .filter(|(_, earlier, _)| {
-                            earlier.len() <= scope.len() && scope.starts_with(earlier)
-                        })
-                        .count();
+                    peak_tiles = in_scope.count() + other_count;
                 }
+            }
+            for c in &calls {
+                held_at_calls.push(of_other_tasks(&c.tasks, &c.scope, c.order).0);
+            }
+            if let Some(spawn) = not_known {
+                crate::hir::check::capacity_fold::report_task_count_not_known(
+                    &mut self.errors,
+                    &copy.name(),
+                    decl.overcommit,
+                    &spawn,
+                );
             }
             let tile_count = peak_tiles.max(1);
             if total > 0 {
-                summary.self_peak.insert(space.name(), total);
+                summary.self_peak.insert(copy.name(), total);
             }
             // What is still resident when each call transfers control: every tile placed
             // earlier in program order whose block is still open -- the same prefix test the
             // peak walk uses, evaluated at the call instead of at a placement.
             for (k, c) in calls.iter().enumerate() {
+                // A call from a closure body happens wherever the closure is called. What is
+                // resident at any point is at most the function's peak.
+                if c.in_closure {
+                    if total > 0 {
+                        summary.calls[k].live.insert(copy.name(), total);
+                    }
+                    continue;
+                }
+                // A tile of another task that runs at the same time is resident too, also when
+                // the task places it later in program order.
                 let held: u64 = placed
                     .iter()
                     .filter(|(_, sc, ord)| {
-                        *ord < c.order && sc.len() <= c.scope.len() && c.scope.starts_with(sc)
+                        *ord < c.order
+                            && sc.len() <= c.scope.len()
+                            && c.scope.starts_with(sc)
+                            && not_ended(*ord, c.order)
                     })
                     .map(|&(b, _, _)| b)
-                    .sum();
+                    .sum::<u64>()
+                    + held_at_calls[k];
                 if held > 0 {
-                    summary.calls[k].live.insert(space.name(), held);
+                    summary.calls[k].live.insert(copy.name(), held);
                 }
             }
             // Record the working set whether or not it violates. An *admitted* program emits no
@@ -763,6 +1183,7 @@ impl<'a> TypeChecker<'a> {
             // utilization an engine must be given (#285). A verdict alone does not carry it.
             self.traffic.resident_sets.push(crate::report::ResidentSet {
                 space: space.clone(),
+                device: copy.device.clone(),
                 total_bytes: total,
                 capacity_bytes: cap,
                 tiles: tile_count,
@@ -772,7 +1193,7 @@ impl<'a> TypeChecker<'a> {
             // E6009's job, and reporting it twice would double-count in the record.
             if total > cap && tile_count > 1 {
                 violations.push((
-                    space.clone(),
+                    copy.clone(),
                     total,
                     cap,
                     tile_count,
@@ -784,15 +1205,16 @@ impl<'a> TypeChecker<'a> {
         if !summary.self_peak.is_empty() || !summary.calls.is_empty() {
             self.traffic.capacity_summaries.push(summary);
         }
-        for (space, total, cap, count, overcommit, granule) in violations {
+        for (copy, total, cap, count, overcommit, granule) in violations {
+            let space = &copy.space;
             let rounded_note = match granule {
                 Some(g) => format!(" (each rounded up to the {g}-byte granule)"),
                 None => String::new(),
             };
             let msg = format!(
-                "the working set placed in memory space '{}' ({} tiles){} sums to {} bytes, over \
+                "the working set placed in memory space {} ({} tiles){} sums to {} bytes, over \
                  its {} byte capacity",
-                space.name(),
+                MemoryCopy::quoted(&copy.name()),
                 count,
                 rounded_note,
                 total,
@@ -801,7 +1223,7 @@ impl<'a> TypeChecker<'a> {
             // The same working-set numbers in machine-readable form, on whichever of the two
             // codes this space's `overcommit` selects (#282).
             let facts = crate::diagnostic::DiagnosticFacts::Capacity {
-                space: space.name(),
+                space: copy.name(),
                 required_bytes: total,
                 available_bytes: cap,
                 tiles: Some(count),
@@ -829,6 +1251,24 @@ impl<'a> TypeChecker<'a> {
     /// Whether a memory space is declared `managed: cached` (hardware-coherent), so an implicit
     /// cross-space use of a value there — or a relaxed transfer into it — is safe. Undeclared
     /// spaces are treated as `explicit` (the strict default), preserving the older behavior.
+    /// Whether the fleet may run `top` on a worker of another node (`offload: true`). Such a
+    /// worker does not share this node's memory, so `managed: cached` does not reach it. A
+    /// built-in device has no declaration to mark, and a manifest can send it anywhere, so it
+    /// counts as one. The host does not.
+    pub(crate) fn topology_offloads(&self, top: &Topology) -> bool {
+        match top {
+            Topology::Custom(name, _) => self
+                .env
+                .topologies
+                .get(name)
+                .is_none_or(|d| d.descriptor.offload),
+            Topology::Slice(inner, ..) => self.topology_offloads(inner),
+            // The host runs the program itself, so its own code reads its own memory.
+            Topology::CPU | Topology::CpuAvx512 | Topology::CpuNeon => false,
+            _ => true,
+        }
+    }
+
     pub(crate) fn space_is_cached(&self, space: &MemorySpace) -> bool {
         self.env.memories.values().any(|d| {
             d.managed == crate::syntax::Management::Cached
@@ -877,12 +1317,13 @@ impl<'a> TypeChecker<'a> {
         self.transfer_cost_graph.placement_space(p)
     }
 
-    /// Every placed tensor a type carries, as (element type, dimensions, the space it occupies).
+    /// Every placed tensor a type carries, as (element type, dimensions, the copy of the memory
+    /// it occupies).
     ///
     /// Descends the wrappers, so a placement inside `Verified<..>`, `&..` or `*const ..` is found
     /// rather than only the outermost one. A tensor that states its own placement takes it; a
     /// wrapper's location applies only to a tensor that states none.
-    fn placed_tensors(&self, ty: &Type) -> Vec<(ElementType, Vec<Dim>, MemorySpace)> {
+    fn placed_tensors(&self, ty: &Type) -> Vec<(ElementType, Vec<Dim>, MemoryCopy)> {
         let mut out = Vec::new();
         self.collect_placed_tensors(ty, &mut out);
         out
@@ -891,8 +1332,9 @@ impl<'a> TypeChecker<'a> {
     fn collect_placed_tensors(
         &self,
         ty: &Type,
-        out: &mut Vec<(ElementType, Vec<Dim>, MemorySpace)>,
+        out: &mut Vec<(ElementType, Vec<Dim>, MemoryCopy)>,
     ) {
+        let copy = |space: MemorySpace, device: Option<String>| MemoryCopy { space, device };
         let before = out.len();
         match ty {
             Type::Ref(inner, _)
@@ -900,6 +1342,8 @@ impl<'a> TypeChecker<'a> {
             | Type::Pointer(inner, _, _)
             | Type::Verified(inner)
             | Type::Pinned(inner, _) => self.collect_placed_tensors(inner, out),
+            // A channel end holds no tensor: `channel` counts the room of the channel.
+            Type::GenericInstance(base, _) if Self::is_channel_end(base) => return,
             Type::GenericInstance(base, args) => {
                 self.collect_placed_tensors(base, out);
                 for a in args {
@@ -910,7 +1354,11 @@ impl<'a> TypeChecker<'a> {
         }
         if let (Some(p), Some((e, d))) = (ty.placement(), Self::tensor_of(ty)) {
             let space = self.placement_space(p);
-            out.push((e.clone(), d.to_vec(), space));
+            out.push((
+                e.clone(),
+                d.to_vec(),
+                copy(space, self.device_copy(&p.topology)),
+            ));
             return;
         }
         // A wrapper states the location for a tensor that does not state one itself.
@@ -918,17 +1366,93 @@ impl<'a> TypeChecker<'a> {
             match ty {
                 Type::Ref(inner, mem) => {
                     if let Some((e, d)) = Self::tensor_of(inner) {
-                        out.push((e.clone(), d.to_vec(), mem.clone()));
+                        out.push((e.clone(), d.to_vec(), copy(mem.clone(), None)));
                     }
                 }
                 Type::Pinned(inner, top) if !matches!(top, Topology::Current) => {
                     if let Some((e, d)) = Self::tensor_of(inner) {
                         let space = self.transfer_cost_graph.default_memory_for(top);
-                        out.push((e.clone(), d.to_vec(), space));
+                        out.push((e.clone(), d.to_vec(), copy(space, self.device_copy(top))));
                     }
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// The declaration of the memory space that `p` places a tensor in, if the program has one.
+    fn space_decl(&self, p: &crate::syntax::Placement) -> Option<&crate::syntax::MemoryDecl> {
+        let space = self.placement_space(p);
+        self.env
+            .memories
+            .values()
+            .find(|m| m.name.as_ref() == space.name())
+            .copied()
+    }
+
+    /// The alignment that a tensor placed by `p` has: its `aligned(N)`, or the `alignment:` of its
+    /// space, whichever is larger. 0 when neither says.
+    pub(crate) fn alignment_of(&self, p: &crate::syntax::Placement) -> u64 {
+        let least = self
+            .space_decl(p)
+            .and_then(|m| m.alignment.as_ref())
+            .map_or(0, |a| a.0);
+        p.alignment.unwrap_or(0).max(least)
+    }
+
+    /// Each `aligned(N)` in `ty` is in a space whose storage the compiler lays out, and is at
+    /// least the `alignment:` of that space (E6034).
+    fn check_alignments_in(&mut self, ty: &Type, context: &str, span: &Span) {
+        match ty {
+            Type::Borrow { inner, .. }
+            | Type::Pointer(inner, ..)
+            | Type::Ref(inner, _)
+            | Type::Pinned(inner, _) => self.check_alignments_in(inner, context, span),
+            Type::GenericInstance(base, args) => {
+                self.check_alignments_in(base, context, span);
+                for a in args {
+                    self.check_alignments_in(a, context, span);
+                }
+            }
+            Type::Tensor(_, _, Some(p)) => {
+                let Some(n) = p.alignment else {
+                    return;
+                };
+                let space = self.placement_space(p).name();
+                let decl = self.space_decl(p);
+                let laid_out = decl.is_some_and(|m| {
+                    matches!(
+                        m.scope,
+                        Some(
+                            crate::syntax::Scope::Sm
+                                | crate::syntax::Scope::Cta
+                                | crate::syntax::Scope::Thread
+                        )
+                    )
+                });
+                let least = decl.and_then(|m| m.alignment.as_ref()).map_or(0, |a| a.0);
+                let message = if !laid_out {
+                    Some(format!(
+                        "{context}: `aligned({n})` needs a space whose storage the compiler lays \
+                         out, one declared with `scope: sm`, `cta` or `thread`, and '{space}' is not"
+                    ))
+                } else if n < least {
+                    Some(format!(
+                        "{context}: `aligned({n})` is less than the `alignment: {least} B` of \
+                         '{space}', which every tensor there has"
+                    ))
+                } else {
+                    None
+                };
+                if let Some(message) = message {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E6034,
+                        message,
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                    );
+                }
+            }
+            _ => {}
         }
     }
 
@@ -946,10 +1470,18 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn check_placement_of_type(&mut self, ty: &Type, context: &str, span: &Span, record: bool) {
+        // A raw pointer, such as the room of a channel, points at tensors that it does not hold.
+        let record = record && !matches!(ty, Type::Pointer(..));
         self.report_unheld_placements(ty, context);
-        for (e, d, space) in self.placed_tensors(ty) {
-            self.check_capacity_of(&e, &d, &space, context, span, record);
-            self.check_element_type(&e, &space, context);
+        self.check_alignments_in(ty, context, span);
+        for (e, d, copy) in self.placed_tensors(ty) {
+            self.check_capacity_of(&e, &d, &copy, context, span, record, 1);
+            self.check_element_type(
+                &e,
+                &copy.space,
+                context,
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
         }
     }
 
@@ -1074,6 +1606,24 @@ impl<'a> TypeChecker<'a> {
     /// the other. Reports the edge's own diagnostics on the way: capacity, and a host memory
     /// nothing declared. `None` when no route exists at all.
     fn resolve_transfer_edge(&mut self, t: &mut TransferExpr) -> Option<ResolvedEdge> {
+        // `transfer(x, Topology::X[i])` moves the value into the memory of that device. A memory
+        // that several devices have does not say which device gets the value.
+        if let Some(device) = &mut t.device {
+            if *device == Topology::Current {
+                *device = self.active_topology.clone();
+            }
+            if let Some(why) = self.declared_device_problem(device) {
+                let message = format!("`transfer(.., {device})` names no device: {why}");
+                self.report_once(crate::diagnostic::DiagnosticCode::E6025, message, &t.span);
+            }
+            t.space = self.transfer_cost_graph.default_memory_for(device);
+        } else if let Some(why) = self.memory_of_several_devices(&t.space) {
+            let message = format!(
+                "`transfer(.., Memory::{})` names no location: {why}",
+                t.space.name()
+            );
+            self.report_once(crate::diagnostic::DiagnosticCode::E6025, message, &t.span);
+        }
         let prev = self.allow_cross_topology;
         self.allow_cross_topology = true;
         // Anything placed while checking this operand is a hop feeding this transfer, so it has
@@ -1083,16 +1633,24 @@ impl<'a> TypeChecker<'a> {
         let inner_ty = self.check_expr_type_flag(&mut t.expr, false);
         self.traffic.consumed_by_transfer = prev_consumed;
         self.allow_cross_topology = prev;
+        // A transfer of a borrowed tensor copies the tensor it points to, and the owner keeps it.
+        let shared_borrow = matches!(&inner_ty, Type::Borrow { inner, is_mut: false, .. }
+            if matches!(**inner, Type::Tensor(..)));
+        let inner_ty = match inner_ty {
+            Type::Borrow { inner, .. } if matches!(*inner, Type::Tensor(..)) => *inner,
+            other => other,
+        };
 
         // Extract source memory space, preferring exact space from an inner transfer if present
         let source_mem = if let Expr::Transfer(inner_t) = &*t.expr {
             inner_t.space.clone()
-        } else if let Some(space) = inner_ty.placement().map(|p| p.space.clone()) {
+        } else if let Some(space) = inner_ty.placement().map(|p| self.placement_space(p)) {
             // A placed tensor names the space it is in. While `transfer` produced
             // `Pinned`, a transferred value matched an arm below and the fallback saw
             // only genuinely host-resident values; with the placement unread it called
             // this one host memory and computed the edge from CPU_DRAM, inserting a
-            // redundant staging hop into the region.
+            // redundant staging hop into the region. A placement written as a declared
+            // device gets its space from the declaration, not from the parser's guess.
             space
         } else {
             match &inner_ty {
@@ -1103,10 +1661,9 @@ impl<'a> TypeChecker<'a> {
                 // handoff reports "no hardware path" (#253). Only an undeclared custom topology
                 // falls back to the like-named space (`Memory::Foo` <-> `Topology::Foo`), the
                 // sub-space placement case (SMEM/TMEM), which has no descriptor.
-                Type::Pinned(_, Topology::Custom(name)) => {
-                    let top = Topology::Custom(name.clone());
+                Type::Pinned(_, top @ Topology::Custom(name, _)) => {
                     if self.transfer_cost_graph.descriptor(&top.kind()).is_some() {
-                        self.transfer_cost_graph.default_memory_for(&top)
+                        self.transfer_cost_graph.default_memory_for(top)
                     } else {
                         MemorySpace::from_name(name.as_ref())
                     }
@@ -1116,6 +1673,10 @@ impl<'a> TypeChecker<'a> {
             }
         };
         let target_mem = t.space.clone();
+        t.shared = shared_borrow
+            && self
+                .transfer_cost_graph
+                .is_shared_edge(&source_mem, &target_mem);
 
         // Capacity: a statically-shaped tensor transferred into a declared space must fit.
         if let Some((e, d)) = Self::tensor_of(&inner_ty) {
@@ -1123,8 +1684,19 @@ impl<'a> TypeChecker<'a> {
             // one: distinct per `transfer(..)` written in the source, and the same on a
             // second visit to the same node.
             let placement_span = Self::buffer_span(&t.expr).unwrap_or(t.span);
-            self.check_capacity(e, d, &target_mem, "transferred tensor", &placement_span);
-            self.check_element_type(e, &target_mem, "transferred tensor");
+            let copy = MemoryCopy {
+                space: target_mem.clone(),
+                device: t.device.as_ref().and_then(|d| self.device_copy(d)),
+            };
+            self.check_capacity(e, d, &copy, "transferred tensor", &placement_span);
+            self.check_element_type(
+                e,
+                &target_mem,
+                "transferred tensor",
+                Some(crate::diagnostic::SourceSpan::from_ast_span(
+                    &placement_span,
+                )),
+            );
         }
 
         // Bandwidth-derived roofline cost (bytes / bandwidth along the hierarchy). When the
@@ -1142,10 +1714,19 @@ impl<'a> TypeChecker<'a> {
         let moved_bytes: Option<u64> = Self::tensor_of(&inner_ty)
             .and_then(|(e, d)| crate::hir::memory::static_tensor_bytes(e, d));
 
-        // Which of the two cost sources applied. They are mutually exclusive by construction
-        // (E6013), so this names the one that fired rather than a precedence winner.
+        // Which cost source applied. They are mutually exclusive by construction (E6013), so this
+        // names the one that fired rather than a precedence winner.
         let link_bw = self.transfer_cost_graph.link_rate(&source_mem, &target_mem);
+        let shared = self
+            .transfer_cost_graph
+            .is_shared_edge(&source_mem, &target_mem);
         let derived: Option<crate::hir::memory::DerivedCost> = moved_bytes.and_then(|bytes| {
+            if shared {
+                return Some(crate::hir::memory::DerivedCost {
+                    value: 0,
+                    per: crate::syntax::RatePer::Second,
+                });
+            }
             link_bw
                 .and_then(|bw| {
                     crate::hir::memory::hop_cost(bytes, bw)
@@ -1159,7 +1740,9 @@ impl<'a> TypeChecker<'a> {
         let derived_cost = derived.map(|d| d.value);
         let derived_unit = derived.map(|d| d.per);
         let cost_source = derived.map(|_| {
-            if link_bw.is_some() {
+            if shared {
+                crate::report::CostSource::Shared
+            } else if link_bw.is_some() {
                 crate::report::CostSource::LinkRate
             } else {
                 crate::report::CostSource::Containment
@@ -1786,16 +2369,24 @@ impl<'a> TypeChecker<'a> {
             current_expr = Expr::Transfer(TransferExpr {
                 expr: Box::new(current_expr),
                 space: intermediate_space,
+                device: None,
                 cost: None,
                 lowering: None,
+                is_async: false,
+                shared: false,
                 span: t.span,
             });
         }
+        // Only the last hop gives the token of `transfer_async`, and only the last hop is into the
+        // memory of the device that the transfer names.
         *expr = Expr::Transfer(TransferExpr {
             expr: Box::new(current_expr),
             space: target_mem,
+            device: t.device,
             cost: None,
             lowering: None,
+            is_async: t.is_async,
+            shared: false,
             span: t.span,
         });
         // Propagate the relaxed marker so each rewritten single-hop transfer is checked with the
@@ -1874,7 +2465,7 @@ impl<'a> TypeChecker<'a> {
             MemorySpace::CPUDRAM => Topology::CPU,
             // A value in a user-defined memory space is pinned on the like-named
             // custom topology (naming convention: Memory::Foo <-> Topology::Foo).
-            MemorySpace::Custom(name) => Topology::Custom(name.clone()),
+            MemorySpace::Custom(name) => Topology::Custom(name.clone(), None),
         }
     }
 
@@ -1887,6 +2478,19 @@ impl<'a> TypeChecker<'a> {
         target_mem: &MemorySpace,
         consume: bool,
     ) -> Type {
+        // `transfer(x, Topology::X[i])` gives a tensor on that device, in its memory.
+        let device = match &*expr {
+            Expr::Transfer(t) => t.device.clone(),
+            _ => None,
+        };
+        let placement = match &device {
+            Some(device) => {
+                let mut p = Placement::on(device.clone());
+                p.space = target_mem.clone();
+                p
+            }
+            None => Placement::in_space(target_mem.clone(), Self::pinned_topology_for(target_mem)),
+        };
         match inner_ty {
             Type::Ref(base_ty, _) => Type::Ref(base_ty, target_mem.clone()),
             // A dynamic tensor re-homes exactly as a statically shaped one does; only the
@@ -1898,14 +2502,7 @@ impl<'a> TypeChecker<'a> {
             // `Tensor<f16, [n, n], Memory::NPU_HBM>` were two different types for the same fact
             // and would not assign to one another. `Pinned` also carries only a topology, so the
             // space the transfer named was not recorded on the value at all.
-            Type::Tensor(el, dims, _) => Type::Tensor(
-                el,
-                dims,
-                Some(Placement::in_space(
-                    target_mem.clone(),
-                    Self::pinned_topology_for(target_mem),
-                )),
-            ),
+            Type::Tensor(el, dims, _) => Type::Tensor(el, dims, Some(placement)),
             Type::Verified(_inner) => {
                 if let Expr::Transfer(t) = expr {
                     let inner_pinned = self.check_expr_type_flag(&mut t.expr, consume);
@@ -1914,7 +2511,10 @@ impl<'a> TypeChecker<'a> {
                     unreachable!()
                 }
             }
-            Type::Pinned(base, _) => Type::Pinned(base, Self::pinned_topology_for(target_mem)),
+            Type::Pinned(base, _) => Type::Pinned(
+                base,
+                device.unwrap_or_else(|| Self::pinned_topology_for(target_mem)),
+            ),
             // An error already reported made this value's type unknown.
             Type::Unknown => Type::Unknown,
             _ => {
@@ -1992,12 +2592,14 @@ impl<'a> TypeChecker<'a> {
         let Statement::LetDecl(made) = &spawn.stmts[at] else {
             return None;
         };
-        let is_constructor = matches!(&made.expr, Expr::FunctionCall(c)
+        // `unsafe { Tensor<..>::uninit() }` is the same allocation; the `unsafe` stays on it.
+        let init = crate::syntax::bare_unsafe_value(&made.expr);
+        let is_constructor = matches!(init, Expr::FunctionCall(c)
             if c.name.as_ref() == "Tensor" || c.name.as_ref().starts_with("Tensor::"));
         // The size must not use anything the region computes before it.
         let uses_region_value = spawn.stmts[..at].iter().any(|s| {
             matches!(s, Statement::LetDecl(d)
-                if crate::hir::check::raw::expr_mentions(&made.expr, d.name.as_ref()))
+                if crate::hir::check::raw::expr_mentions(init, d.name.as_ref()))
         });
         if !is_constructor || made.ty_ann.is_some() || uses_region_value {
             return None;
@@ -2028,6 +2630,7 @@ impl<'a> TypeChecker<'a> {
                 stmts,
                 ret,
                 span,
+                arrivals,
             }) => {
                 let spawn_span = *span;
                 let mut actual_top = top.clone();
@@ -2043,12 +2646,49 @@ impl<'a> TypeChecker<'a> {
                     }
                     actual_top = self.active_topology.clone();
                 }
+                // Code after the `across` nest runs once, in the last pass to end. That pass
+                // knows it is the last from a count in the region's own memory.
+                if crate::hir::check::across::code_after_the_nest(stmts)
+                    || crate::hir::check::across::code_of_a_group(stmts)
+                {
+                    // The lanes of the pass learn that it was the last through shared memory.
+                    let shared = self
+                        .env
+                        .memories
+                        .values()
+                        .filter(|d| {
+                            matches!(
+                                d.scope,
+                                Some(crate::syntax::Scope::Cta | crate::syntax::Scope::Sm)
+                            )
+                        })
+                        .map(|d| d.name.as_ref().to_string())
+                        .min()
+                        .map(|n| crate::syntax::MemorySpace::from_name(&n));
+                    let count = self.transfer_cost_graph.default_memory_for(&actual_top);
+                    *arrivals = Some((count, shared));
+                }
+
+                let no_device = self.declared_device_problem(&actual_top);
+                if let Some(why) = &no_device {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E6025,
+                        format!("`spawn on({actual_top})` names no device: {why}"),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&spawn_span)),
+                    );
+                } else if let Some(why) = self.device_with_no_gpu(&actual_top) {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E6042,
+                        format!("`spawn on({actual_top})`: {why}"),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&spawn_span)),
+                    );
+                }
 
                 // Typo-safety for the open topology set: a user-defined topology with no
                 // registered descriptor (not declared via `Topology <Name> { ... }` and not
                 // registered by a plugin) is often a misspelled built-in. Warn; it still
                 // compiles with host-like placement.
-                if let Topology::Custom(name) = &actual_top {
+                if let (Topology::Custom(name, _), None) = (&actual_top, &no_device) {
                     if self
                         .transfer_cost_graph
                         .descriptor(&crate::syntax::TopologyKind::Custom(name.clone()))
@@ -2100,24 +2740,28 @@ impl<'a> TypeChecker<'a> {
                         let _t1 = self.check_expr_type(start);
                         let _t2 = self.check_expr_type(end);
                     }
-                    // No index expression to validate (Custom carries only a name).
-                    Topology::GPU(e) => {
+                    Topology::GPU(e) | Topology::Custom(_, Some(e)) => {
                         let _t = self.check_expr_type(e);
                     }
-                    // No index expression to validate (Custom carries only a name).
+                    // No index expression to validate.
                     Topology::CPU
                     | Topology::AMX
                     | Topology::ANE
                     | Topology::CpuAvx512
                     | Topology::CpuNeon
-                    | Topology::Custom(_)
+                    | Topology::Custom(_, None)
                     | Topology::Current => {}
                 }
 
                 let prev_top = self.active_topology.clone();
                 let prev_mem = self.active_memory.clone();
+                let prev_device_spawn = self.device_spawn;
+                if self.runs_on_a_device(&actual_top) {
+                    self.device_spawn = Some(spawn_span);
+                }
                 self.active_topology = actual_top.clone();
-                self.active_memory = self.transfer_cost_graph.default_memory_for(&actual_top);
+                let region_mem = self.transfer_cost_graph.default_memory_for(&actual_top);
+                self.set_active_memory(region_mem);
 
                 *top = actual_top;
 
@@ -2161,18 +2805,48 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 self.drops_enter_spawn();
+                if let Some(v) =
+                    self.region_frees_through(stmts, ret.as_deref(), &Default::default())
+                {
+                    self.pointer_facts_event(*span, |_| {
+                        crate::hir::check::pointer_facts::region_event(&v)
+                    });
+                }
+                let outer_pointers = self.pointer_facts_enter_body();
                 self.check_expr_block(stmts, ret.as_deref(), consume);
+                self.pointer_facts_leave_body(outer_pointers);
                 // Checked once the region's own frame is closed, so a variable from outside that
                 // the region hands out moves in the enclosing function.
                 self.drops_exit_spawn();
 
                 let mut ret_ty = Type::Struct("void".into(), None); // default void-like type
                 let has_ret = ret.is_some();
+                let ret_span = ret.as_deref().map(|r| r.span());
                 if let Some(r) = ret {
                     // The parser reads a trailing `if` as the region's value; a region used as
                     // a statement does not use it.
                     self.value_unused = unused;
                     ret_ty = self.check_expr_type_flag(r, consume);
+                }
+                // The result may be a value that was never bound to a name, and an untyped
+                // literal there was skipped by the expression check.
+                if self.active_space_declares_dtypes {
+                    if let Some(ret_span) = ret_span {
+                        let statement = self.errors.at;
+                        let span = if ret_span.line != 0 {
+                            ret_span
+                        } else {
+                            statement
+                        };
+                        if span.line != 0 {
+                            self.check_type_element_types_in_active_region(
+                                &ret_ty,
+                                "this region's result",
+                                &span,
+                                &statement,
+                            );
+                        }
+                    }
                 }
                 // A variable from outside the region is handed out as the same buffer.
                 let hands_out_outside =
@@ -2189,7 +2863,7 @@ impl<'a> TypeChecker<'a> {
                         "this `spawn` region makes a tensor on the device and hands it out, but \
                          the compiler cannot make it before the region; hand out a variable, \
                          create it with \
-                         `Tensor<..>(..)`, `::new()` or `::uninit()`, without a type \
+                         `Tensor<..>(..)`, `::new()` or `unsafe { ..::uninit() }`, without a type \
                          annotation, with a size known before the region and a name not already \
                          in use, or make it before the region yourself"
                             .to_string(),
@@ -2225,7 +2899,8 @@ impl<'a> TypeChecker<'a> {
                 self.pop_scope();
 
                 self.active_topology = prev_top;
-                self.active_memory = prev_mem;
+                self.set_active_memory(prev_mem);
+                self.device_spawn = prev_device_spawn;
 
                 // The result of a device kernel is located ON that device: return
                 // `Pinned<ret_ty, d>` so reading it on another topology re-triggers the USE
@@ -2246,4 +2921,208 @@ impl<'a> TypeChecker<'a> {
             _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
     }
+}
+
+/// The type of `transfer_async(x, M)`: a token of the placed tensor `placed`.
+pub(crate) fn token_of(placed: Type) -> Type {
+    if placed == Type::Unknown {
+        return Type::Unknown;
+    }
+    Type::GenericInstance(Box::new(Type::Struct("Token".into(), None)), vec![placed])
+}
+
+impl TypeChecker<'_> {
+    /// `t.wait()` on a token of `transfer_async`: it takes the token, and its value is the placed
+    /// tensor. The code generators copy at the `transfer_async`, so the wait is the value.
+    pub(crate) fn check_token_wait(&mut self, expr: &mut Expr) -> Option<Type> {
+        let Expr::MethodCall(m) = &*expr else {
+            return None;
+        };
+        if m.method_name.as_ref() != "wait" || !m.args.is_empty() {
+            return None;
+        }
+        let probe = self.check_expr_type_probe(&m.base);
+        let probe = match &*m.base {
+            Expr::Transfer(t) if t.is_async => Type::GenericInstance(
+                Box::new(Type::Struct("Token".into(), None)),
+                vec![Type::Unknown],
+            ),
+            _ => probe,
+        };
+        token_inner(&probe)?;
+        let copy = crate::syntax::types::is_copy_token(&probe);
+        let Expr::MethodCall(m) = std::mem::replace(
+            expr,
+            Expr::Number(crate::syntax::NumberExpr::new(
+                "0".to_string(),
+                None,
+                Span::default(),
+            )),
+        ) else {
+            unreachable!("matched above")
+        };
+        // The token of a lane copy waits at `lanes::copy_wait`, where the copy ends on a GPU.
+        if copy {
+            *expr = Expr::FunctionCall(crate::syntax::expr::FunctionCallExpr::new(
+                "lanes::copy_wait".into(),
+                None,
+                vec![*m.base],
+                m.span,
+            ));
+            return Some(self.check_expr_type_flag(expr, true));
+        }
+        let mut base = *m.base;
+        let ty = self.check_expr_type_flag(&mut base, true);
+        if let Expr::Identifier(id) = &base {
+            self.consume(id.name.as_ref());
+        }
+        *expr = base;
+        Some(token_inner(&ty).cloned().unwrap_or(Type::Unknown))
+    }
+
+    /// A `let` of `name` that holds a token: it must be waited before its scope ends.
+    pub(crate) fn note_token_let(&mut self, name: &crate::symbol::Symbol, span: Span) {
+        if self.speculating {
+            return;
+        }
+        let is_token = self
+            .lookup(name.as_ref())
+            .is_some_and(|(ty, _)| token_inner(ty).is_some());
+        if is_token {
+            self.tokens.push((name.clone(), span, self.scopes.len()));
+        }
+    }
+
+    /// The scope that ends now: each token of it that no `.wait()` took is E6036.
+    pub(crate) fn check_tokens_waited(&mut self) {
+        let depth = self.scopes.len();
+        let ending: Vec<_> = self
+            .tokens
+            .iter()
+            .filter(|(_, _, d)| *d == depth)
+            .cloned()
+            .collect();
+        self.tokens.retain(|(_, _, d)| *d != depth);
+        for (name, span, _) in ending {
+            if !self.is_moved(name.as_ref()) {
+                self.report_dropped_token(&name, &span, "its scope ends");
+            }
+        }
+    }
+
+    /// `name = ..` gives a token variable a new value: the old token must be waited first.
+    pub(crate) fn check_token_overwrite(&mut self, lhs: &Expr, span: &Span) {
+        let Expr::Identifier(id) = lhs else {
+            return;
+        };
+        let is_token = self
+            .lookup(id.name.as_ref())
+            .is_some_and(|(ty, _)| token_inner(ty).is_some());
+        if is_token && !self.is_moved(id.name.as_ref()) {
+            self.report_dropped_token(&id.name, span, "this assignment gives it a new value");
+        }
+    }
+
+    fn report_dropped_token(&mut self, name: &crate::symbol::Symbol, span: &Span, when: &str) {
+        if self.speculating {
+            return;
+        }
+        let copy = self
+            .lookup(name.as_ref())
+            .is_some_and(|(ty, _)| crate::syntax::types::is_copy_token(ty));
+        let message = if copy {
+            format!(
+                "the copy token '{name}' is dropped with no `.wait()` when {when}, so the copy \
+                 may not be done. Call `{name}.wait()`"
+            )
+        } else {
+            format!(
+                "the transfer token '{name}' is dropped with no `.wait()` when {when}, so the copy \
+                 may not be done. Call `{name}.wait()`, which gives the placed tensor"
+            )
+        };
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E6036,
+            message,
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+    }
+}
+
+/// Code at position `b_order` in the `tasks` blocks and tasks `b` that can run at the same time
+/// as code at `a_order` in `a`. Each item is one group of tasks that `b` is in, with its count of
+/// copies. Two tasks of one block run at the same time. The code of a block runs at the same time
+/// as each task that it started before. The other tasks of a `spawn` in a loop run at the same
+/// time as each other. A join that always runs ends its task.
+fn at_the_same_time(
+    a: &[TaskLevel],
+    a_order: usize,
+    b: &[TaskLevel],
+    b_order: usize,
+    ended: &std::collections::HashMap<usize, usize>,
+) -> Vec<Overlap> {
+    let started = |x: &TaskRun, order: usize| order.min(x.start);
+    // Code at `order` runs while the task `x` runs: after the task starts, and before a join ends
+    // it.
+    let during = |x: &TaskRun, x_order: usize, order: usize| {
+        started(x, x_order) < order && ended.get(&x.task).is_none_or(|&end| order < end)
+    };
+    let one_ends_first = |p: &TaskRun, q: &TaskRun| {
+        let ends_before =
+            |x: &TaskRun, y: &TaskRun| ended.get(&x.task).is_some_and(|&e| e <= y.start);
+        ends_before(p, q) || ends_before(q, p)
+    };
+    let mut found = Vec::new();
+    for (level, (x, y)) in a.iter().zip(b).enumerate() {
+        if x.block != y.block {
+            break;
+        }
+        let group = |run: Option<TaskRun>, copies: Option<u64>, other_copies: bool| Overlap {
+            level,
+            task: run.map(|r| r.task),
+            other_copies,
+            copies,
+            spawn: run.map(|r| r.spawn),
+        };
+        match (x.run, y.run) {
+            (Some(p), Some(q)) if p.task != q.task => {
+                if !one_ends_first(&p, &q) {
+                    found.push(group(Some(q), q.copies, false));
+                }
+                break;
+            }
+            (Some(p), Some(_)) => {
+                if p.copies != Some(1) {
+                    found.push(group(Some(p), p.copies.map(|n| n.saturating_sub(1)), true));
+                }
+            }
+            (None, Some(q)) => {
+                if during(&q, b_order, a_order) {
+                    found.push(group(Some(q), q.copies, false));
+                }
+                break;
+            }
+            (Some(p), None) => {
+                if during(&p, a_order, b_order) {
+                    found.push(group(None, Some(1), false));
+                }
+                break;
+            }
+            (None, None) => {}
+        }
+    }
+    found
+}
+
+/// A group of tasks that [`at_the_same_time`] found.
+struct Overlap {
+    /// The index of the shared `tasks` block in the chain.
+    level: usize,
+    /// `None` is the code of the block.
+    task: Option<usize>,
+    /// The other tasks of the same `spawn` in a loop, not a sibling task.
+    other_copies: bool,
+    /// How many of the group run at once. `None` when it is not known at compile time.
+    copies: Option<u64>,
+    spawn: Option<crate::syntax::Span>,
 }

@@ -1,0 +1,40 @@
+//===- c_allocators_declared_with_c_types.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// C's allocation functions, each declared with a type that lowers to C's: a size can be `usize`,
+// `i64` or `u64`, and a pointer can be a pointer to any type. Each is called, and what it gives
+// back is used: `calloc` zeroes the block, `realloc` keeps its contents, and `aligned_alloc` gives
+// a block that can be written.
+extern "C" {
+  fn malloc(size : u64) -> *mut f32;
+  fn calloc(count : i64, size : usize) -> *mut i32;
+  fn realloc(ptr : *mut i32, size : usize) -> *mut i32;
+  fn aligned_alloc(alignment : usize, size : usize) -> *mut i64;
+  fn free(ptr : *mut i8) -> void;
+}
+
+fn main() -> i32 {
+  let f : *mut f32 = unsafe { malloc(8) };
+  unsafe { f[1] = 2.5; }
+  print(unsafe { f[1] });
+  print!(" ");
+  let z : *mut i32 = unsafe { calloc(4, 4) };
+  print(unsafe { z[3] });
+  print!(" ");
+  unsafe { z[0] = 7; }
+  let g : *mut i32 = unsafe { realloc(z, 32) };
+  unsafe { g[7] = 8; }
+  print(unsafe { g[0] + g[7] });
+  print!(" ");
+  let a : *mut i64 = unsafe { aligned_alloc(64, 64) };
+  unsafe { a[0] = 9; }
+  print(unsafe { a[0] });
+  unsafe { free(f); free(g); free(a); }
+  return 0;
+}
+
+// EXPECT: 2.5 0 15 9

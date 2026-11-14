@@ -7,14 +7,12 @@
 //===----------------------------------------------------------------------===//
 // A function returns a row of a tensor it borrows, as a tensor whose length is not known
 // when the program is compiled. The row is a view of the caller's tensor, so the function
-// returns a copy of it. 10 + 12 = 22.
+// returns a copy of it with `.clone()`. 10 + 12 = 22.
 //
 // EXPECT: 22
-// The legacy code generator still fails on this program (#1186).
-// REQUIRES: flat-codegen
 
 fn second_row(q : &Tensor<f32, [2, ?]>) -> Tensor<f32, [?]> {
-  return q[1];
+  return q[1].clone();
 }
 
 fn main() -> i32 {

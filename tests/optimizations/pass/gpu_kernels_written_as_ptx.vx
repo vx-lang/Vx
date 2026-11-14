@@ -1,0 +1,74 @@
+//===- gpu_kernels_written_as_ptx.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `--emit-ptx` writes both GPU kernels to one PTX file. Each entry has the name of its function.
+// The kernel takes the parameters that the region uses, in the order that the function declares
+// them: `scale` uses `n` first, but `n` is its last parameter. The `.json` file gives each
+// parameter's name and how many PTX parameters it takes.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --host default --emit-ptx -o %t.ptx
+// RUN: FileCheck %s --check-prefix=JSON < %t.json
+// RUN: FileCheck %s --check-prefix=PTX < %t.ptx
+
+// JSON:      "name": "scale"
+// JSON:      "name": "out"
+// JSON-NEXT: "rank": 1
+// JSON:      "words": 5
+// JSON:      "name": "x"
+// JSON:      "kind": "scalar"
+// JSON-NEXT: "mutable": false
+// JSON-NEXT: "name": "factor"
+// JSON:      "name": "n"
+// JSON:      "name": "zero"
+// JSON:      "name": "out"
+// JSON-NEXT: "rank": 2
+// JSON-NEXT: "type": "&mut Tensor<i32, [?, ?], Memory::HBM>"
+// JSON-NEXT: "words": 7
+// JSON:      "name": "rows"
+// JSON:      "name": "cols"
+// JSON:      "target": "sm_80"
+
+// PTX:      .entry scale(
+// PTX:      .param .f32 scale_param_10,
+// PTX-NEXT: .param .u32 scale_param_11
+// PTX-NEXT: )
+// PTX:      .entry zero(
+// PTX:      .param .u32 zero_param_7,
+// PTX-NEXT: .param .u32 zero_param_8
+// PTX-NEXT: )
+
+Memory HBM {
+  capacity: 40 GiB, bandwidth: 1555 GB/s, managed: explicit, scope: device
+}
+Topology Gpu {
+  arch: nvptx64,
+  memory: Memory::HBM,
+  visible: [Memory::CPU_DRAM, Memory::HBM],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 31.5 GB/s
+}
+
+pub fn scale(out: &mut Tensor<f32, [?], Memory::HBM>, unused: i32, x: &Tensor<f32, [?], Memory::HBM>,
+factor: f32, n: i32) -> void {
+  spawn on(Topology::Gpu) {
+    for i in 0..n {
+      out[i] = x[i] * factor;
+    }
+  }
+  return;
+}
+
+pub fn zero(out: &mut Tensor<i32, [?, ?], Memory::HBM>, rows: i32, cols: i32) -> void {
+  spawn on(Topology::Gpu) {
+    for r in 0..rows {
+      for c in 0..cols {
+        out[r][c] = 0;
+      }
+    }
+  }
+  return;
+}

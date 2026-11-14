@@ -1,0 +1,132 @@
+// A matmul of tiles on the Apple GPU, with f32 tiles and with f16 tiles. Each of these uses the
+// simdgroup matrices (lane_matmuls_in_metal_shading_language.vx). The kernels are that of
+// lane_matmuls_on_the_cpu.vx: each subgroup adds two chunks of k into `acc`, and `last` gets the
+// second chunk alone. `last` starts at 100, which a matmul with no `+` must not add. The inputs
+// are small integers, so each sum is exact, and the lines are those of that test. The last RUN
+// line uses the CPU copy of each kernel.
+//
+// REQUIRES: macos
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s -j 2 --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_METAL=0 vxc %s --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}f32 tiles sum: -4 6 -3 sum of all 1{{$}}
+// CHECK: {{^}}f32 tiles last chunk: 4 6 sum of all -30{{$}}
+// CHECK: {{^}}f16 tiles sum: -4 6 -3 sum of all 1{{$}}
+// CHECK: {{^}}f16 tiles last chunk: 4 6 sum of all -30{{$}}
+
+fn report(name : *const i8, hc : &Tensor<f32, [2, 4, 16, 8]>, hd : &Tensor<f32, [2, 4, 16, 8]>) -> void {
+  let mut all = 0.0;
+  let mut all_last = 0.0;
+  for b in 0..2 {
+    for w in 0..4 {
+      for i in 0..16 {
+        for j in 0..8 {
+          all = all + hc[b][w][i][j];
+          all_last = all_last + hd[b][w][i][j];
+        }
+      }
+    }
+  }
+  println!("{} sum: {} {} {} sum of all {}", name, hc[0][0][0][0], hc[1][3][15][7], hc[1][0][6][3], all);
+  println!("{} last chunk: {} {} sum of all {}", name, hd[0][2][5][1], hd[1][1][9][6], all_last);
+  return;
+}
+
+fn main() -> i32 {
+  let mut c = transfer(Tensor<f32, [2, 4, 16, 8]>::fill(0.0), Memory::HBM);
+  let mut d = transfer(Tensor<f32, [2, 4, 16, 8]>::fill(0.0), Memory::HBM);
+  let mut c16 = transfer(Tensor<f32, [2, 4, 16, 8]>::fill(0.0), Memory::HBM);
+  let mut d16 = transfer(Tensor<f32, [2, 4, 16, 8]>::fill(0.0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for blk in 0..2 across blocks {
+      let mut sa = unsafe { Tensor<f32, [4, 16, 16], Memory::SMEM>::uninit() };
+      let mut sb = unsafe { Tensor<f32, [4, 16, 8], Memory::SMEM>::uninit() };
+      let mut acc = unsafe { Tensor<f32, [4, 16, 8], Memory::SMEM>::uninit() };
+      let mut last = unsafe {
+        Tensor<f32, [4, 16, 8], Memory::SMEM>::uninit()
+      };
+      for w in 0..4 across subgroups {
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for j in 0..8 {
+              acc[w][i][j] = 0.0;
+              last[w][i][j] = 100.0;
+            }
+          }
+        }
+        for kk in 0..2 {
+          for i in 0..32 across lanes {
+            if i < 16 {
+              for k in 0..16 {
+                sa[w][i][k] = (((blk * 64 + w * 16 + i) * 3 + (kk * 16 + k) * 5) % 7 - 3) as f32;
+              }
+              for j in 0..8 {
+                sb[w][i][j] = (((kk * 16 + i) * 2 + j) % 5 - 2) as f32;
+              }
+            }
+          }
+          acc[w] = acc[w] + sa[w] @ sb[w];
+        }
+        last[w] = sa[w] @ sb[w];
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for j in 0..8 {
+              c[blk][w][i][j] = acc[w][i][j];
+              d[blk][w][i][j] = last[w][i][j];
+            }
+          }
+        }
+      }
+    }
+  }
+  spawn on(Topology::Device) {
+    for blk in 0..2 across blocks {
+      let mut sa = unsafe { Tensor<f16, [4, 16, 16], Memory::SMEM>::uninit() };
+      let mut sb = unsafe { Tensor<f16, [4, 16, 8], Memory::SMEM>::uninit() };
+      let mut acc = unsafe { Tensor<f32, [4, 16, 8], Memory::SMEM>::uninit() };
+      let mut last = unsafe {
+        Tensor<f32, [4, 16, 8], Memory::SMEM>::uninit()
+      };
+      for w in 0..4 across subgroups {
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for j in 0..8 {
+              acc[w][i][j] = 0.0;
+              last[w][i][j] = 100.0;
+            }
+          }
+        }
+        for kk in 0..2 {
+          for i in 0..32 across lanes {
+            if i < 16 {
+              for k in 0..16 {
+                sa[w][i][k] = (((blk * 64 + w * 16 + i) * 3 + (kk * 16 + k) * 5) % 7 - 3) as f16;
+              }
+              for j in 0..8 {
+                sb[w][i][j] = (((kk * 16 + i) * 2 + j) % 5 - 2) as f16;
+              }
+            }
+          }
+          acc[w] = acc[w] + (sa[w] as f32) @ (sb[w] as f32);
+        }
+        last[w] = (sa[w] as f32) @ (sb[w] as f32);
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for j in 0..8 {
+              c16[blk][w][i][j] = acc[w][i][j];
+              d16[blk][w][i][j] = last[w][i][j];
+            }
+          }
+        }
+      }
+    }
+  }
+  let hc = transfer(c, Memory::CPU_DRAM);
+  let hd = transfer(d, Memory::CPU_DRAM);
+  let hc16 = transfer(c16, Memory::CPU_DRAM);
+  let hd16 = transfer(d16, Memory::CPU_DRAM);
+  report("f32 tiles", &hc, &hd);
+  report("f16 tiles", &hc16, &hd16);
+  return 0;
+}

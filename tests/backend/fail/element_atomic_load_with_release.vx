@@ -1,0 +1,21 @@
+//===- element_atomic_load_with_release.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A load of a tensor element cannot use the Release ordering, so it stops the program, as
+// `AtomicI32::load` does.
+//
+// RUN: not vxc %s --run 2>&1 | FileCheck %s
+// CHECK: atomic load: the ordering cannot be Release or AcqRel
+// CHECK-NOT: after
+import core::sync::atomic;
+
+fn main() -> i32 {
+  let h = Tensor<i64, [2]>::fill(4i64);
+  let v = atomic_load_i64(&h, 0, AtomicOrdering::Release);
+  println!("after {}", v);
+  return 0;
+}

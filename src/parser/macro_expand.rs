@@ -18,6 +18,9 @@ use crate::syntax::*;
 use crate::syntax::{Delimiter, Span};
 use std::collections::HashMap;
 
+/// The macros that `expand_macro_call` expands itself, with no `macro_rules!`.
+pub const BUILT_IN_MACROS: [&str; 6] = ["mlir", "vec", "print", "eprint", "println", "eprintln"];
+
 pub struct MacroExpander<'a> {
     pub macros: &'a HashMap<crate::symbol::Symbol, Vec<MacroRule>>,
     /// The trait methods that carry a default body, across every module. Held here because
@@ -25,6 +28,9 @@ pub struct MacroExpander<'a> {
     /// an impl a macro produced is entitled to the defaults, and nothing before expansion
     /// can see it.
     pub trait_defaults: &'a crate::resolver::TraitDefaults,
+    /// The id the last expansion in this module got. Counted per module, so a parallel compile
+    /// gives the same ids as a normal one.
+    expansions: std::cell::Cell<u32>,
 }
 
 fn take_expr(expr: &mut expr::Expr) -> expr::Expr {
@@ -139,6 +145,7 @@ impl<'a> MacroExpander<'a> {
         Self {
             macros,
             trait_defaults,
+            expansions: std::cell::Cell::new(0),
         }
     }
 
@@ -232,6 +239,7 @@ impl<'a> MacroExpander<'a> {
                     line: 0,
                     column: 0,
                     length: 0,
+                    expansion: 0,
                 });
                 let lexed: Vec<_> = transcribed.iter().map(|t| t.as_token()).collect();
                 let mut parser = crate::parser::Parser::new(&lexed, "");
@@ -244,6 +252,10 @@ impl<'a> MacroExpander<'a> {
     }
 
     pub fn expand_module(&self, module: &mut VxModule) -> Result<(), String> {
+        Self::new(self.macros, self.trait_defaults).expand_module_from_zero(module)
+    }
+
+    fn expand_module_from_zero(&self, module: &mut VxModule) -> Result<(), String> {
         // Item-position macro calls first, so the items they produce are expanded below like
         // any other. A produced item may call another item macro, so this drains a worklist
         // rather than walking the list once; the depth limit is what a macro that expands to
@@ -483,6 +495,17 @@ impl<'a> MacroExpander<'a> {
                 }
                 u.stmts = new_body;
             }
+            expr::Expr::TaskBlock(u) => {
+                if let Some(ret) = &mut u.ret {
+                    **ret = self.expand_expr(take_expr(ret))?;
+                }
+                let body = std::mem::take(&mut u.stmts);
+                let mut new_body = Vec::with_capacity(body.len());
+                for s in body {
+                    new_body.extend(self.expand_stmt(s)?);
+                }
+                u.stmts = new_body;
+            }
             expr::Expr::ComptimeBlock(u) => {
                 if let Some(ret) = &mut u.ret {
                     **ret = self.expand_expr(take_expr(ret))?;
@@ -525,7 +548,51 @@ impl<'a> MacroExpander<'a> {
                 }
                 *j_expr.tangent = self.expand_expr(take_expr(&mut j_expr.tangent))?;
             }
-            _ => {}
+            expr::Expr::AsCast(c) => {
+                *c.expr = self.expand_expr(take_expr(&mut c.expr))?;
+            }
+            expr::Expr::Transfer(t) => {
+                *t.expr = self.expand_expr(take_expr(&mut t.expr))?;
+            }
+            expr::Expr::IndirectCall(c) => {
+                *c.callee = self.expand_expr(take_expr(&mut c.callee))?;
+                for arg in &mut c.args {
+                    *arg = self.expand_expr(take_expr(arg))?;
+                }
+            }
+            expr::Expr::Print(p) => {
+                for arg in &mut p.args {
+                    *arg = self.expand_expr(take_expr(arg))?;
+                }
+            }
+            expr::Expr::Println(p) => {
+                for arg in &mut p.args {
+                    *arg = self.expand_expr(take_expr(arg))?;
+                }
+            }
+            expr::Expr::EnumVariant(e) => {
+                for arg in e.payload.iter_mut().flatten() {
+                    *arg = self.expand_expr(take_expr(arg))?;
+                }
+            }
+            expr::Expr::InlineMlir(m) => {
+                for (_, input, _) in &mut m.inputs {
+                    *input = self.expand_expr(take_expr(input))?;
+                }
+                for clobber in &mut m.clobbers {
+                    *clobber = self.expand_expr(take_expr(clobber))?;
+                }
+            }
+            // These hold no expression. A new kind of expression must be listed here or walked
+            // above, so that a macro call inside it is expanded.
+            expr::Expr::Identifier(_)
+            | expr::Expr::Number(_)
+            | expr::Expr::StringLiteral(_)
+            | expr::Expr::TransferPredicate(_)
+            | expr::Expr::MemorySpace(_)
+            | expr::Expr::Topology(_)
+            | expr::Expr::SizeOf(_) => {}
+            expr::Expr::MacroCall(_) => unreachable!("expanded above"),
         }
         Ok(expr)
     }
@@ -543,11 +610,11 @@ impl<'a> MacroExpander<'a> {
         if name == "vec" {
             return self.expand_vec_macro(tt);
         }
-        if name == "print" {
-            return self.expand_print_macro(tt);
+        if name == "print" || name == "eprint" {
+            return self.expand_print_macro(tt, name == "eprint");
         }
-        if name == "println" {
-            return self.expand_println_macro(tt);
+        if name == "println" || name == "eprintln" {
+            return self.expand_println_macro(tt, name == "eprintln");
         }
 
         let rules = self
@@ -578,6 +645,7 @@ impl<'a> MacroExpander<'a> {
                     line: 0,
                     column: 0,
                     length: 0,
+                    expansion: 0,
                 });
                 return self.parse_expanded_expr(&transcribed);
             }
@@ -610,6 +678,7 @@ impl<'a> MacroExpander<'a> {
                     line: 0,
                     column: 0,
                     length: 0,
+                    expansion: 0,
                 });
                 for i in inner {
                     tokens.extend(self.flatten_tt(i));
@@ -619,6 +688,7 @@ impl<'a> MacroExpander<'a> {
                     line: 0,
                     column: 0,
                     length: 0,
+                    expansion: 0,
                 });
             }
         }
@@ -650,12 +720,14 @@ impl<'a> MacroExpander<'a> {
                     if colon_tok.kind == OwnedTokenType::Colon && j + 3 < matcher_tokens.len() {
                         let kind_tok = &matcher_tokens[j + 3];
                         if let OwnedTokenType::Identifier(kind) = &kind_tok.kind {
-                            // Match a meta-variable. `ident` takes exactly one token; `expr`
-                            // and `ty` take everything up to the next token the matcher names,
-                            // which is what lets `$t : ty` capture `Tensor<f32, [4]>` as well
-                            // as `i32`. They are not told apart beyond that: nothing here
-                            // parses the capture to check it really is a type or an
-                            // expression, and the error surfaces where the capture is used.
+                            // Match a meta-variable. `ident` takes exactly one token. `expr`
+                            // and `ty` take the tokens up to the next token the matcher names,
+                            // outside brackets: the `,` of `f(1, 2)` stays in the capture. A
+                            // `ty` also counts `<..>`, so that it takes `Tensor<f32, [4]>`. An
+                            // `expr` cannot, because its `<` can be a comparison. A `,` outside
+                            // brackets ends an `expr`, so a rule for 2 values does not fit a
+                            // call with 3. Nothing here parses the capture, and an error
+                            // shows where the capture is used.
                             if kind.as_ref() == "ident" {
                                 if i >= input.len() {
                                     return Err("Input ended unexpectedly".to_string());
@@ -666,18 +738,35 @@ impl<'a> MacroExpander<'a> {
                                 continue;
                             }
                             if kind.as_ref() == "expr" || kind.as_ref() == "ty" {
+                                let is_ty = kind.as_ref() == "ty";
+                                let next = matcher_tokens.get(j + 4).map(|t| &t.kind);
+                                let mut depth = 0usize;
                                 let mut captured = Vec::new();
-                                if j + 4 < matcher_tokens.len() {
-                                    let next_m_tok = &matcher_tokens[j + 4];
-                                    while i < input.len() && input[i].kind != next_m_tok.kind {
-                                        captured.push(input[i].clone());
-                                        i += 1;
+                                while i < input.len() {
+                                    let k = &input[i].kind;
+                                    if depth == 0
+                                        && (Some(k) == next
+                                            || (!is_ty && *k == OwnedTokenType::Comma))
+                                    {
+                                        break;
                                     }
-                                } else {
-                                    while i < input.len() {
-                                        captured.push(input[i].clone());
-                                        i += 1;
+                                    match k {
+                                        OwnedTokenType::LeftParen
+                                        | OwnedTokenType::LeftBracket
+                                        | OwnedTokenType::LeftBrace => depth += 1,
+                                        OwnedTokenType::LeftAngle if is_ty => depth += 1,
+                                        OwnedTokenType::RightParen
+                                        | OwnedTokenType::RightBracket
+                                        | OwnedTokenType::RightBrace => {
+                                            depth = depth.saturating_sub(1)
+                                        }
+                                        OwnedTokenType::RightAngle if is_ty => {
+                                            depth = depth.saturating_sub(1)
+                                        }
+                                        _ => {}
                                     }
+                                    captured.push(input[i].clone());
+                                    i += 1;
                                 }
                                 captures.insert(name.clone(), captured);
                                 j += 4;
@@ -720,9 +809,16 @@ impl<'a> MacroExpander<'a> {
             transcriber_tokens.extend(self.flatten_tt(tt));
         }
 
+        // A capture wider than its `$name` moves the rest of that line right, so `$t to`
+        // with `f16` reads `f16 to`, not `f16to`: (line, columns moved).
+        let mut shift: (usize, isize) = (0, 0);
         let mut j = 0;
         while j < transcriber_tokens.len() {
-            let m_tok = &transcriber_tokens[j];
+            let mut m_tok = transcriber_tokens[j].clone();
+            if m_tok.line != 0 && m_tok.line == shift.0 {
+                m_tok.column = m_tok.column.saturating_add_signed(shift.1);
+            }
+            let m_tok = &m_tok;
             if m_tok.kind == OwnedTokenType::Dollar && j + 1 < transcriber_tokens.len() {
                 let name_tok = &transcriber_tokens[j + 1];
                 if let OwnedTokenType::Identifier(name) = &name_tok.kind {
@@ -749,6 +845,15 @@ impl<'a> MacroExpander<'a> {
                             }
                             tokens.push(placed);
                         }
+                        let one_line = captured.iter().all(|t| t.line == 0)
+                            || captured.iter().all(|t| t.line == anchor.map_or(0, |a| a.0));
+                        if let (true, Some(last)) = (one_line, tokens.last()) {
+                            if m_tok.line != 0 && last.line == m_tok.line {
+                                let name_end = (name_tok.column + name_tok.length) as isize;
+                                let capture_end = (last.column + last.length) as isize;
+                                shift = (m_tok.line, capture_end - name_end);
+                            }
+                        }
                         j += 2;
                         continue;
                     }
@@ -764,8 +869,16 @@ impl<'a> MacroExpander<'a> {
             line: 0,
             column: 0,
             length: 0,
+            expansion: 0,
         });
 
+        // Two expansions of one macro give their tokens the same positions, so the id is
+        // what keeps their nodes apart.
+        let id = self.expansions.get() + 1;
+        self.expansions.set(id);
+        for tok in &mut tokens {
+            tok.expansion = id;
+        }
         Ok(tokens)
     }
 
@@ -783,6 +896,7 @@ impl<'a> MacroExpander<'a> {
             line: 0,
             column: 0,
             length: 0,
+            expansion: 0,
         });
         let exprs = self.parse_expanded_exprs(&tokens)?;
         Ok(expr::Expr::VecMacro(expr::VecMacroExpr {
@@ -791,7 +905,7 @@ impl<'a> MacroExpander<'a> {
         }))
     }
 
-    fn expand_print_macro(&self, tt: &TokenTree) -> Result<expr::Expr, String> {
+    fn expand_print_macro(&self, tt: &TokenTree, to_stderr: bool) -> Result<expr::Expr, String> {
         let elements = match tt {
             TokenTree::Delimited(_, inner) => inner,
             _ => return Err("Expected delimited token tree for print!".to_string()),
@@ -805,15 +919,18 @@ impl<'a> MacroExpander<'a> {
             line: 0,
             column: 0,
             length: 0,
+            expansion: 0,
         });
         let exprs = self.parse_expanded_exprs(&tokens)?;
+        let name = if to_stderr { "eprint!" } else { "print!" };
         Ok(expr::Expr::Print(expr::PrintExpr {
-            args: interleave_format_args(exprs, "print!")?,
+            args: interleave_format_args(exprs, name)?,
             span: Span::default(),
+            to_stderr,
         }))
     }
 
-    fn expand_println_macro(&self, tt: &TokenTree) -> Result<expr::Expr, String> {
+    fn expand_println_macro(&self, tt: &TokenTree, to_stderr: bool) -> Result<expr::Expr, String> {
         let elements = match tt {
             TokenTree::Delimited(_, inner) => inner,
             _ => return Err("Expected delimited token tree for println!".to_string()),
@@ -827,11 +944,14 @@ impl<'a> MacroExpander<'a> {
             line: 0,
             column: 0,
             length: 0,
+            expansion: 0,
         });
         let exprs = self.parse_expanded_exprs(&tokens)?;
+        let name = if to_stderr { "eprintln!" } else { "println!" };
         Ok(expr::Expr::Println(expr::PrintlnExpr {
-            args: interleave_format_args(exprs, "println!")?,
+            args: interleave_format_args(exprs, name)?,
             span: Span::default(),
+            to_stderr,
         }))
     }
 
@@ -844,6 +964,7 @@ impl<'a> MacroExpander<'a> {
         let mut clobbers = Vec::new();
         let mut returns = None;
         let mut dialects = Vec::new();
+        let mut ensures = Vec::new();
 
         let tokens = match tt {
             TokenTree::Delimited(_, inner) => {
@@ -856,6 +977,7 @@ impl<'a> MacroExpander<'a> {
                     line: 0,
                     column: 0,
                     length: 0,
+                    expansion: 0,
                 });
                 t
             }
@@ -868,21 +990,23 @@ impl<'a> MacroExpander<'a> {
         while !parser.check(&crate::lexer::TokenType::Eof) {
             let field_name = match &parser.advance().kind {
                 crate::lexer::TokenType::Identifier(ident) => ident.to_string(),
+                crate::lexer::TokenType::Ensures => "ensures".to_string(),
                 _ => {
                     return Err(
-                        "Expected 'inputs', 'clobbers', 'returns', or 'dialects'".to_string()
+                        "Expected 'inputs', 'clobbers', 'returns', 'dialects' or 'ensures'"
+                            .to_string(),
                     )
                 }
             };
             parser
                 .consume(&crate::lexer::TokenType::Colon, "Expected ':'")
-                .map_err(|e| e.format(""))?;
+                .map_err(|e| e.format("", None))?;
 
             match field_name.as_ref() {
                 "inputs" => {
                     parser
                         .consume(&crate::lexer::TokenType::LeftParen, "Expected '('")
-                        .map_err(|e| e.format(""))?;
+                        .map_err(|e| e.format("", None))?;
                     if !parser.check(&crate::lexer::TokenType::RightParen) {
                         loop {
                             // An MLIR value name: `%arg`. Until `%` was the remainder
@@ -907,11 +1031,11 @@ impl<'a> MacroExpander<'a> {
                             };
                             parser
                                 .consume(&crate::lexer::TokenType::Equals, "Expected '='")
-                                .map_err(|e| e.format(""))?;
-                            let expr = parser.parse_expr().map_err(|e| e.format(""))?;
+                                .map_err(|e| e.format("", None))?;
+                            let expr = parser.parse_expr().map_err(|e| e.format("", None))?;
                             parser
                                 .consume(&crate::lexer::TokenType::Colon, "Expected ':'")
-                                .map_err(|e| e.format(""))?;
+                                .map_err(|e| e.format("", None))?;
 
                             let mut ty_str = String::new();
                             let mut angle_depth = 0;
@@ -947,15 +1071,15 @@ impl<'a> MacroExpander<'a> {
                     }
                     parser
                         .consume(&crate::lexer::TokenType::RightParen, "Expected ')'")
-                        .map_err(|e| e.format(""))?;
+                        .map_err(|e| e.format("", None))?;
                 }
                 "clobbers" => {
                     parser
                         .consume(&crate::lexer::TokenType::LeftBracket, "Expected '['")
-                        .map_err(|e| e.format(""))?;
+                        .map_err(|e| e.format("", None))?;
                     if !parser.check(&crate::lexer::TokenType::RightBracket) {
                         loop {
-                            clobbers.push(parser.parse_expr().map_err(|e| e.format(""))?);
+                            clobbers.push(parser.parse_expr().map_err(|e| e.format("", None))?);
                             if !parser.match_token(&crate::lexer::TokenType::Comma) {
                                 break;
                             }
@@ -963,19 +1087,37 @@ impl<'a> MacroExpander<'a> {
                     }
                     parser
                         .consume(&crate::lexer::TokenType::RightBracket, "Expected ']'")
-                        .map_err(|e| e.format(""))?;
+                        .map_err(|e| e.format("", None))?;
+                }
+                // What the block writes, as `atomic(t)` clauses. The race proof of an `across`
+                // loop reads them in place of the MLIR.
+                "ensures" => {
+                    parser
+                        .consume(&crate::lexer::TokenType::LeftBracket, "Expected '['")
+                        .map_err(|e| e.format("", None))?;
+                    if !parser.check(&crate::lexer::TokenType::RightBracket) {
+                        loop {
+                            ensures.push(parser.parse_expr().map_err(|e| e.format("", None))?);
+                            if !parser.match_token(&crate::lexer::TokenType::Comma) {
+                                break;
+                            }
+                        }
+                    }
+                    parser
+                        .consume(&crate::lexer::TokenType::RightBracket, "Expected ']'")
+                        .map_err(|e| e.format("", None))?;
                 }
                 "returns" => {
                     if parser.match_token(&crate::lexer::TokenType::Identifier("void")) {
                         returns = None;
                     } else {
-                        returns = Some(parser.parse_type().map_err(|e| e.format(""))?);
+                        returns = Some(parser.parse_type().map_err(|e| e.format("", None))?);
                     }
                 }
                 "dialects" => {
                     parser
                         .consume(&crate::lexer::TokenType::LeftBracket, "Expected '['")
-                        .map_err(|e| e.format(""))?;
+                        .map_err(|e| e.format("", None))?;
                     if !parser.check(&crate::lexer::TokenType::RightBracket) {
                         loop {
                             match &parser.advance().kind {
@@ -991,7 +1133,7 @@ impl<'a> MacroExpander<'a> {
                     }
                     parser
                         .consume(&crate::lexer::TokenType::RightBracket, "Expected ']'")
-                        .map_err(|e| e.format(""))?;
+                        .map_err(|e| e.format("", None))?;
                 }
                 _ => return Err(format!("Unknown field '{}' in mlir! macro", field_name)),
             }
@@ -1055,6 +1197,7 @@ impl<'a> MacroExpander<'a> {
                 line: t.line,
                 column: t.column,
                 length: t.length,
+                expansion: t.expansion,
             })
             .unwrap_or_default();
 
@@ -1063,6 +1206,7 @@ impl<'a> MacroExpander<'a> {
             clobbers,
             returns,
             dialects,
+            ensures,
             block_str,
             span,
         }))

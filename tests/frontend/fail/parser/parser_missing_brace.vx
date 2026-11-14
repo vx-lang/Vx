@@ -1,5 +1,5 @@
 //===- parser_missing_brace.vx - Vx Compiler -------------------*- Vx -*-===//
-// CHECK: Unexpected end of file. Expected '}'
+// CHECK: Unexpected end of file in {{.*}}parser_missing_brace.vx. Expected '}'
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.

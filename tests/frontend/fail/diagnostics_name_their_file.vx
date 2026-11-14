@@ -1,0 +1,21 @@
+//===- diagnostics_name_their_file.vx - Vx Compiler -----------------*- Vx -*-===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --check-prefixes=CHECK,SEQ
+// RUN: not vxc -j 2 %s 2>&1 | FileCheck %s
+//
+// Every warning and error names the file it is in, as `file:line:column`, so an
+// editor or a build log can turn the message into a link. A warning about a whole
+// function, such as an unused parameter, points at the function's name. A parallel
+// compile (`-j`) prints its errors before its warnings, so only the error is checked
+// there.
+
+fn add_one(x: i32, unused: i32) -> i32 {
+  return x + 1;
+}
+
+fn main() -> i32 {
+  let y = nope + add_one(1, 2);
+  return y;
+}
+
+// SEQ: Warning[W1009] at {{.*}}diagnostics_name_their_file.vx:11:4: Unused function parameter 'unused'
+// CHECK: Error[E2001] at {{.*}}diagnostics_name_their_file.vx:16:11: Undefined variable 'nope'

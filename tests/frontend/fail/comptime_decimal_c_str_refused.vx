@@ -12,7 +12,7 @@
 import core::num;
 
 fn show(n : i64) -> i32 {
-  // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}every argument has to be known
+  // CHECK: Error[E3033] at {{.*}}comptime_decimal_c_str_refused.vx:[[@LINE+1]]:{{.*}}every argument has to be known
   print!(n.decimal_c_str());
   return 0;
 }
@@ -20,10 +20,10 @@ fn show(n : i64) -> i32 {
 fn main() -> i32 {
   show(7i64);
   let big : u64 = 18446744073709551615u64;
-  // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}every argument has to be known
+  // CHECK: Error[E3033] at {{.*}}comptime_decimal_c_str_refused.vx:[[@LINE+1]]:{{.*}}every argument has to be known
   print!(big.decimal_c_str());
   // Read as a float, the literal lost its low digits and this folded to a wrong number.
-  // CHECK: Error[E3033] at [[@LINE+2]]:{{.*}}cannot be evaluated
+  // CHECK: Error[E3033] at {{.*}}comptime_decimal_c_str_refused.vx:[[@LINE+2]]:{{.*}}cannot be evaluated
   let third = comptime {
     18446744073709551615u64 / 3u64
   };

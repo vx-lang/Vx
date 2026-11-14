@@ -49,6 +49,9 @@ pub enum LogicalOp {
 pub enum UnaryOp {
     Not,
     Neg,
+    /// `x?`: the value of an `Ok`, or the `Err` passed up unchanged. The checker turns it into a
+    /// `match`, so no later pass sees it.
+    Try,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -65,6 +68,8 @@ impl IdentifierExpr {
 #[derive(Debug, PartialEq, Clone)]
 pub struct EnumVariantExpr {
     pub enum_name: Symbol,
+    /// Parsed type arguments, retained through checking and substitution.
+    pub type_args: Option<Vec<Type>>,
     pub variant_name: Symbol,
     pub payload: Option<Vec<Expr>>,
     pub span: Span,
@@ -78,6 +83,7 @@ impl EnumVariantExpr {
     ) -> Self {
         Self {
             enum_name,
+            type_args: None,
             variant_name,
             payload,
             span,
@@ -85,11 +91,18 @@ impl EnumVariantExpr {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+/// A number compares by its value and type, not its place: a number can be a tensor dimension,
+/// and `[4]` written in two places is one type.
+#[derive(Debug, Clone)]
 pub struct NumberExpr {
     pub value: Symbol,
     pub ty: Option<ElementType>,
     pub span: Span,
+}
+impl PartialEq for NumberExpr {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value && self.ty == other.ty
+    }
 }
 impl NumberExpr {
     pub fn new(value: String, ty: Option<ElementType>, span: Span) -> Self {
@@ -121,6 +134,13 @@ pub struct SpawnOnExpr {
     pub stmts: Vec<Statement>,
     pub ret: Option<Box<Expr>>,
     pub span: Span,
+    /// For a region with code after its `across` nest of blocks, or code of a group: the memory
+    /// that holds the count of the passes that ended, and a shared memory of a block, set by the
+    /// checker. The last pass runs that code.
+    pub arrivals: Option<(
+        crate::syntax::MemorySpace,
+        Option<crate::syntax::MemorySpace>,
+    )>,
 }
 impl SpawnOnExpr {
     pub fn new(top: Topology, stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self {
@@ -129,6 +149,7 @@ impl SpawnOnExpr {
             stmts,
             ret,
             span,
+            arrivals: None,
         }
     }
 }
@@ -137,6 +158,9 @@ impl SpawnOnExpr {
 pub struct TransferExpr {
     pub expr: Box<Expr>,
     pub space: MemorySpace,
+    /// The device of `transfer(x, Topology::X[i])`, which moves `x` into the memory of that
+    /// device. The checker sets `space` to that memory. `None` when the transfer names a memory.
+    pub device: Option<crate::syntax::Topology>,
     /// The bandwidth-derived roofline cost, filled in by sema. Cycles for a `B/cyc` hop,
     /// picoseconds for a `B/s` one — `u64` because picoseconds overflow `u32` at 4.3 ms.
     pub cost: Option<u64>,
@@ -149,6 +173,12 @@ pub struct TransferExpr {
     /// lowering: two machines may implement `Memory::L2 -> Memory::SMEM` differently, and
     /// the one that runs here is the one sema picked, not whichever the lookup finds first.
     pub lowering: Option<(MemorySpace, MemorySpace, String)>,
+    /// `transfer_async(x, M)`: the copy gives a `Token`, whose `.wait()` gives the placed
+    /// tensor. The code generators copy as for `transfer` today, and the wait is the value.
+    pub is_async: bool,
+    /// Set by sema when the source is a `&` tensor and the edge is `: shared`. The result is still
+    /// a copy, but the lowering may skip the copy when every use of it only reads.
+    pub shared: bool,
     pub span: Span,
 }
 
@@ -171,8 +201,11 @@ impl TransferExpr {
         Self {
             expr,
             space,
+            device: None,
             cost: None,
             lowering: None,
+            is_async: false,
+            shared: false,
             span,
         }
     }
@@ -180,6 +213,8 @@ impl TransferExpr {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct FunctionCallExpr {
+    /// Type arguments before `::`, separate from the function's type arguments.
+    pub owner_type_args: Option<Vec<Type>>,
     pub name: Symbol,
     pub type_args: Option<Vec<Type>>,
     pub args: Vec<Expr>,
@@ -188,6 +223,7 @@ pub struct FunctionCallExpr {
 impl FunctionCallExpr {
     pub fn new(name: Symbol, type_args: Option<Vec<Type>>, args: Vec<Expr>, span: Span) -> Self {
         Self {
+            owner_type_args: None,
             name,
             type_args,
             args,
@@ -476,11 +512,60 @@ pub struct UnsafeBlockExpr {
     pub stmts: Vec<Statement>,
     pub ret: Option<Box<Expr>>,
     pub span: Span,
+    /// The compiler made this block (for `vec![..]`), so W1010 never warns about it or counts it
+    /// as a block around another one.
+    pub generated: bool,
+    /// The checker made this block from a `tasks` block or a task body. Each pass treats it as a
+    /// plain block, which T7 allows. The flat code generator runs a task on a thread of its own.
+    pub task: Option<TaskBlockKind>,
+    /// A `tasks` block with a task that can fail: the type of the block, `Result<U, E>`. A
+    /// `join()` of a task that failed leaves the block with an `Err` of this type.
+    pub fails_as: Option<Type>,
+    /// A task body whose value is this `Result` type. When it ends with an `Err`, it cancels its
+    /// `tasks` block (F3).
+    pub cancels_on_err: Option<Type>,
+    /// A `tasks` block with a value: the type of that value, set by the checker. A code generator
+    /// keeps the value in a slot of this type when an exit can leave the block.
+    pub value_ty: Option<Type>,
+    /// The program wrote this block as the body of a closure, `|x| { .. }`. It is a plain block,
+    /// so the code in it cannot do what needs `unsafe`.
+    pub closure_body: bool,
 }
 impl UnsafeBlockExpr {
     pub fn new(stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self {
-        Self { stmts, ret, span }
+        Self {
+            stmts,
+            ret,
+            span,
+            generated: false,
+            task: None,
+            fails_as: None,
+            cancels_on_err: None,
+            value_ty: None,
+            closure_body: false,
+        }
     }
+}
+
+/// Which block a [`TaskBlockExpr`] is.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum TaskBlockKind {
+    /// `tasks { .. }`: when the block ends, every task that it started is finished.
+    Tasks,
+    /// `spawn { .. }` in a `tasks` block: a task. Its value is a `Task<T>`.
+    Spawn,
+}
+
+/// `tasks { .. }`, or `spawn { .. }` without `on`. The design is in
+/// docs/discussions/cpu_tasks_send_sync_and_shared_atomics.md. The checker makes both blocks an
+/// [`UnsafeBlockExpr`] with a `task` mark once it has checked them. The code generators never see
+/// one.
+#[derive(Debug, PartialEq, Clone)]
+pub struct TaskBlockExpr {
+    pub kind: TaskBlockKind,
+    pub stmts: Vec<Statement>,
+    pub ret: Option<Box<Expr>>,
+    pub span: Span,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -645,19 +730,129 @@ pub fn statement_always_exits(stmt: &Statement, never: &dyn Fn(&str) -> bool) ->
             }
             Expr::FunctionCall(c) => is_abort_or_panic(c) || never(c.name.as_ref()),
             Expr::UnsafeBlock(UnsafeBlockExpr { stmts, .. }) => block_always_exits(stmts, never),
+            Expr::TaskBlock(TaskBlockExpr {
+                kind: TaskBlockKind::Tasks,
+                stmts,
+                ..
+            }) => block_always_exits(stmts, never),
             _ => false,
         },
         _ => false,
     }
 }
 
-/// Whether this call is `abort()` or `panic(msg)`, the two built-ins that end the program.
+/// Whether this call is `abort()` or `panic(msg)`, the two built-ins that end the program. A
+/// `panic` can also have a `Caller`, and after the checker it has a file and a line instead.
 pub fn is_abort_or_panic(c: &FunctionCallExpr) -> bool {
     match c.name.as_ref() {
         "abort" => c.args.is_empty(),
-        "panic" => c.args.len() == 1,
+        "panic" => (1..=3).contains(&c.args.len()),
         _ => false,
     }
+}
+
+/// What a checked `panic(msg, file, line)` prints, as the arguments of an `eprintln!`:
+/// `panic: <msg>`, and `  at <file>:<line>` on the next line.
+pub fn panic_message(c: &FunctionCallExpr) -> Vec<Expr> {
+    assert_eq!(
+        c.args.len(),
+        3,
+        "the checker gives each panic its file and line"
+    );
+    let text = |s: &str| Expr::StringLiteral(StringLiteralExpr::new(s.to_string(), c.span));
+    vec![
+        text("panic: "),
+        c.args[0].clone(),
+        text("\n  at "),
+        c.args[1].clone(),
+        text(":"),
+        c.args[2].clone(),
+    ]
+}
+
+/// The callee of the statement the checker puts before the drops of an exit from a `tasks`
+/// block. No program can name it. It waits for the tasks of the innermost `tasks` block.
+pub const TASKS_WAIT: &str = "$tasks_wait";
+
+/// `$tasks_wait();`, for the exit at `span`.
+pub fn tasks_wait_stmt(span: Span) -> super::Statement {
+    super::Statement::ExprStmt(super::ExprStmtStmt {
+        expr: Expr::FunctionCall(FunctionCallExpr::new(
+            TASKS_WAIT.into(),
+            None,
+            Vec::new(),
+            span,
+        )),
+        has_semi: true,
+        span,
+    })
+}
+
+/// The callee of the statement the checker puts at the end of the body of a `tasks` block, before
+/// the drops of what its tasks use. No program can name it. It joins each task of the block that
+/// is not joined yet, as the end of the block does, and cancels none of them.
+pub const TASKS_JOIN: &str = "$tasks_join";
+
+/// `$tasks_join();`, at the end of a body whose last statement is at `span`.
+pub fn tasks_join_stmt(span: Span) -> super::Statement {
+    super::Statement::ExprStmt(super::ExprStmtStmt {
+        expr: Expr::FunctionCall(FunctionCallExpr::new(
+            TASKS_JOIN.into(),
+            None,
+            Vec::new(),
+            span,
+        )),
+        has_semi: true,
+        span,
+    })
+}
+
+/// Whether `e` is the call of [`tasks_join_stmt`].
+pub fn is_tasks_join(e: &Expr) -> bool {
+    matches!(e, Expr::FunctionCall(c) if c.name.as_ref() == TASKS_JOIN)
+}
+
+/// The callee that `h.join()` becomes, with `h` as its argument. No program can name it. The
+/// code generators wait for the task of `h` at the call, and its value is the value of `h`.
+pub const TASK_JOIN: &str = "$task_join";
+
+/// `$task_join(handle)`, for the join at `span`.
+pub fn task_join_expr(handle: Expr, span: Span) -> Expr {
+    Expr::FunctionCall(FunctionCallExpr::new(
+        TASK_JOIN.into(),
+        None,
+        vec![handle],
+        span,
+    ))
+}
+
+/// The handle of a call of [`task_join_expr`].
+pub fn task_join_handle(e: &Expr) -> Option<&Expr> {
+    match e {
+        Expr::FunctionCall(c) if c.name.as_ref() == TASK_JOIN => c.args.first(),
+        _ => None,
+    }
+}
+
+/// `Err(value)` of the type `Result<U, E>` of a `tasks` block that can fail, as the parser and
+/// the checker write a construction: the type in the name, and its arguments apart.
+pub fn failure_of(result: &Type, value: Expr, span: Span) -> EnumVariantExpr {
+    let Type::GenericInstance(_, args) = result else {
+        panic!("a tasks block that can fail gives a Result<U, E>, not {result}");
+    };
+    let mut ev = EnumVariantExpr::new(
+        result.to_string().into(),
+        "Err".into(),
+        Some(vec![value]),
+        span,
+    );
+    ev.type_args = Some(args.clone());
+    ev
+}
+
+/// Whether `e` is the call of [`tasks_wait_stmt`].
+pub fn is_tasks_wait(e: &Expr) -> bool {
+    matches!(e, Expr::FunctionCall(c) if c.name.as_ref() == TASKS_WAIT)
 }
 
 /// Whether this expression cannot be a value, so a trailing one is a statement rather than the
@@ -677,6 +872,11 @@ pub fn yields_no_value(expr: &Expr) -> bool {
             else_block: None,
             ..
         }) | Expr::UnsafeBlock(UnsafeBlockExpr { ret: None, .. })
+            | Expr::TaskBlock(TaskBlockExpr {
+                kind: TaskBlockKind::Tasks,
+                ret: None,
+                ..
+            })
     )
 }
 
@@ -706,12 +906,30 @@ pub fn diverges_on_every_path(expr: &Expr) -> bool {
         }
     }
     match expr {
+        // A folded `if comptime` keeps one branch and leaves the other empty.
+        Expr::If(IfExpr {
+            is_comptime: true,
+            then_block,
+            else_block,
+            ..
+        }) if then_block.is_empty() || else_block.as_ref().is_none_or(|e| e.is_empty()) => {
+            let taken = if then_block.is_empty() {
+                else_block.as_deref().unwrap_or_default()
+            } else {
+                then_block
+            };
+            block_returns(taken)
+        }
         // An `if` with no `else` always has a path that falls through.
         Expr::If(IfExpr {
             then_block,
             else_block: Some(else_block),
             ..
         }) => block_returns(then_block) && block_returns(else_block),
+        // `unsafe { ..; return x; }` as a function's last statement.
+        Expr::UnsafeBlock(UnsafeBlockExpr {
+            stmts, ret: None, ..
+        }) => block_returns(stmts),
         // Deliberately not `match`. A `match` whose arms all return already compiled correctly --
         // the rewrite to `return <match>` is harmless there, because the arm blocks carry their own
         // terminators and the chain never falls through to the merge block. Treating it as
@@ -761,7 +979,7 @@ impl RangeExpr {
 #[derive(Debug, PartialEq, Clone)]
 pub enum Pattern {
     Wildcard,
-    Literal(Expr), // e.g. Number, StringLiteral
+    Literal(Box<Expr>), // e.g. Number, StringLiteral
     Identifier(Symbol),
     EnumVariant(Symbol, Symbol, Option<Vec<Pattern>>), // enum_name, variant_name, payload patterns
 }
@@ -844,10 +1062,16 @@ impl MacroCallExpr {
 pub struct PrintExpr {
     pub args: Vec<Expr>,
     pub span: Span,
+    /// `eprint!`: the arguments go to standard error.
+    pub to_stderr: bool,
 }
 impl PrintExpr {
     pub fn new(args: Vec<Expr>, span: Span) -> Self {
-        Self { args, span }
+        Self {
+            args,
+            span,
+            to_stderr: false,
+        }
     }
 }
 
@@ -855,10 +1079,16 @@ impl PrintExpr {
 pub struct PrintlnExpr {
     pub args: Vec<Expr>,
     pub span: Span,
+    /// `eprintln!`: the arguments and the newline go to standard error.
+    pub to_stderr: bool,
 }
 impl PrintlnExpr {
     pub fn new(args: Vec<Expr>, span: Span) -> Self {
-        Self { args, span }
+        Self {
+            args,
+            span,
+            to_stderr: false,
+        }
     }
 }
 
@@ -879,6 +1109,8 @@ pub struct InlineMlirExpr {
     pub clobbers: Vec<Expr>,
     pub returns: Option<Type>, // None for void
     pub dialects: Vec<String>,
+    /// What the block writes, as `atomic(t)` clauses. Not evaluated, so visitors skip them.
+    pub ensures: Vec<Expr>,
     pub block_str: String,
     pub span: Span,
 }
@@ -915,6 +1147,7 @@ pub enum Expr {
     Vjp(VjpExpr),
     Jvp(JvpExpr),
     SpawnOn(SpawnOnExpr),
+    TaskBlock(TaskBlockExpr),
     VecMacro(VecMacroExpr),
     Closure(ClosureExpr),
     MacroCall(MacroCallExpr),
@@ -958,6 +1191,7 @@ macro_rules! delegate_expr {
             Expr::Vjp(e) => e.$method.clone(),
             Expr::Jvp(e) => e.$method.clone(),
             Expr::SpawnOn(e) => e.$method.clone(),
+            Expr::TaskBlock(e) => e.$method.clone(),
             Expr::VecMacro(e) => e.$method.clone(),
             Expr::Closure(e) => e.$method.clone(),
             Expr::MacroCall(e) => e.$method.clone(),
@@ -1001,13 +1235,28 @@ fn substitute_words(text: &str, mapping: &std::collections::HashMap<Symbol, Type
     result
 }
 
+/// An `mlir!` block's `returns` type is parsed without the enclosing function's type
+/// parameters in scope, so `returns : T` reads as a type named `T`. A name the substitution
+/// binds is that parameter, so it is substituted like one.
+fn substitute_mlir_returns(ty: &Type, mapping: &std::collections::HashMap<Symbol, Type>) -> Type {
+    match ty {
+        Type::Struct(name, None) if mapping.contains_key(name) => mapping[name].clone(),
+        Type::Pointer(inner, mem, is_mut) => Type::Pointer(
+            Box::new(substitute_mlir_returns(inner, mapping)),
+            super::types::substitute_memory(mem, mapping),
+            *is_mut,
+        ),
+        _ => ty.substitute(mapping),
+    }
+}
+
 /// Is this a tensor construction -- storage the compiler allocated?
 ///
 /// A view built with `tensor_view_2d` has the same type and a shape the checker enforces, but
 /// names memory the compiler does not control: two views over one pointer are two names for one
 /// buffer, which no rule about names can see.
 pub fn is_tensor_construction(e: &Expr) -> bool {
-    match e {
+    match bare_unsafe_value(e) {
         Expr::FunctionCall(fc) => {
             let n = fc.name.as_ref();
             if matches!(n, "Tensor::new" | "Tensor::uninit" | "Tensor::fill") {
@@ -1017,6 +1266,19 @@ pub fn is_tensor_construction(e: &Expr) -> bool {
         }
         _ => false,
     }
+}
+
+/// `unsafe { e }` with nothing else in it, as `e`, so code that recognises a shape sees
+/// `unsafe { Tensor<..>::uninit() }` as the allocation it is. Peels any number of them.
+pub fn bare_unsafe_value(e: &Expr) -> &Expr {
+    let mut e = e;
+    while let Expr::UnsafeBlock(u) = e {
+        match (u.stmts.is_empty(), u.ret.as_deref()) {
+            (true, Some(r)) => e = r,
+            _ => break,
+        }
+    }
+    e
 }
 
 /// The local an `@` operand reads, when the operand is a bare name or a borrow of one.
@@ -1062,6 +1324,29 @@ pub fn locals_with_address_taken(stmts: &[Statement]) -> std::collections::HashS
         }
     });
     names
+}
+
+/// Whether `stmts` compare with a string literal: `==` or `!=` with one, or a `match` arm with a
+/// string literal pattern. Such code calls `core::c_str`.
+pub fn compares_with_a_string_literal(stmts: &[Statement]) -> bool {
+    let mut found = false;
+    visit_exprs(stmts, &mut |e| match e {
+        Expr::RelationalOp(r)
+            if matches!(r.op, RelationalOp::Eq | RelationalOp::NotEq)
+                && (matches!(&*r.lhs, Expr::StringLiteral(_))
+                    || matches!(&*r.rhs, Expr::StringLiteral(_))) =>
+        {
+            found = true
+        }
+        Expr::Match(m) if m.arms.iter().any(|arm| is_string_pattern(&arm.pattern)) => found = true,
+        _ => {}
+    });
+    found
+}
+
+/// Whether `pattern` is a string literal, such as `"hello" => ..`.
+pub fn is_string_pattern(pattern: &Pattern) -> bool {
+    matches!(pattern, Pattern::Literal(lit) if matches!(&**lit, Expr::StringLiteral(_)))
 }
 
 /// Calls `f` on every expression in `stmts`, each one before the expressions inside it. The
@@ -1170,6 +1455,12 @@ pub fn visit_expr(e: &Expr, f: &mut dyn FnMut(&Expr)) {
                 visit_expr(r, f);
             }
         }
+        Expr::TaskBlock(b) => {
+            visit_exprs(&b.stmts, f);
+            if let Some(r) = &b.ret {
+                visit_expr(r, f);
+            }
+        }
         Expr::StructInit(s) => s.fields.iter().for_each(|(_, e)| visit_expr(e, f)),
         Expr::If(i) => {
             visit_expr(&i.cond, f);
@@ -1207,6 +1498,161 @@ pub fn visit_expr(e: &Expr, f: &mut dyn FnMut(&Expr)) {
     }
 }
 
+/// Calls `f` on every expression in `stmts`, each one after the expressions inside it, so that
+/// `f` can replace an expression. See [`visit_exprs`].
+pub fn visit_exprs_mut(stmts: &mut [Statement], f: &mut dyn FnMut(&mut Expr)) {
+    for stmt in stmts {
+        match stmt {
+            Statement::LetDecl(l) => visit_expr_mut(&mut l.expr, f),
+            Statement::Return(r) => {
+                if let Some(e) = &mut r.expr {
+                    visit_expr_mut(e, f);
+                }
+            }
+            Statement::ExprStmt(e) => visit_expr_mut(&mut e.expr, f),
+            Statement::ForLoop(l) => {
+                visit_expr_mut(&mut l.iterable, f);
+                l.invariants.iter_mut().for_each(|e| visit_expr_mut(e, f));
+                visit_exprs_mut(&mut l.body, f);
+            }
+            Statement::Assign(a) => {
+                visit_expr_mut(&mut a.lhs, f);
+                visit_expr_mut(&mut a.rhs, f);
+            }
+            Statement::CompoundAssign(a) => {
+                visit_expr_mut(&mut a.lhs, f);
+                visit_expr_mut(&mut a.rhs, f);
+            }
+            Statement::Assert(a) => visit_expr_mut(&mut a.expr, f),
+            Statement::Loop(l) => {
+                l.invariants.iter_mut().for_each(|e| visit_expr_mut(e, f));
+                visit_exprs_mut(&mut l.body, f);
+            }
+            Statement::Break(_)
+            | Statement::Continue(_)
+            | Statement::MacroCall(_)
+            | Statement::Drop(_)
+            | Statement::Error(_) => {}
+        }
+    }
+}
+
+/// Calls `f` on every expression inside `e`, and then on `e`; see [`visit_exprs_mut`].
+pub fn visit_expr_mut(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
+    let all = |es: &mut [Expr], f: &mut dyn FnMut(&mut Expr)| {
+        es.iter_mut().for_each(|e| visit_expr_mut(e, f))
+    };
+    match e {
+        Expr::Identifier(_)
+        | Expr::Number(_)
+        | Expr::StringLiteral(_)
+        | Expr::TransferPredicate(_)
+        | Expr::MemorySpace(_)
+        | Expr::Topology(_)
+        | Expr::MacroCall(_)
+        | Expr::SizeOf(_) => {}
+        Expr::EnumVariant(v) => {
+            if let Some(payload) = &mut v.payload {
+                all(payload, f);
+            }
+        }
+        Expr::Transfer(t) => visit_expr_mut(&mut t.expr, f),
+        Expr::FunctionCall(c) => all(&mut c.args, f),
+        Expr::IndirectCall(c) => {
+            visit_expr_mut(&mut c.callee, f);
+            all(&mut c.args, f);
+        }
+        Expr::Array(a) => all(&mut a.elements, f),
+        Expr::MemberAccess(m) => visit_expr_mut(&mut m.base, f),
+        Expr::IndexAccess(i) => {
+            visit_expr_mut(&mut i.base, f);
+            visit_expr_mut(&mut i.index, f);
+        }
+        Expr::MethodCall(m) => {
+            visit_expr_mut(&mut m.base, f);
+            all(&mut m.args, f);
+        }
+        Expr::BinaryOp(b) => {
+            visit_expr_mut(&mut b.lhs, f);
+            visit_expr_mut(&mut b.rhs, f);
+        }
+        Expr::RelationalOp(r) => {
+            visit_expr_mut(&mut r.lhs, f);
+            visit_expr_mut(&mut r.rhs, f);
+        }
+        Expr::LogicalOp(l) => {
+            visit_expr_mut(&mut l.lhs, f);
+            visit_expr_mut(&mut l.rhs, f);
+        }
+        Expr::UnaryOp(u) => visit_expr_mut(&mut u.expr, f),
+        Expr::Borrow(b) => visit_expr_mut(&mut b.expr, f),
+        Expr::Dereference(d) => visit_expr_mut(&mut d.expr, f),
+        Expr::UnsafeBlock(b) => {
+            visit_exprs_mut(&mut b.stmts, f);
+            if let Some(r) = &mut b.ret {
+                visit_expr_mut(r, f);
+            }
+        }
+        Expr::ComptimeBlock(b) => {
+            visit_exprs_mut(&mut b.stmts, f);
+            if let Some(r) = &mut b.ret {
+                visit_expr_mut(r, f);
+            }
+        }
+        Expr::SpawnOn(b) => {
+            visit_exprs_mut(&mut b.stmts, f);
+            if let Some(r) = &mut b.ret {
+                visit_expr_mut(r, f);
+            }
+        }
+        Expr::TaskBlock(b) => {
+            visit_exprs_mut(&mut b.stmts, f);
+            if let Some(r) = &mut b.ret {
+                visit_expr_mut(r, f);
+            }
+        }
+        Expr::StructInit(s) => s.fields.iter_mut().for_each(|(_, e)| visit_expr_mut(e, f)),
+        Expr::If(i) => {
+            visit_expr_mut(&mut i.cond, f);
+            visit_exprs_mut(&mut i.then_block, f);
+            if let Some(b) = &mut i.else_block {
+                visit_exprs_mut(b, f);
+            }
+        }
+        Expr::Range(r) => {
+            visit_expr_mut(&mut r.start, f);
+            visit_expr_mut(&mut r.end, f);
+        }
+        Expr::Match(m) => {
+            visit_expr_mut(&mut m.expr, f);
+            m.arms
+                .iter_mut()
+                .for_each(|arm| visit_exprs_mut(&mut arm.body, f));
+        }
+        Expr::Grad(g) => all(&mut g.args, f),
+        Expr::Vjp(v) => {
+            all(&mut v.args, f);
+            visit_expr_mut(&mut v.cotangent, f);
+        }
+        Expr::Jvp(j) => {
+            all(&mut j.args, f);
+            visit_expr_mut(&mut j.tangent, f);
+        }
+        Expr::VecMacro(v) => all(&mut v.elements, f),
+        Expr::Closure(c) => visit_expr_mut(&mut c.body, f),
+        Expr::AsCast(c) => visit_expr_mut(&mut c.expr, f),
+        Expr::Print(p) => all(&mut p.args, f),
+        Expr::Println(p) => all(&mut p.args, f),
+        Expr::InlineMlir(m) => {
+            m.inputs
+                .iter_mut()
+                .for_each(|(_, e, _)| visit_expr_mut(e, f));
+            all(&mut m.clobbers, f);
+        }
+    }
+    f(e);
+}
+
 impl Expr {
     pub fn span(&self) -> Span {
         delegate_expr!(self, span)
@@ -1236,8 +1682,11 @@ impl Expr {
             Expr::Transfer(e) => Expr::Transfer(TransferExpr {
                 expr: Box::new(e.expr.substitute(mapping)),
                 space: e.space.clone(),
+                device: e.device.as_ref().map(|d| d.substitute(mapping)),
                 cost: e.cost,
                 lowering: e.lowering.clone(),
+                is_async: e.is_async,
+                shared: e.shared,
                 span: e.span,
             }),
             // Type substitution does not touch topologies; topology substitution is done
@@ -1271,6 +1720,10 @@ impl Expr {
                     .as_ref()
                     .map(|tys| tys.iter().map(|ty| ty.substitute(mapping)).collect());
                 Expr::FunctionCall(FunctionCallExpr {
+                    owner_type_args: e
+                        .owner_type_args
+                        .as_ref()
+                        .map(|args| args.iter().map(|ty| ty.substitute(mapping)).collect()),
                     name: new_name,
                     type_args: substituted_type_args,
                     args: e.args.iter().map(|a| a.substitute(mapping)).collect(),
@@ -1350,6 +1803,12 @@ impl Expr {
                 stmts: e.stmts.iter().map(|s| s.substitute(mapping)).collect(),
                 ret: e.ret.as_ref().map(|r| Box::new(r.substitute(mapping))),
                 span: e.span,
+                generated: e.generated,
+                task: e.task,
+                fails_as: e.fails_as.as_ref().map(|t| t.substitute(mapping)),
+                cancels_on_err: e.cancels_on_err.as_ref().map(|t| t.substitute(mapping)),
+                value_ty: e.value_ty.as_ref().map(|t| t.substitute(mapping)),
+                closure_body: e.closure_body,
             }),
             Expr::StructInit(e) => {
                 let mut new_name = e.name.clone();
@@ -1425,6 +1884,13 @@ impl Expr {
                 stmts: e.stmts.iter().map(|s| s.substitute(mapping)).collect(),
                 ret: e.ret.as_ref().map(|r| Box::new(r.substitute(mapping))),
                 span: e.span,
+                arrivals: e.arrivals.clone(),
+            }),
+            Expr::TaskBlock(e) => Expr::TaskBlock(TaskBlockExpr {
+                kind: e.kind,
+                stmts: e.stmts.iter().map(|s| s.substitute(mapping)).collect(),
+                ret: e.ret.as_ref().map(|r| Box::new(r.substitute(mapping))),
+                span: e.span,
             }),
             Expr::Identifier(id) => {
                 if let Some(mapped_ty) = mapping.get(&*id.name) {
@@ -1454,6 +1920,10 @@ impl Expr {
                 }
                 Expr::EnumVariant(EnumVariantExpr {
                     enum_name: new_name,
+                    type_args: e
+                        .type_args
+                        .as_ref()
+                        .map(|args| args.iter().map(|ty| ty.substitute(mapping)).collect()),
                     variant_name: e.variant_name.clone(),
                     payload: e
                         .payload
@@ -1490,10 +1960,12 @@ impl Expr {
             Expr::Print(e) => Expr::Print(PrintExpr {
                 args: e.args.iter().map(|ex| ex.substitute(mapping)).collect(),
                 span: e.span,
+                to_stderr: e.to_stderr,
             }),
             Expr::Println(e) => Expr::Println(PrintlnExpr {
                 args: e.args.iter().map(|ex| ex.substitute(mapping)).collect(),
                 span: e.span,
+                to_stderr: e.to_stderr,
             }),
             Expr::SizeOf(e) => Expr::SizeOf(SizeOfExpr {
                 target_ty: e.target_ty.substitute(mapping),
@@ -1516,8 +1988,12 @@ impl Expr {
                     })
                     .collect(),
                 clobbers: e.clobbers.iter().map(|ex| ex.substitute(mapping)).collect(),
-                returns: e.returns.as_ref().map(|t| t.substitute(mapping)),
+                returns: e
+                    .returns
+                    .as_ref()
+                    .map(|t| substitute_mlir_returns(t, mapping)),
                 dialects: e.dialects.clone(),
+                ensures: e.ensures.iter().map(|ex| ex.substitute(mapping)).collect(),
                 block_str: substitute_words(&e.block_str, mapping),
                 span: e.span,
             }),

@@ -1,0 +1,178 @@
+//===- pointer_facts_that_a_loop_keeps.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each call of `need_valid` here compiles, because no pass of the loop before it can free memory.
+// The compiler reads the loop body before it checks it. It takes the type of an argument from
+// the parameter of the callee, or from the variables before the loop. After a `loop`, the facts
+// are the ones that hold at each of its `break`s.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-NOT: E8006
+// CHECK: func.func @main
+
+import core::ptr;
+
+fn need_valid(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  return n;
+}
+
+fn add_one(x : i64) -> i64 {
+  return x + 1i64;
+}
+
+fn same<T>(x : T) -> T {
+  return x;
+}
+
+struct Counter {
+  n : i64,
+}
+
+impl Counter {
+  fn bump(self : &mut Counter) -> void {
+    self.n = self.n + 1i64;
+  }
+
+  fn value(self : &Counter) -> i64 {
+    return self.n;
+  }
+}
+
+// `k` is a variable of the body. The compiler knows its type before the check, because its value
+// is a number.
+fn after_a_loop_that_calls_functions_that_get_numbers(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  let mut t = 0i64;
+  for i in 0i64..3i64 {
+    let k = i * 2i64;
+    t = add_one(t) + add_one(k);
+    t = same(t);
+  }
+  return need_valid(p, n) + t;
+}
+
+// The compiler does not know the type of `c.value()` before the check, but the parameter of
+// `add_one` is a number.
+fn after_a_loop_that_calls_methods_on_a_struct_of_numbers(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  let mut c = Counter {
+    n: 0i64
+  };
+  let mut t = 0i64;
+  for _i in 0i64..3i64 {
+    c.bump();
+    t = add_one(c.value());
+  }
+  return need_valid(p, n) + t;
+}
+
+fn after_a_loop_that_calls_a_function_value(p : *const i64, n : i64, g : fn(i64) -> i64) -> i64
+requires valid(p, n)
+{
+  let mut t = 0i64;
+  for _i in 0i64..3i64 {
+    t = g(t);
+  }
+  return need_valid(p, n) + t;
+}
+
+fn after_a_while_loop_that_reads_through_the_pointer(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  let mut i = 0i64;
+  let mut s = 0i64;
+  while i < n {
+    let q = offset(p, i);
+    let x = unsafe { *q };
+    s = s + x;
+    i = i + 1i64;
+  }
+  return need_valid(p, n) + s;
+}
+
+// The value of the block is the value of its last expression, a number.
+fn after_a_loop_with_an_unsafe_block_that_has_a_value(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  let mut s = 0i64;
+  for i in 0i64..n {
+    let x = unsafe { let q = offset(p, i); *q };
+    s = s + x;
+  }
+  return need_valid(p, n) + s;
+}
+
+// A `comptime` block runs when the program compiles, and its value here is a number.
+fn after_a_loop_with_a_comptime_block(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  let mut t = 0i64;
+  for _i in 0i64..3i64 {
+    let k = comptime {
+      let a = 2i64;
+      a * 3i64
+    };
+    t = t + k;
+  }
+  return need_valid(p, n) + t;
+}
+
+fn after_a_loop_with_an_mlir_block_on_numbers(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  let mut t = 0i64;
+  for _i in 0i64..3i64 {
+    let z = mlir!(inputs : (%a = t : i64), returns : i64, dialects : ["arith"]) {
+      %z = arith.addi %a, %a : i64
+      macro.yield %z : i64
+    };
+    t = z;
+  }
+  return need_valid(p, n) + t;
+}
+
+// `q` gets a new value in the body. After the loop it has the value that it has at the `break`.
+fn after_a_loop_that_leaves_at_a_break(p : *const i64, r : *const i64, n : i64) -> i64
+requires valid(r, n)
+{
+  let mut q = p;
+  loop {
+    q = r;
+    break;
+  }
+  return need_valid(q, n);
+}
+
+// A write through `p` changes the memory behind it, and `p` keeps its value.
+fn after_a_loop_that_writes_through_the_pointer(p : *mut i64, n : i64) -> i64
+requires valid(p, n)
+{
+  for i in 0i64..n {
+    unsafe { p[i] = 0i64; }
+  }
+  return need_valid(p as *const i64, n);
+}
+
+// The call can write through `q`, and `q` keeps its value. That `n` is `k` stays known too.
+fn in_a_loop_that_gives_a_copy_of_the_pointer_to_a_call(p : *mut i64, k : i32) -> i64
+requires valid(p, k)
+{
+  let q = p;
+  let n = k as i64;
+  for i in 0i64..2i64 {
+    need_valid(q as *const i64, n);
+  }
+  return n;
+}
+
+fn main() -> i32 {
+  return 0;
+}

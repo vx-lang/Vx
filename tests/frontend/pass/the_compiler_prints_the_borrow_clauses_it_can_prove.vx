@@ -1,0 +1,70 @@
+//===- the_compiler_prints_the_borrow_clauses_it_can_prove.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `vxc --print-borrow-clauses` prints each `!` clause that the checker can prove from a body. No
+// function here writes a clause, so each line is one that a programmer can copy into the
+// signature. `set_r` stores `b`, so nothing is printed for it. `!keeps` is printed only for a call
+// that gets something else that a reference can be stored through, so not for `c`, `v` or `key`.
+//
+// RUN: vxc --print-borrow-clauses %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}find: ensures !reaches(return, *key){{$}}
+// CHECK-NEXT: {{^}}next: ensures !points_into(return, *c){{$}}
+// CHECK-NEXT: {{^}}note: ensures !keeps(x){{$}}
+// CHECK-NOT: ensures
+
+import std::vec;
+
+struct Cursor {
+  data : &Vec<i64>,
+  pos : i32,
+}
+
+struct Holder {
+  r : &i64,
+}
+
+fn find(v : &Vec<i64>, key : &i64) -> &i64 {
+  for i in 0..v.len() {
+    if *v.get_ref(i) == *key {
+      return v.get_ref(i);
+    }
+  }
+  return v.get_ref(0);
+}
+
+fn next(c : &mut Cursor) -> &i64 {
+  let r = c.data.get_ref(c.pos);
+  c.pos = c.pos + 1;
+  return r;
+}
+
+fn note(out : &mut Vec<&i64>, x : &i64) -> i64 {
+  if out.len() > 0 {
+    return *x + 1i64;
+  }
+  return *x;
+}
+
+fn set_r(h : &mut Holder, b : &i64) -> void {
+  h.r = b;
+}
+
+fn main() -> i32 {
+  let mut v = Vec<i64>::new();
+  v.push(1i64);
+  let k = 1i64;
+  let mut c = Cursor {
+    data : &v, pos : 0
+  };
+  let mut out = Vec<&i64>::new();
+  let mut h = Holder {
+    r : &k
+  };
+  set_r(&mut h, &k);
+  let total = *find(&v, &k) + *next(&mut c) + note(&mut out, &k) + *h.r;
+  return (total - 4i64) as i32;
+}

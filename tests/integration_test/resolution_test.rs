@@ -380,6 +380,7 @@ fn test_local_name_resolution() -> Result<(), String> {
         item_macros: Vec::new(),
         imports: Vec::new(),
         module_path: "core::math".into(),
+        file: None,
         topologies: vec![],
         memories: vec![],
         transfer_impls: Vec::new(),
@@ -388,6 +389,8 @@ fn test_local_name_resolution() -> Result<(), String> {
             name: "Vector".into(),
             generics: vec![],
             fields: vec![],
+            invariants: vec![],
+            place: Default::default(),
             doc_comment: None,
         }],
         enums: vec![],
@@ -396,6 +399,7 @@ fn test_local_name_resolution() -> Result<(), String> {
         macros: vec![],
         functions: vec![Function {
             is_unsafe: false,
+            is_pub: false,
             name: "get_vector".into(),
             generics: vec![],
             params: vec![],
@@ -407,6 +411,8 @@ fn test_local_name_resolution() -> Result<(), String> {
             where_transfers: Vec::new(),
             body: vec![],
             doc_comment: None,
+            span: Span::default(),
+            file: None,
         }],
         consts: vec![],
     };
@@ -449,6 +455,7 @@ fn test_unresolved_symbol_remains_none() -> Result<(), String> {
         item_macros: Vec::new(),
         imports: Vec::new(),
         module_path: "core::bad".into(),
+        file: None,
         topologies: vec![],
         memories: vec![],
         transfer_impls: Vec::new(),
@@ -460,6 +467,7 @@ fn test_unresolved_symbol_remains_none() -> Result<(), String> {
         macros: vec![],
         functions: vec![Function {
             is_unsafe: false,
+            is_pub: false,
             name: "get_vector".into(),
             generics: vec![],
             params: vec![],
@@ -471,6 +479,8 @@ fn test_unresolved_symbol_remains_none() -> Result<(), String> {
             where_transfers: Vec::new(),
             body: vec![],
             doc_comment: None,
+            span: Span::default(),
+            file: None,
         }],
         consts: vec![],
     };
@@ -498,6 +508,7 @@ fn test_nested_type_resolution() -> Result<(), String> {
         item_macros: Vec::new(),
         imports: Vec::new(),
         module_path: "core::math".into(),
+        file: None,
         topologies: vec![],
         memories: vec![],
         transfer_impls: Vec::new(),
@@ -506,6 +517,8 @@ fn test_nested_type_resolution() -> Result<(), String> {
             name: "Matrix".into(),
             generics: vec![],
             fields: vec![],
+            invariants: vec![],
+            place: Default::default(),
             doc_comment: None,
         }],
         enums: vec![],
@@ -514,6 +527,7 @@ fn test_nested_type_resolution() -> Result<(), String> {
         macros: vec![],
         functions: vec![Function {
             is_unsafe: false,
+            is_pub: false,
             name: "compute".into(),
             generics: vec![],
             topology: vxc::syntax::Topology::CPU,
@@ -534,6 +548,8 @@ fn test_nested_type_resolution() -> Result<(), String> {
             where_transfers: Vec::new(),
             body: vec![],
             doc_comment: None,
+            span: Span::default(),
+            file: None,
         }],
         consts: vec![],
     };
@@ -565,6 +581,7 @@ fn test_expr_and_stmt_resolution() -> Result<(), String> {
         item_macros: Vec::new(),
         imports: Vec::new(),
         module_path: "core::app".into(),
+        file: None,
         topologies: vec![],
         memories: vec![],
         transfer_impls: Vec::new(),
@@ -573,6 +590,8 @@ fn test_expr_and_stmt_resolution() -> Result<(), String> {
             name: "Config".into(),
             generics: vec![],
             fields: vec![],
+            invariants: vec![],
+            place: Default::default(),
             doc_comment: None,
         }],
         enums: vec![],
@@ -581,6 +600,7 @@ fn test_expr_and_stmt_resolution() -> Result<(), String> {
         macros: vec![],
         functions: vec![Function {
             is_unsafe: false,
+            is_pub: false,
             name: "setup".into(),
             generics: vec![],
             params: vec![],
@@ -603,6 +623,8 @@ fn test_expr_and_stmt_resolution() -> Result<(), String> {
                 span: Span::default(),
             })],
             doc_comment: None,
+            span: Span::default(),
+            file: None,
         }],
         consts: vec![],
     };
@@ -667,7 +689,7 @@ fn a_declared_topologys_placement_gets_its_declared_space() {
     let before = placement_of(&m, 0);
     assert_eq!(
         before.topology,
-        vxc::syntax::Topology::Custom(sym("SmemDev"))
+        vxc::syntax::Topology::Custom(sym("SmemDev"), None)
     );
     assert_eq!(
         before.space,
@@ -682,7 +704,7 @@ fn a_declared_topologys_placement_gets_its_declared_space() {
     let after = placement_of(&m, 0);
     assert_eq!(
         after.topology,
-        vxc::syntax::Topology::Custom(sym("SmemDev"))
+        vxc::syntax::Topology::Custom(sym("SmemDev"), None)
     );
     assert_eq!(after.space, vxc::syntax::MemorySpace::Custom(sym("SMEM")));
 }
@@ -748,7 +770,10 @@ fn a_device_spelling_and_a_space_spelling_are_the_same_type() {
 
     assert_eq!(param_ty(&m, 0), param_ty(&m, 1));
     let p = placement_of(&m, 1);
-    assert_eq!(p.topology, vxc::syntax::Topology::Custom(sym("SmemDev")));
+    assert_eq!(
+        p.topology,
+        vxc::syntax::Topology::Custom(sym("SmemDev"), None)
+    );
     assert_eq!(p.space, vxc::syntax::MemorySpace::Custom(sym("SMEM")));
 }
 
@@ -788,6 +813,9 @@ fn a_space_no_topology_claims_falls_back_to_the_like_named_device() {
     m.resolve_names(&symbol_map, &[]);
 
     let p = placement_of(&m, 0);
-    assert_eq!(p.topology, vxc::syntax::Topology::Custom(sym("Nowhere")));
+    assert_eq!(
+        p.topology,
+        vxc::syntax::Topology::Custom(sym("Nowhere"), None)
+    );
     assert_eq!(p.space, vxc::syntax::MemorySpace::Custom(sym("Nowhere")));
 }

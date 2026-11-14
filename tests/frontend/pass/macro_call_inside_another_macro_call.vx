@@ -1,0 +1,30 @@
+//===- macro_call_inside_another_macro_call.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A macro call can be an argument of another macro. Here `embed!` puts its argument inside an
+// `as` cast. `prompt!(2)` is 13, and `embed!(13, 1)` is 3. The program prints 3.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s
+// CHECK: 3
+
+macro_rules embed {
+  ($t:expr, $i:expr) => {
+    ((($t) * 7 + ($i) * 3 + 2) % 11 - 5) as f32
+  };
+}
+
+macro_rules prompt {
+  ($p:expr) => {
+    (($p) * 5 + 3) % 16
+  };
+}
+
+fn main() -> i32 {
+  let e = embed!(prompt!(2), 1);
+  println!("{}", e as i32);
+  return 0;
+}

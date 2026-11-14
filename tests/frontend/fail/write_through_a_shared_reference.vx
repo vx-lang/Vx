@@ -10,13 +10,13 @@
 // Each assignment writes through a shared reference (`&`), which can only be read through:
 // `*r = ..`, `*r += ..`, a field, an element, a `&mut` field reached through a `&`, a
 // parameter, and the `&i64` items of `v.iter()`.
-// CHECK-DAG: Error[E4006] at 30:3: this assigns through `p`
-// CHECK-DAG: Error[E4006] at 37:3: this assigns through `r`
-// CHECK-DAG: Error[E4006] at 38:3: this assigns through `r`
-// CHECK-DAG: Error[E4006] at 44:5: this assigns through `h`
-// CHECK-DAG: Error[E4006] at 47:4: this assigns through `t`
-// CHECK-DAG: Error[E4006] at 49:3: this assigns through `w`
-// CHECK-DAG: Error[E4006] at 53:5: this assigns through `x`
+// CHECK-DAG: Error[E4006] at {{.*}}write_through_a_shared_reference.vx:30:3: this assigns through `p`
+// CHECK-DAG: Error[E4006] at {{.*}}write_through_a_shared_reference.vx:37:3: this assigns through `r`
+// CHECK-DAG: Error[E4006] at {{.*}}write_through_a_shared_reference.vx:38:3: this assigns through `r`
+// CHECK-DAG: Error[E4006] at {{.*}}write_through_a_shared_reference.vx:44:5: this assigns through `h`
+// CHECK-DAG: Error[E4006] at {{.*}}write_through_a_shared_reference.vx:47:4: this assigns through `t`
+// CHECK-DAG: Error[E4006] at {{.*}}write_through_a_shared_reference.vx:49:3: this assigns through `w`
+// CHECK-DAG: Error[E4006] at {{.*}}write_through_a_shared_reference.vx:53:5: this assigns through `x`
 // CHECK: 7 error(s) emitted
 import core::iter;
 import std::vec;

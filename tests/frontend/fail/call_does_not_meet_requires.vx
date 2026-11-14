@@ -11,10 +11,10 @@
 // a precondition written with arithmetic.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK-DAG: E8006] at 25:10: this call to 'halve' may not meet its precondition `x > 0`
-// CHECK-DAG: E8006] at 29:10: this call to 'halve' may not meet its precondition `x > 0`
-// CHECK-DAG: E8006] at 37:10: this call to 'halve' may not meet its precondition `x > 0`
-// CHECK-DAG: E8006] at 46:10: this call to 'above_one' may not meet its precondition `x - 1 > 0`
+// CHECK-DAG: E8006] at {{.*}}call_does_not_meet_requires.vx:25:10: this call to 'halve' may not meet its precondition `x > 0`
+// CHECK-DAG: E8006] at {{.*}}call_does_not_meet_requires.vx:29:10: this call to 'halve' may not meet its precondition `x > 0`
+// CHECK-DAG: E8006] at {{.*}}call_does_not_meet_requires.vx:37:10: this call to 'halve' may not meet its precondition `x > 0`
+// CHECK-DAG: E8006] at {{.*}}call_does_not_meet_requires.vx:46:10: this call to 'above_one' may not meet its precondition `x - 1 > 0`
 // CHECK: 4 error(s) emitted
 fn halve(x : i32) -> i32
 requires x > 0 {

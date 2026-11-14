@@ -1,0 +1,28 @@
+//===- spawn_region_assigns_to_an_outer_variable.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s
+//
+// A spawn region with no loop or `if` assigns to variables declared before it. Code after
+// the region sees the new values.
+
+fn main() -> i32 {
+  let mut d : i32 = 0;
+  let mut e : i32 = 5;
+  spawn on(Topology::CPU) {
+    d = 2;
+    e += 3;
+  }
+  // CHECK-NOT: Error
+  // CHECK: {{^}}2{{$}}
+  print(d);
+  print!("\n");
+  // CHECK-NEXT: {{^}}8{{$}}
+  print(e);
+  print!("\n");
+  return 0;
+}

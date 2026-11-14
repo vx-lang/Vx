@@ -1,0 +1,74 @@
+//===- each_device_has_its_own_copy_of_its_memory.vx -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Card` has two devices, and each has its own 4 KiB of `CARD_RAM`. The capacity
+// check counts each device on its own: 3 KiB on each device fits, but two
+// tensors of 3 KiB on device 1 do not, in one function or across a call.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: not vxc %s --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck %s --check-prefix=JSON
+// JSON: {"space": "CARD_RAM", "device": "Card[0]", "total_bytes": 3072, "capacity_bytes": 4096,
+// JSON: {"space": "CARD_RAM", "device": "Card[1]", "total_bytes": 3072, "capacity_bytes": 4096,
+
+Memory CPU_DRAM {}
+Memory CARD_RAM {
+  within: Memory::CPU_DRAM, capacity: 4 KiB, managed: explicit, scope: device
+}
+Topology Card {
+  count: 2,
+  memory: Memory::CARD_RAM,
+  visible: [Memory::CARD_RAM],
+  transfer Memory::CPU_DRAM -> Memory::CARD_RAM : 10,
+  transfer Memory::CARD_RAM -> Memory::CPU_DRAM : 10
+}
+
+// 3 KiB on each device: 6 KiB in all, and each device has 4 KiB.
+fn one_on_each_device() -> f32 {
+  let a = transfer(Tensor<f32, [768]>::fill(1.0), Topology::Card[0]);
+  let b : Tensor<f32, [768], Topology::Card[1]> = transfer(Tensor<f32, [768]>::fill(2.0), Topology::Card[1]);
+  let c = transfer(a, Memory::CPU_DRAM);
+  let d = transfer(b, Memory::CPU_DRAM);
+  return c[0] + d[0];
+}
+
+// CHECK: Error[E6010] at {{.*}}.vx:[[@LINE+1]]:{{[0-9]+}}: the working set placed in memory space 'CARD_RAM' of Card[1] (2 tiles) sums to 6144 bytes, over its 4096 byte capacity
+fn two_on_device_1() -> f32 {
+  let a = transfer(Tensor<f32, [768]>::fill(1.0), Topology::Card[1]);
+  let b = transfer(Tensor<f32, [768]>::fill(2.0), Topology::Card[1]);
+  let c = transfer(a, Memory::CPU_DRAM);
+  let d = transfer(b, Memory::CPU_DRAM);
+  return c[0] + d[0];
+}
+
+fn three_kib_on_device_1() -> f32 {
+  let x = transfer(Tensor<f32, [768]>::fill(1.0), Topology::Card[1]);
+  let y = transfer(x, Memory::CPU_DRAM);
+  return y[0];
+}
+
+// The caller holds 3 KiB on device 0 across the call, so the call fits.
+fn holds_device_0_across_a_call() -> f32 {
+  let a = transfer(Tensor<f32, [768]>::fill(1.0), Topology::Card[0]);
+  let v = three_kib_on_device_1();
+  let c = transfer(a, Memory::CPU_DRAM);
+  return c[0] + v;
+}
+
+// The caller holds 3 KiB on device 1 across the call, so the call does not fit.
+fn holds_device_1_across_a_call() -> f32 {
+  let a = transfer(Tensor<f32, [768]>::fill(1.0), Topology::Card[1]);
+  // CHECK: Error[E6027] at {{.*}}.vx:[[@LINE+1]]:{{[0-9]+}}: the working set along call path 'holds_device_1_across_a_call -> three_kib_on_device_1' in memory space 'CARD_RAM' of Card[1] peaks at 6144 bytes, over its 4096 byte capacity
+  let v = three_kib_on_device_1();
+  let c = transfer(a, Memory::CPU_DRAM);
+  return c[0] + v;
+}
+
+fn main() -> i32 {
+  print(one_on_each_device() + two_on_device_1());
+  print(holds_device_0_across_a_call() + holds_device_1_across_a_call());
+  return 0;
+}

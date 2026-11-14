@@ -14,7 +14,7 @@
 // called on `x` or on `x[i]` keeps it quiet. An unused `let mut` gets only the unused-variable
 // warning (W1001).
 
-// CHECK: Warning[W1004] at 58:3: `never_changed` is declared `mut` but never changes
+// CHECK: Warning[W1004] at {{.*}}warning_for_mut_that_is_never_needed.vx:58:3: `never_changed` is declared `mut` but never changes
 
 // QUIET-NOT: `assigned` is declared `mut`
 // QUIET-NOT: `added_to` is declared `mut`
@@ -25,7 +25,7 @@
 // QUIET-NOT: `counters` is declared `mut`
 // QUIET-NOT: `unused` is declared `mut`
 
-// UNUSED: Warning[W1001] at 81:3: Unused variable 'unused'
+// UNUSED: Warning[W1001] at {{.*}}warning_for_mut_that_is_never_needed.vx:81:3: Unused variable 'unused'
 
 import core::ops;
 

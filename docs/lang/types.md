@@ -39,6 +39,24 @@ the half it did not state, which is why `Placement` records which half the sourc
 > falls back to the like-named device rather than being refused, which is what an undeclared
 > `Topology::X` already does.
 
+### A tensor can ask for an alignment
+
+`aligned(N)` after the placement makes the tensor start at a multiple of N bytes, with N a power
+of two. TMA's 128-byte swizzle, for example, needs each shared buffer aligned to 1024:
+
+```rust
+let stage = unsafe { Tensor<f8e4m3, [128, 128], Memory::SMEM, aligned(1024)>::uninit() };
+```
+
+A memory space in the machine file states the least alignment of every tensor in it, as
+`alignment: 16 B`. `aligned(N)` may ask for more, not less, and only in a space whose storage the
+compiler lays out: one declared with `scope: sm`, `cta` or `thread`. Anything else is E6034.
+
+The alignment is part of the type. A tensor fits where a smaller alignment is asked: a
+`&mut Tensor<f32, [16], Memory::SMEM, aligned(1024)>` can be given to a parameter of type
+`&mut Tensor<f32, [16], Memory::SMEM>`, and not the other way round. A tensor with no `aligned(N)`
+has the alignment of its space.
+
 ### A raw pointer can say which memory it points into
 
 A bare `*mut T` or `*const T` points into host memory. A pointer into another memory writes the
@@ -182,7 +200,7 @@ A `Pinned<T, TopologyA>` value can only be accessed from topologies that have vi
 | Active Topology | Default space | Directly visible memory spaces |
 |---|---|---|
 | CPU | CPU_DRAM | CPU_DRAM, NPU_HBM |
-| GPU | GPU_HBM | GPU_HBM, CPU_DRAM |
+| GPU | GPU_HBM | GPU_HBM |
 | NPU[i] | NPU_HBM | NPU_HBM |
 | ANE | NPU_HBM | NPU_HBM, CPU_DRAM |
 | AMX | CPU_DRAM | CPU_DRAM |
@@ -196,6 +214,11 @@ A `Pinned<T, TopologyA>` value can only be accessed from topologies that have vi
 > `transfer(...)` (the `NeedsSeam` verdict); only a space with no path at all is truly
 > `Unreachable`. User-defined `Topology` declarations (see [syntax.md](./syntax.md#31-user-defined-topologies))
 > contribute their own visibility sets and transfer edges to this matrix.
+>
+> The built-in GPU is a discrete GPU, so it cannot read host memory. A tensor goes to
+> `Memory::GPU_HBM` with `transfer` before code on the GPU uses it. A number or a pointer from
+> the host is copied to the GPU, so code on the GPU can use it without a transfer. A machine
+> whose GPU can read host memory lists `CPU_DRAM` in its `visible:` set.
 
 **Example — rejected at compile time:**
 
@@ -224,7 +247,8 @@ fn invalid_cross_access() -> i32 {
 it per concrete target at each call site. Moving a value between two topology variables
 requires a `where Reachable<S, D>` constraint (discharged against the transfer cost graph), and
 the same relation is available as a compile-time `Reachable<A, B>` predicate for `if comptime`
-branch pruning. See [syntax.md §3.2](./syntax.md#32-topology-polymorphic-functions) for the
+branch pruning. An `M: Memory` bound does the same for the memory of a tensor:
+`Tensor<T, [?], Memory::M>` takes a tensor in any memory. See [syntax.md §3.2](./syntax.md#32-topology-polymorphic-functions) for the
 surface syntax and [`hardware_monad.md`](./hardware_monad.md) for the categorical model.
 
 ### 3.5 When Two Topologies Are the Same Topology
@@ -334,8 +358,8 @@ reach for otherwise: a name that promises a valid value should deliver one, and 
 greppable when a garbage-value bug is being hunted.
 
 `::uninit()` belongs inside `unsafe`, because the compiler cannot check that every element is
-written before it is read. Outside `unsafe` it is warned about (W1032), and a later version will
-refuse it.
+written before it is read. Outside `unsafe` it is refused (E5001). The older spelling,
+`Tensor<f32>([8, 8])`, which passes the shape as an argument, starts at zero, as `::new()` does.
 
 A `Tensor`'s extents are part of its type, so every one of them has to be known at compile time —
 a literal or a const generic. An extent that is a run-time value is refused, naming the `?` spelling,
@@ -363,6 +387,8 @@ When verifying `let target: TargetType = source_expression;`, the compiler permi
 1. **Borrow to Raw Pointer:** A borrow fits a raw pointer to the same type: `&mut T` fits `*mut T` or `*const T`, and `&T` fits `*const T`. A `&T` does not fit `*mut T`.
 1. **Dropping `mut`:** `&mut T` fits `&T`, and `*mut T` fits `*const T`. A raw pointer to `i8` fits a raw pointer to any type, and the other way round, as `void *` does in C.
 1. **Never:** A value of type `!`, such as a call to a function that never returns, fits any type.
+1. **More aligned to less aligned:** A tensor fits a tensor type that differs only in a smaller
+   `aligned(N)`. A tensor with no `aligned(N)` has the `alignment:` of its space.
 
 These are refused, and the compiler says so with E3001:
 
@@ -413,13 +439,27 @@ Vx provides a comprehensive set of primitive types:
 
 - **Signed Integers**: `i4`, `i8`, `i16`, `i32`, `i64`, `i128`
 - **Unsigned Integers**: `u4`, `u8`, `u16`, `u32`, `u64`, `u128`
+- **Size**: `usize`, which holds 0 up to `i64::MAX`
 - **Floating Point**: `f16`, `bf16`, `f32`, `f64`
 - **Boolean**: `bool`
 
-### Arrays, Tensors, and Matrices
+### Integer casts
+
+`x as T` converts the integer `x` to the integer type `T`. A value that fits in `T` stays the
+same. A value that does not fit wraps at the width of `T`: `300 as u8` is 44.
+
+`usize` is the exception: a cast to it never wraps. A cast of a value outside 0 to `i64::MAX`
+stops the program with "cast to usize is out of range". When the compiler knows the value while
+it compiles, it also gives warning W1014. A cast from `u8`, `u16` or `u32` always fits, so it has
+no run-time check.
+
+In a contract, the prover reads a cast to `usize` as its value only for a value in range. So
+`requires (x as usize) < 10` holds only when `x` is in 0..10.
+
+### Arrays and Tensors
 
 - **Arrays**: Fixed-size arrays are supported using the `[T; N]` syntax.
-- **Tensors and Matrices**: Built-in `Tensor<T, Shape>` and `Matrix` types are first-class constructs natively understood by the compiler for high-performance algebraic operations.
+- **Tensors**: The built-in `Tensor<T, Shape>` type is a first-class construct that the compiler understands, for high-performance algebraic operations. A matrix is a tensor of rank 2.
 - **Vectors**: `<N x T>` is N lanes of a scalar type `T` (`<4 x f32>`): one value, lowered to `vector<NxT>`. Arithmetic between two `<N x T>` values is lane-wise. A vector is loaded and stored through a pointer to the vector type (`*mut <4 x f32>`). There is no implicit conversion between `<N x T>` and `T`: an `f32` is not a `<1 x f32>`, and a `*mut f32` dereferences to one `f32`.
 
 ## 9. Linear (Affine) Types vs. Copyable Types
@@ -439,8 +479,7 @@ visits every position `t[i]` accepts. A rank-0 tensor has no `len()`.
 | Type | Example |
 |------|---------|
 | `Tensor<T, Shape>` | `let a : Tensor<f32, []> = 1.0;` |
-| `Tensor<T, Shape, Memory>` | `let d = Tensor<f32, [4, 4], Memory::NPU_HBM>::uninit();` |
-| `Matrix` | `let m : Matrix = ...;` |
+| `Tensor<T, Shape, Memory>` | `let d = unsafe { Tensor<f32, [4, 4], Memory::NPU_HBM>::uninit() };` |
 | `Verified<T>` | `let v : Verified<Tensor<f32, [4, 4]>> = ...;` |
 | `Pinned<T, Topology>` | `let p : Pinned<Tensor<f32, [4, 4]>, Topology::NPU[0]> = ...;` |
 | `struct` instances | `let cfg = Config { value: 1.0 };` |

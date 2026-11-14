@@ -17,7 +17,6 @@
 pub mod collections;
 pub mod env;
 pub mod ffi;
-pub mod googletest;
 pub mod io;
 pub mod net;
 pub mod simd;

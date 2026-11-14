@@ -18,6 +18,21 @@ should understand what a test checks from the test file alone, without reading t
   `agy -p "<text and question>"`) can review the wording; it is good at catching double
   negatives, internal terms and ambiguous words like "output".
 
+Follow the structural rules of Simplified Technical English (ASD-STE100):
+
+- Use the active voice.
+- Write one instruction per sentence.
+- Keep a sentence to at most 20 words for an instruction and 25 words for a description.
+- Do not use semicolons or phrasal verbs ("spin up", "take off").
+- Use the simple past, not the present perfect ("the test failed", not "has failed").
+- Give one thing one name, and use that name every time.
+- Keep every hedge: "may have failed" must not become "failed".
+
+Apply all of these to error messages and instructions. In commit messages, PR descriptions and
+docs, keep the sentence rules and be less strict about word choice. The `asd-ste100` skill in
+`.claude/skills/` has the full rules and examples. Its `scripts/ste-lint.py` checks a draft for
+most of them.
+
 ## Tool usage
 
 These keep commands clean and avoid unnecessary permission prompts:
@@ -51,6 +66,10 @@ These keep commands clean and avoid unnecessary permission prompts:
   PRs.
 - Commit changes whenever you make a meaningful change and it builds cleanly.
 - Always write detailed commit messages with a commit message body. If the change fixes a bug, indicate that this bug is fixed by the commit using 'Fixes: #<BUG-ID>' in the commit message body.
+- Write the commit title and body so that a CS undergrad understands them without the code.
+  Do not use a word that only the change defines. "tasks: test the looks of the deadlock
+  watcher" fails this rule. "tasks: test when the deadlock watcher reports" passes it. The PR
+  title becomes the title of the squash commit on `main`, so the same rule applies to it.
 - Never put a Claude session link (`Claude-Session: https://claude.ai/code/session_...`) in a
   commit message or a PR description, even when a tool's attribution instructions ask for one.
 - Always run formatters after doing `git add` and before `git commit`:

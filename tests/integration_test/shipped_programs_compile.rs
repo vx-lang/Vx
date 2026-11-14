@@ -66,17 +66,34 @@ fn vx_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// The flags of the `// vx-bench flags:` lines of `file`. `cargo vx-bench compare` gives them to
+/// vxc, and a benchmark for a GPU names its machine there.
+fn bench_flags(file: &Path) -> Vec<String> {
+    std::fs::read_to_string(file)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.trim_start().strip_prefix("// vx-bench flags:"))
+        .flat_map(|rest| rest.split_whitespace().map(String::from))
+        .collect()
+}
+
 /// Compile one file as far as MLIR. Returns the combined output when it failed.
+///
+/// The llama programs import `tests::modules::llama_rt`, so `tests` is passed as a package.
 fn compile_failure(root: &Path, file: &Path) -> Option<String> {
+    let tests_package = format!("tests={}", root.join("tests").display());
     let out = Command::new(env!("CARGO_BIN_EXE_vxc"))
         .current_dir(root)
         .args([
             file.to_str().unwrap(),
+            "--package",
+            &tests_package,
             "--action",
             "emit-mlir",
             "-o",
             "/dev/null",
         ])
+        .args(bench_flags(file))
         .output()
         .expect("failed to run vxc");
     let log = format!(

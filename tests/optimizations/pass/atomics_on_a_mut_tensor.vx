@@ -1,0 +1,47 @@
+//===- atomics_on_a_mut_tensor.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The element atomics of `core::sync::atomic` take a `&` tensor, and a `&mut` can stand for it,
+// as in any call. A kernel that changes a tensor only with atomics can then say so with `&mut`.
+// `histogram` counts 128 values modulo 4 into `counts`, so each count is 32. `add_twice` takes a
+// `&mut` and calls the atomic with it on the host.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=PTX
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=PTX
+// CHECK: {{^}}counts 32 32 32 32{{$}}
+// CHECK-NEXT: {{^}}old 0 1, now 2{{$}}
+// PTX: atom.global.add.u32
+import core::sync::atomic;
+
+fn histogram(counts : &mut Tensor<u32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      for l in 0..32 across lanes {
+        let _old = atomic_fetch_add_u32(counts, (b * 32 + l) % 4, 1u32, AtomicOrdering::Relaxed);
+      }
+    }
+  }
+  return;
+}
+
+fn add_twice(t : &mut Tensor<u32, [?]>) -> void {
+  let first = atomic_fetch_add_u32(t, 0, 1u32, AtomicOrdering::Relaxed);
+  let second = atomic_fetch_add_u32(t, 0, 1u32, AtomicOrdering::Relaxed);
+  println!("old {} {}, now {}", first, second, t[0]);
+}
+
+fn main() -> i32 {
+  let mut counts = transfer(Tensor<u32, [4]>::fill(0u32), Memory::HBM);
+  histogram(&mut counts);
+  let c = transfer(counts, Memory::CPU_DRAM);
+  println!("counts {} {} {} {}", c[0], c[1], c[2], c[3]);
+  let mut t = Tensor<u32, [1]>::fill(0u32);
+  add_twice(&mut t);
+  return 0;
+}

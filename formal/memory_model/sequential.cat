@@ -1,0 +1,10 @@
+"Vx memory model: sequential consistency with barriers"
+
+(* Every run is one interleaving of the threads, and the threads in one instance of a barrier's
+   scope meet at the barrier. run_litmus.py compares a test without data races against this
+   model, to check that such a test cannot see weak memory ordering (DRF-SC). *)
+
+include "cos.cat"
+include "vx_events.cat"
+
+acyclic po | rf | co | fr | bar as sequential

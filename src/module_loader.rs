@@ -25,7 +25,8 @@ use std::path::{Path, PathBuf};
 #[derive(Debug)]
 pub enum ModuleError {
     IO(String, std::io::Error),
-    Parse(String, crate::error::Error),
+    /// The error names its file and position itself.
+    Parse(crate::error::Error),
     Resolution(String),
 }
 
@@ -33,7 +34,7 @@ impl std::fmt::Display for ModuleError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ModuleError::IO(file, err) => write!(f, "Failed to open file '{}': {}", file, err),
-            ModuleError::Parse(file, err) => write!(f, "Parse failed in '{}': {}", file, err),
+            ModuleError::Parse(err) => write!(f, "{}", err),
             ModuleError::Resolution(err) => write!(f, "Resolution error: {}", err),
         }
     }
@@ -48,7 +49,10 @@ enum Resolved {
 }
 
 pub struct ModuleLoader {
-    search_paths: Vec<PathBuf>,
+    /// Where the standard library is: `--std-path`, or found from the compiler itself.
+    std_roots: Vec<PathBuf>,
+    /// The directory of each file compiled as a root, so a program can import a file beside it.
+    entry_dirs: Vec<PathBuf>,
     /// `--package name=dir`: an import that starts with `name` is read from `dir` and nowhere else.
     packages: Vec<(String, PathBuf)>,
     pub loaded_modules: HashMap<crate::symbol::Symbol, Program>,
@@ -65,46 +69,48 @@ pub struct ModuleLoader {
     paths: HashMap<Symbol, PathBuf>,
     /// The modules loaded as roots rather than imported, in load order.
     roots: Vec<Symbol>,
+    /// The name each file got when it was first loaded, by its canonical path. A file loaded
+    /// both as a root and by an import path keeps that one name.
+    file_names: HashMap<PathBuf, Symbol>,
 }
 
 impl ModuleLoader {
+    /// A loader that finds the standard library from the compiler itself.
     pub fn new() -> Self {
-        let mut search_paths = Vec::new();
-        if let Ok(env_path) = std::env::var("VX_STD_PATH") {
-            // Read as a PATH-style list rather than a single directory. Set to one directory it
-            // replaced BOTH roots below, so `import graph::traversal` stopped resolving -- which
-            // is exactly what an installed toolchain would have set it to.
-            search_paths.extend(std::env::split_paths(&env_path));
-        } else {
-            // Beside the compiler, as an installed toolchain lays it out: `bin/vxc` and `stdlib/`
-            // under one prefix. Checked before the working directory so a downloaded toolchain
-            // resolves imports from any directory, with no environment variable set.
-            if let Ok(exe) = std::env::current_exe() {
-                if let Some(bin_dir) = exe.parent() {
-                    let prefix = bin_dir.join("..");
-                    if prefix.join("stdlib").join("std").is_dir() {
-                        search_paths.push(prefix.join("stdlib").join("std"));
-                        search_paths.push(prefix.join("stdlib"));
-                    }
-                }
-            }
-            search_paths.push(PathBuf::from("stdlib/std"));
-            // `stdlib` itself is a root so top-level libraries beyond `std` resolve, e.g.
-            // `import graph::traversal` -> `stdlib/graph/traversal.vx`.
-            search_paths.push(PathBuf::from("stdlib"));
-        }
+        Self::with_std_paths(Self::default_std_roots())
+    }
 
-        search_paths.push(PathBuf::from("."));
-
+    /// A loader that reads the standard library from `std_paths` only (`--std-path`).
+    pub fn with_std_paths(std_paths: Vec<PathBuf>) -> Self {
         Self {
-            search_paths,
+            std_roots: std_paths,
+            entry_dirs: Vec::new(),
             packages: Vec::new(),
             loaded_modules: HashMap::new(),
             loaded_interfaces: HashMap::new(),
             returned_modules_directly: false,
             paths: HashMap::new(),
             roots: Vec::new(),
+            file_names: HashMap::new(),
         }
+    }
+
+    /// The standard library beside the compiler, as an installed toolchain lays it out (`bin/vxc`
+    /// and `stdlib/` under one prefix), or else in the source tree the compiler was built from.
+    /// Never the current directory: one command must read the same files wherever it runs.
+    fn default_std_roots() -> Vec<PathBuf> {
+        let beside_the_compiler = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|bin| bin.join("..").join("stdlib")));
+        let source_tree = Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib");
+        for stdlib in beside_the_compiler.into_iter().chain([source_tree]) {
+            if stdlib.join("std").is_dir() {
+                // `stdlib` itself is a root so libraries beyond `std` resolve too:
+                // `import graph::traversal` is `stdlib/graph/traversal.vx`.
+                return vec![stdlib.join("std"), stdlib];
+            }
+        }
+        Vec::new()
     }
 
     /// Read imports that start with `name` from `dir`: `import name::a::b` is `dir/a/b.vx`. The
@@ -113,14 +119,27 @@ impl ModuleLoader {
         self.packages.push((name.to_string(), dir.to_path_buf()));
     }
 
+    /// Let the program import files that sit beside `root`, one of the files it compiles.
+    fn add_entry_dir(&mut self, root: &Path) {
+        let dir = match root.parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
+            _ => PathBuf::from("."),
+        };
+        if !self.entry_dirs.contains(&dir) {
+            self.entry_dirs.push(dir);
+        }
+    }
+
     pub fn load_main(&mut self, filename: &str) -> Result<(), ModuleError> {
-        let main_program = Self::parse_file(Path::new(filename), filename.into())?;
-        self.paths.insert(filename.into(), PathBuf::from(filename));
-        self.roots.push(filename.into());
+        self.add_entry_dir(Path::new(filename));
+        let name = self.root_name(filename);
+        let mut main_program = Self::parse_file(Path::new(filename), name.clone())?;
+        self.name_file_once(&mut main_program, Path::new(filename))?;
+        self.paths.insert(name.clone(), PathBuf::from(filename));
+        self.roots.push(name.clone());
 
         let imports = main_program.imports.clone();
-        self.loaded_modules
-            .insert(filename.to_string().into(), main_program);
+        self.loaded_modules.insert(name, main_program);
 
         for import in imports {
             self.load_import(&import.path)?;
@@ -151,9 +170,11 @@ impl ModuleLoader {
         let mut seen: HashSet<Symbol> = HashSet::new();
         let mut wave: Vec<(Symbol, PathBuf)> = Vec::new();
         for root in roots {
-            if seen.insert(root.as_str().into()) {
-                wave.push((root.as_str().into(), PathBuf::from(root)));
-                self.roots.push(root.as_str().into());
+            self.add_entry_dir(Path::new(root));
+            let name = self.root_name(root);
+            if seen.insert(name.clone()) {
+                wave.push((name.clone(), PathBuf::from(root)));
+                self.roots.push(name);
             }
         }
         while !wave.is_empty() {
@@ -167,8 +188,9 @@ impl ModuleLoader {
             };
             // The next wave's imports, in source order, each once.
             let mut pending: Vec<(Symbol, Vec<Symbol>)> = Vec::new();
-            for result in parsed {
-                let program = result?;
+            for (result, (_, path)) in parsed.into_iter().zip(&wave) {
+                let mut program = result?;
+                self.name_file_once(&mut program, path)?;
                 for import in &program.imports {
                     let module_name = Self::module_name(&import.path);
                     if seen.insert(module_name.clone()) {
@@ -210,12 +232,14 @@ impl ModuleLoader {
                 continue;
             };
             let path = &self.paths[&program.module_path];
-            let renamed = Self::parse_file_renaming(path, program.module_path.clone(), renames)?;
+            let mut renamed =
+                Self::parse_file_renaming(path, program.module_path.clone(), renames)?;
             // The imports were already followed as first parsed.
             assert_eq!(
                 renamed.imports, program.imports,
                 "renaming a clashing name changed an import path"
             );
+            renamed.file = program.file.clone();
             *program = renamed;
         }
         Ok(())
@@ -257,6 +281,25 @@ impl ModuleLoader {
         Ok(programs)
     }
 
+    /// The name of the root file `file`: its module name when it is a module of the standard
+    /// library, as `core::ops` for `stdlib/core/ops.vx`, or else the file name. So an import
+    /// that leads back to the root finds it, and does not load the file again as a second module.
+    pub(crate) fn root_name(&self, file: &str) -> Symbol {
+        let canonical = |p: &Path| fs::canonicalize(p).ok();
+        let module = canonical(Path::new(file)).and_then(|file| {
+            self.std_roots.iter().rev().find_map(|root| {
+                let rel = file.strip_prefix(canonical(root)?).ok()?.with_extension("");
+                let path: Vec<Symbol> = rel
+                    .components()
+                    .map(|c| c.as_os_str().to_str().map(Symbol::from))
+                    .collect::<Option<_>>()?;
+                let found = canonical(&self.resolve_module_path(&path)?)?;
+                (found == file).then(|| Self::module_name(&path))
+            })
+        });
+        module.unwrap_or_else(|| file.into())
+    }
+
     /// The name a module is known by: its import path joined with `::`.
     fn module_name(path: &[Symbol]) -> Symbol {
         path.iter()
@@ -265,6 +308,20 @@ impl ModuleLoader {
             .join("::")
             .as_str()
             .into()
+    }
+
+    /// Give `program` the file name that the first load of the same file got. Otherwise a file
+    /// loaded as a root and again by an import path has two names, and its impl blocks no
+    /// longer compare equal, so E3049 reports one impl as two.
+    fn name_file_once(&mut self, program: &mut Program, path: &Path) -> Result<(), ModuleError> {
+        let key = fs::canonicalize(path)
+            .map_err(|e| ModuleError::IO(path.to_string_lossy().into_owned(), e))?;
+        let first = self
+            .file_names
+            .entry(key)
+            .or_insert_with(|| program.file.clone().expect("a parsed file has a name"));
+        program.file = Some(first.clone());
+        Ok(())
     }
 
     /// Read and parse one file as the module `module_path`.
@@ -290,13 +347,15 @@ impl ModuleLoader {
 
         let mut program = parser
             .parse()
-            .map_err(|e| ModuleError::Parse(name, crate::error::Error(e.format(&source))))?;
+            .map_err(|e| ModuleError::Parse(crate::error::Error(e.format(&source, Some(&name)))))?;
         program.module_path = module_path;
+        program.file = Some(name.as_str().into());
         Ok(program)
     }
 
-    /// Resolve an import path against the search paths, trying the given file extension. Shared by
-    /// `.vx` source resolution and `.vxlib` artifact resolution (#219).
+    /// Resolve an import path against the standard library roots, then the directories of the
+    /// root files, trying the given file extension. Shared by `.vx` source resolution and `.vxlib`
+    /// artifact resolution (#219).
     fn resolve_with_ext(&self, path: &[crate::symbol::Symbol], ext: &str) -> Option<PathBuf> {
         if path.len() > 1 {
             if let Some((_, dir)) = self.packages.iter().find(|(name, _)| *path[0] == **name) {
@@ -308,7 +367,7 @@ impl ModuleLoader {
                 return current_path.exists().then_some(current_path);
             }
         }
-        for search_path in &self.search_paths {
+        for search_path in self.std_roots.iter().chain(&self.entry_dirs) {
             let mut current_path = search_path.clone();
             if !path.is_empty() && *path[0] == *"std" {
                 for component in &path[1..] {
@@ -361,7 +420,8 @@ impl ModuleLoader {
             Resolved::Source(p) => p,
         };
 
-        let program = Self::parse_file(&resolved_path, module_name.clone())?;
+        let mut program = Self::parse_file(&resolved_path, module_name.clone())?;
+        self.name_file_once(&mut program, &resolved_path)?;
         self.paths.insert(module_name.clone(), resolved_path);
 
         let imports = program.imports.clone();
@@ -385,6 +445,82 @@ impl Default for ModuleLoader {
 mod tests {
     use super::*;
 
+    /// A loader that reads the repository's `tests` directory as the package `tests`, which the
+    /// fixtures below import from.
+    fn loader() -> ModuleLoader {
+        let mut loader = ModuleLoader::new();
+        loader.add_package(
+            "tests",
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests"),
+        );
+        loader
+    }
+
+    fn scratch_dir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("vx_module_loader_{name}_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A program in another directory imports a file that sits beside it.
+    #[test]
+    fn an_import_resolves_beside_the_entry_file() {
+        let dir = scratch_dir("beside_the_entry_file");
+        fs::write(dir.join("helper.vx"), "fn helper() -> i32 { return 1; }\n").unwrap();
+        let main = dir.join("main.vx");
+        fs::write(
+            &main,
+            "import helper;\nfn main() -> i32 { return helper(); }\n",
+        )
+        .unwrap();
+        let programs = ModuleLoader::new()
+            .load_all(&[main.to_string_lossy().into_owned()], Schedule::Sequential)
+            .expect("the file beside the entry file should be found");
+        assert_eq!(programs.len(), 2, "expected main.vx and helper.vx");
+    }
+
+    /// `tests/modules/jobs_wave_b.vx` is under the current directory of `cargo test`, but no flag
+    /// names that directory, so the import must fail wherever the compiler runs.
+    #[test]
+    fn an_import_is_not_read_from_the_current_directory() {
+        assert!(
+            Path::new("tests/modules/jobs_wave_b.vx").exists(),
+            "this test needs the file under the current directory, or it checks nothing"
+        );
+        let dir = scratch_dir("not_the_current_directory");
+        let main = dir.join("main.vx");
+        fs::write(
+            &main,
+            "import tests::modules::jobs_wave_b;\nfn main() -> i32 { return 0; }\n",
+        )
+        .unwrap();
+        match ModuleLoader::new()
+            .load_all(&[main.to_string_lossy().into_owned()], Schedule::Sequential)
+        {
+            Ok(_) => panic!("the import was read from the current directory"),
+            Err(err) => assert!(
+                err.to_string()
+                    .contains("Could not resolve import 'tests::modules::jobs_wave_b'"),
+                "unexpected error: {err}"
+            ),
+        }
+    }
+
+    /// A relative root would be read from the current directory.
+    #[test]
+    fn the_standard_library_roots_are_absolute_paths() {
+        let roots = ModuleLoader::default_std_roots();
+        assert!(
+            !roots.is_empty(),
+            "no standard library beside the compiler or in its source tree"
+        );
+        for root in &roots {
+            assert!(root.is_absolute(), "{} is a relative path", root.display());
+        }
+    }
+
     /// `load_all` hands its modules back rather than keeping them, so a caller who follows the
     /// `load_main` shape gets nothing from this loader. That used to be an empty `Vec` and an
     /// empty compile; it is a crash now, because a compiler that emits nothing and reports
@@ -392,7 +528,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "load_all already returned the modules")]
     fn asking_load_all_s_loader_for_its_modules_is_refused() {
-        let mut loader = ModuleLoader::new();
+        let mut loader = loader();
         let _ = loader.load_all(
             &["tests/modules/jobs_wave_b.vx".to_string()],
             Schedule::Sequential,
@@ -416,11 +552,11 @@ mod tests {
             out
         };
 
-        let mut recursive = ModuleLoader::new();
+        let mut recursive = loader();
         recursive.load_main(entry).expect("the fixture should load");
         let from_load_main = names(recursive.into_programs().unwrap());
 
-        let mut waves = ModuleLoader::new();
+        let mut waves = loader();
         let from_load_all = names(
             waves
                 .load_all(&[entry.to_string()], Schedule::Sequential)
@@ -440,7 +576,7 @@ mod tests {
     /// The `load_main` entry point does keep them, and this is the shape that reads them back.
     #[test]
     fn load_main_keeps_the_modules_it_parsed() {
-        let mut loader = ModuleLoader::new();
+        let mut loader = loader();
         loader
             .load_main("tests/modules/jobs_wave_b.vx")
             .expect("the fixture module should parse");
@@ -448,5 +584,31 @@ mod tests {
             !loader.into_programs().unwrap().is_empty(),
             "load_main kept nothing, so a compile through this loader would be empty"
         );
+    }
+
+    /// A file that is a root and is also imported, by itself here, is loaded twice. Both
+    /// loads name the file the way the root was written, in both loaders.
+    #[test]
+    fn a_file_loaded_twice_has_one_name() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.vx"), "import pkg::a;\n").unwrap();
+        // Written with `./`, so the root's name differs from the path the import finds.
+        let root = format!("{}/./a.vx", dir.path().display());
+        let files = |programs: Vec<Program>| -> Vec<Option<Symbol>> {
+            programs.into_iter().map(|p| p.file).collect()
+        };
+
+        let mut recursive = ModuleLoader::new();
+        recursive.add_package("pkg", dir.path());
+        recursive.load_main(&root).unwrap();
+        let mut waves = ModuleLoader::new();
+        waves.add_package("pkg", dir.path());
+        let from_load_all = waves
+            .load_all(std::slice::from_ref(&root), Schedule::Sequential)
+            .unwrap();
+
+        let expected = vec![Some(Symbol::from(root.as_str())); 2];
+        assert_eq!(files(recursive.into_programs().unwrap()), expected);
+        assert_eq!(files(from_load_all), expected);
     }
 }

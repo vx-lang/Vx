@@ -1,0 +1,76 @@
+//===- gpu_helpers_that_no_kernel_calls_get_host_stubs.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A file of GPU helpers, of which the kernel uses only some. `grid_size` holds
+// `gpu.grid_dim`, and `fast_exp` holds an `llvm.nvvm.` intrinsic. Nothing calls them. `warp_max` calls `shfl_down`, and nothing calls
+// `warp_max`. The kernel calls `warp_sum`, which calls `shfl_down`. Each of these five gets a
+// CPU copy that stops the program, so the program compiles to an object file. Before, the
+// unused helpers kept their GPU ops, and `warp_max` made `shfl_down` look like host code.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --host default --machine fleet/a100-40.vx --action emit-obj -o %t.o 2>&1 | FileCheck %s --check-prefix=OBJ --allow-empty
+// RUN: vxc %s --host default --machine fleet/a100-40.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s
+// OBJ-NOT: LLVM Translation failed
+// OBJ-NOT: LLVM ERROR
+// CHECK-DAG: __vx_gpu_only_grid_size{{.*}}runs only on a GPU
+// CHECK-DAG: __vx_gpu_only_fast_exp{{.*}}runs only on a GPU
+// CHECK-DAG: __vx_gpu_only_shfl_down{{.*}}runs only on a GPU
+// CHECK-DAG: __vx_gpu_only_warp_sum{{.*}}runs only on a GPU
+// CHECK-DAG: __vx_gpu_only_warp_max{{.*}}runs only on a GPU
+
+fn grid_size() on Topology::GPU -> i32 {
+  return mlir!( inputs : (), returns : i32, dialects : ["gpu", "arith"]) {
+    %g = gpu.grid_dim x
+    %r = "arith.index_cast"(%g) : (index) -> i32
+    macro.yield %r : i32
+  };
+}
+
+fn fast_exp(x : f32) on Topology::GPU -> f32 {
+  return mlir!( inputs : (%x = x : f32), returns : f32, dialects : ["llvm", "arith"]) {
+    %r = llvm.call_intrinsic "llvm.nvvm.ex2.approx.ftz.f"(%x) : (f32) -> f32
+    macro.yield %r : f32
+  };
+}
+
+fn shfl_down(v : f32, delta : i32) on Topology::GPU -> f32 {
+  return mlir!( inputs : (%v = v : f32, %d = delta : i32), returns : f32, dialects : ["gpu", "arith"]) {
+    %w = "arith.constant"() {
+      value = 32 : i32
+    } : () -> i32
+    %r, %ok = gpu.shuffle down %v, %d, %w : f32
+    macro.yield %r : f32
+  };
+}
+
+fn warp_sum(v : f32) on Topology::GPU -> f32 {
+  return v + shfl_down(v, 16);
+}
+
+fn warp_max(v : f32) on Topology::GPU -> f32 {
+  let other = shfl_down(v, 16);
+  if other > v {
+    return other;
+  }
+  return v;
+}
+
+fn main() -> i32 {
+  let mut x_host = Tensor<f32, [32]>::new();
+  for i in 0..32 {
+    x_host[i] = 1.0;
+  }
+  let mut x = transfer(x_host, Memory::GPU_HBM);
+  spawn on(Topology::GPU) {
+    for i in 0..32 {
+      x[i] = warp_sum(x[i]);
+    }
+  }
+  let r = transfer(x, Memory::CPU_DRAM);
+  print(r);
+  return 0;
+}

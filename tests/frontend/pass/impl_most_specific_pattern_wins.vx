@@ -35,7 +35,7 @@ impl<T : Float> Tensor<T, [?, ?]> {
 }
 
 fn probe(n : i32) -> i32 {
-  let s = Tensor<f32, [2, 2]>::uninit();
+  let s = unsafe { Tensor<f32, [2, 2]>::uninit() };
   let d = Tensor<f32>([n, n]);
   return s.which() * 10 + d.which() - 21;
 }

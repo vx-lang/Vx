@@ -1,9 +1,9 @@
-// RUN: vxc %s --action emit-mlir
-// XFAIL: *
+// Nested loops, a match on a variant with two payloads, a match whose arms have no braces, and
+// a match on a string. Each function returns the answer its comment gives.
 //
-// The IR assertion this file used to carry could not run: the program does not compile on
-// the default path -- a multi-payload variant binding panics the AST lowering (Vx#398,
-// Vx#233). The XFAIL above reports the day that changes, and the assertions go back.
+// RUN: vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}25 10 1 2.5{{$}}
 enum Result {
   Ok(i32, f32),
   Err,
@@ -73,6 +73,7 @@ fn main() -> i32 {
   let b = test_match_no_braces();
   let c = test_match_string();
 
-  // 25 + 10 + 1 = 36
-  return a + b + c;
+  let d = test_match_multi_payload();
+  println!("{} {} {} {}", a, b, c, d);
+  return 0;
 }

@@ -1,0 +1,43 @@
+//===- assignment_runs_the_place_before_the_value.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An assignment runs the code in its place before its value (rule E3 in
+// docs/discussions/borrow_check_sequence_points_for_calls.md). `note` and `pick` print their
+// tag, so each line lists the calls in the order they ran. The legacy code generator used to
+// print `2 1`, `3 1 2` and `2 1`.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+
+fn note(tag : i32, v : i32) -> i32 {
+  print!("{} ", tag);
+  return v;
+}
+
+fn pick(r : &mut i32, tag : i32) -> &mut i32 {
+  print!("{} ", tag);
+  return r;
+}
+
+fn main() -> i32 {
+  let mut t = Tensor<i32, [2]>::fill(0);
+  t[note(1, 1)] = note(2, 5);
+  println!("| {}", t[1]);
+  // CHECK: {{^}}1 2 | 5{{$}}
+
+  // The indices run left to right.
+  let mut m = Tensor<i32, [2, 2]>::fill(0);
+  m[note(1, 0)][note(2, 1)] = note(3, 7);
+  println!("| {}", m[0][1]);
+  // CHECK: {{^}}1 2 3 | 7{{$}}
+
+  let mut x = 0;
+  *pick(&mut x, 1) = note(2, 9);
+  println!("| {}", x);
+  // CHECK: {{^}}1 2 | 9{{$}}
+  return 0;
+}

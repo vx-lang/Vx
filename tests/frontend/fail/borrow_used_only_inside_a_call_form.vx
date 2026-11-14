@@ -10,9 +10,9 @@
 // second borrow.
 //===----------------------------------------------------------------------===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK-DAG: Error[E4004] at 24:11: Cannot borrow 'a'
-// CHECK-DAG: Error[E4004] at 32:11: Cannot borrow 'a'
-// CHECK-DAG: Error[E4004] at 40:11: Cannot borrow 'a'
+// CHECK-DAG: Error[E4004] at {{.*}}borrow_used_only_inside_a_call_form.vx:24:11: Cannot borrow 'a'
+// CHECK-DAG: Error[E4004] at {{.*}}borrow_used_only_inside_a_call_form.vx:32:11: Cannot borrow 'a'
+// CHECK-DAG: Error[E4004] at {{.*}}borrow_used_only_inside_a_call_form.vx:40:11: Cannot borrow 'a'
 
 fn sq(x : f32) -> f32 {
   return x * x;

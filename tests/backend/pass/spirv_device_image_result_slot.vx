@@ -1,0 +1,45 @@
+//===- spirv_device_image_result_slot.vx - a yielding region warns -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// A `spirv64` region that yields a value hands it back through a host stack
+// slot, which a device cannot address, so the kernel gets no image and the
+// compiler says so. The region runs on the host and computes the same answer.
+//
+// Here: the spawn carries the arch and the answer is right. The warning and the
+// absent `format=spirv` entry are device_image_test.rs's business.
+//
+// CHECK: vx.spawn topology({{[0-9]+}}) {
+// CHECK: } {arch = "spirv64"
+// EXPECT: 6
+
+Memory CPU_DRAM {}
+Memory DEV_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 63 GB/s
+}
+
+fn main() -> i32 {
+  let mut a = unsafe { Tensor<i32, [2, 2]>::uninit() };
+  for i in 0..2 {
+    for j in 0..2 {
+      a[i][j] = i * 3 + j + 1;
+    }
+  }
+  let ad = transfer(a, Memory::DEV_HBM);
+  let v = spawn on(Topology::Dev) {
+    ad[0][0] + ad[1][1]
+  };
+  let hv = transfer(v, Memory::CPU_DRAM);
+  print(hv);
+  return 0;
+}

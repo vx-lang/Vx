@@ -131,12 +131,32 @@ ______________________________________________________________________
 | `visible: [..]` | Every space it can address. Defaults to just its own memory. |
 | `arch:` | The instruction set it executes: `x86_64`, `aarch64`, `nvptx64`, `amdgcn`. |
 | `transfer A -> B` | An edge in the cost graph. Repeatable. |
+| `offload: true` | The fleet may run it on a worker of another node. Defaults to `false`. |
+| `count: N` | How many devices it has. `Topology::X[i]` names one. Defaults to 1. |
+
+A worker of another node does not share the memory of this node. So a topology with
+`offload: true` gets no exception for `managed: cached` memory: a host tensor in its region needs
+a `transfer` (E6003), as on a discrete GPU.
+
+A fleet manifest (`VX_FLEET_MANIFEST`) can send a topology to such a worker only when it says
+`offload: true`. The runtime stops a program whose manifest sends an unmarked topology to a worker.
+A built-in device, such as `GPU[0]`, has no machine file to say it, and it counts as
+`offload: true`. The host (`Topology::CPU`) runs the program itself, so it does not.
 
 A `transfer` clause takes an optional cost (`: 300`, or a bandwidth like `: 64 GB/s`), an optional
 consistency grade (`relaxed` or `sync`, default `sync`), and an optional `copy_engine` marker.
 `copy_engine` declares that hardware can drive the hop, and it is what makes `raw::async_copy`
 legal in a lowering for that edge. Omitting the cost declares that the move is possible and leaves
 the number to be derived from the endpoints.
+
+The cost `: shared` says that both sides address the same memory, as on a Mac with unified memory.
+The hop copies no bytes, so the cost model gives it a cost of 0 and the JSON report says
+`"cost_source": "shared"`.
+
+A transfer of a `&` tensor parameter over a shared edge is still a copy for the type system. But
+when every use of the copy only reads it, the compiler skips the copy: the program waits for the
+GPU and reads the parameter in place. When a use writes the copy or keeps it, the copy stays and
+the compiler gives a warning that names the use. A transfer of an owned tensor still copies.
 
 ### Memory fields
 
@@ -160,17 +180,14 @@ These are the errors a first attempt actually hits, in the order you are likely 
 | `E6003` | A value is read on a device whose `visible:` list does not include the space it lives in. |
 | `E6009` | A tensor does not fit the declared `capacity`. This one is the point of the exercise. |
 | `W1026` | The topology's memory has no transfer edge from the host, so nothing can reach it. |
+| `E6037` | A type places a tensor in the memory, and the memory has no `scope:`. |
+| `E6025` | A use names a device that the topology does not have, such as `X[2]` with `count: 2`, or a bare `X` with more than one device. Or it names the memory of a topology with more than one device, which does not say which device: write `Topology::X[i]`. |
+| `E6042` | Code runs on device 1 or a later device of a declared GPU. For now, only device 0 of an `nvptx64` topology can run code. |
 
-One more, which only appears on the AST backend (`--legacy-codegen`) and only when a tensor is
-*placed* in the space rather than transferred into it:
-
-```
-Codegen Error: topology 'Acc_RAM' has no memory space that maps to this target's
-address spaces; declare its memory with a `scope:` (device/sm/cta/thread)
-```
-
-Declaring `scope:` on the memory fixes it. A space with no `scope:` has no honest target address
-space, and defaulting one would put the data somewhere the program did not ask for.
+Declaring `scope:` on the memory fixes E6037. A space with no `scope:` has no address space on
+the target, and a default would put the data somewhere the program did not ask for. A memory with
+`scope: device` describes a machine, so a transfer from host memory then needs a host
+(`--host default`, E6014).
 
 ______________________________________________________________________
 

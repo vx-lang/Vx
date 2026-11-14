@@ -46,6 +46,9 @@ pub struct GlobalSession {
     /// process-global until Vx#381 -- set from `--intern-mode` on one thread and read by every
     /// worker from inside the parallel type-check.
     pub intern_mode: crate::intern_mode::InternMode,
+    /// `-fauto-schedule-levels`: an `across` loop on an arch that cannot launch its levels runs
+    /// as a plain `for` that carries its level, instead of E6032.
+    pub auto_schedule_levels: bool,
     pub registry: Arc<ImmutableGlobalRegistry>,
 
     /// The dense, homogeneous arena for complex parameter and lifetime evaluation.
@@ -74,6 +77,7 @@ impl GlobalSession {
         Self {
             epoch,
             intern_mode: crate::intern_mode::InternMode::Deferred,
+            auto_schedule_levels: false,
             registry: Arc::new(registry),
             slow_path_arena: Arc::new(Vec::new()),
             generics_arena: Arc::new(Vec::new()),
@@ -86,6 +90,12 @@ impl GlobalSession {
     /// `&`, so it must be settled before it is wrapped.
     pub fn in_intern_mode(mut self, mode: crate::intern_mode::InternMode) -> Self {
         self.intern_mode = mode;
+        self
+    }
+
+    /// The same session with `-fauto-schedule-levels` on or off.
+    pub fn auto_schedule_levels(mut self, on: bool) -> Self {
+        self.auto_schedule_levels = on;
         self
     }
 }
@@ -119,13 +129,9 @@ pub struct LocalWorkerState {
     /// This function's inline `mlir!` blocks, indexed by an `InlineMlir` instruction's `imm`.
     pub local_inline_blocks: Vec<crate::hir::flatten::InlineBlock>,
 
-    /// Synthetic aggregate layouts for *monomorphized data-carrying enum instances* (`Option<i32>` ->
-    /// `{ i32 tag, i32 payload }`), keyed by a per-instance GID, as `(gid, field byte offsets, field
-    /// MLIR types)`. Such an instance's layout is instance-dependent (the by-value payload varies with
-    /// `T`) and so isn't in the frozen registry `layouts` (which only holds the generic base); the
-    /// lowerer synthesizes it here as it constructs/matches an enum, and the flat codegen folds these
-    /// into its aggregate map — the tagged-union analogue of `local_tensor_types`. (#242)
-    pub local_agg_layouts: Vec<(TypeId, Vec<u64>, Vec<String>)>,
+    /// Generated struct and enum instance layouts, including storage and actual variant metadata.
+    /// Each lowerer builds these locally because concrete layouts can depend on generic arguments.
+    pub local_agg_layouts: Vec<crate::layout::GeneratedAggregateLayout>,
 
     /// Per-function place-write alias table (M2b-2): for each `*r = v` store through a `&mut o.field`
     /// place, `(stream position, group id, disjoint-sibling group ids)`. Codegen emits an `alias_scopes`
@@ -134,7 +140,14 @@ pub struct LocalWorkerState {
     /// function per worker, so positions are 0-based into the function's stream (like the string table).
     /// (#275, §5.4)
     pub local_place_alias_stores: Vec<(usize, usize, Vec<usize>)>,
+    /// The bodies of the program's `impl Transfer` lowerings, by (from, to, topology). The flat
+    /// lowerer copies a body into each transfer site that the checker matched to it.
+    pub transfer_lowerings: Arc<TransferLowerings>,
 }
+
+/// The `impl Transfer` bodies of a program, by (from space, to space, topology name).
+pub type TransferLowerings =
+    std::collections::HashMap<(String, String, String), crate::syntax::Function>;
 
 use crate::gid::LifetimeSignature;
 
@@ -152,6 +165,7 @@ impl LocalWorkerState {
             local_inline_blocks: Vec::new(),
             local_agg_layouts: Vec::new(),
             local_place_alias_stores: Vec::new(),
+            transfer_lowerings: Arc::default(),
         }
     }
 

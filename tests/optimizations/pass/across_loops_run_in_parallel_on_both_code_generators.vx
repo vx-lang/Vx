@@ -1,0 +1,161 @@
+//===- across_loops_run_in_parallel_on_both_code_generators.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Both code generators give a GPU kernel of `across` loops the same blocks and lanes. A loop of
+// blocks starts at the block's id and steps by the number of blocks. A lane loop or a subgroup
+// loop starts at the lane's id and steps by the lanes. A barrier follows a lane loop in the code
+// of a block or a subgroup. Code there that writes memory runs on lane 0, and a barrier follows.
+//
+// In `sums`, lane 0 fills `tile`. After the lanes copy a row of `x` into it, lane 0 adds up its 64
+// elements and stores the sum in `tile[1]`. Then 16 of the 64 lanes copy the first elements of
+// `tile`, and lane 0 writes `total` again. So `total` is in a slot from before lane 0's code.
+// In `scaled`, every lane computes `k` with a plain loop, because the loop writes no memory.
+// In `row_sums`, lane 0 of each subgroup adds up the row of its subgroup. The CPU runs the
+// kernels here, and a Python loop gave the expected values.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-mlir -o - 2>/dev/null | FileCheck %s --check-prefix=MLIR
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --emit-mlir -o - 2>/dev/null | FileCheck %s --check-prefix=MLIR
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-mlir -o - 2>/dev/null | FileCheck %s --check-prefix=BARRIERS
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --emit-mlir -o - 2>/dev/null | FileCheck %s --check-prefix=BARRIERS
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-mlir -o - 2>/dev/null | FileCheck %s --check-prefix=LANE0
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --emit-mlir -o - 2>/dev/null | FileCheck %s --check-prefix=LANE0
+// CHECK: sums 2016 8516 15016 firsts 115 203 8516
+// CHECK: row sums 496 1520 3696 4720 6896 7920
+// CHECK: scaled 4 13
+//
+// MLIR-LABEL: func.func @sums(
+// MLIR-DAG: vx.launch_dim %arg{{[0-9]+}} axis(0)
+// MLIR-DAG: vx.launch_dim %c64_i32 axis(3)
+// The loop of blocks starts at the block's id and steps by the number of blocks.
+// MLIR-DAG: %[[BLOCK:[0-9]+]] = arith.index_cast %block_id_x : index to i32
+// MLIR-DAG: %[[GRID:[0-9]+]] = arith.index_cast %grid_dim_x : index to i32
+// MLIR-DAG: arith.addi %c0_i32, %[[BLOCK]] : i32
+// MLIR-DAG: arith.addi %{{[0-9]+}}, %[[GRID]] : i32
+// A lane loop starts at the lane's id. The loop of 16 lanes leaves the other 48 out.
+// MLIR-DAG: arith.cmpi slt, %{{[0-9]+}}, %c16_i32
+// MLIR-DAG: %[[LANE:[0-9]+]] = arith.index_cast %thread_id_x_{{[0-9]+}} : index to i32
+// MLIR-DAG: arith.addi %c0_i32_{{[0-9]+}}, %[[LANE]] : i32
+// Each lane steps by the lanes of the loop, or the lanes of the block when it has fewer.
+// MLIR-DAG: arith.minsi %c64_i32{{(_[0-9]+)?}}, %{{[0-9]+}} : i32
+// MLIR-DAG: arith.cmpi eq, %{{[0-9]+}}, %c0_i32
+// MLIR-DAG: {{^ *}}vx.barrier{{$}}
+// MLIR-DAG: vx.across}
+// MLIR-LABEL: func.func @row_sums(
+// MLIR-DAG: vx.launch_dim %c64_i32 axis(3)
+// MLIR-DAG: arith.divsi %{{[0-9]+}}, %c32_i32
+// MLIR-DAG: arith.remsi %{{[0-9]+}}, %c32_i32{{.*}}
+// MLIR-DAG: vx.barrier {subgroup}
+// MLIR-DAG: {{^ *}}vx.barrier{{$}}
+// MLIR-DAG: vx.across}
+//
+// One barrier after each lane loop and one after each stretch that lane 0 runs. In `row_sums`,
+// one after the lane loop and one after lane 0's sum, for the subgroup, and one after the loop
+// of subgroups.
+// Lane 0 of a subgroup is the lane whose id modulo 32 is 0.
+// LANE0-LABEL: func.func @row_sums(
+// LANE0: vx.barrier {subgroup}
+// LANE0-NEXT: %thread_id_x{{.*}} = gpu.thread_id  x
+// LANE0-NEXT: %[[LANE:[0-9]+]] = arith.index_cast %thread_id_x
+// LANE0-NEXT: %[[SUB:c32_i32[_0-9]*]] = arith.constant 32 : i32
+// LANE0-NEXT: %[[MOD:[0-9]+]] = arith.remsi %[[LANE]], %[[SUB]] : i32
+// LANE0-NEXT: %[[ZERO:c0_i32[_0-9]*]] = arith.constant 0 : i32
+// LANE0-NEXT: arith.cmpi eq, %[[MOD]], %[[ZERO]] : i32
+//
+// BARRIERS-LABEL: func.func @sums(
+// BARRIERS-COUNT-5: vx.barrier{{$}}
+// BARRIERS-NOT: vx.barrier
+// In `scaled`, every lane computes `k`, which writes no memory. Only the lane loop has a barrier.
+// BARRIERS-LABEL: func.func @scaled(
+// BARRIERS-COUNT-1: vx.barrier
+// BARRIERS-NOT: vx.barrier
+// BARRIERS-LABEL: func.func @row_sums(
+// BARRIERS-COUNT-3: vx.barrier
+// BARRIERS-NOT: vx.barrier
+
+pub fn sums(out : &mut Tensor<i32, [?], Memory::HBM>, firsts : &mut Tensor<i32, [?, 16], Memory::HBM>, x : &Tensor<i32, [?, 64], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      let mut tile = Tensor<i32, [64], Memory::SMEM>::fill(0);
+      for t in 0..64 across lanes {
+        tile[t] = x[b][t];
+      }
+      let first = tile[0];
+      let mut sum = 0;
+      for i in 0..64 {
+        sum = sum + tile[i];
+      }
+      let total = sum + first;
+      tile[1] = total;
+      for t in 0..16 across lanes {
+        firsts[b][t] = tile[t];
+      }
+      out[b] = total;
+    }
+  }
+  return;
+}
+
+pub fn row_sums(out : &mut Tensor<i32, [?, 2], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      let mut tile = unsafe { Tensor<i32, [2, 32], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        for l in 0..32 across lanes {
+          tile[w][l] = b * 100 + w * 32 + l;
+        }
+        let mut s = 0;
+        for i in 0..32 {
+          s = s + tile[w][i];
+        }
+        out[b][w] = s;
+      }
+    }
+  }
+  return;
+}
+
+pub fn scaled(out : &mut Tensor<i32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      let mut k = 0;
+      for i in 0..4 {
+        k = k + b;
+      }
+      for t in 0..32 across lanes {
+        out[b][t] = k + t;
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut h = Tensor<i32, [3, 64]>::fill(0);
+  for b in 0..3 {
+    for t in 0..64 {
+      h[b][t] = b * 100 + t;
+    }
+  }
+  let x = transfer(h, Memory::HBM);
+  let mut out = transfer(Tensor<i32, [3]>::fill(0), Memory::HBM);
+  let mut firsts = transfer(Tensor<i32, [3, 16]>::fill(0), Memory::HBM);
+  sums(&mut out, &mut firsts, &x, 3);
+  let o = transfer(out, Memory::CPU_DRAM);
+  let f = transfer(firsts, Memory::CPU_DRAM);
+  println!("sums {} {} {} firsts {} {} {}", o[0], o[1], o[2], f[1][15], f[2][3], f[1][1]);
+  let mut rows = transfer(Tensor<i32, [3, 2]>::fill(0), Memory::HBM);
+  row_sums(&mut rows, 3);
+  let r = transfer(rows, Memory::CPU_DRAM);
+  println!("row sums {} {} {} {} {} {}", r[0][0], r[0][1], r[1][0], r[1][1], r[2][0], r[2][1]);
+  let mut sc = transfer(Tensor<i32, [3, 32]>::fill(0), Memory::HBM);
+  scaled(&mut sc, 3);
+  let c = transfer(sc, Memory::CPU_DRAM);
+  println!("scaled {} {}", c[1][0], c[2][5]);
+  return 0;
+}

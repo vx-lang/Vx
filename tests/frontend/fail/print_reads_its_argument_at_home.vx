@@ -43,7 +43,7 @@ Topology Dev {
 }
 
 fn mk() -> Tensor<f32, [4, 4], Memory::GPU_HBM> {
-  let h = Tensor<f32, [4, 4]>::uninit();
+  let h = unsafe { Tensor<f32, [4, 4]>::uninit() };
   return transfer(h, Memory::GPU_HBM);
 }
 

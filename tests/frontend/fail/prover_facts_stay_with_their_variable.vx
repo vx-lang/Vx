@@ -1,0 +1,61 @@
+//===- prover_facts_stay_with_their_variable.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A fact is about one variable. Each `ensures` below is false, and the prover would prove it if
+// it read a fact about one variable as a fact about another, whose range then contradicts it:
+//
+// - `hidden`: the arm's `u8` named `x` hides the `i32` parameter `x`;
+// - `first`: a generic instance is checked inside its caller, and the caller's `n` is not the
+//   parameter `n`;
+// - `fields`: the field `p.x` and the parameter `p_x` had one name in the prover. No call is
+//   needed: the `ensures` of every function is checked.
+
+import core::option;
+
+struct P {
+  x : i32,
+}
+
+// `hidden(-1, Option<u8>::Some(5u8))` returns 1.
+fn hidden(x : i32, o : Option<u8>) -> i32
+requires x < 0
+ensures return > 100 {
+  match o {
+    Option<u8>::Some(x) => {
+      // CHECK-DAG: Error[E8001] at {{.*}}prover_facts_stay_with_their_variable.vx:[[@LINE+1]]:{{.*}}'hidden' cannot prove postcondition
+      return 1;
+    }
+    Option<u8>::None => {
+      return 200;
+    }
+  }
+}
+
+// `first(true, 3)` returns 3.
+fn first<T>(v : T, n : usize) -> usize
+ensures return == 1000 {
+  // CHECK-DAG: Error[E8001] at {{.*}}prover_facts_stay_with_their_variable.vx:[[@LINE+1]]:{{.*}}'first$bool' cannot prove postcondition
+  return n;
+}
+
+// `fields(P { x : -5 }, 3u8)` returns 1.
+fn fields(p : P, p_x : u8) -> i32
+requires p.x < 0 && p_x == p_x
+ensures return == 777 {
+  // CHECK-DAG: Error[E8001] at {{.*}}prover_facts_stay_with_their_variable.vx:[[@LINE+1]]:{{.*}}'fields' cannot prove postcondition
+  return 1;
+}
+
+fn main() -> i32 {
+  let n : i32 = -1;
+  let r = first(true, 3);
+  println!("{} {} {}", n, r, hidden(-1, Option<u8>::None()));
+  return 0;
+}
+// CHECK: 3 error(s) emitted

@@ -1,0 +1,60 @@
+//===- gpu_that_shares_host_memory_gets_host_tensors.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Here the GPU shares host memory: CPU_DRAM is `managed: cached`. So a GPU kernel
+// may use host tensors with no `transfer`. The compiler generates a PTX kernel
+// (`image=`), and the launch gets the host tensors' own stack buffers.
+// When a remote worker runs this kernel, the client must copy its writes back
+// to these buffers. tests/runtime/remote_kernel_output_test.cpp checks that.
+// The machine here is not the machine of the test: its chip is sm_90, and its GPU reads host
+// memory. So this file only checks the generated code, and `NO_EXEC` stops the test runner from
+// running it.
+// NO_EXEC
+//
+// RUN: vxc %s --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=vx_plugin_alloc_and_transfer # flat-codegen
+// CHECK: @vx_npu_kernel_0_str("vx_npu_kernel_0{{.*}}format=ptx\00image=
+// CHECK-LABEL: llvm.func @main(
+// CHECK: %[[OUT:[0-9]+]] = llvm.alloca %{{[0-9]+}} x f32
+// CHECK: %[[X:[0-9]+]] = llvm.alloca %{{[0-9]+}} x f32
+// CHECK: llvm.call @double(%[[OUT]], %[[OUT]], {{.*}}, %[[X]], %[[X]],
+// CHECK-LABEL: llvm.func hidden @double(
+// CHECK: llvm.call @vx_plugin_dispatch_async(
+
+Memory CPU_DRAM {
+  capacity: 480 GiB, bandwidth: 500 GB/s, managed: cached
+}
+
+Memory HBM {
+  capacity: 96 GiB, bandwidth: 4 TB/s, managed: explicit, scope: device
+}
+
+Topology SharedGpu {
+  arch: nvptx64,
+  levels: [blocks(max_lanes: 1024, memory: cta), subgroups(lanes: 32), lanes(memory: thread)],
+  chip: sm_90,
+  memory: Memory::HBM,
+  visible: [Memory::HBM],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 450 GB/s,
+  transfer Memory::HBM -> Memory::CPU_DRAM : 450 GB/s
+}
+
+fn double(out : &mut Tensor<f32, [?]>, x : &Tensor<f32, [?]>, n : i32) -> void {
+  spawn on(Topology::SharedGpu) {
+    for i in 0..n across blocks {
+      out[i] = 2.0 * x[i];
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let x = Tensor<f32, [4]>::fill(3.0);
+  let mut out = Tensor<f32, [4]>::fill(0.0);
+  double(&mut out, &x, 4);
+  println!("{} {} {} {}", out[0], out[1], out[2], out[3]);
+  return 0;
+}

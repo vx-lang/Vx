@@ -1,0 +1,65 @@
+//===- splits_read_from_gpu_memory.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A condition or a bound around a lane loop must be the same for every lane. An element of a
+// `&` tensor parameter is, because no lane can change it with a plain write. So the number of
+// splits can come from GPU memory, as a replayed CUDA graph needs. The kernel
+// launches `splits_max` splits, and a split past `splits` does nothing.
+//
+// Lane `l` of head `h` sums `100 * h + q + l` over the 10 values `q`, whichever split takes
+// each one. So the merge gives `1000 * h + 45 + 10 * l` for 1 split and for 3.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=PTX
+// CHECK: 1 split: 45 355 1045 1355
+// CHECK: 3 splits: 45 355 1045 1355
+// PTX: .entry vx_npu_kernel_0(
+
+fn split_sum(step : &Tensor<i32, [2], Memory::HBM>, partial : &mut Tensor<i32, [2, 128], Memory::HBM>, merged : &mut Tensor<i32, [2, 32], Memory::HBM>, splits_max : i32) -> void {
+  spawn on(Topology::Device) {
+    for h in 0..2 across blocks {
+      for s in 0..splits_max across blocks {
+        let splits = step[0];
+        let count = step[1];
+        if s < splits {
+          for k in 0..(count - s + splits - 1) / splits {
+            for l in 0..32 across lanes {
+              partial[h][s * 32 + l] = partial[h][s * 32 + l] + 100 * h + s + k * splits + l;
+            }
+          }
+        }
+      }
+      for d in 0..32 across lanes {
+        let mut sum = 0;
+        for s in 0..step[0] {
+          sum = sum + partial[h][s * 32 + d];
+        }
+        merged[h][d] = sum;
+      }
+    }
+  }
+  return;
+}
+
+fn run(splits : i32) -> Tensor<i32, [2, 32]> {
+  let mut s = Tensor<i32, [2]>::fill(0);
+  s[0] = splits;
+  s[1] = 10;
+  let step = transfer(s, Memory::HBM);
+  let mut partial = transfer(Tensor<i32, [2, 128]>::fill(0), Memory::HBM);
+  let mut merged = transfer(Tensor<i32, [2, 32]>::fill(0), Memory::HBM);
+  split_sum(&step, &mut partial, &mut merged, 4);
+  return transfer(merged, Memory::CPU_DRAM);
+}
+
+fn main() -> i32 {
+  let one = run(1);
+  println!("1 split: {} {} {} {}", one[0][0], one[0][31], one[1][0], one[1][31]);
+  let three = run(3);
+  println!("3 splits: {} {} {} {}", three[0][0], three[0][31], three[1][0], three[1][31]);
+  return 0;
+}

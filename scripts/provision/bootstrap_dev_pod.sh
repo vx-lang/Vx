@@ -132,11 +132,11 @@ say "building vxc and libvx_std_core"
 #             path relative to the CWD, so a bundle without it dies in clang
 #             with "no such file or directory" naming a path that does exist --
 #             just not from there. CARGO_TARGET_DIR does not reach the JIT.
-#   stdlib/   imports resolve against `stdlib/std` relative to the CWD unless
-#             VX_STD_PATH is set (src/module_loader.rs). Without it every
-#             program fails at "Could not resolve import 'std::math'", which
-#             looks like a broken bundle rather than a missing symlink.
-#   tests/    `import tests::modules::llama_rt` for the llama benchmarks.
+#   stdlib/   kept for older compilers, which read `stdlib/std` relative to
+#             the CWD. A current vxc reads the stdlib of the source tree it
+#             was built from (src/module_loader.rs).
+#   tests/    `import tests::modules::llama_rt` for the llama benchmarks,
+#             which a current vxc reads only with `--package tests=tests`.
 say "assembling the bench bundle"
 "${SSH[@]}" "set -e; cd '$REMOTE'
   ln -sfn '$TARGET' target

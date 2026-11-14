@@ -12,7 +12,7 @@
 // Why it is shaped this way, because it is not obvious:
 //
 //   * It cannot be an opaque token. `llama2.vx` stages each projection as one
-//     blob spanning every layer and slices it with `vx_advance_ptr(w.wq, off)`,
+//     blob spanning every layer and slices it with `vx_advance_ptr_f32(w.wq, off)`,
 //     seven times per layer. A token has no meaningful `+ offset`.
 //   * It cannot be the worker's own pointer. `is_device_ptr` would answer "no"
 //     for a remote address, and the plugin would then *stage* it -- reading
@@ -126,7 +126,9 @@ typedef struct {
   int32_t dtype;       /* VX_DTYPE_*, for descriptor reconstruction */
   void *remote;        /* the worker's own pointer; never leaves the plugin */
   uint64_t generation; /* bumped on free, so a stale handle is detectable */
-  int32_t live;        /* 0 once freed; the slot is not reused */
+  /* 0 once freed. A new region takes the slot only after
+     vx_remote_table_free_all empties the table. */
+  int32_t live;
 } vx_remote_region;
 
 /// Where a resolved handle points.
@@ -175,7 +177,7 @@ static inline void vx_remote_table_init(vx_remote_table *t,
 /// bounds check cannot see by itself: an overrun that reaches the *next*
 /// region's base passes the check against that region and is indistinguishable
 /// from a correct handle. That is not a contrived case, it is the off-by-one
-/// this program is shaped to produce, `vx_advance_ptr(w.wq, l * dim * dim)`
+/// this program is shaped to produce, `vx_advance_ptr_f32(w.wq, l * dim * dim)`
 /// with `l` one too large, which overshoots by exactly one region.
 ///
 /// Returns the region's base address, or 0 on failure (bad worker, no room).
@@ -278,6 +280,25 @@ static inline int vx_remote_table_free(vx_remote_table *t, uint64_t base) {
     }
   }
   return 0;
+}
+
+/// Call `release` with the worker's pointer of each live region, then empty the
+/// table so that its slots can hold new regions. A worker calls this when its
+/// host disconnects. Returns the number of regions it freed.
+///
+/// The offsets do not go back, so each new base is above every old address,
+/// and a handle from the old host resolves to nothing.
+static inline size_t vx_remote_table_free_all(vx_remote_table *t,
+                                              void (*release)(void *remote)) {
+  size_t i, freed = 0;
+  for (i = 0; i < t->count; ++i) {
+    if (t->regions[i].live) {
+      release(t->regions[i].remote);
+      ++freed;
+    }
+  }
+  t->count = 0;
+  return freed;
 }
 
 #endif /* VX_REMOTE_REGION_H */

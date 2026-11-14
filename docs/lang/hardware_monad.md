@@ -9,11 +9,11 @@ precisely why they compose soundly.
 
 Audience: language designers and compiler engineers. Companions:
 [`formal_semantics.md`](formal_semantics.md) (the operational rules, the `Verified`
-return-type contract, and the planned `try_pin` acquisition layer),
+return-type contract, and the planned `try_pin` acquisition layer) and
 [`seam_obligations.md`](seam_obligations.md) (the per-hop safety check discharged
-by `z3`), and the design record
-[`../discussions/brainstorming/hardware_monad_topology.md`](../discussions/brainstorming/hardware_monad_topology.md)
-(the open, user-definable topology model this semantics targets).
+by `z3`). The open, user-definable topology model this semantics targets is
+described in [`hosts_and_machines.md`](hosts_and_machines.md) and the `fleet/`
+machine files.
 
 ## 1. Memory spaces form a category
 

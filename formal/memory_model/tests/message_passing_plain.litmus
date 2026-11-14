@@ -1,0 +1,10 @@
+LISA message_passing_plain
+(* A flag that is a plain variable does not publish data. The reader can see the flag and
+   still read the old data, and the two threads race on both variables (C3).
+   Expect: sometimes, a data race. *)
+{ data = 0; flag = 0; }
+ P0                  | P1                   ;
+ w[plain] data 1     | r[plain] r0 flag     ;
+ w[plain] flag 1     | r[plain] r1 data     ;
+scopes: (system P0 P1)
+exists (1:r0 = 1 /\ 1:r1 = 0)

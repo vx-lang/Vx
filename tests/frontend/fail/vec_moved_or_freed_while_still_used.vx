@@ -14,9 +14,9 @@
 // - `slice_returned` and `slice_returned_in_a_struct`: a slice of a local `Vec` points at
 //   its buffer, which is freed when the function returns.
 
-// CHECK-DAG: Error[E4001] at 31:10: Use of moved or consumed linear variable: w
-// CHECK-DAG: Error[E4005] at 37:3: this returns a value that points into this function's stack frame
-// CHECK-DAG: Error[E4005] at 42:3: this returns a value that points into this function's stack frame
+// CHECK-DAG: Error[E4001] at {{.*}}vec_moved_or_freed_while_still_used.vx:31:10: Use of moved or consumed linear variable: w
+// CHECK-DAG: Error[E4005] at {{.*}}vec_moved_or_freed_while_still_used.vx:37:3: this returns a value that points into this function's stack frame
+// CHECK-DAG: Error[E4005] at {{.*}}vec_moved_or_freed_while_still_used.vx:42:3: this returns a value that points into this function's stack frame
 
 import core::iter;
 import std::vec;

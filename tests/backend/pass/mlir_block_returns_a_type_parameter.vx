@@ -1,0 +1,42 @@
+//===- mlir_block_returns_a_type_parameter.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An `mlir!` block in a generic function can return a value of a type parameter:
+// `returns : T` in `same<T>`, and `returns : *mut T` in a method of `Slot<T>`. The method
+// hands back the pointer the slot holds; writing through it changes `x` from 40 to 42,
+// and `same` returns 42 unchanged.
+//
+// EXPECT: 42
+
+struct Slot<T> {
+  p : *mut T,
+}
+
+impl<T> Slot<T> {
+  fn get(self : &Slot<T>) -> *mut T {
+    return mlir!( inputs : (%p = self.p : !llvm.ptr), returns : *mut T, dialects : ["llvm"]) {
+      macro.yield %p : !llvm.ptr
+    };
+  }
+}
+
+fn same<T>(x : T) -> T {
+  return mlir!( inputs : (%a = x : i32), returns : T, dialects : ["arith"]) {
+    macro.yield %a : i32
+  };
+}
+
+fn main() -> i32 {
+  let mut x : i32 = 40;
+  let s = Slot<i32> {
+    p: (&mut x) as *mut i32
+  };
+  let q = s.get();
+  unsafe { *q = *q + 2; }
+  print(same(x));
+  return 0;
+}

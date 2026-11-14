@@ -19,6 +19,36 @@ use std::sync::{Mutex, Once};
 static INIT_RAYON: Once = Once::new();
 static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
+use super::time_limit::{has_timeout, SECONDS as RUN_LINE_SECONDS};
+
+/// Whether clang can link a program with ThreadSanitizer. Linux packages ship its runtime
+/// apart from clang, in `libclang-rt-<version>-dev`.
+fn has_thread_sanitizer() -> bool {
+    static HAS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *HAS.get_or_init(|| {
+        let Ok(dir) = tempfile::tempdir() else {
+            return false;
+        };
+        let src = dir.path().join("t.c");
+        if fs::write(&src, "int main(void) { return 0; }\n").is_err() {
+            return false;
+        }
+        let clang = std::env::var("CLANG_PATH").unwrap_or_else(|_| "clang".to_string());
+        std::process::Command::new(clang)
+            .arg("-fsanitize=thread")
+            .arg(&src)
+            .arg("-o")
+            .arg(dir.path().join("t"))
+            .output()
+            .is_ok_and(|o| o.status.success())
+    })
+}
+
+/// `s` as one word for bash, in single quotes.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 fn init_rayon() {
     INIT_RAYON.call_once(|| {
         let cores = std::thread::available_parallelism()
@@ -44,6 +74,17 @@ fn ane_models_available() -> bool {
         .join("ane-primitives")
         .join("matmul_4x4.mlmodelc")
         .exists()
+}
+
+// A module loader for a fixture compiled in this process. Fixtures import other test files from
+// the package `tests`, so the loader is told where it is, as `vxc --package tests=tests` is.
+fn fixture_loader() -> vxc::module_loader::ModuleLoader {
+    let mut loader = vxc::module_loader::ModuleLoader::new();
+    loader.add_package(
+        "tests",
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests"),
+    );
+    loader
 }
 
 // Minimal FileCheck-style match for an EXPECT line: a `{{...}}` hole matches any text, so
@@ -89,7 +130,7 @@ fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
     // runner below reports the day it starts passing, which is the other half of the claim.
     let xfail = source.contains("// XFAIL: *");
 
-    let mut loader = vxc::module_loader::ModuleLoader::new();
+    let mut loader = fixture_loader();
     if let Err(e) = loader.load_main(path.to_str().unwrap()) {
         if !expect_pass || xfail {
             return Ok(());
@@ -179,7 +220,7 @@ fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
     // what makes the header mean what it says. XFAIL files come along because that marker is
     // itself an assertion -- that the RUN line still cannot pass.
     if source.lines().any(|l| l.trim().starts_with("// CHECK")) || source.contains("// XFAIL: *") {
-        run_lit_test(path, false)?;
+        run_lit_test(path)?;
     }
     Ok(())
 }
@@ -235,7 +276,7 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
         return Ok(());
     }
 
-    let mut loader = vxc::module_loader::ModuleLoader::new();
+    let mut loader = fixture_loader();
     loader
         .load_main(path.to_str().unwrap())
         .expect("Failed to parse");
@@ -272,6 +313,10 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
     if let Err(e) = expander.expand_module(&mut program) {
         return Err(format!("Macro expansion failed on {:?}: {}", path, e));
     }
+    // A module `const` in a signature becomes its value after expansion, as in the driver.
+    program_arr.push(program);
+    vxc::resolver::fold_const_extents(&mut program_arr);
+    program = program_arr.pop().expect("the main program was just pushed");
 
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let mut all_programs = program_arr.clone();
@@ -405,7 +450,7 @@ fn run_warning_test(path: &Path) -> Result<(), String> {
         .map(|l| l.split_once("NO-WARN:").unwrap().1.trim().to_string())
         .collect();
 
-    let mut loader = vxc::module_loader::ModuleLoader::new();
+    let mut loader = fixture_loader();
     loader
         .load_main(path.to_str().unwrap())
         .map_err(|e| format!("Parse failed on {:?}: {}", path, e))?;
@@ -449,6 +494,8 @@ fn run_warning_test(path: &Path) -> Result<(), String> {
     checker.seam.verify = source.contains("// VERIFY-SEAMS");
     checker.check_topology_coherence(&program.topologies);
     checker.check_memory_coherence();
+    // As the driver does: every function names its file, so its warnings do too.
+    program.name_file_on_items();
     for f in &mut program.functions {
         checker.check_function(f);
     }
@@ -495,14 +542,15 @@ fn run_warning_test(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-// Backend Runner
-fn run_backend_test(path: &Path) -> Result<(), String> {
+/// Runs a file's `// EXPECT:` lines on the AST code generator. flat_corpus_sweep.rs runs the
+/// same lines on the flat code generator, which is the default. Together they check that both
+/// code generators give the same answers.
+fn run_expect_lines_on_the_ast_code_generator(path: &Path) -> Result<(), String> {
     let source = fs::read_to_string(path).expect("Failed to read test file");
 
-    // This runner is the legacy AST code generator. `// REQUIRES: flat-codegen` says the
-    // file needs something only the flat path does, such as a pass that runs only there.
-    // The flat sweep in flat_corpus_sweep.rs still runs the file, so its `EXPECT` lines are
-    // checked -- on one code generator rather than two.
+    // `// REQUIRES: flat-codegen` says the AST code generator cannot run the file yet. Each
+    // such file is a gap between the two code generators. The flat sweep still checks its
+    // `EXPECT` lines.
     if source.contains("// REQUIRES: flat-codegen") {
         return Ok(());
     }
@@ -514,7 +562,7 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
         .map(|line| line.split_once("EXPECT:").unwrap().1.trim().to_string())
         .collect();
 
-    let mut loader = vxc::module_loader::ModuleLoader::new();
+    let mut loader = fixture_loader();
     if let Err(e) = loader.load_main(path.to_str().unwrap()) {
         return Err(format!(
             "Frontend failed to parse '{}': {}",
@@ -555,6 +603,10 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
     if let Err(e) = expander.expand_module(&mut program) {
         return Err(format!("Macro expansion failed on {:?}: {}", path, e));
     }
+    // A module `const` in a signature becomes its value after expansion, as in the driver.
+    program_arr.push(program);
+    vxc::resolver::fold_const_extents(&mut program_arr);
+    program = program_arr.pop().expect("the main program was just pushed");
 
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let mut all_programs = program_arr.clone();
@@ -671,6 +723,7 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
         return Ok(());
     }
 
+    let _watchdog = super::time_limit::Watchdog::new(path.display().to_string());
     let out = execute_mlir(&mlir_str, vec![], 0, false).expect("JIT execution failed");
 
     for expect in expect_lines {
@@ -805,11 +858,25 @@ fn run_the_run_lines(path: &Path) -> Result<(), String> {
             .replace("%t", &tmp_base.to_string_lossy());
         // `vxc` as a bare word is the binary under test, not whatever is on PATH.
         let cmd = cmd.replacen("vxc ", &format!("{} ", vxc), 1);
+        let cmd = if has_timeout() {
+            format!(
+                "timeout -k 5 {RUN_LINE_SECONDS} bash -c {}",
+                shell_quote(&cmd)
+            )
+        } else {
+            cmd
+        };
         let out = std::process::Command::new("bash")
             .arg("-c")
             .arg(&cmd)
             .output()
             .map_err(|e| format!("{:?}: could not run `{}`: {}", path, run, e))?;
+        // A hang is an error even in a file marked XFAIL-RUN.
+        if out.status.code() == Some(124) && has_timeout() {
+            return Err(format!(
+                "{path:?}: RUN line did not finish in {RUN_LINE_SECONDS} seconds: {run}"
+            ));
+        }
         if !out.status.success() {
             failure = Some(format!(
                 "{:?}: RUN line failed: {}\n{}",
@@ -894,8 +961,7 @@ fn test_warnings() -> Result<(), String> {
 
 // Optimization Test Runner
 fn run_optimization_test(path: &Path) -> Result<(), String> {
-    // These files pin the AST codegen's MLIR structure, so they force the legacy path.
-    run_lit_test(path, true)
+    run_lit_test(path)
 }
 
 /// Execute a file's `// RUN:` lines through a shell, so `| FileCheck %s` runs the real
@@ -906,18 +972,70 @@ fn run_optimization_test(path: &Path) -> Result<(), String> {
 /// `CHECK-NOT:`, which meant the pipe in the RUN line was decoration -- anything else a
 /// file wrote had to be refused, or it would pass while asserting nothing (Vx#407).
 ///
-/// `force_legacy` pins the AST codegen, which the optimizations and backend tests want
-/// because they assert that path's exact IR. The frontend tests run the default path
-/// instead: they assert what a user actually gets, and forcing legacy there would report
-/// the AST path's own bugs as frontend failures (three such programs are recorded on
-/// Vx#398).
-fn run_lit_test(path: &Path, force_legacy: bool) -> Result<(), String> {
+/// A RUN line runs exactly the command it names. It uses the AST code generator only when
+/// it says `--legacy-codegen`.
+/// `cmd` with `--legacy-codegen` after each `vxc` that starts a command: at the start, after
+/// `|`, `;` or `&`, or after `env` with its settings, or `not`. `None` when no command is `vxc`.
+fn with_legacy_codegen(cmd: &str) -> Option<String> {
+    let start =
+        regex::Regex::new(r"(^|[|;&]\s*|\benv\s+(?:-u\s+\S+\s+|\S+=\S*\s+)*|\bnot\s+)vxc\b")
+            .unwrap();
+    start
+        .is_match(cmd)
+        .then(|| start.replace_all(cmd, "${0} --legacy-codegen").into_owned())
+}
+
+#[test]
+fn legacy_codegen_goes_after_each_vxc_command() {
+    let added = |c: &str| with_legacy_codegen(c);
+    assert_eq!(
+        added("vxc f.vx --run | FileCheck f.vx").as_deref(),
+        Some("vxc --legacy-codegen f.vx --run | FileCheck f.vx")
+    );
+    assert_eq!(
+        added("env VX_METAL=0 A= vxc f.vx").as_deref(),
+        Some("env VX_METAL=0 A= vxc --legacy-codegen f.vx")
+    );
+    assert_eq!(
+        added("not vxc a.vx; vxc b.vx").as_deref(),
+        Some("not vxc --legacy-codegen a.vx; vxc --legacy-codegen b.vx")
+    );
+    assert_eq!(added("FileCheck f.vx < t.vxc.out"), None);
+    assert_eq!(added("grep vxc t.log"), None);
+}
+
+fn run_lit_test(path: &Path) -> Result<(), String> {
+    run_lit_test_with_env(path, &[])
+}
+
+/// As `run_lit_test`, with the variables `env` set for each RUN line. With variables, the RUN
+/// lines that set a `VX_TASK_` variable of their own or use a sanitizer do not run.
+fn run_lit_test_with_env(path: &Path, env: &[(&str, String)]) -> Result<(), String> {
     let source = fs::read_to_string(path).expect("Failed to read test file");
 
     // Same lit-style gate the middle-end and backend runners apply. A check against IR that
     // only a macOS-registered plugin can produce is not a failure elsewhere, it is a test
     // that does not apply.
     if source.contains("// REQUIRES: macos") && !cfg!(target_os = "macos") {
+        return Ok(());
+    }
+    if source.contains("// REQUIRES: thread-sanitizer") && !has_thread_sanitizer() {
+        // CI has the runtime, so a skip there means that a test stopped running.
+        if std::env::var_os("VX_TESTS_NEED_THREAD_SANITIZER").is_some() {
+            return Err(format!(
+                "{}: clang cannot link a program with -fsanitize=thread, so this test cannot run",
+                path.display()
+            ));
+        }
+        return Ok(());
+    }
+    // A file with `// REQUIRES: x86_64` and `// REQUIRES: aarch64` lines runs on each machine it
+    // names. `%arch` in a RUN line becomes the name of the machine, so a file can check each one.
+    let arches: Vec<&str> = ["x86_64", "aarch64"]
+        .into_iter()
+        .filter(|arch| source.contains(&format!("// REQUIRES: {arch}")))
+        .collect();
+    if !arches.is_empty() && !arches.contains(&std::env::consts::ARCH) {
         return Ok(());
     }
 
@@ -948,6 +1066,19 @@ fn run_lit_test(path: &Path, force_legacy: bool) -> Result<(), String> {
             path
         ));
     }
+    let run_lines: Vec<&str> = if env.is_empty() {
+        run_lines
+    } else {
+        if xfail {
+            return Ok(());
+        }
+        run_lines
+            .into_iter()
+            .filter(|l| !l.contains("VX_TASK_") && !l.contains("--sanitize"))
+            .collect()
+    };
+    // The settings, for an error message. A person can run a failed line again with them.
+    let settings: String = env.iter().map(|(k, v)| format!(" {k}={v}")).collect();
 
     // The freshly built vxc/vx-opt lead; the rest of PATH is what carries FileCheck.
     let bin_dir = Path::new(env!("CARGO_BIN_EXE_vxc")).parent().unwrap();
@@ -969,42 +1100,78 @@ fn run_lit_test(path: &Path, force_legacy: bool) -> Result<(), String> {
         hash
     ));
 
-    for run_line in run_lines {
-        let mut cmd = run_line
-            .split_once("RUN:")
-            .unwrap()
-            .1
-            .trim()
-            .replace("%s", path.to_str().unwrap())
-            .replace("%t", t_val.to_str().unwrap());
-
-        // `// REQUIRES: flat-codegen` opts a file out: some constructs exist ONLY on the flat
-        // path, and forcing legacy there tests a lowering that deliberately does not exist.
-        // Skip a command that already names the flag: clap rejects it twice.
-        if force_legacy
-            && !cmd.contains("--legacy-codegen")
-            && !source.contains("// REQUIRES: flat-codegen")
-        {
-            let split = cmd.find('|').unwrap_or(cmd.len());
-            let (head, tail) = cmd.split_at(split);
-            let mut words = head.split_whitespace();
-            let first = words.next();
-            if first == Some("vxc") || (first == Some("not") && words.next() == Some("vxc")) {
-                cmd = format!("{} --legacy-codegen {}", head.trim_end(), tail);
-            }
-        }
-
+    let commands: Vec<String> = run_lines
+        .iter()
+        .map(|run_line| {
+            run_line
+                .split_once("RUN:")
+                .unwrap()
+                .1
+                .trim()
+                .replace("%arch", std::env::consts::ARCH)
+                .replace("%s", path.to_str().unwrap())
+                .replace("%t", t_val.to_str().unwrap())
+        })
+        .collect();
+    // With VX_LEGACY_PARITY=1, the RUN lines run a second time, in order, after all of them
+    // passed. In the second pass, each `vxc` command gets `--legacy-codegen`. These lines run
+    // again unchanged: a line that already names it, a parallel compile (`-j`, #3139), and a
+    // line that ends with the shell comment `# flat-codegen`. That comment says the line checks
+    // text that only the flat code generator writes, such as its MLIR. A file with
+    // `// REQUIRES: flat-codegen` uses a construct that only the flat code generator has, and
+    // does not run a second time.
+    let parity = std::env::var_os("VX_LEGACY_PARITY").is_some()
+        && !xfail
+        && !source.contains("// REQUIRES: flat-codegen");
+    let parallel = regex::Regex::new(r"\s-j\s*\d").unwrap();
+    let again: Vec<String> = if parity {
+        commands
+            .iter()
+            .map(|c| {
+                if c.contains("--legacy-codegen")
+                    || parallel.is_match(c)
+                    || c.trim_end().ends_with("# flat-codegen")
+                {
+                    c.clone()
+                } else {
+                    with_legacy_codegen(c).unwrap_or_else(|| c.clone())
+                }
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let parity_start = commands.len();
+    for (k, cmd) in commands.into_iter().chain(again).enumerate() {
         // pipefail, because a RUN line fails if any stage fails. A shell reports only the
         // last stage, so a compiler that crashed would still pass whenever its stderr
         // happened to satisfy the CHECK lines.
-        let output = std::process::Command::new("bash")
+        // A test of tasks or channels that hangs fails after the time limit, and does not stop
+        // the whole run. `timeout` signals its whole process group, so the compiled program
+        // stops too. A machine with no `timeout` (macOS) runs the line with no limit.
+        let line = format!("set -o pipefail; {}", cmd);
+        let line = if has_timeout() {
+            format!("timeout {RUN_LINE_SECONDS} bash -c {}", shell_quote(&line))
+        } else {
+            line
+        };
+        let mut command = std::process::Command::new("bash");
+        command
             .arg("-c")
-            .arg(format!("set -o pipefail; {}", cmd))
+            .arg(line)
             .env("PATH", &path_var)
             .env("RUST_BACKTRACE", "1")
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .output()
-            .expect("Failed to execute RUN line");
+            // A RUN line without `--legacy-codegen` tests the default code generator. If that
+            // code generator declines the program, vxc fails, and does not use the AST one.
+            .env("VX_NO_AST_FALLBACK", "1")
+            .current_dir(env!("CARGO_MANIFEST_DIR"));
+        if !env.is_empty() {
+            for name in TASK_RUNTIME_VARIABLES {
+                command.env_remove(name);
+            }
+        }
+        command.envs(env.iter().map(|(k, v)| (k, v)));
+        let output = command.output().expect("Failed to execute RUN line");
 
         if xfail {
             if !output.status.success() {
@@ -1013,9 +1180,21 @@ fn run_lit_test(path: &Path, force_legacy: bool) -> Result<(), String> {
             continue;
         }
 
-        if !output.status.success() {
+        if output.status.code() == Some(124) && has_timeout() {
             return Err(format!(
-                "RUN line failed for {:?}:\n  {}\nStdout:\n{}\nStderr:\n{}",
+                "RUN line did not finish in {RUN_LINE_SECONDS} seconds for {:?}:\n {settings} {}",
+                path,
+                cmd.trim()
+            ));
+        }
+        if !output.status.success() {
+            let only = if k >= parity_start {
+                " only on the AST code generator (VX_LEGACY_PARITY)"
+            } else {
+                ""
+            };
+            return Err(format!(
+                "RUN line failed{only} for {:?}:\n {settings} {}\nStdout:\n{}\nStderr:\n{}",
                 path,
                 cmd.trim(),
                 String::from_utf8_lossy(&output.stdout),
@@ -1078,7 +1257,7 @@ fn test_middle_end_fail() -> Result<(), String> {
 fn test_crash() -> Result<(), String> {
     for i in 0..5 {
         println!("test_crash iteration {}", i);
-        run_backend_test(Path::new("tests/backend/pass/plugin_npe.vx"))?;
+        run_expect_lines_on_the_ast_code_generator(Path::new("tests/backend/pass/plugin_npe.vx"))?;
         println!("test_crash iteration {} done", i);
     }
     Ok(())
@@ -1091,7 +1270,7 @@ fn test_backend() -> Result<(), String> {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/pass"),
         |path| {
             println!("Running test_backend on {:?}", path);
-            run_backend_test(path)?;
+            run_expect_lines_on_the_ast_code_generator(path)?;
             // Any file that states CHECK lines, or whose RUN line names FileCheck, gets
             // those RUN lines executed. Matching on one exact spelling of the RUN line
             // left most of this directory's CHECK lines inert, and they had drifted
@@ -1121,6 +1300,7 @@ fn test_frontend_pass_modules() -> Result<(), String> {
     for dir in [
         "tests/frontend/pass/modules_basic",
         "tests/frontend/pass/modules_nested",
+        "tests/frontend/pass/modules_c_function",
     ] {
         run_directory_tests(Path::new(env!("CARGO_MANIFEST_DIR")).join(dir), |path| {
             println!("Running test_frontend_pass_modules on {:?}", path);
@@ -1217,7 +1397,7 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
         .map(|line| line.split_once("EXPECT:").unwrap().1.trim().to_string())
         .collect();
 
-    let mut loader = vxc::module_loader::ModuleLoader::new();
+    let mut loader = fixture_loader();
     if let Err(e) = loader.load_main(path.to_str().unwrap()) {
         return Err(format!(
             "Frontend failed to parse '{}': {}",
@@ -1258,6 +1438,10 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
     if let Err(e) = expander.expand_module(&mut program) {
         return Err(format!("Macro expansion failed on {:?}: {}", path, e));
     }
+    // A module `const` in a signature becomes its value after expansion, as in the driver.
+    program_arr.push(program);
+    vxc::resolver::fold_const_extents(&mut program_arr);
+    program = program_arr.pop().expect("the main program was just pushed");
 
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let mut all_programs = program_arr.clone();
@@ -1360,6 +1544,7 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
         return Ok(());
     }
 
+    let _watchdog = super::time_limit::Watchdog::new(path.display().to_string());
     let out = execute_mlir(&mlir_str, vec![], 0, false).expect("JIT execution failed");
 
     for expect in expect_lines {
@@ -1378,6 +1563,68 @@ fn test_backend_fail() -> Result<(), String> {
     run_directory_tests(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/fail"),
         run_shell_tests,
+    )
+}
+
+/// The variables that choose how the runtime runs tasks.
+const TASK_RUNTIME_VARIABLES: [&str; 4] = [
+    "VX_TASK_RUNTIME",
+    "VX_TASK_WORKERS",
+    "VX_TASK_MAX_WORKERS",
+    "VX_TASK_SEED",
+];
+
+/// The settings of the task runtime that `test_tasks_under_many_schedules` runs each test with:
+/// the seeds 1 to `seeds`, and the shared runtime with 1, 2 and 8 workers. A seed runs the tasks
+/// on one thread, in an order that the seed chooses.
+fn task_runtime_settings(seeds: u64) -> Vec<Vec<(&'static str, String)>> {
+    let mut settings: Vec<_> = (1..=seeds)
+        .map(|seed| vec![("VX_TASK_SEED", seed.to_string())])
+        .collect();
+    for workers in [1, 2, 8] {
+        settings.push(vec![
+            ("VX_TASK_RUNTIME", "shared".to_string()),
+            ("VX_TASK_WORKERS", workers.to_string()),
+        ]);
+    }
+    settings
+}
+
+/// Runs each test in `tests/backend/pass` that starts tasks again, under other orders of its
+/// tasks. A test of tasks usually runs with one order, so a race that shows only in another
+/// order passes. `VX_TEST_TASK_SEEDS` sets the number of seeds (3 by default). CI runs this
+/// test by name with more seeds on every 10th run.
+///
+/// A seed runs all tasks on one thread. So a test that checks for more than one thread, or
+/// that loops with no wait until another task acts, says `// NO-SEED-SWEEP: <reason>`. It
+/// still runs with the shared runtime. A RUN line that sets a `VX_TASK_` variable keeps it,
+/// and does not run again here.
+#[test]
+#[ignore = "it runs each test of tasks many times; CI runs it by name"]
+fn test_tasks_under_many_schedules() -> Result<(), String> {
+    let seeds = match std::env::var("VX_TEST_TASK_SEEDS") {
+        Ok(n) => n
+            .parse::<u64>()
+            .map_err(|_| format!("VX_TEST_TASK_SEEDS must be a number, not '{n}'"))?,
+        Err(_) => 3,
+    };
+    let settings = task_runtime_settings(seeds);
+    run_directory_tests(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/pass"),
+        |path| {
+            let source = fs::read_to_string(path).map_err(|e| format!("{path:?}: {e}"))?;
+            // A file with no RUN line checks its `EXPECT` lines in `test_backend`.
+            if !source.contains("tasks {") || !source.contains("// RUN:") {
+                return Ok(());
+            }
+            let no_seeds = source.contains("// NO-SEED-SWEEP:");
+            for env in &settings {
+                if !(no_seeds && env.iter().any(|(k, _)| *k == "VX_TASK_SEED")) {
+                    run_lit_test_with_env(path, env)?;
+                }
+            }
+            Ok(())
+        },
     )
 }
 
@@ -1481,16 +1728,15 @@ where
     Ok(())
 }
 
-// The fail tiers name their own command, so nothing is pinned for them; everything else
-// the lit runner does -- the real FileCheck, pipefail, %s/%t -- applies here too.
+// The fail tiers get everything the lit runner does: the real FileCheck, pipefail, %s/%t.
 fn run_shell_tests(path: &Path) -> Result<(), String> {
-    run_lit_test(path, false)
+    run_lit_test(path)
 }
 
 #[test]
 fn test_melior_matmul() -> Result<(), String> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/middle_end/pass/matmul.vx");
-    let mut loader = vxc::module_loader::ModuleLoader::new();
+    let mut loader = fixture_loader();
     loader
         .load_main(path.to_str().unwrap())
         .expect("Failed to parse");
@@ -1514,6 +1760,10 @@ fn test_melior_matmul() -> Result<(), String> {
     if let Err(e) = expander.expand_module(&mut program) {
         return Err(format!("Macro expansion failed on {:?}: {}", path, e));
     }
+    // A module `const` in a signature becomes its value after expansion, as in the driver.
+    program_arr.push(program);
+    vxc::resolver::fold_const_extents(&mut program_arr);
+    program = program_arr.pop().expect("the main program was just pushed");
 
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let mut all_programs = program_arr.clone();

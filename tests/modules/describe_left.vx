@@ -1,0 +1,15 @@
+//===- describe_left.vx - Vx Compiler ----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// One of two modules that each implement `Describe` for `Point`.
+import tests::modules::describe_shape;
+
+impl Describe for Point {
+  fn describe(self : &Point) -> i32 {
+    return 1;
+  }
+}

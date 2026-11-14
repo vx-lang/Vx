@@ -15,7 +15,7 @@
 import std::tensor;
 
 fn counted() -> Tensor<f32, [2, 2]> {
-  let mut t = Tensor<f32, [2, 2]>::uninit();
+  let mut t = unsafe { Tensor<f32, [2, 2]>::uninit() };
   t[0][0] = 1.0;
   t[1][1] = 4.0;
   return t;
@@ -23,7 +23,7 @@ fn counted() -> Tensor<f32, [2, 2]> {
 
 fn main() -> i32 {
   let src = counted();
-  let mut dst = Tensor<f32, [2, 2]>::uninit();
+  let mut dst = unsafe { Tensor<f32, [2, 2]>::uninit() };
   dst.fill(0.0);
   dst.copy(&src);
   print(dst[0][0]);

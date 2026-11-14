@@ -36,7 +36,7 @@ fn fact(n: i32) -> i32 {
 }
 
 fn main() -> i32 {
-  let x = Tensor<f32, [1024, 768]>::uninit();
+  let x = unsafe { Tensor<f32, [1024, 768]>::uninit() };
   let _sx = transfer(x, Memory::W);
   return fact(5);
 }

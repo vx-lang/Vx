@@ -1,0 +1,140 @@
+//===- spawn_loop_writing_one_row_per_group_runs_in_parallel.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// In `packed`, only the passes with `k % 4 == 0` write, and each writes row `k / 4`. No two of
+// them write the same row, so the loop runs in parallel. Each of the other loops writes row
+// `k / 4` from passes that can share it, so each stays serial:
+// - `unguarded` writes it from every pass, after its `if k % 4 == 0` block ends.
+// - `other_divisor` writes it from the passes with `k % 2 == 0`.
+// - `in_else` writes it from the passes with `k % 4 != 0`.
+// - `two_rows` also writes row `k` from every pass, so pass 4 and pass 1 both write row 1.
+//
+// Each loop has its own trip count. Only `packed` gets a launch size:
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s --implicit-check-not=launch=2048 --implicit-check-not=launch=1024 --implicit-check-not=launch=512 --implicit-check-not=launch=256
+// CHECK: launch=4096
+//
+// Every group in `packed` sums 4 * 2 = 8 into its own row, and 1024 rows give 8192. The other
+// loops write 1 to each row they reach. In `two_rows`, rows 0 to 63 end at 1 and the other 192
+// rows at 2, which is 448. Only the Linux host dispatcher splits a loop.
+//
+// RUN: env VX_HOST_THREADS=8 vxc %s 2>/dev/null | FileCheck %s --check-prefix=ANSWER
+// ANSWER: packed=8192 unguarded=512 other_divisor=256 in_else=128 two_rows=448{{$}}
+
+fn packed() -> f32 {
+  let mut parts = Tensor<f32, [4096]>::new();
+  for r in 0..4096 {
+    parts[r] = 2.0;
+  }
+  let d = transfer(parts, Memory::GPU_HBM);
+  let mut out = transfer(Tensor<f32, [1024]>::new(), Memory::GPU_HBM);
+  spawn on(Topology::GPU) {
+    for k in 0..4096 {
+      if k % 4 == 0 {
+        let mut s : f32 = 0.0;
+        for p in 0..4 {
+          s = s + d[k + p];
+        }
+        out[k / 4] = s;
+      }
+    }
+  }
+  let back = transfer(out, Memory::CPU_DRAM);
+  let mut sum = 0.0;
+  for r in 0..1024 {
+    sum = sum + back[r];
+  }
+  return sum;
+}
+
+fn unguarded() -> f32 {
+  let mut out = transfer(Tensor<f32, [512]>::new(), Memory::GPU_HBM);
+  spawn on(Topology::GPU) {
+    for k in 0..2048 {
+      if k % 4 == 0 {
+        let _ = 0;
+      }
+      out[k / 4] = 1.0;
+    }
+  }
+  let back = transfer(out, Memory::CPU_DRAM);
+  let mut sum = 0.0;
+  for r in 0..512 {
+    sum = sum + back[r];
+  }
+  return sum;
+}
+
+fn other_divisor() -> f32 {
+  let mut out = transfer(Tensor<f32, [256]>::new(), Memory::GPU_HBM);
+  spawn on(Topology::GPU) {
+    for k in 0..1024 {
+      if k % 2 == 0 {
+        out[k / 4] = 1.0;
+      }
+    }
+  }
+  let back = transfer(out, Memory::CPU_DRAM);
+  let mut sum = 0.0;
+  for r in 0..256 {
+    sum = sum + back[r];
+  }
+  return sum;
+}
+
+fn in_else() -> f32 {
+  let mut out = transfer(Tensor<f32, [128]>::new(), Memory::GPU_HBM);
+  spawn on(Topology::GPU) {
+    for k in 0..512 {
+      if k % 4 == 0 {
+        let _ = 0;
+      } else {
+        out[k / 4] = 1.0;
+      }
+    }
+  }
+  let back = transfer(out, Memory::CPU_DRAM);
+  let mut sum = 0.0;
+  for r in 0..128 {
+    sum = sum + back[r];
+  }
+  return sum;
+}
+
+fn two_rows() -> f32 {
+  let mut out = transfer(Tensor<f32, [256]>::new(), Memory::GPU_HBM);
+  spawn on(Topology::GPU) {
+    for k in 0..256 {
+      out[k] = 2.0;
+      if k % 4 == 0 {
+        out[k / 4] = 1.0;
+      }
+    }
+  }
+  let back = transfer(out, Memory::CPU_DRAM);
+  let mut sum = 0.0;
+  for r in 0..256 {
+    sum = sum + back[r];
+  }
+  return sum;
+}
+
+fn main() -> i32 {
+  print!("packed=");
+  print(packed());
+  print!(" unguarded=");
+  print(unguarded());
+  print!(" other_divisor=");
+  print(other_divisor());
+  print!(" in_else=");
+  print(in_else());
+  print!(" two_rows=");
+  print(two_rows());
+  println!("");
+  return 0;
+}

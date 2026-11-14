@@ -15,37 +15,37 @@ struct S {
 }
 
 fn index_read(p : *mut i32) -> i32 {
-  // CHECK-DAG: E5002] at {{[1-9][0-9]*}}:{{[0-9]+}}: Indexing a raw pointer requires an unsafe block
+  // CHECK-DAG: E5002] at {{.*}}raw_pointer_access_needs_unsafe.vx:{{[1-9][0-9]*}}:{{[0-9]+}}: Indexing a raw pointer requires an unsafe block
   let v = p[0];
   return v;
 }
 
 fn index_write(p : *mut i32) -> i32 {
-  // CHECK-DAG: E5002] at {{[1-9][0-9]*}}:{{[0-9]+}}: Indexing a raw pointer requires an unsafe block
+  // CHECK-DAG: E5002] at {{.*}}raw_pointer_access_needs_unsafe.vx:{{[1-9][0-9]*}}:{{[0-9]+}}: Indexing a raw pointer requires an unsafe block
   p[0] = 7;
   return 0;
 }
 
 fn field_read(p : *mut S) -> i32 {
-  // CHECK-DAG: E5002] at {{[1-9][0-9]*}}:{{[0-9]+}}: Reading a field through a raw pointer requires an unsafe block
+  // CHECK-DAG: E5002] at {{.*}}raw_pointer_access_needs_unsafe.vx:{{[1-9][0-9]*}}:{{[0-9]+}}: Reading a field through a raw pointer requires an unsafe block
   let v = p.n;
   return v;
 }
 
 fn field_write(p : *mut S) -> i32 {
-  // CHECK-DAG: E5002] at {{[1-9][0-9]*}}:{{[0-9]+}}: Writing a field through a raw pointer requires an unsafe block
+  // CHECK-DAG: E5002] at {{.*}}raw_pointer_access_needs_unsafe.vx:{{[1-9][0-9]*}}:{{[0-9]+}}: Writing a field through a raw pointer requires an unsafe block
   p.n = 7;
   return 0;
 }
 
 fn deref_read(p : *mut i32) -> i32 {
-  // CHECK-DAG: E5002] at {{[1-9][0-9]*}}:{{[0-9]+}}: Dereferencing a raw pointer requires an unsafe block
+  // CHECK-DAG: E5002] at {{.*}}raw_pointer_access_needs_unsafe.vx:{{[1-9][0-9]*}}:{{[0-9]+}}: Dereferencing a raw pointer requires an unsafe block
   let v = *p;
   return v;
 }
 
 fn deref_write(p : *mut i32) -> i32 {
-  // CHECK-DAG: E5002] at {{[1-9][0-9]*}}:{{[0-9]+}}: Writing through a raw pointer requires an unsafe block
+  // CHECK-DAG: E5002] at {{.*}}raw_pointer_access_needs_unsafe.vx:{{[1-9][0-9]*}}:{{[0-9]+}}: Writing through a raw pointer requires an unsafe block
   *p = 7;
   return 0;
 }

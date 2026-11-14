@@ -1,0 +1,81 @@
+//===- cancelled_sends_lose_no_value_and_repeat_none.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A cancel can stop a `send` at any time, and no value is lost or comes twice. In each of 2000
+// rounds, a task sends the numbers from `next` on, on a channel with room for 1. The code of the
+// block receives one number and returns early, which cancels the task while it sends. In half
+// of the rounds the code first sleeps for 1 ms, so the task waits for room when the cancel
+// comes. In the others, the cancel often comes before the `send` takes its place. A
+// cancelled `send` gives its value back, so the task does not count it, and the next round
+// sends it again. A `send` that has its place in the channel when the cancel comes leaves a
+// place that `recv` passes. So the main code must get 0, 1, 2 and so on, with no gap and no
+// repeat.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=instead
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=2 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=instead
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=instead
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=instead
+// CHECK: {{^}}2000 numbers came in order{{$}}
+
+import core::sync::atomic;
+import core::time;
+import std::sync::arc;
+import std::sync::channel;
+import std::time;
+
+// Sends `next`, `next + 1` and so on, until a send fails.
+fn send_from(tx : Sender<i64>, next : Arc<AtomicI64>) -> void {
+  loop {
+    let v = next.get().load(AtomicOrdering::SeqCst);
+    match tx.send(v) {
+      Result<void, SendError<i64>>::Ok() => {
+        next.get().store(v + 1, AtomicOrdering::SeqCst);
+      }
+      Result<void, SendError<i64>>::Err(_e) => {
+        return;
+      }
+    }
+  }
+}
+
+// Receives one number, and leaves the block early. Gives the number that it wants next.
+fn round(rx : &Receiver<i64>, tx : Sender<i64>, next : Arc<AtomicI64>, want : i64) -> i64 {
+  tasks {
+    spawn {
+      send_from(tx, next);
+    };
+    match rx.recv() {
+      Result<i64, RecvError>::Ok(v) => {
+        if v != want {
+          println!("got {} instead of {}", v, want);
+        }
+        // In half of the rounds, the task waits for room by the time of the cancel.
+        if v % 2 == 1 {
+          sleep(Duration::from_millis(1));
+        }
+        return v + 1;
+      }
+      Result<i64, RecvError>::Err(_e) => {
+        println!("the recv failed instead of giving {}", want);
+        return want;
+      }
+    }
+  };
+  return want;
+}
+
+fn main() -> i32 {
+  let (tx, rx) = channel<i64>(1);
+  let next = Arc<AtomicI64>::new(AtomicI64::new(0));
+  let mut want : i64 = 0;
+  while want < 2000 {
+    want = round(&rx, tx.clone(), next.clone(), want);
+  }
+  println!("{} numbers came in order", want);
+  drop(tx);
+  return 0;
+}

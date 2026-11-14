@@ -14,9 +14,40 @@
 //! so they compose with the parallel pipeline's phase isolation.
 
 use crate::symbol::Symbol;
-use crate::syntax::{Expr, MemorySpace, StructDecl, Topology, Type};
+use crate::syntax::{ElementType, Expr, MemorySpace, Span, StructDecl, Topology, Type};
 use crate::{hir::env::Value, syntax::Function};
 use std::collections::{HashMap, HashSet};
+
+/// One copy of a memory, which the capacity check counts on its own. Each device of a topology
+/// with more than one device has its own copy of the memory of that topology, and `device` names
+/// it (`Card[1]`). Any other memory has one copy, with no device.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MemoryCopy {
+    pub space: MemorySpace,
+    pub device: Option<String>,
+}
+
+impl MemoryCopy {
+    /// `CARD_RAM`, or `CARD_RAM of Card[1]`. The cross-call check and the JSON report key on it.
+    pub fn name(&self) -> String {
+        match &self.device {
+            None => self.space.name(),
+            Some(device) => format!("{} of {device}", self.space.name()),
+        }
+    }
+
+    /// The memory that a name from [`MemoryCopy::name`] is a copy of. A memory name has no
+    /// spaces, so the first space ends it.
+    pub fn space_of(name: &str) -> &str {
+        name.split(' ').next().unwrap_or(name)
+    }
+
+    /// A name from [`MemoryCopy::name`] as a message quotes it: `'CARD_RAM' of Card[1]`.
+    pub fn quoted(name: &str) -> String {
+        let space = Self::space_of(name);
+        format!("'{space}'{}", &name[space.len()..])
+    }
+}
 
 /// Compile-time evaluation: the constant environment and the constraints gathered from it.
 /// One tile placed in a memory space: what it costs, where it lives, and when it happened.
@@ -29,6 +60,13 @@ pub struct Placement {
     /// Position in program order, used to tell a tile placed before a sibling block from one
     /// placed after it has closed.
     pub order: usize,
+    /// The `tasks` blocks and tasks that the tile is placed in (`TaskCx::task_chain`).
+    pub(crate) tasks: Vec<crate::hir::check::tasks::TaskLevel>,
+    /// The variable that a `let` binds the tile to.
+    pub holder: Option<String>,
+    /// The first position in program order where the tile is gone, because a statement moved
+    /// it out of its variable.
+    pub end: Option<usize>,
 }
 
 pub struct ConstEvalState {
@@ -67,6 +105,9 @@ pub struct ConstEvalState {
     /// time walking a trip count that belongs to the program. What still happens everywhere
     /// is the settling up: see `settle_loop_consteval`.
     pub comptime_depth: u32,
+    /// Set just before checking a `comptime` block whose `return` gives its value: the whole
+    /// body of a closure, or the value of a `return`.
+    pub comptime_return_is_value: bool,
 }
 
 /// Provenance carried by a value while a `comptime` block is interpreted.
@@ -91,6 +132,9 @@ pub(crate) struct ComptimeValueFacts {
     pub captured_writes: HashSet<Symbol>,
     /// The callable's body is unavailable, so a call through it must be conservative.
     pub unknown_callable: bool,
+    /// An integer operation on known values gave this value a result outside its type, such
+    /// as an overflow. So it is unknown, though no value from the running program went in.
+    pub out_of_range: bool,
 }
 
 impl ComptimeValueFacts {
@@ -112,6 +156,7 @@ impl ComptimeValueFacts {
         self.captured_writes
             .extend(other.captured_writes.iter().cloned());
         self.unknown_callable |= other.unknown_callable;
+        self.out_of_range |= other.out_of_range;
     }
 }
 
@@ -134,6 +179,9 @@ pub(crate) struct ComptimeEvalValue {
     pub concrete: Option<Value>,
     pub facts: ComptimeValueFacts,
     pub aggregate: Option<ComptimeAggregateValue>,
+    /// The scalar type of the value, when the code says it. Arithmetic in a body the checker
+    /// has not typed takes its integer range from here.
+    pub ty: Option<ElementType>,
 }
 
 impl ComptimeEvalValue {
@@ -142,6 +190,7 @@ impl ComptimeEvalValue {
             concrete: Some(value),
             facts: ComptimeValueFacts::default(),
             aggregate: None,
+            ty: None,
         }
     }
 
@@ -150,6 +199,9 @@ impl ComptimeEvalValue {
     pub(crate) fn merge_from(&mut self, other: &Self) {
         if self.concrete != other.concrete {
             self.concrete = None;
+        }
+        if self.ty != other.ty {
+            self.ty = None;
         }
         let aggregates_match = match (&mut self.aggregate, &other.aggregate) {
             (
@@ -302,6 +354,37 @@ impl ComptimeEvalOutcome {
     }
 }
 
+/// A check that the program makes while it runs, in a `comptime` block, that the interpreter
+/// could not show to pass. The block is removed, so the check would never run.
+#[derive(Clone, PartialEq)]
+pub(crate) struct ComptimeCheckProblem {
+    pub span: Span,
+    pub check: ComptimeCheck,
+    pub kind: ComptimeCheckProblemKind,
+}
+
+#[derive(Clone, PartialEq)]
+pub(crate) enum ComptimeCheck {
+    /// An `assert`, with its message.
+    Assert(Option<String>),
+    /// An integer `/` or `%`, which stops the program on a divisor of 0, and on the minimum
+    /// value divided by -1.
+    Division,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum ComptimeCheckProblemKind {
+    /// The check fails, and it runs every time the block runs.
+    Fails,
+    /// The check fails, on a path that runs only for some run-time values.
+    MayFail,
+    /// The check depends on a value known only when the program runs.
+    Undecided,
+    /// The check has no value, because an integer operation on known values gives a result
+    /// outside its type.
+    OutOfRange,
+}
+
 /// Per-`comptime`-block state for the unified concrete/abstract interpreter.
 ///
 /// It replaces the old pattern of an evaluator plus a separately invoked effect walk. Its lexical
@@ -319,6 +402,13 @@ pub(crate) struct ComptimeEvalContext {
     /// Loop iterations run so far in this block, by every loop together, so nested loops share
     /// one `MAX_LOOP_STEPS` budget.
     loop_steps: u64,
+    /// The loop that was running when the budget ran out.
+    loop_limit_reached_at: Option<Span>,
+    /// Whether the code being run may not run in the program, such as a branch of an `if`
+    /// whose condition is known only at run time.
+    on_uncertain_path: bool,
+    /// The checks not shown to pass, in the order they ran.
+    check_problems: Vec<ComptimeCheckProblem>,
 }
 
 impl ComptimeEvalContext {
@@ -336,16 +426,65 @@ impl ComptimeEvalContext {
             call_depth_exceeded: false,
             escaping_writes: HashSet::new(),
             loop_steps: 0,
+            loop_limit_reached_at: None,
+            on_uncertain_path: false,
+            check_problems: Vec::new(),
         }
     }
 
-    /// Counts one loop iteration, or returns false when the block has used its whole budget.
-    pub(crate) fn take_loop_step(&mut self) -> bool {
+    /// Marks what runs next as a path that may not run, and answers the old mark to restore.
+    pub(crate) fn enter_uncertain_path(&mut self) -> bool {
+        std::mem::replace(&mut self.on_uncertain_path, true)
+    }
+
+    pub(crate) fn leave_uncertain_path(&mut self, outer: bool) {
+        self.on_uncertain_path = outer;
+    }
+
+    /// Records a check that passes when `passes` is `Some(true)`, and nothing in that case.
+    /// `out_of_range` says that the check has no value because of an operation on known values.
+    pub(crate) fn note_check(
+        &mut self,
+        check: ComptimeCheck,
+        passes: Option<bool>,
+        out_of_range: bool,
+        span: Span,
+    ) {
+        let kind = match (passes, self.on_uncertain_path) {
+            (Some(true), _) => return,
+            (Some(false), false) => ComptimeCheckProblemKind::Fails,
+            (Some(false), true) => ComptimeCheckProblemKind::MayFail,
+            (None, _) if out_of_range => ComptimeCheckProblemKind::OutOfRange,
+            (None, _) => ComptimeCheckProblemKind::Undecided,
+        };
+        self.add_check_problem(ComptimeCheckProblem { span, check, kind });
+    }
+
+    fn add_check_problem(&mut self, problem: ComptimeCheckProblem) {
+        // A loop runs the same check many times, and both sides of a branch carry what ran
+        // before the branch.
+        if !self.check_problems.contains(&problem) {
+            self.check_problems.push(problem);
+        }
+    }
+
+    pub(crate) fn check_problems(&self) -> &[ComptimeCheckProblem] {
+        &self.check_problems
+    }
+
+    /// Counts one iteration of the loop at `span`, or returns false when the block has used
+    /// its whole budget.
+    pub(crate) fn take_loop_step(&mut self, span: Span) -> bool {
         if self.loop_steps >= MAX_LOOP_STEPS {
+            self.loop_limit_reached_at.get_or_insert(span);
             return false;
         }
         self.loop_steps += 1;
         true
+    }
+
+    pub(crate) fn loop_limit_reached_at(&self) -> Option<Span> {
+        self.loop_limit_reached_at
     }
 
     pub(crate) fn push_scope(&mut self) {
@@ -449,6 +588,10 @@ impl ComptimeEvalContext {
         }
         self.escaping_writes
             .extend(branch.escaping_writes.iter().cloned());
+        for problem in &branch.check_problems {
+            self.add_check_problem(problem.clone());
+        }
+        self.loop_limit_reached_at = self.loop_limit_reached_at.or(branch.loop_limit_reached_at);
         self.call_depth_exceeded |= branch.call_depth_exceeded;
         self.loop_steps = self.loop_steps.max(branch.loop_steps);
         debug_assert_eq!(self.analysis_call_depth, branch.analysis_call_depth);
@@ -567,6 +710,7 @@ impl Default for ConstEvalState {
             loop_steps: std::cell::Cell::new(0),
             steps_exceeded: std::cell::Cell::new(false),
             comptime_depth: 0,
+            comptime_return_is_value: false,
             closure_body_depth: 0,
         }
     }
@@ -587,6 +731,9 @@ pub struct MonoState {
     /// Topology bindings (`D -> concrete topology`) deduced during that unify, consumed by
     /// `instantiate_function` to specialize `on D` and `Pinned<_, D>`.
     pub pending_topo_bindings: HashMap<Symbol, Topology>,
+    /// Memory generic parameters (`<M : Memory>`) of the function being instantiated. Set around
+    /// the same unify, so that a `Tensor<_, _, Memory::M>` param binds `M` to the argument's memory.
+    pub pending_memory_vars: HashSet<Symbol>,
     /// Signature of each closure literal, keyed by its generated `Closure_N` struct name:
     /// `(param types, return type)`. A closure expression checks to `Struct("Closure_N")`, which
     /// erases the call signature, so unifying it against a `ClosureK<Args.., Ret>` parameter needs
@@ -596,6 +743,11 @@ pub struct MonoState {
     pub closure_depths: Vec<usize>,
     /// Variables each open closure literal captured, innermost last.
     pub closure_captures_stack: Vec<HashMap<Symbol, Type>>,
+    /// Each use, in the body of each open closure literal, of a variable that the closure
+    /// captured: its name and its span. Innermost last.
+    pub closure_capture_uses: Vec<Vec<(Symbol, crate::syntax::Span)>>,
+    /// The borrows of each closure literal that is not the value of a `let`, by its struct name.
+    pub closure_literal_borrows: HashMap<Symbol, Vec<(Symbol, bool)>>,
     /// How many generic instantiations are open around the call being checked.
     ///
     /// `f<N - 1>()` whose base case is never reached instantiates a new `f` every time
@@ -606,10 +758,20 @@ pub struct MonoState {
     /// only after its body is checked, so a method that calls itself looks here to avoid
     /// checking its own body again, without end.
     pub being_checked: HashSet<Symbol>,
+    /// Instances that a `Type::method(..)` call made, such as `f32::from_bits`.
+    pub static_method_instances: HashSet<Symbol>,
     /// The warnings already given in each generic function's body, keyed by
     /// `TypeChecker::generic_body_key`. Every instance checks the same body, so a later
     /// instance's copy of a warning is dropped.
     pub warnings_given: HashMap<String, HashSet<crate::diagnostic::WarningKey>>,
+    /// The return-provenance summary of each checked instance, by its name. In a checked body a
+    /// method call is a call by name, so the summary can follow it.
+    pub return_provenances: HashMap<Symbol, crate::hir::provenance::ReturnProvenance>,
+    /// The parameters that each checked instance says `!keeps` for, as bits, by its name.
+    pub not_kept: HashMap<Symbol, u32>,
+    /// The parameters that each checked instance says `!frees` for, or that the walk of its
+    /// body proves, as bits, by its name.
+    pub not_freed: HashMap<Symbol, u32>,
 }
 
 /// How deep a chain of generic instantiations the checker will follow before giving up.
@@ -681,7 +843,7 @@ pub struct TrafficState {
     /// The chain is what makes this a peak rather than a sum. A placed tile is released at the
     /// end of the block that placed it, so two tiles in sibling blocks never occupy the space at
     /// the same time, and adding them together describes a program that was never run.
-    pub memory_placements: HashMap<MemorySpace, HashMap<String, Placement>>,
+    pub memory_placements: HashMap<MemoryCopy, HashMap<String, Placement>>,
     /// Monotonic id for placements with no binding name, so they still count toward the sum.
     pub placement_site: usize,
     /// The *releasing* blocks currently open, outermost first.
@@ -707,10 +869,21 @@ pub struct TrafficState {
     /// copy said two of them never coexisted, when the emitted code holds both to the end of the
     /// block.
     pub consumed_by_transfer: bool,
+    /// How many closure bodies the checker is inside. A closure runs where it is called, not
+    /// where it is written.
+    pub closure_depth: u32,
     /// The calls the current function makes, keyed by call-site span (a probe may check the
     /// same expression twice; the first visit's program order wins). Taken, with the
     /// placements, when the function's summary is built.
     pub call_sites: HashMap<String, CallSite>,
+    /// Where the current function calls `channel` for tensors in a memory with a capacity. The
+    /// room of such a channel is counted there.
+    pub channel_rooms: Vec<crate::syntax::Span>,
+    /// The variable of the `let` being checked, which the tiles placed for it go to.
+    pub tile_holder: Option<String>,
+    /// The variables that the current statement moved out of, with the blocks and tasks open at
+    /// the move. A tile of one of them ends after the statement.
+    pub(crate) moved_out: Vec<(String, Vec<u32>, Vec<crate::hir::check::tasks::TaskLevel>)>,
     /// One finished capacity summary per checked function, in check order -- what the
     /// cross-call fold reads after every body is done.
     pub capacity_summaries: Vec<crate::hir::check::capacity_fold::FnCapacitySummary>,
@@ -723,4 +896,8 @@ pub struct CallSite {
     pub scope: Vec<u32>,
     pub order: usize,
     pub span: crate::syntax::Span,
+    /// Made from a closure body, which may run anywhere in the function.
+    pub in_closure: bool,
+    /// The `tasks` blocks and tasks that the call is in (`TaskCx::task_chain`).
+    pub(crate) tasks: Vec<crate::hir::check::tasks::TaskLevel>,
 }

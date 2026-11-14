@@ -16,7 +16,7 @@
 use super::super::*;
 
 /// How an operator is written, for a diagnostic that has to name it.
-fn binary_op_symbol(op: &BinaryOp) -> &'static str {
+pub(crate) fn binary_op_symbol(op: &BinaryOp) -> &'static str {
     match op {
         BinaryOp::Add => "+",
         BinaryOp::Sub => "-",
@@ -30,6 +30,78 @@ fn binary_op_symbol(op: &BinaryOp) -> &'static str {
         BinaryOp::Shl => "<<",
         BinaryOp::Shr => ">>",
     }
+}
+
+/// Whether `e` is arithmetic on fp8 or fp4 values that the checker moved to f32: a narrow value
+/// converted with `as f32`, or an operator on such values and f32 literals.
+pub(crate) fn is_widened_narrow_arithmetic(e: &Expr) -> bool {
+    match e {
+        Expr::AsCast(c) => {
+            c.target_ty == Type::Scalar(ElementType::F32)
+                && matches!(&c.source_ty, Some(Type::Scalar(s)) if s.is_narrow_float())
+        }
+        Expr::BinaryOp(b) => {
+            matches!(
+                b.op,
+                BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem
+            ) && (is_widened_narrow_arithmetic(&b.lhs) || is_widened_narrow_arithmetic(&b.rhs))
+                && [&b.lhs, &b.rhs]
+                    .iter()
+                    .all(|o| is_widened_narrow_arithmetic(o) || is_f32_literal(o))
+        }
+        Expr::UnaryOp(u) => u.op == UnaryOp::Neg && is_widened_narrow_arithmetic(&u.expr),
+        _ => false,
+    }
+}
+
+fn is_f32_literal(e: &Expr) -> bool {
+    matches!(e, Expr::Number(n) if n.ty == Some(ElementType::F32))
+}
+
+/// `e` as f32: an fp8 or fp4 value becomes `e as f32`, and a literal becomes an f32 literal.
+fn widen_to_f32(e: &mut Expr, ty: &Type) {
+    if let Expr::Number(n) = e {
+        n.ty = Some(ElementType::F32);
+        return;
+    }
+    let span = e.span();
+    let inner = std::mem::replace(
+        e,
+        Expr::Number(NumberExpr::new("0".to_string(), None, span)),
+    );
+    *e = Expr::AsCast(AsCastExpr {
+        expr: Box::new(inner),
+        target_ty: Type::Scalar(ElementType::F32),
+        source_ty: Some(ty.clone()),
+        span,
+    });
+}
+
+/// The right side of `let c : f8e4m3 = a * b`, which the checker moved to f32: it rounds once,
+/// here, to the written type. Any other expression keeps its type.
+pub(crate) fn round_narrow_arithmetic(e: &mut Expr, ty: Type, written: Option<&Type>) -> Type {
+    let Some(Type::Scalar(t)) = written else {
+        return ty;
+    };
+    if ty != Type::Scalar(ElementType::F32)
+        || !t.is_float()
+        || *t == ElementType::F32
+        || !is_widened_narrow_arithmetic(e)
+    {
+        return ty;
+    }
+    let span = e.span();
+    let inner = std::mem::replace(
+        e,
+        Expr::Number(NumberExpr::new("0".to_string(), None, span)),
+    );
+    *e = Expr::AsCast(AsCastExpr {
+        expr: Box::new(inner),
+        target_ty: Type::Scalar(t.clone()),
+        source_ty: Some(Type::Scalar(ElementType::F32)),
+        span,
+    });
+    Type::Scalar(t.clone())
 }
 
 /// `x.topology()`, with no arguments: the placement query.
@@ -126,7 +198,19 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub(crate) fn check_ascast_expr(&mut self, expr: &mut AsCastExpr, consume: bool) -> Type {
+        // The type that the context expects is the cast's, not the operand's. An integer
+        // literal keeps its own type: `255 as i8` casts the `i32` 255, and is -1. A float
+        // literal takes the float type the cast names: `0.1 as f64` is the `f64` 0.1.
+        let operand_expected = match &expr.target_ty {
+            Type::Scalar(e) if e.is_float() => Some(expr.target_ty.clone()),
+            _ => None,
+        };
+        let expected = std::mem::replace(&mut self.expected_type, operand_expected);
+        // A cast to a number only reads its operand: a tensor cast makes a new tensor, and the
+        // operand stays usable.
+        let consume = consume && !matches!(expr.target_ty, Type::Scalar(_));
         let source_ty = self.check_expr_type_flag(&mut expr.expr, consume);
+        self.expected_type = expected;
         let target_ty = expr.target_ty.clone();
         expr.source_ty = Some(source_ty.clone());
 
@@ -182,16 +266,37 @@ impl<'a> TypeChecker<'a> {
                     return Type::Unknown;
                 }
             }
-            // `slice as f16`: an elementwise cast over a rank-1 float slice, yielding a
-            // slice of the target element type. This is the spelling that narrows a
-            // widened slice back into half storage, which the assignment rules require
-            // rather than performing silently.
+            // `t as f32`: a cast of each element of a float tensor, to a tensor of the same
+            // shape. On a slice, it narrows a widened slice back into half storage, which the
+            // assignment rules require rather than performing silently.
             (Type::Tensor(src_el, dims, top), Type::Scalar(dst_el))
-                if dims.len() == 1 && src_el.is_float() && dst_el.is_float() =>
+                if src_el.is_float() && dst_el.is_float() =>
             {
                 return Type::Tensor(dst_el.clone(), dims.clone(), top.clone());
             }
+            // A borrowed tensor, such as a parameter `a : &Tensor<bf16, ..>`.
+            (Type::Borrow { inner, .. }, Type::Scalar(dst_el)) if dst_el.is_float() => {
+                if let Type::Tensor(src_el, dims, top) = &**inner {
+                    if src_el.is_float() {
+                        return Type::Tensor(dst_el.clone(), dims.clone(), top.clone());
+                    }
+                }
+            }
             (Type::Scalar(src), Type::Scalar(dst)) => {
+                // Rust's rule: only a `bool` casts to a `bool`. From an integer the cast kept
+                // the lowest bit, so `2 as bool` was `false`.
+                if *dst == ElementType::Bool && *src != ElementType::Bool {
+                    let zero = if src.is_float() { "0.0" } else { "0" };
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3011,
+                        format!(
+                            "cannot cast `{src}` to `bool`: compare it with zero instead, as in \
+                             `x != {zero}`"
+                        ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&expr.span)),
+                    );
+                    return Type::Unknown;
+                }
                 // A literal is left alone, since a cast is one way to give a number its type.
                 // So is a generic instance: there `x as T` converts for every other `T`.
                 let literal = match &*expr.expr {
@@ -226,7 +331,13 @@ impl<'a> TypeChecker<'a> {
                     {
                         self.errors.warn(
                             crate::diagnostic::DiagnosticCode::W1014,
-                            format!("{v} does not fit in {dst}, so `as` changes its value"),
+                            if *dst == ElementType::USize {
+                                format!(
+                                    "{v} does not fit in usize, so this cast will stop the program"
+                                )
+                            } else {
+                                format!("{v} does not fit in {dst}, so `as` changes its value")
+                            },
                             Some(crate::diagnostic::SourceSpan::from_ast_span(&expr.span)),
                         );
                     }
@@ -249,7 +360,7 @@ impl<'a> TypeChecker<'a> {
             }
             (Type::Scalar(_), Type::Pointer(_, _, _)) => {
                 // Allow casting integers to pointers (e.g. 0 as *mut T)
-                if !self.in_unsafe_block && !self.speculating {
+                if self.unsafe_is_missing() {
                     self.errors.push(
                         "Casting an integer to a raw pointer requires an unsafe block".to_string(),
                     );
@@ -260,8 +371,7 @@ impl<'a> TypeChecker<'a> {
         }
 
         self.errors.push(format!(
-            "Unsupported cast: cannot cast from {:?} to {:?}",
-            source_ty, target_ty
+            "Unsupported cast: cannot cast from `{source_ty}` to `{target_ty}`"
         ));
         Type::Unknown
     }
@@ -311,6 +421,18 @@ impl<'a> TypeChecker<'a> {
             span,
         });
         Some((**inner).clone())
+    }
+
+    /// The value that the reference `e` points at: `x` for `&x`, and `*e` for another reference.
+    fn through_reference(e: &Expr, inner: &Type) -> Expr {
+        if let Expr::Borrow(b) = e {
+            return (*b.expr).clone();
+        }
+        Expr::Dereference(DereferenceExpr {
+            expr: Box::new(e.clone()),
+            ty: Some(inner.clone()),
+            span: e.span(),
+        })
     }
 
     /// `a + b` on a struct or an enum whose type has the operator's trait method: the call
@@ -499,6 +621,30 @@ impl<'a> TypeChecker<'a> {
                 if let Type::Scalar(e) = &lhs_ty {
                     *operand_ty = Some(e.clone());
                 }
+                let narrow_scalar = [&lhs_ty, &rhs_ty]
+                    .iter()
+                    .any(|t| matches!(t, Type::Scalar(e) if e.is_narrow_float()));
+                let arithmetic = matches!(
+                    op,
+                    BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem
+                );
+                if narrow_scalar && arithmetic && self.has_written_float_result() {
+                    if Self::widen_narrow_operands(&mut [
+                        (&mut **lhs, &lhs_ty),
+                        (&mut **rhs, &rhs_ty),
+                    ]) {
+                        *operand_ty = Some(ElementType::F32);
+                        return Type::Scalar(ElementType::F32);
+                    }
+                    // An operand of another type, such as an f32 value: the type mismatch
+                    // below reports it.
+                } else if !self.check_no_narrow_float_operand(
+                    binary_op_symbol(op),
+                    &[&lhs_ty, &rhs_ty],
+                    span,
+                ) {
+                    return lhs_ty;
+                }
 
                 // Tensor operator overloading (A * B) -> Matmul.
                 //
@@ -660,10 +806,15 @@ impl<'a> TypeChecker<'a> {
                     && lhs_ty != Type::Unknown
                     && rhs_ty != Type::Unknown
                 {
+                    let note = self
+                        .literal_default_note(lhs, &lhs_ty, &rhs_ty)
+                        .or_else(|| self.literal_default_note(rhs, &rhs_ty, &lhs_ty))
+                        .map(|n| format!("; {n}"))
+                        .unwrap_or_default();
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3004,
                         format!(
-                            "Type mismatch in binary operation: {} vs {}",
+                            "Type mismatch in binary operation: {} vs {}{note}",
                             lhs_ty, rhs_ty
                         ),
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
@@ -688,6 +839,83 @@ impl<'a> TypeChecker<'a> {
             Type::Borrow { inner, .. } => Self::scalar_elem(inner),
             _ => None,
         }
+    }
+
+    /// Reports E3052 when an operand of `op` is an fp8 or fp4 value, or a tensor of them, and
+    /// returns false. A scalar operand is an error here only when no result type is written.
+    pub(crate) fn check_no_narrow_float_operand(
+        &mut self,
+        op: &str,
+        operands: &[&Type],
+        span: &Span,
+    ) -> bool {
+        let Some(elem) = operands
+            .iter()
+            .find_map(|t| Self::scalar_elem(t).filter(|e| e.is_narrow_float()))
+        else {
+            return true;
+        };
+        let tensor = operands
+            .iter()
+            .any(|t| matches!(t, Type::Tensor(e, ..) if e.is_narrow_float()));
+        let message = if tensor {
+            format!(
+                "The compiler cannot compute `{op}` on tensors of `{elem}` yet. Convert the \
+                 elements with `as f32`"
+            )
+        } else if let Some(Type::Scalar(written)) = &self.expected_type {
+            format!(
+                "`{op}` on `{elem}` values gives a float, and the written result type is \
+                 `{written}`. Write a float type, and convert the result with `as {written}`"
+            )
+        } else {
+            format!(
+                "`{op}` on `{elem}` values needs a written result type, such as \
+                 `let c : f32 = ...`. The compiler computes in f32, and rounds once to that type"
+            )
+        };
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E3052,
+            message,
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+        false
+    }
+
+    /// Whether the expression being checked has a written float result type, as in
+    /// `let c : f32 = a * b`. Only then can arithmetic on fp8 or fp4 values happen.
+    fn has_written_float_result(&self) -> bool {
+        matches!(&self.expected_type, Some(Type::Scalar(t)) if t.is_float())
+    }
+
+    /// `a * b` or `a < b` on fp8 or fp4 values: each narrow operand becomes `operand as f32`,
+    /// and a literal operand becomes an f32 literal, so the operation happens in f32. Returns
+    /// false, and changes nothing, when an operand is anything else, such as an f32 value.
+    fn widen_narrow_operands(operands: &mut [(&mut Expr, &Type)]) -> bool {
+        let needs_cast: Option<Vec<bool>> = operands
+            .iter()
+            .map(|(e, t)| match t {
+                Type::Scalar(n) if n.is_narrow_float() => Some(true),
+                Type::Scalar(ElementType::F32)
+                    if is_widened_narrow_arithmetic(e) || is_f32_literal(e) =>
+                {
+                    Some(false)
+                }
+                _ => None,
+            })
+            .collect();
+        let Some(needs_cast) = needs_cast else {
+            return false;
+        };
+        if !needs_cast.iter().any(|c| *c) {
+            return false;
+        }
+        for ((e, t), cast) in operands.iter_mut().zip(needs_cast) {
+            if cast {
+                widen_to_f32(e, t);
+            }
+        }
+        true
     }
 
     /// The operand rule for `%`, the bitwise operators and the shifts: the three that have
@@ -763,6 +991,51 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// `s == "hello"` as `c_str_equals(s, "hello", 6)`, and `!=` as its `!`. The bound is the
+    /// literal's length and its NUL. When both sides are literals, the call is in a `comptime`
+    /// block, so the comparison becomes `true` or `false` while compiling.
+    fn text_compare(expr: &Expr) -> Option<Expr> {
+        let Expr::RelationalOp(RelationalOpExpr {
+            lhs, op, rhs, span, ..
+        }) = expr
+        else {
+            return None;
+        };
+        let literal = match (&**lhs, &**rhs) {
+            (Expr::StringLiteral(l), _) | (_, Expr::StringLiteral(l)) => l,
+            _ => return None,
+        };
+        if !matches!(op, RelationalOp::Eq | RelationalOp::NotEq) {
+            return None;
+        }
+        let bound = Expr::Number(crate::syntax::NumberExpr::new(
+            (literal.value.as_ref().len() + 1).to_string(),
+            Some(ElementType::I64),
+            *span,
+        ));
+        let mut compare = Expr::FunctionCall(crate::syntax::FunctionCallExpr::new(
+            "c_str_equals".into(),
+            None,
+            vec![(**lhs).clone(), (**rhs).clone(), bound],
+            *span,
+        ));
+        if matches!(op, RelationalOp::NotEq) {
+            compare = Expr::UnaryOp(crate::syntax::UnaryOpExpr::new(
+                crate::syntax::UnaryOp::Not,
+                Box::new(compare),
+                *span,
+            ));
+        }
+        if matches!(**lhs, Expr::StringLiteral(_)) && matches!(**rhs, Expr::StringLiteral(_)) {
+            compare = Expr::ComptimeBlock(crate::syntax::ComptimeBlockExpr::new(
+                Vec::new(),
+                Some(Box::new(compare)),
+                *span,
+            ));
+        }
+        Some(compare)
+    }
+
     pub(crate) fn check_relationalop_expr(&mut self, expr: &mut Expr) -> Type {
         // A placement query compares at check time: `x.topology()` is a fact of `x`'s type,
         // and nothing at run time holds one. The comparison becomes its answer.
@@ -779,6 +1052,12 @@ impl<'a> TypeChecker<'a> {
                 return Type::Scalar(ElementType::Bool);
             }
         }
+        // `==` or `!=` with a string literal compares the text: it is a call of `core::c_str`'s
+        // `c_str_equals`, which the parser imports for such a program.
+        if let Some(call) = Self::text_compare(expr) {
+            *expr = call;
+            return self.check_expr_type_flag(expr, false);
+        }
         // `a == b` on a struct or an enum is `a.eq(&b)`, through `PartialEq`, and `a < b` is
         // `a.lt(&b)`, through `Ord`.
         if let Expr::RelationalOp(RelationalOpExpr {
@@ -794,6 +1073,37 @@ impl<'a> TypeChecker<'a> {
                 RelationalOp::Ge => "ge",
             };
             let span = *span;
+            // `&a == &b` compares the values, as Rust's impls for references do. Two references
+            // to numbers compare the numbers, and two references to a struct pass themselves to
+            // its `eq`.
+            if let (Type::Borrow { inner: li, .. }, Type::Borrow { inner: ri, .. }) =
+                (self.operand_type(lhs), self.operand_type(rhs))
+            {
+                if Self::is_user_type(&li)
+                    && self
+                        .resolve_method_in_impls(
+                            &li,
+                            &method.into(),
+                            &mut std::collections::HashMap::new(),
+                        )
+                        .is_some()
+                {
+                    let mut call = Expr::MethodCall(crate::syntax::MethodCallExpr {
+                        base: Box::new(Self::through_reference(lhs, &li)),
+                        method_name: method.into(),
+                        type_args: None,
+                        args: vec![(**rhs).clone()],
+                        span,
+                    });
+                    let ty = self.check_expr_type_flag(&mut call, false);
+                    *expr = call;
+                    return ty;
+                }
+                if matches!(*li, Type::Scalar(_)) && matches!(*ri, Type::Scalar(_)) {
+                    **lhs = Self::through_reference(lhs, &li);
+                    **rhs = Self::through_reference(rhs, &ri);
+                }
+            }
             let rhs_ref = Expr::Borrow(crate::syntax::expr::BorrowExpr {
                 expr: rhs.clone(),
                 is_mut: false,
@@ -821,6 +1131,7 @@ impl<'a> TypeChecker<'a> {
                     span,
                 });
                 let mut call = Expr::FunctionCall(crate::syntax::expr::FunctionCallExpr {
+                    owner_type_args: None,
                     name: helper.into(),
                     type_args: None,
                     args: vec![lhs_ref, rhs_ref],
@@ -840,6 +1151,33 @@ impl<'a> TypeChecker<'a> {
                 operand_ty,
             }) => {
                 let (lhs_ty, rhs_ty) = self.check_operand_pair(lhs, rhs, false);
+                let symbol = match op {
+                    RelationalOp::Eq => "==",
+                    RelationalOp::NotEq => "!=",
+                    RelationalOp::Lt => "<",
+                    RelationalOp::Le => "<=",
+                    RelationalOp::Gt => ">",
+                    RelationalOp::Ge => ">=",
+                };
+                // A comparison of fp8 or fp4 values happens in f32, which holds them exactly, so
+                // it needs no result type.
+                let narrow_scalar = [&lhs_ty, &rhs_ty]
+                    .iter()
+                    .any(|t| matches!(t, Type::Scalar(e) if e.is_narrow_float()));
+                if narrow_scalar
+                    && Self::widen_narrow_operands(&mut [
+                        (&mut **lhs, &lhs_ty),
+                        (&mut **rhs, &rhs_ty),
+                    ])
+                {
+                    *operand_ty = Some(ElementType::F32);
+                    return Type::Scalar(ElementType::Bool);
+                }
+                if !narrow_scalar
+                    && !self.check_no_narrow_float_operand(symbol, &[&lhs_ty, &rhs_ty], span)
+                {
+                    return Type::Scalar(ElementType::Bool);
+                }
                 if self.is_struct_type(&lhs_ty) {
                     let at = if *span == crate::syntax::Span::default() {
                         lhs.span()
@@ -915,6 +1253,7 @@ impl<'a> TypeChecker<'a> {
             let method = match op {
                 UnaryOp::Neg => "neg",
                 UnaryOp::Not => "not",
+                UnaryOp::Try => return self.check_try(expr),
             };
             let span = *span;
             if let Some(mut call) = self.operator_method_call(inner, method, None, span) {
@@ -923,57 +1262,132 @@ impl<'a> TypeChecker<'a> {
                 return ty;
             }
         }
-        match expr {
+        // `-1.5` written for an fp8 or fp4 value is one literal, not a negation the compiler
+        // would have to compute.
+        let mut folded = None;
+        let ty = match expr {
             Expr::UnaryOp(UnaryOpExpr {
                 op,
                 expr: inner,
                 span,
             }) => {
                 let inner_ty = self.check_expr_type(inner);
-                // Both would leave `usize`'s range: `-x` is below zero for any `x` but 0, and
-                // `!x` sets the top bit. A tensor of `usize` too, elementwise.
-                let usize_operand = match &inner_ty {
-                    Type::Scalar(e) | Type::Tensor(e, ..) => *e == ElementType::USize,
-                    _ => false,
-                };
-                if usize_operand {
-                    let why = match op {
-                        UnaryOp::Neg => "`-` does not apply to a `usize`, which is never negative",
-                        UnaryOp::Not => {
-                            "`!` does not apply to a `usize`: it would set the top bit, which a \
-                             `usize` never has"
-                        }
-                    };
-                    self.errors.error_with_code(
-                        crate::diagnostic::DiagnosticCode::E3030,
-                        why.to_string(),
-                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
-                    );
-                    return Type::Unknown;
+                if let (UnaryOp::Neg, Expr::Number(n)) = (&*op, &**inner) {
+                    if Self::scalar_elem(&inner_ty).is_some_and(|e| e.is_narrow_float()) {
+                        let value = match n.value.as_ref().strip_prefix('-') {
+                            Some(positive) => positive.to_string(),
+                            None => format!("-{}", n.value),
+                        };
+                        folded = Some(Expr::Number(NumberExpr::new(value, n.ty.clone(), *span)));
+                    }
                 }
-                self.drops_note_operands(&[(inner, &inner_ty)]);
-                match op {
-                    // Rust's rule: logical on a `bool`, bitwise on an integer, so the result has
-                    // the operand's type. It used to be `bool` whatever the operand was, and each
-                    // code generator then lowered an integer operand its own way.
-                    UnaryOp::Not => match &inner_ty {
-                        Type::Unknown | Type::Generic(..) => inner_ty,
-                        _ => match Self::single_value_elem(&inner_ty) {
-                            Some(e) if !e.is_float() => Type::Scalar(e),
-                            _ => {
-                                self.errors.error_with_code(
-                                    crate::diagnostic::DiagnosticCode::E3030,
-                                    format!("`!` takes a bool or an integer, got {}", inner_ty),
-                                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
-                                );
-                                Type::Unknown
-                            }
-                        },
-                    },
-                    UnaryOp::Neg => inner_ty,
+                if folded.is_some() {
+                    inner_ty
+                } else {
+                    self.check_unary_operand(op, inner, inner_ty, span)
                 }
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
+        };
+        if let Some(f) = folded {
+            *expr = f;
+        }
+        ty
+    }
+
+    /// The type of `-x` or `!x` once `x` is checked: the operand rules for both operators.
+    fn check_unary_operand(
+        &mut self,
+        op: &UnaryOp,
+        inner: &mut Expr,
+        inner_ty: Type,
+        span: &Span,
+    ) -> Type {
+        // Both would leave `usize`'s range: `-x` is below zero for any `x` but 0, and
+        // `!x` sets the top bit. A tensor of `usize` too, elementwise.
+        let usize_operand = match &inner_ty {
+            Type::Scalar(e) | Type::Tensor(e, ..) => *e == ElementType::USize,
+            _ => false,
+        };
+        if usize_operand {
+            let why = match op {
+                UnaryOp::Neg => "`-` does not apply to a `usize`, which is never negative",
+                UnaryOp::Not => {
+                    "`!` does not apply to a `usize`: it would set the top bit, which a \
+                     `usize` never has"
+                }
+                UnaryOp::Try => unreachable!("check_try handles `?`"),
+            };
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3030,
+                why.to_string(),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
+            return Type::Unknown;
+        }
+        // Rust's rule: `-` takes a signed integer or a float. On another unsigned type it
+        // would wrap with no error, and on a `bool` it does nothing. A negative literal is
+        // left to the check that a literal fits its type (E3045).
+        if *op == UnaryOp::Neg && !matches!(inner, Expr::Number(_)) {
+            let elem = match &inner_ty {
+                Type::Simd(e, _) => Some(e.clone()),
+                _ => Self::scalar_elem(&inner_ty),
+            };
+            let why = match elem {
+                Some(ElementType::Bool) => {
+                    Some("`-` does not apply to a `bool`: use `!` to flip it".to_string())
+                }
+                Some(e) if e.is_unsigned_int() => Some(format!(
+                    "`-` does not apply to a `{e}`, which is never negative: cast it to a \
+                     signed type first, or call `wrapping_neg()` from `core::num`"
+                )),
+                _ => None,
+            };
+            if let Some(why) = why {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3030,
+                    why,
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                );
+                return Type::Unknown;
+            }
+        }
+        let symbol = match op {
+            UnaryOp::Neg => "-",
+            UnaryOp::Not => "!",
+            UnaryOp::Try => unreachable!("check_try handles `?`"),
+        };
+        if *op == UnaryOp::Neg
+            && matches!(&inner_ty, Type::Scalar(e) if e.is_narrow_float())
+            && self.has_written_float_result()
+        {
+            widen_to_f32(inner, &inner_ty);
+            return Type::Scalar(ElementType::F32);
+        }
+        if !self.check_no_narrow_float_operand(symbol, &[&inner_ty], span) {
+            return inner_ty;
+        }
+        self.drops_note_operands(&[(inner, &inner_ty)]);
+        match op {
+            // Rust's rule: logical on a `bool`, bitwise on an integer, so the result has
+            // the operand's type. It used to be `bool` whatever the operand was, and each
+            // code generator then lowered an integer operand its own way.
+            UnaryOp::Not => match &inner_ty {
+                Type::Unknown | Type::Generic(..) => inner_ty,
+                _ => match Self::single_value_elem(&inner_ty) {
+                    Some(e) if !e.is_float() => Type::Scalar(e),
+                    _ => {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E3030,
+                            format!("`!` takes a bool or an integer, got {}", inner_ty),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                        );
+                        Type::Unknown
+                    }
+                },
+            },
+            UnaryOp::Neg => inner_ty,
+            UnaryOp::Try => unreachable!("check_try handles `?`"),
         }
     }
 }

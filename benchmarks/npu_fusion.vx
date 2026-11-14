@@ -6,11 +6,11 @@ extern "C" {
 }
 
 fn run_benchmark_128() -> i32 {
-  let mut a_host = Tensor<f32, [128, 128]>::uninit();
-  let mut b_host = Tensor<f32, [128, 128]>::uninit();
-  let mut bias_host = Tensor<f32, [128, 128]>::uninit();
-  let mut out_unfused_host = Tensor<f32, [128, 128]>::uninit();
-  let mut out_fused_host = Tensor<f32, [128, 128]>::uninit();
+  let mut a_host = unsafe { Tensor<f32, [128, 128]>::uninit() };
+  let mut b_host = unsafe { Tensor<f32, [128, 128]>::uninit() };
+  let mut bias_host = unsafe { Tensor<f32, [128, 128]>::uninit() };
+  let mut out_unfused_host = unsafe { Tensor<f32, [128, 128]>::uninit() };
+  let mut out_fused_host = unsafe { Tensor<f32, [128, 128]>::uninit() };
 
   for i in 0..128 {
     for j in 0..128 {
@@ -35,8 +35,8 @@ fn run_benchmark_128() -> i32 {
   let mut out_unfused = transfer(out_unfused_host, Memory::NPU_HBM);
   let mut out_fused = transfer(out_fused_host, Memory::NPU_HBM);
 
-  let mut temp_matmul = Tensor<f32, [128, 128]>::uninit();
-  let mut temp_bias = Tensor<f32, [128, 128]>::uninit();
+  let mut temp_matmul = unsafe { Tensor<f32, [128, 128]>::uninit() };
+  let mut temp_bias = unsafe { Tensor<f32, [128, 128]>::uninit() };
   let mut temp_matmul_npu = transfer(temp_matmul, Memory::NPU_HBM);
   let mut temp_bias_npu = transfer(temp_bias, Memory::NPU_HBM);
 
@@ -73,7 +73,7 @@ fn run_benchmark_128() -> i32 {
     }
 
     // Benchmark Unfused
-    let t1 = now();
+    let t1 = Instant::now();
     for _iter in 0..10 {
       spawn on(Topology::NPU[0]) {
         for i in 0..128 {
@@ -105,8 +105,8 @@ fn run_benchmark_128() -> i32 {
         }
       }
     }
-    let t2 = now();
-    let time_unfused = t2 - t1;
+    let t2 = Instant::now();
+    let time_unfused = (t2 - t1).as_secs_f32();
 
     // Warmup Fused immediately before benchmark
     spawn on(Topology::NPU[0]) {
@@ -127,7 +127,7 @@ fn run_benchmark_128() -> i32 {
     }
 
     // Benchmark Fused
-    let t3 = now();
+    let t3 = Instant::now();
     for _iter in 0..10 {
       spawn on(Topology::NPU[0]) {
         for i in 0..128 {
@@ -146,8 +146,8 @@ fn run_benchmark_128() -> i32 {
         }
       }
     }
-    let t4 = now();
-    let time_fused = t4 - t3;
+    let t4 = Instant::now();
+    let time_fused = (t4 - t3).as_secs_f32();
 
     bench_report("npu_fusion_128_unfused", "seconds", time_unfused);
     bench_report("npu_fusion_128_fused", "seconds", time_fused);
@@ -168,11 +168,11 @@ fn run_benchmark_128() -> i32 {
 }
 
 fn run_benchmark_256() -> i32 {
-  let mut a_host = Tensor<f32, [256, 256]>::uninit();
-  let mut b_host = Tensor<f32, [256, 256]>::uninit();
-  let mut bias_host = Tensor<f32, [256, 256]>::uninit();
-  let mut out_unfused_host = Tensor<f32, [256, 256]>::uninit();
-  let mut out_fused_host = Tensor<f32, [256, 256]>::uninit();
+  let mut a_host = unsafe { Tensor<f32, [256, 256]>::uninit() };
+  let mut b_host = unsafe { Tensor<f32, [256, 256]>::uninit() };
+  let mut bias_host = unsafe { Tensor<f32, [256, 256]>::uninit() };
+  let mut out_unfused_host = unsafe { Tensor<f32, [256, 256]>::uninit() };
+  let mut out_fused_host = unsafe { Tensor<f32, [256, 256]>::uninit() };
 
   for i in 0..256 {
     for j in 0..256 {
@@ -197,8 +197,8 @@ fn run_benchmark_256() -> i32 {
   let mut out_unfused = transfer(out_unfused_host, Memory::NPU_HBM);
   let mut out_fused = transfer(out_fused_host, Memory::NPU_HBM);
 
-  let mut temp_matmul = Tensor<f32, [256, 256]>::uninit();
-  let mut temp_bias = Tensor<f32, [256, 256]>::uninit();
+  let mut temp_matmul = unsafe { Tensor<f32, [256, 256]>::uninit() };
+  let mut temp_bias = unsafe { Tensor<f32, [256, 256]>::uninit() };
   let mut temp_matmul_npu = transfer(temp_matmul, Memory::NPU_HBM);
   let mut temp_bias_npu = transfer(temp_bias, Memory::NPU_HBM);
 
@@ -235,7 +235,7 @@ fn run_benchmark_256() -> i32 {
     }
 
     // Benchmark Unfused
-    let t1 = now();
+    let t1 = Instant::now();
     for _iter in 0..10 {
       spawn on(Topology::NPU[0]) {
         for i in 0..256 {
@@ -267,8 +267,8 @@ fn run_benchmark_256() -> i32 {
         }
       }
     }
-    let t2 = now();
-    let time_unfused = t2 - t1;
+    let t2 = Instant::now();
+    let time_unfused = (t2 - t1).as_secs_f32();
 
     // Warmup Fused immediately before benchmark
     spawn on(Topology::NPU[0]) {
@@ -289,7 +289,7 @@ fn run_benchmark_256() -> i32 {
     }
 
     // Benchmark Fused
-    let t3 = now();
+    let t3 = Instant::now();
     for _iter in 0..10 {
       spawn on(Topology::NPU[0]) {
         for i in 0..256 {
@@ -308,8 +308,8 @@ fn run_benchmark_256() -> i32 {
         }
       }
     }
-    let t4 = now();
-    let time_fused = t4 - t3;
+    let t4 = Instant::now();
+    let time_fused = (t4 - t3).as_secs_f32();
 
     bench_report("npu_fusion_256_unfused", "seconds", time_unfused);
     bench_report("npu_fusion_256_fused", "seconds", time_fused);
@@ -330,11 +330,11 @@ fn run_benchmark_256() -> i32 {
 }
 
 fn run_benchmark_512() -> i32 {
-  let mut a_host = Tensor<f32, [512, 512]>::uninit();
-  let mut b_host = Tensor<f32, [512, 512]>::uninit();
-  let mut bias_host = Tensor<f32, [512, 512]>::uninit();
-  let mut out_unfused_host = Tensor<f32, [512, 512]>::uninit();
-  let mut out_fused_host = Tensor<f32, [512, 512]>::uninit();
+  let mut a_host = unsafe { Tensor<f32, [512, 512]>::uninit() };
+  let mut b_host = unsafe { Tensor<f32, [512, 512]>::uninit() };
+  let mut bias_host = unsafe { Tensor<f32, [512, 512]>::uninit() };
+  let mut out_unfused_host = unsafe { Tensor<f32, [512, 512]>::uninit() };
+  let mut out_fused_host = unsafe { Tensor<f32, [512, 512]>::uninit() };
 
   for i in 0..512 {
     for j in 0..512 {
@@ -359,8 +359,8 @@ fn run_benchmark_512() -> i32 {
   let mut out_unfused = transfer(out_unfused_host, Memory::NPU_HBM);
   let mut out_fused = transfer(out_fused_host, Memory::NPU_HBM);
 
-  let mut temp_matmul = Tensor<f32, [512, 512]>::uninit();
-  let mut temp_bias = Tensor<f32, [512, 512]>::uninit();
+  let mut temp_matmul = unsafe { Tensor<f32, [512, 512]>::uninit() };
+  let mut temp_bias = unsafe { Tensor<f32, [512, 512]>::uninit() };
   let mut temp_matmul_npu = transfer(temp_matmul, Memory::NPU_HBM);
   let mut temp_bias_npu = transfer(temp_bias, Memory::NPU_HBM);
 
@@ -397,7 +397,7 @@ fn run_benchmark_512() -> i32 {
     }
 
     // Benchmark Unfused
-    let t1 = now();
+    let t1 = Instant::now();
     for _iter in 0..10 {
       spawn on(Topology::NPU[0]) {
         for i in 0..512 {
@@ -429,8 +429,8 @@ fn run_benchmark_512() -> i32 {
         }
       }
     }
-    let t2 = now();
-    let time_unfused = t2 - t1;
+    let t2 = Instant::now();
+    let time_unfused = (t2 - t1).as_secs_f32();
 
     // Warmup Fused immediately before benchmark
     spawn on(Topology::NPU[0]) {
@@ -451,7 +451,7 @@ fn run_benchmark_512() -> i32 {
     }
 
     // Benchmark Fused
-    let t3 = now();
+    let t3 = Instant::now();
     for _iter in 0..10 {
       spawn on(Topology::NPU[0]) {
         for i in 0..512 {
@@ -470,8 +470,8 @@ fn run_benchmark_512() -> i32 {
         }
       }
     }
-    let t4 = now();
-    let time_fused = t4 - t3;
+    let t4 = Instant::now();
+    let time_fused = (t4 - t3).as_secs_f32();
 
     bench_report("npu_fusion_512_unfused", "seconds", time_unfused);
     bench_report("npu_fusion_512_fused", "seconds", time_fused);
@@ -492,11 +492,11 @@ fn run_benchmark_512() -> i32 {
 }
 
 fn run_benchmark_1024() -> i32 {
-  let mut a_host = Tensor<f32, [1024, 1024]>::uninit();
-  let mut b_host = Tensor<f32, [1024, 1024]>::uninit();
-  let mut bias_host = Tensor<f32, [1024, 1024]>::uninit();
-  let mut out_unfused_host = Tensor<f32, [1024, 1024]>::uninit();
-  let mut out_fused_host = Tensor<f32, [1024, 1024]>::uninit();
+  let mut a_host = unsafe { Tensor<f32, [1024, 1024]>::uninit() };
+  let mut b_host = unsafe { Tensor<f32, [1024, 1024]>::uninit() };
+  let mut bias_host = unsafe { Tensor<f32, [1024, 1024]>::uninit() };
+  let mut out_unfused_host = unsafe { Tensor<f32, [1024, 1024]>::uninit() };
+  let mut out_fused_host = unsafe { Tensor<f32, [1024, 1024]>::uninit() };
 
   for i in 0..1024 {
     for j in 0..1024 {
@@ -521,8 +521,8 @@ fn run_benchmark_1024() -> i32 {
   let mut out_unfused = transfer(out_unfused_host, Memory::NPU_HBM);
   let mut out_fused = transfer(out_fused_host, Memory::NPU_HBM);
 
-  let mut temp_matmul = Tensor<f32, [1024, 1024]>::uninit();
-  let mut temp_bias = Tensor<f32, [1024, 1024]>::uninit();
+  let mut temp_matmul = unsafe { Tensor<f32, [1024, 1024]>::uninit() };
+  let mut temp_bias = unsafe { Tensor<f32, [1024, 1024]>::uninit() };
   let mut temp_matmul_npu = transfer(temp_matmul, Memory::NPU_HBM);
   let mut temp_bias_npu = transfer(temp_bias, Memory::NPU_HBM);
 
@@ -559,7 +559,7 @@ fn run_benchmark_1024() -> i32 {
     }
 
     // Benchmark Unfused
-    let t1 = now();
+    let t1 = Instant::now();
     for _iter in 0..10 {
       spawn on(Topology::NPU[0]) {
         for i in 0..1024 {
@@ -591,8 +591,8 @@ fn run_benchmark_1024() -> i32 {
         }
       }
     }
-    let t2 = now();
-    let time_unfused = t2 - t1;
+    let t2 = Instant::now();
+    let time_unfused = (t2 - t1).as_secs_f32();
 
     // Warmup Fused immediately before benchmark
     spawn on(Topology::NPU[0]) {
@@ -613,7 +613,7 @@ fn run_benchmark_1024() -> i32 {
     }
 
     // Benchmark Fused
-    let t3 = now();
+    let t3 = Instant::now();
     for _iter in 0..10 {
       spawn on(Topology::NPU[0]) {
         for i in 0..1024 {
@@ -632,8 +632,8 @@ fn run_benchmark_1024() -> i32 {
         }
       }
     }
-    let t4 = now();
-    let time_fused = t4 - t3;
+    let t4 = Instant::now();
+    let time_fused = (t4 - t3).as_secs_f32();
 
     bench_report("npu_fusion_1024_unfused", "seconds", time_unfused);
     bench_report("npu_fusion_1024_fused", "seconds", time_fused);
@@ -654,11 +654,11 @@ fn run_benchmark_1024() -> i32 {
 }
 
 fn run_benchmark_2048() -> i32 {
-  let mut a_host = Tensor<f32, [2048, 2048]>::uninit();
-  let mut b_host = Tensor<f32, [2048, 2048]>::uninit();
-  let mut bias_host = Tensor<f32, [2048, 2048]>::uninit();
-  let mut out_unfused_host = Tensor<f32, [2048, 2048]>::uninit();
-  let mut out_fused_host = Tensor<f32, [2048, 2048]>::uninit();
+  let mut a_host = unsafe { Tensor<f32, [2048, 2048]>::uninit() };
+  let mut b_host = unsafe { Tensor<f32, [2048, 2048]>::uninit() };
+  let mut bias_host = unsafe { Tensor<f32, [2048, 2048]>::uninit() };
+  let mut out_unfused_host = unsafe { Tensor<f32, [2048, 2048]>::uninit() };
+  let mut out_fused_host = unsafe { Tensor<f32, [2048, 2048]>::uninit() };
 
   for i in 0..2048 {
     for j in 0..2048 {
@@ -683,8 +683,8 @@ fn run_benchmark_2048() -> i32 {
   let mut out_unfused = transfer(out_unfused_host, Memory::NPU_HBM);
   let mut out_fused = transfer(out_fused_host, Memory::NPU_HBM);
 
-  let mut temp_matmul = Tensor<f32, [2048, 2048]>::uninit();
-  let mut temp_bias = Tensor<f32, [2048, 2048]>::uninit();
+  let mut temp_matmul = unsafe { Tensor<f32, [2048, 2048]>::uninit() };
+  let mut temp_bias = unsafe { Tensor<f32, [2048, 2048]>::uninit() };
   let mut temp_matmul_npu = transfer(temp_matmul, Memory::NPU_HBM);
   let mut temp_bias_npu = transfer(temp_bias, Memory::NPU_HBM);
 
@@ -721,7 +721,7 @@ fn run_benchmark_2048() -> i32 {
     }
 
     // Benchmark Unfused
-    let t1 = now();
+    let t1 = Instant::now();
     for _iter in 0..10 {
       spawn on(Topology::NPU[0]) {
         for i in 0..2048 {
@@ -753,8 +753,8 @@ fn run_benchmark_2048() -> i32 {
         }
       }
     }
-    let t2 = now();
-    let time_unfused = t2 - t1;
+    let t2 = Instant::now();
+    let time_unfused = (t2 - t1).as_secs_f32();
 
     // Warmup Fused immediately before benchmark
     spawn on(Topology::NPU[0]) {
@@ -775,7 +775,7 @@ fn run_benchmark_2048() -> i32 {
     }
 
     // Benchmark Fused
-    let t3 = now();
+    let t3 = Instant::now();
     for _iter in 0..10 {
       spawn on(Topology::NPU[0]) {
         for i in 0..2048 {
@@ -794,8 +794,8 @@ fn run_benchmark_2048() -> i32 {
         }
       }
     }
-    let t4 = now();
-    let time_fused = t4 - t3;
+    let t4 = Instant::now();
+    let time_fused = (t4 - t3).as_secs_f32();
 
     bench_report("npu_fusion_2048_unfused", "seconds", time_unfused);
     bench_report("npu_fusion_2048_fused", "seconds", time_fused);

@@ -1,0 +1,40 @@
+//===- assert_after_a_branch_that_does_not_run.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A write in a branch that does not run does not change the value that the checker uses for a
+// later assert. The compiler used to keep the value that the last branch wrote, so each true
+// assert below failed to compile (E8002). A `match` arm is joined the same way, in
+// fail/comptime_reads_a_variable_written_in_a_branch.vx.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK-LABEL: func.func @main
+
+// The condition is false, so `v` is still 7.
+fn false_condition() -> i64 {
+  let mut v : i64 = 7i64;
+  if v < 3i64 {
+    v = 0i64;
+  }
+  assert(v > 1i64, "v is 7");
+  return v;
+}
+
+// With no arguments, `argc` is 1 and `v` stays 7. The checker cannot know `argc`, so the
+// assert stays a run-time check.
+fn run_time_condition(argc : i32) -> i64 {
+  let mut v : i64 = 7i64;
+  if argc > 5i32 {
+    v = 0i64;
+  }
+  assert(v > 1i64, "v is 7 when argc is at most 5");
+  return v;
+}
+
+fn main(argc : i32) -> i32 {
+  print(false_condition() + run_time_condition(argc));
+  return 0;
+}

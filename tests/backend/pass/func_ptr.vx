@@ -1,10 +1,14 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: %[[F:.*]] = constant @square : (i32) -> i32
+// CHECK: %[[P:.*]] = builtin.unrealized_conversion_cast %[[F]] : (i32) -> i32 to !llvm.ptr
+// CHECK: call @apply_func(%[[P]], %{{.*}}) : (!llvm.ptr, i32) -> i32
 // CHECK-LABEL: func.func @square(%arg0: i32) -> i32
 // CHECK: %[[V0:.*]] = arith.muli %{{.*}}, %{{.*}} : i32
 // CHECK: return %[[V0]] : i32
 // CHECK-LABEL: func.func @apply_func(%arg0: !llvm.ptr, %arg1: i32) -> i32
-// CHECK-LABEL: func.func @main() -> i32
-// CHECK: call @apply_func(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
+// CHECK: %[[G:.*]] = builtin.unrealized_conversion_cast %arg0 : !llvm.ptr to (i32) -> i32
+// CHECK: call_indirect %[[G]](%arg1) : (i32) -> i32
 fn square(x : i32) -> i32 {
   return x * x;
 }

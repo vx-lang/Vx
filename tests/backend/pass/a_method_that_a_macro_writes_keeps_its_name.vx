@@ -1,0 +1,27 @@
+//===- a_method_that_a_macro_writes_keeps_its_name.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// This program and `a_macro_writes_an_impl` both declare a function `double`. The program keeps
+// the name, and the library's function gets a new one. The library's method `double`, which a
+// macro writes, keeps its name: the compiler renamed it too, and refused the `impl` (E3061).
+import tests::modules::a_macro_writes_an_impl;
+
+fn double(x : i64) -> i64 {
+  return x + 100i64;
+}
+
+fn main() -> i32 {
+  print(double(1i64));
+  print!(" ");
+  print(library_double(3i64));
+  print!(" ");
+  let five = 5i64;
+  print(five.double());
+  return 0;
+}
+
+// EXPECT: 101 6 10

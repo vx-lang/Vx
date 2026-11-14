@@ -1,0 +1,12 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// Only a function can be `pub` for now.
+
+pub struct Point {
+  x : i32,
+}
+// CHECK: Expected 'fn' after 'pub'
+
+fn main() -> i32 {
+  return 0;
+}

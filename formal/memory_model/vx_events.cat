@@ -1,0 +1,29 @@
+"Vx memory model: events, scopes and barriers"
+
+(* Shared by vx.cat and sequential.cat. *)
+
+(* Events, from the tags in vx.bell. *)
+let Plain = tag2events('plain)
+let Rlx = tag2events('rlx)
+let Acq = tag2events('acq)
+let Rel = tag2events('rel)
+let AcqRel = tag2events('acq_rel)
+let Sc = tag2events('sc)
+let Atomic = Rlx | Acq | Rel | AcqRel | Sc
+let Barrier = F & tag2events('barrier)
+
+(* Scopes. Two events are in one block when the scope tree puts their threads in one block. *)
+let same-subgroup = tag2scope('subgroup)
+let same-block = tag2scope('block)
+let same-device = tag2scope('device)
+let InSubgroup = tag2events('subgroup)
+let InBlock = tag2events('block)
+let InDevice = tag2events('device)
+
+(* C5: a barrier synchronizes the threads in one instance of its scope. Each access before a
+   barrier happens before each access after the matching barrier of another thread. *)
+let bar-scope =
+    ((Barrier & InSubgroup) * (Barrier & InSubgroup)) & same-subgroup
+  | ((Barrier & InBlock) * (Barrier & InBlock)) & same-block
+  | ((Barrier & InDevice) * (Barrier & InDevice)) & same-device
+let bar = po; [Barrier]; (bar-scope & ext); [Barrier]; po

@@ -7,8 +7,8 @@
 // nothing.
 
 fn tensors() -> i32 {
-  let a = Tensor<f32, [4]>::uninit();
-  let b = Tensor<f32, [4]>::uninit();
+  let a = unsafe { Tensor<f32, [4]>::uninit() };
+  let b = unsafe { Tensor<f32, [4]>::uninit() };
   let c = a % b;
   return 0;
 }

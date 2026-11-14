@@ -76,6 +76,7 @@ impl<'a> Parser<'a> {
                 Expr::UnsafeBlock(UnsafeBlockExpr { .. })
                 | Expr::ComptimeBlock(ComptimeBlockExpr { .. })
                 | Expr::SpawnOn(SpawnOnExpr { .. })
+                | Expr::TaskBlock(TaskBlockExpr { .. })
                 | Expr::If(IfExpr { .. })
                 | Expr::Match(MatchExpr { .. }) => {
                     has_semicolon = self.match_token(&TokenType::Semicolon);
@@ -105,6 +106,7 @@ impl<'a> Parser<'a> {
             line: token_line,
             column: token_col,
             length: token_len,
+            expansion: self.expansion(),
         };
 
         match &token.kind {
@@ -119,12 +121,10 @@ impl<'a> Parser<'a> {
                         line: token_line,
                         column: token_col,
                         length: token_len,
+                        expansion: self.expansion(),
                     });
                 }
-                let name = match &self.advance().kind {
-                    TokenType::Identifier(s) => s.to_string(),
-                    _ => return Err(self.error("Expected identifier after let")),
-                };
+                let name = self.expect_identifier("Expected identifier after let")?;
                 let mut type_annotation = None;
                 if self.match_token(&TokenType::Colon) {
                     type_annotation = Some(self.parse_type()?);
@@ -143,6 +143,7 @@ impl<'a> Parser<'a> {
                         line: token_line,
                         column: token_col,
                         length: token_len,
+                        expansion: self.expansion(),
                     },
                 }))
             }
@@ -173,6 +174,7 @@ impl<'a> Parser<'a> {
                             line: keyword.line,
                             column: keyword.column,
                             length: keyword.length,
+                            expansion: self.expansion(),
                         },
                     }),
                     has_semi: true,
@@ -199,11 +201,11 @@ impl<'a> Parser<'a> {
                     "Expected ')' after assert condition",
                 )?;
                 self.consume(&TokenType::Semicolon, "Expected ';' after assert statement")?;
-                Ok(Statement::Assert(AssertStmt {
-                    expr: Box::new(expr),
+                Ok(Statement::Assert(AssertStmt::new(
+                    Box::new(expr),
                     msg,
-                    span: Span::default(),
-                }))
+                    token_span,
+                )))
             }
             TokenType::Return => {
                 self.advance();
@@ -222,6 +224,7 @@ impl<'a> Parser<'a> {
                         line: token_line,
                         column: token_col,
                         length: token_len,
+                        expansion: self.expansion(),
                     },
                 }))
             }
@@ -240,7 +243,7 @@ impl<'a> Parser<'a> {
                 Ok(Statement::Loop(LoopStmt {
                     invariants,
                     body,
-                    span: Span::default(),
+                    span: token_span,
                 }))
             }
             TokenType::While => {
@@ -248,6 +251,7 @@ impl<'a> Parser<'a> {
                     line: token_line,
                     column: token_col,
                     length: token_len,
+                    expansion: self.expansion(),
                 };
                 self.advance();
                 let cond = self.parse_expr()?;
@@ -262,7 +266,7 @@ impl<'a> Parser<'a> {
                 }
                 self.consume(&TokenType::RightBrace, "Expected '}'")?;
 
-                let else_block = Some(vec![Statement::Break(BreakStmt { span: while_span })]);
+                let else_block = Some(vec![Statement::Break(BreakStmt::new(while_span))]);
 
                 let if_expr = Expr::If(IfExpr {
                     is_comptime: false,
@@ -287,7 +291,7 @@ impl<'a> Parser<'a> {
             TokenType::Break => {
                 self.advance();
                 self.consume(&TokenType::Semicolon, "Expected ';'")?;
-                Ok(Statement::Break(BreakStmt { span: token_span }))
+                Ok(Statement::Break(BreakStmt::new(token_span)))
             }
             TokenType::Continue => {
                 self.advance();
@@ -299,14 +303,13 @@ impl<'a> Parser<'a> {
                     line: token_line,
                     column: token_col,
                     length: token_len,
+                    expansion: self.expansion(),
                 };
                 self.advance();
-                let iter = match &self.advance().kind {
-                    TokenType::Identifier(s) => s.to_string(),
-                    _ => return Err(self.error("Expected identifier after 'for'")),
-                };
+                let iter = self.expect_identifier("Expected identifier after 'for'")?;
                 self.consume(&TokenType::In, "Expected 'in' after for iterator")?;
                 let iterable = self.parse_expr()?;
+                let across = self.parse_across_clause()?;
                 let mut invariants = Vec::new();
                 while self.match_token(&TokenType::Invariant) {
                     invariants.push(self.parse_expr()?);
@@ -324,12 +327,37 @@ impl<'a> Parser<'a> {
                     body: stmts,
                     span: for_span,
                     next_fn: None,
+                    unroll: None,
+                    across,
                 }))
             }
             TokenType::Identifier(s) => {
                 let ident_line = token_line;
                 let ident_end_col = token_col + token_len;
                 let next_token = self.peek_n(1);
+                // `assume e;`. `assume` is a word of its own only before a name or a `!` with a
+                // space, so a function named `assume` can still be called.
+                let spaced_bang = next_token.kind == TokenType::Bang
+                    && !(next_token.line == ident_line && next_token.column == ident_end_col);
+                if *s == "assume"
+                    && (matches!(next_token.kind, TokenType::Identifier(_)) || spaced_bang)
+                {
+                    self.advance();
+                    let fact = self.parse_expr()?;
+                    self.consume(
+                        &TokenType::Semicolon,
+                        "Expected ';' after the fact of `assume`",
+                    )?;
+                    let call = Expr::FunctionCall(FunctionCallExpr::new(
+                        crate::syntax::stmt::ASSUME.into(),
+                        None,
+                        vec![fact],
+                        token_span,
+                    ));
+                    return Ok(Statement::ExprStmt(ExprStmtStmt::new(
+                        call, true, token_span,
+                    )));
+                }
 
                 let mut is_macro = false;
                 if next_token.kind == TokenType::Bang {
@@ -362,10 +390,14 @@ impl<'a> Parser<'a> {
                 let expr = self.parse_expr()?;
                 self.parse_expr_or_assign_stmt(expr, token_span)
             }
-            // An `if`, `match`, `unsafe` or `spawn` block that starts a statement ends at its
+            // An `if`, `match`, `unsafe`, `spawn` or `tasks` block that starts a statement ends at its
             // closing brace, as in Rust. Read as one expression, `if c { .. }` followed by
             // `*x = 1;` would be `(if c { .. }) * x = 1`.
-            TokenType::If | TokenType::Match | TokenType::Unsafe | TokenType::Spawn => {
+            TokenType::If
+            | TokenType::Match
+            | TokenType::Unsafe
+            | TokenType::Spawn
+            | TokenType::Tasks => {
                 let expr = self.parse_primary_expr()?;
                 self.parse_expr_or_assign_stmt(expr, token_span)
             }
@@ -381,6 +413,47 @@ impl<'a> Parser<'a> {
     ///
     /// The first `let` is returned and the rest wait in `pending_stmts` for
     /// `parse_statement_into`, since a statement parses to one statement.
+    /// `across <level>` or `across <level>(n)` after the range of a `for`.
+    fn parse_across_clause(&mut self) -> ParseResult<'a, Option<AcrossClause>> {
+        if !self.check(&TokenType::Across) {
+            return Ok(None);
+        }
+        let at = self.advance().clone();
+        let span = Span {
+            line: at.line,
+            column: at.column,
+            length: at.length,
+            expansion: self.expansion(),
+        };
+        let level = match &self.advance().kind {
+            TokenType::Identifier(s) => crate::symbol::Symbol::from(*s),
+            other => {
+                return Err(self.error(&format!(
+                    "Expected a level such as `blocks` or `lanes` after 'across', got {:?}",
+                    other
+                )))
+            }
+        };
+        let share = if self.match_token(&TokenType::LeftParen) {
+            let n = self.parse_expr()?;
+            self.consume(
+                &TokenType::RightParen,
+                "Expected ')' after the count of passes",
+            )?;
+            Some(Box::new(n))
+        } else {
+            None
+        };
+        Ok(Some(AcrossClause {
+            level,
+            share,
+            span,
+            kind: None,
+            subgroup_lanes: None,
+            auto_schedule: false,
+        }))
+    }
+
     fn parse_tuple_let(&mut self, span: Span) -> ParseResult<'a, Statement> {
         let start = self.peek().clone();
         let pattern = self.parse_tuple_pattern()?;
@@ -477,7 +550,7 @@ impl<'a> Parser<'a> {
                         name: format!("_{temp}_size").into(),
                         is_mut: false,
                         ty_ann: None,
-                        expr: super::tuple_match::has_elements(elems.len(), &temp_expr),
+                        expr: super::tuple_match::has_elements(elems.len(), &temp_expr, span),
                         span,
                     }));
                 }

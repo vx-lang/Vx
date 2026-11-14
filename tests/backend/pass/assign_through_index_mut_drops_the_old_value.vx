@@ -1,0 +1,70 @@
+//===- assign_through_index_mut_drops_the_old_value.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `p[i] = x` on a type that implements `IndexMut` drops the value it replaces, as in Rust.
+// The right side runs first, then `index_mut` runs once, then the old value is dropped.
+// The trace is on one line, so the check also covers the order.
+//
+// EXPECT: make, index_mut, drop 1, replaced, index_mut, drop 2, through a reference, drop 3, drop 6,
+
+import core::ops;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print!("drop ");
+    print!(self.id);
+    print!(", ");
+  }
+}
+
+struct Pair {
+  a : Noisy,
+  b : Noisy,
+}
+
+impl IndexMut for Pair {
+  type Output = Noisy;
+  fn index_mut(self : &mut Pair, i : i32) -> &mut Noisy {
+    print!("index_mut, ");
+    if i == 0 {
+      return &mut self.a;
+    }
+    return &mut self.b;
+  }
+}
+
+fn make(id : i32) -> Noisy {
+  print!("make, ");
+  return Noisy {
+    id : id
+  };
+}
+
+fn set_second(p : &mut Pair) -> void {
+  (*p)[1] = Noisy {
+    id : 6
+  };
+  print!("through a reference, ");
+}
+
+fn main() -> i32 {
+  let mut p = Pair {
+    a : Noisy {
+      id : 1
+    }, b : Noisy {
+      id : 2
+    }
+  };
+  p[0] = make(3);
+  print!("replaced, ");
+  set_second(&mut p);
+  return 0;
+}

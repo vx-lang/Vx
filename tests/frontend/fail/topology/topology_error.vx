@@ -15,7 +15,7 @@ fn main() -> i32 {
 
   spawn on(Topology::NPU[0]) {
     // This is illegal! Accessing Host memory natively from NPU.
-    let invalid = t_host;
+    let invalid = t_host.clone();
   }
 
   return 0;

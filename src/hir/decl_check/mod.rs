@@ -19,6 +19,7 @@ mod conflicts;
 mod copy_impls;
 mod memory;
 mod placement;
+mod thread_safety_impls;
 mod topology;
 
 impl TypeChecker<'_> {
@@ -36,11 +37,21 @@ impl TypeChecker<'_> {
     pub fn check_whole_program_declarations(&mut self) {
         // A name declared by two inputs (e.g. a `--machine` file and the program) is ambiguous.
         self.check_declaration_conflicts();
+        // A safe method of a trait impl with a pointer clause, or one that adds a `!frees`.
+        self.check_trait_impl_pointer_clauses();
+        // An `invariant` of a struct that names something other than `self` and its fields.
+        self.check_type_invariants_are_well_formed();
+        // The `ensures` of an `extern` function.
+        self.check_extern_clauses();
         // `impl Copy for X` where one of X's fields moves rather than copies.
         self.check_copy_impls();
+        // `impl Send for X` with no `unsafe`, and `unsafe impl` of another trait.
+        self.check_thread_safety_impls();
         // An impl binds every associated type its trait declares. Nothing downstream can catch
         // this: the binding is substituted into the signatures before name resolution runs.
         self.check_associated_type_bindings();
+        // An impl writes every method its trait gives no default body.
+        self.check_impls_write_required_methods();
         self.check_no_projections_in_fields();
         // `T : NoSuchTrait` on any declaration, called or not.
         self.check_bounds_name_a_trait();
@@ -64,6 +75,38 @@ impl TypeChecker<'_> {
         self.check_placements_name_a_place();
         // An `extern` signature has to be spellable in C, and a tensor is not.
         self.check_extern_signatures();
+        // A `const` whose value does not fit its type, or has no value while compiling, is
+        // reported once here. Uses only substitute the value.
+        self.check_const_declarations();
+    }
+
+    /// Report E3044 once per scalar `const` that has no usable value, at the declaration.
+    ///
+    /// The check used to run when a use asked for the value, so a `const` used twice got two
+    /// errors and an unused overflowing `const` got none. Tables stay checked at the use that
+    /// names them, where the diagnostic says how to read them.
+    fn check_const_declarations(&mut self) {
+        let mut consts: Vec<&crate::syntax::ConstDecl> =
+            self.env.consts.values().copied().collect();
+        // Source order, so FileCheck on multi-const fixtures stays stable.
+        consts.sort_by(|a, b| {
+            (a.span.line, a.span.column, a.name.as_ref()).cmp(&(
+                b.span.line,
+                b.span.column,
+                b.name.as_ref(),
+            ))
+        });
+        for decl in consts {
+            match crate::registry::ConstTable::from_decl(decl) {
+                Ok(None) => {
+                    let _ = self.const_literal(decl, &decl.span, true);
+                }
+                Ok(Some(_)) => {}
+                // Bad tables are reported when named; an unused bad table is rare and the use
+                // site message says how to read a table.
+                Err(_) => {}
+            }
+        }
     }
 
     /// Refuse a tensor anywhere in an `extern` signature.
@@ -98,11 +141,72 @@ impl TypeChecker<'_> {
                         ext.name,
                         Self::short_type_name(found)
                     ),
+                    Some(span.clone()),
+                );
+            }
+            if let Some(c_type) = c_allocator_mismatch(ext) {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3059,
+                    format!(
+                        "extern fn `{}` does not have the type of C's `{}`. Declare it as \
+                         `{}`. A size can also be `i64` or `u64`, and a pointer can be any raw \
+                         pointer to host memory.",
+                        ext.name, ext.name, c_type
+                    ),
                     Some(span),
                 );
             }
         }
     }
+}
+
+/// For a declaration of a C allocation function whose type is not C's, the declaration to write.
+/// The compiler calls these functions itself, with C's type, and LLVM has one declaration of each.
+fn c_allocator_mismatch(ext: &crate::syntax::ExternDecl) -> Option<&'static str> {
+    use crate::syntax::{ElementType, Type};
+    // Each parameter is a size (`true`) or a pointer (`false`); the bool after is whether the
+    // function returns a pointer.
+    let (params, returns_pointer, c_type): (&[bool], bool, &'static str) = match ext.name.as_ref() {
+        "malloc" => (&[true], true, "fn malloc(size : usize) -> *mut i8"),
+        "calloc" => (
+            &[true, true],
+            true,
+            "fn calloc(count : usize, size : usize) -> *mut i8",
+        ),
+        "realloc" => (
+            &[false, true],
+            true,
+            "fn realloc(ptr : *mut i8, size : usize) -> *mut i8",
+        ),
+        "aligned_alloc" => (
+            &[true, true],
+            true,
+            "fn aligned_alloc(alignment : usize, size : usize) -> *mut i8",
+        ),
+        "free" => (&[false], false, "fn free(ptr : *mut i8) -> void"),
+        _ => return None,
+    };
+    let is_size = |ty: &Type| {
+        matches!(
+            ty,
+            Type::Scalar(ElementType::I64 | ElementType::U64 | ElementType::USize)
+        )
+    };
+    let is_host_pointer = |ty: &Type| matches!(ty, Type::Pointer(_, None, _));
+    let params_match = ext.params.len() == params.len()
+        && ext.params.iter().zip(params).all(|((_, ty), size)| {
+            if *size {
+                is_size(ty)
+            } else {
+                is_host_pointer(ty)
+            }
+        });
+    let result_matches = if returns_pointer {
+        is_host_pointer(&ext.return_type)
+    } else {
+        crate::syntax::types::is_void_ty(&ext.return_type)
+    };
+    (!(params_match && result_matches)).then_some(c_type)
 }
 
 /// The tensor inside a type, through the wrappers that restate where a value lives, and through

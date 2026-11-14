@@ -1,0 +1,30 @@
+//===- module_const_extent_checked_against_capacity.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A tensor whose extents are module `const`s has a known size, so it is checked against the
+// capacity of the memory it is moved to: 1024 x 1024 f32 is 4 MiB, which does not fit a 1 MiB
+// memory (E6009) and does fit a 64 GiB one. `-j`, the parallel compile, reads the `const`s too.
+//
+// RUN: mkdir -p %t.d
+// RUN: printf 'Memory HBM {\n  capacity: 1 MiB, bandwidth: 2 TB/s, managed: explicit, scope: device\n}\nTopology Dev {\n  memory: Memory::HBM,\n  visible: [Memory::HBM],\n  transfer Memory::CPU_DRAM -> Memory::HBM : 300\n}\n' > %t.d/small.vx
+// RUN: sed 's/capacity: 1 MiB/capacity: 64 GiB/' %t.d/small.vx > %t.d/big.vx
+// RUN: not vxc --host default --machine %t.d/small.vx %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s
+// RUN: not vxc -j 2 --host default --machine %t.d/small.vx %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s
+// RUN: vxc --host default --machine %t.d/big.vx %s --action emit-mlir -o /dev/null
+
+const ROWS : i32 = 1024;
+const COLS : i32 = ROWS;
+
+fn main() -> i32 {
+  let kv : Tensor<f32, [ROWS, COLS]> = Tensor<f32, [ROWS, COLS]>::new();
+  let _staged = transfer(kv, Memory::HBM);
+  return 0;
+}
+
+// CHECK: E6009
+// CHECK-SAME: needs 4194304 bytes
+// CHECK-SAME: 'HBM' has capacity 1048576 bytes

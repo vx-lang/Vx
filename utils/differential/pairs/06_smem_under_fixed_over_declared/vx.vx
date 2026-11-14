@@ -20,7 +20,9 @@
 // RUN: vxc --host default --machine fleet/a100-80.vx %s --action emit-mlir -o /dev/null
 
 fn main() -> i32 {
-  let tile : Tensor<f32, [ 128, 128 ]> = Tensor<f32, [ 128, 128 ]>::uninit();
+  let tile : Tensor<f32, [ 128, 128 ]> = unsafe {
+    Tensor<f32, [ 128, 128 ]>::uninit()
+  };
   let _on_chip = transfer(tile, Memory::SMEM);
   return 0;
 }

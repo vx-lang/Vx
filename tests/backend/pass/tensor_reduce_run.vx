@@ -26,7 +26,7 @@ fn sum_of(t : &Tensor<f32, [?]>) -> f32 {
 
 fn main() -> i32 {
   // 1, 2, 3, 4.
-  let mut v = Tensor<f32, [4]>::uninit();
+  let mut v = unsafe { Tensor<f32, [4]>::uninit() };
   for i in 0..4 {
     v[i] = (i + 1) as f32;
   }
@@ -36,7 +36,7 @@ fn main() -> i32 {
   print(v.reduce(100.0, | acc, x | acc + x));
 
   // [[1, 2, 3], [4, 5, 6]].
-  let mut m = Tensor<f32, [2, 3]>::uninit();
+  let mut m = unsafe { Tensor<f32, [2, 3]>::uninit() };
   for i in 0..2 {
     for j in 0..3 {
       m[i][j] = (i * 3 + j + 1) as f32;
@@ -52,7 +52,7 @@ fn main() -> i32 {
   }));
 
   // 2 x 3 x 4 elements, 1 to 24: 24 * 25 / 2 = 300.
-  let mut c = Tensor<f32, [2, 3, 4]>::uninit();
+  let mut c = unsafe { Tensor<f32, [2, 3, 4]>::uninit() };
   for i in 0..2 {
     for j in 0..3 {
       for k in 0..4 {
@@ -64,14 +64,14 @@ fn main() -> i32 {
   print(c.reduce(0.0, | acc, x | acc + x));
 
   // 0.5 + 2.0.
-  let mut d = Tensor<f64, [2]>::uninit();
+  let mut d = unsafe { Tensor<f64, [2]>::uninit() };
   d[0] = 0.5;
   d[1] = 2.0;
   print!("; f64=");
   print(d.reduce(0.0, | acc, x | acc + x));
 
   // 1 * 2 * 3 * 4.
-  let mut n = Tensor<i32, [4]>::uninit();
+  let mut n = unsafe { Tensor<i32, [4]>::uninit() };
   for i in 0..4 {
     n[i] = i + 1;
   }

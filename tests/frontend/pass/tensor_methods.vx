@@ -1,9 +1,9 @@
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 
 import std::tensor;
 
 fn main() -> i32 {
-  let mut x = Tensor<f32, [10, 10]>::uninit();
+  let mut x = unsafe { Tensor<f32, [10, 10]>::uninit() };
   x.fill(1.0);
   let y = x.map(| val | val * 2.0);
   return 0;

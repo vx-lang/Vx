@@ -14,7 +14,7 @@ import std::string;
 import std::alloc;
 
 fn main() -> i32 {
-  let buf : *mut i8 = unsafe { malloc(4i64) };
+  let buf : *mut i8 = alloc(4, 16);
   unsafe { buf[0i64] = 104i8; buf[1i64] = 105i8; buf[2i64] = 0i8; }
   let mut s = unsafe { String::from_c_str(buf as *const i8) };
   print!("from_mut=");
@@ -27,6 +27,6 @@ fn main() -> i32 {
   unsafe { print(back[1i64] as i64); }
   print!(";");
   // CHECK: {{^}}from_mut=hi; second_byte=121;{{$}}
-  unsafe { free(buf); }
+  dealloc(buf, 16);
   return 0;
 }

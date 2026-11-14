@@ -1,0 +1,41 @@
+//===- second_tile_next_to_a_reshape_view.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A reshape view adds nothing to the working set, but a second tensor placed in the same space
+// still does: two 64 MiB tiles do not fit in 100 MiB.
+//
+// CHECK: E6010
+// CHECK-SAME: (2 tiles) sums to 134217728 bytes
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 100 MiB, bandwidth: 300 GB/s, managed: cached, scope: device
+}
+
+fn fill<const R : i32, const C : i32>(t : &mut Tensor<f32, [R, C], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    for r in 0..R {
+      for c in 0..C {
+        t[r][c] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let h = Tensor<f32, [4096, 4096]>::new();
+  let mut t = transfer(h, Memory::GPU_HBM);
+  let mut v = t.reshape([16384, 1024]);
+  let g = Tensor<f32, [4096, 4096]>::new();
+  let mut u = transfer(g, Memory::GPU_HBM);
+  fill<16384, 1024>(&mut v);
+  fill<4096, 4096>(&mut u);
+  return 0;
+}

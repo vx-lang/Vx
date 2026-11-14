@@ -1,0 +1,51 @@
+//===- method_called_on_an_enum_variant_value.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A method is found on an enum value however the value was made. Printed: `code` on a variable
+// set to `Op::B`; `code` called on `Op::A` directly; `answer`, which takes `&Op`, on that
+// variable; `is_lt` on `Ordering::Less()` directly; and `is_eq` on a variable set to
+// `Ordering::Equal()` with no type written.
+//
+// EXPECT: 2 1 42 true true
+import core::cmp;
+
+enum Op {
+  A,
+  B,
+}
+
+impl Op {
+  fn answer(self : &Op) -> i32 {
+    return 42;
+  }
+
+  fn code(self : Op) -> i32 {
+    match self {
+      Op::A => {
+        return 1;
+      }
+      Op::B => {
+        return 2;
+      }
+    }
+  }
+}
+
+fn main() -> i32 {
+  let x = Op::B;
+  print(x.code());
+  print!(" ");
+  print(Op::A.code());
+  print!(" ");
+  print(x.answer());
+  print!(" ");
+  print(Ordering::Less().is_lt());
+  print!(" ");
+  let p = Ordering::Equal();
+  print(p.is_eq());
+  return 0;
+}

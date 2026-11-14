@@ -228,7 +228,7 @@ fn flat_llvm(src: &str) -> Option<String> {
         .iter()
         .map(|w| w.local_inline_blocks.as_slice())
         .collect();
-    let agg_layouts: Vec<_> = lowered
+    let agg_layouts: Vec<vxc::layout::GeneratedAggregateLayout> = lowered
         .iter()
         .flat_map(|w| w.local_agg_layouts.iter().cloned())
         .collect();
@@ -248,6 +248,7 @@ fn flat_llvm(src: &str) -> Option<String> {
         &[],
         &[],
         vxc::config::Schedule::Parallel,
+        false,
     )
     .ok()?;
 
@@ -328,7 +329,7 @@ fn flat_module_mlir(src: &str) -> Option<String> {
         .iter()
         .map(|w| w.local_inline_blocks.as_slice())
         .collect();
-    let agg_layouts: Vec<_> = lowered
+    let agg_layouts: Vec<vxc::layout::GeneratedAggregateLayout> = lowered
         .iter()
         .flat_map(|w| w.local_agg_layouts.iter().cloned())
         .collect();
@@ -348,6 +349,7 @@ fn flat_module_mlir(src: &str) -> Option<String> {
         &[],
         &[],
         vxc::config::Schedule::Parallel,
+        false,
     )
     .map_err(|e| eprintln!("flat path failed to emit: {e:?}"))
     .ok()
@@ -955,7 +957,7 @@ fn flat_matches_ast_placed_tensor() {
     // device-placement transfer *methods* (`to_device`/`to_host`) are a different thing and are
     // rewritten to `Expr::Transfer` by the type checker.
     assert_output_parity(
-        "fn main() -> i32 { let mut c = Tensor<f32, [2], Memory::NPU_HBM>::uninit(); \
+        "fn main() -> i32 { let mut c = unsafe { Tensor<f32, [2], Memory::NPU_HBM>::uninit() }; \
          c[0] = 3.0; c[1] = 4.0; print(c[0]); return 0; }",
     );
 }
@@ -968,8 +970,8 @@ fn flat_matches_ast_two_tensors_differing_only_in_placement() {
     // space is not a property the type carries into codegen, and this pins that it is not
     // one the type needs to.
     assert_output_parity(
-        "fn main() -> i32 { let mut h = Tensor<f32, [2]>::uninit(); \
-         let mut d = Tensor<f32, [2], Memory::NPU_HBM>::uninit(); \
+        "fn main() -> i32 { let mut h = unsafe { Tensor<f32, [2]>::uninit() }; \
+         let mut d = unsafe { Tensor<f32, [2], Memory::NPU_HBM>::uninit() }; \
          h[0] = 1.0; h[1] = 2.0; d[0] = 3.0; d[1] = 4.0; \
          print(h[1]); print(d[0]); return 0; }",
     );
@@ -1053,7 +1055,7 @@ fn flat_matches_ast_spawn_regions_with_a_value_a_tail_and_nesting() {
     // A trailing `if` with no semicolon is the region's tail as the parser reads it, and in
     // statement position it is the last thing the region does, not a value.
     assert_parity(
-        "fn main() -> i32 { let mut a = Tensor<f32, [1, 1]>::uninit(); a[0][0] = 0.0; \
+        "fn main() -> i32 { let mut a = unsafe { Tensor<f32, [1, 1]>::uninit() }; a[0][0] = 0.0; \
            let x : f32 = 2.0; \
            spawn on(Topology::CPU) { a[0][0] = 1.0; if x > 1.0 { a[0][0] = 3.0; } } \
            return a[0][0] as i32; }",
@@ -1069,7 +1071,7 @@ fn flat_matches_ast_spawn_regions_with_a_value_a_tail_and_nesting() {
     // A nested region: the inner one is the outer's tail, and each closes with its own
     // topology.
     assert_parity(
-        "fn main() -> i32 { let mut a = Tensor<f32, [1, 1]>::uninit(); a[0][0] = 0.0; \
+        "fn main() -> i32 { let mut a = unsafe { Tensor<f32, [1, 1]>::uninit() }; a[0][0] = 0.0; \
            spawn on(Topology::CPU) { let y = 1; spawn on(Topology::CPU) { a[0][0] = 5.0; } } \
            return a[0][0] as i32; }",
         5,
@@ -1113,6 +1115,24 @@ fn flat_matches_ast_closure_capturing_nothing() {
          fn good(m : &Map) -> &i32 { let f = |q : &Map| &q.slot; return f(m); }\n\
          fn main() -> i32 { let x = Map { slot : 7, present : 1 }; return *good(&x); }",
         7,
+    );
+}
+
+#[test]
+fn flat_matches_ast_closure_cast_to_a_closure_type() {
+    // `c as ||->i32` makes the pair `{ env, func }`. A function takes the pair as a parameter
+    // and calls it, so `func` must get `env` first. (5 * 2 + 1) + (30 + 5) + (1 + 5) = 52.
+    assert_parity(
+        "fn apply(f : ||->i32) -> i32 { return f() + 1; }\n\
+         fn apply_to(f : |i32|->i32, v : i32) -> i32 { return f(v); }\n\
+         fn main() -> i32 {\n\
+           let k = 5;\n\
+           let c = || k * 2;\n\
+           let add = |x : i32| x + k;\n\
+           let g = add as |i32|->i32;\n\
+           return apply(c as ||->i32) + apply_to(g, 30) + g(1);\n\
+         }",
+        52,
     );
 }
 
@@ -1374,6 +1394,13 @@ fn flat_matches_ast_tensor_reduce() {
     );
 }
 
+// An enum payload of an enum is the whole storage of the inner enum. Each program stores its
+// values, reads them back through the payloads, and gives 42 only when each one is intact. A store
+// past the end of the outer enum, or a payload cut short, gives another answer.
+const READ_INNER: &str = "enum Inner { Value(i64), Empty }\n\
+     fn inner_value(i : Inner) -> i64 { match i { \
+       Inner::Value(n) => { return n; } Inner::Empty => { return 0; } } }\n";
+
 fn assert_enum_layout_declines(src: &str) {
     let mut program = parse(src);
     program.module_path = "crate::diff".into();
@@ -1407,15 +1434,60 @@ fn assert_enum_layout_declines(src: &str) {
 }
 
 #[test]
+fn flat_matches_ast_for_an_enum_with_a_nested_payload() {
+    assert_parity(
+        &format!(
+            "{READ_INNER}enum Outer {{ Number(i32), Nested(Inner) }}\n\
+             fn read(o : Outer) -> i64 {{ match o {{ \
+               Outer::Number(n) => {{ return n as i64; }} \
+               Outer::Nested(i) => {{ return inner_value(i); }} }} }}\n\
+             fn main() -> i32 {{ \
+               let v = Outer::Nested(Inner::Value(9223372036854775807i64)); \
+               if read(v) == 9223372036854775807i64 {{ return 42; }} return 1; }}"
+        ),
+        42,
+    );
+}
+
+#[test]
+fn flat_matches_ast_for_the_first_variant_of_an_enum_with_a_nested_payload() {
+    assert_parity(
+        &format!(
+            "{READ_INNER}enum Outer {{ Nested(Inner), Number(i32) }}\n\
+             fn read(o : Outer) -> i64 {{ match o {{ \
+               Outer::Nested(i) => {{ return inner_value(i); }} \
+               Outer::Number(n) => {{ return n as i64; }} }} }}\n\
+             fn main() -> i32 {{ let v = Outer::Number(7); return (read(v) * 6) as i32; }}"
+        ),
+        42,
+    );
+}
+
+#[test]
 fn flat_declines_an_enum_with_an_unsupported_nested_payload() {
-    // Lower the code but don't run it: without the fix, the store of `Inner` would write
-    // past the end of `Outer`.
+    // A function pointer payload has no layout on the flat path. Lower the code but don't run it: a
+    // layout that let the store through would write past the end of `Outer`.
     assert_enum_layout_declines(
-        "enum Inner { Value(i64), Empty }\n\
-         enum Outer { Number(i32), Nested(Inner) }\n\
+        "fn add_one(x : i32) -> i32 { return x + 1; }\n\
+         enum Outer { Number(i32), Nested(fn(i32) -> i32) }\n\
          fn main() -> i32 { \
-           let _value = Outer::Nested(Inner::Value(9223372036854775807i64)); \
+           let _value = Outer::Nested(add_one); \
            return 0; }",
+    );
+}
+
+#[test]
+fn flat_matches_ast_for_a_nested_payload_after_another_payload() {
+    assert_parity(
+        &format!(
+            "{READ_INNER}enum Outer {{ Numbers(i32, i32), Nested(i32, Inner) }}\n\
+             fn read(o : Outer) -> i64 {{ match o {{ \
+               Outer::Numbers(a, b) => {{ return (a * b) as i64; }} \
+               Outer::Nested(a, i) => {{ return a as i64 + inner_value(i); }} }} }}\n\
+             fn main() -> i32 {{ \
+               let v = Outer::Nested(5, Inner::Value(37)); return read(v) as i32; }}"
+        ),
+        42,
     );
 }
 
@@ -1423,26 +1495,52 @@ fn flat_declines_an_enum_with_an_unsupported_nested_payload() {
 fn flat_declines_an_enum_with_an_unsupported_first_variant() {
     // Even constructing the supported variant must reject the incomplete enum layout.
     assert_enum_layout_declines(
-        "enum Inner { Value(i64), Empty }\n\
-         enum Outer { Nested(Inner), Number(i32) }\n\
+        "enum Outer { Nested(fn(i32) -> i32), Number(i32) }\n\
          fn main() -> i32 { let _value = Outer::Number(7); return 0; }",
+    );
+}
+
+#[test]
+fn flat_matches_ast_for_a_nested_payload_in_the_first_variant() {
+    assert_parity(
+        &format!(
+            "{READ_INNER}enum Outer {{ Nested(i32, Inner), Numbers(i32, i32) }}\n\
+             fn read(o : Outer) -> i64 {{ match o {{ \
+               Outer::Nested(a, i) => {{ return a as i64 + inner_value(i); }} \
+               Outer::Numbers(a, b) => {{ return (a * b * 2) as i64; }} }} }}\n\
+             fn main() -> i32 {{ let v = Outer::Numbers(3, 7); return read(v) as i32; }}"
+        ),
+        42,
     );
 }
 
 #[test]
 fn flat_declines_an_enum_with_an_unsupported_second_payload() {
     assert_enum_layout_declines(
-        "enum Inner { Value(i64), Empty }\n\
-         enum Outer { Numbers(i32, i32), Nested(i32, Inner) }\n\
+        "enum Outer { Numbers(i32, i32), Nested(i32, fn(i32) -> i32) }\n\
          fn main() -> i32 { let _value = Outer::Numbers(3, 7); return 0; }",
+    );
+}
+
+#[test]
+fn flat_matches_ast_for_a_generic_enum_with_a_nested_payload() {
+    assert_parity(
+        &format!(
+            "{READ_INNER}enum Outer<T> {{ Number(i32), Nested(T) }}\n\
+             fn read(o : Outer<Inner>) -> i64 {{ match o {{ \
+               Outer<Inner>::Number(n) => {{ return n as i64; }} \
+               Outer<Inner>::Nested(i) => {{ return inner_value(i); }} }} }}\n\
+             fn main() -> i32 {{ \
+               let v = Outer<Inner>::Nested(Inner::Value(42)); return read(v) as i32; }}"
+        ),
+        42,
     );
 }
 
 #[test]
 fn flat_declines_an_enum_with_an_unsupported_second_payload_in_the_first_variant() {
     assert_enum_layout_declines(
-        "enum Inner { Value(i64), Empty }\n\
-         enum Outer { Nested(i32, Inner), Numbers(i32, i32) }\n\
+        "enum Outer { Nested(i32, fn(i32) -> i32), Numbers(i32, i32) }\n\
          fn main() -> i32 { let _value = Outer::Numbers(3, 7); return 0; }",
     );
 }
@@ -1450,13 +1548,93 @@ fn flat_declines_an_enum_with_an_unsupported_second_payload_in_the_first_variant
 #[test]
 fn flat_declines_an_enum_with_an_unsupported_generic_payload() {
     assert_enum_layout_declines(
-        "enum Inner { Value(i64), Empty }\n\
-         enum Outer<T> { Number(i32), Nested(T) }\n\
-         fn main() -> i32 { let _value = Outer<Inner>::Number(7); return 0; }",
+        "enum Outer<T> { Number(i32), Nested(T) }\n\
+         fn main() -> i32 { let _value = Outer<fn(i32) -> i32>::Number(7); return 0; }",
     );
 }
 
-fn assert_enum_layout_falls_back(jobs: Option<usize>) {
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn non_generic_struct_with_an_option_field_runs(#[case] jobs: Option<usize>) {
+    assert_generated_aggregate_runs(
+        "error_with_an_optional_code.vx",
+        &["-7", "99", "-7", "99"],
+        jobs,
+    );
+}
+
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn result_holds_an_error_with_an_optional_code(#[case] jobs: Option<usize>) {
+    assert_generated_aggregate_runs(
+        "result_holds_an_error_with_an_optional_code.vx",
+        &["4294967301", "22", "33", "-7", "11", "44", "99"],
+        jobs,
+    );
+}
+
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn result_holds_structs_with_different_enum_fields(#[case] jobs: Option<usize>) {
+    assert_generated_aggregate_runs(
+        "result_holds_structs_with_different_enum_fields.vx",
+        &["-9000000000", "77", "3", "-7", "42", "99", "-5"],
+        jobs,
+    );
+}
+
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn struct_with_an_option_field_in_different_enums(#[case] jobs: Option<usize>) {
+    assert_generated_aggregate_runs(
+        "struct_with_an_option_field_in_different_enums.vx",
+        &[
+            "55",
+            "-7",
+            "4294967301",
+            "99",
+            "41",
+            "7",
+            "2",
+            "-9000000000",
+            "1",
+            "-3",
+        ],
+        jobs,
+    );
+}
+
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn result_holds_an_error_from_another_module(#[case] jobs: Option<usize>) {
+    assert_generated_aggregate_runs(
+        "result_holds_an_error_from_another_module.vx",
+        &["4294967301", "2", "-9000000000"],
+        jobs,
+    );
+}
+
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn enum_payload_with_empty_fields_runs(
+    #[case] jobs: Option<usize>,
+    #[values(0, 2)] optimization: u8,
+) {
+    assert_generated_aggregate_runs_at_optimization(
+        "enum_payload_with_empty_fields.vx",
+        &["-2", "11", "42", "31", "-13", "47"],
+        jobs,
+        optimization,
+    );
+}
+
+fn assert_nested_enum_takes_the_flat_path(jobs: Option<usize>) {
     use melior::ir::operation::OperationLike;
 
     let dir = tempfile::tempdir().expect("create fixture directory");
@@ -1470,7 +1648,68 @@ fn assert_enum_layout_falls_back(jobs: Option<usize>) {
            return 0; }",
     )
     .expect("write fixture");
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_vxc"));
+    let mut command = super::time_limit::vxc();
+    command
+        .arg(&path)
+        .arg("--emit-mlir")
+        .env("VX_FLAT_DBG", "1");
+    if let Some(jobs) = jobs {
+        command.arg("-j").arg(jobs.to_string());
+    }
+    // Emit only. The parity tests above run such programs and read the values back.
+    let output = command.output().expect("run compiler");
+    let log = String::from_utf8_lossy(&output.stderr);
+    let context = make_context();
+    let valid_mlir = melior::ir::Module::parse(&context, &String::from_utf8_lossy(&output.stdout))
+        .is_some_and(|module| module.as_operation().verify());
+    let decline = "[flat-codegen] declined main";
+    assert_eq!(
+        (
+            output.status.success(),
+            log.contains(decline),
+            log.contains("[flat-codegen] program outside the flat subset; using the AST path"),
+            log.contains("emitted module via the flat path")
+                || log.contains("[parallel-frontend] emitted module"),
+            jobs.is_none()
+                || log.contains("[parallel-frontend] the flat emitter did not take this program; using the sequential driver"),
+            valid_mlir,
+        ),
+        (true, false, false, true, jobs.is_none(), true),
+        "compilation with jobs={jobs:?}: flags are (success, decline, AST fallback, flat module, \
+         parallel fallback, valid MLIR)\n{log}\nMLIR:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
+fn driver_takes_the_flat_path_for_a_nested_enum() {
+    assert_nested_enum_takes_the_flat_path(None);
+}
+
+#[test]
+fn parallel_driver_takes_the_flat_path_for_a_nested_enum() {
+    if std::thread::available_parallelism().map_or(0, usize::from) < 4 {
+        eprintln!("two-worker compilation requires leaving two CPU cores idle");
+        return;
+    }
+    assert_nested_enum_takes_the_flat_path(Some(2));
+}
+
+fn assert_enum_layout_falls_back(jobs: Option<usize>) {
+    use melior::ir::operation::OperationLike;
+
+    let dir = tempfile::tempdir().expect("create fixture directory");
+    let path = dir.path().join("enum_with_a_function_payload.vx");
+    std::fs::write(
+        &path,
+        "fn add_one(x : i32) -> i32 { return x + 1; }\n\
+         enum Outer { Number(i32), Nested(fn(i32) -> i32) }\n\
+         fn main() -> i32 { \
+           let _value = Outer::Nested(add_one); \
+           return 0; }",
+    )
+    .expect("write fixture");
+    let mut command = super::time_limit::vxc();
     command
         .arg(&path)
         .arg("--emit-mlir")
@@ -1515,6 +1754,234 @@ fn parallel_driver_falls_back_for_an_unsupported_enum_layout() {
         return;
     }
     assert_enum_layout_falls_back(Some(2));
+}
+
+fn assert_enum_variants_with_different_structs_run(jobs: Option<usize>) {
+    assert_generated_aggregate_runs(
+        "enum_variants_with_different_structs.vx",
+        &["17", "25", "17", "25", "29"],
+        jobs,
+    );
+}
+
+fn assert_generated_aggregate_runs(fixture: &str, expected: &[&str], jobs: Option<usize>) {
+    assert_generated_aggregate_runs_at_optimization(fixture, expected, jobs, 0);
+}
+
+fn assert_generated_aggregate_runs_at_optimization(
+    fixture: &str,
+    expected: &[&str],
+    jobs: Option<usize>,
+    optimization: u8,
+) {
+    let dir = tempfile::tempdir().expect("create fixture directory");
+    let path = dir.path().join("enum_metadata.vx");
+    let source = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/backend/pass")
+            .join(fixture),
+    )
+    .expect("read fixture");
+    std::fs::write(&path, source).expect("write fixture");
+    // A fixture may import a helper module, such as `tests::modules::pass_a_result_through`.
+    let tests_package = format!("tests={}", concat!(env!("CARGO_MANIFEST_DIR"), "/tests"));
+    let mut command = super::time_limit::vxc();
+    command
+        .arg(&path)
+        .args(["--package", &tests_package])
+        .arg("--run")
+        .arg(format!("-O{optimization}"))
+        .env("VX_FLAT_DBG", "1");
+    if let Some(jobs) = jobs {
+        command.arg("-j").arg(jobs.to_string());
+    }
+    let output = command.output().expect("compile and run fixture");
+    let log = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "compilation with jobs={jobs:?}: {log}\n{stdout}"
+    );
+    let marker = if jobs.is_some() {
+        "[parallel-frontend] emitted module with -j 2"
+    } else {
+        "[flat-codegen] emitted module via the flat path"
+    };
+    assert!(log.contains(marker), "flat path with jobs={jobs:?}: {log}");
+    // Native compilation prints progress before the program's final output line.
+    let values = stdout
+        .lines()
+        .last()
+        .expect("program prints its payload values");
+    let actual: Vec<_> = values.split_whitespace().collect();
+    assert_eq!(
+        actual.len(),
+        expected.len(),
+        "printed values from {fixture} with jobs={jobs:?}: {stdout}"
+    );
+    for (i, expected) in expected.iter().enumerate() {
+        assert_eq!(actual[i], *expected, "payload value {i} with jobs={jobs:?}");
+    }
+}
+
+#[rstest::rstest]
+#[case::i64_before_pointer("enum_with_integer_and_pointer_variants.vx")]
+#[case::pointer_before_i64("enum_with_pointer_before_i64.vx")]
+#[case::i32_before_pointer("enum_with_i32_before_pointer.vx")]
+#[case::pointer_before_i32("enum_with_pointer_before_i32.vx")]
+fn enum_with_integer_and_pointer_variants_runs(#[case] fixture: &str) {
+    assert_generated_aggregate_runs(fixture, &["5", "7"], None);
+}
+
+#[rstest::rstest]
+#[case::i64_before_pointer("enum_with_integer_and_pointer_variants.vx")]
+#[case::pointer_before_i64("enum_with_pointer_before_i64.vx")]
+#[case::i32_before_pointer("enum_with_i32_before_pointer.vx")]
+#[case::pointer_before_i32("enum_with_pointer_before_i32.vx")]
+fn enum_with_integer_and_pointer_variants_runs_in_parallel(#[case] fixture: &str) {
+    if std::thread::available_parallelism().map_or(0, usize::from) < 4 {
+        eprintln!("two-worker compilation requires leaving two CPU cores idle");
+        return;
+    }
+    assert_generated_aggregate_runs(fixture, &["5", "7"], Some(2));
+}
+
+#[test]
+fn enum_variants_with_different_structs_run() {
+    assert_enum_variants_with_different_structs_run(None);
+}
+
+#[test]
+fn enum_variants_with_different_structs_run_in_parallel() {
+    if std::thread::available_parallelism().map_or(0, usize::from) < 4 {
+        eprintln!("two-worker compilation requires leaving two CPU cores idle");
+        return;
+    }
+    assert_enum_variants_with_different_structs_run(Some(2));
+}
+
+#[test]
+fn generic_struct_with_nested_pointer_fields_runs() {
+    assert_generated_aggregate_runs(
+        "generic_struct_with_nested_pointer_fields.vx",
+        &["5", "1", "17", "31"],
+        None,
+    );
+}
+
+#[test]
+fn generic_struct_with_nested_pointer_fields_runs_in_parallel() {
+    if std::thread::available_parallelism().map_or(0, usize::from) < 4 {
+        eprintln!("two-worker compilation requires leaving two CPU cores idle");
+        return;
+    }
+    assert_generated_aggregate_runs(
+        "generic_struct_with_nested_pointer_fields.vx",
+        &["5", "1", "17", "31"],
+        Some(2),
+    );
+}
+
+#[test]
+fn generic_structs_with_borrowed_tensors_run() {
+    assert_generated_aggregate_runs(
+        "generic_structs_with_borrowed_tensors.vx",
+        &["5", "41", "7", "43"],
+        None,
+    );
+}
+
+#[test]
+fn generic_structs_with_borrowed_tensors_run_in_parallel() {
+    if std::thread::available_parallelism().map_or(0, usize::from) < 4 {
+        eprintln!("two-worker compilation requires leaving two CPU cores idle");
+        return;
+    }
+    assert_generated_aggregate_runs(
+        "generic_structs_with_borrowed_tensors.vx",
+        &["5", "41", "7", "43"],
+        Some(2),
+    );
+}
+
+#[test]
+fn enum_borrows_from_separate_functions_run() {
+    assert_generated_aggregate_runs(
+        "enum_borrows_from_separate_functions.vx",
+        &["11", "23"],
+        None,
+    );
+}
+
+#[test]
+fn enum_borrows_from_separate_functions_run_in_parallel() {
+    if std::thread::available_parallelism().map_or(0, usize::from) < 4 {
+        eprintln!("two-worker compilation requires leaving two CPU cores idle");
+        return;
+    }
+    assert_generated_aggregate_runs(
+        "enum_borrows_from_separate_functions.vx",
+        &["11", "23"],
+        Some(2),
+    );
+}
+
+#[test]
+fn enum_tensor_pointers_construct_and_match() {
+    assert_generated_aggregate_runs(
+        "enum_tensor_pointers_construct_and_match.vx",
+        &["5", "7", "3", "3"],
+        None,
+    );
+}
+
+#[test]
+fn enum_tensor_pointers_construct_and_match_in_parallel() {
+    if std::thread::available_parallelism().map_or(0, usize::from) < 4 {
+        eprintln!("two-worker compilation requires leaving two CPU cores idle");
+        return;
+    }
+    assert_generated_aggregate_runs(
+        "enum_tensor_pointers_construct_and_match.vx",
+        &["5", "7", "3", "3"],
+        Some(2),
+    );
+}
+
+#[test]
+fn enum_parameters_with_host_and_gpu_tensor_pointers_compile() {
+    assert_generated_aggregate_runs("enum_pointer_tensor_placements.vx", &["3"], None);
+}
+
+#[test]
+fn enum_parameters_with_host_and_gpu_tensor_pointers_compile_in_parallel() {
+    if std::thread::available_parallelism().map_or(0, usize::from) < 4 {
+        eprintln!("two-worker compilation requires leaving two CPU cores idle");
+        return;
+    }
+    assert_generated_aggregate_runs("enum_pointer_tensor_placements.vx", &["3"], Some(2));
+}
+
+#[test]
+fn nested_struct_with_a_leading_zero_constant_runs() {
+    assert_generated_aggregate_runs(
+        "nested_struct_with_a_leading_zero_constant.vx",
+        &["17"],
+        None,
+    );
+}
+
+#[test]
+fn nested_struct_with_a_leading_zero_constant_runs_in_parallel() {
+    if std::thread::available_parallelism().map_or(0, usize::from) < 4 {
+        eprintln!("two-worker compilation requires leaving two CPU cores idle");
+        return;
+    }
+    assert_generated_aggregate_runs(
+        "nested_struct_with_a_leading_zero_constant.vx",
+        &["17"],
+        Some(2),
+    );
 }
 
 #[test]
@@ -1664,11 +2131,11 @@ fn flat_matches_ast_reborrow_of_a_raw_pointer() {
     // `&mut *ptr` on a raw pointer is the pointer itself, returned as a reference and read
     // through: the `Vec::as_mut_slice` shape.
     assert_parity(
-        "extern \"C\" { fn vx_vec_alloc(elem_size: i64, cap: i64) -> *mut i8; }\n\
+        "extern \"C\" { fn malloc(size: i64) -> *mut i8; }\n\
          struct Buf { data : *mut i32 }\n\
          fn first(b : &mut Buf) -> &mut i32 { let ptr : *mut i32 = b.data; \
            return unsafe { &mut *ptr }; }\n\
-         fn main() -> i32 { let p : *mut i32 = unsafe { vx_vec_alloc(4, 4) }; \
+         fn main() -> i32 { let p : *mut i32 = unsafe { malloc(16) }; \
            let mut b = Buf { data : p }; unsafe { b.data[0] = 42; } \
            let r = first(&mut b); return *r; }",
         42,
@@ -2095,7 +2562,201 @@ fn flat_matches_ast_scalar_casts() {
     );
 }
 
-/// Compile a "library" module to a serialized `.vxlib` interface (frozen registry + flat-HIR bodies).
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn same_named_pointer_targets_use_their_own_module_layout(#[case] jobs: Option<usize>) {
+    let directory = tempfile::tempdir().unwrap();
+    for (name, source) in [
+        ("left.vx", "struct Node { count: i32, value: i64 } struct Left { node: *const Node } fn read_left() -> i64 { let node = Node { count: 1, value: 42 }; let holder = Left { node: (&node) as *const Node }; return unsafe { holder.node.value }; }"),
+        ("right.vx", "struct Node { count: i32, value: i32 } struct Right { node: *const Node } fn read_right() -> i32 { let node = Node { count: 1, value: 7 }; let holder = Right { node: (&node) as *const Node }; return unsafe { holder.node.value }; }"),
+        ("app.vx", "import left; import right; fn main() -> i32 { print(read_left()); print(\" \"); print(read_right()); return 0; }"),
+    ] {
+        std::fs::write(directory.path().join(name), source).unwrap();
+    }
+    for optimization in ["-O0", "-O2"] {
+        let mut command = super::time_limit::vxc();
+        command
+            .arg(directory.path().join("app.vx"))
+            .arg("--run")
+            .arg(optimization)
+            .env("VX_FLAT_DBG", "1");
+        if let Some(jobs) = jobs {
+            command.arg("-j").arg(jobs.to_string());
+        }
+        let output = command.output().unwrap();
+        let log = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "different Node layouts must compile: {log}"
+        );
+        let marker = if jobs.is_some() {
+            "[parallel-frontend] emitted module with -j 2"
+        } else {
+            "[flat-codegen] emitted module via the flat path"
+        };
+        assert!(
+            log.contains(marker),
+            "both Node layouts must use the flat path: {log}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).lines().last(),
+            Some("42 7"),
+            "each pointer must read its own module's value at {optimization}"
+        );
+    }
+}
+
+const LIBRARY_WITH_EMPTY_FIELDS: &str = r#"
+struct Empty {}
+struct Fields { marker: Empty, number: i32 }
+fn read_number(fields: &Fields) -> i32 { return fields.number; }
+fn write_number(fields: &mut Fields, number: i32) -> void { fields.number = number; }
+fn number_address(fields: &Fields) -> &i32 { return &fields.number; }
+fn answer() -> i32 {
+    let mut fields = Fields { marker: Empty {}, number: 7 };
+    let initial = read_number(&fields);
+    write_number(&mut fields, initial + 35);
+    let number = number_address(&fields);
+    return *number;
+}
+"#;
+
+#[rstest::rstest]
+#[case::artifact(None, true)]
+#[case::source_normal(None, false)]
+#[case::source_parallel(Some(2), false)]
+fn indexed_fields_survive_imports(#[case] jobs: Option<usize>, #[case] artifact_only: bool) {
+    use vxc::bytecode::Opcode;
+    let directory = tempfile::tempdir().expect("create artifact test directory");
+    let library = directory.path().join("fields.vx");
+    let artifact = directory.path().join("fields.vxlib");
+    let app = directory.path().join("app.vx");
+    std::fs::write(&library, LIBRARY_WITH_EMPTY_FIELDS).expect("write library");
+    if artifact_only {
+        let export = super::time_limit::vxc()
+            .arg("--emit-interface")
+            .arg(&library)
+            .arg("-o")
+            .arg(&artifact)
+            .output()
+            .expect("export interface");
+        assert!(
+            export.status.success(),
+            "export interface: {}",
+            String::from_utf8_lossy(&export.stderr)
+        );
+        let bytes = std::fs::read(&artifact).expect("read exported interface");
+        let metadata = vxc::metadata::VxMetadata::load_from_buffer(&bytes);
+        let registry = vxc::metadata::deserialize_registry_interface(metadata.interface_data)
+            .expect("read exported function bodies");
+        for (name, opcode) in [
+            ("read_number", Opcode::FieldLoad),
+            ("write_number", Opcode::FieldStore),
+            ("number_address", Opcode::FieldAddr),
+        ] {
+            let signature = registry
+                .fn_sigs
+                .get(&vxc::symbol::Symbol::from(name))
+                .expect("field helper is exported");
+            let body = registry
+                .body_of(signature.gid)
+                .expect("field helper body is exported");
+            assert!(
+                body.hir
+                    .iter()
+                    .any(|instruction| instruction.opcode == Opcode::CheckAggregate),
+                "imported {name} must retain its aggregate layout check"
+            );
+            let indices: Vec<_> = body
+                .hir
+                .iter()
+                .filter(|instruction| instruction.opcode == opcode)
+                .map(|instruction| instruction.imm)
+                .collect();
+            assert_eq!(
+                indices,
+                vec![vxc::bytecode::encode_field_index(1)],
+                "imported {name} must retain the number field index"
+            );
+        }
+        std::fs::remove_file(&library)
+            .expect("remove library source before importing its artifact");
+    }
+    let import = if artifact_only {
+        ""
+    } else {
+        "import fields;\n"
+    };
+    std::fs::write(
+        &app,
+        format!("{import}fn main() -> i32 {{ print(answer()); return 0; }}"),
+    )
+    .expect("write consumer");
+    let mut command = super::time_limit::vxc();
+    if artifact_only {
+        command.arg("--link-interface").arg(&artifact);
+    }
+    command.arg(&app).arg("--emit-mlir").env("VX_FLAT_DBG", "1");
+    if let Some(jobs) = jobs {
+        command.arg("-j").arg(jobs.to_string());
+    }
+    let emitted = command.output().expect("emit imported field helpers");
+    assert!(
+        emitted.status.success(),
+        "emit imported field helpers: {}",
+        String::from_utf8_lossy(&emitted.stderr)
+    );
+    let mlir = String::from_utf8_lossy(&emitted.stdout);
+    for name in ["read_number", "write_number", "number_address"] {
+        let header = format!("@{name}(");
+        let lines: Vec<_> = mlir
+            .lines()
+            .skip_while(|line| {
+                !(line.trim_start().starts_with("func.func") && line.contains(&header))
+            })
+            .skip(1)
+            .take_while(|line| !line.trim_start().starts_with('}'))
+            .filter(|line| line.contains("llvm.getelementptr"))
+            .collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "imported {name} must access exactly one field: {mlir}"
+        );
+        assert!(
+            lines[0].contains("[0, 1]"),
+            "imported {name} must select the number field: {mlir}"
+        );
+    }
+    let mut run = super::time_limit::vxc();
+    if artifact_only {
+        run.arg("--link-interface").arg(&artifact);
+    }
+    run.arg(&app).arg("--run").env("VX_FLAT_DBG", "1");
+    if let Some(jobs) = jobs {
+        run.arg("-j").arg(jobs.to_string());
+    }
+    let output = run.output().expect("run imported field helpers");
+    let log = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "import consumer: {log}");
+    let marker = if jobs.is_some() {
+        "[parallel-frontend] emitted module with -j 2"
+    } else {
+        "[flat-codegen] emitted module via the flat path"
+    };
+    assert!(
+        log.contains(marker),
+        "import consumer must use the flat path: {log}"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).lines().last(),
+        Some("42"),
+        "imported field stores and borrowed access must preserve the number"
+    );
+}
+
+/// Compile a library to an interface containing its registry and flat function bodies.
 fn build_lib_interface(path: &str, src: &str) -> Vec<u8> {
     let mut prog = parse(src);
     prog.module_path = path.into();
@@ -2155,7 +2816,10 @@ fn program_links_a_function_body_from_a_vxlib_artifact() {
         .clone();
     let synth = Function {
         is_unsafe: false,
+        is_pub: false,
         name: body.name.clone(),
+        span: vxc::syntax::Span::default(),
+        file: None,
         generics: vec![],
         params: body
             .params
@@ -2206,6 +2870,7 @@ fn program_links_a_function_body_from_a_vxlib_artifact() {
         &[],
         &[],
         vxc::config::Schedule::Parallel,
+        false,
     )
     .expect("flat codegen emits the linked module");
     let context = make_context();
@@ -2422,6 +3087,74 @@ fn driver_link_interface_runs_an_imported_enum() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A program can also build and match an enum it imports from a `.vxlib`, not only pass it
+/// between the library's functions. The type checker never sees the library's source, so it
+/// reads the enum's variants from the `.vxlib`.
+#[test]
+fn driver_link_interface_builds_and_matches_an_imported_enum() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join(format!("vx_link_enum_match_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (lib, app, vxlib) = (
+        dir.join("colors.vx"),
+        dir.join("app.vx"),
+        dir.join("colors.vxlib"),
+    );
+    std::fs::write(
+        &lib,
+        "enum Color { Red, Green, Blue }\n\
+         fn pick() -> Color { return Color::Blue; }\n\
+         fn number(c : Color) -> i32 { match c { Color::Red => { return 10; } \
+           Color::Green => { return 20; } Color::Blue => { return 30; } } }\n",
+    )
+    .unwrap();
+    // `c` is used again after the `match`: an enum without data is a plain value, not moved.
+    std::fs::write(
+        &app,
+        "fn main() -> i32 { let c = pick(); print(number(Color::Green)); print!(\" \"); \
+           match c { Color::Blue => { print!(\"blue\"); } _ => { print!(\"other\"); } } \
+           print!(\" \"); print(number(c)); print!(\"\\n\"); return 0; }\n",
+    )
+    .unwrap();
+
+    let vxc = env!("CARGO_BIN_EXE_vxc");
+    let emit = Command::new(vxc)
+        .args([
+            "--emit-interface",
+            lib.to_str().unwrap(),
+            "-o",
+            vxlib.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run vxc --emit-interface");
+    assert!(
+        emit.status.success(),
+        "emit-interface failed:\n{}",
+        String::from_utf8_lossy(&emit.stderr)
+    );
+
+    let run = Command::new(vxc)
+        .args([
+            "--link-interface",
+            vxlib.to_str().unwrap(),
+            app.to_str().unwrap(),
+            "--run",
+        ])
+        .output()
+        .expect("run vxc --link-interface --run");
+    let out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        out.lines().any(|l| l == "20 blue 30"),
+        "expected the imported enum to print 20 blue 30, got:\n{out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A number literal inside a library takes its type from the type checker, as it does in a
 /// program: `b == 32` with `b : u8` compares two `u8`s. A library saved without being checked
 /// kept the literal as an `i32`, and the program that called `is_space` failed to compile.
@@ -2497,15 +3230,13 @@ fn driver_link_interface_declines_cleanly_outside_flat_subset() {
         dir.join("reflib.vxlib"),
     );
     std::fs::write(&lib, "fn double(x : i32) -> i32 { return x * 2; }\n").unwrap();
-    // `main` allocates a tensor whose extent is a local (`Tensor<f32, [n, n]>`), which the flat
-    // path does not model and so declines, while also calling the imported `double`. The
-    // decline forces the AST path, which has no AST for the imported body, so the driver must
-    // emit a clean diagnostic rather than ICE. (A data-carrying enum from a call, the construct
-    // this test used before, now lowers on the flat path.)
+    // VX_FLAT_DECLINE makes the flat path decline `main`, which calls the imported `double`.
+    // The decline forces the AST path, which has no AST for the imported body, so the driver
+    // must emit a clean diagnostic rather than ICE.
     std::fs::write(
         &app,
-        "fn main() -> i32 { let n = 3; let mut a = Tensor<f32, [n, n]>::uninit(); \
-           a[0][0] = 1.0; return double(10) + (a[0][0] as i32); }\n",
+        "fn main() -> i32 { let n = 0i64; let k = match n { 0i64 => { 1 } _ => { 2 } }; \
+           return double(10) + k; }\n",
     )
     .unwrap();
 
@@ -2529,6 +3260,7 @@ fn driver_link_interface_declines_cleanly_outside_flat_subset() {
             app.to_str().unwrap(),
             "--run",
         ])
+        .env("VX_FLAT_DECLINE", "main")
         .output()
         .expect("run");
     let out = format!(
@@ -2541,12 +3273,80 @@ fn driver_link_interface_declines_cleanly_outside_flat_subset() {
         "linking an import into an out-of-flat-subset program must fail, got success:\n{out}"
     );
     assert!(
-        out.contains("flat-coverage") || out.contains("outside the flat-codegen subset"),
-        "expected a clean flat-coverage error, got:\n{out}"
+        out.contains("the default code generator does not support yet"),
+        "expected a clean error about the construct, got:\n{out}"
     );
     assert!(
         !out.contains("Internal Error") && !out.contains("panicked"),
         "must be a clean error, not an ICE, got:\n{out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `--legacy-codegen` cannot link the functions of a `.vxlib`. A program that imports one fails
+/// with a message that names the option, even when the default code generator compiles it.
+#[test]
+fn legacy_codegen_names_itself_when_a_program_imports_a_vxlib() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join(format!("vx_legacy_vxlib_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (lib, app, vxlib) = (
+        dir.join("reflib.vx"),
+        dir.join("refapp.vx"),
+        dir.join("reflib.vxlib"),
+    );
+    std::fs::write(&lib, "fn double(x : i32) -> i32 { return x * 2; }\n").unwrap();
+    std::fs::write(&app, "fn main() -> i32 { print(double(21)); return 0; }\n").unwrap();
+
+    let vxc = env!("CARGO_BIN_EXE_vxc");
+    assert!(Command::new(vxc)
+        .args([
+            "--emit-interface",
+            lib.to_str().unwrap(),
+            "-o",
+            vxlib.to_str().unwrap(),
+        ])
+        .output()
+        .expect("emit")
+        .status
+        .success());
+
+    let run = |extra: &[&str]| {
+        let out = Command::new(vxc)
+            .args([
+                "--link-interface",
+                vxlib.to_str().unwrap(),
+                app.to_str().unwrap(),
+            ])
+            .args(extra)
+            .arg("--run")
+            .output()
+            .expect("run");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        (out.status.success(), text)
+    };
+    let (ok, out) = run(&[]);
+    assert!(
+        ok && out.contains("42"),
+        "the default code generator must run it, got:\n{out}"
+    );
+    let (ok, out) = run(&["--legacy-codegen"]);
+    assert!(
+        !ok,
+        "--legacy-codegen cannot link a .vxlib, but it succeeded:\n{out}"
+    );
+    assert!(
+        out.contains("with `--legacy-codegen`, because it imports a `.vxlib`"),
+        "expected the message to name --legacy-codegen, got:\n{out}"
+    );
+    assert!(
+        !out.contains("does not support yet"),
+        "the message must not blame a construct in the program, got:\n{out}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -2656,7 +3456,6 @@ fn driver_import_runs_cross_module_scalar_references() {
 
     let run = Command::new(vxc)
         .args([app.to_str().unwrap(), "--run"])
-        .env("VX_STD_PATH", dir.to_str().unwrap())
         .env("RUST_BACKTRACE", "1")
         .output()
         .expect("run");
@@ -2708,10 +3507,9 @@ fn driver_import_auto_resolves_a_vxlib_artifact() {
     // Delete the library source: the import must resolve *purely* to the artifact.
     std::fs::remove_file(&lib).unwrap();
 
-    // No --link-interface flag; VX_STD_PATH makes `import mathlib;` resolve to `<dir>/mathlib.vxlib`.
+    // No --link-interface flag: `import mathlib;` resolves to the `mathlib.vxlib` beside the program.
     let run = Command::new(vxc)
         .args([app.to_str().unwrap(), "--run"])
-        .env("VX_STD_PATH", dir.to_str().unwrap())
         .env("RUST_BACKTRACE", "1")
         .output()
         .expect("run");
@@ -2770,7 +3568,6 @@ fn driver_import_uses_a_struct_from_a_vxlib() {
 
     let run = Command::new(vxc)
         .args([app.to_str().unwrap(), "--run"])
-        .env("VX_STD_PATH", dir.to_str().unwrap())
         .env("RUST_BACKTRACE", "1")
         .output()
         .expect("run");
@@ -2824,7 +3621,6 @@ fn driver_import_constructs_a_struct_from_a_vxlib() {
 
     let run = Command::new(vxc)
         .args([app.to_str().unwrap(), "--run"])
-        .env("VX_STD_PATH", dir.to_str().unwrap())
         .env("RUST_BACKTRACE", "1")
         .output()
         .expect("run");
@@ -3076,8 +3872,8 @@ fn flat_matches_ast_corpus_tensor_view_2d() {
     // yet; they are row-major, as the oracle's.)
     assert_parity(
         "extern \"C\" { fn vx_alloc_f32(n : i32) -> *mut f32; fn vx_free_f32(p : *mut f32, n : i32) -> void; }\n\
-         fn view(p : *mut f32, r : i32, c : i32) -> Tensor<f32, [?, ?]> { \
-           let v = unsafe { tensor_view_2d(p, r, c) }; return v; }\n\
+         fn view(p : *mut f32, r : i32, c : i32) -> &Tensor<f32, [?, ?]> { \
+           let v = unsafe { tensor_view_2d(p, r, c) }; return &v; }\n\
          fn main() -> i32 { let p : *mut f32 = unsafe { vx_alloc_f32(6) }; \
            unsafe { for i in 0..6 { p[i] = (i + 1) as f32; } } \
            let a = view(p, 2, 3); let x = a[1][2]; let w = a.extent(1); \
@@ -3087,7 +3883,7 @@ fn flat_matches_ast_corpus_tensor_view_2d() {
 }
 
 /// A minimal self-contained `Vec<T>` (the shape of `stdlib/std/vec.vx`, minus googletest): a struct
-/// with a raw-pointer field, a generic `impl` allocating through the Rust byte allocator, and
+/// with a raw-pointer field, a generic `impl` allocating through `malloc`, and
 /// `push`/`get`/`len`. Exercises the whole `#242` surface — a pointer-field aggregate, field access
 /// through a `self` pointer, raw-pointer indexing, construction, and a generic static call.
 /// A self-contained `Vec` + `VecIter` + `Option` (the shape of `stdlib/std/vec.vx`) exercising the
@@ -3098,15 +3894,15 @@ fn flat_matches_ast_corpus_tensor_view_2d() {
 /// differential reference here — the stdlib form is validated flat-vs-oracle by the corpus sweep. (#242)
 const ITER_MINI: &str = r#"
 extern "C" {
-  fn vx_vec_alloc(elem_size: i64, cap: i64) -> *mut i8;
-  fn vx_vec_grow(ptr: *mut i8, old_cap: i64, new_cap: i64, elem_size: i64) -> *mut i8;
+  fn malloc(size: i64) -> *mut i8;
+  fn realloc(ptr: *mut i8, size: i64) -> *mut i8;
 }
 struct Vec<T> { data: *mut T, len: i32, capacity: i32 }
 enum Option<T> { Some(T), None }
 struct VecIter<T> { vec: *const Vec<T>, current: i32 }
 impl<T> Vec<T> {
   fn with_capacity(capacity: i32) -> Vec<T> {
-    let ptr: *mut T = unsafe { vx_vec_alloc(sizeof<T>(), capacity as i64) };
+    let ptr: *mut T = unsafe { malloc(sizeof<T>() * (capacity as i64)) };
     return Vec<T> { data: ptr, len: 0, capacity: capacity };
   }
   fn new() -> Vec<T> { return Vec<T>::with_capacity(2); }
@@ -3115,7 +3911,7 @@ impl<T> Vec<T> {
       let mut nc: i32 = 4;
       if self.capacity > 0 { nc = self.capacity * 2; }
       let p: *mut i8 = self.data;
-      self.data = unsafe { vx_vec_grow(p, self.capacity as i64, nc as i64, sizeof<T>()) };
+      self.data = unsafe { realloc(p, sizeof<T>() * (nc as i64)) };
       self.capacity = nc;
     }
     unsafe { self.data[self.len] = val; }
@@ -3166,14 +3962,13 @@ fn flat_lowers_for_over_iterator_count() {
 
 const VEC_MINI: &str = r#"
 extern "C" {
-  fn vx_vec_alloc(elem_size: i64, cap: i64) -> *mut i8;
-  fn vx_vec_grow(ptr: *mut i8, old_cap: i64, new_cap: i64, elem_size: i64) -> *mut i8;
-  fn vx_vec_bounds_check(index: i64, len: i64) -> i32;
+  fn malloc(size: i64) -> *mut i8;
+  fn realloc(ptr: *mut i8, size: i64) -> *mut i8;
 }
 struct Vec<T> { data: *mut T, len: i32, capacity: i32 }
 impl<T> Vec<T> {
   fn with_capacity(capacity: i32) -> Vec<T> {
-    let ptr: *mut T = unsafe { vx_vec_alloc(sizeof<T>(), capacity as i64) };
+    let ptr: *mut T = unsafe { malloc(sizeof<T>() * (capacity as i64)) };
     return Vec<T> { data: ptr, len: 0, capacity: capacity };
   }
   fn new() -> Vec<T> { return Vec<T>::with_capacity(2); }
@@ -3182,7 +3977,7 @@ impl<T> Vec<T> {
       let mut new_cap: i32 = 4;
       if self.capacity > 0 { new_cap = self.capacity * 2; }
       let ptr: *mut i8 = self.data;
-      self.data = unsafe { vx_vec_grow(ptr, self.capacity as i64, new_cap as i64, sizeof<T>()) };
+      self.data = unsafe { realloc(ptr, sizeof<T>() * (new_cap as i64)) };
       self.capacity = new_cap;
     }
     unsafe { self.data[self.len] = val; }
@@ -3190,7 +3985,6 @@ impl<T> Vec<T> {
     return 0;
   }
   fn get(self: &Vec<T>, index: i32) -> T {
-    unsafe { vx_vec_bounds_check(index as i64, self.len as i64); }
     return unsafe { self.data[index] };
   }
   fn len(self: &Vec<T>) -> i32 { return self.len; }
@@ -3201,7 +3995,7 @@ impl<T> Vec<T> {
 fn flat_matches_ast_vec_push_get_len() {
     // The core `Vec<T>` surface (#242) end to end through the flat path: `Vec<i32>::new()` (a
     // generic static call returning an aggregate by value), three `push`es (the third grows the
-    // buffer through `vx_vec_grow`), field access through the `&mut self`/`&self` pointer, raw-pointer
+    // buffer through `realloc`), field access through the `&mut self`/`&self` pointer, raw-pointer
     // element stores/loads (`self.data[i]`), and `&v` aggregate borrows at the rewritten method calls.
     // `10 + 30 + 3 = 43`.
     assert_parity(
@@ -3682,7 +4476,7 @@ fn a_generic_over_two_tensor_shapes_gets_two_monomorphs() {
     )
     .unwrap();
 
-    let run = std::process::Command::new(env!("CARGO_BIN_EXE_vxc"))
+    let run = super::time_limit::vxc()
         .args([src.to_str().unwrap(), "--action", "run-jit"])
         .output()
         .expect("run vxc");
@@ -3697,4 +4491,409 @@ fn a_generic_over_two_tensor_shapes_gets_two_monomorphs() {
         out.contains("exited with code: 8"),
         "expected 1.0 + 7.0 through two distinct monomorphs, got:\n{out}"
     );
+}
+
+#[rstest::rstest]
+#[case(0, 7)]
+#[case(1, 9)]
+fn flat_matches_ast_returned_match_value(#[case] input: i32, #[case] expected: i32) {
+    assert_parity(
+        &format!("fn main() -> i32 {{ return match {input} {{ 0 => {{ 7 }}, _ => {{ 9 }}, }}; }}"),
+        expected,
+    );
+}
+
+#[test]
+fn flat_matches_ast_match_value_in_local_and_call() {
+    assert_parity(
+        "fn add_one(x: i32) -> i32 { return x + 1; }
+        fn main() -> i32 {
+            let n = match 0 { 0 => { 7 }, _ => { 9 }, };
+            return add_one(match n { 7 => { 20 }, _ => { 30 }, });
+        }",
+        21,
+    );
+}
+
+#[test]
+fn flat_matches_ast_nested_match_value() {
+    assert_parity(
+        "fn main() -> i32 {
+        return if true { match 1 { 0 => { 7 }, _ => { 9 }, } } else { 3 };
+    }",
+        9,
+    );
+}
+
+#[test]
+fn flat_matches_ast_match_value_with_side_effects() {
+    assert_parity(
+        "fn main() -> i32 {
+        let mut count = 0;
+        let value = match 0 {
+            0 => { count += 1; 7 },
+            _ => { count += 10; 9 },
+        };
+        return value + count;
+    }",
+        8,
+    );
+}
+
+#[test]
+fn flat_matches_ast_enum_match_value() {
+    assert_parity(
+        "enum Choice { First, Second }
+        fn main() -> i32 {
+            return match Choice::Second {
+                Choice::First => { 7 }, Choice::Second => { 9 },
+            };
+        }",
+        9,
+    );
+}
+
+#[test]
+fn flat_matches_ast_payload_match_value() {
+    assert_parity(
+        "enum Number { Some(i32), None }
+        fn main() -> i32 {
+            let n = Number::Some(12);
+            return match n { Number::Some(value) => { value }, Number::None => { 0 }, };
+        }",
+        12,
+    );
+}
+
+#[test]
+fn flat_matches_ast_match_value_with_early_return() {
+    assert_parity(
+        "fn main() -> i32 {
+        return match 0 { 0 => { return 7; }, _ => { 9 }, };
+    }",
+        7,
+    );
+}
+
+// Each case checks both possible Boolean results. The older generator supplies a working baseline.
+// The default generator must also succeed, so missing inference cannot pass through fallback.
+#[rstest::rstest]
+#[case::comparison("a == a", "a == b")]
+#[case::boolean_literals("true", "false")]
+#[case::logical_and("a && a", "a && b")]
+#[case::logical_or("b || a", "b || b")]
+fn boolean_match_result_inference(#[case] true_expr: &str, #[case] false_expr: &str) {
+    for (subject, expected) in [(0, 7), (1, 9)] {
+        let src = format!(
+            "fn choose(n: i32, a: bool, b: bool) -> bool {{
+                return match n {{ 0 => {{ {true_expr} }}, _ => {{ {false_expr} }}, }};
+            }}
+            fn main() -> i32 {{
+                if choose({subject}, true, false) {{ return 7; }}
+                return 9;
+            }}"
+        );
+        assert_eq!(
+            ast_exit_code(&src),
+            expected,
+            "older generator: subject {subject}"
+        );
+        let flat = flat_exit_code(&src)
+            .expect("the default generator must infer the Boolean match result");
+        assert_eq!(flat, expected, "default generator: subject {subject}");
+    }
+}
+
+#[rstest::rstest]
+#[case(0, 77)]
+#[case(1, 99)]
+fn struct_match_result_from_construction(#[case] subject: i32, #[case] expected: i32) {
+    let src = format!(
+        "struct Point {{ x: i32, y: i32 }}
+        fn choose(n: i32) -> Point {{
+            return match n {{
+                0 => {{ Point {{ x: 7, y: 70 }} }},
+                _ => {{ Point {{ x: 9, y: 90 }} }},
+            }};
+        }}
+        fn main() -> i32 {{ let p = choose({subject}); return p.x + p.y; }}"
+    );
+    assert_eq!(ast_exit_code(&src), expected);
+    assert_parity(&src, expected);
+}
+
+#[rstest::rstest]
+#[case(0, 77)]
+#[case(1, 99)]
+fn struct_match_result_from_local(#[case] subject: i32, #[case] expected: i32) {
+    let src = format!(
+        "struct Point {{ x: i32, y: i32 }}
+        fn choose(n: i32) -> Point {{
+            let left = Point {{ x: 7, y: 70 }};
+            let right = Point {{ x: 9, y: 90 }};
+            return match n {{ 0 => {{ left }}, _ => {{ right }}, }};
+        }}
+        fn main() -> i32 {{ let p = choose({subject}); return p.x + p.y; }}"
+    );
+    assert_eq!(ast_exit_code(&src), expected);
+    assert_parity(&src, expected);
+}
+
+#[rstest::rstest]
+#[case(0, 77)]
+#[case(1, 99)]
+fn struct_if_result_from_construction(#[case] subject: i32, #[case] expected: i32) {
+    let src = format!(
+        "struct Point {{ x: i32, y: i32 }}
+        fn choose(n: i32) -> Point {{
+            return if n == 0 {{ Point {{ x: 7, y: 70 }} }} else {{ Point {{ x: 9, y: 90 }} }};
+        }}
+        fn main() -> i32 {{ let p = choose({subject}); return p.x + p.y; }}"
+    );
+    assert_eq!(ast_exit_code(&src), expected);
+    assert_parity(&src, expected);
+}
+
+// Native output alone cannot detect merging two identity functions with pointer arguments.
+// Also inspect the generated definitions and the targets their calls select.
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn generic_functions_keep_tensor_pointer_placements(#[case] jobs: Option<usize>) {
+    let fixture = "generic_function_with_tensor_pointer_placements.vx";
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/backend/pass")
+        .join(fixture);
+    let mut command = super::time_limit::vxc();
+    command
+        .arg(&path)
+        .arg("--emit-mlir")
+        .env("VX_FLAT_DBG", "1");
+    if let Some(jobs) = jobs {
+        command.arg("-j").arg(jobs.to_string());
+    }
+    let output = command
+        .output()
+        .expect("compile tensor pointer specializations");
+    let log = String::from_utf8_lossy(&output.stderr);
+    let mlir = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "compilation with jobs={jobs:?}: {log}\n{mlir}"
+    );
+    for function in ["host_first", "gpu_first"] {
+        let symbols = |operation: &str| -> std::collections::BTreeSet<String> {
+            mlir.lines()
+                .filter(|line| line.contains(operation))
+                .filter_map(|line| line.split('@').nth(1))
+                .map(|tail| tail.split('(').next().unwrap().trim_matches('"').to_owned())
+                .filter(|name| name.starts_with(&format!("{function}$")))
+                .collect()
+        };
+        let definitions = symbols("func.func");
+        let calls = symbols("call @");
+        assert_eq!(
+            definitions.len(),
+            2,
+            "{function} must define two placement specializations: {mlir}"
+        );
+        assert_eq!(
+            calls, definitions,
+            "{function} calls must select both placement specializations: {mlir}"
+        );
+    }
+    assert_generated_aggregate_runs(fixture, &["5", "7", "7", "5"], jobs);
+}
+
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn enum_variants_with_two_payload_fields_run(#[case] jobs: Option<usize>) {
+    assert_generated_aggregate_runs(
+        "enum_variants_with_two_payload_fields.vx",
+        &["5", "17", "7", "25", "-1"],
+        jobs,
+    );
+}
+
+#[test]
+fn flat_lowers_iterator_with_payload_in_second_variant() {
+    let source = ITER_MINI.replace(
+        "enum Option<T> { Some(T), None }",
+        "enum Option<T> { None, Some(T) }",
+    );
+    assert_flat_exit(&format!("{source}\nfn main() -> i32 {{ let mut v = Vec<i32>::new(); v.push(10); v.push(20); v.push(30); let mut sum: i32 = 0; for value in v.iter() {{ sum = sum + value; }} return sum; }}"), 60);
+}
+
+#[rstest::rstest]
+#[case::normal(None, 0)]
+#[case::parallel(Some(2), 0)]
+#[case::optimized_normal(None, 2)]
+#[case::optimized_parallel(Some(2), 2)]
+fn enum_payloads_keep_size_and_alignment(#[case] jobs: Option<usize>, #[case] optimization: u8) {
+    assert_generated_aggregate_runs_at_optimization(
+        "enum_payloads_have_different_size_and_alignment.vx",
+        &["119", "120", "139", "140", "-1", "-2"],
+        jobs,
+        optimization,
+    );
+}
+
+#[rstest::rstest]
+#[case::normal(None, 0)]
+#[case::parallel(Some(2), 0)]
+#[case::optimized_normal(None, 2)]
+#[case::optimized_parallel(Some(2), 2)]
+fn enum_shared_storage_preserves_all_payload_bits(
+    #[case] jobs: Option<usize>,
+    #[case] optimization: u8,
+    #[values(
+        "enum_bool_and_byte_preserve_all_bits.vx",
+        "enum_padded_and_dense_preserve_all_bits.vx",
+        "enum_copies_preserve_numbers_and_pointers.vx"
+    )]
+    fixture: &str,
+) {
+    let expected: &[&str] = match fixture {
+        "enum_bool_and_byte_preserve_all_bits.vx" => {
+            &["254", "254", "254", "254", "13", "11", "1", "0"]
+        }
+        "enum_padded_and_dense_preserve_all_bits.vx" => {
+            &["1540", "1540", "1540", "1540", "22", "34"]
+        }
+        _ => &["4294967301", "1.5", "29"],
+    };
+    assert_generated_aggregate_runs_at_optimization(fixture, expected, jobs, optimization);
+}
+
+#[rstest::rstest]
+#[case(0, 40)]
+#[case(1, 3)]
+fn match_constructs_an_enum_result(#[case] subject: i32, #[case] expected: i32) {
+    let src = format!("enum Shape {{ Square(i32), Empty }}
+        fn choose(n: i32) -> Shape {{
+            return match n {{ 0 => {{ Shape::Square(40) }}, _ => {{ Shape::Empty }}, }};
+        }}
+        fn main() -> i32 {{
+            let shape = choose({subject});
+            match shape {{ Shape::Square(value) => {{ return value; }}, Shape::Empty => {{ return 3; }}, }}
+        }}");
+    assert_eq!(ast_exit_code(&src), expected);
+    assert_parity(&src, expected);
+}
+
+#[rstest::rstest]
+#[case(0, 40)]
+#[case(1, 3)]
+fn match_constructs_a_local_enum_result(#[case] subject: i32, #[case] expected: i32) {
+    let src = format!("enum Shape {{ Square(i32), Empty }}
+        fn main() -> i32 {{
+            let shape = match {subject} {{ 0 => {{ Shape::Square(40) }}, _ => {{ Shape::Empty }}, }};
+            match shape {{ Shape::Square(value) => {{ return value; }}, Shape::Empty => {{ return 3; }}, }}
+        }}");
+    // The older generator cannot infer this local match result. Check the default generator directly.
+    assert_flat_exit(&src, expected);
+}
+
+#[rstest::rstest]
+#[case(0, 40)]
+#[case(1, 3)]
+fn match_constructs_a_generic_enum_result(#[case] subject: i32, #[case] expected: i32) {
+    let src = format!("enum Choice<T> {{ Some(T), None }}
+        fn choose(n: i32) -> Choice<i64> {{
+            return match n {{ 0 => {{ Choice<i64>::Some(40i64) }}, _ => {{ Choice<i64>::None() }}, }};
+        }}
+        fn main() -> i32 {{
+            let choice = choose({subject});
+            match choice {{ Choice<i64>::Some(value) => {{ return value as i32; }}, Choice<i64>::None() => {{ return 3; }}, }}
+        }}");
+    assert_eq!(ast_exit_code(&src), expected);
+    assert_parity(&src, expected);
+}
+
+#[rstest::rstest]
+#[case(0, 40)]
+#[case(1, 3)]
+fn match_constructs_a_payload_free_enum_result(#[case] subject: i32, #[case] expected: i32) {
+    let src = format!(
+        "enum Color {{ Red, Blue }}
+        fn choose(n: i32) -> Color {{
+            return match n {{ 0 => {{ Color::Red }}, _ => {{ Color::Blue }}, }};
+        }}
+        fn main() -> i32 {{
+            let color = choose({subject});
+            match color {{ Color::Red => {{ return 40; }}, Color::Blue => {{ return 3; }}, }}
+        }}"
+    );
+    assert_eq!(ast_exit_code(&src), expected);
+    assert_parity(&src, expected);
+}
+
+// The index function prints 3, the right side prints 4, and the updated element prints 7.
+// A repeated index call adds an extra 3 between 4 and 7.
+const INDEXED_COMPOUND_ASSIGNMENT: &str = r#"
+    fn note(tag: i32, value: i32) -> i32 {
+        print(tag);
+        print!(" ");
+        return value;
+    }
+
+    fn main() -> i32 {
+        let mut t = Tensor<i32, [4]>::fill(0);
+        t[note(3, 1)] += note(4, 7);
+        print(t[1]);
+        return 0;
+    }
+"#;
+
+#[test]
+fn flat_indexed_compound_assignment_calls_index_once() {
+    let mlir = flat_llvm(INDEXED_COMPOUND_ASSIGNMENT)
+        .expect("the flat generator supports this indexed compound assignment");
+    let output = run_output(&mlir);
+    let values: Vec<_> = output.split_whitespace().collect();
+    assert_eq!(values, ["3", "4", "7"], "flat generator output: {output}");
+}
+
+#[test]
+fn ast_indexed_compound_assignment_calls_index_once() {
+    let output = run_output(&ast_llvm(INDEXED_COMPOUND_ASSIGNMENT));
+    let values: Vec<_> = output.split_whitespace().collect();
+    assert_eq!(values, ["3", "4", "7"], "AST generator output: {output}");
+}
+
+// The first call selects element 1. A second call would select element 2 instead.
+const COMPOUND_ASSIGNMENT_WITH_CHANGING_INDEX: &str = r#"
+    fn next_index(calls: &mut i32) -> i32 {
+        *calls += 1;
+        return *calls;
+    }
+
+    fn main() -> i32 {
+        let mut calls = 0;
+        let mut t = Tensor<i32, [4]>::fill(10);
+        t[next_index(&mut calls)] += 7;
+        print(calls);
+        print!(" ");
+        print(t[1]);
+        print!(" ");
+        print(t[2]);
+        return 0;
+    }
+"#;
+
+#[test]
+fn flat_compound_assignment_updates_the_element_it_read() {
+    let mlir = flat_llvm(COMPOUND_ASSIGNMENT_WITH_CHANGING_INDEX)
+        .expect("the flat generator supports an index that changes a counter");
+    let output = run_output(&mlir);
+    let values: Vec<_> = output.split_whitespace().collect();
+    assert_eq!(values, ["1", "17", "10"], "flat generator output: {output}");
+}
+
+#[test]
+fn ast_compound_assignment_updates_the_element_it_read() {
+    let output = run_output(&ast_llvm(COMPOUND_ASSIGNMENT_WITH_CHANGING_INDEX));
+    let values: Vec<_> = output.split_whitespace().collect();
+    assert_eq!(values, ["1", "17", "10"], "AST generator output: {output}");
 }

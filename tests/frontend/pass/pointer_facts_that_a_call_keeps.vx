@@ -1,0 +1,204 @@
+//===- pointer_facts_that_a_call_keeps.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A call keeps the facts about the memory of a pointer when the function says `!frees` for that
+// parameter. The compiler finds `!frees(p)` itself when the body only reads and writes through
+// `p`, moves `p` with `offset`, compares it, and gives it only to functions with `!frees`. It
+// also finds it for a method, and for a generic function once for each type that the program
+// calls it with. An `extern` function and a trait method can say it. A print keeps the facts
+// too.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-NOT: E8006
+// CHECK: func.func @main
+
+import core::ptr;
+
+fn sum(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  let mut total = 0i64;
+  for i in 0i64..n {
+    total = total + unsafe { p[i] };
+  }
+  return total;
+}
+
+fn split(p : *const i64, n : i64, k : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+requires 0i64 <= k
+requires k <= n
+{
+  return sum(p, k) + sum(offset(p, k), n - k);
+}
+
+fn with_a_print(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  let a = sum(p, n);
+  println!("a = {}", a);
+  return a + sum(p, n);
+}
+
+// It writes through `p`, moves it and compares it.
+fn fill(p : *mut i64, n : i64) -> void {
+  let last = offset_mut(p, n - 1i64);
+  for i in 0i64..n {
+    unsafe { p[i] = 0i64; }
+  }
+  if !is_null_mut(last) {
+    unsafe { last[0] = 1i64; }
+  }
+}
+
+fn after_a_fill(p : *mut i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+requires n > 0i64
+{
+  fill(p, n);
+  return sum(p as *const i64, n);
+}
+
+// `sum` frees nothing through `p`, so `twice` and `four_times` free nothing through it either.
+// `four_times` comes before `twice`, so the compiler must find `!frees` for `twice` first.
+fn four_times(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  return twice(p, n) + twice(p, n);
+}
+
+fn twice(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  return sum(p, n) + sum(p, n);
+}
+
+fn after_a_call_that_calls_sum(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  return four_times(p, n) + sum(p, n);
+}
+
+// The compiler reads a loop body before it checks it, and it uses `!frees` there too.
+fn in_a_loop(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  let mut total = 0i64;
+  for i in 0i64..3i64 {
+    total = total + sum(p, n);
+  }
+  return total;
+}
+
+// The compiler checks a written `!frees(p)` against the body.
+fn first(p : *const i64) -> i64
+ensures !frees(p)
+{
+  return unsafe { p[0] };
+}
+
+fn after_a_call_that_says_it(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+requires n > 0i64
+{
+  return first(p) + sum(p, n);
+}
+
+// The compiler trusts a `!frees` on an `extern` function.
+extern "C" {
+  safe fn strlen(s : *const i8) -> i64
+  ensures !frees(s);
+}
+
+fn need_bytes(s : *const i8, n : i64) -> i64
+requires valid(s, n)
+{
+  return n;
+}
+
+fn after_an_extern_call(s : *const i8, n : i64) -> i64
+requires valid(s, n)
+{
+  return strlen(s) + need_bytes(s, n);
+}
+
+struct Counter {
+  count : i64,
+}
+
+impl Counter {
+  fn look(self : &mut Counter, p : *const i64) -> i64 {
+    self.count = self.count + 1i64;
+    return unsafe { p[0] };
+  }
+}
+
+fn after_a_method_call(c : &mut Counter, p : *const i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  return c.look(p) + sum(p, n);
+}
+
+// For `T` = `i64`, the read moves nothing that owns memory.
+fn first_of<T>(p : *const T) -> T {
+  return unsafe { p[0] };
+}
+
+fn after_a_generic_call(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  return first_of(p) + sum(p, n);
+}
+
+// A call through a trait bound uses the `!frees` of the trait method. The compiler checks each
+// impl against it.
+trait Reads {
+  fn read_one(self : &Self, p : *const i64) -> i64
+  ensures !frees(p);
+}
+
+struct Offset {
+  k : i64,
+}
+
+impl Reads for Offset {
+  fn read_one(self : &Offset, p : *const i64) -> i64 {
+    return unsafe { p[0] } + self.k;
+  }
+}
+
+fn through_a_bound<R : Reads>(r : &R, p : *const i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  return r.read_one(p) + sum(p, n);
+}
+
+fn main() -> i32 {
+  let x = 5i64;
+  let p : *const i64 = &x;
+  let r = Offset {
+    k: 1i64
+  };
+  let mut c = Counter {
+    count: 0i64
+  };
+  let a = through_a_bound(&r, p, 1i64) + after_a_generic_call(p, 1i64);
+  let b = after_a_method_call(&mut c, p, 1i64);
+  return (a + b) as i32;
+}

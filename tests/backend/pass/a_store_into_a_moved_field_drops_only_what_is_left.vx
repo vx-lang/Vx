@@ -1,0 +1,108 @@
+//===- a_store_into_a_moved_field_drops_only_what_is_left.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+//
+// Storing into a field drops the value that was there, but not a part of it that was moved
+// out first, and a part that may have been moved only when it was not. Each `Noisy` prints its
+// id when dropped.
+//
+// CHECK: moved: | 1 3 2 sub: 2 | 1 3 4 maybe true: 5 | 7 6 maybe false: 5 | 7 6
+import core::ops;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print(self.id);
+    print!(" ");
+  }
+}
+
+struct Pair {
+  a : Noisy,
+  b : Noisy,
+}
+
+struct Outer {
+  p : Pair,
+}
+
+fn sub() -> void {
+  let mut o = Outer {
+    p : Pair {
+      a : Noisy {
+        id : 1
+      },
+      b : Noisy {
+        id : 2
+      }
+    }
+  };
+  // The store drops what is left of the old `o.p` (2); the new `o.p` drops all of itself.
+  let y = o.p.a;
+  o.p = Pair {
+    a : Noisy {
+      id : 3
+    },
+    b : Noisy {
+      id : 4
+    }
+  };
+  print!("| ");
+}
+
+fn maybe(c : bool) -> void {
+  let mut p = Pair {
+    a : Noisy {
+      id : 5
+    },
+    b : Noisy {
+      id : 6
+    }
+  };
+  // `p.a` is moved only when `c` is true, and then `y` drops 5. Otherwise the store drops it.
+  if c {
+    let y = p.a;
+  }
+  p.a = Noisy {
+    id : 7
+  };
+  print!("| ");
+}
+
+fn moved() -> void {
+  let mut p = Pair {
+    a : Noisy {
+      id : 1
+    },
+    b : Noisy {
+      id : 2
+    }
+  };
+  // `p.a` was moved to `x`, so only `x` drops 1.
+  let x = p.a;
+  p.a = Noisy {
+    id : 3
+  };
+  print!("| ");
+}
+
+fn main() -> i32 {
+  print!("moved: ");
+  moved();
+  print!("sub: ");
+  sub();
+  print!("maybe true: ");
+  maybe(true);
+  print!("maybe false: ");
+  maybe(false);
+  return 0;
+}

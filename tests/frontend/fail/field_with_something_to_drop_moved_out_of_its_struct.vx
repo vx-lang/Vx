@@ -41,13 +41,13 @@ fn make() -> Pair {
 }
 
 fn field_of_a_call_result() -> i32 {
-  // CHECK-DAG: Error[E4013] at [[@LINE+1]]:18: this field cannot be moved out of a value with no name
+  // CHECK-DAG: Error[E4013] at {{.*}}field_with_something_to_drop_moved_out_of_its_struct.vx:[[@LINE+1]]:18: this field cannot be moved out of a value with no name
   let x = make().a;
   return x.id;
 }
 
 fn field_through_a_reference(r : &Pair) -> i32 {
-  // CHECK-DAG: Error[E4008] at [[@LINE+1]]:16: this field cannot be moved out through a reference
+  // CHECK-DAG: Error[E4008] at {{.*}}field_with_something_to_drop_moved_out_of_its_struct.vx:[[@LINE+1]]:16: this field cannot be moved out through a reference
   let x = (*r).a;
   return x.id;
 }

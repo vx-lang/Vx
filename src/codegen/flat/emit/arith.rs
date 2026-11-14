@@ -10,12 +10,14 @@ impl FnEmit<'_> {
         let e = self.ty_at(ins.type_idx.0).ok_or(crate::emitter_gap!())?;
         let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
         let lit = if e.is_float() {
-            mlir_float_literal(f64::from_bits(ins.imm))
+            let v = f64::from_bits(ins.imm);
+            mlir_float_literal(e.nearest_narrow_value(v).unwrap_or(v), &e)
         } else if !is_signed(&e) && int_bits(&e).is_some_and(|b| b > 64) {
             // The literal holds 64 bits. A wider unsigned type fills the rest with zeroes, so
             // `2^64 - 1` stays positive in a `u128`.
             ins.imm.to_string()
         } else {
+            self.int_consts.insert(idx, ins.imm as i64);
             (ins.imm as i64).to_string()
         };
         let n = format!("%v{idx}");
@@ -67,6 +69,32 @@ impl FnEmit<'_> {
             }
             self.names[idx] = n;
             self.etypes[idx] = Some(e);
+        } else if let (Some(Some(va)), Some(Some(vb))) = (
+            self.vec_of.get(ins.operand1.0 as usize),
+            self.vec_of.get(ins.operand2.0 as usize),
+        ) {
+            // `a + b` on two `<N x T>` values: the same op on each lane.
+            if va != vb {
+                return Err(crate::emitter_gap!());
+            }
+            let vecty = va.clone();
+            let float = vecty.contains("xf") || vecty.contains("xbf");
+            let op = match (ins.opcode, float) {
+                (Opcode::Add, true) => "arith.addf",
+                (Opcode::Sub, true) => "arith.subf",
+                (Opcode::Mul, true) => "arith.mulf",
+                (Opcode::Div, true) => "arith.divf",
+                (Opcode::Add, false) => "arith.addi",
+                (Opcode::Sub, false) => "arith.subi",
+                (Opcode::Mul, false) => "arith.muli",
+                _ => return Err(crate::emitter_gap!()),
+            };
+            let a = &self.names[ins.operand1.0 as usize];
+            let b = &self.names[ins.operand2.0 as usize];
+            let n = format!("%v{idx}");
+            self.body += &format!("  {n} = {op} {a}, {b} : {vecty}\n");
+            self.names[idx] = n;
+            self.vec_of[idx] = Some(vecty);
         } else {
             let (elem, shape) = self
                 .ctx
@@ -299,6 +327,33 @@ impl FnEmit<'_> {
     // Scalar comparison → `i1`; the relation is in `imm`, the operand type comes from the
     // first operand's tracked type (this instruction's own type is `bool`, the result).
     pub(crate) fn op_cmp(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        // A comparison of two raw pointers compares their addresses, as unsigned numbers.
+        if self.is_pointer_value(ins.operand1.0 as usize)?
+            && self.is_pointer_value(ins.operand2.0 as usize)?
+        {
+            let pred = match ins.imm {
+                0 => "eq",
+                1 => "ne",
+                2 => "ult",
+                3 => "ugt",
+                4 => "ule",
+                5 => "uge",
+                _ => return Err(crate::emitter_gap!()),
+            };
+            let a = self
+                .names
+                .get(ins.operand1.0 as usize)
+                .ok_or(crate::emitter_gap!())?;
+            let b = self
+                .names
+                .get(ins.operand2.0 as usize)
+                .ok_or(crate::emitter_gap!())?;
+            let n = format!("%v{idx}");
+            self.body += &format!("  {n} = llvm.icmp \"{pred}\" {a}, {b} : !llvm.ptr\n");
+            self.names[idx] = n;
+            self.etypes[idx] = Some(ElementType::Bool);
+            return Ok(());
+        }
         let e = self.elem_at(ins.operand1.0).ok_or(crate::emitter_gap!())?;
         let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
         let (op, pred) = cmp_op(ins.imm, &e).ok_or(crate::emitter_gap!())?;
@@ -381,11 +436,84 @@ impl FnEmit<'_> {
     // Scalar `as` cast (#214): `type_idx` is the *target* type, `operand1` the source value
     // (whose type comes from its tracked `etypes`). The right `arith` conversion is chosen by
     // the source/target kinds + widths; a same-type cast is a no-op that just aliases.
+    /// A slice `as`: the source is a vector an elementwise op produced, so the cast is
+    /// `arith.truncf` or `arith.extf` over the lanes, to `elem`.
+    pub(crate) fn cast_vector(
+        &mut self,
+        idx: usize,
+        ins: &HirInstruction,
+        elem: &ElementType,
+        src_vec: &str,
+    ) -> Lowered<()> {
+        if !elem.is_float() {
+            return Err(Decline::TypeNotModelled {
+                what: "a slice cast to a non-float element type",
+            });
+        }
+        let lanes = src_vec
+            .strip_prefix("vector<")
+            .ok_or(crate::emitter_gap!())?
+            .split('x')
+            .next()
+            .ok_or(crate::emitter_gap!())?
+            .to_string();
+        let src_elem = src_vec
+            .rsplit('x')
+            .next()
+            .ok_or(crate::emitter_gap!())?
+            .trim_end_matches('>')
+            .to_string();
+        let et = mlir_scalar(elem).ok_or(crate::emitter_gap!())?;
+        let dst_vec = format!("vector<{lanes}x{et}>");
+        let a = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        if src_elem == et {
+            self.names[idx] = a;
+            self.vec_of[idx] = Some(dst_vec);
+            return Ok(());
+        }
+        let src_ty = crate::mlir_ty::float_elem_of_mlir(&src_elem).ok_or(crate::emitter_gap!())?;
+        let src_bits = src_ty.bits().ok_or(crate::emitter_gap!())?;
+        let dst_bits = elem.bits().ok_or(crate::emitter_gap!())?;
+        // f16 and bf16 are both 16 bits and neither `truncf` nor `extf` converts between
+        // them, so that pair declines rather than emitting a conversion that lies.
+        let conv = match dst_bits.cmp(&src_bits) {
+            std::cmp::Ordering::Less => "arith.truncf",
+            std::cmp::Ordering::Greater => "arith.extf",
+            std::cmp::Ordering::Equal => {
+                return Err(Decline::TypeNotModelled {
+                    what: "a slice cast between two equal-width float types",
+                });
+            }
+        };
+        let n = format!("%v{idx}");
+        self.body += &format!("  {n} = {conv} {a} : {src_vec} to {dst_vec}\n");
+        self.names[idx] = n;
+        self.vec_of[idx] = Some(dst_vec);
+        Ok(())
+    }
+
     pub(crate) fn op_cast(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let gid = *self
             .types
             .get(ins.type_idx.0 as usize)
             .ok_or(crate::emitter_gap!())?;
+        // A pointer cast to a struct's layout (`(*p).field` with `p : *mut S`): the same pointer,
+        // which now knows the struct it points to, so a field access through it can address the
+        // field. No code is written.
+        if self.ctx.aggs.contains_key(&gid) && self.is_pointer_value(ins.operand1.0 as usize)? {
+            self.names[idx] = self
+                .names
+                .get(ins.operand1.0 as usize)
+                .ok_or(crate::emitter_gap!())?
+                .clone();
+            self.ptr_of[idx] = true;
+            self.agg_of[idx] = Some(gid);
+            return Ok(());
+        }
         // A slice `as`: the source is a vector an elementwise op produced, so the cast is
         // `arith.truncf`/`arith.extf` over the lanes. This is the spelling that narrows a
         // widened slice back into half storage, which the checker requires be written.
@@ -398,56 +526,7 @@ impl FnEmit<'_> {
             // `as f16` names an element type, so the target GID is the scalar; the lane
             // count comes from the operand it is applied to.
             let elem = elem_of_gid(gid).ok_or(crate::emitter_gap!())?;
-            if !elem.is_float() {
-                return Err(Decline::TypeNotModelled {
-                    what: "a slice cast to a non-float element type",
-                });
-            }
-            let lanes = src_vec
-                .strip_prefix("vector<")
-                .ok_or(crate::emitter_gap!())?
-                .split('x')
-                .next()
-                .ok_or(crate::emitter_gap!())?
-                .to_string();
-            let src_elem = src_vec
-                .rsplit('x')
-                .next()
-                .ok_or(crate::emitter_gap!())?
-                .trim_end_matches('>')
-                .to_string();
-            let et = mlir_scalar(&elem).ok_or(crate::emitter_gap!())?;
-            let dst_vec = format!("vector<{lanes}x{et}>");
-            let a = self
-                .names
-                .get(ins.operand1.0 as usize)
-                .ok_or(crate::emitter_gap!())?
-                .clone();
-            if src_elem == et {
-                self.names[idx] = a;
-                self.vec_of[idx] = Some(dst_vec);
-                return Ok(());
-            }
-            let src_ty =
-                crate::mlir_ty::float_elem_of_mlir(&src_elem).ok_or(crate::emitter_gap!())?;
-            let src_bits = src_ty.bits().ok_or(crate::emitter_gap!())?;
-            let dst_bits = elem.bits().ok_or(crate::emitter_gap!())?;
-            // f16 and bf16 are both 16 bits and neither `truncf` nor `extf` converts between
-            // them, so that pair declines rather than emitting a conversion that lies.
-            let conv = match dst_bits.cmp(&src_bits) {
-                std::cmp::Ordering::Less => "arith.truncf",
-                std::cmp::Ordering::Greater => "arith.extf",
-                std::cmp::Ordering::Equal => {
-                    return Err(Decline::TypeNotModelled {
-                        what: "a slice cast between two equal-width float types",
-                    })
-                }
-            };
-            let n = format!("%v{idx}");
-            self.body += &format!("  {n} = {conv} {a} : {src_vec} to {dst_vec}\n");
-            self.names[idx] = n;
-            self.vec_of[idx] = Some(dst_vec);
-            return Ok(());
+            return self.cast_vector(idx, ins, &elem, &src_vec);
         }
         // A tensor target: the two memref types differ only in which extents are known, so this
         // is `memref.cast` rather than any arithmetic conversion.
@@ -478,7 +557,43 @@ impl FnEmit<'_> {
             .get(ins.operand1.0 as usize)
             .ok_or(crate::emitter_gap!())?
             .clone();
+        if tgt == ElementType::USize && src != ElementType::USize {
+            let ty = mlir_scalar(&src).ok_or(crate::emitter_gap!())?;
+            if src.is_signed_int() {
+                self.body += &format!(
+                    "  %cast{idx}zero = arith.constant 0 : {ty}\n  \
+                     %cast{idx}nonnegative = arith.cmpi sge, {a}, %cast{idx}zero : {ty}\n  \
+                     cf.assert %cast{idx}nonnegative, \"cast to usize is out of range\"\n"
+                );
+            }
+            if src.int_bits().is_some_and(|bits| bits > 63) {
+                let pred = if src.is_signed_int() { "sle" } else { "ule" };
+                self.body += &format!(
+                    "  %cast{idx}max = arith.constant {} : {ty}\n  \
+                     %cast{idx}fits = arith.cmpi {pred}, {a}, %cast{idx}max : {ty}\n  \
+                     cf.assert %cast{idx}fits, \"cast to usize is out of range\"\n",
+                    i64::MAX
+                );
+            }
+        }
         let op = cast_op(&src, &tgt).ok_or(crate::emitter_gap!())?;
+        // Two different float types of one width (`f8e4m3` and `f8e5m2`, `f16` and `bf16`):
+        // neither `extf` nor `truncf` converts between them. f32 holds every value of both, so
+        // going through it rounds only once.
+        let same_width_floats =
+            src.is_float() && tgt.is_float() && !op.is_empty() && src.bits() == tgt.bits();
+        if same_width_floats {
+            let (s, t) = (
+                mlir_scalar(&src).ok_or(crate::emitter_gap!())?,
+                mlir_scalar(&tgt).ok_or(crate::emitter_gap!())?,
+            );
+            let n = format!("%v{idx}");
+            self.body += &format!("  {n}_f32 = arith.extf {a} : {s} to f32\n");
+            self.body += &format!("  {n} = arith.truncf {n}_f32 : f32 to {t}\n");
+            self.names[idx] = n;
+            self.etypes[idx] = Some(tgt);
+            return Ok(());
+        }
         if op.is_empty() {
             self.names[idx] = a; // reinterpret (e.g. i32 as u32) -> alias
         } else {
@@ -515,7 +630,10 @@ impl FnEmit<'_> {
             .ok_or(crate::emitter_gap!())?
             .clone()
             .ok_or(crate::emitter_gap!())?;
-        let dst_ty = tensor_memref_ty(elem, shape).ok_or(crate::emitter_gap!())?;
+        // The tensor stays where it is: only its extents change.
+        let dst_ty = tensor_memref_ty(elem, shape)
+            .and_then(|ty| crate::codegen::lower::memref_in_space_of(&ty, &src_ty))
+            .ok_or(crate::emitter_gap!())?;
         self.names[idx] = self.cast_memref_value(&format!("v{idx}"), &a, &src_ty, &dst_ty)?;
         self.mem_of[idx] = Some(dst_ty);
         Ok(())

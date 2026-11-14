@@ -1,0 +1,23 @@
+//===- hand_written_gpu_function_is_refused.mlr - Vx Compiler --*- MLIR -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `gpu.func` that Vx did not make is refused with a message, not crashed on.
+//
+// The device-image step finds each `gpu.func`'s `vx.kernel` twin to learn which
+// pipeline compiles it. Hand-written IR has no twin, so `vx-opt --vx-to-llvm`
+// must name the func and stop.
+//
+// RUN: not vx-opt %s --vx-to-llvm 2>&1 | FileCheck %s
+// CHECK: this gpu.func has no vx.kernel of the same name
+
+module {
+  gpu.module @hand_written {
+    gpu.func @dummy() kernel {
+      gpu.return
+    }
+  }
+}

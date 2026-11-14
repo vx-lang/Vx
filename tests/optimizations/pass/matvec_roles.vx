@@ -67,12 +67,13 @@ fn matvec() -> f32 {
   let pw : *mut f32 = unsafe { vx_alloc_f32(12) };
   let px : *mut f32 = unsafe { vx_alloc_f32(3) };
 
-  let w = unsafe { tensor_view_2d(pw, 4, 3) };
-  let x = unsafe { tensor_view_2d(px, 3, 1) };
+  let w = transfer(unsafe { tensor_view_2d(pw, 4, 3) }, Memory::GPU_HBM);
+  let x = transfer(unsafe { tensor_view_2d(px, 3, 1) }, Memory::GPU_HBM);
 
-  let mut y = Tensor<f32, [4, 1]>::uninit();
+  let mut y = unsafe { Tensor<f32, [4, 1], Memory::GPU_HBM>::uninit() };
   spawn on(Topology::GPU[0]) {
     y = &w @ &x;
   }
-  return y[0][0];
+  let back = transfer(y, Memory::CPU_DRAM);
+  return back[0][0];
 }

@@ -70,6 +70,10 @@ fn main() -> i32 {
 }
 ```
 
+A `break` or `continue` must be inside a loop of its own function or closure (`E3064`). A closure
+body is not inside a loop around the closure, because a call of the closure can run after the
+loop ends.
+
 ### Loop invariants
 
 A `loop` can carry an `invariant`: a condition that must hold on every turn. The prover checks it.
@@ -88,9 +92,8 @@ fn main() -> i32 {
 }
 ```
 
-The parentheses around the condition are **required** here, unlike `requires` and `ensures` on a
-function, which take theirs optionally. That inconsistency is not deliberate — it is
-[Vx#501](https://github.com/vx-lang/Vx/issues/501).
+The parentheses around the condition are optional, as on `requires` and `ensures`:
+`loop invariant limit > 0 { .. }` works too.
 
 ## while
 

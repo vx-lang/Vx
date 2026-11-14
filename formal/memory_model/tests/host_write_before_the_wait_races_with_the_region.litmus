@@ -1,0 +1,11 @@
+LISA host_write_before_the_wait_races_with_the_region
+(* An overlapped region reads its input until the host waits for it (C4). A host write to the
+   input before the wait races with the region, so the compiler must put the wait first. P0 is
+   the region and P1 is the host.
+   Expect: sometimes, a data race. *)
+{ input = 0; done = 0; }
+ P0                  | P1                   ;
+ r[plain] r0 input   | w[plain] input 1     ;
+ w[rel] done 1       | r[acq] r1 done       ;
+scopes: (system P0 P1)
+exists (0:r0 = 1)

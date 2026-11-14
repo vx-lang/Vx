@@ -9,33 +9,112 @@
 // Safe wrapper around the runtime's native time functionality.
 //===----------------------------------------------------------------------===//
 
+import core::cmp;
+import core::ops;
+import core::option;
+import core::time;
+
 extern {
-  /// The Rust core behind `now`.
-  fn vx_get_time() -> f32;
+  /// The Rust core behind `Instant::now`.
+  fn vx_clock_ns() -> i64;
   /// The Rust core behind `sleep`.
-  fn vx_sleep(seconds : f32)->i32;
+  fn vx_sleep(ns : i64)->i32;
   /// The Rust core behind `unix_timestamp`.
   fn vx_unix_timestamp() -> f64;
   /// The Rust core behind `bench_report`.
   fn vx_bench_report(name : *const i8, unit : *const i8, value : f32) -> i32;
 }
 
-/// Seconds from some fixed point, for measuring how long something took.
-///
-/// Only differences between two calls mean anything: the origin is unspecified. An `f32`
-/// holds about seven digits, so a long-running process loses resolution as the value grows
-/// -- `unix_timestamp` is the `f64` one.
-fn now() -> f32 {
-  return unsafe { vx_get_time() };
+/// A reading of a clock that never goes back, for measuring how long something took. Only the
+/// difference of two readings means something: `later - earlier` is a `Duration`.
+struct Instant {
+  ns : i64,
 }
 
-/// Pause this thread for at least `seconds`. It may be longer; it is never shorter.
-fn sleep(seconds : f32) -> i32 {
-  return unsafe { vx_sleep(seconds) };
+impl Copy for Instant {}
+
+impl Instant {
+  /// The clock now.
+  fn now() -> Instant {
+    return Instant {
+      ns: unsafe { vx_clock_ns() }
+    };
+  }
+
+  /// How long ago `self` was.
+  fn elapsed(self : &Instant) -> Duration {
+    return Instant::now().duration_since(self);
+  }
+
+  /// How long after `earlier` this reading is, or zero when `earlier` is the later one.
+  fn duration_since(self : &Instant, earlier : &Instant) -> Duration {
+    if self.ns <= earlier.ns {
+      return Duration::zero();
+    }
+    return Duration::from_nanos((self.ns - earlier.ns) as u64);
+  }
+
+  /// The reading `d` after this one, or `None` when the clock cannot hold it.
+  fn checked_add(self : &Instant, d : &Duration) -> Option<Instant> {
+    let ns = d.as_nanos_i64();
+    if ns > 9223372036854775807 - self.ns {
+      return Option<Instant>::None;
+    }
+    return Option<Instant>::Some(Instant {
+      ns: self.ns + ns
+    });
+  }
+
+  /// A reading that the clock never reaches. A wait with it as its deadline has no time limit.
+  fn never() -> Instant {
+    return Instant {
+      ns: 9223372036854775807
+    };
+  }
+
+  /// The reading in nanoseconds, as the runtime takes a deadline.
+  fn as_nanos_i64(self : &Instant) -> i64 {
+    return self.ns;
+  }
+}
+
+/// `later - earlier`, or zero when `earlier` is the later one.
+impl Sub for Instant {
+  type Output = Duration;
+  fn sub(self : Instant, rhs : Instant) -> Duration {
+    return self.duration_since(&rhs);
+  }
+}
+
+impl PartialEq for Instant {
+  fn eq(self : &Instant, other : &Instant) -> bool {
+    return self.ns == other.ns;
+  }
+}
+
+impl Eq for Instant {}
+
+/// The later reading is greater.
+impl Ord for Instant {
+  fn cmp(self : &Instant, other : &Instant) -> Ordering {
+    return self.ns.cmp(&other.ns);
+  }
+}
+
+impl PartialOrd for Instant {
+  fn partial_cmp(self : &Instant, other : &Instant) -> Option<Ordering> {
+    return Option<Ordering>::Some(self.cmp(other));
+  }
+}
+
+/// Pause this task for at least `d`. It may be longer. It is never shorter. Other tasks can run on
+/// the thread of the task while it sleeps.
+fn sleep(d : Duration) -> i32 {
+  return unsafe { vx_sleep(d.as_nanos_i64()) };
 }
 
 /// Seconds since the Unix epoch, as an `f64`. Wall-clock time, so it can move backwards
-/// when the system clock is adjusted; `now` is the one to measure a duration with.
+/// when the system clock is adjusted. `Instant` is the one to measure a duration with.
 fn unix_timestamp() -> f64 {
   return unsafe { vx_unix_timestamp() };
 }

@@ -1,0 +1,7 @@
+(* RC11 from memalloy, with "no data race" as an axiom. *)
+
+"C"
+
+include "c11_lahav.cat"
+
+empty dr as NoDataRace

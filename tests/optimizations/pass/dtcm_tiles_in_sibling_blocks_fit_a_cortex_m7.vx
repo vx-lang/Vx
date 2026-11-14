@@ -19,9 +19,9 @@
 // RUN: vxc %s --machine fleet/cortex-m7.vx --host default --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck %s
 
 fn main(argc: i32) -> i32 {
-  let raw = Tensor<f32, [128, 96]>::uninit();
-  let filtered = Tensor<f32, [128, 96]>::uninit();
-  let output = Tensor<f32, [128, 96]>::uninit();
+  let raw = unsafe { Tensor<f32, [128, 96]>::uninit() };
+  let filtered = unsafe { Tensor<f32, [128, 96]>::uninit() };
+  let output = unsafe { Tensor<f32, [128, 96]>::uninit() };
   let raw_sram = transfer(raw, Memory::HBM);
   let filtered_sram = transfer(filtered, Memory::HBM);
   let output_sram = transfer(output, Memory::HBM);

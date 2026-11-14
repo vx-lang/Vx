@@ -41,6 +41,7 @@ ensures return > 0 {
 }
 
 fn in_else(x : i32) -> i32
+requires x > -1000
 ensures return > 0 {
   if x > 0 {
     return x;

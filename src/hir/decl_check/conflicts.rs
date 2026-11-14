@@ -21,7 +21,9 @@ impl TypeChecker<'_> {
     /// whose SKU declares a space the program also declares inline: the whole point of the flag is
     /// that the machine model is swappable, which requires knowing it is the one in force (#281).
     pub fn check_declaration_conflicts(&mut self) {
+        let outside = self.errors.here();
         for dup in &self.env.duplicate_decls {
+            self.errors.point_at(&dup.place, &outside);
             self.errors.error_with_code(
                 crate::diagnostic::DiagnosticCode::E6012,
                 format!(
@@ -32,5 +34,22 @@ impl TypeChecker<'_> {
                 None,
             );
         }
+        for dup in &self.env.duplicate_impls {
+            self.errors.point_at(&dup.place, &outside);
+            let place = if dup.first == dup.second {
+                format!("twice in '{}'", dup.first)
+            } else {
+                format!("in '{}' and in '{}'", dup.first, dup.second)
+            };
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3049,
+                format!(
+                    "`impl {}` is written {place}; a type has one impl of a trait, so remove one",
+                    dup.what
+                ),
+                None,
+            );
+        }
+        self.errors.point_back(outside);
     }
 }

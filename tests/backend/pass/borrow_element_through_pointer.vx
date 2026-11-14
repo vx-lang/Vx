@@ -6,19 +6,25 @@
 //
 //===----------------------------------------------------------------------===//
 // `&(*p).data[i]` borrows an element of a Vec through a pointer to the Vec, and `&(*p).len`
-// one of its fields. Elements of different sizes check that each step is one element.
+// one of its fields. Elements of different sizes check that each step is one element. `Vec` has
+// an invariant, so only `std::vec` can change its fields. The `&mut` to a field uses a `Slot`.
 //
 //   42  i64 elements
 //   42  i32 elements
 //   47  struct elements, fields 40 and 7
 //   43  `*f = 31` reached the Vec, plus 12
-//   42  `&(*m).len` read 3, and `*g = 39` wrote `capacity`
+//   42  `&(*m).len` read 3, and `*g = 39` wrote `count` of a `Slot`
 import std::vec;
 
 struct Pt {
   x : i32,
   y : i64,
   z : i32,
+}
+
+struct Slot<T> {
+  value : T,
+  count : i32,
 }
 
 fn main() -> i32 {
@@ -58,11 +64,15 @@ fn main() -> i32 {
   *f = 31;
   let l : &i32 = unsafe { &(*m).len };
   let len = *l;
-  let g : &mut i32 = unsafe { &mut (*m).capacity };
+  let mut s = Slot<i64> {
+    value : 5i64, count : 0
+  };
+  let n : *mut Slot<i64> = &mut s;
+  let g : &mut i32 = unsafe { &mut (*n).count };
   *g = 39;
   print(w.get(0) + w.get(2));
   print!(" ");
-  print(len + w.capacity);
+  print(len + s.count);
   return 0;
 }
 

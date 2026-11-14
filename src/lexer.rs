@@ -29,9 +29,11 @@ pub enum TokenTypeBase<S, C> {
     Continue,
     Return,
     Spawn,
+    Tasks,
     On,
     Where,
     Transfer,
+    TransferAsync,
     Unroll,
     Across,
     Match,
@@ -39,6 +41,8 @@ pub enum TokenTypeBase<S, C> {
     Unsafe,
     Safe,
     Extern,
+    /// `pub fn`: the function is exported from the object file.
+    Pub,
     Trait,
     /// `type Item;` in a trait, `type Item = i64;` in an impl.
     TypeKw,
@@ -143,9 +147,11 @@ impl<S: std::fmt::Display, C: std::fmt::Display> std::fmt::Display for TokenType
             TokenTypeBase::Continue => write!(f, "continue"),
             TokenTypeBase::Return => write!(f, "return"),
             TokenTypeBase::Spawn => write!(f, "spawn"),
+            TokenTypeBase::Tasks => write!(f, "tasks"),
             TokenTypeBase::On => write!(f, "on"),
             TokenTypeBase::Where => write!(f, "where"),
             TokenTypeBase::Transfer => write!(f, "transfer"),
+            TokenTypeBase::TransferAsync => write!(f, "transfer_async"),
             TokenTypeBase::Unroll => write!(f, "unroll"),
             TokenTypeBase::Across => write!(f, "across"),
             TokenTypeBase::Match => write!(f, "match"),
@@ -153,6 +159,7 @@ impl<S: std::fmt::Display, C: std::fmt::Display> std::fmt::Display for TokenType
             TokenTypeBase::Unsafe => write!(f, "unsafe"),
             TokenTypeBase::Safe => write!(f, "safe"),
             TokenTypeBase::Extern => write!(f, "extern"),
+            TokenTypeBase::Pub => write!(f, "pub"),
             TokenTypeBase::Trait => write!(f, "trait"),
             TokenTypeBase::TypeKw => write!(f, "type"),
             TokenTypeBase::Impl => write!(f, "impl"),
@@ -235,12 +242,71 @@ impl<S: std::fmt::Display, C: std::fmt::Display> std::fmt::Display for TokenType
     }
 }
 
+impl<S, C> TokenTypeBase<S, C> {
+    /// True for reserved words and reserved type/topology names the lexer
+    /// classifies as their own token kinds rather than as identifiers.
+    pub fn is_keyword(&self) -> bool {
+        matches!(
+            self,
+            TokenTypeBase::Fn
+                | TokenTypeBase::Let
+                | TokenTypeBase::Mut
+                | TokenTypeBase::For
+                | TokenTypeBase::In
+                | TokenTypeBase::If
+                | TokenTypeBase::Else
+                | TokenTypeBase::Loop
+                | TokenTypeBase::While
+                | TokenTypeBase::Break
+                | TokenTypeBase::Continue
+                | TokenTypeBase::Return
+                | TokenTypeBase::Spawn
+                | TokenTypeBase::Tasks
+                | TokenTypeBase::On
+                | TokenTypeBase::Where
+                | TokenTypeBase::Transfer
+                | TokenTypeBase::TransferAsync
+                | TokenTypeBase::Unroll
+                | TokenTypeBase::Across
+                | TokenTypeBase::Match
+                | TokenTypeBase::Struct
+                | TokenTypeBase::Unsafe
+                | TokenTypeBase::Safe
+                | TokenTypeBase::Extern
+                | TokenTypeBase::Pub
+                | TokenTypeBase::Trait
+                | TokenTypeBase::TypeKw
+                | TokenTypeBase::Impl
+                | TokenTypeBase::Comptime
+                | TokenTypeBase::Import
+                | TokenTypeBase::Assert
+                | TokenTypeBase::Enum
+                | TokenTypeBase::As
+                | TokenTypeBase::Grad
+                | TokenTypeBase::Vjp
+                | TokenTypeBase::Jvp
+                | TokenTypeBase::Requires
+                | TokenTypeBase::Ensures
+                | TokenTypeBase::Invariant
+                | TokenTypeBase::MacroRules
+                | TokenTypeBase::Topology
+                | TokenTypeBase::Memory
+                | TokenTypeBase::Ref
+                | TokenTypeBase::Verified
+                | TokenTypeBase::Pinned
+                | TokenTypeBase::HardwareState
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TokenBase<S, C> {
     pub kind: TokenTypeBase<S, C>,
     pub line: usize,
     pub column: usize,
     pub length: usize,
+    /// Which macro expansion made this token, or 0 for a token from the source.
+    pub expansion: u32,
 }
 
 pub type Token<'a> = TokenBase<&'a str, std::borrow::Cow<'a, str>>;
@@ -266,9 +332,11 @@ static KEYWORDS: Lazy<
     m.insert("continue", TokenTypeBase::Continue);
     m.insert("return", TokenTypeBase::Return);
     m.insert("spawn", TokenTypeBase::Spawn);
+    m.insert("tasks", TokenTypeBase::Tasks);
     m.insert("on", TokenTypeBase::On);
     m.insert("where", TokenTypeBase::Where);
     m.insert("transfer", TokenTypeBase::Transfer);
+    m.insert("transfer_async", TokenTypeBase::TransferAsync);
     m.insert("unroll", TokenTypeBase::Unroll);
     m.insert("across", TokenTypeBase::Across);
     m.insert("match", TokenTypeBase::Match);
@@ -282,6 +350,7 @@ static KEYWORDS: Lazy<
     m.insert("unsafe", TokenTypeBase::Unsafe);
     m.insert("safe", TokenTypeBase::Safe);
     m.insert("extern", TokenTypeBase::Extern);
+    m.insert("pub", TokenTypeBase::Pub);
     m.insert("trait", TokenTypeBase::Trait);
     m.insert("type", TokenTypeBase::TypeKw);
     m.insert("impl", TokenTypeBase::Impl);
@@ -414,6 +483,7 @@ impl<'a> Lexer<'a> {
             line: self.line,
             column: start_col,
             length: self.current_byte_offset() - start_byte,
+            expansion: 0,
         }
     }
 
@@ -428,6 +498,20 @@ impl<'a> Lexer<'a> {
                     break;
                 }
                 self.advance();
+            } else if c == '+' || c == '-' {
+                // Sign of a scientific exponent (`1e-15`, `2.5E+3`). Only after `e`/`E`,
+                // and only when a digit follows, so `42-1` stays two tokens.
+                let so_far = &self.source[start_byte..self.current_byte_offset()];
+                let after_exp = so_far.ends_with('e') || so_far.ends_with('E');
+                if after_exp {
+                    let offset = self.current_byte_offset();
+                    let mut chars = self.source[offset + c.len_utf8()..].chars();
+                    if chars.next().is_some_and(|d| d.is_ascii_digit()) {
+                        self.advance();
+                        continue;
+                    }
+                }
+                break;
             } else {
                 break;
             }
@@ -441,6 +525,7 @@ impl<'a> Lexer<'a> {
             line: self.line,
             column: start_col,
             length: self.current_byte_offset() - start_byte,
+            expansion: 0,
         }
     }
 
@@ -513,6 +598,21 @@ impl<'a> Lexer<'a> {
                 line: start_line,
                 column: start_col,
                 length: end_byte - start_byte,
+                expansion: 0,
+            };
+        }
+
+        // The formatter writes each string back as it is written, escapes included. Decoded,
+        // `"\n"` came back as a line break inside the quotes.
+        if self.preserve_comments && end_byte >= start_byte + 2 {
+            return TokenBase {
+                kind: TokenTypeBase::StringLiteral(std::borrow::Cow::Borrowed(
+                    &self.source[start_byte + 1..end_byte - 1],
+                )),
+                line: self.line,
+                column: start_col,
+                length: end_byte - start_byte,
+                expansion: 0,
             };
         }
 
@@ -522,6 +622,7 @@ impl<'a> Lexer<'a> {
                 line: self.line,
                 column: start_col,
                 length: self.current_byte_offset() - start_byte,
+                expansion: 0,
             };
         }
 
@@ -536,6 +637,7 @@ impl<'a> Lexer<'a> {
             line: self.line,
             column: start_col,
             length: self.current_byte_offset() - start_byte,
+            expansion: 0,
         }
     }
 
@@ -557,6 +659,7 @@ impl<'a> Lexer<'a> {
             line: self.line,
             column: start_col,
             length: end_byte - start_byte,
+            expansion: 0,
         }
     }
 
@@ -575,6 +678,7 @@ impl<'a> Lexer<'a> {
             line: self.line,
             column: start_col,
             length: end_byte - start_byte,
+            expansion: 0,
         }
     }
 
@@ -611,6 +715,7 @@ impl<'a> Lexer<'a> {
                     line: self.line,
                     column: self.column,
                     length: 0,
+                    expansion: 0,
                 }
             }
         };
@@ -784,6 +889,7 @@ impl<'a> Lexer<'a> {
             line: self.line,
             column: start_col,
             length: self.current_byte_offset() - start_byte,
+            expansion: 0,
         }
     }
 
@@ -817,9 +923,11 @@ impl<'a> Token<'a> {
             TokenTypeBase::Continue => TokenTypeBase::Continue,
             TokenTypeBase::Return => TokenTypeBase::Return,
             TokenTypeBase::Spawn => TokenTypeBase::Spawn,
+            TokenTypeBase::Tasks => TokenTypeBase::Tasks,
             TokenTypeBase::On => TokenTypeBase::On,
             TokenTypeBase::Where => TokenTypeBase::Where,
             TokenTypeBase::Transfer => TokenTypeBase::Transfer,
+            TokenTypeBase::TransferAsync => TokenTypeBase::TransferAsync,
             TokenTypeBase::Unroll => TokenTypeBase::Unroll,
             TokenTypeBase::Across => TokenTypeBase::Across,
             TokenTypeBase::Match => TokenTypeBase::Match,
@@ -827,6 +935,7 @@ impl<'a> Token<'a> {
             TokenTypeBase::Unsafe => TokenTypeBase::Unsafe,
             TokenTypeBase::Safe => TokenTypeBase::Safe,
             TokenTypeBase::Extern => TokenTypeBase::Extern,
+            TokenTypeBase::Pub => TokenTypeBase::Pub,
             TokenTypeBase::Trait => TokenTypeBase::Trait,
             TokenTypeBase::TypeKw => TokenTypeBase::TypeKw,
             TokenTypeBase::Impl => TokenTypeBase::Impl,
@@ -911,6 +1020,7 @@ impl<'a> Token<'a> {
             line: self.line,
             column: self.column,
             length: self.length,
+            expansion: self.expansion,
         }
     }
 }
@@ -931,9 +1041,11 @@ impl OwnedToken {
             TokenTypeBase::Continue => TokenTypeBase::Continue,
             TokenTypeBase::Return => TokenTypeBase::Return,
             TokenTypeBase::Spawn => TokenTypeBase::Spawn,
+            TokenTypeBase::Tasks => TokenTypeBase::Tasks,
             TokenTypeBase::On => TokenTypeBase::On,
             TokenTypeBase::Where => TokenTypeBase::Where,
             TokenTypeBase::Transfer => TokenTypeBase::Transfer,
+            TokenTypeBase::TransferAsync => TokenTypeBase::TransferAsync,
             TokenTypeBase::Unroll => TokenTypeBase::Unroll,
             TokenTypeBase::Across => TokenTypeBase::Across,
             TokenTypeBase::Match => TokenTypeBase::Match,
@@ -941,6 +1053,7 @@ impl OwnedToken {
             TokenTypeBase::Unsafe => TokenTypeBase::Unsafe,
             TokenTypeBase::Safe => TokenTypeBase::Safe,
             TokenTypeBase::Extern => TokenTypeBase::Extern,
+            TokenTypeBase::Pub => TokenTypeBase::Pub,
             TokenTypeBase::Trait => TokenTypeBase::Trait,
             TokenTypeBase::TypeKw => TokenTypeBase::TypeKw,
             TokenTypeBase::Impl => TokenTypeBase::Impl,
@@ -1021,6 +1134,7 @@ impl OwnedToken {
             line: self.line,
             column: self.column,
             length: self.length,
+            expansion: self.expansion,
         }
     }
 }
@@ -1128,6 +1242,19 @@ mod tests {
     }
 
     #[test]
+    fn a_scientific_float_is_one_token() {
+        assert_eq!(lex_first("1e10"), TokenTypeBase::Number("1e10"));
+        assert_eq!(lex_first("1.0e-15"), TokenTypeBase::Number("1.0e-15"));
+        assert_eq!(lex_first("1.5E+3"), TokenTypeBase::Number("1.5E+3"));
+        assert_eq!(lex_first("1e-15f64"), TokenTypeBase::Number("1e-15f64"));
+        // The sign is only part of the number after e/E, so subtraction stays two tokens.
+        let tokens = Lexer::new("42-1").tokenize();
+        assert_eq!(tokens[0].kind, TokenTypeBase::Number("42"));
+        assert_eq!(tokens[1].kind, TokenTypeBase::Minus);
+        assert_eq!(tokens[2].kind, TokenTypeBase::Number("1"));
+    }
+
+    #[test]
     fn test_lex_string_literal() {
         let kind = lex_first("\"hello\"");
         if let TokenTypeBase::StringLiteral(s) = kind {
@@ -1155,6 +1282,30 @@ mod tests {
         let tokens = lexer.tokenize();
         assert_eq!(tokens.len(), 1);
         assert_eq!(tokens[0].kind, TokenTypeBase::Eof);
+    }
+
+    #[test]
+    fn test_is_keyword_distinguishes_reserved_words() {
+        let across = Lexer::new("across").tokenize();
+        assert!(across[0].kind.is_keyword());
+        assert_eq!(format!("{}", across[0].kind), "across");
+        let ident = Lexer::new("across_width").tokenize();
+        assert!(!ident[0].kind.is_keyword());
+        let eq = Lexer::new("=").tokenize();
+        assert!(!eq[0].kind.is_keyword());
+    }
+
+    #[test]
+    fn test_is_keyword_covers_every_keywords_map_entry() {
+        // is_keyword mirrors KEYWORDS by hand; this catches a new map entry that
+        // never got added to the match.
+        for word in KEYWORDS.keys() {
+            let tokens = Lexer::new(word).tokenize();
+            assert!(
+                tokens[0].kind.is_keyword(),
+                "KEYWORDS entry `{word}` must report is_keyword()"
+            );
+        }
     }
 
     #[test]

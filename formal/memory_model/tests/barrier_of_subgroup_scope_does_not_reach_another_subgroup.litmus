@@ -1,0 +1,10 @@
+LISA barrier_of_subgroup_scope_does_not_reach_another_subgroup
+(* A barrier of subgroup scope orders only the lanes of one subgroup, such as a warp (C5). P1
+   is in the same block but in another subgroup, so its read races with the write.
+   Expect: sometimes, a data race. *)
+{ x = 0; }
+ P0                     | P1                     ;
+ w[plain] x 1           | f[barrier,subgroup]    ;
+ f[barrier,subgroup]    | r[plain] r0 x          ;
+scopes: (device (block (subgroup P0) (subgroup P1)))
+exists (1:r0 = 0)

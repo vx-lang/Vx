@@ -1,0 +1,34 @@
+//===- topology_names_close_to_builtins_are_declarable.vx -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Only the exact built-in names are reserved. These three look like built-ins
+// but are not, so a program may declare topologies with them:
+//   - `Gpu` and `cpu`: built-in names are case-sensitive (`GPU`, `CPU`).
+//   - `Slice`: the compiler's name for `NPU[0..4]`, which no program writes.
+
+Memory CHIP_RAM {
+  capacity: 1 GB, bandwidth: 1 TB/s
+}
+
+Topology Gpu {
+  memory: Memory::CHIP_RAM,
+  transfer Memory::CPU_DRAM -> Memory::CHIP_RAM : 100,
+}
+
+Topology cpu {
+  memory: Memory::CHIP_RAM,
+  transfer Memory::CPU_DRAM -> Memory::CHIP_RAM : 100,
+}
+
+Topology Slice {
+  memory: Memory::CHIP_RAM,
+  transfer Memory::CPU_DRAM -> Memory::CHIP_RAM : 100,
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -1,0 +1,75 @@
+//===- code_after_the_blocks_in_a_kernel_for_emit_ptx.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Code after a nest of blocks counts the passes that ended. A kernel that `--emit-ptx` writes
+// gets that count from its caller, as one more parameter, `arrivals`. The manifest says that it
+// has one `u32` for each group and must be 0 before the first launch. The last pass of each group
+// sets its element back to 0, so the next launch can use the same buffer.
+//
+// `sum_all` has code after the whole nest: one group. `merge_heads` has the code of a group for
+// each pass of its outer loop: `heads` groups.
+//
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s --check-prefix=JSON < %t.json
+// RUN: FileCheck %s --check-prefix=PTX < %t.ptx
+// JSON: "name": "merge_heads"
+// JSON: "elements": {
+// JSON-NEXT: "param": "heads"
+// JSON-NEXT: },
+// JSON-NEXT: "kind": "arrivals",
+// JSON-NEXT: "name": "arrivals",
+// JSON: "zero_before_first_launch": true
+// JSON: "name": "sum_all"
+// JSON: "elements": 1,
+// JSON-NEXT: "kind": "arrivals",
+// JSON: "zero_before_first_launch": true
+// The count goes up by 1, the last pass sets it back to 0, and the flag for the lanes is in
+// shared memory.
+// PTX: .entry merge_heads(
+// PTX: atom.global.add.u32 [[COUNT:%r[a-z]*[0-9]+]], {{\[}}[[AT:%rd[0-9]+]]{{\]}}, 1;
+// PTX: st.global.b32 {{\[}}[[AT]]{{\]}}, 0;
+// PTX: st.shared.b32
+// PTX: bar.sync
+// PTX: ld.shared.b32
+// PTX: .entry sum_all(
+// PTX: atom.global.add.u32
+
+pub fn merge_heads(partial : &mut Tensor<i32, [?, ?], Memory::HBM>, merged : &mut Tensor<i32, [?, ?], Memory::HBM>, heads : i32, splits : i32) -> void {
+  spawn on(Topology::Device) {
+    for h in 0..heads across blocks {
+      for s in 0..splits across blocks {
+        for l in 0..32 across lanes {
+          partial[h][s * 32 + l] = h * 1000 + s * 32 + l;
+        }
+      }
+      for d in 0..32 across lanes {
+        let mut sum = 0;
+        for s in 0..splits {
+          sum = sum + partial[h][s * 32 + d];
+        }
+        merged[h][d] = sum;
+      }
+    }
+  }
+  return;
+}
+
+pub fn sum_all(partial : &mut Tensor<i32, [?], Memory::HBM>, out : &mut Tensor<i32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for l in 0..32 across lanes {
+        partial[b * 32 + l] = l;
+      }
+    }
+    let mut s = 0;
+    for i in 0..n * 32 {
+      s = s + partial[i];
+    }
+    out[0] = s;
+  }
+  return;
+}

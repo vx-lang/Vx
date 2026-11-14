@@ -55,6 +55,9 @@ pub struct FnSig {
     /// function unsafe states a contract rather than changing what the function is -- the same
     /// reason `ret_prov` lives here.
     pub is_unsafe: bool,
+    /// The length of an `ensures valid(return, n)`, when it is a parameter or a number. The code
+    /// generator tells LLVM after each call that the result points at `n` elements.
+    pub ret_valid: Option<crate::hir::check::pointer_clauses::Length>,
 }
 
 /// The generic field-type information the flat path needs to resolve a member access *through a
@@ -102,6 +105,7 @@ pub struct FnBody {
 /// The globally frozen type registry for parallel compilation phases.
 #[derive(Debug, Clone)]
 pub struct ImmutableGlobalRegistry {
+    pub(crate) aggregate_identities: std::sync::Arc<crate::layout::identity::AggregateIdentities>,
     pub layouts: FxHashMap<TypeId, TypeDefinition>,
     pub module_indices: FxHashMap<u64, FxHashMap<crate::symbol::Symbol, TypeId>>,
     /// Function signatures by name, for call resolution in the flat HIR. A name defined in more than
@@ -132,6 +136,9 @@ pub struct ImmutableGlobalRegistry {
     /// name through `struct_fields_of` / `resolve_unique_nominal`. Populated by
     /// `build_frozen_registry` and when deserialized from a `.vxlib` (#219/#242).
     pub structs: FxHashMap<TypeId, StructFields>,
+    /// The structs of `structs` that have an invariant. An interface cannot carry the invariant
+    /// yet, so it leaves these structs out.
+    pub structs_with_invariants: FxHashSet<TypeId>,
     /// Data-carrying (tagged-union) enum declarations keyed by name, carrying each variant's *declared*
     /// (possibly generic) payload types + the enum's generic parameters. A monomorphized instance
     /// (`Option<i32>`) has an instance-dependent layout (`{ i32 tag, i32 payload }`) that the frozen
@@ -155,10 +162,9 @@ pub struct ImmutableGlobalRegistry {
     pub(crate) layout_by_base_name: LayoutNameIndex,
 }
 
-/// The base-name index over a registry's layouts: `Some(gid)` for a name exactly one non-stub
-/// layout has, `None` (present) for a name two distinct ones share, absent when no non-stub
-/// layout has it. Carries the length of the table it was built from, so a lookup can refuse an
-/// index the table has outgrown.
+/// The base-name index over declarations: `Some(gid)` for a unique, complete layout.
+/// Incomplete declarations also count when deciding whether a name is ambiguous.
+/// The table length detects an index that needs rebuilding.
 #[derive(Debug, Clone, Default)]
 pub struct LayoutNameIndex {
     built_from: usize,
@@ -167,21 +173,17 @@ pub struct LayoutNameIndex {
 
 impl LayoutNameIndex {
     pub fn build(layouts: &FxHashMap<TypeId, TypeDefinition>) -> Self {
-        let mut by_base_name: FxHashMap<String, Option<TypeId>> = FxHashMap::default();
-        for def in layouts.values() {
-            if def.align_bytes == 0 {
-                continue;
-            }
-            match by_base_name.get(&def.name) {
-                Some(Some(existing)) if *existing != def.id => {
-                    by_base_name.insert(def.name.clone(), None);
-                }
-                Some(_) => {}
-                None => {
-                    by_base_name.insert(def.name.clone(), Some(def.id));
-                }
-            }
-        }
+        let identities = crate::layout::identity::AggregateIdentities::from_layouts(layouts);
+        let by_base_name = layouts
+            .values()
+            .map(|def| {
+                let id = identities
+                    .resolve_base(def.name.as_str().into())
+                    .map(|(_, id)| id)
+                    .filter(|id| layouts[id].align_bytes != 0);
+                (def.name.clone(), id)
+            })
+            .collect();
         Self {
             built_from: layouts.len(),
             by_base_name,
@@ -479,7 +481,11 @@ impl ImmutableGlobalRegistry {
         }
 
         let layout_by_base_name = LayoutNameIndex::build(&layouts);
+        let aggregate_identities = std::sync::Arc::new(
+            crate::layout::identity::AggregateIdentities::from_layouts(&layouts),
+        );
         Ok(Self {
+            aggregate_identities,
             layouts,
             module_indices,
             fn_sigs: FxHashMap::default(),
@@ -487,11 +493,23 @@ impl ImmutableGlobalRegistry {
             bodies: FxHashMap::default(),
             enum_variants: FxHashMap::default(),
             structs: FxHashMap::default(),
+            structs_with_invariants: Default::default(),
             enum_data: FxHashMap::default(),
             merge_state: MergeState::default(),
             const_tables: Vec::new(),
             layout_by_base_name,
         })
+    }
+
+    pub fn aggregate_identities(
+        &self,
+    ) -> &std::sync::Arc<crate::layout::identity::AggregateIdentities> {
+        assert_eq!(
+            self.aggregate_identities.len(),
+            self.layouts.len(),
+            "layouts changed after the aggregate identity index was built"
+        );
+        &self.aggregate_identities
     }
 
     /// An enum whose variants carry no data: its layout has no fields, and its value is an
@@ -513,8 +531,8 @@ impl ImmutableGlobalRegistry {
 
     /// The unique modelled layout of a struct or enum, by base name (`Vec<i32>` asks for `Vec`): the
     /// fallback for a monomorphized cross-module instance whose base GID name resolution left
-    /// unattached. Only a non-stub layout counts, and a name two distinct layouts share answers
-    /// `None`, so a wrong layout is never chosen.
+    /// unattached. Resolve the unique declaration first, then require a complete layout.
+    /// Incomplete declarations also count when checking name ambiguity.
     ///
     /// One hash probe. This used to walk every layout comparing names, once per nominal-typed
     /// parameter the lowerer met, and on a 1,000-module corpus that scan was 80% of the compile.
@@ -532,6 +550,15 @@ impl ImmutableGlobalRegistry {
             .get(base)
             .copied()
             .flatten()
+    }
+
+    /// Resolve a declaration before checking storage. An attached ID never falls back to a name.
+    pub fn nominal_layout_id(&self, ty: &crate::syntax::Type) -> Option<TypeId> {
+        let (_, id) = self.aggregate_identities().resolve_base(ty.into())?;
+        self.layouts
+            .get(&id)
+            .filter(|def| def.align_bytes != 0)
+            .map(|_| id)
     }
 
     /// Resolve a method `recv.method(..)` to its signature by `(receiver GID, method name)` -- the
@@ -585,6 +612,9 @@ impl ImmutableGlobalRegistry {
         }
         // The merge is the one path that grows `layouts` after the freeze, so the index follows it.
         self.layout_by_base_name = LayoutNameIndex::build(&self.layouts);
+        self.aggregate_identities = std::sync::Arc::new(
+            crate::layout::identity::AggregateIdentities::from_layouts(&self.layouts),
+        );
         for (module_hash, by_name) in other.module_indices {
             let dst = self.module_indices.entry(module_hash).or_default();
             for (name, gid) in by_name {
@@ -677,6 +707,50 @@ impl ImmutableGlobalRegistry {
         let gid = attached.or_else(|| self.resolve_unique_nominal(name))?;
         self.structs.get(&gid)
     }
+
+    /// Whether a value of type `ty` holds a `SharedCell`, in a field or enum payload at any
+    /// depth. A shared reference to such a value can write through the cell, so it is not
+    /// read-only. A pointer or reference field points to another value, so it does not count.
+    /// When the registry does not know a type's fields, the answer is `true`.
+    pub fn holds_shared_cell(&self, ty: &crate::syntax::Type) -> bool {
+        self.holds_shared_cell_at(ty, 0)
+    }
+
+    fn holds_shared_cell_at(&self, ty: &crate::syntax::Type, depth: usize) -> bool {
+        use crate::syntax::Type;
+        // A value cannot hold itself, so only a bug in the layout check could get this deep.
+        assert!(depth < 64, "holds_shared_cell: {ty:?} nests too deep");
+        let (base, args): (&Type, &[Type]) = match ty {
+            Type::GenericInstance(base, args) => (base, args),
+            Type::Verified(inner) | Type::Pinned(inner, _) => {
+                return self.holds_shared_cell_at(inner, depth + 1)
+            }
+            _ => (ty, &[]),
+        };
+        let subst = |fty: &Type, generics: &[crate::symbol::Symbol]| {
+            let mapping: std::collections::HashMap<_, _> =
+                generics.iter().cloned().zip(args.iter().cloned()).collect();
+            fty.substitute(&mapping)
+        };
+        match base {
+            Type::Struct(name, _) if name.as_ref() == "SharedCell" => true,
+            // A struct or enum whose fields the registry does not have may hold a cell. Losing
+            // `llvm.readonly` costs speed, and a wrong one would make the optimizer drop a write.
+            Type::Struct(..) => self.struct_fields_of(base).is_none_or(|s| {
+                s.fields
+                    .iter()
+                    .any(|(_, f)| self.holds_shared_cell_at(&subst(f, &s.generics), depth + 1))
+            }),
+            Type::Enum(name, _) if self.enum_variants.contains_key(name) => false,
+            Type::Enum(name, _) => self.enum_data.get(name).is_none_or(|e| {
+                e.variants
+                    .iter()
+                    .flat_map(|(_, p)| p)
+                    .any(|f| self.holds_shared_cell_at(&subst(f, &e.generics), depth + 1))
+            }),
+            _ => false,
+        }
+    }
 }
 
 /// The query surface the frontend consults for anything defined *outside the current module* --
@@ -743,11 +817,21 @@ mod tests {
         }
     }
 
-    /// The base-name index answers what the old scan of every layout answered, in one probe: the
-    /// unique modelled layout, or nothing for an ambiguous or unknown name, with a stub (alignment
-    /// 0) never counted and a generic instance asking for its base.
     #[test]
-    fn layout_gid_by_base_name_answers_as_the_scan_did() {
+    #[should_panic(expected = "aggregate identity index")]
+    fn aggregate_identity_index_refuses_a_table_that_grew_under_it() {
+        let mut registry =
+            ImmutableGlobalRegistry::build_and_validate(vec![make_def("First", 1, 1, vec![])])
+                .unwrap();
+        let second = make_def("Second", 1, 2, vec![]);
+        registry.layouts.insert(second.id, second);
+        registry.aggregate_identities();
+    }
+
+    /// An incomplete declaration still makes a shared name ambiguous.
+    /// A generic instance asks for its base declaration.
+    #[test]
+    fn layout_gid_by_base_name_requires_a_unique_declaration() {
         let mut stub = make_def("Vec", 1, 100, vec![]);
         stub.align_bytes = 0; // a generic base whose layout could not be computed
         let vec_b = make_def("Vec", 2, 100, vec![]);
@@ -756,11 +840,7 @@ mod tests {
         let reg = ImmutableGlobalRegistry::build_and_validate(vec![stub, vec_b, point_a, point_b])
             .unwrap();
 
-        // Unique among the non-stub layouts, asked for through an instance's spelling.
-        assert_eq!(
-            reg.layout_gid_by_base_name("Vec<i32>"),
-            Some(TypeId::new(2, 100, 0, 0))
-        );
+        assert_eq!(reg.layout_gid_by_base_name("Vec<i32>"), None);
         // Two distinct non-stub layouts share the name: ambiguous, so no answer.
         assert_eq!(reg.layout_gid_by_base_name("Point"), None);
         // No such layout at all.
@@ -966,6 +1046,7 @@ mod tests {
             ret_ty: crate::syntax::Type::Scalar(crate::syntax::types::ElementType::I32),
             ret_prov: 0,
             is_unsafe: false,
+            ret_valid: None,
         }
     }
 
@@ -1000,6 +1081,58 @@ mod tests {
                 .insert(crate::symbol::Symbol::from(*name), sig(module, *w1));
         }
         reg
+    }
+
+    #[test]
+    fn a_shared_cell_is_found_in_a_field_at_any_depth() {
+        use crate::symbol::Symbol;
+        use crate::syntax::types::ElementType;
+        use crate::syntax::Type;
+        let i32_ty = Type::Scalar(ElementType::I32);
+        let named =
+            |name: &str, w1: u64| Type::Struct(Symbol::from(name), Some(TypeId::new(1, w1, 0, 0)));
+        let cell = named("SharedCell", 1);
+        let holder = named("Holder", 2);
+        let counter = named("Counter", 3);
+        let plain = named("Plain", 4);
+        let mut reg = ImmutableGlobalRegistry::build_and_validate(vec![]).unwrap();
+        let mut add = |w1: u64, generics: &[&str], fields: Vec<Type>| {
+            reg.structs.insert(
+                TypeId::new(1, w1, 0, 0),
+                StructFields {
+                    generics: generics.iter().map(|g| Symbol::from(*g)).collect(),
+                    fields: fields.into_iter().map(|f| (Symbol::from("f"), f)).collect(),
+                },
+            );
+        };
+        let t = Type::Generic(Symbol::from("T"), None);
+        add(1, &["T"], vec![t.clone()]);
+        add(2, &["T"], vec![t]);
+        add(
+            3,
+            &[],
+            vec![Type::GenericInstance(
+                Box::new(cell.clone()),
+                vec![i32_ty.clone()],
+            )],
+        );
+        add(4, &[], vec![i32_ty.clone()]);
+        let instance =
+            |base: &Type, arg: Type| Type::GenericInstance(Box::new(base.clone()), vec![arg]);
+        let cell_of_i32 = instance(&cell, i32_ty.clone());
+
+        assert!(reg.holds_shared_cell(&cell_of_i32));
+        assert!(reg.holds_shared_cell(&counter), "a field holds the cell");
+        assert!(
+            reg.holds_shared_cell(&instance(&holder, cell_of_i32.clone())),
+            "a generic field holds the cell after substitution"
+        );
+        assert!(!reg.holds_shared_cell(&plain));
+        assert!(!reg.holds_shared_cell(&instance(&holder, i32_ty.clone())));
+        // A pointer to a cell points to another value, so the reference itself stays read-only.
+        assert!(!reg.holds_shared_cell(&Type::Pointer(Box::new(cell_of_i32), None, true)));
+        // The registry does not know the fields of `Missing`, so it may hold a cell.
+        assert!(reg.holds_shared_cell(&named("Missing", 9)));
     }
 
     /// The #291 acceptance property: merging the same set of artifacts must produce the same

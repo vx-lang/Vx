@@ -1,0 +1,45 @@
+//===- fast_exp_and_fast_tanh.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `fast_exp` and `fast_tanh` are not correctly rounded, but on the CPU they agree with `exp`
+// and `tanh` to within a millionth of the value, in f32 and in f64.
+//
+// EXPECT: exp_f32=1;
+// EXPECT: tanh_f32=1;
+// EXPECT: exp_f64=1;
+// EXPECT: tanh_f64=1;
+
+import core::num;
+
+fn close_f32(fast : f32, exact : f32) -> i32 {
+  if ((fast - exact) / exact).abs() < 0.000001 {
+    return 1;
+  }
+  return 0;
+}
+
+fn close_f64(fast : f64, exact : f64) -> i32 {
+  if ((fast - exact) / exact).abs() < 0.000001 {
+    return 1;
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let x : f32 = 1.5;
+  let y : f64 = 0.75;
+  print!("exp_f32=");
+  print(close_f32(x.fast_exp(), x.exp()));
+  print!("; tanh_f32=");
+  print(close_f32(x.fast_tanh(), x.tanh()));
+  print!("; exp_f64=");
+  print(close_f64(y.fast_exp(), y.exp()));
+  print!("; tanh_f64=");
+  print(close_f64(y.fast_tanh(), y.tanh()));
+  print!(";");
+  return 0;
+}

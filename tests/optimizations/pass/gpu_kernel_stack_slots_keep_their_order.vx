@@ -1,0 +1,38 @@
+//===- gpu_kernel_stack_slots_keep_their_order.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Two shared tensors declared in an `if`. The compiler moves their stack slots to the kernel's
+// entry block, and keeps their order there: `big`, declared first, is the first shared tensor of
+// the kernel (`_smem_0`), and `small` the second.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --host default --machine fleet/a100-40.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s
+// CHECK-DAG: .shared .align 16 .b8 vx_npu_kernel_0_smem_0[4096];
+// CHECK-DAG: .shared .align 16 .b8 vx_npu_kernel_0_smem_1[1024];
+
+pub fn two_tiles(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    if x[0] > 0.0 {
+      let mut big = unsafe { Tensor<f32, [1024], Memory::SMEM>::uninit() };
+      let mut small = unsafe { Tensor<f32, [256], Memory::SMEM>::uninit() };
+      for i in 0..1024 {
+        big[i] = x[i];
+      }
+      for i in 0..256 {
+        small[i] = big[i] + big[i + 256];
+      }
+      for i in 0..256 {
+        out[i] = small[255 - i];
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

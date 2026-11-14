@@ -1,0 +1,38 @@
+//===- two_expansions_of_one_macro_place_two_tiles.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `place!` runs twice, so `a` and `b` are in `W` together: 6 MiB in a 4 MiB space. Both
+// expansions copy the same tokens from the macro, at the same positions. The check used to
+// count the two transfers as one tile.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: E6010
+// CHECK-SAME: (2 tiles) sums to 6291456 bytes
+
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 4 MiB, managed: explicit
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10,
+  transfer Memory::W -> Memory::CPU_DRAM : 10
+}
+macro_rules place { ($t : ident) => {
+    transfer($t, Memory::W)
+  }; }
+fn main() -> i32 {
+  let aT = unsafe { Tensor<f32, [1024, 768]>::uninit() };
+  let a = place!(aT);
+  let bT = unsafe { Tensor<f32, [1024, 768]>::uninit() };
+  let b = place!(bT);
+  let _ra = transfer(a, Memory::CPU_DRAM);
+  let _rb = transfer(b, Memory::CPU_DRAM);
+  return 0;
+}

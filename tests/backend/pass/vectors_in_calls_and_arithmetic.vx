@@ -1,0 +1,45 @@
+//===- vectors_in_calls_and_arithmetic.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `<N x T>` value is added lane by lane, passed to a function and returned from one, also
+// as a method of a struct. No program can make a vector value yet, so this checks the MLIR.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s
+//
+// CHECK-DAG: arith.addf %{{.*}}, %{{.*}} : vector<4xf32>
+// CHECK-DAG: arith.subi %{{.*}}, %{{.*}} : vector<8xi32>
+// CHECK-DAG: call @add(%{{.*}}, %{{.*}}) : (vector<4xf32>, vector<4xf32>) -> vector<4xf32>
+// CHECK-DAG: call @Lanes$Twice$Lanes$twice(%{{.*}}, %{{.*}}) : (!llvm.struct<{{("Lanes", )?}}()>, vector<4xf32>) -> vector<4xf32>
+
+struct Lanes {}
+
+trait Twice<T> {
+  fn twice(self : T, a : <4 x f32>) -> <4 x f32>;
+}
+
+impl Twice<Lanes> for Lanes {
+  fn twice(self : Lanes, a : <4 x f32>) -> <4 x f32> {
+    return add(a, a);
+  }
+}
+
+fn add(a : <4 x f32>, b : <4 x f32>) -> <4 x f32> {
+  return a + b;
+}
+
+fn difference(a : <8 x i32>, b : <8 x i32>) -> <8 x i32> {
+  return a - b;
+}
+
+fn use_them(a : <4 x f32>) -> <4 x f32> {
+  return Lanes {}.twice(add(a, a));
+}
+
+fn main() -> i32 {
+  return 0;
+}

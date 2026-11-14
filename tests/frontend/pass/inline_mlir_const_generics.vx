@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // An inline MLIR block inside a generic impl. The block is source text, so the const generics
 // are substituted word by word -- and the wrapper's signature has to get the same treatment as
 // its body, or the two disagree about the shape they name (Vx#414).
@@ -50,8 +50,8 @@ impl<T : Float, const N : i32, const M : i32> Tensor<T, [N, M]> {
 }
 
 fn main() -> i32 {
-  let mut a : Tensor<f32, [2, 2]> = Tensor<f32, [2, 2]>::uninit();
-  let mut b : Tensor<f32, [2, 2]> = Tensor<f32, [2, 2]>::uninit();
+  let mut a : Tensor<f32, [2, 2]> = unsafe { Tensor<f32, [2, 2]>::uninit() };
+  let mut b : Tensor<f32, [2, 2]> = unsafe { Tensor<f32, [2, 2]>::uninit() };
   for i in 0..2 {
     for j in 0..2 {
       a[i][j] = ((i + j) as f32);
