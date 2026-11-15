@@ -1,8 +1,8 @@
 # Checking the compiled library with GenMC
 
 The tests in `formal/memory_model` check a model of the library. The tests here check the LLVM
-IR that vxc generates for the `Mutex`, the channel and `Arc`. So they also find a bug in the
-lowering of atomics. Tracking issue: #2170.
+IR that vxc generates for the `Mutex`, the `Semaphore`, the channel and `Arc`. So they also find
+a bug in the lowering of atomics. Tracking issue: #2170.
 
 [GenMC](https://github.com/MPI-SWS/genmc) is a model checker for LLVM IR. It runs a small program
 in every execution that RC11 allows. It reports a failed assertion, a data race, an access to
@@ -11,6 +11,7 @@ freed memory, and a thread that waits forever.
 | File | What it is |
 | --- | --- |
 | `mutex_three_tasks.vx` | Three tasks lock a `Mutex` and add 1 to its value. |
+| `semaphore_three_tasks.vx` | Three tasks take the one permit of a `Semaphore` and add 1 to a plain value. |
 | `channel_keeps_the_order_of_one_sender.vx` | One task sends 1 and 2, and the values arrive in order. |
 | `arc_two_holders.vx` | Two tasks read through an `Arc` and drop it. The last drop writes to the value. |
 | `harness.c` | The runtime functions that the library calls, written for GenMC. |
@@ -20,7 +21,8 @@ freed memory, and a thread that waits forever.
 ## What is real and what is a stub
 
 Real: the IR that vxc generates for each client and for the library: `lock`, the drop of the
-guard, `send`, `recv`, `clone` and the drop of `Arc`, with the atomic orders that vxc chose.
+guard, `acquire`, the drop of the `Permit`, `send`, `recv`, `clone` and the drop of `Arc`, with
+the atomic orders that vxc chose.
 
 Stubs, in `harness.c`:
 

@@ -13,7 +13,9 @@
 // wakes the sleepers. All accesses are `SeqCst`, as in the `Mutex`: with release and acquire, a
 // drop could miss a sleeper while the sleeper misses the new permit, and the wake would be lost.
 //
-// The tasks do not get the permits in the order of their `acquire` calls.
+// The tasks do not get the permits in the order of their `acquire` calls. A drop wakes all the
+// sleepers, and they race for the permit. So when many tasks compete, one waiter can wait without
+// limit: a task that drops a permit and takes it again at once can win each time.
 //===----------------------------------------------------------------------===//
 import core::marker;
 import core::option;
@@ -52,8 +54,7 @@ impl HostOnly for Permit {}
 
 /// One permit of a `Semaphore`. Its drop gives the permit back.
 struct Permit {
-  permits : &AtomicI64,
-  sleepers : &AtomicI64,
+  semaphore : &Semaphore,
 }
 
 impl Semaphore {
@@ -66,7 +67,8 @@ impl Semaphore {
   }
 
   /// Take a permit. Wait while no permit is free. When the `tasks` block of this task was
-  /// cancelled, give `Cancelled`.
+  /// cancelled, give `Cancelled`. The waiters are not served in order, so when many tasks
+  /// compete, one waiter can wait without limit.
   fn acquire(self : &Semaphore, at : Caller) -> Result<Permit, AcquireError> {
     return self.acquire_until(Instant::never(), at);
   }
@@ -82,10 +84,16 @@ impl Semaphore {
     let mut now = self.permits.load(AtomicOrdering::SeqCst);
     while !cancelled_at(at) {
       if now > 0 {
-        if self.permits.compare_exchange(now, now - 1, AtomicOrdering::SeqCst, AtomicOrdering::SeqCst).is_ok() {
-          return Result<Permit, AcquireError>::Ok(Permit {
-            permits : &self.permits, sleepers : &self.sleepers
-          });
+        // A failed compare-exchange gives the value that it found, so no load is needed.
+        match self.permits.compare_exchange(now, now - 1, AtomicOrdering::SeqCst, AtomicOrdering::SeqCst) {
+          Result<i64, i64>::Ok(_old) => {
+            return Result<Permit, AcquireError>::Ok(Permit {
+              semaphore : self
+            });
+          }
+          Result<i64, i64>::Err(found) => {
+            now = found;
+          }
         }
       } else {
         if past_deadline(deadline) {
@@ -96,8 +104,8 @@ impl Semaphore {
         waiting_for_acquire(at, self.made);
         wait_while_until(&self.permits, 0, deadline, true);
         self.sleepers.fetch_sub(1, AtomicOrdering::SeqCst);
+        now = self.permits.load(AtomicOrdering::SeqCst);
       }
-      now = self.permits.load(AtomicOrdering::SeqCst);
     }
     return Result<Permit, AcquireError>::Err(why);
   }
@@ -106,12 +114,16 @@ impl Semaphore {
   fn try_acquire(self : &Semaphore) -> Option<Permit> {
     let mut now = self.permits.load(AtomicOrdering::SeqCst);
     while now > 0 {
-      if self.permits.compare_exchange(now, now - 1, AtomicOrdering::SeqCst, AtomicOrdering::SeqCst).is_ok() {
-        return Option<Permit>::Some(Permit {
-          permits : &self.permits, sleepers : &self.sleepers
-        });
+      match self.permits.compare_exchange(now, now - 1, AtomicOrdering::SeqCst, AtomicOrdering::SeqCst) {
+        Result<i64, i64>::Ok(_old) => {
+          return Option<Permit>::Some(Permit {
+            semaphore : self
+          });
+        }
+        Result<i64, i64>::Err(found) => {
+          now = found;
+        }
       }
-      now = self.permits.load(AtomicOrdering::SeqCst);
     }
     return Option<Permit>::None;
   }
@@ -120,13 +132,21 @@ impl Semaphore {
   fn available_permits(self : &Semaphore) -> i64 {
     return self.permits.load(AtomicOrdering::SeqCst);
   }
+
+  /// Give back the permit of a `Permit`, and wake the sleepers. Only the drop of a `Permit`
+  /// calls this.
+  fn permit_dropped(self : &Semaphore) -> void {
+    self.permits.fetch_add(1, AtomicOrdering::SeqCst);
+    if self.sleepers.load(AtomicOrdering::SeqCst) > 0 {
+      wake_all(&self.permits);
+    }
+  }
 }
 
 impl Drop for Permit {
   fn drop(self : &mut Permit) -> void {
-    self.permits.fetch_add(1, AtomicOrdering::SeqCst);
-    if self.sleepers.load(AtomicOrdering::SeqCst) > 0 {
-      wake_all(self.permits);
-    }
+    // A method of `Semaphore`, because `--legacy-codegen` gets an atomic call through the
+    // `semaphore` field wrong: the call has no effect.
+    self.semaphore.permit_dropped();
   }
 }
