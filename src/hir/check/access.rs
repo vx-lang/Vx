@@ -1533,6 +1533,61 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The type of `q[a..b]`: rows `a` to `b - 1`, so `q`'s dimensions with the first one
+    /// replaced by `b - a`. Both ends must be literal numbers, and the rows must exist.
+    fn range_index_type(
+        &mut self,
+        el_ty: ElementType,
+        dims: &[Dim],
+        top: Option<Placement>,
+        range: &RangeExpr,
+        span: &crate::syntax::Span,
+    ) -> Type {
+        use crate::diagnostic::DiagnosticCode;
+        let at = Some(crate::diagnostic::SourceSpan::from_ast_span(span));
+        let rows = match dims.first() {
+            Some(Dim::Static(Expr::Number(n))) => n.value.parse::<u64>().ok(),
+            _ => None,
+        };
+        let problem = match range.literal_ends() {
+            None => Some((
+                DiagnosticCode::E3065,
+                "the ends of a range index must be literal numbers, such as `q[1..3]`: the \
+                 number of rows is part of the type of the range"
+                    .to_string(),
+            )),
+            Some((a, b)) if b <= a => Some((
+                DiagnosticCode::E3065,
+                format!("the range `{a}..{b}` is empty: its end must be greater than its start"),
+            )),
+            Some((a, b)) => rows.filter(|rows| b > *rows).map(|rows| {
+                (
+                    DiagnosticCode::E8003,
+                    format!("the range `{a}..{b}` goes past the end: this dimension has {rows} elements"),
+                )
+            }),
+        };
+        if let Some((code, message)) = problem {
+            if !self.speculating {
+                self.errors.error_with_code(code, message, at);
+            }
+            // Keep the tensor's own type, so one wrong range gives one error.
+            return Type::Tensor(el_ty, dims.to_vec(), top);
+        }
+        let (a, b) = range
+            .literal_ends()
+            .expect("a range with other ends was refused above");
+        let mut new_dims = dims.to_vec();
+        if let Some(first) = new_dims.first_mut() {
+            *first = Dim::Static(Expr::Number(NumberExpr::new(
+                (b - a).to_string(),
+                None,
+                *span,
+            )));
+        }
+        Type::Tensor(el_ty, new_dims, top)
+    }
+
     pub(crate) fn check_indexaccess_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         // `a[i]` on a struct or an enum whose type implements `Index` reads `*a.index(i)`, and
         // a write, `a[i] = x`, goes through `*a.index_mut(i)`, as in Rust.
@@ -1599,7 +1654,10 @@ impl<'a> TypeChecker<'a> {
                 self.indexed_name = None;
                 if let Some((name, mut path)) = place {
                     if !self.borrow.skip_borrow_check && !self.speculating {
-                        path.push(crate::hir::places::index_element(idx));
+                        crate::hir::places::push_path_element(
+                            &mut path,
+                            crate::hir::places::index_element(idx),
+                        );
                         let live = self.borrow.live_borrows(&name).to_vec();
                         let conflict = live.iter().find(|b| {
                             b.is_mut && crate::hir::places::paths_may_alias(&path, &b.path)
@@ -1757,6 +1815,9 @@ impl<'a> TypeChecker<'a> {
                 }
                 if let Type::Pointer(inner, _, _) = base {
                     *inner
+                } else if let (Type::Tensor(el_ty, dims, top), Expr::Range(range)) = (&base, &**idx)
+                {
+                    self.range_index_type(el_ty.clone(), dims, top.clone(), range, &ix_span)
                 } else if let Type::Tensor(el_ty, dims, top) = base {
                     if dims.len() > 1 {
                         // Partial index (S1): a rank-reduced slice of the remaining dimensions,
@@ -2107,7 +2168,10 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::IndexAccess(i) => {
                 let (root, mut path) = self.reborrow_base_and_path(&i.base)?;
-                path.push(crate::hir::places::index_element(&i.index));
+                crate::hir::places::push_path_element(
+                    &mut path,
+                    crate::hir::places::index_element(&i.index),
+                );
                 Some((root, path))
             }
             _ => None,

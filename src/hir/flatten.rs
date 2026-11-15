@@ -1732,6 +1732,11 @@ impl<'r> Lowerer<'r> {
                                 what: "an index of a rank-0 value",
                             }); // cannot index a rank-0 value
                         }
+
+                        if let Expr::Range(range) = &*ix.index {
+                            return self.lower_tensor_range(base.reg, elem, shape, range);
+                        }
+
                         let index = self.lower_expr(&ix.index)?;
                         if !matches!(index.ty, LoweredTy::Scalar(_)) {
                             return Err(Decline::TypeNotModelled {
@@ -6651,6 +6656,30 @@ impl<'r> Lowerer<'r> {
         ))
     }
 
+    /// `q[a..b]`: rows `a` to `b - 1` of the tensor `base`, a view that shares its memory. The
+    /// checker refused a range whose ends are not literal numbers or that has no rows.
+    fn lower_tensor_range(
+        &mut self,
+        base: Register,
+        elem: ElementType,
+        mut shape: Vec<String>,
+        range: &crate::syntax::expr::RangeExpr,
+    ) -> Lowered<Val> {
+        let (a, b) = range
+            .literal_ends()
+            .expect("the checker refuses a range whose ends are not literal numbers");
+        assert!(a < b, "the checker refuses a range with no rows");
+        let start = self.lower_expr(&range.start)?;
+        shape[0] = (b - a).to_string();
+        Ok(self.emit_typed(
+            Opcode::TensorRange,
+            base,
+            start.reg,
+            LoweredTy::Tensor { elem, shape },
+            0,
+        ))
+    }
+
     fn lower_place(&mut self, e: &Expr) -> Lowered<Val> {
         // A raw-pointer dereference place `*p = val`: `p[0]`.
         if let Expr::Dereference(d) = e {
@@ -6694,6 +6723,10 @@ impl<'r> Lowerer<'r> {
             return Err(Decline::TypeNotModelled {
                 what: "an index of a rank-0 value",
             }); // cannot index a rank-0 value
+        }
+        // `q[1..3] = w` writes `w` into the rows of the range.
+        if let Expr::Range(range) = &*ix.index {
+            return self.lower_tensor_range(base.reg, elem, shape, range);
         }
         let index = self.lower_expr(&ix.index)?;
         if !matches!(index.ty, LoweredTy::Scalar(_)) {
@@ -7070,7 +7103,10 @@ impl<'r> Lowerer<'r> {
             }
             match ins.opcode {
                 // A view of `r` or `r` under another type: dead when that is.
-                Opcode::Cast | Opcode::TensorIndex | Opcode::TensorReshape => {
+                Opcode::Cast
+                | Opcode::TensorIndex
+                | Opcode::TensorRange
+                | Opcode::TensorReshape => {
                     if !self.temp_is_dead(Register(i as u32), keep) {
                         return false;
                     }
@@ -8992,6 +9028,7 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             | Opcode::Store
             | Opcode::FieldStore
             | Opcode::TensorIndex
+            | Opcode::TensorRange
             | Opcode::TensorStore
             | Opcode::TensorDim
             // `PtrIndex` reads base+index; `PtrStore` reads place+value (#242).
