@@ -382,6 +382,9 @@ impl FnEmit<'_> {
         if ins.imm & crate::bytecode::LANE_REDUCE_FILL != 0 {
             return self.op_lane_fill(ins);
         }
+        if ins.imm & crate::bytecode::LANE_REDUCE_SCALE_ROWS != 0 {
+            return self.op_lane_scale_rows(ins);
+        }
         if ins.imm & crate::bytecode::LANE_REDUCE_MATMUL != 0 {
             return self.op_lane_matmul(ins);
         }
@@ -519,6 +522,26 @@ impl FnEmit<'_> {
             "  \"vx.lane_fill\"({t}, {v}) {{lanes = {} : i64{subgroup}}} : ({memty}, {vty}) -> ()\n",
             ins.imm >> 32
         );
+        Ok(())
+    }
+
+    /// `vx.lane_scale_rows`: the tile and the tile of the scale of each row.
+    fn op_lane_scale_rows(&mut self, ins: &HirInstruction) -> Lowered<()> {
+        let operand = |r: u32| {
+            let name = self.names.get(r as usize).cloned();
+            let memty = self.mem_of.get(r as usize).cloned().flatten();
+            name.zip(memty).ok_or(crate::emitter_gap!())
+        };
+        let ((t, tty), (s, sty)) = (operand(ins.operand1.0)?, operand(ins.operand2.0)?);
+        let mut attrs = format!("lanes = {} : i64", ins.imm >> 32);
+        if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
+            attrs += ", subgroup";
+        }
+        if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP_ROW != 0 {
+            attrs += ", subgroup_row";
+        }
+        self.body +=
+            &format!("  \"vx.lane_scale_rows\"({t}, {s}) {{{attrs}}} : ({tty}, {sty}) -> ()\n");
         Ok(())
     }
 

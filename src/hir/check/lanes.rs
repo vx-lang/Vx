@@ -13,6 +13,7 @@
 // `lanes::sort_descending(&mut t, n)` sort the first `n` elements of a rank-1 tensor of `i64`.
 // `lanes::copy(&mut dst, &src, [i, j])` copies a tile in shared memory to or from a tensor.
 // `lanes::fill(&mut tile, v)` sets each element of a tile in shared memory to `v`.
+// `lanes::scale_rows(&mut tile, &scale)` multiplies row `i` of a tile by `scale[i]`.
 //
 //===----------------------------------------------------------------------===//
 
@@ -41,6 +42,8 @@ pub enum LaneOp {
     Copy,
     /// Sets each element of a tile in shared memory to a value.
     Fill,
+    /// Multiplies each row of a tile in shared memory by an element of another tile.
+    ScaleRows,
 }
 
 impl LaneOp {
@@ -50,12 +53,20 @@ impl LaneOp {
 
     /// Whether a call is a statement of its own, not the value of a `let`.
     pub fn is_statement(self) -> bool {
-        self.is_sort() || matches!(self, LaneOp::CopyWait | LaneOp::Copy | LaneOp::Fill)
+        self.is_sort()
+            || matches!(
+                self,
+                LaneOp::CopyWait | LaneOp::Copy | LaneOp::Fill | LaneOp::ScaleRows
+            )
     }
 
     /// Whether the call writes the tensor that its first argument borrows.
     pub fn writes_first(self) -> bool {
-        self.is_sort() || matches!(self, LaneOp::CopyAsync | LaneOp::Copy | LaneOp::Fill)
+        self.is_sort()
+            || matches!(
+                self,
+                LaneOp::CopyAsync | LaneOp::Copy | LaneOp::Fill | LaneOp::ScaleRows
+            )
     }
 }
 
@@ -74,6 +85,7 @@ const ROUTINES: &[(&str, LaneOp, bool)] = &[
     ("copy_wait", LaneOp::CopyWait, true),
     ("copy", LaneOp::Copy, true),
     ("fill", LaneOp::Fill, true),
+    ("scale_rows", LaneOp::ScaleRows, true),
 ];
 
 /// The most elements that a block reduces: 32 groups of 32.
@@ -239,6 +251,9 @@ impl crate::hir::TypeChecker<'_> {
             }
             Some(LaneOp::Copy) => return self.check_copy(name, args, arg_types, call_span),
             Some(LaneOp::Fill) => return self.check_fill(name, args, arg_types, call_span),
+            Some(LaneOp::ScaleRows) => {
+                return self.check_scale_rows(name, args, arg_types, call_span)
+            }
             _ => {}
         }
         let argmax = lane_routine(name).map(|(op, _)| op) == Some(LaneOp::ArgMax);
@@ -690,6 +705,76 @@ impl crate::hir::TypeChecker<'_> {
                 format!(
                     "the second argument of `{name}` is the value of each element, so its type is \
                      the element type of the tile, `{elem}`, but it is `{}`",
+                    arg_types[1]
+                ),
+                span,
+            );
+        }
+        void
+    }
+
+    /// The type of a call `lanes::scale_rows(&mut tile, &scale)`, which multiplies row `i` of
+    /// `tile`, an `f32` matrix in shared memory, by `scale[i]`. `scale` is an `f32` tile in shared
+    /// memory with one element for each row. Both sizes are numbers.
+    fn check_scale_rows(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        arg_types: &[Type],
+        call_span: Span,
+    ) -> Type {
+        let void = Type::Struct("void".into(), None);
+        if self.speculating {
+            return void;
+        }
+        let span = Some(SourceSpan::from_ast_span(&call_span));
+        if args.len() != 2 {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "`{name}` takes 2 arguments, a `&mut` tile in shared memory and a `&` tile of \
+                     the scale of each row, but it got {}",
+                    args.len()
+                ),
+                span,
+            );
+            return void;
+        }
+        // The sizes of an `f32` tile in shared memory, borrowed as `&mut` or as `&`.
+        let f32_tile = |t: &Type, is_mut: bool| -> Option<Vec<i128>> {
+            match t {
+                Type::Borrow {
+                    inner, is_mut: m, ..
+                } if *m == is_mut => match inner.as_ref() {
+                    Type::Tensor(ElementType::F32, dims, p) if self.in_shared_memory(p) => dims
+                        .iter()
+                        .map(|d| crate::hir::memory::static_extent(d).filter(|&n| n >= 1))
+                        .collect(),
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
+        let Some(&[rows, _]) = f32_tile(&arg_types[0], true).as_deref() else {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "the first argument of `{name}` must borrow an `f32` matrix in shared memory as \
+                     `&mut`, with sizes that are numbers, such as `&mut acc[w]` for `Tensor<f32, \
+                     [4, 16, 64], Memory::SMEM>`, but it is `{}`",
+                    arg_types[0]
+                ),
+                span,
+            );
+            return void;
+        };
+        if f32_tile(&arg_types[1], false).as_deref() != Some(&[rows]) {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "the second argument of `{name}` must borrow an `f32` tile in shared memory as \
+                     `&`, with one element for each of the {rows} rows of the first, such as \
+                     `&scale[w]` for `Tensor<f32, [4, {rows}], Memory::SMEM>`, but it is `{}`",
                     arg_types[1]
                 ),
                 span,

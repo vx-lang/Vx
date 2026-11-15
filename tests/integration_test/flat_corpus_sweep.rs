@@ -206,6 +206,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/lane_copy_on_the_gpu.vx",                         // needs --machine
             "optimizations/pass/lane_fill_of_a_tile.vx",                          // needs --machine
             "optimizations/pass/lane_fill_on_the_gpu.vx",                         // needs --machine
+            "optimizations/pass/lane_scale_rows_keeps_the_sums_in_registers.vx",  // needs --machine
             "optimizations/pass/lane_matmul_result_goes_from_registers_to_the_tensor.vx", // needs --machine
             "optimizations/pass/lane_copies_with_tma.vx",                         // needs --machine
             "optimizations/pass/lane_argmax_on_the_cpu.vx",                       // needs --machine

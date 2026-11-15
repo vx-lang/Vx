@@ -169,6 +169,10 @@ Two blocks or two subgroups must not write the same element of `c` (E6032).
 `lanes::fill(&mut tile, v)` sets each element of a tile in shared memory to `v`. Every lane of the
 block or the subgroup sets a part of the tile, so it is faster than a loop on one lane.
 
+`lanes::scale_rows(&mut tile, &scale)` multiplies row `i` of a tile in shared memory by `scale[i]`.
+Flash attention does this to its output sums between two matmuls. The sums of a tensor-core
+matmul can then stay in registers.
+
 ## Math functions in a kernel
 
 `x.exp()` and `x.tanh()` are exact, and on a GPU they compute in `f64`, which is slow. In a kernel

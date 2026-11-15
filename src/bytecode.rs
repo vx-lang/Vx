@@ -435,15 +435,19 @@ pub const LANE_REDUCE_COPY_NOW: u64 = 2048;
 /// `Opcode::LaneReduce`: `lanes::fill`, an effect with no result. `operand1` is the tile in shared
 /// memory and `operand2` the value. The lanes of the block or the subgroup are in `imm >> 32`.
 pub const LANE_REDUCE_FILL: u64 = 4096;
-/// `Opcode::LaneReduce` with `LANE_REDUCE_MATMUL`, `LANE_REDUCE_COPY_NOW` or `LANE_REDUCE_FILL`:
-/// its tile (the accumulator, the source of a copy, or the tile of a fill) is `t[w]`, where `w` is
-/// the index of a subgroup loop that gives each subgroup one pass at most. So `w` is the number of
-/// the subgroup.
+/// `Opcode::LaneReduce` with `LANE_REDUCE_MATMUL`, `LANE_REDUCE_COPY_NOW`, `LANE_REDUCE_FILL` or
+/// `LANE_REDUCE_SCALE_ROWS`: its tile (the accumulator, the source of a copy, or the tile of a fill
+/// or a scale) is `t[w]`, where `w` is the index of a subgroup loop that gives each subgroup one
+/// pass at most. So `w` is the number of the subgroup.
 pub const LANE_REDUCE_SUBGROUP_ROW: u64 = 8192;
 /// `Opcode::LaneReduce` with `LANE_REDUCE_OWN_ROW`: the subgroup has the row for the whole kernel,
 /// so the reduction may read it from the registers of `LANE_OWN_SUBGROUP` or `LANE_OWN_WHOLE`
 /// elements.
 pub const LANE_REDUCE_LANE_OWN: u64 = 16384;
+/// `Opcode::LaneReduce`: `lanes::scale_rows`, an effect with no result. `operand1` is the tile in
+/// shared memory and `operand2` the tile of the scales. The lanes of the block or the subgroup are
+/// in `imm >> 32`.
+pub const LANE_REDUCE_SCALE_ROWS: u64 = 32768;
 
 /// `Opcode::TensorStore`: the place is `tile[t]` in a lane loop of the code of a block, with `t`
 /// the index of the loop. The loop goes from 0 over all of its lanes, so only lane `t` writes the
