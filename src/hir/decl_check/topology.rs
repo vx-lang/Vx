@@ -52,6 +52,49 @@ impl TypeChecker<'_> {
 
             if !matches!(kind, TopologyKind::Custom(_)) {
                 if let Some(builtin) = crate::arch::builtin_descriptors().remove(&kind) {
+                    if !crate::arch::can_patch_builtin_dtypes(&kind) {
+                        if kind == TopologyKind::CPU {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E6016,
+                                "topology 'CPU' cannot take `dtypes:`, because host functions and the standard library run on it",
+                                None,
+                            );
+                        } else if let Some(owner) =
+                            crate::arch::builtin_space_owner(&builtin.default_space)
+                        {
+                            if owner == TopologyKind::CPU {
+                                self.errors.error_with_code(
+                                    crate::diagnostic::DiagnosticCode::E6016,
+                                    format!(
+                                        "topology '{}' cannot take `dtypes:`, because its memory `{}` belongs to 'CPU'",
+                                        decl.name,
+                                        builtin.default_space.name()
+                                    ),
+                                    None,
+                                );
+                            } else {
+                                self.errors.error_with_code(
+                                    crate::diagnostic::DiagnosticCode::E6016,
+                                    format!(
+                                        "topology '{}' cannot take `dtypes:`, because its memory `{}` belongs to '{}'. Put `dtypes:` on '{}'",
+                                        decl.name,
+                                        builtin.default_space.name(),
+                                        owner,
+                                        owner
+                                    ),
+                                    None,
+                                );
+                            }
+                        } else {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E6016,
+                                format!("topology '{}' cannot take `dtypes:`", decl.name),
+                                None,
+                            );
+                        }
+                        continue;
+                    }
+
                     let field = if decl.descriptor.arch.is_some() {
                         Some("`arch:`")
                     } else if decl.descriptor.chip.is_some() {
@@ -98,44 +141,6 @@ impl TypeChecker<'_> {
                             None,
                         );
                         continue;
-                    }
-
-                    if kind == TopologyKind::CPU {
-                        self.errors.error_with_code(
-                            crate::diagnostic::DiagnosticCode::E6016,
-                            "topology 'CPU' cannot take `dtypes:`, because host functions and the standard library run on it",
-                            None,
-                        );
-                        continue;
-                    }
-
-                    if let Some(owner) = crate::arch::builtin_space_owner(&builtin.default_space) {
-                        if owner != kind {
-                            if owner == TopologyKind::CPU {
-                                self.errors.error_with_code(
-                                    crate::diagnostic::DiagnosticCode::E6016,
-                                    format!(
-                                        "topology '{}' cannot take `dtypes:`, because its memory `{}` belongs to 'CPU'",
-                                        decl.name,
-                                        builtin.default_space.name()
-                                    ),
-                                    None,
-                                );
-                            } else {
-                                self.errors.error_with_code(
-                                    crate::diagnostic::DiagnosticCode::E6016,
-                                    format!(
-                                        "topology '{}' cannot take `dtypes:`, because its memory `{}` belongs to '{}'. Put `dtypes:` on '{}'",
-                                        decl.name,
-                                        builtin.default_space.name(),
-                                        owner,
-                                        owner
-                                    ),
-                                    None,
-                                );
-                            }
-                            continue;
-                        }
                     }
                 }
             }

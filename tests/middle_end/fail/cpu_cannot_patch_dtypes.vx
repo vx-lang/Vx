@@ -3,6 +3,8 @@
 // CHECK: E6016
 // CHECK: topology 'CPU' cannot take `dtypes:`, because host functions and the standard library run on it
 
+import std::vec;
+
 Memory CPU_DRAM {}
 
 Topology CPU {
