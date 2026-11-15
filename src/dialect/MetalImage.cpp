@@ -53,6 +53,8 @@
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
+#include <functional>
+#include <map>
 
 #include <string>
 
@@ -80,6 +82,10 @@ struct KernelInliner : public InlinerInterface {
            InlinerInterface::isLegalToInline(dest, src, wouldBeCloned, mapping);
   }
 };
+
+// The attribute of a lane matmul, fill or copy whose accumulator stays in
+// simdgroup matrices (src/dialect/VxLowering.cpp).
+constexpr StringLiteral simdgroupRegisters = "simdgroup_registers";
 
 // Where a memref's elements are: `ptr[origin + i0 * strides[0] + ...]`.
 // `origin` is the index of the memref's first element in `ptr`.
@@ -131,6 +137,10 @@ private:
   DenseMap<Value, Address> addresses;
   // The value that each compare-and-swap found, and whether it wrote.
   DenseMap<Value, std::pair<std::string, std::string>> exchanges;
+  // For each accumulator that stays in the simdgroup matrices of the
+  // subgroups (`simdgroup_registers`), the numbers of rows and columns of its
+  // 8 x 8 pieces.
+  std::map<int64_t, std::pair<int64_t, int64_t>> registerSums;
 
   bool fail(Operation *op, const Twine &why) {
     if (failure.empty()) {
@@ -177,6 +187,8 @@ private:
   bool llvmOp(Operation *op);
   bool atomicOp(Operation *op);
   bool laneMatmul(Operation *op);
+  bool laneFill(Operation *op);
+  bool laneCopy(Operation *op);
   bool atomicAt(Operation *op, Value ptr, Type t, Address &out);
   void acquireFence(const Address &a);
   bool ifOp(scf::IfOp op);
@@ -436,9 +448,50 @@ bool Printer::kernel(gpu::GPUFuncOp f) {
   os << "    uint vx_simd [[threads_per_simdgroup]]) {\n";
   depth = 1;
 
+  // The accumulators that stay in simdgroup matrices. Each lane matmul, fill
+  // and copy of one has `simdgroup_registers`, and its tile has no shared
+  // memory (`keepSimdgroupSumsInRegisters` in src/dialect/VxLowering.cpp).
+  registerSums.clear();
+  f.walk([&](Operation *o) {
+    auto number = o->getAttrOfType<IntegerAttr>(simdgroupRegisters);
+    if (!number)
+      return;
+    // The tile is the first operand of a matmul or a fill, and the source of
+    // a copy.
+    Value tile = o->getOperand(o->getName().getStringRef() == "vx.lane_copy");
+    auto t = cast<MemRefType>(tile.getType());
+    registerSums[number.getInt()] = {t.getDimSize(0) / 8, t.getDimSize(1) / 8};
+  });
+  // Whether only those ops use the memref `v`, through its views.
+  std::function<bool(Value)> onlyInRegisters = [&](Value v) {
+    for (Operation *user : v.getUsers()) {
+      if (auto meta = dyn_cast<memref::ExtractStridedMetadataOp>(user)) {
+        if (!onlyInRegisters(meta.getBaseBuffer()))
+          return false;
+        continue;
+      }
+      if (isa<memref::CastOp, memref::MemorySpaceCastOp,
+              memref::ReinterpretCastOp, memref::SubViewOp>(user)) {
+        if (!onlyInRegisters(user->getResult(0)))
+          return false;
+        continue;
+      }
+      if (!user->hasAttr(simdgroupRegisters))
+        return false;
+    }
+    return true;
+  };
+  llvm::StringSet<> used;
+  f.walk([&](memref::GetGlobalOp get) {
+    if (!onlyInRegisters(get.getResult()))
+      used.insert(get.getName());
+  });
+
   // Shared memory that this kernel uses.
   llvm::StringSet<> shared;
   f.walk([&](memref::GetGlobalOp get) {
+    if (!used.contains(get.getName()))
+      return;
     auto t = get.getType();
     auto space = dyn_cast_or_null<IntegerAttr>(t.getMemorySpace());
     if (!(space && space.getInt() == 3) &&
@@ -454,6 +507,12 @@ bool Printer::kernel(gpu::GPUFuncOp f) {
   });
   if (!failure.empty())
     return false;
+  for (auto [number, pieces] : registerSums) {
+    int64_t count = pieces.first * pieces.second;
+    line() << "simdgroup_float8x8 vx_sums" << number << "[" << count << "];\n";
+    line() << "for (int i = 0; i < " << count << "; i++)\n";
+    line() << "  vx_sums" << number << "[i] = simdgroup_float8x8(0);\n";
+  }
 
   // The parameters, from the words.
   unsigned word = 0;
@@ -595,6 +654,12 @@ bool Printer::op(Operation *o) {
     return mathOp(o);
   if (o->getName().getStringRef() == "vx.lane_matmul")
     return laneMatmul(o);
+  if (o->getName().getStringRef() == "vx.lane_fill" &&
+      o->hasAttr(simdgroupRegisters))
+    return laneFill(o);
+  if (o->getName().getStringRef() == "vx.lane_copy" &&
+      o->hasAttr(simdgroupRegisters))
+    return laneCopy(o);
   if (o->getName().getStringRef() == "nvvm.bar.warp.sync") {
     // The end of a lane loop in a subgroup loop. A subgroup is a SIMD-group
     // of 32 threads, and all of them wait, as with the mask of all lanes.
@@ -645,18 +710,29 @@ bool Printer::laneMatmul(Operation *o) {
          acc.getDimSize(1) % 8 == 0 &&
          "the lowering left only matmuls of whole 8 x 8 pieces");
   auto at = [&](unsigned k) { return tiles[k].ptr + " + " + tiles[k].origin; };
-  std::string c = fresh("mm"), a = fresh("ma"), b = fresh("mb");
+  // With `simdgroup_registers`, the pieces of the result are the matrices of
+  // the kernel that hold the accumulator, and they stay there.
+  auto number = o->getAttrOfType<IntegerAttr>(simdgroupRegisters);
+  std::string c =
+      number ? "vx_sums" + std::to_string(number.getInt()) : fresh("mm");
+  std::string a = fresh("ma"), b = fresh("mb");
   std::string r = std::to_string(rows), n = std::to_string(cols);
   line() << "{\n";
   ++depth;
-  line() << "simdgroup_float8x8 " << c << "[" << rows * cols << "];\n";
-  line() << "for (int i = 0; i < " << r << "; i++)\n";
-  line() << "  for (int j = 0; j < " << n << "; j++)\n";
-  if (o->hasAttr("accumulate"))
-    line() << "    simdgroup_load(" << c << "[i * " << n << " + j], " << at(0)
-           << " + i * 8 * " << stride[0] << " + j * 8, " << stride[0] << ");\n";
-  else
-    line() << "    " << c << "[i * " << n << " + j] = simdgroup_float8x8(0);\n";
+  // The lowering marks only a matmul that adds to its accumulator, so the
+  // matrices of the kernel already hold the value it starts from.
+  if (!number) {
+    line() << "simdgroup_float8x8 " << c << "[" << rows * cols << "];\n";
+    line() << "for (int i = 0; i < " << r << "; i++)\n";
+    line() << "  for (int j = 0; j < " << n << "; j++)\n";
+    if (o->hasAttr("accumulate"))
+      line() << "    simdgroup_load(" << c << "[i * " << n << " + j], " << at(0)
+             << " + i * 8 * " << stride[0] << " + j * 8, " << stride[0]
+             << ");\n";
+    else
+      line() << "    " << c << "[i * " << n
+             << " + j] = simdgroup_float8x8(0);\n";
+  }
   line() << "for (int k = 0; k < " << inner << "; k += 8) {\n";
   line() << "  " << matrix[1] << " " << a << "[" << r << "];\n";
   line() << "  " << matrix[2] << " " << b << "[" << n << "];\n";
@@ -672,12 +748,87 @@ bool Printer::laneMatmul(Operation *o) {
          << " + j], " << a << "[i], " << b << "[j], " << c << "[i * " << n
          << " + j]);\n";
   line() << "}\n";
-  line() << "for (int i = 0; i < " << r << "; i++)\n";
-  line() << "  for (int j = 0; j < " << n << "; j++)\n";
-  line() << "    simdgroup_store(" << c << "[i * " << n << " + j], " << at(0)
-         << " + i * 8 * " << stride[0] << " + j * 8, " << stride[0] << ");\n";
+  if (!number) {
+    line() << "for (int i = 0; i < " << r << "; i++)\n";
+    line() << "  for (int j = 0; j < " << n << "; j++)\n";
+    line() << "    simdgroup_store(" << c << "[i * " << n << " + j], " << at(0)
+           << " + i * 8 * " << stride[0] << " + j * 8, " << stride[0] << ");\n";
+  }
   --depth;
   line() << "}\n";
+  return true;
+}
+
+// A `vx.lane_fill` of an accumulator in simdgroup matrices: each element of
+// each piece gets the value. (`simdgroup_float8x8(v)` sets only the diagonal.)
+bool Printer::laneFill(Operation *o) {
+  auto number = o->getAttrOfType<IntegerAttr>(simdgroupRegisters);
+  auto pieces = registerSums[number.getInt()];
+  std::string sums = "vx_sums" + std::to_string(number.getInt());
+  line() << "for (int i = 0; i < " << pieces.first * pieces.second
+         << "; i++)\n";
+  line() << "  " << sums << "[i] = make_filled_simdgroup_matrix<float, 8, 8>("
+         << name(o->getOperand(1)) << ");\n";
+  return true;
+}
+
+// A `vx.lane_copy` of an accumulator in simdgroup matrices to the part of an
+// f32 tensor at `place`. A piece that is inside the tensor goes with one
+// `simdgroup_store`. Otherwise each lane stores its 2 elements of the piece
+// that are inside. Lane l holds row (l / 16) * 4 + (l / 2) % 4 of the piece,
+// and the columns from ((l / 8) % 2) * 4 + (l % 2) * 2, in
+// `thread_elements()`: the layout of the Apple GPU, which
+// tests/optimizations/pass/lane_matmul_sums_stay_in_simdgroup_matrices.vx
+// checks. Then the lanes wait, as after the copy that the lowering expands.
+bool Printer::laneCopy(Operation *o) {
+  auto number = o->getAttrOfType<IntegerAttr>(simdgroupRegisters);
+  auto pieces = registerSums[number.getInt()];
+  std::string sums = "vx_sums" + std::to_string(number.getInt());
+  View dst;
+  if (!viewOf(o->getOperand(0), dst, o))
+    return false;
+  if (dst.space != "device" || dst.sizes.size() != 2 ||
+      o->getNumOperands() != 4)
+    return fail(o, "a copy of simdgroup matrices to a tensor that is not a "
+                   "tensor of 2 dimensions in device memory");
+  std::string top = fresh("r"), left = fresh("c");
+  line() << "{\n";
+  ++depth;
+  line() << "const int " << top << " = (int)" << name(o->getOperand(2))
+         << ";\n";
+  line() << "const int " << left << " = (int)" << name(o->getOperand(3))
+         << ";\n";
+  line() << "for (int i = 0; i < " << pieces.first << "; i++)\n";
+  line() << "  for (int j = 0; j < " << pieces.second << "; j++) {\n";
+  line() << "    const int r = " << top << " + i * 8, c = " << left
+         << " + j * 8;\n";
+  line() << "    if (r >= 0 && c >= 0 && r + 8 <= " << dst.sizes[0]
+         << " && c + 8 <= " << dst.sizes[1] << ") {\n";
+  line() << "      simdgroup_store(" << sums << "[i * " << pieces.second
+         << " + j], " << dst.ptr << " + " << dst.origin << " + r * "
+         << dst.strides[0] << " + c, (ulong)" << dst.strides[0] << ");\n";
+  line() << "    } else {\n";
+  line() << "      thread auto &e = " << sums << "[i * " << pieces.second
+         << " + j].thread_elements();\n";
+  line() << "      const int er = r + (int)(vx_lane / 16) * 4 + (int)(vx_lane "
+            "/ 2) % 4;\n";
+  line() << "      const int ec = c + (int)((vx_lane / 8) % 2) * 4 + "
+            "(int)(vx_lane % 2) * 2;\n";
+  line() << "      for (int k = 0; k < 2; k++)\n";
+  line() << "        if ((uint)er < (uint)" << dst.sizes[0]
+         << " && (uint)(ec + k) < (uint)" << dst.sizes[1] << ")\n";
+  line() << "          " << dst.ptr << "[" << dst.origin << " + er * "
+         << dst.strides[0] << " + ec + k] = e[k];\n";
+  line() << "    }\n";
+  line() << "  }\n";
+  --depth;
+  line() << "}\n";
+  if (o->hasAttr("subgroup"))
+    line() << "simdgroup_barrier(mem_flags::mem_device | "
+              "mem_flags::mem_threadgroup);\n";
+  else
+    line() << "threadgroup_barrier(mem_flags::mem_device | "
+              "mem_flags::mem_threadgroup);\n";
   return true;
 }
 

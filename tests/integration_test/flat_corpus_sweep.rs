@@ -191,6 +191,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/lane_reductions_on_the_cpu.vx",                   // needs --machine
             "optimizations/pass/lane_reductions_on_the_gpu.vx",                   // needs --machine
             "optimizations/pass/lane_values_stay_in_registers_on_the_gpu.vx",     // needs --machine
+            "optimizations/pass/lane_values_stay_in_registers_between_lane_loops.vx", // needs --machine
             "optimizations/pass/across_loops_run_in_parallel_on_both_code_generators.vx", // needs --machine
             "optimizations/pass/lane_routines_run_in_parallel_on_both_code_generators.vx", // needs --machine
             "optimizations/pass/lane_sorts_on_the_cpu.vx",                        // needs --machine
@@ -240,6 +241,10 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             // needs --machine
             "optimizations/pass/apple_gpu_counted_loops_are_for_loops_in_metal_shading_language.vx",
             "optimizations/pass/lane_matmuls_in_metal_shading_language.vx",
+            // needs --machine
+            "optimizations/pass/lane_matmul_sums_stay_in_simdgroup_matrices.vx",
+            // needs --machine
+            "optimizations/pass/lane_matmul_sums_in_simdgroup_matrices_on_the_apple_gpu.vx",
             // needs --machine
             "optimizations/pass/a_bulk_hash_table_search_wraps_around_the_end_of_the_table.vx",
             // needs --machine

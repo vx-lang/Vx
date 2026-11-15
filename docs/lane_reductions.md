@@ -92,6 +92,15 @@ kernel expands it, and the argmax shuffles a value and an index at each step:
   and `part` takes no memory. A subgroup can also have several rows, `part[w][c][t]` for a number
   `c`, and each row gets its own register. A row whose `c` is not a number keeps `part`. The larger value in the code of a block also needs a count that is
   a multiple of 32, because its pad is the element of lane 0.
+- **A tile whose elements belong to lanes:** every access to `t` is `t[w][..][l]` in the code of
+  subgroup `w`, or `t[..][l]` in the code of a block or of a subgroup loop with one subgroup.
+  `l` is the index of a lane loop from 0 over all the lanes of its level, and the subgroup loop
+  gives each subgroup one pass at most. Then each element belongs to one lane, and the GPU kernel
+  keeps the lane's elements in registers through all its lane loops. A lane reduction of a row
+  `t[w][c]` in the code of the subgroup reads the registers. The last dimension of `t` is the
+  lanes of the loop, and a lane keeps at most 128 elements. The `for` loops whose variables index
+  such an element are unrolled, so each index is a number. Flash decoding keeps its query, its
+  output sums and the running maximum and sum of its scores this way.
 - **CPU:** loops that compute the same tree. The CPU copy of a kernel and
   `-fauto-schedule-levels` use them. So does the AST code generator (`--legacy-codegen`) for a
   kernel with code after its nest of blocks, which it still runs on one lane.
@@ -182,6 +191,14 @@ Each 8 x 8 piece of the result is then a `simdgroup_float8x8`. With `+`, it star
 value, and otherwise from 0. Each 8 values of `k` add one `simdgroup_multiply_accumulate` to it.
 The GPU adds the products in an order of its own, so a result can differ from the CPU copy in its
 last bits, as on the tensor cores.
+
+The accumulator can stay in the simdgroup matrices of the subgroups, with no tile in shared memory,
+as on an NVIDIA GPU. This happens when each other use of the tile is a `lanes::fill` of `acc[w]`,
+a `lanes::copy` out of it to an `f32` tensor of 2 dimensions, or another matmul that adds to it, and
+`w` is the index of a subgroup loop that gives each subgroup one pass at most. The matmul then
+neither loads nor stores the matrices. The copy stores each 8 x 8 piece that is inside the tensor
+with one `simdgroup_store`. For a piece that goes past the end of the tensor, each lane stores its
+elements that are inside.
 
 Each other matmul uses the lanes of the subgroup: they share the elements of the result, and each
 lane computes its elements in the order above.

@@ -861,6 +861,13 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
                 }
             }
         }
+        if let syntax::Expr::Range(_) = self.index.as_ref() {
+            return Err(LowerError::from(
+                "the legacy code generator (`--legacy-codegen`) does not support a range index \
+                 `q[a..b]`"
+                    .to_string(),
+            ));
+        }
         let (base_val, base_ty, indices, block) = gen
             .flatten_indices(&syntax::Expr::IndexAccess(self.clone()), block)
             .expect("Failed to flatten indices for IndexAccess");
@@ -1134,8 +1141,10 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
             let inner_ty = Type::parse(gen.context, &inner_ty_str).ok_or_else(|| {
                 crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
             })?;
-            let mut load_builder =
-                OperationBuilder::new("memref.load", gen.loc()).add_operands(&[base_val]);
+            // docs/lane_reductions.md: a read of an element of this lane alone.
+            let mut load_builder = OperationBuilder::new("memref.load", gen.loc())
+                .add_operands(&[base_val])
+                .add_attributes(&super::across::lane_own_attrs(gen, self));
 
             for idx in indices {
                 load_builder = load_builder.add_operands(&[idx]);

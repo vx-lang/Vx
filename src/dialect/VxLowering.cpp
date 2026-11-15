@@ -4250,6 +4250,79 @@ expandLaneMatmulWithoutTile(gpu::GPUFuncOp func, vx::LaneMatmulOp op, Type elem,
   return true;
 }
 
+/// The attribute that marks a lane matmul, fill or copy whose accumulator
+/// stays in the simdgroup matrices of the Apple GPU. Its value numbers the
+/// tile, so that the Metal printer gives each tile its own matrices.
+constexpr StringLiteral simdgroupRegistersAttr = "simdgroup_registers";
+
+/// On the Apple GPU, keeps the accumulator of a lane matmul in the simdgroup
+/// matrices of each subgroup in the whole kernel, and gives its tile no shared
+/// memory, as `expandLaneMatmulWithoutTile` does on the tensor cores. This
+/// happens when each other use of the tile is a `vx.lane_fill` of it, a
+/// `vx.lane_copy` out of it to an f32 tensor of 2 dimensions, or another
+/// matmul that adds to it. Each of them takes the row of its subgroup
+/// (`subgroup_row`), so each subgroup holds the same row in all of them. Marks
+/// them with `simdgroup_registers` = `number`, and leaves them to the Metal
+/// printer (src/dialect/MetalImage.cpp). Puts the other matmuls in `marked`.
+/// Returns false, and changes nothing, when the tile has another use.
+static bool keepSimdgroupSumsInRegisters(vx::LaneMatmulOp op, int64_t number,
+                                         SmallPtrSetImpl<Operation *> &marked) {
+  Type accType = op.getAcc().getType();
+  auto acc = cast<MemRefType>(accType);
+  memref::AllocaOp tile = laneCopyTileAlloca(op.getAcc());
+  auto addsToRow = [&](vx::LaneMatmulOp m) {
+    return m.getAccumulate() && m.getSubgroupRow() && !m.getSerial() &&
+           fitsSimdgroupMatrices(m) && m.getAcc().getType() == accType &&
+           laneCopyTileAlloca(m.getAcc()) == tile &&
+           laneCopyTileAlloca(m.getLhs()) != tile &&
+           laneCopyTileAlloca(m.getRhs()) != tile;
+  };
+  // Each 8 x 8 piece takes 2 registers of each lane.
+  if (!tile || !addsToRow(op) || acc.getRank() != 2 ||
+      acc.getNumElements() / 32 > laneMatmulFragmentRegisters)
+    return false;
+  SmallVector<Operation *> uses;
+  accessesOf(tile.getResult(), uses);
+  SmallVector<Operation *> others;
+  for (Operation *use : uses) {
+    if (use == op.getOperation())
+      continue;
+    auto other = dyn_cast<vx::LaneMatmulOp>(use);
+    if (other && addsToRow(other)) {
+      others.push_back(other);
+      continue;
+    }
+    auto fill = dyn_cast<vx::LaneFillOp>(use);
+    if (fill && fill.getSubgroupRow() && !fill.getSerial() &&
+        fill.getTile().getType() == accType) {
+      others.push_back(fill);
+      continue;
+    }
+    auto copy = dyn_cast<vx::LaneCopyOp>(use);
+    if (!copy || !copy.getSubgroupRow() || copy.getSerial())
+      return false;
+    LaneCopyNow c = laneCopyNowOf(copy);
+    auto tensor = cast<MemRefType>(c.tensor.getType());
+    SmallVector<int64_t> strides;
+    int64_t offset;
+    if (!c.toTensor || c.tile.getType() != accType ||
+        laneCopyTileAlloca(c.tensor) == tile || tensor.getRank() != 2 ||
+        !tensor.getElementType().isF32() ||
+        failed(tensor.getStridesAndOffset(strides, offset)) || strides[1] != 1)
+      return false;
+    others.push_back(copy);
+  }
+  Builder b(op.getContext());
+  auto mark = b.getI64IntegerAttr(number);
+  op->setAttr(simdgroupRegistersAttr, mark);
+  for (Operation *other : others) {
+    other->setAttr(simdgroupRegistersAttr, mark);
+    if (isa<vx::LaneMatmulOp>(other))
+      marked.insert(other);
+  }
+  return true;
+}
+
 /// Removes the tile of a matmul that `expandLaneMatmulWithoutTile` rewrote,
 /// after the matmul is gone, with the views that nothing uses any more.
 static void eraseUnusedTile(memref::AllocaOp tile) {
@@ -4580,6 +4653,359 @@ static bool onlyLaneElements(Value tile, StringRef level,
   return true;
 }
 
+/// The ops that use `tile`, and the ops that use its views and their
+/// metadata.
+static SmallVector<Operation *> laneTileUsers(Operation *tile) {
+  SmallVector<Operation *> users;
+  std::function<void(Operation *)> collect = [&](Operation *op) {
+    for (Operation *user : op->getUsers()) {
+      users.push_back(user);
+      if (isa<memref::ReinterpretCastOp, memref::ExtractStridedMetadataOp>(
+              user))
+        collect(user);
+    }
+  };
+  collect(tile);
+  return users;
+}
+
+/// Erases `tile` and `users`, its users from `laneTileUsers`, after its loads
+/// and its reductions are gone or moved: the stores, and what then has no use,
+/// such as the casts, the metadata, and the index arithmetic on it.
+static void eraseLaneTile(Operation *tile, ArrayRef<Operation *> users) {
+  llvm::SetVector<Operation *> left(users.begin(), users.end());
+  left.insert(tile);
+  for (bool erased = true; erased;) {
+    erased = false;
+    for (Operation *op : left.takeVector()) {
+      if (isa<memref::StoreOp>(op) || op->use_empty()) {
+        op->erase();
+        erased = true;
+      } else {
+        left.insert(op);
+      }
+    }
+  }
+  assert(left.empty() && "a use of a lane tile that is not a lane element");
+}
+
+/// The most elements of a tile that one lane keeps in registers.
+static constexpr int64_t laneOwnSlotLimit = 128;
+
+namespace {
+/// A tile in shared memory whose every access in a lane loop is an element
+/// of the lane that makes it, as `vx.lane_own` says: `t[w][..][l]` in the code
+/// of subgroup `w` (`subgroup`), or `t[..][l]` when one block or one subgroup
+/// has the whole tile (`whole`), with `l` the lane. Each lane keeps its
+/// elements in `slots` places of an array of its own.
+struct LaneOwnTile {
+  memref::AllocaOp tile;
+  StringRef form;
+  int64_t lanes = 0;
+  int64_t slots = 0;
+  SmallVector<Operation *> accesses;
+};
+} // namespace
+
+/// Adds the loads and the stores of `view`, which is `t.tile` or a view of
+/// it, to `t`. Returns false when another op uses the view, or when two marks
+/// disagree. A lane reduction in `reductions` may read the tile when it says
+/// `vx.lane_own`.
+static bool
+laneOwnAccesses(Value view, LaneOwnTile &t,
+                const llvm::SmallPtrSetImpl<Operation *> &reductions) {
+  for (OpOperand &use : view.getUses()) {
+    Operation *user = use.getOwner();
+    if (isa<memref::ReinterpretCastOp, memref::CastOp>(user) &&
+        use.getOperandNumber() == 0) {
+      if (!laneOwnAccesses(user->getResult(0), t, reductions))
+        return false;
+      continue;
+    }
+    if (auto meta = dyn_cast<memref::ExtractStridedMetadataOp>(user)) {
+      // The offset and the strides are numbers. Only the base buffer is
+      // memory, and it starts where the tile starts.
+      if (!laneOwnAccesses(meta.getBaseBuffer(), t, reductions))
+        return false;
+      continue;
+    }
+    if (isa<vx::DropOp>(user) && view == t.tile.getResult())
+      continue;
+    if (reductions.contains(user)) {
+      if (!user->hasAttr("vx.lane_own"))
+        return false;
+      continue;
+    }
+    auto store = dyn_cast<memref::StoreOp>(user);
+    bool access =
+        isa<memref::LoadOp>(user) || (store && store.getMemRef() == view);
+    auto form = user->getAttrOfType<StringAttr>("vx.lane_own");
+    auto lanes = user->getAttrOfType<IntegerAttr>("vx.lanes");
+    if (!access || !form || !lanes)
+      return false;
+    if (t.form.empty()) {
+      t.form = form.getValue();
+      t.lanes = lanes.getInt();
+    } else if (t.form != form.getValue() || t.lanes != lanes.getInt()) {
+      return false;
+    }
+    SmallVector<int64_t> strides;
+    int64_t offset;
+    if (failed(cast<MemRefType>(view.getType())
+                   .getStridesAndOffset(strides, offset)) ||
+        llvm::any_of(strides, ShapedType::isDynamic))
+      return false;
+    t.accesses.push_back(user);
+  }
+  return true;
+}
+
+/// The places that each lane keeps for `t`, or 0 when the tile cannot stay in
+/// registers: the elements of the row of a subgroup, or of the whole tile, over
+/// the lanes. The last dimension of the tile is the lane.
+static int64_t laneOwnSlots(const LaneOwnTile &t) {
+  auto type = cast<MemRefType>(t.tile->getResult(0).getType());
+  auto space = dyn_cast_or_null<IntegerAttr>(type.getMemorySpace());
+  if (!space || space.getInt() != 3 || !type.hasStaticShape() || t.lanes <= 0 ||
+      type.getDimSize(type.getRank() - 1) != t.lanes)
+    return 0;
+  int64_t slots = type.getNumElements() / t.lanes;
+  if (t.form == "subgroup") {
+    if (type.getRank() < 2)
+      return 0;
+    slots /= type.getDimSize(0);
+  } else if (t.form != "whole") {
+    return 0;
+  }
+  return slots >= 1 && slots <= laneOwnSlotLimit ? slots : 0;
+}
+
+static Value laneOwnViewOffset(OpBuilder &b, Location loc, Value view,
+                               int64_t period, IRMapping &known);
+
+/// `v`, an index, made again at `b` without the metadata of a view: the offset
+/// of a view comes from `laneOwnViewOffset`, and a stride or a size from its
+/// type. The pure ops that use them are made again too. Then the views can go
+/// when the tile goes. A product with a multiple of `period` becomes 0, because
+/// the place of an element repeats with that period: such a product is the
+/// offset of the row of a subgroup. Without it, LLVM can turn each place into a
+/// number.
+static Value laneOwnIndex(OpBuilder &b, Location loc, Value v, int64_t period,
+                          IRMapping &known) {
+  if (Value done = known.lookupOrNull(v))
+    return done;
+  Operation *def = v.getDefiningOp();
+  Value out = v;
+  auto multiple = [&](Value f) {
+    std::optional<int64_t> c = getConstantIntValue(f);
+    return c && *c % period == 0;
+  };
+  if (auto mul = dyn_cast_or_null<arith::MulIOp>(def);
+      mul && (multiple(mul.getLhs()) || multiple(mul.getRhs()))) {
+    out = b.create<arith::ConstantIndexOp>(loc, 0);
+  } else if (auto meta =
+                 dyn_cast_or_null<memref::ExtractStridedMetadataOp>(def)) {
+    auto type = cast<MemRefType>(meta.getSource().getType());
+    SmallVector<int64_t> strides;
+    int64_t offset;
+    bool strided = succeeded(type.getStridesAndOffset(strides, offset));
+    assert(strided && "a view with a strided layout");
+    (void)strided;
+    if (v == meta.getOffset()) {
+      out = laneOwnViewOffset(b, loc, meta.getSource(), period, known);
+    } else {
+      auto number = [&](ResultRange values, ArrayRef<int64_t> numbers) {
+        for (auto [r, n] : llvm::zip(values, numbers))
+          if (r == v) {
+            assert(!ShapedType::isDynamic(n) && "a view with static strides");
+            return b.create<arith::ConstantIndexOp>(loc, n).getResult();
+          }
+        return Value();
+      };
+      out = number(meta.getStrides(), strides);
+      if (!out)
+        out = number(meta.getSizes(), type.getShape());
+      assert(out && "the metadata of a view");
+    }
+  } else if (def && def->getNumRegions() == 0 && isPure(def) &&
+             def->getNumResults() == 1) {
+    IRMapping operands;
+    bool changed = false;
+    for (Value o : def->getOperands()) {
+      Value n = laneOwnIndex(b, loc, o, period, known);
+      operands.map(o, n);
+      changed |= n != o;
+    }
+    if (changed)
+      out = b.clone(*def, operands)->getResult(0);
+  }
+  known.map(v, out);
+  return out;
+}
+
+/// The offset of `view` from the start of its tile, made at `b`, less a
+/// multiple of `period`. A cast keeps the offset of what it casts. The base
+/// buffer of a view starts where the tile starts, and the offset of a
+/// `reinterpret_cast` counts from there.
+static Value laneOwnViewOffset(OpBuilder &b, Location loc, Value view,
+                               int64_t period, IRMapping &known) {
+  Operation *def = view.getDefiningOp();
+  assert(def && "a view of a tile");
+  if (isa<memref::AllocaOp, memref::ExtractStridedMetadataOp>(def))
+    return b.create<arith::ConstantIndexOp>(loc, 0);
+  if (auto cast = dyn_cast<memref::CastOp>(def))
+    return laneOwnViewOffset(b, loc, cast.getSource(), period, known);
+  auto row = cast<memref::ReinterpretCastOp>(def);
+  OpFoldResult offset = row.getMixedOffsets()[0];
+  if (auto number = getConstantIntValue(offset))
+    return b.create<arith::ConstantIndexOp>(loc, *number % period);
+  return laneOwnIndex(b, loc, cast<Value>(offset), period, known);
+}
+
+/// The place of the element at `indices` of `view` in the array of its lane:
+/// its row over the lanes, past the rows of the other subgroups. The places
+/// repeat every `slots` rows, so the offset of the row of a subgroup, a
+/// multiple of that, does not count.
+static Value laneOwnSlot(OpBuilder &b, Location loc, const LaneOwnTile &t,
+                         Value view, ValueRange indices) {
+  IRMapping known;
+  int64_t period = t.slots * t.lanes;
+  Value at = laneOwnViewOffset(b, loc, view, period, known);
+  SmallVector<int64_t> strides;
+  int64_t offset;
+  (void)cast<MemRefType>(view.getType()).getStridesAndOffset(strides, offset);
+  for (auto [i, stride] : llvm::zip(indices, strides)) {
+    if (stride % period == 0)
+      continue;
+    at = b.create<arith::AddIOp>(
+        loc, at,
+        b.create<arith::MulIOp>(loc, laneOwnIndex(b, loc, i, period, known),
+                                b.create<arith::ConstantIndexOp>(loc, stride)));
+  }
+  Value row = b.create<arith::DivUIOp>(
+      loc, at, b.create<arith::ConstantIndexOp>(loc, t.lanes));
+  return b.create<arith::RemUIOp>(
+      loc, row, b.create<arith::ConstantIndexOp>(loc, t.slots));
+}
+
+/// The tiles of a lane reduction, which are rows of tiles of shared memory.
+static SmallVector<Value, 2> laneReductionInputs(Operation *op) {
+  if (auto r = dyn_cast<vx::LaneReduceOp>(op))
+    return {r.getInput()};
+  auto r = cast<vx::LaneArgmaxOp>(op);
+  return {r.getValues(), r.getIndices()};
+}
+
+/// docs/lane_reductions.md: a tile in shared memory whose every access is an
+/// element of the lane that makes it, or a lane reduction of a row of it,
+/// stays in the registers of the lanes. Then lane loops one after another
+/// keep a lane's values in registers, and the tile takes no shared memory.
+/// Expands the reductions of those tiles, and gives the others back.
+static SmallVector<Operation *>
+keepLaneOwnTilesInRegisters(gpu::GPUFuncOp f,
+                            ArrayRef<Operation *> reductions) {
+  llvm::SmallPtrSet<Operation *, 8> reductionSet(reductions.begin(),
+                                                 reductions.end());
+  llvm::MapVector<Operation *, LaneOwnTile> tiles;
+  llvm::SmallPtrSet<Operation *, 8> seen;
+  f.walk([&](Operation *op) {
+    if (!op->hasAttr("vx.lane_own") ||
+        !isa<memref::LoadOp, memref::StoreOp>(op))
+      return;
+    Value memref = isa<memref::LoadOp>(op)
+                       ? cast<memref::LoadOp>(op).getMemRef()
+                       : cast<memref::StoreOp>(op).getMemRef();
+    memref::AllocaOp tile = allocaBehind(memref);
+    if (!tile || !seen.insert(tile).second)
+      return;
+    LaneOwnTile t;
+    t.tile = tile;
+    if (!laneOwnAccesses(tile.getResult(), t, reductionSet))
+      return;
+    t.slots = laneOwnSlots(t);
+    if (t.slots)
+      tiles.insert({tile, std::move(t)});
+  });
+  // A reduction reads its rows from registers when each of its tiles stays in
+  // registers. Otherwise it reads them from memory, and so do the others.
+  auto fits = [&](Operation *op) {
+    if (!op->hasAttr("vx.lane_own"))
+      return false;
+    for (Value input : laneReductionInputs(op)) {
+      auto it = tiles.find(allocaBehind(input));
+      if (it == tiles.end())
+        return false;
+      // The checker takes a rank-1 tensor, and the last dimension of the
+      // tile is the lane.
+      auto row = cast<MemRefType>(input.getType());
+      assert(row.getRank() == 1 && row.getDimSize(0) == it->second.lanes &&
+             "a lane reduction of a row of the lanes");
+      (void)row;
+    }
+    return true;
+  };
+  for (bool changed = true; changed;) {
+    changed = false;
+    for (Operation *op : reductions)
+      if (op->hasAttr("vx.lane_own") && !fits(op))
+        for (Value input : laneReductionInputs(op))
+          changed |= tiles.erase(allocaBehind(input)) != 0;
+  }
+  if (tiles.empty())
+    return SmallVector<Operation *>(reductions);
+
+  Block &entry = f.getBody().front();
+  OpBuilder atEntry(&entry, entry.begin());
+  llvm::DenseMap<Operation *, Value> arrays;
+  for (auto &[op, t] : tiles)
+    arrays[op] = atEntry.create<memref::AllocaOp>(
+        t.tile.getLoc(),
+        MemRefType::get({t.slots}, t.tile.getType().getElementType()));
+  for (auto &[op, t] : tiles)
+    for (Operation *access : t.accesses) {
+      OpBuilder b(access);
+      Location loc = access->getLoc();
+      if (auto load = dyn_cast<memref::LoadOp>(access)) {
+        Value slot =
+            laneOwnSlot(b, loc, t, load.getMemRef(), load.getIndices());
+        load.replaceAllUsesWith(
+            b.create<memref::LoadOp>(loc, arrays[op], slot).getResult());
+        load.erase();
+      } else {
+        auto store = cast<memref::StoreOp>(access);
+        Value slot =
+            laneOwnSlot(b, loc, t, store.getMemRef(), store.getIndices());
+        b.create<memref::StoreOp>(loc, store.getValue(), arrays[op], slot);
+        store.erase();
+      }
+    }
+  SmallVector<Operation *> rest;
+  for (Operation *op : reductions) {
+    if (!op->hasAttr("vx.lane_own") || !fits(op)) {
+      rest.push_back(op);
+      continue;
+    }
+    OpBuilder b(op);
+    SmallVector<Value, 2> registers;
+    for (Value input : laneReductionInputs(op)) {
+      Operation *tile = allocaBehind(input);
+      Value slot = laneOwnSlot(b, op->getLoc(), tiles.find(tile)->second, input,
+                               ValueRange{});
+      registers.push_back(
+          b.create<memref::LoadOp>(op->getLoc(), arrays[tile], slot));
+    }
+    if (auto r = dyn_cast<vx::LaneReduceOp>(op))
+      expandLaneReduction(b, r, /*device=*/true, registers);
+    else
+      expandLaneReduction(b, cast<vx::LaneArgmaxOp>(op), /*device=*/true,
+                          registers);
+  }
+  // The accesses and the reductions are gone, so only the views are left.
+  for (auto &[tile, t] : tiles)
+    eraseLaneTile(tile, laneTileUsers(tile));
+  return rest;
+}
+
 /// docs/lane_reductions.md: a lane that alone writes its element of a tile
 /// keeps the element in a register, when the tile is only there for lane
 /// reductions. Then the device copy of a kernel has no tile in memory. The
@@ -4684,16 +5110,7 @@ expandLaneReductionsFromRegisters(gpu::GPUFuncOp f,
   // The stores go to the registers of their rows. A store to a row that no
   // reduction reads goes nowhere. Then nothing uses the tiles.
   for (Operation *tile : tiles) {
-    SmallVector<Operation *> users;
-    std::function<void(Operation *)> collect = [&](Operation *op) {
-      for (Operation *user : op->getUsers()) {
-        users.push_back(user);
-        if (isa<memref::ReinterpretCastOp, memref::ExtractStridedMetadataOp>(
-                user))
-          collect(user);
-      }
-    };
-    collect(tile);
+    SmallVector<Operation *> users = laneTileUsers(tile);
     for (Operation *user : users)
       if (auto store = dyn_cast<memref::StoreOp>(user)) {
         auto slot = slots.find(Row{tile, laneRow(store)});
@@ -4703,22 +5120,7 @@ expandLaneReductionsFromRegisters(gpu::GPUFuncOp f,
         b.create<memref::StoreOp>(store.getLoc(), store.getValue(),
                                   slot->second);
       }
-    // The stores and the reductions are gone or moved. Erase what then has no
-    // use: the casts, the metadata, and the index arithmetic on it.
-    llvm::SetVector<Operation *> left(users.begin(), users.end());
-    left.insert(tile);
-    for (bool erased = true; erased;) {
-      erased = false;
-      for (Operation *op : left.takeVector()) {
-        if (isa<memref::StoreOp>(op) || op->use_empty()) {
-          op->erase();
-          erased = true;
-        } else {
-          left.insert(op);
-        }
-      }
-    }
-    assert(left.empty() && "a use of a lane tile that is not a lane element");
+    eraseLaneTile(tile, users);
   }
   return rest;
 }
@@ -6690,6 +7092,7 @@ struct ConvertVxToStandardPass
           if (isa<vx::LaneReduceOp, vx::LaneArgmaxOp>(op))
             reductions.push_back(op);
         });
+        reductions = keepLaneOwnTilesInRegisters(gpuFunc, reductions);
         reductions = expandLaneReductionsFromRegisters(gpuFunc, reductions);
         SmallVector<vx::LaneMatmulOp> matmuls;
         gpuFunc.walk([&](vx::LaneMatmulOp op) { matmuls.push_back(op); });
@@ -6698,9 +7101,15 @@ struct ConvertVxToStandardPass
                            chipHasMmaSync(deviceChip(gpuModule));
         bool simdgroupMatrices = pipeline == DevicePipeline::Metal;
         SmallPtrSet<Operation *, 4> expanded;
+        int64_t registerTiles = 0;
         for (vx::LaneMatmulOp op : matmuls) {
           if (expanded.contains(op))
             continue;
+          if (simdgroupMatrices && !op.getSerial() &&
+              keepSimdgroupSumsInRegisters(op, registerTiles, expanded)) {
+            ++registerTiles;
+            continue;
+          }
           Type elem =
               tensorCores && !op.getSerial() ? mmaElementOf(op) : Type();
           memref::AllocaOp tile = laneCopyTileAlloca(op.getAcc());
@@ -6720,10 +7129,13 @@ struct ConvertVxToStandardPass
         }
         // Each lane op whose expansion looks at no other op. After the
         // matmuls, which can keep a tile in registers when its fills and
-        // copies are still ops.
+        // copies are still ops. The Metal printer prints a fill or copy of a
+        // tile in simdgroup matrices.
         SmallVector<vx::LaneOpInterface> lanes;
         gpuFunc.walk([&](vx::LaneOpInterface op) { lanes.push_back(op); });
         for (vx::LaneOpInterface op : lanes) {
+          if (op->hasAttr(simdgroupRegistersAttr))
+            continue;
           OpBuilder b(op);
           FailureOr<Value> v = op.expandInKernel(b);
           if (failed(v))
@@ -6760,9 +7172,11 @@ struct ConvertVxToStandardPass
             expandLaneReduction(b, cast<vx::LaneArgmaxOp>(op), /*device=*/true);
         }
         swizzleLdmatrixTiles(gpuFunc);
-        // Only a matmul that the printer of the Apple GPU prints stays.
+        // Only what the printer of the Apple GPU prints stays: a matmul, and
+        // a fill or copy of a tile in simdgroup matrices.
         gpuFunc.walk([&](vx::LaneOpInterface op) {
-          if (!(simdgroupMatrices && isa<vx::LaneMatmulOp>(op)))
+          if (!(simdgroupMatrices && (isa<vx::LaneMatmulOp>(op) ||
+                                      op->hasAttr(simdgroupRegistersAttr))))
             llvm::report_fatal_error(
                 llvm::Twine("the device copy of a kernel did not expand `") +
                 op->getName().getStringRef() + "`");
@@ -10453,8 +10867,9 @@ struct CheckIntegerDivisionPass
 
 // With `-fbounds-checks`, an index outside the shape of a tensor stops the
 // program. Each index of a `memref.load` and `memref.store` must be less than
-// its dimension. A row `t[i]` is a `memref.reinterpret_cast` of lower rank
-// than its source, and it must stay inside the elements of the source. A
+// its dimension. A row `t[i]` or a range of rows `t[a..b]` is a
+// `memref.reinterpret_cast` of its source with lower or the same rank, and it
+// must stay inside the elements of the source. A
 // constant index inside a static dimension is not checked, and neither is an
 // operation inside a `linalg` region or a GPU kernel, where `cf.assert` does
 // not lower.
@@ -10507,7 +10922,7 @@ struct CheckTensorIndicesPass
 
   static void checkRow(memref::ReinterpretCastOp row) {
     auto sourceTy = dyn_cast<MemRefType>(row.getSource().getType());
-    if (!sourceTy || row.getType().getRank() >= sourceTy.getRank())
+    if (!sourceTy || row.getType().getRank() > sourceTy.getRank())
       return;
     OpBuilder b(row);
     Location loc = row.getLoc();

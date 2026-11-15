@@ -153,8 +153,8 @@ r[0] = 5.0;         // writes q[1][0]
 print(q[1][0]);     // fine: r is not used again
 ```
 
-- A view is made by indexing to a row (`q[1]`), reading a tensor field (`h.t`), reshaping
-  (`q.reshape([8])`), or taking a view of a view. A view chosen by an `if` or a `match` borrows
+- A view is made by indexing to a row (`q[1]`) or to a range of rows (`q[1..3]`), reading a
+  tensor field (`h.t`), reshaping (`q.reshape([8])`), or taking a view of a view. A view chosen by an `if` or a `match` borrows
   every tensor it may come from, and a view taken through a reference (`rq[1]` with `rq = &q`)
   borrows the tensor behind the reference. A closure that uses a view keeps the view's tensor
   borrowed for as long as the closure is used.

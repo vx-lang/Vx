@@ -447,6 +447,9 @@ impl FnEmit<'_> {
         if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
             add("subgroup");
         }
+        if ins.imm & crate::bytecode::LANE_REDUCE_LANE_OWN != 0 {
+            add("vx.lane_own");
+        }
         if ins.imm & crate::bytecode::LANE_REDUCE_OWN_ROW != 0 {
             add("own_row");
             let row = ins.imm >> crate::bytecode::LANE_ROW_SHIFT;
