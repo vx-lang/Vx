@@ -640,7 +640,7 @@ static void vx_note_cpu_fallback(const void *payload, size_t size,
   const int32_t topo = vx_payload_topology(payload, size);
   const std::string where =
       vx_placement_name(topo, vx_payload_field(payload, size, "toponame="));
-  // A declared topology gives its `arch:`. A built-in one gives only its id.
+  // The topology gives its `arch:` when it has one. Otherwise only its id.
   const char *arch = vx_payload_field(payload, size, "arch=");
   const bool on_host =
       topo == VX_TOPO_CPU || topo == VX_TOPO_AMX ||

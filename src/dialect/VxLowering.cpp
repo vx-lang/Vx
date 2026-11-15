@@ -1107,12 +1107,10 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       if (llvm::any_of(align, [](int64_t a) { return a != 0; }))
         kernelOp->setAttr("vx.arg_align", rewriter.getI64ArrayAttr(align));
     }
-    // The declared arch travels from the machine file, via the spawn, onto the
-    // outlined kernel -- a discardable attribute, so no dialect change. It is
-    // what lets `materializeGpuKernels` gate device compilation on the
-    // DECLARATION instead of the dispatch-id band, which a custom topology
-    // arithmetically cannot enter (declared ids start at 3000; the band is
-    // [500, 600)).
+    // The declared arch travels from the topology descriptor, via the spawn,
+    // onto the outlined kernel -- a discardable attribute, so no dialect
+    // change. It is what lets `materializeGpuKernels` gate device compilation
+    // on the declared architecture attribute.
     if (auto arch = op->getAttrOfType<StringAttr>("arch"))
       kernelOp->setAttr("arch", arch);
     if (auto chip = op->getAttrOfType<StringAttr>("chip"))
@@ -1290,7 +1288,7 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     if (auto offload = op->getAttrOfType<BoolAttr>("offload")) {
       launchOp->setAttr("vx.offload", offload);
     }
-    // The `arch:` of a declared topology. A built-in has none.
+    // The topology's architecture, from its descriptor.
     if (auto arch = op->getAttrOfType<StringAttr>("arch")) {
       launchOp->setAttr("vx.arch", arch);
     }
@@ -4499,29 +4497,21 @@ static DevicePipeline pipelineForArch(StringRef arch) {
   return DevicePipeline::None;
 }
 
-/// The pipeline that compiles the kernel placed on `topology`: the declared
-/// architecture when it carries one, and the dispatch-id band when it does not.
+/// The pipeline that compiles the placed kernel: determined by the
+/// `arch` attribute on the operation.
 ///
-/// The band is the fallback for a kernel with no arch attribute: a built-in
-/// topology, whose descriptor declares no arch. The AST code generator stamps
-/// the attribute too, for a topology that declares one
-/// (src/codegen/lower/tensors.rs), so both code generators agree on which
-/// kernels ride the band. A declared arch with no row in the table answers
-/// `None`.
+/// Both code generators stamp the `arch` attribute from the topology's
+/// descriptor (whether declared or built-in). A kernel with no `arch` attribute
+/// or with an unrecognized architecture answers `None`.
 ///
 /// `materializeGpuKernels` asks this to decide whether a kernel gets a device
 /// copy, `spawnRunsOnDevice` asks it the same question about the `vx.spawn` the
 /// kernel is outlined from, and the device-image step asks it again to decide
 /// which pipeline compiles the copy. One answer, so a kernel cannot be admitted
 /// for one architecture and compiled for another.
-static DevicePipeline pipelineOfKernel(Operation *placed, int32_t topology) {
+static DevicePipeline pipelineOfKernel(Operation *placed) {
   if (auto arch = placed->getAttrOfType<StringAttr>("arch"))
     return pipelineForArch(arch.getValue());
-  // The GPU band from `topology_dispatch_id` in src/arch.rs, where `GPU[i]` is
-  // 500 + i. NPU and AccCore are below the band and outline the same way, but
-  // they reach their devices through a different backend.
-  if (topology >= 500 && topology < 600)
-    return DevicePipeline::Nvptx;
   return DevicePipeline::None;
 }
 
@@ -4692,7 +4682,7 @@ static bool dropsOwnBuffer(vx::SpawnOp spawn, Value buffer) {
 
 static bool spawnRunsOnDevice(vx::SpawnOp spawn) {
   // No pipeline compiles the region, so it gets no device image.
-  const DevicePipeline pipeline = pipelineOfKernel(spawn, spawn.getTopology());
+  const DevicePipeline pipeline = pipelineOfKernel(spawn);
   if (pipeline == DevicePipeline::None)
     return false;
   // This LLVM cannot make the image the arch asks for. The region runs on the
@@ -6121,8 +6111,7 @@ struct ConvertVxToStandardPass
     SmallVector<vx::KernelOp> kernels;
     llvm::DenseMap<Operation *, DeviceCallees> callees;
     module.walk([&](vx::KernelOp k) {
-      const int32_t topo = static_cast<int32_t>(k.getTopology());
-      const DevicePipeline pipeline = pipelineOfKernel(k, topo);
+      const DevicePipeline pipeline = pipelineOfKernel(k);
       // A kernel no pipeline claims gets no device image: it stops here rather
       // than being cloned into a `gpu.module` that nothing will compile.
       if (pipeline == DevicePipeline::None)
@@ -6380,8 +6369,7 @@ struct ConvertVxToStandardPass
         }
         SmallVector<vx::LaneMatmulOp> matmuls;
         gpuFunc.walk([&](vx::LaneMatmulOp op) { matmuls.push_back(op); });
-        DevicePipeline pipeline = pipelineOfKernel(
-            kernel, static_cast<int32_t>(kernel.getTopology()));
+        DevicePipeline pipeline = pipelineOfKernel(kernel);
         bool tensorCores = pipeline == DevicePipeline::Nvptx &&
                            chipHasMmaSync(deviceChip(gpuModule));
         bool simdgroupMatrices = pipeline == DevicePipeline::Metal;
@@ -7421,7 +7409,7 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
       payload.push_back('\0');
     }
 
-    // The `arch:` of a declared topology. The runtime counts a topology with
+    // The `arch:` of the topology. The runtime counts a topology with
     // a CPU arch as the host, so `VX_ENABLE_CPU_FALLBACK=0` does not stop it.
     if (auto arch = op->getAttrOfType<StringAttr>("vx.arch")) {
       payload += "arch=";
@@ -9132,8 +9120,7 @@ struct ConvertVxToLLVMPass
                       "there is no pipeline to compile it with");
           return WalkResult::interrupt();
         }
-        const DevicePipeline p = pipelineOfKernel(
-            it->second, static_cast<int32_t>(it->second.getTopology()));
+        const DevicePipeline p = pipelineOfKernel(it->second);
         // The gate gives a kernel with no pipeline no device copy, so a copy
         // whose kernel answers `None` means the two answers have disagreed.
         assert(p != DevicePipeline::None &&
@@ -9150,8 +9137,7 @@ struct ConvertVxToLLVMPass
         return;
       }
       if (disagrees) {
-        const DevicePipeline other = pipelineOfKernel(
-            disagrees, static_cast<int32_t>(disagrees.getTopology()));
+        const DevicePipeline other = pipelineOfKernel(disagrees);
         // On the `vx.kernel` rather than on the module: the module's location
         // is the whole program, the kernel's is the `spawn` that asked for the
         // other architecture.

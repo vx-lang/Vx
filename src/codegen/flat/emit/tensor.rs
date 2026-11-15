@@ -23,11 +23,11 @@ impl FnEmit<'_> {
     pub(crate) fn shared_addrspace(&self) -> i32 {
         // Read only the frame's first field, the topology, so a new field in the frame does not
         // break this lookup.
-        let arch = self
+        let arch_decl = self
             .spawn_stack
             .last()
-            .and_then(|open| self.ctx.topo_archs.get(&open.0))
-            .map(|a| a.arch.as_str());
+            .and_then(|open| self.ctx.topo_arch(open.0));
+        let arch = arch_decl.as_ref().map(|a| a.arch.as_str());
         crate::arch::address_space_for_arch(arch, crate::arch::AddressSpace::Workgroup)
     }
 

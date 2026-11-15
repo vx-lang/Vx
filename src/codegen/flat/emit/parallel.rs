@@ -243,9 +243,9 @@ impl FnEmit<'_> {
             self.body += "  \"vx.yield\"() : () -> ()\n";
         }
         let result_ty = result_ty.unwrap_or_default();
-        // A topology that declared an `arch:` sends it along, so the device pipeline can
-        // gate on the declaration instead of the dispatch-id band (Vx#352). Discardable
-        // attribute on the generic form -- no dialect change involved.
+        // The topology gives its `arch:` when it has one, so the device pipeline can
+        // gate on the architecture. Discardable attribute on the generic form -- no
+        // dialect change involved.
         //
         // A nonzero `imm` is the trip count `parallel_outer_for` proved for the region's
         // outermost loop: `vx_parallel_trip` rides the same attribute dict, telling the
@@ -278,21 +278,23 @@ impl FnEmit<'_> {
         } else {
             String::new()
         };
-        if let Some(declared) = self.ctx.topo_archs.get(&topo) {
-            let arch = &declared.arch;
-            let chip = match &declared.chip {
-                Some(chip) => format!(", chip = \"{chip}\""),
-                None => String::new(),
-            };
-            let offload = declared.offload;
-            self.body += &format!(
-                "  }}) {{arch = \"{arch}\"{chip}, offload = {offload}, topology = {topo} : i32{name}{trip}{across}}} : () -> ({result_ty})\n"
-            );
-        } else {
-            self.body += &format!(
-                "  }}) {{topology = {topo} : i32{name}{trip}{across}}} : () -> ({result_ty})\n"
-            );
+
+        let mut attrs = String::new();
+        if let Some(declared) = self.ctx.topo_arch(topo) {
+            if !declared.arch.is_empty() {
+                attrs.push_str(&format!("arch = \"{}\", ", declared.arch));
+            }
+            if let Some(offload) = declared.offload {
+                attrs.push_str(&format!("offload = {}, ", offload));
+            }
+            if let Some(chip) = &declared.chip {
+                attrs.push_str(&format!("chip = \"{}\", ", chip));
+            }
         }
+
+        self.body += &format!(
+            "  }}) {{{attrs}topology = {topo} : i32{name}{trip}{across}}} : () -> ({result_ty})\n"
+        );
         self.terminated = false;
         Ok(())
     }

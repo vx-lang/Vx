@@ -30,7 +30,7 @@ Memory SMEM {
 Topology Dev {
   // Deliberately NO arch: a topology that does not say what code to emit for it
   // gets no device image -- refusing to guess, the same policy fleet/m4-uma.vx
-  // documents for its own arch field (Vx#352).
+  // documents for its own arch field.
   memory: Memory::GPU_HBM,
   visible: [Memory::GPU_HBM, Memory::SMEM],
   transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s,
