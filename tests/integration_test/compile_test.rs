@@ -23,6 +23,15 @@ use super::time_limit::{has_timeout, SECONDS as RUN_LINE_SECONDS};
 
 /// Whether clang can link a program with ThreadSanitizer. Linux packages ship its runtime
 /// apart from clang, in `libclang-rt-<version>-dev`.
+/// Whether a program can see an NVIDIA GPU: a device file exists, and `CUDA_VISIBLE_DEVICES` does
+/// not hide every GPU. A test that only shows its bug on a GPU says `// REQUIRES: nvidia-gpu`.
+fn has_nvidia_gpu() -> bool {
+    if std::env::var("CUDA_VISIBLE_DEVICES").is_ok_and(|v| v.trim().is_empty()) {
+        return false;
+    }
+    Path::new("/dev/nvidia0").exists()
+}
+
 fn has_thread_sanitizer() -> bool {
     static HAS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *HAS.get_or_init(|| {
@@ -1017,6 +1026,9 @@ fn run_lit_test_with_env(path: &Path, env: &[(&str, String)]) -> Result<(), Stri
     // only a macOS-registered plugin can produce is not a failure elsewhere, it is a test
     // that does not apply.
     if source.contains("// REQUIRES: macos") && !cfg!(target_os = "macos") {
+        return Ok(());
+    }
+    if source.contains("// REQUIRES: nvidia-gpu") && !has_nvidia_gpu() {
         return Ok(());
     }
     if source.contains("// REQUIRES: thread-sanitizer") && !has_thread_sanitizer() {
