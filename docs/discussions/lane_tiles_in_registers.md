@@ -166,6 +166,33 @@ says which lane owns each element. Because the compiler sees the loops and the i
 it can prove that each lane touches only its own elements, and it needs no annotation. The same
 program still runs on the CPU, with the same result.
 
+The abstractions give the compiler two kinds of facts:
+
+- Space: where each element lives and who owns it. The type gives the memory (`Memory::SMEM`) and
+  the shape (`[2, 4, 2, 32]`). The index gives the subgroup and the lane.
+- Time: when each lane uses it. The lane loops run in the order of the code, the end of each lane
+  loop is a barrier, and the token loop repeats them.
+
+The same kernel in C, C++ or Rust hides both facts:
+
+```text
+   C++ (CUDA)                                   Vx
+   ──────────                                   ──
+   __shared__ float s[512];                     Tensor<f32, [2, 4, 2, 32], Memory::SMEM>
+   s[w*256 + h*64 + e*32 + tid % 32]            qr[w][h][e][l]
+     a flat address, the shape is gone            the shape is in the type
+   tid = threadIdx.x, a run-time value          l = the index of a lane loop
+   __syncthreads() anywhere in the code         a barrier at the end of each lane loop
+```
+
+To prove there that each thread touches only its own elements, the compiler must first get the
+dimensions back from the flat address. LLVM has a delinearization analysis for this, which guesses
+the dimensions from the address expression. It often fails when the sizes are parameters. Then a
+polyhedral tool such as Polly must model the accesses as sets of integer points, through the
+barriers and with alias facts for the pointers. In Vx the check is a match on the index: is the
+last index the variable of a lane loop over all the lanes? The high-level abstractions make the
+analysis simple.
+
 ## 8. The other option: a sum across the lanes inside a lane loop
 
 #3469 named two fixes. Option (a) was a sum across the warp that a lane loop can use as a value.
