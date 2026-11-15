@@ -12,7 +12,7 @@ on:
 jobs:
   llvm:
     name: Build LLVM
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 360
     outputs:
       key: ${{ steps.llvm.outputs.key }}
@@ -30,7 +30,7 @@ jobs:
   tsan:
     name: Programs with tasks under ThreadSanitizer
     needs: llvm
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 120
     env:
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
