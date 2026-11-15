@@ -469,6 +469,15 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
   return ptr;
 }
 
+/// A copy into host memory ends before it returns, so `transfer_async` is a
+/// `transfer` here.
+void *vx_plugin_alloc_and_transfer_async(size_t bytes, void *host_ptr,
+                                         uint32_t topology_id,
+                                         uint32_t space_access) {
+  return vx_plugin_alloc_and_transfer(bytes, host_ptr, topology_id,
+                                      space_access);
+}
+
 /// Release what the entry point above returned.
 ///
 /// Paired with it deliberately: an allocation made by a backend has to be freed
