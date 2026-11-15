@@ -89,6 +89,9 @@ program adds each row of a matrix in a block of its own (`book_gpu_row_sums_in_s
 It prints `row 0: 256, row 7: 2048`.
 
 Here each lane reads only the element that it wrote, so the compiler keeps `part` in registers.
+This also works through several lane loops. When every access to a tile is `t[..][l]`, or
+`t[w][..][l]` in subgroup `w`, with `l` the index of a lane loop over all the lanes, the compiler
+keeps each lane's elements of `t` in its registers.
 
 The library has other routines of this kind. `lanes::max` gives the largest element, and
 `lanes::argmax` its index. Write each call as the whole value of a `let`, in the code of a block.
