@@ -815,6 +815,13 @@ fn lower_lane_matmul<'c>(
     if m.accumulate {
         attrs.push((Identifier::new(gen.context, "accumulate"), unit));
     }
+    if gen
+        .across_map
+        .as_ref()
+        .is_some_and(|map| map.row_of_subgroup(m.acc))
+    {
+        attrs.push((Identifier::new(gen.context, "subgroup_row"), unit));
+    }
     block.append_operation(
         OperationBuilder::new("vx.lane_matmul", gen.loc())
             .add_operands(&operands)

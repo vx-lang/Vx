@@ -348,6 +348,9 @@ impl FnEmit<'_> {
         if ins.imm & crate::bytecode::LANE_REDUCE_ACCUMULATE != 0 {
             attrs += ", accumulate";
         }
+        if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP_ROW != 0 {
+            attrs += ", subgroup_row";
+        }
         self.body += &format!(
             "  \"vx.lane_matmul\"({}) {{{attrs}}} : ({}) -> ()\n",
             names.join(", "),
@@ -501,11 +504,14 @@ impl FnEmit<'_> {
             .flatten()
             .ok_or(crate::emitter_gap!())?;
         let vty = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
-        let subgroup = if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
-            ", subgroup"
+        let mut subgroup = if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
+            ", subgroup".to_string()
         } else {
-            ""
+            String::new()
         };
+        if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP_ROW != 0 {
+            subgroup += ", subgroup_row";
+        }
         self.body += &format!(
             "  \"vx.lane_fill\"({t}, {v}) {{lanes = {} : i64{subgroup}}} : ({memty}, {vty}) -> ()\n",
             ins.imm >> 32
@@ -555,11 +561,14 @@ impl FnEmit<'_> {
             types.push(mlir_scalar(&e).ok_or(crate::emitter_gap!())?.to_string());
         }
         let v = format!("%v{idx}");
-        let subgroup = if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
-            ", subgroup"
+        let mut subgroup = if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
+            ", subgroup".to_string()
         } else {
-            ""
+            String::new()
         };
+        if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP_ROW != 0 {
+            subgroup += ", subgroup_row";
+        }
         if ins.imm & crate::bytecode::LANE_REDUCE_COPY_NOW != 0 {
             // `lanes::copy` gives no token, so its value is a 0 that nothing reads.
             self.body += &format!(

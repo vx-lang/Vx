@@ -56,6 +56,9 @@ pub(crate) struct AcrossMap<'c> {
     pub on_lane0: bool,
     /// The row of a tile that the code of a subgroup alone writes.
     pub subgroup_row: Option<SubgroupRow>,
+    /// The subgroup loop gives each subgroup one pass at most, so its index is the number of the
+    /// subgroup, the same in each such loop.
+    pub subgroup_once: bool,
     /// In a lane loop from 0 over all the lanes of its level: the index `t` of the loop, and the
     /// level. Only lane `t` writes `tile[t]` in the code of a block, or element `t` of the row of
     /// the subgroup.
@@ -100,6 +103,12 @@ impl AcrossMap<'_> {
     /// When `e` is a row of a tile that the code of this subgroup alone writes, the number that
     /// tells it from the other rows of the subgroup: 0 for `t` or `t[w]`, and `c + 1` for
     /// `t[w][c]` with a number `c`.
+    /// Whether `e` is the row of the subgroup, `t[w]`, in a subgroup loop whose index `w` is the
+    /// number of the subgroup.
+    pub(crate) fn row_of_subgroup(&self, e: &Expr) -> bool {
+        self.subgroup_once && self.subgroup_row_number(e) == Some(0)
+    }
+
     fn subgroup_row_number(&self, e: &Expr) -> Option<u64> {
         let is_own_row = |e: &Expr| match (&self.subgroup_row, e) {
             (Some(SubgroupRow::Whole), Expr::Identifier(_)) => true,
@@ -555,6 +564,10 @@ pub(crate) fn lower_across_for<'c>(
     let outer_element = map.lane_element.take();
     let from_zero = matches!(&*for_loop.iterable,
         Expr::Range(r) if matches!(&*r.start, Expr::Number(n) if n.value.as_ref() == "0"));
+    let once = kind == LevelKind::Subgroups
+        && from_zero
+        && crate::hir::flatten::across::one_pass_each(for_loop, width, inner, lanes);
+    let outer_once = std::mem::replace(&mut map.subgroup_once, once);
     let all_lanes = match root {
         Some(Level::Block) => true,
         Some(Level::Subgroup) => Some(width) == map.subgroup,
@@ -569,6 +582,7 @@ pub(crate) fn lower_across_for<'c>(
     map.level = outer_level;
     map.inner = outer_inner;
     map.lane_element = outer_element;
+    map.subgroup_once = outer_once;
     if let Some(row) = outer_row {
         map.subgroup_row = row;
     }

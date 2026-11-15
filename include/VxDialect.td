@@ -264,7 +264,7 @@ def Vx_LaneMatmulOp : Vx_Op<"lane_matmul", [MemoryEffects<[MemRead, MemWrite]>]>
     let summary = "A matmul of tiles with the lanes of a subgroup.";
     let arguments = (ins AnyMemRef:$acc, AnyMemRef:$lhs, AnyMemRef:$rhs,
                      UnitAttr:$accumulate, UnitAttr:$subgroup,
-                     UnitAttr:$serial);
+                     UnitAttr:$serial, UnitAttr:$subgroup_row);
 }
 
 // `lanes::copy_async`: the lanes of a block copy the tile of `source` at `place`
@@ -289,6 +289,11 @@ def Vx_LaneCopyAsyncMapOp : Vx_Op<"lane_copy_async_map", [MemoryEffects<[MemRead
     let results = (outs I32:$token);
 }
 
+// `subgroup_row` on a lane matmul, a lane copy or a lane fill says that its tile
+// (the accumulator, the source of a copy out, or the tile of a fill) is `t[w]`,
+// where `w` is the index of a subgroup loop that gives each subgroup one pass at
+// most. So each lane of a subgroup has the same row in each of them.
+
 // `lanes::copy`: the lanes of a block copy a tile in shared memory to or from the
 // part of a tensor at `place`. When `dst` is in shared memory, it is the tile, and
 // an element past the end of `src` copies as zero. Otherwise `src` is the tile,
@@ -298,7 +303,8 @@ def Vx_LaneCopyOp : Vx_Op<"lane_copy", [MemoryEffects<[MemRead, MemWrite]>]> {
     let summary = "Copy a tile to or from shared memory.";
     let arguments = (ins AnyMemRef:$dst, AnyMemRef:$src,
                      Variadic<AnySignlessInteger>:$place, I64Attr:$lanes,
-                     UnitAttr:$serial, UnitAttr:$subgroup);
+                     UnitAttr:$serial, UnitAttr:$subgroup,
+                     UnitAttr:$subgroup_row);
 }
 
 // `lanes::fill`: the lanes of a block set each element of `tile`, in shared
@@ -307,7 +313,8 @@ def Vx_LaneCopyOp : Vx_Op<"lane_copy", [MemoryEffects<[MemRead, MemWrite]>]> {
 def Vx_LaneFillOp : Vx_Op<"lane_fill", [MemoryEffects<[MemWrite]>]> {
     let summary = "Set each element of a tile in shared memory.";
     let arguments = (ins AnyMemRef:$tile, AnyType:$value, I64Attr:$lanes,
-                     UnitAttr:$serial, UnitAttr:$subgroup);
+                     UnitAttr:$serial, UnitAttr:$subgroup,
+                     UnitAttr:$subgroup_row);
 }
 
 // Waits until the copy of `token` ends, and then for every lane of the block,
