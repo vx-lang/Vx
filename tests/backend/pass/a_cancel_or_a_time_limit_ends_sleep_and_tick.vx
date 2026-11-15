@@ -11,6 +11,7 @@
 // cancel gives `true`. The last case runs a loop of 1 ms ticks in a task, and each tick is late.
 // The cancel must end that loop too.
 //
+// NO-SEED-SWEEP: the loop of late ticks never waits, so with one thread the code that cancels it never runs.
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 VX_TASK_MAX_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
