@@ -965,9 +965,9 @@ impl<'a> Parser<'a> {
                 }
             }
             self.consume(&TokenType::RightBrace, "Expected '}'")?;
-            // Only `as` may follow the block: a `(` or `[` on the next line starts a new
-            // statement, and `as` cannot.
-            return self.parse_as_casts(Expr::UnsafeBlock(UnsafeBlockExpr {
+            // Only `as` and `?` may follow the block: a `(` or `[` on the next line starts a
+            // new statement, and `as` and `?` cannot.
+            return self.parse_casts_and_tries(Expr::UnsafeBlock(UnsafeBlockExpr {
                 stmts,
                 ret,
                 span: unsafe_span,
@@ -1675,6 +1675,30 @@ impl<'a> Parser<'a> {
         );
         block.closure_body = true;
         Ok(Expr::UnsafeBlock(block))
+    }
+
+    /// `e as T` and `e?`, in any order, after `e`.
+    fn parse_casts_and_tries(&mut self, mut expr: Expr) -> ParseResult<'a, Expr> {
+        loop {
+            if self.check(&TokenType::As) {
+                expr = self.parse_as_casts(expr)?;
+            } else if self.check(&TokenType::Question) {
+                let token = self.advance();
+                let span = Span {
+                    line: token.line,
+                    column: token.column,
+                    length: token.length,
+                    expansion: self.expansion(),
+                };
+                expr = Expr::UnaryOp(UnaryOpExpr {
+                    op: UnaryOp::Try,
+                    expr: Box::new(expr),
+                    span,
+                });
+            } else {
+                return Ok(expr);
+            }
+        }
     }
 
     fn parse_as_casts(&mut self, mut expr: Expr) -> ParseResult<'a, Expr> {
