@@ -177,6 +177,14 @@ impl FnEmit<'_> {
             self.body += &format!("  memref.store {val}, {slot}[] : memref<{mt}>\n");
         } else if let Some(&Some(agg_gid)) = self.agg_of.get(ins.operand1.0 as usize) {
             let agg = self.ctx.aggs.get(&agg_gid).ok_or(crate::emitter_gap!())?;
+            // A constructed struct is a slot of its own: load its value first.
+            let val = if matches!(self.agg_of.get(ins.operand2.0 as usize), Some(Some(_))) {
+                let v = format!("%sv{_idx}");
+                self.body += &format!("  {v} = llvm.load {val} : !llvm.ptr -> {}\n", agg.struct_ty);
+                v
+            } else {
+                val
+            };
             self.body += &format!(
                 "  llvm.store {val}, {slot} : {}, !llvm.ptr\n",
                 agg.struct_ty

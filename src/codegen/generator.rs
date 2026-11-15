@@ -1535,6 +1535,49 @@ impl<'c> MeliorGenerator<'c> {
         Ok(())
     }
 
+    /// A stack slot that holds the value of a parameter, in the function's first block.
+    fn emit_param_slot(
+        &self,
+        val: Value<'c, 'c>,
+        ty: melior::ir::Type<'c>,
+        block: &melior::ir::BlockRef<'c, 'c>,
+    ) -> Result<Value<'c, 'c>, LowerError> {
+        use melior::ir::attribute::{IntegerAttribute, TypeAttribute};
+        use melior::ir::operation::OperationBuilder;
+        use melior::ir::Identifier;
+        let one = block
+            .append_operation(
+                OperationBuilder::new("llvm.mlir.constant", self.loc())
+                    .add_results(&[self.i32_ty])
+                    .add_attributes(&[(
+                        Identifier::new(self.context, "value"),
+                        IntegerAttribute::new(self.i32_ty, 1).into(),
+                    )])
+                    .build()?,
+            )
+            .result(0)?
+            .into();
+        let slot = block
+            .append_operation(
+                OperationBuilder::new("llvm.alloca", self.loc())
+                    .add_operands(&[one])
+                    .add_results(&[self.ptr_ty])
+                    .add_attributes(&[(
+                        Identifier::new(self.context, "elem_type"),
+                        TypeAttribute::new(ty).into(),
+                    )])
+                    .build()?,
+            )
+            .result(0)?
+            .into();
+        block.append_operation(
+            OperationBuilder::new("llvm.store", self.loc())
+                .add_operands(&[val, slot])
+                .build()?,
+        );
+        Ok(slot)
+    }
+
     pub(crate) fn generate_function(
         &mut self,
         func: &Function,
@@ -1602,9 +1645,17 @@ impl<'c> MeliorGenerator<'c> {
 
         // Map arguments into the environment, past the return slot when there is one.
         for (i, (name, ast_ty)) in func.params.iter().enumerate() {
-            let arg_val = current_block.argument(i + slot_args)?.into();
-            self.env
-                .insert(name.to_string().into(), (arg_val, arg_tys[i + slot_args]));
+            let arg_val: Value = current_block.argument(i + slot_args)?.into();
+            let arg_ty = arg_tys[i + slot_args];
+            // A borrowed struct needs one address for all its borrows, as a local does.
+            // Without a slot, each `&x` copied `x` to a new place.
+            if self.address_taken.contains(name) && arg_ty.to_string().contains("!llvm.struct") {
+                let slot = self.emit_param_slot(arg_val, arg_ty, &current_block)?;
+                self.env.insert(name.to_string().into(), (slot, arg_ty));
+                self.allocs.insert(name.to_string());
+            } else {
+                self.env.insert(name.to_string().into(), (arg_val, arg_ty));
+            }
             self.ast_env.insert(name.to_string().into(), ast_ty.clone());
         }
         // The caller's buffer is block argument 0; `return` writes into it. Cleared with

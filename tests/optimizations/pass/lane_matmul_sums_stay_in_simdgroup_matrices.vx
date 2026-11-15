@@ -1,0 +1,97 @@
+//===- lane_matmul_sums_stay_in_simdgroup_matrices.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The MSL of a matmul of tiles on the Apple GPU whose accumulator `acc` is in shared memory. When
+// each other use of `acc` is a `lanes::fill` of the row of a subgroup, a `lanes::copy` out of it,
+// or another such matmul, the accumulator stays in the simdgroup matrices of the subgroup in the
+// whole kernel, and `acc` takes no shared memory. The matmul neither loads nor stores the
+// matrices, and the copy stores them straight to `c`. This needs a subgroup loop that gives each
+// subgroup one pass at most, so that each subgroup holds its row of `acc` in the fill, the
+// matmuls and the copy. The test needs no GPU.
+//
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx --emit-msl -o %t.metal
+// RUN: FileCheck %s --input-file=%t.metal
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/m4-uma.vx --emit-msl -o %t.ast.metal
+// RUN: FileCheck %s --input-file=%t.ast.metal
+
+// Only `sa` and `sb` are in shared memory, as half. The 2 x 4 pieces of `acc[w]` (16 x 32) are
+// `vx_sums0`. The fill sets them, the matmul adds to them, and the copy stores them to `c`. A piece
+// past the end of `c` stores the 2 elements of each lane that are inside.
+// CHECK-LABEL: kernel void one_pass_each(
+// CHECK-NOT: threadgroup float
+// CHECK: simdgroup_float8x8 vx_sums0[8];
+// CHECK: vx_sums0[i] = make_filled_simdgroup_matrix<float, 8, 8>({{v[0-9]+}});
+// CHECK-NOT: simdgroup_load(vx_sums0
+// CHECK: simdgroup_multiply_accumulate(vx_sums0[i * 4 + j], {{ma[0-9]+}}[i], {{mb[0-9]+}}[j], vx_sums0[i * 4 + j]);
+// CHECK-NOT: simdgroup_store(vx_sums0[i * 4 + j], vx_npu
+// CHECK: simdgroup_store(vx_sums0[i * 4 + j], p0 + p0_o + r * p0_s0 + c, (ulong)p0_s0);
+// CHECK: thread auto &e = vx_sums0[i * 4 + j].thread_elements();
+// CHECK: p0[p0_o + er * p0_s0 + ec + k] = e[k];
+pub fn one_pass_each(c : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<f16, [?, ?], Memory::HBM>, b : &Tensor<f16, [?, ?], Memory::HBM>, k : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut sa = unsafe { Tensor<f16, [2, 16, 16], Memory::SMEM>::uninit() };
+      let mut sb = unsafe { Tensor<f16, [16, 32], Memory::SMEM>::uninit() };
+      let mut acc = unsafe {
+        Tensor<f32, [2, 16, 32], Memory::SMEM>::uninit()
+      };
+      for w in 0..2 across subgroups {
+        lanes::fill(&mut acc[w], 0.0);
+      }
+      for kt in 0..k / 16 {
+        lanes::copy(&mut sb, b, [kt * 16, 0]);
+        lanes::copy(&mut sa[0], a, [0, kt * 16]);
+        lanes::copy(&mut sa[1], a, [16, kt * 16]);
+        for w in 0..2 across subgroups {
+          acc[w] = acc[w] + (sa[w] as f32) @ (sb as f32);
+        }
+      }
+      for w in 0..2 across subgroups {
+        lanes::copy(c, &acc[w], [w * 16, 0]);
+      }
+    }
+  }
+  return;
+}
+
+// The lanes read `acc` after the loop, so it stays in shared memory, and the matmul loads and
+// stores its pieces.
+// CHECK-LABEL: kernel void read_by_the_lanes(
+// CHECK: threadgroup float {{vx_npu_kernel_[0-9]+_smem_[0-9]+}}[1024];
+// CHECK-NOT: vx_sums
+// CHECK: simdgroup_load({{mm[0-9]+}}[i * 4 + j]
+// CHECK: return;
+pub fn read_by_the_lanes(c : &mut Tensor<f32, [2, 16, 32], Memory::HBM>, a : &Tensor<f16, [?, ?], Memory::HBM>, b : &Tensor<f16, [?, ?], Memory::HBM>, k : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut sa = unsafe { Tensor<f16, [2, 16, 16], Memory::SMEM>::uninit() };
+      let mut sb = unsafe { Tensor<f16, [16, 32], Memory::SMEM>::uninit() };
+      let mut acc = unsafe {
+        Tensor<f32, [2, 16, 32], Memory::SMEM>::uninit()
+      };
+      for w in 0..2 across subgroups {
+        lanes::fill(&mut acc[w], 0.0);
+      }
+      for kt in 0..k / 16 {
+        lanes::copy(&mut sb, b, [kt * 16, 0]);
+        lanes::copy(&mut sa[0], a, [0, kt * 16]);
+        lanes::copy(&mut sa[1], a, [16, kt * 16]);
+        for w in 0..2 across subgroups {
+          acc[w] = acc[w] + (sa[w] as f32) @ (sb as f32);
+        }
+      }
+      for w in 0..2 across subgroups {
+        for l in 0..32 across lanes {
+          for i in 0..16 {
+            c[w][i][l] = acc[w][i][l];
+          }
+        }
+      }
+    }
+  }
+  return;
+}

@@ -1455,7 +1455,12 @@ impl CompilerDriver {
                 let module = p.module_path.as_ref();
                 p.topologies.iter().map(move |t| (module, t))
             })
-            .filter(|(_, t)| t.descriptor.default_space == crate::syntax::MemorySpace::CPUDRAM)
+            .filter(|(_, t)| {
+                matches!(
+                    crate::syntax::TopologyKind::from_name(&t.name),
+                    crate::syntax::TopologyKind::Custom(_)
+                ) && t.descriptor.default_space == crate::syntax::MemorySpace::CPUDRAM
+            })
             .collect();
         // A declared host wins over the one `--host default` synthesises: the synthesised module
         // says only "this machine", which is the answer when nothing else was stated. Among

@@ -861,6 +861,13 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
                 }
             }
         }
+        if let syntax::Expr::Range(_) = self.index.as_ref() {
+            return Err(LowerError::from(
+                "the legacy code generator (`--legacy-codegen`) does not support a range index \
+                 `q[a..b]`"
+                    .to_string(),
+            ));
+        }
         let (base_val, base_ty, indices, block) = gen
             .flatten_indices(&syntax::Expr::IndexAccess(self.clone()), block)
             .expect("Failed to flatten indices for IndexAccess");
@@ -1134,8 +1141,10 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
             let inner_ty = Type::parse(gen.context, &inner_ty_str).ok_or_else(|| {
                 crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
             })?;
-            let mut load_builder =
-                OperationBuilder::new("memref.load", gen.loc()).add_operands(&[base_val]);
+            // docs/lane_reductions.md: a read of an element of this lane alone.
+            let mut load_builder = OperationBuilder::new("memref.load", gen.loc())
+                .add_operands(&[base_val])
+                .add_attributes(&super::across::lane_own_attrs(gen, self));
 
             for idx in indices {
                 load_builder = load_builder.add_operands(&[idx]);
@@ -7131,7 +7140,8 @@ fn lane_routine_attrs<'c>(
 
 /// `lanes::copy_async(&mut tile, &x, [i, j, ..])` as `vx.lane_copy_async`, and the wait of its
 /// token as `vx.lane_copy_wait`. In a region on one lane, both are `serial`, so the copy ends
-/// where it starts.
+/// where it starts. `lanes::copy(&mut dst, &src, [i, j, ..])` is `vx.lane_copy`, with no token,
+/// and `lanes::fill(&mut tile, v)` is `vx.lane_fill`.
 fn lower_lane_copy<'c>(
     gen: &mut MeliorGenerator<'c>,
     block: melior::ir::BlockRef<'c, 'c>,
@@ -7146,6 +7156,20 @@ fn lower_lane_copy<'c>(
     LowerError,
 > {
     let (mut attrs, lanes) = lane_routine_attrs(gen)?;
+    // The tile of a fill is its first argument, and the tile of a copy out is its second.
+    let tile = match op {
+        crate::hir::check::lanes::LaneOp::Fill => args.first(),
+        crate::hir::check::lanes::LaneOp::Copy => args.get(1),
+        _ => None,
+    };
+    let row = matches!(tile, Some(Expr::Borrow(b)) if gen
+        .across_map
+        .as_ref()
+        .is_some_and(|map| map.row_of_subgroup(&b.expr)));
+    if row {
+        let unit = melior::ir::attribute::Attribute::unit(gen.context);
+        attrs.push((Identifier::new(gen.context, "subgroup_row"), unit));
+    }
     if op == crate::hir::check::lanes::LaneOp::CopyWait {
         let [token] = args else {
             return Err(LowerError::ParseType(
@@ -7159,6 +7183,27 @@ fn lower_lane_copy<'c>(
             .add_attributes(&attrs)
             .build()?;
         block.append_operation(wait);
+        let v = constant_i32(gen, block, 0)?;
+        return Ok((v, gen.i32_ty, block));
+    }
+    if op == crate::hir::check::lanes::LaneOp::Fill {
+        let [tile, value] = args else {
+            return Err(LowerError::ParseType(
+                "a lane fill takes a tile and a value".to_string(),
+            ));
+        };
+        let (tile, block) = lane_tensor_operand(gen, tile, block)?;
+        let (v, _, block) = gen.generate_expr(value, block)?;
+        let i64_ty = melior::ir::r#type::IntegerType::new(gen.context, 64).into();
+        attrs.push((
+            Identifier::new(gen.context, "lanes"),
+            IntegerAttribute::new(i64_ty, lanes as i64).into(),
+        ));
+        let fill = OperationBuilder::new("vx.lane_fill", gen.loc())
+            .add_operands(&[tile, v])
+            .add_attributes(&attrs)
+            .build()?;
+        block.append_operation(fill);
         let v = constant_i32(gen, block, 0)?;
         return Ok((v, gen.i32_ty, block));
     }
@@ -7180,6 +7225,15 @@ fn lower_lane_copy<'c>(
         Identifier::new(gen.context, "lanes"),
         IntegerAttribute::new(i64_ty, lanes as i64).into(),
     ));
+    if op == crate::hir::check::lanes::LaneOp::Copy {
+        let copy = OperationBuilder::new("vx.lane_copy", gen.loc())
+            .add_operands(&operands)
+            .add_attributes(&attrs)
+            .build()?;
+        block.append_operation(copy);
+        let v = constant_i32(gen, block, 0)?;
+        return Ok((v, gen.i32_ty, block));
+    }
     let copy = OperationBuilder::new("vx.lane_copy_async", gen.loc())
         .add_operands(&operands)
         .add_attributes(&attrs)
@@ -7231,7 +7285,10 @@ fn lower_lane_reduce<'c>(
 > {
     if matches!(
         op,
-        crate::hir::check::lanes::LaneOp::CopyAsync | crate::hir::check::lanes::LaneOp::CopyWait
+        crate::hir::check::lanes::LaneOp::CopyAsync
+            | crate::hir::check::lanes::LaneOp::CopyWait
+            | crate::hir::check::lanes::LaneOp::Copy
+            | crate::hir::check::lanes::LaneOp::Fill
     ) {
         return lower_lane_copy(gen, block, op, args);
     }

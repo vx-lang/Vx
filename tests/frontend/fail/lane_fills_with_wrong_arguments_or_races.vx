@@ -1,0 +1,66 @@
+//===- lane_fills_with_wrong_arguments_or_races.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `lanes::fill(&mut tile, v)` takes a `&mut` tile in shared memory with a size that is a number,
+// and a value of its element type. Two subgroups must not fill the same tile, and every lane of
+// the block must get to the fill. Each function below breaks one rule.
+//
+// RUN: not vxc %s --host default --machine fleet/a100-80.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: Error[E6032] at {{.*}}lane_fills_with_wrong_arguments_or_races.vx:25:{{.*}}each pass writes `tile`, which is declared outside the loop, so the passes race.
+// CHECK: Error[E3003] at {{.*}}lane_fills_with_wrong_arguments_or_races.vx:36:{{.*}}the first argument of `lanes::fill` must borrow a tile in shared memory as `&mut`, with a size that is a number,
+// CHECK: Error[E3003] at {{.*}}lane_fills_with_wrong_arguments_or_races.vx:47:{{.*}}the second argument of `lanes::fill` is the value of each element, so its type is the element type of the tile, `f32`, but it is `i32`
+// CHECK: Error[E6032] at {{.*}}lane_fills_with_wrong_arguments_or_races.vx:60:{{.*}}each pass writes `tile`, which is declared outside the loop, so the passes race.
+// CHECK: Error[E6032] at {{.*}}lane_fills_with_wrong_arguments_or_races.vx:60:{{.*}}`lanes::fill` must be a statement of its own in the code of a loop of blocks or subgroups, outside its lane loops.
+
+// Both subgroups fill the whole tile.
+pub fn two_subgroups_fill_one_tile(y : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tile = unsafe { Tensor<f32, [8, 32], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        lanes::fill(&mut tile, 1.0);
+      }
+    }
+  }
+  return;
+}
+
+// The tile is in global memory.
+pub fn tile_in_hbm(y : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      lanes::fill(y, 1.0);
+    }
+  }
+  return;
+}
+
+// An `i32` value for a tile of `f32`.
+pub fn value_of_another_type(y : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tile = unsafe { Tensor<f32, [4, 4], Memory::SMEM>::uninit() };
+      lanes::fill(&mut tile, 1);
+      lanes::copy(y, &tile, [0, 0]);
+    }
+  }
+  return;
+}
+
+// A fill in a lane loop, where each lane would fill the whole tile.
+pub fn fill_in_a_lane_loop(y : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tile = unsafe { Tensor<f32, [4, 4], Memory::SMEM>::uninit() };
+      for t in 0..16 across lanes(32) {
+        lanes::fill(&mut tile, 1.0);
+      }
+      lanes::copy(y, &tile, [0, 0]);
+    }
+  }
+  return;
+}

@@ -1,0 +1,50 @@
+//===- lane_fill_of_a_tile.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `lanes::fill` on the CPU copy of a kernel (`CUDA_VISIBLE_DEVICES=`). A block sets each element
+// of a 3x5 tile in shared memory to 2.5, and each of two subgroups sets its own row of another
+// tile to `w + 1`. A tile of `i32` gets 7. `lanes::copy` copies the tiles out.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s -j 2 --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+
+// CHECK: block row 0: 2.5 2.5 2.5 2.5 2.5 -1
+// CHECK-NEXT: block row 2: 2.5 2.5 2.5 2.5 2.5 -1
+// CHECK-NEXT: block row 3: -1 -1 -1 -1 -1 -1
+// CHECK-NEXT: subgroup rows: 1 1 2 2
+// CHECK-NEXT: i32: 7 7 7 7
+
+fn main() -> i32 {
+  let mut y = transfer(Tensor<f32, [4, 6]>::fill(-1.0), Memory::HBM);
+  let mut z = transfer(Tensor<f32, [4, 2]>::fill(-1.0), Memory::HBM);
+  let mut n = transfer(Tensor<i32, [4]>::fill(0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tile = unsafe { Tensor<f32, [3, 5], Memory::SMEM>::uninit() };
+      lanes::fill(&mut tile, 2.5);
+      lanes::copy(&mut y, &tile, [0, 0]);
+      let mut rows = unsafe { Tensor<f32, [2, 2, 2], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        lanes::fill(&mut rows[w], (w + 1) as f32);
+        lanes::copy(&mut z, &rows[w], [2 * w, 0]);
+      }
+      let mut ints = unsafe { Tensor<i32, [4], Memory::SMEM>::uninit() };
+      lanes::fill(&mut ints, 7);
+      lanes::copy(&mut n, &ints, [0]);
+    }
+  }
+  let yh = transfer(y, Memory::CPU_DRAM);
+  for r in [0, 2, 3] {
+    println!("block row {}: {} {} {} {} {} {}", r, yh[r][0], yh[r][1], yh[r][2], yh[r][3], yh[r][4], yh[r][5]);
+  }
+  let zh = transfer(z, Memory::CPU_DRAM);
+  println!("subgroup rows: {} {} {} {}", zh[0][0], zh[1][1], zh[2][0], zh[3][1]);
+  let nh = transfer(n, Memory::CPU_DRAM);
+  println!("i32: {} {} {} {}", nh[0], nh[1], nh[2], nh[3]);
+  return 0;
+}

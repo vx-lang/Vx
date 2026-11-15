@@ -1,0 +1,60 @@
+//===- lane_copy_on_the_gpu.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The PTX of `lanes::copy`. Into a tile, each lane loads its elements from global memory and
+// stores them in shared memory. Out of a tile, each lane loads its elements from shared memory and
+// stores them in global memory. Then every lane of the block waits (`bar.sync`). In the code of a
+// subgroup, only the lanes of the subgroup wait (`bar.warp.sync`).
+//
+// RUN: vxc %s --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s < %t.ptx --implicit-check-not=local_depot
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ast.ptx
+// RUN: FileCheck %s < %t.ast.ptx --implicit-check-not=local_depot
+
+// CHECK-LABEL: .entry through_a_tile(
+// CHECK: ld.global.nc.b32
+// CHECK: st.shared.b32
+// CHECK: bar.sync 0;
+// CHECK: ld.shared.b32
+// CHECK-NEXT: st.global.b32
+// CHECK: bar.sync 0;
+// CHECK-NEXT: $L__BB
+pub fn through_a_tile(y : &mut Tensor<f32, [?, ?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tile = unsafe { Tensor<f32, [16, 16], Memory::SMEM>::uninit() };
+      lanes::copy(&mut tile, x, [0, 0]);
+      lanes::copy(y, &tile, [0, 0]);
+    }
+  }
+  return;
+}
+
+// The first `bar.warp.sync` ends the lane loop, and the second one the copy.
+// CHECK-LABEL: .entry subgroup_rows(
+// CHECK: bar.warp.sync -1;
+// CHECK: ld.shared.b32
+// CHECK-NEXT: st.global.b32
+// CHECK: bar.warp.sync -1;
+pub fn subgroup_rows(y : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut part = unsafe {
+        Tensor<f32, [4, 8, 32], Memory::SMEM>::uninit()
+      };
+      for w in 0..4 across subgroups {
+        for j in 0..32 across lanes {
+          for i in 0..8 {
+            part[w][i][j] = 1.0;
+          }
+        }
+        lanes::copy(y, &part[w], [8 * w, 0]);
+      }
+    }
+  }
+  return;
+}
