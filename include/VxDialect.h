@@ -15,6 +15,9 @@
 // Include the auto-generated Dialect header.
 #include "VxDialect.h.inc"
 
+// The interfaces of the operations, such as `LaneOpInterface`.
+#include "VxOpInterfaces.h.inc"
+
 // Define the operations.
 #define GET_OP_CLASSES
 #include "VxOps.h.inc"
