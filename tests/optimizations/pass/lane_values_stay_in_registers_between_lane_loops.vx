@@ -22,8 +22,8 @@
 
 import core::num;
 
-// The PTX has the kernels in the order of their names. `block_rows` and `decode` have no tile in
-// shared memory, and read no shared memory. The others keep their tiles there.
+// The PTX has the kernels in the order of their names. `block_rows`, `decode` and `three_rows`
+// have no tile in shared memory, and read no shared memory. The others keep their tiles there.
 // CHECK-LABEL: .entry another_lane(
 // CHECK: .shared .align 16 .b8 {{.*}}[512];
 // CHECK-LABEL: .entry block_rows(
@@ -31,6 +31,10 @@ import core::num;
 // CHECK-LABEL: .entry block_sum_of_a_row(
 // CHECK: .shared .align 16 .b8 {{.*}}[1024];
 // CHECK-LABEL: .entry decode(
+// CHECK-NOT: .shared
+// CHECK: shfl.sync.bfly
+// CHECK-NOT: .shared
+// CHECK-LABEL: .entry three_rows(
 // CHECK-NOT: .shared
 // CHECK: shfl.sync.bfly
 // CHECK-NOT: .shared
@@ -147,6 +151,28 @@ pub fn block_rows(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?]
   return;
 }
 
+// Each lane keeps 3 elements of `t`, a number of places that is not a power of two. The place of
+// each element is still a number, so the elements need no local memory.
+pub fn three_rows(out : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut t = unsafe { Tensor<f32, [2, 3, 32], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        for l in 0..32 across lanes {
+          for m in 0..3 {
+            t[w][m][l] = (w * 100 + m * 32 + l) as f32;
+          }
+        }
+        let s = lanes::sum(&t[w][1], 32);
+        for l in 0..32 across lanes {
+          out[w][l] = s + t[w][0][l] + t[w][2][l];
+        }
+      }
+    }
+  }
+  return;
+}
+
 // A lane reduction in the code of a block reads `t[0]` from shared memory, so `t` stays there,
 // 1024 bytes.
 pub fn block_sum_of_a_row(out : &mut Tensor<f32, [?], Memory::HBM>) -> void {
@@ -235,6 +261,7 @@ pub fn another_lane(out : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
 // OUT-NEXT: two passes 32 664
 // OUT-NEXT: another lane 63 263
 // OUT-NEXT: block sum 2081 2016
+// OUT-NEXT: three rows 1584 5046
 // OUT-NEXT: wider 32 232
 fn main() -> i32 {
   let mut hq = Tensor<f32, [8, 64]>::fill(0.0);
@@ -276,6 +303,10 @@ fn main() -> i32 {
   block_sum_of_a_row(&mut bs);
   let hb = transfer(bs, Memory::CPU_DRAM);
   println!("block sum {} {}", hb[1], hb[0] - 64.0);
+  let mut tr = transfer(Tensor<f32, [2, 32]>::fill(0.0), Memory::HBM);
+  three_rows(&mut tr);
+  let h3 = transfer(tr, Memory::CPU_DRAM);
+  println!("three rows {} {}", h3[0][0], h3[1][31]);
   let mut wd = transfer(Tensor<f32, [2, 32]>::fill(0.0), Memory::HBM);
   wider_than_the_lanes(&mut wd);
   let hw = transfer(wd, Memory::CPU_DRAM);

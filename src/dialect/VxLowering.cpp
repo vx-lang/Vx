@@ -4718,19 +4718,30 @@ static int64_t laneOwnSlots(const LaneOwnTile &t) {
 }
 
 static Value laneOwnViewOffset(OpBuilder &b, Location loc, Value view,
-                               IRMapping &known);
+                               int64_t period, IRMapping &known);
 
 /// `v`, an index, made again at `b` without the metadata of a view: the offset
 /// of a view comes from `laneOwnViewOffset`, and a stride or a size from its
 /// type. The pure ops that use them are made again too. Then the views can go
-/// when the tile goes.
-static Value laneOwnIndex(OpBuilder &b, Location loc, Value v,
+/// when the tile goes. A product with a multiple of `period` becomes 0, because
+/// the place of an element repeats with that period: such a product is the
+/// offset of the row of a subgroup. Without it, LLVM can turn each place into a
+/// number.
+static Value laneOwnIndex(OpBuilder &b, Location loc, Value v, int64_t period,
                           IRMapping &known) {
   if (Value done = known.lookupOrNull(v))
     return done;
   Operation *def = v.getDefiningOp();
   Value out = v;
-  if (auto meta = dyn_cast_or_null<memref::ExtractStridedMetadataOp>(def)) {
+  auto multiple = [&](Value f) {
+    std::optional<int64_t> c = getConstantIntValue(f);
+    return c && *c % period == 0;
+  };
+  if (auto mul = dyn_cast_or_null<arith::MulIOp>(def);
+      mul && (multiple(mul.getLhs()) || multiple(mul.getRhs()))) {
+    out = b.create<arith::ConstantIndexOp>(loc, 0);
+  } else if (auto meta =
+                 dyn_cast_or_null<memref::ExtractStridedMetadataOp>(def)) {
     auto type = cast<MemRefType>(meta.getSource().getType());
     SmallVector<int64_t> strides;
     int64_t offset;
@@ -4738,7 +4749,7 @@ static Value laneOwnIndex(OpBuilder &b, Location loc, Value v,
     assert(strided && "a view with a strided layout");
     (void)strided;
     if (v == meta.getOffset()) {
-      out = laneOwnViewOffset(b, loc, meta.getSource(), known);
+      out = laneOwnViewOffset(b, loc, meta.getSource(), period, known);
     } else {
       auto number = [&](ResultRange values, ArrayRef<int64_t> numbers) {
         for (auto [r, n] : llvm::zip(values, numbers))
@@ -4758,7 +4769,7 @@ static Value laneOwnIndex(OpBuilder &b, Location loc, Value v,
     IRMapping operands;
     bool changed = false;
     for (Value o : def->getOperands()) {
-      Value n = laneOwnIndex(b, loc, o, known);
+      Value n = laneOwnIndex(b, loc, o, period, known);
       operands.map(o, n);
       changed |= n != o;
     }
@@ -4769,38 +4780,45 @@ static Value laneOwnIndex(OpBuilder &b, Location loc, Value v,
   return out;
 }
 
-/// The offset of `view` from the start of its tile, made at `b`. A cast keeps
-/// the offset of what it casts. The base buffer of a view starts where the
-/// tile starts, and the offset of a `reinterpret_cast` counts from there.
+/// The offset of `view` from the start of its tile, made at `b`, less a
+/// multiple of `period`. A cast keeps the offset of what it casts. The base
+/// buffer of a view starts where the tile starts, and the offset of a
+/// `reinterpret_cast` counts from there.
 static Value laneOwnViewOffset(OpBuilder &b, Location loc, Value view,
-                               IRMapping &known) {
+                               int64_t period, IRMapping &known) {
   Operation *def = view.getDefiningOp();
   assert(def && "a view of a tile");
   if (isa<memref::AllocaOp, memref::ExtractStridedMetadataOp>(def))
     return b.create<arith::ConstantIndexOp>(loc, 0);
   if (auto cast = dyn_cast<memref::CastOp>(def))
-    return laneOwnViewOffset(b, loc, cast.getSource(), known);
+    return laneOwnViewOffset(b, loc, cast.getSource(), period, known);
   auto row = cast<memref::ReinterpretCastOp>(def);
   OpFoldResult offset = row.getMixedOffsets()[0];
   if (auto number = getConstantIntValue(offset))
-    return b.create<arith::ConstantIndexOp>(loc, *number);
-  return laneOwnIndex(b, loc, cast<Value>(offset), known);
+    return b.create<arith::ConstantIndexOp>(loc, *number % period);
+  return laneOwnIndex(b, loc, cast<Value>(offset), period, known);
 }
 
 /// The place of the element at `indices` of `view` in the array of its lane:
-/// its row over the lanes, past the rows of the other subgroups.
+/// its row over the lanes, past the rows of the other subgroups. The places
+/// repeat every `slots` rows, so the offset of the row of a subgroup, a
+/// multiple of that, does not count.
 static Value laneOwnSlot(OpBuilder &b, Location loc, const LaneOwnTile &t,
                          Value view, ValueRange indices) {
   IRMapping known;
-  Value at = laneOwnViewOffset(b, loc, view, known);
+  int64_t period = t.slots * t.lanes;
+  Value at = laneOwnViewOffset(b, loc, view, period, known);
   SmallVector<int64_t> strides;
   int64_t offset;
   (void)cast<MemRefType>(view.getType()).getStridesAndOffset(strides, offset);
-  for (auto [i, stride] : llvm::zip(indices, strides))
+  for (auto [i, stride] : llvm::zip(indices, strides)) {
+    if (stride % period == 0)
+      continue;
     at = b.create<arith::AddIOp>(
         loc, at,
-        b.create<arith::MulIOp>(loc, laneOwnIndex(b, loc, i, known),
+        b.create<arith::MulIOp>(loc, laneOwnIndex(b, loc, i, period, known),
                                 b.create<arith::ConstantIndexOp>(loc, stride)));
+  }
   Value row = b.create<arith::DivUIOp>(
       loc, at, b.create<arith::ConstantIndexOp>(loc, t.lanes));
   return b.create<arith::RemUIOp>(
