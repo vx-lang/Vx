@@ -336,6 +336,11 @@ fn pass_a_skip(words : *mut AtomicI64, cap : i64, k : i64) -> bool {
   if word(words, SKIPS).load(AtomicOrdering::SeqCst) == 0 {
     return false;
   }
+  // A work queue has many receivers. The `recv` `cap` places before can still read the slot,
+  // so pass only when it freed the slot. Its notify wakes this receiver.
+  if word(words, SLOTS + k % cap).load(AtomicOrdering::Acquire) != 2 * k {
+    return false;
+  }
   if unsafe { vx_channel_take_skip(words, k) } == 0 {
     return false;
   }
