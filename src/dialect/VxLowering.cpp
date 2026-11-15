@@ -2943,6 +2943,8 @@ struct LaneCopy {
   int64_t lanes;
   bool subgroup;
   Value token;
+  /// With `ids`, row `r` of the tile is row `ids[place[0] + r]` of the source.
+  Value ids = Value();
 };
 
 static LaneCopy laneCopyOf(Operation *op) {
@@ -2955,6 +2957,16 @@ static LaneCopy laneCopyOf(Operation *op) {
             static_cast<int64_t>(c.getLanes()),
             c.getSubgroup(),
             c.getToken()};
+  if (auto c = dyn_cast<vx::LaneCopyRowsAsyncOp>(op))
+    return {op,
+            c.getTile(),
+            c.getSource(),
+            Value(),
+            c.getPlace(),
+            static_cast<int64_t>(c.getLanes()),
+            c.getSubgroup(),
+            c.getToken(),
+            c.getIds()};
   auto c = cast<vx::LaneCopyAsyncOp>(op);
   return {op,
           c.getTile(),
@@ -2974,6 +2986,22 @@ static std::pair<Value, Value> laneCopySourceIndex(OpBuilder &b, Location loc,
   Value at = b.create<arith::IndexCastOp>(loc, b.getIndexType(), op.place[d]);
   Value index = b.create<arith::AddIOp>(loc, at, i);
   Value dim = b.create<memref::DimOp>(loc, op.source, d);
+  if (op.ids && d == 0) {
+    // The row is the id at `index`, and a row past the end of `ids` is
+    // outside the source too. The load reads id 0 for it, which is in `ids`.
+    Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+    Value inIds =
+        b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ult, index,
+                                b.create<memref::DimOp>(loc, op.ids, 0));
+    Value id = b.create<memref::LoadOp>(
+        loc, op.ids,
+        ValueRange{b.create<arith::SelectOp>(loc, inIds, index, zero)});
+    Value row = b.create<arith::IndexCastOp>(loc, b.getIndexType(), id);
+    Value in = b.create<arith::AndIOp>(
+        loc, inIds,
+        b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ult, row, dim));
+    return {row, in};
+  }
   // A place below zero is a large unsigned number, past the end too.
   Value in =
       b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ult, index, dim);
@@ -7148,7 +7176,7 @@ struct ConvertVxToStandardPass
         SmallVector<Operation *> copyOps;
         gpuFunc.walk([&](Operation *op) {
           if (isa<vx::LaneCopyAsyncOp, vx::LaneCopyAsyncMapOp,
-                  vx::LaneCopyWaitOp>(op))
+                  vx::LaneCopyRowsAsyncOp, vx::LaneCopyWaitOp>(op))
             copyOps.push_back(op);
           copies.ring |= isa<vx::LaneCopyAsyncMapOp>(op);
         });
@@ -8673,6 +8701,11 @@ Value vx::LaneMatmulOp::expandOnHost(OpBuilder &b) {
 }
 
 Value vx::LaneCopyAsyncOp::expandOnHost(OpBuilder &b) {
+  expandLaneCopyOnHost(b, laneCopyOf(getOperation()));
+  return Value();
+}
+
+Value vx::LaneCopyRowsAsyncOp::expandOnHost(OpBuilder &b) {
   expandLaneCopyOnHost(b, laneCopyOf(getOperation()));
   return Value();
 }

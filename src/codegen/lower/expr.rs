@@ -7207,14 +7207,28 @@ fn lower_lane_copy<'c>(
         let v = constant_i32(gen, block, 0)?;
         return Ok((v, gen.i32_ty, block));
     }
-    let [dst, src, Expr::Array(place)] = args else {
-        return Err(LowerError::ParseType(
-            "a lane copy takes a tile, a tensor and a place".to_string(),
-        ));
+    // `lanes::copy_rows_async(&mut tile, &x, &ids, [first, col])` has the ids before the place.
+    let (dst, src, ids, place) = match args {
+        [dst, src, Expr::Array(place)] => (dst, src, None, place),
+        [dst, src, ids, Expr::Array(place)]
+            if op == crate::hir::check::lanes::LaneOp::CopyAsync =>
+        {
+            (dst, src, Some(ids), place)
+        }
+        _ => {
+            return Err(LowerError::ParseType(
+                "a lane copy takes a tile, a tensor and a place".to_string(),
+            ))
+        }
     };
     let (dst, block) = lane_tensor_operand(gen, dst, block)?;
     let (src, mut block) = lane_tensor_operand(gen, src, block)?;
     let mut operands = vec![dst, src];
+    if let Some(ids) = ids {
+        let (ids, b) = lane_tensor_operand(gen, ids, block)?;
+        block = b;
+        operands.push(ids);
+    }
     for e in &place.elements {
         let (v, v_ty, b) = gen.generate_expr(e, block)?;
         block = b;
@@ -7234,7 +7248,12 @@ fn lower_lane_copy<'c>(
         let v = constant_i32(gen, block, 0)?;
         return Ok((v, gen.i32_ty, block));
     }
-    let copy = OperationBuilder::new("vx.lane_copy_async", gen.loc())
+    let name = if ids.is_some() {
+        "vx.lane_copy_rows_async"
+    } else {
+        "vx.lane_copy_async"
+    };
+    let copy = OperationBuilder::new(name, gen.loc())
         .add_operands(&operands)
         .add_attributes(&attrs)
         .add_results(&[gen.i32_ty])

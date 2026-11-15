@@ -537,9 +537,15 @@ impl FnEmit<'_> {
             return Err(crate::emitter_gap!());
         }
         let at = self.pending_args.split_off(self.pending_args.len() - rank);
+        // `lanes::copy_rows_async`: the tensor of ids is the `Arg` before the place.
+        let rows = ins.imm & crate::bytecode::LANE_REDUCE_COPY_ROWS != 0;
+        let mut tensors = vec![ins.operand1.0, ins.operand2.0];
+        if rows {
+            tensors.push(self.pending_args.pop().ok_or(crate::emitter_gap!())?);
+        }
         let mut operands = Vec::new();
         let mut types = Vec::new();
-        for r in [ins.operand1.0, ins.operand2.0] {
+        for r in tensors {
             operands.push(
                 self.names
                     .get(r as usize)
@@ -588,8 +594,13 @@ impl FnEmit<'_> {
                 types.join(", ")
             );
         } else {
+            let op = if rows {
+                "vx.lane_copy_rows_async"
+            } else {
+                "vx.lane_copy_async"
+            };
             self.body += &format!(
-                "  {v} = \"vx.lane_copy_async\"({}) {{lanes = {} : i64{subgroup}}} : ({}) -> i32\n",
+                "  {v} = \"{op}\"({}) {{lanes = {} : i64{subgroup}}} : ({}) -> i32\n",
                 operands.join(", "),
                 ins.imm >> 32,
                 types.join(", ")

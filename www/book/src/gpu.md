@@ -152,6 +152,13 @@ error, and a token with no `.wait()` gets the error E6036. On an H100 the copy u
 older NVIDIA GPU `cp.async`. Today the copy does not work on tiles of `f64` or of integers.
 `tests/optimizations/pass/lane_copies_on_the_cpu.vx` is a complete program.
 
+`lanes::copy_rows_async(&mut tile, &x, &ids, [first, col])` copies rows that a list of ids
+chooses, such as the cached rows of the tokens that an attention step reads. Row `r` of `tile` gets
+row `ids[first + r]` of `x`, from column `col`. A row whose id is below 0 or not a row of `x`, or
+past the end of `ids`, is zeros. `tile` and `x` have 2 dimensions, and `ids` is a tensor of `i32`
+with 1 dimension. The token works as the one of `lanes::copy_async`, and the copy uses `cp.async`.
+`tests/optimizations/pass/lane_copies_of_rows_by_id.vx` is a complete program.
+
 `lanes::copy(&mut dst, &src, [i, j])` copies a tile and ends before it returns. When `dst` is a
 tile in shared memory, the copy goes into it, as `lanes::copy_async` and `.wait()` do. Otherwise
 `src` is the tile, and the copy goes into the part of `dst` that starts at `[i, j]`. Past the end
