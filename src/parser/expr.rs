@@ -854,11 +854,22 @@ impl<'a> Parser<'a> {
         }))
     }
 
+    /// A primary expression, including prefix `-` / `!` / `*` / `&` / `&&` and any trailing `as` casts.
+    ///
+    /// A prefix `-`, `!`, `*`, `&` or `&&` applies first, so `-x as T` is `(-x) as T` and
+    /// `*p as T` is `(*p) as T`. Field access, indexing and calls stay on the operand:
+    /// `-x.f`, `-a[i]` and `-f()` are unchanged.
     pub(crate) fn parse_primary_expr(&mut self) -> ParseResult<'a, Expr> {
+        let expr = self.parse_prefixed_primary()?;
+        self.parse_as_casts(expr)
+    }
+
+    /// A primary with prefix operators and postfix field/index/call, but not `as`.
+    fn parse_prefixed_primary(&mut self) -> ParseResult<'a, Expr> {
         // Where the `!` or `-` is, so a refused operand is reported at it rather than at 0:0.
         let (bang_line, bang_column) = (self.peek().line, self.peek().column);
         if self.match_token(&TokenType::Bang) {
-            let inner = self.parse_primary_expr()?;
+            let inner = self.parse_prefixed_primary()?;
             return Ok(Expr::UnaryOp(UnaryOpExpr {
                 op: UnaryOp::Not,
                 expr: Box::new(inner),
@@ -870,7 +881,7 @@ impl<'a> Parser<'a> {
                 },
             }));
         } else if self.match_token(&TokenType::Minus) {
-            let inner = self.parse_primary_expr()?;
+            let inner = self.parse_prefixed_primary()?;
             return Ok(Expr::UnaryOp(UnaryOpExpr {
                 op: UnaryOp::Neg,
                 expr: Box::new(inner),
@@ -891,7 +902,7 @@ impl<'a> Parser<'a> {
             };
             self.advance();
             let is_mut = self.match_token(&TokenType::Mut);
-            let inner = self.parse_primary_expr()?;
+            let inner = self.parse_prefixed_primary()?;
             return Ok(Expr::Borrow(BorrowExpr {
                 expr: Box::new(inner),
                 is_mut,
@@ -903,7 +914,7 @@ impl<'a> Parser<'a> {
             let (line, column) = (self.peek().line, self.peek().column);
             self.advance();
             let is_mut = self.match_token(&TokenType::Mut);
-            let inner = self.parse_primary_expr()?;
+            let inner = self.parse_prefixed_primary()?;
             return Ok(Expr::Borrow(BorrowExpr {
                 expr: Box::new(Expr::Borrow(BorrowExpr {
                     expr: Box::new(inner),
@@ -932,7 +943,7 @@ impl<'a> Parser<'a> {
                 expansion: self.expansion(),
             };
             self.advance();
-            let inner = self.parse_primary_expr()?;
+            let inner = self.parse_prefixed_primary()?;
             return Ok(Expr::Dereference(DereferenceExpr {
                 expr: Box::new(inner),
                 ty: None,
@@ -966,8 +977,8 @@ impl<'a> Parser<'a> {
             }
             self.consume(&TokenType::RightBrace, "Expected '}'")?;
             // Only `as` may follow the block: a `(` or `[` on the next line starts a new
-            // statement, and `as` cannot.
-            return self.parse_as_casts(Expr::UnsafeBlock(UnsafeBlockExpr {
+            // statement, and `as` cannot. `as` is applied by `parse_primary_expr`.
+            return Ok(Expr::UnsafeBlock(UnsafeBlockExpr {
                 stmts,
                 ret,
                 span: unsafe_span,
@@ -999,8 +1010,9 @@ impl<'a> Parser<'a> {
             let mut else_block = None;
             if self.match_token(&TokenType::Else) {
                 if self.check(&TokenType::If) {
-                    // `else if`
-                    let inner_if = self.parse_primary_expr()?;
+                    // `else if`. Use parse_prefixed_primary so a trailing `as`
+                    // applies to the whole if, not only this inner one.
+                    let inner_if = self.parse_prefixed_primary()?;
                     else_block = Some(vec![Statement::ExprStmt(ExprStmtStmt {
                         expr: inner_if,
                         has_semi: false,
@@ -1497,7 +1509,9 @@ impl<'a> Parser<'a> {
             }
         };
 
-        // Postfix operators: .member, .method(), [index], ?
+        // Postfix operators: .member, .method(), [index], ?. `as` is applied by
+        // `parse_primary_expr` after a prefix `-` / `!` / `*` / `&` / `&&`, so
+        // `-x as T` is `(-x) as T` and `*p as T` is `(*p) as T`.
         loop {
             if self.match_token(&TokenType::Dot) {
                 // The method name's own token, so a diagnostic about the call points at it.
@@ -1583,8 +1597,6 @@ impl<'a> Parser<'a> {
                     index: Box::new(index),
                     span: ix_span,
                 });
-            } else if self.check(&TokenType::As) {
-                expr = self.parse_as_casts(expr)?;
             } else if self.check(&TokenType::Question) {
                 let token = self.advance();
                 let span = Span {
@@ -2265,6 +2277,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_else_if_chain_then_as_cast() {
+        // `as` applies to the whole if, not only the last `else if`.
+        let expr = parse_expr("if a { 1i32 } else if b { 2i32 } else { 3i32 } as i64");
+        if let Expr::AsCast(AsCastExpr {
+            expr: inner,
+            target_ty,
+            ..
+        }) = expr
+        {
+            assert_eq!(target_ty.to_string(), "i64");
+            assert!(matches!(&*inner, Expr::If(_)));
+        } else {
+            panic!("Expected AsCast(If(...), i64), got {:?}", expr);
+        }
+    }
+
     // ---- Match expression tests ----
 
     #[test]
@@ -2585,6 +2614,87 @@ mod tests {
             assert!(matches!(&*inner, Expr::AsCast(_)));
         } else {
             panic!("Expected chained AsCast, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_prefix_neg_then_as_cast() {
+        // `-x as T` is `(-x) as T`, not `-(x as T)`.
+        let expr = parse_expr("-x as i32");
+        if let Expr::AsCast(AsCastExpr {
+            expr: inner,
+            target_ty,
+            ..
+        }) = expr
+        {
+            assert_eq!(target_ty.to_string(), "i32");
+            assert!(matches!(&*inner, Expr::UnaryOp(u) if u.op == UnaryOp::Neg));
+        } else {
+            panic!("Expected AsCast(UnaryOp(Neg(_)), i32), got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_prefix_not_then_as_cast() {
+        let expr = parse_expr("!flag as i32");
+        if let Expr::AsCast(AsCastExpr {
+            expr: inner,
+            target_ty,
+            ..
+        }) = expr
+        {
+            assert_eq!(target_ty.to_string(), "i32");
+            assert!(matches!(&*inner, Expr::UnaryOp(u) if u.op == UnaryOp::Not));
+        } else {
+            panic!("Expected AsCast(UnaryOp(Not(_)), i32), got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_deref_then_as_cast() {
+        // `*p as T` is `(*p) as T`, not `*(p as T)`.
+        let expr = parse_expr("*p as i64");
+        if let Expr::AsCast(AsCastExpr {
+            expr: inner,
+            target_ty,
+            ..
+        }) = expr
+        {
+            assert_eq!(target_ty.to_string(), "i64");
+            assert!(matches!(&*inner, Expr::Dereference(_)));
+        } else {
+            panic!("Expected AsCast(Dereference(_), i64), got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_borrow_then_as_cast() {
+        let expr = parse_expr("&x as &i32");
+        if let Expr::AsCast(AsCastExpr {
+            expr: inner,
+            target_ty,
+            ..
+        }) = expr
+        {
+            assert_eq!(target_ty.to_string(), "&i32");
+            assert!(matches!(&*inner, Expr::Borrow(_)));
+        } else {
+            panic!("Expected AsCast(Borrow(_), &i32), got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_prefix_neg_still_binds_tighter_than_field() {
+        // `-x.f` stays `-(x.f)`.
+        let expr = parse_expr("-x.f");
+        if let Expr::UnaryOp(UnaryOpExpr {
+            op, expr: inner, ..
+        }) = expr
+        {
+            assert_eq!(op, UnaryOp::Neg);
+            assert!(matches!(&*inner, Expr::MemberAccess(_)));
+        } else {
+            panic!("Expected UnaryOp(Neg(MemberAccess)), got {:?}", expr);
         }
     }
 
