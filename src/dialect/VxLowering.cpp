@@ -3935,13 +3935,12 @@ static void accessesOf(Value v, SmallVectorImpl<Operation *> &out) {
   }
 }
 
-/// Moves the lane's elements of `acc` between the tile and `fragments`, in the
-/// order of `expandLaneMatmulWithMma`: into `fragments` with `fill`, and back
-/// to the tile otherwise.
-static void moveLaneFragments(OpBuilder &b, Location loc, Value acc,
-                              Value fragments, bool fill) {
-  auto type = cast<MemRefType>(acc.getType());
-  int64_t m = type.getDimSize(0), n = type.getDimSize(1);
+/// Calls `each` with the slot in `fragments`, the row and the column of each
+/// element of an `m` x `n` accumulator that this lane holds, in the order of
+/// `expandLaneMatmulWithMma`.
+static void forEachLaneFragment(
+    OpBuilder &b, Location loc, int64_t m, int64_t n,
+    llvm::function_ref<void(Value slot, Value row, Value col)> each) {
   auto index = [&](int64_t v) -> Value {
     return b.create<arith::ConstantIndexOp>(loc, v);
   };
@@ -3960,20 +3959,179 @@ static void moveLaneFragments(OpBuilder &b, Location loc, Value acc,
       Value col1 = b.create<arith::AddIOp>(loc, col0, index(1));
       std::pair<Value, Value> place[] = {
           {row0, col0}, {row0, col1}, {row1, col0}, {row1, col1}};
-      for (auto [e, ij] : llvm::enumerate(place)) {
-        Value slot = index(4 * p + e);
+      for (auto [e, ij] : llvm::enumerate(place))
+        each(index(4 * p + e), ij.first, ij.second);
+    }
+}
+
+/// Moves the lane's elements of `acc` between the tile and `fragments`, in the
+/// order of `expandLaneMatmulWithMma`: into `fragments` with `fill`, and back
+/// to the tile otherwise.
+static void moveLaneFragments(OpBuilder &b, Location loc, Value acc,
+                              Value fragments, bool fill) {
+  auto type = cast<MemRefType>(acc.getType());
+  forEachLaneFragment(
+      b, loc, type.getDimSize(0), type.getDimSize(1),
+      [&](Value slot, Value row, Value col) {
         if (fill)
           b.create<memref::StoreOp>(
-              loc,
-              b.create<memref::LoadOp>(loc, acc,
-                                       ValueRange{ij.first, ij.second}),
+              loc, b.create<memref::LoadOp>(loc, acc, ValueRange{row, col}),
               fragments, slot);
         else
           b.create<memref::StoreOp>(
               loc, b.create<memref::LoadOp>(loc, fragments, slot), acc,
-              ValueRange{ij.first, ij.second});
-      }
+              ValueRange{row, col});
+      });
+}
+
+/// Erases the views of `v` that nothing uses any more.
+static void eraseUnusedViews(Value v) {
+  for (Operation *user : llvm::make_early_inc_range(v.getUsers())) {
+    if (!isa<memref::ReinterpretCastOp, memref::SubViewOp, memref::CastOp,
+             memref::ExtractStridedMetadataOp>(user))
+      continue;
+    for (Value r : user->getResults())
+      eraseUnusedViews(r);
+    if (user->use_empty())
+      user->erase();
+  }
+}
+
+/// Keeps the accumulator of a tensor-core lane matmul in registers in the
+/// whole kernel, and removes its tile in shared memory, when each other use of
+/// the tile is a `vx.lane_fill` of it or a `vx.lane_copy` out of it. The
+/// matmul, the fills and the copies take the row of their subgroup
+/// (`subgroup_row`) with one type, so each lane holds the same elements of
+/// the row in all of them. A fill gives the value that the elements start at,
+/// and the next matmul or copy sets the registers to it. A copy stores the
+/// registers straight to its tensor. Returns false, and changes nothing, when
+/// the tile has another use.
+static bool expandLaneMatmulWithoutTile(gpu::GPUFuncOp func,
+                                        vx::LaneMatmulOp op, Type elem) {
+  Region &body = func.getBody();
+  Type accType = op.getAcc().getType();
+  auto acc = cast<MemRefType>(accType);
+  memref::AllocaOp tile = laneCopyTileAlloca(op.getAcc());
+  if (!op.getAccumulate() || !op.getSubgroupRow() || !tile ||
+      acc.getRank() != 2 ||
+      acc.getNumElements() / 32 > laneMatmulFragmentRegisters ||
+      op->getParentRegion() != &body)
+    return false;
+  SmallVector<Operation *> uses;
+  accessesOf(tile.getResult(), uses);
+  SmallVector<vx::LaneFillOp> fills;
+  SmallVector<vx::LaneCopyOp> copies;
+  for (Operation *use : uses) {
+    if (use == op)
+      continue;
+    if (use->getParentRegion() != &body)
+      return false;
+    auto fill = dyn_cast<vx::LaneFillOp>(use);
+    if (fill && fill.getSubgroupRow() && !fill.getSerial() &&
+        fill.getTile().getType() == accType) {
+      fills.push_back(fill);
+      continue;
     }
+    auto copy = dyn_cast<vx::LaneCopyOp>(use);
+    if (!copy || !copy.getSubgroupRow() || copy.getSerial())
+      return false;
+    LaneCopyNow c = laneCopyNowOf(copy);
+    if (!c.toTensor || c.tile.getType() != accType ||
+        laneCopyTileAlloca(c.tensor) == tile)
+      return false;
+    if (!llvm::is_contained(copies, copy))
+      copies.push_back(copy);
+  }
+
+  Location loc = op.getLoc();
+  OpBuilder b(&body.front(), body.front().begin());
+  int64_t count = acc.getNumElements() / 32;
+  Type f32 = b.getF32Type();
+  Value fragments =
+      b.create<memref::AllocaOp>(loc, MemRefType::get({count}, f32));
+  Value valid =
+      b.create<memref::AllocaOp>(loc, MemRefType::get({}, b.getI1Type()));
+  Value start = b.create<memref::AllocaOp>(loc, MemRefType::get({}, f32));
+  // The tile starts with no values, so the registers may start at zero.
+  b.create<memref::StoreOp>(
+      loc, b.create<arith::ConstantIntOp>(loc, b.getI1Type(), 0), valid);
+  b.create<memref::StoreOp>(
+      loc, b.create<arith::ConstantFloatOp>(loc, b.getF32Type(), APFloat(0.0f)),
+      start);
+  // When the registers hold the value of the last fill, not yet set.
+  auto ready = [&](OpBuilder &rb, Location l) {
+    Value set = rb.create<memref::LoadOp>(l, valid);
+    auto unset = rb.create<scf::IfOp>(
+        l,
+        rb.create<arith::XOrIOp>(
+            l, set, rb.create<arith::ConstantIntOp>(l, rb.getI1Type(), 1)),
+        /*withElseRegion=*/false);
+    OpBuilder::InsertionGuard guard(rb);
+    rb.setInsertionPoint(unset.getThenRegion().front().getTerminator());
+    Value v = rb.create<memref::LoadOp>(l, start);
+    for (int64_t s = 0; s < count; ++s)
+      rb.create<memref::StoreOp>(
+          l, v, fragments, ValueRange{rb.create<arith::ConstantIndexOp>(l, s)});
+    rb.create<memref::StoreOp>(
+        l, rb.create<arith::ConstantIntOp>(l, rb.getI1Type(), 1), valid);
+  };
+  for (vx::LaneFillOp fill : fills) {
+    OpBuilder fb(fill);
+    fb.create<memref::StoreOp>(fill.getLoc(), fill.getValue(), start);
+    fb.create<memref::StoreOp>(
+        fill.getLoc(),
+        fb.create<arith::ConstantIntOp>(fill.getLoc(), fb.getI1Type(), 0),
+        valid);
+    fill.erase();
+  }
+  OpBuilder mb(op);
+  ready(mb, loc);
+  expandLaneMatmulWithMma(mb, op, elem, fragments);
+  for (vx::LaneCopyOp copy : copies) {
+    Location l = copy.getLoc();
+    OpBuilder cb(copy);
+    ready(cb, l);
+    LaneCopyNow c = laneCopyNowOf(copy);
+    forEachLaneFragment(
+        cb, l, acc.getDimSize(0), acc.getDimSize(1),
+        [&](Value slot, Value row, Value col) {
+          Value in;
+          SmallVector<Value> at;
+          for (auto [d, i] : llvm::enumerate(ValueRange{row, col})) {
+            Value index = cb.create<arith::AddIOp>(
+                l,
+                cb.create<arith::IndexCastOp>(l, cb.getIndexType(),
+                                              copy.getPlace()[d]),
+                i);
+            Value inside = cb.create<arith::CmpIOp>(
+                l, arith::CmpIPredicate::ult, index,
+                cb.create<memref::DimOp>(l, c.tensor, d));
+            at.push_back(index);
+            in = in ? cb.create<arith::AndIOp>(l, in, inside) : inside;
+          }
+          auto store = cb.create<scf::IfOp>(l, in, /*withElseRegion=*/false);
+          OpBuilder::InsertionGuard guard(cb);
+          cb.setInsertionPoint(store.getThenRegion().front().getTerminator());
+          cb.create<memref::StoreOp>(
+              l, cb.create<memref::LoadOp>(l, fragments, slot), c.tensor, at);
+        });
+    if (copy.getSubgroup()) {
+      auto bar = cb.create<vx::BarrierOp>(l);
+      bar->setAttr("subgroup", cb.getUnitAttr());
+    } else {
+      cb.create<gpu::BarrierOp>(l);
+    }
+    copy.erase();
+  }
+  return true;
+}
+
+/// Removes the tile of a matmul that `expandLaneMatmulWithoutTile` rewrote,
+/// after the matmul is gone, with the views that nothing uses any more.
+static void eraseUnusedTile(memref::AllocaOp tile) {
+  eraseUnusedViews(tile.getResult());
+  if (tile->use_empty())
+    tile.erase();
 }
 
 /// Keeps the accumulator of a tensor-core lane matmul in registers through
@@ -6318,6 +6476,12 @@ struct ConvertVxToStandardPass
         for (vx::LaneMatmulOp op : matmuls) {
           Type elem =
               tensorCores && !op.getSerial() ? mmaElementOf(op) : Type();
+          memref::AllocaOp tile = laneCopyTileAlloca(op.getAcc());
+          if (elem && expandLaneMatmulWithoutTile(gpuFunc, op, elem)) {
+            op.erase();
+            eraseUnusedTile(tile);
+            continue;
+          }
           if (elem && expandLaneMatmulInRegisters(gpuFunc, op, elem)) {
             op.erase();
             continue;

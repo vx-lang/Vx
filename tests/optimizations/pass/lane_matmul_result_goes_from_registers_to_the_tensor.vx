@@ -1,0 +1,121 @@
+//===- lane_matmul_result_goes_from_registers_to_the_tensor.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A tensor-core matmul whose accumulator `acc` is in shared memory. When each other use of `acc`
+// is a `lanes::fill` of the row of a subgroup, or a `lanes::copy` out of it, the accumulator stays
+// in the registers of the lanes, and `acc` takes no shared memory. The copy stores the registers
+// straight to `c`. This needs a subgroup loop that gives each subgroup one pass at most, so that
+// each lane holds the same elements of `acc[w]` in the fill, the matmul and the copy.
+//
+// RUN: vxc %s --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s < %t.ptx --implicit-check-not=local_depot
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ast.ptx
+// RUN: FileCheck %s < %t.ast.ptx --implicit-check-not=local_depot
+
+// Only `sa` and `sb` are in shared memory, 1024 bytes each. `acc` would take 4096. The stores to
+// `c` come after the last `mma.sync`, with no load from shared memory between them.
+// CHECK-LABEL: .entry one_pass_each(
+// CHECK-NOT: .shared .align
+// CHECK: .shared .align 16 .b8 {{.*}}[1024];
+// CHECK-NEXT: // demoted variable
+// CHECK-NEXT: .shared .align 16 .b8 {{.*}}[1024];
+// CHECK-NOT: .shared .align
+// CHECK-COUNT-4: mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32
+// CHECK-NOT: ld.shared
+// CHECK: st.global.b32 [%rd{{[0-9]+}}], %r{{[0-9]+}};
+pub fn one_pass_each(c : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<bf16, [?, ?], Memory::HBM>, b : &Tensor<bf16, [?, ?], Memory::HBM>, k : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut sa = unsafe {
+        Tensor<bf16, [2, 16, 16], Memory::SMEM>::uninit()
+      };
+      let mut sb = unsafe { Tensor<bf16, [16, 32], Memory::SMEM>::uninit() };
+      let mut acc = unsafe {
+        Tensor<f32, [2, 16, 32], Memory::SMEM>::uninit()
+      };
+      for w in 0..2 across subgroups {
+        lanes::fill(&mut acc[w], 0.0);
+      }
+      for kt in 0..k / 16 {
+        lanes::copy(&mut sb, b, [kt * 16, 0]);
+        lanes::copy(&mut sa[0], a, [0, kt * 16]);
+        lanes::copy(&mut sa[1], a, [16, kt * 16]);
+        for w in 0..2 across subgroups {
+          acc[w] = acc[w] + (sa[w] as f32) @ (sb as f32);
+        }
+      }
+      for w in 0..2 across subgroups {
+        lanes::copy(c, &acc[w], [w * 16, 0]);
+      }
+    }
+  }
+  return;
+}
+
+// Each subgroup has two passes, `w` and `w + 2`, so a lane holds two rows of `acc`, one at a
+// time. `acc` stays in shared memory, 8192 bytes.
+// CHECK-LABEL: .entry two_passes_each(
+// CHECK: .shared .align 16 .b8 {{.*}}[8192];
+pub fn two_passes_each(c : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<bf16, [?, ?], Memory::HBM>, b : &Tensor<bf16, [?, ?], Memory::HBM>, k : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut sa = unsafe {
+        Tensor<bf16, [4, 16, 16], Memory::SMEM>::uninit()
+      };
+      let mut sb = unsafe { Tensor<bf16, [16, 32], Memory::SMEM>::uninit() };
+      let mut acc = unsafe {
+        Tensor<f32, [4, 16, 32], Memory::SMEM>::uninit()
+      };
+      for w in 0..4 across subgroups(2) {
+        lanes::fill(&mut acc[w], 0.0);
+      }
+      for kt in 0..k / 16 {
+        lanes::copy(&mut sb, b, [kt * 16, 0]);
+        lanes::copy(&mut sa[0], a, [0, kt * 16]);
+        for w in 0..4 across subgroups(2) {
+          acc[w] = acc[w] + (sa[w] as f32) @ (sb as f32);
+        }
+      }
+      for w in 0..4 across subgroups(2) {
+        lanes::copy(c, &acc[w], [w * 16, 0]);
+      }
+    }
+  }
+  return;
+}
+
+// A lane loop also reads `acc`, so `acc` stays in shared memory, 4096 bytes.
+// CHECK-LABEL: .entry another_read(
+// CHECK: .shared .align 16 .b8 {{.*}}[4096];
+pub fn another_read(c : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<bf16, [?, ?], Memory::HBM>, b : &Tensor<bf16, [?, ?], Memory::HBM>, k : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut sa = unsafe {
+        Tensor<bf16, [2, 16, 16], Memory::SMEM>::uninit()
+      };
+      let mut sb = unsafe { Tensor<bf16, [16, 32], Memory::SMEM>::uninit() };
+      let mut acc = unsafe {
+        Tensor<f32, [2, 16, 32], Memory::SMEM>::uninit()
+      };
+      for w in 0..2 across subgroups {
+        lanes::fill(&mut acc[w], 0.0);
+      }
+      for kt in 0..k / 16 {
+        lanes::copy(&mut sb, b, [kt * 16, 0]);
+        lanes::copy(&mut sa[0], a, [0, kt * 16]);
+        lanes::copy(&mut sa[1], a, [16, kt * 16]);
+        for w in 0..2 across subgroups {
+          acc[w] = acc[w] + (sa[w] as f32) @ (sb as f32);
+        }
+      }
+      for t in 0..32 across lanes(64) {
+        c[40][t] = acc[1][0][t];
+      }
+    }
+  }
+  return;
+}

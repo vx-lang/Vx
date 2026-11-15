@@ -7147,6 +7147,20 @@ fn lower_lane_copy<'c>(
     LowerError,
 > {
     let (mut attrs, lanes) = lane_routine_attrs(gen)?;
+    // The tile of a fill is its first argument, and the tile of a copy out is its second.
+    let tile = match op {
+        crate::hir::check::lanes::LaneOp::Fill => args.first(),
+        crate::hir::check::lanes::LaneOp::Copy => args.get(1),
+        _ => None,
+    };
+    let row = matches!(tile, Some(Expr::Borrow(b)) if gen
+        .across_map
+        .as_ref()
+        .is_some_and(|map| map.row_of_subgroup(&b.expr)));
+    if row {
+        let unit = melior::ir::attribute::Attribute::unit(gen.context);
+        attrs.push((Identifier::new(gen.context, "subgroup_row"), unit));
+    }
     if op == crate::hir::check::lanes::LaneOp::CopyWait {
         let [token] = args else {
             return Err(LowerError::ParseType(

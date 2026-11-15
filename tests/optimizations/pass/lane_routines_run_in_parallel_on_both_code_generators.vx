@@ -9,7 +9,8 @@
 // the subgroup in the code of a subgroup. No routine is `serial`. A sort gets the lanes that
 // share it. Each store of `part[t]` in a lane loop over all the lanes says that only lane `t`
 // writes the element, so the GPU keeps it in a register. A reduction of the row of a subgroup
-// says `own_row`. A subgroup barrier follows a matmul of tiles.
+// says `own_row`. A matmul of the row of a subgroup, in a loop that gives each subgroup one pass,
+// says `subgroup_row`. A subgroup barrier follows a matmul of tiles.
 //
 // The kernels run on the CPU here. The inputs are small integers, so each expected value is a
 // short sum of them, which I computed by hand.
@@ -24,7 +25,7 @@
 // CHECK: matmul 1 17 33
 //
 // MLIR-LABEL: func.func @tile_matmul(
-// MLIR: "vx.lane_matmul"({{.*}}) <{accumulate, subgroup}>
+// MLIR: "vx.lane_matmul"({{.*}}) <{accumulate, subgroup, subgroup_row}>
 // MLIR-NEXT: vx.barrier {subgroup}
 // MLIR-LABEL: func.func @sorted(
 // MLIR: memref.store {{.*}} {vx.lane_element = "block"} : memref<64xi64, 3>

@@ -149,6 +149,29 @@ Each 16 x 8 piece of the result is then a chain of `mma.sync.m16n8k16`, one for 
 core adds the products in an order of its own, so a result can differ from the CPU copy in its
 last bits. With small integer inputs, each sum is exact and the two results are equal.
 
+The accumulator can stay in the registers of the lanes, with no tile in shared memory. This
+happens when each other use of the tile is a `lanes::fill` of `acc[w]` or a `lanes::copy` out of
+it, and `w` is the index of a subgroup loop that gives each subgroup one pass at most. Then each
+lane holds the same elements of `acc[w]` in each of them. A fill gives the value that the
+registers start at, and a copy stores the registers straight to its tensor:
+
+<!-- vx-doctest: skip (needs a GPU topology) -->
+
+```vx
+for w in 0..4 across subgroups {
+  lanes::fill(&mut acc[w], 0.0);
+}
+for kt in 0..k / 32 {
+  // copies of the tiles of A and B
+  for w in 0..4 across subgroups {
+    acc[w] = acc[w] + (sa[w] as f32) @ (sb as f32);
+  }
+}
+for w in 0..4 across subgroups {
+  lanes::copy(c, &acc[w], [bm * 128 + w * 32, bn * 128]);
+}
+```
+
 On the Apple GPU, a matmul uses the simdgroup matrices of Metal when all of these are true:
 
 - The result is `f32`, and each tile is `f32` or `f16`.

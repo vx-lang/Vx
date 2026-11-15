@@ -23,8 +23,8 @@ use crate::bytecode::{
     LANE_REDUCE_ACCUMULATE, LANE_REDUCE_ARGMAX, LANE_REDUCE_COPY, LANE_REDUCE_COPY_NOW,
     LANE_REDUCE_COPY_WAIT, LANE_REDUCE_DESCENDING, LANE_REDUCE_FILL, LANE_REDUCE_MATMUL,
     LANE_REDUCE_MAX, LANE_REDUCE_ORDERED, LANE_REDUCE_OWN_ROW, LANE_REDUCE_SORT,
-    LANE_REDUCE_SUBGROUP, LANE_ROW_SHIFT, TENSOR_STORE_BLOCK_LANE_ELEMENT,
-    TENSOR_STORE_SUBGROUP_LANE_ELEMENT,
+    LANE_REDUCE_SUBGROUP, LANE_REDUCE_SUBGROUP_ROW, LANE_ROW_SHIFT,
+    TENSOR_STORE_BLOCK_LANE_ELEMENT, TENSOR_STORE_SUBGROUP_LANE_ELEMENT,
 };
 use crate::hir::check::across_lanes;
 
@@ -63,6 +63,9 @@ pub(super) struct AcrossState {
     /// The row of a tile that the code of a subgroup alone writes. `None` when the body of the
     /// subgroup loop binds the loop's index again.
     pub subgroup_row: Option<SubgroupRow>,
+    /// The subgroup loop gives each subgroup one pass at most, so its index is the number of the
+    /// subgroup, the same in each such loop.
+    pub subgroup_once: bool,
     /// In a lane loop from 0 over all the lanes of its level: the index `t` of the loop, and the
     /// level. Only lane `t` writes `tile[t]` in the code of a block, or element `t` of the row of
     /// the subgroup.
@@ -248,6 +251,24 @@ pub(crate) fn across_width(f: &crate::syntax::ForLoopStmt) -> Option<u64> {
         return None;
     };
     number(&r.end)?.checked_sub(number(&r.start)?)
+}
+
+/// Whether a lane loop or a subgroup loop from 0 gives each of its lanes one pass at most: it has
+/// at most `width` passes, and its `width` groups of `inner` lanes fit in the `lanes` of the block.
+pub(crate) fn one_pass_each(
+    f: &crate::syntax::ForLoopStmt,
+    width: u64,
+    inner: u64,
+    lanes: u64,
+) -> bool {
+    let trip = match &*f.iterable {
+        Expr::Range(r) => match &*r.end {
+            Expr::Number(n) => n.value.parse::<u64>().ok(),
+            _ => None,
+        },
+        _ => None,
+    };
+    trip.is_some_and(|t| t <= width) && width.checked_mul(inner).is_some_and(|n| n <= lanes)
 }
 
 /// The lane loop that is the whole body of the lane loop `f`, if there is one.
@@ -501,6 +522,9 @@ impl Lowerer<'_> {
                 let t = self.lower_expr(t)?;
                 let v = self.lower_expr(v)?;
                 let mut imm = LANE_REDUCE_FILL;
+                if matches!(&fc.args[0], Expr::Borrow(b) if self.row_of_subgroup(&b.expr)) {
+                    imm |= LANE_REDUCE_SUBGROUP_ROW;
+                }
                 let lanes = if self.across.kinds.last() == Some(&LevelKind::Subgroups) {
                     imm |= LANE_REDUCE_SUBGROUP;
                     self.subgroup_lanes()?
@@ -612,6 +636,9 @@ impl Lowerer<'_> {
         if m.accumulate {
             imm |= LANE_REDUCE_ACCUMULATE;
         }
+        if self.row_of_subgroup(m.acc) {
+            imm |= LANE_REDUCE_SUBGROUP_ROW;
+        }
         self.emit_effect(Opcode::Arg, rhs.reg, Register(0), 0);
         self.emit_effect(Opcode::LaneReduce, acc.reg, lhs.reg, imm);
         self.barrier(AcrossLevel::Subgroup);
@@ -682,6 +709,9 @@ impl Lowerer<'_> {
             self.emit_effect(Opcode::Arg, r, Register(0), 0);
         }
         let mut imm = LANE_REDUCE_COPY | flags | (rank << 16);
+        if matches!(&fc.args[1], Expr::Borrow(b) if self.row_of_subgroup(&b.expr)) {
+            imm |= LANE_REDUCE_SUBGROUP_ROW;
+        }
         let lanes = if self.across.kinds.last() == Some(&LevelKind::Subgroups) {
             imm |= LANE_REDUCE_SUBGROUP;
             self.subgroup_lanes()?
@@ -716,6 +746,12 @@ impl Lowerer<'_> {
     /// When `e` is a row of a tile that the code of this subgroup alone writes, the number that
     /// tells it from the other rows of the subgroup: 0 for `t` or `t[w]`, and `c + 1` for
     /// `t[w][c]` with a number `c`. Each row keeps its own register on the device.
+    /// Whether `e` is the row of the subgroup, `t[w]`, in a subgroup loop whose index `w` is the
+    /// number of the subgroup.
+    fn row_of_subgroup(&self, e: &Expr) -> bool {
+        self.across.subgroup_once && self.subgroup_row_number(e) == Some(0)
+    }
+
     fn subgroup_row_number(&self, e: &Expr) -> Option<u64> {
         let is_own_row = |e: &Expr| match (&self.across.subgroup_row, e) {
             (Some(SubgroupRow::Whole), Expr::Identifier(_)) => true,
@@ -841,6 +877,10 @@ impl Lowerer<'_> {
         let lane_element = self.across.lane_element.take();
         let from_zero = matches!(&*f.iterable,
             Expr::Range(r) if matches!(&*r.start, Expr::Number(n) if &*n.value == "0"));
+        let once = kind == LevelKind::Subgroups
+            && from_zero
+            && one_pass_each(f, width, inner, self.across.lanes);
+        let outer_once = std::mem::replace(&mut self.across.subgroup_once, once);
         let all_lanes = match root {
             Some(AcrossLevel::Block) => true,
             Some(AcrossLevel::Subgroup) => Some(width) == self.across.subgroup,
@@ -852,6 +892,7 @@ impl Lowerer<'_> {
         }
         let lowered = self.lower_plain_for(f);
         self.across.lane_element = lane_element;
+        self.across.subgroup_once = outer_once;
         if let Some(outer) = subgroup_row {
             self.across.subgroup_row = outer;
         }
