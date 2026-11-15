@@ -1508,6 +1508,7 @@ impl<'a> TypeChecker<'a> {
                 var: iter.as_str().into(),
                 bounds,
                 used: false,
+                across: across.is_some(),
             });
         let pointers_at_head = match ordered {
             true => self.pointer_facts.clone(),

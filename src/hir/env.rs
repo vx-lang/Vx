@@ -609,6 +609,8 @@ pub(crate) struct UnrollCandidate {
     /// Whether a register tensor is indexed with the variable, which makes the code generator
     /// unroll the loop.
     pub(crate) used: bool,
+    /// The loop is an `across` loop, which the code generator never unrolls.
+    pub(crate) across: bool,
 }
 
 pub struct TypeChecker<'a> {

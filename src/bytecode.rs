@@ -436,6 +436,10 @@ pub const LANE_REDUCE_FILL: u64 = 4096;
 /// the index of a subgroup loop that gives each subgroup one pass at most. So `w` is the number of
 /// the subgroup.
 pub const LANE_REDUCE_SUBGROUP_ROW: u64 = 8192;
+/// `Opcode::LaneReduce` with `LANE_REDUCE_OWN_ROW`: the subgroup has the row for the whole kernel,
+/// so the reduction may read it from the registers of `LANE_OWN_SUBGROUP` or `LANE_OWN_WHOLE`
+/// elements.
+pub const LANE_REDUCE_LANE_OWN: u64 = 16384;
 
 /// `Opcode::TensorStore`: the place is `tile[t]` in a lane loop of the code of a block, with `t`
 /// the index of the loop. The loop goes from 0 over all of its lanes, so only lane `t` writes the
@@ -447,6 +451,15 @@ pub const TENSOR_STORE_SUBGROUP_LANE_ELEMENT: u64 = 2;
 /// The bits of a lane-element store's or an `own_row` reduction's `imm` from here up give the row
 /// of the subgroup: 0 for `t[w]`, and `c + 1` for `t[w][c]`.
 pub const LANE_ROW_SHIFT: u64 = 32;
+/// `Opcode::TensorStore`, and `Opcode::TensorIndex` that reads an element: the element belongs to
+/// this lane alone, as `t[w][..][l]` in a lane loop of subgroup `w`, where `w` is the number of the
+/// subgroup (docs/lane_reductions.md).
+pub const LANE_OWN_SUBGROUP: u64 = 1 << 8;
+/// As `LANE_OWN_SUBGROUP`, but `t[..][l]`, where one block or one subgroup has all of `t`.
+pub const LANE_OWN_WHOLE: u64 = 1 << 9;
+/// With `LANE_OWN_SUBGROUP` or `LANE_OWN_WHOLE`, the bits from here up to `LANE_ROW_SHIFT` give
+/// the lanes of the lane loop.
+pub const LANE_OWN_LANES_SHIFT: u64 = 16;
 
 /// `Opcode::LoopHint`: the loop was `across` a level of blocks.
 pub const LOOP_HINT_BLOCKS: u64 = 0;

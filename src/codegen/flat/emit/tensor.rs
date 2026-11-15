@@ -1101,7 +1101,7 @@ impl FnEmit<'_> {
         if let (Some(Some(vecty)), Some(e), false) = (
             self.vec_of.get(ins.operand1.0 as usize).cloned(),
             elem_of_gid(result_gid),
-            ins.imm == 1,
+            ins.imm & 1 == 1,
         ) {
             let imt = mlir_scalar(&self.elem_at(ins.operand2.0).ok_or(crate::emitter_gap!())?)
                 .ok_or(crate::emitter_gap!())?;
@@ -1138,11 +1138,17 @@ impl FnEmit<'_> {
         if let Some(e) = elem_of_gid(result_gid) {
             // Scalar element: a value read or a store place (works on a contiguous or a
             // strided-row base — `memref.load`/`store` handle both).
-            if ins.imm == 1 {
+            if ins.imm & 1 == 1 {
                 self.place_of[idx] = Some((base, ic, base_memty));
             } else {
                 let n = format!("%v{idx}");
-                self.body += &format!("  {n} = memref.load {base}[{ic}] : {base_memty}\n");
+                let own = lane_own_attrs(ins.imm);
+                let attrs = if own.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {{{}}}", own.join(", "))
+                };
+                self.body += &format!("  {n} = memref.load {base}[{ic}]{attrs} : {base_memty}\n");
                 self.names[idx] = n;
                 self.etypes[idx] = Some(e);
             }
@@ -1534,17 +1540,24 @@ impl FnEmit<'_> {
             // docs/lane_reductions.md: the device copy of a kernel keeps this lane's element in a
             // register.
             let row = ins.imm >> crate::bytecode::LANE_ROW_SHIFT;
-            let lane = match ins.imm & ((1 << crate::bytecode::LANE_ROW_SHIFT) - 1) {
+            let mut attrs = match ins.imm & 3 {
                 crate::bytecode::TENSOR_STORE_BLOCK_LANE_ELEMENT => {
-                    " {vx.lane_element = \"block\"}".to_string()
+                    vec!["vx.lane_element = \"block\"".to_string()]
                 }
-                crate::bytecode::TENSOR_STORE_SUBGROUP_LANE_ELEMENT if row > 0 => {
-                    format!(" {{vx.lane_element = \"subgroup\", vx.lane_row = {row} : i64}}")
-                }
+                crate::bytecode::TENSOR_STORE_SUBGROUP_LANE_ELEMENT if row > 0 => vec![
+                    "vx.lane_element = \"subgroup\"".to_string(),
+                    format!("vx.lane_row = {row} : i64"),
+                ],
                 crate::bytecode::TENSOR_STORE_SUBGROUP_LANE_ELEMENT => {
-                    " {vx.lane_element = \"subgroup\"}".to_string()
+                    vec!["vx.lane_element = \"subgroup\"".to_string()]
                 }
-                _ => String::new(),
+                _ => Vec::new(),
+            };
+            attrs.extend(lane_own_attrs(ins.imm));
+            let lane = if attrs.is_empty() {
+                String::new()
+            } else {
+                format!(" {{{}}}", attrs.join(", "))
             };
             self.body += &format!("  memref.store {val}, {base}[{ic}]{lane} : {memty}\n");
         } else if let Some(rowty) = self
@@ -1655,4 +1668,22 @@ fn i64_list(v: &[i64]) -> String {
         .map(|x| x.to_string())
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// The `vx.lane_own` and `vx.lanes` attributes of an element access whose `imm` has
+/// `LANE_OWN_SUBGROUP` or `LANE_OWN_WHOLE` (docs/lane_reductions.md).
+fn lane_own_attrs(imm: u64) -> Vec<String> {
+    let form = if imm & crate::bytecode::LANE_OWN_SUBGROUP != 0 {
+        "subgroup"
+    } else if imm & crate::bytecode::LANE_OWN_WHOLE != 0 {
+        "whole"
+    } else {
+        return Vec::new();
+    };
+    let lanes = (imm >> crate::bytecode::LANE_OWN_LANES_SHIFT)
+        & ((1 << (crate::bytecode::LANE_ROW_SHIFT - crate::bytecode::LANE_OWN_LANES_SHIFT)) - 1);
+    vec![
+        format!("vx.lane_own = \"{form}\""),
+        format!("vx.lanes = {lanes} : i64"),
+    ]
 }

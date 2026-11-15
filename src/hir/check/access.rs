@@ -1328,6 +1328,69 @@ impl<'a> TypeChecker<'a> {
             .any(|m| m.name == *name && m.scope == Some(crate::syntax::Scope::Thread))
     }
 
+    /// Whether a tensor placed in `placement` is in the shared memory of a block: its space is
+    /// declared `scope: sm` or `scope: cta`.
+    fn is_shared_space(&self, placement: Option<&crate::syntax::Placement>) -> bool {
+        let Some(p) = placement else {
+            return false;
+        };
+        let crate::syntax::MemorySpace::Custom(name) = &p.space else {
+            return false;
+        };
+        self.env.memories.values().any(|m| {
+            m.name == *name
+                && matches!(
+                    m.scope,
+                    Some(crate::syntax::Scope::Sm | crate::syntax::Scope::Cta)
+                )
+        })
+    }
+
+    /// docs/lane_reductions.md: `obj[idx]`, an element of a tensor in shared memory whose last
+    /// index `idx` is the variable of an `across` loop, may belong to that lane alone. The GPU
+    /// kernel keeps such an element in a register when the other indices are known when
+    /// compiling. So the code generator unrolls the `for` loops of their variables, as for a
+    /// register tensor. Nothing is reported when it cannot.
+    fn unroll_for_lane_element(&mut self, obj: &Expr, idx: &Expr) {
+        if self.speculating {
+            return;
+        }
+        let Expr::Identifier(lane) = idx else {
+            return;
+        };
+        let across = |c: &crate::hir::env::UnrollCandidate| c.across;
+        if !self
+            .unroll_candidates
+            .iter()
+            .rev()
+            .find(|c| c.var == lane.name)
+            .is_some_and(across)
+        {
+            return;
+        }
+        let mut e = obj;
+        while let Expr::IndexAccess(r) = e {
+            let mut names = Vec::new();
+            if Self::index_names(&r.index, &mut names) {
+                for name in names {
+                    let candidate = self
+                        .unroll_candidates
+                        .iter_mut()
+                        .rev()
+                        .find(|c| c.var == name);
+                    if let Some(c) = candidate {
+                        if !c.across
+                            && matches!(c.bounds, Some((lo, hi)) if hi - lo <= MAX_UNROLLED_PASSES)
+                        {
+                            c.used = true;
+                        }
+                    }
+                }
+            }
+            e = &r.base;
+        }
+    }
+
     /// A tensor in a `scope: thread` space stays in registers, and a register has no address.
     /// So each index must be a constant, or made of constants and the variables of `for` loops
     /// with constant bounds. Such a loop is marked, and the code generator unrolls it.
@@ -1659,6 +1722,9 @@ impl<'a> TypeChecker<'a> {
                     type_reported = self.check_tensor_index_in_range(dims, idx, &ix_span);
                     if self.is_register_space(placement.as_ref()) {
                         self.check_register_index(obj, idx, &ix_span);
+                    }
+                    if dims.len() == 1 && self.is_shared_space(placement.as_ref()) {
+                        self.unroll_for_lane_element(obj, idx);
                     }
                 }
                 if !self.speculating && !type_reported {

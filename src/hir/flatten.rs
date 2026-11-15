@@ -1755,15 +1755,23 @@ impl<'r> Lowerer<'r> {
                             }); // index must be a scalar
                         }
                         let reduced: Vec<String> = shape[1..].to_vec();
-                        let result_ty = if reduced.is_empty() {
-                            LoweredTy::Scalar(elem)
+                        // docs/lane_reductions.md: a read of an element of this lane alone.
+                        let (result_ty, imm) = if reduced.is_empty() {
+                            (LoweredTy::Scalar(elem), self.lane_own(ix))
                         } else {
-                            LoweredTy::Tensor {
+                            let ty = LoweredTy::Tensor {
                                 elem,
                                 shape: reduced,
-                            }
+                            };
+                            (ty, 0)
                         };
-                        Ok(self.emit_typed(Opcode::TensorIndex, base.reg, index.reg, result_ty, 0))
+                        Ok(self.emit_typed(
+                            Opcode::TensorIndex,
+                            base.reg,
+                            index.reg,
+                            result_ty,
+                            imm,
+                        ))
                     }
                     LoweredTy::Ptr => {
                         let elem = self
@@ -6860,7 +6868,7 @@ impl<'r> Lowerer<'r> {
             let imm = if is_ptr {
                 0
             } else {
-                self.lane_element_store(ix)
+                self.lane_element_store(ix) | self.lane_own(ix)
             };
             self.emit_effect(store, place.reg, value.reg, imm);
             return Ok(());
