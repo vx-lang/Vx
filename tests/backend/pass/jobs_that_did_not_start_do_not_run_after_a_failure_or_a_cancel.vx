@@ -14,6 +14,9 @@
 // `run_jobs`: a task calls it, and after 30 ms the code of the `tasks` block around the task
 // returns. That cancels the task, so `run_jobs` gives `None`, and fewer than 20 jobs start.
 //
+// `try_run_jobs` and a cancel: the same, with a `work` that never fails. The call gives
+// `Cancelled`, and fewer than 20 jobs start.
+//
 // The RUN lines with `env` run the same program on the shared runtime: with one worker thread,
 // and with a seed that picks the order of the tasks.
 //
@@ -24,6 +27,8 @@
 // CHECK: {{^}}try_run_jobs failed with 2{{$}}
 // CHECK-NEXT: {{^}}fewer than 20 jobs started: true{{$}}
 // CHECK-NEXT: {{^}}run_jobs gave None: true{{$}}
+// CHECK-NEXT: {{^}}fewer than 20 jobs started: true{{$}}
+// CHECK-NEXT: {{^}}try_run_jobs gave Cancelled{{$}}
 // CHECK-NEXT: {{^}}fewer than 20 jobs started: true{{$}}
 
 import core::option;
@@ -45,6 +50,10 @@ fn slow_or_fail(started : &AtomicI64, job : &i64) -> Result<i64, i64> {
     started.fetch_add(1, AtomicOrdering::SeqCst);
     return Result<i64, i64>::Err(*job);
   }
+  return Result<i64, i64>::Ok(slow(started, job));
+}
+
+fn slow_and_never_fails(started : &AtomicI64, job : &i64) -> Result<i64, i64> {
   return Result<i64, i64>::Ok(slow(started, job));
 }
 
@@ -76,6 +85,18 @@ fn run_and_leave(started : &AtomicI64, jobs : &Vec<i64>) -> i32 {
   return 0;
 }
 
+// Starts `try_run_jobs` in a task, and leaves the `tasks` block after 30 ms.
+fn try_run_and_leave(started : &AtomicI64, jobs : &Vec<i64>) -> i32 {
+  tasks {
+    spawn {
+      report_failure(try_run_jobs(started, jobs, 2, slow_and_never_fails));
+    };
+    sleep(Duration::from_millis(30));
+    return 1;
+  };
+  return 0;
+}
+
 fn main() -> i32 {
   let mut jobs = Vec<i64>::new();
   for i in 0..20 {
@@ -88,5 +109,9 @@ fn main() -> i32 {
   let started_too = AtomicI64::new(0);
   run_and_leave(&started_too, &jobs);
   println!("fewer than 20 jobs started: {}", started_too.load(AtomicOrdering::SeqCst) < 20);
+
+  let started_three = AtomicI64::new(0);
+  try_run_and_leave(&started_three, &jobs);
+  println!("fewer than 20 jobs started: {}", started_three.load(AtomicOrdering::SeqCst) < 20);
   return 0;
 }

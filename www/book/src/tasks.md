@@ -256,7 +256,8 @@ It prints `10 downloads, at most 2 at once`.
 An `acquire` can be cancelled, as a `recv` can. It gives `Cancelled` when the `tasks` block of
 the task was cancelled. `acquire_for(limit)` also gives `TimedOut` after the time limit, and
 `acquire_until(deadline)` at a deadline. `try_acquire()` does not wait: it gives `None` when no
-permit is free. The tasks do not get the permits in the order of their `acquire` calls.
+permit is free. The tasks do not get the permits in the order of their `acquire` calls. So when
+many tasks compete, one waiter can wait without limit.
 
 ## Run jobs with at most `n` tasks
 
@@ -281,26 +282,25 @@ jobs share in `context`.
 When the `tasks` block around the call is cancelled, the jobs that did not start do not run, and
 `run_jobs` gives `None`. `try_run_jobs` takes a `work` that gives a `Result`. The first `Err`
 cancels the tasks, so the jobs that did not start do not run. The call then gives
-`Failed` with that error.
+`Failed` with that error, and drops the results that arrived before it. A panic in `work` stops
+the program, as a panic in any task does.
 
-### Compared with tokio
+### Compared with Rust
 
-tokio has a `Semaphore`, and a `JoinSet` that holds many tasks. Vx is better in these ways:
+`run_jobs` does parallel work on a list, as `std::thread::scope` and rayon's
+`par_iter().map().collect()` do. As with those, the tasks borrow the data of the caller, and the
+results come in the order of the jobs. Two things differ:
 
-- The tasks of `run_jobs` borrow the data of the caller. A task of `tokio::spawn` and of a
-  `JoinSet` must own its data, so a program clones it or puts it in an `Arc`.
-- `run_jobs` gives the results in the order of the jobs. A `JoinSet` gives them in the order in
-  which the tasks end.
-- `run_jobs` returns after each task ends, also after a failure or a cancel. A dropped
-  `JoinSet` asks its tasks to stop, but it does not wait for them.
-- A cancel of the `tasks` block also stops a task that waits in `acquire`. In tokio, a program
-  puts a `CancellationToken` and a `select!` around each wait to stop it.
+- A cancel of the `tasks` block around the call stops the jobs that did not start, and a task
+  that waits in `acquire`. The cancel follows the blocks of the program, so it needs no extra
+  code. In tokio, `JoinSet::abort_all`, `JoinHandle::abort` or the drop of a `JoinSet` cancels a
+  task at its next `.await`.
 - When each task waits and nothing can wake one, the runtime stops the program. Its report names
-  each `acquire` that waits, its line, and the line that made the `Semaphore`. A tokio program
-  hangs with no message.
+  each `acquire` that waits, its line, and the line that made the `Semaphore`.
 
 tokio's `Semaphore` gives the permits in the order of the `acquire` calls, and the Vx
-`Semaphore` does not.
+`Semaphore` does not. tokio's also has `acquire_many`, `add_permits` and `close`, which the Vx
+`Semaphore` does not have yet.
 
 ## `Arc`
 
