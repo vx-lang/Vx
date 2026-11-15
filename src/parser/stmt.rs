@@ -398,7 +398,7 @@ impl<'a> Parser<'a> {
             | TokenType::Unsafe
             | TokenType::Spawn
             | TokenType::Tasks => {
-                let expr = self.parse_primary_expr()?;
+                let expr = self.parse_as_expr()?;
                 self.parse_expr_or_assign_stmt(expr, token_span)
             }
             _ => {
