@@ -5,10 +5,15 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// An enum with a payload holds an `i32` tag and then the payload. So `Option<i64>` takes 16
-// bytes, `Option<i32>` takes 8, and a struct with an `Option<i64>` and an `i64` takes 24. A
-// `Vec` sizes its buffer with `sizeof`, so with a size that is too small, the pushes below
-// write past the end of the buffer.
+// An enum with a payload holds an `i32` tag and then the payload. The `sizes` line is the check:
+// `Option<i64>` takes 16 bytes, and a struct with an `Option<i64>` and an `i64` takes 24. Before
+// this fix, `--legacy-codegen` gave 8 for all three. `Option<i32>` takes 8 bytes with the old
+// code too, so it checks only that a small enum keeps its size.
+//
+// The `sum` line checks that 100 values pushed into a `Vec<Option<i64>>` read back. A `Vec`
+// sizes its buffer with `sizeof`, so a size that is too small makes the pushes write past the
+// buffer. This line does not always show that: a write past the end does not always change a
+// value that the program reads.
 //
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error

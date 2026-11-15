@@ -2347,7 +2347,9 @@ impl<'c> MeliorGenerator<'c> {
     }
 
     /// Byte size and alignment of an enum: the size of the type that it lowers to, a tag and a
-    /// payload slot. `None` when `ty` is not an enum.
+    /// payload slot. `None` when `ty` is not an enum. An enum that does not lower, or whose
+    /// lowered type has no size here, is a compiler bug: the caller's default of 8 bytes is the
+    /// wrong size that this function exists to replace, so it panics instead.
     fn enum_size_align(&self, ty: &syntax::Type) -> Option<(usize, usize)> {
         let name = match ty {
             syntax::Type::GenericInstance(base, _) => match &**base {
@@ -2360,7 +2362,15 @@ impl<'c> MeliorGenerator<'c> {
         if !self.enums.contains_key(name.as_str()) {
             return None;
         }
-        llvm_type_size_align(&self.lower_type_str(ty).ok()?)
+        let lowered = self
+            .lower_type_str(ty)
+            .unwrap_or_else(|e| panic!("sizeof: the enum {name} does not lower: {e:?}"));
+        let size_align = llvm_type_size_align(&lowered);
+        assert!(
+            size_align.is_some(),
+            "sizeof: the enum {name} lowers to {lowered}, which has no known size"
+        );
+        size_align
     }
 
     /// Byte size and alignment of a struct with these field types, in order.
@@ -3376,4 +3386,29 @@ pub(crate) fn on_chip(space: Option<crate::arch::AddressSpace>) -> bool {
         space,
         Some(crate::arch::AddressSpace::Workgroup | crate::arch::AddressSpace::Private)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::llvm_type_size_align;
+
+    /// An enum whose variants carry one kind of payload lowers to a tag and that payload. The tag
+    /// is padded to the alignment of the payload.
+    #[test]
+    fn a_tag_and_one_payload_take_the_size_of_both() {
+        assert_eq!(
+            llvm_type_size_align("!llvm.struct<(i32, i64)>"),
+            Some((16, 8))
+        );
+    }
+
+    /// An enum whose variants carry different kinds of payload lowers to a tag and a slot of
+    /// bytes, written as an array of its most strictly aligned unit.
+    #[test]
+    fn a_tag_and_a_byte_slot_take_the_size_of_both() {
+        assert_eq!(
+            llvm_type_size_align("!llvm.struct<(i32, array<2 x i64>)>"),
+            Some((24, 8))
+        );
+    }
 }
