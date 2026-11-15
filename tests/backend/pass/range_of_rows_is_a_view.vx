@@ -11,7 +11,7 @@
 // Default code generator only: the legacy one refuses a range index with an error message.
 //
 // REQUIRES: flat-codegen
-// EXPECT: 7 9 5 0 1 6
+// EXPECT: 7 9 5 0 1 6 4 4 7
 fn two_dimensions() -> f32 {
   let mut q = Tensor<f32, [4, 2]>::new();
   let mut r = q[1..3];
@@ -59,6 +59,33 @@ fn tensor_made_from_a_list_of_sizes() -> f32 {
   return q[2][7];
 }
 
+// The type of `q[1..3]` on `[4, 3]` is `[2, 3]`, so it can be named.
+fn declared_type() -> f32 {
+  let mut q = Tensor<f32, [4, 3]>::new();
+  q[2][2] = 4.0;
+  let r: Tensor<f32, [2, 3]> = q[1..3];
+  return r[1][2];
+}
+
+fn corner_sum(t : &Tensor<f32, [2, 3]>) -> f32 {
+  return t[0][0] + t[1][2];
+}
+
+// ... and a function that takes `&Tensor<f32, [2, 3]>` accepts it.
+fn passed_to_a_function() -> f32 {
+  let mut q = Tensor<f32, [4, 3]>::new();
+  q[2][2] = 4.0;
+  return corner_sum(&q[1..3]);
+}
+
+// A range of a tensor with one dimension is a tensor, not a number.
+fn one_dimension() -> f32 {
+  let mut v = Tensor<f32, [6]>::new();
+  v[3] = 7.0;
+  let w = v[2..4];
+  return w[1];
+}
+
 fn main() -> i32 {
   print(two_dimensions() as i32);
   print!(" ");
@@ -71,5 +98,11 @@ fn main() -> i32 {
   print(range_from_zero() as i32);
   print!(" ");
   print(tensor_made_from_a_list_of_sizes() as i32);
+  print!(" ");
+  print(declared_type() as i32);
+  print!(" ");
+  print(passed_to_a_function() as i32);
+  print!(" ");
+  print(one_dimension() as i32);
   return 0;
 }

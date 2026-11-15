@@ -36,10 +36,20 @@ fn range_of_read_only() -> f32 {
   return r[0][0];
 }
 
+// A row of a range is a view of `q` too: it is any row of `q`, here row 2.
+fn row_of_a_range() -> f32 {
+  let mut q = Tensor<f32, [4, 3]>::new();
+  let r = q[1..3];
+  let row = r[1];
+  q[2][2] = 5.0;
+  return row[2];
+}
+
 fn main() -> i32 {
   return 0;
 }
 
-// CHECK-DAG: Error[E4009] at 18:7: `q[3][0]` is assigned while it is borrowed
-// CHECK-DAG: Error[E4002] at 26:11: Cannot access 'q' because it is mutably borrowed.
-// CHECK-DAG: Error[E4010] at 34:3: `q` is not declared `mut`, so a view of it cannot be declared `mut`
+// CHECK-DAG: Error[E4009] at {{.*}}tensor_ranges_borrow_their_owner.vx:18:7: `q[3][0]` is assigned while it is borrowed
+// CHECK-DAG: Error[E4002] at {{.*}}tensor_ranges_borrow_their_owner.vx:26:11: Cannot access 'q' because it is mutably borrowed.
+// CHECK-DAG: Error[E4010] at {{.*}}tensor_ranges_borrow_their_owner.vx:34:3: `q` is not declared `mut`, so a view of it cannot be declared `mut`
+// CHECK-DAG: Error[E4009] at {{.*}}tensor_ranges_borrow_their_owner.vx:44:7: `q[2][2]` is assigned while it is borrowed
