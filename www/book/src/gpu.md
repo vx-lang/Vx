@@ -149,6 +149,20 @@ error, and a token with no `.wait()` gets the error E6036. On an H100 the copy u
 older NVIDIA GPU `cp.async`. Today the copy does not work on tiles of `f64` or of integers.
 `tests/optimizations/pass/lane_copies_on_the_cpu.vx` is a complete program.
 
+`lanes::copy(&mut dst, &src, [i, j])` copies a tile and ends before it returns. When `dst` is a
+tile in shared memory, the copy goes into it, as `lanes::copy_async` and `.wait()` do. Otherwise
+`src` is the tile, and the copy goes into the part of `dst` that starts at `[i, j]`. Past the end
+of `dst`, it writes nothing. So the subgroups of a block can store their tiles of a result:
+
+```rust
+for w in 0..4 across subgroups {
+  lanes::copy(c, &acc[w], [bm * 128 + w * 32, bn * 128]);
+}
+```
+
+Two blocks or two subgroups must not write the same element of `c` (E6032).
+`tests/optimizations/pass/lane_copy_into_and_out_of_a_tile.vx` is a complete program.
+
 ## Math functions in a kernel
 
 `x.exp()` and `x.tanh()` are exact, and on a GPU they compute in `f64`, which is slow. In a kernel

@@ -240,6 +240,13 @@ lets the groups that started after the token go on (`cp.async.wait_group`), and 
 of the block or the subgroup waits. The CPU copies the tile at the call, and the wait does
 nothing.
 
+`lanes::copy(&mut dst, &src, [i, j])` ends before it returns, and gives no token. When `dst` is
+a tile in shared memory, the copy goes into it, as `copy_async` and `.wait()` do. Otherwise `src`
+is the tile, and the copy goes into the part of `dst` at `[i, j]`. An element past the end of
+`dst` is not written. Each lane copies the elements `lane`, `lane + lanes`, and so on, with plain
+loads and stores, and then every lane of the block or the subgroup waits. The proof that the passes of an `across` loop write apart sees the copy as a
+write of each element of that part.
+
 ## Not yet
 
 - `f64` and the integer types.

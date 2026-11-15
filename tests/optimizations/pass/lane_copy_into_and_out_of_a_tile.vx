@@ -1,0 +1,79 @@
+//===- lane_copy_into_and_out_of_a_tile.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `lanes::copy` on the CPU copy of a kernel (`CUDA_VISIBLE_DEVICES=`). Element `[r][c]` of `x` is
+// `100 * r + c + 1`, and every element of `y` starts as -1. A block copies the 4x4 tile at
+// `[1, 2]` of `x` into shared memory, and then out of it into `y` at `[0, 0]` and at `[8, 8]`.
+// Past the end of `y`, the copy writes nothing. Next it copies the tile at `[8, 8]` of `x`, where
+// the elements past the end of `x` are zero, into `y` at `[4, 0]`. Then each of two blocks, with
+// two subgroups each, sets a tile in shared memory and copies it into its own part of `z`.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s -j 2 --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+
+// The tile at `[0, 0]` of `y`: rows 1 to 4 and columns 2 to 5 of `x`.
+// CHECK: y row 0: 103 104 105 106 -1
+// CHECK-NEXT: y row 3: 403 404 405 406 -1
+// The tile at `[4, 0]`: rows 8 and 9 and columns 8 and 9 of `x`, and zeros.
+// CHECK-NEXT: y row 4: 809 810 0 0 -1
+// CHECK-NEXT: y row 5: 909 910 0 0 -1
+// CHECK-NEXT: y row 7: 0 0 0 0 -1
+// The tile at `[8, 8]`: only its first two rows and columns are in `y`.
+// CHECK-NEXT: y row 8: -1 -1 -1 103 104
+// CHECK-NEXT: y row 9: -1 -1 -1 203 204
+// Block `b` and subgroup `w` write `10 * b + w` into rows `4 * b + 2 * w` and the next one.
+// CHECK-NEXT: z row 0: 0 0 0
+// CHECK-NEXT: z row 1: 0 0 0
+// CHECK-NEXT: z row 2: 1 1 1
+// CHECK-NEXT: z row 5: 10 10 10
+// CHECK-NEXT: z row 7: 11 11 11
+
+fn main() -> i32 {
+  let mut src = Tensor<f32, [10, 10]>::fill(0.0);
+  for r in 0..10 {
+    for c in 0..10 {
+      src[r][c] = (100 * r + c + 1) as f32;
+    }
+  }
+  let x = transfer(src, Memory::HBM);
+  let mut y = transfer(Tensor<f32, [10, 10]>::fill(-1.0), Memory::HBM);
+  let mut z = transfer(Tensor<f32, [8, 3]>::fill(-1.0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tile = unsafe { Tensor<f32, [4, 4], Memory::SMEM>::uninit() };
+      lanes::copy(&mut tile, &x, [1, 2]);
+      lanes::copy(&mut y, &tile, [0, 0]);
+      lanes::copy(&mut y, &tile, [8, 8]);
+      lanes::copy(&mut tile, &x, [8, 8]);
+      lanes::copy(&mut y, &tile, [4, 0]);
+    }
+  }
+  spawn on(Topology::Device) {
+    for b in 0..2 across blocks {
+      let mut part = unsafe { Tensor<f32, [2, 2, 3], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        for t in 0..6 across lanes(32) {
+          part[w][t / 3][t % 3] = (10 * b + w) as f32;
+        }
+        lanes::copy(&mut z, &part[w], [4 * b + 2 * w, 0]);
+      }
+    }
+  }
+  let yh = transfer(y, Memory::CPU_DRAM);
+  for r in [0, 3, 4, 5, 7] {
+    println!("y row {}: {} {} {} {} {}", r, yh[r][0], yh[r][1], yh[r][2], yh[r][3], yh[r][4]);
+  }
+  for r in [8, 9] {
+    println!("y row {}: {} {} {} {} {}", r, yh[r][0], yh[r][1], yh[r][7], yh[r][8], yh[r][9]);
+  }
+  let zh = transfer(z, Memory::CPU_DRAM);
+  for r in [0, 1, 2, 5, 7] {
+    println!("z row {}: {} {} {}", r, zh[r][0], zh[r][1], zh[r][2]);
+  }
+  return 0;
+}

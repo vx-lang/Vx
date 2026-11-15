@@ -3496,6 +3496,117 @@ static void expandLaneCopyWaitOnDevice(OpBuilder &b, vx::LaneCopyWaitOp op,
   }
 }
 
+/// The tile of a `vx.lane_copy`, which is in shared memory, and the tensor.
+/// `toTensor` says that the copy goes from the tile into the tensor.
+struct LaneCopyNow {
+  Value tile, tensor;
+  bool toTensor;
+};
+
+static LaneCopyNow laneCopyNowOf(vx::LaneCopyOp op) {
+  auto type = cast<MemRefType>(op.getDst().getType());
+  auto space = dyn_cast_or_null<IntegerAttr>(type.getMemorySpace());
+  if (space && space.getInt() == 3)
+    return {op.getDst(), op.getSrc(), false};
+  return {op.getSrc(), op.getDst(), true};
+}
+
+/// The copy of element `ivs` of the tile of a `vx.lane_copy`. Into the tile, an
+/// element past the end of the tensor copies as zero. Out of the tile, an
+/// element past the end of the tensor is not written.
+static void laneCopyNowElement(OpBuilder &b, Location loc, vx::LaneCopyOp op,
+                               const LaneCopyNow &c, ValueRange ivs) {
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  Value in;
+  SmallVector<Value> at;
+  for (auto [d, i] : llvm::enumerate(ivs)) {
+    Value index = b.create<arith::AddIOp>(
+        loc,
+        b.create<arith::IndexCastOp>(loc, b.getIndexType(), op.getPlace()[d]),
+        i);
+    // A place below zero is a large unsigned number, past the end too.
+    Value inside =
+        b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ult, index,
+                                b.create<memref::DimOp>(loc, c.tensor, d));
+    at.push_back(b.create<arith::SelectOp>(loc, inside, index, zero));
+    in = in ? b.create<arith::AndIOp>(loc, in, inside) : inside;
+  }
+  if (c.toTensor) {
+    auto store = b.create<scf::IfOp>(loc, in, /*withElseRegion=*/false);
+    OpBuilder::InsertionGuard guard(b);
+    b.setInsertionPoint(store.getThenRegion().front().getTerminator());
+    b.create<memref::StoreOp>(loc, b.create<memref::LoadOp>(loc, c.tile, ivs),
+                              c.tensor, at);
+    return;
+  }
+  Type elem = cast<MemRefType>(c.tile.getType()).getElementType();
+  auto pick = b.create<scf::IfOp>(loc, TypeRange{elem}, in,
+                                  /*withElseRegion=*/true);
+  {
+    OpBuilder::InsertionGuard guard(b);
+    b.setInsertionPointToStart(&pick.getThenRegion().front());
+    b.create<scf::YieldOp>(
+        loc, ValueRange{b.create<memref::LoadOp>(loc, c.tensor, at)});
+    b.setInsertionPointToStart(&pick.getElseRegion().front());
+    b.create<scf::YieldOp>(
+        loc, ValueRange{b.create<arith::ConstantOp>(loc, b.getZeroAttr(elem))});
+  }
+  b.create<memref::StoreOp>(loc, pick.getResult(0), c.tile, ivs);
+}
+
+/// A `vx.lane_copy` on the CPU: a loop over the elements of the tile.
+static void expandLaneCopyNowOnHost(OpBuilder &b, vx::LaneCopyOp op) {
+  Location loc = op.getLoc();
+  LaneCopyNow c = laneCopyNowOf(op);
+  auto tile = cast<MemRefType>(c.tile.getType());
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  Value one = b.create<arith::ConstantIndexOp>(loc, 1);
+  SmallVector<Value> lower(tile.getRank(), zero), upper,
+      steps(tile.getRank(), one);
+  for (int64_t d = 0; d < tile.getRank(); ++d)
+    upper.push_back(b.create<memref::DimOp>(loc, c.tile, d));
+  scf::buildLoopNest(b, loc, lower, upper, steps,
+                     [&](OpBuilder &nb, Location l, ValueRange ivs) {
+                       laneCopyNowElement(nb, l, op, c, ivs);
+                     });
+}
+
+/// A `vx.lane_copy` on the GPU: each lane copies the elements `lane`,
+/// `lane + lanes`, and so on, of the tile, and then every lane of the block or
+/// the subgroup waits, so each lane sees the whole copy.
+static void expandLaneCopyNowOnDevice(OpBuilder &b, vx::LaneCopyOp op) {
+  Location loc = op.getLoc();
+  LaneCopyNow c = laneCopyNowOf(op);
+  auto tile = cast<MemRefType>(c.tile.getType());
+  int64_t lanes = static_cast<int64_t>(op.getLanes());
+  Value tid =
+      b.create<gpu::ThreadIdOp>(loc, b.getIndexType(), gpu::Dimension::x);
+  Value lane = op.getSubgroup()
+                   ? b.create<arith::RemUIOp>(
+                         loc, tid, b.create<arith::ConstantIndexOp>(loc, lanes))
+                   : tid;
+  b.create<scf::ForOp>(
+      loc, lane, b.create<arith::ConstantIndexOp>(loc, tile.getNumElements()),
+      b.create<arith::ConstantIndexOp>(loc, lanes), ValueRange{},
+      [&](OpBuilder &nb, Location l, Value e, ValueRange) {
+        SmallVector<Value> ivs(tile.getRank());
+        Value rest = e;
+        for (int64_t d = tile.getRank() - 1; d >= 0; --d) {
+          Value size = nb.create<arith::ConstantIndexOp>(l, tile.getDimSize(d));
+          ivs[d] = nb.create<arith::RemUIOp>(l, rest, size);
+          rest = nb.create<arith::DivUIOp>(l, rest, size);
+        }
+        laneCopyNowElement(nb, l, op, c, ivs);
+        nb.create<scf::YieldOp>(l);
+      });
+  if (op.getSubgroup()) {
+    auto bar = b.create<vx::BarrierOp>(loc);
+    bar->setAttr("subgroup", b.getUnitAttr());
+  } else {
+    b.create<gpu::BarrierOp>(loc);
+  }
+}
+
 /// Replaces a lane sort with its expansion: the host's loops with `serial`,
 /// and otherwise the expansion that `device` picks.
 static void expandLaneSort(OpBuilder &b, vx::LaneSortOp op, bool device) {
@@ -4401,7 +4512,8 @@ static bool runsOnDevice(Operation *op, ModuleOp module,
   // A `vx.launch_dim` leaves the region when it is outlined.
   if (isa<vx::YieldOp, vx::ReturnOp, vx::BarrierOp, vx::LaunchDimOp,
           vx::LaneReduceOp, vx::LaneArgmaxOp, vx::LaneSortOp, vx::LaneMatmulOp,
-          vx::LaneCopyAsyncOp, vx::LaneCopyAsyncMapOp, vx::LaneCopyWaitOp>(op))
+          vx::LaneCopyAsyncOp, vx::LaneCopyAsyncMapOp, vx::LaneCopyWaitOp,
+          vx::LaneCopyOp>(op))
     return true;
   // The SPIR-V path's own rules, from the one place that holds them. NVPTX
   // compiles the shapes they name, so they apply to this pipeline alone.
@@ -6162,6 +6274,16 @@ struct ConvertVxToStandardPass
           expandLaneMatmul(b, op, /*device=*/true, tensorCores,
                            simdgroupMatrices);
         }
+        SmallVector<vx::LaneCopyOp> copiesNow;
+        gpuFunc.walk([&](vx::LaneCopyOp op) { copiesNow.push_back(op); });
+        for (vx::LaneCopyOp op : copiesNow) {
+          OpBuilder b(op);
+          if (op.getSerial())
+            expandLaneCopyNowOnHost(b, op);
+          else
+            expandLaneCopyNowOnDevice(b, op);
+          op.erase();
+        }
         LaneCopyState copies{gpuFunc};
         SmallVector<Operation *> copyOps;
         gpuFunc.walk([&](Operation *op) {
@@ -7658,6 +7780,17 @@ struct LaneCopyAsyncLowering : public OpRewritePattern<CopyOp> {
   LogicalResult matchAndRewrite(CopyOp op,
                                 PatternRewriter &rewriter) const override {
     expandLaneCopyOnHost(rewriter, laneCopyOf(op));
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct LaneCopyLowering : public OpRewritePattern<vx::LaneCopyOp> {
+  using OpRewritePattern<vx::LaneCopyOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vx::LaneCopyOp op,
+                                PatternRewriter &rewriter) const override {
+    expandLaneCopyNowOnHost(rewriter, op);
     rewriter.eraseOp(op);
     return success();
   }
@@ -9305,7 +9438,8 @@ struct ConvertVxToLLVMPass
     target.addIllegalOp<vx::BarrierOp>();
     target.addIllegalOp<vx::LaneReduceOp, vx::LaneArgmaxOp, vx::LaneSortOp,
                         vx::LaneMatmulOp, vx::LaneCopyAsyncOp,
-                        vx::LaneCopyAsyncMapOp, vx::LaneCopyWaitOp>();
+                        vx::LaneCopyAsyncMapOp, vx::LaneCopyWaitOp,
+                        vx::LaneCopyOp>();
 
     LLVMTypeConverter typeConverter(&getContext());
     RewritePatternSet patterns(&getContext());
@@ -9321,7 +9455,7 @@ struct ConvertVxToLLVMPass
                  LaneReductionLowering<vx::LaneArgmaxOp>, LaneSortLowering,
                  LaneMatmulLowering, LaneCopyAsyncLowering<vx::LaneCopyAsyncOp>,
                  LaneCopyAsyncLowering<vx::LaneCopyAsyncMapOp>,
-                 LaneCopyWaitLowering>(&getContext());
+                 LaneCopyWaitLowering, LaneCopyLowering>(&getContext());
 
     adoptDeclaredRuntimeFns(getOperation());
     markArrivalCounts(getOperation());

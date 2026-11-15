@@ -20,10 +20,10 @@ use super::*;
 use crate::arch::LevelKind;
 use crate::bytecode::{
     ACROSS_BLOCK, ACROSS_BLOCKS, ACROSS_LANE, ACROSS_STRIDE, BARRIER_SUBGROUP,
-    LANE_REDUCE_ACCUMULATE, LANE_REDUCE_ARGMAX, LANE_REDUCE_COPY, LANE_REDUCE_COPY_WAIT,
-    LANE_REDUCE_DESCENDING, LANE_REDUCE_MATMUL, LANE_REDUCE_MAX, LANE_REDUCE_ORDERED,
-    LANE_REDUCE_OWN_ROW, LANE_REDUCE_SORT, LANE_REDUCE_SUBGROUP, LANE_ROW_SHIFT,
-    TENSOR_STORE_BLOCK_LANE_ELEMENT, TENSOR_STORE_SUBGROUP_LANE_ELEMENT,
+    LANE_REDUCE_ACCUMULATE, LANE_REDUCE_ARGMAX, LANE_REDUCE_COPY, LANE_REDUCE_COPY_NOW,
+    LANE_REDUCE_COPY_WAIT, LANE_REDUCE_DESCENDING, LANE_REDUCE_MATMUL, LANE_REDUCE_MAX,
+    LANE_REDUCE_ORDERED, LANE_REDUCE_OWN_ROW, LANE_REDUCE_SORT, LANE_REDUCE_SUBGROUP,
+    LANE_ROW_SHIFT, TENSOR_STORE_BLOCK_LANE_ELEMENT, TENSOR_STORE_SUBGROUP_LANE_ELEMENT,
 };
 use crate::hir::check::across_lanes;
 
@@ -489,7 +489,10 @@ impl Lowerer<'_> {
             return self.lower_lane_sort(fc, op);
         }
         match op {
-            crate::hir::check::lanes::LaneOp::CopyAsync => return self.lower_lane_copy(fc),
+            crate::hir::check::lanes::LaneOp::CopyAsync => return self.lower_lane_copy(fc, 0),
+            crate::hir::check::lanes::LaneOp::Copy => {
+                return self.lower_lane_copy(fc, LANE_REDUCE_COPY_NOW)
+            }
             crate::hir::check::lanes::LaneOp::CopyWait => {
                 let [t] = fc.args.as_slice() else {
                     return Err(crate::emitter_gap!());
@@ -623,8 +626,13 @@ impl Lowerer<'_> {
     }
 
     /// `lanes::copy_async(&mut tile, &x, [i, j, ..])` in the code of a block or a subgroup: the
-    /// place goes in `Arg`s, and the value is the token.
-    fn lower_lane_copy(&mut self, fc: &crate::syntax::expr::FunctionCallExpr) -> Lowered<Val> {
+    /// place goes in `Arg`s, and the value is the token. `lanes::copy` has `LANE_REDUCE_COPY_NOW`
+    /// in `flags`, and its value is not used.
+    fn lower_lane_copy(
+        &mut self,
+        fc: &crate::syntax::expr::FunctionCallExpr,
+        flags: u64,
+    ) -> Lowered<Val> {
         let [dst, src, Expr::Array(place)] = fc.args.as_slice() else {
             return Err(crate::emitter_gap!());
         };
@@ -649,7 +657,7 @@ impl Lowerer<'_> {
         for r in at {
             self.emit_effect(Opcode::Arg, r, Register(0), 0);
         }
-        let mut imm = LANE_REDUCE_COPY | (rank << 16);
+        let mut imm = LANE_REDUCE_COPY | flags | (rank << 16);
         let lanes = if self.across.kinds.last() == Some(&LevelKind::Subgroups) {
             imm |= LANE_REDUCE_SUBGROUP;
             self.subgroup_lanes()?

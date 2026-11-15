@@ -87,6 +87,8 @@ struct Walk<'g> {
     templates: HashSet<String>,
     /// The size of the tensor of each lane reduction, from the type checker.
     lane_sizes: HashMap<Span, u64>,
+    /// The shape of the tile of each `lanes::copy` out of shared memory, from the type checker.
+    lane_copies_out: HashMap<Span, Vec<u64>>,
     /// The lane reductions in a place that allows them.
     lane_calls: Vec<LaneCall>,
     /// The `@` of each lane matmul in the code of a subgroup.
@@ -147,6 +149,7 @@ impl crate::hir::TypeChecker<'_> {
                 .map(|k| k.as_ref().to_string())
                 .collect(),
             lane_sizes: self.lane_reductions.clone(),
+            lane_copies_out: self.lane_copies_out.clone(),
             lane_calls: Vec::new(),
             lane_matmuls: HashSet::new(),
             read_only,
@@ -728,12 +731,16 @@ impl Walk<'_> {
         let calls = std::mem::take(&mut self.lane_calls);
         for c in &calls {
             let copy = lanes::lane_routine(&c.name).is_some_and(|(op, _)| {
-                matches!(op, lanes::LaneOp::CopyAsync | lanes::LaneOp::CopyWait)
+                matches!(
+                    op,
+                    lanes::LaneOp::CopyAsync | lanes::LaneOp::CopyWait | lanes::LaneOp::Copy
+                )
             });
             if copy {
                 // The copy reports the size, so its wait does not report it again.
-                let start = lanes::lane_routine(&c.name)
-                    .is_some_and(|(op, _)| op == lanes::LaneOp::CopyAsync);
+                let start = lanes::lane_routine(&c.name).is_some_and(|(op, _)| {
+                    matches!(op, lanes::LaneOp::CopyAsync | lanes::LaneOp::Copy)
+                });
                 if start && c.scope == LevelKind::Subgroups {
                     self.needs_subgroups_of_32(c);
                 }
@@ -1282,6 +1289,7 @@ impl Walk<'_> {
             kind_word(level.kind),
             &self.contracts,
             &self.templates,
+            &self.lane_copies_out,
         ) {
             Err((why, at)) => self.error(why, at),
             Ok(ends) => {
