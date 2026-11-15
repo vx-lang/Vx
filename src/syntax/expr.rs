@@ -737,8 +737,65 @@ pub fn statement_always_exits(stmt: &Statement, never: &dyn Fn(&str) -> bool) ->
             }) => block_always_exits(stmts, never),
             _ => false,
         },
+        // A `loop` that no `break` leaves ends only through a `return` or the end of the program.
+        Statement::Loop(l) => !breaks_out_of_loop(&l.body),
         _ => false,
     }
+}
+
+/// Whether a `break` in `stmts`, the body of a loop, can leave that loop. A `break` in an inner
+/// loop leaves the inner loop only. A `break` deep inside another expression counts, to be safe.
+pub fn breaks_out_of_loop(stmts: &[Statement]) -> bool {
+    stmts.iter().any(|s| match s {
+        Statement::Break(_) => true,
+        Statement::Loop(_) => false,
+        Statement::ForLoop(f) => holds_a_break(&f.iterable),
+        Statement::ExprStmt(ExprStmtStmt { expr, .. }) => match expr {
+            Expr::If(i) => {
+                holds_a_break(&i.cond)
+                    || breaks_out_of_loop(&i.then_block)
+                    || i.else_block.as_deref().is_some_and(breaks_out_of_loop)
+            }
+            Expr::Match(m) => {
+                holds_a_break(&m.expr) || m.arms.iter().any(|a| breaks_out_of_loop(&a.body))
+            }
+            Expr::UnsafeBlock(UnsafeBlockExpr { stmts, ret, .. })
+            | Expr::TaskBlock(TaskBlockExpr { stmts, ret, .. }) => {
+                breaks_out_of_loop(stmts) || ret.as_deref().is_some_and(holds_a_break)
+            }
+            e => holds_a_break(e),
+        },
+        other => {
+            let mut found = false;
+            visit_exprs(std::slice::from_ref(other), &mut |e| {
+                found |= holds_a_break(e)
+            });
+            found
+        }
+    })
+}
+
+/// Whether a block inside `e` holds a `break`, at any depth. This also counts a `break` of an
+/// inner loop, so it may say yes when no `break` leaves the loop around `e`.
+fn holds_a_break(e: &Expr) -> bool {
+    let mut found = false;
+    visit_expr(e, &mut |e| {
+        let blocks: Vec<&[Statement]> = match e {
+            Expr::If(i) => std::iter::once(i.then_block.as_slice())
+                .chain(i.else_block.as_deref())
+                .collect(),
+            Expr::Match(m) => m.arms.iter().map(|a| a.body.as_slice()).collect(),
+            Expr::UnsafeBlock(b) => vec![&b.stmts],
+            Expr::TaskBlock(b) => vec![&b.stmts],
+            Expr::ComptimeBlock(b) => vec![&b.stmts],
+            Expr::SpawnOn(b) => vec![&b.stmts],
+            _ => Vec::new(),
+        };
+        found |= blocks
+            .iter()
+            .any(|b| b.iter().any(|s| matches!(s, Statement::Break(_))));
+    });
+    found
 }
 
 /// Whether this call is `abort()` or `panic(msg)`, the two built-ins that end the program. A
