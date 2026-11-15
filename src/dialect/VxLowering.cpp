@@ -3700,6 +3700,61 @@ static void expandLaneFillOnDevice(OpBuilder &b, vx::LaneFillOp op) {
   }
 }
 
+/// Multiplies element (`i`, `j`) of the tile of `op` by element `i` of its
+/// scale.
+static void scaleLaneRowElement(OpBuilder &b, Location loc,
+                                vx::LaneScaleRowsOp op, Value i, Value j) {
+  Value x = b.create<memref::LoadOp>(loc, op.getTile(), ValueRange{i, j});
+  Value s = b.create<memref::LoadOp>(loc, op.getScale(), ValueRange{i});
+  b.create<memref::StoreOp>(loc, b.create<arith::MulFOp>(loc, x, s),
+                            op.getTile(), ValueRange{i, j});
+}
+
+/// A `vx.lane_scale_rows` on the CPU: a loop over the elements of the tile.
+static void expandLaneScaleRowsOnHost(OpBuilder &b, vx::LaneScaleRowsOp op) {
+  Location loc = op.getLoc();
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  Value one = b.create<arith::ConstantIndexOp>(loc, 1);
+  SmallVector<Value> upper;
+  for (int64_t d = 0; d < 2; ++d)
+    upper.push_back(b.create<memref::DimOp>(loc, op.getTile(), d));
+  scf::buildLoopNest(b, loc, {zero, zero}, upper, {one, one},
+                     [&](OpBuilder &nb, Location l, ValueRange ivs) {
+                       scaleLaneRowElement(nb, l, op, ivs[0], ivs[1]);
+                     });
+}
+
+/// A `vx.lane_scale_rows` on the GPU: each lane scales the elements `lane`,
+/// `lane + lanes`, and so on, of the tile, and then every lane of the block or
+/// the subgroup waits.
+static void expandLaneScaleRowsOnDevice(OpBuilder &b, vx::LaneScaleRowsOp op) {
+  Location loc = op.getLoc();
+  auto tile = cast<MemRefType>(op.getTile().getType());
+  int64_t lanes = static_cast<int64_t>(op.getLanes());
+  Value tid =
+      b.create<gpu::ThreadIdOp>(loc, b.getIndexType(), gpu::Dimension::x);
+  Value lane = op.getSubgroup()
+                   ? b.create<arith::RemUIOp>(
+                         loc, tid, b.create<arith::ConstantIndexOp>(loc, lanes))
+                   : tid;
+  b.create<scf::ForOp>(
+      loc, lane, b.create<arith::ConstantIndexOp>(loc, tile.getNumElements()),
+      b.create<arith::ConstantIndexOp>(loc, lanes), ValueRange{},
+      [&](OpBuilder &nb, Location l, Value e, ValueRange) {
+        Value columns =
+            nb.create<arith::ConstantIndexOp>(l, tile.getDimSize(1));
+        scaleLaneRowElement(nb, l, op, nb.create<arith::DivUIOp>(l, e, columns),
+                            nb.create<arith::RemUIOp>(l, e, columns));
+        nb.create<scf::YieldOp>(l);
+      });
+  if (op.getSubgroup()) {
+    auto bar = b.create<vx::BarrierOp>(loc);
+    bar->setAttr("subgroup", b.getUnitAttr());
+  } else {
+    b.create<gpu::BarrierOp>(loc);
+  }
+}
+
 /// Element (i, j) of a lane matmul: the sum of the products from 0, in the
 /// order of `k`, and then the old value of the element when the op adds.
 static void laneMatmulElement(OpBuilder &b, Location loc, vx::LaneMatmulOp op,
@@ -4146,12 +4201,13 @@ static void eraseUnusedViews(Value v) {
 
 /// Keeps the accumulator of a tensor-core lane matmul in registers in the
 /// whole kernel, and removes its tile in shared memory, when each other use of
-/// the tile is a `vx.lane_fill` of it, a `vx.lane_copy` out of it, or another
-/// such matmul. The matmuls, the fills and the copies take the row of their
+/// the tile is a `vx.lane_fill` of it, a `vx.lane_scale_rows` of it, a
+/// `vx.lane_copy` out of it, or another such matmul. They take the row of their
 /// subgroup (`subgroup_row`) with one type, so each lane holds the same
 /// elements of the row in all of them. A fill gives the value that the
-/// elements start at, and the next matmul or copy sets the registers to it. A
-/// copy stores the registers straight to its tensor. Erases the other matmuls
+/// elements start at, and the next matmul, scale or copy sets the registers to
+/// it. A scale multiplies each register by the scale of its row. A copy
+/// stores the registers straight to its tensor. Erases the other matmuls
 /// and puts them in `expanded`. Returns false, and changes nothing, when the
 /// tile has another use.
 static bool
@@ -4176,6 +4232,7 @@ expandLaneMatmulWithoutTile(gpu::GPUFuncOp func, vx::LaneMatmulOp op, Type elem,
   SmallVector<Operation *> uses;
   accessesOf(tile.getResult(), uses);
   SmallVector<vx::LaneFillOp> fills;
+  SmallVector<vx::LaneScaleRowsOp> scales;
   SmallVector<vx::LaneCopyOp> copies;
   SmallVector<vx::LaneMatmulOp> matmuls = {op};
   for (Operation *use : uses) {
@@ -4191,6 +4248,14 @@ expandLaneMatmulWithoutTile(gpu::GPUFuncOp func, vx::LaneMatmulOp op, Type elem,
     if (fill && fill.getSubgroupRow() && !fill.getSerial() &&
         fill.getTile().getType() == accType) {
       fills.push_back(fill);
+      continue;
+    }
+    auto scale = dyn_cast<vx::LaneScaleRowsOp>(use);
+    if (scale && scale.getSubgroupRow() && !scale.getSerial() &&
+        scale.getTile().getType() == accType &&
+        laneCopyTileAlloca(scale.getScale()) != tile) {
+      if (!llvm::is_contained(scales, scale))
+        scales.push_back(scale);
       continue;
     }
     auto copy = dyn_cast<vx::LaneCopyOp>(use);
@@ -4244,6 +4309,20 @@ expandLaneMatmulWithoutTile(gpu::GPUFuncOp func, vx::LaneMatmulOp op, Type elem,
         fb.create<arith::ConstantIntOp>(fill.getLoc(), fb.getI1Type(), 0),
         valid);
     fill.erase();
+  }
+  for (vx::LaneScaleRowsOp scale : scales) {
+    Location l = scale.getLoc();
+    OpBuilder sb(scale);
+    ready(sb, l);
+    forEachLaneFragment(
+        sb, l, acc.getDimSize(0), acc.getDimSize(1),
+        [&](Value slot, Value row, Value) {
+          Value x = sb.create<memref::LoadOp>(l, fragments, slot);
+          Value s = sb.create<memref::LoadOp>(l, scale.getScale(), row);
+          sb.create<memref::StoreOp>(l, sb.create<arith::MulFOp>(l, x, s),
+                                     fragments, slot);
+        });
+    scale.erase();
   }
   for (vx::LaneMatmulOp m : matmuls) {
     OpBuilder mb(m);
@@ -8754,6 +8833,18 @@ FailureOr<Value> vx::LaneFillOp::expandInKernel(OpBuilder &b) {
   if (getSerial())
     return expandOnHost(b);
   expandLaneFillOnDevice(b, *this);
+  return Value();
+}
+
+Value vx::LaneScaleRowsOp::expandOnHost(OpBuilder &b) {
+  expandLaneScaleRowsOnHost(b, *this);
+  return Value();
+}
+
+FailureOr<Value> vx::LaneScaleRowsOp::expandInKernel(OpBuilder &b) {
+  if (getSerial())
+    return expandOnHost(b);
+  expandLaneScaleRowsOnDevice(b, *this);
   return Value();
 }
 

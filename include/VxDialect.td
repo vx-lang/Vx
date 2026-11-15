@@ -331,8 +331,9 @@ def Vx_LaneCopyAsyncMapOp : Vx_Op<"lane_copy_async_map", [MemoryEffects<[MemRead
     let results = (outs I32:$token);
 }
 
-// `subgroup_row` on a lane matmul, a lane copy or a lane fill says that its tile
-// (the accumulator, the source of a copy out, or the tile of a fill) is `t[w]`,
+// `subgroup_row` on a lane matmul, a lane copy, a lane fill or a lane scale says
+// that its tile (the accumulator, the source of a copy out, or the tile of a fill
+// or a scale) is `t[w]`,
 // where `w` is the index of a subgroup loop that gives each subgroup one pass at
 // most. So each lane of a subgroup has the same row in each of them.
 
@@ -357,6 +358,17 @@ def Vx_LaneFillOp : Vx_Op<"lane_fill", [MemoryEffects<[MemWrite]>,
         DeclareOpInterfaceMethods<Vx_LaneOpInterface, ["expandInKernel"]>]> {
     let summary = "Set each element of a tile in shared memory.";
     let arguments = (ins AnyMemRef:$tile, AnyType:$value, I64Attr:$lanes,
+                     UnitAttr:$serial, UnitAttr:$subgroup,
+                     UnitAttr:$subgroup_row);
+}
+
+// `lanes::scale_rows`: the lanes of a block multiply each element of row `i` of
+// `tile`, a matrix in shared memory, by element `i` of `scale`. It ends before
+// the next op, for every lane of the block, or of the subgroup with `subgroup`.
+def Vx_LaneScaleRowsOp : Vx_Op<"lane_scale_rows", [MemoryEffects<[MemRead, MemWrite]>,
+        DeclareOpInterfaceMethods<Vx_LaneOpInterface, ["expandInKernel"]>]> {
+    let summary = "Multiply each row of a tile in shared memory by a value.";
+    let arguments = (ins AnyMemRef:$tile, AnyMemRef:$scale, I64Attr:$lanes,
                      UnitAttr:$serial, UnitAttr:$subgroup,
                      UnitAttr:$subgroup_row);
 }
