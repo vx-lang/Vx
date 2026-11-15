@@ -2857,11 +2857,15 @@ static void expandLaneSortOnDevice(OpBuilder &b, vx::LaneSortOp op) {
                 ? b.create<arith::RemUIOp>(
                       loc, tid, b.create<arith::ConstantIndexOp>(loc, 32))
                 : tid;
-  SmallVector<Value> pos, r;
+  Value inTensor = b.create<arith::ConstantIndexOp>(loc, size);
+  SmallVector<Value> pos, r, kept;
   for (int64_t k = 0; k < regs; ++k) {
     pos.push_back(b.create<arith::AddIOp>(
         loc, x, b.create<arith::ConstantIndexOp>(loc, k * lanes)));
     r.push_back(laneSortLoad(b, op, op.getInput(), pos[k], n));
+    // The steps below can exchange keys through the tensor itself, and they
+    // write each position of it. So each lane keeps its keys past the count.
+    kept.push_back(laneSortLoad(b, op, op.getInput(), pos[k], inTensor));
   }
   // The memory of the steps between: the tensor itself when every lane of the
   // block sees it, and otherwise a tile of shared memory.
@@ -2884,7 +2888,6 @@ static void expandLaneSortOnDevice(OpBuilder &b, vx::LaneSortOp op) {
     }
     return shared;
   };
-  Value inTensor = b.create<arith::ConstantIndexOp>(loc, size);
   for (int64_t run = 2; run <= span; run *= 2)
     for (int64_t d = run / 2; d >= 1; d /= 2) {
       SmallVector<Value> theirs(regs);
@@ -2926,6 +2929,18 @@ static void expandLaneSortOnDevice(OpBuilder &b, vx::LaneSortOp op) {
     }
   for (int64_t k = 0; k < regs; ++k)
     laneSortStore(b, loc, r[k], op.getInput(), pos[k], n);
+  // The keys past the count go back where they were. The lane that wrote a
+  // position in the steps writes it again, so no other lane races with it.
+  if (shared == op.getInput()) {
+    for (int64_t k = 0; k < regs; ++k) {
+      Value past =
+          b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge, pos[k], n);
+      auto restore = b.create<scf::IfOp>(loc, past, /*withElseRegion=*/false);
+      OpBuilder::InsertionGuard guard(b);
+      b.setInsertionPointToStart(&restore.getThenRegion().front());
+      laneSortStore(b, loc, kept[k], op.getInput(), pos[k], inTensor);
+    }
+  }
   // Later code reads what the other lanes wrote.
   if (op.getSubgroup()) {
     auto bar = b.create<vx::BarrierOp>(loc);
