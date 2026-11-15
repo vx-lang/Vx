@@ -1861,8 +1861,19 @@ impl<'r> Lowerer<'r> {
                 // `barrier()` (Vx#379): an effect, not a call -- there is no callee anywhere.
                 // The checker typed it i32, so hand back a constant for the value position
                 // nobody should be using it in.
-                if let Some((op, ordered)) = crate::hir::check::lanes::lane_routine(&fc.name) {
-                    return self.lower_lane_reduce(fc, op, ordered);
+                if let Some(routine) = crate::hir::check::lanes::lane_routine(&fc.name) {
+                    let args: Vec<&Expr> = fc.args.iter().collect();
+                    return match self.lower_lane_call(routine, &args)? {
+                        Some(v) => Ok(v),
+                        // The value of a routine with no value, which nothing reads.
+                        None => Ok(self.emit_value(
+                            Opcode::Const,
+                            Register(0),
+                            Register(0),
+                            ElementType::I32,
+                            0,
+                        )),
+                    };
                 }
                 // Around the call of a `Drop` impl's `drop` (F6, F6a): an effect on the
                 // runtime, with the time limit of the drop in nanoseconds.
@@ -9021,8 +9032,7 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             | Opcode::TensorDim
             // `PtrIndex` reads base+index; `PtrStore` reads place+value (#242).
             | Opcode::PtrIndex
-            | Opcode::PtrStore
-            | Opcode::LaneReduce => {
+            | Opcode::PtrStore => {
                 assert!(
                     ins.operand1.0 < i && ins.operand2.0 < i,
                     "HIR operand not dominated at instruction {i}"

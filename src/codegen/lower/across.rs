@@ -100,16 +100,16 @@ pub(crate) enum SubgroupRow {
 }
 
 impl AcrossMap<'_> {
-    /// When `e` is a row of a tile that the code of this subgroup alone writes, the number that
-    /// tells it from the other rows of the subgroup: 0 for `t` or `t[w]`, and `c + 1` for
-    /// `t[w][c]` with a number `c`.
     /// Whether `e` is the row of the subgroup, `t[w]`, in a subgroup loop whose index `w` is the
     /// number of the subgroup.
     pub(crate) fn row_of_subgroup(&self, e: &Expr) -> bool {
         self.subgroup_once && self.subgroup_row_number(e) == Some(0)
     }
 
-    fn subgroup_row_number(&self, e: &Expr) -> Option<u64> {
+    /// When `e` is a row of a tile that the code of this subgroup alone writes, the number that
+    /// tells it from the other rows of the subgroup: 0 for `t` or `t[w]`, and `c + 1` for
+    /// `t[w][c]` with a number `c`.
+    pub(crate) fn subgroup_row_number(&self, e: &Expr) -> Option<u64> {
         let is_own_row = |e: &Expr| match (&self.subgroup_row, e) {
             (Some(SubgroupRow::Whole), Expr::Identifier(_)) => true,
             (Some(SubgroupRow::Index(w)), Expr::IndexAccess(r)) => {
@@ -173,44 +173,6 @@ pub(crate) fn lane_element_attrs<'c>(
         },
         _ => Vec::new(),
     }
-}
-
-/// `own_row`, and `vx.lane_row` for a row after the first, when each tensor of a lane reduction
-/// in the code of a subgroup is the same row of a tile that the subgroup alone writes.
-pub(crate) fn own_row_attrs<'c>(
-    gen: &MeliorGenerator<'c>,
-    tensors: &[Expr],
-) -> Vec<(Identifier<'c>, melior::ir::Attribute<'c>)> {
-    let Some(map) = &gen.across_map else {
-        return Vec::new();
-    };
-    if gen.across_kinds.last() != Some(&LevelKind::Subgroups) {
-        return Vec::new();
-    }
-    let rows: Vec<Option<u64>> = tensors
-        .iter()
-        .map(|t| match t {
-            Expr::Borrow(b) => map.subgroup_row_number(&b.expr),
-            _ => None,
-        })
-        .collect();
-    let Some(Some(row)) = rows.first().copied() else {
-        return Vec::new();
-    };
-    if !rows.iter().all(|r| *r == Some(row)) {
-        return Vec::new();
-    }
-    let mut attrs = vec![(
-        Identifier::new(gen.context, "own_row"),
-        melior::ir::Attribute::unit(gen.context),
-    )];
-    if row > 0 {
-        attrs.push((
-            Identifier::new(gen.context, "vx.lane_row"),
-            IntegerAttribute::new(gen.i64_ty, row as i64).into(),
-        ));
-    }
-    attrs
 }
 
 /// The lanes of a block of `s`, when its `across` loops map to blocks and lanes.

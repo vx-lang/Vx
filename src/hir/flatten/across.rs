@@ -19,14 +19,11 @@
 use super::*;
 use crate::arch::LevelKind;
 use crate::bytecode::{
-    ACROSS_BLOCK, ACROSS_BLOCKS, ACROSS_LANE, ACROSS_STRIDE, BARRIER_SUBGROUP,
-    LANE_REDUCE_ACCUMULATE, LANE_REDUCE_ARGMAX, LANE_REDUCE_COPY, LANE_REDUCE_COPY_NOW,
-    LANE_REDUCE_COPY_WAIT, LANE_REDUCE_DESCENDING, LANE_REDUCE_FILL, LANE_REDUCE_MATMUL,
-    LANE_REDUCE_MAX, LANE_REDUCE_ORDERED, LANE_REDUCE_OWN_ROW, LANE_REDUCE_SORT,
-    LANE_REDUCE_SUBGROUP, LANE_REDUCE_SUBGROUP_ROW, LANE_ROW_SHIFT,
-    TENSOR_STORE_BLOCK_LANE_ELEMENT, TENSOR_STORE_SUBGROUP_LANE_ELEMENT,
+    LaneCallImm, ACROSS_BLOCK, ACROSS_BLOCKS, ACROSS_LANE, ACROSS_STRIDE, BARRIER_SUBGROUP,
+    LANE_ROW_SHIFT, TENSOR_STORE_BLOCK_LANE_ELEMENT, TENSOR_STORE_SUBGROUP_LANE_ELEMENT,
 };
 use crate::hir::check::across_lanes;
+use crate::hir::check::lanes::{LaneArg, LaneRoutine, LaneSite};
 
 /// The code of a blocks body or a subgroups body outside its lane loops.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -499,122 +496,104 @@ impl Lowerer<'_> {
         )
     }
 
-    /// `lanes::sum(&t, n)` and the other lane reductions. The checker allows a call only in the
-    /// code of a block or a subgroup, so the innermost level says which.
-    pub(super) fn lower_lane_reduce(
+    /// A call to a lane routine, or a lane matmul: the operands go in `Arg`s, and then a
+    /// `LaneCall`. The checker allows a call only in the code of a block or a subgroup, so the
+    /// innermost level says which. The value is `None` for a routine with no value.
+    pub(super) fn lower_lane_call(
         &mut self,
-        fc: &crate::syntax::expr::FunctionCallExpr,
-        op: crate::hir::check::lanes::LaneOp,
-        ordered: bool,
-    ) -> Lowered<Val> {
-        if op.is_sort() {
-            return self.lower_lane_sort(fc, op);
-        }
-        match op {
-            crate::hir::check::lanes::LaneOp::CopyAsync => return self.lower_lane_copy(fc, 0),
-            crate::hir::check::lanes::LaneOp::Copy => {
-                return self.lower_lane_copy(fc, LANE_REDUCE_COPY_NOW)
-            }
-            crate::hir::check::lanes::LaneOp::Fill => {
-                let [t, v] = fc.args.as_slice() else {
-                    return Err(crate::emitter_gap!());
-                };
-                let t = self.lower_expr(t)?;
-                let v = self.lower_expr(v)?;
-                let mut imm = LANE_REDUCE_FILL;
-                if matches!(&fc.args[0], Expr::Borrow(b) if self.row_of_subgroup(&b.expr)) {
-                    imm |= LANE_REDUCE_SUBGROUP_ROW;
-                }
-                let lanes = if self.across.kinds.last() == Some(&LevelKind::Subgroups) {
-                    imm |= LANE_REDUCE_SUBGROUP;
-                    self.subgroup_lanes()?
-                } else {
-                    self.across.lanes
-                };
-                imm |= lanes << 32;
-                self.emit_effect(Opcode::LaneReduce, t.reg, v.reg, imm);
-                return Ok(self.emit_value(
-                    Opcode::Const,
-                    Register(0),
-                    Register(0),
-                    ElementType::I32,
-                    0,
-                ));
-            }
-            crate::hir::check::lanes::LaneOp::CopyWait => {
-                let [t] = fc.args.as_slice() else {
-                    return Err(crate::emitter_gap!());
-                };
-                let t = self.lower_expr(t)?;
-                let mut imm = LANE_REDUCE_COPY_WAIT;
-                if self.across.kinds.last() == Some(&LevelKind::Subgroups) {
-                    imm |= LANE_REDUCE_SUBGROUP;
-                }
-                self.emit_effect(Opcode::LaneReduce, t.reg, Register(0), imm);
-                return Ok(self.emit_value(
-                    Opcode::Const,
-                    Register(0),
-                    Register(0),
-                    ElementType::I32,
-                    0,
-                ));
-            }
-            _ => {}
-        }
-        let argmax = op == crate::hir::check::lanes::LaneOp::ArgMax;
-        let (n, tensors) = fc.args.split_last().ok_or(crate::emitter_gap!())?;
-        if tensors.len() != if argmax { 2 } else { 1 } {
+        routine: &'static LaneRoutine,
+        args: &[&Expr],
+    ) -> Lowered<Option<Val>> {
+        if args.len() != routine.args.len() {
             return Err(crate::emitter_gap!());
         }
-        let mut regs = Vec::new();
-        for t in tensors {
-            let t = self.lower_expr(t)?;
-            if !matches!(&t.ty, LoweredTy::Tensor { shape, .. } if shape.len() == 1) {
-                return Err(Decline::TypeNotModelled {
-                    what: "a lane reduction of something that is not a rank-1 tensor",
-                });
+        let mut operands = Vec::new();
+        let mut place = None;
+        let mut tile_ranks = Vec::new();
+        for (&arg, &kind) in args.iter().zip(routine.args) {
+            if kind == LaneArg::Place {
+                let Expr::Array(at) = arg else {
+                    return Err(crate::emitter_gap!());
+                };
+                for e in &at.elements {
+                    operands.push(self.lower_expr(e)?.reg);
+                }
+                place = Some(at.elements.len());
+                continue;
             }
-            regs.push(t.reg);
-        }
-        let n = self.lower_expr(n)?;
-        let mut imm = 0;
-        match op {
-            crate::hir::check::lanes::LaneOp::Max => imm |= LANE_REDUCE_MAX,
-            crate::hir::check::lanes::LaneOp::ArgMax => imm |= LANE_REDUCE_ARGMAX,
-            _ => {}
-        }
-        if ordered {
-            imm |= LANE_REDUCE_ORDERED;
-        }
-        if self.across.kinds.last() == Some(&LevelKind::Subgroups) {
-            imm |= LANE_REDUCE_SUBGROUP;
-            let rows: Vec<Option<u64>> = tensors
-                .iter()
-                .map(|t| match t {
-                    Expr::Borrow(b) => self.subgroup_row_number(&b.expr),
-                    _ => None,
-                })
-                .collect();
-            if let Some(Some(row)) = rows.first() {
-                if rows.iter().all(|r| *r == Some(*row)) {
-                    imm |= LANE_REDUCE_OWN_ROW | (row << LANE_ROW_SHIFT);
+            let v = self.lower_expr(arg)?;
+            if kind.is_tensor() {
+                let LoweredTy::Tensor { elem, shape } = &v.ty else {
+                    return Err(Decline::TypeNotModelled {
+                        what: "a lane routine of something that is not a tensor",
+                    });
+                };
+                match kind {
+                    LaneArg::Vector if shape.len() != 1 => {
+                        return Err(Decline::TypeNotModelled {
+                            what: "a lane routine of something that is not a rank-1 tensor",
+                        })
+                    }
+                    LaneArg::Matrix(elems) if shape.len() != 2 || !elems.contains(elem) => {
+                        return Err(Decline::TypeNotModelled {
+                            what: "a lane matmul of something that is not a matrix of floats",
+                        })
+                    }
+                    LaneArg::Tile => tile_ranks.push(shape.len()),
+                    _ => {}
                 }
             }
+            operands.push(v.reg);
         }
-        if argmax {
-            self.emit_effect(Opcode::Arg, n.reg, Register(0), 0);
-            return Ok(self.emit_value(
-                Opcode::LaneReduce,
-                regs[0],
-                regs[1],
-                ElementType::I32,
+        if tile_ranks.iter().any(|r| Some(*r) != place) {
+            return Err(Decline::TypeNotModelled {
+                what: "a lane copy whose tensors do not have the rank of its place",
+            });
+        }
+        let subgroup = self.across.kinds.last() == Some(&LevelKind::Subgroups);
+        let lanes = match (routine.lanes, subgroup) {
+            (false, _) => 0,
+            (true, true) => self.subgroup_lanes()?,
+            (true, false) => self.across.lanes,
+        };
+        let own_row = if routine.own_row && subgroup {
+            routine.own_row_of(args, |e| self.subgroup_row_number(e))
+        } else {
+            None
+        };
+        let site = LaneSite {
+            serial: false,
+            subgroup,
+            subgroup_row: routine
+                .row_tile(args)
+                .is_some_and(|t| self.row_of_subgroup(t)),
+            own_row,
+            lanes,
+        };
+        for r in &operands {
+            self.emit_effect(Opcode::Arg, *r, Register(0), 0);
+        }
+        let imm = LaneCallImm {
+            routine: routine.index(),
+            operands: operands.len(),
+            site,
+        }
+        .encode();
+        Ok(match routine.result {
+            Some(value) => Some(self.emit_value(
+                Opcode::LaneCall,
+                Register(0),
+                Register(0),
+                value.element(),
                 imm,
-            ));
-        }
-        Ok(self.emit_value(Opcode::LaneReduce, regs[0], n.reg, ElementType::F32, imm))
+            )),
+            None => {
+                self.emit_effect(Opcode::LaneCall, Register(0), Register(0), imm);
+                None
+            }
+        })
     }
 
-    /// `lanes::sort(&mut t, n)` and `lanes::sort_descending(&mut t, n)`: an effect on `t`. The
     /// `acc = acc + (a as f32) @ (b as f32)` in the code of a subgroup: an effect on `acc`, which
     /// every lane of the subgroup computes. A subgroup barrier after it lets each lane read the
     /// elements that the other lanes wrote.
@@ -622,104 +601,15 @@ impl Lowerer<'_> {
         &mut self,
         m: &crate::hir::check::lanes::LaneMatmul,
     ) -> Lowered<()> {
-        let matrix = |v: &Val, elems: &[ElementType]| matches!(&v.ty, LoweredTy::Tensor { elem, shape } if shape.len() == 2 && elems.contains(elem));
-        let acc = self.lower_expr(m.acc)?;
-        let lhs = self.lower_expr(m.lhs)?;
-        let rhs = self.lower_expr(m.rhs)?;
-        let tile = [ElementType::F32, ElementType::BF16, ElementType::F16];
-        if !matrix(&acc, &[ElementType::F32]) || !matrix(&lhs, &tile) || !matrix(&rhs, &tile) {
-            return Err(Decline::TypeNotModelled {
-                what: "a lane matmul of something that is not a matrix of floats",
-            });
-        }
-        let mut imm = LANE_REDUCE_MATMUL | LANE_REDUCE_SUBGROUP;
-        if m.accumulate {
-            imm |= LANE_REDUCE_ACCUMULATE;
-        }
-        if self.row_of_subgroup(m.acc) {
-            imm |= LANE_REDUCE_SUBGROUP_ROW;
-        }
-        self.emit_effect(Opcode::Arg, rhs.reg, Register(0), 0);
-        self.emit_effect(Opcode::LaneReduce, acc.reg, lhs.reg, imm);
+        assert_eq!(
+            self.across.kinds.last(),
+            Some(&LevelKind::Subgroups),
+            "a lane matmul is in the code of a subgroup"
+        );
+        let routine = crate::hir::check::lanes::matmul_routine(m.accumulate);
+        self.lower_lane_call(routine, &[m.acc, m.lhs, m.rhs])?;
         self.barrier(AcrossLevel::Subgroup);
         Ok(())
-    }
-
-    /// value is a constant that nothing reads, as for `barrier()`.
-    fn lower_lane_sort(
-        &mut self,
-        fc: &crate::syntax::expr::FunctionCallExpr,
-        op: crate::hir::check::lanes::LaneOp,
-    ) -> Lowered<Val> {
-        let [t, n] = fc.args.as_slice() else {
-            return Err(crate::emitter_gap!());
-        };
-        let t = self.lower_expr(t)?;
-        if !matches!(&t.ty, LoweredTy::Tensor { shape, .. } if shape.len() == 1) {
-            return Err(Decline::TypeNotModelled {
-                what: "a lane sort of something that is not a rank-1 tensor",
-            });
-        }
-        let n = self.lower_expr(n)?;
-        let mut imm = LANE_REDUCE_SORT | LANE_REDUCE_ORDERED;
-        if op == crate::hir::check::lanes::LaneOp::SortDescending {
-            imm |= LANE_REDUCE_DESCENDING;
-        }
-        let lanes = if self.across.kinds.last() == Some(&LevelKind::Subgroups) {
-            imm |= LANE_REDUCE_SUBGROUP;
-            self.subgroup_lanes()?
-        } else {
-            self.across.lanes
-        };
-        imm |= lanes << 32;
-        self.emit_effect(Opcode::LaneReduce, t.reg, n.reg, imm);
-        Ok(self.emit_value(Opcode::Const, Register(0), Register(0), ElementType::I32, 0))
-    }
-
-    /// `lanes::copy_async(&mut tile, &x, [i, j, ..])` in the code of a block or a subgroup: the
-    /// place goes in `Arg`s, and the value is the token. `lanes::copy` has `LANE_REDUCE_COPY_NOW`
-    /// in `flags`, and its value is not used.
-    fn lower_lane_copy(
-        &mut self,
-        fc: &crate::syntax::expr::FunctionCallExpr,
-        flags: u64,
-    ) -> Lowered<Val> {
-        let [dst, src, Expr::Array(place)] = fc.args.as_slice() else {
-            return Err(crate::emitter_gap!());
-        };
-        let dst = self.lower_expr(dst)?;
-        let src = self.lower_expr(src)?;
-        let rank = match (&dst.ty, &src.ty) {
-            (LoweredTy::Tensor { shape: d, .. }, LoweredTy::Tensor { shape: s, .. })
-                if d.len() == s.len() && d.len() == place.elements.len() =>
-            {
-                d.len() as u64
-            }
-            _ => {
-                return Err(Decline::TypeNotModelled {
-                    what: "a lane copy of something that is not a tensor",
-                })
-            }
-        };
-        let mut at = Vec::new();
-        for e in &place.elements {
-            at.push(self.lower_expr(e)?.reg);
-        }
-        for r in at {
-            self.emit_effect(Opcode::Arg, r, Register(0), 0);
-        }
-        let mut imm = LANE_REDUCE_COPY | flags | (rank << 16);
-        if matches!(&fc.args[1], Expr::Borrow(b) if self.row_of_subgroup(&b.expr)) {
-            imm |= LANE_REDUCE_SUBGROUP_ROW;
-        }
-        let lanes = if self.across.kinds.last() == Some(&LevelKind::Subgroups) {
-            imm |= LANE_REDUCE_SUBGROUP;
-            self.subgroup_lanes()?
-        } else {
-            self.across.lanes
-        };
-        imm |= lanes << 32;
-        Ok(self.emit_value(Opcode::LaneReduce, dst.reg, src.reg, ElementType::I32, imm))
     }
 
     /// `TENSOR_STORE_BLOCK_LANE_ELEMENT` or `TENSOR_STORE_SUBGROUP_LANE_ELEMENT` when the store
@@ -743,15 +633,15 @@ impl Lowerer<'_> {
         }
     }
 
-    /// When `e` is a row of a tile that the code of this subgroup alone writes, the number that
-    /// tells it from the other rows of the subgroup: 0 for `t` or `t[w]`, and `c + 1` for
-    /// `t[w][c]` with a number `c`. Each row keeps its own register on the device.
     /// Whether `e` is the row of the subgroup, `t[w]`, in a subgroup loop whose index `w` is the
     /// number of the subgroup.
     fn row_of_subgroup(&self, e: &Expr) -> bool {
         self.across.subgroup_once && self.subgroup_row_number(e) == Some(0)
     }
 
+    /// When `e` is a row of a tile that the code of this subgroup alone writes, the number that
+    /// tells it from the other rows of the subgroup: 0 for `t` or `t[w]`, and `c + 1` for
+    /// `t[w][c]` with a number `c`. Each row keeps its own register on the device.
     fn subgroup_row_number(&self, e: &Expr) -> Option<u64> {
         let is_own_row = |e: &Expr| match (&self.across.subgroup_row, e) {
             (Some(SubgroupRow::Whole), Expr::Identifier(_)) => true,

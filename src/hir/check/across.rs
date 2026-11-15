@@ -714,7 +714,7 @@ impl Walk<'_> {
             }
         });
         for (name, at) in elsewhere {
-            let place = if lanes::lane_routine(&name).is_some_and(|(op, _)| op.is_statement()) {
+            let place = if lanes::lane_routine(&name).is_some_and(|r| r.is_statement()) {
                 "a statement of its own"
             } else {
                 "the whole value of a `let`"
@@ -730,9 +730,9 @@ impl Walk<'_> {
         }
         let calls = std::mem::take(&mut self.lane_calls);
         for c in &calls {
-            let copy = lanes::lane_routine(&c.name).is_some_and(|(op, _)| {
+            let copy = lanes::lane_routine(&c.name).is_some_and(|r| {
                 matches!(
-                    op,
+                    r.op,
                     lanes::LaneOp::CopyAsync
                         | lanes::LaneOp::CopyWait
                         | lanes::LaneOp::Copy
@@ -741,9 +741,9 @@ impl Walk<'_> {
             });
             if copy {
                 // The copy reports the size, so its wait does not report it again.
-                let start = lanes::lane_routine(&c.name).is_some_and(|(op, _)| {
+                let start = lanes::lane_routine(&c.name).is_some_and(|r| {
                     matches!(
-                        op,
+                        r.op,
                         lanes::LaneOp::CopyAsync | lanes::LaneOp::Copy | lanes::LaneOp::Fill
                     )
                 });
@@ -755,7 +755,7 @@ impl Walk<'_> {
             let Some(&n) = self.lane_sizes.get(&c.at) else {
                 continue;
             };
-            if lanes::lane_routine(&c.name).is_some_and(|(op, _)| op.is_sort()) {
+            if lanes::lane_routine(&c.name).is_some_and(|r| r.op.is_sort()) {
                 self.lane_sort_sizes(c, n, &block_lanes);
                 continue;
             }
