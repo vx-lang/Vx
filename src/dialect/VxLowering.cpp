@@ -4260,6 +4260,79 @@ expandLaneMatmulWithoutTile(gpu::GPUFuncOp func, vx::LaneMatmulOp op, Type elem,
   return true;
 }
 
+/// The attribute that marks a lane matmul, fill or copy whose accumulator
+/// stays in the simdgroup matrices of the Apple GPU. Its value numbers the
+/// tile, so that the Metal printer gives each tile its own matrices.
+constexpr StringLiteral simdgroupRegistersAttr = "simdgroup_registers";
+
+/// On the Apple GPU, keeps the accumulator of a lane matmul in the simdgroup
+/// matrices of each subgroup in the whole kernel, and gives its tile no shared
+/// memory, as `expandLaneMatmulWithoutTile` does on the tensor cores. This
+/// happens when each other use of the tile is a `vx.lane_fill` of it, a
+/// `vx.lane_copy` out of it to an f32 tensor of 2 dimensions, or another
+/// matmul that adds to it. Each of them takes the row of its subgroup
+/// (`subgroup_row`), so each subgroup holds the same row in all of them. Marks
+/// them with `simdgroup_registers` = `number`, and leaves them to the Metal
+/// printer (src/dialect/MetalImage.cpp). Puts the other matmuls in `marked`.
+/// Returns false, and changes nothing, when the tile has another use.
+static bool keepSimdgroupSumsInRegisters(vx::LaneMatmulOp op, int64_t number,
+                                         SmallPtrSetImpl<Operation *> &marked) {
+  Type accType = op.getAcc().getType();
+  auto acc = cast<MemRefType>(accType);
+  memref::AllocaOp tile = laneCopyTileAlloca(op.getAcc());
+  auto addsToRow = [&](vx::LaneMatmulOp m) {
+    return m.getAccumulate() && m.getSubgroupRow() && !m.getSerial() &&
+           fitsSimdgroupMatrices(m) && m.getAcc().getType() == accType &&
+           laneCopyTileAlloca(m.getAcc()) == tile &&
+           laneCopyTileAlloca(m.getLhs()) != tile &&
+           laneCopyTileAlloca(m.getRhs()) != tile;
+  };
+  // Each 8 x 8 piece takes 2 registers of each lane.
+  if (!tile || !addsToRow(op) || acc.getRank() != 2 ||
+      acc.getNumElements() / 32 > laneMatmulFragmentRegisters)
+    return false;
+  SmallVector<Operation *> uses;
+  accessesOf(tile.getResult(), uses);
+  SmallVector<Operation *> others;
+  for (Operation *use : uses) {
+    if (use == op.getOperation())
+      continue;
+    auto other = dyn_cast<vx::LaneMatmulOp>(use);
+    if (other && addsToRow(other)) {
+      others.push_back(other);
+      continue;
+    }
+    auto fill = dyn_cast<vx::LaneFillOp>(use);
+    if (fill && fill.getSubgroupRow() && !fill.getSerial() &&
+        fill.getTile().getType() == accType) {
+      others.push_back(fill);
+      continue;
+    }
+    auto copy = dyn_cast<vx::LaneCopyOp>(use);
+    if (!copy || !copy.getSubgroupRow() || copy.getSerial())
+      return false;
+    LaneCopyNow c = laneCopyNowOf(copy);
+    auto tensor = cast<MemRefType>(c.tensor.getType());
+    SmallVector<int64_t> strides;
+    int64_t offset;
+    if (!c.toTensor || c.tile.getType() != accType ||
+        laneCopyTileAlloca(c.tensor) == tile || tensor.getRank() != 2 ||
+        !tensor.getElementType().isF32() ||
+        failed(tensor.getStridesAndOffset(strides, offset)) || strides[1] != 1)
+      return false;
+    others.push_back(copy);
+  }
+  Builder b(op.getContext());
+  auto mark = b.getI64IntegerAttr(number);
+  op->setAttr(simdgroupRegistersAttr, mark);
+  for (Operation *other : others) {
+    other->setAttr(simdgroupRegistersAttr, mark);
+    if (isa<vx::LaneMatmulOp>(other))
+      marked.insert(other);
+  }
+  return true;
+}
+
 /// Removes the tile of a matmul that `expandLaneMatmulWithoutTile` rewrote,
 /// after the matmul is gone, with the views that nothing uses any more.
 static void eraseUnusedTile(memref::AllocaOp tile) {
@@ -6716,9 +6789,15 @@ struct ConvertVxToStandardPass
                            chipHasMmaSync(deviceChip(gpuModule));
         bool simdgroupMatrices = pipeline == DevicePipeline::Metal;
         SmallPtrSet<Operation *, 4> expanded;
+        int64_t registerTiles = 0;
         for (vx::LaneMatmulOp op : matmuls) {
           if (expanded.contains(op))
             continue;
+          if (simdgroupMatrices && !op.getSerial() &&
+              keepSimdgroupSumsInRegisters(op, registerTiles, expanded)) {
+            ++registerTiles;
+            continue;
+          }
           Type elem =
               tensorCores && !op.getSerial() ? mmaElementOf(op) : Type();
           memref::AllocaOp tile = laneCopyTileAlloca(op.getAcc());
@@ -6739,6 +6818,8 @@ struct ConvertVxToStandardPass
         SmallVector<vx::LaneFillOp> fills;
         gpuFunc.walk([&](vx::LaneFillOp op) { fills.push_back(op); });
         for (vx::LaneFillOp op : fills) {
+          if (op->hasAttr(simdgroupRegistersAttr))
+            continue;
           OpBuilder b(op);
           if (op.getSerial())
             expandLaneFillOnHost(b, op);
@@ -6749,6 +6830,8 @@ struct ConvertVxToStandardPass
         SmallVector<vx::LaneCopyOp> copiesNow;
         gpuFunc.walk([&](vx::LaneCopyOp op) { copiesNow.push_back(op); });
         for (vx::LaneCopyOp op : copiesNow) {
+          if (op->hasAttr(simdgroupRegistersAttr))
+            continue;
           OpBuilder b(op);
           if (op.getSerial())
             expandLaneCopyNowOnHost(b, op);
