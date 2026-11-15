@@ -11,6 +11,8 @@
 // first `n` elements of rank-1 tensors, and every lane of the block or the subgroup gets the
 // result. docs/lane_reductions.md has the order. `lanes::sort(&mut t, n)` and
 // `lanes::sort_descending(&mut t, n)` sort the first `n` elements of a rank-1 tensor of `i64`.
+// `lanes::copy_rows_async(&mut tile, &x, &ids, [first, col])` copies the rows of `x` that `ids`
+// chooses into a tile in shared memory, in the background.
 // `lanes::copy(&mut dst, &src, [i, j])` copies a tile in shared memory to or from a tensor.
 // `lanes::fill(&mut tile, v)` sets each element of a tile in shared memory to `v`.
 //
@@ -70,11 +72,17 @@ const ROUTINES: &[(&str, LaneOp, bool)] = &[
     ("sort", LaneOp::Sort, true),
     ("sort_descending", LaneOp::SortDescending, true),
     ("copy_async", LaneOp::CopyAsync, true),
+    // A copy of the rows that a list of ids chooses. It is a `copy_async` in every rule but its
+    // arguments.
+    ("copy_rows_async", LaneOp::CopyAsync, true),
     // The checker writes `t.wait()` as this call. The message of an unknown routine leaves it out.
     ("copy_wait", LaneOp::CopyWait, true),
     ("copy", LaneOp::Copy, true),
     ("fill", LaneOp::Fill, true),
 ];
+
+/// The name of the copy of rows that a list of ids chooses.
+pub const COPY_ROWS_ASYNC: &str = "lanes::copy_rows_async";
 
 /// The most elements that a block reduces: 32 groups of 32.
 pub const MAX_BLOCK_ELEMENTS: u64 = 1024;
@@ -230,6 +238,9 @@ impl crate::hir::TypeChecker<'_> {
         match lane_routine(name).map(|(op, _)| op) {
             Some(op) if op.is_sort() => {
                 return self.check_lane_sort(name, args, arg_types, call_span)
+            }
+            Some(LaneOp::CopyAsync) if name == COPY_ROWS_ASYNC => {
+                return self.check_copy_rows_async(name, args, arg_types, call_span)
             }
             Some(LaneOp::CopyAsync) => {
                 return self.check_copy_async(name, args, arg_types, call_span)
@@ -498,6 +509,120 @@ impl crate::hir::TypeChecker<'_> {
                 format!(
                     "the third argument of `{name}` is the place of the tile, written as a list of \
                      {rank} integers such as `[r, c]`"
+                ),
+                span,
+            );
+        }
+        token
+    }
+
+    /// The type of a call `lanes::copy_rows_async(&mut tile, &x, &ids, [first, col])`: a token of
+    /// the copy of row `ids[first + r]` of `x`, from column `col`, into row `r` of `tile`, which is
+    /// in shared memory. A row whose id is not a row of `x`, or past the end of `ids`, is zeros.
+    fn check_copy_rows_async(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        arg_types: &[Type],
+        call_span: Span,
+    ) -> Type {
+        let token = crate::hir::check::transfer::token_of(Type::Struct("void".into(), None));
+        if self.speculating {
+            return token;
+        }
+        let span = Some(SourceSpan::from_ast_span(&call_span));
+        if args.len() != 4 {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "`{name}` takes 4 arguments, a `&mut` tile in shared memory, a borrowed \
+                     tensor, a borrowed tensor of `i32` ids and the place `[first, col]`, but it \
+                     got {}",
+                    args.len()
+                ),
+                span,
+            );
+            return token;
+        }
+        let shared = |p: &Option<crate::syntax::Placement>| self.in_shared_memory(p);
+        let elem = match &arg_types[0] {
+            Type::Borrow {
+                inner,
+                is_mut: true,
+                ..
+            } => match inner.as_ref() {
+                Type::Tensor(e, dims, p)
+                    if shared(p)
+                        && dims.len() == 2
+                        && dims.iter().all(|d| {
+                            crate::hir::memory::static_extent(d).is_some_and(|n| n >= 1)
+                        })
+                        && matches!(crate::hir::memory::element_bytes(e), Some(2 | 4 | 8)) =>
+                {
+                    Some(e.clone())
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some(elem) = elem else {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "the first argument of `{name}` must borrow a tile with 2 dimensions in \
+                     shared memory as `&mut`, with a size that is a number and elements of 2, 4 \
+                     or 8 bytes, such as `&mut tiles[0]` for `Tensor<bf16, [2, 16, 128], \
+                     Memory::SMEM>`, but it is `{}`",
+                    arg_types[0]
+                ),
+                span,
+            );
+            return token;
+        };
+        // `x` and `&x` for a parameter `x : &Tensor<..>` both name the tensor.
+        let borrowed = |t: &Type| {
+            let mut inner = t;
+            while let Type::Borrow { inner: i, .. } = inner {
+                inner = i;
+            }
+            (!matches!(t, Type::Tensor(..))).then_some(inner.clone())
+        };
+        if !matches!(borrowed(&arg_types[1]), Some(Type::Tensor(e, dims, _)) if e == elem && dims.len() == 2)
+        {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "the second argument of `{name}` must borrow a tensor of `{elem}` with 2 \
+                     dimensions, as the tile has, but it is `{}`",
+                    arg_types[1]
+                ),
+                span.clone(),
+            );
+        }
+        if !matches!(borrowed(&arg_types[2]), Some(Type::Tensor(ElementType::I32, dims, _)) if dims.len() == 1)
+        {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "the third argument of `{name}` must borrow a tensor of `i32` ids with 1 \
+                     dimension, such as `&ids[w]` for `Tensor<i32, [8, 32], Memory::SMEM>`, but \
+                     it is `{}`",
+                    arg_types[2]
+                ),
+                span.clone(),
+            );
+        }
+        let place_ok = matches!(&args[3], Expr::Array(a) if a.elements.len() == 2)
+            && matches!(
+                &arg_types[3],
+                Type::Tensor(ElementType::I32 | ElementType::I64, ..)
+            );
+        if !place_ok {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "the fourth argument of `{name}` is `[first, col]`: the index of the id of \
+                     the first row in the ids, and the column of `x` where the rows start"
                 ),
                 span,
             );

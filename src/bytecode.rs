@@ -444,6 +444,9 @@ pub const LANE_REDUCE_SUBGROUP_ROW: u64 = 8192;
 /// so the reduction may read it from the registers of `LANE_OWN_SUBGROUP` or `LANE_OWN_WHOLE`
 /// elements.
 pub const LANE_REDUCE_LANE_OWN: u64 = 16384;
+/// `Opcode::LaneReduce` with `LANE_REDUCE_COPY`: `lanes::copy_rows_async`. The `Arg` before the
+/// place is the tensor of ids, and the place is `[first, col]`.
+pub const LANE_REDUCE_COPY_ROWS: u64 = 32768;
 
 /// `Opcode::TensorStore`: the place is `tile[t]` in a lane loop of the code of a block, with `t`
 /// the index of the loop. The loop goes from 0 over all of its lanes, so only lane `t` writes the
