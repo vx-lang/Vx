@@ -55,6 +55,8 @@ the same in each run.
 | A sum, a maximum or a sort over the lanes of a block | `lanes::sum`, `lanes::max`, `lanes::sort` |
 | Many passes that add to the same element of a tensor | `atomic_fetch_add_u32` and the other atomics on elements |
 | A copy into a tile while the lanes work | `lanes::copy_async` |
+| A copy of a tile to or from shared memory | `lanes::copy` |
+| The same value in each element of a tile in shared memory | `lanes::fill` |
 | A faster `exp` or `tanh` in a GPU kernel | `fast_exp`, `fast_tanh` ([Exact and fast math](exact-and-fast-math.md)) |
 | Work on several devices at the same time | a task for each device, with a `spawn on` in each task |
 | The result of one task | `join()` on its handle |

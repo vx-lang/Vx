@@ -11,6 +11,8 @@
 // first `n` elements of rank-1 tensors, and every lane of the block or the subgroup gets the
 // result. docs/lane_reductions.md has the order. `lanes::sort(&mut t, n)` and
 // `lanes::sort_descending(&mut t, n)` sort the first `n` elements of a rank-1 tensor of `i64`.
+// `lanes::copy(&mut dst, &src, [i, j])` copies a tile in shared memory to or from a tensor.
+// `lanes::fill(&mut tile, v)` sets each element of a tile in shared memory to `v`.
 //
 //===----------------------------------------------------------------------===//
 
@@ -35,6 +37,10 @@ pub enum LaneOp {
     CopyAsync,
     /// The end of a copy: `t.wait()` on the token of a `lanes::copy_async`.
     CopyWait,
+    /// A copy into a tile of shared memory or out of one, which ends before the call returns.
+    Copy,
+    /// Sets each element of a tile in shared memory to a value.
+    Fill,
 }
 
 impl LaneOp {
@@ -44,12 +50,12 @@ impl LaneOp {
 
     /// Whether a call is a statement of its own, not the value of a `let`.
     pub fn is_statement(self) -> bool {
-        self.is_sort() || self == LaneOp::CopyWait
+        self.is_sort() || matches!(self, LaneOp::CopyWait | LaneOp::Copy | LaneOp::Fill)
     }
 
     /// Whether the call writes the tensor that its first argument borrows.
     pub fn writes_first(self) -> bool {
-        self.is_sort() || self == LaneOp::CopyAsync
+        self.is_sort() || matches!(self, LaneOp::CopyAsync | LaneOp::Copy | LaneOp::Fill)
     }
 }
 
@@ -66,6 +72,8 @@ const ROUTINES: &[(&str, LaneOp, bool)] = &[
     ("copy_async", LaneOp::CopyAsync, true),
     // The checker writes `t.wait()` as this call. The message of an unknown routine leaves it out.
     ("copy_wait", LaneOp::CopyWait, true),
+    ("copy", LaneOp::Copy, true),
+    ("fill", LaneOp::Fill, true),
 ];
 
 /// The most elements that a block reduces: 32 groups of 32.
@@ -229,6 +237,8 @@ impl crate::hir::TypeChecker<'_> {
             Some(LaneOp::CopyWait) => {
                 return self.check_copy_wait(name, args, arg_types, call_span)
             }
+            Some(LaneOp::Copy) => return self.check_copy(name, args, arg_types, call_span),
+            Some(LaneOp::Fill) => return self.check_fill(name, args, arg_types, call_span),
             _ => {}
         }
         let argmax = lane_routine(name).map(|(op, _)| op) == Some(LaneOp::ArgMax);
@@ -426,17 +436,7 @@ impl crate::hir::TypeChecker<'_> {
             );
             return token;
         }
-        let shared = |p: &Option<crate::syntax::Placement>| {
-            p.as_ref().is_some_and(|p| {
-                self.env.memories.values().any(|d| {
-                    crate::syntax::MemorySpace::from_name(d.name.as_ref()) == p.space
-                        && matches!(
-                            d.scope,
-                            Some(crate::syntax::Scope::Cta | crate::syntax::Scope::Sm)
-                        )
-                })
-            })
-        };
+        let shared = |p: &Option<crate::syntax::Placement>| self.in_shared_memory(p);
         let dst = match &arg_types[0] {
             Type::Borrow {
                 inner,
@@ -503,6 +503,199 @@ impl crate::hir::TypeChecker<'_> {
             );
         }
         token
+    }
+
+    /// Whether a tensor with placement `p` is in a memory that the lanes of a block share.
+    fn in_shared_memory(&self, p: &Option<crate::syntax::Placement>) -> bool {
+        p.as_ref().is_some_and(|p| {
+            self.env.memories.values().any(|d| {
+                crate::syntax::MemorySpace::from_name(d.name.as_ref()) == p.space
+                    && matches!(
+                        d.scope,
+                        Some(crate::syntax::Scope::Cta | crate::syntax::Scope::Sm)
+                    )
+            })
+        })
+    }
+
+    /// The type of a call `lanes::copy(&mut dst, &src, [i, j, ..])`, which copies a tile in shared
+    /// memory to or from the part of a tensor that starts at `[i, j, ..]`. When `dst` is a tile in
+    /// shared memory, the copy goes into it, as `lanes::copy_async` does. Otherwise `src` is the
+    /// tile, and the copy goes into `dst`. The shape of the tile goes to `lane_copies_out`, for
+    /// the proof that the passes of an `across` loop write apart.
+    fn check_copy(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        arg_types: &[Type],
+        call_span: Span,
+    ) -> Type {
+        let void = Type::Struct("void".into(), None);
+        if self.speculating {
+            return void;
+        }
+        let span = Some(SourceSpan::from_ast_span(&call_span));
+        if args.len() != 3 {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "`{name}` takes 3 arguments, a `&mut` tensor, a borrowed tensor and the place \
+                     of the tile in the tensor that is not in shared memory, such as `[r, c]`, but \
+                     it got {}",
+                    args.len()
+                ),
+                span,
+            );
+            return void;
+        }
+        // The tensor behind a borrow, and whether the borrow is `&mut`.
+        let tensor = |t: &Type| match t {
+            Type::Borrow { inner, is_mut, .. } => match inner.as_ref() {
+                Type::Tensor(e, dims, p) => Some((e.clone(), dims.clone(), p.clone(), *is_mut)),
+                _ => None,
+            },
+            _ => None,
+        };
+        let tile_dims = |dims: &[crate::syntax::Dim]| {
+            dims.iter()
+                .map(|d| {
+                    crate::hir::memory::static_extent(d)
+                        .filter(|n| *n >= 1)
+                        .and_then(|n| u64::try_from(n).ok())
+                })
+                .collect::<Option<Vec<u64>>>()
+        };
+        let (dst, src) = (tensor(&arg_types[0]), tensor(&arg_types[1]));
+        let Some((elem, dst_dims, dst_place, true)) = dst else {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "the first argument of `{name}` must borrow a tensor as `&mut`, such as \
+                     `&mut tiles[0]` or a parameter `c : &mut Tensor<..>`, but it is `{}`",
+                    arg_types[0]
+                ),
+                span,
+            );
+            return void;
+        };
+        let into_tile = self.in_shared_memory(&dst_place);
+        let tile = match (&src, into_tile) {
+            (Some((e, dims, _, _)), true) if *e == elem && dims.len() == dst_dims.len() => {
+                tile_dims(&dst_dims)
+            }
+            (Some((e, dims, p, _)), false)
+                if *e == elem && dims.len() == dst_dims.len() && self.in_shared_memory(p) =>
+            {
+                tile_dims(dims)
+            }
+            _ => None,
+        };
+        let Some(tile) = tile else {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "`{name}` copies a tile in shared memory with a size that is a number, into \
+                     the first argument or out of the second. Both must borrow tensors of `{elem}` \
+                     with {} dimensions, but they are `{}` and `{}`",
+                    dst_dims.len(),
+                    arg_types[0],
+                    arg_types[1]
+                ),
+                span,
+            );
+            return void;
+        };
+        let rank = tile.len();
+        let place_ok = matches!(&args[2], Expr::Array(a) if a.elements.len() == rank)
+            && matches!(
+                &arg_types[2],
+                Type::Tensor(ElementType::I32 | ElementType::I64, ..)
+            );
+        if !place_ok {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "the third argument of `{name}` is the place of the tile, written as a list of \
+                     {rank} integers such as `[r, c]`"
+                ),
+                span,
+            );
+        }
+        if !into_tile {
+            self.lane_copies_out.insert(call_span, tile);
+        }
+        void
+    }
+
+    /// The type of a call `lanes::fill(&mut tile, v)`, which sets each element of `tile`, a tile
+    /// in shared memory with a size that is a number, to `v`.
+    fn check_fill(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        arg_types: &[Type],
+        call_span: Span,
+    ) -> Type {
+        let void = Type::Struct("void".into(), None);
+        if self.speculating {
+            return void;
+        }
+        let span = Some(SourceSpan::from_ast_span(&call_span));
+        if args.len() != 2 {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "`{name}` takes 2 arguments, a `&mut` tile in shared memory and the value of \
+                     each element, but it got {}",
+                    args.len()
+                ),
+                span,
+            );
+            return void;
+        }
+        let tile = match &arg_types[0] {
+            Type::Borrow {
+                inner,
+                is_mut: true,
+                ..
+            } => match inner.as_ref() {
+                Type::Tensor(e, dims, p)
+                    if self.in_shared_memory(p)
+                        && dims.iter().all(|d| {
+                            crate::hir::memory::static_extent(d).is_some_and(|n| n >= 1)
+                        }) =>
+                {
+                    Some(e.clone())
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some(elem) = tile else {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "the first argument of `{name}` must borrow a tile in shared memory as `&mut`, \
+                     with a size that is a number, such as `&mut acc[w]` for `Tensor<f32, [4, 32, \
+                     32], Memory::SMEM>`, but it is `{}`",
+                    arg_types[0]
+                ),
+                span,
+            );
+            return void;
+        };
+        if !matches!(&arg_types[1], Type::Scalar(e) if *e == elem) {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "the second argument of `{name}` is the value of each element, so its type is \
+                     the element type of the tile, `{elem}`, but it is `{}`",
+                    arg_types[1]
+                ),
+                span,
+            );
+        }
+        void
     }
 
     /// The type of `lanes::copy_wait(t)`, which the checker writes for `t.wait()` on the token of

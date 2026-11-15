@@ -815,6 +815,13 @@ fn lower_lane_matmul<'c>(
     if m.accumulate {
         attrs.push((Identifier::new(gen.context, "accumulate"), unit));
     }
+    if gen
+        .across_map
+        .as_ref()
+        .is_some_and(|map| map.row_of_subgroup(m.acc))
+    {
+        attrs.push((Identifier::new(gen.context, "subgroup_row"), unit));
+    }
     block.append_operation(
         OperationBuilder::new("vx.lane_matmul", gen.loc())
             .add_operands(&operands)
@@ -1231,7 +1238,8 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                         .add_operands(&[store_val, base_val]);
                     if let Expr::IndexAccess(ix) = lhs {
                         store_builder = store_builder
-                            .add_attributes(&super::across::lane_element_attrs(gen, ix));
+                            .add_attributes(&super::across::lane_element_attrs(gen, ix))
+                            .add_attributes(&super::across::lane_own_attrs(gen, ix));
                     }
 
                     for idx in indices {

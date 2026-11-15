@@ -89,6 +89,9 @@ program adds each row of a matrix in a block of its own (`book_gpu_row_sums_in_s
 It prints `row 0: 256, row 7: 2048`.
 
 Here each lane reads only the element that it wrote, so the compiler keeps `part` in registers.
+This also works through several lane loops. When every access to a tile is `t[..][l]`, or
+`t[w][..][l]` in subgroup `w`, with `l` the index of a lane loop over all the lanes, the compiler
+keeps each lane's elements of `t` in its registers.
 
 The library has other routines of this kind. `lanes::max` gives the largest element, and
 `lanes::argmax` its index. Write each call as the whole value of a `let`, in the code of a block.
@@ -148,6 +151,23 @@ The token holds the borrow of the tile. So a read of the tile before its `.wait(
 error, and a token with no `.wait()` gets the error E6036. On an H100 the copy uses TMA, and on an
 older NVIDIA GPU `cp.async`. Today the copy does not work on tiles of `f64` or of integers.
 `tests/optimizations/pass/lane_copies_on_the_cpu.vx` is a complete program.
+
+`lanes::copy(&mut dst, &src, [i, j])` copies a tile and ends before it returns. When `dst` is a
+tile in shared memory, the copy goes into it, as `lanes::copy_async` and `.wait()` do. Otherwise
+`src` is the tile, and the copy goes into the part of `dst` that starts at `[i, j]`. Past the end
+of `dst`, it writes nothing. So the subgroups of a block can store their tiles of a result:
+
+```rust
+for w in 0..4 across subgroups {
+  lanes::copy(c, &acc[w], [bm * 128 + w * 32, bn * 128]);
+}
+```
+
+Two blocks or two subgroups must not write the same element of `c` (E6032).
+`tests/optimizations/pass/lane_copy_into_and_out_of_a_tile.vx` is a complete program.
+
+`lanes::fill(&mut tile, v)` sets each element of a tile in shared memory to `v`. Every lane of the
+block or the subgroup sets a part of the tile, so it is faster than a loop on one lane.
 
 ## Math functions in a kernel
 

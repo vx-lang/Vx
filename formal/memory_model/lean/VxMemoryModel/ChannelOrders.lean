@@ -8,7 +8,9 @@ counter. The send waits with an acquire load until its slot holds `2k`, writes i
 the slot to `2k + 1` with a release store. The `recv` with the number `k` waits with an acquire
 load for `2k + 1`, reads the value, and sets the slot to `2(k + n)` with a release store, for the
 send `n` places later. A `pass_a_skip` sets the slot to `2(k + n)` with an `sc` store, which is
-also a release store. `slot_send_hb_recv` and `slot_recv_hb_send` give the two edges.
+also a release store. It first checks with an acquire load that the slot holds `2k`. With the many
+receivers of a work queue, the `recv` `n` places before can be another task, and the edge from
+it goes through that load. `slot_send_hb_recv` and `slot_recv_hb_send` give the two edges.
 -/
 
 namespace Vx.Execution

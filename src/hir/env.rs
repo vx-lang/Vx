@@ -609,6 +609,8 @@ pub(crate) struct UnrollCandidate {
     /// Whether a register tensor is indexed with the variable, which makes the code generator
     /// unroll the loop.
     pub(crate) used: bool,
+    /// The loop is an `across` loop, which the code generator never unrolls.
+    pub(crate) across: bool,
 }
 
 pub struct TypeChecker<'a> {
@@ -773,6 +775,9 @@ pub struct TypeChecker<'a> {
     pub traffic: crate::hir::check_state::TrafficState,
     /// The size of the tensor of each lane reduction, by the position of its call.
     pub(crate) lane_reductions: HashMap<crate::syntax::Span, u64>,
+    /// The shape of the tile of each `lanes::copy` out of shared memory, by the position of its
+    /// call.
+    pub(crate) lane_copies_out: HashMap<crate::syntax::Span, Vec<u64>>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -857,6 +862,7 @@ impl<'a> TypeChecker<'a> {
             seam: Default::default(),
             traffic: Default::default(),
             lane_reductions: HashMap::new(),
+            lane_copies_out: HashMap::new(),
         }
     }
 
@@ -2425,8 +2431,10 @@ impl<'a> TypeChecker<'a> {
         }
 
         let mut expr_parser = crate::parser::Parser::new(&tokens, s);
-        if let Ok(expr) = expr_parser.parse_primary_expr() {
-            return Type::Const(Box::new(expr));
+        if let Ok(expr) = expr_parser.parse_as_expr() {
+            if expr_parser.check(&crate::lexer::TokenType::Eof) {
+                return Type::Const(Box::new(expr));
+            }
         }
 
         Type::Unknown
@@ -2898,5 +2906,19 @@ mod specialization_identity_tests {
             (true, true),
             "unsupported indices must decline with a diagnostic"
         );
+    }
+
+    #[test]
+    fn parse_ty_str_preserves_cast_in_generic_argument() {
+        let env = GlobalAstEnv::build(&[]);
+        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(
+            crate::session::GlobalSession::new(1),
+        ));
+        let checker = TypeChecker::new(&env, &mut worker);
+        let ty = checker.parse_ty_str("N as usize");
+        match ty {
+            Type::Const(c) => assert!(matches!(*c, Expr::AsCast(_))),
+            other => panic!("expected Type::Const(AsCast), got {:?}", other),
+        }
     }
 }

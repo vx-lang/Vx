@@ -1,0 +1,19 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// A declaration with a built-in name cannot change its default memory space.
+// CHECK: E6016
+// CHECK: topology 'GPU' has the name of a built-in topology, so it cannot set `memory:`. A declaration with a built-in name can only add `dtypes:`
+
+Memory CPU_DRAM {}
+
+Memory CHIP_RAM {
+  capacity: 1 GB, bandwidth: 1 TB/s
+}
+
+Topology GPU {
+  memory: Memory::CHIP_RAM
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
