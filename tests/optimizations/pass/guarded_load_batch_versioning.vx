@@ -1,0 +1,37 @@
+//===- guarded_load_batch_versioning.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A batch of guarded loads checks monotonic affine indices.
+// The compiler versions the loop on the last condition.
+// The fast path executes all 16 loads without predicate tests.
+//
+// REQUIRES: flat-codegen
+// RUN: env -u VX_GPU_CHIP vxc %s --host default --emit-ptx -o %t.ptx
+// RUN: FileCheck %s --input-file=%t.ptx
+//
+// CHECK-LABEL: .visible .entry matvec8
+// CHECK-COUNT-16: ld.global.nc.b32
+// CHECK: setp.lt.s32 %p{{[0-9]+}}, %r{{[0-9]+}}, 31;
+
+fn matvec8(
+out: &mut Tensor<f32, [256], Memory::GPU_HBM>,
+m: &Tensor<f32, [256, 256], Memory::GPU_HBM>,
+v: &Tensor<f32, [256], Memory::GPU_HBM>
+) -> void {
+  spawn on(Topology::GPU[0]) {
+    for batch in 0..256 {
+      let mut sum = 0.0;
+      for k in 0..8 {
+        let col = batch + k * 32;
+        if col + 1 < 256 {
+          sum += m[batch][col] * v[col];
+        }
+      }
+      out[batch] = sum;
+    }
+  }
+}

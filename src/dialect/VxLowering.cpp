@@ -6949,6 +6949,471 @@ static LogicalResult lowerTasks(ModuleOp module) {
   return failure(stray.wasInterrupted());
 }
 
+static bool guardedLoadVersioningEnabled(Operation *op) {
+  ModuleOp module =
+      isa<ModuleOp>(op) ? cast<ModuleOp>(op) : op->getParentOfType<ModuleOp>();
+  return !module || !module->hasAttr("vx.no_guarded_load_versioning");
+}
+
+static std::optional<int64_t> getConstantIntValue(Value v) {
+  if (auto cst = v.getDefiningOp<arith::ConstantIntOp>())
+    return cst.value();
+  if (auto cst = v.getDefiningOp<arith::ConstantOp>())
+    if (auto attr = dyn_cast<IntegerAttr>(cst.getValue()))
+      return attr.getInt();
+  return std::nullopt;
+}
+
+static bool exprDependsOn(Value val, Value target) {
+  if (val == target)
+    return true;
+  Operation *op = val.getDefiningOp();
+  if (!op)
+    return false;
+  for (Value operand : op->getOperands()) {
+    if (exprDependsOn(operand, target))
+      return true;
+  }
+  return false;
+}
+
+static bool canHoistExprWithReplacement(Value val, Value targetVal,
+                                        Block *preHeader,
+                                        ArrayRef<Block *> loopBlocks,
+                                        DominanceInfo &domInfo) {
+  if (val == targetVal)
+    return true;
+  Operation *op = val.getDefiningOp();
+  if (!op)
+    return domInfo.dominates(val, preHeader->getTerminator());
+  if (!exprDependsOn(val, targetVal) &&
+      domInfo.dominates(op, preHeader->getTerminator()))
+    return true;
+  if (auto load = dyn_cast<memref::LoadOp>(op)) {
+    if (!domInfo.dominates(load.getMemref(), preHeader->getTerminator()))
+      return false;
+    for (Value idx : load.getIndices()) {
+      if (!domInfo.dominates(idx, preHeader->getTerminator()))
+        return false;
+    }
+    for (Block *b : loopBlocks) {
+      for (Operation &bOp : *b) {
+        if (auto st = dyn_cast<memref::StoreOp>(bOp)) {
+          if (st.getMemref() == load.getMemref())
+            return false;
+        }
+      }
+    }
+    return true;
+  }
+  if (!isa<arith::AddIOp, arith::SubIOp, arith::MulIOp, arith::IndexCastOp,
+           arith::ExtSIOp, arith::ExtUIOp>(op))
+    return false;
+  for (Value operand : op->getOperands()) {
+    if (!canHoistExprWithReplacement(operand, targetVal, preHeader, loopBlocks,
+                                     domInfo))
+      return false;
+  }
+  return true;
+}
+
+static Value cloneExprWithReplacement(Value val, Value targetVal,
+                                      Value replacementVal, OpBuilder &b,
+                                      Location loc, Block *preHeader,
+                                      DominanceInfo &domInfo,
+                                      llvm::DenseMap<Value, Value> &memo) {
+  if (val == targetVal)
+    return replacementVal;
+  auto it = memo.find(val);
+  if (it != memo.end())
+    return it->second;
+
+  Operation *op = val.getDefiningOp();
+  if (!op)
+    return val;
+
+  if (!exprDependsOn(val, targetVal) &&
+      domInfo.dominates(op, preHeader->getTerminator()))
+    return val;
+
+  if (auto load = dyn_cast<memref::LoadOp>(op)) {
+    Value newLoad =
+        b.create<memref::LoadOp>(loc, load.getMemref(), load.getIndices());
+    return memo[val] = newLoad;
+  }
+  if (auto cst = dyn_cast<arith::ConstantIntOp>(op)) {
+    return memo[val] =
+               b.create<arith::ConstantIntOp>(loc, cst.getType(), cst.value());
+  }
+  if (auto cst = dyn_cast<arith::ConstantIndexOp>(op)) {
+    return memo[val] = b.create<arith::ConstantIndexOp>(loc, cst.value());
+  }
+  if (auto cst = dyn_cast<arith::ConstantOp>(op)) {
+    return memo[val] = b.create<arith::ConstantOp>(loc, cst.getValue());
+  }
+  if (auto add = dyn_cast<arith::AddIOp>(op)) {
+    Value lhs =
+        cloneExprWithReplacement(add.getLhs(), targetVal, replacementVal, b,
+                                 loc, preHeader, domInfo, memo);
+    Value rhs =
+        cloneExprWithReplacement(add.getRhs(), targetVal, replacementVal, b,
+                                 loc, preHeader, domInfo, memo);
+    return memo[val] = b.create<arith::AddIOp>(loc, lhs, rhs);
+  }
+  if (auto sub = dyn_cast<arith::SubIOp>(op)) {
+    Value lhs =
+        cloneExprWithReplacement(sub.getLhs(), targetVal, replacementVal, b,
+                                 loc, preHeader, domInfo, memo);
+    Value rhs =
+        cloneExprWithReplacement(sub.getRhs(), targetVal, replacementVal, b,
+                                 loc, preHeader, domInfo, memo);
+    return memo[val] = b.create<arith::SubIOp>(loc, lhs, rhs);
+  }
+  if (auto mul = dyn_cast<arith::MulIOp>(op)) {
+    Value lhs =
+        cloneExprWithReplacement(mul.getLhs(), targetVal, replacementVal, b,
+                                 loc, preHeader, domInfo, memo);
+    Value rhs =
+        cloneExprWithReplacement(mul.getRhs(), targetVal, replacementVal, b,
+                                 loc, preHeader, domInfo, memo);
+    return memo[val] = b.create<arith::MulIOp>(loc, lhs, rhs);
+  }
+  if (auto castOp = dyn_cast<arith::IndexCastOp>(op)) {
+    Value in =
+        cloneExprWithReplacement(castOp.getIn(), targetVal, replacementVal, b,
+                                 loc, preHeader, domInfo, memo);
+    return memo[val] = b.create<arith::IndexCastOp>(loc, castOp.getType(), in);
+  }
+  if (auto extOp = dyn_cast<arith::ExtSIOp>(op)) {
+    Value in =
+        cloneExprWithReplacement(extOp.getIn(), targetVal, replacementVal, b,
+                                 loc, preHeader, domInfo, memo);
+    return memo[val] = b.create<arith::ExtSIOp>(loc, extOp.getType(), in);
+  }
+  if (auto extOp = dyn_cast<arith::ExtUIOp>(op)) {
+    Value in =
+        cloneExprWithReplacement(extOp.getIn(), targetVal, replacementVal, b,
+                                 loc, preHeader, domInfo, memo);
+    return memo[val] = b.create<arith::ExtUIOp>(loc, extOp.getType(), in);
+  }
+  return memo[val] = val;
+}
+
+struct CountedGuardedLoop {
+  Block *header = nullptr;
+  Block *body = nullptr;
+  Block *guarded = nullptr;
+  Block *join = nullptr;
+  Block *latch = nullptr;
+  Block *preHeader = nullptr;
+  Block *exit = nullptr;
+
+  memref::AllocaOp ivAlloca;
+  Value ivInBody;
+  int64_t lb = 0;
+  int64_t ub = 0;
+  int64_t step = 1;
+  int64_t tripCount = 0;
+
+  Value guardExpr;
+  Value guardLimit;
+  arith::CmpIPredicate guardPredicate = arith::CmpIPredicate::slt;
+};
+
+static bool findGuardedLoopCandidate(
+    gpu::GPUFuncOp gpuFunc,
+    const llvm::SmallPtrSetImpl<Block *> &transformedHeaders,
+    CountedGuardedLoop &c) {
+  for (Block &header : gpuFunc.getBody()) {
+    if (transformedHeaders.contains(&header))
+      continue;
+
+    auto condBr = dyn_cast_or_null<cf::CondBranchOp>(header.getTerminator());
+    if (!condBr)
+      continue;
+
+    auto cmp = condBr.getCondition().getDefiningOp<arith::CmpIOp>();
+    if (!cmp)
+      continue;
+    arith::CmpIPredicate pred = cmp.getPredicate();
+    if (pred != arith::CmpIPredicate::slt && pred != arith::CmpIPredicate::sle)
+      continue;
+
+    auto ivLoad = cmp.getLhs().getDefiningOp<memref::LoadOp>();
+    if (!ivLoad || !ivLoad.getIndices().empty())
+      continue;
+    auto ivAlloca = ivLoad.getMemref().getDefiningOp<memref::AllocaOp>();
+    if (!ivAlloca)
+      continue;
+
+    SmallVector<Block *, 2> preds(header.getPredecessors());
+    if (preds.size() != 2)
+      continue;
+
+    Block *body = condBr.getTrueDest();
+    Block *exit = condBr.getFalseDest();
+
+    Block *latch = nullptr;
+    Block *preHeader = nullptr;
+    for (Block *p : preds) {
+      if (auto br = dyn_cast_or_null<cf::BranchOp>(p->getTerminator())) {
+        if (br.getDest() == &header) {
+          bool hasStep = false;
+          for (Operation &op : *p) {
+            if (auto st = dyn_cast<memref::StoreOp>(op)) {
+              if (st.getMemref() == ivAlloca.getResult()) {
+                if (auto add = st.getValue().getDefiningOp<arith::AddIOp>()) {
+                  hasStep = true;
+                  break;
+                }
+              }
+            }
+          }
+          if (hasStep)
+            latch = p;
+          else
+            preHeader = p;
+        }
+      }
+    }
+    if (!latch || !preHeader)
+      continue;
+
+    int64_t stepVal = 0;
+    for (Operation &op : *latch) {
+      if (auto st = dyn_cast<memref::StoreOp>(op)) {
+        if (st.getMemref() == ivAlloca.getResult()) {
+          if (auto add = st.getValue().getDefiningOp<arith::AddIOp>()) {
+            if (auto cst = getConstantIntValue(add.getRhs()))
+              stepVal = *cst;
+            else if (auto cst = getConstantIntValue(add.getLhs()))
+              stepVal = *cst;
+          }
+        }
+      }
+    }
+    if (stepVal <= 0)
+      continue;
+
+    int64_t lbVal = 0;
+    bool foundLb = false;
+    for (Operation &op : *preHeader) {
+      if (auto st = dyn_cast<memref::StoreOp>(op)) {
+        if (st.getMemref() == ivAlloca.getResult()) {
+          if (auto cst = getConstantIntValue(st.getValue())) {
+            lbVal = *cst;
+            foundLb = true;
+          }
+        }
+      }
+    }
+    if (!foundLb)
+      continue;
+
+    int64_t ubVal = 0;
+    bool foundUb = false;
+    if (auto ubCst = getConstantIntValue(cmp.getRhs())) {
+      ubVal = *ubCst;
+      foundUb = true;
+    } else if (auto ubLoad = cmp.getRhs().getDefiningOp<memref::LoadOp>()) {
+      Value ubMem = ubLoad.getMemref();
+      for (Operation &op : *preHeader) {
+        if (auto st = dyn_cast<memref::StoreOp>(op)) {
+          if (st.getMemref() == ubMem) {
+            if (auto cst = getConstantIntValue(st.getValue())) {
+              ubVal = *cst;
+              foundUb = true;
+            }
+          }
+        }
+      }
+    }
+    if (!foundUb)
+      continue;
+
+    int64_t diff = ubVal - lbVal;
+    if (pred == arith::CmpIPredicate::sle)
+      diff += 1;
+    if (diff <= 0)
+      continue;
+    int64_t tripCount = diff / stepVal;
+    if (tripCount < 4 || tripCount > 64)
+      continue;
+
+    auto bodyCondBr = dyn_cast_or_null<cf::CondBranchOp>(body->getTerminator());
+    if (!bodyCondBr)
+      continue;
+
+    Block *guarded = bodyCondBr.getTrueDest();
+    Block *join = bodyCondBr.getFalseDest();
+
+    auto guardCmp = bodyCondBr.getCondition().getDefiningOp<arith::CmpIOp>();
+    if (!guardCmp)
+      continue;
+    arith::CmpIPredicate gpred = guardCmp.getPredicate();
+    if (gpred != arith::CmpIPredicate::slt &&
+        gpred != arith::CmpIPredicate::sle &&
+        gpred != arith::CmpIPredicate::ult &&
+        gpred != arith::CmpIPredicate::ule)
+      continue;
+
+    Value ivInBody;
+    for (Operation &op : *body) {
+      if (auto ld = dyn_cast<memref::LoadOp>(op)) {
+        if (ld.getMemref() == ivAlloca.getResult()) {
+          ivInBody = ld.getResult();
+          break;
+        }
+      }
+    }
+    if (!ivInBody)
+      continue;
+
+    if (guarded->getSinglePredecessor() != body)
+      continue;
+    auto guardedBr = dyn_cast_or_null<cf::BranchOp>(guarded->getTerminator());
+    if (!guardedBr || guardedBr.getDest() != join)
+      continue;
+
+    if (join == latch) {
+      if (std::distance(latch->pred_begin(), latch->pred_end()) != 2)
+        continue;
+    } else {
+      if (std::distance(join->pred_begin(), join->pred_end()) != 2)
+        continue;
+      auto joinBr = dyn_cast_or_null<cf::BranchOp>(join->getTerminator());
+      if (!joinBr || joinBr.getDest() != latch)
+        continue;
+      if (std::distance(latch->pred_begin(), latch->pred_end()) != 1)
+        continue;
+    }
+
+    SmallVector<Block *, 5> loopBlocks;
+    loopBlocks.push_back(&header);
+    loopBlocks.push_back(body);
+    loopBlocks.push_back(guarded);
+    loopBlocks.push_back(join);
+    if (latch != join)
+      loopBlocks.push_back(latch);
+
+    DominanceInfo domInfo(gpuFunc);
+    if (!canHoistExprWithReplacement(guardCmp.getLhs(), ivInBody, preHeader,
+                                     loopBlocks, domInfo))
+      continue;
+    if (!canHoistExprWithReplacement(guardCmp.getRhs(), ivInBody, preHeader,
+                                     loopBlocks, domInfo))
+      continue;
+
+    bool safeLoop = true;
+    for (Block *b : {body, guarded, join}) {
+      for (Operation &op : *b) {
+        if (auto st = dyn_cast<memref::StoreOp>(op)) {
+          auto memref = dyn_cast<MemRefType>(st.getMemref().getType());
+          if (!memref || memref.getRank() != 0) {
+            safeLoop = false;
+            break;
+          }
+          if (!st.getMemref().getDefiningOp<memref::AllocaOp>()) {
+            safeLoop = false;
+            break;
+          }
+        } else if (op.hasTrait<OpTrait::IsTerminator>()) {
+          continue;
+        } else if (isa<memref::LoadOp, memref::ReinterpretCastOp>(op) ||
+                   (op.getDialect() &&
+                    op.getDialect()->getNamespace() == "arith")) {
+          continue;
+        } else {
+          safeLoop = false;
+          break;
+        }
+      }
+      if (!safeLoop)
+        break;
+    }
+    if (!safeLoop)
+      continue;
+
+    c.header = &header;
+    c.body = body;
+    c.guarded = guarded;
+    c.join = join;
+    c.latch = latch;
+    c.preHeader = preHeader;
+    c.exit = exit;
+    c.ivAlloca = ivAlloca;
+    c.ivInBody = ivInBody;
+    c.lb = lbVal;
+    c.ub = ubVal;
+    c.step = stepVal;
+    c.tripCount = tripCount;
+    c.guardExpr = guardCmp.getLhs();
+    c.guardLimit = guardCmp.getRhs();
+    c.guardPredicate = gpred;
+    return true;
+  }
+  return false;
+}
+
+static void versionGuardedLoads(gpu::GPUFuncOp gpuFunc) {
+  llvm::SmallPtrSet<Block *, 8> transformedHeaders;
+  CountedGuardedLoop c;
+  while (findGuardedLoopCandidate(gpuFunc, transformedHeaders, c)) {
+    transformedHeaders.insert(c.header);
+
+    int64_t maxIvVal = c.lb + (c.tripCount - 1) * c.step;
+    OpBuilder preB(c.preHeader->getTerminator());
+    Location loc = c.body->getTerminator()->getLoc();
+    Type ivTy = c.ivInBody.getType();
+    Value maxIvConst = preB.create<arith::ConstantIntOp>(loc, ivTy, maxIvVal);
+
+    DominanceInfo domInfo(gpuFunc);
+    llvm::DenseMap<Value, Value> memo;
+    Value maxGuardExpr =
+        cloneExprWithReplacement(c.guardExpr, c.ivInBody, maxIvConst, preB, loc,
+                                 c.preHeader, domInfo, memo);
+    Value maxLimit =
+        cloneExprWithReplacement(c.guardLimit, c.ivInBody, maxIvConst, preB,
+                                 loc, c.preHeader, domInfo, memo);
+    Value versionCond = preB.create<arith::CmpIOp>(loc, c.guardPredicate,
+                                                   maxGuardExpr, maxLimit);
+
+    SmallVector<Block *> loopBlocks;
+    loopBlocks.push_back(c.header);
+    loopBlocks.push_back(c.body);
+    loopBlocks.push_back(c.guarded);
+    loopBlocks.push_back(c.join);
+    if (c.latch != c.join)
+      loopBlocks.push_back(c.latch);
+
+    IRMapping map;
+    for (Block *b : loopBlocks) {
+      Block *nb = gpuFunc.addBlock();
+      map.map(b, nb);
+    }
+    for (Block *b : loopBlocks) {
+      Block *nb = map.lookup(b);
+      OpBuilder nbBuilder = OpBuilder::atBlockEnd(nb);
+      for (Operation &op : *b)
+        nbBuilder.clone(op, map);
+    }
+
+    transformedHeaders.insert(map.lookup(c.header));
+
+    Block *clonedBody = map.lookup(c.body);
+    Operation *oldBodyTerm = clonedBody->getTerminator();
+    OpBuilder bodyB(oldBodyTerm);
+    bodyB.create<cf::BranchOp>(oldBodyTerm->getLoc(), map.lookup(c.guarded));
+    oldBodyTerm->erase();
+
+    Operation *oldPreTerm = c.preHeader->getTerminator();
+    OpBuilder pB(oldPreTerm);
+    pB.create<cf::CondBranchOp>(oldPreTerm->getLoc(), versionCond,
+                                map.lookup(c.header), c.header);
+    oldPreTerm->erase();
+  }
+}
+
 struct ConvertVxToStandardPass
     : public PassWrapper<ConvertVxToStandardPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConvertVxToStandardPass)
@@ -7670,6 +8135,11 @@ struct ConvertVxToStandardPass
           end.create<gpu::ReturnOp>(kernel.getLoc());
         }
       }
+
+      // On a GPU, version batches of guarded loads on the last guard so that
+      // loads are not serialized by predicate exhaustion on sm_90.
+      if (guardedLoadVersioningEnabled(gpuFunc))
+        versionGuardedLoads(gpuFunc);
     }
   }
 
