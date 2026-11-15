@@ -3631,12 +3631,98 @@ static bool fitsSimdgroupMatrices(vx::LaneMatmulOp op) {
          fits(op.getRhs(), false);
 }
 
+static bool startsAtMultipleOf(Value tile, int64_t n);
+
+/// The alloca that `buffer` views, through views and the base buffer of their
+/// metadata, or null.
+static memref::AllocaOp allocaBehind(Value buffer) {
+  if (auto meta = buffer.getDefiningOp<memref::ExtractStridedMetadataOp>())
+    return allocaBehind(meta.getSource());
+  if (Operation *def = buffer.getDefiningOp();
+      isa_and_nonnull<memref::ReinterpretCastOp, memref::SubViewOp,
+                      memref::CastOp>(def))
+    return allocaBehind(def->getOperand(0));
+  return buffer.getDefiningOp<memref::AllocaOp>();
+}
+
+/// Whether the index `v` is a multiple of `n`: a constant, the offset or a
+/// static stride of a view that is one, or a sum or product of such values.
+static bool knownMultipleOf(OpFoldResult v, int64_t n) {
+  if (std::optional<int64_t> c = getConstantIntValue(v))
+    return *c % n == 0;
+  Operation *def = cast<Value>(v).getDefiningOp();
+  if (auto meta = dyn_cast_or_null<memref::ExtractStridedMetadataOp>(def)) {
+    if (v == OpFoldResult(meta.getOffset()))
+      return startsAtMultipleOf(meta.getSource(), n);
+    SmallVector<int64_t> strides;
+    int64_t offset;
+    if (failed(cast<MemRefType>(meta.getSource().getType())
+                   .getStridesAndOffset(strides, offset)))
+      return false;
+    for (auto [stride, value] : llvm::zip(strides, meta.getStrides()))
+      if (v == OpFoldResult(value))
+        return !ShapedType::isDynamic(stride) && stride % n == 0;
+    return false;
+  }
+  if (auto mul = dyn_cast_or_null<arith::MulIOp>(def))
+    return knownMultipleOf(mul.getLhs(), n) || knownMultipleOf(mul.getRhs(), n);
+  if (auto add = dyn_cast_or_null<arith::AddIOp>(def))
+    return knownMultipleOf(add.getLhs(), n) && knownMultipleOf(add.getRhs(), n);
+  if (auto cast = dyn_cast_or_null<arith::IndexCastOp>(def))
+    return knownMultipleOf(cast.getIn(), n);
+  return false;
+}
+
+/// Whether the view `tile` of an alloca starts a multiple of `n` elements
+/// after the start of the alloca.
+static bool startsAtMultipleOf(Value tile, int64_t n) {
+  Operation *def = tile.getDefiningOp();
+  if (isa_and_nonnull<memref::AllocaOp>(def))
+    return true;
+  if (auto cast = dyn_cast_or_null<memref::CastOp>(def))
+    return startsAtMultipleOf(cast.getSource(), n);
+  // The offset of a reinterpret cast counts from the start of the alloca.
+  if (auto view = dyn_cast_or_null<memref::ReinterpretCastOp>(def))
+    return allocaBehind(view.getSource()) &&
+           knownMultipleOf(view.getMixedOffsets()[0], n);
+  if (auto view = dyn_cast_or_null<memref::SubViewOp>(def)) {
+    SmallVector<int64_t> strides;
+    int64_t offset;
+    if (failed(view.getSourceType().getStridesAndOffset(strides, offset)) ||
+        !startsAtMultipleOf(view.getSource(), n))
+      return false;
+    for (auto [at, stride] : llvm::zip(view.getMixedOffsets(), strides))
+      if (ShapedType::isDynamic(stride) ||
+          (stride % n && !knownMultipleOf(at, n)))
+        return false;
+    return true;
+  }
+  return false;
+}
+
+/// Whether `ldmatrix` can read `tile`: a 2-D tile of 16-bit elements in
+/// shared memory, in rows of 16-byte multiples that start at a multiple of 16
+/// bytes.
+static bool ldmatrixFits(Value tile) {
+  auto type = cast<MemRefType>(tile.getType());
+  auto space = dyn_cast_or_null<IntegerAttr>(type.getMemorySpace());
+  SmallVector<int64_t> strides;
+  int64_t offset;
+  return type.getRank() == 2 && type.getElementTypeBitWidth() == 16 && space &&
+         space.getInt() == 3 &&
+         succeeded(type.getStridesAndOffset(strides, offset)) &&
+         strides[1] == 1 && !ShapedType::isDynamic(strides[0]) &&
+         strides[0] % 8 == 0 && startsAtMultipleOf(tile, 8);
+}
+
 /// A lane matmul on the tensor cores. Each 16 x 8 piece of `acc` is one chain
-/// of `mma.sync.m16n8k16`, one for each 16 columns of `lhs`. Lane `l` loads the
-/// elements of its fragments from the tiles: row `l / 4` and `l / 4 + 8`, and
-/// the columns `2 * (l % 4)` and the one after. The tensor core adds the
-/// products in an order of its own, so the last bits can differ from the
-/// expansion on the host.
+/// of `mma.sync.m16n8k16`, one for each 16 columns of `lhs`. Lane `l` holds
+/// the elements of row `l / 4` and `l / 4 + 8`, and of the columns
+/// `2 * (l % 4)` and the one after. When `ldmatrixRowStride` accepts a tile,
+/// `ldmatrix` loads its fragments, transposed for `rhs`, and otherwise each
+/// lane loads its elements one at a time. The tensor core adds the products in
+/// an order of its own, so the last bits can differ from the expansion on the
+/// host.
 static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
                                     Type elem, Value fragments = {}) {
   Location loc = op.getLoc();
@@ -3674,6 +3760,27 @@ static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
   };
   auto add = [&](OpBuilder &nb, Location l, Value x, Value y) -> Value {
     return nb.create<arith::AddIOp>(l, x, y);
+  };
+  // For `ldmatrix`, lane `l` gives the address of row `l % 16` of a 16 x 16
+  // part of `lhs`, at column 8 for the lanes from 16 on. In `rhs` it gives
+  // the same row, and `.trans` turns the rows of K into the columns of B.
+  bool lhsLdmatrix = ldmatrixFits(op.getLhs());
+  bool rhsLdmatrix = ldmatrixFits(op.getRhs());
+  Value row16 = b.create<arith::RemUIOp>(loc, lane, index(16));
+  Value half8 = b.create<arith::MulIOp>(
+      loc, b.create<arith::DivUIOp>(loc, lane, index(16)), index(8));
+  auto ldmatrix = [&](OpBuilder &nb, Location l, Value tile, Value i, Value j,
+                      int32_t num, bool transpose) -> SmallVector<Value> {
+    Value loaded =
+        nb.create<nvgpu::LdMatrixOp>(l, VectorType::get({num, 2}, elem), tile,
+                                     ValueRange{i, j}, transpose, num);
+    SmallVector<Value> regs;
+    for (int64_t r = 0; r < num; ++r) {
+      Value pair = nb.create<vector::ExtractOp>(l, loaded, r);
+      regs.push_back(elem.isF16() ? pair
+                                  : nb.create<LLVM::BitcastOp>(l, i32, pair));
+    }
+    return regs;
   };
   Type result = LLVM::LLVMStructType::getLiteral(ctx, {f32, f32, f32, f32});
   std::array<NVVM::MMATypes, 2> types = {
@@ -3716,12 +3823,21 @@ static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
             return kb.create<memref::LoadOp>(kl, op.getRhs(),
                                              ValueRange{i, col});
           };
-          SmallVector<Value> a = {pack(kb, kl, lhs(row0, k0), lhs(row0, k1)),
-                                  pack(kb, kl, lhs(row1, k0), lhs(row1, k1)),
-                                  pack(kb, kl, lhs(row0, k8), lhs(row0, k9)),
-                                  pack(kb, kl, lhs(row1, k8), lhs(row1, k9))};
-          SmallVector<Value> bv = {pack(kb, kl, rhs(k0), rhs(k1)),
-                                   pack(kb, kl, rhs(k8), rhs(k9))};
+          SmallVector<Value> a =
+              lhsLdmatrix
+                  ? ldmatrix(kb, kl, op.getLhs(), add(kb, kl, top, row16),
+                             add(kb, kl, depth, half8), 4, /*transpose=*/false)
+                  : SmallVector<Value>{
+                        pack(kb, kl, lhs(row0, k0), lhs(row0, k1)),
+                        pack(kb, kl, lhs(row1, k0), lhs(row1, k1)),
+                        pack(kb, kl, lhs(row0, k8), lhs(row0, k9)),
+                        pack(kb, kl, lhs(row1, k8), lhs(row1, k9))};
+          SmallVector<Value> bv =
+              rhsLdmatrix ? ldmatrix(kb, kl, op.getRhs(),
+                                     add(kb, kl, depth, row16), left, 2,
+                                     /*transpose=*/true)
+                          : SmallVector<Value>{pack(kb, kl, rhs(k0), rhs(k1)),
+                                               pack(kb, kl, rhs(k8), rhs(k9))};
           auto mma = kb.create<NVVM::MmaOp>(
               kl, result, a, bv, c, ArrayRef<int64_t>{16, 8, 16}, std::nullopt,
               std::nullopt, types, layouts);
@@ -5856,7 +5972,8 @@ struct ConvertVxToStandardPass
     registry.insert<async::AsyncDialect, cf::ControlFlowDialect,
                     func::FuncDialect, LLVM::LLVMDialect, memref::MemRefDialect,
                     arith::ArithDialect, gpu::GPUDialect, math::MathDialect,
-                    scf::SCFDialect, NVVM::NVVMDialect, nvgpu::NVGPUDialect>();
+                    scf::SCFDialect, NVVM::NVVMDialect, nvgpu::NVGPUDialect,
+                    vector::VectorDialect>();
   }
 
   /// Give every device kernel a `gpu.func` beside its `vx.kernel`.
