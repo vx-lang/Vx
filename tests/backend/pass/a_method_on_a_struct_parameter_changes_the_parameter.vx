@@ -45,7 +45,11 @@ fn two_bumps_through_a_reference(c : Counter) -> void {
 }
 
 fn main() -> i32 {
-  three_bumps(Counter { next: AtomicI64::new(0) });
-  two_bumps_through_a_reference(Counter { next: AtomicI64::new(3) });
+  three_bumps(Counter {
+    next: AtomicI64::new(0)
+  });
+  two_bumps_through_a_reference(Counter {
+    next: AtomicI64::new(3)
+  });
   return 0;
 }
