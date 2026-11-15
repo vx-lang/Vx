@@ -183,6 +183,14 @@ value, and otherwise from 0. Each 8 values of `k` add one `simdgroup_multiply_ac
 The GPU adds the products in an order of its own, so a result can differ from the CPU copy in its
 last bits, as on the tensor cores.
 
+The accumulator can stay in the simdgroup matrices of the subgroups, with no tile in shared memory,
+as on an NVIDIA GPU. This happens when each other use of the tile is a `lanes::fill` of `acc[w]`,
+a `lanes::copy` out of it to an `f32` tensor of 2 dimensions, or another matmul that adds to it, and
+`w` is the index of a subgroup loop that gives each subgroup one pass at most. The matmul then
+neither loads nor stores the matrices. The copy stores each 8 x 8 piece that is inside the tensor
+with one `simdgroup_store`. For a piece that goes past the end of the tensor, each lane stores its
+elements that are inside.
+
 Each other matmul uses the lanes of the subgroup: they share the elements of the result, and each
 lane computes its elements in the order above.
 
