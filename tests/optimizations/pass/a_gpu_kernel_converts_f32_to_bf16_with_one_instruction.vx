@@ -1,0 +1,76 @@
+//===- a_gpu_kernel_converts_f32_to_bf16_with_one_instruction.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `x as bf16` in a kernel for an NVIDIA GPU from sm_80 on is one `cvt.rn.bf16.f32`, which rounds
+// to the nearest even value and keeps subnormals. The CPU copy of the kernel rounds the same way
+// with integer operations, because an x86 CPU with AVX512-BF16 would flush a subnormal to zero.
+// The values: 1, two ties that round to the even neighbour (1 + 2^-8 to 1, and 1 + 3 * 2^-8 to
+// 1 + 2^-6), a value just above a tie that rounds up, an f32 subnormal that stays a bf16 subnormal
+// (11 * 2^-133), -0, NaN and 0.1.
+//
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s --check-prefix=PTX < %t.ptx
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ast.ptx
+// RUN: FileCheck %s --check-prefix=PTX < %t.ast.ptx
+// PTX-LABEL: .entry to_bf16(
+// PTX-NOT: setp.nan.f32
+// PTX: cvt.rn.bf16.f32
+// PTX-NOT: setp.nan.f32
+// PTX: ret;
+//
+// The code of the CPU, and an Apple GPU kernel, still round with integer operations.
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-llvm 2>&1 | FileCheck %s --check-prefix=HOST
+// HOST-NOT: llvm.fptrunc {{.*}} to bf16
+// HOST: llvm.func @main(
+// HOST-NOT: llvm.fptrunc {{.*}} to bf16
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx --emit-msl -o %t.metal
+// RUN: FileCheck %s --check-prefix=MSL --input-file=%t.metal
+// MSL-NOT: (bfloat)
+// MSL: as_type<bfloat>
+// MSL-NOT: (bfloat)
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: 0: 1
+// CHECK-NEXT: 1: 1
+// CHECK-NEXT: 2: 1.015625
+// CHECK-NEXT: 3: 1.0078125
+// CHECK-NEXT: 4: 0.00000000000000000000000000000000000000101019
+// CHECK-NEXT: 5: -0
+// CHECK-NEXT: 6: NaN
+// CHECK-NEXT: 7: 0.100097656
+
+// Each lane converts one f32 to bf16.
+pub fn to_bf16(out : &mut Tensor<bf16, [?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for t in 0..8 across lanes(32) {
+        out[t] = x[t] as bf16;
+      }
+    }
+  }
+}
+
+fn main() -> i32 {
+  let mut v = Tensor<f32, [8]>::fill(0.0);
+  v[0] = 1.0;
+  v[1] = 1.00390625;
+  v[2] = 1.01171875;
+  v[3] = 1.0039065;
+  v[4] = 0.000000000000000000000000000000000000001;
+  v[5] = -0.0;
+  v[6] = 0.0 / 0.0;
+  v[7] = 0.1;
+  let x = transfer(v, Memory::HBM);
+  let mut out = transfer(Tensor<bf16, [8]>::fill(0.0 as bf16), Memory::HBM);
+  to_bf16(&mut out, &x);
+  let o = transfer(out, Memory::CPU_DRAM);
+  for i in 0..8 {
+    println!("{}: {}", i, o[i] as f32);
+  }
+  return 0;
+}

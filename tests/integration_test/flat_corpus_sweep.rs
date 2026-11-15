@@ -230,6 +230,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/lane_copies_of_rows_by_id.vx", // needs --machine
             "optimizations/pass/lane_copies_of_rows_on_the_gpu.vx", // needs --machine
             // needs --machine
+            "optimizations/pass/a_gpu_kernel_converts_f32_to_bf16_with_one_instruction.vx",
+            // needs --machine
             "optimizations/pass/a_transfer_async_to_a_gpu_copies_in_the_background.vx",
             "optimizations/pass/across_loops_with_auto_schedule_levels_carry_their_level.vx", // needs -f
             "frontend/pass/packages/import_from_a_package.vx", // needs --package
