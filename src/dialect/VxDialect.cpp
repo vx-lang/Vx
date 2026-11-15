@@ -9,6 +9,7 @@ using namespace mlir::vx;
 
 // Include the auto-generated Dialect CPP.
 #include "VxDialect.cpp.inc"
+#include "VxOpInterfaces.cpp.inc"
 
 // Include the auto-generated Operation CPP.
 #define GET_OP_CLASSES

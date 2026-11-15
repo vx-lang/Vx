@@ -3657,16 +3657,6 @@ static void expandLaneFillOnDevice(OpBuilder &b, vx::LaneFillOp op) {
   }
 }
 
-/// Replaces a lane sort with its expansion: the host's loops with `serial`,
-/// and otherwise the expansion that `device` picks.
-static void expandLaneSort(OpBuilder &b, vx::LaneSortOp op, bool device) {
-  if (device && !op.getSerial())
-    expandLaneSortOnDevice(b, op);
-  else
-    expandLaneSortOnHost(b, op);
-  op.erase();
-}
-
 /// Element (i, j) of a lane matmul: the sum of the products from 0, in the
 /// order of `k`, and then the old value of the element when the op adds.
 static void laneMatmulElement(OpBuilder &b, Location loc, vx::LaneMatmulOp op,
@@ -5366,9 +5356,7 @@ static bool runsOnDevice(Operation *op, ModuleOp module,
   // Rewritten to `gpu.return` and `gpu.barrier` in the device clone (Vx#379).
   // A `vx.launch_dim` leaves the region when it is outlined.
   if (isa<vx::YieldOp, vx::ReturnOp, vx::BarrierOp, vx::LaunchDimOp,
-          vx::LaneReduceOp, vx::LaneArgmaxOp, vx::LaneSortOp, vx::LaneMatmulOp,
-          vx::LaneCopyAsyncOp, vx::LaneCopyAsyncMapOp, vx::LaneCopyWaitOp,
-          vx::LaneCopyOp, vx::LaneFillOp>(op))
+          vx::LaneOpInterface>(op))
     return true;
   // The SPIR-V path's own rules, from the one place that holds them. NVPTX
   // compiles the shapes they name, so they apply to this pipeline alone.
@@ -7106,12 +7094,6 @@ struct ConvertVxToStandardPass
         });
         reductions = keepLaneOwnTilesInRegisters(gpuFunc, reductions);
         reductions = expandLaneReductionsFromRegisters(gpuFunc, reductions);
-        SmallVector<vx::LaneSortOp> sorts;
-        gpuFunc.walk([&](vx::LaneSortOp op) { sorts.push_back(op); });
-        for (vx::LaneSortOp op : sorts) {
-          OpBuilder b(op);
-          expandLaneSort(b, op, /*device=*/true);
-        }
         SmallVector<vx::LaneMatmulOp> matmuls;
         gpuFunc.walk([&](vx::LaneMatmulOp op) { matmuls.push_back(op); });
         DevicePipeline pipeline = pipelineOfKernel(kernel);
@@ -7145,29 +7127,22 @@ struct ConvertVxToStandardPass
           expandLaneMatmul(b, op, /*device=*/true, tensorCores,
                            simdgroupMatrices);
         }
-        SmallVector<vx::LaneFillOp> fills;
-        gpuFunc.walk([&](vx::LaneFillOp op) { fills.push_back(op); });
-        for (vx::LaneFillOp op : fills) {
+        // Each lane op whose expansion looks at no other op. After the
+        // matmuls, which can keep a tile in registers when its fills and
+        // copies are still ops. The Metal printer prints a fill or copy of a
+        // tile in simdgroup matrices.
+        SmallVector<vx::LaneOpInterface> lanes;
+        gpuFunc.walk([&](vx::LaneOpInterface op) { lanes.push_back(op); });
+        for (vx::LaneOpInterface op : lanes) {
           if (op->hasAttr(simdgroupRegistersAttr))
             continue;
           OpBuilder b(op);
-          if (op.getSerial())
-            expandLaneFillOnHost(b, op);
-          else
-            expandLaneFillOnDevice(b, op);
-          op.erase();
-        }
-        SmallVector<vx::LaneCopyOp> copiesNow;
-        gpuFunc.walk([&](vx::LaneCopyOp op) { copiesNow.push_back(op); });
-        for (vx::LaneCopyOp op : copiesNow) {
-          if (op->hasAttr(simdgroupRegistersAttr))
+          FailureOr<Value> v = op.expandInKernel(b);
+          if (failed(v))
             continue;
-          OpBuilder b(op);
-          if (op.getSerial())
-            expandLaneCopyNowOnHost(b, op);
-          else
-            expandLaneCopyNowOnDevice(b, op);
-          op.erase();
+          if (*v)
+            op->getResult(0).replaceAllUsesWith(*v);
+          op->erase();
         }
         LaneCopyState copies{gpuFunc};
         SmallVector<Operation *> copyOps;
@@ -7197,6 +7172,15 @@ struct ConvertVxToStandardPass
             expandLaneReduction(b, cast<vx::LaneArgmaxOp>(op), /*device=*/true);
         }
         swizzleLdmatrixTiles(gpuFunc);
+        // Only what the printer of the Apple GPU prints stays: a matmul, and
+        // a fill or copy of a tile in simdgroup matrices.
+        gpuFunc.walk([&](vx::LaneOpInterface op) {
+          if (!(simdgroupMatrices && (isa<vx::LaneMatmulOp>(op) ||
+                                      op->hasAttr(simdgroupRegistersAttr))))
+            llvm::report_fatal_error(
+                llvm::Twine("the device copy of a kernel did not expand `") +
+                op->getName().getStringRef() + "`");
+        });
       }
 
       // Every launch has the block of a `vx.launch_block` that is a number, so
@@ -8645,82 +8629,90 @@ struct BarrierOpLowering : public OpRewritePattern<vx::BarrierOp> {
   }
 };
 
-/// The host half of the lane reductions: the loops of the same order.
-template <typename OpTy>
-struct LaneReductionLowering : public OpRewritePattern<OpTy> {
-  using OpRewritePattern<OpTy>::OpRewritePattern;
+//===----------------------------------------------------------------------===//
+// The two expansions of each lane op (`LaneOpInterface`)
+//===----------------------------------------------------------------------===//
 
-  LogicalResult matchAndRewrite(OpTy op,
+// The methods of the ops are outside the anonymous namespace of this file.
+} // namespace
+
+Value vx::LaneReduceOp::expandOnHost(OpBuilder &b) {
+  LaneReduction r = laneReduction(*this);
+  return laneResult(r, expandLaneReductionOnHost(b, r));
+}
+
+Value vx::LaneArgmaxOp::expandOnHost(OpBuilder &b) {
+  LaneReduction r = laneReduction(*this);
+  return laneResult(r, expandLaneReductionOnHost(b, r));
+}
+
+Value vx::LaneSortOp::expandOnHost(OpBuilder &b) {
+  expandLaneSortOnHost(b, *this);
+  return Value();
+}
+
+FailureOr<Value> vx::LaneSortOp::expandInKernel(OpBuilder &b) {
+  if (getSerial())
+    return expandOnHost(b);
+  expandLaneSortOnDevice(b, *this);
+  return Value();
+}
+
+Value vx::LaneMatmulOp::expandOnHost(OpBuilder &b) {
+  expandLaneMatmulOnHost(b, *this);
+  return Value();
+}
+
+Value vx::LaneCopyAsyncOp::expandOnHost(OpBuilder &b) {
+  expandLaneCopyOnHost(b, laneCopyOf(getOperation()));
+  return Value();
+}
+
+Value vx::LaneCopyAsyncMapOp::expandOnHost(OpBuilder &b) {
+  expandLaneCopyOnHost(b, laneCopyOf(getOperation()));
+  return Value();
+}
+
+/// The copy ended at its start, so there is nothing to wait for.
+Value vx::LaneCopyWaitOp::expandOnHost(OpBuilder &) { return Value(); }
+
+Value vx::LaneCopyOp::expandOnHost(OpBuilder &b) {
+  expandLaneCopyNowOnHost(b, *this);
+  return Value();
+}
+
+FailureOr<Value> vx::LaneCopyOp::expandInKernel(OpBuilder &b) {
+  if (getSerial())
+    return expandOnHost(b);
+  expandLaneCopyNowOnDevice(b, *this);
+  return Value();
+}
+
+Value vx::LaneFillOp::expandOnHost(OpBuilder &b) {
+  expandLaneFillOnHost(b, *this);
+  return Value();
+}
+
+FailureOr<Value> vx::LaneFillOp::expandInKernel(OpBuilder &b) {
+  if (getSerial())
+    return expandOnHost(b);
+  expandLaneFillOnDevice(b, *this);
+  return Value();
+}
+
+namespace {
+
+/// The host half of every lane op: its loops of the CPU.
+struct LaneOpLowering : public OpInterfaceRewritePattern<vx::LaneOpInterface> {
+  using OpInterfaceRewritePattern<
+      vx::LaneOpInterface>::OpInterfaceRewritePattern;
+
+  LogicalResult matchAndRewrite(vx::LaneOpInterface op,
                                 PatternRewriter &rewriter) const override {
-    LaneReduction r = laneReduction(op);
-    rewriter.replaceOp(op,
-                       laneResult(r, expandLaneReductionOnHost(rewriter, r)));
-    return success();
-  }
-};
-
-template <typename CopyOp>
-struct LaneCopyAsyncLowering : public OpRewritePattern<CopyOp> {
-  using OpRewritePattern<CopyOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(CopyOp op,
-                                PatternRewriter &rewriter) const override {
-    expandLaneCopyOnHost(rewriter, laneCopyOf(op));
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
-struct LaneCopyLowering : public OpRewritePattern<vx::LaneCopyOp> {
-  using OpRewritePattern<vx::LaneCopyOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(vx::LaneCopyOp op,
-                                PatternRewriter &rewriter) const override {
-    expandLaneCopyNowOnHost(rewriter, op);
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
-struct LaneFillLowering : public OpRewritePattern<vx::LaneFillOp> {
-  using OpRewritePattern<vx::LaneFillOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(vx::LaneFillOp op,
-                                PatternRewriter &rewriter) const override {
-    expandLaneFillOnHost(rewriter, op);
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
-struct LaneCopyWaitLowering : public OpRewritePattern<vx::LaneCopyWaitOp> {
-  using OpRewritePattern<vx::LaneCopyWaitOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(vx::LaneCopyWaitOp op,
-                                PatternRewriter &rewriter) const override {
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
-struct LaneMatmulLowering : public OpRewritePattern<vx::LaneMatmulOp> {
-  using OpRewritePattern<vx::LaneMatmulOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(vx::LaneMatmulOp op,
-                                PatternRewriter &rewriter) const override {
-    expandLaneMatmulOnHost(rewriter, op);
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
-struct LaneSortLowering : public OpRewritePattern<vx::LaneSortOp> {
-  using OpRewritePattern<vx::LaneSortOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(vx::LaneSortOp op,
-                                PatternRewriter &rewriter) const override {
-    expandLaneSortOnHost(rewriter, op);
-    rewriter.eraseOp(op);
+    if (Value v = op.expandOnHost(rewriter))
+      rewriter.replaceOp(op, v);
+    else
+      rewriter.eraseOp(op);
     return success();
   }
 };
@@ -10309,7 +10301,9 @@ struct ConvertVxToLLVMPass
 
     ConversionTarget target(getContext());
     target.addLegalDialect<LLVM::LLVMDialect>();
-    target.addLegalDialect<vx::VxDialect>();
+    // A lane op is illegal, so that `LaneOpLowering` expands it.
+    target.addDynamicallyLegalDialect<vx::VxDialect>(
+        [](Operation *op) { return !isa<vx::LaneOpInterface>(op); });
     target.addLegalDialect<arith::ArithDialect>();
     target.addLegalDialect<func::FuncDialect>();
     target.addLegalDialect<memref::MemRefDialect>();
@@ -10331,10 +10325,6 @@ struct ConvertVxToLLVMPass
     // pattern rather than letting the op leak to mlir-translate, which does
     // not know the vx dialect (Vx#379).
     target.addIllegalOp<vx::BarrierOp>();
-    target.addIllegalOp<vx::LaneReduceOp, vx::LaneArgmaxOp, vx::LaneSortOp,
-                        vx::LaneMatmulOp, vx::LaneCopyAsyncOp,
-                        vx::LaneCopyAsyncMapOp, vx::LaneCopyWaitOp,
-                        vx::LaneCopyOp, vx::LaneFillOp>();
 
     LLVMTypeConverter typeConverter(&getContext());
     RewritePatternSet patterns(&getContext());
@@ -10346,12 +10336,7 @@ struct ConvertVxToLLVMPass
     patterns.add<KernelOpLowering>(&getContext());
     patterns.add<ReturnOpLowering>(&getContext());
     patterns.add<BarrierOpLowering>(&getContext());
-    patterns.add<LaneReductionLowering<vx::LaneReduceOp>,
-                 LaneReductionLowering<vx::LaneArgmaxOp>, LaneSortLowering,
-                 LaneMatmulLowering, LaneCopyAsyncLowering<vx::LaneCopyAsyncOp>,
-                 LaneCopyAsyncLowering<vx::LaneCopyAsyncMapOp>,
-                 LaneCopyWaitLowering, LaneCopyLowering, LaneFillLowering>(
-        &getContext());
+    patterns.add<LaneOpLowering>(&getContext());
 
     adoptDeclaredRuntimeFns(getOperation());
     markArrivalCounts(getOperation());
