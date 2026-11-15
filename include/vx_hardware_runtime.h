@@ -44,6 +44,13 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
                                    uint32_t topology_id,
                                    uint32_t space_access);
 
+/// As `vx_plugin_alloc_and_transfer`, for `transfer_async`: a device may still
+/// copy when this returns. Each later use of the result waits for the copy. The
+/// caller may free `host_ptr` when this returns.
+void *vx_plugin_alloc_and_transfer_async(size_t bytes, void *host_ptr,
+                                         uint32_t topology_id,
+                                         uint32_t space_access);
+
 /// Per-argument ABI tag layout, produced by abiTagForType/LaunchOpLowering in
 /// src/dialect/VxLowering.cpp.
 ///

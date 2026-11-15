@@ -107,7 +107,9 @@ impl FnEmit<'_> {
         }
         // The count of the passes of a nest of blocks, which `--emit-ptx` names by its length.
         let user_lowered = ins.operand2.0 & crate::bytecode::TRANSFER_USER_LOWERED;
-        let arrivals = ins.operand2.0 & !crate::bytecode::TRANSFER_USER_LOWERED;
+        let is_async = ins.operand2.0 & crate::bytecode::TRANSFER_ASYNC;
+        let arrivals = ins.operand2.0
+            & !(crate::bytecode::TRANSFER_USER_LOWERED | crate::bytecode::TRANSFER_ASYNC);
         if let Some(i) = (arrivals as usize).checked_sub(1) {
             let length = self.strings.get(i).ok_or(crate::emitter_gap!())?;
             attrs += &format!(", vx.arrivals = \"{length}\"");
@@ -115,6 +117,10 @@ impl FnEmit<'_> {
         // The body of a user lowering copies the tile, so the backend only places it.
         if user_lowered != 0 {
             attrs += ", user_lowered";
+        }
+        // A `transfer_async`: a device copies in the background until a use of the tensor.
+        if is_async != 0 {
+            attrs += ", async";
         }
         self.body +=
             &format!("  {n} = \"vx.transfer\"({src}) {{{attrs}}} : ({srcty}) -> {dstty}\n");
@@ -554,9 +560,15 @@ impl FnEmit<'_> {
             return Err(crate::emitter_gap!());
         }
         let at = self.pending_args.split_off(self.pending_args.len() - rank);
+        // `lanes::copy_rows_async`: the tensor of ids is the `Arg` before the place.
+        let rows = ins.imm & crate::bytecode::LANE_REDUCE_COPY_ROWS != 0;
+        let mut tensors = vec![ins.operand1.0, ins.operand2.0];
+        if rows {
+            tensors.push(self.pending_args.pop().ok_or(crate::emitter_gap!())?);
+        }
         let mut operands = Vec::new();
         let mut types = Vec::new();
-        for r in [ins.operand1.0, ins.operand2.0] {
+        for r in tensors {
             operands.push(
                 self.names
                     .get(r as usize)
@@ -605,8 +617,13 @@ impl FnEmit<'_> {
                 types.join(", ")
             );
         } else {
+            let op = if rows {
+                "vx.lane_copy_rows_async"
+            } else {
+                "vx.lane_copy_async"
+            };
             self.body += &format!(
-                "  {v} = \"vx.lane_copy_async\"({}) {{lanes = {} : i64{subgroup}}} : ({}) -> i32\n",
+                "  {v} = \"{op}\"({}) {{lanes = {} : i64{subgroup}}} : ({}) -> i32\n",
                 operands.join(", "),
                 ins.imm >> 32,
                 types.join(", ")

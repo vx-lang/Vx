@@ -444,10 +444,13 @@ pub const LANE_REDUCE_SUBGROUP_ROW: u64 = 8192;
 /// so the reduction may read it from the registers of `LANE_OWN_SUBGROUP` or `LANE_OWN_WHOLE`
 /// elements.
 pub const LANE_REDUCE_LANE_OWN: u64 = 16384;
+/// `Opcode::LaneReduce` with `LANE_REDUCE_COPY`: `lanes::copy_rows_async`. The `Arg` before the
+/// place is the tensor of ids, and the place is `[first, col]`.
+pub const LANE_REDUCE_COPY_ROWS: u64 = 32768;
 /// `Opcode::LaneReduce`: `lanes::scale_rows`, an effect with no result. `operand1` is the tile in
 /// shared memory and `operand2` the tile of the scales. The lanes of the block or the subgroup are
-/// in `imm >> 32`.
-pub const LANE_REDUCE_SCALE_ROWS: u64 = 32768;
+/// in `imm >> 32`. Bits 16 to 23 hold the rank of a copy, so this flag is above them.
+pub const LANE_REDUCE_SCALE_ROWS: u64 = 1 << 24;
 
 /// `Opcode::TensorStore`: the place is `tile[t]` in a lane loop of the code of a block, with `t`
 /// the index of the loop. The loop goes from 0 over all of its lanes, so only lane `t` writes the
@@ -502,6 +505,9 @@ pub const BARRIER_GPU: u64 = 2;
 /// body follows the transfer, and the transfer only places the tile. The other bits are the
 /// string index of the arrival count, plus 1.
 pub const TRANSFER_USER_LOWERED: u32 = 1 << 31;
+/// A bit of `Opcode::Transfer`'s `operand2`: the transfer is a `transfer_async`, so a device can
+/// copy in the background until a use of the tensor.
+pub const TRANSFER_ASYNC: u32 = 1 << 30;
 
 /// `Opcode::TensorPad`'s `imm`: pad each axis (`t.pad(shape)`), not the flat row order.
 pub const TENSOR_PAD_EACH_AXIS: u64 = 1;

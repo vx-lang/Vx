@@ -282,6 +282,15 @@ lets the groups that started after the token go on (`cp.async.wait_group`), and 
 of the block or the subgroup waits. The CPU copies the tile at the call, and the wait does
 nothing.
 
+`lanes::copy_rows_async(&mut tile, &x, &ids, [first, col])` is a `copy_async` whose rows a list of
+ids chooses: row `r` of `tile` gets row `ids[first + r]` of `x`, from column `col`. `tile` and `x`
+have 2 dimensions, and `ids` is a tensor of `i32` with 1 dimension, in any memory. A row whose id is
+below 0 or not below the number of rows of `x`, or whose place `first + r` is past the end of
+`ids`, is zeros, and so is a column past the end of `x`. Its token, its wait and the rules of both
+are those of `copy_async`. On the GPU, each lane reads the id of each of its slots of the tile, and
+starts a `cp.async` from that row, 16 bytes at a time when the addresses allow it. It never uses
+TMA, because TMA on `sm_90` has no gather. The CPU copies the rows at the call.
+
 `lanes::copy(&mut dst, &src, [i, j])` ends before it returns, and gives no token. When `dst` is
 a tile in shared memory, the copy goes into it, as `copy_async` and `.wait()` do. Otherwise `src`
 is the tile, and the copy goes into the part of `dst` at `[i, j]`. An element past the end of

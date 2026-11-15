@@ -304,6 +304,21 @@ def Vx_LaneCopyAsyncOp : Vx_Op<"lane_copy_async", [MemoryEffects<[MemRead, MemWr
     let results = (outs I32:$token);
 }
 
+// `lanes::copy_rows_async`: as `vx.lane_copy_async`, but row `r` of `tile`
+// comes from row `ids[place[0] + r]` of `source`, at the column `place[1]`. A
+// row whose id is outside `source`, or past the end of `ids`, copies as zeros.
+def Vx_LaneCopyRowsAsyncOp
+    : Vx_Op<"lane_copy_rows_async", [MemoryEffects<[MemRead, MemWrite]>,
+                                     DeclareOpInterfaceMethods<
+                                         Vx_LaneOpInterface>]> {
+  let summary =
+      "Start a copy of the rows that a list of ids chooses into shared memory.";
+  let arguments = (ins AnyMemRef:$tile, AnyMemRef:$source, AnyMemRef:$ids,
+      Variadic<AnySignlessInteger>:$place, I64Attr:$lanes, UnitAttr:$serial,
+      UnitAttr:$subgroup);
+  let results = (outs I32:$token);
+}
+
 // `vx.lane_copy_async` with `map`, the address of a tensor map of `source` in
 // device memory, or 0. The host makes the map before the launch. The GPU
 // copies the tile with TMA when the map is not 0.
