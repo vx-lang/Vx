@@ -773,6 +773,9 @@ pub struct TypeChecker<'a> {
     pub traffic: crate::hir::check_state::TrafficState,
     /// The size of the tensor of each lane reduction, by the position of its call.
     pub(crate) lane_reductions: HashMap<crate::syntax::Span, u64>,
+    /// The shape of the tile of each `lanes::copy` out of shared memory, by the position of its
+    /// call.
+    pub(crate) lane_copies_out: HashMap<crate::syntax::Span, Vec<u64>>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -857,6 +860,7 @@ impl<'a> TypeChecker<'a> {
             seam: Default::default(),
             traffic: Default::default(),
             lane_reductions: HashMap::new(),
+            lane_copies_out: HashMap::new(),
         }
     }
 

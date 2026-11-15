@@ -116,6 +116,9 @@ struct Proof<'c> {
     contracts: &'c HashMap<String, Vec<usize>>,
     /// The names of the generic functions.
     templates: &'c HashSet<String>,
+    /// The shape of the tile of each `lanes::copy` out of shared memory, by the position of its
+    /// call.
+    copies_out: &'c HashMap<Span, Vec<u64>>,
     /// The key of the loop's own variable.
     own: String,
     /// The values from outside the loop that are factors of its end, by key.
@@ -166,6 +169,7 @@ pub(crate) fn across_loop_race(
     level: &str,
     contracts: &HashMap<String, Vec<usize>>,
     templates: &HashSet<String>,
+    copies_out: &HashMap<Span, Vec<u64>>,
 ) -> Result<Vec<LargestEnd>, (String, Span)> {
     let range = match &*f.iterable {
         Expr::Range(r) => int(&r.start).zip(int(&r.end)),
@@ -179,6 +183,7 @@ pub(crate) fn across_loop_race(
         let mut p = Proof {
             contracts,
             templates,
+            copies_out,
             own: String::new(),
             end_factors: match &*f.iterable {
                 Expr::Range(r) => factors(&r.end),
@@ -564,6 +569,65 @@ impl Proof<'_> {
         }
     }
 
+    /// `lanes::copy(&mut x, &tile, [i, j, ..])`, which writes the part of `x` that starts at
+    /// `[i, j, ..]` and has the shape `tile`. Each index of the part is the place plus an index
+    /// below the size of the tile in that dimension.
+    fn copy_out(&mut self, fc: &crate::syntax::expr::FunctionCallExpr, tile: &[u64]) {
+        let (Some(dst), Some(src), Some(Expr::Array(place))) =
+            (fc.args.first(), fc.args.get(1), fc.args.get(2))
+        else {
+            self.fail(
+                "the checker cannot see which part of a tensor this copy writes".to_string(),
+                fc.span,
+            );
+            return;
+        };
+        self.expr(src);
+        place.elements.iter().for_each(|e| self.expr(e));
+        // `&mut y`, or `y` for a parameter `y : &mut Tensor<..>`.
+        let (dst, at) = match dst {
+            Expr::Borrow(b) => (b.expr.as_ref(), b.span),
+            e => (e, e.span()),
+        };
+        let (name, rows) = match dst {
+            Expr::Identifier(id) => (id.name.as_ref(), Vec::new()),
+            e => match Self::element(e) {
+                Some(found) => found,
+                None => {
+                    self.fail(
+                        "the checker cannot see which tensor this copy writes. Pass the tensor \
+                         by name"
+                            .to_string(),
+                        at,
+                    );
+                    return;
+                }
+            },
+        };
+        rows.iter().for_each(|i| self.expr(i));
+        if !self.outside(name) {
+            return;
+        }
+        let mut indices: Vec<Option<Affine>> = rows.iter().map(|i| self.affine(i)).collect();
+        for (at, &size) in place.elements.iter().zip(tile) {
+            let key = format!("copy#{}", self.next_key);
+            self.next_key += 1;
+            self.ranges
+                .insert(key.clone(), i64::try_from(size).ok().map(|n| (0, n)));
+            indices.push(self.affine(at).and_then(|a| a.add(&Affine::var(key), 1)));
+        }
+        self.accesses
+            .entry(name.to_string())
+            .or_default()
+            .push(Access {
+                write: true,
+                atomic: false,
+                indices,
+                span: at,
+                pass: self.pass,
+            });
+    }
+
     fn target(&mut self, lhs: &Expr, at: Span) {
         if let Some((name, indices)) = Self::element(lhs) {
             for i in &indices {
@@ -653,6 +717,10 @@ impl Proof<'_> {
                         )
                     };
                     self.fail(why, fc.span);
+                    return;
+                }
+                if let Some(tile) = self.copies_out.get(&fc.span) {
+                    self.copy_out(fc, tile);
                     return;
                 }
                 // A lane sort and a lane copy write the tensor that they borrow first: a row

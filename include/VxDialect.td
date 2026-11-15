@@ -289,6 +289,18 @@ def Vx_LaneCopyAsyncMapOp : Vx_Op<"lane_copy_async_map", [MemoryEffects<[MemRead
     let results = (outs I32:$token);
 }
 
+// `lanes::copy`: the lanes of a block copy a tile in shared memory to or from the
+// part of a tensor at `place`. When `dst` is in shared memory, it is the tile, and
+// an element past the end of `src` copies as zero. Otherwise `src` is the tile,
+// and an element past the end of `dst` is not written. The copy ends before the
+// next op, for every lane of the block, or of the subgroup with `subgroup`.
+def Vx_LaneCopyOp : Vx_Op<"lane_copy", [MemoryEffects<[MemRead, MemWrite]>]> {
+    let summary = "Copy a tile to or from shared memory.";
+    let arguments = (ins AnyMemRef:$dst, AnyMemRef:$src,
+                     Variadic<AnySignlessInteger>:$place, I64Attr:$lanes,
+                     UnitAttr:$serial, UnitAttr:$subgroup);
+}
+
 // Waits until the copy of `token` ends, and then for every lane of the block,
 // or of the subgroup with `subgroup`.
 def Vx_LaneCopyWaitOp : Vx_Op<"lane_copy_wait", [MemoryEffects<[MemRead, MemWrite]>]> {

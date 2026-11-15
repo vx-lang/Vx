@@ -7131,7 +7131,7 @@ fn lane_routine_attrs<'c>(
 
 /// `lanes::copy_async(&mut tile, &x, [i, j, ..])` as `vx.lane_copy_async`, and the wait of its
 /// token as `vx.lane_copy_wait`. In a region on one lane, both are `serial`, so the copy ends
-/// where it starts.
+/// where it starts. `lanes::copy(&mut dst, &src, [i, j, ..])` is `vx.lane_copy`, with no token.
 fn lower_lane_copy<'c>(
     gen: &mut MeliorGenerator<'c>,
     block: melior::ir::BlockRef<'c, 'c>,
@@ -7180,6 +7180,15 @@ fn lower_lane_copy<'c>(
         Identifier::new(gen.context, "lanes"),
         IntegerAttribute::new(i64_ty, lanes as i64).into(),
     ));
+    if op == crate::hir::check::lanes::LaneOp::Copy {
+        let copy = OperationBuilder::new("vx.lane_copy", gen.loc())
+            .add_operands(&operands)
+            .add_attributes(&attrs)
+            .build()?;
+        block.append_operation(copy);
+        let v = constant_i32(gen, block, 0)?;
+        return Ok((v, gen.i32_ty, block));
+    }
     let copy = OperationBuilder::new("vx.lane_copy_async", gen.loc())
         .add_operands(&operands)
         .add_attributes(&attrs)
@@ -7231,7 +7240,9 @@ fn lower_lane_reduce<'c>(
 > {
     if matches!(
         op,
-        crate::hir::check::lanes::LaneOp::CopyAsync | crate::hir::check::lanes::LaneOp::CopyWait
+        crate::hir::check::lanes::LaneOp::CopyAsync
+            | crate::hir::check::lanes::LaneOp::CopyWait
+            | crate::hir::check::lanes::LaneOp::Copy
     ) {
         return lower_lane_copy(gen, block, op, args);
     }

@@ -424,6 +424,10 @@ pub const LANE_REDUCE_COPY_WAIT: u64 = 256;
 pub const LANE_REDUCE_MATMUL: u64 = 512;
 /// `Opcode::LaneReduce` with `LANE_REDUCE_MATMUL`: the products are added to the old `acc`.
 pub const LANE_REDUCE_ACCUMULATE: u64 = 1024;
+/// `Opcode::LaneReduce` with `LANE_REDUCE_COPY`: `lanes::copy`, which ends before it returns, and
+/// gives no token. `operand1` is the tensor it writes and `operand2` the tensor it reads. One of
+/// the two is the tile in shared memory.
+pub const LANE_REDUCE_COPY_NOW: u64 = 2048;
 
 /// `Opcode::TensorStore`: the place is `tile[t]` in a lane loop of the code of a block, with `t`
 /// the index of the loop. The loop goes from 0 over all of its lanes, so only lane `t` writes the

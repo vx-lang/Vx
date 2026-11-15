@@ -477,7 +477,8 @@ impl FnEmit<'_> {
     }
 
     /// `vx.lane_copy_async`: the tile, the tensor and the place of the tile, which the `Arg`s
-    /// before hold. The result is the token.
+    /// before hold. The result is the token. `vx.lane_copy` takes the tensor that it writes and
+    /// the one that it reads, and has no result.
     fn op_lane_copy(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let rank = ((ins.imm >> 16) & 0xff) as usize;
         if self.pending_args.len() < rank {
@@ -517,17 +518,28 @@ impl FnEmit<'_> {
             types.push(mlir_scalar(&e).ok_or(crate::emitter_gap!())?.to_string());
         }
         let v = format!("%v{idx}");
-        self.body += &format!(
-            "  {v} = \"vx.lane_copy_async\"({}) {{lanes = {} : i64{}}} : ({}) -> i32\n",
-            operands.join(", "),
-            ins.imm >> 32,
-            if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
-                ", subgroup"
-            } else {
-                ""
-            },
-            types.join(", ")
-        );
+        let subgroup = if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
+            ", subgroup"
+        } else {
+            ""
+        };
+        if ins.imm & crate::bytecode::LANE_REDUCE_COPY_NOW != 0 {
+            // `lanes::copy` gives no token, so its value is a 0 that nothing reads.
+            self.body += &format!(
+                "  \"vx.lane_copy\"({}) {{lanes = {} : i64{subgroup}}} : ({}) -> ()\n  {v} = \
+                 arith.constant 0 : i32\n",
+                operands.join(", "),
+                ins.imm >> 32,
+                types.join(", ")
+            );
+        } else {
+            self.body += &format!(
+                "  {v} = \"vx.lane_copy_async\"({}) {{lanes = {} : i64{subgroup}}} : ({}) -> i32\n",
+                operands.join(", "),
+                ins.imm >> 32,
+                types.join(", ")
+            );
+        }
         self.names[idx] = v;
         self.etypes[idx] = Some(ElementType::I32);
         Ok(())
