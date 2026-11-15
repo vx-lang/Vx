@@ -76,9 +76,11 @@
 // CHECK: mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32
 // CHECK: st.shared.{{b32|v2.b32}}
 // CHECK: bar.warp.sync
-// The lowering alone, with `vx-opt`, builds `ldmatrix` from a tile and the indices of a row.
-// MLIR: nvgpu.ldmatrix {{.*}} {numTiles = 4 : i32, transpose = false} : memref<32x32xbf16
-// MLIR: nvgpu.ldmatrix {{.*}} {numTiles = 2 : i32, transpose = true} : memref<32x16xbf16
+// The lowering alone, with `vx-opt`, builds `ldmatrix` from a tile and the indices of a row. The
+// tiles are flat views here, because their layout avoids bank conflicts
+// (`matmul_tiles_in_shared_memory_avoid_bank_conflicts.vx`).
+// MLIR: nvgpu.ldmatrix {{.*}} {numTiles = 4 : i32, transpose = false} : memref<2048xbf16, 3>
+// MLIR: nvgpu.ldmatrix {{.*}} {numTiles = 2 : i32, transpose = true} : memref<1024xbf16, 3>
 // A lane loads no single 16-bit element of the tiles: `ldmatrix` loads them for `mma.sync`.
 // LDM-LABEL: .entry bf16_tiles(
 // LDM-NOT: ld.shared.b16
