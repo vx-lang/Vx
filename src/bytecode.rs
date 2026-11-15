@@ -494,6 +494,9 @@ pub const BARRIER_GPU: u64 = 2;
 /// body follows the transfer, and the transfer only places the tile. The other bits are the
 /// string index of the arrival count, plus 1.
 pub const TRANSFER_USER_LOWERED: u32 = 1 << 31;
+/// A bit of `Opcode::Transfer`'s `operand2`: the transfer is a `transfer_async`, so a device can
+/// copy in the background until a use of the tensor.
+pub const TRANSFER_ASYNC: u32 = 1 << 30;
 
 /// `Opcode::TensorPad`'s `imm`: pad each axis (`t.pad(shape)`), not the flat row order.
 pub const TENSOR_PAD_EACH_AXIS: u64 = 1;

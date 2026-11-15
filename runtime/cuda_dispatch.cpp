@@ -335,8 +335,74 @@ static cudaError_t device_alloc(void **ptr, size_t bytes) {
   return err;
 }
 
+/* The copies of `transfer_async` that may still run. Each copy goes on a copy
+   stream of its GPU and records an event. A use of the device memory waits for
+   that event: a launch waits on the GPU, and a read, a peer copy or a free
+   waits on the host. */
+static std::mutex copies_mutex;
+static std::unordered_map<void *, cudaEvent_t> copies_in_flight;
+
+/// The copy stream of the current GPU. It does not wait for the legacy default
+/// stream, so a copy runs while a kernel runs.
+static cudaStream_t copy_stream() {
+  static std::mutex mutex;
+  static std::unordered_map<int, cudaStream_t> streams;
+  int device = 0;
+  VX_CUDA_CHECK(cudaGetDevice(&device));
+  std::lock_guard<std::mutex> lock(mutex);
+  cudaStream_t &stream = streams[device];
+  if (!stream) {
+    VX_CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+  }
+  return stream;
+}
+
+/// The event of the copy into `ptr`, or null if no copy into it may still run.
+static cudaEvent_t copy_into(void *ptr) {
+  std::lock_guard<std::mutex> lock(copies_mutex);
+  auto found = copies_in_flight.find(ptr);
+  return found == copies_in_flight.end() ? nullptr : found->second;
+}
+
+/// Makes the work that comes next on `stream` wait for the copy into `ptr`.
+static void stream_waits_for_copy(cudaStream_t stream, void *ptr) {
+  if (cudaEvent_t event = copy_into(ptr)) {
+    VX_CUDA_CHECK(cudaStreamWaitEvent(stream, event, 0));
+  }
+}
+
+/// Waits on the host for the copy into `ptr`, and forgets the copy.
+static void finish_copy_into(void *ptr) {
+  cudaEvent_t event = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(copies_mutex);
+    auto found = copies_in_flight.find(ptr);
+    if (found == copies_in_flight.end()) {
+      return;
+    }
+    event = found->second;
+    copies_in_flight.erase(found);
+  }
+  VX_CUDA_CHECK(cudaEventSynchronize(event));
+  VX_CUDA_CHECK(cudaEventDestroy(event));
+}
+
+/// Forgets the copies that ended.
+static void forget_ended_copies() {
+  std::lock_guard<std::mutex> lock(copies_mutex);
+  for (auto it = copies_in_flight.begin(); it != copies_in_flight.end();) {
+    if (cudaEventQuery(it->second) == cudaSuccess) {
+      VX_CUDA_CHECK(cudaEventDestroy(it->second));
+      it = copies_in_flight.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
 /// Frees device memory, by the rules of `vx_free_action_for`.
 static void device_free(void *ptr) {
+  finish_copy_into(ptr);
   cudaStream_t from = nullptr;
   bool mine = false;
   {
@@ -1016,6 +1082,36 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
   return device_ptr;
 }
 
+void *vx_plugin_alloc_and_transfer_async(size_t bytes, void *host_ptr,
+                                         uint32_t topology_id,
+                                         uint32_t space_access) {
+  // A copy on the caller's stream is already in stream order, and a copy to
+  // the host or to another machine has no device memory to wait for.
+  if (!host_ptr || !cuda_available() || gpu_index((int32_t)topology_id) < 0 ||
+      caller_stream || vx_routing_worker((int32_t)topology_id)) {
+    return vx_plugin_alloc_and_transfer(bytes, host_ptr, topology_id,
+                                        space_access);
+  }
+  select_device((int32_t)topology_id, "stage");
+  if (space_access == VX_SPACE_ACCESS_HOST_READABLE) {
+    warn_space_access_contradiction(topology_id, bytes);
+  }
+  forget_ended_copies();
+  void *device_ptr = nullptr;
+  VX_CUDA_CHECK(device_alloc(&device_ptr, bytes));
+  // From pageable memory, CUDA returns after it copied the bytes into its own
+  // pinned memory. So the program may free `host_ptr` when this returns.
+  cudaStream_t stream = copy_stream();
+  VX_CUDA_CHECK(cudaMemcpyAsync(device_ptr, host_ptr, bytes,
+                                cudaMemcpyHostToDevice, stream));
+  cudaEvent_t event = nullptr;
+  VX_CUDA_CHECK(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
+  VX_CUDA_CHECK(cudaEventRecord(event, stream));
+  std::lock_guard<std::mutex> lock(copies_mutex);
+  copies_in_flight[device_ptr] = event;
+  return device_ptr;
+}
+
 void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
                               uint32_t dst_topology_id, size_t bytes) {
   void *routed = nullptr;
@@ -1055,6 +1151,7 @@ void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
   // through the host itself. One call is therefore correct on an NVLink pod and
   // on a PCIe-only one, which matters because a rented pod does not say which
   // it gave you.
+  finish_copy_into(src_device_ptr);
   select_device((int32_t)dst_topology_id, "peer");
   void *dst_ptr = nullptr;
   VX_CUDA_CHECK(device_alloc(&dst_ptr, bytes));
@@ -1412,6 +1509,23 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
     return 1;
   }
 
+  // The kernel and every copy below wait for the copies of `transfer_async`
+  // into the operands. They all go on the caller's stream.
+  if (cuda_available()) {
+    for (int64_t i = 0; i < num_args; ++i) {
+      if (VX_ABI_KIND(arg_tags[i]) != VX_ABI_KIND_MEMREF || !device_args[i]) {
+        continue;
+      }
+      void *desc = *(void **)device_args[i];
+      if (desc && VX_ABI_IS_SLOT(arg_tags[i])) {
+        desc = vx_memref_aligned(desc);
+      }
+      if (desc) {
+        stream_waits_for_copy(caller_stream, vx_memref_aligned(desc));
+      }
+    }
+  }
+
   vx_gemm_plan plan;
   if (vx_gemm_plan_decode(binary_payload, payload_size, device_args, arg_tags,
                           num_args, &plan)) {
@@ -1588,6 +1702,9 @@ uint64_t vx_plugin_dispatch_async_flat(float *xout, float *x, float *w, int n,
     return 1;
   }
 
+  for (void *operand : {(void *)xout, (void *)x, (void *)w}) {
+    stream_waits_for_copy(caller_stream, operand);
+  }
   const float alpha = 1.0f, beta = 0.0f;
   DeviceBuffer dw = stage(w, d, n, n, sizeof(float));
   DeviceBuffer dx = stage(x, 1, n, n, sizeof(float));
@@ -1636,6 +1753,7 @@ int32_t vx_plugin_transfer_device_to_host(void *device_ptr, void *host_ptr,
     // because the ABI is the contract a non-CUDA backend implements and nothing
     // guarantees that backend can infer anything from an address (#346).
     select_device((int32_t)topology_id, "fetch");
+    finish_copy_into(device_ptr);
     wait_for_kernels("Vx copied a tensor to host memory");
     VX_CUDA_CHECK(
         cudaMemcpy(host_ptr, device_ptr, bytes, cudaMemcpyDeviceToHost));

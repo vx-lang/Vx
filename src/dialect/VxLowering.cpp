@@ -7902,10 +7902,19 @@ struct TransferToPluginLowering : public OpRewritePattern<vx::TransferOp> {
                   ValueRange{siteAddr, bytes, alignedPtr, topoVal, spaceAccess})
               .getResult();
     } else {
+      // A `transfer_async` copies in the background. The runtime makes each
+      // later use of the device memory wait for the copy.
+      StringRef name = allocName;
+      if (op->hasAttr("async")) {
+        name = "vx_plugin_alloc_and_transfer_async";
+        getOrDeclareRuntimeFn(
+            rewriter, module, loc, name, llvmPtrType,
+            {llvmI64Type, llvmPtrType, llvmI32Type, llvmI32Type});
+      }
       devicePtr = rewriter
                       .create<LLVM::CallOp>(
                           loc, TypeRange{llvmPtrType},
-                          SymbolRefAttr::get(rewriter.getContext(), allocName),
+                          SymbolRefAttr::get(rewriter.getContext(), name),
                           ValueRange{bytes, alignedPtr, topoVal, spaceAccess})
                       .getResult();
     }

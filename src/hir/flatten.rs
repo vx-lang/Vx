@@ -1818,11 +1818,15 @@ impl<'r> Lowerer<'r> {
                     0
                 };
                 let imm = mem_id | ((source as u64) << 32) | shared;
-                let flag = Register(if body.is_some() {
+                let mut flag = if body.is_some() {
                     crate::bytecode::TRANSFER_USER_LOWERED
                 } else {
                     0
-                });
+                };
+                if t.is_async {
+                    flag |= crate::bytecode::TRANSFER_ASYNC;
+                }
+                let flag = Register(flag);
                 let placed = self.emit_typed(Opcode::Transfer, src.reg, flag, result_ty, imm);
                 if let Some(body) = body {
                     self.inline_transfer_body(&body, src.clone(), placed.clone())?;
