@@ -301,6 +301,15 @@ def Vx_LaneCopyOp : Vx_Op<"lane_copy", [MemoryEffects<[MemRead, MemWrite]>]> {
                      UnitAttr:$serial, UnitAttr:$subgroup);
 }
 
+// `lanes::fill`: the lanes of a block set each element of `tile`, in shared
+// memory, to `value`. The fill ends before the next op, for every lane of the
+// block, or of the subgroup with `subgroup`.
+def Vx_LaneFillOp : Vx_Op<"lane_fill", [MemoryEffects<[MemWrite]>]> {
+    let summary = "Set each element of a tile in shared memory.";
+    let arguments = (ins AnyMemRef:$tile, AnyType:$value, I64Attr:$lanes,
+                     UnitAttr:$serial, UnitAttr:$subgroup);
+}
+
 // Waits until the copy of `token` ends, and then for every lane of the block,
 // or of the subgroup with `subgroup`.
 def Vx_LaneCopyWaitOp : Vx_Op<"lane_copy_wait", [MemoryEffects<[MemRead, MemWrite]>]> {

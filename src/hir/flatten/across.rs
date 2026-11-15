@@ -21,9 +21,10 @@ use crate::arch::LevelKind;
 use crate::bytecode::{
     ACROSS_BLOCK, ACROSS_BLOCKS, ACROSS_LANE, ACROSS_STRIDE, BARRIER_SUBGROUP,
     LANE_REDUCE_ACCUMULATE, LANE_REDUCE_ARGMAX, LANE_REDUCE_COPY, LANE_REDUCE_COPY_NOW,
-    LANE_REDUCE_COPY_WAIT, LANE_REDUCE_DESCENDING, LANE_REDUCE_MATMUL, LANE_REDUCE_MAX,
-    LANE_REDUCE_ORDERED, LANE_REDUCE_OWN_ROW, LANE_REDUCE_SORT, LANE_REDUCE_SUBGROUP,
-    LANE_ROW_SHIFT, TENSOR_STORE_BLOCK_LANE_ELEMENT, TENSOR_STORE_SUBGROUP_LANE_ELEMENT,
+    LANE_REDUCE_COPY_WAIT, LANE_REDUCE_DESCENDING, LANE_REDUCE_FILL, LANE_REDUCE_MATMUL,
+    LANE_REDUCE_MAX, LANE_REDUCE_ORDERED, LANE_REDUCE_OWN_ROW, LANE_REDUCE_SORT,
+    LANE_REDUCE_SUBGROUP, LANE_ROW_SHIFT, TENSOR_STORE_BLOCK_LANE_ELEMENT,
+    TENSOR_STORE_SUBGROUP_LANE_ELEMENT,
 };
 use crate::hir::check::across_lanes;
 
@@ -492,6 +493,29 @@ impl Lowerer<'_> {
             crate::hir::check::lanes::LaneOp::CopyAsync => return self.lower_lane_copy(fc, 0),
             crate::hir::check::lanes::LaneOp::Copy => {
                 return self.lower_lane_copy(fc, LANE_REDUCE_COPY_NOW)
+            }
+            crate::hir::check::lanes::LaneOp::Fill => {
+                let [t, v] = fc.args.as_slice() else {
+                    return Err(crate::emitter_gap!());
+                };
+                let t = self.lower_expr(t)?;
+                let v = self.lower_expr(v)?;
+                let mut imm = LANE_REDUCE_FILL;
+                let lanes = if self.across.kinds.last() == Some(&LevelKind::Subgroups) {
+                    imm |= LANE_REDUCE_SUBGROUP;
+                    self.subgroup_lanes()?
+                } else {
+                    self.across.lanes
+                };
+                imm |= lanes << 32;
+                self.emit_effect(Opcode::LaneReduce, t.reg, v.reg, imm);
+                return Ok(self.emit_value(
+                    Opcode::Const,
+                    Register(0),
+                    Register(0),
+                    ElementType::I32,
+                    0,
+                ));
             }
             crate::hir::check::lanes::LaneOp::CopyWait => {
                 let [t] = fc.args.as_slice() else {

@@ -428,6 +428,9 @@ pub const LANE_REDUCE_ACCUMULATE: u64 = 1024;
 /// gives no token. `operand1` is the tensor it writes and `operand2` the tensor it reads. One of
 /// the two is the tile in shared memory.
 pub const LANE_REDUCE_COPY_NOW: u64 = 2048;
+/// `Opcode::LaneReduce`: `lanes::fill`, an effect with no result. `operand1` is the tile in shared
+/// memory and `operand2` the value. The lanes of the block or the subgroup are in `imm >> 32`.
+pub const LANE_REDUCE_FILL: u64 = 4096;
 
 /// `Opcode::TensorStore`: the place is `tile[t]` in a lane loop of the code of a block, with `t`
 /// the index of the loop. The loop goes from 0 over all of its lanes, so only lane `t` writes the

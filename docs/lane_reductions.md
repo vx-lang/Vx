@@ -247,6 +247,10 @@ is the tile, and the copy goes into the part of `dst` at `[i, j]`. An element pa
 loads and stores, and then every lane of the block or the subgroup waits. The proof that the passes of an `across` loop write apart sees the copy as a
 write of each element of that part.
 
+`lanes::fill(&mut tile, v)` sets each element of a tile in shared memory to `v`, which has the
+element type of the tile. Each lane sets the elements `lane`, `lane + lanes`, and so on, and then
+every lane of the block or the subgroup waits.
+
 ## Not yet
 
 - `f64` and the integer types.

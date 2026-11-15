@@ -733,13 +733,19 @@ impl Walk<'_> {
             let copy = lanes::lane_routine(&c.name).is_some_and(|(op, _)| {
                 matches!(
                     op,
-                    lanes::LaneOp::CopyAsync | lanes::LaneOp::CopyWait | lanes::LaneOp::Copy
+                    lanes::LaneOp::CopyAsync
+                        | lanes::LaneOp::CopyWait
+                        | lanes::LaneOp::Copy
+                        | lanes::LaneOp::Fill
                 )
             });
             if copy {
                 // The copy reports the size, so its wait does not report it again.
                 let start = lanes::lane_routine(&c.name).is_some_and(|(op, _)| {
-                    matches!(op, lanes::LaneOp::CopyAsync | lanes::LaneOp::Copy)
+                    matches!(
+                        op,
+                        lanes::LaneOp::CopyAsync | lanes::LaneOp::Copy | lanes::LaneOp::Fill
+                    )
                 });
                 if start && c.scope == LevelKind::Subgroups {
                     self.needs_subgroups_of_32(c);

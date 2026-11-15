@@ -163,6 +163,9 @@ for w in 0..4 across subgroups {
 Two blocks or two subgroups must not write the same element of `c` (E6032).
 `tests/optimizations/pass/lane_copy_into_and_out_of_a_tile.vx` is a complete program.
 
+`lanes::fill(&mut tile, v)` sets each element of a tile in shared memory to `v`. Every lane of the
+block or the subgroup sets a part of the tile, so it is faster than a loop on one lane.
+
 ## Math functions in a kernel
 
 `x.exp()` and `x.tanh()` are exact, and on a GPU they compute in `f64`, which is slow. In a kernel
