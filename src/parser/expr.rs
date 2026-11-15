@@ -1626,21 +1626,16 @@ impl<'a> Parser<'a> {
                 source_ty: None,
                 span: as_span,
             });
-            if self.check(&TokenType::Question)
-                || self.check(&TokenType::Dot)
-                || self.check(&TokenType::LeftBracket)
-                || self.check(&TokenType::LeftParen)
-            {
-                let op_desc = match self.peek().kind {
-                    TokenType::Question => "`?`",
-                    TokenType::Dot => "`.`",
-                    TokenType::LeftBracket => "`[`",
-                    TokenType::LeftParen => "`(`",
-                    _ => "operator",
-                };
+            let op = match self.peek().kind {
+                TokenType::Question => Some(("`?`", "(x as T)?")),
+                TokenType::Dot => Some(("`.`", "(x as T).f")),
+                TokenType::LeftBracket => Some(("`[`", "(x as T)[i]")),
+                TokenType::LeftParen => Some(("`(`", "(x as T)(arg)")),
+                _ => None,
+            };
+            if let Some((op, example)) = op {
                 return Err(self.error(&format!(
-                    "cannot use {} directly after a cast; parenthesize the cast expression",
-                    op_desc
+                    "a cast cannot have {op} directly after it. Put the cast in parentheses, as in `{example}`"
                 )));
             }
         }
@@ -2921,20 +2916,24 @@ mod tests {
     fn test_cast_followed_by_postfix_refused() {
         // Rust refuses ?, ., [, and ( directly after a cast, asking for parentheses.
         let err_try = parse_expr_err("x as i64?");
-        assert!(err_try
-            .contains("cannot use `?` directly after a cast; parenthesize the cast expression"));
+        assert!(err_try.contains(
+            "a cast cannot have `?` directly after it. Put the cast in parentheses, as in `(x as T)?`"
+        ));
 
         let err_dot = parse_expr_err("x as f64.sqrt()");
-        assert!(err_dot
-            .contains("cannot use `.` directly after a cast; parenthesize the cast expression"));
+        assert!(err_dot.contains(
+            "a cast cannot have `.` directly after it. Put the cast in parentheses, as in `(x as T).f`"
+        ));
 
         let err_index = parse_expr_err("x as i64[0]");
-        assert!(err_index
-            .contains("cannot use `[` directly after a cast; parenthesize the cast expression"));
+        assert!(err_index.contains(
+            "a cast cannot have `[` directly after it. Put the cast in parentheses, as in `(x as T)[i]`"
+        ));
 
         let err_call = parse_expr_err("x as i64(0)");
-        assert!(err_call
-            .contains("cannot use `(` directly after a cast; parenthesize the cast expression"));
+        assert!(err_call.contains(
+            "a cast cannot have `(` directly after it. Put the cast in parentheses, as in `(x as T)(arg)`"
+        ));
 
         // With parentheses around the cast, each is accepted:
         let expr = parse_expr("(x as i64)?");
