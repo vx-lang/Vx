@@ -227,6 +227,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/a_tensor_in_gpu_memory_in_a_struct_or_enum_is_freed_by_its_plugin.vx", // split-file
             "optimizations/pass/gpu_region_that_ends_in_a_value_runs_on_the_gpu.vx", // needs --machine
             // needs --machine
+            "optimizations/pass/a_gpu_kernel_converts_f32_to_bf16_with_one_instruction.vx",
+            // needs --machine
             "optimizations/pass/a_transfer_async_to_a_gpu_copies_in_the_background.vx",
             "optimizations/pass/across_loops_with_auto_schedule_levels_carry_their_level.vx", // needs -f
             "frontend/pass/packages/import_from_a_package.vx", // needs --package

@@ -13,6 +13,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Arith/Transforms/Passes.h"
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
@@ -8947,6 +8948,23 @@ static OwningOpRef<ModuleOp> deviceModuleCopy(gpu::GPUModuleOp gpuModule) {
 
 static std::unique_ptr<Pass> createLifetimeMarkersOnAllocasPass();
 
+/// Conversions to and from bf16 as integer operations that round to nearest
+/// even, as on the CPU. The pipeline expands them only after `vx-to-llvm`, so
+/// that an NVIDIA GPU converts with one `cvt.rn.bf16.f32`. The printers of the
+/// Apple GPU and of SPIR-V write a conversion as a cast, so they get the
+/// expansion here.
+static void expandBf16Conversions(gpu::GPUModuleOp gpuModule) {
+  RewritePatternSet patterns(gpuModule.getContext());
+  arith::populateExpandBFloat16Patterns(patterns);
+  // Only the conversions change. A fold here would hide an op that the
+  // printers refuse, such as a `memref.cast` of a tensor.
+  GreedyRewriteConfig config;
+  config.enableFolding(false)
+      .enableConstantCSE(false)
+      .setRegionSimplificationLevel(GreedySimplifyRegionLevel::Disabled);
+  (void)applyPatternsGreedily(gpuModule, std::move(patterns), config);
+}
+
 /// Compile a `gpu.module` to a device image, as PTX text.
 ///
 /// This is the pipeline a standalone script established, moved into the
@@ -9993,9 +10011,11 @@ struct ConvertVxToLLVMPass
         image = deviceImageOf(m, error);
         break;
       case DevicePipeline::Metal:
+        expandBf16Conversions(m);
         image = DeviceImage{"msl", mslImageOf(m, error)};
         break;
       case DevicePipeline::Spirv:
+        expandBf16Conversions(m);
         image = spirvImageOf(m, error, refused);
         break;
       case DevicePipeline::None:

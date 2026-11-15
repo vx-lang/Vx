@@ -2240,11 +2240,13 @@ fn get_optimization_pipeline(
     if llvm_lower {
         // LLVM has no fp8 or fp4 type, so their conversions become integer operations first.
         passes.push("vx-expand-narrow-floats".to_string());
-        // A conversion to bf16 becomes integer operations that round exactly. Left to LLVM, an
-        // x86 CPU with AVX512-BF16 converts with `vcvtneps2bf16`, which flushes a subnormal to
-        // zero.
-        passes.push("arith-expand{include-bf16=true include-f8e8m0=true}".to_string());
+        passes.push("arith-expand{include-f8e8m0=true}".to_string());
+        // `vx-to-llvm` compiles each NVIDIA GPU kernel, which converts to bf16 with one
+        // `cvt.rn.bf16.f32`. After it, a conversion to bf16 on the CPU becomes integer operations
+        // that round exactly. Left to LLVM, an x86 CPU with AVX512-BF16 converts with
+        // `vcvtneps2bf16`, which flushes a subnormal to zero.
         passes.push("vx-to-llvm".to_string());
+        passes.push("arith-expand{include-bf16=true}".to_string());
         passes.push("func.func(convert-linalg-to-loops,lower-affine)".to_string());
         passes.push("convert-scf-to-cf".to_string());
         passes.push("expand-strided-metadata".to_string());
