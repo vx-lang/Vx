@@ -4,7 +4,7 @@
 // `arch:`) is refused: the parser resolves `Topology::GPU` to the built-in unconditionally,
 // so the override would be silently ignored at every use site.
 // CHECK: E6016
-// CHECK: cannot override its `arch:`
+// CHECK: so it cannot set `arch:`
 Memory CPU_DRAM {}
 Memory DEV_HBM {
   within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached

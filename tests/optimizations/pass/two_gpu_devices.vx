@@ -32,6 +32,7 @@
 // RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s --check-prefix=PAYLOAD
 // PAYLOAD-DAG: topo=501
 // PAYLOAD-DAG: topo=500
+// PAYLOAD-DAG: arch=nvptx64
 
 fn prefill() -> f32 {
   let a = unsafe { Tensor<f32, [2, 2], Memory::GPU_HBM>::uninit() };

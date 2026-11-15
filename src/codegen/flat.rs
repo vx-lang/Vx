@@ -1312,56 +1312,6 @@ pub fn topo_archs_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i64, Declared
         .flatten()
         .collect();
 
-    for (kind, desc) in crate::arch::builtin_descriptors() {
-        let Some(arch) = desc.arch.as_ref() else {
-            continue;
-        };
-        if kind == crate::syntax::TopologyKind::GPU {
-            for id in 500..600 {
-                out.push((
-                    id,
-                    DeclaredArch {
-                        arch: arch.as_ref().to_string(),
-                        chip: desc.chip.as_ref().map(|c| c.as_ref().to_string()),
-                        offload: None,
-                    },
-                ));
-            }
-            continue;
-        }
-        let top = match kind {
-            crate::syntax::TopologyKind::CPU => crate::syntax::Topology::CPU,
-            crate::syntax::TopologyKind::NPU => crate::syntax::Topology::NPU(Box::new(
-                crate::syntax::Expr::Number(crate::syntax::NumberExpr::new(
-                    "0".to_string(),
-                    None,
-                    crate::syntax::Span::default(),
-                )),
-            )),
-            crate::syntax::TopologyKind::ANE => crate::syntax::Topology::ANE,
-            crate::syntax::TopologyKind::AccCore => crate::syntax::Topology::AccCore(Box::new(
-                crate::syntax::Expr::Number(crate::syntax::NumberExpr::new(
-                    "0".to_string(),
-                    None,
-                    crate::syntax::Span::default(),
-                )),
-            )),
-            crate::syntax::TopologyKind::AMX => crate::syntax::Topology::AMX,
-            crate::syntax::TopologyKind::CpuAvx512 => crate::syntax::Topology::CpuAvx512,
-            crate::syntax::TopologyKind::CpuNeon => crate::syntax::Topology::CpuNeon,
-            _ => continue,
-        };
-        let id = crate::arch::topology_dispatch_id(&top);
-        out.push((
-            id as i64,
-            DeclaredArch {
-                arch: arch.as_ref().to_string(),
-                chip: desc.chip.as_ref().map(|c| c.as_ref().to_string()),
-                offload: None,
-            },
-        ));
-    }
-
     // Sorted, because `env.topologies` is a HashMap and iteration order would otherwise decide
     // which entry wins an id collision -- the coin-flip E6016 refuses upstream, kept impossible
     // here too so the emitted MLIR is byte-reproducible (the freeze protocol depends on that).

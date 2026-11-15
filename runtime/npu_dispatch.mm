@@ -113,19 +113,20 @@ static NSURL *vx_find_ane_model(NSString *name) {
   return nil;
 }
 
-/// Which device CoreML will actually use for a model, asked rather than assumed.
+/// Which device CoreML will actually use for a model, asked rather than
+/// assumed.
 ///
 /// `computeUnits = MLComputeUnitsAll` lets CoreML choose among the CPU, the GPU
-/// and the Neural Engine, so the fact that this dispatcher took the CoreML route
-/// says nothing about the hardware that then ran the work. The two were reported
-/// as one for a long time, and they disagreed: a 4x4 fp32 matmul announced the
-/// Neural Engine and ran on the CPU.
+/// and the Neural Engine, so the fact that this dispatcher took the CoreML
+/// route says nothing about the hardware that then ran the work. The two were
+/// reported as one for a long time, and they disagreed: a 4x4 fp32 matmul
+/// announced the Neural Engine and ran on the CPU.
 ///
-/// `MLComputePlan` is CoreML's own answer. It is a plan rather than an execution
-/// trace -- it says where CoreML intends to put each operation -- which is still
-/// the difference between a measured statement and a hopeful one. `const`
-/// operations carry no device usage and are not counted; they are folded values,
-/// not work.
+/// `MLComputePlan` is CoreML's own answer. It is a plan rather than an
+/// execution trace -- it says where CoreML intends to put each operation --
+/// which is still the difference between a measured statement and a hopeful
+/// one. `const` operations carry no device usage and are not counted; they are
+/// folded values, not work.
 ///
 /// Logged once per model, at load, because that is when the answer is fixed.
 static void vx_log_planned_device(NSURL *url, MLModelConfiguration *config,
@@ -168,7 +169,8 @@ static void vx_log_planned_device(NSURL *url, MLModelConfiguration *config,
     dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
 
     if (!answered) {
-      VX_NPU_LOG("[Vx Dispatcher] CoreML would not report a plan for %s\n", name);
+      VX_NPU_LOG("[Vx Dispatcher] CoreML would not report a plan for %s\n",
+                 name);
       return;
     }
     const int total = ane + gpu + cpu + other;
@@ -179,11 +181,11 @@ static void vx_log_planned_device(NSURL *url, MLModelConfiguration *config,
                  "(%d op(s))\n",
                  name, total);
     } else if (cpu == total) {
-      VX_NPU_LOG("[Vx Dispatcher] CoreML plans %s on the CPU (%d op(s))\n", name,
-                 total);
+      VX_NPU_LOG("[Vx Dispatcher] CoreML plans %s on the CPU (%d op(s))\n",
+                 name, total);
     } else if (gpu == total) {
-      VX_NPU_LOG("[Vx Dispatcher] CoreML plans %s on the GPU (%d op(s))\n", name,
-                 total);
+      VX_NPU_LOG("[Vx Dispatcher] CoreML plans %s on the GPU (%d op(s))\n",
+                 name, total);
     } else {
       VX_NPU_LOG("[Vx Dispatcher] CoreML plans %s across devices "
                  "(%d ANE, %d GPU, %d CPU, %d other)\n",
@@ -310,10 +312,10 @@ extern "C" int vx_dispatch_gpu(float *xout, float *x, float *w, int n, int d) {
 //
 // Deliberately not a conversion of the fp32 path. Downcasting an f32 program to
 // f16 to reach an accelerator would change the arithmetic the program asked for
-// without saying so, which is the failure Vx#405 is about -- the element type is
-// part of the placement's meaning, and silently altering it to satisfy hardware
-// is the thing the machine model should be refusing, not the thing the runtime
-// should be doing quietly.
+// without saying so, which is the failure Vx#405 is about -- the element type
+// is part of the placement's meaning, and silently altering it to satisfy
+// hardware is the thing the machine model should be refusing, not the thing the
+// runtime should be doing quietly.
 extern "C" int vx_dispatch_ane_f16(void *xout, const void *x, const void *w,
                                    int n, int d) {
   @autoreleasepool {
@@ -430,7 +432,8 @@ extern "C" int vx_dispatch_ane(float *xout, float *x, float *w, int n, int d) {
     // every time (Vx#436, measured with MLComputePlan). Claiming the ANE here
     // asserted hardware nobody had checked. The fp16 512x512 path above is the
     // one CoreML does put on the Neural Engine.
-    VX_NPU_LOG("--- DISPATCHING VIA COREML (compute unit chosen by CoreML) ---\n");
+    VX_NPU_LOG(
+        "--- DISPATCHING VIA COREML (compute unit chosen by CoreML) ---\n");
     static MLModel *model = nil;
     NSError *error = nil;
     if (!model) {
@@ -518,7 +521,8 @@ extern "C" int vx_dispatch_ane_affine(float *out, float *x, float alpha,
     // The fp32 matmul banner was corrected and this one was left claiming the
     // Neural Engine for work MLComputePlan puts entirely on the CPU -- every
     // operation in affine_4, not merely most of them.
-    VX_NPU_LOG("--- DISPATCHING VIA COREML (compute unit chosen by CoreML) ---\n");
+    VX_NPU_LOG(
+        "--- DISPATCHING VIA COREML (compute unit chosen by CoreML) ---\n");
     static MLModel *affineModel = nil;
     NSError *error = nil;
     if (!affineModel) {
@@ -640,7 +644,7 @@ static void vx_note_cpu_fallback(const void *payload, size_t size,
   const int32_t topo = vx_payload_topology(payload, size);
   const std::string where =
       vx_placement_name(topo, vx_payload_field(payload, size, "toponame="));
-  // A declared topology gives its `arch:`. A built-in one gives only its id.
+  // The topology gives its `arch:` when it has one. Otherwise only its id.
   const char *arch = vx_payload_field(payload, size, "arch=");
   const bool on_host =
       topo == VX_TOPO_CPU || topo == VX_TOPO_AMX ||

@@ -14,7 +14,6 @@ and so on. A `W` prefix is a warning rather than an error.
 Every code below links to its own page, which carries the message the compiler emits and, where
 the test suite has one, a program that triggers it.
 
-
 ## Contents
 
 - [Warnings](#warnings) — `W1001`–`W1036` (27 codes)

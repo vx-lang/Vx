@@ -11,17 +11,17 @@
 // `Current` is refused for its name. A use of that name always means the built-in,
 // so overriding its transfer edges is refused.
 // topology_shadows_builtin.vx shows what goes wrong when it is not refused.
-// CHECK-DAG: topology 'CPU' shadows the built-in
+// CHECK-DAG: topology 'CPU' has the name of a built-in topology, so it cannot set transfer edges
 // CHECK-DAG: a topology cannot be named `Current`
-// CHECK-DAG: topology 'NPU' shadows the built-in
-// CHECK-DAG: topology 'AccCore' shadows the built-in
-// CHECK-DAG: topology 'AMX' shadows the built-in
-// CHECK-DAG: topology 'ANE' shadows the built-in
-// CHECK-DAG: topology 'GPU' shadows the built-in
-// CHECK-DAG: topology 'CpuAvx512' shadows the built-in
-// CHECK-DAG: topology 'CPU_AVX512' shadows the built-in
-// CHECK-DAG: topology 'CpuNeon' shadows the built-in
-// CHECK-DAG: topology 'CPU_Neon' shadows the built-in
+// CHECK-DAG: topology 'NPU' has the name of a built-in topology, so it cannot set transfer edges
+// CHECK-DAG: topology 'AccCore' has the name of a built-in topology, so it cannot set transfer edges
+// CHECK-DAG: topology 'AMX' has the name of a built-in topology, so it cannot set transfer edges
+// CHECK-DAG: topology 'ANE' has the name of a built-in topology, so it cannot set transfer edges
+// CHECK-DAG: topology 'GPU' has the name of a built-in topology, so it cannot set transfer edges
+// CHECK-DAG: topology 'CpuAvx512' has the name of a built-in topology, so it cannot set transfer edges
+// CHECK-DAG: topology 'CPU_AVX512' has the name of a built-in topology, so it cannot set transfer edges
+// CHECK-DAG: topology 'CpuNeon' has the name of a built-in topology, so it cannot set transfer edges
+// CHECK-DAG: topology 'CPU_Neon' has the name of a built-in topology, so it cannot set transfer edges
 
 Memory CHIP_RAM {
   capacity: 1 GB, bandwidth: 1 TB/s

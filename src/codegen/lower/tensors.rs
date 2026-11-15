@@ -275,6 +275,7 @@ fn lower_spawn_region<'c>(
         spawn_builder =
             spawn_builder.add_attributes(&[(Identifier::new(gen.context, "chip"), chip_attr)]);
     }
+    // Whether the fleet may run it on a worker of another node. A built-in has no mark.
     if let Some(offload) = desc_offload {
         let offload_attr = melior::ir::attribute::BoolAttribute::new(gen.context, offload);
         spawn_builder = spawn_builder

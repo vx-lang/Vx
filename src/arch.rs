@@ -490,6 +490,21 @@ pub fn topology_dispatch_id(top: &Topology) -> i32 {
     }
 }
 
+/// The built-in topology kind for a dispatch id, if the id falls in a built-in range.
+pub fn builtin_kind_from_dispatch_id(id: i64) -> Option<crate::syntax::TopologyKind> {
+    match id {
+        0 => Some(crate::syntax::TopologyKind::CPU),
+        100..200 => Some(crate::syntax::TopologyKind::NPU),
+        200..300 => Some(crate::syntax::TopologyKind::AccCore),
+        300 => Some(crate::syntax::TopologyKind::AMX),
+        400 => Some(crate::syntax::TopologyKind::ANE),
+        500..600 => Some(crate::syntax::TopologyKind::GPU),
+        600 => Some(crate::syntax::TopologyKind::CpuAvx512),
+        700 => Some(crate::syntax::TopologyKind::CpuNeon),
+        _ => None,
+    }
+}
+
 /// The dispatch ids of every device of a declared topology, in device order.
 pub fn declared_dispatch_ids(name: &crate::symbol::Symbol, count: Option<u64>) -> Vec<i32> {
     (0..count.unwrap_or(1))
@@ -953,6 +968,8 @@ pub(crate) fn builtin_descriptors() -> HashMap<crate::syntax::TopologyKind, Topo
             default_space,
             visibility: visibility.to_vec(),
             transfers: Vec::new(),
+            // The built-ins describe a class of device rather than a part, and which element types a
+            // GPU has is a property of the part. Undeclared, so they constrain nothing.
             dtypes: None,
             chip: None,
             levels: None,
@@ -974,30 +991,6 @@ pub(crate) fn builtin_descriptors() -> HashMap<crate::syntax::TopologyKind, Topo
     m.insert(K::CpuNeon, d(CPUDRAM, &[CPUDRAM], None, false));
     m.insert(K::Slice, d(NPUHBM, &[NPUHBM], None, false));
     m
-}
-
-/// The default architecture for a built-in topology, if it defines one.
-pub fn builtin_topology_arch(kind: &crate::syntax::TopologyKind) -> Option<&'static str> {
-    match kind {
-        crate::syntax::TopologyKind::GPU => Some("nvptx64"),
-        crate::syntax::TopologyKind::ANE => Some("appleane"),
-        _ => None,
-    }
-}
-
-/// The built-in topology kind for a dispatch id, if the id falls in a built-in range.
-pub fn builtin_kind_from_dispatch_id(id: i64) -> Option<crate::syntax::TopologyKind> {
-    match id {
-        0 => Some(crate::syntax::TopologyKind::CPU),
-        100..200 => Some(crate::syntax::TopologyKind::NPU),
-        200..300 => Some(crate::syntax::TopologyKind::AccCore),
-        300 => Some(crate::syntax::TopologyKind::AMX),
-        400 => Some(crate::syntax::TopologyKind::ANE),
-        500..600 => Some(crate::syntax::TopologyKind::GPU),
-        600 => Some(crate::syntax::TopologyKind::CpuAvx512),
-        700 => Some(crate::syntax::TopologyKind::CpuNeon),
-        _ => None,
-    }
 }
 
 /// The declared arch, chip, and offload for a topology.
@@ -1208,12 +1201,6 @@ impl TransferCostGraph {
     /// twice per *function*, in `default()` and again in `seed_from_topologies`. Hoisting the graph
     /// to one per compilation (see `GlobalAstEnv::build`) fixed the per-function part and left the
     /// double sweep in place.
-    /// Patch the existing descriptor for a built-in topology if a machine file declares it.
-    ///
-    /// Note: The compiler's type checker associates a memory space with its *owning* topology.
-    /// For example, `NPU_HBM` belongs to `NPU`. Patching `dtypes:` on `ANE` will have no effect
-    /// if an `ANE` tries to use `NPU_HBM`, because `check_element_type` will look up `NPU`'s
-    /// descriptor, not `ANE`'s.
     pub fn add_topology_edges(&mut self, topologies: &[TopologyDecl]) {
         for decl in topologies {
             let kind = crate::syntax::TopologyKind::from_name(&decl.name);
@@ -1797,6 +1784,35 @@ mod tests {
             None,
             Span::default(),
         ))))
+    }
+
+    #[test]
+    fn test_builtin_kind_from_dispatch_id() {
+        use crate::syntax::{Topology, TopologyKind};
+        let cases = [
+            (Topology::CPU, TopologyKind::CPU),
+            (Topology::AMX, TopologyKind::AMX),
+            (Topology::ANE, TopologyKind::ANE),
+            (Topology::CpuAvx512, TopologyKind::CpuAvx512),
+            (Topology::CpuNeon, TopologyKind::CpuNeon),
+            (Topology::gpu(0), TopologyKind::GPU),
+            (Topology::gpu(99), TopologyKind::GPU),
+        ];
+        for (top, expected_kind) in cases {
+            let id = topology_dispatch_id(&top) as i64;
+            assert_eq!(builtin_kind_from_dispatch_id(id), Some(expected_kind));
+        }
+        assert_eq!(builtin_kind_from_dispatch_id(100), Some(TopologyKind::NPU));
+        assert_eq!(builtin_kind_from_dispatch_id(199), Some(TopologyKind::NPU));
+        assert_eq!(
+            builtin_kind_from_dispatch_id(200),
+            Some(TopologyKind::AccCore)
+        );
+        assert_eq!(
+            builtin_kind_from_dispatch_id(299),
+            Some(TopologyKind::AccCore)
+        );
+        assert_eq!(builtin_kind_from_dispatch_id(800), None);
     }
 
     /// Device 0 of a declared topology keeps the id of its name, and each other device gets an

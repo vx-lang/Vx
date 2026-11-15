@@ -243,9 +243,9 @@ impl FnEmit<'_> {
             self.body += "  \"vx.yield\"() : () -> ()\n";
         }
         let result_ty = result_ty.unwrap_or_default();
-        // A topology that declared an `arch:` sends it along, so the device pipeline can
-        // gate on the declaration instead of the dispatch-id band (Vx#352). Discardable
-        // attribute on the generic form -- no dialect change involved.
+        // The topology gives its `arch:` when it has one, so the device pipeline can
+        // gate on the architecture. Discardable attribute on the generic form -- no
+        // dialect change involved.
         //
         // A nonzero `imm` is the trip count `parallel_outer_for` proved for the region's
         // outermost loop: `vx_parallel_trip` rides the same attribute dict, telling the
