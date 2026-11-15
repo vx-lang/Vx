@@ -1,0 +1,193 @@
+//===- broadcast_gives_each_value_to_each_receiver.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A broadcast channel gives each value to each receiver.
+//
+// - Three receivers each get the values 1 to 100: the first one, one from `subscribe`, and a
+//   clone of the first. The channel has room for 2, so `send` often waits for the slowest one.
+// - A receiver from `subscribe` gets only the values sent after the call.
+// - `send_for` gives up while a receiver did not read the old value. A clone of that receiver
+//   gets that value too. The drop of a receiver that did not read a value frees its room, so
+//   the next `send` does not wait.
+// - `recv_for` gives `TimedOut` when no value comes, and `recv` gives `Closed` after the drop of
+//   the sender.
+// - The code of a `tasks` block returns early while one task waits in `recv` and one in `send`.
+//   The cancel ends both waits.
+// - A `send` with no receiver gives the value back.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_SEED=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK-COUNT-3: {{^}}a receiver got 100 values, sum 5050{{$}}
+// CHECK-NEXT: {{^}}early got 1{{$}}
+// CHECK-NEXT: {{^}}late got 2{{$}}
+// CHECK-NEXT: {{^}}send_for gave back 3, timed out true{{$}}
+// CHECK-NEXT: {{^}}extra got 2{{$}}
+// CHECK-NEXT: {{^}}early got 2{{$}}
+// CHECK-NEXT: {{^}}early got 4{{$}}
+// CHECK-NEXT: {{^}}late got 4{{$}}
+// CHECK-NEXT: {{^}}early got 5{{$}}
+// CHECK-NEXT: {{^}}early got TimedOut{{$}}
+// CHECK-NEXT: {{^}}early got Closed{{$}}
+// CHECK-DAG: {{^}}a task got Cancelled{{$}}
+// CHECK-DAG: {{^}}a task's send gave back 2, cancelled true{{$}}
+// CHECK: {{^}}leave_early gave 7{{$}}
+// CHECK-NEXT: {{^}}send gave back 9{{$}}
+
+import core::time;
+import std::sync::broadcast;
+import std::sync::wait;
+
+fn say(who : *const i8, e : RecvError) -> void {
+  match e {
+    RecvError::Closed => {
+      println!("{} got Closed", who);
+    }
+    RecvError::Cancelled => {
+      println!("{} got Cancelled", who);
+    }
+    RecvError::TimedOut => {
+      println!("{} got TimedOut", who);
+    }
+  }
+}
+
+fn show(who : *const i8, r : Result<i64, RecvError>) -> void {
+  match r {
+    Result<i64, RecvError>::Ok(v) => {
+      println!("{} got {}", who, v);
+    }
+    Result<i64, RecvError>::Err(e) => {
+      say(who, e);
+    }
+  }
+}
+
+// Adds the values from `rx` until `recv` gives an error.
+fn sum_all(rx : BroadcastReceiver<i64>) -> void {
+  let mut count : i64 = 0;
+  let mut sum : i64 = 0;
+  loop {
+    match rx.recv() {
+      Result<i64, RecvError>::Ok(v) => {
+        count = count + 1;
+        sum = sum + v;
+      }
+      Result<i64, RecvError>::Err(_e) => {
+        println!("a receiver got {} values, sum {}", count, sum);
+        return;
+      }
+    }
+  }
+}
+
+fn say_send_error(e : SendError<i64>) -> void {
+  if e.cancelled {
+    println!("a task's send gave back {}, cancelled true", e.value);
+  } else {
+    println!("send gave back {}", e.value);
+  }
+}
+
+fn send_now(tx : &BroadcastSender<i64>, v : i64) -> void {
+  match tx.send(v) {
+    Result<void, SendError<i64>>::Ok() => {}
+    Result<void, SendError<i64>>::Err(e) => {
+      say_send_error(e);
+    }
+  }
+}
+
+fn wait_for_one(rx : BroadcastReceiver<i64>) -> void {
+  show("a task", rx.recv());
+}
+
+// Sends 1, which fills the room, and then 2, which waits for `rx` to read 1.
+fn send_two(tx : BroadcastSender<i64>) -> void {
+  send_now(&tx, 1);
+  send_now(&tx, 2);
+}
+
+fn leave_early(early : bool) -> i64 {
+  let (tx, rx) = broadcast<i64>(1);
+  let (tx2, rx2) = broadcast<i64>(1);
+  tasks {
+    spawn {
+      wait_for_one(rx);
+    };
+    spawn {
+      send_two(tx2);
+    };
+    if early {
+      return 7;
+    }
+    send_now(&tx, 1);
+  };
+  drop(rx2);
+  return 0;
+}
+
+fn main() -> i32 {
+  let (tx, rx) = broadcast<i64>(2);
+  let rx2 = tx.subscribe();
+  let rx3 = rx.clone();
+  tasks {
+    spawn {
+      sum_all(rx);
+    };
+    spawn {
+      sum_all(rx2);
+    };
+    spawn {
+      sum_all(rx3);
+    };
+    let first : i64 = 1;
+    for v in first..101 {
+      send_now(&tx, v);
+    }
+    drop(tx);
+  };
+
+  let (to_early, early) = broadcast<i64>(1);
+  send_now(&to_early, 1);
+  let late = to_early.subscribe();
+  show("early", early.recv());
+  send_now(&to_early, 2);
+  show("late", late.recv());
+  // `early` did not read 2, so the room is full.
+  match to_early.send_for(3, Duration::from_millis(20)) {
+    Result<void, SendError<i64>>::Ok() => {
+      println!("send_for sent 3");
+    }
+    Result<void, SendError<i64>>::Err(e) => {
+      println!("send_for gave back {}, timed out {}", e.value, e.timed_out);
+    }
+  }
+  // `extra` is a clone of `early`, so it did not read 2 either.
+  let extra = early.clone();
+  show("extra", extra.recv());
+  show("early", early.recv());
+  send_now(&to_early, 4);
+  show("early", early.recv());
+  show("late", late.recv());
+  // `extra` did not read 4, so the room is full until its drop.
+  drop(extra);
+  send_now(&to_early, 5);
+  show("early", early.recv());
+  show("early", early.recv_for(Duration::from_millis(20)));
+  drop(to_early);
+  show("early", early.recv());
+
+  let left = leave_early(true);
+  println!("leave_early gave {}", left);
+
+  let (to_none, none) = broadcast<i64>(1);
+  drop(none);
+  send_now(&to_none, 9);
+  return 0;
+}

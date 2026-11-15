@@ -1,0 +1,343 @@
+//===- broadcast.vx - Vx Standard Library -------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A broadcast channel gives each value to each receiver.
+//
+// It is a ring of `n` slots, as in `channel`, and its first words are the words of `channel`.
+// Each slot has a number that says whose turn it is: `2k` lets the send `k` in, and `2k + 1` lets
+// the receivers read the value `k`. Each slot also has a count of the receivers that did not
+// read its value yet.
+//
+// - A `send` takes the lock of the channel. It waits until its slot is free, writes the value, sets
+//   the count to the number of receivers, and sets the number to `2k + 1`.
+// - A receiver reads with no lock. It clones the value and takes 1 from the count. The last one
+//   moves the value out with no clone, and sets the number to `2(k + n)` for the next `send`.
+//
+// So a `send` waits for the slowest receiver, and no receiver misses a value. The lock also
+// guards the set of receivers: `subscribe`, and the clone and the drop of a receiver, take it.
+// So the count of each value is the receivers that will read it.
+//===----------------------------------------------------------------------===//
+import core::clone;
+import core::marker;
+import core::mem;
+import core::panic;
+import core::ptr;
+import core::result;
+import core::sync::atomic;
+import core::time;
+import std::alloc;
+import std::sync::channel;
+import std::sync::wait;
+import std::time;
+
+// The three words of the lock.
+const BROADCAST_LOCK : i64 = 8;
+// The number of slot 0, then its count of readers. The other slots follow.
+const BROADCAST_SLOTS : i64 = 11;
+
+/// The end of a broadcast channel that sends. Clone it to send from many tasks.
+struct BroadcastSender<T> {
+  words : *mut AtomicI64,
+  data : *mut T,
+  cap : i64,
+  // The line that made the channel, for the deadlock report.
+  made : Location,
+}
+
+/// An end of a broadcast channel that receives. Each receiver gets each value that was sent after
+/// it was made.
+struct BroadcastReceiver<T> {
+  words : *mut AtomicI64,
+  data : *mut T,
+  cap : i64,
+  made : Location,
+  // The number of the next value that this receiver reads, in a word of its own.
+  next : *mut AtomicI64,
+}
+
+unsafe impl<T : Send> Send for BroadcastSender<T> {}
+unsafe impl<T : Send> Send for BroadcastReceiver<T> {}
+impl<T> HostOnly for BroadcastSender<T> {}
+impl<T> HostOnly for BroadcastReceiver<T> {}
+impl<T> SenderOfAChannel for BroadcastSender<T> {}
+impl<T> ReceiverOfAChannel for BroadcastReceiver<T> {}
+
+/// A broadcast channel with room for `n` values. `n` must be at least 1. Each receiver gets a
+/// clone of each value, so `T` must be `Clone`.
+fn broadcast<T : Send + Owned + Clone>(n : i64, at : Caller) -> (BroadcastSender<T>, BroadcastReceiver<T>) {
+  assert(n >= 1, "broadcast: the room must be at least 1");
+  let size = BROADCAST_SLOTS + 2 * n;
+  let words : *mut AtomicI64 = alloc(size * 8, 8);
+  let data : *mut T = alloc(n * sizeof<T>(), 16);
+  if is_null_mut(words) || is_null_mut(data) {
+    panic("broadcast: out of memory");
+  }
+  for i in 0..size {
+    unsafe { words[i] = AtomicI64::new(0); }
+  }
+  unsafe {
+    words[SENDERS] = AtomicI64::new(1);
+    words[RECEIVER] = AtomicI64::new(1);
+    words[ENDS] = AtomicI64::new(2);
+  }
+  for i in 0..n {
+    unsafe { words[BROADCAST_SLOTS + 2 * i] = AtomicI64::new(2 * i); }
+  }
+  return (BroadcastSender<T> {
+    words : words, data : data, cap : n, made : at.location
+  },
+  BroadcastReceiver<T> {
+    words : words, data : data, cap : n, made : at.location, next : new_receiver_word(0)
+  });
+}
+
+/// The number of slot `i`.
+fn broadcast_turn(words : *mut AtomicI64, i : i64) -> &AtomicI64 {
+  return word(words, BROADCAST_SLOTS + 2 * i);
+}
+
+/// The receivers that did not read the value in slot `i` yet.
+fn broadcast_readers(words : *mut AtomicI64, i : i64) -> &AtomicI64 {
+  return word(words, BROADCAST_SLOTS + 2 * i + 1);
+}
+
+/// The value `k` was read for the last time. Drop it, and free its slot for the next `send`.
+fn broadcast_free<T>(words : *mut AtomicI64, data : *mut T, cap : i64, k : i64) -> void {
+  let old : T = unsafe { take_slot(data, k % cap) };
+  drop(old);
+  broadcast_turn(words, k % cap).store(2 * (k + cap), AtomicOrdering::Release);
+  notify(words);
+}
+
+/// One end is dropped. The last one drops the values that a receiver did not read, and frees the
+/// channel.
+fn broadcast_release<T>(words : *mut AtomicI64, data : *mut T, cap : i64) -> void {
+  if word(words, ENDS).fetch_sub(1, AtomicOrdering::SeqCst) != 1 {
+    return;
+  }
+  for i in 0..cap {
+    if broadcast_turn(words, i).load(AtomicOrdering::SeqCst) % 2 == 1 {
+      let value : T = unsafe { take_slot(data, i) };
+      drop(value);
+    }
+  }
+  let w : *mut i8 = words;
+  let d : *mut i8 = data;
+  dealloc(w, 8);
+  dealloc(d, 16);
+}
+
+impl<T : Clone>
+BroadcastSender<T> {
+  /// Send `v` to each receiver. Wait while a receiver did not read the value in the next slot.
+  /// When each receiver was dropped, or the `tasks` block of this task was cancelled, give `v`
+  /// back.
+  fn send(self : &BroadcastSender<T>, v : T, at : Caller) -> Result<void, SendError<T>> {
+    return self.send_until(v, Instant::never(), at);
+  }
+
+  /// `send`, and give `v` back when it waited `limit` for room.
+  fn send_for(self : &BroadcastSender<T>, v : T, limit : Duration, at : Caller) -> Result<void, SendError<T>> {
+    return self.send_until(v, deadline_after(limit), at);
+  }
+
+  /// `send` until the clock reaches `deadline`.
+  fn send_until(self : &BroadcastSender<T>, v : T, deadline : Instant, at : Caller) -> Result<void, SendError<T>> {
+    let words = self.words;
+    let mut cancelled = false;
+    loop {
+      cancelled = cancelled_at(at);
+      if cancelled {
+        break;
+      }
+      let seen = word(words, WAKE).load(AtomicOrdering::SeqCst);
+      lock_channel(words, BROADCAST_LOCK);
+      let receivers = word(words, RECEIVER).load(AtomicOrdering::SeqCst);
+      if receivers == 0 {
+        unlock_channel(words, BROADCAST_LOCK);
+        return Result<void, SendError<T>>::Err(SendError<T> {
+          value : v, cancelled : false, timed_out : false
+        });
+      }
+      let k = word(words, SENDS).load(AtomicOrdering::SeqCst);
+      let i = k % self.cap;
+      if broadcast_turn(words, i).load(AtomicOrdering::Acquire) == 2 * k {
+        let data = self.data;
+        unsafe { data[i] = v; }
+        broadcast_readers(words, i).store(receivers, AtomicOrdering::SeqCst);
+        word(words, SENDS).store(k + 1, AtomicOrdering::SeqCst);
+        broadcast_turn(words, i).store(2 * k + 1, AtomicOrdering::Release);
+        unlock_channel(words, BROADCAST_LOCK);
+        notify(words);
+        return Result<void, SendError<T>>::Ok();
+      }
+      unlock_channel(words, BROADCAST_LOCK);
+      if past_deadline(deadline) {
+        break;
+      }
+      wait_for_event(words, seen, deadline, WAIT_IN_SEND, at, self.made);
+    }
+    return Result<void, SendError<T>>::Err(SendError<T> {
+      value : v, cancelled : cancelled, timed_out : !cancelled
+    });
+  }
+
+  /// A new receiver. It gets each value that is sent after this call.
+  fn subscribe(self : &BroadcastSender<T>) -> BroadcastReceiver<T> {
+    let words = self.words;
+    lock_channel(words, BROADCAST_LOCK);
+    let k = word(words, SENDS).load(AtomicOrdering::SeqCst);
+    word(words, RECEIVER).fetch_add(1, AtomicOrdering::SeqCst);
+    word(words, ENDS).fetch_add(1, AtomicOrdering::SeqCst);
+    unlock_channel(words, BROADCAST_LOCK);
+    return BroadcastReceiver<T> {
+      words : words, data : self.data, cap : self.cap, made : self.made, next : new_receiver_word(k)
+    };
+  }
+}
+
+impl<T : Clone>
+BroadcastReceiver<T> {
+  /// The next value. Wait while this receiver read each value. When each `BroadcastSender` was
+  /// dropped and no value is left for this receiver, give `Closed`. When the `tasks` block of
+  /// this task was cancelled, give `Cancelled`.
+  fn recv(self : &BroadcastReceiver<T>, at : Caller) -> Result<T, RecvError> {
+    return self.recv_until(Instant::never(), at);
+  }
+
+  /// `recv`, and give `TimedOut` when it waited `limit` for a value.
+  fn recv_for(self : &BroadcastReceiver<T>, limit : Duration, at : Caller) -> Result<T, RecvError> {
+    return self.recv_until(deadline_after(limit), at);
+  }
+
+  /// `recv` until the clock reaches `deadline`.
+  fn recv_until(self : &BroadcastReceiver<T>, deadline : Instant, at : Caller) -> Result<T, RecvError> {
+    let words = self.words;
+    let mut why = RecvError::Closed;
+    loop {
+      if cancelled_at(at) {
+        why = RecvError::Cancelled;
+        break;
+      }
+      let seen = word(words, WAKE).load(AtomicOrdering::SeqCst);
+      match self.try_recv() {
+        Result<T, TryRecvError>::Ok(v) => {
+          return Result<T, RecvError>::Ok(v);
+        }
+        Result<T, TryRecvError>::Err(e) => {
+          match e {
+            TryRecvError::Closed => {
+              break;
+            }
+            TryRecvError::Empty => {}
+          }
+        }
+      }
+      if past_deadline(deadline) {
+        why = RecvError::TimedOut;
+        break;
+      }
+      wait_for_event(words, seen, deadline, WAIT_IN_RECV, at, self.made);
+    }
+    return Result<T, RecvError>::Err(why);
+  }
+
+  /// The next value for this receiver, if it was sent. It does not wait.
+  fn try_recv(self : &BroadcastReceiver<T>) -> Result<T, TryRecvError> {
+    let words = self.words;
+    // Read `SENDERS` before the slot. Each `send` comes before the drop of its sender, so a
+    // closed channel shows its last value.
+    let closed = word(words, SENDERS).load(AtomicOrdering::SeqCst) == 0;
+    let k = word(self.next, 0).load(AtomicOrdering::Relaxed);
+    let i = k % self.cap;
+    if broadcast_turn(words, i).load(AtomicOrdering::Acquire) != 2 * k + 1 {
+      if closed {
+        return Result<T, TryRecvError>::Err(TryRecvError::Closed);
+      }
+      return Result<T, TryRecvError>::Err(TryRecvError::Empty);
+    }
+    word(self.next, 0).store(k + 1, AtomicOrdering::Relaxed);
+    let readers = broadcast_readers(words, i);
+    let data = self.data;
+    if readers.load(AtomicOrdering::Acquire) == 1 {
+      // Each other receiver read the value, so this one moves it out.
+      readers.store(0, AtomicOrdering::Relaxed);
+      let value : T = unsafe { take_slot(data, i) };
+      broadcast_turn(words, i).store(2 * (k + self.cap), AtomicOrdering::Release);
+      notify(words);
+      return Result<T, TryRecvError>::Ok(value);
+    }
+    let shared : &T = unsafe { &data[i] };
+    let value = shared.clone();
+    if readers.fetch_sub(1, AtomicOrdering::AcqRel) == 1 {
+      broadcast_free<T>(words, data, self.cap, k);
+    }
+    return Result<T, TryRecvError>::Ok(value);
+  }
+}
+
+impl<T> Clone for BroadcastSender<T> {
+  fn clone(self : &BroadcastSender<T>) -> BroadcastSender<T> {
+    word(self.words, SENDERS).fetch_add(1, AtomicOrdering::SeqCst);
+    word(self.words, ENDS).fetch_add(1, AtomicOrdering::SeqCst);
+    return BroadcastSender<T> {
+      words : self.words, data : self.data, cap : self.cap, made : self.made
+    };
+  }
+}
+
+impl<T> Clone for BroadcastReceiver<T> {
+  /// A receiver that gets the same values as this one, from the same place.
+  fn clone(self : &BroadcastReceiver<T>) -> BroadcastReceiver<T> {
+    let words = self.words;
+    lock_channel(words, BROADCAST_LOCK);
+    let k = word(self.next, 0).load(AtomicOrdering::Relaxed);
+    let end = word(words, SENDS).load(AtomicOrdering::SeqCst);
+    let mut j = k;
+    while j < end {
+      broadcast_readers(words, j % self.cap).fetch_add(1, AtomicOrdering::SeqCst);
+      j = j + 1;
+    }
+    word(words, RECEIVER).fetch_add(1, AtomicOrdering::SeqCst);
+    word(words, ENDS).fetch_add(1, AtomicOrdering::SeqCst);
+    unlock_channel(words, BROADCAST_LOCK);
+    return BroadcastReceiver<T> {
+      words : words, data : self.data, cap : self.cap, made : self.made, next : new_receiver_word(k)
+    };
+  }
+}
+
+impl<T> Drop for BroadcastSender<T> {
+  fn drop(self : &mut BroadcastSender<T>) -> void {
+    if word(self.words, SENDERS).fetch_sub(1, AtomicOrdering::SeqCst) == 1 {
+      notify(self.words);
+    }
+    broadcast_release<T>(self.words, self.data, self.cap);
+  }
+}
+
+impl<T> Drop for BroadcastReceiver<T> {
+  /// Count each value that this receiver did not read as read, so that a `send` does not wait
+  /// for it.
+  fn drop(self : &mut BroadcastReceiver<T>) -> void {
+    let words = self.words;
+    lock_channel(words, BROADCAST_LOCK);
+    let end = word(words, SENDS).load(AtomicOrdering::SeqCst);
+    let mut k = word(self.next, 0).load(AtomicOrdering::Relaxed);
+    while k < end {
+      if broadcast_readers(words, k % self.cap).fetch_sub(1, AtomicOrdering::AcqRel) == 1 {
+        broadcast_free<T>(words, self.data, self.cap, k);
+      }
+      k = k + 1;
+    }
+    word(words, RECEIVER).fetch_sub(1, AtomicOrdering::SeqCst);
+    unlock_channel(words, BROADCAST_LOCK);
+    free_receiver_word(self.next);
+    notify(words);
+    broadcast_release<T>(words, self.data, self.cap);
+  }
+}
