@@ -1,0 +1,19 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=E6026
+// `CPU` cannot take `dtypes:`, because host functions and the standard library run on it.
+// CHECK: E6016
+// CHECK: topology 'CPU' cannot take `dtypes:`, because host functions and the standard library run on it
+
+Memory CPU_DRAM {}
+
+Topology CPU {
+  memory: Memory::CPU_DRAM,
+  visible: [Memory::CPU_DRAM, Memory::NPU_HBM],
+  dtypes: [f32, i32]
+}
+
+fn main() -> i32 {
+  let mut v = Vec<i32>::new();
+  v.push(42);
+  return v[0];
+}
+

@@ -52,104 +52,80 @@ impl TypeChecker<'_> {
 
             if !matches!(kind, TopologyKind::Custom(_)) {
                 if let Some(builtin) = crate::arch::builtin_descriptors().remove(&kind) {
-                    if decl.descriptor.arch.is_some() {
-                        self.errors.error_with_code(
-                            crate::diagnostic::DiagnosticCode::E6016,
-                            format!(
-                                "topology '{}' has the name of a built-in topology, so it cannot set `arch:`. A declaration with a built-in name can only add `dtypes:`",
-                                decl.name
-                            ),
-                            None,
-                        );
-                        continue;
-                    }
-                    if decl.descriptor.chip.is_some() {
-                        self.errors.error_with_code(
-                            crate::diagnostic::DiagnosticCode::E6016,
-                            format!(
-                                "topology '{}' has the name of a built-in topology, so it cannot set `chip:`. A declaration with a built-in name can only add `dtypes:`",
-                                decl.name
-                            ),
-                            None,
-                        );
-                        continue;
-                    }
-                    if decl.descriptor.levels.is_some() {
-                        self.errors.error_with_code(
-                            crate::diagnostic::DiagnosticCode::E6016,
-                            format!(
-                                "topology '{}' has the name of a built-in topology, so it cannot set `levels:`. A declaration with a built-in name can only add `dtypes:`",
-                                decl.name
-                            ),
-                            None,
-                        );
-                        continue;
-                    }
-                    if decl.descriptor.offload {
-                        self.errors.error_with_code(
-                            crate::diagnostic::DiagnosticCode::E6016,
-                            format!(
-                                "topology '{}' has the name of a built-in topology, so it cannot set `offload:`. A declaration with a built-in name can only add `dtypes:`",
-                                decl.name
-                            ),
-                            None,
-                        );
-                        continue;
-                    }
-                    if !decl.descriptor.transfers.is_empty() {
-                        self.errors.error_with_code(
-                            crate::diagnostic::DiagnosticCode::E6016,
-                            format!(
-                                "topology '{}' has the name of a built-in topology, so it cannot set transfer edges. A declaration with a built-in name can only add `dtypes:`",
-                                decl.name
-                            ),
-                            None,
-                        );
-                        continue;
-                    }
-                    if decl.descriptor.default_space != builtin.default_space {
-                        self.errors.error_with_code(
-                            crate::diagnostic::DiagnosticCode::E6016,
-                            format!(
-                                "topology '{}' has the name of a built-in topology, so it cannot set `memory:`. A declaration with a built-in name can only add `dtypes:`",
-                                decl.name
-                            ),
-                            None,
-                        );
-                        continue;
-                    }
-                    let decl_vis: std::collections::HashSet<_> =
-                        decl.descriptor.visibility.iter().collect();
-                    let builtin_vis: std::collections::HashSet<_> =
-                        builtin.visibility.iter().collect();
-                    if decl_vis != builtin_vis {
-                        self.errors.error_with_code(
-                            crate::diagnostic::DiagnosticCode::E6016,
-                            format!(
-                                "topology '{}' has the name of a built-in topology, so it cannot set `visible:`. A declaration with a built-in name can only add `dtypes:`",
-                                decl.name
-                            ),
-                            None,
-                        );
-                        continue;
-                    }
-                    if decl.descriptor.dtypes.is_some() {
-                        if kind == TopologyKind::CPU {
-                            self.errors.error_with_code(
-                                crate::diagnostic::DiagnosticCode::E6016,
-                                "topology 'CPU' cannot take `dtypes:`, because host functions and the standard library run on it",
-                                None,
-                            );
-                            continue;
+                    let field = if decl.descriptor.arch.is_some() {
+                        Some("`arch:`")
+                    } else if decl.descriptor.chip.is_some() {
+                        Some("`chip:`")
+                    } else if decl.descriptor.levels.is_some() {
+                        Some("`levels:`")
+                    } else if decl.descriptor.offload {
+                        Some("`offload:`")
+                    } else if !decl.descriptor.transfers.is_empty() {
+                        Some("transfer edges")
+                    } else if decl.descriptor.default_space != builtin.default_space {
+                        Some("`memory:`")
+                    } else {
+                        let decl_vis: std::collections::HashSet<_> =
+                            decl.descriptor.visibility.iter().collect();
+                        let builtin_vis: std::collections::HashSet<_> =
+                            builtin.visibility.iter().collect();
+                        if decl_vis != builtin_vis {
+                            Some("`visible:`")
+                        } else {
+                            None
                         }
-                        if let Some(owner) =
-                            crate::arch::builtin_space_owner(&builtin.default_space)
-                        {
-                            if owner != kind {
+                    };
+
+                    if let Some(field) = field {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E6016,
+                            format!(
+                                "topology '{}' has the name of a built-in topology, so it cannot set {}. A declaration with a built-in name can only add `dtypes:`",
+                                decl.name, field
+                            ),
+                            None,
+                        );
+                        continue;
+                    }
+
+                    if decl.descriptor.dtypes.is_none() {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E6016,
+                            format!(
+                                "topology '{}' has the name of a built-in topology, and declares no `dtypes:`. A declaration with a built-in name can only add `dtypes:`",
+                                decl.name
+                            ),
+                            None,
+                        );
+                        continue;
+                    }
+
+                    if kind == TopologyKind::CPU {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E6016,
+                            "topology 'CPU' cannot take `dtypes:`, because host functions and the standard library run on it",
+                            None,
+                        );
+                        continue;
+                    }
+
+                    if let Some(owner) = crate::arch::builtin_space_owner(&builtin.default_space) {
+                        if owner != kind {
+                            if owner == TopologyKind::CPU {
                                 self.errors.error_with_code(
                                     crate::diagnostic::DiagnosticCode::E6016,
                                     format!(
-                                        "topology '{}' cannot take `dtypes:`, because its memory {} belongs to '{}'. Put `dtypes:` on '{}'",
+                                        "topology '{}' cannot take `dtypes:`, because its memory `{}` belongs to 'CPU'",
+                                        decl.name,
+                                        builtin.default_space.name()
+                                    ),
+                                    None,
+                                );
+                            } else {
+                                self.errors.error_with_code(
+                                    crate::diagnostic::DiagnosticCode::E6016,
+                                    format!(
+                                        "topology '{}' cannot take `dtypes:`, because its memory `{}` belongs to '{}'. Put `dtypes:` on '{}'",
                                         decl.name,
                                         builtin.default_space.name(),
                                         owner,
@@ -157,8 +133,8 @@ impl TypeChecker<'_> {
                                     ),
                                     None,
                                 );
-                                continue;
                             }
+                            continue;
                         }
                     }
                 }
@@ -489,9 +465,9 @@ impl TypeChecker<'_> {
             // A generic fn inside a lowering can never be checked: generic bodies are checked at
             // instantiation, and a lowering fn is not callable, so it is never instantiated -- its
             // body would escape the checker forever. That silently reopens, for generics only, the
-            // exact parses-clean-while-broken gap that was closed: a
-            // lowering is instantiated per EDGE, not per type, and a type parameter has no meaning
-            // there.
+            // exact parses-clean-while-broken gap that the checker closes for other code, so the
+            // checker refuses it: a lowering is instantiated per EDGE, not per type, and a type
+            // parameter has no meaning there.
             for f in &t.methods {
                 if !f.generics.is_empty() {
                     self.errors.error_with_code(

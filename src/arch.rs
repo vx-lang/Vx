@@ -993,6 +993,25 @@ pub(crate) fn builtin_descriptors() -> HashMap<crate::syntax::TopologyKind, Topo
     m
 }
 
+/// Whether a built-in topology can have its `dtypes:` patched by a machine declaration.
+/// Host execution (CPU) and topologies whose memory belongs to another topology cannot.
+pub fn can_patch_builtin_dtypes(kind: &crate::syntax::TopologyKind) -> bool {
+    if matches!(
+        kind,
+        crate::syntax::TopologyKind::CPU
+            | crate::syntax::TopologyKind::Custom(_)
+            | crate::syntax::TopologyKind::Current
+            | crate::syntax::TopologyKind::Slice
+    ) {
+        return false;
+    }
+    if let Some(desc) = builtin_descriptors().remove(kind) {
+        builtin_space_owner(&desc.default_space).as_ref() == Some(kind)
+    } else {
+        false
+    }
+}
+
 /// The declared arch, chip, and offload for a topology.
 /// Checks the declared topologies first, then falls back to built-in descriptors.
 pub fn topology_arch_and_chip(
@@ -1208,10 +1227,12 @@ impl TransferCostGraph {
             if matches!(kind, crate::syntax::TopologyKind::Custom(_)) {
                 self.apply_descriptor_edges(&decl.descriptor);
                 self.descriptors.insert(kind, decl.descriptor.clone());
-            } else if let Some(existing) = self.descriptors.get_mut(&kind) {
-                // Built-in. Patch the dtypes if provided.
-                if let Some(dtypes) = &decl.descriptor.dtypes {
-                    existing.dtypes = Some(dtypes.clone());
+            } else if can_patch_builtin_dtypes(&kind) {
+                if let Some(existing) = self.descriptors.get_mut(&kind) {
+                    // Built-in. Patch the dtypes if provided.
+                    if let Some(dtypes) = &decl.descriptor.dtypes {
+                        existing.dtypes = Some(dtypes.clone());
+                    }
                 }
             }
         }
@@ -1813,6 +1834,23 @@ mod tests {
             Some(TopologyKind::AccCore)
         );
         assert_eq!(builtin_kind_from_dispatch_id(800), None);
+    }
+
+    #[test]
+    fn test_can_patch_builtin_dtypes() {
+        use crate::syntax::TopologyKind::*;
+        assert!(can_patch_builtin_dtypes(&GPU));
+        assert!(can_patch_builtin_dtypes(&NPU));
+        assert!(can_patch_builtin_dtypes(&AccCore));
+
+        assert!(!can_patch_builtin_dtypes(&CPU));
+        assert!(!can_patch_builtin_dtypes(&AMX));
+        assert!(!can_patch_builtin_dtypes(&ANE));
+        assert!(!can_patch_builtin_dtypes(&CpuAvx512));
+        assert!(!can_patch_builtin_dtypes(&CpuNeon));
+        assert!(!can_patch_builtin_dtypes(&Current));
+        assert!(!can_patch_builtin_dtypes(&Slice));
+        assert!(!can_patch_builtin_dtypes(&Custom("Dev".into())));
     }
 
     /// Device 0 of a declared topology keeps the id of its name, and each other device gets an

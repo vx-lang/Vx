@@ -1,7 +1,7 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // ANE cannot take dtypes:, because NPU_HBM belongs to NPU.
 // CHECK: E6016
-// CHECK: topology 'ANE' cannot take `dtypes:`, because its memory NPU_HBM belongs to 'NPU'. Put `dtypes:` on 'NPU'
+// CHECK: topology 'ANE' cannot take `dtypes:`, because its memory `NPU_HBM` belongs to 'NPU'. Put `dtypes:` on 'NPU'
 
 Topology ANE {
   memory: Memory::NPU_HBM,

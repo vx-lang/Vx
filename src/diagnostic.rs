@@ -600,7 +600,7 @@ pub enum DiagnosticCode {
     /// A `Topology` or `Memory` declaration whose identity cannot be relied on. Three forms: a
     /// declared topology tries to override hardware facts of a built-in topology (like `arch:`,
     /// `chip:`, or transfer edges) -- the compiler refuses such overrides, though patching
-    /// `dtypes:` is allowed on a topology that owns its memory space; or two declared names collide
+    /// `dtypes:` is allowed on a topology that owns its memory space (except `CPU`); or two declared names collide
     /// on one dispatch id (custom ids are derived from the name by hashing), in which case which
     /// declaration is in force would be hash-iteration order -- observed as the same program
     /// getting a device image on some runs and not others for a topology, and as a `transfer`
