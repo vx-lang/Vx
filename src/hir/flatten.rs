@@ -604,9 +604,6 @@ struct Lowerer<'r> {
     queued_drops: Vec<PendingDrop>,
     /// The `queued_drops` of the statement being lowered: they run once its value is computed.
     value_drops: Vec<PendingDrop>,
-    /// The drops waiting for the value of a returned `match` whose arms return. Each `Ret` in the
-    /// arms runs them.
-    return_drops: Vec<PendingDrop>,
     /// The fresh tensors the statement being lowered has made: each is
     /// dropped when the statement ends unless something took it.
     temps: Vec<Register>,
@@ -628,21 +625,17 @@ fn placed_id(d: &crate::syntax::DropStmt) -> Option<u32> {
 #[derive(Clone)]
 enum PendingDrop {
     /// A tensor to free: the owner itself, or (`field`) a tensor that a struct field or an enum
-    /// payload held. The struct or the enum owned it. `owner` is the name that the drop names.
+    /// payload held. The struct or the enum owned it.
     Tensor {
         reg: Register,
         flag: Option<Symbol>,
         field: bool,
         /// For a field: the dispatch id of the device memory its type names.
         placed: Option<u32>,
-        owner: Symbol,
     },
     /// The statements that run a drop: a `Drop` impl's `drop`, with cancellation off around
     /// it, or a `match` on an enum whose arms hold more drops.
-    Call {
-        stmts: Vec<Statement>,
-        owner: Symbol,
-    },
+    Call { stmts: Vec<Statement> },
     /// The end of the lifetime of a struct's or enum's stack slot.
     LifetimeEnd { slot: Register },
 }
@@ -696,7 +689,6 @@ impl<'r> Lowerer<'r> {
             across: AcrossState::default(),
             queued_drops: Vec::new(),
             value_drops: Vec::new(),
-            return_drops: Vec::new(),
             temps: Vec::new(),
             moved_args: HashSet::new(),
             tensor_depth: HashMap::new(),
@@ -863,9 +855,6 @@ impl<'r> Lowerer<'r> {
 
     /// The function returns `v`. In a `tasks` block, `v` waits in a slot until the block ends.
     fn emit_ret(&mut self, v: Option<Val>) -> Lowered<()> {
-        for d in self.return_drops.clone() {
-            self.emit_drop(d)?;
-        }
         if !self.leaving_tasks(false) {
             match v {
                 Some(v) => {
@@ -1184,10 +1173,7 @@ impl<'r> Lowerer<'r> {
                 }
             }
         } else if let Some(stmts) = d.call_statements() {
-            PendingDrop::Call {
-                stmts,
-                owner: d.name.clone(),
-            }
+            PendingDrop::Call { stmts }
         } else if let Some(place) = d.expr.as_deref() {
             let v = self.lower_expr(place)?;
             if !matches!(v.ty, LoweredTy::Tensor { .. }) {
@@ -1200,7 +1186,6 @@ impl<'r> Lowerer<'r> {
                 flag: d.flag.clone(),
                 field: true,
                 placed: placed_id(d),
-                owner: d.name.clone(),
             }
         } else {
             let (reg, from_payload) = match self.scope.get(&d.name).cloned() {
@@ -1223,7 +1208,6 @@ impl<'r> Lowerer<'r> {
                 flag: d.flag.clone(),
                 field: from_payload,
                 placed: placed_id(d),
-                owner: d.name.clone(),
             }
         };
         if d.after_value {
@@ -7388,28 +7372,11 @@ impl<'r> Lowerer<'r> {
                         return Ok(());
                     }
                     // Each arm returns, so nothing runs after the match. A slot whose lifetime
-                    // does not end lives to the end of the call, which is correct.
-                    // An owner that the `match` uses is still alive in the arms, so each arm's
-                    // `return` drops it. The other drops wait for a value that never comes, so
-                    // they run before each `return` in the arms.
-                    let mut used = HashSet::new();
-                    let returned = r.expr.as_ref().expect("matched above");
-                    crate::syntax::expr::visit_expr(returned, &mut |e| {
-                        if let Expr::Identifier(id) = e {
-                            used.insert(id.name.clone());
-                        }
-                    });
-                    let outer = self.return_drops.len();
-                    let waiting = std::mem::take(&mut self.value_drops);
-                    self.return_drops.extend(waiting.into_iter().filter(|d| match d {
-                        PendingDrop::Tensor { owner, .. } | PendingDrop::Call { owner, .. } => {
-                            !used.contains(owner)
-                        }
-                        PendingDrop::LifetimeEnd { .. } => false,
-                    }));
-                    let lowered = self.lower_match(m);
-                    self.return_drops.truncate(outer);
-                    lowered?;
+                    // does not end lives to the end of the call, which is correct. The checker
+                    // drops each owner before each `return` in the arms, so the drops that wait
+                    // for the value of the match never run.
+                    self.value_drops.clear();
+                    self.lower_match(m)?;
                     if !self.block_terminated() {
                         let rty = self.ret_ty.clone().ok_or(Decline::TypeNotModelled {
                             what: "a function with no recorded return type",
