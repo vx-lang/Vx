@@ -7131,7 +7131,8 @@ fn lane_routine_attrs<'c>(
 
 /// `lanes::copy_async(&mut tile, &x, [i, j, ..])` as `vx.lane_copy_async`, and the wait of its
 /// token as `vx.lane_copy_wait`. In a region on one lane, both are `serial`, so the copy ends
-/// where it starts. `lanes::copy(&mut dst, &src, [i, j, ..])` is `vx.lane_copy`, with no token.
+/// where it starts. `lanes::copy(&mut dst, &src, [i, j, ..])` is `vx.lane_copy`, with no token,
+/// and `lanes::fill(&mut tile, v)` is `vx.lane_fill`.
 fn lower_lane_copy<'c>(
     gen: &mut MeliorGenerator<'c>,
     block: melior::ir::BlockRef<'c, 'c>,
@@ -7159,6 +7160,27 @@ fn lower_lane_copy<'c>(
             .add_attributes(&attrs)
             .build()?;
         block.append_operation(wait);
+        let v = constant_i32(gen, block, 0)?;
+        return Ok((v, gen.i32_ty, block));
+    }
+    if op == crate::hir::check::lanes::LaneOp::Fill {
+        let [tile, value] = args else {
+            return Err(LowerError::ParseType(
+                "a lane fill takes a tile and a value".to_string(),
+            ));
+        };
+        let (tile, block) = lane_tensor_operand(gen, tile, block)?;
+        let (v, _, block) = gen.generate_expr(value, block)?;
+        let i64_ty = melior::ir::r#type::IntegerType::new(gen.context, 64).into();
+        attrs.push((
+            Identifier::new(gen.context, "lanes"),
+            IntegerAttribute::new(i64_ty, lanes as i64).into(),
+        ));
+        let fill = OperationBuilder::new("vx.lane_fill", gen.loc())
+            .add_operands(&[tile, v])
+            .add_attributes(&attrs)
+            .build()?;
+        block.append_operation(fill);
         let v = constant_i32(gen, block, 0)?;
         return Ok((v, gen.i32_ty, block));
     }
@@ -7243,6 +7265,7 @@ fn lower_lane_reduce<'c>(
         crate::hir::check::lanes::LaneOp::CopyAsync
             | crate::hir::check::lanes::LaneOp::CopyWait
             | crate::hir::check::lanes::LaneOp::Copy
+            | crate::hir::check::lanes::LaneOp::Fill
     ) {
         return lower_lane_copy(gen, block, op, args);
     }

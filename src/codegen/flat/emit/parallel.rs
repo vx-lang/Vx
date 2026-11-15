@@ -376,6 +376,9 @@ impl FnEmit<'_> {
         if ins.imm & crate::bytecode::LANE_REDUCE_COPY != 0 {
             return self.op_lane_copy(idx, ins);
         }
+        if ins.imm & crate::bytecode::LANE_REDUCE_FILL != 0 {
+            return self.op_lane_fill(ins);
+        }
         if ins.imm & crate::bytecode::LANE_REDUCE_MATMUL != 0 {
             return self.op_lane_matmul(ins);
         }
@@ -473,6 +476,40 @@ impl FnEmit<'_> {
             &format!("  {v} = \"vx.lane_reduce\"({t}, {n}) {{{attrs}}} : ({memty}, i32) -> f32\n");
         self.names[idx] = v;
         self.etypes[idx] = Some(ElementType::F32);
+        Ok(())
+    }
+
+    /// `vx.lane_fill`: the tile and the value of each element.
+    fn op_lane_fill(&mut self, ins: &HirInstruction) -> Lowered<()> {
+        let name = |r: u32| {
+            self.names
+                .get(r as usize)
+                .cloned()
+                .ok_or(crate::emitter_gap!())
+        };
+        let (t, v) = (name(ins.operand1.0)?, name(ins.operand2.0)?);
+        let memty = self
+            .mem_of
+            .get(ins.operand1.0 as usize)
+            .cloned()
+            .flatten()
+            .ok_or(crate::emitter_gap!())?;
+        let e = self
+            .etypes
+            .get(ins.operand2.0 as usize)
+            .cloned()
+            .flatten()
+            .ok_or(crate::emitter_gap!())?;
+        let vty = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
+        let subgroup = if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
+            ", subgroup"
+        } else {
+            ""
+        };
+        self.body += &format!(
+            "  \"vx.lane_fill\"({t}, {v}) {{lanes = {} : i64{subgroup}}} : ({memty}, {vty}) -> ()\n",
+            ins.imm >> 32
+        );
         Ok(())
     }
 

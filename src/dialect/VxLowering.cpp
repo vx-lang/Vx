@@ -3605,6 +3605,58 @@ static void expandLaneCopyNowOnDevice(OpBuilder &b, vx::LaneCopyOp op) {
   }
 }
 
+/// A `vx.lane_fill` on the CPU: a loop over the elements of the tile.
+static void expandLaneFillOnHost(OpBuilder &b, vx::LaneFillOp op) {
+  Location loc = op.getLoc();
+  auto tile = cast<MemRefType>(op.getTile().getType());
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  Value one = b.create<arith::ConstantIndexOp>(loc, 1);
+  SmallVector<Value> lower(tile.getRank(), zero), upper,
+      steps(tile.getRank(), one);
+  for (int64_t d = 0; d < tile.getRank(); ++d)
+    upper.push_back(b.create<memref::DimOp>(loc, op.getTile(), d));
+  scf::buildLoopNest(b, loc, lower, upper, steps,
+                     [&](OpBuilder &nb, Location l, ValueRange ivs) {
+                       nb.create<memref::StoreOp>(l, op.getValue(),
+                                                  op.getTile(), ivs);
+                     });
+}
+
+/// A `vx.lane_fill` on the GPU: each lane sets the elements `lane`,
+/// `lane + lanes`, and so on, of the tile, and then every lane of the block or
+/// the subgroup waits.
+static void expandLaneFillOnDevice(OpBuilder &b, vx::LaneFillOp op) {
+  Location loc = op.getLoc();
+  auto tile = cast<MemRefType>(op.getTile().getType());
+  int64_t lanes = static_cast<int64_t>(op.getLanes());
+  Value tid =
+      b.create<gpu::ThreadIdOp>(loc, b.getIndexType(), gpu::Dimension::x);
+  Value lane = op.getSubgroup()
+                   ? b.create<arith::RemUIOp>(
+                         loc, tid, b.create<arith::ConstantIndexOp>(loc, lanes))
+                   : tid;
+  b.create<scf::ForOp>(
+      loc, lane, b.create<arith::ConstantIndexOp>(loc, tile.getNumElements()),
+      b.create<arith::ConstantIndexOp>(loc, lanes), ValueRange{},
+      [&](OpBuilder &nb, Location l, Value e, ValueRange) {
+        SmallVector<Value> ivs(tile.getRank());
+        Value rest = e;
+        for (int64_t d = tile.getRank() - 1; d >= 0; --d) {
+          Value size = nb.create<arith::ConstantIndexOp>(l, tile.getDimSize(d));
+          ivs[d] = nb.create<arith::RemUIOp>(l, rest, size);
+          rest = nb.create<arith::DivUIOp>(l, rest, size);
+        }
+        nb.create<memref::StoreOp>(l, op.getValue(), op.getTile(), ivs);
+        nb.create<scf::YieldOp>(l);
+      });
+  if (op.getSubgroup()) {
+    auto bar = b.create<vx::BarrierOp>(loc);
+    bar->setAttr("subgroup", b.getUnitAttr());
+  } else {
+    b.create<gpu::BarrierOp>(loc);
+  }
+}
+
 /// Replaces a lane sort with its expansion: the host's loops with `serial`,
 /// and otherwise the expansion that `device` picks.
 static void expandLaneSort(OpBuilder &b, vx::LaneSortOp op, bool device) {
@@ -4736,7 +4788,7 @@ static bool runsOnDevice(Operation *op, ModuleOp module,
   if (isa<vx::YieldOp, vx::ReturnOp, vx::BarrierOp, vx::LaunchDimOp,
           vx::LaneReduceOp, vx::LaneArgmaxOp, vx::LaneSortOp, vx::LaneMatmulOp,
           vx::LaneCopyAsyncOp, vx::LaneCopyAsyncMapOp, vx::LaneCopyWaitOp,
-          vx::LaneCopyOp>(op))
+          vx::LaneCopyOp, vx::LaneFillOp>(op))
     return true;
   // The SPIR-V path's own rules, from the one place that holds them. NVPTX
   // compiles the shapes they name, so they apply to this pipeline alone.
@@ -6496,6 +6548,16 @@ struct ConvertVxToStandardPass
           expandLaneMatmul(b, op, /*device=*/true, tensorCores,
                            simdgroupMatrices);
         }
+        SmallVector<vx::LaneFillOp> fills;
+        gpuFunc.walk([&](vx::LaneFillOp op) { fills.push_back(op); });
+        for (vx::LaneFillOp op : fills) {
+          OpBuilder b(op);
+          if (op.getSerial())
+            expandLaneFillOnHost(b, op);
+          else
+            expandLaneFillOnDevice(b, op);
+          op.erase();
+        }
         SmallVector<vx::LaneCopyOp> copiesNow;
         gpuFunc.walk([&](vx::LaneCopyOp op) { copiesNow.push_back(op); });
         for (vx::LaneCopyOp op : copiesNow) {
@@ -8014,6 +8076,17 @@ struct LaneCopyLowering : public OpRewritePattern<vx::LaneCopyOp> {
   LogicalResult matchAndRewrite(vx::LaneCopyOp op,
                                 PatternRewriter &rewriter) const override {
     expandLaneCopyNowOnHost(rewriter, op);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct LaneFillLowering : public OpRewritePattern<vx::LaneFillOp> {
+  using OpRewritePattern<vx::LaneFillOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vx::LaneFillOp op,
+                                PatternRewriter &rewriter) const override {
+    expandLaneFillOnHost(rewriter, op);
     rewriter.eraseOp(op);
     return success();
   }
@@ -9660,7 +9733,7 @@ struct ConvertVxToLLVMPass
     target.addIllegalOp<vx::LaneReduceOp, vx::LaneArgmaxOp, vx::LaneSortOp,
                         vx::LaneMatmulOp, vx::LaneCopyAsyncOp,
                         vx::LaneCopyAsyncMapOp, vx::LaneCopyWaitOp,
-                        vx::LaneCopyOp>();
+                        vx::LaneCopyOp, vx::LaneFillOp>();
 
     LLVMTypeConverter typeConverter(&getContext());
     RewritePatternSet patterns(&getContext());
@@ -9676,7 +9749,8 @@ struct ConvertVxToLLVMPass
                  LaneReductionLowering<vx::LaneArgmaxOp>, LaneSortLowering,
                  LaneMatmulLowering, LaneCopyAsyncLowering<vx::LaneCopyAsyncOp>,
                  LaneCopyAsyncLowering<vx::LaneCopyAsyncMapOp>,
-                 LaneCopyWaitLowering, LaneCopyLowering>(&getContext());
+                 LaneCopyWaitLowering, LaneCopyLowering, LaneFillLowering>(
+        &getContext());
 
     adoptDeclaredRuntimeFns(getOperation());
     markArrivalCounts(getOperation());
