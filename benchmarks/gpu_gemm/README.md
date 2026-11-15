@@ -32,17 +32,19 @@ every benchmark compiles these files too, but does not run them.
 
 ## Results
 
-TFLOP/s on an RTX A6000 (CUDA 12.8), with `main` of 2026-11-14. Every run was exact.
+TFLOP/s for `main` of 2026-11-15 on an A100 80GB PCIe and of 2026-11-14 on an RTX A6000, both with
+CUDA 12.8. Every run was exact.
 
-| | 8192 x 3072 x 768 | 4096 x 4096 x 4096 |
-|---|---|---|
-| cuBLAS | 91.8 | 114.8 |
-| v1 | 9.2 | 9.7 |
-| v2 | 8.1 | 8.8 |
-| v3 | 8.5 | 9.2 |
-| v4 | 8.1 | 8.7 |
-| v5 | 24.0 | 24.6 |
-| v6 | 13.1 | 13.9 |
-| v7 | 28.5 | 31.3 |
+| | A100, 8192 x 3072 x 768 | A100, 4096 x 4096 x 4096 | A6000, 8192 x 3072 x 768 | A6000, 4096 x 4096 x 4096 |
+|---|---|---|---|---|
+| cuBLAS | 214.2 | 260.1 | 91.8 | 114.8 |
+| v1 | 11.6 | 8.8 | 9.2 | 9.7 |
+| v2 | 11.7 | 10.1 | 8.1 | 8.8 |
+| v3 | 11.0 | 8.4 | 8.5 | 9.2 |
+| v4 | 14.8 | 10.3 | 8.1 | 8.7 |
+| v5 | 26.3 | 27.0 | 24.0 | 24.6 |
+| v6 | 13.4 | 13.5 | 13.1 | 13.9 |
+| v7 | 44.4 | 47.3 | 28.5 | 31.3 |
+| v8 | 39.0 | 38.9 | | |
 
-v8 was added later and is not measured yet. #3400 tracks the work on the gap to cuBLAS.
+v8 was added after the A6000 runs. #3400 tracks the work on the gap to cuBLAS.
