@@ -137,7 +137,36 @@ flash kernel and its merge of the splits together.
 SGLang's FlashMLA takes 13.9 µs for the same step. The remaining gap is in the kernel: the flash
 kernel waits on two dependent loads for each token, and the merge is a separate launch.
 
-## 7. The other option: a sum across the lanes inside a lane loop
+## 7. No pragmas, no hints
+
+The program does not say "keep this in registers", "unroll this loop" or "use shuffles". The
+compiler finds all three from the program alone:
+
+```text
+   What the compiler must know           Where it comes from in Vx
+   ───────────────────────────           ─────────────────────────
+   which lane owns an element      ◄──   t[w][..][l], with l the index of a
+                                         lane loop over all the lanes
+   which subgroup owns a row       ◄──   w, the index of a subgroup loop
+   that no other lane reads it     ◄──   every access to the tile has that form
+   which loops to unroll           ◄──   their variables index such an element
+   how to sum across the lanes     ◄──   lanes::sum on a row that the lanes own
+```
+
+In other GPU languages, the programmer usually gives these facts by hand:
+
+- In CUDA, each thread has its own variables, and a warp sum is a loop of `__shfl_xor_sync`
+  calls, or a library such as CUB. To keep an array in registers, its indexes must be constants,
+  so programmers often add `#pragma unroll`.
+- In OpenMP or OpenACC offload, the programmer adds clauses such as `private` and `reduction`.
+
+In Vx, the program uses one tile for the whole block or subgroup, and `across lanes` and
+`across subgroups` say which level of the GPU runs each loop. The index `l` of a lane loop then
+says which lane owns each element. Because the compiler sees the loops and the indexes together,
+it can prove that each lane touches only its own elements, and it needs no annotation. The same
+program still runs on the CPU, with the same result.
+
+## 8. The other option: a sum across the lanes inside a lane loop
 
 #3469 named two fixes. Option (a) was a sum across the warp that a lane loop can use as a value.
 Option (b) was per-lane values that stay in registers from one lane loop to the next. #3475 is
