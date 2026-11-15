@@ -1102,6 +1102,8 @@ impl<'a> TypeChecker<'a> {
                     return intrinsic_ty;
                 }
 
+                // A call through a variable reads the variable, so a task takes it.
+                self.note_task_use(&resolved_name, span);
                 if let Some((Type::Function(param_types, ret_ty, callee_unsafe), _)) =
                     self.lookup(&resolved_name).cloned()
                 {
