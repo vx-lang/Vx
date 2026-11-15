@@ -23,14 +23,10 @@ struct Holder<T> {
   value: Value<T>, tail: i64
 }
 fn make() -> Value<Dense> {
-  return Value<Dense>::Dense(Dense {
-    a: 513, b: 1027
-  });
+  return Value<Dense>::Dense(Dense { a: 513, b: 1027 });
 }
 fn reverse() -> Reversed<Dense> {
-  return Reversed<Dense>::Dense(Dense {
-    a: 513, b: 1027
-  });
+  return Reversed<Dense>::Dense(Dense { a: 513, b: 1027 });
 }
 fn read(value: Value<Dense>) -> i64 {
   match value {
@@ -63,9 +59,7 @@ fn borrowed(value: &Value<Dense>) -> i64 {
   }
 }
 fn field(value: Value<Dense>) -> i64 {
-  let holder: Holder<Dense> = Holder<Dense> {
-    value: value, tail: 23
-  };
+  let holder: Holder<Dense> = Holder<Dense> { value: value, tail: 23 };
   return read(holder.value);
 }
 fn main() -> i32 {
@@ -76,11 +70,7 @@ fn main() -> i32 {
   print(borrowed(&for_borrow)); print(" ");
   print(field(make())); print(" ");
   print(read_reversed(reverse())); print(" ");
-  print(read(Value<Dense>::Padded(Padded {
-    small: 3, big: 19
-  }))); print(" ");
-  print(read_reversed(Reversed<Dense>::Padded(Padded {
-    small: 5, big: 29
-  })));
+  print(read(Value<Dense>::Padded(Padded { small: 3, big: 19 }))); print(" ");
+  print(read_reversed(Reversed<Dense>::Padded(Padded { small: 5, big: 29 })));
   return 0;
 }

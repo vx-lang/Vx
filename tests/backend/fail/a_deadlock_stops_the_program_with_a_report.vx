@@ -24,17 +24,21 @@ import std::sync::channel;
 
 fn send_on(to : &Sender<i64>, v : i64) -> void {
   match to.send(v) {
-    Result<void, SendError<i64>>::Ok() => {}
-    Result<void, SendError<i64>>::Err(_e) => {}
+    Result<void,
+    SendError<i64>>::Ok() => {}
+    Result<void,
+    SendError<i64>>::Err(_e) => {}
   }
 }
 
 fn pass_on(from : Receiver<i64>, to : Sender<i64>) -> void {
   match from.recv() {
-    Result<i64, RecvError>::Ok(v) => {
+    Result<i64,
+    RecvError>::Ok(v) => {
       send_on(&to, v);
     }
-    Result<i64, RecvError>::Err(_e) => {}
+    Result<i64,
+    RecvError>::Err(_e) => {}
   }
 }
 

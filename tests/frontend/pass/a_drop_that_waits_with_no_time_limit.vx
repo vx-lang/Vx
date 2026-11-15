@@ -63,9 +63,7 @@ impl SlotGuard {
 
 fn main() -> i32 {
   let (tx, rx) = channel<i64>(4);
-  let g = SlotGuard {
-    slot: 1, to_pool: tx, from_pool: rx
-  };
+  let g = SlotGuard { slot: 1, to_pool: tx, from_pool: rx };
   g.give_back();
   return 0;
 }

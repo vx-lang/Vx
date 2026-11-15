@@ -26,9 +26,7 @@ enum Maybe<T> {
 }
 
 fn main() -> i32 {
-  let h = Holder::Full(Noisy {
-    id : 7
-  });
+  let h = Holder::Full(Noisy { id : 7 });
   match &h {
     Holder::Full(n) => {
       print(n.id);

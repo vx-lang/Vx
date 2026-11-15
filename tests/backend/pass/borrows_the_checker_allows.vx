@@ -86,9 +86,7 @@ fn reborrow_then_the_original() -> i64 {
 }
 
 fn different_fields_at_once() -> i64 {
-  let mut p = Pair {
-    a : 1i64, b : 2i64
-  };
+  let mut p = Pair { a : 1i64, b : 2i64 };
   let x = &mut p.a;
   let y = &mut p.b;
   *x = 3i64;
@@ -104,13 +102,9 @@ fn two_shared_borrows() -> i64 {
 }
 
 fn moved_then_given_a_new_value() -> i64 {
-  let mut a = S {
-    v : 1i64
-  };
+  let mut a = S { v : 1i64 };
   take(a);
-  a = S {
-    v : 2i64
-  };
+  a = S { v : 2i64 };
   return a.v;
 }
 

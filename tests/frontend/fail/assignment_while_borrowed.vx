@@ -24,9 +24,7 @@ fn the_variable() -> i64 {
 }
 
 fn a_field_while_the_whole_is_borrowed() -> i64 {
-  let mut p = Pair {
-    a : 1i64, b : 2i64
-  };
+  let mut p = Pair { a : 1i64, b : 2i64 };
   let r = &p;
   p.a = 9i64;
   return r.a;
@@ -53,6 +51,6 @@ fn main() -> i32 {
 }
 
 // CHECK-DAG: Error[E4009] at {{.*}}assignment_while_borrowed.vx:22:3: `x` is assigned while it is borrowed, and the borrow is used after the assignment
-// CHECK-DAG: Error[E4009] at {{.*}}assignment_while_borrowed.vx:31:5: `p.a` is assigned while it is borrowed
-// CHECK-DAG: Error[E4009] at {{.*}}assignment_while_borrowed.vx:38:4: `t[0]` is assigned while it is borrowed
-// CHECK-DAG: Error[E4009] at {{.*}}assignment_while_borrowed.vx:47:3: `r` is assigned while it is borrowed
+// CHECK-DAG: Error[E4009] at {{.*}}assignment_while_borrowed.vx:29:5: `p.a` is assigned while it is borrowed
+// CHECK-DAG: Error[E4009] at {{.*}}assignment_while_borrowed.vx:36:4: `t[0]` is assigned while it is borrowed
+// CHECK-DAG: Error[E4009] at {{.*}}assignment_while_borrowed.vx:45:3: `r` is assigned while it is borrowed

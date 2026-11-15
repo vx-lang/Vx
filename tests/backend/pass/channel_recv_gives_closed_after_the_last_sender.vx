@@ -20,10 +20,12 @@ import std::sync::channel;
 
 fn show(r : Result<i64, RecvError>) -> void {
   match r {
-    Result<i64, RecvError>::Ok(v) => {
+    Result<i64,
+    RecvError>::Ok(v) => {
       println!("got {}", v);
     }
-    Result<i64, RecvError>::Err(_) => {
+    Result<i64,
+    RecvError>::Err(_) => {
       println!("closed");
     }
   }
@@ -33,15 +35,19 @@ fn main() -> i32 {
   let (a, rx) = channel<i64>(4);
   let b = a.clone();
   match a.send(10) {
-    Result<void, SendError<i64>>::Ok() => {}
-    Result<void, SendError<i64>>::Err(_) => {
+    Result<void,
+    SendError<i64>>::Ok() => {}
+    Result<void,
+    SendError<i64>>::Err(_) => {
       panic("the receiver is gone");
     }
   }
   drop(a);
   match b.send(20) {
-    Result<void, SendError<i64>>::Ok() => {}
-    Result<void, SendError<i64>>::Err(_) => {
+    Result<void,
+    SendError<i64>>::Ok() => {}
+    Result<void,
+    SendError<i64>>::Err(_) => {
       panic("the receiver is gone");
     }
   }

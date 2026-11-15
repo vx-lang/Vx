@@ -40,9 +40,7 @@ impl Pair<i32> {
 }
 
 fn make_pair(a: i32, b: i32) -> Pair<i32> {
-  return Pair<i32> {
-    first: a, second: b
-  };
+  return Pair<i32> { first: a, second: b };
 }
 
 fn main() -> i32 {
@@ -55,7 +53,8 @@ fn main() -> i32 {
     Maybe<i32>::Just(val) => {
       result = val;
     }
-    , Maybe<i32>::Nothing => {
+    ,
+    Maybe<i32>::Nothing => {
       result = 0;
     }
   }

@@ -21,9 +21,7 @@ fn set_field_then_add(h : *mut Holder, n : *mut i32) -> i32 {
 fn main() -> i32 {
   // CHECK: Error[E3033]{{.*}}cannot be evaluated
   let value = comptime {
-    let mut holder = Holder {
-      n: 5i32
-    };
+    let mut holder = Holder { n: 5i32 };
     let _ignored = set_field_then_add(&mut holder, &mut holder.n);
     holder.n
   };

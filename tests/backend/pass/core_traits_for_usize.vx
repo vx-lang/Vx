@@ -138,12 +138,18 @@ fn main() -> i32 {
   // `Sum` and `Product`, over items whose answer is exactly the largest `usize`:
   // 0 + (2^62 - 1) + 2^62, and 49 * 9271 * 20303320287433.
   let mut s = Three {
-    a : 0, b : 4611686018427387903, c : 4611686018427387904, given : 0i64
+    a : 0,
+    b : 4611686018427387903,
+    c : 4611686018427387904,
+    given : 0i64
   };
   print!("sum=");
   print(s.sum());
   let mut p = Three {
-    a : 49, b : 9271, c : 20303320287433, given : 0i64
+    a : 49,
+    b : 9271,
+    c : 20303320287433,
+    given : 0i64
   };
   print!("; product=");
   print(p.product());

@@ -38,9 +38,7 @@ struct Empty {}
 
 fn maybe_error(n: i32) -> Option<Error> {
   if n > 0 {
-    return Option<Error>::Some(Error {
-      code: Option<i32>::Some(-7)
-    });
+    return Option<Error>::Some(Error { code: Option<i32>::Some(-7) });
   }
   return Option<Error>::None();
 }
@@ -58,9 +56,7 @@ fn code_or_55(o: Option<Error>) -> i32 {
 
 fn outcome(n: i32) -> Outcome {
   if n > 0 {
-    return Outcome::Failed(Error {
-      code: Option<i32>::None()
-    });
+    return Outcome::Failed(Error { code: Option<i32>::None() });
   }
   return Outcome::Done(4294967301u64);
 }
@@ -103,19 +99,19 @@ fn print_two(t: Two) -> void {
 
 fn empty_or_error(n: i32) -> Result<Empty, Error> {
   if n > 0 {
-    return Result<Empty, Error>::Err(Error {
-      code: Option<i32>::Some(-3)
-    });
+    return Result<Empty, Error>::Err(Error { code: Option<i32>::Some(-3) });
   }
   return Result<Empty, Error>::Ok(Empty {});
 }
 
 fn empty_or_code(r: Result<Empty, Error>) -> i32 {
   match r {
-    Result<Empty, Error>::Ok(e) => {
+    Result<Empty,
+    Error>::Ok(e) => {
       return 1;
     }
-    Result<Empty, Error>::Err(e) => {
+    Result<Empty,
+    Error>::Err(e) => {
       return e.code.unwrap_or(99);
     }
   }

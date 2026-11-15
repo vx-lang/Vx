@@ -24,9 +24,7 @@ struct Point {
 impl Copy for Point {}
 
 fn main() -> i32 {
-  let p = Point {
-    x : 5
-  };
+  let p = Point { x : 5 };
   let above_0 = || -> i64 {
     if p.x > 0 {
       return 2;
@@ -34,9 +32,7 @@ fn main() -> i32 {
     return 1;
   };
   println!("a point with x above 0: {}", above_0());
-  let q = Point {
-    x : 0
-  };
+  let q = Point { x : 0 };
   let at_0 = || -> i64 {
     if q.x > 0 {
       return 2;

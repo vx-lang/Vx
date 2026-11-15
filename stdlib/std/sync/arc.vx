@@ -70,7 +70,8 @@ Arc<T> {
     let value : *mut T = core_arc_value(count);
     unsafe { *count = AtomicI64::new(1); *value = v; }
     return Arc<T> {
-      count : count, value : PhantomData<T> {}
+      count : count,
+      value : PhantomData<T> {}
     };
   }
 
@@ -98,8 +99,10 @@ Arc<T> {
       (&*count).compare_exchange(1, 0, AtomicOrdering::Relaxed, AtomicOrdering::Relaxed)
     };
     match only {
-      Result<i64, i64>::Ok(_one) => {}
-      Result<i64, i64>::Err(_count) => {
+      Result<i64,
+      i64>::Ok(_one) => {}
+      Result<i64,
+      i64>::Err(_count) => {
         return Result<T, Arc<T>>::Err(self);
       }
     }
@@ -141,7 +144,8 @@ impl<T> Clone for Arc<T> {
       panic("Arc: too many clones");
     }
     return Arc<T> {
-      count : count, value : PhantomData<T> {}
+      count : count,
+      value : PhantomData<T> {}
     };
   }
 }

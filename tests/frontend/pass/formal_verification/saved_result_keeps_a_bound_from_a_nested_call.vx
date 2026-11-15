@@ -41,9 +41,7 @@ fn bound_from_a_nested_call(cell : Cell) -> i32 {
 }
 
 fn main() -> i32 {
-  return bound_from_a_nested_call(Cell {
-    value: 4
-  });
+  return bound_from_a_nested_call(Cell { value: 4 });
 }
 
 // CHECK: func.func @main

@@ -31,12 +31,8 @@ struct Pair {
 
 fn make() -> Pair {
   return Pair {
-    a : Noisy {
-      id : 1
-    },
-    b : Noisy {
-      id : 2
-    }
+    a : Noisy { id : 1 },
+    b : Noisy { id : 2 }
   };
 }
 

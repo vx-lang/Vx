@@ -21,9 +21,7 @@ fn main(n : i32) -> i32 {
   // CHECK: Error[E3033]{{.*}}writes to 'nested_outer'
   let value = comptime {
     let _ignored = if n > 0i32 {
-      let cell = Cell {
-        value : touch(&mut nested_outer)
-      };
+      let cell = Cell { value : touch(&mut nested_outer) };
       cell.value
     } else {
       1i32

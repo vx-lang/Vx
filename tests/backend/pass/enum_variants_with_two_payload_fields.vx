@@ -39,12 +39,8 @@ fn read(value: Value, second: bool) -> i64 {
 }
 
 fn main() -> i32 {
-  let first = Node {
-    value: 7
-  };
-  let second = Node {
-    value: 25
-  };
+  let first = Node { value: 7 };
+  let second = Node { value: 25 };
   print(read(Value::Numbers(5, 17), false)); print(" ");
   print(read(Value::Numbers(5, 17), true)); print(" ");
   print(read(Value::Pointers(&first, &second), false)); print(" ");

@@ -10,10 +10,10 @@
 // An operator on a struct needs an impl of its trait. `Point` has none, so `+`, `==`, `<` and
 // `+=` are each refused, and the error names the trait to implement.
 
-// CHECK-DAG: Error[E3004] at {{.*}}operator_on_a_struct_without_its_trait.vx:35:13: `+` is not defined for Point: it needs an impl of `core::ops::Add`
-// CHECK-DAG: Error[E3004] at {{.*}}operator_on_a_struct_without_its_trait.vx:36:13: `==` is not defined for Point: it needs an impl of `core::cmp::PartialEq`
-// CHECK-DAG: Error[E3004] at {{.*}}operator_on_a_struct_without_its_trait.vx:37:13: `<` is not defined for Point: it needs an impl of `core::cmp::PartialOrd`
-// CHECK-DAG: Error[E3004] at {{.*}}operator_on_a_struct_without_its_trait.vx:39:3: `+` is not defined for Point: it needs an impl of `core::ops::Add`
+// CHECK-DAG: Error[E3004] at {{.*}}operator_on_a_struct_without_its_trait.vx:31:13: `+` is not defined for Point: it needs an impl of `core::ops::Add`
+// CHECK-DAG: Error[E3004] at {{.*}}operator_on_a_struct_without_its_trait.vx:32:13: `==` is not defined for Point: it needs an impl of `core::cmp::PartialEq`
+// CHECK-DAG: Error[E3004] at {{.*}}operator_on_a_struct_without_its_trait.vx:33:13: `<` is not defined for Point: it needs an impl of `core::cmp::PartialOrd`
+// CHECK-DAG: Error[E3004] at {{.*}}operator_on_a_struct_without_its_trait.vx:35:3: `+` is not defined for Point: it needs an impl of `core::ops::Add`
 // CHECK: 4 error(s) emitted
 
 import core::marker;
@@ -26,12 +26,8 @@ struct Point {
 impl Copy for Point {}
 
 fn main() -> i32 {
-  let a = Point {
-    x: 1
-  };
-  let b = Point {
-    x: 2
-  };
+  let a = Point { x: 1 };
+  let b = Point { x: 2 };
   let c = a + b;
   let d = a == b;
   let e = a < b;

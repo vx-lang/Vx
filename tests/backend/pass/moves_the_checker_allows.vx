@@ -23,9 +23,7 @@ fn take(s : S) -> i64 {
 }
 
 fn moved_in_both_branches(n : i32) -> i64 {
-  let a = S {
-    v : 1i64
-  };
+  let a = S { v : 1i64 };
   let mut got = 0i64;
   if n > 0 {
     got = take(a);
@@ -36,9 +34,7 @@ fn moved_in_both_branches(n : i32) -> i64 {
 }
 
 fn moved_in_each_arm(n : i32) -> i64 {
-  let a = S {
-    v : 2i64
-  };
+  let a = S { v : 2i64 };
   let mut got = 0i64;
   match n {
     0 => {
@@ -52,9 +48,7 @@ fn moved_in_each_arm(n : i32) -> i64 {
 }
 
 fn moved_then_break() -> i64 {
-  let a = S {
-    v : 3i64
-  };
+  let a = S { v : 3i64 };
   let mut got = 0i64;
   let mut i = 0;
   while i < 5 {
@@ -68,17 +62,13 @@ fn moved_then_break() -> i64 {
 }
 
 fn moved_then_given_a_new_value() -> i64 {
-  let mut a = S {
-    v : 1i64
-  };
+  let mut a = S { v : 1i64 };
   let mut total = 0i64;
   let mut i = 0;
   while i < 3 {
     let next = a.v + 1i64;
     total = total + take(a);
-    a = S {
-      v : next
-    };
+    a = S { v : next };
     i = i + 1;
   }
   return total;
@@ -87,18 +77,14 @@ fn moved_then_given_a_new_value() -> i64 {
 fn fresh_on_every_pass() -> i64 {
   let mut total = 0i64;
   for i in 0..3 {
-    let a = S {
-      v : i as i64
-    };
+    let a = S { v : i as i64 };
     total = total + take(a);
   }
   return total;
 }
 
 fn moved_after_the_borrow_is_done() -> i64 {
-  let a = S {
-    v : 5i64
-  };
+  let a = S { v : 5i64 };
   let r = &a;
   let seen = r.v;
   let b = a;

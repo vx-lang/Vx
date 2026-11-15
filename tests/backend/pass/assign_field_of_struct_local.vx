@@ -41,9 +41,7 @@ impl Outer {
 }
 
 fn main() -> i32 {
-  let mut p : Pair = Pair {
-    a : 1u64, b : 2u64
-  };
+  let mut p : Pair = Pair { a : 1u64, b : 2u64 };
   p.a = p.a + 10u64;
   print(p.a);
   print!(" ");
@@ -51,9 +49,7 @@ fn main() -> i32 {
   print(p.b);
   print!(" ");
 
-  let mut total : Pair = Pair {
-    a : 0u64, b : 0u64
-  };
+  let mut total : Pair = Pair { a : 0u64, b : 0u64 };
   for i in 0..5 {
     total.a = total.a + 3u64;
   }
@@ -61,11 +57,7 @@ fn main() -> i32 {
   print!(" ");
 
   // A struct-typed field, written through `&mut self`.
-  let mut o : Outer = Outer {
-    inner : Inner {
-      v : 5u64
-    }, count : 0u64
-  };
+  let mut o : Outer = Outer { inner : Inner { v : 5u64 }, count : 0u64 };
   o.bump();
   o.bump();
   print(o.inner.v);

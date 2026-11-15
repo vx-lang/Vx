@@ -35,11 +35,7 @@ fn pick() -> i64 {
 }
 
 fn countdown(n : i64) -> i64 {
-  return if n <= 0 {
-    0
-  } else {
-    countdown(n - 1) + 1
-  };
+  return if n <= 0 { 0 } else { countdown(n - 1) + 1 };
 }
 
 fn _guess() -> void {

@@ -30,9 +30,7 @@ fn filter(x : i32) -> i32 {
 fn main() -> i32 {
   let mut v = Vec<i32>::new();
   v.push(5);
-  let r = Range {
-    lo : 1, hi : 5
-  };
+  let r = Range { lo : 1, hi : 5 };
   print(r.hi - r.lo);
   print!(" ");
   print(filter(v.len()));

@@ -49,12 +49,8 @@ impl Host for Tagged {
 }
 
 fn main() -> i32 {
-  let t : Tagged = Tagged {
-    n : 4
-  };
-  let p : Plain = Plain {
-    n : 9
-  };
+  let t : Tagged = Tagged { n : 4 };
+  let p : Plain = Plain { n : 9 };
   print(t.via(p));
   return 0;
 }

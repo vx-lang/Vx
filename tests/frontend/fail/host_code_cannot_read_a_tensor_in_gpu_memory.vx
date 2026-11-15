@@ -63,9 +63,7 @@ fn main() -> i32 {
   // CHECK: Error[E6003] at {{.*}}.vx:[[@LINE+1]]:12: argument 1 of 'first_of_a_reference' is a tensor in W, and CPU cannot see W. The parameter type &Tensor<T, [4]> names no memory
   let _w = first_of_a_reference(&e);
   let f = on_gpu();
-  let _h = Holder {
-    t : f
-  };
+  let _h = Holder { t : f };
   let g = on_gpu();
   let _p = Payload::Placed(g);
   let h = on_gpu();

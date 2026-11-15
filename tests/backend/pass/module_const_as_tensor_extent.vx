@@ -75,7 +75,10 @@ fn main() -> i32 {
   print(product<2, 3>());
 
   let mut p = Pair {
-    a: Tensor<f32, [4]>::new(), b: Tensor<f32, [8]>::new()
+    a: Tensor<f32,
+    [4]>::new(),
+    b: Tensor<f32,
+    [8]>::new()
   };
   p.b[7] = 4.0;
   print!("; field=");

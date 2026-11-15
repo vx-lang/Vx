@@ -30,10 +30,12 @@ import std::sync::channel;
 fn wait_for_one(rx : Receiver<i64>) -> Result<i64, i32> {
   let mut got : i64 = 0;
   match rx.recv() {
-    Result<i64, RecvError>::Ok(v) => {
+    Result<i64,
+    RecvError>::Ok(v) => {
       got = v;
     }
-    Result<i64, RecvError>::Err(_e) => {
+    Result<i64,
+    RecvError>::Err(_e) => {
       println!("the waiter saw Cancelled");
     }
   }
@@ -63,8 +65,10 @@ fn run() -> Result<i64, i32> {
 
 fn send_one(tx : &Sender<i64>, v : i64) -> void {
   match tx.send(v) {
-    Result<void, SendError<i64>>::Ok() => {}
-    Result<void, SendError<i64>>::Err(_e) => {
+    Result<void,
+    SendError<i64>>::Ok() => {}
+    Result<void,
+    SendError<i64>>::Err(_e) => {
       println!("the send did not send");
     }
   }
@@ -94,10 +98,12 @@ fn run_ok() -> Result<i64, i32> {
 
 fn report(r : Result<i64, i32>) -> void {
   match r {
-    Result<i64, i32>::Ok(v) => {
+    Result<i64,
+    i32>::Ok(v) => {
       println!("the block gave {}", v);
     }
-    Result<i64, i32>::Err(e) => {
+    Result<i64,
+    i32>::Err(e) => {
       println!("the block failed with {}", e);
     }
   }

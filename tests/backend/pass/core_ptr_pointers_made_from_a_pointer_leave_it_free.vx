@@ -44,9 +44,7 @@ fn main() -> i32 {
   print!(" ");
   unsafe { print(p1[0]); }
   print!(" | ");
-  let w = Weights {
-    base : p0
-  };
+  let w = Weights { base : p0 };
   let r = add_mut(w.base, 7);
   unsafe { print(w.base[0]); }
   print!(" ");

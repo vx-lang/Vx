@@ -16,9 +16,7 @@ struct Cell<U> {
 
 impl<U> Cell<U> {
   fn new(v : U) -> Cell<U> {
-    return Cell<U> {
-      v: v
-    };
+    return Cell<U> { v: v };
   }
 }
 

@@ -60,18 +60,10 @@ enum Tagged {
 }
 
 fn not_generic() -> void {
-  let mut a = Slot::Full(Noisy {
-    id: 5
-  });
+  let mut a = Slot::Full(Noisy { id: 5 });
   let b = Slot::Empty();
-  a = Slot::Two(Noisy {
-    id: 6
-  }, Noisy {
-    id: 7
-  });
-  let c = Tagged::One(1, Noisy {
-    id: 8
-  });
+  a = Slot::Two(Noisy { id: 6 }, Noisy { id: 7 });
+  let c = Tagged::One(1, Noisy { id: 8 });
 }
 
 fn take(o : Opt<Noisy>) -> void {
@@ -79,29 +71,21 @@ fn take(o : Opt<Noisy>) -> void {
 }
 
 fn given_away() -> void {
-  let o = Opt<Noisy>::Some(Noisy {
-    id: 1
-  });
+  let o = Opt<Noisy>::Some(Noisy { id: 1 });
   take(o);
 }
 
 fn held() -> void {
   let n = Opt<Noisy>::None();
-  let w = Opt<Noisy>::Some(Noisy {
-    id: 3
-  });
+  let w = Opt<Noisy>::Some(Noisy { id: 3 });
 }
 
 fn own_drop() -> void {
-  let x = Wrapped<Noisy>::It(Noisy {
-    id: 4
-  });
+  let x = Wrapped<Noisy>::It(Noisy { id: 4 });
 }
 
 fn main() -> i32 {
-  let kept = Opt<Noisy>::Some(Noisy {
-    id: 2
-  });
+  let kept = Opt<Noisy>::Some(Noisy { id: 2 });
   given_away();
   print!("| ");
   held();

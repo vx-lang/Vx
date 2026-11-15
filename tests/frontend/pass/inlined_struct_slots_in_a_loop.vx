@@ -31,19 +31,13 @@ fn inner(p : P, s : u64) -> P {
   if s == 0u64 {
     return p;
   }
-  return P {
-    n: p.n, a: p.a << s, b: p.b
-  };
+  return P { n: p.n, a: p.a << s, b: p.b };
 }
 
 fn outer(x : u64) -> P {
-  let p = P {
-    n: (x % 7u64) as i32, a: x, b: x + 1u64
-  };
+  let p = P { n: (x % 7u64) as i32, a: x, b: x + 1u64 };
   let q = inner(p, x % 3u64);
-  return P {
-    n: q.n, a: q.a + 1u64, b: q.b
-  };
+  return P { n: q.n, a: q.a + 1u64, b: q.b };
 }
 
 fn main() -> i32 {

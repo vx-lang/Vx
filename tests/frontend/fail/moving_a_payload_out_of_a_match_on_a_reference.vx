@@ -11,12 +11,12 @@
 // Moving such a name would drop that part twice, so each way to move one is an error (E4008).
 
 // CHECK-DAG: Error[E4008] at {{.*}}.vx:68:14: `n` cannot be moved out: `n` is part of a value behind a reference
-// CHECK-DAG: Error[E4008] at {{.*}}.vx:81:15: `n` cannot be moved out: `n` is part of a value behind a reference
-// CHECK-DAG: Error[E4008] at {{.*}}.vx:93:14: `n` cannot be moved out: `n` is part of a value behind a reference
-// CHECK-DAG: Error[E4008] at {{.*}}.vx:106:14: `n` cannot be moved out: `n` is part of a value behind a reference
-// CHECK-DAG: Error[E4008] at {{.*}}.vx:118:17: `n` cannot be moved out: `n` is part of a value behind a reference
-// CHECK-DAG: Error[E4008] at {{.*}}.vx:132:16: `p.left` cannot be moved out: `p` is part of a value behind a reference
-// CHECK-DAG: Error[E4008] at {{.*}}.vx:151:17: `n` cannot be moved out: `n` is part of a value behind a reference
+// CHECK-DAG: Error[E4008] at {{.*}}.vx:79:15: `n` cannot be moved out: `n` is part of a value behind a reference
+// CHECK-DAG: Error[E4008] at {{.*}}.vx:91:14: `n` cannot be moved out: `n` is part of a value behind a reference
+// CHECK-DAG: Error[E4008] at {{.*}}.vx:102:14: `n` cannot be moved out: `n` is part of a value behind a reference
+// CHECK-DAG: Error[E4008] at {{.*}}.vx:114:17: `n` cannot be moved out: `n` is part of a value behind a reference
+// CHECK-DAG: Error[E4008] at {{.*}}.vx:128:16: `p.left` cannot be moved out: `p` is part of a value behind a reference
+// CHECK-DAG: Error[E4008] at {{.*}}.vx:143:17: `n` cannot be moved out: `n` is part of a value behind a reference
 // CHECK: 7 error(s) emitted
 
 import core::ops;
@@ -68,9 +68,7 @@ fn return_the_payload(h : &Holder) -> Noisy {
       return n;
     }
     Holder::Empty => {
-      return Noisy {
-        id : 0
-      };
+      return Noisy { id : 0 };
     }
   }
 }
@@ -93,9 +91,7 @@ fn return_the_payload_of_a_generic_enum(h : &Maybe<Noisy>) -> Noisy {
       return n;
     }
     Maybe<Noisy>::Nothing => {
-      return Noisy {
-        id : 0
-      };
+      return Noisy { id : 0 };
     }
   }
 }
@@ -132,18 +128,14 @@ fn return_a_field_of_the_payload(t : &Two) -> Noisy {
       return p.left;
     }
     Two::Neither => {
-      return Noisy {
-        id : 0
-      };
+      return Noisy { id : 0 };
     }
   }
 }
 
 // `h` is part of the value behind `o`, so the names of a `match` on `h` are too.
 fn move_out_of_a_match_on_a_payload(o : &Outer) -> Noisy {
-  let mut out = Noisy {
-    id : 0
-  };
+  let mut out = Noisy { id : 0 };
   match o {
     Outer::Has(h) => {
       match h {

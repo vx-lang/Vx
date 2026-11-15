@@ -43,10 +43,8 @@ fn field_of_a_struct_literal() -> i32 {
   let mut n = 0;
   if true {
     let y = 7;
-    // CHECK-NEXT: Error[E4005] at {{.*}}a_call_inside_another_expression_is_checked_for_escapes.vx:[[# @LINE + 2]]:11: `r` is given a value that points at a variable of an inner block, and `r` outlives that block.
-    let w = Wrap {
-      n : set(&mut r, &y)
-    };
+    // CHECK-NEXT: Error[E4005] at {{.*}}a_call_inside_another_expression_is_checked_for_escapes.vx:[[# @LINE + 1]]:24: `r` is given a value that points at a variable of an inner block, and `r` outlives that block.
+    let w = Wrap { n : set(&mut r, &y) };
     n = w.n;
   }
   return *r + n;

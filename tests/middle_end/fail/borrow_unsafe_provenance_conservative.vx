@@ -18,15 +18,9 @@ fn pick_unsafe(a : &Map, b : &Map, c : &mut Cell) -> &i32 {
   return unsafe { &*c.p };
 }
 fn bad() -> i32 {
-  let mut x = Map {
-    slot : 1, present : 1
-  };
-  let mut y = Map {
-    slot : 2, present : 1
-  };
-  let mut c = Cell {
-    p : (&y.slot) as *const i32
-  };
+  let mut x = Map { slot : 1, present : 1 };
+  let mut y = Map { slot : 2, present : 1 };
+  let mut c = Cell { p : (&y.slot) as *const i32 };
   let r = pick_unsafe(&x, &y, &mut c);
   insert(&mut x, 9);   // `r` points at `x.slot`
   return *r;

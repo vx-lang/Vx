@@ -18,9 +18,7 @@ impl Point {
 }
 
 fn main() -> i32 {
-  let p = Point {
-    x : 3.0, y : 4.0
-  };
+  let p = Point { x : 3.0, y : 4.0 };
   let d = p.distance();
   return 0;
 }

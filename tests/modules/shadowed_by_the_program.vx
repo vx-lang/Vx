@@ -25,9 +25,7 @@ impl Count {
 }
 
 fn count(n : i64) -> Count {
-  return Count {
-    count : n
-  };
+  return Count { count : n };
 }
 
 fn iter() -> i64 {

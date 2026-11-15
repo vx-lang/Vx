@@ -45,9 +45,7 @@ requires x < 5i64
 }
 
 fn a_shared_borrow() -> i64 {
-  let c = Counter {
-    n : 0i64
-  };
+  let c = Counter { n : 0i64 };
   if c.n < 5i64 {
     look(&c);
     return need(c.n);
@@ -56,9 +54,7 @@ fn a_shared_borrow() -> i64 {
 }
 
 fn a_method_with_shared_self() -> i64 {
-  let c = Counter {
-    n : 0i64
-  };
+  let c = Counter { n : 0i64 };
   if c.n < 5i64 {
     c.peek();
     return need(c.n);
@@ -85,9 +81,7 @@ fn a_reference_to_another_variable() -> i64 {
 }
 
 fn requires_met_before_the_call_changes_it() -> i64 {
-  let mut c = Counter {
-    n : 0i64
-  };
+  let mut c = Counter { n : 0i64 };
   if c.n < 5i64 {
     reset(c.n, &mut c);
   }
@@ -95,9 +89,7 @@ fn requires_met_before_the_call_changes_it() -> i64 {
 }
 
 fn loop_calls_a_shared_self_method() -> i64 {
-  let c = Counter {
-    n : 0i64
-  };
+  let c = Counter { n : 0i64 };
   let mut total = 0i64;
   if c.n < 5i64 {
     for i in 0i64..3i64 {

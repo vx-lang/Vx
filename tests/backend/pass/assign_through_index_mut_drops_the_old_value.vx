@@ -43,25 +43,18 @@ impl IndexMut for Pair {
 
 fn make(id : i32) -> Noisy {
   print!("make, ");
-  return Noisy {
-    id : id
-  };
+  return Noisy { id : id };
 }
 
 fn set_second(p : &mut Pair) -> void {
-  (*p)[1] = Noisy {
-    id : 6
-  };
+  (*p)[1] = Noisy { id : 6 };
   print!("through a reference, ");
 }
 
 fn main() -> i32 {
   let mut p = Pair {
-    a : Noisy {
-      id : 1
-    }, b : Noisy {
-      id : 2
-    }
+    a : Noisy { id : 1 },
+    b : Noisy { id : 2 }
   };
   p[0] = make(3);
   print!("replaced, ");

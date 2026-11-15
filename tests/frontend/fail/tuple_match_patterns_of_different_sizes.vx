@@ -14,7 +14,8 @@ fn main() -> i32 {
   match t {
     (1, y) => {
       print(y);
-    }, (a, b, c) => {
+    },
+    (a, b, c) => {
       print(a + b + c);
     }
   }

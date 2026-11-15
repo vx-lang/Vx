@@ -48,9 +48,7 @@ struct SplitMix64 {
 impl SplitMix64 {
   /// A generator started at `seed`. Every seed is valid, including zero.
   fn seeded(seed : u64) -> SplitMix64 {
-    return SplitMix64 {
-      state : seed
-    };
+    return SplitMix64 { state : seed };
   }
 
   /// Advance the counter by the golden-ratio constant, then scramble the value taken. The

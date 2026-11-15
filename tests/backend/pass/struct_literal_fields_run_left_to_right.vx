@@ -28,15 +28,9 @@ fn note(tag : i32, v : i32) -> i32 {
 
 fn main() -> i32 {
   print!("order=");
-  let p = P {
-    x: note(1, 1),
-    y: note(2, 2)
-  };
+  let p = P { x: note(1, 1), y: note(2, 2) };
   let o = Outer {
-    p: P {
-      x: note(3, 3),
-      y: note(4, 4)
-    },
+    p: P { x: note(3, 3), y: note(4, 4) },
     z: note(5, 5)
   };
   print!("; sum={};", p.x + p.y + o.p.x + o.p.y + o.z);

@@ -54,12 +54,8 @@ impl Peek for Holder {
 
 // A safe function: every call below needs an unsafe context and has none.
 fn from_safe_code() -> i32 {
-  let h = Holder {
-    n : 1
-  };
-  let b = Boxed<i32> {
-    v : 2
-  };
+  let h = Holder { n : 1 };
+  let b = Boxed<i32> { v : 2 };
   // CHECK-DAG: E5001{{.*}}'free_fn'
   let a = free_fn();
   // CHECK-DAG: E5001{{.*}}'generic_fn'

@@ -18,11 +18,7 @@ fn main(n : i32) -> i32 {
   // CHECK: Error[E3033]{{.*}}writes to 'alias_outer'
   let value = comptime {
     let alias = &mut alias_outer;
-    let _ignored = if n > 0i32 {
-      _callback(alias)
-    } else {
-      1i32
-    };
+    let _ignored = if n > 0i32 { _callback(alias) } else { 1i32 };
     7i32
   };
   return value;

@@ -35,10 +35,12 @@ struct Waiter {
 impl Drop for Waiter {
   fn drop(self : &mut Waiter) -> void {
     match self.rx.recv() {
-      Result<i64, RecvError>::Ok(v) => {
+      Result<i64,
+      RecvError>::Ok(v) => {
         println!("the drop got {}", v);
       }
-      Result<i64, RecvError>::Err(_e) => {
+      Result<i64,
+      RecvError>::Err(_e) => {
         println!("the drop gave up, cancelled {}", cancelled());
       }
     }
@@ -48,9 +50,7 @@ impl Drop for Waiter {
 fn main() -> i32 {
   println!("the program started");
   let (tx, rx) = channel<i64>(1);
-  let w = Waiter {
-    rx : rx
-  };
+  let w = Waiter { rx : rx };
   let start = Instant::now();
   drop(w);
   println!("the drop took less than 5 seconds: {}", start.elapsed() < Duration::from_secs(5));

@@ -22,13 +22,9 @@ fn main(n : i32) -> i32 {
   // CHECK: Error[E3033]{{.*}}writes to 'outside'
   let _value = comptime {
     if n > 0i32 {
-      Cell {
-        value : touch(&mut outside)
-      }
+      Cell { value : touch(&mut outside) }
     } else {
-      Cell {
-        value : 0i32
-      }
+      Cell { value : 0i32 }
     }
   };
   return 0i32;

@@ -50,10 +50,12 @@ fn sum(second : i32) -> Result<i32, i32> {
 
 fn show_sum(r : Result<i32, i32>) -> i32 {
   match r {
-    Result<i32, i32>::Ok(v) => {
+    Result<i32,
+    i32>::Ok(v) => {
       println!("sum {}", v);
     }
-    Result<i32, i32>::Err(e) => {
+    Result<i32,
+    i32>::Err(e) => {
       println!("sum failed {}", e);
     }
   }
@@ -78,13 +80,9 @@ fn in_a_loop() -> Result<i32, i32> {
 
 fn work(id : i32, fails : bool) -> Result<Noisy, Noisy> {
   if fails {
-    return Result<Noisy, Noisy>::Err(Noisy {
-      id: id
-    });
+    return Result<Noisy, Noisy>::Err(Noisy { id: id });
   }
-  return Result<Noisy, Noisy>::Ok(Noisy {
-    id: id
-  });
+  return Result<Noisy, Noisy>::Ok(Noisy { id: id });
 }
 
 fn run(a_fails : bool, b_fails : bool) -> Result<Noisy, Noisy> {
@@ -97,19 +95,19 @@ fn run(a_fails : bool, b_fails : bool) -> Result<Noisy, Noisy> {
     };
     let x = a.join();
     let y = b.join();
-    Result<Noisy, Noisy>::Ok(Noisy {
-      id: x.id + y.id
-    })
+    Result<Noisy, Noisy>::Ok(Noisy { id: x.id + y.id })
   };
   return r;
 }
 
 fn show(r : &Result<Noisy, Noisy>) -> i32 {
   match r {
-    Result<Noisy, Noisy>::Ok(v) => {
+    Result<Noisy,
+    Noisy>::Ok(v) => {
       println!("ok {}", v.id);
     }
-    Result<Noisy, Noisy>::Err(e) => {
+    Result<Noisy,
+    Noisy>::Err(e) => {
       println!("err {}", e.id);
     }
   }
@@ -144,10 +142,12 @@ fn main() -> i32 {
   show_sum(sum(3));
   show_sum(sum(2));
   match in_a_loop() {
-    Result<i32, i32>::Ok(v) => {
+    Result<i32,
+    i32>::Ok(v) => {
       println!("in_a_loop {}", v);
     }
-    Result<i32, i32>::Err(e) => {
+    Result<i32,
+    i32>::Err(e) => {
       println!("in_a_loop failed {}", e);
     }
   }

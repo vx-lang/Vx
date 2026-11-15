@@ -21,7 +21,8 @@ struct Rules {
 
 fn main() -> i32 {
   let r : Rules = Rules {
-    add : | x : i32 | x > 1, wide : | x : i32 | x
+    add : | x : i32 | x > 1,
+    wide : | x : i32 | x
   };
   let p = r.add.func;
   print(p(r.add.env, 4));

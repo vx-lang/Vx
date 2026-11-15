@@ -29,9 +29,7 @@ fn read(x: Value) -> i64 {
 }
 
 fn main() -> i32 {
-  let node = Node {
-    value: 7
-  };
+  let node = Node { value: 7 };
   let integer = Value::Int(5);
   let pointer = Value::Ptr((&node) as *const Node);
   print(read(integer));

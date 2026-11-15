@@ -31,11 +31,7 @@ fn argument_from_call() -> i32 {
 fn argument_from_if() -> i32 {
   return comptime {
     let mut x = 1i32;
-    let _result = touch(if true {
-      &mut x
-    } else {
-      &mut x
-    });
+    let _result = touch(if true { &mut x } else { &mut x });
     // CHECK: Error[E3033] at {{.*}}comptime_reference_from_call_or_if.vx:[[@LINE+1]]:{{.*}}cannot be evaluated
     x
   };
@@ -54,11 +50,7 @@ fn variable_from_call() -> i32 {
 fn variable_from_if_passed_on() -> i32 {
   return comptime {
     let mut x = 1i32;
-    let r = if true {
-      &mut x
-    } else {
-      &mut x
-    };
+    let r = if true { &mut x } else { &mut x };
     let _result = touch(r);
     // CHECK: Error[E3033] at {{.*}}comptime_reference_from_call_or_if.vx:[[@LINE+1]]:{{.*}}cannot be evaluated
     x
@@ -71,11 +63,7 @@ fn outer_reference_from_if() -> i32 {
   let p = &mut y;
   let seven = 7i32;
   let value = comptime {
-    let _result = touch(if true {
-      p
-    } else {
-      p
-    });
+    let _result = touch(if true { p } else { p });
     // CHECK: Error[E3033] at {{.*}}comptime_reference_from_call_or_if.vx:[[@LINE+1]]:{{.*}}cannot be evaluated
     seven
   };

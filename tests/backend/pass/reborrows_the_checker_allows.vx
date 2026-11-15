@@ -34,9 +34,7 @@ fn two_shared_reborrows() -> i64 {
 }
 
 fn a_field_next_to_another_field() -> i64 {
-  let mut p = Pair {
-    a : 1i64, b : 2i64
-  };
+  let mut p = Pair { a : 1i64, b : 2i64 };
   let m = &mut p;
   let fa = &mut (*m).a;
   m.b = 7i64;

@@ -21,10 +21,7 @@ fn size(m : &Matrix) -> i32 {
 }
 
 fn main() -> i32 {
-  let m = Matrix {
-    rows: 2,
-    cols: 3
-  };
+  let m = Matrix { rows: 2, cols: 3 };
   println!("size {}", size(&m));
   return 0;
 }

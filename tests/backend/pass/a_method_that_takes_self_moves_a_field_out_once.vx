@@ -77,38 +77,26 @@ fn by_local(o : Box2<Noisy>) -> Noisy {
 
 fn main() -> i32 {
   let a = by_method(Box2<Noisy> {
-    b : Box1<Noisy> {
-      v : Noisy {
-        id : 1
-      }
-    }, n : 0
+    b : Box1<Noisy> { v : Noisy { id : 1 } },
+    n : 0
   });
   println!("by_method gave {}", a.id);
   drop(a);
   let b = by_function(Box2<Noisy> {
-    b : Box1<Noisy> {
-      v : Noisy {
-        id : 2
-      }
-    }, n : 0
+    b : Box1<Noisy> { v : Noisy { id : 2 } },
+    n : 0
   });
   println!("by_function gave {}", b.id);
   drop(b);
   let c = by_path(Box2<Noisy> {
-    b : Box1<Noisy> {
-      v : Noisy {
-        id : 3
-      }
-    }, n : 0
+    b : Box1<Noisy> { v : Noisy { id : 3 } },
+    n : 0
   });
   println!("by_path gave {}", c.id);
   drop(c);
   let d = by_local(Box2<Noisy> {
-    b : Box1<Noisy> {
-      v : Noisy {
-        id : 4
-      }
-    }, n : 0
+    b : Box1<Noisy> { v : Noisy { id : 4 } },
+    n : 0
   });
   println!("by_local gave {}", d.id);
   drop(d);

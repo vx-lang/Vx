@@ -77,9 +77,7 @@ fn main() -> i32 {
   k = 7i64;
   println!("found={}; key={};", *found, k);
 
-  let mut c = Cursor {
-    data : &v, pos : 0
-  };
+  let mut c = Cursor { data : &v, pos : 0 };
   let a = next(&mut c);
   let b = next(&mut c);
   println!("a={}; b={};", *a, *b);
@@ -90,9 +88,7 @@ fn main() -> i32 {
   println!("last={}; key={};", *last, k2);
 
   let mut y = 5i64;
-  let h = Holder {
-    r : &y
-  };
+  let h = Holder { r : &y };
   let picked = pick(&h, &v);
   y = 6i64;
   println!("picked={}; y={};", *picked, y);

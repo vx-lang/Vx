@@ -75,20 +75,14 @@ fn scale<I : Stream, U>(it : I, f : Closure1<I::Item, U>) -> U {
 }
 
 fn main() -> i32 {
-  let mut a = Count {
-    at : 5i64, end : 9i64
-  };
+  let mut a = Count { at : 5i64, end : 9i64 };
   print(a.second().unwrap());
   print!(" ");
-  let b = Count {
-    at : 3i64, end : 9i64
-  };
+  let b = Count { at : 3i64, end : 9i64 };
   print(scale(b, | x : i64 | x * 10i64));
   print!(" ");
   let mut c = Cap<Count> {
-    inner : Count {
-      at : 0i64, end : 9i64
-    },
+    inner : Count { at : 0i64, end : 9i64 },
     left : 1i64
   };
   if c.next().is_some() && c.next().is_none() {
@@ -96,12 +90,8 @@ fn main() -> i32 {
   }
   print!(" ");
   // `scale(b, ..)` above took `b` by value, so this pulls from a count of its own.
-  let b2 = Count {
-    at : 3i64, end : 9i64
-  };
-  print(b2.pull(Count {
-    at : 4i64, end : 9i64
-  }).unwrap());
+  let b2 = Count { at : 3i64, end : 9i64 };
+  print(b2.pull(Count { at : 4i64, end : 9i64 }).unwrap());
   return 0;
 }
 

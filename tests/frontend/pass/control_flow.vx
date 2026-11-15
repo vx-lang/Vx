@@ -30,7 +30,8 @@ fn test_match(x : i32) -> i32 {
     0 => {
       res = 1;
     }
-    , _ => {
+    ,
+    _ => {
       res = 2;
     }
   }
@@ -50,7 +51,8 @@ fn test_match_enum() -> i32 {
     Option::Some(val) => {
       out = val;
     }
-    , Option::None => {
+    ,
+    Option::None => {
       out = 0 - 1;
     }
   }

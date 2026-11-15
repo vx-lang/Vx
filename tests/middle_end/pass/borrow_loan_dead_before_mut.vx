@@ -25,9 +25,7 @@ fn insert(m : &mut Map, v : i32) -> void {
   m.slot = v; m.present = 1;
 }
 fn ok() -> i32 {
-  let mut m = Map {
-    slot : 0, present : 0
-  };
+  let mut m = Map { slot : 0, present : 0 };
   let found = probe(&m);
   let copied = *found;
   insert(&mut m, 42);

@@ -28,15 +28,9 @@ struct Mixed {
 fn make(v : i64) -> Mixed {
   return Mixed {
     a : 1,
-    h : Holder<i64> {
-      x : v
-    },
+    h : Holder<i64> { x : v },
     b : 2,
-    n : Holder<Holder<i32>> {
-      x : Holder<i32> {
-        x : 7
-      }
-    }
+    n : Holder<Holder<i32>> { x : Holder<i32> { x : 7 } }
   };
 }
 

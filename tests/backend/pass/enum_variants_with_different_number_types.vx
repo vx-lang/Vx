@@ -23,10 +23,12 @@ enum Mixed<A, B> {
 impl<A, B> Mixed<A, B> {
   fn left_or(self : Mixed<A, B>, d : A) -> A {
     match self {
-      Mixed<A, B>::L(v) => {
+      Mixed<A,
+      B>::L(v) => {
         return v;
       }
-      Mixed<A, B>::R(v) => {
+      Mixed<A,
+      B>::R(v) => {
         return d;
       }
     }
@@ -34,10 +36,12 @@ impl<A, B> Mixed<A, B> {
 
   fn right_or(self : Mixed<A, B>, d : B) -> B {
     match self {
-      Mixed<A, B>::L(v) => {
+      Mixed<A,
+      B>::L(v) => {
         return d;
       }
-      Mixed<A, B>::R(v) => {
+      Mixed<A,
+      B>::R(v) => {
         return v;
       }
     }

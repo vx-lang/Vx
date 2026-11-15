@@ -29,10 +29,12 @@ import std::time;
 // Whether the `recv` gave up, and did not get a value.
 fn gave_up(rx : Receiver<i64>) -> bool {
   match rx.recv() {
-    Result<i64, RecvError>::Ok(_v) => {
+    Result<i64,
+    RecvError>::Ok(_v) => {
       return false;
     }
-    Result<i64, RecvError>::Err(_e) => {
+    Result<i64,
+    RecvError>::Err(_e) => {
       return true;
     }
   }
@@ -85,9 +87,7 @@ fn main() -> i32 {
   drop(tx);
   drop(inner_tx);
 
-  let w = WaitsInATask {
-    n : 1
-  };
+  let w = WaitsInATask { n : 1 };
   let drop_start = Instant::now();
   drop(w);
   println!("the drop took less than 5 seconds: {}", drop_start.elapsed() < Duration::from_secs(5));

@@ -22,11 +22,13 @@ fn show(p : *mut i32) -> i32 {
 
 fn show_result(r : Result<*mut i32, *mut i32>, now : &AtomicPtr<i32>) -> i32 {
   match r {
-    Result<*mut i32, *mut i32>::Ok(p) => {
+    Result<*mut i32,
+    *mut i32>::Ok(p) => {
       print!("ok ");
       let _ = show(p);
     }
-    Result<*mut i32, *mut i32>::Err(p) => {
+    Result<*mut i32,
+    *mut i32>::Err(p) => {
       print!("err ");
       let _ = show(p);
     }

@@ -25,22 +25,16 @@ fn bump(p : &mut S) -> void {
 }
 
 fn field_through_a_shared_reference() -> void {
-  let mut v = S {
-    x : 1
-  };
+  let mut v = S { x : 1 };
   let t = &v;
   let x = &t.x;
   print(*x);
-  v = S {
-    x : 2
-  };
+  v = S { x : 2 };
   print(v.x);
 }
 
 fn mut_reference_copied_by_let() -> void {
-  let mut s = S {
-    x : 1
-  };
+  let mut s = S { x : 1 };
   let a = &mut s;
   let b = a;
   b.x = 2;
@@ -49,22 +43,16 @@ fn mut_reference_copied_by_let() -> void {
 }
 
 fn mut_reference_copied_into_a_struct() -> void {
-  let mut s = S {
-    x : 1
-  };
+  let mut s = S { x : 1 };
   let a = &mut s;
-  let mut m = M {
-    r : a
-  };
+  let mut m = M { r : a };
   m.r.x = 2;
   a.x = 5;
   print(a.x);
 }
 
 fn mut_reference_given_to_two_calls() -> void {
-  let mut s = S {
-    x : 1
-  };
+  let mut s = S { x : 1 };
   let a = &mut s;
   bump(a);
   bump(a);
@@ -73,9 +61,7 @@ fn mut_reference_given_to_two_calls() -> void {
 
 fn reference_copied_out_of_a_field() -> void {
   let mut x = 1;
-  let h = H {
-    r : &x
-  };
+  let h = H { r : &x };
   let w = h.r;
   print(*w);
   x = 2;

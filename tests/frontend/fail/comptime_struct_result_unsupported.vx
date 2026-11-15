@@ -16,9 +16,7 @@ struct Cell {
 fn main() -> i32 {
   // CHECK: Error[E3033]{{.*}}its value cannot be worked out
   let _value = comptime {
-    Cell {
-      value : 0i32
-    }
+    Cell { value : 0i32 }
   };
   return 0i32;
 }

@@ -21,9 +21,7 @@ macro_rules get_val { ($obj : expr) => {
     $obj.get()
   }; }
 fn main() -> i32 {
-  let b = Box {
-    val : 100
-  };
+  let b = Box { val : 100 };
   let v = get_val!(b);
   return v;
 }

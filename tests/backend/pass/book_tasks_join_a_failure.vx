@@ -42,10 +42,12 @@ fn read_two(a : i32, b : i32) -> Result<i32, i32> {
 
 fn show(a : i32, b : i32) -> void {
   match read_two(a, b) {
-    Result<i32, i32>::Ok(v) => {
+    Result<i32,
+    i32>::Ok(v) => {
       println!("read {} and {}: Ok {}", a, b, v);
     }
-    Result<i32, i32>::Err(e) => {
+    Result<i32,
+    i32>::Err(e) => {
       println!("read {} and {}: Err {}", a, b, e);
     }
   }

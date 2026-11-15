@@ -23,9 +23,7 @@ struct Holder {
 fn make_holder(p : *mut Inner, calls : &mut i32) -> Holder {
   *calls = *calls + 1;
   print!("make, ");
-  return Holder {
-    n: 5, p: p
-  };
+  return Holder { n: 5, p: p };
 }
 
 fn read(r : &i64) -> i64 {
@@ -34,9 +32,7 @@ fn read(r : &i64) -> i64 {
 
 fn main() -> i32 {
   let mut calls : i32 = 0;
-  let mut inner = Inner {
-    x: 7
-  };
+  let mut inner = Inner { x: 7 };
   let p = (&mut inner) as *mut Inner;
   print!("start, ");
   print(read(&make_holder(p, &mut calls).n));

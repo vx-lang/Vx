@@ -25,9 +25,7 @@ fn total(p: Pair) -> i32 {
 }
 
 fn main() -> i32 {
-  let p: Pair = Pair {
-    left: wave_a(1), right: wave_b(2)
-  };
+  let p: Pair = Pair { left: wave_a(1), right: wave_b(2) };
   return total(p);
 }
 

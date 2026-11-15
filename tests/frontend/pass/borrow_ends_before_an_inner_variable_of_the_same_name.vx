@@ -21,9 +21,7 @@ fn in_an_if_block() -> i64 {
   let r : &mut Tensor<i64, [3]> = &mut d;
   r[0] = 9i64;
   let first = d[0];
-  let mut p = P {
-    x : 1i64
-  };
+  let mut p = P { x : 1i64 };
   if true {
     let r : &mut P = &mut p;
     r.x = 5i64;
@@ -36,9 +34,7 @@ fn in_a_for_loop() -> i64 {
   let r : &mut Tensor<i64, [3]> = &mut d;
   r[1] = 7i64;
   let second = d[1];
-  let mut p = P {
-    x : 0i64
-  };
+  let mut p = P { x : 0i64 };
   for i in 0..3 {
     let r : &mut P = &mut p;
     r.x = r.x + 1i64;
@@ -51,9 +47,7 @@ fn in_an_unsafe_block_that_ends_in_a_value() -> i64 {
   let r : &mut Tensor<i64, [3]> = &mut d;
   r[2] = 4i64;
   let third = d[2];
-  let mut p = P {
-    x : 6i64
-  };
+  let mut p = P { x : 6i64 };
   let x = unsafe { let r : &mut P = &mut p; r.x };
   return third * 10i64 + x;
 }

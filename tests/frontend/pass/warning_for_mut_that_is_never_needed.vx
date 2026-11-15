@@ -25,7 +25,7 @@
 // QUIET-NOT: `counters` is declared `mut`
 // QUIET-NOT: `unused` is declared `mut`
 
-// UNUSED: Warning[W1001] at {{.*}}warning_for_mut_that_is_never_needed.vx:81:3: Unused variable 'unused'
+// UNUSED: Warning[W1001] at {{.*}}warning_for_mut_that_is_never_needed.vx:73:3: Unused variable 'unused'
 
 import core::ops;
 
@@ -60,23 +60,15 @@ fn main() -> i32 {
   assigned = 2;
   let mut added_to = 1;
   added_to += 1;
-  let mut point = Counter {
-    count: 0
-  };
+  let mut point = Counter { count: 0 };
   point.count = 5;
   let mut values : Tensor<i32, [2]> = Tensor<i32, [2]>::fill(0);
   values[0] = 3;
   let mut borrowed = 1;
   increment(&mut borrowed);
-  let mut counter = Counter {
-    count: 0
-  };
+  let mut counter = Counter { count: 0 };
   counter.add_one();
-  let mut counters = Counters {
-    first: Counter {
-      count: 0
-    }
-  };
+  let mut counters = Counters { first: Counter { count: 0 } };
   counters[0].add_one();
   let mut unused = 0;
   return never_changed + assigned + added_to + point.count + values[0] + borrowed

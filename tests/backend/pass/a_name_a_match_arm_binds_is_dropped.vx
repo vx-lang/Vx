@@ -32,9 +32,7 @@ impl Drop for Noisy {
 }
 
 fn some(id : i32) -> Option<Noisy> {
-  return Option<Noisy>::Some(Noisy {
-    id: id
-  });
+  return Option<Noisy>::Some(Noisy { id: id });
 }
 
 fn used(o : Option<Noisy>) -> void {

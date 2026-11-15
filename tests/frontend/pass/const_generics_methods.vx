@@ -30,9 +30,7 @@ Buffer<T, N> {
 }
 
 fn test_const_generics_methods() -> void {
-  let b = Buffer<f32, 25> {
-    val : 3.14
-  };
+  let b = Buffer<f32, 25> { val : 3.14 };
   let sz = b.get_size();
   assert(true);
 }

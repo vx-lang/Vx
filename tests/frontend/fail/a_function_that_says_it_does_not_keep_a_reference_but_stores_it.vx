@@ -58,13 +58,9 @@ ensures !keeps(b)
 
 fn main() -> i32 {
   let x = 1i64;
-  let mut h = Holder {
-    r : &x
-  };
+  let mut h = Holder { r : &x };
   let mut v = Vec<&i64>::new();
-  let c = Cursor {
-    data : &x
-  };
+  let c = Cursor { data : &x };
   set_r(&mut h, &x);
   push_it(&mut v, &x);
   leak(&mut h, &c);

@@ -41,10 +41,12 @@ import std::time;
 /// Whether a `recv` on `rx` gave up.
 fn gave_up(rx : &Receiver<i64>) -> bool {
   match rx.recv() {
-    Result<i64, RecvError>::Ok(_v) => {
+    Result<i64,
+    RecvError>::Ok(_v) => {
       return false;
     }
-    Result<i64, RecvError>::Err(_e) => {
+    Result<i64,
+    RecvError>::Err(_e) => {
       return true;
     }
   }
@@ -58,10 +60,12 @@ impl Drop for Waiter {
   fn drop(self : &mut Waiter) -> void {
     within(Duration::from_millis(200), || -> void {
       match self.rx.recv() {
-        Result<i64, RecvError>::Ok(v) => {
+        Result<i64,
+        RecvError>::Ok(v) => {
           println!("the drop got {}", v);
         }
-        Result<i64, RecvError>::Err(_e) => {
+        Result<i64,
+        RecvError>::Err(_e) => {
           println!("the drop gave up, cancelled {}", cancelled());
         }
       }
@@ -130,17 +134,17 @@ fn main() -> i32 {
   sleep(Duration::from_millis(200));
   let mut gave_back_an_error = false;
   match received {
-    Result<i64, RecvError>::Ok(_v) => {}
-    Result<i64, RecvError>::Err(_e) => {
+    Result<i64,
+    RecvError>::Ok(_v) => {}
+    Result<i64,
+    RecvError>::Err(_e) => {
       gave_back_an_error = true;
     }
   }
   println!("the body gave back an error with ?: {}, and after it, cancelled {}", gave_back_an_error, cancelled());
 
   let (tx2, rx2) = channel<i64>(1);
-  let w = Waiter {
-    rx: rx2
-  };
+  let w = Waiter { rx: rx2 };
   let drop_start = Instant::now();
   drop(w);
   println!("the drop took less than 5 seconds: {}", drop_start.elapsed() < Duration::from_secs(5));

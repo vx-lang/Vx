@@ -89,9 +89,7 @@ ensures !reaches(return, *a)
 
 fn main() -> i32 {
   let x = 1i64;
-  let c = Cursor {
-    data : &x, pos : 0
-  };
+  let c = Cursor { data : &x, pos : 0 };
   let total = *in_requires(&x) + *inside_another_clause(&x, 1i64) + *not_about_the_result(&x, &x)
   + *no_such_parameter(&x) + *not_a_reference(&x, 1i64) + *about_a_field(&c)
   + keeps_two(&x, &x) + keeps_and_not(&x) + no_reference(&x) + *contradicts(&x);

@@ -13,10 +13,10 @@
 // CHECK-DAG: Error[E4006] at {{.*}}write_through_a_shared_reference.vx:30:3: this assigns through `p`
 // CHECK-DAG: Error[E4006] at {{.*}}write_through_a_shared_reference.vx:37:3: this assigns through `r`
 // CHECK-DAG: Error[E4006] at {{.*}}write_through_a_shared_reference.vx:38:3: this assigns through `r`
-// CHECK-DAG: Error[E4006] at {{.*}}write_through_a_shared_reference.vx:44:5: this assigns through `h`
-// CHECK-DAG: Error[E4006] at {{.*}}write_through_a_shared_reference.vx:47:4: this assigns through `t`
-// CHECK-DAG: Error[E4006] at {{.*}}write_through_a_shared_reference.vx:49:3: this assigns through `w`
-// CHECK-DAG: Error[E4006] at {{.*}}write_through_a_shared_reference.vx:53:5: this assigns through `x`
+// CHECK-DAG: Error[E4006] at {{.*}}write_through_a_shared_reference.vx:42:5: this assigns through `h`
+// CHECK-DAG: Error[E4006] at {{.*}}write_through_a_shared_reference.vx:45:4: this assigns through `t`
+// CHECK-DAG: Error[E4006] at {{.*}}write_through_a_shared_reference.vx:47:3: this assigns through `w`
+// CHECK-DAG: Error[E4006] at {{.*}}write_through_a_shared_reference.vx:51:5: this assigns through `x`
 // CHECK: 7 error(s) emitted
 import core::iter;
 import std::vec;
@@ -37,9 +37,7 @@ fn main() -> i32 {
   *r = 5i64;
   *r += 1i64;
   let mut b : i64 = 2i64;
-  let hv = Holder {
-    n : 1i64, m : &mut b
-  };
+  let hv = Holder { n : 1i64, m : &mut b };
   let h : &Holder = &hv;
   h.n = 3i64;
   let arr : Tensor<i64, [2]> = [ 1i64, 2i64 ];

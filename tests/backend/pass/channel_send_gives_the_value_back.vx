@@ -18,10 +18,12 @@ import std::sync::channel;
 
 fn try_send(tx : &Sender<i64>, v : i64) -> void {
   match tx.send(v) {
-    Result<void, SendError<i64>>::Ok() => {
+    Result<void,
+    SendError<i64>>::Ok() => {
       println!("sent {}", v);
     }
-    Result<void, SendError<i64>>::Err(e) => {
+    Result<void,
+    SendError<i64>>::Err(e) => {
       println!("given back {}", e.value);
     }
   }

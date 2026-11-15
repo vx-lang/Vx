@@ -11,9 +11,9 @@
 // type is `Copy`. So it cannot be used after it is moved, and a `match` on what a reference
 // points at cannot take a payload out of it.
 
-// CHECK-DAG: Error[E4001] at {{.*}}generic_values_move.vx:40:9: Use of moved or consumed linear variable: g
-// CHECK-DAG: Error[E4001] at {{.*}}generic_values_move.vx:55:14: Use of moved or consumed linear variable: w
-// CHECK-DAG: Error[E4008] at {{.*}}generic_values_move.vx:59:9: this moves a value of type `Opt<Pair>` out from behind a reference
+// CHECK-DAG: Error[E4001] at {{.*}}generic_values_move.vx:38:9: Use of moved or consumed linear variable: g
+// CHECK-DAG: Error[E4001] at {{.*}}generic_values_move.vx:51:14: Use of moved or consumed linear variable: w
+// CHECK-DAG: Error[E4008] at {{.*}}generic_values_move.vx:55:9: this moves a value of type `Opt<Pair>` out from behind a reference
 
 enum Opt<T> {
   Some(T),
@@ -33,9 +33,7 @@ fn take(w : Wrap<i32>) -> i32 {
 }
 
 fn enum_after_a_move() -> i32 {
-  let g = Opt<Pair>::Some(Pair {
-    a: 1
-  });
+  let g = Opt<Pair>::Some(Pair { a: 1 });
   let g2 = g;
   match g {
     Opt<Pair>::Some(p) => {
@@ -48,9 +46,7 @@ fn enum_after_a_move() -> i32 {
 }
 
 fn struct_after_a_move() -> i32 {
-  let w = Wrap<i32> {
-    x: 2
-  };
+  let w = Wrap<i32> { x: 2 };
   let n = take(w);
   return n + w.x;
 }

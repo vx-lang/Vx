@@ -58,15 +58,9 @@ fn add_new<K : PartialEq>(seen : &mut Vec<K>, key : K) -> bool {
 }
 
 fn main() -> i32 {
-  let a = Cell {
-    row: 1, col: 2
-  };
-  let b = Cell {
-    row: 1, col: 2
-  };
-  let c = Cell {
-    row: 2, col: 1
-  };
+  let a = Cell { row: 1, col: 2 };
+  let b = Cell { row: 1, col: 2 };
+  let c = Cell { row: 2, col: 1 };
   println!("same hash {}, other hash {}", hash_of(&a) == hash_of(&b), hash_of(&a) == hash_of(&c));
   let mut seen = Vec<Cell>::new();
   println!("added {} {} {}", add_new(&mut seen, a), add_new(&mut seen, b), add_new(&mut seen, c));

@@ -41,9 +41,7 @@ fn main() -> i32 {
   (a, (b, c)) = (1, (2, 3));
   print(a * 100 + b * 10 + c);
   print!(" ");
-  let mut p = P {
-    x: 0, y: 0
-  };
+  let mut p = P { x: 0, y: 0 };
   (p.x, p.y) = pair();
   print(p.x + p.y);
   return 0;

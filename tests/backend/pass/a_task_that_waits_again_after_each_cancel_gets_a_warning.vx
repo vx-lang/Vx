@@ -23,8 +23,10 @@ fn recv_many(rx : Receiver<i64>, times : i64) -> i64 {
   let mut errors : i64 = 0;
   for _i in 0..times {
     match rx.recv() {
-      Result<i64, RecvError>::Ok(_v) => {}
-      Result<i64, RecvError>::Err(_e) => {
+      Result<i64,
+      RecvError>::Ok(_v) => {}
+      Result<i64,
+      RecvError>::Err(_e) => {
         errors = errors + 1;
       }
     }
@@ -52,7 +54,7 @@ fn leave_early(times : i64) -> i64 {
 // CHECK: {{^}}leave_early gave 7{{$}}
 // CHECK-NEXT: {{^}}vx: warning: a task saw the cancel of its `tasks` block 1000 times. A loop may wait again after each `Cancelled`.{{$}}
 // CHECK-NEXT: {{^}}  at {{.*}}a_task_that_waits_again_after_each_cancel_gets_a_warning.vx:25{{$}}
-// CHECK-NEXT: {{^}}  in the task from the `spawn` at {{.*}}.vx:39{{$}}
+// CHECK-NEXT: {{^}}  in the task from the `spawn` at {{.*}}.vx:41{{$}}
 // CHECK-NOT: vx: warning
 // CHECK: {{^}}leave_early gave 7{{$}}
 fn main() -> i32 {

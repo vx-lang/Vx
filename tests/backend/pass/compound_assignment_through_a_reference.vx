@@ -30,9 +30,7 @@ fn main() -> i32 {
   bump(&mut a);
   print(a);
   print!(" ");
-  let mut s = S {
-    f : 1i64
-  };
+  let mut s = S { f : 1i64 };
   s.f += 2i64;
   print(s.f);
   print!(" ");

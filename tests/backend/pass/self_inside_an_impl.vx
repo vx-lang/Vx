@@ -24,9 +24,7 @@ struct P {
 
 impl P {
   fn new(a : i64) -> Self {
-    return Self {
-      a : a
-    };
+    return Self { a : a };
   }
   fn get(self : &Self) -> i64 {
     return self.a;
@@ -50,9 +48,7 @@ struct Pair<T> {
 
 impl<T> Pair<T> {
   fn make(x : T, y : T) -> Self {
-    return Self {
-      x : x, y : y
-    };
+    return Self { x : x, y : y };
   }
   fn swap(self : Self) -> Self {
     return Self::make(self.y, self.x);

@@ -28,21 +28,15 @@ impl W {
 }
 
 fn assign_while_a_returned_reference_is_used() -> i32 {
-  let mut w = W {
-    x : 1i32
-  };
+  let mut w = W { x : 1i32 };
   let r = w.peek();
   // CHECK: Error[E4009]{{.*}}`w` is assigned while it is borrowed
-  w = W {
-    x : 2i32
-  };
+  w = W { x : 2i32 };
   return *r;
 }
 
 fn mut_method_while_a_returned_reference_is_used() -> i32 {
-  let mut w = W {
-    x : 1i32
-  };
+  let mut w = W { x : 1i32 };
   let r = w.peek();
   // CHECK: Error[E4003]{{.*}}Cannot borrow 'w' as mutable because it is also borrowed as immutable.
   let _ = w.bump();
@@ -50,9 +44,7 @@ fn mut_method_while_a_returned_reference_is_used() -> i32 {
 }
 
 fn mut_method_while_a_field_is_borrowed() -> i32 {
-  let mut w = W {
-    x : 1i32
-  };
+  let mut w = W { x : 1i32 };
   let r = &w.x;
   // CHECK: Error[E4003]{{.*}}Cannot borrow 'w' as mutable because it is also borrowed as immutable.
   let _ = w.bump();

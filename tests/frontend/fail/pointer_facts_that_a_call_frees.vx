@@ -59,9 +59,7 @@ fn stores_it(h : &mut Holder, p : *const i64) -> void {
 }
 
 fn puts_it_in_a_value(p : *const i64) -> i64 {
-  let h = Holder {
-    p: p
-  };
+  let h = Holder { p: p };
   return 0i64;
 }
 
@@ -249,9 +247,7 @@ requires valid(p, n)
 fn main() -> i32 {
   let x = 5i64;
   let p : *const i64 = &x;
-  let r = Reader {
-    k: 1i64
-  };
+  let r = Reader { k: 1i64 };
   return through_a_bound(&r, p, 1i64) as i32;
 }
 

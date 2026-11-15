@@ -70,9 +70,7 @@ struct Holder {
 }
 
 fn drop_a_holder(t : Tensor<f32, [4], Memory::W>) -> void {
-  let _h = Holder {
-    t : t
-  };
+  let _h = Holder { t : t };
 }
 
 fn main() -> i32 {
@@ -91,9 +89,7 @@ struct Pinner {
 }
 
 fn drop_a_pinned_holder(t : Pinned<Tensor<f32, [2, 2]>, Topology::GPU[0]>) -> void {
-  let _h = Pinner {
-    t : t
-  };
+  let _h = Pinner { t : t };
 }
 
 fn main() -> i32 {

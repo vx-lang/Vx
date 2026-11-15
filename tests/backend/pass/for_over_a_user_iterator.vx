@@ -35,9 +35,7 @@ impl Upto {
 }
 
 fn main() -> i32 {
-  let mut it : Upto = Upto {
-    at : 0, end : 4
-  };
+  let mut it : Upto = Upto { at : 0, end : 4 };
   let mut sum : i32 = 0;
   for x in it {
     sum = sum + x;
@@ -46,9 +44,7 @@ fn main() -> i32 {
   print!(" ");
 
   // An empty iterator runs the body no times.
-  let mut none : Upto = Upto {
-    at : 2, end : 2
-  };
+  let mut none : Upto = Upto { at : 2, end : 2 };
   let mut ran : i32 = 0;
   for y in none {
     ran = ran + 1;

@@ -25,13 +25,9 @@ struct Point {
 }
 
 fn make() -> Span {
-  return Span {
-    lo : 1, hi : 2
-  };
+  return Span { lo : 1, hi : 2 };
 }
 
 fn origin() -> Point {
-  return Point {
-    x : 0
-  };
+  return Point { x : 0 };
 }

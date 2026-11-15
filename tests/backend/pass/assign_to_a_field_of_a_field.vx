@@ -33,11 +33,7 @@ impl Outer {
 }
 
 fn main() -> i32 {
-  let mut o = Outer {
-    inner: Inner {
-      n: 10, m: 20
-    }, k: 30
-  };
+  let mut o = Outer { inner: Inner { n: 10, m: 20 }, k: 30 };
   o.inner.n = 5;
   print!("two levels: ");
   print(o.inner.n);
@@ -59,11 +55,7 @@ fn main() -> i32 {
   // CHECK-NEXT: {{^}}reads itself: 5 60{{$}}
 
   let mut t = Top {
-    outer: Outer {
-      inner: Inner {
-        n: 1, m: 2
-      }, k: 3
-    }
+    outer: Outer { inner: Inner { n: 1, m: 2 }, k: 3 }
   };
   t.outer.inner.m = 7;
   print!("three levels: ");

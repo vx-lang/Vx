@@ -121,10 +121,12 @@ fn pass_result(r : Result<Option<i32>, Error>) -> Result<Option<i32>, Error> {
 
 fn result_number(r : Result<Option<i32>, Error>) -> i32 {
   match r {
-    Result<Option<i32>, Error>::Ok(o) => {
+    Result<Option<i32>,
+    Error>::Ok(o) => {
       return number_or(o, 303);
     }
-    Result<Option<i32>, Error>::Err(e) => {
+    Result<Option<i32>,
+    Error>::Err(e) => {
       return number_or(e.code, 404) - 1000;
     }
   }
@@ -179,7 +181,8 @@ fn main() -> i32 {
   let e = Mixed::Numbers(3, 7);
   println!("{} {}", mixed_value(d), mixed_value(e));
   let mut guarded = Guarded {
-    o : Outer::Number(1), canary : 1234567890123i64
+    o : Outer::Number(1),
+    canary : 1234567890123i64
   };
   guarded.o = Outer::Nested(Inner::Value(-1i64));
   println!("canary {} value {}", guarded.canary, outer_value(guarded.o));
@@ -188,9 +191,7 @@ fn main() -> i32 {
   println!("{} {}", wrap_value(f), wrap_value(g));
   let ok_none = pass_result(Result<Option<i32>, Error>::Ok(Option<i32>::None()));
   let ok_some = pass_result(Result<Option<i32>, Error>::Ok(Option<i32>::Some(-9)));
-  let err = pass_result(Result<Option<i32>, Error>::Err(Error {
-    code : Option<i32>::Some(-11)
-  }));
+  let err = pass_result(Result<Option<i32>, Error>::Err(Error { code : Option<i32>::Some(-11) }));
   println!("{} {} {} {} {} {} {}", result_number(ok_none), result_number(ok_some),
   result_number(err), pair_number(pass_pair(left())), pair_option(pass_pair(left())),
   pair_number(pass_pair(right())), pair_option(pass_pair(right())));

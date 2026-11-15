@@ -60,16 +60,12 @@ impl Instant {
     if ns > 9223372036854775807 - self.ns {
       return Option<Instant>::None;
     }
-    return Option<Instant>::Some(Instant {
-      ns: self.ns + ns
-    });
+    return Option<Instant>::Some(Instant { ns: self.ns + ns });
   }
 
   /// A reading that the clock never reaches. A wait with it as its deadline has no time limit.
   fn never() -> Instant {
-    return Instant {
-      ns: 9223372036854775807
-    };
+    return Instant { ns: 9223372036854775807 };
   }
 
   /// The reading in nanoseconds, as the runtime takes a deadline.

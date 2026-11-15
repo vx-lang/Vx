@@ -43,9 +43,7 @@ fn main() -> i32 {
   };
 
   let field_value = comptime {
-    let mut holder = Holder {
-      field : 1i32
-    };
+    let mut holder = Holder { field : 1i32 };
     holder.field = 10i32;
     holder.field
   };
@@ -63,9 +61,7 @@ fn main() -> i32 {
   };
 
   let field_parameter_value = comptime {
-    let mut holder = Holder {
-      field : 1i32
-    };
+    let mut holder = Holder { field : 1i32 };
     increment_scalar(&mut holder.field);
     holder.field
   };
@@ -77,11 +73,7 @@ fn main() -> i32 {
   };
 
   let nested_field_value = comptime {
-    let mut outer = Outer {
-      nested : Nested {
-        field : 1i32
-      }
-    };
+    let mut outer = Outer { nested : Nested { field : 1i32 } };
     outer.nested.field = 10i32;
     outer.nested.field
   };

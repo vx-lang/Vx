@@ -73,9 +73,7 @@ impl Stream<Map, i32> for Map {
 }
 
 fn map_range(iter : Range, f : fn(i32)->i32) -> Map {
-  return Map {
-    iter : iter, f : f
-  };
+  return Map { iter : iter, f : f };
 }
 
 fn square(x : i32) -> i32 {
@@ -83,9 +81,7 @@ fn square(x : i32) -> i32 {
 }
 
 fn main() -> i32 {
-  let mut r = Range {
-    current : 0, end : 5
-  };
+  let mut r = Range { current : 0, end : 5 };
   let mut m = map_range(r, square);
 
   let mut sum = 0;

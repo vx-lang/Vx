@@ -23,9 +23,7 @@ struct SharedCell<T> {
 impl<T> SharedCell<T> {
   /// A new cell holding `v`.
   fn new(v : T) -> SharedCell<T> {
-    return SharedCell<T> {
-      v : v
-    };
+    return SharedCell<T> { v : v };
   }
 
   /// The value, out of the cell.

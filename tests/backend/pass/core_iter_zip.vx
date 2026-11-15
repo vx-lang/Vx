@@ -49,9 +49,7 @@ fn main() -> i32 {
     print(0);
   }
   print!(" ");
-  let mut ps = range(0i64, 3i64).map(| x : i64 | P {
-    a : x, b : x * 2i64
-  });
+  let mut ps = range(0i64, 3i64).map(| x : i64 | P { a : x, b : x * 2i64 });
   for p in ps {
     print(p.b);
   }

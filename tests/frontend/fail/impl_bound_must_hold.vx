@@ -34,16 +34,8 @@ impl<T : Shape> Named for Wrap<T> {
 }
 
 fn main() -> i32 {
-  let s = Wrap<Square> {
-    inner : Square {
-      size : 1
-    }
-  };
-  let b = Wrap<Blob> {
-    inner : Blob {
-      size : 1
-    }
-  };
+  let s = Wrap<Square> { inner : Square { size : 1 } };
+  let b = Wrap<Blob> { inner : Blob { size : 1 } };
   return s.name_len() + b.name_len();
 }
 

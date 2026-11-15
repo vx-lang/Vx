@@ -19,7 +19,8 @@ fn arm(x : i32) -> i32 {
   let y = match x {
     1 => {
       unimplemented()
-    }, _ => {
+    },
+    _ => {
       5
     }
   };

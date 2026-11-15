@@ -63,33 +63,15 @@ impl Outer {
 }
 
 fn main() -> i32 {
-  let w = W {
-    inner: In {
-      n: 7
-    }
-  };
-  let v = W {
-    inner: In {
-      n: 9
-    }
-  };
+  let w = W { inner: In { n: 7 } };
+  let v = W { inner: In { n: 9 } };
   print!("{} ", w.call_on_a_field());
   print!("{} ", w.borrow_a_field_after_a_new_value(&v));
-  let o = Outer {
-    w: W {
-      inner: In {
-        n: 8
-      }
-    }
-  };
+  let o = Outer { w: W { inner: In { n: 8 } } };
   print!("{} ", o.call_two_fields_deep());
   let mut s = &w;
   print!("{} ", s.inner.get());
-  let mut m = W {
-    inner: In {
-      n: 3
-    }
-  };
+  let mut m = W { inner: In { n: 3 } };
   print!("{} ", m.write_through_a_field());
   print!("{}\n", m.inner.n);
   return 0;

@@ -16,15 +16,9 @@ fn read(cell : &Cell) -> i32 {
 }
 
 fn main(n : i32) -> i32 {
-  let outer = Cell {
-    value : 0i32
-  };
+  let outer = Cell { value : 0i32 };
   let value = comptime {
-    let _ignored = if n > 0i32 {
-      read(&outer)
-    } else {
-      1i32
-    };
+    let _ignored = if n > 0i32 { read(&outer) } else { 1i32 };
     7i32
   };
   return value;

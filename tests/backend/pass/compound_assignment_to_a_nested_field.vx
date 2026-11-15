@@ -27,11 +27,7 @@ fn halve(o : &mut Outer) -> void {
 }
 
 fn main() -> i32 {
-  let mut o = Outer {
-    inner: Inner {
-      n: 10
-    }, f: 9.0
-  };
+  let mut o = Outer { inner: Inner { n: 10 }, f: 9.0 };
   o.inner.n *= 3;
   print!("nested field: ");
   print!(o.inner.n);

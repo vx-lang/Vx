@@ -28,9 +28,7 @@ impl Holder {
 fn make_holder() -> Holder {
   let mut v = Vec<f32>::with_capacity(8);
   v.push(1.0);
-  return Holder {
-    v : v
-  };
+  return Holder { v : v };
 }
 
 struct Point {
@@ -39,10 +37,7 @@ struct Point {
 }
 
 fn make_point() -> Point {
-  return Point {
-    x : 1.0,
-    y : 2.0
-  };
+  return Point { x : 1.0, y : 2.0 };
 }
 
 fn read_in_the_same_statement() -> f32 {

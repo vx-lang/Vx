@@ -35,9 +35,7 @@ fn main() -> i32 {
   let mut v = Vec<i64>::new();
   v.push(10i64);
   v.push(20i64);
-  let mut c = Cursor {
-    data : &v, pos : 0
-  };
+  let mut c = Cursor { data : &v, pos : 0 };
   let a = c.next();
   // CHECK: Error[E4003] at {{.*}}.vx:[[@LINE+1]]:13: Cannot borrow 'c' as mutable because it is also borrowed as immutable
   let b = c.next();

@@ -26,9 +26,7 @@ fn first_of_copy(g : Grid<4>) -> f32 {
 fn main() -> i32 {
   let mut cells = Tensor<f32, [4]>::new();
   cells[0] = 7.0;
-  let g = Grid {
-    cells: cells
-  };
+  let g = Grid { cells: cells };
   print(first(&g));
   print!(" ");
   print(first_of_copy(g));

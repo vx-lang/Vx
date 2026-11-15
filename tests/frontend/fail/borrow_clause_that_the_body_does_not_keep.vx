@@ -52,9 +52,7 @@ ensures !points_into(return, *b)
 fn main() -> i32 {
   let x = 1i64;
   let y = 2i64;
-  let mut h = Holder {
-    r : &x
-  };
+  let mut h = Holder { r : &x };
   let total = *second(&x, &y) + *held(&h) + *stash(&mut h, &x, &y) + *pick_second(&x, &y);
   return total as i32;
 }

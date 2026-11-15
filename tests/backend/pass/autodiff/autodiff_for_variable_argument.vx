@@ -25,9 +25,7 @@ fn f(x : f64, p : P, k : i32) -> f64 {
 }
 
 fn main() -> i32 {
-  let p = P {
-    a: 1.0
-  };
+  let p = P { a: 1.0 };
   print!("grad");
   for k in 0..2 {
     print!(" ");

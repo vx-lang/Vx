@@ -63,9 +63,7 @@ fn first(stop : bool) -> i32 {
 // CHECK-NEXT: dropped 7
 // CHECK-NEXT: wait_then_drop 1
 fn wait_then_drop() -> i32 {
-  let n = Noisy {
-    id: 7
-  };
+  let n = Noisy { id: 7 };
   tasks {
     spawn {
       slow_read(&n);

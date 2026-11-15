@@ -27,11 +27,7 @@ fn borrow_in_an_if_statement(c : bool) -> i64 {
 
 fn value_with_no_borrow(c : bool) -> i64 {
   let mut x : i64 = 5;
-  let n : i64 = if c {
-    1
-  } else {
-    2
-  };
+  let n : i64 = if c { 1 } else { 2 };
   x = 6;
   return x + n;
 }
@@ -40,11 +36,7 @@ fn borrow_held_by_a_variable_of_an_arm(c : bool) -> i64 {
   let mut x : i64 = 5;
   let mut y : i64 = 7;
   if c {
-    let r : &mut i64 = if c {
-      &mut x
-    } else {
-      &mut y
-    };
+    let r : &mut i64 = if c { &mut x } else { &mut y };
     *r = 1;
   }
   x = x + 10;
@@ -54,11 +46,7 @@ fn borrow_held_by_a_variable_of_an_arm(c : bool) -> i64 {
 fn borrow_that_ends_at_its_last_use(c : bool) -> i64 {
   let mut x : i64 = 5;
   let mut y : i64 = 7;
-  let r : &mut i64 = if c {
-    &mut x
-  } else {
-    &mut y
-  };
+  let r : &mut i64 = if c { &mut x } else { &mut y };
   *r = 9;
   x = x + 100;
   return x + y;

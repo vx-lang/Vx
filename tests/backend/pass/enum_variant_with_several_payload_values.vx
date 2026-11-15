@@ -44,10 +44,12 @@ fn sum(t : Two) -> i64 {
 
 fn second(p : Pair<i32, f64>) -> f64 {
   match p {
-    Pair<i32, f64>::Of(_, b) => {
+    Pair<i32,
+    f64>::Of(_, b) => {
       return b;
     }
-    Pair<i32, f64>::Neither() => {
+    Pair<i32,
+    f64>::Neither() => {
       return 0.0;
     }
   }

@@ -43,10 +43,12 @@ fn name(e : RecvError) -> *const i8 {
 
 fn say(what : *const i8, r : Result<Selected<i64>, RecvError>) -> void {
   match r {
-    Result<Selected<i64>, RecvError>::Ok(s) => {
+    Result<Selected<i64>,
+    RecvError>::Ok(s) => {
       println!("{}: the value {}", what, s.value);
     }
-    Result<Selected<i64>, RecvError>::Err(e) => {
+    Result<Selected<i64>,
+    RecvError>::Err(e) => {
       println!("{}: {}", what, name(e));
     }
   }

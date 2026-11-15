@@ -37,9 +37,7 @@ impl Sink {
 }
 
 fn cast_borrow_passed_to_a_method_twice() -> u64 {
-  let s = Sink {
-    n : 1
-  };
+  let s = Sink { n : 1 };
   let mut b : u8 = 0;
   let got = s.put((&mut b) as *mut u8);
   let again = s.put((&mut b) as *mut u8);

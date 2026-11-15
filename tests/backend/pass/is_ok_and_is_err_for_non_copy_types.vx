@@ -31,10 +31,12 @@ fn main() -> i32 {
   let b = Result<Failure, i64>::Ok(Failure::Closed);
   if failed(&a) && succeeded(&b) {
     match a {
-      Result<i64, Failure>::Ok(_) => {
+      Result<i64,
+      Failure>::Ok(_) => {
         return 1;
       }
-      Result<i64, Failure>::Err(f) => {
+      Result<i64,
+      Failure>::Err(f) => {
         match f {
           Failure::Closed => {
             println!("a failed: closed");
@@ -43,14 +45,16 @@ fn main() -> i32 {
       }
     }
     match b {
-      Result<Failure, i64>::Ok(f) => {
+      Result<Failure,
+      i64>::Ok(f) => {
         match f {
           Failure::Closed => {
             println!("b succeeded: closed");
           }
         }
       }
-      Result<Failure, i64>::Err(_) => {
+      Result<Failure,
+      i64>::Err(_) => {
         return 1;
       }
     }

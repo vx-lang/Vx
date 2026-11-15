@@ -60,10 +60,12 @@ fn say_send_error(what : *const i8, e : SendError<i64>) -> void {
 
 fn say_send(what : *const i8, r : Result<void, SendError<i64>>) -> void {
   match r {
-    Result<void, SendError<i64>>::Ok() => {
+    Result<void,
+    SendError<i64>>::Ok() => {
       println!("{}: Ok", what);
     }
-    Result<void, SendError<i64>>::Err(e) => {
+    Result<void,
+    SendError<i64>>::Err(e) => {
       say_send_error(what, e);
     }
   }
@@ -71,10 +73,12 @@ fn say_send(what : *const i8, r : Result<void, SendError<i64>>) -> void {
 
 fn say_recv(what : *const i8, r : Result<i64, RecvError>) -> void {
   match r {
-    Result<i64, RecvError>::Ok(v) => {
+    Result<i64,
+    RecvError>::Ok(v) => {
       println!("{}: {}", what, v);
     }
-    Result<i64, RecvError>::Err(e) => {
+    Result<i64,
+    RecvError>::Err(e) => {
       println!("{}: {}", what, name(e));
     }
   }
@@ -83,8 +87,10 @@ fn say_recv(what : *const i8, r : Result<i64, RecvError>) -> void {
 fn send_5_later(tx : Sender<i64>) -> void {
   sleep(Duration::from_millis(100));
   match tx.send(5) {
-    Result<void, SendError<i64>>::Ok() => {}
-    Result<void, SendError<i64>>::Err(e) => {
+    Result<void,
+    SendError<i64>>::Ok() => {}
+    Result<void,
+    SendError<i64>>::Err(e) => {
       say_send_error("the send of 5", e);
     }
   }

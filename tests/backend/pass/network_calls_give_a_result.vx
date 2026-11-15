@@ -97,10 +97,12 @@ fn read_one_byte(s : TcpStream) -> void {
 fn accept_and_read(listener : TcpListener) -> void {
   let mut l = listener;
   match l.accept() {
-    Result<TcpStream, NetError>::Ok(s) => {
+    Result<TcpStream,
+    NetError>::Ok(s) => {
       read_one_byte(s);
     }
-    Result<TcpStream, NetError>::Err(e) => {
+    Result<TcpStream,
+    NetError>::Err(e) => {
       println!("the accept failed: {}", name(e));
     }
   }
@@ -118,10 +120,12 @@ fn serve(listener : TcpListener) -> void {
 fn wait_for_a_connection(listener : TcpListener) -> void {
   let mut l = listener;
   match l.accept() {
-    Result<TcpStream, NetError>::Ok(_s) => {
+    Result<TcpStream,
+    NetError>::Ok(_s) => {
       println!("the accept got a connection");
     }
-    Result<TcpStream, NetError>::Err(e) => {
+    Result<TcpStream,
+    NetError>::Err(e) => {
       println!("the accept gave {}", name(e));
     }
   }

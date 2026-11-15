@@ -49,9 +49,7 @@ fn main() -> i32 {
   let b : i64 = total_of(range(0i64, 5i64).map(| v : i64 | v * 2i64));
   print(b);
   print!(" ");
-  let h = Holder {
-    v : range(0i64, 3i64)
-  };
+  let h = Holder { v : range(0i64, 3i64) };
   print(h.seven());
   return 0;
 }

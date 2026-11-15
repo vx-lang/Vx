@@ -21,12 +21,8 @@ impl Num {
 }
 
 fn main() -> i32 {
-  let a = Num {
-    v : 1i32
-  };
-  let mut b = Num {
-    v : 1i32
-  };
+  let a = Num { v : 1i32 };
+  let mut b = Num { v : 1i32 };
   let r = &b;
   let same = a.same_as(&b);
   // CHECK: Error[E4009]{{.*}}`b.v` is assigned while it is borrowed

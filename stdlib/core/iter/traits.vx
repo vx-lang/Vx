@@ -366,31 +366,23 @@ trait Iterator {
 
   /// An iterator over these items with `f` applied to each.
   fn map<U>(self : Self, f : Closure1<Self::Item, U>) -> Map<Self, Closure1<Self::Item, U>> {
-    return Map<Self, Closure1<Self::Item, U>> {
-      inner : self, f : f
-    };
+    return Map<Self, Closure1<Self::Item, U>> { inner : self, f : f };
   }
 
   /// An iterator over the items `keep` accepts.
   fn filter(self : Self, keep : Closure1<&Self::Item, bool>)
   -> Filter<Self, Closure1<&Self::Item, bool>> {
-    return Filter<Self, Closure1<&Self::Item, bool>> {
-      inner : self, keep : keep
-    };
+    return Filter<Self, Closure1<&Self::Item, bool>> { inner : self, keep : keep };
   }
 
   /// An iterator over at most the first `n` items.
   fn take(self : Self, n : i64) -> Take<Self> {
-    return Take<Self> {
-      inner : self, left : n
-    };
+    return Take<Self> { inner : self, left : n };
   }
 
   /// An iterator over the items after the first `n`.
   fn skip(self : Self, n : i64) -> Skip<Self> {
-    return Skip<Self> {
-      inner : self, drop : n
-    };
+    return Skip<Self> { inner : self, drop : n };
   }
 
   /// An iterator over the first item and every `step`th one after it.
@@ -401,39 +393,33 @@ trait Iterator {
   fn step_by(self : Self, step : i64) -> StepBy<Self> {
     assert(step > 0i64, "step_by needs a step of at least one");
     return StepBy<Self> {
-      inner : self, gap : step - 1i64, first : true
+      inner : self,
+      gap : step - 1i64,
+      first : true
     };
   }
 
   /// An iterator over these items and then `other`'s, which must be of the same type.
   fn chain<B>(self : Self, other : B) -> Chain<Self, B> {
-    return Chain<Self, B> {
-      a : self, b : other, a_done : false
-    };
+    return Chain<Self, B> { a : self, b : other, a_done : false };
   }
 
   /// An iterator over the leading items `keep` accepts, stopping at the first it refuses.
   fn take_while(self : Self, keep : Closure1<&Self::Item, bool>)
   -> TakeWhile<Self, Closure1<&Self::Item, bool>> {
-    return TakeWhile<Self, Closure1<&Self::Item, bool>> {
-      inner : self, keep : keep, done : false
-    };
+    return TakeWhile<Self, Closure1<&Self::Item, bool>> { inner : self, keep : keep, done : false };
   }
 
   /// An iterator over the items from the first one `skip` refuses onward.
   fn skip_while(self : Self, skip : Closure1<&Self::Item, bool>)
   -> SkipWhile<Self, Closure1<&Self::Item, bool>> {
-    return SkipWhile<Self, Closure1<&Self::Item, bool>> {
-      inner : self, skip : skip, done : false
-    };
+    return SkipWhile<Self, Closure1<&Self::Item, bool>> { inner : self, skip : skip, done : false };
   }
 
   /// An iterator over what `f` answers for each item, ending where `f` first answers nothing.
   fn map_while<U>(self : Self, f : Closure1<Self::Item, Option<U>>)
   -> MapWhile<Self, Closure1<Self::Item, Option<U>>> {
-    return MapWhile<Self, Closure1<Self::Item, Option<U>>> {
-      inner : self, f : f
-    };
+    return MapWhile<Self, Closure1<Self::Item, Option<U>>> { inner : self, f : f };
   }
 
   /// An iterator over these items that hands each to `f` on its way past.
@@ -441,9 +427,7 @@ trait Iterator {
   /// `f` answers an `i32`, which is discarded, because no closure literal can return void yet.
   fn inspect(self : Self, f : Closure1<&Self::Item, i32>)
   -> Inspect<Self, Closure1<&Self::Item, i32>> {
-    return Inspect<Self, Closure1<&Self::Item, i32>> {
-      inner : self, f : f
-    };
+    return Inspect<Self, Closure1<&Self::Item, i32>> { inner : self, f : f };
   }
 
   /// An iterator over what `f` answers for each item, with `f` given `initial` to keep and
@@ -451,7 +435,9 @@ trait Iterator {
   fn scan<St, B>(self : Self, initial : St, f : Closure2<&mut St, Self::Item, Option<B>>)
   -> Scan<Self, St, Closure2<&mut St, Self::Item, Option<B>>> {
     return Scan<Self, St, Closure2<&mut St, Self::Item, Option<B>>> {
-      inner : self, state : initial, f : f
+      inner : self,
+      state : initial,
+      f : f
     };
   }
 
@@ -459,38 +445,32 @@ trait Iterator {
   /// iterator as it was when `cycle` was called, so the type must implement `Clone`. An
   /// iterator with no items gives one with none.
   fn cycle(self : Self) -> Cycle<Self> {
-    return Cycle<Self> {
-      orig : self, cur : Option<Self>::None()
-    };
+    return Cycle<Self> { orig : self, cur : Option<Self>::None() };
   }
 
   /// An iterator over copies of what these items point at, for an iterator that hands out
   /// references to a `Copy` type, as `Vec::iter` does.
   fn copied(self : Self) -> Copied<Self> {
-    return Copied<Self> {
-      inner : self
-    };
+    return Copied<Self> { inner : self };
   }
 
   /// An iterator over clones of what these items point at, for an iterator that hands out
   /// references to a `Clone` type.
   fn cloned(self : Self) -> Cloned<Self> {
-    return Cloned<Self> {
-      inner : self
-    };
+    return Cloned<Self> { inner : self };
   }
 
   /// An iterator that answers nothing forever once these items have run out.
   fn fuse(self : Self) -> Fuse<Self> {
-    return Fuse<Self> {
-      inner : self, done : false
-    };
+    return Fuse<Self> { inner : self, done : false };
   }
 
   /// An iterator whose next item can be looked at, by `peek`, without taking it.
   fn peekable(self : Self) -> Peekable<Self, Self::Item> {
     return Peekable<Self, Self::Item> {
-      inner : self, peeked : Option<Self::Item>::None(), has_peeked : false
+      inner : self,
+      peeked : Option<Self::Item>::None(),
+      has_peeked : false
     };
   }
 
@@ -499,38 +479,35 @@ trait Iterator {
   /// `f` answers an iterator.
   fn flat_map<U>(self : Self, f : Closure1<Self::Item, U>) -> FlatMap<Self, Closure1<Self::Item, U>, U> {
     return FlatMap<Self, Closure1<Self::Item, U>, U> {
-      outer : self, f : f, front : Option<U>::None()
+      outer : self,
+      f : f,
+      front : Option<U>::None()
     };
   }
 
   /// An iterator over the items of each of these items, which are iterators themselves.
   fn flatten(self : Self) -> Flatten<Self, Self::Item> {
     return Flatten<Self, Self::Item> {
-      outer : self, front : Option<Self::Item>::None()
+      outer : self,
+      front : Option<Self::Item>::None()
     };
   }
 
   /// An iterator over these items from the back, for an iterator that can answer from both ends.
   fn rev(self : Self) -> Rev<Self> {
-    return Rev<Self> {
-      inner : self
-    };
+    return Rev<Self> { inner : self };
   }
 
   /// An iterator over pairs of these items and `other`'s, in step, as long as both last.
   fn zip<U>(self : Self, other : U) -> Zip<Self, U> {
-    return Zip<Self, U> {
-      a : self, b : other
-    };
+    return Zip<Self, U> { a : self, b : other };
   }
 
   /// An iterator over these items, each paired with its position, counting from zero.
   ///
   /// The position is an `i64`.
   fn enumerate(self : Self) -> Enumerate<Self> {
-    return Enumerate<Self> {
-      inner : self, count : 0i64
-    };
+    return Enumerate<Self> { inner : self, count : 0i64 };
   }
 
   /// `fold` with the first item as the starting value, so nothing for a sequence already

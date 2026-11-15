@@ -27,9 +27,7 @@ fn main() -> i32 {
   let ptr2: *mut f32 = null_val as *mut f32;
 
   // FAILING 3: Struct initialization without unsafe
-  let b = Box {
-    data: 0 as *mut i32
-  };
+  let b = Box { data: 0 as *mut i32 };
 
   // FAILING 4: Function argument without unsafe
   takes_ptr(0 as *mut i32);

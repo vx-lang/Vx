@@ -91,18 +91,14 @@ fn main() -> i32 {
   let x : i64 = 0;
   print(Loud::speak(&x));
   print(Quiet::speak(&x));
-  let mut d = Dog {
-    n : 1
-  };
+  let mut d = Dog { n : 1 };
   print(Loud::speak(&d));
   print(Quiet::speak(&d));
   // A method that takes `&mut self` and another argument: 1 + 7.
   print(Quiet::bump(&mut d, 7));
   // A trait's default method, through its trait: Loud's speak (3), doubled.
   print(Loud::twice(&d));
-  let p : Pair<i32> = Pair {
-    a : 0
-  };
+  let p : Pair<i32> = Pair { a : 0 };
   print(Loud::speak(&p));
   print(Quiet::speak(&p));
   print(both(&d));

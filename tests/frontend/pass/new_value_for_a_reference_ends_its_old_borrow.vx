@@ -23,12 +23,8 @@ fn reference() -> i32 {
 fn struct_holding_a_reference() -> i32 {
   let mut x : i32 = 1;
   let y : i32 = 2;
-  let mut outer = W {
-    r : &x
-  };
-  outer = W {
-    r : &y
-  };
+  let mut outer = W { r : &x };
+  outer = W { r : &y };
   x = 5;
   return *outer.r + x;
 }

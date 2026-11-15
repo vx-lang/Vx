@@ -31,9 +31,7 @@ struct Holder {
 
 fn make_holder(v : f32) -> Holder {
   let a : Tensor<f32, [ 4 ]> = [ v, v, v, v ];
-  return Holder {
-    t: a
-  };
+  return Holder { t: a };
 }
 
 fn fill(h : &mut Holder, v : f32) -> void {
@@ -51,12 +49,8 @@ fn main() -> i32 {
 
   let z : Tensor<f32, [ 4 ]> = [ 0.0, 0.0, 0.0, 0.0 ];
   let w : Tensor<f32, [ 4 ]> = [ 0.0, 0.0, 0.0, 0.0 ];
-  let mut third = Holder {
-    t: z
-  };
-  let mut fourth = Holder {
-    t: w
-  };
+  let mut third = Holder { t: z };
+  let mut fourth = Holder { t: w };
   fill(&mut third, 3.0);
   fill(&mut fourth, 7.0);
   print(third.t[2]);

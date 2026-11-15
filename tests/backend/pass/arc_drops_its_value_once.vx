@@ -38,19 +38,19 @@ fn id_of(a : Arc<Noisy>) -> i64 {
 
 fn move_out(a : Arc<Noisy>) -> void {
   match a.try_unwrap() {
-    Result<Noisy, Arc<Noisy>>::Ok(v) => {
+    Result<Noisy,
+    Arc<Noisy>>::Ok(v) => {
       println!("moved out {}", v.id);
     }
-    Result<Noisy, Arc<Noisy>>::Err(_back) => {
+    Result<Noisy,
+    Arc<Noisy>>::Err(_back) => {
       println!("another owner exists");
     }
   }
 }
 
 fn main() -> i32 {
-  let a = Arc<Noisy>::new(Noisy {
-    id : 7
-  });
+  let a = Arc<Noisy>::new(Noisy { id : 7 });
   let sum = AtomicI64::new(0);
   tasks {
     for t in 0..4 {
@@ -67,9 +67,7 @@ fn main() -> i32 {
   drop(b);
   println!("after the last drop");
 
-  move_out(Arc<Noisy>::new(Noisy {
-    id : 8
-  }));
+  move_out(Arc<Noisy>::new(Noisy { id : 8 }));
   println!("end");
   return 0;
 }

@@ -47,11 +47,7 @@ fn hash(kind : i32) -> u64 {
     let mut bb = s;
     s = next(s);
     let u = ((s >> 11u64) as f64) * 0.00000000000000011102230246251565;
-    let sign : f64 = if (bb >> 63u64) == 1u64 {
-      -1.0
-    } else {
-      1.0
-    };
+    let sign : f64 = if (bb >> 63u64) == 1u64 { -1.0 } else { 1.0 };
     let mut x : f64 = 0.0;
     if kind == 0 {
       let e = 960u64 + (bb >> 52u64) % 74u64;

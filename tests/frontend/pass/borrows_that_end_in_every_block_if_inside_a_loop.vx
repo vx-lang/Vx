@@ -193,9 +193,7 @@ fn assign_while_a_struct_holds_a_borrow_if_inside_a_loop(k : i32) -> i32 {
   let mut y = 0;
   for i in 0..k {
     if i > 0 {
-      let h = Holder {
-        r: &x
-      };
+      let h = Holder { r: &x };
       y = *h.r;
       x = 2;
     }
@@ -207,9 +205,7 @@ fn assign_while_a_struct_holds_a_borrow_if_inside_a_loop(k : i32) -> i32 {
 fn assign_while_a_struct_holds_a_borrow_if_inside_a_loop_borrowed_outside(k : i32) -> i32 {
   let mut x = 1;
   let mut y = 0;
-  let h = Holder {
-    r: &x
-  };
+  let h = Holder { r: &x };
   y = *h.r;
   for i in 0..k {
     if i > 0 {

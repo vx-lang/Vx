@@ -81,9 +81,7 @@ fn read_while_a_returned_reference_is_in_use_function_body(k : i32) -> i32 {
 fn assign_while_a_struct_holds_a_borrow_function_body(k : i32) -> i32 {
   let mut x = 1;
   let mut y = 0;
-  let h = Holder {
-    r: &x
-  };
+  let h = Holder { r: &x };
   y = *h.r;
   x = 2;
   return x + y;

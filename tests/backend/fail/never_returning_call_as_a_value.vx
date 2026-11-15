@@ -21,20 +21,12 @@
 import core::panic;
 
 fn pick(ok : bool, v : i32) -> i32 {
-  let x : i32 = if ok {
-    v
-  } else {
-    todo()
-  };
+  let x : i32 = if ok { v } else { todo() };
   return x;
 }
 
 fn half(v : f64) -> f64 {
-  let h : f64 = if v > 0.0 {
-    v / 2.0
-  } else {
-    panic("not positive")
-  };
+  let h : f64 = if v > 0.0 { v / 2.0 } else { panic("not positive") };
   return h;
 }
 

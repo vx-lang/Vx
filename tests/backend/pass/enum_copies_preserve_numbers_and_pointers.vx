@@ -51,12 +51,8 @@ fn read_pointer(value: Value) -> i64 {
   }
 }
 fn main() -> i32 {
-  let _nearby = Node {
-    value: 17
-  };
-  let node = Node {
-    value: 29
-  };
+  let _nearby = Node { value: 17 };
+  let node = Node { value: 29 };
   print(read_integer(integer())); print(" ");
   print(read_float(floating())); print(" ");
   print(read_pointer(pointer((&node) as *const Node)));

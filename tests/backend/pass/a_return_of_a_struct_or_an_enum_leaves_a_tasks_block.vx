@@ -38,14 +38,10 @@ fn a_struct(early : bool) -> P {
     };
     let a = h.join();
     if early {
-      return P {
-        a: a, b: 4
-      };
+      return P { a: a, b: 4 };
     }
   };
-  return P {
-    a: 0, b: 0
-  };
+  return P { a: 0, b: 0 };
 }
 
 fn an_enum(early : bool) -> Option<i64> {
@@ -71,14 +67,10 @@ fn a_bag(early : bool) -> Bag {
       let mut items = Vec<i64>::new();
       items.push(1);
       items.push(v);
-      return Bag {
-        items: items
-      };
+      return Bag { items: items };
     }
   };
-  return Bag {
-    items: Vec<i64>::new()
-  };
+  return Bag { items: Vec<i64>::new() };
 }
 
 fn show(o : Option<i64>) -> void {

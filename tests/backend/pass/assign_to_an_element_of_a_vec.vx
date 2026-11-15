@@ -54,15 +54,9 @@ fn main() -> i32 {
   print!(v[3]);
   print!("\n");
   let mut n = Vec<Noisy>::with_capacity(2);
-  n.push(Noisy {
-    id : 1
-  });
-  n.push(Noisy {
-    id : 2
-  });
-  n[0] = Noisy {
-    id : 3
-  };
+  n.push(Noisy { id : 1 });
+  n.push(Noisy { id : 2 });
+  n[0] = Noisy { id : 3 };
   print!("replaced\n");
   return 0;
 }

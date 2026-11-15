@@ -42,9 +42,7 @@ fn main() -> i32 {
   spawn on(Topology::Dev) {
     for i in 0..4 {
       // A struct local: one field is written, then read back.
-      let mut p : Pair = Pair {
-        a : ((i + 1) as f32), b : 2.0
-      };
+      let mut p : Pair = Pair { a : ((i + 1) as f32), b : 2.0 };
       p.a = p.a + 1.0;
       od[i] = p.a * p.b;
     }

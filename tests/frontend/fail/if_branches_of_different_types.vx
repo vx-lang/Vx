@@ -17,15 +17,7 @@ fn main() -> i32 {
   let x : i32 = 1;
   let y : f32 = 2.0;
   let c = true;
-  let _n = if c {
-    x
-  } else {
-    y
-  };
-  let _t = if c {
-    a
-  } else {
-    b
-  };
+  let _n = if c { x } else { y };
+  let _t = if c { a } else { b };
   return 0;
 }

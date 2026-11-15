@@ -31,27 +31,21 @@ impl Copy for Money {}
 impl Add for Money {
   type Output = Money;
   fn add(self : Money, rhs : Money) -> Money {
-    return Money {
-      cents: self.cents + rhs.cents
-    };
+    return Money { cents: self.cents + rhs.cents };
   }
 }
 
 impl Sub for Money {
   type Output = Money;
   fn sub(self : Money, rhs : Money) -> Money {
-    return Money {
-      cents: self.cents - rhs.cents
-    };
+    return Money { cents: self.cents - rhs.cents };
   }
 }
 
 impl Neg for Money {
   type Output = Money;
   fn neg(self : Money) -> Money {
-    return Money {
-      cents: 0 - self.cents
-    };
+    return Money { cents: 0 - self.cents };
   }
 }
 
@@ -66,21 +60,13 @@ fn sum3<T : Add>(a : T, b : T, c : T) -> T {
 }
 
 fn main() -> i32 {
-  let price = Money {
-    cents: 250
-  };
-  let tip = Money {
-    cents: 50
-  };
+  let price = Money { cents: 250 };
+  let tip = Money { cents: 50 };
   let total = price + tip;
   println!("total {}", total.cents);
-  println!("change {}", (Money {
-    cents: 1000
-  } - total).cents);
+  println!("change {}", (Money { cents: 1000 } - total).cents);
   println!("refund {}", (-tip).cents);
-  println!("equal {}, different {}", total == Money {
-    cents: 300
-  }, total != price);
+  println!("equal {}, different {}", total == Money { cents: 300 }, total != price);
   println!("sums {} {}", sum3(price, tip, total).cents, sum3(1, 2, 3));
   return 0;
 }

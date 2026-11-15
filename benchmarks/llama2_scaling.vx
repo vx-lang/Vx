@@ -75,7 +75,8 @@ fn malloc_run_state(dim: i32, hidden_dim: i32, n_layers: i32, n_heads: i32, n_kv
 
     RunState {
       x:
-      s_x, xb : s_xb,
+      s_x,
+      xb : s_xb,
       xb2 : s_xb2,
       hb : s_hb,
       hb2 : s_hb2,
@@ -118,7 +119,8 @@ seq_len : i32, vocab_size : i32) -> TransformerWeights {
 
     TransformerWeights {
       token_embedding_table:
-      p0, rms_att_weight : p1,
+      p0,
+      rms_att_weight : p1,
       rms_ffn_weight : p6,
       wq : p2,
       wk : p3,

@@ -51,11 +51,7 @@ fn tree(n : i32, size : i32) -> f32 {
   let mut q = Tensor<f32, [32]>::fill(0.0);
   for w in 0..size / 32 {
     for i in 0..32 {
-      g[i] = if w * 32 + i < n {
-        value(w * 32 + i)
-      } else {
-        0.0
-      };
+      g[i] = if w * 32 + i < n { value(w * 32 + i) } else { 0.0 };
     }
     q[w] = group(&mut g);
   }
@@ -127,11 +123,7 @@ fn main() -> i32 {
   }
   let mut g = Tensor<f32, [32]>::fill(0.0);
   for i in 0..32 {
-    g[i] = if i < 20 {
-      value(i)
-    } else {
-      0.0
-    };
+    g[i] = if i < 20 { value(i) } else { 0.0 };
   }
   println!("ordered_sum {} tree {} left {}", o[0], tree(256, 256), left);
   println!("sum_unordered {}", o[1]);

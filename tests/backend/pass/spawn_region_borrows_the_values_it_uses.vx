@@ -24,9 +24,7 @@ impl Drop for Noisy {
 
 impl Clone for Noisy {
   fn clone(self : &Noisy) -> Noisy {
-    return Noisy {
-      id: self.id + 10
-    };
+    return Noisy { id: self.id + 10 };
   }
 }
 
@@ -35,9 +33,7 @@ fn look(n : &Noisy) -> i32 {
 }
 
 fn main() -> i32 {
-  let n = Noisy {
-    id: 1
-  };
+  let n = Noisy { id: 1 };
   spawn on(Topology::Current) {
     println!("saw {}", look(&n));
     let _c = n.clone();

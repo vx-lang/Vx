@@ -32,9 +32,7 @@ fn same<T>(x : T) -> T {
 
 fn main() -> i32 {
   let mut x : i32 = 40;
-  let s = Slot<i32> {
-    p: (&mut x) as *mut i32
-  };
+  let s = Slot<i32> { p: (&mut x) as *mut i32 };
   let q = s.get();
   unsafe { *q = *q + 2; }
   print(same(x));

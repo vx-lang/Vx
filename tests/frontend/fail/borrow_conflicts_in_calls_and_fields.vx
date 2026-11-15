@@ -40,9 +40,7 @@ fn two_mutable_in_one_call() -> i32 {
 }
 // E4004: the same field borrowed `&mut` twice.
 fn same_field_twice() -> i32 {
-  let mut p = Pair {
-    a : 1i64, b : 2i64
-  };
+  let mut p = Pair { a : 1i64, b : 2i64 };
   let x = &mut p.a;
   let y = &mut p.a;
   *x = 3i64;
@@ -51,9 +49,7 @@ fn same_field_twice() -> i32 {
 }
 // E4004: a field borrowed while the whole struct is borrowed `&mut`.
 fn field_while_whole_is_mutably_borrowed() -> i32 {
-  let mut p = Pair {
-    a : 1i64, b : 2i64
-  };
+  let mut p = Pair { a : 1i64, b : 2i64 };
   let w = &mut p;
   let x = &p.a;
   print(*x);
@@ -67,6 +63,6 @@ fn main() -> i32 {
 
 // CHECK-DAG: Error[E4004] at {{.*}}borrow_conflicts_in_calls_and_fields.vx:32:16: Cannot borrow 'x' because it is already borrowed as mutable.
 // CHECK-DAG: Error[E4004] at {{.*}}borrow_conflicts_in_calls_and_fields.vx:38:15: Cannot borrow 'x' because it is already borrowed as mutable.
-// CHECK-DAG: Error[E4004] at {{.*}}borrow_conflicts_in_calls_and_fields.vx:47:11: Cannot borrow 'p' because it is already borrowed as mutable.
-// CHECK-DAG: Error[E4004] at {{.*}}borrow_conflicts_in_calls_and_fields.vx:58:11: Cannot borrow 'p' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4004] at {{.*}}borrow_conflicts_in_calls_and_fields.vx:45:11: Cannot borrow 'p' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4004] at {{.*}}borrow_conflicts_in_calls_and_fields.vx:54:11: Cannot borrow 'p' because it is already borrowed as mutable.
 // CHECK: 4 error(s) emitted

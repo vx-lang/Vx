@@ -55,9 +55,7 @@ fn call_that_returns_a_number() -> i64 {
 }
 
 fn method_result_last_used_before_the_assignment() -> i64 {
-  let mut s = S {
-    v : 1
-  };
+  let mut s = S { v : 1 };
   let m = &mut s;
   let r = m.get_mut();
   *r = 7;
@@ -66,9 +64,7 @@ fn method_result_last_used_before_the_assignment() -> i64 {
 }
 
 fn method_that_returns_a_number() -> i64 {
-  let mut s = S {
-    v : 1
-  };
+  let mut s = S { v : 1 };
   let m = &mut s;
   let n = m.bump();
   s.v = s.v + 1;

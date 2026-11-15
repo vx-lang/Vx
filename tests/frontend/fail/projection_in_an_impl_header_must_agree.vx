@@ -6,9 +6,7 @@ import core::iter;
 // implements `Iterator` for `Filter<I, Closure1<&I::Item, bool>>`, so this one is not an
 // iterator.
 fn wrap<I>(inner : I, keep : Closure1<&i32, bool>) -> Filter<I, Closure1<&i32, bool>> {
-  return Filter<I, Closure1<&i32, bool>> {
-    inner : inner, keep : keep
-  };
+  return Filter<I, Closure1<&i32, bool>> { inner : inner, keep : keep };
 }
 
 fn cap<I : Iterator>(it : I) -> Take<I> {

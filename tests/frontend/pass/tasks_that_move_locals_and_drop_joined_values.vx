@@ -24,9 +24,7 @@ impl Drop for Noisy {
 }
 
 fn make_noisy(id : i32) -> Noisy {
-  return Noisy {
-    id: id
-  };
+  return Noisy { id: id };
 }
 
 // `v` and `n` end with their pass, and nothing joins the task. So the task moves them, and it

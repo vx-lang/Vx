@@ -25,10 +25,12 @@ fn run<T>(body : || -> T) -> T {
 
 fn got_one(rx : &Receiver<i64>) -> bool {
   match rx.recv() {
-    Result<i64, RecvError>::Ok(_v) => {
+    Result<i64,
+    RecvError>::Ok(_v) => {
       return true;
     }
-    Result<i64, RecvError>::Err(_e) => {
+    Result<i64,
+    RecvError>::Err(_e) => {
       return false;
     }
   }
@@ -42,10 +44,12 @@ fn main() -> i32 {
   });
   println!("the closure got a value: {}", got);
   match tx.send(2) {
-    Result<void, SendError<i64>>::Ok(_) => {
+    Result<void,
+    SendError<i64>>::Ok(_) => {
       println!("a send after the call worked");
     }
-    Result<void, SendError<i64>>::Err(_e) => {
+    Result<void,
+    SendError<i64>>::Err(_e) => {
       println!("a send after the call failed");
     }
   }
@@ -58,8 +62,10 @@ fn main() -> i32 {
   });
   let mut gave_back_an_error = false;
   match received {
-    Result<i64, RecvError>::Ok(_v) => {}
-    Result<i64, RecvError>::Err(_e) => {
+    Result<i64,
+    RecvError>::Ok(_v) => {}
+    Result<i64,
+    RecvError>::Err(_e) => {
       gave_back_an_error = true;
     }
   }

@@ -34,9 +34,7 @@ fn make_size(k : i32) -> Size {
 
 fn make_place(k : i32) -> Place {
   if k == 0 {
-    return Place::At(Point {
-      id: 4
-    });
+    return Place::At(Point { id: 4 });
   }
   return Place::Nowhere();
 }

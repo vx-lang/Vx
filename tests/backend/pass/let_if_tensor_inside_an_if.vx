@@ -19,11 +19,7 @@ fn main() -> i32 {
   if b {
     s = s + 1.0;
   } else {
-    let c = if b {
-      q[0]
-    } else {
-      q[1]
-    };
+    let c = if b { q[0] } else { q[1] };
     s = s + c[0];
   }
   print(s);

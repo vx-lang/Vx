@@ -24,9 +24,7 @@ impl Holder {
 fn make_holder() -> Holder {
   let mut v = Vec<f32>::with_capacity(8);
   v.push(1.0);
-  return Holder {
-    v : v
-  };
+  return Holder { v : v };
 }
 
 fn make_vec() -> Vec<f32> {

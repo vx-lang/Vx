@@ -196,9 +196,7 @@ macro_rules stamp_atomic_int {
     impl $name {
       /// A new atomic holding `v`.
       fn new(v : $t) -> $name {
-        return $name {
-          v : SharedCell<$t>::new(v)
-        };
+        return $name { v : SharedCell<$t>::new(v) };
       }
 
       /// The value, which is no longer atomic.
@@ -305,10 +303,12 @@ macro_rules stamp_atomic_int {
           match call(f.env, prev) {
             Option<$t>::Some(next) => {
               match self.compare_exchange_weak(prev, next, set_order, fetch_order) {
-                Result<$t, $t>::Ok(old) => {
+                Result<$t,
+                $t>::Ok(old) => {
                   return Result<$t, $t>::Ok(old);
                 }
-                Result<$t, $t>::Err(seen) => {
+                Result<$t,
+                $t>::Err(seen) => {
                   prev = seen;
                 }
               }
@@ -368,18 +368,14 @@ macro_rules stamp_atomic_int {
     impl Default for $name {
       /// An atomic holding zero.
       fn default() -> $name {
-        return $name {
-          v : SharedCell<$t>::new(0)
-        };
+        return $name { v : SharedCell<$t>::new(0) };
       }
     }
 
     impl From<$t> for $name {
       /// `new`.
       fn from(value : $t) -> $name {
-        return $name {
-          v : SharedCell<$t>::new(value)
-        };
+        return $name { v : SharedCell<$t>::new(value) };
       }
     }
   };
@@ -561,9 +557,7 @@ fn core_atomic_ptr_eq<T>(a : *mut T, b : *mut T) -> bool {
 impl<T> AtomicPtr<T> {
   /// A new atomic holding `p`.
   fn new(p : *mut T) -> AtomicPtr<T> {
-    return AtomicPtr<T> {
-      v : SharedCell<*mut T>::new(p)
-    };
+    return AtomicPtr<T> { v : SharedCell<*mut T>::new(p) };
   }
 
   /// The pointer, which is no longer atomic.

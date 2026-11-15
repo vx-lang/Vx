@@ -131,15 +131,9 @@ fn two_blocks(c : bool) -> i64 {
 }
 
 fn one_block() -> i64 {
-  let a = Pair {
-    a: 1,
-    b: 2
-  };
+  let a = Pair { a: 1, b: 2 };
   let first = a.a + a.b;
-  let b = Pair {
-    a: 30,
-    b: 40
-  };
+  let b = Pair { a: 30, b: 40 };
   return first + sum_of(&b);
 }
 
@@ -159,15 +153,9 @@ fn read(h : &Holder) -> i64 {
 
 fn a_raw_pointer() -> i64 {
   let mut h = no_pair();
-  let a = Pair {
-    a: 1,
-    b: 2
-  };
+  let a = Pair { a: 1, b: 2 };
   keep(&mut h, &a);
-  let b = Pair {
-    a: 30,
-    b: 40
-  };
+  let b = Pair { a: 30, b: 40 };
   let second = sum_of(&b);
   return second + read(&h);
 }

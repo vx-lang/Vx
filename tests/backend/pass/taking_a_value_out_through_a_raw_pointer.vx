@@ -34,38 +34,26 @@ unsafe fn take(p : *const Noisy) -> Noisy {
 }
 
 fn run() -> void {
-  let three = Noisy {
-    id: 3
-  };
+  let three = Noisy { id: 3 };
   let r = unsafe { read((&three) as *const Noisy) };
   print!("read={}; ", r.id);
   forget(r);
 
-  let four = Noisy {
-    id: 4
-  };
+  let four = Noisy { id: 4 };
   let t = unsafe { take((&four) as *const Noisy) };
   print!("own={}; ", t.id);
   forget(t);
 
-  let five = Plain {
-    id: 5
-  };
+  let five = Plain { id: 5 };
   let pp = (&five) as *const Plain;
   let c = unsafe { *pp };
   print!("plain={}; ", c.id);
 
-  let mut a = Noisy {
-    id: 1
-  };
-  let mut b = Noisy {
-    id: 2
-  };
+  let mut a = Noisy { id: 1 };
+  let mut b = Noisy { id: 2 };
   swap(&mut a, &mut b);
   print!("a={}; b={}; ", a.id, b.id);
-  let old = replace(&mut a, Noisy {
-    id: 6
-  });
+  let old = replace(&mut a, Noisy { id: 6 });
   print!("old={}; a={}; end ", old.id, a.id);
 }
 

@@ -13,12 +13,8 @@ fn pick(a : &Map, b : &Map) -> &i32 {
   return &b.slot;
 }
 fn bad() -> i32 {
-  let mut x = Map {
-    slot : 1, present : 1
-  };
-  let mut y = Map {
-    slot : 2, present : 1
-  };
+  let mut x = Map { slot : 1, present : 1 };
+  let mut y = Map { slot : 2, present : 1 };
   let r = pick(&x, &y);
   insert(&mut y, 9);   // r aliases y — must reject
   return *r;

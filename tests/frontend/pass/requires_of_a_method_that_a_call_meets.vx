@@ -44,9 +44,7 @@ impl<T> Holder<T> {
 }
 
 fn a_literal_that_meets_it() -> i64 {
-  let c = C {
-    n : 0i64
-  };
+  let c = C { n : 0i64 };
   return c.take_below_5(3i64);
 }
 

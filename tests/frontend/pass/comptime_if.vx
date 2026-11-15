@@ -24,11 +24,7 @@ fn main() -> i32 {
 
   // Since our default compiler configuration executes as Topology::CPU,
   // val must be 1.
-  return if val == 1 {
-    0
-  } else {
-    1
-  };
+  return if val == 1 { 0 } else { 1 };
 }
 
 // The comptime branch is not folded away in the frontend module: the comparison and both

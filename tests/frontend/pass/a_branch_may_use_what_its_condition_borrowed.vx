@@ -30,9 +30,7 @@ fn get(s : &S) -> Held {
 }
 
 fn read_in_arm() -> i32 {
-  let s = S {
-    x : 1
-  };
+  let s = S { x : 1 };
   match get(&s) {
     Held::R(r) => {
       return *r + s.x;
@@ -44,9 +42,7 @@ fn read_in_arm() -> i32 {
 }
 
 fn borrow_after_condition() -> i32 {
-  let mut s = S {
-    x : 1
-  };
+  let mut s = S { x : 1 };
   if s.x == 1 {
     let m = &mut s;
     m.x = 3;
@@ -55,9 +51,7 @@ fn borrow_after_condition() -> i32 {
 }
 
 fn name_hidden_by_arm() -> i32 {
-  let mut s = S {
-    x : 4
-  };
+  let mut s = S { x : 4 };
   let m = &mut s;
   m.x = 5;
   match get(&s) {
@@ -71,9 +65,7 @@ fn name_hidden_by_arm() -> i32 {
 }
 
 fn let_in_branch() -> i32 {
-  let mut s = S {
-    x : 1
-  };
+  let mut s = S { x : 1 };
   let m = &mut s;
   m.x = 2;
   if s.x == 2 {

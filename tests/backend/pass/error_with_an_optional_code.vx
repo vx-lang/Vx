@@ -12,15 +12,11 @@ struct Error {
 }
 
 fn with_code() -> Error {
-  return Error {
-    code: Option<i32>::Some(-7)
-  };
+  return Error { code: Option<i32>::Some(-7) };
 }
 
 fn without_code() -> Error {
-  return Error {
-    code: Option<i32>::None()
-  };
+  return Error { code: Option<i32>::None() };
 }
 
 fn take_code(error: Error) -> Option<i32> {

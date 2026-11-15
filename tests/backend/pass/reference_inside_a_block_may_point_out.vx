@@ -45,9 +45,7 @@ fn used_in_the_loop(k : i32) -> i32 {
   let mut w : i32 = 0;
   while w < k {
     let x : i32 = w;
-    let v = View {
-      r : &x
-    };
+    let v = View { r : &x };
     let add = | y : i32 | y + x;
     total = add(total) + *v.r;
     w = w + 1;

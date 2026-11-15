@@ -38,9 +38,7 @@ impl Drop for Counted {
 
 fn replace(m : &Mutex<Counted>, id : i64, drops : Arc<AtomicI64>) -> void {
   let mut g = m.lock();
-  *g.get() = Counted {
-    id : id, drops : drops
-  };
+  *g.get() = Counted { id : id, drops : drops };
 }
 
 fn count(drops : &Arc<AtomicI64>) -> i64 {
@@ -49,9 +47,7 @@ fn count(drops : &Arc<AtomicI64>) -> i64 {
 
 fn main() -> i32 {
   let drops = Arc<AtomicI64>::new(AtomicI64::new(0));
-  let m = Mutex<Counted>::new(Counted {
-    id : 0, drops : drops.clone()
-  });
+  let m = Mutex<Counted>::new(Counted { id : 0, drops : drops.clone() });
   tasks {
     for t in 1..5 {
       let d = drops.clone();
@@ -64,9 +60,7 @@ fn main() -> i32 {
   drop(m);
   println!("after the drop of the Mutex, dropped {}", count(&drops));
 
-  let m2 = Mutex<Counted>::new(Counted {
-    id : 9, drops : drops.clone()
-  });
+  let m2 = Mutex<Counted>::new(Counted { id : 9, drops : drops.clone() });
   let v = m2.into_inner();
   println!("after into_inner, dropped {}, and the value is {}", count(&drops), v.id);
   drop(v);

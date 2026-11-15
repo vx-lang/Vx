@@ -61,15 +61,11 @@ impl ExactSizeIterator for Range {
 impl Clone for Range {
   /// A second span over the same values, which is what `cycle` restarts from.
   fn clone(self : &Range) -> Range {
-    return Range {
-      at : self.at, end : self.end
-    };
+    return Range { at : self.at, end : self.end };
   }
 }
 
 /// The numbers `at .. end`.
 fn range(at : i64, end : i64) -> Range {
-  return Range {
-    at : at, end : end
-  };
+  return Range { at : at, end : end };
 }
