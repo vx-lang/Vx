@@ -10469,8 +10469,9 @@ struct CheckIntegerDivisionPass
 
 // With `-fbounds-checks`, an index outside the shape of a tensor stops the
 // program. Each index of a `memref.load` and `memref.store` must be less than
-// its dimension. A row `t[i]` is a `memref.reinterpret_cast` of lower rank
-// than its source, and it must stay inside the elements of the source. A
+// its dimension. A row `t[i]` or a range of rows `t[a..b]` is a
+// `memref.reinterpret_cast` of its source with lower or the same rank, and it
+// must stay inside the elements of the source. A
 // constant index inside a static dimension is not checked, and neither is an
 // operation inside a `linalg` region or a GPU kernel, where `cf.assert` does
 // not lower.
@@ -10523,7 +10524,7 @@ struct CheckTensorIndicesPass
 
   static void checkRow(memref::ReinterpretCastOp row) {
     auto sourceTy = dyn_cast<MemRefType>(row.getSource().getType());
-    if (!sourceTy || row.getType().getRank() >= sourceTy.getRank())
+    if (!sourceTy || row.getType().getRank() > sourceTy.getRank())
       return;
     OpBuilder b(row);
     Location loc = row.getLoc();

@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 //
 // `q[0..2]` is rows 0 and 1 of `q`. Like a single row `q[1]`, it is a view of `q`, not a
 // copy, so it borrows `q`. Each function below breaks one rule of that borrow.
@@ -49,7 +49,7 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK-DAG: Error[E4009] at {{.*}}tensor_ranges_borrow_their_owner.vx:18:7: `q[3][0]` is assigned while it is borrowed
-// CHECK-DAG: Error[E4002] at {{.*}}tensor_ranges_borrow_their_owner.vx:26:11: Cannot access 'q' because it is mutably borrowed.
-// CHECK-DAG: Error[E4010] at {{.*}}tensor_ranges_borrow_their_owner.vx:34:3: `q` is not declared `mut`, so a view of it cannot be declared `mut`
-// CHECK-DAG: Error[E4009] at {{.*}}tensor_ranges_borrow_their_owner.vx:44:7: `q[2][2]` is assigned while it is borrowed
+// CHECK: Error[E4009] at {{.*}}tensor_ranges_borrow_their_owner.vx:18:7: `q[3][0]` is assigned while it is borrowed
+// CHECK: Error[E4002] at {{.*}}tensor_ranges_borrow_their_owner.vx:26:11: Cannot access 'q' because it is mutably borrowed.
+// CHECK: Error[E4010] at {{.*}}tensor_ranges_borrow_their_owner.vx:34:3: `q` is not declared `mut`, so a view of it cannot be declared `mut`
+// CHECK: Error[E4009] at {{.*}}tensor_ranges_borrow_their_owner.vx:44:7: `q[2][2]` is assigned while it is borrowed

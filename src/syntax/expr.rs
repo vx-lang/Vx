@@ -974,6 +974,15 @@ impl RangeExpr {
     pub fn new(start: Box<Expr>, end: Box<Expr>, span: Span) -> Self {
         Self { start, end, span }
     }
+
+    /// Both ends, when both are literal numbers: `(1, 3)` for `1..3`.
+    pub fn literal_ends(&self) -> Option<(u64, u64)> {
+        let literal = |e: &Expr| match e {
+            Expr::Number(n) => n.value.parse::<u64>().ok(),
+            _ => None,
+        };
+        Some((literal(&self.start)?, literal(&self.end)?))
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]

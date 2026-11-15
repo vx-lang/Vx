@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 //
 // `q[a..b]` is rows `a` to `b - 1` of `q`. The ends must be literal numbers, and the rows
 // must exist. Each function below breaks one of these rules.
@@ -42,7 +42,7 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK-DAG: Error[E8003] at {{.*}}range_index_with_wrong_ends.vx:16:12: the range `3..6` is out of range: this tensor has 4 rows
-// CHECK-DAG: Error[E8003] at {{.*}}range_index_with_wrong_ends.vx:23:12: the range `3..1` has no rows: its end must be after its start
-// CHECK-DAG: Error[E8003] at {{.*}}range_index_with_wrong_ends.vx:30:12: the range `2..2` has no rows: its end must be after its start
-// CHECK-DAG: Error[E8003] at {{.*}}range_index_with_wrong_ends.vx:37:12: the ends of a range index must be literal numbers
+// CHECK: Error[E8003] at {{.*}}range_index_with_wrong_ends.vx:16:12: the range `3..6` goes past the end: this dimension has 4 elements
+// CHECK: Error[E3065] at {{.*}}range_index_with_wrong_ends.vx:23:12: the range `3..1` is empty: its end must be greater than its start
+// CHECK: Error[E3065] at {{.*}}range_index_with_wrong_ends.vx:30:12: the range `2..2` is empty: its end must be greater than its start
+// CHECK: Error[E3065] at {{.*}}range_index_with_wrong_ends.vx:37:12: the ends of a range index must be literal numbers

@@ -863,9 +863,8 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
         }
         if let syntax::Expr::Range(_) = self.index.as_ref() {
             return Err(LowerError::from(
-                "a range index `q[a..b]` is not supported by the legacy code generator. The \
-                 default code generator supports it when both ends are literal numbers, such as \
-                 `q[1..3]`"
+                "the legacy code generator (`--legacy-codegen`) does not support a range index \
+                 `q[a..b]`"
                     .to_string(),
             ));
         }

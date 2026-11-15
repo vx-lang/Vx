@@ -1480,45 +1480,40 @@ impl<'a> TypeChecker<'a> {
         range: &RangeExpr,
         span: &crate::syntax::Span,
     ) -> Type {
-        let literal = |e: &Expr| match e {
-            Expr::Number(n) => n.value.parse::<i64>().ok(),
-            _ => None,
-        };
+        use crate::diagnostic::DiagnosticCode;
         let at = Some(crate::diagnostic::SourceSpan::from_ast_span(span));
-        let (Some(a), Some(b)) = (literal(&range.start), literal(&range.end)) else {
-            if !self.speculating {
-                self.errors.error_with_code(
-                    crate::diagnostic::DiagnosticCode::E8003,
-                    "the ends of a range index must be literal numbers, such as `q[1..3]`: the \
-                     number of rows has to be known when the program is compiled",
-                    at,
-                );
-            }
-            return Type::Tensor(el_ty, dims.to_vec(), top);
-        };
         let rows = match dims.first() {
-            Some(Dim::Static(Expr::Number(n))) => n.value.parse::<i64>().ok(),
+            Some(Dim::Static(Expr::Number(n))) => n.value.parse::<u64>().ok(),
             _ => None,
         };
-        let problem = if a < 0 || b <= a {
-            Some(format!(
-                "the range `{a}..{b}` has no rows: its end must be after its start"
-            ))
-        } else if let Some(rows) = rows.filter(|rows| b > *rows) {
-            Some(format!(
-                "the range `{a}..{b}` is out of range: this tensor has {rows} rows"
-            ))
-        } else {
-            None
+        let problem = match range.literal_ends() {
+            None => Some((
+                DiagnosticCode::E3065,
+                "the ends of a range index must be literal numbers, such as `q[1..3]`: the \
+                 number of rows is part of the type of the range"
+                    .to_string(),
+            )),
+            Some((a, b)) if b <= a => Some((
+                DiagnosticCode::E3065,
+                format!("the range `{a}..{b}` is empty: its end must be greater than its start"),
+            )),
+            Some((a, b)) => rows.filter(|rows| b > *rows).map(|rows| {
+                (
+                    DiagnosticCode::E8003,
+                    format!("the range `{a}..{b}` goes past the end: this dimension has {rows} elements"),
+                )
+            }),
         };
-        if let Some(message) = problem {
+        if let Some((code, message)) = problem {
             if !self.speculating {
-                self.errors
-                    .error_with_code(crate::diagnostic::DiagnosticCode::E8003, message, at);
+                self.errors.error_with_code(code, message, at);
             }
             // Keep the tensor's own type, so one wrong range gives one error.
             return Type::Tensor(el_ty, dims.to_vec(), top);
         }
+        let (a, b) = range
+            .literal_ends()
+            .expect("a range with other ends was refused above");
         let mut new_dims = dims.to_vec();
         if let Some(first) = new_dims.first_mut() {
             *first = Dim::Static(Expr::Number(NumberExpr::new(

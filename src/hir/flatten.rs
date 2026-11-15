@@ -1749,50 +1749,8 @@ impl<'r> Lowerer<'r> {
                             }); // cannot index a rank-0 value
                         }
 
-                        // `q[a..b]`: a window of rows `a` to `b - 1` that shares `q`'s memory.
                         if let Expr::Range(range) = &*ix.index {
-                            let start = self.lower_expr(&range.start)?;
-                            if !matches!(start.ty, LoweredTy::Scalar(_)) {
-                                return Err(Decline::TypeNotModelled {
-                                    what: "the start of a range index is not a scalar",
-                                });
-                            }
-                            let end = self.lower_expr(&range.end)?;
-                            if !matches!(end.ty, LoweredTy::Scalar(_)) {
-                                return Err(Decline::TypeNotModelled {
-                                    what: "the end of a range index is not a scalar",
-                                });
-                            }
-                            // The result has `b - a` rows, which is only known now when both
-                            // ends are literal numbers.
-                            let literal = |e: &Expr| match e {
-                                Expr::Number(n) => n.value.parse::<i64>().ok(),
-                                _ => None,
-                            };
-                            let (Some(a), Some(b)) = (literal(&range.start), literal(&range.end))
-                            else {
-                                return Err(Decline::TypeNotModelled {
-                                    what: "a range index whose ends are not literal numbers",
-                                });
-                            };
-                            if a < 0 || b <= a {
-                                return Err(Decline::TypeNotModelled {
-                                    what: "a range index that is empty or runs backwards",
-                                });
-                            }
-                            let mut new_shape = shape;
-                            new_shape[0] = (b - a).to_string();
-                            let result_ty = LoweredTy::Tensor {
-                                elem,
-                                shape: new_shape,
-                            };
-                            return Ok(self.emit_typed(
-                                Opcode::TensorRange,
-                                base.reg,
-                                start.reg,
-                                result_ty,
-                                end.reg.0 as u64,
-                            ));
+                            return self.lower_tensor_range(base.reg, elem, shape, range);
                         }
 
                         let index = self.lower_expr(&ix.index)?;
@@ -6706,6 +6664,30 @@ impl<'r> Lowerer<'r> {
         ))
     }
 
+    /// `q[a..b]`: rows `a` to `b - 1` of the tensor `base`, a view that shares its memory. The
+    /// checker refused a range whose ends are not literal numbers or that has no rows.
+    fn lower_tensor_range(
+        &mut self,
+        base: Register,
+        elem: ElementType,
+        mut shape: Vec<String>,
+        range: &crate::syntax::expr::RangeExpr,
+    ) -> Lowered<Val> {
+        let (a, b) = range
+            .literal_ends()
+            .expect("the checker refuses a range whose ends are not literal numbers");
+        assert!(a < b, "the checker refuses a range with no rows");
+        let start = self.lower_expr(&range.start)?;
+        shape[0] = (b - a).to_string();
+        Ok(self.emit_typed(
+            Opcode::TensorRange,
+            base,
+            start.reg,
+            LoweredTy::Tensor { elem, shape },
+            0,
+        ))
+    }
+
     fn lower_place(&mut self, e: &Expr) -> Lowered<Val> {
         // A raw-pointer dereference place `*p = val`: `p[0]`.
         if let Expr::Dereference(d) = e {
@@ -6749,6 +6731,10 @@ impl<'r> Lowerer<'r> {
             return Err(Decline::TypeNotModelled {
                 what: "an index of a rank-0 value",
             }); // cannot index a rank-0 value
+        }
+        // `q[1..3] = w` writes `w` into the rows of the range.
+        if let Expr::Range(range) = &*ix.index {
+            return self.lower_tensor_range(base.reg, elem, shape, range);
         }
         let index = self.lower_expr(&ix.index)?;
         if !matches!(index.ty, LoweredTy::Scalar(_)) {
@@ -9067,6 +9053,7 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             | Opcode::Store
             | Opcode::FieldStore
             | Opcode::TensorIndex
+            | Opcode::TensorRange
             | Opcode::TensorStore
             | Opcode::TensorDim
             // `PtrIndex` reads base+index; `PtrStore` reads place+value (#242).
@@ -9099,11 +9086,6 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             Opcode::TensorDrop => assert!(
                 ins.operand1.0 < i
                     && (ins.imm & crate::bytecode::TENSOR_DROP_FLAG == 0 || ins.operand2.0 < i),
-                "HIR operand not dominated at instruction {i}"
-            ),
-            // The end of the range is a register in `imm`.
-            Opcode::TensorRange => assert!(
-                ins.operand1.0 < i && ins.operand2.0 < i && ins.imm < u64::from(i),
                 "HIR operand not dominated at instruction {i}"
             ),
             Opcode::CondBr => {

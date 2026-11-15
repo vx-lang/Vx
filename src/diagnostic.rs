@@ -455,6 +455,10 @@ pub enum DiagnosticCode {
     /// body is not inside a loop around the closure, because the closure can run after the loop
     /// ends.
     E3064,
+    /// A range index `q[a..b]` with ends that are not literal numbers, or with no rows
+    /// (`q[2..2]`, `q[3..1]`). The number of rows, `b - a`, is part of the type of the range, so
+    /// it must be known while compiling. A range past the last row is E8003.
+    E3065,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

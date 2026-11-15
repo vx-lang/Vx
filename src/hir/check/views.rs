@@ -149,10 +149,7 @@ impl<'a> TypeChecker<'a> {
                 .borrow
                 .borrowed_by(&root)
                 .into_iter()
-                .map(|(o, p)| {
-                    let joined = joined_path(&p, &path);
-                    (o, joined)
-                })
+                .map(|(o, p)| (o, joined_path(&p, &path)))
                 .collect();
             return View {
                 owners: vec![(root, path)],

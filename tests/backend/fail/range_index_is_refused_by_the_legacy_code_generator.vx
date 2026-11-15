@@ -9,7 +9,7 @@
 // (`--legacy-codegen`) does not support a range index and stops with an error message.
 //
 // RUN: not vxc %s --legacy-codegen 2>&1 | FileCheck %s
-// CHECK: a range index `q[a..b]` is not supported by the legacy code generator
+// CHECK: the legacy code generator (`--legacy-codegen`) does not support a range index `q[a..b]`
 fn main() -> i32 {
   let q = Tensor<f32, [4, 2]>::new();
   let r = q[1..3];

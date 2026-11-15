@@ -11,7 +11,7 @@
 // Default code generator only: the legacy one refuses a range index with an error message.
 //
 // REQUIRES: flat-codegen
-// EXPECT: 7 9 5 0 1 6 4 4 7
+// EXPECT: 7 9 5 0 1 6 4 4 7 4 8 3 6
 fn two_dimensions() -> f32 {
   let mut q = Tensor<f32, [4, 2]>::new();
   let mut r = q[1..3];
@@ -86,6 +86,42 @@ fn one_dimension() -> f32 {
   return w[1];
 }
 
+// `q[1..3] = w` writes `w` into rows 1 and 2.
+fn assign_to_a_range() -> f32 {
+  let mut q = Tensor<f32, [4, 3]>::new();
+  let w = Tensor<f32, [2, 3]>::fill(2.0);
+  q[1..3] = w;
+  return q[0][0] + q[1][0] + q[2][2] + q[3][2];
+}
+
+// A range of a row: `q[2]` is a view too.
+fn range_of_a_row() -> f32 {
+  let mut q = Tensor<f32, [4, 3, 2]>::new();
+  let mut r = q[2][1..3];
+  r[1][0] = 8.0;
+  return q[2][2][0];
+}
+
+// A range of a range: rows 1 and 2 of `q[1..4]` are rows 2 and 3 of `q`.
+fn range_of_a_range() -> f32 {
+  let mut q = Tensor<f32, [4, 3]>::new();
+  let mut r = q[1..4][1..3];
+  r[1][2] = 3.0;
+  return q[3][2];
+}
+
+// The number of rows of `q` is known only when the program runs.
+fn end_of_second_row(q : &Tensor<f32, [?, 3]>) -> f32 {
+  let r = q[1..3];
+  return r[1][2];
+}
+
+fn rows_known_at_run_time() -> f32 {
+  let mut q = Tensor<f32, [4, 3]>::new();
+  q[2][2] = 6.0;
+  return end_of_second_row(&q);
+}
+
 fn main() -> i32 {
   print(two_dimensions() as i32);
   print!(" ");
@@ -104,5 +140,13 @@ fn main() -> i32 {
   print(passed_to_a_function() as i32);
   print!(" ");
   print(one_dimension() as i32);
+  print!(" ");
+  print(assign_to_a_range() as i32);
+  print!(" ");
+  print(range_of_a_row() as i32);
+  print!(" ");
+  print(range_of_a_range() as i32);
+  print!(" ");
+  print(rows_known_at_run_time() as i32);
   return 0;
 }

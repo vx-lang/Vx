@@ -86,7 +86,7 @@ impl FnEmit<'_> {
             return Err(crate::emitter_gap!());
         }
         // Each stride must be the product of the sizes after it. A `?` cannot be checked here;
-        // only indexing a row out of a tensor makes one, and a row of a tensor is contiguous.
+        // only a row or a range of rows makes one, and both are contiguous.
         let mut expect = Some(1i64);
         for k in (0..dims.len()).rev() {
             if let (Some(e), Ok(s)) = (expect, strides[k].parse::<i64>()) {
@@ -1214,9 +1214,11 @@ impl FnEmit<'_> {
         Ok(())
     }
 
-    // `q[a..b]`: rows `a` to `b - 1` of a tensor, as a window onto the same memory (no copy).
-    // `operand1` is the base tensor and `operand2` is `a`. The number of rows is already in the
-    // result type, so the register in `imm` (`b`) is not read yet.
+    /// `q[a..b]`: rows `a` to `b - 1` of a tensor, as a view of the same memory. `operand1` is
+    /// the tensor and `operand2` is `a`, and the result type holds the number of rows. Each other
+    /// size and each stride is the tensor's: a literal where its type has one, else a value read
+    /// from the tensor. The offset is the tensor's own offset plus `a` rows. The cast reads the
+    /// tensor itself, so `-fbounds-checks` checks the range against it.
     pub(crate) fn op_tensor_range(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let result_gid = *self
             .types
@@ -1227,17 +1229,80 @@ impl FnEmit<'_> {
             .get(ins.operand1.0 as usize)
             .ok_or(crate::emitter_gap!())?
             .clone();
+        // A one-dimensional result of arithmetic stays in a vector register, with no memory.
+        if matches!(self.vec_of.get(ins.operand1.0 as usize), Some(Some(_))) {
+            return Err(Decline::TypeNotModelled {
+                what: "a range of a one-dimensional result that is kept in registers",
+            });
+        }
         let base_memty = self
             .mem_of
             .get(ins.operand1.0 as usize)
             .ok_or(crate::emitter_gap!())?
             .clone()
             .ok_or(crate::emitter_gap!())?;
-        if base_memty.contains("strided") {
-            return Err(Decline::TypeNotModelled {
-                what: "a range of a tensor that is already a view",
-            });
+        let (dims_x, et) = memref_lead_dims_and_elem(&base_memty).ok_or(crate::emitter_gap!())?;
+        let et = et.to_string();
+        let dims: Vec<String> = dims_x
+            .split('x')
+            .filter(|d| !d.is_empty())
+            .map(str::to_string)
+            .collect();
+        let rank = dims.len();
+        let rows = self
+            .ctx
+            .tensors
+            .get(&result_gid)
+            .and_then(|(_, shape)| shape.first().cloned())
+            .ok_or(crate::emitter_gap!())?;
+        // The strides of the tensor as its type gives them: from its layout, or row-major when
+        // it has none.
+        let layout = base_memty.contains("strided<");
+        let strides: Vec<String> = if layout {
+            base_memty
+                .split("strided<[")
+                .nth(1)
+                .and_then(|s| s.split(']').next())
+                .ok_or(crate::emitter_gap!())?
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect()
+        } else {
+            let mut s = vec!["1".to_string(); rank];
+            for k in (0..rank.saturating_sub(1)).rev() {
+                s[k] = match (s[k + 1].parse::<i64>(), dims[k + 1].parse::<i64>()) {
+                    (Ok(a), Ok(b)) => (a * b).to_string(),
+                    _ => DYN_DIM.to_string(),
+                };
+            }
+            s
+        };
+        if rank == 0 || strides.len() != rank {
+            return Err(crate::emitter_gap!());
         }
+        let shared = self.shared_addrspace();
+        let space_sfx = if base_memty.ends_with(&format!(", {shared}>")) {
+            format!(", {shared}")
+        } else {
+            String::new()
+        };
+        // The offset of a view, and each size or stride that is `?` in the type, come from the
+        // descriptor of the tensor: result 1 is the offset, then the sizes, then the strides.
+        let meta = format!("%rgm{idx}");
+        if layout || dims.iter().chain(&strides).any(|d| d == DYN_DIM) {
+            self.body += &format!(
+                "  {meta}:{} = memref.extract_strided_metadata {base} : {base_memty} -> memref<{et}{space_sfx}>, {}\n",
+                2 + 2 * rank,
+                vec!["index"; 1 + 2 * rank].join(", ")
+            );
+        }
+        let value = |txt: &str, result: usize| {
+            if txt == DYN_DIM {
+                format!("{meta}#{result}")
+            } else {
+                txt.to_string()
+            }
+        };
         let imt = mlir_scalar(&self.elem_at(ins.operand2.0).ok_or(crate::emitter_gap!())?)
             .ok_or(crate::emitter_gap!())?;
         let start = self
@@ -1247,48 +1312,39 @@ impl FnEmit<'_> {
             .clone();
         let ic = format!("%ic{idx}");
         self.body += &format!("  {ic} = arith.index_cast {start} : {imt} to index\n");
-
-        let (elem, shape) = self
-            .ctx
-            .tensors
-            .get(&result_gid)
-            .ok_or(crate::emitter_gap!())?;
-        let et = mlir_scalar(elem).ok_or(crate::emitter_gap!())?.to_string();
-        let dims: Vec<i64> = shape
-            .iter()
-            .map(|d| d.parse::<i64>().ok())
-            .collect::<Option<_>>()
-            .ok_or(Decline::TypeNotModelled {
-                what: "a range of a tensor whose extents are not all literals",
-            })?;
-        // One step in the first dimension skips all the other dimensions' elements.
-        let step: i64 = dims[1..].iter().product();
-        let mut strides = vec![1i64; dims.len()];
-        for i in (0..dims.len() - 1).rev() {
-            strides[i] = strides[i + 1] * dims[i + 1];
+        let row_stride = if strides[0] == DYN_DIM {
+            value(&strides[0], 2 + rank)
+        } else {
+            let c = format!("%rgc{idx}");
+            self.body += &format!("  {c} = arith.constant {} : index\n", strides[0]);
+            c
+        };
+        let mut off = format!("%rgo{idx}");
+        self.body += &format!("  {off} = arith.muli {ic}, {row_stride} : index\n");
+        if layout {
+            let o = format!("%rga{idx}");
+            self.body += &format!("  {o} = arith.addi {meta}#1, {off} : index\n");
+            off = o;
         }
-        let off = if step == 1 {
-            ic
-        } else {
-            let cst = format!("%cs{idx}");
-            let o = format!("%off{idx}");
-            self.body += &format!("  {cst} = arith.constant {step} : index\n");
-            self.body += &format!("  {o} = arith.muli {ic}, {cst} : index\n");
-            o
-        };
-        let sizes_s = join_i64(&dims);
-        let strides_s = join_i64(&strides);
-        let dimx: String = dims.iter().map(|d| format!("{d}x")).collect();
-        // A window of shared storage stays in its memory space, as a row does.
-        let space_sfx = if base_memty.ends_with(", 3>") {
-            ", 3"
-        } else {
-            ""
-        };
-        let result_ty = format!("memref<{dimx}{et}, strided<[{strides_s}], offset: ?>{space_sfx}>");
+        let sizes: Vec<String> = std::iter::once(rows.clone())
+            .chain((1..rank).map(|k| value(&dims[k], 2 + k)))
+            .collect();
+        let stride_values: Vec<String> = (0..rank)
+            .map(|k| value(&strides[k], 2 + rank + k))
+            .collect();
+        let dimx: String = std::iter::once(&rows)
+            .chain(&dims[1..])
+            .map(|d| format!("{d}x"))
+            .collect();
+        let result_ty = format!(
+            "memref<{dimx}{et}, strided<[{}], offset: ?>{space_sfx}>",
+            strides.join(", ")
+        );
         let n = format!("%v{idx}");
         self.body += &format!(
-            "  {n} = memref.reinterpret_cast {base} to offset: [{off}], sizes: [{sizes_s}], strides: [{strides_s}] : {base_memty} to {result_ty}\n"
+            "  {n} = memref.reinterpret_cast {base} to offset: [{off}], sizes: [{}], strides: [{}] : {base_memty} to {result_ty}\n",
+            sizes.join(", "),
+            stride_values.join(", ")
         );
         self.names[idx] = n;
         self.mem_of[idx] = Some(result_ty);
