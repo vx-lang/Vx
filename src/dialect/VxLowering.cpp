@@ -3999,21 +3999,30 @@ static void eraseUnusedViews(Value v) {
 
 /// Keeps the accumulator of a tensor-core lane matmul in registers in the
 /// whole kernel, and removes its tile in shared memory, when each other use of
-/// the tile is a `vx.lane_fill` of it or a `vx.lane_copy` out of it. The
-/// matmul, the fills and the copies take the row of their subgroup
-/// (`subgroup_row`) with one type, so each lane holds the same elements of
-/// the row in all of them. A fill gives the value that the elements start at,
-/// and the next matmul or copy sets the registers to it. A copy stores the
-/// registers straight to its tensor. Returns false, and changes nothing, when
-/// the tile has another use.
-static bool expandLaneMatmulWithoutTile(gpu::GPUFuncOp func,
-                                        vx::LaneMatmulOp op, Type elem) {
+/// the tile is a `vx.lane_fill` of it, a `vx.lane_copy` out of it, or another
+/// such matmul. The matmuls, the fills and the copies take the row of their
+/// subgroup (`subgroup_row`) with one type, so each lane holds the same
+/// elements of the row in all of them. A fill gives the value that the
+/// elements start at, and the next matmul or copy sets the registers to it. A
+/// copy stores the registers straight to its tensor. Erases the other matmuls
+/// and puts them in `expanded`. Returns false, and changes nothing, when the
+/// tile has another use.
+static bool
+expandLaneMatmulWithoutTile(gpu::GPUFuncOp func, vx::LaneMatmulOp op, Type elem,
+                            SmallPtrSetImpl<Operation *> &expanded) {
   Region &body = func.getBody();
   Type accType = op.getAcc().getType();
   auto acc = cast<MemRefType>(accType);
   memref::AllocaOp tile = laneCopyTileAlloca(op.getAcc());
-  if (!op.getAccumulate() || !op.getSubgroupRow() || !tile ||
-      acc.getRank() != 2 ||
+  // A matmul that adds to a row of the tile, and reads no other part of it.
+  auto addsToRow = [&](vx::LaneMatmulOp m) {
+    return m.getAccumulate() && m.getSubgroupRow() && !m.getSerial() &&
+           m.getAcc().getType() == accType &&
+           laneCopyTileAlloca(m.getAcc()) == tile &&
+           laneCopyTileAlloca(m.getLhs()) != tile &&
+           laneCopyTileAlloca(m.getRhs()) != tile && mmaElementOf(m) == elem;
+  };
+  if (!tile || !addsToRow(op) || acc.getRank() != 2 ||
       acc.getNumElements() / 32 > laneMatmulFragmentRegisters ||
       op->getParentRegion() != &body)
     return false;
@@ -4021,11 +4030,16 @@ static bool expandLaneMatmulWithoutTile(gpu::GPUFuncOp func,
   accessesOf(tile.getResult(), uses);
   SmallVector<vx::LaneFillOp> fills;
   SmallVector<vx::LaneCopyOp> copies;
+  SmallVector<vx::LaneMatmulOp> matmuls = {op};
   for (Operation *use : uses) {
-    if (use == op)
-      continue;
     if (use->getParentRegion() != &body)
       return false;
+    auto other = dyn_cast<vx::LaneMatmulOp>(use);
+    if (other && addsToRow(other)) {
+      if (!llvm::is_contained(matmuls, other))
+        matmuls.push_back(other);
+      continue;
+    }
     auto fill = dyn_cast<vx::LaneFillOp>(use);
     if (fill && fill.getSubgroupRow() && !fill.getSerial() &&
         fill.getTile().getType() == accType) {
@@ -4084,9 +4098,15 @@ static bool expandLaneMatmulWithoutTile(gpu::GPUFuncOp func,
         valid);
     fill.erase();
   }
-  OpBuilder mb(op);
-  ready(mb, loc);
-  expandLaneMatmulWithMma(mb, op, elem, fragments);
+  for (vx::LaneMatmulOp m : matmuls) {
+    OpBuilder mb(m);
+    ready(mb, m.getLoc());
+    expandLaneMatmulWithMma(mb, m, elem, fragments);
+    if (m != op) {
+      expanded.insert(m);
+      m.erase();
+    }
+  }
   for (vx::LaneCopyOp copy : copies) {
     Location l = copy.getLoc();
     OpBuilder cb(copy);
@@ -6473,11 +6493,15 @@ struct ConvertVxToStandardPass
         bool tensorCores = pipeline == DevicePipeline::Nvptx &&
                            chipHasMmaSync(deviceChip(gpuModule));
         bool simdgroupMatrices = pipeline == DevicePipeline::Metal;
+        SmallPtrSet<Operation *, 4> expanded;
         for (vx::LaneMatmulOp op : matmuls) {
+          if (expanded.contains(op))
+            continue;
           Type elem =
               tensorCores && !op.getSerial() ? mmaElementOf(op) : Type();
           memref::AllocaOp tile = laneCopyTileAlloca(op.getAcc());
-          if (elem && expandLaneMatmulWithoutTile(gpuFunc, op, elem)) {
+          if (elem &&
+              expandLaneMatmulWithoutTile(gpuFunc, op, elem, expanded)) {
             op.erase();
             eraseUnusedTile(tile);
             continue;
