@@ -3427,10 +3427,12 @@ static void expandLaneCopyOnDevice(OpBuilder &b, const LaneCopy &op,
     cpAsync(b);
   }
   b.create<NVVM::CpAsyncCommitGroupOp>(loc);
+  // The count never wraps, which lets LLVM pick the larger of two tokens.
   b.create<memref::StoreOp>(
       loc,
       b.create<arith::AddIOp>(loc, n,
-                              b.create<arith::ConstantIntOp>(loc, i32, 1)),
+                              b.create<arith::ConstantIntOp>(loc, i32, 1),
+                              arith::IntegerOverflowFlags::nuw),
       count);
   Value(op.token).replaceAllUsesWith(token);
 }
@@ -3438,17 +3440,17 @@ static void expandLaneCopyOnDevice(OpBuilder &b, const LaneCopy &op,
 /// Waits for the `cp.async` groups of the copy of `token`. The groups that the
 /// lane started after it may still run: `cp.async.wait_group` takes that number
 /// as a constant, so each case of a small number has its own wait, and a
-/// larger number waits for all but the last 3, which is earlier than it must.
+/// larger number waits for all but the last 7, which is earlier than it must.
 static void laneCopyWaitGroups(OpBuilder &b, Location loc, Value started,
                                Value token) {
   Value after = b.create<arith::SubIOp>(
       loc, b.create<arith::SubIOp>(loc, started, token),
       b.create<arith::ConstantIntOp>(loc, b.getI32Type(), 1));
-  constexpr int64_t most = 3;
+  constexpr int64_t most = 7;
   auto cases = b.create<scf::IndexSwitchOp>(
       loc, TypeRange{},
       b.create<arith::IndexCastOp>(loc, b.getIndexType(), after),
-      ArrayRef<int64_t>{0, 1, 2}, /*caseRegionsCount=*/3);
+      llvm::to_vector(llvm::seq<int64_t>(0, most)), /*caseRegionsCount=*/most);
   auto fill = [&](Region &region, int64_t n) {
     OpBuilder::InsertionGuard guard(b);
     b.setInsertionPointToStart(&region.emplaceBlock());
@@ -3494,6 +3496,25 @@ static void expandLaneCopyWaitOnDevice(OpBuilder &b, vx::LaneCopyWaitOp op,
   } else {
     b.create<gpu::BarrierOp>(loc);
   }
+}
+
+/// The wait right after `wait`, when only ops that touch no memory come between
+/// them and both are `cp.async` waits of the same lanes. Copies finish in the
+/// order that they started, so a wait there for the later of the two tokens
+/// does the work of both.
+static vx::LaneCopyWaitOp nextLaneCopyWait(vx::LaneCopyWaitOp wait,
+                                           const LaneCopyState &s) {
+  if (s.ring || wait.getSerial())
+    return {};
+  for (Operation *op = wait->getNextNode(); op; op = op->getNextNode()) {
+    if (auto next = dyn_cast<vx::LaneCopyWaitOp>(op))
+      return !next.getSerial() && next.getSubgroup() == wait.getSubgroup()
+                 ? next
+                 : vx::LaneCopyWaitOp();
+    if (!isMemoryEffectFree(op))
+      return {};
+  }
+  return {};
 }
 
 /// Replaces a lane sort with its expansion: the host's loops with `serial`,
@@ -6173,8 +6194,13 @@ struct ConvertVxToStandardPass
         for (Operation *op : copyOps) {
           OpBuilder b(op);
           if (auto wait = dyn_cast<vx::LaneCopyWaitOp>(op)) {
-            if (!wait.getSerial())
+            if (vx::LaneCopyWaitOp next = nextLaneCopyWait(wait, copies)) {
+              OpBuilder nb(next);
+              next.getTokenMutable().assign(nb.create<arith::MaxUIOp>(
+                  next.getLoc(), wait.getToken(), next.getToken()));
+            } else if (!wait.getSerial()) {
               expandLaneCopyWaitOnDevice(b, wait, copies);
+            }
           } else if (op->hasAttr("serial")) {
             expandLaneCopyOnHost(b, laneCopyOf(op));
           } else {
