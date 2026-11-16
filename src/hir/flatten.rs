@@ -132,6 +132,14 @@ fn construction_tail(e: &Expr) -> bool {
 }
 
 /// Whether two extents agree: equal, or either a `?`, which agrees with anything.
+/// One argument of a `print!`, lowered and not printed yet.
+enum PrintPiece {
+    Text(String),
+    Value(Val),
+    /// A NUL-terminated copy of a `String`, which the runtime made and printing frees.
+    StringCopy(Val),
+}
+
 fn extents_agree(x: &str, y: &str) -> bool {
     x == y || x == DYN_DIM || y == DYN_DIM
 }
@@ -1021,8 +1029,14 @@ impl<'r> Lowerer<'r> {
         if to_stderr {
             self.emit_print_stream(true);
         }
+        // Every argument is evaluated, left to right, before anything is printed, so a call in
+        // an argument that prints cannot split the line.
+        let mut pieces = Vec::with_capacity(args.len());
         for arg in args {
-            self.lower_print_arg(arg)?;
+            pieces.push(self.lower_print_arg(arg)?);
+        }
+        for piece in pieces {
+            self.emit_print_piece(piece)?;
         }
         if newline {
             self.emit_print_str("\n");
@@ -1033,12 +1047,33 @@ impl<'r> Lowerer<'r> {
         Ok(())
     }
 
-    /// Lower one `print!`/`println!` argument: a string literal emits a `PrintStr`; any other argument
-    /// is lowered as a value and `print`ed (routing to the scalar/tensor `print_*` helper by type).
-    fn lower_print_arg(&mut self, arg: &Expr) -> Lowered<()> {
+    /// Print what `lower_print_arg` made of one argument.
+    fn emit_print_piece(&mut self, piece: PrintPiece) -> Lowered<()> {
+        match piece {
+            PrintPiece::Text(text) => self.emit_print_str(&text),
+            PrintPiece::Value(v) => self.emit_print(v)?,
+            // A NUL-terminated copy of a `String`, freed once it is printed.
+            PrintPiece::StringCopy(c) => {
+                self.emit_print(c.clone())?;
+                self.emit_runtime_call(
+                    "vx_string_free_c_str",
+                    &[c.reg],
+                    LoweredTy::Scalar(ElementType::I32),
+                )
+                .ok_or(Decline::TypeNotModelled {
+                    what: "a String print without std::string's runtime entry points in scope",
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Lower one `print!`/`println!` argument to what is printed: a string literal is text, and
+    /// any other argument is lowered as a value, which `emit_print` routes to the scalar or tensor
+    /// `print_*` helper by its type.
+    fn lower_print_arg(&mut self, arg: &Expr) -> Lowered<PrintPiece> {
         if let Expr::StringLiteral(sl) = arg {
-            self.emit_print_str(sl.value.as_ref());
-            return Ok(());
+            return Ok(PrintPiece::Text(sl.value.to_string()));
         }
         // A `String` value prints its bytes: the runtime hands out a C copy of the handle in
         // the `ptr` field, `print_str` prints it, and the copy is freed. The runtime's entry
@@ -1063,19 +1098,12 @@ impl<'r> Lowerer<'r> {
             };
             let c = self
                 .emit_runtime_call("vx_string_as_c_str", &[handle.reg], LoweredTy::Ptr)
-                .ok_or(missing.clone())?;
-            self.emit_print(c.clone())?;
-            self.emit_runtime_call(
-                "vx_string_free_c_str",
-                &[c.reg],
-                LoweredTy::Scalar(ElementType::I32),
-            )
-            .ok_or(missing)?;
-            return Ok(());
+                .ok_or(missing)?;
+            return Ok(PrintPiece::StringCopy(c));
         }
-        let v = self.lower_expr(Self::print_operand(arg))?;
-        self.emit_print(v)?;
-        Ok(())
+        Ok(PrintPiece::Value(
+            self.lower_expr(Self::print_operand(arg))?,
+        ))
     }
 
     /// A call to a runtime entry point the registry knows by name (an `extern` a stdlib module
