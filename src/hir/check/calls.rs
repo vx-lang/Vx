@@ -2685,7 +2685,11 @@ impl<'a> TypeChecker<'a> {
         let unsigned = match ty {
             Type::Scalar(e) => matches!(
                 e,
-                ElementType::U8 | ElementType::U16 | ElementType::U32 | ElementType::U64
+                ElementType::U8
+                    | ElementType::U16
+                    | ElementType::U32
+                    | ElementType::U64
+                    | ElementType::U128
             ),
             Type::Tensor(e, _, _) => matches!(
                 e,
