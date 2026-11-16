@@ -1,0 +1,60 @@
+//===- a_large_transfer_async_copies_through_pinned_memory.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `transfer_async` of 1 MiB or more to an NVIDIA GPU copies through pinned memory of the runtime,
+// in chunks of 8 MiB. Each matrix here is 52,428,800 bytes: six full chunks and a part of one.
+// The program starts three copies before it waits for the first one.
+// The matrices have a dynamic shape, because a function that returns a fixed shape this large
+// overflows the stack.
+//
+// REQUIRES: nvidia-gpu
+// RUN: VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: VX_DISPATCH_VERBOSE=1 vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// The runtime writes its lines to stderr, so they need not come in order with the program's lines.
+// CHECK-DAG: copy of 52428800 bytes through pinned memory
+// CHECK-DAG: copy of 52428800 bytes through pinned memory
+// CHECK-DAG: copy of 52428800 bytes through pinned memory
+// CHECK-DAG: copy 0: 0 wrong, first 0, last 13107199
+// CHECK-DAG: copy 1: 0 wrong, first 1, last 13107200
+// CHECK-DAG: copy 2: 0 wrong, first 2, last 13107201
+
+// Element [i][j] is i * 4096 + j + k. Every value is below 2^24, so an f32 holds it exactly.
+fn matrix(k : f32) -> Tensor<f32, [?, ?]> {
+  let mut m = unsafe { Tensor<f32, [?, ?]>::uninit([3200, 4096]) };
+  for i in 0..3200 {
+    for j in 0..4096 {
+      m[i][j] = (i * 4096 + j) as f32 + k;
+    }
+  }
+  return m;
+}
+
+// Prints how many elements of `m` differ from `matrix(k)`.
+fn report(k : i32, m : &Tensor<f32, [?, ?]>) -> void {
+  let mut wrong = 0;
+  for i in 0..3200 {
+    for j in 0..4096 {
+      if m[i][j] != (i * 4096 + j) as f32 + k as f32 {
+        wrong = wrong + 1;
+      }
+    }
+  }
+  println!("copy {}: {} wrong, first {}, last {}", k, wrong, m[0][0], m[3199][4095]);
+}
+
+fn main() -> i32 {
+  let t0 = transfer_async(matrix(0.0), Memory::HBM);
+  let t1 = transfer_async(matrix(1.0), Memory::HBM);
+  let t2 = transfer_async(matrix(2.0), Memory::HBM);
+  let m0 = transfer(t0.wait(), Memory::CPU_DRAM);
+  report(0, &m0);
+  let m1 = transfer(t1.wait(), Memory::CPU_DRAM);
+  report(1, &m1);
+  let m2 = transfer(t2.wait(), Memory::CPU_DRAM);
+  report(2, &m2);
+  return 0;
+}
