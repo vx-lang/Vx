@@ -1,0 +1,62 @@
+// A kernel for the Apple GPU calls `min`, `max` and `clamp` of `i32`, `i64` and `u32`. The GPU
+// must give the values of the CPU.
+//
+// REQUIRES: macos
+// RUN: env VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/m4-uma.vx 2>%t.gpu | FileCheck %s
+// RUN: FileCheck %s --check-prefix=GPU --input-file=%t.gpu
+// RUN: env VX_DISPATCH_VERBOSE=1 vxc %s --legacy-codegen --host default --machine fleet/m4-uma.vx 2>%t.ast.gpu | FileCheck %s
+// RUN: FileCheck %s --check-prefix=GPU --input-file=%t.ast.gpu
+// RUN: env VX_METAL=0 vxc %s --host default --machine fleet/m4-uma.vx | FileCheck %s
+//
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 8 x 1 x 1, block 1
+// CHECK: {{^}}i32 min: 7 15 23 29 29 29 29 29{{$}}
+// CHECK-NEXT: {{^}}i32 max: 29 29 29 31 39 47 55 63{{$}}
+// CHECK-NEXT: {{^}}i32 clamp: 10 15 23 29 29 29 29 29{{$}}
+// CHECK-NEXT: {{^}}i64 min: 7 15 23 29 29 29 29 29{{$}}
+// CHECK-NEXT: {{^}}i64 max: 29 29 29 31 39 47 55 63{{$}}
+// CHECK-NEXT: {{^}}u32 clamp: 10 15 23 29 29 29 29 29{{$}}
+
+import core::num;
+import core::cmp;
+import core::convert;
+
+pub fn pick(out : &mut Tensor<i32, [?, ?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..8 across blocks {
+      let x = b * 8 + 7;
+      out[0][b] = i32::min(x, n);
+      out[1][b] = x.max(n);
+      out[2][b] = x.clamp(10, n);
+      out[3][b] = i64::min(i64::from(x), i64::from(n)) as i32;
+      out[4][b] = i64::from(x).max(i64::from(n)) as i32;
+      out[5][b] = (x as u32).clamp(10, n as u32) as i32;
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut out = transfer(Tensor<i32>([6, 8]), Memory::HBM);
+  pick(&mut out, 29);
+  let h = transfer(&out, Memory::CPU_DRAM);
+  for row in 0..6 {
+    if row == 0 {
+      print!("i32 min:");
+    } else if row == 1 {
+      print!("i32 max:");
+    } else if row == 2 {
+      print!("i32 clamp:");
+    } else if row == 3 {
+      print!("i64 min:");
+    } else if row == 4 {
+      print!("i64 max:");
+    } else {
+      print!("u32 clamp:");
+    }
+    for b in 0..8 {
+      print!(" {}", h[row][b]);
+    }
+    println!("");
+  }
+  return 0;
+}
