@@ -828,6 +828,18 @@ impl<'c> LowerToMelior<'c> for DereferenceExpr {
     }
 }
 
+/// The extents of a memref type spelled `memref<4x?xf32, ..>`, with `None` for each `?`.
+fn memref_dims(ty: &str) -> Vec<Option<i64>> {
+    let Some(body) = ty.strip_prefix("memref<") else {
+        return Vec::new();
+    };
+    let shape = body.split([',', '>']).next().unwrap_or("");
+    let mut parts: Vec<&str> = shape.split('x').collect();
+    // The last part is the element type.
+    parts.pop();
+    parts.iter().map(|d| d.trim().parse::<i64>().ok()).collect()
+}
+
 impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
     fn lower(
@@ -987,6 +999,13 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
                     .map(|d| d.literal().and_then(|v| v.parse::<i64>().ok()))
                     .collect(),
                 _ => Vec::new(),
+            };
+            // A local made from `v + w` has no type in the checker's table. Its memref type has
+            // the rank, and the extents known while compiling.
+            let base_dims = if base_dims.is_empty() {
+                memref_dims(&base_ty_str)
+            } else {
+                base_dims
             };
             let rank = base_dims.len();
             if rank >= 2 && indices.len() < rank {

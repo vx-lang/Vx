@@ -797,6 +797,9 @@ impl<'a> TypeChecker<'a> {
         if matches!(&*expr, Expr::Transfer(_)) {
             self.traffic.tile_holder = Some(name.to_string());
         }
+        // The parser's `let` for the sum in `let r = (v + w)[1]` holds what was the base of an
+        // index. Reading an index does not move its base, so `v` and `w` stay usable.
+        let consume = consume && !name.starts_with(crate::syntax::expr::INDEXED_TEMPORARY);
         let ty = self.check_whole_value(expr, |c, e| c.check_expr_type_flag(e, consume));
         self.traffic.tile_holder = prev_holder;
         self.let_closure = None;

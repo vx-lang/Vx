@@ -1409,6 +1409,9 @@ pub fn locals_with_address_taken(stmts: &[Statement]) -> std::collections::HashS
     names
 }
 
+/// The start of the name of the `let` that the parser adds for the sum in `let r = (v + w)[1]`.
+pub const INDEXED_TEMPORARY: &str = "$indexed";
+
 /// Whether `stmts` compare with a string literal: `==` or `!=` with one or with a name in
 /// `literal_names`, or a `match` arm with a string literal pattern. Such code calls
 /// `core::c_str`.
