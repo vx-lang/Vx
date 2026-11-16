@@ -354,6 +354,10 @@ pub enum Opcode {
     /// `t as f32`: a fresh tensor of the result type, each element of `operand1` cast to the
     /// result's element type.
     TensorCast = 85,
+    /// Rows `a` to `b - 1` of a tensor (`q[a..b]`): `operand1` is the tensor and `operand2` is
+    /// `a`. The result type holds the number of rows, `b - a`. The result is a view that shares
+    /// the memory of the tensor.
+    TensorRange = 86,
 }
 
 /// A zero-based variant and payload field, stored entirely in an instruction's immediate.
@@ -406,11 +410,12 @@ pub struct LaneCallImm {
 }
 
 impl LaneCallImm {
-    // Bits 0 to 7 hold the routine, 8 to 15 the operands, 16 to 18 the flags of the site, 20 to
+    // Bits 0 to 7 hold the routine, 8 to 15 the operands, 16 to 19 the flags of the site, 20 to
     // 31 the row of `own_row`, and 32 to 63 the lanes.
     const SUBGROUP: u64 = 1 << 16;
     const SUBGROUP_ROW: u64 = 1 << 17;
     const OWN_ROW: u64 = 1 << 18;
+    const LANE_OWN: u64 = 1 << 19;
 
     pub fn encode(self) -> u64 {
         assert!(
@@ -443,6 +448,9 @@ impl LaneCallImm {
             );
             imm |= Self::OWN_ROW | row << 20;
         }
+        if self.site.lane_own {
+            imm |= Self::LANE_OWN;
+        }
         imm
     }
 
@@ -455,6 +463,7 @@ impl LaneCallImm {
                 subgroup: imm & Self::SUBGROUP != 0,
                 subgroup_row: imm & Self::SUBGROUP_ROW != 0,
                 own_row: (imm & Self::OWN_ROW != 0).then_some((imm >> 20) & 0xfff),
+                lane_own: imm & Self::LANE_OWN != 0,
                 lanes: imm >> 32,
             },
         }
@@ -471,6 +480,15 @@ pub const TENSOR_STORE_SUBGROUP_LANE_ELEMENT: u64 = 2;
 /// The bits of a lane-element store's `imm` from here up give the row of the subgroup: 0 for
 /// `t[w]`, and `c + 1` for `t[w][c]`.
 pub const LANE_ROW_SHIFT: u64 = 32;
+/// `Opcode::TensorStore`, and `Opcode::TensorIndex` that reads an element: the element belongs to
+/// this lane alone, as `t[w][..][l]` in a lane loop of subgroup `w`, where `w` is the number of the
+/// subgroup (docs/lane_reductions.md).
+pub const LANE_OWN_SUBGROUP: u64 = 1 << 8;
+/// As `LANE_OWN_SUBGROUP`, but `t[..][l]`, where one block or one subgroup has all of `t`.
+pub const LANE_OWN_WHOLE: u64 = 1 << 9;
+/// With `LANE_OWN_SUBGROUP` or `LANE_OWN_WHOLE`, the bits from here up to `LANE_ROW_SHIFT` give
+/// the lanes of the lane loop.
+pub const LANE_OWN_LANES_SHIFT: u64 = 16;
 
 /// `Opcode::LoopHint`: the loop was `across` a level of blocks.
 pub const LOOP_HINT_BLOCKS: u64 = 0;
@@ -505,6 +523,9 @@ pub const BARRIER_GPU: u64 = 2;
 /// body follows the transfer, and the transfer only places the tile. The other bits are the
 /// string index of the arrival count, plus 1.
 pub const TRANSFER_USER_LOWERED: u32 = 1 << 31;
+/// A bit of `Opcode::Transfer`'s `operand2`: the transfer is a `transfer_async`, so a device can
+/// copy in the background until a use of the tensor.
+pub const TRANSFER_ASYNC: u32 = 1 << 30;
 
 /// `Opcode::TensorPad`'s `imm`: pad each axis (`t.pad(shape)`), not the flat row order.
 pub const TENSOR_PAD_EACH_AXIS: u64 = 1;
@@ -562,6 +583,7 @@ impl Opcode {
             80 => LifetimeEnd,
             84 => CheckAggregate,
             85 => TensorCast,
+            86 => TensorRange,
             8 => Call,
             9 => Ret,
             10 => Matmul,
@@ -731,6 +753,7 @@ mod lane_call_tests {
     #[case::subgroup_row(LaneSite { subgroup: true, subgroup_row: true, lanes: 32, ..LaneSite::default() })]
     #[case::first_row(LaneSite { subgroup: true, own_row: Some(0), ..LaneSite::default() })]
     #[case::later_row(LaneSite { subgroup: true, own_row: Some(4095), ..LaneSite::default() })]
+    #[case::row_in_registers(LaneSite { subgroup: true, own_row: Some(0), lane_own: true, ..LaneSite::default() })]
     fn a_lane_call_decodes_to_the_call_that_was_encoded(#[case] site: LaneSite) {
         let call = LaneCallImm {
             routine: 255,

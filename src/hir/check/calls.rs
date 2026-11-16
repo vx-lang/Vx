@@ -996,6 +996,7 @@ impl<'a> TypeChecker<'a> {
                 let lane_bases: Vec<(String, Option<Vec<BorrowRecord>>)> =
                     if resolved_name.as_ref().starts_with("lanes::")
                         && resolved_name.as_ref() != "lanes::copy_async"
+                        && resolved_name.as_ref() != crate::hir::check::lanes::COPY_ROWS_ASYNC
                         && !self.speculating
                     {
                         args.iter()

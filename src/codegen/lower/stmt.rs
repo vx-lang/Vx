@@ -1211,7 +1211,8 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                         .add_operands(&[store_val, base_val]);
                     if let Expr::IndexAccess(ix) = lhs {
                         store_builder = store_builder
-                            .add_attributes(&super::across::lane_element_attrs(gen, ix));
+                            .add_attributes(&super::across::lane_element_attrs(gen, ix))
+                            .add_attributes(&super::across::lane_own_attrs(gen, ix));
                     }
 
                     for idx in indices {

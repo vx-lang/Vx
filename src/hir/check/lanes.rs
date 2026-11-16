@@ -11,8 +11,11 @@
 // first `n` elements of rank-1 tensors, and every lane of the block or the subgroup gets the
 // result. docs/lane_reductions.md has the order. `lanes::sort(&mut t, n)` and
 // `lanes::sort_descending(&mut t, n)` sort the first `n` elements of a rank-1 tensor of `i64`.
+// `lanes::copy_rows_async(&mut tile, &x, &ids, [first, col])` copies the rows of `x` that `ids`
+// chooses into a tile in shared memory, in the background.
 // `lanes::copy(&mut dst, &src, [i, j])` copies a tile in shared memory to or from a tensor.
 // `lanes::fill(&mut tile, v)` sets each element of a tile in shared memory to `v`.
+// `lanes::scale_rows(&mut tile, &scale)` multiplies row `i` of a tile by `scale[i]`.
 //
 // `LANE_ROUTINES` describes each routine once. Both code generators make the op of a call from
 // its row, so a new routine needs a row, its op in VxDialect.td and the op's lowering.
@@ -46,6 +49,8 @@ pub enum LaneOp {
     Fill,
     /// `acc = acc + x @ y` or `acc = x @ y` on tiles, in the code of a subgroup.
     Matmul,
+    /// Multiplies each row of a tile in shared memory by an element of another tile.
+    ScaleRows,
 }
 
 impl LaneOp {
@@ -121,6 +126,9 @@ pub struct LaneSite {
     /// Each tensor of the call is the same row of a tile that the code of the subgroup alone
     /// writes: 0 for `t` or `t[w]`, and `c + 1` for `t[w][c]`.
     pub own_row: Option<u64>,
+    /// With `own_row`: the subgroup has the row for the whole kernel, so the op may read it from
+    /// the registers of the lanes (docs/lane_reductions.md).
+    pub lane_own: bool,
     /// The lanes that share the work, for a routine whose op has `lanes`.
     pub lanes: u64,
 }
@@ -317,10 +325,18 @@ impl LaneRoutine {
         if let Some(row) = site.own_row {
             assert!(self.own_row, "`{}` cannot have `own_row`", self.name);
             attrs.push(("own_row", LaneAttr::Unit));
+            if site.lane_own {
+                attrs.push(("vx.lane_own", LaneAttr::Unit));
+            }
             if row > 0 {
                 attrs.push(("vx.lane_row", LaneAttr::I64(row)));
             }
         }
+        assert!(
+            !site.lane_own || site.own_row.is_some(),
+            "`vx.lane_own` on `{}` needs `own_row`",
+            self.name
+        );
         attrs
     }
 }
@@ -340,6 +356,8 @@ pub const LANE_ROUTINES: &[LaneRoutine] = {
     use LaneValue::{F32, I32 as INT};
     let reduce: &[LaneArg] = &[Vector, I32];
     let copy: &[LaneArg] = &[Tile, Tile, Place];
+    // The tile, the tensor, the ids of the rows and the place `[first, col]`.
+    let copy_rows: &[LaneArg] = &[Tile, Tile, Vector, Place];
     let matmul: &[LaneArg] = &[
         Matrix(MATMUL_ACC),
         Matrix(MATMUL_TILES),
@@ -400,6 +418,17 @@ pub const LANE_ROUTINES: &[LaneRoutine] = {
         )
         .with_lanes()
         .writing_first(),
+        // A copy of the rows that a list of ids chooses. It is a `copy_async` in every rule but its
+        // arguments.
+        LaneRoutine::call(
+            "copy_rows_async",
+            CopyAsync,
+            "vx.lane_copy_rows_async",
+            copy_rows,
+            Some(INT),
+        )
+        .with_lanes()
+        .writing_first(),
         LaneRoutine::call("copy_wait", CopyWait, "vx.lane_copy_wait", &[I32], None)
             .with_syntax(LaneSyntax::Written),
         LaneRoutine::call("copy", Copy, "vx.lane_copy", copy, None)
@@ -410,6 +439,16 @@ pub const LANE_ROUTINES: &[LaneRoutine] = {
             .with_lanes()
             .with_row_of(0)
             .writing_first(),
+        LaneRoutine::call(
+            "scale_rows",
+            ScaleRows,
+            "vx.lane_scale_rows",
+            &[Tensor, Tensor],
+            None,
+        )
+        .with_lanes()
+        .with_row_of(0)
+        .writing_first(),
         LaneRoutine::call("matmul", Matmul, "vx.lane_matmul", matmul, None)
             .with_syntax(LaneSyntax::Operator)
             .with_row_of(0)
@@ -421,6 +460,9 @@ pub const LANE_ROUTINES: &[LaneRoutine] = {
             .writing_first(),
     ]
 };
+
+/// The name of the copy of rows that a list of ids chooses.
+pub const COPY_ROWS_ASYNC: &str = "lanes::copy_rows_async";
 
 /// The most elements that a block reduces: 32 groups of 32.
 pub const MAX_BLOCK_ELEMENTS: u64 = 1024;
@@ -588,6 +630,9 @@ impl crate::hir::TypeChecker<'_> {
             Some(op) if op.is_sort() => {
                 return self.check_lane_sort(name, args, arg_types, call_span)
             }
+            Some(LaneOp::CopyAsync) if name == COPY_ROWS_ASYNC => {
+                return self.check_copy_rows_async(name, args, arg_types, call_span)
+            }
             Some(LaneOp::CopyAsync) => {
                 return self.check_copy_async(name, args, arg_types, call_span)
             }
@@ -596,6 +641,9 @@ impl crate::hir::TypeChecker<'_> {
             }
             Some(LaneOp::Copy) => return self.check_copy(name, args, arg_types, call_span),
             Some(LaneOp::Fill) => return self.check_fill(name, args, arg_types, call_span),
+            Some(LaneOp::ScaleRows) => {
+                return self.check_scale_rows(name, args, arg_types, call_span)
+            }
             _ => {}
         }
         let argmax = lane_routine(name).map(|r| r.op) == Some(LaneOp::ArgMax);
@@ -862,6 +910,120 @@ impl crate::hir::TypeChecker<'_> {
         token
     }
 
+    /// The type of a call `lanes::copy_rows_async(&mut tile, &x, &ids, [first, col])`: a token of
+    /// the copy of row `ids[first + r]` of `x`, from column `col`, into row `r` of `tile`, which is
+    /// in shared memory. A row whose id is not a row of `x`, or past the end of `ids`, is zeros.
+    fn check_copy_rows_async(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        arg_types: &[Type],
+        call_span: Span,
+    ) -> Type {
+        let token = crate::hir::check::transfer::token_of(Type::Struct("void".into(), None));
+        if self.speculating {
+            return token;
+        }
+        let span = Some(SourceSpan::from_ast_span(&call_span));
+        if args.len() != 4 {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "`{name}` takes 4 arguments, a `&mut` tile in shared memory, a borrowed \
+                     tensor, a borrowed tensor of `i32` ids and the place `[first, col]`, but it \
+                     got {}",
+                    args.len()
+                ),
+                span,
+            );
+            return token;
+        }
+        let shared = |p: &Option<crate::syntax::Placement>| self.in_shared_memory(p);
+        let elem = match &arg_types[0] {
+            Type::Borrow {
+                inner,
+                is_mut: true,
+                ..
+            } => match inner.as_ref() {
+                Type::Tensor(e, dims, p)
+                    if shared(p)
+                        && dims.len() == 2
+                        && dims.iter().all(|d| {
+                            crate::hir::memory::static_extent(d).is_some_and(|n| n >= 1)
+                        })
+                        && matches!(crate::hir::memory::element_bytes(e), Some(2 | 4 | 8)) =>
+                {
+                    Some(e.clone())
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some(elem) = elem else {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "the first argument of `{name}` must borrow a tile with 2 dimensions in \
+                     shared memory as `&mut`, with a size that is a number and elements of 2, 4 \
+                     or 8 bytes, such as `&mut tiles[0]` for `Tensor<bf16, [2, 16, 128], \
+                     Memory::SMEM>`, but it is `{}`",
+                    arg_types[0]
+                ),
+                span,
+            );
+            return token;
+        };
+        // `x` and `&x` for a parameter `x : &Tensor<..>` both name the tensor.
+        let borrowed = |t: &Type| {
+            let mut inner = t;
+            while let Type::Borrow { inner: i, .. } = inner {
+                inner = i;
+            }
+            (!matches!(t, Type::Tensor(..))).then_some(inner.clone())
+        };
+        if !matches!(borrowed(&arg_types[1]), Some(Type::Tensor(e, dims, _)) if e == elem && dims.len() == 2)
+        {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "the second argument of `{name}` must borrow a tensor of `{elem}` with 2 \
+                     dimensions, as the tile has, but it is `{}`",
+                    arg_types[1]
+                ),
+                span.clone(),
+            );
+        }
+        if !matches!(borrowed(&arg_types[2]), Some(Type::Tensor(ElementType::I32, dims, _)) if dims.len() == 1)
+        {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "the third argument of `{name}` must borrow a tensor of `i32` ids with 1 \
+                     dimension, such as `&ids[w]` for `Tensor<i32, [8, 32], Memory::SMEM>`, but \
+                     it is `{}`",
+                    arg_types[2]
+                ),
+                span.clone(),
+            );
+        }
+        let place_ok = matches!(&args[3], Expr::Array(a) if a.elements.len() == 2)
+            && matches!(
+                &arg_types[3],
+                Type::Tensor(ElementType::I32 | ElementType::I64, ..)
+            );
+        if !place_ok {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "the fourth argument of `{name}` is `[first, col]`: the index of the id of \
+                     the first row in the ids, and the column of `x` where the rows start"
+                ),
+                span,
+            );
+        }
+        token
+    }
+
     /// Whether a tensor with placement `p` is in a memory that the lanes of a block share.
     fn in_shared_memory(&self, p: &Option<crate::syntax::Placement>) -> bool {
         p.as_ref().is_some_and(|p| {
@@ -1047,6 +1209,76 @@ impl crate::hir::TypeChecker<'_> {
                 format!(
                     "the second argument of `{name}` is the value of each element, so its type is \
                      the element type of the tile, `{elem}`, but it is `{}`",
+                    arg_types[1]
+                ),
+                span,
+            );
+        }
+        void
+    }
+
+    /// The type of a call `lanes::scale_rows(&mut tile, &scale)`, which multiplies row `i` of
+    /// `tile`, an `f32` matrix in shared memory, by `scale[i]`. `scale` is an `f32` tile in shared
+    /// memory with one element for each row. Both sizes are numbers.
+    fn check_scale_rows(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        arg_types: &[Type],
+        call_span: Span,
+    ) -> Type {
+        let void = Type::Struct("void".into(), None);
+        if self.speculating {
+            return void;
+        }
+        let span = Some(SourceSpan::from_ast_span(&call_span));
+        if args.len() != 2 {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "`{name}` takes 2 arguments, a `&mut` tile in shared memory and a `&` tile of \
+                     the scale of each row, but it got {}",
+                    args.len()
+                ),
+                span,
+            );
+            return void;
+        }
+        // The sizes of an `f32` tile in shared memory, borrowed as `&mut` or as `&`.
+        let f32_tile = |t: &Type, is_mut: bool| -> Option<Vec<i128>> {
+            match t {
+                Type::Borrow {
+                    inner, is_mut: m, ..
+                } if *m == is_mut => match inner.as_ref() {
+                    Type::Tensor(ElementType::F32, dims, p) if self.in_shared_memory(p) => dims
+                        .iter()
+                        .map(|d| crate::hir::memory::static_extent(d).filter(|&n| n >= 1))
+                        .collect(),
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
+        let Some(&[rows, _]) = f32_tile(&arg_types[0], true).as_deref() else {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "the first argument of `{name}` must borrow an `f32` matrix in shared memory as \
+                     `&mut`, with sizes that are numbers, such as `&mut acc[w]` for `Tensor<f32, \
+                     [4, 16, 64], Memory::SMEM>`, but it is `{}`",
+                    arg_types[0]
+                ),
+                span,
+            );
+            return void;
+        };
+        if f32_tile(&arg_types[1], false).as_deref() != Some(&[rows]) {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "the second argument of `{name}` must borrow an `f32` tile in shared memory as \
+                     `&`, with one element for each of the {rows} rows of the first, such as \
+                     `&scale[w]` for `Tensor<f32, [4, {rows}], Memory::SMEM>`, but it is `{}`",
                     arg_types[1]
                 ),
                 span,

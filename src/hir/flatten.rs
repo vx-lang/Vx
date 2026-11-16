@@ -604,9 +604,6 @@ struct Lowerer<'r> {
     queued_drops: Vec<PendingDrop>,
     /// The `queued_drops` of the statement being lowered: they run once its value is computed.
     value_drops: Vec<PendingDrop>,
-    /// The drops waiting for the value of a returned `match` whose arms return. Each `Ret` in the
-    /// arms runs them.
-    return_drops: Vec<PendingDrop>,
     /// The fresh tensors the statement being lowered has made: each is
     /// dropped when the statement ends unless something took it.
     temps: Vec<Register>,
@@ -628,21 +625,17 @@ fn placed_id(d: &crate::syntax::DropStmt) -> Option<u32> {
 #[derive(Clone)]
 enum PendingDrop {
     /// A tensor to free: the owner itself, or (`field`) a tensor that a struct field or an enum
-    /// payload held. The struct or the enum owned it. `owner` is the name that the drop names.
+    /// payload held. The struct or the enum owned it.
     Tensor {
         reg: Register,
         flag: Option<Symbol>,
         field: bool,
         /// For a field: the dispatch id of the device memory its type names.
         placed: Option<u32>,
-        owner: Symbol,
     },
     /// The statements that run a drop: a `Drop` impl's `drop`, with cancellation off around
     /// it, or a `match` on an enum whose arms hold more drops.
-    Call {
-        stmts: Vec<Statement>,
-        owner: Symbol,
-    },
+    Call { stmts: Vec<Statement> },
     /// The end of the lifetime of a struct's or enum's stack slot.
     LifetimeEnd { slot: Register },
 }
@@ -696,7 +689,6 @@ impl<'r> Lowerer<'r> {
             across: AcrossState::default(),
             queued_drops: Vec::new(),
             value_drops: Vec::new(),
-            return_drops: Vec::new(),
             temps: Vec::new(),
             moved_args: HashSet::new(),
             tensor_depth: HashMap::new(),
@@ -863,9 +855,6 @@ impl<'r> Lowerer<'r> {
 
     /// The function returns `v`. In a `tasks` block, `v` waits in a slot until the block ends.
     fn emit_ret(&mut self, v: Option<Val>) -> Lowered<()> {
-        for d in self.return_drops.clone() {
-            self.emit_drop(d)?;
-        }
         if !self.leaving_tasks(false) {
             match v {
                 Some(v) => {
@@ -1184,10 +1173,7 @@ impl<'r> Lowerer<'r> {
                 }
             }
         } else if let Some(stmts) = d.call_statements() {
-            PendingDrop::Call {
-                stmts,
-                owner: d.name.clone(),
-            }
+            PendingDrop::Call { stmts }
         } else if let Some(place) = d.expr.as_deref() {
             let v = self.lower_expr(place)?;
             if !matches!(v.ty, LoweredTy::Tensor { .. }) {
@@ -1200,7 +1186,6 @@ impl<'r> Lowerer<'r> {
                 flag: d.flag.clone(),
                 field: true,
                 placed: placed_id(d),
-                owner: d.name.clone(),
             }
         } else {
             let (reg, from_payload) = match self.scope.get(&d.name).cloned() {
@@ -1223,7 +1208,6 @@ impl<'r> Lowerer<'r> {
                 flag: d.flag.clone(),
                 field: from_payload,
                 placed: placed_id(d),
-                owner: d.name.clone(),
             }
         };
         if d.after_value {
@@ -1748,6 +1732,11 @@ impl<'r> Lowerer<'r> {
                                 what: "an index of a rank-0 value",
                             }); // cannot index a rank-0 value
                         }
+
+                        if let Expr::Range(range) = &*ix.index {
+                            return self.lower_tensor_range(base.reg, elem, shape, range);
+                        }
+
                         let index = self.lower_expr(&ix.index)?;
                         if !matches!(index.ty, LoweredTy::Scalar(_)) {
                             return Err(Decline::TypeNotModelled {
@@ -1755,15 +1744,23 @@ impl<'r> Lowerer<'r> {
                             }); // index must be a scalar
                         }
                         let reduced: Vec<String> = shape[1..].to_vec();
-                        let result_ty = if reduced.is_empty() {
-                            LoweredTy::Scalar(elem)
+                        // docs/lane_reductions.md: a read of an element of this lane alone.
+                        let (result_ty, imm) = if reduced.is_empty() {
+                            (LoweredTy::Scalar(elem), self.lane_own(ix))
                         } else {
-                            LoweredTy::Tensor {
+                            let ty = LoweredTy::Tensor {
                                 elem,
                                 shape: reduced,
-                            }
+                            };
+                            (ty, 0)
                         };
-                        Ok(self.emit_typed(Opcode::TensorIndex, base.reg, index.reg, result_ty, 0))
+                        Ok(self.emit_typed(
+                            Opcode::TensorIndex,
+                            base.reg,
+                            index.reg,
+                            result_ty,
+                            imm,
+                        ))
                     }
                     LoweredTy::Ptr => {
                         let elem = self
@@ -1826,11 +1823,15 @@ impl<'r> Lowerer<'r> {
                     0
                 };
                 let imm = mem_id | ((source as u64) << 32) | shared;
-                let flag = Register(if body.is_some() {
+                let mut flag = if body.is_some() {
                     crate::bytecode::TRANSFER_USER_LOWERED
                 } else {
                     0
-                });
+                };
+                if t.is_async {
+                    flag |= crate::bytecode::TRANSFER_ASYNC;
+                }
+                let flag = Register(flag);
                 let placed = self.emit_typed(Opcode::Transfer, src.reg, flag, result_ty, imm);
                 if let Some(body) = body {
                     self.inline_transfer_body(&body, src.clone(), placed.clone())?;
@@ -6670,6 +6671,30 @@ impl<'r> Lowerer<'r> {
         ))
     }
 
+    /// `q[a..b]`: rows `a` to `b - 1` of the tensor `base`, a view that shares its memory. The
+    /// checker refused a range whose ends are not literal numbers or that has no rows.
+    fn lower_tensor_range(
+        &mut self,
+        base: Register,
+        elem: ElementType,
+        mut shape: Vec<String>,
+        range: &crate::syntax::expr::RangeExpr,
+    ) -> Lowered<Val> {
+        let (a, b) = range
+            .literal_ends()
+            .expect("the checker refuses a range whose ends are not literal numbers");
+        assert!(a < b, "the checker refuses a range with no rows");
+        let start = self.lower_expr(&range.start)?;
+        shape[0] = (b - a).to_string();
+        Ok(self.emit_typed(
+            Opcode::TensorRange,
+            base,
+            start.reg,
+            LoweredTy::Tensor { elem, shape },
+            0,
+        ))
+    }
+
     fn lower_place(&mut self, e: &Expr) -> Lowered<Val> {
         // A raw-pointer dereference place `*p = val`: `p[0]`.
         if let Expr::Dereference(d) = e {
@@ -6713,6 +6738,10 @@ impl<'r> Lowerer<'r> {
             return Err(Decline::TypeNotModelled {
                 what: "an index of a rank-0 value",
             }); // cannot index a rank-0 value
+        }
+        // `q[1..3] = w` writes `w` into the rows of the range.
+        if let Expr::Range(range) = &*ix.index {
+            return self.lower_tensor_range(base.reg, elem, shape, range);
         }
         let index = self.lower_expr(&ix.index)?;
         if !matches!(index.ty, LoweredTy::Scalar(_)) {
@@ -6871,7 +6900,7 @@ impl<'r> Lowerer<'r> {
             let imm = if is_ptr {
                 0
             } else {
-                self.lane_element_store(ix)
+                self.lane_element_store(ix) | self.lane_own(ix)
             };
             self.emit_effect(store, place.reg, value.reg, imm);
             return Ok(());
@@ -7089,7 +7118,10 @@ impl<'r> Lowerer<'r> {
             }
             match ins.opcode {
                 // A view of `r` or `r` under another type: dead when that is.
-                Opcode::Cast | Opcode::TensorIndex | Opcode::TensorReshape => {
+                Opcode::Cast
+                | Opcode::TensorIndex
+                | Opcode::TensorRange
+                | Opcode::TensorReshape => {
                     if !self.temp_is_dead(Register(i as u32), keep) {
                         return false;
                     }
@@ -7399,28 +7431,11 @@ impl<'r> Lowerer<'r> {
                         return Ok(());
                     }
                     // Each arm returns, so nothing runs after the match. A slot whose lifetime
-                    // does not end lives to the end of the call, which is correct.
-                    // An owner that the `match` uses is still alive in the arms, so each arm's
-                    // `return` drops it. The other drops wait for a value that never comes, so
-                    // they run before each `return` in the arms.
-                    let mut used = HashSet::new();
-                    let returned = r.expr.as_ref().expect("matched above");
-                    crate::syntax::expr::visit_expr(returned, &mut |e| {
-                        if let Expr::Identifier(id) = e {
-                            used.insert(id.name.clone());
-                        }
-                    });
-                    let outer = self.return_drops.len();
-                    let waiting = std::mem::take(&mut self.value_drops);
-                    self.return_drops.extend(waiting.into_iter().filter(|d| match d {
-                        PendingDrop::Tensor { owner, .. } | PendingDrop::Call { owner, .. } => {
-                            !used.contains(owner)
-                        }
-                        PendingDrop::LifetimeEnd { .. } => false,
-                    }));
-                    let lowered = self.lower_match(m);
-                    self.return_drops.truncate(outer);
-                    lowered?;
+                    // does not end lives to the end of the call, which is correct. The checker
+                    // drops each owner before each `return` in the arms, so the drops that wait
+                    // for the value of the match never run.
+                    self.value_drops.clear();
+                    self.lower_match(m)?;
                     if !self.block_terminated() {
                         let rty = self.ret_ty.clone().ok_or(Decline::TypeNotModelled {
                             what: "a function with no recorded return type",
@@ -9028,6 +9043,7 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             | Opcode::Store
             | Opcode::FieldStore
             | Opcode::TensorIndex
+            | Opcode::TensorRange
             | Opcode::TensorStore
             | Opcode::TensorDim
             // `PtrIndex` reads base+index; `PtrStore` reads place+value (#242).

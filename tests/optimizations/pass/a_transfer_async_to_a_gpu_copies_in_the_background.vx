@@ -1,0 +1,68 @@
+//===- a_transfer_async_to_a_gpu_copies_in_the_background.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `transfer_async` into GPU memory, with double buffering. Each pass of the loop starts the copy
+// of the next matrix, then multiplies the current one by the identity on the GPU. The runtime
+// makes the matmul wait for the copy of its own operands, not for the copy of the next matrix.
+//
+// The first two RUN lines check that only `transfer_async` calls the async runtime function. The
+// plain `transfer` of the identity comes first, and it calls the one that copies at once.
+//
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-llvm 2>&1 | FileCheck %s --check-prefix=IR
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --emit-llvm 2>&1 | FileCheck %s --check-prefix=IR
+// IR-LABEL: llvm.func @main(
+// IR-NOT: @vx_plugin_alloc_and_transfer_async(
+// IR: llvm.call @vx_plugin_alloc_and_transfer(
+// IR: llvm.call @vx_plugin_alloc_and_transfer_async(
+// IR: llvm.call @vx_plugin_alloc_and_transfer_async(
+// IR-NOT: llvm.call @vx_plugin_alloc_and_transfer_async(
+//
+// The program runs on a GPU, or on the CPU when there is none.
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
+// OUT: pass 1: 1 2 3 4
+// OUT-NEXT: pass 2: 11 12 13 14
+// OUT-NEXT: pass 3: 21 22 23 24
+
+// The 2x2 matrix [[k + 1, k + 2], [k + 3, k + 4]].
+fn matrix(k : f32) -> Tensor<f32, [2, 2]> {
+  let mut m = unsafe { Tensor<f32, [2, 2]>::uninit() };
+  for i in 0..2 {
+    for j in 0..2 {
+      m[i][j] = k + (i * 2 + j + 1) as f32;
+    }
+  }
+  return m;
+}
+
+fn main() -> i32 {
+  let mut e = Tensor<f32, [2, 2]>::fill(0.0);
+  e[0][0] = 1.0;
+  e[1][1] = 1.0;
+  let e_d = transfer(e, Memory::HBM);
+
+  let mut inflight = transfer_async(matrix(0.0), Memory::HBM);
+  for k in 1..3 {
+    let next = transfer_async(matrix(k as f32 * 10.0), Memory::HBM);
+    let a_d = inflight.wait();
+    let mut r_d = transfer(Tensor<f32, [2, 2]>::fill(0.0), Memory::HBM);
+    spawn on(Topology::Device) {
+      matmul_into(&mut r_d, &a_d, &e_d);
+    }
+    let r = transfer(r_d, Memory::CPU_DRAM);
+    println!("pass {}: {} {} {} {}", k, r[0][0], r[0][1], r[1][0], r[1][1]);
+    inflight = next;
+  }
+  let a_d = inflight.wait();
+  let mut r_d = transfer(Tensor<f32, [2, 2]>::fill(0.0), Memory::HBM);
+  spawn on(Topology::Device) {
+    matmul_into(&mut r_d, &a_d, &e_d);
+  }
+  let r = transfer(r_d, Memory::CPU_DRAM);
+  println!("pass 3: {} {} {} {}", r[0][0], r[0][1], r[1][0], r[1][1]);
+  return 0;
+}

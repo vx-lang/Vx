@@ -604,6 +604,14 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
             )]);
         }
 
+        // A `transfer_async`: a device copies in the background until a use of the tensor.
+        if self.is_async {
+            transfer_builder = transfer_builder.add_attributes(&[(
+                Identifier::new(gen.context, "async"),
+                melior::ir::attribute::Attribute::unit(gen.context),
+            )]);
+        }
+
         let transfer_op = transfer_builder
             .add_results(&[target_ty])
             .build()

@@ -63,6 +63,9 @@ pub(crate) struct AcrossMap<'c> {
     /// level. Only lane `t` writes `tile[t]` in the code of a block, or element `t` of the row of
     /// the subgroup.
     pub lane_element: Option<(String, Level)>,
+    /// With `lane_element`: the lanes of the lane loop, and whether the subgroup loop around it
+    /// gives each subgroup one pass at most.
+    pub lane_loop: Option<(u64, bool)>,
     /// The code after the nest of blocks, which the last pass to end runs.
     pub tail: Option<Tail<'c>>,
     /// The body of the loop of blocks whose passes end with an arrival, by its address.
@@ -129,6 +132,12 @@ impl AcrossMap<'_> {
             _ => None,
         }
     }
+
+    /// Whether the subgroup has its row for the whole kernel, so a lane reduction of the row may
+    /// read it from the registers of `lane_own_attrs` elements.
+    pub(crate) fn subgroup_keeps_its_row(&self) -> bool {
+        self.subgroup_once || matches!(self.subgroup_row, Some(SubgroupRow::Whole))
+    }
 }
 
 /// The attributes of a store `ix = ..` that writes element `t` of a tile, which only lane `t`
@@ -173,6 +182,54 @@ pub(crate) fn lane_element_attrs<'c>(
         },
         _ => Vec::new(),
     }
+}
+
+/// `vx.lane_own` and `vx.lanes` for an access `ix` in a lane loop to an element that this lane
+/// alone accesses (docs/lane_reductions.md). The tensor under it is a variable, not a reference
+/// that could point into another tensor.
+pub(crate) fn lane_own_attrs<'c>(
+    gen: &MeliorGenerator<'c>,
+    ix: &syntax::IndexAccessExpr,
+) -> Vec<(Identifier<'c>, melior::ir::Attribute<'c>)> {
+    use crate::hir::check::across_lanes::{lane_own_access, LaneOwn};
+    let Some(map) = &gen.across_map else {
+        return Vec::new();
+    };
+    let (Some((lane, level)), Some((lanes, once))) = (&map.lane_element, map.lane_loop) else {
+        return Vec::new();
+    };
+    let tensor = |e: &Expr| {
+        matches!(e, Expr::Identifier(_))
+            && matches!(gen.infer_ast_type(e), Some(syntax::Type::Tensor(..)))
+    };
+    let own = |e: &Expr| match (level, &map.subgroup_row) {
+        (Level::Block, _) | (Level::Subgroup, Some(SubgroupRow::Whole)) => {
+            tensor(e).then_some(LaneOwn::Whole)
+        }
+        (Level::Subgroup, Some(SubgroupRow::Index(w))) if once => match e {
+            Expr::IndexAccess(r)
+                if tensor(&r.base)
+                    && matches!(&*r.index, Expr::Identifier(id) if id.name.as_ref() == w) =>
+            {
+                Some(LaneOwn::Subgroup)
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+    let Some(form) = lane_own_access(ix, lane, own) else {
+        return Vec::new();
+    };
+    vec![
+        (
+            Identifier::new(gen.context, "vx.lane_own"),
+            melior::ir::attribute::StringAttribute::new(gen.context, form.name()).into(),
+        ),
+        (
+            Identifier::new(gen.context, "vx.lanes"),
+            IntegerAttribute::new(gen.i64_ty, lanes as i64).into(),
+        ),
+    ]
 }
 
 /// The lanes of a block of `s`, when its `across` loops map to blocks and lanes.
@@ -524,6 +581,7 @@ pub(crate) fn lower_across_for<'c>(
         std::mem::replace(&mut map.subgroup_row, row)
     });
     let outer_element = map.lane_element.take();
+    let outer_lane_loop = map.lane_loop.take();
     let from_zero = matches!(&*for_loop.iterable,
         Expr::Range(r) if matches!(&*r.start, Expr::Number(n) if n.value.as_ref() == "0"));
     let once = kind == LevelKind::Subgroups
@@ -538,12 +596,14 @@ pub(crate) fn lower_across_for<'c>(
     let shared = for_loop.across.as_ref().is_some_and(|a| a.share.is_some());
     if kind == LevelKind::Lanes && inner == 1 && !rebound && from_zero && all_lanes && !shared {
         map.lane_element = root.map(|level| (index, level));
+        map.lane_loop = Some((width, outer_once));
     }
     let lowered = lower_strided(for_loop, (pass, step), gen, block);
     let map = gen.across_map.as_mut().expect("a mapped region");
     map.level = outer_level;
     map.inner = outer_inner;
     map.lane_element = outer_element;
+    map.lane_loop = outer_lane_loop;
     map.subgroup_once = outer_once;
     if let Some(row) = outer_row {
         map.subgroup_row = row;

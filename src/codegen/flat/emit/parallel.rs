@@ -107,7 +107,9 @@ impl FnEmit<'_> {
         }
         // The count of the passes of a nest of blocks, which `--emit-ptx` names by its length.
         let user_lowered = ins.operand2.0 & crate::bytecode::TRANSFER_USER_LOWERED;
-        let arrivals = ins.operand2.0 & !crate::bytecode::TRANSFER_USER_LOWERED;
+        let is_async = ins.operand2.0 & crate::bytecode::TRANSFER_ASYNC;
+        let arrivals = ins.operand2.0
+            & !(crate::bytecode::TRANSFER_USER_LOWERED | crate::bytecode::TRANSFER_ASYNC);
         if let Some(i) = (arrivals as usize).checked_sub(1) {
             let length = self.strings.get(i).ok_or(crate::emitter_gap!())?;
             attrs += &format!(", vx.arrivals = \"{length}\"");
@@ -115,6 +117,10 @@ impl FnEmit<'_> {
         // The body of a user lowering copies the tile, so the backend only places it.
         if user_lowered != 0 {
             attrs += ", user_lowered";
+        }
+        // A `transfer_async`: a device copies in the background until a use of the tensor.
+        if is_async != 0 {
+            attrs += ", async";
         }
         self.body +=
             &format!("  {n} = \"vx.transfer\"({src}) {{{attrs}}} : ({srcty}) -> {dstty}\n");

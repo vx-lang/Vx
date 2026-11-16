@@ -26,30 +26,38 @@
 // CHECK-DAG: %[[SA:.*]] = memref.reinterpret_cast %{{.*}} to offset: [0], sizes: [512], strides: [1] : memref<16x32xbf16, 3> to memref<512xbf16, 3>
 // CHECK-DAG: %[[SB:.*]] = memref.reinterpret_cast %{{.*}} to offset: [0], sizes: [4096], strides: [1] : memref<32x128xbf16, 3> to memref<4096xbf16, 3>
 // The copy into `sa`, 16 bytes at a time when the addresses allow it, and else one element at a
-// time. The new place of element `e` is `e ^ (((e >> 6) & 7) << 3)`.
-// CHECK: %[[LINE:.*]] = arith.shrui %[[E:.*]], %c6{{(_[0-9]+)?}} : index
+// time. The new place of element `e` is `e ^ (((e >> 6) & 7) << 3)`. The compiler writes `e` as
+// `high | low`, with `low` below 8, and moves only `high`. So LLVM sees that the elements of a
+// 16-byte part stay next to each other.
+// CHECK: %[[LINE:.*]] = arith.shrui %[[HIGH:.*]], %c6{{(_[0-9]+)?}} : index
 // CHECK-NEXT: arith.constant 7 : index
-// CHECK-NEXT: %[[LOW:.*]] = arith.andi %[[LINE]], %c7{{(_[0-9]+)?}} : index
+// CHECK-NEXT: %[[LINE8:.*]] = arith.andi %[[LINE]], %c7{{(_[0-9]+)?}} : index
 // CHECK-NEXT: arith.constant 3 : index
-// CHECK-NEXT: %[[MOVE:.*]] = arith.shli %[[LOW]], %c3{{(_[0-9]+)?}} : index
-// CHECK-NEXT: %[[AT:.*]] = arith.xori %[[E]], %[[MOVE]] : index
+// CHECK-NEXT: %[[MOVE:.*]] = arith.shli %[[LINE8]], %c3{{(_[0-9]+)?}} : index
+// CHECK-NEXT: %[[MOVED:.*]] = arith.xori %[[HIGH]], %[[MOVE]] : index
+// CHECK-NEXT: %[[AT:.*]] = arith.ori %[[MOVED]], %{{.*}} : index
 // CHECK-NEXT: nvgpu.device_async_copy %arg1[{{.*}}], %[[SA]][%[[AT]]], 8
 // CHECK: arith.shrui %{{.*}}, %c6{{(_[0-9]+)?}} : index
-// CHECK: %[[AT:.*]] = arith.xori
+// CHECK: arith.xori
+// CHECK-NEXT: %[[AT:.*]] = arith.ori
 // CHECK-NEXT: memref.store %{{.*}}, %[[SA]][%[[AT]]] : memref<512xbf16, 3>
 // The copy into `sb`, whose rows of 256 bytes move by their row: `e >> 7`.
 // CHECK: arith.shrui %{{.*}}, %c7{{(_[0-9]+)?}} : index
-// CHECK: %[[AT:.*]] = arith.xori
+// CHECK: arith.xori
+// CHECK-NEXT: %[[AT:.*]] = arith.ori
 // CHECK-NEXT: nvgpu.device_async_copy %arg2[{{.*}}], %[[SB]][%[[AT]]], 8
 // CHECK: arith.shrui %{{.*}}, %c7{{(_[0-9]+)?}} : index
-// CHECK: %[[AT:.*]] = arith.xori
+// CHECK: arith.xori
+// CHECK-NEXT: %[[AT:.*]] = arith.ori
 // CHECK-NEXT: memref.store %{{.*}}, %[[SB]][%[[AT]]] : memref<4096xbf16, 3>
 // The `ldmatrix` reads find each row at its new place.
 // CHECK: arith.shrui %{{.*}}, %c6{{(_[0-9]+)?}} : index
-// CHECK: %[[AT:.*]] = arith.xori
+// CHECK: arith.xori
+// CHECK-NEXT: %[[AT:.*]] = arith.ori
 // CHECK-NEXT: nvgpu.ldmatrix %[[SA]][%[[AT]]] {numTiles = 4 : i32, transpose = false}
 // CHECK: arith.shrui %{{.*}}, %c7{{(_[0-9]+)?}} : index
-// CHECK: %[[AT:.*]] = arith.xori
+// CHECK: arith.xori
+// CHECK-NEXT: %[[AT:.*]] = arith.ori
 // CHECK-NEXT: nvgpu.ldmatrix %[[SB]][%[[AT]]] {numTiles = 2 : i32, transpose = true}
 
 // TMA-LABEL: gpu.func @vx_npu_kernel_0(

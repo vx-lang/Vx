@@ -93,6 +93,9 @@ These keep commands clean and avoid unnecessary permission prompts:
   Ubuntu, and nothing you need -- not `llvm-config`, not `mlir-translate`, not even
   `cargo` -- is on PATH in a non-login shell until it is sourced.
 - Create a build log in the respective build directory.
+- Give each git worktree its own `target/` directory, and start it as a clone of the one in the
+  main checkout. Do not share one `CARGO_TARGET_DIR` between worktrees. `agents/Worktrees.md`
+  says why, and gives the commands.
 
 ## Virtual Environment
 

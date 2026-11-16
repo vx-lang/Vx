@@ -227,6 +227,58 @@ So for `n` channels, if one channel has a value at each of `n` calls in a row, o
 takes a value from it. [What Vx guarantees about concurrency](guarantees.md) lists this promise
 and the others about tasks, and says how we check each one.
 
+## Other kinds of channel
+
+`std::sync` has four more kinds of channel. Each one is a library on the atomics and the waits
+that `channel` uses, so each one works as `channel` does in these ways:
+
+- A wait parks only its task. On the shared runtime, the thread runs other tasks.
+- A cancel of the `tasks` block ends a wait: `recv` gives `Cancelled`, and a `send` that waits
+  gives its value back with `cancelled` set.
+- `within` limits each wait. `recv_for(limit)` and `recv_until(deadline)` give `TimedOut`, and
+  `send_for` and `send_until` give the value back with `timed_out` set.
+- The deadlock report names each wait, with the line that made the channel and the task that
+  can end the wait.
+
+| Kind | Make it with | Who gets a value | Use it for |
+| --- | --- | --- | --- |
+| `channel` | `channel<T>(n)` | One receiver | A stream of values to one task |
+| oneshot | `oneshot<T>()` | The one receiver, once | The reply to a request |
+| work queue | `work_queue<T>(n)` | One of many receivers | Jobs that many workers share |
+| broadcast | `broadcast<T>(n)` | Each receiver | Events that each task must see |
+| watch | `watch<T>(v)` | Each receiver sees the latest value | A setting or a status |
+
+- **oneshot** (`std::sync::oneshot`): `send(v)` takes the `OneshotSender` by value, so the type
+  allows only one `send`. It never waits. After the value, `recv` gives `Closed`.
+- **work queue** (`std::sync::work_queue`): it sends with the `Sender` of `channel`. Clone the
+  `WorkReceiver` for each worker. Each value goes to one worker.
+- **broadcast** (`std::sync::broadcast`): each `BroadcastReceiver` gets each value that a
+  sender sends after the program makes the receiver. `subscribe()` on the sender makes a new
+  receiver, and `clone()` on a receiver makes one that gets the same values. `T` must be `Clone`.
+  When the room is full, `send` waits for the slowest receiver. So no receiver misses a value.
+- **watch** (`std::sync::watch`): the channel holds one value. `send(v)` replaces it and never
+  waits. `recv()` waits for a value that this receiver did not see, and gives only the latest one.
+  `get()` gives the value now, and `has_changed()` says if it is new. `T` must be `Clone`.
+
+In this program, three workers take jobs from a work queue. Each job carries a oneshot channel for
+its answer (`book_workers_reply_on_oneshot_channels.vx`):
+
+```rust
+{{#include ../../../tests/backend/pass/book_workers_reply_on_oneshot_channels.vx:program}}
+```
+
+It prints `the squares of 1 to 5 add up to 55`.
+
+Rust's tokio has the same four kinds. The Vx kinds differ in these ways:
+
+- A cancel of a `tasks` block ends each wait in its tasks, with `Cancelled`. In tokio, each
+  program writes its own cancel, with `select!` and a `CancellationToken`, or with `abort`.
+- A deadlock in Vx stops the program with a report that names each wait and each cycle. In tokio,
+  a deadlock is a program that hangs.
+- A broadcast `send` in Vx waits for the slowest receiver, so no receiver misses a value. In
+  tokio, a slow receiver loses the old values and gets the error `Lagged`.
+- The waits are normal calls. They need no `async` and no `.await`.
+
 ## `Mutex`
 
 A `Mutex<T>` guards a value that many tasks change. `lock()` waits until no other task holds the
@@ -311,3 +363,4 @@ tasks. The language is the same for both runtimes.
 | Cancel the other tasks | When the block leaves or a task fails | Each program writes it | `context`, by hand |
 | Functions that wait | Normal functions | `async fn`, or a blocked thread | Normal functions |
 | Wait on many channels | `select` over a list of receivers | A crate, such as `crossbeam` | `select` statement |
+| Kinds of channel | `channel`, oneshot, work queue, broadcast, watch | The same in tokio | One kind, `chan` |

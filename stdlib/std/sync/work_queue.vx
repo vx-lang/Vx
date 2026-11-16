@@ -1,0 +1,159 @@
+//===- work_queue.vx - Vx Standard Library ------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A work queue is a channel with many receivers. Each value goes to one of them.
+//
+// It is the ring of `channel`, and it sends with the same `Sender`. A `channel` has one
+// `Receiver`, so its `recv` takes the receive number with a plain store. Here many `WorkReceiver`s
+// compete for it. A `recv` takes the number `k` with a compare-and-swap from `k` to `k + 1`, and
+// only when slot `k` holds its value. So a cancel or a time limit can stop a `recv` at any time,
+// and leave no number taken with no value.
+//
+// The word `RECEIVER` of the channel counts the `WorkReceiver`s that are not dropped.
+//===----------------------------------------------------------------------===//
+import core::clone;
+import core::marker;
+import core::mem;
+import core::panic;
+import core::result;
+import core::sync::atomic;
+import core::time;
+import std::sync::channel;
+import std::sync::wait;
+import std::time;
+
+/// An end of a work queue that receives. Clone it to receive in many tasks. Each value goes to
+/// one `WorkReceiver`.
+struct WorkReceiver<T> {
+  words : *mut AtomicI64,
+  data : *mut T,
+  cap : i64,
+  // The line that made the work queue, for the deadlock report.
+  made : Location,
+}
+
+unsafe impl<T : Send> Send for WorkReceiver<T> {}
+impl<T> HostOnly for WorkReceiver<T> {}
+impl<T> ReceiverOfAChannel for WorkReceiver<T> {}
+
+/// A work queue with room for `n` values. `n` must be at least 1. Send with the `Sender`, as on a
+/// `channel`.
+fn work_queue<T : Send + Owned>(n : i64, at : Caller) -> (Sender<T>, WorkReceiver<T>) {
+  let (tx, rx) = channel<T>(n, at);
+  let r = WorkReceiver<T> {
+    words : rx.words, data : rx.data, cap : rx.cap, made : rx.made
+  };
+  // The `WorkReceiver` takes over the end that `rx` holds.
+  forget(rx);
+  return (tx, r);
+}
+
+impl<T>
+WorkReceiver<T> {
+  /// The next value. Wait while the queue is empty. When each `Sender` was dropped and no value is
+  /// left, give `Closed`. When the `tasks` block of this task was cancelled, give `Cancelled`.
+  fn recv(self : &WorkReceiver<T>, at : Caller) -> Result<T, RecvError> {
+    return self.recv_until(Instant::never(), at);
+  }
+
+  /// `recv`, and give `TimedOut` when it waited `limit` for a value.
+  fn recv_for(self : &WorkReceiver<T>, limit : Duration, at : Caller) -> Result<T, RecvError> {
+    return self.recv_until(deadline_after(limit), at);
+  }
+
+  /// `recv` until the clock reaches `deadline`.
+  fn recv_until(self : &WorkReceiver<T>, deadline : Instant, at : Caller) -> Result<T, RecvError> {
+    let words = self.words;
+    let mut why = RecvError::Closed;
+    loop {
+      if cancelled_at(at) {
+        why = RecvError::Cancelled;
+        break;
+      }
+      let seen = word(words, WAKE).load(AtomicOrdering::SeqCst);
+      match self.take() {
+        Result<T, TryRecvError>::Ok(v) => {
+          return Result<T, RecvError>::Ok(v);
+        }
+        Result<T, TryRecvError>::Err(e) => {
+          match e {
+            TryRecvError::Closed => {
+              break;
+            }
+            TryRecvError::Empty => {}
+          }
+        }
+      }
+      if past_deadline(deadline) {
+        why = RecvError::TimedOut;
+        break;
+      }
+      wait_for_event(words, seen, deadline, WAIT_IN_RECV, at, self.made);
+    }
+    return Result<T, RecvError>::Err(why);
+  }
+
+  /// The next value, if one is in the queue now. It does not wait.
+  fn try_recv(self : &WorkReceiver<T>) -> Result<T, TryRecvError> {
+    return self.take();
+  }
+
+  /// Take the next value, or pass the numbers of cancelled sends until none is left.
+  fn take(self : &WorkReceiver<T>) -> Result<T, TryRecvError> {
+    let words = self.words;
+    let recvs = word(words, RECVS);
+    loop {
+      // Read `SENDERS` first. Each `send` comes before the drop of its `Sender`, so a closed
+      // queue shows each of its values below.
+      let closed = word(words, SENDERS).load(AtomicOrdering::SeqCst) == 0;
+      let k = recvs.load(AtomicOrdering::SeqCst);
+      let slot = word(words, SLOTS + k % self.cap);
+      if slot.load(AtomicOrdering::Acquire) == 2 * k + 1 {
+        match recvs.compare_exchange(k, k + 1, AtomicOrdering::SeqCst, AtomicOrdering::SeqCst) {
+          Result<i64, i64>::Ok(_) => {
+            let data = self.data;
+            let value : T = unsafe { take_slot(data, k % self.cap) };
+            slot.store(2 * (k + self.cap), AtomicOrdering::Release);
+            notify(words);
+            return Result<T, TryRecvError>::Ok(value);
+          }
+          // Another `WorkReceiver` took the value. Try the next number.
+          Result<i64, i64>::Err(_) => {}
+        }
+      } else {
+        if !pass_a_skip(words, self.cap, k) {
+          // Another `WorkReceiver` can be in the middle of a pass of a skipped number. The queue
+          // is closed only when each send number has a `recv`.
+          if closed && recvs.load(AtomicOrdering::SeqCst) >= word(words, SENDS).load(AtomicOrdering::SeqCst) {
+            return Result<T, TryRecvError>::Err(TryRecvError::Closed);
+          }
+          return Result<T, TryRecvError>::Err(TryRecvError::Empty);
+        }
+      }
+    }
+    return Result<T, TryRecvError>::Err(TryRecvError::Empty);
+  }
+}
+
+impl<T> Clone for WorkReceiver<T> {
+  fn clone(self : &WorkReceiver<T>) -> WorkReceiver<T> {
+    word(self.words, RECEIVER).fetch_add(1, AtomicOrdering::SeqCst);
+    word(self.words, ENDS).fetch_add(1, AtomicOrdering::SeqCst);
+    return WorkReceiver<T> {
+      words : self.words, data : self.data, cap : self.cap, made : self.made
+    };
+  }
+}
+
+impl<T> Drop for WorkReceiver<T> {
+  fn drop(self : &mut WorkReceiver<T>) -> void {
+    if word(self.words, RECEIVER).fetch_sub(1, AtomicOrdering::SeqCst) == 1 {
+      notify(self.words);
+    }
+    release<T>(self.words, self.data, self.cap);
+  }
+}

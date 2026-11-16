@@ -191,6 +191,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/lane_reductions_on_the_cpu.vx",                   // needs --machine
             "optimizations/pass/lane_reductions_on_the_gpu.vx",                   // needs --machine
             "optimizations/pass/lane_values_stay_in_registers_on_the_gpu.vx",     // needs --machine
+            "optimizations/pass/lane_values_stay_in_registers_between_lane_loops.vx", // needs --machine
             "optimizations/pass/across_loops_run_in_parallel_on_both_code_generators.vx", // needs --machine
             "optimizations/pass/lane_routines_run_in_parallel_on_both_code_generators.vx", // needs --machine
             "optimizations/pass/lane_sorts_on_the_cpu.vx",                        // needs --machine
@@ -205,6 +206,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/lane_copy_on_the_gpu.vx",                         // needs --machine
             "optimizations/pass/lane_fill_of_a_tile.vx",                          // needs --machine
             "optimizations/pass/lane_fill_on_the_gpu.vx",                         // needs --machine
+            "optimizations/pass/lane_scale_rows_keeps_the_sums_in_registers.vx",  // needs --machine
+            "optimizations/pass/lane_stores_of_neighbouring_bf16_join_into_one.vx", // needs --machine
             "optimizations/pass/lane_matmul_result_goes_from_registers_to_the_tensor.vx", // needs --machine
             "optimizations/pass/lane_copies_with_tma.vx",                         // needs --machine
             "optimizations/pass/lane_argmax_on_the_cpu.vx",                       // needs --machine
@@ -225,6 +228,12 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/a_shared_tile_in_the_code_after_the_blocks.vx", // needs --machine
             "optimizations/pass/a_tensor_in_gpu_memory_in_a_struct_or_enum_is_freed_by_its_plugin.vx", // split-file
             "optimizations/pass/gpu_region_that_ends_in_a_value_runs_on_the_gpu.vx", // needs --machine
+            "optimizations/pass/lane_copies_of_rows_by_id.vx", // needs --machine
+            "optimizations/pass/lane_copies_of_rows_on_the_gpu.vx", // needs --machine
+            // needs --machine
+            "optimizations/pass/a_gpu_kernel_converts_f32_to_bf16_with_one_instruction.vx",
+            // needs --machine
+            "optimizations/pass/a_transfer_async_to_a_gpu_copies_in_the_background.vx",
             "optimizations/pass/across_loops_with_auto_schedule_levels_carry_their_level.vx", // needs -f
             "frontend/pass/packages/import_from_a_package.vx", // needs --package
             // needs --machine
@@ -240,6 +249,10 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             // needs --machine
             "optimizations/pass/apple_gpu_counted_loops_are_for_loops_in_metal_shading_language.vx",
             "optimizations/pass/lane_matmuls_in_metal_shading_language.vx",
+            // needs --machine
+            "optimizations/pass/lane_matmul_sums_stay_in_simdgroup_matrices.vx",
+            // needs --machine
+            "optimizations/pass/lane_matmul_sums_in_simdgroup_matrices_on_the_apple_gpu.vx",
             // needs --machine
             "optimizations/pass/a_bulk_hash_table_search_wraps_around_the_end_of_the_table.vx",
             // needs --machine

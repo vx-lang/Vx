@@ -86,7 +86,7 @@ impl FnEmit<'_> {
             return Err(crate::emitter_gap!());
         }
         // Each stride must be the product of the sizes after it. A `?` cannot be checked here;
-        // only indexing a row out of a tensor makes one, and a row of a tensor is contiguous.
+        // only a row or a range of rows makes one, and both are contiguous.
         let mut expect = Some(1i64);
         for k in (0..dims.len()).rev() {
             if let (Some(e), Ok(s)) = (expect, strides[k].parse::<i64>()) {
@@ -1101,7 +1101,7 @@ impl FnEmit<'_> {
         if let (Some(Some(vecty)), Some(e), false) = (
             self.vec_of.get(ins.operand1.0 as usize).cloned(),
             elem_of_gid(result_gid),
-            ins.imm == 1,
+            ins.imm & 1 == 1,
         ) {
             let imt = mlir_scalar(&self.elem_at(ins.operand2.0).ok_or(crate::emitter_gap!())?)
                 .ok_or(crate::emitter_gap!())?;
@@ -1138,11 +1138,17 @@ impl FnEmit<'_> {
         if let Some(e) = elem_of_gid(result_gid) {
             // Scalar element: a value read or a store place (works on a contiguous or a
             // strided-row base — `memref.load`/`store` handle both).
-            if ins.imm == 1 {
+            if ins.imm & 1 == 1 {
                 self.place_of[idx] = Some((base, ic, base_memty));
             } else {
                 let n = format!("%v{idx}");
-                self.body += &format!("  {n} = memref.load {base}[{ic}] : {base_memty}\n");
+                let own = lane_own_attrs(ins.imm);
+                let attrs = if own.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {{{}}}", own.join(", "))
+                };
+                self.body += &format!("  {n} = memref.load {base}[{ic}]{attrs} : {base_memty}\n");
                 self.names[idx] = n;
                 self.etypes[idx] = Some(e);
             }
@@ -1211,6 +1217,143 @@ impl FnEmit<'_> {
             self.names[idx] = n;
             self.mem_of[idx] = Some(result_ty);
         }
+        Ok(())
+    }
+
+    /// `q[a..b]`: rows `a` to `b - 1` of a tensor, as a view of the same memory. `operand1` is
+    /// the tensor and `operand2` is `a`, and the result type holds the number of rows. Each other
+    /// size and each stride is the tensor's: a literal where its type has one, else a value read
+    /// from the tensor. The offset is the tensor's own offset plus `a` rows. The cast reads the
+    /// tensor itself, so `-fbounds-checks` checks the range against it.
+    pub(crate) fn op_tensor_range(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let result_gid = *self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let base = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        // A one-dimensional result of arithmetic stays in a vector register, with no memory.
+        if matches!(self.vec_of.get(ins.operand1.0 as usize), Some(Some(_))) {
+            return Err(Decline::TypeNotModelled {
+                what: "a range of a one-dimensional result that is kept in registers",
+            });
+        }
+        let base_memty = self
+            .mem_of
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone()
+            .ok_or(crate::emitter_gap!())?;
+        let (dims_x, et) = memref_lead_dims_and_elem(&base_memty).ok_or(crate::emitter_gap!())?;
+        let et = et.to_string();
+        let dims: Vec<String> = dims_x
+            .split('x')
+            .filter(|d| !d.is_empty())
+            .map(str::to_string)
+            .collect();
+        let rank = dims.len();
+        let rows = self
+            .ctx
+            .tensors
+            .get(&result_gid)
+            .and_then(|(_, shape)| shape.first().cloned())
+            .ok_or(crate::emitter_gap!())?;
+        // The strides of the tensor as its type gives them: from its layout, or row-major when
+        // it has none.
+        let layout = base_memty.contains("strided<");
+        let strides: Vec<String> = if layout {
+            base_memty
+                .split("strided<[")
+                .nth(1)
+                .and_then(|s| s.split(']').next())
+                .ok_or(crate::emitter_gap!())?
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect()
+        } else {
+            let mut s = vec!["1".to_string(); rank];
+            for k in (0..rank.saturating_sub(1)).rev() {
+                s[k] = match (s[k + 1].parse::<i64>(), dims[k + 1].parse::<i64>()) {
+                    (Ok(a), Ok(b)) => (a * b).to_string(),
+                    _ => DYN_DIM.to_string(),
+                };
+            }
+            s
+        };
+        if rank == 0 || strides.len() != rank {
+            return Err(crate::emitter_gap!());
+        }
+        let shared = self.shared_addrspace();
+        let space_sfx = if base_memty.ends_with(&format!(", {shared}>")) {
+            format!(", {shared}")
+        } else {
+            String::new()
+        };
+        // The offset of a view, and each size or stride that is `?` in the type, come from the
+        // descriptor of the tensor: result 1 is the offset, then the sizes, then the strides.
+        let meta = format!("%rgm{idx}");
+        if layout || dims.iter().chain(&strides).any(|d| d == DYN_DIM) {
+            self.body += &format!(
+                "  {meta}:{} = memref.extract_strided_metadata {base} : {base_memty} -> memref<{et}{space_sfx}>, {}\n",
+                2 + 2 * rank,
+                vec!["index"; 1 + 2 * rank].join(", ")
+            );
+        }
+        let value = |txt: &str, result: usize| {
+            if txt == DYN_DIM {
+                format!("{meta}#{result}")
+            } else {
+                txt.to_string()
+            }
+        };
+        let imt = mlir_scalar(&self.elem_at(ins.operand2.0).ok_or(crate::emitter_gap!())?)
+            .ok_or(crate::emitter_gap!())?;
+        let start = self
+            .names
+            .get(ins.operand2.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let ic = format!("%ic{idx}");
+        self.body += &format!("  {ic} = arith.index_cast {start} : {imt} to index\n");
+        let row_stride = if strides[0] == DYN_DIM {
+            value(&strides[0], 2 + rank)
+        } else {
+            let c = format!("%rgc{idx}");
+            self.body += &format!("  {c} = arith.constant {} : index\n", strides[0]);
+            c
+        };
+        let mut off = format!("%rgo{idx}");
+        self.body += &format!("  {off} = arith.muli {ic}, {row_stride} : index\n");
+        if layout {
+            let o = format!("%rga{idx}");
+            self.body += &format!("  {o} = arith.addi {meta}#1, {off} : index\n");
+            off = o;
+        }
+        let sizes: Vec<String> = std::iter::once(rows.clone())
+            .chain((1..rank).map(|k| value(&dims[k], 2 + k)))
+            .collect();
+        let stride_values: Vec<String> = (0..rank)
+            .map(|k| value(&strides[k], 2 + rank + k))
+            .collect();
+        let dimx: String = std::iter::once(&rows)
+            .chain(&dims[1..])
+            .map(|d| format!("{d}x"))
+            .collect();
+        let result_ty = format!(
+            "memref<{dimx}{et}, strided<[{}], offset: ?>{space_sfx}>",
+            strides.join(", ")
+        );
+        let n = format!("%v{idx}");
+        self.body += &format!(
+            "  {n} = memref.reinterpret_cast {base} to offset: [{off}], sizes: [{}], strides: [{}] : {base_memty} to {result_ty}\n",
+            sizes.join(", "),
+            stride_values.join(", ")
+        );
+        self.names[idx] = n;
+        self.mem_of[idx] = Some(result_ty);
         Ok(())
     }
 
@@ -1534,17 +1677,24 @@ impl FnEmit<'_> {
             // docs/lane_reductions.md: the device copy of a kernel keeps this lane's element in a
             // register.
             let row = ins.imm >> crate::bytecode::LANE_ROW_SHIFT;
-            let lane = match ins.imm & ((1 << crate::bytecode::LANE_ROW_SHIFT) - 1) {
+            let mut attrs = match ins.imm & 3 {
                 crate::bytecode::TENSOR_STORE_BLOCK_LANE_ELEMENT => {
-                    " {vx.lane_element = \"block\"}".to_string()
+                    vec!["vx.lane_element = \"block\"".to_string()]
                 }
-                crate::bytecode::TENSOR_STORE_SUBGROUP_LANE_ELEMENT if row > 0 => {
-                    format!(" {{vx.lane_element = \"subgroup\", vx.lane_row = {row} : i64}}")
-                }
+                crate::bytecode::TENSOR_STORE_SUBGROUP_LANE_ELEMENT if row > 0 => vec![
+                    "vx.lane_element = \"subgroup\"".to_string(),
+                    format!("vx.lane_row = {row} : i64"),
+                ],
                 crate::bytecode::TENSOR_STORE_SUBGROUP_LANE_ELEMENT => {
-                    " {vx.lane_element = \"subgroup\"}".to_string()
+                    vec!["vx.lane_element = \"subgroup\"".to_string()]
                 }
-                _ => String::new(),
+                _ => Vec::new(),
+            };
+            attrs.extend(lane_own_attrs(ins.imm));
+            let lane = if attrs.is_empty() {
+                String::new()
+            } else {
+                format!(" {{{}}}", attrs.join(", "))
             };
             self.body += &format!("  memref.store {val}, {base}[{ic}]{lane} : {memty}\n");
         } else if let Some(rowty) = self
@@ -1655,4 +1805,22 @@ fn i64_list(v: &[i64]) -> String {
         .map(|x| x.to_string())
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// The `vx.lane_own` and `vx.lanes` attributes of an element access whose `imm` has
+/// `LANE_OWN_SUBGROUP` or `LANE_OWN_WHOLE` (docs/lane_reductions.md).
+fn lane_own_attrs(imm: u64) -> Vec<String> {
+    let form = if imm & crate::bytecode::LANE_OWN_SUBGROUP != 0 {
+        "subgroup"
+    } else if imm & crate::bytecode::LANE_OWN_WHOLE != 0 {
+        "whole"
+    } else {
+        return Vec::new();
+    };
+    let lanes = (imm >> crate::bytecode::LANE_OWN_LANES_SHIFT)
+        & ((1 << (crate::bytecode::LANE_ROW_SHIFT - crate::bytecode::LANE_OWN_LANES_SHIFT)) - 1);
+    vec![
+        format!("vx.lane_own = \"{form}\""),
+        format!("vx.lanes = {lanes} : i64"),
+    ]
 }

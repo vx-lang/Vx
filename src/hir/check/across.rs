@@ -737,6 +737,7 @@ impl Walk<'_> {
                         | lanes::LaneOp::CopyWait
                         | lanes::LaneOp::Copy
                         | lanes::LaneOp::Fill
+                        | lanes::LaneOp::ScaleRows
                 )
             });
             if copy {
@@ -744,7 +745,10 @@ impl Walk<'_> {
                 let start = lanes::lane_routine(&c.name).is_some_and(|r| {
                     matches!(
                         r.op,
-                        lanes::LaneOp::CopyAsync | lanes::LaneOp::Copy | lanes::LaneOp::Fill
+                        lanes::LaneOp::CopyAsync
+                            | lanes::LaneOp::Copy
+                            | lanes::LaneOp::Fill
+                            | lanes::LaneOp::ScaleRows
                     )
                 });
                 if start && c.scope == LevelKind::Subgroups {

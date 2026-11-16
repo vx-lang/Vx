@@ -20,9 +20,10 @@ use super::*;
 use crate::arch::LevelKind;
 use crate::bytecode::{
     LaneCallImm, ACROSS_BLOCK, ACROSS_BLOCKS, ACROSS_LANE, ACROSS_STRIDE, BARRIER_SUBGROUP,
-    LANE_ROW_SHIFT, TENSOR_STORE_BLOCK_LANE_ELEMENT, TENSOR_STORE_SUBGROUP_LANE_ELEMENT,
+    LANE_OWN_LANES_SHIFT, LANE_OWN_SUBGROUP, LANE_OWN_WHOLE, LANE_ROW_SHIFT,
+    TENSOR_STORE_BLOCK_LANE_ELEMENT, TENSOR_STORE_SUBGROUP_LANE_ELEMENT,
 };
-use crate::hir::check::across_lanes;
+use crate::hir::check::across_lanes::{self, lane_own_access, LaneOwn};
 use crate::hir::check::lanes::{LaneArg, LaneRoutine, LaneSite};
 
 /// The code of a blocks body or a subgroups body outside its lane loops.
@@ -67,6 +68,9 @@ pub(super) struct AcrossState {
     /// level. Only lane `t` writes `tile[t]` in the code of a block, or element `t` of the row of
     /// the subgroup.
     pub lane_element: Option<(Symbol, AcrossLevel)>,
+    /// With `lane_element`: the lanes of the lane loop, and whether the subgroup loop around it
+    /// gives each subgroup one pass at most.
+    pub lane_loop: Option<(u64, bool)>,
 }
 
 /// The row of a tile that the code of a subgroup alone writes.
@@ -568,6 +572,9 @@ impl Lowerer<'_> {
                 .row_tile(args)
                 .is_some_and(|t| self.row_of_subgroup(t)),
             own_row,
+            lane_own: own_row.is_some()
+                && (self.across.subgroup_once
+                    || matches!(self.across.subgroup_row, Some(SubgroupRow::Whole))),
             lanes,
         };
         for r in &operands {
@@ -630,6 +637,44 @@ impl Lowerer<'_> {
                 None => 0,
             },
             _ => 0,
+        }
+    }
+
+    /// `LANE_OWN_SUBGROUP` or `LANE_OWN_WHOLE`, with the lanes of the lane loop, when `ix` is an
+    /// element that this lane alone accesses, and otherwise 0. The tensor under it is a variable,
+    /// not a reference that could point into another tensor.
+    pub(super) fn lane_own(&self, ix: &crate::syntax::expr::IndexAccessExpr) -> u64 {
+        let (Some((lane, level)), Some((lanes, once))) =
+            (&self.across.lane_element, self.across.lane_loop)
+        else {
+            return 0;
+        };
+        let tensor = |e: &Expr| {
+            matches!(e, Expr::Identifier(_))
+                && matches!(
+                    self.infer_ast_type(e),
+                    Some(crate::syntax::Type::Tensor(..))
+                )
+        };
+        let own = |e: &Expr| match (level, &self.across.subgroup_row) {
+            (AcrossLevel::Block, _) | (AcrossLevel::Subgroup, Some(SubgroupRow::Whole)) => {
+                tensor(e).then_some(LaneOwn::Whole)
+            }
+            (AcrossLevel::Subgroup, Some(SubgroupRow::Index(w))) if once => match e {
+                Expr::IndexAccess(r)
+                    if tensor(&r.base)
+                        && matches!(&*r.index, Expr::Identifier(id) if &id.name == w) =>
+                {
+                    Some(LaneOwn::Subgroup)
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        match lane_own_access(ix, lane.as_ref(), own) {
+            Some(LaneOwn::Subgroup) => LANE_OWN_SUBGROUP | (lanes << LANE_OWN_LANES_SHIFT),
+            Some(LaneOwn::Whole) => LANE_OWN_WHOLE | (lanes << LANE_OWN_LANES_SHIFT),
+            None => 0,
         }
     }
 
@@ -765,6 +810,7 @@ impl Lowerer<'_> {
             _ => None,
         };
         let lane_element = self.across.lane_element.take();
+        let lane_loop = self.across.lane_loop.take();
         let from_zero = matches!(&*f.iterable,
             Expr::Range(r) if matches!(&*r.start, Expr::Number(n) if &*n.value == "0"));
         let once = kind == LevelKind::Subgroups
@@ -779,9 +825,11 @@ impl Lowerer<'_> {
         let shared = f.across.as_ref().is_some_and(|a| a.share.is_some());
         if kind == LevelKind::Lanes && inner == 1 && !rebound && from_zero && all_lanes && !shared {
             self.across.lane_element = root.map(|level| (index, level));
+            self.across.lane_loop = Some((width, outer_once));
         }
         let lowered = self.lower_plain_for(f);
         self.across.lane_element = lane_element;
+        self.across.lane_loop = lane_loop;
         self.across.subgroup_once = outer_once;
         if let Some(outer) = subgroup_row {
             self.across.subgroup_row = outer;
