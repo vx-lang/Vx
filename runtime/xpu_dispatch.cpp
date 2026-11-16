@@ -1373,7 +1373,26 @@ int32_t vx_plugin_control(uint32_t opcode, void *payload) {
     local_devices[local_device_count++] = {pair[0], pair[1]};
     return 1;
   }
+  case VX_CTRL_WAIT:
+  case VX_CTRL_WAIT_FOR_TENSORS:
+  case VX_CTRL_WAIT_FOR_THREAD:
+    /* The compiler sends these before it reads a tensor a launch wrote in
+       place, at the return of a `pub fn` in a library, and at exit. Every
+       launch here waits for the command queue before it returns
+       (`zeCommandQueueSynchronize`), so nothing is in flight when one arrives,
+       which the header allows a backend to answer this way.
+
+       Answered rather than left to the `default` below: that one says "this
+       opcode means nothing to me", and these three do. A launch that later
+       returns before its kernel finishes has to wait here instead of
+       inheriting a silent zero. */
+    return 1;
   case VX_CTRL_SHUTDOWN:
+    /* The context, the queue and the loaded modules are function-local statics
+       that every later launch uses, and a program is allowed to launch after
+       this call. Nothing is torn down: the operating system reclaims them at
+       exit, and destroying them here would leave the next launch with no
+       queue. */
     return 1;
   default:
     return 0;
