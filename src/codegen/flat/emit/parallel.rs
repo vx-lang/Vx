@@ -108,8 +108,11 @@ impl FnEmit<'_> {
         // The count of the passes of a nest of blocks, which `--emit-ptx` names by its length.
         let user_lowered = ins.operand2.0 & crate::bytecode::TRANSFER_USER_LOWERED;
         let is_async = ins.operand2.0 & crate::bytecode::TRANSFER_ASYNC;
+        let read_only_source = ins.operand2.0 & crate::bytecode::TRANSFER_READ_ONLY_SOURCE;
         let arrivals = ins.operand2.0
-            & !(crate::bytecode::TRANSFER_USER_LOWERED | crate::bytecode::TRANSFER_ASYNC);
+            & !(crate::bytecode::TRANSFER_USER_LOWERED
+                | crate::bytecode::TRANSFER_ASYNC
+                | crate::bytecode::TRANSFER_READ_ONLY_SOURCE);
         if let Some(i) = (arrivals as usize).checked_sub(1) {
             let length = self.strings.get(i).ok_or(crate::emitter_gap!())?;
             attrs += &format!(", vx.arrivals = \"{length}\"");
@@ -121,6 +124,9 @@ impl FnEmit<'_> {
         // A `transfer_async`: a device copies in the background until a use of the tensor.
         if is_async != 0 {
             attrs += ", async";
+        }
+        if read_only_source != 0 {
+            attrs += ", read_only_source";
         }
         self.body +=
             &format!("  {n} = \"vx.transfer\"({src}) {{{attrs}}} : ({srcty}) -> {dstty}\n");

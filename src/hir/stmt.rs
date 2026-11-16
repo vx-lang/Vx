@@ -884,6 +884,16 @@ impl<'a> TypeChecker<'a> {
         if !self.borrow.views.contains_key(name.as_ref()) {
             self.check_spawn_capture_moved(expr);
         }
+        // A view of a `*const` pointer stays read-only also when another name takes it.
+        let read_only_view = match crate::syntax::expr::bare_unsafe_value(expr) {
+            Expr::Identifier(id) => self.borrow.const_views.contains(&id.name),
+            e => Self::foreign_view_pointer(e).is_some_and(|p| self.is_const_pointer(p)),
+        };
+        if read_only_view {
+            self.borrow.const_views.insert(name.clone());
+        } else {
+            self.borrow.const_views.remove(name);
+        }
         if let Some(p) = Self::foreign_view_pointer(expr) {
             let provenance = self.ref_provenance_of(p);
             self.borrow.foreign_views.insert(name.clone(), provenance);
@@ -2035,6 +2045,71 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Is `e` a `*const` pointer?
+    pub(crate) fn is_const_pointer(&self, e: &Expr) -> bool {
+        matches!(self.check_expr_type_probe(e), Type::Pointer(_, _, false))
+    }
+
+    /// What a write to `place` goes through that only allows reading, as the program names it:
+    /// a `*const` pointer on the way to the place (`*p`, `p[i]`, `(*p).f`), or a view of memory
+    /// from one. The flag is true for a view. `None` when the write goes through no `*const`
+    /// pointer.
+    pub(crate) fn const_pointer_in_place(&self, place: &Expr) -> Option<(String, bool)> {
+        let name_of = |e: &Expr| match Self::extract_base_and_path(e) {
+            Some((root, path)) => crate::hir::places::display_place(&root, &path),
+            None => "a pointer".to_string(),
+        };
+        let mut place = crate::syntax::expr::bare_unsafe_value(place);
+        loop {
+            if let Expr::Identifier(id) = place {
+                if self.borrow.const_views.contains(&id.name) {
+                    return Some((id.name.to_string(), true));
+                }
+            }
+            if let Some(p) = Self::foreign_view_pointer(place) {
+                if self.is_const_pointer(p) {
+                    return Some((name_of(p), false));
+                }
+            }
+            let base = match place {
+                Expr::Dereference(d) => &*d.expr,
+                Expr::MemberAccess(m) => &*m.base,
+                Expr::IndexAccess(i) => &*i.base,
+                _ => return None,
+            };
+            if self.is_const_pointer(base) {
+                return Some((name_of(base), false));
+            }
+            place = crate::syntax::expr::bare_unsafe_value(base);
+        }
+    }
+
+    /// E4006 for a change, `what`, to memory that `place` reaches through a `*const` pointer.
+    pub(crate) fn check_const_pointer_change(&mut self, place: &Expr, what: &str) {
+        if self.speculating {
+            return;
+        }
+        if let Some((name, is_view)) = self.const_pointer_in_place(place) {
+            let message = if is_view {
+                format!(
+                    "{what} memory through `{name}`, a view of memory from a `*const` pointer. \
+                     It only allows reading. Make the view from a `*mut` pointer to change the \
+                     memory"
+                )
+            } else {
+                format!(
+                    "{what} memory through `{name}`, a `*const` pointer. It only allows \
+                     reading. Use a `*mut` pointer to change the memory"
+                )
+            };
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E4006,
+                message,
+                Some(crate::diagnostic::SourceSpan::from_ast_span(&place.span())),
+            );
+        }
+    }
+
     /// `name = &v` or `&mut v`: a use of `name` reaches what `v` borrows, so `name` holds
     /// those borrows too.
     fn reach_borrows_of(&mut self, name: &crate::symbol::Symbol, value: &Expr, depth: usize) {
@@ -2151,6 +2226,9 @@ impl<'a> TypeChecker<'a> {
             let added = self.borrow.added_since(&before_lhs);
             self.borrow.reserve(&added)
         });
+        if !matches!(lhs, Expr::Identifier(_)) {
+            self.check_const_pointer_change(lhs, "this assigns to");
+        }
         if let Some(shared) = self.shared_reference_in_place(lhs) {
             if !self.speculating {
                 self.errors.error_with_code(
