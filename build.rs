@@ -92,6 +92,13 @@ struct XpuToolchain {
 ///
 /// Set VX_DISABLE_XPU to build the host shim on a machine that has oneAPI.
 fn xpu_root() -> Option<XpuToolchain> {
+    // Which library a build links is decided here, so a change of either
+    // setting has to run this script again: without this, `VX_DISABLE_XPU=1
+    // cargo build` after a build with oneAPI succeeds and keeps linking
+    // `libvx_xpu_dispatch`, because every input file is unchanged.
+    for var in ["VX_DISABLE_XPU", "ONEAPI_ROOT"] {
+        println!("cargo:rerun-if-env-changed={}", var);
+    }
     if env::var_os("VX_DISABLE_XPU").is_some() {
         return None;
     }
@@ -538,9 +545,8 @@ fn main() {
         // Which backend answers the plugin ABI. CUDA wins where a toolkit is
         // installed, then oneAPI where it is, otherwise the target's own CPU
         // backend, and the portable one for an architecture nobody has looked
-        // at yet. The order is the precedence: one library serves the process
-        // (#1137, "one dispatch library per build"), so a machine with both
-        // toolkits takes the first row.
+        // at yet. The order is the precedence: one library serves the process,
+        // so a machine with both toolkits takes the first row.
         //
         // Every target gets a backend, which is what lets the compiler emit
         // allocate/transfer/free unconditionally and never name a vendor.

@@ -1057,6 +1057,29 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
     if (ptr && host_ptr) {
       memcpy(ptr, host_ptr, bytes);
     }
+    /* A NUMA node's id asks for bytes bound to that node. The CPU backends
+       answer it with `mmap` and `mbind` (`runtime/host_dispatch_common.h`);
+       this library serves the GPU and has no node placement, so the bytes are
+       plain host memory. That costs speed, not correctness, so it warns rather
+       than refusing -- and once, because this runs for every tensor. It matters
+       on a machine whose only oneAPI part is MKL: no SYCL device is present,
+       this library is the one the build picked, and the x86 backend that would
+       have placed the memory is not in the program at all. */
+    const int numa_node = vx_topology_numa_node(requested);
+    if (numa_node >= 0) {
+      static bool warned = false;
+      if (!warned) {
+        warned = true;
+        fprintf(stderr,
+                "[Vx XPU] WARNING: node %d asked for its memory; this library "
+                "has no node placement, so the bytes are ordinary host "
+                "memory.\n"
+                "          Results are unaffected and every access is slower "
+                "than a placed allocation. A machine that needs the placement "
+                "must run the x86 backend.\n",
+                numa_node);
+      }
+    }
     return ptr;
   }
 
@@ -1308,19 +1331,33 @@ int32_t vx_plugin_control(uint32_t opcode, void *payload) {
        declared id, then the built-in id it stands for. Kept, so that a
        transfer to the declared id allocates the GPU's memory. A program sends
        the same pairs again from each `pub fn`, so an id already known is a
-       success rather than a second entry. */
+       success rather than a second entry. A *different* built-in id for the
+       same name is not a second entry: whichever pair the lookup found first
+       would decide where that name's memory went, so the answer would depend on
+       the order the program's functions ran in. That is a mistake worth
+       stopping for, and so is a table with no room left. */
     const int32_t *pair = static_cast<const int32_t *>(payload);
     if (!pair) {
       return 0;
     }
     std::lock_guard<std::mutex> lock(local_devices_mutex);
     for (size_t i = 0; i < local_device_count; ++i) {
-      if (local_devices[i].declared == pair[0]) {
-        return 1;
+      if (local_devices[i].declared != pair[0]) {
+        continue;
       }
+      if (local_devices[i].builtin != pair[1]) {
+        fprintf(stderr,
+                "[Vx XPU] FATAL: the topology %d is declared as two local "
+                "devices, %d and %d\n",
+                pair[0], local_devices[i].builtin, pair[1]);
+        abort();
+      }
+      return 1;
     }
     if (local_device_count == kMaxLocalDevices) {
-      return 0;
+      fprintf(stderr, "[Vx XPU] FATAL: more than %zu declared local devices\n",
+              kMaxLocalDevices);
+      abort();
     }
     local_devices[local_device_count++] = {pair[0], pair[1]};
     return 1;

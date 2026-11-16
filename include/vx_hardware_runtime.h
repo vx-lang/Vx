@@ -41,8 +41,7 @@ typedef enum {
 /// host cannot read must refuse, or at least complain, when it is told the
 /// program believes otherwise -- see the note in cuda_dispatch.cpp.
 void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
-                                   uint32_t topology_id,
-                                   uint32_t space_access);
+                                   uint32_t topology_id, uint32_t space_access);
 
 /// Per-argument ABI tag layout, produced by abiTagForType/LaunchOpLowering in
 /// src/dialect/VxLowering.cpp.
@@ -427,9 +426,10 @@ vx_payload_field(const void *payload, size_t payload_size, const char *key) {
      `image=` does not read the whole image. */
   const int terminated = base[payload_size - 1] == '\0';
 
-  /* Skip the kernel name, then walk the remaining NUL-terminated entries. memchr rather
-     than a byte loop: an `image=` entry holds a whole module's PTX, and looking up a field
-     that is absent walks all of it, on every launch. */
+  /* Skip the kernel name, then walk the remaining NUL-terminated entries.
+     memchr rather than a byte loop: an `image=` entry holds a whole module's
+     PTX, and looking up a field that is absent walks all of it, on every
+     launch. */
   const char *name_end = (const char *)memchr(base, '\0', payload_size);
   if (!name_end) {
     return NULL;
@@ -521,11 +521,10 @@ static inline int32_t vx_payload_abi(const void *payload, size_t payload_size) {
 /// consumer that meets a format it does not know refuses instead of guessing.
 ///
 /// The section starts wherever the text part ended, so it need not be aligned.
-/// A consumer that reads the image as `uint32_t` words -- SPIR-V's header -- has
-/// to copy it to an aligned buffer rather than cast `out`.
-static inline int64_t vx_payload_section(const void *payload,
-                                         size_t payload_size,
-                                         const void **out) {
+/// A consumer that reads the image as `uint32_t` words -- SPIR-V's header --
+/// has to copy it to an aligned buffer rather than cast `out`.
+static inline int64_t
+vx_payload_section(const void *payload, size_t payload_size, const void **out) {
   if (!out) {
     return -3;
   }
@@ -610,6 +609,17 @@ static inline int vx_topology_device_index(int32_t topology_id, int32_t base) {
   return (int)(topology_id - base);
 }
 
+/// The NUMA node an id names, or -1 when the id names no node.
+///
+/// This band is not `VX_TOPO_BAND` wide: node N is `VX_TOPO_NUMA_BASE + N` for
+/// every node up to 899, so that the whole range fits below the slice band.
+static inline int vx_topology_numa_node(int32_t topology_id) {
+  if (topology_id < VX_TOPO_NUMA_BASE || topology_id >= VX_TOPO_SLICE_BASE) {
+    return -1;
+  }
+  return (int)(topology_id - VX_TOPO_NUMA_BASE);
+}
+
 /// The `topo=` payload entry as an integer, or -1 when absent. Absence means a
 /// producer predating the entry, not device 0.
 static inline int32_t vx_payload_topology(const void *payload,
@@ -689,9 +699,9 @@ int32_t vx_plugin_control(uint32_t opcode, void *payload);
 #define VX_CTRL_GET_DEVICE_COUNT                                               \
   0x03 // Returns number of valid Topology::NPU[i] indices
 // A topology or memory space declared in a machine file is a local device.
-// `payload` points to two int32_t: the declared id, then the id of the device it
-// stands for -- 500 for `GPU[0]`, 1000 for a `spirv64` device. A declared id is
-// a hash of its name, so without this a backend cannot tell that it names a
+// `payload` points to two int32_t: the declared id, then the id of the device
+// it stands for -- 500 for `GPU[0]`, 1000 for a `spirv64` device. A declared id
+// is a hash of its name, so without this a backend cannot tell that it names a
 // GPU. Programs send it at the start of `main`. A name the fleet manifest lists
 // is still remote. Returns 1 if kept.
 #define VX_CTRL_LOCAL_DEVICE 0x04
