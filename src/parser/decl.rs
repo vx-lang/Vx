@@ -1862,7 +1862,9 @@ impl<'a> Parser<'a> {
         let compares_text = functions
             .iter()
             .chain(impls.iter().flat_map(|i: &ImplBlock| i.methods.iter()))
-            .any(|f: &Function| crate::syntax::compares_with_a_string_literal(&f.body));
+            .any(|f: &Function| {
+                crate::syntax::compares_with_a_string_literal(&f.body, &self.string_literal_names)
+            });
         if compares_text
             && !imports.iter().any(|i: &ImportDecl| {
                 i.path.len() == 2 && &*i.path[0] == "core" && &*i.path[1] == "c_str"

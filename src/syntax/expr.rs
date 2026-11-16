@@ -1412,15 +1412,23 @@ pub fn locals_with_address_taken(stmts: &[Statement]) -> std::collections::HashS
     names
 }
 
-/// Whether `stmts` compare with a string literal: `==` or `!=` with one, or a `match` arm with a
-/// string literal pattern. Such code calls `core::c_str`.
-pub fn compares_with_a_string_literal(stmts: &[Statement]) -> bool {
+/// Whether `stmts` compare with a string literal: `==` or `!=` with one or with a name in
+/// `literal_names`, or a `match` arm with a string literal pattern. Such code calls
+/// `core::c_str`.
+pub fn compares_with_a_string_literal(
+    stmts: &[Statement],
+    literal_names: &std::collections::HashSet<Symbol>,
+) -> bool {
+    let is_text = |e: &Expr| match e {
+        Expr::StringLiteral(_) => true,
+        Expr::Identifier(id) => literal_names.contains(&id.name),
+        _ => false,
+    };
     let mut found = false;
     visit_exprs(stmts, &mut |e| match e {
         Expr::RelationalOp(r)
             if matches!(r.op, RelationalOp::Eq | RelationalOp::NotEq)
-                && (matches!(&*r.lhs, Expr::StringLiteral(_))
-                    || matches!(&*r.rhs, Expr::StringLiteral(_))) =>
+                && (is_text(&r.lhs) || is_text(&r.rhs)) =>
         {
             found = true
         }

@@ -1,0 +1,65 @@
+//===- names_for_string_literals_compare_text.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `let` without `mut` whose value is a string literal is a name for the literal. `==` and
+// `!=` on such a name compare the text, as they do on the literal. Each literal is its own
+// copy in memory, so a compare of the addresses gives false for `a == b`. No line compares
+// with a literal, so only the names bring in `core::c_str`, where the text compare is.
+//
+// A `let mut` name, or a name that a later `let` binds to another pointer, compares the
+// addresses, as for any raw pointer. `heap` holds the text "abc" at an address that no literal
+// has, so each of these compares gives false.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}a == b: true, a != b: false, a == c: false{{$}}
+// CHECK: {{^}}hello: true, hell: false, hello!: false{{$}}
+// CHECK: {{^}}mut: false, shadowed: false, shadowed in a block: false{{$}}
+// CHECK: {{^}}the name outside the block: true{{$}}
+
+import std::string;
+
+fn is_hello(s : *const i8) -> bool {
+  let hello = "hello";
+  return hello == s;
+}
+
+fn mut_name(s : *const i8, other : bool) -> bool {
+  let mut m = "abc";
+  if other {
+    m = "abd";
+  }
+  return m == s;
+}
+
+fn shadowed(s : *const i8, t : *const i8) -> bool {
+  let a = "abc";
+  let a = s;
+  return a == t;
+}
+
+fn shadowed_in_a_block(s : *const i8, t : *const i8, inner : bool) -> bool {
+  let a = "abc";
+  if inner {
+    let a = s;
+    return a == t;
+  }
+  return a == t;
+}
+
+fn main() -> i32 {
+  let a = "abc";
+  let b = "abc";
+  let c = "abd";
+  println!("a == b: {}, a != b: {}, a == c: {}", a == b, a != b, a == c);
+  println!("hello: {}, hell: {}, hello!: {}", is_hello("hello"), is_hello("hell"), is_hello("hello!"));
+  let mut copy = unsafe { String::from_c_str(a) };
+  let heap = copy.as_c_str();
+  println!("mut: {}, shadowed: {}, shadowed in a block: {}", mut_name(heap, false), shadowed(heap, a), shadowed_in_a_block(heap, a, true));
+  println!("the name outside the block: {}", shadowed_in_a_block(heap, heap, false));
+  return 0;
+}
