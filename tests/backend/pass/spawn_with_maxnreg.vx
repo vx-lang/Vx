@@ -9,9 +9,9 @@
 // CHECK: .maxnreg 96
 
 fn scale(
-    out: &mut Tensor<f32, [16, 256], Memory::GPU_HBM>,
-    inp: &Tensor<f32, [16, 256], Memory::GPU_HBM>,
-    factor: f32
+out: &mut Tensor<f32, [16, 256], Memory::GPU_HBM>,
+inp: &Tensor<f32, [16, 256], Memory::GPU_HBM>,
+factor: f32
 ) -> void {
   spawn on(Topology::GPU[0]) maxnreg 96 {
     for y in 0..16 across blocks {
