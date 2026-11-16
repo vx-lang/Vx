@@ -27,10 +27,10 @@
 // RUN: vxc %s --action emit-llvm 2>/dev/null | FileCheck %s --check-prefix=IR
 // RUN: vxc %s --action emit-llvm --legacy-codegen 2>/dev/null | FileCheck %s --check-prefix=AST_IR
 //
-// FLAT: Warning in function `mut_view_copies`: this transfer copies the tensor. The device can read it in place only when it is a `&` parameter of this function, or a view of memory from a `*const` pointer.
+// FLAT: Warning in function `mut_view_copies`: this transfer copies the tensor. The device can read it in place only when it is a `&` parameter of this function or reached through one, or a view of memory from a `*const` pointer.
 // The AST code generator's warnings come in the order of its module.
 // AST: .vx:115:{{[0-9]+}}: a transfer to device memory copies a tensor, because the call to `sum_on_device` can change the copy or keep it.
-// AST: .vx:131:{{[0-9]+}}: this transfer copies the tensor. The device can read it in place only when it is a `&` parameter of this function, or a view of memory from a `*const` pointer.
+// AST: .vx:131:{{[0-9]+}}: this transfer copies the tensor. The device can read it in place only when it is a `&` parameter of this function or reached through one, or a view of memory from a `*const` pointer.
 // AST: .vx:124:{{[0-9]+}}: a transfer to device memory copies a tensor, because the call to `sum_on_device` can change the copy or keep it.
 //
 // OUT: param=150;

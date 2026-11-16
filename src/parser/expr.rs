@@ -1070,6 +1070,7 @@ impl<'a> Parser<'a> {
                     is_async,
                     shared: false,
                     read_only_source: false,
+                    source_borrowed_for_call: false,
                     span: Span {
                         line: peeked_token.line,
                         column: peeked_token.column,

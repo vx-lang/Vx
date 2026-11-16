@@ -1834,6 +1834,9 @@ impl<'r> Lowerer<'r> {
                 if t.read_only_source {
                     flag |= crate::bytecode::TRANSFER_READ_ONLY_SOURCE;
                 }
+                if t.source_borrowed_for_call {
+                    flag |= crate::bytecode::TRANSFER_SOURCE_BORROWED_FOR_CALL;
+                }
                 let flag = Register(flag);
                 let placed = self.emit_typed(Opcode::Transfer, src.reg, flag, result_ty, imm);
                 if let Some(body) = body {

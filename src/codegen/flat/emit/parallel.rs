@@ -109,10 +109,12 @@ impl FnEmit<'_> {
         let user_lowered = ins.operand2.0 & crate::bytecode::TRANSFER_USER_LOWERED;
         let is_async = ins.operand2.0 & crate::bytecode::TRANSFER_ASYNC;
         let read_only_source = ins.operand2.0 & crate::bytecode::TRANSFER_READ_ONLY_SOURCE;
+        let borrowed_for_call = ins.operand2.0 & crate::bytecode::TRANSFER_SOURCE_BORROWED_FOR_CALL;
         let arrivals = ins.operand2.0
             & !(crate::bytecode::TRANSFER_USER_LOWERED
                 | crate::bytecode::TRANSFER_ASYNC
-                | crate::bytecode::TRANSFER_READ_ONLY_SOURCE);
+                | crate::bytecode::TRANSFER_READ_ONLY_SOURCE
+                | crate::bytecode::TRANSFER_SOURCE_BORROWED_FOR_CALL);
         if let Some(i) = (arrivals as usize).checked_sub(1) {
             let length = self.strings.get(i).ok_or(crate::emitter_gap!())?;
             attrs += &format!(", vx.arrivals = \"{length}\"");
@@ -127,6 +129,9 @@ impl FnEmit<'_> {
         }
         if read_only_source != 0 {
             attrs += ", read_only_source";
+        }
+        if borrowed_for_call != 0 {
+            attrs += ", source_borrowed_for_call";
         }
         self.body +=
             &format!("  {n} = \"vx.transfer\"({src}) {{{attrs}}} : ({srcty}) -> {dstty}\n");

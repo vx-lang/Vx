@@ -1683,6 +1683,7 @@ impl<'a> TypeChecker<'a> {
             e => e,
         };
         t.read_only_source = t.shared && self.const_pointer_in_place(source_place).is_some();
+        t.source_borrowed_for_call = t.shared && self.borrowed_for_the_call(source_place);
 
         // Capacity: a statically-shaped tensor transferred into a declared space must fit.
         if let Some((e, d)) = Self::tensor_of(&inner_ty) {
@@ -2381,6 +2382,7 @@ impl<'a> TypeChecker<'a> {
                 is_async: false,
                 shared: false,
                 read_only_source: false,
+                source_borrowed_for_call: false,
                 span: t.span,
             });
         }
@@ -2395,6 +2397,7 @@ impl<'a> TypeChecker<'a> {
             is_async: t.is_async,
             shared: false,
             read_only_source: false,
+            source_borrowed_for_call: false,
             span: t.span,
         });
         // Propagate the relaxed marker so each rewritten single-hop transfer is checked with the

@@ -2084,6 +2084,35 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Whether `place` is reached through a shared reference (`&T`) that a parameter holds, and
+    /// the parameter is not declared `mut`: `t` with `t : &Tensor`, or `layer.codes` with
+    /// `layer : &Layer` or `codes : &Tensor`. Nothing can write such a place until the call
+    /// returns. A local reference does not count: its borrow can end before the function does.
+    pub(crate) fn borrowed_for_the_call(&self, place: &Expr) -> bool {
+        let mut place = crate::syntax::expr::bare_unsafe_value(place);
+        let mut through_shared = false;
+        loop {
+            if matches!(
+                self.check_expr_type_probe(place),
+                Type::Borrow { is_mut: false, .. }
+            ) {
+                through_shared = true;
+            }
+            let base = match place {
+                Expr::Identifier(id) => {
+                    return through_shared
+                        && self.borrow.current_params.contains_key(&id.name)
+                        && !self.is_mutable(id.name.as_ref());
+                }
+                Expr::MemberAccess(m) => &*m.base,
+                Expr::IndexAccess(i) => &*i.base,
+                Expr::Dereference(d) => &*d.expr,
+                _ => return false,
+            };
+            place = crate::syntax::expr::bare_unsafe_value(base);
+        }
+    }
+
     /// E4006 for a change, `what`, to memory that `place` reaches through a `*const` pointer.
     pub(crate) fn check_const_pointer_change(&mut self, place: &Expr, what: &str) {
         if self.speculating {
