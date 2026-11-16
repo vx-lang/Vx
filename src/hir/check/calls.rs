@@ -743,11 +743,13 @@ impl<'a> TypeChecker<'a> {
                 continue;
             }
             if !*is_borrow_lit {
+                // What the result keeps of an argument behind a `&` is a shared borrow, also
+                // when the result is a `*mut`: nothing mutable comes through a `&`.
                 self.track_reference_arg_borrow(
                     base,
                     path.clone(),
                     *is_mut_param,
-                    plan.result_is_mut || (plan.ret_holds_ref && *is_mut_param),
+                    *is_mut_param && (plan.result_is_mut || plan.ret_holds_ref),
                     persists(*i),
                     span,
                 );
