@@ -1,0 +1,55 @@
+//===- a_gpu_kernel_reads_host_memory_through_a_pointer_cast.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// On the M4, the CPU and the GPU share one memory, and the machine file says so with a
+// `transfer Memory::CPU_DRAM -> Memory::HBM : shared` edge. So `p as *mut f32 in Memory::HBM`
+// makes a pointer to host memory into a pointer to GPU memory, and `tensor_view_2d` views it as a
+// tensor that a GPU kernel reads, with no copy. A program can view the pages of a mapped file
+// this way.
+//
+// The kernel doubles each element. On a computer with no GPU, it runs its CPU copy.
+//
+// A `transfer` into HBM is still a copy. The compiler skips only the copy of a transfer back
+// to the CPU, so the transfer of `copy_to_gpu` is not `shared`.
+//
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/m4-uma.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx --emit-mlir -o - 2>/dev/null | FileCheck %s --check-prefix=MLIR
+// CHECK: doubled: 0 14 34
+// MLIR-LABEL: func.func @copy_to_gpu(
+// MLIR: "vx.transfer"(%arg0) {{.*}} scope = "device", space = "HBM"}
+
+pub fn copy_to_gpu(t : &Tensor<f32, [2, 8]>) -> Tensor<f32, [2, 8], Memory::HBM> {
+  return transfer(t, Memory::HBM);
+}
+
+fn double(y : &mut Tensor<f32, [?, ?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>, rows : i32, cols : i32) -> void {
+  spawn on(Topology::Device) {
+    for i in 0..rows across blocks {
+      for k in 0..cols across lanes(32) {
+        y[i][k] = x[i][k] * 2.0;
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut host = Tensor<f32, [2, 8]>::new();
+  for i in 0..2 {
+    for k in 0..8 {
+      host[i][k] = (i * 10 + k) as f32;
+    }
+  }
+  let p = host.as_mut_ptr();
+  let x = unsafe { tensor_view_2d(p as *mut f32 in Memory::HBM, 2, 8) };
+  let mut y = transfer(Tensor<f32, [2, 8]>::fill(0.0), Memory::HBM);
+  double(&mut y, &x, 2, 8);
+  let r = transfer(y, Memory::CPU_DRAM);
+  println!("doubled: {} {} {}", r[0][0], r[0][7], r[1][7]);
+  return 0;
+}

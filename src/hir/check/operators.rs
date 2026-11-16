@@ -358,6 +358,33 @@ impl<'a> TypeChecker<'a> {
             {
                 return target_ty;
             }
+            // `p as *mut T in Memory::HBM`: the same address, read from another memory space.
+            // This is right only when the two spaces are one memory, which a machine file says
+            // with a `: shared` edge from the space of `p` to the new one.
+            (Type::Pointer(from, from_space, _), Type::Pointer(to, to_space, _)) if from == to => {
+                let space = |p: &Option<crate::syntax::Placement>| {
+                    p.as_ref().map_or(crate::syntax::MemorySpace::CPUDRAM, |p| {
+                        self.placement_space(p)
+                    })
+                };
+                let (src, dst) = (space(from_space), space(to_space));
+                if !self.transfer_cost_graph.is_shared_edge(&src, &dst) {
+                    let (src, dst) = (src.name(), dst.name());
+                    self.errors.push(format!(
+                        "cannot cast `{source_ty}` to `{target_ty}`: the machine file has no \
+                         `transfer Memory::{src} -> Memory::{dst} : shared` edge, so `{dst}` may be other memory. \
+                         Use `transfer` to copy the data"
+                    ));
+                    return Type::Unknown;
+                }
+                if self.unsafe_is_missing() {
+                    self.errors.push(format!(
+                        "casting `{source_ty}` to `{target_ty}` requires an unsafe block: the \
+                         compiler cannot check that the memory stays valid"
+                    ));
+                }
+                return target_ty;
+            }
             (Type::Scalar(_), Type::Pointer(_, _, _)) => {
                 // Allow casting integers to pointers (e.g. 0 as *mut T)
                 if self.unsafe_is_missing() {
