@@ -1,0 +1,42 @@
+// The prover reasons about integers only. A branch condition on floats is left out of its facts,
+// with a warning, and the call to `get` in the branch is still proved from `n >= 0`. A float
+// literal used to reach z3 in an integer query, which stopped the compiler. Two float names used
+// to become integers, whose facts are wrong for a float.
+// WARN: .vx:15:7: the prover ignores a condition here: it cannot reason about a comparison of floats
+// WARN: .vx:24:7: the prover ignores a condition here: it cannot reason about a comparison of floats
+
+fn get(i : i64) -> i64 requires i >= 0 {
+  return i;
+}
+
+fn above_zero(n : i64, x : f32) -> i64 {
+  if x > 0.0 {
+    if n >= 0 {
+      return get(n);
+    }
+  }
+  return 0;
+}
+
+fn above_other(n : i64, x : f32, y : f32) -> i64 {
+  if x > y {
+    if n >= 0 {
+      return get(n);
+    }
+  }
+  return 0;
+}
+
+// Two stores to different elements, under a guard on a float parameter.
+fn scale_pairs(out : *mut f32, x : *const f32, pairs : i32, eps : f32) -> void {
+  if eps <= 0.0 {
+    return;
+  }
+  unsafe { for t in 0..pairs { out[t] = x[t] * eps; out[pairs + t] = x[t]; } }
+  return;
+}
+
+fn main() -> i32 {
+  print(above_zero(3, 1.0) + above_other(4, 2.0, 1.0));
+  return 0;
+}
