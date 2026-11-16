@@ -1124,6 +1124,8 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       kernelOp->setAttr("arch", arch);
     if (auto chip = op->getAttrOfType<StringAttr>("chip"))
       kernelOp->setAttr("chip", chip);
+    if (auto maxnreg = op->getAttrOfType<IntegerAttr>("vx.maxnreg"))
+       kernelOp->setAttr("vx.maxnreg", maxnreg);
     // The function that holds the region, and the function parameter that
     // fills each kernel parameter (-1 for a value that is not a parameter).
     // `--emit-ptx` names the kernel and describes its parameters from these.
@@ -7247,6 +7249,10 @@ struct ConvertVxToStandardPass
         if (blockThreads > 256)
           gpuFunc->setAttr("nvvm.maxntid",
                            inner.getDenseI32ArrayAttr({blockThreads, 1, 1}));
+      }
+
+      if (auto maxnreg = kernel->getAttrOfType<IntegerAttr>("vx.maxnreg")) {
+        gpuFunc->setAttr("nvvm.maxnreg", maxnreg);
       }
 
       // The whole region, not its entry block. What the outliner produces is

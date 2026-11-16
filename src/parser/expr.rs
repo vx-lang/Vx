@@ -1410,6 +1410,21 @@ impl<'a> Parser<'a> {
                         self.consume(&TokenType::LeftParen, "Expected '('")?;
                         let top = self.parse_topology()?;
                         self.consume(&TokenType::RightParen, "Expected ')'")?;
+                        let mut maxnreg = None;
+                        if self.match_token(&TokenType::Maxnreg) {
+                            if let TokenType::Number(n_str) = self.peek().kind.clone() {
+                                self.advance();
+                                if let Ok(val) = n_str.parse::<u32>() {
+                                    maxnreg = Some(val);
+                                } else {
+                                    return Err(
+                                        self.error("Expected a valid integer after maxnreg")
+                                    );
+                                }
+                            } else {
+                                return Err(self.error("Expected a number after maxnreg"));
+                            }
+                        }
                         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
                         let mut stmts = Vec::new();
                         let mut ret_expr = None;
@@ -1432,22 +1447,26 @@ impl<'a> Parser<'a> {
                             stmts.append(&mut self.pending_stmts);
                         }
                         self.consume(&TokenType::RightBrace, "Expected '}'")?;
-                        Expr::SpawnOn(SpawnOnExpr {
+                        let mut spawn_expr = SpawnOnExpr::new(
                             top,
                             stmts,
-                            ret: ret_expr,
-                            span: Span {
+                            ret_expr,
+                            Span {
                                 line: token.line,
                                 column: token.column,
                                 length: token.length,
                                 expansion: self.expansion(),
                             },
-                            arrivals: None,
-                        })
+                        );
+
+                        spawn_expr.maxnreg = maxnreg;
+
+                        Expr::SpawnOn(spawn_expr)
                     }
                     TokenType::Unknown('"') => {
                         return Err(self.error_at(&token, super::UNCLOSED_STRING))
                     }
+
                     _ => {
                         return Err(self.error_at(
                             &token,
@@ -3124,6 +3143,30 @@ mod tests {
                 "Expected Assign statement for second statement, got {:?}",
                 other
             ),
+        }
+    }
+
+    #[test]
+    fn test_parse_spawn_with_maxnreg() {
+        let input = r#"
+            fn main() -> i32 {
+                spawn on(Topology::GPU) maxnreg 96 {
+                    let x = 1;
+                }
+                return 0;
+            }
+        "#;
+        let program = parse_program(input);
+        let func = &program.functions[0];
+
+        match &func.body[0] {
+            Statement::ExprStmt(stmt) => match &stmt.expr {
+                Expr::SpawnOn(spawn) => {
+                    assert_eq!(spawn.maxnreg, Some(96), "maxnreg was not parsed correctly");
+                }
+                other => panic!("Expected SpawnOn, got {:?}", other),
+            },
+            other => panic!("Expected ExprStmt, got {:?}", other),
         }
     }
 }

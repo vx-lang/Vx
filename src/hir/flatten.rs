@@ -2297,16 +2297,22 @@ impl<'r> Lowerer<'r> {
             // `let v = spawn on(..) { .. }`: the region's tail is the value. A region with no
             // value, the trailing expression of an `unsafe` block, gets the placeholder a void
             // call gets: a type never read.
-            Expr::SpawnOn(sp) => match self.lower_spawn(sp, sp.ret.is_some())? {
-                Some(v) => Ok(v),
-                None => Ok(self.emit_value(
-                    Opcode::Const,
-                    Register(0),
-                    Register(0),
-                    ElementType::I32,
-                    0,
-                )),
-            },
+            Expr::SpawnOn(sp) => {
+                if sp.maxnreg.is_some() {
+                    return Err(Decline::UnsupportedExpr("SpawnOn with maxnreg"));
+                }
+
+                match self.lower_spawn(sp, sp.ret.is_some())? {
+                    Some(v) => Ok(v),
+                    None => Ok(self.emit_value(
+                        Opcode::Const,
+                        Register(0),
+                        Register(0),
+                        ElementType::I32,
+                        0,
+                    )),
+                }
+            }
             Expr::InlineMlir(im) => self.lower_inline_mlir(im),
             // `let status = print!(..)`: the arguments print as in statement position, and the
             // value is a placeholder `i32`; the status the AST path's helper returns is never
