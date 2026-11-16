@@ -3446,6 +3446,8 @@ impl<'a> TypeChecker<'a> {
                     }
                     let change = format!("`{method}` takes `&mut self`, so it can change");
                     self.check_field_change(obj, &change);
+                    let what = format!("`{method}` takes `&mut self`, and this calls it on");
+                    self.check_const_pointer_change(obj, &what);
                 } else if matches!(base_ty, Type::Borrow { is_mut: false, .. }) && !self.speculating
                 {
                     self.errors.error_with_code(
