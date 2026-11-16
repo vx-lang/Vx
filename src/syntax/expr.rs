@@ -698,15 +698,28 @@ impl JvpExpr {
 /// an arm ending in a bare expression: `match x { 0 => { 7 }, _ => { 9 } }` computed 7 and 9 and
 /// then returned the default, silently.
 pub fn match_yields_a_value(m: &MatchExpr) -> bool {
-    m.arms.iter().any(|a| {
-        matches!(
-            a.body.last(),
-            Some(Statement::ExprStmt(ExprStmtStmt {
-                has_semi: false,
-                ..
-            }))
-        )
-    })
+    m.arms.iter().any(|a| block_gives_a_value(&a.body))
+}
+
+/// Whether `body`, a `match` arm or an `if` branch, gives a value: its last statement is an
+/// expression with no `;`. A last `match` or `if` gives a value only when one of its own arms or
+/// branches does. So an arm that ends in a `match` whose arms all `return` gives none.
+pub fn block_gives_a_value(body: &[Statement]) -> bool {
+    match body.last() {
+        Some(Statement::ExprStmt(ExprStmtStmt {
+            expr,
+            has_semi: false,
+            ..
+        })) => match expr {
+            Expr::Match(m) => match_yields_a_value(m),
+            Expr::If(i) => {
+                block_gives_a_value(&i.then_block)
+                    || i.else_block.as_deref().is_some_and(block_gives_a_value)
+            }
+            _ => true,
+        },
+        _ => false,
+    }
 }
 
 /// Whether control can reach the end of `stmts`, or whether every path out of it returns.
@@ -1415,15 +1428,23 @@ pub fn locals_with_address_taken(stmts: &[Statement]) -> std::collections::HashS
 /// The start of the name of the `let` that the parser adds for the sum in `let r = (v + w)[1]`.
 pub const INDEXED_TEMPORARY: &str = "$indexed";
 
-/// Whether `stmts` compare with a string literal: `==` or `!=` with one, or a `match` arm with a
-/// string literal pattern. Such code calls `core::c_str`.
-pub fn compares_with_a_string_literal(stmts: &[Statement]) -> bool {
+/// Whether `stmts` compare with a string literal: `==` or `!=` with one or with a name in
+/// `literal_names`, or a `match` arm with a string literal pattern. Such code calls
+/// `core::c_str`.
+pub fn compares_with_a_string_literal(
+    stmts: &[Statement],
+    literal_names: &std::collections::HashSet<Symbol>,
+) -> bool {
+    let is_text = |e: &Expr| match e {
+        Expr::StringLiteral(_) => true,
+        Expr::Identifier(id) => literal_names.contains(&id.name),
+        _ => false,
+    };
     let mut found = false;
     visit_exprs(stmts, &mut |e| match e {
         Expr::RelationalOp(r)
             if matches!(r.op, RelationalOp::Eq | RelationalOp::NotEq)
-                && (matches!(&*r.lhs, Expr::StringLiteral(_))
-                    || matches!(&*r.rhs, Expr::StringLiteral(_))) =>
+                && (is_text(&r.lhs) || is_text(&r.rhs)) =>
         {
             found = true
         }

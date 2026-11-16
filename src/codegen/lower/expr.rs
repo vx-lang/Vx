@@ -5360,7 +5360,7 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
                     expr,
                     has_semi: false,
                     ..
-                })) => Some((arm, expr)),
+                })) if syntax::expr::block_gives_a_value(&arm.body) => Some((arm, expr)),
                 _ => None,
             })
             .collect();

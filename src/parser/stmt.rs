@@ -157,6 +157,9 @@ impl<'a> Parser<'a> {
                         span: Span::default(),
                     }));
                 }
+                if !is_mut && matches!(expr, Expr::StringLiteral(_)) {
+                    self.string_literal_names.insert(name.clone().into());
+                }
                 Ok(Statement::LetDecl(LetDeclStmt {
                     // The `let` keyword's own token: a diagnostic about the binding (a type
                     // mismatch, an unused variable) points at the declaration, not at 0:0.

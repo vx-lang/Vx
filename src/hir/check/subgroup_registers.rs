@@ -31,7 +31,7 @@ const REGISTERS_A_LANE: u64 = 128;
 enum Gpu {
     /// `mma.sync.m16n8k16`: tiles of f16 or bf16, in sizes of 16 x 8 x 16.
     TensorCores,
-    /// The simdgroup matrices of the Apple GPU: tiles of f16 or f32, in sizes of 8.
+    /// The simdgroup matrices of the Apple GPU: tiles of f16 or f32, each one alone, in sizes of 8.
     Simdgroups,
 }
 
@@ -312,19 +312,22 @@ impl Walk<'_> {
             return;
         }
         let fits = match (self.tile(m.lhs), self.tile(m.rhs)) {
-            (Some((a, [m_, k])), Some((b, [k2, n])))
-                if a == b && m_ == rows && n == cols && k == k2 =>
-            {
+            (Some((a, [m_, k])), Some((b, [k2, n]))) if m_ == rows && n == cols && k == k2 => {
                 match self.gpu {
+                    // `mma.sync` takes two tiles of one type.
                     Gpu::TensorCores => {
-                        matches!(a, ElementType::F16 | ElementType::BF16)
+                        a == b
+                            && matches!(a, ElementType::F16 | ElementType::BF16)
                             && rows % 16 == 0
                             && cols % 8 == 0
                             && k % 16 == 0
                             && k > 0
                     }
+                    // Each tile loads into its own simdgroup matrix, of f16 or f32.
                     Gpu::Simdgroups => {
-                        matches!(a, ElementType::F16 | ElementType::F32)
+                        [a, b]
+                            .iter()
+                            .all(|t| matches!(t, ElementType::F16 | ElementType::F32))
                             && rows % 8 == 0
                             && cols % 8 == 0
                             && k % 8 == 0
