@@ -3038,7 +3038,7 @@ impl<'a> TypeChecker<'a> {
             }
             // `void` is spelled as a struct name in this type system.
             Some(Type::Struct("void".into(), None))
-        } else if let Some(rank) = crate::syntax::expr::tensor_view_rank(resolved_name.as_ref()) {
+        } else if let Some(rank) = crate::syntax::expr::tensor_view_rank(resolved_name) {
             // A rank-1 or rank-2 tensor over memory it does not own, with no copy (#336).
             // The element type comes from the pointer, so the view cannot
             // reinterpret f32 storage as f64 by accident.
