@@ -767,8 +767,10 @@ impl<'a> TypeChecker<'a> {
                     s.name.split('<').next().unwrap_or(&s.name).into();
                 Type::Struct(base, None)
             }
-            // An element of a tensor is a number, so a store into one, such as
-            // `y[r] = lanes::sum(&part, 256)`, holds no reference.
+            // An element of a tensor is a number, and `out[g]` of a tensor with more dimensions
+            // is a tensor of the rest. Neither holds a reference, so a store into one, such as
+            // `y[r] = lanes::sum(&part, 256)` or `lanes::copy(&mut out[g], &acc[w], ..)`, keeps
+            // nothing.
             Expr::IndexAccess(ix) => {
                 let base = match self.check_expr_type_probe(&ix.base) {
                     Type::Borrow { inner, .. } | Type::Ref(inner, _) => *inner,
@@ -776,6 +778,9 @@ impl<'a> TypeChecker<'a> {
                 };
                 match base {
                     Type::Tensor(el, dims, _) if dims.len() <= 1 => Type::Scalar(el),
+                    Type::Tensor(el, dims, top) if !matches!(&*ix.index, Expr::Range(_)) => {
+                        Type::Tensor(el, dims[1..].to_vec(), top)
+                    }
                     _ => Type::Unknown,
                 }
             }
