@@ -59,26 +59,96 @@ no unit test had asked.</p>
 
 <h2 id="what-vxvector-does"><a href="#what-vxvector-does">What VxVector does</a></h2>
 
-<p>A vector index such as VectorChord's <code>vchordrq</code> groups vectors around centroids,
-then searches only the groups near a query. The centroids come from k-means. Training k-means is
-the slow part of building the index, and it is a good fit for a GPU.</p>
+<p>An application that stores embeddings in PostgreSQL usually wants the nearest ones to a query:
+the ten documents closest to a question, or the images most like a photo. An exact search compares
+the query with every row. That is too slow for millions of rows, so a vector index searches only a
+part of the table.</p>
+
+<p>VectorChord's <code>vchordrq</code> index is an IVF index ("inverted file"). It groups the
+vectors into lists, one list for each centroid. A query first finds the centroids nearest to it,
+then searches only their lists. The centroids come from k-means, and their quality decides how many
+true neighbors a query finds. Training k-means is also the slow part of building the index. Each
+iteration compares every sampled vector with every centroid, which is a good fit for a GPU.</p>
+
+<h3 id="the-projects-it-builds-on"><a href="#the-projects-it-builds-on">The projects it builds on</a></h3>
+
+<p>VxVector does not replace a vector database. It adds one step to tools that already work, and
+it borrows its design from them.</p>
+
+<ul>
+  <li><a href="https://github.com/pgvector/pgvector">pgvector</a> gives PostgreSQL the
+  <code>vector</code> type and the distance operators: <code>&lt;-&gt;</code> for L2,
+  <code>&lt;#&gt;</code> for inner product and <code>&lt;=&gt;</code> for cosine. VxVector reads
+  pgvector columns, and queries use these operators unchanged.</li>
+  <li><a href="https://github.com/tensorchord/VectorChord">VectorChord</a>, by TensorChord, provides
+  the <code>vchordrq</code> index and serves every query. Normally it trains its own centroids
+  inside <code>CREATE INDEX</code>. It also has an
+  <a href="https://docs.vectorchord.ai/vectorchord/usage/external-index-precomputation.html">external
+  build</a>: you give it a table of centroids, and it builds the index from them. That table is the
+  whole interface between VxVector and VectorChord. VectorChord's own trainer is also our recall
+  baseline.</li>
+  <li><a href="https://github.com/EnterpriseDB/pgpu">pgpu</a>, by EnterpriseDB, is the direct
+  inspiration. It trains the centroids on an NVIDIA GPU with
+  <a href="https://github.com/rapidsai/cuvs">cuVS</a> and hands them to VectorChord through the
+  same external build. We read its source to learn the exact centroid table and the
+  <code>CREATE INDEX</code> options it uses. VxVector's SQL function follows the arguments of
+  <code>pgpu.create_vector_index_on_gpu</code>, so a pgpu user already knows most of its
+  API.</li>
+  <li><a href="https://github.com/facebookresearch/faiss">Faiss</a> is the reference for
+  correctness. Our tests compare the CPU kernel with Faiss 1.15.1 in 48 matched cases, with the
+  same samples, starting centers and iteration count.</li>
+</ul>
+
+<p>pgpu uses a GPU library that NVIDIA's engineers tuned. VxVector writes its kernels as plain Vx
+loops and lets the compiler generate the GPU code. It differs from pgpu in three more ways. Training
+runs in a separate process. The same kernels run on an Apple GPU through Metal. And the extension
+chooses the CPU when no usable GPU is present. A comparison with cuVS on the same NVIDIA GPU is on
+the plan, but we have not run it yet.</p>
+
+<h3 id="one-sql-call"><a href="#one-sql-call">One SQL call</a></h3>
 
 <p>VxVector adds one SQL function:</p>
 
 <pre><code><span class="k">SELECT</span> vxvector.<span class="f">create_vector_index</span>(
     <span class="n">'public.items'</span>, <span class="n">'features'</span>, <span class="k">ARRAY</span>[<span class="n">256</span>],
-    distance_operator =&gt; <span class="n">'l2'</span>, centroid_table =&gt; <span class="n">'items_centroids'</span>);</code></pre>
+    sampling_factor =&gt; <span class="n">40</span>,
+    kmeans_iterations =&gt; <span class="n">10</span>,
+    distance_operator =&gt; <span class="n">'l2'</span>,
+    seed =&gt; <span class="n">42</span>,
+    centroid_table =&gt; <span class="n">'items_centroids'</span>,
+    index_name =&gt; <span class="n">'items_idx'</span>);</code></pre>
+
+<p><code>ARRAY[256]</code> asks for 256 lists. <code>ARRAY[16, 256]</code> asks for a two-level
+tree: 16 top centroids, each with its own leaves. The distance can be <code>l2</code>,
+<code>ip</code> or <code>cos</code>. Other options set the number of restarts, normalize the
+centroids for directional data, or stop after the centroid table without building the index.</p>
 
 <p>The call does five things:</p>
 
 <ol>
   <li>It reads the table in PostgreSQL and streams the rows to a separate worker process. A crash
   or a timeout kills the worker, not the database.</li>
-  <li>The worker samples the rows in Vx, with one seeded sampler for every backend.</li>
+  <li>The worker samples at most 40 rows for each list, in Vx. One seeded sampler serves every
+  backend, so the same seed gives the same sample on the CPU and the GPU.</li>
   <li>It chooses the GPU or the CPU before any training starts, and reports which one and why.</li>
-  <li>It trains the centroids and writes them to a table.</li>
-  <li>VectorChord builds its index from that table and serves the queries.</li>
+  <li>It trains the centroids and writes them to a table in VectorChord's format.</li>
+  <li>VectorChord builds its index from that table over all the rows, and serves the queries.</li>
 </ol>
+
+<p>The centroid table is a tree. A flat index has a zero root and one leaf for each list:</p>
+
+<pre><code> id | parent | vector
+----+--------+-------------
+  0 |        | [0,0,...,0]
+  1 |      0 | [c1]
+  2 |      0 | [c2]
+ ...
+256 |      0 | [c256]</code></pre>
+
+<p>Every step runs in the caller's transaction. If any step fails, PostgreSQL rolls back the
+centroid table and the index together, and nothing is left behind. The setting
+<code>vxvector.backend_mode</code> is <code>auto</code> by default. Set it to <code>cpu</code> to
+force the CPU, or to <code>gpu</code> to get an error when no GPU can do the work.</p>
 
 <p>The result is JSON that names the backend, the device and the time of each stage:</p>
 
@@ -86,6 +156,17 @@ the slow part of building the index, and it is a good fit for a GPU.</p>
 "device": "Apple M2 Pro",
 "gpu_version": "Metal, Vx 423a10db",
 "backend_reason": "GPU available and supports the request",</code></pre>
+
+<p>After that, a query is ordinary pgvector SQL. VectorChord picks the index:</p>
+
+<pre><code><span class="k">SET</span> vchordrq.probes = <span class="n">'16'</span>;
+<span class="k">SELECT</span> id <span class="k">FROM</span> items
+<span class="k">ORDER BY</span> features &lt;-&gt; <span class="n">'[...]'</span>::vector
+<span class="k">LIMIT</span> <span class="n">10</span>;</code></pre>
+
+<p>On Linux, the Docker image has no GPU library and trains on the CPU. To train on an Apple GPU
+from SQL, PostgreSQL and the worker must run natively on macOS. We tested that on one machine with
+PostgreSQL 17, pgvector 0.8.2 and VectorChord 1.1.1.</p>
 
 <h2 id="what-is-written-in-vx"><a href="#what-is-written-in-vx">What is written in Vx</a></h2>
 
