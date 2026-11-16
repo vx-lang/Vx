@@ -1108,6 +1108,17 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
   return ptr;
 }
 
+/// A copy into the GPU's memory ends before this returns: the pointer is shared
+/// USM, so the host writes the bytes itself and every later launch is submitted
+/// behind the write. That is a stronger guarantee than `transfer_async` asks
+/// for, so this is `transfer` here, as it is on the CPU backends.
+void *vx_plugin_alloc_and_transfer_async(size_t bytes, void *host_ptr,
+                                         uint32_t topology_id,
+                                         uint32_t space_access) {
+  return vx_plugin_alloc_and_transfer(bytes, host_ptr, topology_id,
+                                      space_access);
+}
+
 uint64_t vx_plugin_dispatch_async(const void *binary_payload,
                                   size_t payload_size, void **device_args,
                                   const int32_t *arg_tags, int64_t num_args) {

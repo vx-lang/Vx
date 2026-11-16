@@ -196,10 +196,14 @@ fn the_list_covers_the_whole_interface() {
     let plugins = plugin_calls_from_the_header();
     assert_eq!(
         plugins.len(),
-        11,
+        12,
         "the public header declares {} plugin calls, and this test was written \
-         against 11: {plugins:?}",
+         against 12: {plugins:?}",
         plugins.len()
+    );
+    assert!(
+        plugins.contains(&"vx_plugin_alloc_and_transfer_async"),
+        "the call `transfer_async` uses is not in the list"
     );
     assert!(
         plugins.contains(&"vx_plugin_arrivals_take")
@@ -223,5 +227,5 @@ fn the_list_covers_the_whole_interface() {
         "the two worker calls are not what the header defines"
     );
 
-    assert_eq!(calls().len(), 23, "the interface is 23 calls today");
+    assert_eq!(calls().len(), 24, "the interface is 24 calls today");
 }
