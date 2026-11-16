@@ -1,0 +1,110 @@
+//===- lane_copies_run_one_pass_ahead.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A loop that copies a tile with `lanes::copy_async` and waits for it in the same pass makes the
+// lanes wait for each copy. On a GPU without TMA, such as an A100, the compiler copies one pass
+// ahead instead. The tile gets a second buffer. The copy of the first pass goes before the loop,
+// and each pass starts the copy of the next pass into the buffer that the pass does not use. A
+// flag (`i1`) says which buffer a pass uses, and the last block of each pass flips it.
+//
+// The other buffer was read in the pass before. So this needs a barrier of the block after the
+// last read of a pass. The end of each lane loop, and the code of the block, have one.
+//
+// `tile_read_after_the_loop` reads the tile after the loop, which would need the buffer of the
+// last pass, so its copies stay as they are. On an H100 the copies use TMA, and stay too. A
+// kernel that `--emit-ptx` writes for an H100 gets no TMA, but its copies stay as well. A way to
+// copy ahead on an H100 would use TMA, and is not here yet.
+//
+// RUN: vxc %s --host default --machine fleet/a100-80.vx --emit-mlir 2>/dev/null | vx-opt --pass-pipeline="builtin.module(convert-vx-to-standard)" | FileCheck %s
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/a100-80.vx --emit-mlir 2>/dev/null | vx-opt --pass-pipeline="builtin.module(convert-vx-to-standard)" | FileCheck %s
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-mlir 2>/dev/null | vx-opt --pass-pipeline="builtin.module(convert-vx-to-standard)" | FileCheck %s --check-prefix=TMA
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t90.ptx
+// RUN: FileCheck %s --check-prefix=SM90 < %t90.ptx
+
+// CHECK-LABEL: gpu.func @vx_npu_kernel_0(
+// Before the loop: the flag says buffer 0, and the copy of the first pass goes into buffer 0.
+// CHECK: memref.store %false, %[[ODD:.*]][] : memref<i1>
+// CHECK: scf.if
+// CHECK: nvgpu.device_async_copy {{.*}}, %[[B0:[0-9]+]][{{.*}} to memref<8x32xf32, 3>
+// The header picks the buffer of this pass and the buffer of the next one.
+// CHECK: %[[THIS:.*]] = arith.select %{{.*}}, %[[B1:[0-9]+]], %[[B0]] : memref<8x32xf32, 3>
+// CHECK-NEXT: %[[NEXT:.*]] = arith.select %{{.*}}, %[[B0]], %[[B1]] : memref<8x32xf32, 3>
+// When there is a next pass, `k + 1 < steps`, its copy goes into the other buffer.
+// CHECK: %[[AFTER:.*]] = arith.addi %{{.*}}, %c1{{(_i32)?(_[0-9]+)?}} : {{i32|index}}
+// CHECK: %[[MORE:.*]] = arith.cmpi slt, %[[AFTER]], %{{.*}} : {{i32|index}}
+// CHECK-NEXT: scf.if %[[MORE]] {
+// CHECK-NEXT: arith.muli %[[AFTER]], %c32
+// CHECK: nvgpu.device_async_copy {{.*}}, %[[NEXT]][{{.*}} to memref<8x32xf32, 3>
+// The lanes read this pass's buffer, and the last block of the pass flips the flag. The two
+// code generators put these blocks in different orders.
+// CHECK-DAG: {{memref.load|memref.reinterpret_cast}} %[[THIS]]{{\[| to}}
+// CHECK-DAG: %[[FLIP:.*]] = arith.xori %{{.*}}, %true{{.*}} : i1
+// CHECK-DAG: memref.store %[[FLIP]], %[[ODD]][] : memref<i1>
+// CHECK-LABEL: gpu.func @vx_npu_kernel_1(
+// CHECK-NOT: arith.select {{.*}} : memref<8x32xf32, 3>
+// CHECK-NOT: memref<i1>
+
+// TMA-LABEL: gpu.func @vx_npu_kernel_0(
+// TMA-NOT: arith.select {{.*}} : memref<8x32xf32, 3>
+// TMA: gpu.func @vx_npu_kernel_1(
+// TMA-NOT: arith.select {{.*}} : memref<8x32xf32, 3>
+
+// With no second buffer, the kernel has two arrays in shared memory: the tile and `acc`.
+// SM90-LABEL: .entry one_tile_a_pass(
+// SM90: vx_npu_kernel_0_smem_1[1024];
+// SM90-NOT: vx_npu_kernel_0_smem_2
+// SM90: .entry tile_read_after_the_loop(
+
+pub fn one_tile_a_pass(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>, steps : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tile = unsafe { Tensor<f32, [8, 32], Memory::SMEM>::uninit() };
+      let mut acc = unsafe { Tensor<f32, [256], Memory::SMEM>::uninit() };
+      for t in 0..256 across lanes(256) {
+        acc[t] = 0.0;
+      }
+      for k in 0..steps {
+        let copy = lanes::copy_async(&mut tile, x, [0, k * 32]);
+        copy.wait();
+        for t in 0..256 across lanes(256) {
+          acc[t] = acc[t] + tile[t / 32][t % 32];
+        }
+      }
+      for t in 0..256 across lanes(256) {
+        out[t] = acc[t];
+      }
+    }
+  }
+  return;
+}
+
+pub fn tile_read_after_the_loop(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>, steps : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tile = unsafe { Tensor<f32, [8, 32], Memory::SMEM>::uninit() };
+      let mut acc = unsafe { Tensor<f32, [256], Memory::SMEM>::uninit() };
+      for t in 0..256 across lanes(256) {
+        acc[t] = 0.0;
+      }
+      for k in 0..steps {
+        let copy = lanes::copy_async(&mut tile, x, [0, k * 32]);
+        copy.wait();
+        for t in 0..256 across lanes(256) {
+          acc[t] = acc[t] + tile[t / 32][t % 32];
+        }
+      }
+      for t in 0..256 across lanes(256) {
+        out[t] = acc[t] + tile[t / 32][t % 32];
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}
