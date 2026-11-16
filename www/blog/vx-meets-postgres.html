@@ -87,11 +87,11 @@ it borrows its design from them.</p>
   build</a>: you give it a table of centroids, and it builds the index from them. That table is the
   whole interface between VxVector and VectorChord. VectorChord's own trainer is also our recall
   baseline.</li>
-  <li><a href="https://github.com/EnterpriseDB/pgpu">pgpu</a>, by EnterpriseDB, is the direct
-  inspiration. It trains the centroids on an NVIDIA GPU with
+  <li><a href="https://github.com/EnterpriseDB/pgpu">pgpu</a>, by EnterpriseDB, started the
+  project. It trains the centroids on an NVIDIA GPU with
   <a href="https://github.com/rapidsai/cuvs">cuVS</a> and hands them to VectorChord through the
-  same external build. We read its source to learn the exact centroid table and the
-  <code>CREATE INDEX</code> options it uses. VxVector's SQL function follows the arguments of
+  same external build. Our first thought was simple: let us do this in Vx. We followed its source
+  for the exact centroid table and the <code>CREATE INDEX</code> options. VxVector's SQL function follows the arguments of
   <code>pgpu.create_vector_index_on_gpu</code>, so a pgpu user already knows most of its
   API.</li>
   <li><a href="https://github.com/facebookresearch/faiss">Faiss</a> is the reference for
@@ -99,11 +99,15 @@ it borrows its design from them.</p>
   same samples, starting centers and iteration count.</li>
 </ul>
 
-<p>pgpu uses a GPU library that NVIDIA's engineers tuned. VxVector writes its kernels as plain Vx
-loops and lets the compiler generate the GPU code. It differs from pgpu in three more ways. Training
-runs in a separate process. The same kernels run on an Apple GPU through Metal. And the extension
-chooses the CPU when no usable GPU is present. A comparison with cuVS on the same NVIDIA GPU is on
-the plan, but we have not run it yet.</p>
+<p>pgpu uses a GPU library that NVIDIA's engineers tuned, and as far as we know it needs NVIDIA
+hardware. VxVector writes its kernels as plain Vx loops and lets the compiler generate the GPU
+code. The same kernels run on an Apple GPU through Metal. When no usable GPU is present, the
+extension trains on the CPU. Training also runs in a separate process, so a GPU failure cannot stop
+the database.</p>
+
+<p>We have not measured VxVector against pgpu yet, because our GPU so far is an Apple one. The
+NVIDIA build of VxVector compiles and links. A comparison with pgpu and cuVS on the same NVIDIA GPU
+comes next.</p>
 
 <h3 id="one-sql-call"><a href="#one-sql-call">One SQL call</a></h3>
 
