@@ -8,7 +8,9 @@
 // Each lane writes 4 or 8 neighbouring bf16 elements of a row of a tile that a tensor-core
 // matmul reads. The compiler moves each 16-byte chunk of such a tile, so that `ldmatrix` reads
 // it without bank conflicts. The elements of a chunk stay next to each other, so the GPU code
-// stores the 4 elements with one 8-byte store, and the 8 elements with one 16-byte store.
+// stores the 4 elements with one 8-byte store, and the 8 elements with one 16-byte store. An LLVM
+// pass of the compiler moves the `k` of `t * 4 + k` out of the swizzled place, so that LLVM sees
+// this.
 //
 // The lane fill of `sb` comes first, and ends with `bar.warp.sync`. `x[n]` is `n % 7`, and every
 // element of `sb` is 1. So element (i, j) of the product is the sum of row `i` of `x`. A Python
@@ -21,6 +23,7 @@
 // RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/a100-80.vx --run 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
 // RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/a100-80.vx --run 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
 // OUT: four each: 379 379 383 383
+// OUT-NEXT: four converted: 379 379 383 383
 // OUT-NEXT: eight each: 762 762 771 771
 
 // CHECK-LABEL: .entry eight_each(
@@ -45,6 +48,41 @@ pub fn eight_each(c : &mut Tensor<f32, [?, ?], Memory::HBM>, x : &Tensor<bf16, [
           for i in 0..16 {
             for k in 0..8 {
               sa[w][i][t * 8 + k] = x[i * 256 + t * 8 + k];
+            }
+          }
+        }
+        acc[w] = (sa[w] as f32) @ (sb[w] as f32);
+        lanes::copy(c, &acc[w], [0, 0]);
+      }
+    }
+  }
+  return;
+}
+
+// The same with `as bf16` on `f32` values, which reads the place of each element from the index
+// of the load.
+// CHECK-LABEL: .entry four_converted(
+// CHECK: bar.warp.sync
+// CHECK: ld.global.nc.v4.b32
+// CHECK-NOT: st.shared.b16
+// CHECK: st.shared.v2.b32
+// CHECK: mma.sync
+pub fn four_converted(c : &mut Tensor<f32, [?, ?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut sa = unsafe {
+        Tensor<bf16, [1, 16, 128], Memory::SMEM>::uninit()
+      };
+      let mut sb = unsafe {
+        Tensor<bf16, [1, 128, 8], Memory::SMEM>::uninit()
+      };
+      let mut acc = unsafe { Tensor<f32, [1, 16, 8], Memory::SMEM>::uninit() };
+      for w in 0..1 across subgroups {
+        lanes::fill(&mut sb[w], 1.0 as bf16);
+        for t in 0..32 across lanes {
+          for i in 0..16 {
+            for k in 0..4 {
+              sa[w][i][t * 4 + k] = x[i * 128 + t * 4 + k] as bf16;
             }
           }
         }
@@ -95,10 +133,19 @@ fn main() -> i32 {
     xs[n] = (n % 7) as bf16;
   }
   let x = transfer(xs, Memory::HBM);
+  let mut fs = Tensor<f32, [2048]>::fill(0.0);
+  for n in 0..2048 {
+    fs[n] = (n % 7) as f32;
+  }
+  let xf = transfer(fs, Memory::HBM);
   let mut c = transfer(Tensor<f32, [16, 8]>::fill(0.0), Memory::HBM);
   four_each(&mut c, &x);
   let r = transfer(c, Memory::CPU_DRAM);
   println!("four each: {} {} {} {}", r[0][0], r[0][7], r[15][0], r[15][7]);
+  let mut e = transfer(Tensor<f32, [16, 8]>::fill(0.0), Memory::HBM);
+  four_converted(&mut e, &xf);
+  let q = transfer(e, Memory::CPU_DRAM);
+  println!("four converted: {} {} {} {}", q[0][0], q[0][7], q[15][0], q[15][7]);
   let mut d = transfer(Tensor<f32, [16, 8]>::fill(0.0), Memory::HBM);
   eight_each(&mut d, &x);
   let s = transfer(d, Memory::CPU_DRAM);
