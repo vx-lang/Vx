@@ -1285,6 +1285,8 @@ pub struct DeclaredArch {
     pub arch: String,
     pub chip: Option<String>,
     pub offload: Option<bool>,
+    /// `crate::arch::shared_memory_capacity`.
+    pub shared_bytes: Option<u64>,
 }
 
 /// The declared-arch table for `EmitCtx::topo_archs`, from the per-compilation env: one entry per
@@ -1305,6 +1307,10 @@ pub fn topo_archs_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i64, Declared
                     .as_ref()
                     .map(|c| c.as_ref().to_string()),
                 offload: Some(decl.descriptor.offload),
+                shared_bytes: crate::arch::shared_memory_capacity(
+                    &decl.descriptor,
+                    env.memories.values().copied(),
+                ),
             };
             let ids = crate::arch::declared_dispatch_ids(&decl.name, decl.descriptor.count);
             Some(ids.into_iter().map(move |id| (id as i64, declared.clone())))
@@ -1372,6 +1378,7 @@ impl EmitCtx {
             arch: arch.to_string(),
             chip: desc.chip.map(|c| c.to_string()),
             offload: None,
+            shared_bytes: None,
         })
     }
 

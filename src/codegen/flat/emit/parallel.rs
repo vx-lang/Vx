@@ -307,6 +307,9 @@ impl FnEmit<'_> {
             if let Some(chip) = &declared.chip {
                 attrs.push_str(&format!("chip = \"{}\", ", chip));
             }
+            if let Some(bytes) = declared.shared_bytes {
+                attrs.push_str(&format!("shared_bytes = {bytes} : i64, "));
+            }
         }
 
         self.body += &format!(

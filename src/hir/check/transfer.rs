@@ -824,25 +824,56 @@ impl<'a> TypeChecker<'a> {
             (rounded, cap)
         };
         let (rounded, cap) = sized;
+        // A tile of f32 in shared memory, with a row for each subgroup, which a lane matmul may
+        // keep in registers. The checker knows that only at the end of the function.
+        let shared_tile = {
+            let h = crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
+            let shared = h.descriptor(space).is_some_and(|d| {
+                matches!(
+                    d.scope,
+                    Some(crate::syntax::Scope::Sm | crate::syntax::Scope::Cta)
+                )
+            });
+            let sizes: Option<Vec<u64>> = dims
+                .iter()
+                .map(|d| d.literal().and_then(|v| v.parse::<u64>().ok()))
+                .collect();
+            sizes
+                .filter(|_| shared && copies == 1)
+                .map(|s| (elem.clone(), s))
+        };
+        let may_be_registers = record
+            && self.traffic.tile_holder.is_some()
+            && shared_tile
+                .as_ref()
+                .is_some_and(|(e, s)| *e == ElementType::F32 && s.len() == 3);
+        let mut held_e6009 = None;
         // Precise per-tile check: a single tile larger than the whole space is always wrong.
         if rounded > cap {
-            self.errors
-                .error_with_code(
-                    crate::diagnostic::DiagnosticCode::E6009,
-                    format!(
-                        "{context} needs {rounded} bytes but memory space '{}' has capacity {cap} bytes",
-                        space.name()
-                    ),
-                    // The room of a channel is at the `channel` call.
-                    (copies > 1).then(|| crate::diagnostic::SourceSpan::from_ast_span(span)),
-                )
-                // Machine-readable form of the same verdict, for `--diagnostics-json` (#282).
-                .facts = Some(crate::diagnostic::DiagnosticFacts::Capacity {
+            let message = format!(
+                "{context} needs {rounded} bytes but memory space '{}' has capacity {cap} bytes",
+                space.name()
+            );
+            // The room of a channel is at the `channel` call.
+            let at = (copies > 1).then(|| crate::diagnostic::SourceSpan::from_ast_span(span));
+            // Machine-readable form of the same verdict, for `--diagnostics-json` (#282).
+            let facts = crate::diagnostic::DiagnosticFacts::Capacity {
                 space: space.name(),
                 required_bytes: rounded,
                 available_bytes: cap,
                 tiles: None,
-            });
+            };
+            if may_be_registers {
+                held_e6009 = Some(crate::hir::check_state::HeldE6009 {
+                    message,
+                    span: at,
+                    facts,
+                });
+            } else {
+                self.errors
+                    .error_with_code(crate::diagnostic::DiagnosticCode::E6009, message, at)
+                    .facts = Some(facts);
+            }
         }
         if !record {
             return;
@@ -916,6 +947,8 @@ impl<'a> TypeChecker<'a> {
                 tasks: self.tasks.task_chain(),
                 holder: self.traffic.tile_holder.clone(),
                 end,
+                shared_tile,
+                held_e6009,
             },
         );
     }
