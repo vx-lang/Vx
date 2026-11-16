@@ -6974,6 +6974,28 @@ struct GuardedDiamond {
   arith::CmpIPredicate pred = arith::CmpIPredicate::slt;
 };
 
+static Value baseAllocaMemref(Value base) {
+  if (auto ld = base.getDefiningOp<memref::LoadOp>()) {
+    if (ld.getMemref().getDefiningOp<memref::AllocaOp>())
+      return ld.getMemref();
+  }
+  return nullptr;
+}
+
+static bool areEquivalentBases(Value b1, Value b2) {
+  if (b1 == b2)
+    return true;
+  auto ld1 = b1.getDefiningOp<memref::LoadOp>();
+  auto ld2 = b2.getDefiningOp<memref::LoadOp>();
+  if (ld1 && ld2 && ld1.getMemref() == ld2.getMemref()) {
+    if (ld1.getMemref().getDefiningOp<memref::AllocaOp>()) {
+      if (ld1.getIndices() == ld2.getIndices())
+        return true;
+    }
+  }
+  return false;
+}
+
 static bool isGuardedDiamond(Block *header, GuardedDiamond &d) {
   auto condBr = dyn_cast_or_null<cf::CondBranchOp>(header->getTerminator());
   if (!condBr)
@@ -6981,6 +7003,10 @@ static bool isGuardedDiamond(Block *header, GuardedDiamond &d) {
 
   auto cmp = condBr.getCondition().getDefiningOp<arith::CmpIOp>();
   if (!cmp)
+    return false;
+
+  // The comparison must be in this header block, immediately before the branch.
+  if (cmp->getBlock() != header || cmp->getNextNode() != condBr)
     return false;
 
   arith::CmpIPredicate pred = cmp.getPredicate();
@@ -7018,7 +7044,9 @@ static bool isGuardedDiamond(Block *header, GuardedDiamond &d) {
       base = add.getRhs();
       offset = *cst;
     } else {
-      return false;
+      // Non-constant add (e.g. lane + batch * 256) is the base itself with offset 0.
+      base = lhs;
+      offset = 0;
     }
   }
 
@@ -7085,32 +7113,74 @@ static bool findGuardedDiamondBatch(
       if (!isGuardedDiamond(nextHeader, next))
         break;
 
-      if (next.base != first.base || next.bound != first.bound ||
-          next.pred != first.pred || next.offset <= candidates.back().offset)
-        break;
-
-      bool safeHeader = true;
-      for (Operation &op : *nextHeader) {
-        if (&op == next.cmpOp || op.hasTrait<OpTrait::IsTerminator>())
-          continue;
-        if (auto st = dyn_cast<memref::StoreOp>(op)) {
-          if (!st.getMemref().getDefiningOp<memref::AllocaOp>()) {
-            safeHeader = false;
-            break;
-          }
-        }
-      }
-      if (!safeHeader)
+      if (!areEquivalentBases(next.base, first.base) ||
+          next.bound != first.bound || next.pred != first.pred ||
+          next.offset <= candidates.back().offset)
         break;
 
       candidates.push_back(next);
       currJoin = next.joinDest;
     }
 
-    if (candidates.size() >= 8) {
-      batch = std::move(candidates);
-      return true;
+    if (candidates.size() < 8)
+      continue;
+
+    // Collect all blocks belonging to the batch.
+    llvm::SmallPtrSet<Block *, 32> batchBlocks;
+    for (size_t i = 0; i < candidates.size(); ++i) {
+      batchBlocks.insert(candidates[i].header);
+      batchBlocks.insert(candidates[i].trueDest);
+      batchBlocks.insert(candidates[i].falseDest);
+      if (i + 1 < candidates.size() &&
+          candidates[i].joinDest != candidates[i + 1].header) {
+        batchBlocks.insert(candidates[i].joinDest);
+      }
     }
+
+    // Invariant 1: No base alloca store or non-alloca store within the batch.
+    Value baseAlloca = baseAllocaMemref(first.base);
+    bool safeStores = true;
+    for (Block *b : batchBlocks) {
+      for (Operation &op : *b) {
+        if (auto st = dyn_cast<memref::StoreOp>(op)) {
+          if (!st.getMemref().getDefiningOp<memref::AllocaOp>() ||
+              (baseAlloca && st.getMemref() == baseAlloca)) {
+            safeStores = false;
+            break;
+          }
+        }
+      }
+      if (!safeStores)
+        break;
+    }
+    if (!safeStores)
+      continue;
+
+    // Invariant 2: No value computed in the batch may be used outside the batch.
+    bool valuesEscape = false;
+    for (Block *b : batchBlocks) {
+      for (Operation &op : *b) {
+        for (Value res : op.getResults()) {
+          for (Operation *user : res.getUsers()) {
+            if (!batchBlocks.contains(user->getBlock())) {
+              valuesEscape = true;
+              break;
+            }
+          }
+          if (valuesEscape)
+            break;
+        }
+        if (valuesEscape)
+          break;
+      }
+      if (valuesEscape)
+        break;
+    }
+    if (valuesEscape)
+      continue;
+
+    batch = std::move(candidates);
+    return true;
   }
   return false;
 }
@@ -7133,11 +7203,17 @@ static void versionGuardedLoadBatches(gpu::GPUFuncOp gpuFunc) {
     Value maxOffsetCst = b.create<arith::ConstantIntOp>(
         loc, first.base.getType(), last.offset);
     Value maxLhs = b.create<arith::AddIOp>(loc, first.base, maxOffsetCst);
-    Value versionCond =
+    Value noWrap = b.create<arith::CmpIOp>(
+        loc, arith::CmpIPredicate::sge, maxLhs, first.base);
+    Value inBound =
         b.create<arith::CmpIOp>(loc, first.pred, maxLhs, first.bound);
+    Value versionCond = b.create<arith::AndIOp>(loc, noWrap, inBound);
 
     Block *fastBlock = gpuFunc.addBlock();
     IRMapping mapping;
+
+    for (const GuardedDiamond &d : batch)
+      mapping.map(d.base, first.base);
 
     for (size_t i = 0; i < batch.size(); ++i) {
       GuardedDiamond &d = batch[i];

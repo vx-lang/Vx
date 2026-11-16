@@ -17,20 +17,27 @@ When a kernel issues eight guarded memory access steps in a loop:
 ## 2. Proposed Solution
 
 When $N$ guarded memory access steps test monotonic affine indices against a common upper bound:
+
 $$\\text{guard}\_k: \\quad c + \\text{offset}\_k < \\text{bound}, \\quad \\text{where } 0 \\le \\text{offset}\_0 < \\text{offset}_1 < \\dots < \\text{offset}_{N-1}$$
 
-Because the stride is positive, the last condition strictly implies all earlier conditions:
+Because the stride is positive, when arithmetic does not overflow, the maximum condition strictly implies all earlier conditions:
+
 $$(c + \\text{offset}\_{N-1} < \\text{bound}) \\implies (c + \\text{offset}\_k < \\text{bound}) \\quad \\forall k < N-1$$
+
+In 32-bit signed arithmetic, $c + \\text{offset}_{N-1}$ can wrap around to negative numbers if $c + \\text{offset}_{N-1} > \\text{INT32_MAX}$.
+To prevent integer wrap-around from triggering the fast path on out-of-bounds indices, the optimization emits a combined check:
+
+$$\\text{versionCond} = (c + \\text{offset}_{N-1} \\ge c) \\land (c + \\text{offset}_{N-1} < \\text{bound})$$
 
 We transform the candidate sequence into two paths:
 
 1. Fast Path (Batch in Range):
-   - Guarded by the single condition `c + offset_{N-1} < bound`.
+   - Guarded by the combined non-wrapping in-bound condition.
    - All $N$ load steps execute unconditionally without predicates or branches.
    - All loads are issued back-to-back into the memory pipeline.
    - Zero predicate registers are used for load guarding.
 1. Slow Path (Fallback / Remainder):
-   - Taken when `c + offset_{N-1} < bound` is false.
+   - Taken when either integer overflow occurs or $c + \\text{offset}\_{N-1} \\ge \\text{bound}$.
    - Runs the original individually guarded steps to handle edge elements safely.
 
 ## 3. Location in the Compiler Pipeline
@@ -38,7 +45,7 @@ We transform the candidate sequence into two paths:
 The transformation lives in `src/dialect/VxLowering.cpp`:
 
 - Inside `ConvertVxToStandardPass::materializeGpuKernels` via helper `versionGuardedLoadBatches(gpu::GPUFuncOp func)`.
-- Restricted to Hopper targets (`sm_90+`) on the NVPTX pipeline (`pipeline == DevicePipeline::Nvptx && chipHasHopperPredicatePressure(...)`), avoiding non-Hopper chips and other GPU pipelines (such as Metal).
+- Restricted to Hopper targets (`sm_90+`) on the NVPTX pipeline (`pipeline == DevicePipeline::Nvptx && chipHasHopperPredicatePressure(...)`), avoiding non-Hopper chips (such as Ampere `sm_80`) and non-NVPTX pipelines (such as Metal).
 - This runs directly on `gpu.func` operations in the GPU module before lowerings to LLVM and NVVM.
 - A compiler flag `-fguarded-load-versioning` / `-fno-guarded-load-versioning` in `src/driver.rs` allows toggling the optimization.
 
@@ -46,33 +53,39 @@ The transformation lives in `src/dialect/VxLowering.cpp`:
 
 The optimization must verify all of the following rules before transforming a candidate sequence:
 
-1. Common Upper Bound and Base Expression:
-   - All guards in the sequence must compare against the exact same bound SSA value.
-   - The base address expression must be identical across steps.
-   - If guards compare against different bounds (e.g. `cols` vs `cols2` in `neg_bound`), the sequence must be rejected.
-1. Strictly Monotonic Positive Offsets:
-   - Offsets must be compile-time constants or statically provable positive increments.
-   - Negative, decreasing, or non-monotonic offsets (e.g. `7 - k < 4` in `neg_decreasing`) invalidate the implication and must be rejected.
-1. No Intervening Aliasing Writes:
-   - No memory store that may alias the loads can occur between steps in the batch (as in `neg_store`).
-   - If an intervening write exists, the batch must not be hoisted.
-1. Memory Safety:
-   - The fast path is reached only when the maximum index is proven in bounds.
-   - Therefore, unconditional loads in the fast path cannot trigger out-of-bounds page faults.
+1. Straight-Line Diamond Control Flow:
+   - Each guarded step is a control-flow diamond: a header block, a `then` block containing memory loads, an optional `else` block containing passthrough operations, and a join destination block.
+   - The comparison operation (`arith::CmpIOp`) must reside in the header block immediately preceding the conditional branch (`cf::CondBranchOp`). If instructions or intermediate blocks exist between the comparison and branch, the diamond is rejected.
+1. Common Upper Bound and Equivalent Base:
+   - All guards in the sequence must compare against the exact same bound SSA value using signed less-than (`arith::CmpIPredicate::slt`). Unsigned comparisons are rejected.
+   - The base SSA values must be equivalent. The pass accepts identical SSA values, base values loaded from identical indices of the same stack alloca (`memref.alloca`) without intervening stores, and non-constant `arith::AddIOp` bases with offset 0.
+1. Strictly Monotonic Non-Negative Offsets:
+   - Offsets must be compile-time constants satisfying $0 \\le \\text{offset}\_0 < \\text{offset}_1 < \\dots < \\text{offset}_{N-1}$.
+   - Negative, decreasing, or non-monotonic offsets invalidate the implication and are rejected.
+1. Non-Wrapping Arithmetic Guard:
+   - The fast path is reached only when $c + \\text{offset}_{N-1} \\ge c$ and $c + \\text{offset}_{N-1} < \\text{bound}$ both hold.
+   - This prevents out-of-bounds access when large values of $c$ wrap around to negative numbers in signed 32-bit arithmetic.
+1. No Intervening Mutating Stores:
+   - No store operation to the base alloca or to external non-alloca memory may occur within any block of the candidate batch.
+1. SSA Dominance and No Escaping Values:
+   - Every operation defined inside the batch blocks must have all its uses within the batch blocks. If any value escapes to blocks outside the batch (such as intermediate sum reductions), the batch is rejected to avoid SSA dominance errors.
 1. Minimum Batch Threshold:
    - The transform applies when a batch has at least 8 steps (where Hopper predicate exhaustion occurs due to the 7 hardware predicate registers $P_0..P_6$).
 
-## 5. Verification Plan
+## 5. Verification Suite
 
-1. Positive LIT Test:
-   - Run `vxc tests/optimizations/pass/guarded_load_batch_versioning.vx --host default --machine fleet/h100-sxm.vx --emit-ptx`.
-   - Check with FileCheck:
-     - Hoisted `setp` on the maximum offset (`c + 224 < cols`).
-     - 16 unguarded `ld.global.nc.b32` loads with no `setp` between them (`CHECK-NOT: setp`).
-     - `-fno-guarded-load-versioning` retains individual `setp` checks.
-1. Negative LIT Tests:
-   - Run `vxc tests/optimizations/pass/guarded_load_batch_versioning_negative.vx --host default --machine fleet/h100-sxm.vx --emit-ptx`.
-   - Check with FileCheck:
-     - `neg_decreasing`: decreasing guard (`7 - k < 4`) is not versioned and stores `4.0` (`1082130432`).
-     - `neg_bound`: no versioning when bounds differ (`cols` vs `cols2`).
-     - `neg_store`: no versioning across intervening tensor stores.
+1. Positive LIT Test (`tests/optimizations/pass/guarded_load_batch_versioning.vx`):
+   - Multi-threaded kernel matching the structure of Issue #3403 with `for g in 0..1 across blocks` and `for lane in 0..32 across lanes(32)`.
+   - Verified with FileCheck on `fleet/h100-sxm.vx`:
+     - Combined non-wrapping in-bound condition check.
+     - 16 back-to-back loads with `CHECK-NOT: setp` between all consecutive loads.
+     - `-fno-guarded-load-versioning` retains all 8 individual `setp.ge.s32` checks.
+1. Negative LIT Test (`tests/optimizations/pass/guarded_load_batch_versioning_negative.vx`):
+   - `neg_decreasing_offsets`: decreasing guard offsets (from `c + 224` down to `c`) are rejected by monotonicity checks and remain unversioned.
+   - `neg_bound`: differing bounds (`cols` vs `cols2`) reject the batch and remain unversioned.
+   - `neg_store`: intervening memory store across loads rejects the batch and remains unversioned.
+   - `neg_u32_compare`: unsigned comparisons (`ult`) are rejected and remain unversioned.
+   - `neg_partial_sum`: intermediate computations used outside the batch are rejected to preserve SSA dominance and remain unversioned.
+   - `neg_scale_between`: instructions between comparison and branch reject diamond structure and remain unversioned.
+   - `neg_if_between`: control flow between comparison and branch rejects diamond structure and remain unversioned.
+   - `kernel_a100`: targeting Ampere `sm_80` (`--machine fleet/a100-80.vx`) leaves the kernel unversioned.

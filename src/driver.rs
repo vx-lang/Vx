@@ -255,8 +255,9 @@ pub struct DriverOptions {
     /// error. The check is in CPU code, not in a GPU kernel. The default, `-fno-bounds-checks`,
     /// does not check indices.
     ///
-    /// `-fguarded-load-versioning`: version batches of guarded loads on the last guard so
-    /// that sm_90 predicate registers are not exhausted. The default,
+    /// `-fguarded-load-versioning`: when eight or more `if`s guard loads with `c + k < n`
+    /// for growing `k`, check only the last one. When it holds, run all the loads without
+    /// their checks, so that sm_90 predicate registers are not exhausted. The default,
     /// `-fguarded-load-versioning`, is enabled for GPU kernels.
     /// `-fno-guarded-load-versioning` disables it.
     ///
