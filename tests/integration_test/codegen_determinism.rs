@@ -14,6 +14,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use rayon::prelude::*;
+
 fn corpus_programs(dir: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
     collect(dir, &mut found);
@@ -57,32 +59,35 @@ const RUNS: usize = 3;
 #[test]
 fn the_same_program_always_compiles_to_the_same_mlir() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/pass");
-    let mut unstable = Vec::new();
-    let mut checked = 0usize;
 
-    for program in corpus_programs(&root) {
-        let name = program
-            .strip_prefix(&root)
-            .unwrap_or(&program)
-            .to_string_lossy()
-            .to_string();
-        let Some(first) = emit_mlir(&program) else {
-            continue;
-        };
-        checked += 1;
-        for run in 2..=RUNS {
-            let Some(again) = emit_mlir(&program) else {
-                continue;
-            };
-            if again != first {
-                let (a, b) = first_difference(&first, &again);
-                unstable.push(format!(
-                    "{name}: run {run} differs\n    run 1: {a}\n    run {run}: {b}"
-                ));
-                break;
+    // The programs compile in parallel. Each gives `None` when it does not reach MLIR, and else
+    // the first run that differs. `collect` keeps the order of the corpus.
+    super::parallel::init_rayon();
+    let results: Vec<Option<Option<String>>> = corpus_programs(&root)
+        .par_iter()
+        .map(|program| {
+            let name = program
+                .strip_prefix(&root)
+                .unwrap_or(program)
+                .to_string_lossy()
+                .to_string();
+            let first = emit_mlir(program)?;
+            for run in 2..=RUNS {
+                let Some(again) = emit_mlir(program) else {
+                    continue;
+                };
+                if again != first {
+                    let (a, b) = first_difference(&first, &again);
+                    return Some(Some(format!(
+                        "{name}: run {run} differs\n    run 1: {a}\n    run {run}: {b}"
+                    )));
+                }
             }
-        }
-    }
+            Some(None)
+        })
+        .collect();
+    let checked = results.iter().flatten().count();
+    let unstable: Vec<String> = results.into_iter().flatten().flatten().collect();
 
     assert!(
         checked > 0,

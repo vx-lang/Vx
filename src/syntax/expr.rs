@@ -179,6 +179,14 @@ pub struct TransferExpr {
     /// Set by sema when the source is a `&` tensor and the edge is `: shared`. The result is still
     /// a copy, but the lowering may skip the copy when every use of it only reads.
     pub shared: bool,
+    /// Set by sema with `shared` when the source is memory that nothing can write: a view made
+    /// from a `*const` pointer. The lowering may then read it in place, also when it is not a
+    /// parameter.
+    pub read_only_source: bool,
+    /// Set by sema with `shared` when the source is reached through a shared reference that a
+    /// parameter holds, such as `layer.codes` with `layer : &Layer`. Nothing can write it until
+    /// the call returns, so the lowering may read it in place, as it reads a `&` parameter.
+    pub source_borrowed_for_call: bool,
     pub span: Span,
 }
 
@@ -206,6 +214,8 @@ impl TransferExpr {
             lowering: None,
             is_async: false,
             shared: false,
+            read_only_source: false,
+            source_borrowed_for_call: false,
             span,
         }
     }
@@ -737,8 +747,65 @@ pub fn statement_always_exits(stmt: &Statement, never: &dyn Fn(&str) -> bool) ->
             }) => block_always_exits(stmts, never),
             _ => false,
         },
+        // A `loop` that no `break` leaves ends only through a `return` or the end of the program.
+        Statement::Loop(l) => !breaks_out_of_loop(&l.body),
         _ => false,
     }
+}
+
+/// Whether a `break` in `stmts`, the body of a loop, can leave that loop. A `break` in an inner
+/// loop leaves the inner loop only. A `break` deep inside another expression counts, to be safe.
+pub fn breaks_out_of_loop(stmts: &[Statement]) -> bool {
+    stmts.iter().any(|s| match s {
+        Statement::Break(_) => true,
+        Statement::Loop(_) => false,
+        Statement::ForLoop(f) => holds_a_break(&f.iterable),
+        Statement::ExprStmt(ExprStmtStmt { expr, .. }) => match expr {
+            Expr::If(i) => {
+                holds_a_break(&i.cond)
+                    || breaks_out_of_loop(&i.then_block)
+                    || i.else_block.as_deref().is_some_and(breaks_out_of_loop)
+            }
+            Expr::Match(m) => {
+                holds_a_break(&m.expr) || m.arms.iter().any(|a| breaks_out_of_loop(&a.body))
+            }
+            Expr::UnsafeBlock(UnsafeBlockExpr { stmts, ret, .. })
+            | Expr::TaskBlock(TaskBlockExpr { stmts, ret, .. }) => {
+                breaks_out_of_loop(stmts) || ret.as_deref().is_some_and(holds_a_break)
+            }
+            e => holds_a_break(e),
+        },
+        other => {
+            let mut found = false;
+            visit_exprs(std::slice::from_ref(other), &mut |e| {
+                found |= holds_a_break(e)
+            });
+            found
+        }
+    })
+}
+
+/// Whether a block inside `e` holds a `break`, at any depth. This also counts a `break` of an
+/// inner loop, so it may say yes when no `break` leaves the loop around `e`.
+fn holds_a_break(e: &Expr) -> bool {
+    let mut found = false;
+    visit_expr(e, &mut |e| {
+        let blocks: Vec<&[Statement]> = match e {
+            Expr::If(i) => std::iter::once(i.then_block.as_slice())
+                .chain(i.else_block.as_deref())
+                .collect(),
+            Expr::Match(m) => m.arms.iter().map(|a| a.body.as_slice()).collect(),
+            Expr::UnsafeBlock(b) => vec![&b.stmts],
+            Expr::TaskBlock(b) => vec![&b.stmts],
+            Expr::ComptimeBlock(b) => vec![&b.stmts],
+            Expr::SpawnOn(b) => vec![&b.stmts],
+            _ => Vec::new(),
+        };
+        found |= blocks
+            .iter()
+            .any(|b| b.iter().any(|s| matches!(s, Statement::Break(_))));
+    });
+    found
 }
 
 /// Whether this call is `abort()` or `panic(msg)`, the two built-ins that end the program. A
@@ -973,6 +1040,15 @@ pub struct RangeExpr {
 impl RangeExpr {
     pub fn new(start: Box<Expr>, end: Box<Expr>, span: Span) -> Self {
         Self { start, end, span }
+    }
+
+    /// Both ends, when both are literal numbers: `(1, 3)` for `1..3`.
+    pub fn literal_ends(&self) -> Option<(u64, u64)> {
+        let literal = |e: &Expr| match e {
+            Expr::Number(n) => n.value.parse::<u64>().ok(),
+            _ => None,
+        };
+        Some((literal(&self.start)?, literal(&self.end)?))
     }
 }
 
@@ -1250,9 +1326,19 @@ fn substitute_mlir_returns(ty: &Type, mapping: &std::collections::HashMap<Symbol
     }
 }
 
+/// The rank of the tensor that a view over raw memory has: 1 for `tensor_view_1d(ptr, len)`,
+/// 2 for `tensor_view_2d(ptr, rows, cols)`. `None` for any other function.
+pub fn tensor_view_rank(name: &str) -> Option<usize> {
+    match name {
+        "tensor_view_1d" => Some(1),
+        "tensor_view_2d" => Some(2),
+        _ => None,
+    }
+}
+
 /// Is this a tensor construction -- storage the compiler allocated?
 ///
-/// A view built with `tensor_view_2d` has the same type and a shape the checker enforces, but
+/// A view built with `tensor_view_1d` or `tensor_view_2d` has the same type and a shape the checker enforces, but
 /// names memory the compiler does not control: two views over one pointer are two names for one
 /// buffer, which no rule about names can see.
 pub fn is_tensor_construction(e: &Expr) -> bool {
@@ -1687,6 +1773,8 @@ impl Expr {
                 lowering: e.lowering.clone(),
                 is_async: e.is_async,
                 shared: e.shared,
+                read_only_source: e.read_only_source,
+                source_borrowed_for_call: e.source_borrowed_for_call,
                 span: e.span,
             }),
             // Type substitution does not touch topologies; topology substitution is done

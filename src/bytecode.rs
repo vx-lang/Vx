@@ -230,8 +230,8 @@ pub enum Opcode {
     /// `operand1` is the buffer, `operand2` the value. Lowers to `linalg.fill`, the same fill
     /// `TensorZero` emits, with the value the source wrote instead of a zero.
     TensorFill = 46,
-    /// A rank-2 view over memory the caller owns (`tensor_view_2d(ptr, rows, cols)`): `operand1`
-    /// is the pointer, `type_idx` the tensor type. A `?` extent is the `operand1` of an `Arg`
+    /// A rank-1 or rank-2 view over memory the caller owns (`tensor_view_1d(ptr, len)`,
+    /// `tensor_view_2d(ptr, rows, cols)`): `operand1` is the pointer, `type_idx` the tensor type. A `?` extent is the `operand1` of an `Arg`
     /// immediately before, one per `?` in order; a static one is the type's. Lowers to a memref
     /// descriptor built over the pointer, with row-major strides. The result is the view.
     TensorView = 47,
@@ -353,6 +353,10 @@ pub enum Opcode {
     /// `t as f32`: a fresh tensor of the result type, each element of `operand1` cast to the
     /// result's element type.
     TensorCast = 85,
+    /// Rows `a` to `b - 1` of a tensor (`q[a..b]`): `operand1` is the tensor and `operand2` is
+    /// `a`. The result type holds the number of rows, `b - a`. The result is a view that shares
+    /// the memory of the tensor.
+    TensorRange = 86,
 }
 
 /// A zero-based variant and payload field, stored entirely in an instruction's immediate.
@@ -424,6 +428,29 @@ pub const LANE_REDUCE_COPY_WAIT: u64 = 256;
 pub const LANE_REDUCE_MATMUL: u64 = 512;
 /// `Opcode::LaneReduce` with `LANE_REDUCE_MATMUL`: the products are added to the old `acc`.
 pub const LANE_REDUCE_ACCUMULATE: u64 = 1024;
+/// `Opcode::LaneReduce` with `LANE_REDUCE_COPY`: `lanes::copy`, which ends before it returns, and
+/// gives no token. `operand1` is the tensor it writes and `operand2` the tensor it reads. One of
+/// the two is the tile in shared memory.
+pub const LANE_REDUCE_COPY_NOW: u64 = 2048;
+/// `Opcode::LaneReduce`: `lanes::fill`, an effect with no result. `operand1` is the tile in shared
+/// memory and `operand2` the value. The lanes of the block or the subgroup are in `imm >> 32`.
+pub const LANE_REDUCE_FILL: u64 = 4096;
+/// `Opcode::LaneReduce` with `LANE_REDUCE_MATMUL`, `LANE_REDUCE_COPY_NOW`, `LANE_REDUCE_FILL` or
+/// `LANE_REDUCE_SCALE_ROWS`: its tile (the accumulator, the source of a copy, or the tile of a fill
+/// or a scale) is `t[w]`, where `w` is the index of a subgroup loop that gives each subgroup one
+/// pass at most. So `w` is the number of the subgroup.
+pub const LANE_REDUCE_SUBGROUP_ROW: u64 = 8192;
+/// `Opcode::LaneReduce` with `LANE_REDUCE_OWN_ROW`: the subgroup has the row for the whole kernel,
+/// so the reduction may read it from the registers of `LANE_OWN_SUBGROUP` or `LANE_OWN_WHOLE`
+/// elements.
+pub const LANE_REDUCE_LANE_OWN: u64 = 16384;
+/// `Opcode::LaneReduce` with `LANE_REDUCE_COPY`: `lanes::copy_rows_async`. The `Arg` before the
+/// place is the tensor of ids, and the place is `[first, col]`.
+pub const LANE_REDUCE_COPY_ROWS: u64 = 32768;
+/// `Opcode::LaneReduce`: `lanes::scale_rows`, an effect with no result. `operand1` is the tile in
+/// shared memory and `operand2` the tile of the scales. The lanes of the block or the subgroup are
+/// in `imm >> 32`. Bits 16 to 23 hold the rank of a copy, so this flag is above them.
+pub const LANE_REDUCE_SCALE_ROWS: u64 = 1 << 24;
 
 /// `Opcode::TensorStore`: the place is `tile[t]` in a lane loop of the code of a block, with `t`
 /// the index of the loop. The loop goes from 0 over all of its lanes, so only lane `t` writes the
@@ -435,6 +462,15 @@ pub const TENSOR_STORE_SUBGROUP_LANE_ELEMENT: u64 = 2;
 /// The bits of a lane-element store's or an `own_row` reduction's `imm` from here up give the row
 /// of the subgroup: 0 for `t[w]`, and `c + 1` for `t[w][c]`.
 pub const LANE_ROW_SHIFT: u64 = 32;
+/// `Opcode::TensorStore`, and `Opcode::TensorIndex` that reads an element: the element belongs to
+/// this lane alone, as `t[w][..][l]` in a lane loop of subgroup `w`, where `w` is the number of the
+/// subgroup (docs/lane_reductions.md).
+pub const LANE_OWN_SUBGROUP: u64 = 1 << 8;
+/// As `LANE_OWN_SUBGROUP`, but `t[..][l]`, where one block or one subgroup has all of `t`.
+pub const LANE_OWN_WHOLE: u64 = 1 << 9;
+/// With `LANE_OWN_SUBGROUP` or `LANE_OWN_WHOLE`, the bits from here up to `LANE_ROW_SHIFT` give
+/// the lanes of the lane loop.
+pub const LANE_OWN_LANES_SHIFT: u64 = 16;
 
 /// `Opcode::LoopHint`: the loop was `across` a level of blocks.
 pub const LOOP_HINT_BLOCKS: u64 = 0;
@@ -469,6 +505,15 @@ pub const BARRIER_GPU: u64 = 2;
 /// body follows the transfer, and the transfer only places the tile. The other bits are the
 /// string index of the arrival count, plus 1.
 pub const TRANSFER_USER_LOWERED: u32 = 1 << 31;
+/// A bit of `Opcode::Transfer`'s `operand2`: the transfer is a `transfer_async`, so a device can
+/// copy in the background until a use of the tensor.
+pub const TRANSFER_ASYNC: u32 = 1 << 30;
+/// A bit of `Opcode::Transfer`'s `operand2`: the source is memory that nothing can write, a view
+/// made from a `*const` pointer. See `TransferExpr::read_only_source`.
+pub const TRANSFER_READ_ONLY_SOURCE: u32 = 1 << 29;
+/// A bit of `Opcode::Transfer`'s `operand2`: the source is reached through a shared reference that
+/// a parameter holds. See `TransferExpr::source_borrowed_for_call`.
+pub const TRANSFER_SOURCE_BORROWED_FOR_CALL: u32 = 1 << 28;
 
 /// `Opcode::TensorPad`'s `imm`: pad each axis (`t.pad(shape)`), not the flat row order.
 pub const TENSOR_PAD_EACH_AXIS: u64 = 1;
@@ -526,6 +571,7 @@ impl Opcode {
             80 => LifetimeEnd,
             84 => CheckAggregate,
             85 => TensorCast,
+            86 => TensorRange,
             8 => Call,
             9 => Ret,
             10 => Matmul,

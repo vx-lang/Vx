@@ -104,6 +104,50 @@ pub(crate) fn expr_reads_any(e: &Expr, names: &HashSet<String>) -> Option<(Strin
     found
 }
 
+/// How an access in a lane loop reaches an element that belongs to its lane alone
+/// (docs/lane_reductions.md). The device copy of a kernel can keep such elements in the
+/// registers of the lane.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum LaneOwn {
+    /// `t[w][..][l]`, where `w` is the number of the subgroup.
+    Subgroup,
+    /// `t[..][l]`, where one block, or one subgroup, has all of `t`.
+    Whole,
+}
+
+impl LaneOwn {
+    /// The value of the `vx.lane_own` attribute.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            LaneOwn::Subgroup => "subgroup",
+            LaneOwn::Whole => "whole",
+        }
+    }
+}
+
+/// The `LaneOwn` of `ix`, an element access in a lane loop whose index `lane` is the lane: its
+/// last index is `lane`, and under it is a tensor `e` for which `own(e)` says how the subgroup or
+/// the block has it. The indices between them may be anything.
+pub(crate) fn lane_own_access(
+    ix: &crate::syntax::expr::IndexAccessExpr,
+    lane: &str,
+    own: impl Fn(&Expr) -> Option<LaneOwn>,
+) -> Option<LaneOwn> {
+    if !matches!(&*ix.index, Expr::Identifier(id) if id.name.as_ref() == lane) {
+        return None;
+    }
+    let mut e = &*ix.base;
+    loop {
+        if let Some(form) = own(e) {
+            return Some(form);
+        }
+        match e {
+            Expr::IndexAccess(r) => e = &r.base,
+            _ => return None,
+        }
+    }
+}
+
 /// The root name of an assignment's target: `a` of `a`, `a[i]` and `a.f`.
 fn root(e: &Expr) -> Option<&str> {
     match e {

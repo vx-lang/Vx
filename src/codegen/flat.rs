@@ -1161,11 +1161,9 @@ pub struct EmitCtx {
     /// carries no memory decls, so this is threaded in from the per-compilation env. Empty for a program
     /// with no declared sub-spaces.
     pub subspaces: HashMap<u64, SubspaceInfo>,
-    /// Declared topology arch by dispatch id, so a `vx.spawn` can carry the arch its machine file
-    /// declared and the device pipeline can gate on the DECLARATION rather than on the dispatch-id
-    /// band -- which a custom topology can never enter (declared ids start at 3000 by
-    /// construction, and the GPU band is [500, 600)). Built-in topologies are not in this map and
-    /// keep riding the band.
+    /// Declared topology arch by dispatch id, so a `vx.spawn` can carry the arch declared for
+    /// the topology (both custom and built-in) and the device pipeline can gate on the
+    /// declared architecture attribute.
     pub topo_archs: HashMap<i64, DeclaredArch>,
     /// The program's `const` tables as (global name, memref type), in the registry's order, which
     /// is what a `ConstTable` instruction's `imm` counts in.
@@ -1286,7 +1284,7 @@ pub fn local_devices_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i32, i32)>
 pub struct DeclaredArch {
     pub arch: String,
     pub chip: Option<String>,
-    pub offload: bool,
+    pub offload: Option<bool>,
 }
 
 /// The declared-arch table for `EmitCtx::topo_archs`, from the per-compilation env: one entry per
@@ -1306,13 +1304,14 @@ pub fn topo_archs_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i64, Declared
                     .chip
                     .as_ref()
                     .map(|c| c.as_ref().to_string()),
-                offload: decl.descriptor.offload,
+                offload: Some(decl.descriptor.offload),
             };
             let ids = crate::arch::declared_dispatch_ids(&decl.name, decl.descriptor.count);
             Some(ids.into_iter().map(move |id| (id as i64, declared.clone())))
         })
         .flatten()
         .collect();
+
     // Sorted, because `env.topologies` is a HashMap and iteration order would otherwise decide
     // which entry wins an id collision -- the coin-flip E6016 refuses upstream, kept impossible
     // here too so the emitted MLIR is byte-reproducible (the freeze protocol depends on that).
@@ -1362,6 +1361,20 @@ pub fn subspaces_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<SubspaceInfo> {
 }
 
 impl EmitCtx {
+    pub fn topo_arch(&self, topo: i64) -> Option<DeclaredArch> {
+        if let Some(declared) = self.topo_archs.get(&topo) {
+            return Some(declared.clone());
+        }
+        let kind = crate::arch::builtin_kind_from_dispatch_id(topo)?;
+        let desc = crate::arch::builtin_descriptors().remove(&kind)?;
+        let arch = desc.arch?;
+        Some(DeclaredArch {
+            arch: arch.to_string(),
+            chip: desc.chip.map(|c| c.to_string()),
+            offload: None,
+        })
+    }
+
     fn registry_layout_agrees(
         registry: &ImmutableGlobalRegistry,
         definition: &crate::registry::TypeDefinition,
@@ -2604,6 +2617,8 @@ impl<'a> FnEmit<'a> {
             // tensor GID) rank-reduces the base to a row via `memref.reinterpret_cast` (contiguous
             // base only; a further sub-view of a strided row is deferred).
             Opcode::TensorIndex => self.op_tensor_index(idx, ins),
+            // `q[a..b]`: rows `a` to `b - 1` as a window onto `q`'s memory (contiguous base only).
+            Opcode::TensorRange => self.op_tensor_range(idx, ins),
             // Reduce a rank-1 float slice to a scalar. `operand1` (and `operand2` for `dot`) are the
             // slices; `imm` the kind (0 = dot, 1 = sum, 2 = max, 3 = min). Each slice is `vector.load`ed
             // to a `vector<Nxf32>`; `dot` fuses the two with `arith.mulf`; then `vector.reduction`.

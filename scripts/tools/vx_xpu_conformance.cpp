@@ -213,10 +213,9 @@ static void storeElem(std::vector<char> &raw, size_t index, const DType &dt,
   }
   case VX_DTYPE_I1:
     // Any nonzero value stored as a bool is 1, which is how a one-byte bool is
-    // read back. The .vx programs' `as bool` cast keeps only the low bit
-    // instead, so `2 as bool` is false there -- which would fill the harness's
-    // elementwise operands with a value that makes every result 1 and assert
-    // nothing. The harness fills its own data for that reason.
+    // read back. The harness fills its own operands for this type rather than
+    // letting a program's values decide them: a program that set both operands
+    // to 1 would make every result 1 and assert nothing.
     *p = value != 0.0 ? 1 : 0;
     break;
   case VX_DTYPE_I8: {
@@ -288,7 +287,8 @@ static double loadElem(const std::vector<char> &raw, size_t index,
 
 // The value as the element type stores it, so the reference is computed from
 // the same bytes the kernel reads. Only a narrow type changes the value, and
-// bool is the one that matters here: `3 as bool` is 1, and the kernel reads 1.
+// bool is the one that matters here: any nonzero operand is stored as 1, and
+// the kernel reads 1.
 static double storedValue(const DType &dt, double value) {
   switch (dt.code) {
   case VX_DTYPE_I1:

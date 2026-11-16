@@ -22,10 +22,10 @@
 // rest of the two forms always differ by less than it: `4 * j + c`, with `c` below 3, and
 // `4 * j + 3` never meet.
 //
-// `v / n` and `v % n`, where `v` is the loop's variable, are two more variables of the pass. When
-// one index fixes `v / n` and another fixes `v % n`, the two together fix `v`. `n` is a number above
-// zero, or a value from outside the loop that is a factor of the loop's end, as in `0..m * n`: when
-// `n` is zero, the loop has no passes.
+// `v / n` and `v % n`, where `v` is the variable of the loop or of a loop in it, are two more
+// variables of the pass. When one index fixes `v / n` and another fixes `v % n`, the two together
+// fix `v`. `n` is a number above zero, or a value from outside the loop that is a factor of the
+// loop's end, as in `0..m * n`: when `n` is zero, the loop has no passes.
 //
 // An access in `if v == c`, where `v` is the loop's variable and `c` a number, is made by one
 // pass only. Two such accesses with the same `c` are made by the same pass, so they never race.
@@ -116,6 +116,9 @@ struct Proof<'c> {
     contracts: &'c HashMap<String, Vec<usize>>,
     /// The names of the generic functions.
     templates: &'c HashSet<String>,
+    /// The shape of the tile of each `lanes::copy` out of shared memory, by the position of its
+    /// call.
+    copies_out: &'c HashMap<Span, Vec<u64>>,
     /// The key of the loop's own variable.
     own: String,
     /// The values from outside the loop that are factors of its end, by key.
@@ -166,6 +169,7 @@ pub(crate) fn across_loop_race(
     level: &str,
     contracts: &HashMap<String, Vec<usize>>,
     templates: &HashSet<String>,
+    copies_out: &HashMap<Span, Vec<u64>>,
 ) -> Result<Vec<LargestEnd>, (String, Span)> {
     let range = match &*f.iterable {
         Expr::Range(r) => int(&r.start).zip(int(&r.end)),
@@ -179,6 +183,7 @@ pub(crate) fn across_loop_race(
         let mut p = Proof {
             contracts,
             templates,
+            copies_out,
             own: String::new(),
             end_factors: match &*f.iterable {
                 Expr::Range(r) => factors(&r.end),
@@ -564,6 +569,65 @@ impl Proof<'_> {
         }
     }
 
+    /// `lanes::copy(&mut x, &tile, [i, j, ..])`, which writes the part of `x` that starts at
+    /// `[i, j, ..]` and has the shape `tile`. Each index of the part is the place plus an index
+    /// below the size of the tile in that dimension.
+    fn copy_out(&mut self, fc: &crate::syntax::expr::FunctionCallExpr, tile: &[u64]) {
+        let (Some(dst), Some(src), Some(Expr::Array(place))) =
+            (fc.args.first(), fc.args.get(1), fc.args.get(2))
+        else {
+            self.fail(
+                "the checker cannot see which part of a tensor this copy writes".to_string(),
+                fc.span,
+            );
+            return;
+        };
+        self.expr(src);
+        place.elements.iter().for_each(|e| self.expr(e));
+        // `&mut y`, or `y` for a parameter `y : &mut Tensor<..>`.
+        let (dst, at) = match dst {
+            Expr::Borrow(b) => (b.expr.as_ref(), b.span),
+            e => (e, e.span()),
+        };
+        let (name, rows) = match dst {
+            Expr::Identifier(id) => (id.name.as_ref(), Vec::new()),
+            e => match Self::element(e) {
+                Some(found) => found,
+                None => {
+                    self.fail(
+                        "the checker cannot see which tensor this copy writes. Pass the tensor \
+                         by name"
+                            .to_string(),
+                        at,
+                    );
+                    return;
+                }
+            },
+        };
+        rows.iter().for_each(|i| self.expr(i));
+        if !self.outside(name) {
+            return;
+        }
+        let mut indices: Vec<Option<Affine>> = rows.iter().map(|i| self.affine(i)).collect();
+        for (at, &size) in place.elements.iter().zip(tile) {
+            let key = format!("copy#{}", self.next_key);
+            self.next_key += 1;
+            self.ranges
+                .insert(key.clone(), i64::try_from(size).ok().map(|n| (0, n)));
+            indices.push(self.affine(at).and_then(|a| a.add(&Affine::var(key), 1)));
+        }
+        self.accesses
+            .entry(name.to_string())
+            .or_default()
+            .push(Access {
+                write: true,
+                atomic: false,
+                indices,
+                span: at,
+                pass: self.pass,
+            });
+    }
+
     fn target(&mut self, lhs: &Expr, at: Span) {
         if let Some((name, indices)) = Self::element(lhs) {
             for i in &indices {
@@ -653,6 +717,10 @@ impl Proof<'_> {
                         )
                     };
                     self.fail(why, fc.span);
+                    return;
+                }
+                if let Some(tile) = self.copies_out.get(&fc.span) {
+                    self.copy_out(fc, tile);
                     return;
                 }
                 // A lane sort and a lane copy write the tensor that they borrow first: a row
@@ -820,11 +888,15 @@ impl Proof<'_> {
         }
     }
 
-    /// `v / n` or `v % n` as a variable of its own, when `v` is the loop's variable, `v` is never
-    /// below zero, and `n` is a number above zero or a factor of the loop's end. Its key is the key
-    /// of `v`, then `/` or `%`, then `n` in parentheses.
+    /// `v / n` or `v % n` as a variable of its own, when `v` is a loop index of the pass, `v` is
+    /// never below zero, and `n` is a number above zero or a factor of the loop's end. Its key is
+    /// the key of `v`, then `/` or `%`, then `n` in parentheses.
     fn part(&self, v: &Affine, n: &Affine, quotient: bool) -> Option<Affine> {
-        if *v != Affine::var(self.own.clone()) || self.index_range(&self.own)?.0 < 0 {
+        let index = v.terms.keys().next()?;
+        if *v != Affine::var(index.clone())
+            || !self.ranges.contains_key(index)
+            || self.index_range(index)?.0 < 0
+        {
             return None;
         }
         let n = match n.as_constant() {
@@ -844,11 +916,11 @@ impl Proof<'_> {
         };
         let op = if quotient { '/' } else { '%' };
         // The key cannot end with `#outside`, which marks a value from outside the loop.
-        Some(Affine::var(format!("{}{op}({n})", self.own)))
+        Some(Affine::var(format!("{index}{op}({n})")))
     }
 
-    /// The key of the loop's variable, whether the key is of `v / n`, and `n`, for a key that
-    /// `part` made.
+    /// The key of the loop index, whether the key is of `v / n`, and `n`, for a key that `part`
+    /// made.
     fn part_of(key: &str) -> Option<(&str, bool, &str)> {
         let at = key.find(['/', '%'])?;
         let n = key[at + 1..].strip_prefix('(')?.strip_suffix(')')?;
@@ -895,8 +967,8 @@ impl Proof<'_> {
     /// The least and the greatest value of the loop index `v`, from its range or its type.
     fn index_range(&self, v: &str) -> Option<(i128, i128)> {
         // `v` is never below zero. A remainder is below `n`, and neither part is above `v`.
-        if let Some((own, quotient, n)) = Self::part_of(v) {
-            let (lo, hi) = self.index_range(own)?;
+        if let Some((index, quotient, n)) = Self::part_of(v) {
+            let (lo, hi) = self.index_range(index)?;
             return Some(match (n.parse::<i128>(), quotient) {
                 (Ok(n), true) => (lo / n, hi / n),
                 (Ok(n), false) => (0, hi.min(n - 1)),
@@ -979,10 +1051,12 @@ impl Proof<'_> {
             .iter()
             .filter(|(v, _)| !v.ends_with("#outside"))
             .map(|(v, c)| {
+                // The number of values that `v` can have.
                 let span = match Self::part_of(v) {
-                    Some((own, ..)) if self.ranges.get(own).copied().flatten().is_some() => self
-                        .index_range(v)
-                        .and_then(|(lo, hi)| i64::try_from(hi - lo).ok()),
+                    Some((index, ..)) if self.ranges.get(index).copied().flatten().is_some() => {
+                        self.index_range(v)
+                            .and_then(|(lo, hi)| i64::try_from(hi - lo + 1).ok())
+                    }
                     Some(_) => None,
                     None => self
                         .ranges

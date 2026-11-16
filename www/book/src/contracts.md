@@ -341,8 +341,8 @@ example above with `fail(msg : *const i8) -> void ensures false` also gives E800
 
 The compiler checks the body of a `-> !` function:
 
-- Each path must end in `panic`, `abort` or a call to another `-> !` function. A body that can
-  finish gives E3028.
+- Each path must end in `panic`, `abort`, a call to another `-> !` function, or a `loop` that no
+  `break` leaves. A body that can finish gives E3028.
 - A `return` gives E3002.
 
 A `-> !` function can have a `requires`. Each call must meet it, as with any other function.

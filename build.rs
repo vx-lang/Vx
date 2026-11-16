@@ -746,61 +746,28 @@ fn main() {
         .trim()
         .to_string();
 
-    // 1. Generate Dialect Declarations
-    let status = Command::new(tblgen_str)
-        .args([
-            "-gen-dialect-decls",
-            "-I",
-            &llvm_include,
-            "include/VxDialect.td",
-            "-o",
-            &format!("{}/VxDialect.h.inc", out_dir),
-        ])
-        .status()
-        .expect("Failed to run mlir-tblgen for dialect decls");
-    assert!(status.success(), "mlir-tblgen failed");
-
-    // 2. Generate Dialect Definitions
-    let status = Command::new(tblgen_str)
-        .args([
-            "-gen-dialect-defs",
-            "-I",
-            &llvm_include,
-            "include/VxDialect.td",
-            "-o",
-            &format!("{}/VxDialect.cpp.inc", out_dir),
-        ])
-        .status()
-        .expect("Failed to run mlir-tblgen for dialect defs");
-    assert!(status.success(), "mlir-tblgen failed");
-
-    // 3. Generate Operation Declarations
-    let status = Command::new(tblgen_str)
-        .args([
-            "-gen-op-decls",
-            "-I",
-            &llvm_include,
-            "include/VxDialect.td",
-            "-o",
-            &format!("{}/VxOps.h.inc", out_dir),
-        ])
-        .status()
-        .expect("Failed to run mlir-tblgen for op decls");
-    assert!(status.success(), "mlir-tblgen failed");
-
-    // 4. Generate Operation Definitions
-    let status = Command::new(tblgen_str)
-        .args([
-            "-gen-op-defs",
-            "-I",
-            &llvm_include,
-            "include/VxDialect.td",
-            "-o",
-            &format!("{}/VxOps.cpp.inc", out_dir),
-        ])
-        .status()
-        .expect("Failed to run mlir-tblgen for op defs");
-    assert!(status.success(), "mlir-tblgen failed");
+    // The dialect, its ops and the interfaces of its ops, from VxDialect.td.
+    for (generator, file) in [
+        ("-gen-dialect-decls", "VxDialect.h.inc"),
+        ("-gen-dialect-defs", "VxDialect.cpp.inc"),
+        ("-gen-op-decls", "VxOps.h.inc"),
+        ("-gen-op-defs", "VxOps.cpp.inc"),
+        ("-gen-op-interface-decls", "VxOpInterfaces.h.inc"),
+        ("-gen-op-interface-defs", "VxOpInterfaces.cpp.inc"),
+    ] {
+        let status = Command::new(tblgen_str)
+            .args([
+                generator,
+                "-I",
+                &llvm_include,
+                "include/VxDialect.td",
+                "-o",
+                &format!("{}/{}", out_dir, file),
+            ])
+            .status()
+            .unwrap_or_else(|e| panic!("mlir-tblgen {generator} did not start: {e}"));
+        assert!(status.success(), "mlir-tblgen {generator} failed");
+    }
     println!("cargo:rerun-if-changed=src/dialect/VxLowering.cpp");
     println!("cargo:rerun-if-changed=src/dialect/SpirvKernelArgs.cpp");
     println!("cargo:rerun-if-changed=src/dialect/SpirvKernelArgs.h");

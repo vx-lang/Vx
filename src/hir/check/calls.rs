@@ -979,7 +979,7 @@ impl<'a> TypeChecker<'a> {
                 // storage behind it; it takes nothing (#336). `Verified(t)` is `t` itself,
                 // wrapped, so it moves `t`.
                 let is_builtin_ref = resolved_name == "print".into()
-                    || resolved_name == "tensor_view_2d".into()
+                    || crate::syntax::expr::tensor_view_rank(resolved_name.as_ref()).is_some()
                     || resolved_name == "matmul_into".into();
                 // A call moves what it takes by value, whatever happens to its own result: inside
                 // `print(take(t))`, `t` is moved into `take` though `print` takes nothing.
@@ -996,6 +996,7 @@ impl<'a> TypeChecker<'a> {
                 let lane_bases: Vec<(String, Option<Vec<BorrowRecord>>)> =
                     if resolved_name.as_ref().starts_with("lanes::")
                         && resolved_name.as_ref() != "lanes::copy_async"
+                        && resolved_name.as_ref() != crate::hir::check::lanes::COPY_ROWS_ASYNC
                         && !self.speculating
                     {
                         args.iter()
@@ -3037,17 +3038,22 @@ impl<'a> TypeChecker<'a> {
             }
             // `void` is spelled as a struct name in this type system.
             Some(Type::Struct("void".into(), None))
-        } else if resolved_name == "tensor_view_2d" {
-            // A rank-2 tensor over memory it does not own, with no copy (#336).
+        } else if let Some(rank) = crate::syntax::expr::tensor_view_rank(resolved_name) {
+            // A rank-1 or rank-2 tensor over memory it does not own, with no copy (#336).
             // The element type comes from the pointer, so the view cannot
             // reinterpret f32 storage as f64 by accident.
             //
             // Unsafe because nothing checks that the extents describe the
             // memory truthfully -- the same claim `*mut T` indexing already
             // makes, and the reason the view exists is to wrap foreign buffers.
-            if args.len() != 3 {
+            let form = if rank == 1 {
+                "(ptr, len)"
+            } else {
+                "(ptr, rows, cols)"
+            };
+            if args.len() != rank + 1 {
                 self.errors
-                    .push("Function 'tensor_view_2d' expects (ptr, rows, cols)".to_string());
+                    .push(format!("Function '{resolved_name}' expects {form}"));
             }
             if self.unsafe_is_missing() {
                 self.errors
@@ -3067,7 +3073,7 @@ impl<'a> TypeChecker<'a> {
             };
             match elem {
                 // The extents are ordinary arguments, so the same rule the constructor gets
-                // applies: a view whose rows and cols evaluate at compile time is statically
+                // applies: a view whose extents evaluate at compile time is statically
                 // shaped, and one over run-time extents has `?` there (Vx#399).
                 Some(e) => {
                     let mut env = HashMap::new();
@@ -3076,8 +3082,8 @@ impl<'a> TypeChecker<'a> {
                             env.insert(k.clone(), v.clone());
                         }
                     }
-                    let dims = match args.get(1..3) {
-                        Some(ext) if ext.len() == 2 => ext
+                    let dims = match args.get(1..rank + 1) {
+                        Some(ext) => ext
                             .iter()
                             .map(|a| {
                                 if self.eval_expr(a, &env).is_some() {
@@ -3087,14 +3093,14 @@ impl<'a> TypeChecker<'a> {
                                 }
                             })
                             .collect(),
-                        _ => vec![Dim::Dyn, Dim::Dyn],
+                        None => vec![Dim::Dyn; rank],
                     };
                     Some(Type::Tensor(e, dims, place))
                 }
                 None => {
                     if !self.speculating {
                         self.errors.push(format!(
-                            "Function 'tensor_view_2d' expects a pointer to a scalar, got {:?}",
+                            "Function '{resolved_name}' expects a pointer to a scalar, got {:?}",
                             arg_types.first()
                         ));
                     }
@@ -3445,6 +3451,8 @@ impl<'a> TypeChecker<'a> {
                     }
                     let change = format!("`{method}` takes `&mut self`, so it can change");
                     self.check_field_change(obj, &change);
+                    let what = format!("`{method}` takes `&mut self`, and this calls it on");
+                    self.check_const_pointer_change(obj, &what);
                 } else if matches!(base_ty, Type::Borrow { is_mut: false, .. }) && !self.speculating
                 {
                     self.errors.error_with_code(
@@ -4001,6 +4009,8 @@ impl<'a> TypeChecker<'a> {
                         lowering: None,
                         is_async: false,
                         shared: false,
+                        read_only_source: false,
+                        source_borrowed_for_call: false,
                         span: method_span,
                     });
                     // Mark it so the per-seam obligation in `check_transfer_expr` sends
@@ -4018,6 +4028,8 @@ impl<'a> TypeChecker<'a> {
                         lowering: None,
                         is_async: false,
                         shared: false,
+                        read_only_source: false,
+                        source_borrowed_for_call: false,
                         span: Span::default(),
                     });
                 } else if _method.as_ref() == "as_ptr" || **_method == *"as_mut_ptr" {

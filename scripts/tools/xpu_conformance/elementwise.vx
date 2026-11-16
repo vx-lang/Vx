@@ -520,10 +520,15 @@ fn main() -> i32 {
   let mut o12 = unsafe { Tensor<bool, [32, 32]>::uninit() };
   for i in 0..32 {
     for j in 0..32 {
-      a12[i][j] = ((i + j) % 4) as bool;
-      b12[i][j] = 2 as bool;
-      c12[i][j] = 1 as bool;
-      o12[i][j] = 0 as bool;
+      // `a` alternates so the region is not all one value; `b` is false and `c`
+      // is true, so every element of `a * b + c` is true. This used to read
+      // `2 as bool` and `0 as bool`, which the checker now refuses because a
+      // cast from an integer to a bool has no defined rule; under the old
+      // low-bit rule `2` was false, so these values keep the same bytes.
+      a12[i][j] = ((i + j) % 2) == 1;
+      b12[i][j] = false;
+      c12[i][j] = true;
+      o12[i][j] = false;
     }
   }
   let ga12 = transfer(a12, Memory::DEV_HBM);

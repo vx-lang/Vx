@@ -604,9 +604,6 @@ struct Lowerer<'r> {
     queued_drops: Vec<PendingDrop>,
     /// The `queued_drops` of the statement being lowered: they run once its value is computed.
     value_drops: Vec<PendingDrop>,
-    /// The drops waiting for the value of a returned `match` whose arms return. Each `Ret` in the
-    /// arms runs them.
-    return_drops: Vec<PendingDrop>,
     /// The fresh tensors the statement being lowered has made: each is
     /// dropped when the statement ends unless something took it.
     temps: Vec<Register>,
@@ -628,21 +625,17 @@ fn placed_id(d: &crate::syntax::DropStmt) -> Option<u32> {
 #[derive(Clone)]
 enum PendingDrop {
     /// A tensor to free: the owner itself, or (`field`) a tensor that a struct field or an enum
-    /// payload held. The struct or the enum owned it. `owner` is the name that the drop names.
+    /// payload held. The struct or the enum owned it.
     Tensor {
         reg: Register,
         flag: Option<Symbol>,
         field: bool,
         /// For a field: the dispatch id of the device memory its type names.
         placed: Option<u32>,
-        owner: Symbol,
     },
     /// The statements that run a drop: a `Drop` impl's `drop`, with cancellation off around
     /// it, or a `match` on an enum whose arms hold more drops.
-    Call {
-        stmts: Vec<Statement>,
-        owner: Symbol,
-    },
+    Call { stmts: Vec<Statement> },
     /// The end of the lifetime of a struct's or enum's stack slot.
     LifetimeEnd { slot: Register },
 }
@@ -696,7 +689,6 @@ impl<'r> Lowerer<'r> {
             across: AcrossState::default(),
             queued_drops: Vec::new(),
             value_drops: Vec::new(),
-            return_drops: Vec::new(),
             temps: Vec::new(),
             moved_args: HashSet::new(),
             tensor_depth: HashMap::new(),
@@ -863,9 +855,6 @@ impl<'r> Lowerer<'r> {
 
     /// The function returns `v`. In a `tasks` block, `v` waits in a slot until the block ends.
     fn emit_ret(&mut self, v: Option<Val>) -> Lowered<()> {
-        for d in self.return_drops.clone() {
-            self.emit_drop(d)?;
-        }
         if !self.leaving_tasks(false) {
             match v {
                 Some(v) => {
@@ -1184,10 +1173,7 @@ impl<'r> Lowerer<'r> {
                 }
             }
         } else if let Some(stmts) = d.call_statements() {
-            PendingDrop::Call {
-                stmts,
-                owner: d.name.clone(),
-            }
+            PendingDrop::Call { stmts }
         } else if let Some(place) = d.expr.as_deref() {
             let v = self.lower_expr(place)?;
             if !matches!(v.ty, LoweredTy::Tensor { .. }) {
@@ -1200,7 +1186,6 @@ impl<'r> Lowerer<'r> {
                 flag: d.flag.clone(),
                 field: true,
                 placed: placed_id(d),
-                owner: d.name.clone(),
             }
         } else {
             let (reg, from_payload) = match self.scope.get(&d.name).cloned() {
@@ -1223,7 +1208,6 @@ impl<'r> Lowerer<'r> {
                 flag: d.flag.clone(),
                 field: from_payload,
                 placed: placed_id(d),
-                owner: d.name.clone(),
             }
         };
         if d.after_value {
@@ -1748,6 +1732,11 @@ impl<'r> Lowerer<'r> {
                                 what: "an index of a rank-0 value",
                             }); // cannot index a rank-0 value
                         }
+
+                        if let Expr::Range(range) = &*ix.index {
+                            return self.lower_tensor_range(base.reg, elem, shape, range);
+                        }
+
                         let index = self.lower_expr(&ix.index)?;
                         if !matches!(index.ty, LoweredTy::Scalar(_)) {
                             return Err(Decline::TypeNotModelled {
@@ -1755,15 +1744,23 @@ impl<'r> Lowerer<'r> {
                             }); // index must be a scalar
                         }
                         let reduced: Vec<String> = shape[1..].to_vec();
-                        let result_ty = if reduced.is_empty() {
-                            LoweredTy::Scalar(elem)
+                        // docs/lane_reductions.md: a read of an element of this lane alone.
+                        let (result_ty, imm) = if reduced.is_empty() {
+                            (LoweredTy::Scalar(elem), self.lane_own(ix))
                         } else {
-                            LoweredTy::Tensor {
+                            let ty = LoweredTy::Tensor {
                                 elem,
                                 shape: reduced,
-                            }
+                            };
+                            (ty, 0)
                         };
-                        Ok(self.emit_typed(Opcode::TensorIndex, base.reg, index.reg, result_ty, 0))
+                        Ok(self.emit_typed(
+                            Opcode::TensorIndex,
+                            base.reg,
+                            index.reg,
+                            result_ty,
+                            imm,
+                        ))
                     }
                     LoweredTy::Ptr => {
                         let elem = self
@@ -1826,11 +1823,21 @@ impl<'r> Lowerer<'r> {
                     0
                 };
                 let imm = mem_id | ((source as u64) << 32) | shared;
-                let flag = Register(if body.is_some() {
+                let mut flag = if body.is_some() {
                     crate::bytecode::TRANSFER_USER_LOWERED
                 } else {
                     0
-                });
+                };
+                if t.is_async {
+                    flag |= crate::bytecode::TRANSFER_ASYNC;
+                }
+                if t.read_only_source {
+                    flag |= crate::bytecode::TRANSFER_READ_ONLY_SOURCE;
+                }
+                if t.source_borrowed_for_call {
+                    flag |= crate::bytecode::TRANSFER_SOURCE_BORROWED_FOR_CALL;
+                }
+                let flag = Register(flag);
                 let placed = self.emit_typed(Opcode::Transfer, src.reg, flag, result_ty, imm);
                 if let Some(body) = body {
                     self.inline_transfer_body(&body, src.clone(), placed.clone())?;
@@ -1854,9 +1861,12 @@ impl<'r> Lowerer<'r> {
                 if let Some(prim) = fc.name.as_ref().strip_prefix("raw::") {
                     return self.lower_raw_primitive(prim, &fc.args);
                 }
-                // `tensor_view_2d(ptr, rows, cols)`: a rank-2 view over memory the caller owns.
-                if fc.name.as_ref() == "tensor_view_2d" && fc.args.len() == 3 {
-                    return self.lower_tensor_view_2d(fc);
+                // `tensor_view_1d(ptr, len)` and `tensor_view_2d(ptr, rows, cols)`: a view over
+                // memory the caller owns.
+                if let Some(rank) = crate::syntax::expr::tensor_view_rank(&fc.name) {
+                    if fc.args.len() == rank + 1 {
+                        return self.lower_tensor_view(fc, rank);
+                    }
                 }
                 // `barrier()` (Vx#379): an effect, not a call -- there is no callee anywhere.
                 // The checker typed it i32, so hand back a constant for the value position
@@ -2647,6 +2657,25 @@ impl<'r> Lowerer<'r> {
                 0,
             );
             return Ok((tagged.reg, gid));
+        }
+        // `p[i].field` with `p : *mut S`: address the element in place, so a write reaches it.
+        if let Expr::IndexAccess(ix) = base {
+            if let Some(ptr_ty @ Type::Pointer(..)) = self.infer_ast_type(&ix.base) {
+                let Some(LoweredTy::Aggregate(gid)) = self.pointer_elem_synth(&ptr_ty) else {
+                    return Err(Decline::TypeNotModelled {
+                        what: "a field of a pointer element that is not a struct",
+                    });
+                };
+                let place = self.lower_place(base)?;
+                let tagged = self.emit_typed(
+                    Opcode::Cast,
+                    place.reg,
+                    Register(0),
+                    LoweredTy::Aggregate(gid),
+                    0,
+                );
+                return Ok((tagged.reg, gid));
+            }
         }
         // A field as a base. A by-value nested-aggregate field (`outer.inner.a`) is addressed with a
         // `FieldAddr`, and a pointer field (`make(p).p.x`) is loaded. `m.base` is lowered only here:
@@ -4180,12 +4209,14 @@ impl<'r> Lowerer<'r> {
         let zero = self.emit_value(Opcode::Const, Register(0), Register(0), ElementType::I32, 0);
         self.emit_effect(Opcode::Store, code.reg, zero.reg, 0);
         let ret = match self.ret_ty.clone() {
-            // A tensor waits as its memref, in a tensor slot.
-            Some(ty @ (LoweredTy::Scalar(_) | LoweredTy::Ptr | LoweredTy::Tensor { .. }))
-                if !self.ret_void =>
-            {
-                Some(self.emit_alloca(ty))
-            }
+            // A tensor waits as its memref, in a tensor slot, and a struct or an enum in a slot
+            // of its type.
+            Some(
+                ty @ (LoweredTy::Scalar(_)
+                | LoweredTy::Ptr
+                | LoweredTy::Tensor { .. }
+                | LoweredTy::Aggregate(_)),
+            ) if !self.ret_void => Some(self.emit_alloca(ty)),
             _ => None,
         };
         self.tasks_exits.push(TasksExits {
@@ -5223,36 +5254,6 @@ impl<'r> Lowerer<'r> {
                 (field.clone(), mlir)
             } else {
                 let (sz, al, mlir, kind) = match &fty {
-                    // An enum instance held by value, `Peek<T> { peeked : Option<T> }`. The type may
-                    // spell the enum as a struct, so it is found by name.
-                    Type::GenericInstance(b, a)
-                        if self
-                            .registry
-                            .aggregate_identities()
-                            .resolve_base(b.as_ref().into())
-                            .is_some_and(|(name, _)| {
-                                self.registry.enum_data.contains_key(&name)
-                            }) =>
-                    {
-                        let inner = self.enum_instance_layout_of(b.as_ref(), a)?;
-                        let layout = self.generated_layout(inner)?;
-                        (
-                            layout.size_bytes,
-                            layout.align_bytes,
-                            crate::codegen::flat::generated_storage_type(layout),
-                            FieldTy::Nominal(inner),
-                        )
-                    }
-                    Type::GenericInstance(b, a) if matches!(b.as_ref(), Type::Struct(..)) => {
-                        let inner = self.struct_instance_layout_of(b.as_ref(), a)?;
-                        let layout = self.generated_layout(inner)?;
-                        (
-                            layout.size_bytes,
-                            layout.align_bytes,
-                            crate::codegen::flat::generated_storage_type(layout),
-                            FieldTy::Nominal(inner),
-                        )
-                    }
                     Type::Struct(..) | Type::Enum(..)
                         if matches!(
                             lowered_ty(&fty, self.registry),
@@ -5261,25 +5262,12 @@ impl<'r> Lowerer<'r> {
                     {
                         (4, 4, "i32".to_string(), FieldTy::Scalar(ElementType::I32))
                     }
-                    Type::Struct(..) => {
+                    // A struct or an enum instance held by value, `Peek<T> { peeked : Option<T> }`.
+                    // The type may spell an enum as a struct, so the layout is found by name.
+                    Type::GenericInstance(..) | Type::Struct(..) => {
                         let inner = self.resolve_concrete_layout(&fty)?;
-                        let def = self.layout_of(&inner)?;
-                        let mlir = if let Some(layout) = self.generated_layout(inner) {
-                            crate::codegen::flat::generated_storage_type(layout)
-                        } else {
-                            crate::codegen::flat::agg_struct_ty_of(
-                                inner,
-                                self.registry,
-                                &mut Vec::new(),
-                            )
-                            .ok()?
-                        };
-                        (
-                            def.size_bytes as u64,
-                            def.align_bytes as u64,
-                            mlir,
-                            FieldTy::Nominal(inner),
-                        )
+                        let (sz, al, mlir) = self.aggregate_storage(inner)?;
+                        (sz, al, mlir, FieldTy::Nominal(inner))
                     }
                     _ => {
                         let (sz, al, kind) = crate::layout::structural_field_info(&fty)?;
@@ -5346,18 +5334,37 @@ impl<'r> Lowerer<'r> {
         agg_gid_of_ty(ty, self.registry).is_none() && self.resolve_concrete_layout(inner).is_some()
     }
 
-    /// A complete declared struct layout, resolved by declaration identity.
-    fn nominal_struct_gid(&self, ty: &Type) -> Option<TypeId> {
-        let gid = self.registry.nominal_layout_id(ty)?;
-        self.registry.structs.contains_key(&gid).then_some(gid)
+    /// The size, alignment and MLIR storage type of a completed aggregate: the layout this worker
+    /// built, else the registry's. The registry's layout counts only if each field has an MLIR type.
+    fn aggregate_storage(&self, gid: TypeId) -> Option<(u64, u64, String)> {
+        if let Some(layout) = self.generated_layout(gid) {
+            return Some((
+                layout.size_bytes,
+                layout.align_bytes,
+                crate::codegen::flat::generated_storage_type(layout),
+            ));
+        }
+        let def = self.registry.layouts.get(&gid)?;
+        let mlir =
+            crate::codegen::flat::agg_struct_ty_of(gid, self.registry, &mut Vec::new()).ok()?;
+        Some((def.size_bytes as u64, def.align_bytes as u64, mlir))
     }
 
-    /// The size, alignment and MLIR type of a value held inside an enum's payload or a generic
-    /// struct's field: a number or a pointer, a declared struct, or an instance of a generic
-    /// struct.
-    fn payload_field(&mut self, ty: &Type) -> Option<(u64, u64, String)> {
-        if let Some(field) = enum_payload_field(ty) {
-            return Some(field);
+    /// The size and alignment of a completed aggregate, as `aggregate_storage` gives them.
+    fn aggregate_size_align(&self, gid: TypeId) -> Option<(u64, u64)> {
+        if let Some(layout) = self.generated_layout(gid) {
+            return Some((layout.size_bytes, layout.align_bytes));
+        }
+        // Build the MLIR type of a registry layout only to check that it has one.
+        let (size, align, _) = self.aggregate_storage(gid)?;
+        Some((size, align))
+    }
+
+    /// The size and alignment of a value held in an enum payload: a number, a pointer, a
+    /// tensor, a struct, an instance of a generic struct, or another enum.
+    fn payload_size_align(&mut self, ty: &Type) -> Option<(u64, u64)> {
+        if let Some(size_align) = enum_payload_size_align(ty) {
+            return Some(size_align);
         }
         // An enum whose variants carry nothing, `Ordering`, is its `i32` tag.
         if self
@@ -5367,47 +5374,14 @@ impl<'r> Lowerer<'r> {
             .and_then(|(name, _)| self.registry.enum_data.get(&name))
             .is_some_and(|data| data.variants.iter().all(|(_, fields)| fields.is_empty()))
         {
-            return Some((4, 4, "i32".to_string()));
-        }
-        // An enum whose variants carry data, as `E` in `Result<u64, E>`: its whole storage.
-        let (nominal, args) = match ty {
-            Type::GenericInstance(base, args) => (base.as_ref(), args.as_slice()),
-            other => (other, &[][..]),
-        };
-        let is_enum = self
-            .registry
-            .aggregate_identities()
-            .resolve_base(nominal.into())
-            .is_some_and(|(name, _)| self.registry.enum_data.contains_key(&name));
-        if is_enum {
-            let gid = self.enum_instance_layout_of(nominal, args)?;
-            let layout = self.generated_layout(gid)?;
-            return Some((
-                layout.size_bytes,
-                layout.align_bytes,
-                crate::codegen::flat::generated_storage_type(layout),
-            ));
+            return Some((4, 4));
         }
         match ty {
-            Type::Struct(..) => {
-                let gid = self.nominal_struct_gid(ty)?;
-                let def = self.registry.layouts.get(&gid)?;
-                let mlir =
-                    crate::codegen::flat::agg_struct_ty_of(gid, self.registry, &mut Vec::new())
-                        .ok()?;
-                Some((def.size_bytes as u64, def.align_bytes as u64, mlir))
-            }
-            Type::GenericInstance(base, args) => {
-                let Type::Struct(..) = base.as_ref() else {
-                    return None;
-                };
-                let gid = self.struct_instance_layout_of(base.as_ref(), args)?;
-                let layout = self.generated_layout(gid)?;
-                Some((
-                    layout.size_bytes,
-                    layout.align_bytes,
-                    crate::codegen::flat::generated_storage_type(layout),
-                ))
+            // The registry leaves the layout of a struct with an enum field incomplete. This
+            // worker completes it, as it does for a generic instance or an enum with data.
+            Type::Struct(..) | Type::Enum(..) | Type::GenericInstance(..) => {
+                let gid = self.resolve_concrete_layout(ty)?;
+                self.aggregate_size_align(gid)
             }
             _ => None,
         }
@@ -5460,7 +5434,7 @@ impl<'r> Lowerer<'r> {
                 if crate::syntax::types::is_void_ty(&ty) {
                     continue;
                 }
-                let (size, align, _) = self.payload_field(&ty)?;
+                let (size, align) = self.payload_size_align(&ty)?;
                 payloads.push((size, align));
             }
             variants.push(payloads);
@@ -5776,11 +5750,15 @@ impl<'r> Lowerer<'r> {
         Some(buf)
     }
 
-    /// `tensor_view_2d(ptr, rows, cols)`: the pointer is the view's `operand1`, a run-time extent
-    /// rides on an `Arg` the way an allocation's does, and a literal one is the type's. The
-    /// element is the pointer's pointee when its type is recorded, `f32` otherwise, which is
-    /// the oracle's default too.
-    fn lower_tensor_view_2d(&mut self, fc: &crate::syntax::FunctionCallExpr) -> Lowered<Val> {
+    /// `tensor_view_1d(ptr, len)` and `tensor_view_2d(ptr, rows, cols)`: the pointer is the view's
+    /// `operand1`, a run-time extent rides on an `Arg` the way an allocation's does, and a
+    /// literal one is the type's. The element is the pointer's pointee when its type is
+    /// recorded, `f32` otherwise, which is the oracle's default too.
+    fn lower_tensor_view(
+        &mut self,
+        fc: &crate::syntax::FunctionCallExpr,
+        rank: usize,
+    ) -> Lowered<Val> {
         let ptr = self.lower_expr(&fc.args[0])?;
         if !matches!(ptr.ty, LoweredTy::Ptr) {
             return Err(Decline::TypeNotModelled {
@@ -5794,9 +5772,9 @@ impl<'r> Lowerer<'r> {
             },
             _ => ElementType::F32,
         };
-        let mut shape = Vec::with_capacity(2);
+        let mut shape = Vec::with_capacity(rank);
         let mut extents: Vec<Register> = Vec::new();
-        for a in &fc.args[1..3] {
+        for a in &fc.args[1..rank + 1] {
             if let Expr::Number(n) = a {
                 shape.push(n.value.as_ref().to_string());
             } else {
@@ -6695,6 +6673,30 @@ impl<'r> Lowerer<'r> {
         ))
     }
 
+    /// `q[a..b]`: rows `a` to `b - 1` of the tensor `base`, a view that shares its memory. The
+    /// checker refused a range whose ends are not literal numbers or that has no rows.
+    fn lower_tensor_range(
+        &mut self,
+        base: Register,
+        elem: ElementType,
+        mut shape: Vec<String>,
+        range: &crate::syntax::expr::RangeExpr,
+    ) -> Lowered<Val> {
+        let (a, b) = range
+            .literal_ends()
+            .expect("the checker refuses a range whose ends are not literal numbers");
+        assert!(a < b, "the checker refuses a range with no rows");
+        let start = self.lower_expr(&range.start)?;
+        shape[0] = (b - a).to_string();
+        Ok(self.emit_typed(
+            Opcode::TensorRange,
+            base,
+            start.reg,
+            LoweredTy::Tensor { elem, shape },
+            0,
+        ))
+    }
+
     fn lower_place(&mut self, e: &Expr) -> Lowered<Val> {
         // A raw-pointer dereference place `*p = val`: `p[0]`.
         if let Expr::Dereference(d) = e {
@@ -6738,6 +6740,10 @@ impl<'r> Lowerer<'r> {
             return Err(Decline::TypeNotModelled {
                 what: "an index of a rank-0 value",
             }); // cannot index a rank-0 value
+        }
+        // `q[1..3] = w` writes `w` into the rows of the range.
+        if let Expr::Range(range) = &*ix.index {
+            return self.lower_tensor_range(base.reg, elem, shape, range);
         }
         let index = self.lower_expr(&ix.index)?;
         if !matches!(index.ty, LoweredTy::Scalar(_)) {
@@ -6896,7 +6902,7 @@ impl<'r> Lowerer<'r> {
             let imm = if is_ptr {
                 0
             } else {
-                self.lane_element_store(ix)
+                self.lane_element_store(ix) | self.lane_own(ix)
             };
             self.emit_effect(store, place.reg, value.reg, imm);
             return Ok(());
@@ -7114,7 +7120,10 @@ impl<'r> Lowerer<'r> {
             }
             match ins.opcode {
                 // A view of `r` or `r` under another type: dead when that is.
-                Opcode::Cast | Opcode::TensorIndex | Opcode::TensorReshape => {
+                Opcode::Cast
+                | Opcode::TensorIndex
+                | Opcode::TensorRange
+                | Opcode::TensorReshape => {
                     if !self.temp_is_dead(Register(i as u32), keep) {
                         return false;
                     }
@@ -7424,28 +7433,11 @@ impl<'r> Lowerer<'r> {
                         return Ok(());
                     }
                     // Each arm returns, so nothing runs after the match. A slot whose lifetime
-                    // does not end lives to the end of the call, which is correct.
-                    // An owner that the `match` uses is still alive in the arms, so each arm's
-                    // `return` drops it. The other drops wait for a value that never comes, so
-                    // they run before each `return` in the arms.
-                    let mut used = HashSet::new();
-                    let returned = r.expr.as_ref().expect("matched above");
-                    crate::syntax::expr::visit_expr(returned, &mut |e| {
-                        if let Expr::Identifier(id) = e {
-                            used.insert(id.name.clone());
-                        }
-                    });
-                    let outer = self.return_drops.len();
-                    let waiting = std::mem::take(&mut self.value_drops);
-                    self.return_drops.extend(waiting.into_iter().filter(|d| match d {
-                        PendingDrop::Tensor { owner, .. } | PendingDrop::Call { owner, .. } => {
-                            !used.contains(owner)
-                        }
-                        PendingDrop::LifetimeEnd { .. } => false,
-                    }));
-                    let lowered = self.lower_match(m);
-                    self.return_drops.truncate(outer);
-                    lowered?;
+                    // does not end lives to the end of the call, which is correct. The checker
+                    // drops each owner before each `return` in the arms, so the drops that wait
+                    // for the value of the match never run.
+                    self.value_drops.clear();
+                    self.lower_match(m)?;
                     if !self.block_terminated() {
                         let rty = self.ret_ty.clone().ok_or(Decline::TypeNotModelled {
                             what: "a function with no recorded return type",
@@ -8768,28 +8760,20 @@ fn parse_scalar_type_arg(s: &str) -> Type {
     Type::Scalar(e)
 }
 
-/// The byte size, alignment, and MLIR type string of an enum payload field — a scalar or a pointer.
-/// `None` for a by-value aggregate/tensor/generic payload (not modelled). (#242)
-fn enum_payload_field(ty: &Type) -> Option<(u64, u64, String)> {
+/// The byte size and alignment of an enum payload that has no declaration: a scalar, a pointer
+/// or a tensor. `None` for a struct or an enum, and for a type the flat path does not model.
+fn enum_payload_size_align(ty: &Type) -> Option<(u64, u64)> {
     match ty {
         Type::Scalar(ElementType::Generic(_)) => None,
         Type::Scalar(e) => {
+            // A scalar with no MLIR type cannot be stored.
+            crate::mlir_ty::mlir_scalar(e)?;
             let (s, a) = crate::layout::scalar_size_align(e)?;
-            Some((
-                s as u64,
-                a as u64,
-                crate::mlir_ty::mlir_scalar(e)?.to_string(),
-            ))
+            Some((s as u64, a as u64))
         }
-        Type::Pointer(..) | Type::Borrow { .. } | Type::Ref(..) => {
-            Some((8, 8, "!llvm.ptr".to_string()))
-        }
+        Type::Pointer(..) | Type::Borrow { .. } | Type::Ref(..) => Some((8, 8)),
         // A tensor is its descriptor: two pointers, an offset, and a size and a stride per rank.
-        Type::Tensor(_, shape, ..) => Some((
-            8 * (3 + 2 * shape.len() as u64),
-            8,
-            crate::codegen::flat::memref_descriptor_ty(shape.len()),
-        )),
+        Type::Tensor(_, shape, ..) => Some((8 * (3 + 2 * shape.len() as u64), 8)),
         _ => None,
     }
 }
@@ -9061,6 +9045,7 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             | Opcode::Store
             | Opcode::FieldStore
             | Opcode::TensorIndex
+            | Opcode::TensorRange
             | Opcode::TensorStore
             | Opcode::TensorDim
             // `PtrIndex` reads base+index; `PtrStore` reads place+value (#242).

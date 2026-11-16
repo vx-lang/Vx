@@ -502,6 +502,21 @@ pub fn topology_dispatch_id(top: &Topology) -> i32 {
     }
 }
 
+/// The built-in topology kind for a dispatch id, if the id falls in a built-in range.
+pub fn builtin_kind_from_dispatch_id(id: i64) -> Option<crate::syntax::TopologyKind> {
+    match id {
+        0 => Some(crate::syntax::TopologyKind::CPU),
+        100..200 => Some(crate::syntax::TopologyKind::NPU),
+        200..300 => Some(crate::syntax::TopologyKind::AccCore),
+        300 => Some(crate::syntax::TopologyKind::AMX),
+        400 => Some(crate::syntax::TopologyKind::ANE),
+        500..600 => Some(crate::syntax::TopologyKind::GPU),
+        600 => Some(crate::syntax::TopologyKind::CpuAvx512),
+        700 => Some(crate::syntax::TopologyKind::CpuNeon),
+        _ => None,
+    }
+}
+
 /// The dispatch ids of every device of a declared topology, in device order.
 pub fn declared_dispatch_ids(name: &crate::symbol::Symbol, count: Option<u64>) -> Vec<i32> {
     (0..count.unwrap_or(1))
@@ -673,6 +688,7 @@ pub enum DeviceTarget {
     /// The Apple GPU. Vx writes Metal Shading Language for it, and the MSL printer reads the
     /// NVPTX numbers: 3 is `threadgroup` memory.
     AppleGpu,
+    AppleAne,
 }
 
 impl DeviceTarget {
@@ -687,7 +703,8 @@ impl DeviceTarget {
     ///
     /// `applegpu` answers `None`, because an Apple GPU shares the host's memory (`managed:
     /// cached` in fleet/m4-uma.vx) and its tensors need no alias to be allocated somewhere else.
-    /// So does a target with no device-image pipeline, whose kernels run on the host.
+    /// So does `appleane`, which sits beside it on the same memory. So does a target with no
+    /// device-image pipeline, whose kernels run on the host.
     pub fn device_dispatch_id(self) -> Option<i32> {
         match self {
             DeviceTarget::Nvptx64 => Some(topology_dispatch_id(&Topology::gpu(0))),
@@ -695,7 +712,8 @@ impl DeviceTarget {
             DeviceTarget::X86_64
             | DeviceTarget::Aarch64
             | DeviceTarget::AmdGcn
-            | DeviceTarget::AppleGpu => None,
+            | DeviceTarget::AppleGpu
+            | DeviceTarget::AppleAne => None,
         }
     }
 
@@ -710,6 +728,7 @@ impl DeviceTarget {
             "amdgcn" => Some(DeviceTarget::AmdGcn),
             "spirv64" => Some(DeviceTarget::Spirv64),
             "applegpu" => Some(DeviceTarget::AppleGpu),
+            "appleane" => Some(DeviceTarget::AppleAne),
             _ => None,
         }
     }
@@ -726,6 +745,7 @@ impl DeviceTarget {
             | DeviceTarget::Aarch64
             | DeviceTarget::AmdGcn
             | DeviceTarget::Spirv64 => None,
+            DeviceTarget::AppleAne => None,
         }
     }
 
@@ -741,7 +761,8 @@ impl DeviceTarget {
             DeviceTarget::X86_64
             | DeviceTarget::Aarch64
             | DeviceTarget::AmdGcn
-            | DeviceTarget::Spirv64 => space.nvptx_addrspace(),
+            | DeviceTarget::Spirv64
+            | DeviceTarget::AppleAne => space.nvptx_addrspace(),
         }
     }
 }
@@ -978,35 +999,93 @@ pub fn owning_topology_in(
 /// `visibility` includes each topology's own `default_space`, which subsumes the old
 /// "a topology sees its own memory" special-cases (NPU→NPUHBM, AccCore→LocalSRAM,
 /// GPU→GpuHbm).
-fn builtin_descriptors() -> HashMap<crate::syntax::TopologyKind, TopologyDescriptor> {
+pub(crate) fn builtin_descriptors() -> HashMap<crate::syntax::TopologyKind, TopologyDescriptor> {
     use crate::syntax::TopologyKind as K;
     use MemorySpace::*;
-    let d = |default_space: MemorySpace, visibility: &[MemorySpace]| TopologyDescriptor {
-        arch: None,
-        default_space,
-        visibility: visibility.to_vec(),
-        transfers: Vec::new(), // built-in transfer edges live in TransferCostGraph::default
-        // The built-ins describe a class of device rather than a part, and which element types a
-        // GPU has is a property of the part. Undeclared, so they constrain nothing.
-        dtypes: None,
-        chip: None,
-        levels: None,
-        offload: false,
-        count: None,
-    };
+
     let mut m = HashMap::new();
-    m.insert(K::CPU, d(CPUDRAM, &[CPUDRAM, NPUHBM]));
-    m.insert(K::GPU, d(GpuHbm, &[GpuHbm]));
-    m.insert(K::NPU, d(NPUHBM, &[NPUHBM]));
-    m.insert(K::ANE, d(NPUHBM, &[NPUHBM, CPUDRAM]));
-    m.insert(K::AMX, d(CPUDRAM, &[CPUDRAM]));
-    m.insert(K::AccCore, d(LocalSRAM, &[LocalSRAM]));
-    m.insert(K::CpuAvx512, d(CPUDRAM, &[CPUDRAM]));
-    m.insert(K::CpuNeon, d(CPUDRAM, &[CPUDRAM]));
-    m.insert(K::Slice, d(NPUHBM, &[NPUHBM]));
+
+    let d = |default_space: MemorySpace,
+             visibility: &[MemorySpace],
+             arch: Option<&str>,
+             offload: bool| {
+        TopologyDescriptor {
+            arch: arch.map(|s| s.into()),
+            default_space,
+            visibility: visibility.to_vec(),
+            transfers: Vec::new(),
+            // The built-ins describe a class of device rather than a part, and which element types a
+            // GPU has is a property of the part. Undeclared, so they constrain nothing.
+            dtypes: None,
+            chip: None,
+            levels: None,
+            offload,
+            count: None,
+        }
+    };
+
+    m.insert(K::CPU, d(CPUDRAM, &[CPUDRAM, NPUHBM], None, false));
+    m.insert(K::GPU, d(GpuHbm, &[GpuHbm], Some("nvptx64"), false));
+    m.insert(K::NPU, d(NPUHBM, &[NPUHBM], None, false));
+    m.insert(
+        K::ANE,
+        d(NPUHBM, &[NPUHBM, CPUDRAM], Some("appleane"), false),
+    );
+    m.insert(K::AMX, d(CPUDRAM, &[CPUDRAM], None, false));
+    m.insert(K::AccCore, d(LocalSRAM, &[LocalSRAM], None, false));
+    m.insert(K::CpuAvx512, d(CPUDRAM, &[CPUDRAM], None, false));
+    m.insert(K::CpuNeon, d(CPUDRAM, &[CPUDRAM], None, false));
+    m.insert(K::Slice, d(NPUHBM, &[NPUHBM], None, false));
     m
 }
 
+/// Whether a built-in topology can have its `dtypes:` patched by a machine declaration.
+/// Host execution (CPU) and topologies whose memory belongs to another topology cannot.
+pub fn can_patch_builtin_dtypes(kind: &crate::syntax::TopologyKind) -> bool {
+    if matches!(
+        kind,
+        crate::syntax::TopologyKind::CPU
+            | crate::syntax::TopologyKind::Custom(_)
+            | crate::syntax::TopologyKind::Current
+            | crate::syntax::TopologyKind::Slice
+    ) {
+        return false;
+    }
+    if let Some(desc) = builtin_descriptors().remove(kind) {
+        builtin_space_owner(&desc.default_space).as_ref() == Some(kind)
+    } else {
+        false
+    }
+}
+
+/// The declared arch, chip, and offload for a topology.
+/// Checks the declared topologies first, then falls back to built-in descriptors.
+pub fn topology_arch_and_chip(
+    top: &Topology,
+    declared: &HashMap<crate::symbol::Symbol, TopologyDescriptor>,
+) -> (Option<String>, Option<String>, Option<bool>) {
+    match top {
+        Topology::Custom(name, _) => match declared.get(name) {
+            Some(desc) => (
+                desc.arch.as_ref().map(|a| a.to_string()),
+                desc.chip.as_ref().map(|c| c.to_string()),
+                Some(desc.offload),
+            ),
+            None => (None, None, None),
+        },
+        _ => {
+            let kind = top.kind();
+            match builtin_descriptors().remove(&kind) {
+                Some(desc) if desc.arch.is_some() => (
+                    desc.arch.as_ref().map(|a| a.to_string()),
+                    desc.chip.as_ref().map(|c| c.to_string()),
+                    None,
+                ),
+                _ => (None, None, None),
+            }
+        }
+    }
+}
 // Topology descriptors are no longer a process-global registry. A `TransferCostGraph` carries
 // them per-compilation (`descriptors` field, seeded from the built-ins plus `Program.topologies`
 // via `seed_from_topologies`); see `descriptor` / `default_memory_for` methods below. This is the
@@ -1189,11 +1268,19 @@ impl TransferCostGraph {
     /// double sweep in place.
     pub fn add_topology_edges(&mut self, topologies: &[TopologyDecl]) {
         for decl in topologies {
-            self.apply_descriptor_edges(&decl.descriptor);
-            self.descriptors.insert(
-                crate::syntax::TopologyKind::Custom(decl.name.clone()),
-                decl.descriptor.clone(),
-            );
+            let kind = crate::syntax::TopologyKind::from_name(&decl.name);
+
+            if matches!(kind, crate::syntax::TopologyKind::Custom(_)) {
+                self.apply_descriptor_edges(&decl.descriptor);
+                self.descriptors.insert(kind, decl.descriptor.clone());
+            } else if can_patch_builtin_dtypes(&kind) {
+                if let Some(existing) = self.descriptors.get_mut(&kind) {
+                    // Built-in. Patch the dtypes if provided.
+                    if let Some(dtypes) = &decl.descriptor.dtypes {
+                        existing.dtypes = Some(dtypes.clone());
+                    }
+                }
+            }
         }
     }
 
@@ -1737,6 +1824,8 @@ impl TransferCostGraph {
 
 #[cfg(test)]
 mod tests {
+    use crate::syntax::DeclPlace;
+
     use super::*;
     use syntax::{ElementType, Expr, NumberExpr, Span};
 
@@ -1762,6 +1851,52 @@ mod tests {
             None,
             Span::default(),
         ))))
+    }
+
+    #[test]
+    fn test_builtin_kind_from_dispatch_id() {
+        use crate::syntax::{Topology, TopologyKind};
+        let cases = [
+            (Topology::CPU, TopologyKind::CPU),
+            (Topology::AMX, TopologyKind::AMX),
+            (Topology::ANE, TopologyKind::ANE),
+            (Topology::CpuAvx512, TopologyKind::CpuAvx512),
+            (Topology::CpuNeon, TopologyKind::CpuNeon),
+            (Topology::gpu(0), TopologyKind::GPU),
+            (Topology::gpu(99), TopologyKind::GPU),
+        ];
+        for (top, expected_kind) in cases {
+            let id = topology_dispatch_id(&top) as i64;
+            assert_eq!(builtin_kind_from_dispatch_id(id), Some(expected_kind));
+        }
+        assert_eq!(builtin_kind_from_dispatch_id(100), Some(TopologyKind::NPU));
+        assert_eq!(builtin_kind_from_dispatch_id(199), Some(TopologyKind::NPU));
+        assert_eq!(
+            builtin_kind_from_dispatch_id(200),
+            Some(TopologyKind::AccCore)
+        );
+        assert_eq!(
+            builtin_kind_from_dispatch_id(299),
+            Some(TopologyKind::AccCore)
+        );
+        assert_eq!(builtin_kind_from_dispatch_id(800), None);
+    }
+
+    #[test]
+    fn test_can_patch_builtin_dtypes() {
+        use crate::syntax::TopologyKind::*;
+        assert!(can_patch_builtin_dtypes(&GPU));
+        assert!(can_patch_builtin_dtypes(&NPU));
+        assert!(can_patch_builtin_dtypes(&AccCore));
+
+        assert!(!can_patch_builtin_dtypes(&CPU));
+        assert!(!can_patch_builtin_dtypes(&AMX));
+        assert!(!can_patch_builtin_dtypes(&ANE));
+        assert!(!can_patch_builtin_dtypes(&CpuAvx512));
+        assert!(!can_patch_builtin_dtypes(&CpuNeon));
+        assert!(!can_patch_builtin_dtypes(&Current));
+        assert!(!can_patch_builtin_dtypes(&Slice));
+        assert!(!can_patch_builtin_dtypes(&Custom("Dev".into())));
     }
 
     /// Device 0 of a declared topology keeps the id of its name, and each other device gets an
@@ -2902,5 +3037,46 @@ mod tests {
         let err = g.owning_topology(&shared).unwrap_err();
         assert!(err.contains("ambiguous"), "{err}");
         assert!(err.contains("DevA") && err.contains("DevB"), "{err}");
+    }
+
+    #[test]
+    fn test_patch_builtin_topology_dtypes() {
+        let mut graph = TransferCostGraph::default();
+
+        // The built-in NPU has no dtypes
+        let npu_kind = crate::syntax::TopologyKind::NPU;
+        assert!(graph.descriptor(&npu_kind).unwrap().dtypes.is_none());
+
+        // Create a decl that patches it
+        let decl = TopologyDecl {
+            name: "NPU".into(),
+            place: DeclPlace {
+                file: None,
+                span: crate::syntax::Span::default(),
+            },
+            descriptor: TopologyDescriptor {
+                arch: None,
+                default_space: MemorySpace::NPUHBM,
+                visibility: vec![MemorySpace::NPUHBM],
+                transfers: vec![],
+                dtypes: Some(vec![crate::syntax::ElementType::F16]),
+                chip: None,
+                levels: None,
+                offload: false,
+                count: None,
+            },
+        };
+
+        graph.add_topology_edges(&[decl]);
+
+        // It should be patched now
+        let dtypes = graph
+            .descriptor(&npu_kind)
+            .unwrap()
+            .dtypes
+            .as_ref()
+            .unwrap();
+        assert_eq!(dtypes.len(), 1);
+        assert_eq!(dtypes[0], crate::syntax::ElementType::F16);
     }
 }

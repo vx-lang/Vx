@@ -27,6 +27,8 @@ import VxMemoryModel.Recv
 import VxMemoryModel.Cancel
 import VxMemoryModel.Arc
 import VxMemoryModel.ChannelOrders
+import VxMemoryModel.BroadcastOrders
+import VxMemoryModel.BroadcastExample
 import VxMemoryModel.Footprint
 import VxMemoryModel.FootprintExample
 import VxMemoryModel.ChanFootprint

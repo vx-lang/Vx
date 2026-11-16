@@ -283,6 +283,20 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             (Type::Scalar(src), Type::Scalar(dst)) => {
+                // Rust's rule: only a `bool` casts to a `bool`. From an integer the cast kept
+                // the lowest bit, so `2 as bool` was `false`.
+                if *dst == ElementType::Bool && *src != ElementType::Bool {
+                    let zero = if src.is_float() { "0.0" } else { "0" };
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3011,
+                        format!(
+                            "cannot cast `{src}` to `bool`: compare it with zero instead, as in \
+                             `x != {zero}`"
+                        ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&expr.span)),
+                    );
+                    return Type::Unknown;
+                }
                 // A literal is left alone, since a cast is one way to give a number its type.
                 // So is a generic instance: there `x as T` converts for every other `T`.
                 let literal = match &*expr.expr {
@@ -1310,6 +1324,33 @@ impl<'a> TypeChecker<'a> {
                 Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
             );
             return Type::Unknown;
+        }
+        // Rust's rule: `-` takes a signed integer or a float. On another unsigned type it
+        // would wrap with no error, and on a `bool` it does nothing. A negative literal is
+        // left to the check that a literal fits its type (E3045).
+        if *op == UnaryOp::Neg && !matches!(inner, Expr::Number(_)) {
+            let elem = match &inner_ty {
+                Type::Simd(e, _) => Some(e.clone()),
+                _ => Self::scalar_elem(&inner_ty),
+            };
+            let why = match elem {
+                Some(ElementType::Bool) => {
+                    Some("`-` does not apply to a `bool`: use `!` to flip it".to_string())
+                }
+                Some(e) if e.is_unsigned_int() => Some(format!(
+                    "`-` does not apply to a `{e}`, which is never negative: cast it to a \
+                     signed type first, or call `wrapping_neg()` from `core::num`"
+                )),
+                _ => None,
+            };
+            if let Some(why) = why {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3030,
+                    why,
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                );
+                return Type::Unknown;
+            }
         }
         let symbol = match op {
             UnaryOp::Neg => "-",

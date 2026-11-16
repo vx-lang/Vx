@@ -19,7 +19,7 @@ env:
 jobs:
   genmc:
     name: Check the compiled library with GenMC
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 90
     env:
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
@@ -49,7 +49,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq libllvm22 libffi-dev
 
-      # ImageOS names the OS release of the runner (ubuntu24), as in build-own-llvm.
+      # ImageOS names the OS release of the runner (ubuntu26), as in build-own-llvm.
       - name: GenMC cache key
         id: genmc-key
         run: echo "key=genmc-$ImageOS-llvm22-$GENMC_COMMIT-${{ hashFiles('formal/compiled/genmc.patch') }}" >> "$GITHUB_OUTPUT"
