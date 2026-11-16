@@ -275,6 +275,22 @@ fn lower_spawn_region<'c>(
         spawn_builder =
             spawn_builder.add_attributes(&[(Identifier::new(gen.context, "chip"), chip_attr)]);
     }
+    if let Some(bytes) = match &this.top {
+        crate::syntax::Topology::Custom(name, _) => gen
+            .topologies
+            .get(name)
+            .and_then(|d| crate::arch::shared_memory_capacity(d, gen.memories.values())),
+        _ => None,
+    } {
+        let bytes_attr = melior::ir::attribute::IntegerAttribute::new(
+            melior::ir::r#type::IntegerType::new(gen.context, 64).into(),
+            bytes as i64,
+        );
+        spawn_builder = spawn_builder.add_attributes(&[(
+            Identifier::new(gen.context, "shared_bytes"),
+            bytes_attr.into(),
+        )]);
+    }
     // Whether the fleet may run it on a worker of another node. A built-in has no mark.
     if let Some(offload) = desc_offload {
         let offload_attr = melior::ir::attribute::BoolAttribute::new(gen.context, offload);

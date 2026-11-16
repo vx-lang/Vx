@@ -1124,6 +1124,8 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       kernelOp->setAttr("arch", arch);
     if (auto chip = op->getAttrOfType<StringAttr>("chip"))
       kernelOp->setAttr("chip", chip);
+    if (auto bytes = op->getAttrOfType<IntegerAttr>("shared_bytes"))
+      kernelOp->setAttr("shared_bytes", bytes);
     // The function that holds the region, and the function parameter that
     // fills each kernel parameter (-1 for a value that is not a parameter).
     // `--emit-ptx` names the kernel and describes its parameters from these.
@@ -7442,6 +7444,21 @@ struct ConvertVxToStandardPass
           if (space && space.getInt() == 3 && t.hasStaticShape())
             smemAllocas.push_back(a);
         });
+        // A tile in simdgroup matrices keeps its alloca, which the Metal
+        // printer gives no memory. It becomes a global below, but takes no
+        // part in the size of the shared memory.
+        SmallVector<memref::AllocaOp> inRegisters;
+        llvm::erase_if(smemAllocas, [&](memref::AllocaOp a) {
+          SmallVector<Operation *> uses;
+          accessesOf(a.getResult(), uses);
+          bool registers =
+              !uses.empty() && llvm::all_of(uses, [](Operation *u) {
+                return u->hasAttr(simdgroupRegistersAttr);
+              });
+          if (registers)
+            inRegisters.push_back(a);
+          return registers;
+        });
         // Static `.shared` storage is limited to 48 KiB a block. Past that the
         // tensors are views at offsets into dynamic shared memory, and the
         // kernel says how much it needs (`vx.dynamic_shared`), which the
@@ -7457,6 +7474,19 @@ struct ConvertVxToStandardPass
         int64_t total = 0;
         for (memref::AllocaOp a : smemAllocas)
           total = llvm::alignTo(total, alignOf(a)) + bytesOf(a);
+        // The checker leaves out a tile of sums that it expects in registers.
+        // When the lowering kept such a tile in shared memory, the kernel can
+        // need more than the memory has.
+        if (auto limit = kernel->getAttrOfType<IntegerAttr>("shared_bytes");
+            limit && total > limit.getInt()) {
+          kernel.emitError("this GPU kernel needs ")
+              << total << " bytes of shared memory, but its memory has "
+              << limit.getInt()
+              << ". The checker may have expected the sums of a lane matmul "
+                 "in registers, which the lowering kept in shared memory";
+          signalPassFailure();
+          return;
+        }
         if (total > kMaxStaticSharedBytes) {
           OpBuilder atEntry(&gpuFunc.getBody().front(),
                             gpuFunc.getBody().front().begin());
@@ -7495,6 +7525,7 @@ struct ConvertVxToStandardPass
                            atEntry.getI64IntegerAttr(most));
           smemAllocas.clear();
         }
+        smemAllocas.append(inRegisters.begin(), inRegisters.end());
         int smemIdx = 0;
         for (memref::AllocaOp a : smemAllocas) {
           std::string gname =

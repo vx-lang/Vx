@@ -1012,6 +1012,27 @@ pub fn can_patch_builtin_dtypes(kind: &crate::syntax::TopologyKind) -> bool {
     }
 }
 
+/// The capacity in bytes of the shared memory of a GPU topology: the one memory it can see that
+/// is private to a part of the device (`scope: sm` or `cta`), when that memory has a `capacity:`
+/// and is not `overcommit`. The lowering refuses a kernel that needs more.
+pub fn shared_memory_capacity<'a>(
+    desc: &TopologyDescriptor,
+    memories: impl IntoIterator<Item = &'a crate::syntax::MemoryDecl>,
+) -> Option<u64> {
+    use crate::syntax::Scope;
+    let mut shared = memories.into_iter().filter(|m| {
+        matches!(m.scope, Some(Scope::Sm | Scope::Cta))
+            && desc
+                .visibility
+                .contains(&crate::syntax::MemorySpace::from_name(m.name.as_ref()))
+    });
+    let one = shared.next()?;
+    if shared.next().is_some() || one.overcommit {
+        return None;
+    }
+    one.capacity.map(|c| c.0)
+}
+
 /// The declared arch, chip, and offload for a topology.
 /// Checks the declared topologies first, then falls back to built-in descriptors.
 pub fn topology_arch_and_chip(

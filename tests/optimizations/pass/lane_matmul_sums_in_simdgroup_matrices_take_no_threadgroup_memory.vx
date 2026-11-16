@@ -1,0 +1,100 @@
+//===- lane_matmul_sums_in_simdgroup_matrices_take_no_threadgroup_memory.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// On the Apple GPU, each of 4 subgroups adds to its row of `acc`, and the only other uses of
+// `acc` are a fill and a copy out. The sums stay in the simdgroup matrices, so `acc` takes none
+// of the 32 KB of threadgroup memory of the M4. The checker leaves `acc` out of E6009 and E6010.
+// With 64 columns, `sa`, `sb` and `acc` would be 44 KB (E6010). With 128 columns, `acc` alone
+// would be 64 KB (E6009). The test needs no GPU.
+//
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx --emit-msl -o %t.metal 2>&1 | FileCheck %s --check-prefix=OK --allow-empty --implicit-check-not=Error
+// RUN: FileCheck %s --input-file=%t.metal
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/m4-uma.vx --emit-msl -o %t.ast.metal 2>&1 | FileCheck %s --check-prefix=OK --allow-empty --implicit-check-not=Error
+// RUN: FileCheck %s --input-file=%t.ast.metal
+// OK-NOT: E60
+
+// CHECK-LABEL: kernel void columns_64(
+// CHECK-NOT: threadgroup float
+// CHECK: simdgroup_float8x8 vx_sums0[32];
+pub fn columns_64(out : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<f16, [?, ?], Memory::HBM>, b : &Tensor<f16, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..2 across blocks {
+      let mut sa = unsafe { Tensor<f16, [4, 32, 32], Memory::SMEM>::uninit() };
+      let mut sb = unsafe { Tensor<f16, [32, 64], Memory::SMEM>::uninit() };
+      let mut acc = unsafe {
+        Tensor<f32, [4, 32, 64], Memory::SMEM>::uninit()
+      };
+      for s in 0..4 across subgroups {
+        lanes::fill(&mut acc[s], 0.0);
+      }
+      for kb in 0..4 {
+        for s in 0..4 across subgroups {
+          for l in 0..32 across lanes(32) {
+            for i in 0..32 {
+              sa[s][i][l] = a[blk * 128 + s * 32 + i][kb * 32 + l];
+            }
+            for r in 0..8 {
+              for c in 0..2 {
+                sb[s * 8 + r][c * 32 + l] = b[kb * 32 + s * 8 + r][c * 32 + l];
+              }
+            }
+          }
+        }
+        for s in 0..4 across subgroups {
+          acc[s] = acc[s] + (sa[s] as f32) @ (sb as f32);
+        }
+      }
+      for s in 0..4 across subgroups {
+        lanes::copy(out, &acc[s], [blk * 128 + s * 32, 0]);
+      }
+    }
+  }
+  return;
+}
+
+// CHECK-LABEL: kernel void columns_128(
+// CHECK-NOT: threadgroup float
+// CHECK: simdgroup_float8x8 vx_sums0[64];
+pub fn columns_128(out : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<f16, [?, ?], Memory::HBM>, b : &Tensor<f16, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..2 across blocks {
+      let mut sa = unsafe { Tensor<f16, [4, 32, 32], Memory::SMEM>::uninit() };
+      let mut sb = unsafe { Tensor<f16, [32, 128], Memory::SMEM>::uninit() };
+      let mut acc = unsafe {
+        Tensor<f32, [4, 32, 128], Memory::SMEM>::uninit()
+      };
+      for s in 0..4 across subgroups {
+        lanes::fill(&mut acc[s], 0.0);
+      }
+      for kb in 0..4 {
+        for s in 0..4 across subgroups {
+          for l in 0..32 across lanes(32) {
+            for i in 0..32 {
+              sa[s][i][l] = a[blk * 128 + s * 32 + i][kb * 32 + l];
+            }
+            for r in 0..8 {
+              for c in 0..4 {
+                sb[s * 8 + r][c * 32 + l] = b[kb * 32 + s * 8 + r][c * 32 + l];
+              }
+            }
+          }
+        }
+        for s in 0..4 across subgroups {
+          acc[s] = acc[s] + (sa[s] as f32) @ (sb as f32);
+        }
+      }
+      for s in 0..4 across subgroups {
+        lanes::copy(out, &acc[s], [blk * 128 + s * 32, 0]);
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -2368,6 +2368,8 @@ impl<'a> TypeChecker<'a> {
             self.check_across_loops(&func.params, &mut func.body);
         }
 
+        // A tile that the GPU keeps in registers takes no shared memory.
+        self.leave_out_tiles_in_registers(&func.body);
         // The whole function has been checked; verify the working set of each memory space
         // it places tiles into fits (or is `overcommit`). Clears the per-function placement map.
         self.check_cumulative_capacity();
