@@ -3472,8 +3472,8 @@ fn lower_matmul_into<'c>(
     Ok((unit, gen.i32_ty, block))
 }
 
-/// Lower `tensor_view_2d(ptr, rows, cols)` to a rank-2 memref descriptor built
-/// over `ptr`, with no allocation and no copy (#336).
+/// Lower `tensor_view_1d(ptr, len)` or `tensor_view_2d(ptr, rows, cols)` to a memref
+/// descriptor of rank `rank` built over `ptr`, with no allocation and no copy (#336).
 ///
 /// The descriptor MLIR passes for a ranked memref is
 /// `{allocated, aligned, offset, sizes[rank], strides[rank]}`, so a view is
@@ -3482,47 +3482,53 @@ fn lower_matmul_into<'c>(
 /// how a built descriptor re-enters memref-typed IR; it is the same
 /// materialization the memref-to-LLVM conversion uses.
 ///
-/// Nothing here checks that the extents describe the memory truthfully -- that
+/// The element type is the type argument if there is one, else the pointer's element, else
+/// f32. Nothing here checks that the extents describe the memory truthfully -- that
 /// is the caller's claim, which is why the surface form requires `unsafe`.
-fn lower_tensor_view_2d<'c>(
+fn lower_tensor_view<'c>(
     gen: &mut MeliorGenerator<'c>,
     args: &[Expr],
+    rank: usize,
     type_args: Option<&[syntax::Type]>,
     block: melior::ir::BlockRef<'c, 'c>,
 ) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
-    if args.len() != 3 {
-        return Err(LowerError::from(
-            "tensor_view_2d expects (ptr, rows, cols)".to_string(),
-        ));
+    assert!(rank == 1 || rank == 2, "a tensor view has rank 1 or 2");
+    if args.len() != rank + 1 {
+        return Err(LowerError::from(format!(
+            "a tensor view of rank {rank} expects a pointer and {rank} extents"
+        )));
     }
 
     let elem_str = match type_args {
         Some(tys) if !tys.is_empty() => gen.lower_type_str(&tys[0])?,
-        _ => "f32".to_string(),
+        _ => match gen.infer_ast_type(&args[0]) {
+            Some(syntax::Type::Pointer(inner, _, _))
+                if matches!(*inner, syntax::Type::Scalar(_)) =>
+            {
+                gen.lower_type_str(&inner)?
+            }
+            _ => "f32".to_string(),
+        },
     };
 
-    let (ptr_val, _ptr_ty, block) = gen.generate_expr(&args[0], block)?;
-    let (rows_val, rows_ty, block) = gen.generate_expr(&args[1], block)?;
-    let (cols_val, cols_ty, block) = gen.generate_expr(&args[2], block)?;
+    let (ptr_val, _ptr_ty, mut block) = gen.generate_expr(&args[0], block)?;
 
     let i64_ty =
         Type::parse(gen.context, "i64").ok_or_else(|| LowerError::ParseType("i64".to_string()))?;
-    let to_i64 = |gen: &mut MeliorGenerator<'c>,
-                  v: Value<'c, 'c>,
-                  t: Type<'c>,
-                  b: &melior::ir::BlockRef<'c, 'c>|
-     -> Result<Value<'c, 'c>, LowerError> {
+    let mut dims: Vec<Value<'c, 'c>> = Vec::with_capacity(rank);
+    for a in &args[1..rank + 1] {
+        let (v, t, b) = gen.generate_expr(a, block)?;
+        block = b;
         if t == i64_ty {
-            return Ok(v);
+            dims.push(v);
+            continue;
         }
         let ext = OperationBuilder::new("arith.extsi", gen.loc())
             .add_operands(&[v])
             .add_results(&[i64_ty])
             .build()?;
-        Ok(b.append_operation(ext).result(0)?.into())
-    };
-    let rows_i64 = to_i64(gen, rows_val, rows_ty, &block)?;
-    let cols_i64 = to_i64(gen, cols_val, cols_ty, &block)?;
+        dims.push(block.append_operation(ext).result(0)?.into());
+    }
 
     let const_i64 = |gen: &mut MeliorGenerator<'c>,
                      n: i64,
@@ -3540,7 +3546,8 @@ fn lower_tensor_view_2d<'c>(
     let zero = const_i64(gen, 0, &block)?;
     let one = const_i64(gen, 1, &block)?;
 
-    let desc_ty_str = "!llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>".to_string();
+    let desc_ty_str =
+        format!("!llvm.struct<(ptr, ptr, i64, array<{rank} x i64>, array<{rank} x i64>)>");
     let desc_ty = Type::parse(gen.context, &desc_ty_str)
         .ok_or_else(|| LowerError::ParseType(desc_ty_str.clone()))?;
 
@@ -3549,19 +3556,19 @@ fn lower_tensor_view_2d<'c>(
         .build()?;
     let mut desc: Value = block.append_operation(undef).result(0)?.into();
 
-    // Fields in order: allocated, aligned, offset, sizes[0..1], strides[0..1].
-    // Row-major, so the row stride is the column count and the column stride 1.
-    let fields: [(Value, &[i64]); 7] = [
-        (ptr_val, &[0]),
-        (ptr_val, &[1]),
-        (zero, &[2]),
-        (rows_i64, &[3, 0]),
-        (cols_i64, &[3, 1]),
-        (cols_i64, &[4, 0]),
-        (one, &[4, 1]),
-    ];
+    // Fields in order: allocated, aligned, offset, sizes, strides. Row-major, so a row
+    // stride is the column count and the last stride 1.
+    let mut fields: Vec<(Value, Vec<i64>)> =
+        vec![(ptr_val, vec![0]), (ptr_val, vec![1]), (zero, vec![2])];
+    for (k, d) in dims.iter().enumerate() {
+        fields.push((*d, vec![3, k as i64]));
+    }
+    if rank == 2 {
+        fields.push((dims[1], vec![4, 0]));
+    }
+    fields.push((one, vec![4, rank as i64 - 1]));
     for (val, position) in fields {
-        let pos_attr = melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, position);
+        let pos_attr = melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &position);
         let insert = OperationBuilder::new("llvm.insertvalue", gen.loc())
             .add_operands(&[desc, val])
             .add_attributes(&[(Identifier::new(gen.context, "position"), pos_attr.into())])
@@ -3570,7 +3577,7 @@ fn lower_tensor_view_2d<'c>(
         desc = block.append_operation(insert).result(0)?.into();
     }
 
-    let memref_ty_str = format!("memref<?x?x{}>", elem_str);
+    let memref_ty_str = format!("memref<{}{}>", "?x".repeat(rank), elem_str);
     let memref_ty = Type::parse(gen.context, &memref_ty_str)
         .ok_or_else(|| LowerError::ParseType(memref_ty_str.clone()))?;
     let cast = OperationBuilder::new("builtin.unrealized_conversion_cast", gen.loc())
@@ -4001,8 +4008,8 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             crate::codegen::lower::call_runtime_void(gen, block, "vx_cancel_on")?;
             return cancel_call_value(gen, block);
         }
-        // `tensor_view_2d(ptr, rows, cols)` -- a rank-2 tensor over memory it
-        // does not own, with no copy (#336).
+        // `tensor_view_1d(ptr, len)` and `tensor_view_2d(ptr, rows, cols)` -- a
+        // tensor over memory it does not own, with no copy (#336).
         //
         // The alternative is `Tensor::from_ptr_2d`, which allocates and copies
         // element by element. That is fine once at startup and impossible per
@@ -4018,8 +4025,8 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             return lower_matmul_into(gen, args, block);
         }
 
-        if name.as_ref() == "tensor_view_2d" {
-            return lower_tensor_view_2d(gen, args, type_args.as_deref(), block);
+        if let Some(rank) = crate::syntax::expr::tensor_view_rank(name) {
+            return lower_tensor_view(gen, args, rank, type_args.as_deref(), block);
         }
 
         if matches!(
@@ -7141,7 +7148,8 @@ fn lane_routine_attrs<'c>(
 /// `lanes::copy_async(&mut tile, &x, [i, j, ..])` as `vx.lane_copy_async`, and the wait of its
 /// token as `vx.lane_copy_wait`. In a region on one lane, both are `serial`, so the copy ends
 /// where it starts. `lanes::copy(&mut dst, &src, [i, j, ..])` is `vx.lane_copy`, with no token,
-/// and `lanes::fill(&mut tile, v)` is `vx.lane_fill`.
+/// `lanes::fill(&mut tile, v)` is `vx.lane_fill`, and `lanes::scale_rows(&mut tile, &scale)` is
+/// `vx.lane_scale_rows`.
 fn lower_lane_copy<'c>(
     gen: &mut MeliorGenerator<'c>,
     block: melior::ir::BlockRef<'c, 'c>,
@@ -7156,9 +7164,12 @@ fn lower_lane_copy<'c>(
     LowerError,
 > {
     let (mut attrs, lanes) = lane_routine_attrs(gen)?;
-    // The tile of a fill is its first argument, and the tile of a copy out is its second.
+    // The tile of a fill or a scale is its first argument, and the tile of a copy out is its
+    // second.
     let tile = match op {
-        crate::hir::check::lanes::LaneOp::Fill => args.first(),
+        crate::hir::check::lanes::LaneOp::Fill | crate::hir::check::lanes::LaneOp::ScaleRows => {
+            args.first()
+        }
         crate::hir::check::lanes::LaneOp::Copy => args.get(1),
         _ => None,
     };
@@ -7186,6 +7197,27 @@ fn lower_lane_copy<'c>(
         let v = constant_i32(gen, block, 0)?;
         return Ok((v, gen.i32_ty, block));
     }
+    if op == crate::hir::check::lanes::LaneOp::ScaleRows {
+        let [tile, scale] = args else {
+            return Err(LowerError::ParseType(
+                "a lane scale takes a tile and a tile of scales".to_string(),
+            ));
+        };
+        let (tile, block) = lane_tensor_operand(gen, tile, block)?;
+        let (scale, block) = lane_tensor_operand(gen, scale, block)?;
+        let i64_ty = melior::ir::r#type::IntegerType::new(gen.context, 64).into();
+        attrs.push((
+            Identifier::new(gen.context, "lanes"),
+            IntegerAttribute::new(i64_ty, lanes as i64).into(),
+        ));
+        let op = OperationBuilder::new("vx.lane_scale_rows", gen.loc())
+            .add_operands(&[tile, scale])
+            .add_attributes(&attrs)
+            .build()?;
+        block.append_operation(op);
+        let v = constant_i32(gen, block, 0)?;
+        return Ok((v, gen.i32_ty, block));
+    }
     if op == crate::hir::check::lanes::LaneOp::Fill {
         let [tile, value] = args else {
             return Err(LowerError::ParseType(
@@ -7207,14 +7239,28 @@ fn lower_lane_copy<'c>(
         let v = constant_i32(gen, block, 0)?;
         return Ok((v, gen.i32_ty, block));
     }
-    let [dst, src, Expr::Array(place)] = args else {
-        return Err(LowerError::ParseType(
-            "a lane copy takes a tile, a tensor and a place".to_string(),
-        ));
+    // `lanes::copy_rows_async(&mut tile, &x, &ids, [first, col])` has the ids before the place.
+    let (dst, src, ids, place) = match args {
+        [dst, src, Expr::Array(place)] => (dst, src, None, place),
+        [dst, src, ids, Expr::Array(place)]
+            if op == crate::hir::check::lanes::LaneOp::CopyAsync =>
+        {
+            (dst, src, Some(ids), place)
+        }
+        _ => {
+            return Err(LowerError::ParseType(
+                "a lane copy takes a tile, a tensor and a place".to_string(),
+            ))
+        }
     };
     let (dst, block) = lane_tensor_operand(gen, dst, block)?;
     let (src, mut block) = lane_tensor_operand(gen, src, block)?;
     let mut operands = vec![dst, src];
+    if let Some(ids) = ids {
+        let (ids, b) = lane_tensor_operand(gen, ids, block)?;
+        block = b;
+        operands.push(ids);
+    }
     for e in &place.elements {
         let (v, v_ty, b) = gen.generate_expr(e, block)?;
         block = b;
@@ -7234,7 +7280,12 @@ fn lower_lane_copy<'c>(
         let v = constant_i32(gen, block, 0)?;
         return Ok((v, gen.i32_ty, block));
     }
-    let copy = OperationBuilder::new("vx.lane_copy_async", gen.loc())
+    let name = if ids.is_some() {
+        "vx.lane_copy_rows_async"
+    } else {
+        "vx.lane_copy_async"
+    };
+    let copy = OperationBuilder::new(name, gen.loc())
         .add_operands(&operands)
         .add_attributes(&attrs)
         .add_results(&[gen.i32_ty])
@@ -7289,6 +7340,7 @@ fn lower_lane_reduce<'c>(
             | crate::hir::check::lanes::LaneOp::CopyWait
             | crate::hir::check::lanes::LaneOp::Copy
             | crate::hir::check::lanes::LaneOp::Fill
+            | crate::hir::check::lanes::LaneOp::ScaleRows
     ) {
         return lower_lane_copy(gen, block, op, args);
     }

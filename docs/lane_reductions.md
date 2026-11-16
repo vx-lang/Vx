@@ -159,10 +159,12 @@ core adds the products in an order of its own, so a result can differ from the C
 last bits. With small integer inputs, each sum is exact and the two results are equal.
 
 The accumulator can stay in the registers of the lanes, with no tile in shared memory. This
-happens when each other use of the tile is a `lanes::fill` of `acc[w]` or a `lanes::copy` out of
-it, and `w` is the index of a subgroup loop that gives each subgroup one pass at most. Then each
-lane holds the same elements of `acc[w]` in each of them. A fill gives the value that the
-registers start at, and a copy stores the registers straight to its tensor:
+happens when each other use of the tile is a `lanes::fill` of `acc[w]`, a `lanes::scale_rows` of
+it, or a `lanes::copy` out of it, and `w` is the index of a subgroup loop that gives each subgroup
+one pass at most. Then each lane holds the same elements of `acc[w]` in each of them. A fill gives
+the value that the registers start at. A scale multiplies each register by the scale of its row,
+which flash attention needs between two matmuls. A copy stores the registers straight to its
+tensor:
 
 <!-- vx-doctest: skip (needs a GPU topology) -->
 
@@ -280,6 +282,15 @@ lets the groups that started after the token go on (`cp.async.wait_group`), and 
 of the block or the subgroup waits. The CPU copies the tile at the call, and the wait does
 nothing.
 
+`lanes::copy_rows_async(&mut tile, &x, &ids, [first, col])` is a `copy_async` whose rows a list of
+ids chooses: row `r` of `tile` gets row `ids[first + r]` of `x`, from column `col`. `tile` and `x`
+have 2 dimensions, and `ids` is a tensor of `i32` with 1 dimension, in any memory. A row whose id is
+below 0 or not below the number of rows of `x`, or whose place `first + r` is past the end of
+`ids`, is zeros, and so is a column past the end of `x`. Its token, its wait and the rules of both
+are those of `copy_async`. On the GPU, each lane reads the id of each of its slots of the tile, and
+starts a `cp.async` from that row, 16 bytes at a time when the addresses allow it. It never uses
+TMA, because TMA on `sm_90` has no gather. The CPU copies the rows at the call.
+
 `lanes::copy(&mut dst, &src, [i, j])` ends before it returns, and gives no token. When `dst` is
 a tile in shared memory, the copy goes into it, as `copy_async` and `.wait()` do. Otherwise `src`
 is the tile, and the copy goes into the part of `dst` at `[i, j]`. An element past the end of
@@ -290,6 +301,12 @@ write of each element of that part.
 `lanes::fill(&mut tile, v)` sets each element of a tile in shared memory to `v`, which has the
 element type of the tile. Each lane sets the elements `lane`, `lane + lanes`, and so on, and then
 every lane of the block or the subgroup waits.
+
+`lanes::scale_rows(&mut tile, &scale)` multiplies each element of row `i` of `tile` by `scale[i]`.
+`tile` is an `f32` matrix in shared memory, and `scale` an `f32` tile in shared memory with one
+element for each row. Each lane scales the elements `lane`, `lane + lanes`, and so on, and then
+every lane of the block or the subgroup waits. On the Apple GPU, a scale keeps the tile of a matmul
+in shared memory.
 
 ## Not yet
 

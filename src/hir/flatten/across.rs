@@ -21,11 +21,11 @@ use crate::arch::LevelKind;
 use crate::bytecode::{
     ACROSS_BLOCK, ACROSS_BLOCKS, ACROSS_LANE, ACROSS_STRIDE, BARRIER_SUBGROUP,
     LANE_OWN_LANES_SHIFT, LANE_OWN_SUBGROUP, LANE_OWN_WHOLE, LANE_REDUCE_ACCUMULATE,
-    LANE_REDUCE_ARGMAX, LANE_REDUCE_COPY, LANE_REDUCE_COPY_NOW, LANE_REDUCE_COPY_WAIT,
-    LANE_REDUCE_DESCENDING, LANE_REDUCE_FILL, LANE_REDUCE_LANE_OWN, LANE_REDUCE_MATMUL,
-    LANE_REDUCE_MAX, LANE_REDUCE_ORDERED, LANE_REDUCE_OWN_ROW, LANE_REDUCE_SORT,
-    LANE_REDUCE_SUBGROUP, LANE_REDUCE_SUBGROUP_ROW, LANE_ROW_SHIFT,
-    TENSOR_STORE_BLOCK_LANE_ELEMENT, TENSOR_STORE_SUBGROUP_LANE_ELEMENT,
+    LANE_REDUCE_ARGMAX, LANE_REDUCE_COPY, LANE_REDUCE_COPY_NOW, LANE_REDUCE_COPY_ROWS,
+    LANE_REDUCE_COPY_WAIT, LANE_REDUCE_DESCENDING, LANE_REDUCE_FILL, LANE_REDUCE_LANE_OWN,
+    LANE_REDUCE_MATMUL, LANE_REDUCE_MAX, LANE_REDUCE_ORDERED, LANE_REDUCE_OWN_ROW,
+    LANE_REDUCE_SCALE_ROWS, LANE_REDUCE_SORT, LANE_REDUCE_SUBGROUP, LANE_REDUCE_SUBGROUP_ROW,
+    LANE_ROW_SHIFT, TENSOR_STORE_BLOCK_LANE_ELEMENT, TENSOR_STORE_SUBGROUP_LANE_ELEMENT,
 };
 use crate::hir::check::across_lanes::{self, lane_own_access, LaneOwn};
 
@@ -519,13 +519,18 @@ impl Lowerer<'_> {
             crate::hir::check::lanes::LaneOp::Copy => {
                 return self.lower_lane_copy(fc, LANE_REDUCE_COPY_NOW)
             }
-            crate::hir::check::lanes::LaneOp::Fill => {
+            crate::hir::check::lanes::LaneOp::Fill
+            | crate::hir::check::lanes::LaneOp::ScaleRows => {
                 let [t, v] = fc.args.as_slice() else {
                     return Err(crate::emitter_gap!());
                 };
                 let t = self.lower_expr(t)?;
                 let v = self.lower_expr(v)?;
-                let mut imm = LANE_REDUCE_FILL;
+                let mut imm = if op == crate::hir::check::lanes::LaneOp::Fill {
+                    LANE_REDUCE_FILL
+                } else {
+                    LANE_REDUCE_SCALE_ROWS
+                };
                 if matches!(&fc.args[0], Expr::Borrow(b) if self.row_of_subgroup(&b.expr)) {
                     imm |= LANE_REDUCE_SUBGROUP_ROW;
                 }
@@ -693,11 +698,30 @@ impl Lowerer<'_> {
         fc: &crate::syntax::expr::FunctionCallExpr,
         flags: u64,
     ) -> Lowered<Val> {
-        let [dst, src, Expr::Array(place)] = fc.args.as_slice() else {
-            return Err(crate::emitter_gap!());
+        // `lanes::copy_rows_async(&mut tile, &x, &ids, [first, col])` has the ids before the place.
+        let (dst, src, ids, place) = match fc.args.as_slice() {
+            [dst, src, Expr::Array(place)] => (dst, src, None, place),
+            [dst, src, ids, Expr::Array(place)]
+                if fc.name.as_ref() == crate::hir::check::lanes::COPY_ROWS_ASYNC =>
+            {
+                (dst, src, Some(ids), place)
+            }
+            _ => return Err(crate::emitter_gap!()),
         };
         let dst = self.lower_expr(dst)?;
         let src = self.lower_expr(src)?;
+        let ids = match ids {
+            Some(ids) => {
+                let ids = self.lower_expr(ids)?;
+                if !matches!(&ids.ty, LoweredTy::Tensor { shape, .. } if shape.len() == 1) {
+                    return Err(Decline::TypeNotModelled {
+                        what: "a lane copy of rows whose ids are not a tensor",
+                    });
+                }
+                Some(ids)
+            }
+            None => None,
+        };
         let rank = match (&dst.ty, &src.ty) {
             (LoweredTy::Tensor { shape: d, .. }, LoweredTy::Tensor { shape: s, .. })
                 if d.len() == s.len() && d.len() == place.elements.len() =>
@@ -714,10 +738,14 @@ impl Lowerer<'_> {
         for e in &place.elements {
             at.push(self.lower_expr(e)?.reg);
         }
+        let mut imm = LANE_REDUCE_COPY | flags | (rank << 16);
+        if let Some(ids) = &ids {
+            self.emit_effect(Opcode::Arg, ids.reg, Register(0), 0);
+            imm |= LANE_REDUCE_COPY_ROWS;
+        }
         for r in at {
             self.emit_effect(Opcode::Arg, r, Register(0), 0);
         }
-        let mut imm = LANE_REDUCE_COPY | flags | (rank << 16);
         if matches!(&fc.args[1], Expr::Borrow(b) if self.row_of_subgroup(&b.expr)) {
             imm |= LANE_REDUCE_SUBGROUP_ROW;
         }

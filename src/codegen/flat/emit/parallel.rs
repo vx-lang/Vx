@@ -388,6 +388,9 @@ impl FnEmit<'_> {
         if ins.imm & crate::bytecode::LANE_REDUCE_FILL != 0 {
             return self.op_lane_fill(ins);
         }
+        if ins.imm & crate::bytecode::LANE_REDUCE_SCALE_ROWS != 0 {
+            return self.op_lane_scale_rows(ins);
+        }
         if ins.imm & crate::bytecode::LANE_REDUCE_MATMUL != 0 {
             return self.op_lane_matmul(ins);
         }
@@ -528,6 +531,26 @@ impl FnEmit<'_> {
         Ok(())
     }
 
+    /// `vx.lane_scale_rows`: the tile and the tile of the scale of each row.
+    fn op_lane_scale_rows(&mut self, ins: &HirInstruction) -> Lowered<()> {
+        let operand = |r: u32| {
+            let name = self.names.get(r as usize).cloned();
+            let memty = self.mem_of.get(r as usize).cloned().flatten();
+            name.zip(memty).ok_or(crate::emitter_gap!())
+        };
+        let ((t, tty), (s, sty)) = (operand(ins.operand1.0)?, operand(ins.operand2.0)?);
+        let mut attrs = format!("lanes = {} : i64", ins.imm >> 32);
+        if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
+            attrs += ", subgroup";
+        }
+        if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP_ROW != 0 {
+            attrs += ", subgroup_row";
+        }
+        self.body +=
+            &format!("  \"vx.lane_scale_rows\"({t}, {s}) {{{attrs}}} : ({tty}, {sty}) -> ()\n");
+        Ok(())
+    }
+
     /// `vx.lane_copy_async`: the tile, the tensor and the place of the tile, which the `Arg`s
     /// before hold. The result is the token. `vx.lane_copy` takes the tensor that it writes and
     /// the one that it reads, and has no result.
@@ -537,9 +560,15 @@ impl FnEmit<'_> {
             return Err(crate::emitter_gap!());
         }
         let at = self.pending_args.split_off(self.pending_args.len() - rank);
+        // `lanes::copy_rows_async`: the tensor of ids is the `Arg` before the place.
+        let rows = ins.imm & crate::bytecode::LANE_REDUCE_COPY_ROWS != 0;
+        let mut tensors = vec![ins.operand1.0, ins.operand2.0];
+        if rows {
+            tensors.push(self.pending_args.pop().ok_or(crate::emitter_gap!())?);
+        }
         let mut operands = Vec::new();
         let mut types = Vec::new();
-        for r in [ins.operand1.0, ins.operand2.0] {
+        for r in tensors {
             operands.push(
                 self.names
                     .get(r as usize)
@@ -588,8 +617,13 @@ impl FnEmit<'_> {
                 types.join(", ")
             );
         } else {
+            let op = if rows {
+                "vx.lane_copy_rows_async"
+            } else {
+                "vx.lane_copy_async"
+            };
             self.body += &format!(
-                "  {v} = \"vx.lane_copy_async\"({}) {{lanes = {} : i64{subgroup}}} : ({}) -> i32\n",
+                "  {v} = \"{op}\"({}) {{lanes = {} : i64{subgroup}}} : ({}) -> i32\n",
                 operands.join(", "),
                 ins.imm >> 32,
                 types.join(", ")

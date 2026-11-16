@@ -1855,9 +1855,12 @@ impl<'r> Lowerer<'r> {
                 if let Some(prim) = fc.name.as_ref().strip_prefix("raw::") {
                     return self.lower_raw_primitive(prim, &fc.args);
                 }
-                // `tensor_view_2d(ptr, rows, cols)`: a rank-2 view over memory the caller owns.
-                if fc.name.as_ref() == "tensor_view_2d" && fc.args.len() == 3 {
-                    return self.lower_tensor_view_2d(fc);
+                // `tensor_view_1d(ptr, len)` and `tensor_view_2d(ptr, rows, cols)`: a view over
+                // memory the caller owns.
+                if let Some(rank) = crate::syntax::expr::tensor_view_rank(&fc.name) {
+                    if fc.args.len() == rank + 1 {
+                        return self.lower_tensor_view(fc, rank);
+                    }
                 }
                 // `barrier()` (Vx#379): an effect, not a call -- there is no callee anywhere.
                 // The checker typed it i32, so hand back a constant for the value position
@@ -5741,11 +5744,15 @@ impl<'r> Lowerer<'r> {
         Some(buf)
     }
 
-    /// `tensor_view_2d(ptr, rows, cols)`: the pointer is the view's `operand1`, a run-time extent
-    /// rides on an `Arg` the way an allocation's does, and a literal one is the type's. The
-    /// element is the pointer's pointee when its type is recorded, `f32` otherwise, which is
-    /// the oracle's default too.
-    fn lower_tensor_view_2d(&mut self, fc: &crate::syntax::FunctionCallExpr) -> Lowered<Val> {
+    /// `tensor_view_1d(ptr, len)` and `tensor_view_2d(ptr, rows, cols)`: the pointer is the view's
+    /// `operand1`, a run-time extent rides on an `Arg` the way an allocation's does, and a
+    /// literal one is the type's. The element is the pointer's pointee when its type is
+    /// recorded, `f32` otherwise, which is the oracle's default too.
+    fn lower_tensor_view(
+        &mut self,
+        fc: &crate::syntax::FunctionCallExpr,
+        rank: usize,
+    ) -> Lowered<Val> {
         let ptr = self.lower_expr(&fc.args[0])?;
         if !matches!(ptr.ty, LoweredTy::Ptr) {
             return Err(Decline::TypeNotModelled {
@@ -5759,9 +5766,9 @@ impl<'r> Lowerer<'r> {
             },
             _ => ElementType::F32,
         };
-        let mut shape = Vec::with_capacity(2);
+        let mut shape = Vec::with_capacity(rank);
         let mut extents: Vec<Register> = Vec::new();
-        for a in &fc.args[1..3] {
+        for a in &fc.args[1..rank + 1] {
             if let Expr::Number(n) = a {
                 shape.push(n.value.as_ref().to_string());
             } else {

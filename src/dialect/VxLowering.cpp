@@ -13,6 +13,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Arith/Transforms/Passes.h"
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
@@ -58,9 +59,13 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/TypeSwitch.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/PatternMatch.h"
 #include "llvm/MC/TargetRegistry.h"
+#include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/JSON.h"
@@ -68,6 +73,8 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
+#include "llvm/Transforms/InstCombine/InstCombine.h"
+#include "llvm/Transforms/Scalar/EarlyCSE.h"
 
 #include <atomic>
 #include <set>
@@ -2857,11 +2864,15 @@ static void expandLaneSortOnDevice(OpBuilder &b, vx::LaneSortOp op) {
                 ? b.create<arith::RemUIOp>(
                       loc, tid, b.create<arith::ConstantIndexOp>(loc, 32))
                 : tid;
-  SmallVector<Value> pos, r;
+  Value inTensor = b.create<arith::ConstantIndexOp>(loc, size);
+  SmallVector<Value> pos, r, kept;
   for (int64_t k = 0; k < regs; ++k) {
     pos.push_back(b.create<arith::AddIOp>(
         loc, x, b.create<arith::ConstantIndexOp>(loc, k * lanes)));
     r.push_back(laneSortLoad(b, op, op.getInput(), pos[k], n));
+    // The steps below can exchange keys through the tensor itself, and they
+    // write each position of it. So each lane keeps its keys past the count.
+    kept.push_back(laneSortLoad(b, op, op.getInput(), pos[k], inTensor));
   }
   // The memory of the steps between: the tensor itself when every lane of the
   // block sees it, and otherwise a tile of shared memory.
@@ -2884,7 +2895,6 @@ static void expandLaneSortOnDevice(OpBuilder &b, vx::LaneSortOp op) {
     }
     return shared;
   };
-  Value inTensor = b.create<arith::ConstantIndexOp>(loc, size);
   for (int64_t run = 2; run <= span; run *= 2)
     for (int64_t d = run / 2; d >= 1; d /= 2) {
       SmallVector<Value> theirs(regs);
@@ -2926,6 +2936,18 @@ static void expandLaneSortOnDevice(OpBuilder &b, vx::LaneSortOp op) {
     }
   for (int64_t k = 0; k < regs; ++k)
     laneSortStore(b, loc, r[k], op.getInput(), pos[k], n);
+  // The keys past the count go back where they were. The lane that wrote a
+  // position in the steps writes it again, so no other lane races with it.
+  if (shared == op.getInput()) {
+    for (int64_t k = 0; k < regs; ++k) {
+      Value past =
+          b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge, pos[k], n);
+      auto restore = b.create<scf::IfOp>(loc, past, /*withElseRegion=*/false);
+      OpBuilder::InsertionGuard guard(b);
+      b.setInsertionPointToStart(&restore.getThenRegion().front());
+      laneSortStore(b, loc, kept[k], op.getInput(), pos[k], inTensor);
+    }
+  }
   // Later code reads what the other lanes wrote.
   if (op.getSubgroup()) {
     auto bar = b.create<vx::BarrierOp>(loc);
@@ -2943,6 +2965,8 @@ struct LaneCopy {
   int64_t lanes;
   bool subgroup;
   Value token;
+  /// With `ids`, row `r` of the tile is row `ids[place[0] + r]` of the source.
+  Value ids = Value();
 };
 
 static LaneCopy laneCopyOf(Operation *op) {
@@ -2955,6 +2979,16 @@ static LaneCopy laneCopyOf(Operation *op) {
             static_cast<int64_t>(c.getLanes()),
             c.getSubgroup(),
             c.getToken()};
+  if (auto c = dyn_cast<vx::LaneCopyRowsAsyncOp>(op))
+    return {op,
+            c.getTile(),
+            c.getSource(),
+            Value(),
+            c.getPlace(),
+            static_cast<int64_t>(c.getLanes()),
+            c.getSubgroup(),
+            c.getToken(),
+            c.getIds()};
   auto c = cast<vx::LaneCopyAsyncOp>(op);
   return {op,
           c.getTile(),
@@ -2974,6 +3008,22 @@ static std::pair<Value, Value> laneCopySourceIndex(OpBuilder &b, Location loc,
   Value at = b.create<arith::IndexCastOp>(loc, b.getIndexType(), op.place[d]);
   Value index = b.create<arith::AddIOp>(loc, at, i);
   Value dim = b.create<memref::DimOp>(loc, op.source, d);
+  if (op.ids && d == 0) {
+    // The row is the id at `index`, and a row past the end of `ids` is
+    // outside the source too. The load reads id 0 for it, which is in `ids`.
+    Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+    Value inIds =
+        b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ult, index,
+                                b.create<memref::DimOp>(loc, op.ids, 0));
+    Value id = b.create<memref::LoadOp>(
+        loc, op.ids,
+        ValueRange{b.create<arith::SelectOp>(loc, inIds, index, zero)});
+    Value row = b.create<arith::IndexCastOp>(loc, b.getIndexType(), id);
+    Value in = b.create<arith::AndIOp>(
+        loc, inIds,
+        b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ult, row, dim));
+    return {row, in};
+  }
   // A place below zero is a large unsigned number, past the end too.
   Value in =
       b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ult, index, dim);
@@ -3659,6 +3709,61 @@ static void expandLaneFillOnDevice(OpBuilder &b, vx::LaneFillOp op) {
   }
 }
 
+/// Multiplies element (`i`, `j`) of the tile of `op` by element `i` of its
+/// scale.
+static void scaleLaneRowElement(OpBuilder &b, Location loc,
+                                vx::LaneScaleRowsOp op, Value i, Value j) {
+  Value x = b.create<memref::LoadOp>(loc, op.getTile(), ValueRange{i, j});
+  Value s = b.create<memref::LoadOp>(loc, op.getScale(), ValueRange{i});
+  b.create<memref::StoreOp>(loc, b.create<arith::MulFOp>(loc, x, s),
+                            op.getTile(), ValueRange{i, j});
+}
+
+/// A `vx.lane_scale_rows` on the CPU: a loop over the elements of the tile.
+static void expandLaneScaleRowsOnHost(OpBuilder &b, vx::LaneScaleRowsOp op) {
+  Location loc = op.getLoc();
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  Value one = b.create<arith::ConstantIndexOp>(loc, 1);
+  SmallVector<Value> upper;
+  for (int64_t d = 0; d < 2; ++d)
+    upper.push_back(b.create<memref::DimOp>(loc, op.getTile(), d));
+  scf::buildLoopNest(b, loc, {zero, zero}, upper, {one, one},
+                     [&](OpBuilder &nb, Location l, ValueRange ivs) {
+                       scaleLaneRowElement(nb, l, op, ivs[0], ivs[1]);
+                     });
+}
+
+/// A `vx.lane_scale_rows` on the GPU: each lane scales the elements `lane`,
+/// `lane + lanes`, and so on, of the tile, and then every lane of the block or
+/// the subgroup waits.
+static void expandLaneScaleRowsOnDevice(OpBuilder &b, vx::LaneScaleRowsOp op) {
+  Location loc = op.getLoc();
+  auto tile = cast<MemRefType>(op.getTile().getType());
+  int64_t lanes = static_cast<int64_t>(op.getLanes());
+  Value tid =
+      b.create<gpu::ThreadIdOp>(loc, b.getIndexType(), gpu::Dimension::x);
+  Value lane = op.getSubgroup()
+                   ? b.create<arith::RemUIOp>(
+                         loc, tid, b.create<arith::ConstantIndexOp>(loc, lanes))
+                   : tid;
+  b.create<scf::ForOp>(
+      loc, lane, b.create<arith::ConstantIndexOp>(loc, tile.getNumElements()),
+      b.create<arith::ConstantIndexOp>(loc, lanes), ValueRange{},
+      [&](OpBuilder &nb, Location l, Value e, ValueRange) {
+        Value columns =
+            nb.create<arith::ConstantIndexOp>(l, tile.getDimSize(1));
+        scaleLaneRowElement(nb, l, op, nb.create<arith::DivUIOp>(l, e, columns),
+                            nb.create<arith::RemUIOp>(l, e, columns));
+        nb.create<scf::YieldOp>(l);
+      });
+  if (op.getSubgroup()) {
+    auto bar = b.create<vx::BarrierOp>(loc);
+    bar->setAttr("subgroup", b.getUnitAttr());
+  } else {
+    b.create<gpu::BarrierOp>(loc);
+  }
+}
+
 /// The wait right after `wait`, when only ops that touch no memory come between
 /// them and both are `cp.async` waits of the same lanes. Copies finish in the
 /// order that they started, so a wait there for the later of the two tokens
@@ -4124,12 +4229,13 @@ static void eraseUnusedViews(Value v) {
 
 /// Keeps the accumulator of a tensor-core lane matmul in registers in the
 /// whole kernel, and removes its tile in shared memory, when each other use of
-/// the tile is a `vx.lane_fill` of it, a `vx.lane_copy` out of it, or another
-/// such matmul. The matmuls, the fills and the copies take the row of their
+/// the tile is a `vx.lane_fill` of it, a `vx.lane_scale_rows` of it, a
+/// `vx.lane_copy` out of it, or another such matmul. They take the row of their
 /// subgroup (`subgroup_row`) with one type, so each lane holds the same
 /// elements of the row in all of them. A fill gives the value that the
-/// elements start at, and the next matmul or copy sets the registers to it. A
-/// copy stores the registers straight to its tensor. Erases the other matmuls
+/// elements start at, and the next matmul, scale or copy sets the registers to
+/// it. A scale multiplies each register by the scale of its row. A copy
+/// stores the registers straight to its tensor. Erases the other matmuls
 /// and puts them in `expanded`. Returns false, and changes nothing, when the
 /// tile has another use.
 static bool
@@ -4154,6 +4260,7 @@ expandLaneMatmulWithoutTile(gpu::GPUFuncOp func, vx::LaneMatmulOp op, Type elem,
   SmallVector<Operation *> uses;
   accessesOf(tile.getResult(), uses);
   SmallVector<vx::LaneFillOp> fills;
+  SmallVector<vx::LaneScaleRowsOp> scales;
   SmallVector<vx::LaneCopyOp> copies;
   SmallVector<vx::LaneMatmulOp> matmuls = {op};
   for (Operation *use : uses) {
@@ -4169,6 +4276,14 @@ expandLaneMatmulWithoutTile(gpu::GPUFuncOp func, vx::LaneMatmulOp op, Type elem,
     if (fill && fill.getSubgroupRow() && !fill.getSerial() &&
         fill.getTile().getType() == accType) {
       fills.push_back(fill);
+      continue;
+    }
+    auto scale = dyn_cast<vx::LaneScaleRowsOp>(use);
+    if (scale && scale.getSubgroupRow() && !scale.getSerial() &&
+        scale.getTile().getType() == accType &&
+        laneCopyTileAlloca(scale.getScale()) != tile) {
+      if (!llvm::is_contained(scales, scale))
+        scales.push_back(scale);
       continue;
     }
     auto copy = dyn_cast<vx::LaneCopyOp>(use);
@@ -4222,6 +4337,20 @@ expandLaneMatmulWithoutTile(gpu::GPUFuncOp func, vx::LaneMatmulOp op, Type elem,
         fb.create<arith::ConstantIntOp>(fill.getLoc(), fb.getI1Type(), 0),
         valid);
     fill.erase();
+  }
+  for (vx::LaneScaleRowsOp scale : scales) {
+    Location l = scale.getLoc();
+    OpBuilder sb(scale);
+    ready(sb, l);
+    forEachLaneFragment(
+        sb, l, acc.getDimSize(0), acc.getDimSize(1),
+        [&](Value slot, Value row, Value) {
+          Value x = sb.create<memref::LoadOp>(l, fragments, slot);
+          Value s = sb.create<memref::LoadOp>(l, scale.getScale(), row);
+          sb.create<memref::StoreOp>(l, sb.create<arith::MulFOp>(l, x, s),
+                                     fragments, slot);
+        });
+    scale.erase();
   }
   for (vx::LaneMatmulOp m : matmuls) {
     OpBuilder mb(m);
@@ -4575,19 +4704,44 @@ static void swizzleLdmatrixTiles(gpu::GPUFuncOp func) {
         ArrayRef<int64_t>{1});
     // The new place of element `indices` of `view`.
     auto place = [&](OpBuilder &ab, Value view, ValueRange indices) -> Value {
-      auto meta = ab.create<memref::ExtractStridedMetadataOp>(loc, view);
-      Value at = meta.getOffset();
-      for (auto [i, stride] : llvm::zip(indices, meta.getStrides()))
-        at = ab.create<arith::AddIOp>(loc, at,
-                                      ab.create<arith::MulIOp>(loc, i, stride));
       auto constant = [&](int64_t v) -> Value {
         return ab.create<arith::ConstantIndexOp>(loc, v);
       };
+      auto meta = ab.create<memref::ExtractStridedMetadataOp>(loc, view);
+      // The place before the swizzle is `high + low`, with `high` a multiple
+      // of 8 and `low` below 8. The swizzle moves `high` and keeps `low`.
+      // When the view starts at a multiple of 8 elements and only the last
+      // index has a stride that is not, `low` comes from the last index
+      // alone. LLVM then sees that `t[i][4 * j + k]` for k below 4 are next
+      // to each other, and can store them together.
+      SmallVector<int64_t> strides;
+      int64_t offset;
+      auto viewType = cast<MemRefType>(view.getType());
+      bool lastApart =
+          !indices.empty() &&
+          succeeded(viewType.getStridesAndOffset(strides, offset)) &&
+          strides.back() == 1 &&
+          llvm::all_of(ArrayRef(strides).drop_back(),
+                       [](int64_t s) {
+                         return !ShapedType::isDynamic(s) && s % 8 == 0;
+                       }) &&
+          startsAtMultipleOf(view, 8);
+      Value at = meta.getOffset();
+      ValueRange rest = lastApart ? indices.drop_back() : indices;
+      for (auto [i, stride] : llvm::zip(rest, meta.getStrides()))
+        at = ab.create<arith::AddIOp>(loc, at,
+                                      ab.create<arith::MulIOp>(loc, i, stride));
+      Value mixed = lastApart ? indices.back() : at;
+      Value high = ab.create<arith::AndIOp>(loc, mixed, constant(~int64_t(7)));
+      if (lastApart)
+        high = ab.create<arith::AddIOp>(loc, at, high);
+      Value low = ab.create<arith::AndIOp>(loc, mixed, constant(7));
       Value line = ab.create<arith::AndIOp>(
-          loc, ab.create<arith::ShRUIOp>(loc, at, constant(shift)),
+          loc, ab.create<arith::ShRUIOp>(loc, high, constant(shift)),
           constant(7));
-      return ab.create<arith::XOrIOp>(
-          loc, at, ab.create<arith::ShLIOp>(loc, line, constant(3)));
+      Value moved = ab.create<arith::XOrIOp>(
+          loc, high, ab.create<arith::ShLIOp>(loc, line, constant(3)));
+      return ab.create<arith::OrIOp>(loc, moved, low);
     };
     for (Operation *access : accesses) {
       OpBuilder ab(access);
@@ -7169,7 +7323,7 @@ struct ConvertVxToStandardPass
         SmallVector<Operation *> copyOps;
         gpuFunc.walk([&](Operation *op) {
           if (isa<vx::LaneCopyAsyncOp, vx::LaneCopyAsyncMapOp,
-                  vx::LaneCopyWaitOp>(op))
+                  vx::LaneCopyRowsAsyncOp, vx::LaneCopyWaitOp>(op))
             copyOps.push_back(op);
           copies.ring |= isa<vx::LaneCopyAsyncMapOp>(op);
         });
@@ -8703,6 +8857,11 @@ Value vx::LaneCopyAsyncOp::expandOnHost(OpBuilder &b) {
   return Value();
 }
 
+Value vx::LaneCopyRowsAsyncOp::expandOnHost(OpBuilder &b) {
+  expandLaneCopyOnHost(b, laneCopyOf(getOperation()));
+  return Value();
+}
+
 Value vx::LaneCopyAsyncMapOp::expandOnHost(OpBuilder &b) {
   expandLaneCopyOnHost(b, laneCopyOf(getOperation()));
   return Value();
@@ -8732,6 +8891,18 @@ FailureOr<Value> vx::LaneFillOp::expandInKernel(OpBuilder &b) {
   if (getSerial())
     return expandOnHost(b);
   expandLaneFillOnDevice(b, *this);
+  return Value();
+}
+
+Value vx::LaneScaleRowsOp::expandOnHost(OpBuilder &b) {
+  expandLaneScaleRowsOnHost(b, *this);
+  return Value();
+}
+
+FailureOr<Value> vx::LaneScaleRowsOp::expandInKernel(OpBuilder &b) {
+  if (getSerial())
+    return expandOnHost(b);
+  expandLaneScaleRowsOnDevice(b, *this);
   return Value();
 }
 
@@ -8973,6 +9144,23 @@ static OwningOpRef<ModuleOp> deviceModuleCopy(gpu::GPUModuleOp gpuModule) {
 
 static std::unique_ptr<Pass> createLifetimeMarkersOnAllocasPass();
 
+/// Conversions to and from bf16 as integer operations that round to nearest
+/// even, as on the CPU. The pipeline expands them only after `vx-to-llvm`, so
+/// that an NVIDIA GPU converts with one `cvt.rn.bf16.f32`. The printers of the
+/// Apple GPU and of SPIR-V write a conversion as a cast, so they get the
+/// expansion here.
+static void expandBf16Conversions(gpu::GPUModuleOp gpuModule) {
+  RewritePatternSet patterns(gpuModule.getContext());
+  arith::populateExpandBFloat16Patterns(patterns);
+  // Only the conversions change. A fold here would hide an op that the
+  // printers refuse, such as a `memref.cast` of a tensor.
+  GreedyRewriteConfig config;
+  config.enableFolding(false)
+      .enableConstantCSE(false)
+      .setRegionSimplificationLevel(GreedySimplifyRegionLevel::Disabled);
+  (void)applyPatternsGreedily(gpuModule, std::move(patterns), config);
+}
+
 /// Compile a `gpu.module` to a device image, as PTX text.
 ///
 /// This is the pipeline a standalone script established, moved into the
@@ -8993,6 +9181,65 @@ static std::unique_ptr<Pass> createLifetimeMarkersOnAllocasPass();
 /// why.
 ///
 /// Returns an empty image on failure, with `error` naming the stage.
+/// Rewrites `and (zext (or disjoint X, C1)), C2` in the LLVM IR of a kernel as
+/// `or disjoint (and (zext X), C2), C1 & C2`, and the same with `sext` when
+/// `C1` is not negative. LLVM keeps the first form when the `zext` has another
+/// use. Then `t[4 * j + k]` for `k` below 4 in a tile in shared memory gets a
+/// different swizzled place for each `k`, and the four stores stay apart. With
+/// the second form, InstCombine and CSE give the four places one base plus
+/// `k`, and the load-store vectorizer of NVPTX joins the stores.
+static void splitMasksOfDisjointOrs(llvm::Module &module) {
+  using namespace llvm::PatternMatch;
+  bool changed = false;
+  for (llvm::Function &f : module) {
+    for (llvm::Instruction &i :
+         llvm::make_early_inc_range(llvm::instructions(f))) {
+      llvm::Instruction *ext;
+      llvm::Value *x;
+      const llvm::APInt *mask, *low;
+      if (!match(&i, m_And(m_Instruction(ext), m_APInt(mask))) ||
+          !isa<llvm::ZExtInst, llvm::SExtInst>(ext))
+        continue;
+      auto *disjoint = dyn_cast<llvm::PossiblyDisjointInst>(ext->getOperand(0));
+      if (!disjoint || !disjoint->isDisjoint() ||
+          !match(disjoint, m_Or(m_Value(x), m_APInt(low))) ||
+          (isa<llvm::SExtInst>(ext) && low->isNegative()))
+        continue;
+      llvm::IRBuilder<> b(&i);
+      llvm::Value *wide =
+          b.CreateCast(cast<llvm::CastInst>(ext)->getOpcode(), x, i.getType());
+      llvm::Value *v =
+          b.CreateAnd(wide, llvm::ConstantInt::get(i.getType(), *mask));
+      llvm::APInt kept = low->zext(mask->getBitWidth()) & *mask;
+      if (!kept.isZero())
+        v = b.CreateOr(v, llvm::ConstantInt::get(i.getType(), kept), "",
+                       /*IsDisjoint=*/true);
+      i.replaceAllUsesWith(v);
+      i.eraseFromParent();
+      changed = true;
+    }
+  }
+  if (!changed)
+    return;
+  llvm::LoopAnalysisManager loops;
+  llvm::FunctionAnalysisManager functions;
+  llvm::CGSCCAnalysisManager calls;
+  llvm::ModuleAnalysisManager modules;
+  llvm::PassBuilder builder;
+  builder.registerModuleAnalyses(modules);
+  builder.registerCGSCCAnalyses(calls);
+  builder.registerFunctionAnalyses(functions);
+  builder.registerLoopAnalyses(loops);
+  builder.crossRegisterProxies(loops, functions, calls, modules);
+  llvm::FunctionPassManager cleanup;
+  cleanup.addPass(llvm::InstCombinePass());
+  cleanup.addPass(llvm::EarlyCSEPass());
+  cleanup.addPass(llvm::InstCombinePass());
+  llvm::ModulePassManager run;
+  run.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(cleanup)));
+  run.run(module, modules);
+}
+
 static DeviceImage deviceImageOf(gpu::GPUModuleOp gpuModule,
                                  std::string &error) {
   MLIRContext *context = gpuModule.getContext();
@@ -9065,13 +9312,6 @@ static DeviceImage deviceImageOf(gpu::GPUModuleOp gpuModule,
   // lifetime markers of a kernel's stack slots need it here.
   pm.addPass(createLifetimeMarkersOnAllocasPass());
 
-  PassManager toBinary(context, ModuleOp::getOperationName());
-  GpuModuleToBinaryPassOptions binary;
-  // "isa" stops at PTX text. "fatbin" and "cubin" would both invoke `ptxas`,
-  // which is a toolkit the compile host is not required to have.
-  binary.compilationTarget = "isa";
-  toBinary.addPass(createGpuModuleToBinaryPass(binary));
-
   // A square root must give the same bits as on the CPU. The NVVM conversion
   // turns `math.sqrt` into libdevice's `__nv_sqrtf`, which picks
   // `sqrt.approx.f32`, and `1.0 / sqrt.approx` then becomes `rsqrt.approx.f32`.
@@ -9136,7 +9376,21 @@ static DeviceImage deviceImageOf(gpu::GPUModuleOp gpuModule,
   if (!weakRelaxedAtomics(gpuModule))
     orderRelaxedReads(*device);
   fenceOrderedReadModifyWrites(*device);
-  if (failed(toBinary.run(*device))) {
+  // What `gpu-module-to-binary` does, with a step of our own on the optimized
+  // LLVM IR. "Assembly" stops at PTX text. A cubin or a fatbin would need
+  // `ptxas`, which is a toolkit the compile host is not required to have.
+  std::optional<SymbolTable> symbols;
+  gpu::TargetOptions binary(
+      /*toolkitPath=*/{}, /*librariesToLink=*/{}, /*cmdOptions=*/{},
+      /*elfSection=*/{}, gpu::CompilationTarget::Assembly,
+      [&]() -> SymbolTable * {
+        if (!symbols)
+          symbols.emplace(*device);
+        return &*symbols;
+      },
+      /*initialLlvmIRCallback=*/{}, /*linkedLlvmIRCallback=*/{},
+      splitMasksOfDisjointOrs);
+  if (failed(gpu::transformGpuModulesToBinaries(*device, nullptr, binary))) {
     error = "the NVPTX pipeline failed";
     return {};
   }
@@ -10019,9 +10273,11 @@ struct ConvertVxToLLVMPass
         image = deviceImageOf(m, error);
         break;
       case DevicePipeline::Metal:
+        expandBf16Conversions(m);
         image = DeviceImage{"msl", mslImageOf(m, error)};
         break;
       case DevicePipeline::Spirv:
+        expandBf16Conversions(m);
         image = spirvImageOf(m, error, refused);
         break;
       case DevicePipeline::None:

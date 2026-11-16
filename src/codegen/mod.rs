@@ -198,9 +198,10 @@ pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Resul
 
     // Run unified pipeline. Custom Vx lowering passes run first, followed by standard lowering.
     // `vx-expand-narrow-floats` and `arith-expand` turn conversions to and from fp8, fp4 and bf16
-    // into integer operations; see the note on the copy of this pipeline in src/driver.rs.
+    // into integer operations, bf16 only after `vx-to-llvm` compiles the NVIDIA GPU kernels; see
+    // the note on the copy of this pipeline in src/driver.rs.
     let mut pipeline =
-        "builtin.module(vx-count-callbacks,vx-libc-externs-to-llvm,convert-vx-to-standard,vx-check-integer-division,vx-reorderable-reductions,vx-expand-narrow-floats,arith-expand{include-bf16=true include-f8e8m0=true},vx-to-llvm,".to_string();
+        "builtin.module(vx-count-callbacks,vx-libc-externs-to-llvm,convert-vx-to-standard,vx-check-integer-division,vx-reorderable-reductions,vx-expand-narrow-floats,arith-expand{include-f8e8m0=true},vx-to-llvm,arith-expand{include-bf16=true},".to_string();
     if has_enzyme {
         pipeline.push_str("enzyme,");
     }
