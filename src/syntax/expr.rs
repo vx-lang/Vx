@@ -698,15 +698,28 @@ impl JvpExpr {
 /// an arm ending in a bare expression: `match x { 0 => { 7 }, _ => { 9 } }` computed 7 and 9 and
 /// then returned the default, silently.
 pub fn match_yields_a_value(m: &MatchExpr) -> bool {
-    m.arms.iter().any(|a| {
-        matches!(
-            a.body.last(),
-            Some(Statement::ExprStmt(ExprStmtStmt {
-                has_semi: false,
-                ..
-            }))
-        )
-    })
+    m.arms.iter().any(|a| block_gives_a_value(&a.body))
+}
+
+/// Whether `body`, a `match` arm or an `if` branch, gives a value: its last statement is an
+/// expression with no `;`. A last `match` or `if` gives a value only when one of its own arms or
+/// branches does. So an arm that ends in a `match` whose arms all `return` gives none.
+pub fn block_gives_a_value(body: &[Statement]) -> bool {
+    match body.last() {
+        Some(Statement::ExprStmt(ExprStmtStmt {
+            expr,
+            has_semi: false,
+            ..
+        })) => match expr {
+            Expr::Match(m) => match_yields_a_value(m),
+            Expr::If(i) => {
+                block_gives_a_value(&i.then_block)
+                    || i.else_block.as_deref().is_some_and(block_gives_a_value)
+            }
+            _ => true,
+        },
+        _ => false,
+    }
 }
 
 /// Whether control can reach the end of `stmts`, or whether every path out of it returns.
