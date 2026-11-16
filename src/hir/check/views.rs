@@ -304,7 +304,7 @@ impl<'a> TypeChecker<'a> {
         );
     }
 
-    /// `tensor_view_2d(..)`, or a variable bound to one.
+    /// `tensor_view_1d(..)` or `tensor_view_2d(..)`, or a variable bound to one.
     fn is_foreign_view(&self, expr: &Expr) -> bool {
         match crate::syntax::expr::bare_unsafe_value(expr) {
             Expr::Identifier(id) => self.borrow.foreign_views.contains_key(&id.name),
