@@ -1383,22 +1383,6 @@ pub fn matmul_operand_root(e: &Expr) -> Option<&Symbol> {
     }
 }
 
-/// The locals in `stmts` whose element pointer is taken with `as_ptr()` or `as_mut_ptr()`.
-/// Through that pointer a view can share the tensor's memory under another name.
-pub fn locals_with_pointer_taken(stmts: &[Statement]) -> std::collections::HashSet<Symbol> {
-    let mut names = std::collections::HashSet::new();
-    visit_exprs(stmts, &mut |e| {
-        if let Expr::MethodCall(m) = e {
-            if matches!(m.method_name.as_ref(), "as_ptr" | "as_mut_ptr") {
-                if let Some(root) = matmul_operand_root(&m.base) {
-                    names.insert(root.clone());
-                }
-            }
-        }
-    });
-    names
-}
-
 /// The locals in `stmts` whose address is taken with `&x` or `&mut x`.
 pub fn locals_with_address_taken(stmts: &[Statement]) -> std::collections::HashSet<Symbol> {
     let mut names = std::collections::HashSet::new();

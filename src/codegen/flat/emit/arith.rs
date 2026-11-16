@@ -268,6 +268,34 @@ impl FnEmit<'_> {
         Ok(())
     }
 
+    /// `c = a + b` written into `c`'s buffer (`Opcode::ElementwiseInto`): the `linalg` op that
+    /// `elementwise_linalg` emits, with `c` as its `outs`.
+    pub(crate) fn op_elementwise_into(&mut self, ins: &HirInstruction) -> Lowered<()> {
+        let (dst, op) = crate::bytecode::elementwise_into_parts(ins.imm);
+        let op = match op {
+            Some(Opcode::Add) => "linalg.add",
+            Some(Opcode::Sub) => "linalg.sub",
+            Some(Opcode::Mul) => "linalg.mul",
+            Some(Opcode::Div) => "linalg.div",
+            _ => return Err(crate::emitter_gap!()),
+        };
+        let operand = |r: usize| -> Lowered<(String, String)> {
+            let name = self.names.get(r).ok_or(crate::emitter_gap!())?.clone();
+            let ty = self
+                .mem_of
+                .get(r)
+                .cloned()
+                .flatten()
+                .ok_or(crate::emitter_gap!())?;
+            Ok((name, ty))
+        };
+        let (a, ma) = operand(ins.operand1.0 as usize)?;
+        let (b, mb) = operand(ins.operand2.0 as usize)?;
+        let (d, md) = operand(dst.0 as usize)?;
+        self.body += &format!("  {op} ins({a}, {b} : {ma}, {mb}) outs({d} : {md})\n");
+        Ok(())
+    }
+
     // `-t` on a tensor: a new tensor of each element negated. A float uses `arith.negf`, which
     // keeps the sign of zero right (`0 - x` would not); an integer is `0 - x`.
     fn op_neg_tensor(&mut self, idx: usize, ins: &HirInstruction, ma: &str) -> Lowered<()> {

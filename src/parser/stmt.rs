@@ -55,11 +55,7 @@ impl<'a> Parser<'a> {
                 self.pending_stmts.extend(out);
                 return Ok(first);
             }
-            Ok(Statement::Assign(AssignStmt {
-                lhs: expr,
-                rhs,
-                span,
-            }))
+            Ok(Statement::Assign(AssignStmt::new(expr, rhs, span)))
         } else if let Some(op) = self.compound_assign_op() {
             let rhs = self.parse_expr()?;
             self.consume(&TokenType::Semicolon, "Expected ';'")?;
@@ -589,7 +585,7 @@ impl<'a> Parser<'a> {
         out: &mut Vec<Statement>,
     ) -> ParseResult<'a, ()> {
         let Expr::StructInit(lit) = lhs else {
-            out.push(Statement::Assign(AssignStmt { lhs, rhs, span }));
+            out.push(Statement::Assign(AssignStmt::new(lhs, rhs, span)));
             return Ok(());
         };
         if let Expr::StructInit(r) = &rhs {
@@ -629,11 +625,7 @@ impl<'a> Parser<'a> {
             if Self::is_tuple_literal(&place) {
                 self.lower_tuple_assign(place, element, span, start, out)?;
             } else {
-                out.push(Statement::Assign(AssignStmt {
-                    lhs: place,
-                    rhs: element,
-                    span,
-                }));
+                out.push(Statement::Assign(AssignStmt::new(place, element, span)));
             }
         }
         Ok(())

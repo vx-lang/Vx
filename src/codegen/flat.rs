@@ -2636,6 +2636,7 @@ impl<'a> FnEmit<'a> {
             // cuBLAS. The destination register rides the imm (see `Opcode::MatmulInto`).
             Opcode::Matmul => self.op_matmul(idx, ins),
             Opcode::MatmulInto => self.op_matmul_into(idx, ins),
+            Opcode::ElementwiseInto => self.op_elementwise_into(ins),
             // Store into a tensor place (no result). A scalar-element place (an `imm = 1`
             // `TensorIndex`) → `memref.store`; a row/sub-view place (an `imm = 0` `TensorIndex`, a row
             // memref in `mem_of`) takes an elementwise vector value → `vector.store`.

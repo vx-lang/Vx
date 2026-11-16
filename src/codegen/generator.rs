@@ -38,12 +38,10 @@ pub struct MeliorGenerator<'c> {
     pub(crate) env: HashMap<crate::symbol::Symbol, (Value<'c, 'c>, Type<'c>)>,
     pub(crate) ast_env: HashMap<crate::symbol::Symbol, syntax::Type>,
     /// Locals bound to a tensor the compiler allocated, as against a view over memory it does
-    /// not control. Only these can be filled in place by `c = a @ b` (Vx#391).
+    /// not control.
     pub(crate) owned_tensors: std::collections::HashSet<crate::symbol::Symbol>,
     /// The `printMemref*` helpers declared so far; each is declared on its first use.
     pub(crate) declared_tensor_prints: std::collections::HashSet<&'static str>,
-    /// Locals whose element pointer the function takes: a view through it can share their memory.
-    pub(crate) pointer_taken: std::collections::HashSet<crate::symbol::Symbol>,
     /// The locals of the function being lowered that are borrowed with `&x`. Each gets a stack
     /// slot, so every borrow of it is the same address.
     pub(crate) address_taken: std::collections::HashSet<crate::symbol::Symbol>,
@@ -1092,7 +1090,6 @@ impl<'c> MeliorGenerator<'c> {
             ast_env: HashMap::new(),
             owned_tensors: std::collections::HashSet::new(),
             declared_tensor_prints: std::collections::HashSet::new(),
-            pointer_taken: std::collections::HashSet::new(),
             address_taken: std::collections::HashSet::new(),
             memories: HashMap::new(),
             transfer_impls: HashMap::new(),
@@ -1587,7 +1584,6 @@ impl<'c> MeliorGenerator<'c> {
         self.started_slots.clear();
         self.function_file = func.file.as_ref().map(|f| f.to_string());
         self.subspace_offsets.clear(); // per-function sub-space bump allocator (SS2)
-        self.pointer_taken = syntax::locals_with_pointer_taken(&func.body);
         self.address_taken = syntax::locals_with_address_taken(&func.body);
         let is_main = func.name.as_ref() == "main";
         let true_ret_ty = self.lower_type(&func.return_type)?;

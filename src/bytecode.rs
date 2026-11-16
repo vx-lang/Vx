@@ -357,6 +357,25 @@ pub enum Opcode {
     /// `a`. The result type holds the number of rows, `b - a`. The result is a view that shares
     /// the memory of the tensor.
     TensorRange = 86,
+    /// `c = a + b` (or `-`, `*`, `/`) on whole tensors, written into the buffer that `c`
+    /// holds: `operand1` = a, `operand2` = b. As for `MatmulInto`, `imm` holds the destination
+    /// register, in its low 32 bits. Its high 32 bits hold the operation, the `Opcode` of
+    /// `Add`, `Sub`, `Mul` or `Div`. See `elementwise_into_imm`.
+    ElementwiseInto = 87,
+}
+
+/// The `imm` of an `ElementwiseInto` that writes `op` of its operands into `dst`.
+pub fn elementwise_into_imm(dst: Register, op: Opcode) -> u64 {
+    assert!(matches!(
+        op,
+        Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div
+    ));
+    ((op as u64) << 32) | dst.0 as u64
+}
+
+/// The destination register and the operation of an `ElementwiseInto`'s `imm`.
+pub fn elementwise_into_parts(imm: u64) -> (Register, Option<Opcode>) {
+    (Register(imm as u32), Opcode::from_u32((imm >> 32) as u32))
 }
 
 /// A zero-based variant and payload field, stored entirely in an instruction's immediate.
@@ -572,6 +591,7 @@ impl Opcode {
             84 => CheckAggregate,
             85 => TensorCast,
             86 => TensorRange,
+            87 => ElementwiseInto,
             8 => Call,
             9 => Ret,
             10 => Matmul,
