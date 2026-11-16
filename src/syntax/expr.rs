@@ -183,6 +183,10 @@ pub struct TransferExpr {
     /// from a `*const` pointer. The lowering may then read it in place, also when it is not a
     /// parameter.
     pub read_only_source: bool,
+    /// Set by sema with `shared` when the source is reached through a shared reference that a
+    /// parameter holds, such as `layer.codes` with `layer : &Layer`. Nothing can write it until
+    /// the call returns, so the lowering may read it in place, as it reads a `&` parameter.
+    pub source_borrowed_for_call: bool,
     pub span: Span,
 }
 
@@ -211,6 +215,7 @@ impl TransferExpr {
             is_async: false,
             shared: false,
             read_only_source: false,
+            source_borrowed_for_call: false,
             span,
         }
     }
@@ -1769,6 +1774,7 @@ impl Expr {
                 is_async: e.is_async,
                 shared: e.shared,
                 read_only_source: e.read_only_source,
+                source_borrowed_for_call: e.source_borrowed_for_call,
                 span: e.span,
             }),
             // Type substitution does not touch topologies; topology substitution is done

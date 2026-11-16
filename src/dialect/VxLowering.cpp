@@ -2026,11 +2026,12 @@ static void waitForLaunchesAtReturns(func::FuncOp func, int32_t topology) {
 
 // Skip the copy of a transfer that sema marked `shared`: the edge is `:
 // shared`, so the target can read the source's memory. Its source is a `&`
-// tensor, or a view of memory from a `*const` pointer (`read_only_source`). The
-// caller cannot change a `&` parameter during the call, and nothing can change
-// memory behind a `*const` pointer. So when every use of the copy only reads
-// it, the source can stand in for the copy. Otherwise the copy stays, and a
-// warning names what needs it.
+// parameter, a place reached through a shared reference that a parameter holds
+// (`source_borrowed_for_call`), or a view of memory from a `*const` pointer
+// (`read_only_source`). The caller cannot change the first two during the
+// call, and nothing can change memory behind a `*const` pointer. So when every
+// use of the copy only reads it, the source can stand in for the copy.
+// Otherwise the copy stays, and a warning names what needs it.
 //
 // A transfer to the CPU then waits for the GPU launches that write the source.
 // A transfer to a device reads host memory, which no launch writes. But the
@@ -2055,12 +2056,17 @@ static void elideSharedTransfers(ModuleOp module) {
     StringRef reader = toDevice ? "The device" : "The CPU";
     StringRef transfer =
         toDevice ? "a transfer to device memory" : "a transfer to CPU_DRAM";
-    if (!isParameter(src) && !readOnlySource) {
+    // A parameter that the function owns is freed before the function
+    // returns, so a device must not read it after the call. Sema tells a `&`
+    // parameter from one taken by value.
+    const bool borrowedForCall = t->hasAttr("source_borrowed_for_call") ||
+                                 (!toDevice && isParameter(src));
+    if (!borrowedForCall && !readOnlySource) {
       t.emitWarning() << warningAt(t) << "this transfer copies the tensor. "
                       << reader
                       << " can read it in place only when it is a `&` "
-                         "parameter of this function, or a view of memory "
-                         "from a `*const` pointer.";
+                         "parameter of this function or reached through one, "
+                         "or a view of memory from a `*const` pointer.";
       continue;
     }
     if (srcType.getShape() != copyType.getShape() ||
