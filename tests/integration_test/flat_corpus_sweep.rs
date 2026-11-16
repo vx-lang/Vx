@@ -210,6 +210,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/lane_scale_rows_keeps_the_sums_in_registers.vx",  // needs --machine
         "optimizations/pass/a_gpu_kernel_reads_a_borrowed_host_tensor_with_no_copy.vx", // needs --machine
         "optimizations/pass/weights_in_a_struct_reach_the_gpu_with_no_copy.vx", // needs --machine
+        "optimizations/pass/lane_copies_check_the_whole_tile_once.vx", // needs --machine
         "optimizations/pass/lane_matmul_sums_in_registers_take_no_shared_memory.vx", // needs --machine
         "optimizations/pass/lane_matmul_sums_in_simdgroup_matrices_take_no_threadgroup_memory.vx", // needs --machine
         "optimizations/pass/a_tile_copied_into_a_row_of_a_tensor_parameter.vx", // needs --machine

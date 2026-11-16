@@ -3682,9 +3682,58 @@ static void expandLaneCopyNowOnHost(OpBuilder &b, vx::LaneCopyOp op) {
                      });
 }
 
+/// Whether the whole tile of a `vx.lane_copy` is inside its tensor, and the
+/// elements of a row of the tensor are next to each other. Then also a view of
+/// the tensor whose last stride is the number 1.
+static std::pair<Value, Value> laneCopyNowInside(OpBuilder &b, Location loc,
+                                                 vx::LaneCopyOp op,
+                                                 const LaneCopyNow &c) {
+  auto tile = cast<MemRefType>(c.tile.getType());
+  auto tensor = cast<MemRefType>(c.tensor.getType());
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  auto meta = b.create<memref::ExtractStridedMetadataOp>(loc, c.tensor);
+  int64_t last = tensor.getRank() - 1;
+  Value inside = b.create<arith::CmpIOp>(
+      loc, arith::CmpIPredicate::eq, meta.getStrides()[last],
+      b.create<arith::ConstantIndexOp>(loc, 1));
+  for (int64_t d = 0; d <= last; ++d) {
+    Value at =
+        b.create<arith::IndexCastOp>(loc, b.getIndexType(), op.getPlace()[d]);
+    Value end = b.create<arith::AddIOp>(
+        loc, at, b.create<arith::ConstantIndexOp>(loc, tile.getDimSize(d)));
+    inside = b.create<arith::AndIOp>(
+        loc, inside,
+        b.create<arith::AndIOp>(
+            loc,
+            b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge, at, zero),
+            b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sle, end,
+                                    meta.getSizes()[d])));
+  }
+  SmallVector<int64_t> strides(tensor.getRank(), ShapedType::kDynamic);
+  strides[last] = 1;
+  auto rowsType = MemRefType::get(
+      tensor.getShape(), tensor.getElementType(),
+      StridedLayoutAttr::get(b.getContext(), ShapedType::kDynamic, strides),
+      tensor.getMemorySpace());
+  SmallVector<OpFoldResult> sizes;
+  for (int64_t d = 0; d <= last; ++d)
+    sizes.push_back(tensor.isDynamicDim(d)
+                        ? OpFoldResult(meta.getSizes()[d])
+                        : OpFoldResult(b.getIndexAttr(tensor.getDimSize(d))));
+  SmallVector<OpFoldResult> mixed(meta.getStrides().begin(),
+                                  meta.getStrides().end());
+  mixed[last] = b.getIndexAttr(1);
+  Value rows = b.create<memref::ReinterpretCastOp>(
+      loc, rowsType, meta.getBaseBuffer(), OpFoldResult(meta.getOffset()),
+      sizes, mixed);
+  return {inside, rows};
+}
+
 /// A `vx.lane_copy` on the GPU: each lane copies the elements `lane`,
 /// `lane + lanes`, and so on, of the tile, and then every lane of the block or
-/// the subgroup waits, so each lane sees the whole copy.
+/// the subgroup waits, so each lane sees the whole copy. When the whole tile
+/// is inside the tensor and its rows are next to each other, which is the
+/// usual case, no element needs a check.
 static void expandLaneCopyNowOnDevice(OpBuilder &b, vx::LaneCopyOp op) {
   Location loc = op.getLoc();
   LaneCopyNow c = laneCopyNowOf(op);
@@ -3696,20 +3745,49 @@ static void expandLaneCopyNowOnDevice(OpBuilder &b, vx::LaneCopyOp op) {
                    ? b.create<arith::RemUIOp>(
                          loc, tid, b.create<arith::ConstantIndexOp>(loc, lanes))
                    : tid;
-  b.create<scf::ForOp>(
-      loc, lane, b.create<arith::ConstantIndexOp>(loc, tile.getNumElements()),
-      b.create<arith::ConstantIndexOp>(loc, lanes), ValueRange{},
-      [&](OpBuilder &nb, Location l, Value e, ValueRange) {
-        SmallVector<Value> ivs(tile.getRank());
-        Value rest = e;
-        for (int64_t d = tile.getRank() - 1; d >= 0; --d) {
-          Value size = nb.create<arith::ConstantIndexOp>(l, tile.getDimSize(d));
-          ivs[d] = nb.create<arith::RemUIOp>(l, rest, size);
-          rest = nb.create<arith::DivUIOp>(l, rest, size);
-        }
-        laneCopyNowElement(nb, l, op, c, ivs);
-        nb.create<scf::YieldOp>(l);
-      });
+  auto elements = [&](OpBuilder &ob, Value rows) {
+    ob.create<scf::ForOp>(
+        loc, lane,
+        ob.create<arith::ConstantIndexOp>(loc, tile.getNumElements()),
+        ob.create<arith::ConstantIndexOp>(loc, lanes), ValueRange{},
+        [&](OpBuilder &nb, Location l, Value e, ValueRange) {
+          SmallVector<Value> ivs(tile.getRank());
+          Value rest = e;
+          for (int64_t d = tile.getRank() - 1; d >= 0; --d) {
+            Value size =
+                nb.create<arith::ConstantIndexOp>(l, tile.getDimSize(d));
+            ivs[d] = nb.create<arith::RemUIOp>(l, rest, size);
+            rest = nb.create<arith::DivUIOp>(l, rest, size);
+          }
+          if (!rows) {
+            laneCopyNowElement(nb, l, op, c, ivs);
+          } else {
+            SmallVector<Value> at;
+            for (auto [d, i] : llvm::enumerate(ivs))
+              at.push_back(nb.create<arith::AddIOp>(
+                  l,
+                  nb.create<arith::IndexCastOp>(l, nb.getIndexType(),
+                                                op.getPlace()[d]),
+                  i));
+            if (c.toTensor)
+              nb.create<memref::StoreOp>(
+                  l, nb.create<memref::LoadOp>(l, c.tile, ivs), rows, at);
+            else
+              nb.create<memref::StoreOp>(
+                  l, nb.create<memref::LoadOp>(l, rows, at), c.tile, ivs);
+          }
+          nb.create<scf::YieldOp>(l);
+        });
+  };
+  auto [inside, rows] = laneCopyNowInside(b, loc, op, c);
+  auto pick = b.create<scf::IfOp>(loc, inside, /*withElseRegion=*/true);
+  {
+    OpBuilder::InsertionGuard guard(b);
+    b.setInsertionPoint(pick.getThenRegion().front().getTerminator());
+    elements(b, rows);
+    b.setInsertionPoint(pick.getElseRegion().front().getTerminator());
+    elements(b, Value());
+  }
   if (op.getSubgroup()) {
     auto bar = b.create<vx::BarrierOp>(loc);
     bar->setAttr("subgroup", b.getUnitAttr());
