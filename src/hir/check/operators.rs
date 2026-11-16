@@ -991,25 +991,36 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The length of the text that `e` names: a string literal, or a `let` without `mut` whose
+    /// value is one.
+    fn text_len(&self, e: &Expr) -> Option<usize> {
+        match e {
+            Expr::StringLiteral(l) => Some(l.value.as_ref().len()),
+            Expr::Identifier(id) => {
+                let (depth, len) = self.string_literal_lets.get(id.name.as_ref())?;
+                (*depth == self.scope_depth_of(&id.name)).then_some(*len)
+            }
+            _ => None,
+        }
+    }
+
     /// `s == "hello"` as `c_str_equals(s, "hello", 6)`, and `!=` as its `!`. The bound is the
-    /// literal's length and its NUL. When both sides are literals, the call is in a `comptime`
-    /// block, so the comparison becomes `true` or `false` while compiling.
-    fn text_compare(expr: &Expr) -> Option<Expr> {
+    /// length of the text and its NUL. A name for a string literal counts as the literal. When
+    /// both sides are literals, the call is in a `comptime` block, so the comparison becomes
+    /// `true` or `false` while compiling.
+    fn text_compare(&self, expr: &Expr) -> Option<Expr> {
         let Expr::RelationalOp(RelationalOpExpr {
             lhs, op, rhs, span, ..
         }) = expr
         else {
             return None;
         };
-        let literal = match (&**lhs, &**rhs) {
-            (Expr::StringLiteral(l), _) | (_, Expr::StringLiteral(l)) => l,
-            _ => return None,
-        };
+        let len = self.text_len(lhs).or_else(|| self.text_len(rhs))?;
         if !matches!(op, RelationalOp::Eq | RelationalOp::NotEq) {
             return None;
         }
         let bound = Expr::Number(crate::syntax::NumberExpr::new(
-            (literal.value.as_ref().len() + 1).to_string(),
+            (len + 1).to_string(),
             Some(ElementType::I64),
             *span,
         ));
@@ -1054,7 +1065,7 @@ impl<'a> TypeChecker<'a> {
         }
         // `==` or `!=` with a string literal compares the text: it is a call of `core::c_str`'s
         // `c_str_equals`, which the parser imports for such a program.
-        if let Some(call) = Self::text_compare(expr) {
+        if let Some(call) = self.text_compare(expr) {
             *expr = call;
             return self.check_expr_type_flag(expr, false);
         }

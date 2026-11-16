@@ -784,6 +784,11 @@ impl<'a> TypeChecker<'a> {
             e => e,
         };
         let from_literal = ty_ann.is_none() && matches!(bare, Expr::Number(n) if n.ty.is_none());
+        // `let s = "abc"` makes `s` a name for the text, so `==` on `s` compares the text.
+        let text_len = match &*expr {
+            Expr::StringLiteral(l) if !*_is_mut => Some(l.value.as_ref().len()),
+            _ => None,
+        };
         let prev_expected = self.expected_type.take();
         self.expected_type = ty_ann.clone();
         self.let_closure = matches!(&*expr, Expr::Closure(_)).then_some(*span);
@@ -872,6 +877,13 @@ impl<'a> TypeChecker<'a> {
             }
             ty
         };
+        let depth = self.current_scope_depth();
+        if let Some(len) = text_len {
+            self.string_literal_lets
+                .insert(name.to_string(), (depth, len));
+        } else if self.string_literal_lets.get(name.as_ref()).map(|(d, _)| *d) == Some(depth) {
+            self.string_literal_lets.remove(name.as_ref());
+        }
 
         // The region's device has to represent what the body builds. A type annotation, or a
         // type inferred from an untyped literal, has no expression that carries it, so the
