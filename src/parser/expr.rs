@@ -1454,6 +1454,15 @@ impl<'a> Parser<'a> {
                     TokenType::Unknown('"') => {
                         return Err(self.error_at(&token, super::UNCLOSED_STRING))
                     }
+                    TokenType::UnknownEscape(c, _) => {
+                        return Err(self.error_at(
+                            &token,
+                            &format!(
+                                "this string has the escape `\\{c}`, which Vx does not know. A \
+                                 string can use `\\n`, `\\t`, `\\r`, `\\\"` and `\\\\`"
+                            ),
+                        ))
+                    }
                     _ => {
                         return Err(self.error_at(
                             &token,

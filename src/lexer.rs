@@ -72,6 +72,9 @@ pub enum TokenTypeBase<S, C> {
     Identifier(S),
     Number(S),
     StringLiteral(C),
+    /// A string literal with an escape that Vx does not know, such as MLIR's `\0A`: the escape's
+    /// letter, and the text between the quotes as it is written. Only an `mlir!` block takes it.
+    UnknownEscape(char, C),
 
     // Symbols
     LeftParen,
@@ -187,6 +190,7 @@ impl<S: std::fmt::Display, C: std::fmt::Display> std::fmt::Display for TokenType
             TokenTypeBase::Identifier(s) => write!(f, "{}", s),
             TokenTypeBase::Number(s) => write!(f, "{}", s),
             TokenTypeBase::StringLiteral(s) => write!(f, "\"{}\"", s),
+            TokenTypeBase::UnknownEscape(_, raw) => write!(f, "\"{}\"", raw),
 
             TokenTypeBase::LeftParen => write!(f, "("),
             TokenTypeBase::RightParen => write!(f, ")"),
@@ -618,7 +622,10 @@ impl<'a> Lexer<'a> {
 
         if let Some(c) = unknown_escape {
             return TokenBase {
-                kind: TokenTypeBase::Unknown(c),
+                kind: TokenTypeBase::UnknownEscape(
+                    c,
+                    std::borrow::Cow::Borrowed(&self.source[start_byte + 1..end_byte - 1]),
+                ),
                 line: self.line,
                 column: start_col,
                 length: self.current_byte_offset() - start_byte,
@@ -962,6 +969,9 @@ impl<'a> Token<'a> {
             }
             TokenTypeBase::Number(s) => TokenTypeBase::Number(crate::symbol::Symbol::from(s)),
             TokenTypeBase::StringLiteral(s) => TokenTypeBase::StringLiteral(s.into_owned()),
+            TokenTypeBase::UnknownEscape(c, raw) => {
+                TokenTypeBase::UnknownEscape(c, raw.into_owned())
+            }
             TokenTypeBase::LeftParen => TokenTypeBase::LeftParen,
             TokenTypeBase::RightParen => TokenTypeBase::RightParen,
             TokenTypeBase::LeftBrace => TokenTypeBase::LeftBrace,
@@ -1079,6 +1089,9 @@ impl OwnedToken {
             TokenTypeBase::Number(s) => TokenTypeBase::Number(&**s),
             TokenTypeBase::StringLiteral(s) => {
                 TokenTypeBase::StringLiteral(std::borrow::Cow::Borrowed(s.as_str()))
+            }
+            TokenTypeBase::UnknownEscape(c, raw) => {
+                TokenTypeBase::UnknownEscape(*c, std::borrow::Cow::Borrowed(raw.as_str()))
             }
             TokenTypeBase::LeftParen => TokenTypeBase::LeftParen,
             TokenTypeBase::RightParen => TokenTypeBase::RightParen,

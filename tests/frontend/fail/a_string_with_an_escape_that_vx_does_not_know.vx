@@ -1,0 +1,17 @@
+//===- a_string_with_an_escape_that_vx_does_not_know.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// Outside an `mlir!` block, a string can use only the escapes that Vx knows.
+//
+// CHECK: :15:{{.*}}this string has the escape `\0`, which Vx does not know. A string can use `\n`, `\t`, `\r`, `\"` and `\\`
+
+fn main() -> i32 {
+  let s = "a\0b";
+  return 0;
+}
