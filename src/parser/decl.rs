@@ -2442,7 +2442,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
                 panic!("Expected Range expression for iterable");
             }
             assert_eq!(body.len(), 1);
-            if let Statement::Assign(AssignStmt { lhs, rhs, span: _ }) = &body[0] {
+            if let Statement::Assign(AssignStmt { lhs, rhs, .. }) = &body[0] {
                 if let Expr::Identifier(id) = lhs {
                     assert_eq!(id.name.as_ref(), "x");
                 } else {
