@@ -12062,6 +12062,13 @@ struct BoundedInlinerPass
     Region *body = call.targetNode->getCallableRegion();
     if (!body)
       return false;
+    // MLIR's inliner takes the last operation of a `func.func` with one block
+    // to be a return. An `mlir!` block that ends in `llvm.unreachable` has that
+    // shape, and the inliner lost the `llvm.unreachable`. Such a callee stays a
+    // call.
+    if (isa<func::FuncOp>(body->getParentOp()) && body->hasOneBlock() &&
+        (body->front().empty() || !isa<func::ReturnOp>(body->front().back())))
+      return false;
     unsigned ops = 0;
     body->walk([&](Operation *) { ++ops; });
     return ops <= kMaxInlinedOps;
