@@ -1189,6 +1189,30 @@ impl<'a> TypeChecker<'a> {
                 {
                     return Type::Scalar(ElementType::Bool);
                 }
+                // `&a == &b` compares the values, as in Rust, but a reference does not compare
+                // with a value: `r < 6.0` with `r : &f32` needs `*r`.
+                // The number of `&` around a type, and the type inside them.
+                let borrows = |mut ty: &Type| {
+                    let mut depth = 0;
+                    while let Type::Borrow { inner, .. } = ty {
+                        depth += 1;
+                        ty = inner;
+                    }
+                    (depth, ty.clone())
+                };
+                let ((ld, li), (rd, ri)) = (borrows(&lhs_ty), borrows(&rhs_ty));
+                // An `Unknown` side already has its error, a name with no `let` say.
+                if ld != rd && li != Type::Unknown && ri != Type::Unknown {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3005,
+                        format!(
+                            "`{symbol}` cannot compare {lhs_ty} with {rhs_ty}. Write `*` before \
+                             the reference to compare the value it points to"
+                        ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                    );
+                    return Type::Scalar(ElementType::Bool);
+                }
                 if self.is_struct_type(&lhs_ty) {
                     let at = if *span == crate::syntax::Span::default() {
                         lhs.span()
@@ -1212,7 +1236,7 @@ impl<'a> TypeChecker<'a> {
                         (Some(a), Some(b)) if a == b
                     );
                 // An `Unknown` side already has its error, a use of a moved value say.
-                if !compatible && lhs_ty != Type::Unknown && rhs_ty != Type::Unknown {
+                if !compatible && li != Type::Unknown && ri != Type::Unknown {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3005,
                         format!(
