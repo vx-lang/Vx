@@ -7886,8 +7886,7 @@ struct ConvertVxToStandardPass
 
       // On a GPU, version batches of guarded loads on the last guard so that
       // loads are not serialized by predicate exhaustion on sm_90.
-      DevicePipeline pipeline = pipelineOfKernel(
-          kernel, static_cast<int32_t>(kernel.getTopology()));
+      DevicePipeline pipeline = pipelineOfKernel(kernel);
       bool isSm90Nvptx = pipeline == DevicePipeline::Nvptx &&
                          chipHasHopperPredicatePressure(deviceChip(gpuModule));
       if (isSm90Nvptx && guardedLoadVersioningEnabled(gpuFunc))
