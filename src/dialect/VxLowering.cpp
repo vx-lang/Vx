@@ -4449,12 +4449,12 @@ constexpr StringLiteral simdgroupRegistersAttr = "simdgroup_registers";
 /// matrices of each subgroup in the whole kernel, and gives its tile no shared
 /// memory, as `expandLaneMatmulWithoutTile` does on the tensor cores. This
 /// happens when each other use of the tile is a `vx.lane_fill` of it, a
-/// `vx.lane_copy` out of it to an f32 tensor of 2 dimensions, or another
-/// matmul that adds to it. Each of them takes the row of its subgroup
-/// (`subgroup_row`), so each subgroup holds the same row in all of them. Marks
-/// them with `simdgroup_registers` = `number`, and leaves them to the Metal
-/// printer (src/dialect/MetalImage.cpp). Puts the other matmuls in `marked`.
-/// Returns false, and changes nothing, when the tile has another use.
+/// `vx.lane_scale_rows` of it, a `vx.lane_copy` out of it to an f32 tensor of
+/// 2 dimensions, or another matmul that adds to it. Each of them takes the row
+/// of its subgroup (`subgroup_row`), so each subgroup holds the same row in all
+/// of them. Marks them with `simdgroup_registers` = `number`, and leaves them
+/// to the Metal printer (src/dialect/MetalImage.cpp). Puts the other matmuls in
+/// `marked`. Returns false, and changes nothing, when the tile has another use.
 static bool keepSimdgroupSumsInRegisters(vx::LaneMatmulOp op, int64_t number,
                                          SmallPtrSetImpl<Operation *> &marked) {
   Type accType = op.getAcc().getType();
@@ -4486,6 +4486,13 @@ static bool keepSimdgroupSumsInRegisters(vx::LaneMatmulOp op, int64_t number,
     if (fill && fill.getSubgroupRow() && !fill.getSerial() &&
         fill.getTile().getType() == accType) {
       others.push_back(fill);
+      continue;
+    }
+    auto scale = dyn_cast<vx::LaneScaleRowsOp>(use);
+    if (scale && scale.getSubgroupRow() && !scale.getSerial() &&
+        scale.getTile().getType() == accType &&
+        laneCopyTileAlloca(scale.getScale()) != tile) {
+      others.push_back(scale);
       continue;
     }
     auto copy = dyn_cast<vx::LaneCopyOp>(use);

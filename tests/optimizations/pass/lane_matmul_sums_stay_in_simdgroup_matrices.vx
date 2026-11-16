@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 // The MSL of a matmul of tiles on the Apple GPU whose accumulator `acc` is in shared memory. When
-// each other use of `acc` is a `lanes::fill` of the row of a subgroup, a `lanes::copy` out of it,
-// or another such matmul, the accumulator stays in the simdgroup matrices of the subgroup in the
+// each other use of `acc` is a `lanes::fill` of the row of a subgroup, a `lanes::scale_rows` of
+// it, a `lanes::copy` out of it, or another such matmul, the accumulator stays in the simdgroup matrices of the subgroup in the
 // whole kernel, and `acc` takes no shared memory. The matmul neither loads nor stores the
 // matrices, and the copy stores them straight to `c`. This needs a subgroup loop that gives each
 // subgroup one pass at most, so that each subgroup holds its row of `acc` in the fill, the
@@ -90,6 +90,56 @@ pub fn read_by_the_lanes(c : &mut Tensor<f32, [2, 16, 32], Memory::HBM>, a : &Te
             c[w][i][l] = acc[w][i][l];
           }
         }
+      }
+    }
+  }
+  return;
+}
+
+// A `lanes::scale_rows` of the row of a subgroup keeps the accumulator in the simdgroup matrices.
+// Each lane multiplies its 2 elements of each piece by the scale of their row, in the layout of
+// `thread_elements`. Only the scales (2 x 16) are in shared memory as float.
+// CHECK-LABEL: kernel void scaled_each_step(
+// CHECK-NOT: threadgroup float {{.*}}[1024];
+// CHECK: threadgroup float {{vx_npu_kernel_[0-9]+_smem_[0-9]+}}[32];
+// CHECK: simdgroup_float8x8 vx_sums0[8];
+// CHECK: const int [[ROW:r[0-9]+]] = (int)(vx_lane / 16) * 4 + (int)(vx_lane / 2) % 4;
+// CHECK-NEXT: for (int i = 0; i < 2; i++) {
+// CHECK-NEXT: const float s = {{vx_npu_kernel_[0-9]+_smem_[0-9]+}}[{{o[0-9]+}} + (i * 8 + [[ROW]]) * 1];
+// CHECK-NEXT: for (int j = 0; j < 4; j++) {
+// CHECK-NEXT: thread auto &e = vx_sums0[i * 4 + j].thread_elements();
+// CHECK-NEXT: e[0] *= s;
+// CHECK-NEXT: e[1] *= s;
+// CHECK-NOT: simdgroup_load(vx_sums0
+// CHECK: simdgroup_multiply_accumulate(vx_sums0[i * 4 + j]
+pub fn scaled_each_step(c : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<f16, [?, ?], Memory::HBM>, b : &Tensor<f16, [?, ?], Memory::HBM>, k : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut sa = unsafe { Tensor<f16, [2, 16, 16], Memory::SMEM>::uninit() };
+      let mut sb = unsafe { Tensor<f16, [16, 32], Memory::SMEM>::uninit() };
+      let mut acc = unsafe {
+        Tensor<f32, [2, 16, 32], Memory::SMEM>::uninit()
+      };
+      let mut half = unsafe { Tensor<f32, [2, 16], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        lanes::fill(&mut acc[w], 0.0);
+        for l in 0..32 across lanes(32) {
+          if l < 16 {
+            half[w][l] = 0.5;
+          }
+        }
+      }
+      for kt in 0..k / 16 {
+        lanes::copy(&mut sb, b, [kt * 16, 0]);
+        lanes::copy(&mut sa[0], a, [0, kt * 16]);
+        lanes::copy(&mut sa[1], a, [16, kt * 16]);
+        for w in 0..2 across subgroups {
+          lanes::scale_rows(&mut acc[w], &half[w]);
+          acc[w] = acc[w] + (sa[w] as f32) @ (sb as f32);
+        }
+      }
+      for w in 0..2 across subgroups {
+        lanes::copy(c, &acc[w], [w * 16, 0]);
       }
     }
   }
