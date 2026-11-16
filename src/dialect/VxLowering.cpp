@@ -59,9 +59,13 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/TypeSwitch.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/PatternMatch.h"
 #include "llvm/MC/TargetRegistry.h"
+#include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/JSON.h"
@@ -69,6 +73,8 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
+#include "llvm/Transforms/InstCombine/InstCombine.h"
+#include "llvm/Transforms/Scalar/EarlyCSE.h"
 
 #include <atomic>
 #include <set>
@@ -4677,19 +4683,44 @@ static void swizzleLdmatrixTiles(gpu::GPUFuncOp func) {
         ArrayRef<int64_t>{1});
     // The new place of element `indices` of `view`.
     auto place = [&](OpBuilder &ab, Value view, ValueRange indices) -> Value {
-      auto meta = ab.create<memref::ExtractStridedMetadataOp>(loc, view);
-      Value at = meta.getOffset();
-      for (auto [i, stride] : llvm::zip(indices, meta.getStrides()))
-        at = ab.create<arith::AddIOp>(loc, at,
-                                      ab.create<arith::MulIOp>(loc, i, stride));
       auto constant = [&](int64_t v) -> Value {
         return ab.create<arith::ConstantIndexOp>(loc, v);
       };
+      auto meta = ab.create<memref::ExtractStridedMetadataOp>(loc, view);
+      // The place before the swizzle is `high + low`, with `high` a multiple
+      // of 8 and `low` below 8. The swizzle moves `high` and keeps `low`.
+      // When the view starts at a multiple of 8 elements and only the last
+      // index has a stride that is not, `low` comes from the last index
+      // alone. LLVM then sees that `t[i][4 * j + k]` for k below 4 are next
+      // to each other, and can store them together.
+      SmallVector<int64_t> strides;
+      int64_t offset;
+      auto viewType = cast<MemRefType>(view.getType());
+      bool lastApart =
+          !indices.empty() &&
+          succeeded(viewType.getStridesAndOffset(strides, offset)) &&
+          strides.back() == 1 &&
+          llvm::all_of(ArrayRef(strides).drop_back(),
+                       [](int64_t s) {
+                         return !ShapedType::isDynamic(s) && s % 8 == 0;
+                       }) &&
+          startsAtMultipleOf(view, 8);
+      Value at = meta.getOffset();
+      ValueRange rest = lastApart ? indices.drop_back() : indices;
+      for (auto [i, stride] : llvm::zip(rest, meta.getStrides()))
+        at = ab.create<arith::AddIOp>(loc, at,
+                                      ab.create<arith::MulIOp>(loc, i, stride));
+      Value mixed = lastApart ? indices.back() : at;
+      Value high = ab.create<arith::AndIOp>(loc, mixed, constant(~int64_t(7)));
+      if (lastApart)
+        high = ab.create<arith::AddIOp>(loc, at, high);
+      Value low = ab.create<arith::AndIOp>(loc, mixed, constant(7));
       Value line = ab.create<arith::AndIOp>(
-          loc, ab.create<arith::ShRUIOp>(loc, at, constant(shift)),
+          loc, ab.create<arith::ShRUIOp>(loc, high, constant(shift)),
           constant(7));
-      return ab.create<arith::XOrIOp>(
-          loc, at, ab.create<arith::ShLIOp>(loc, line, constant(3)));
+      Value moved = ab.create<arith::XOrIOp>(
+          loc, high, ab.create<arith::ShLIOp>(loc, line, constant(3)));
+      return ab.create<arith::OrIOp>(loc, moved, low);
     };
     for (Operation *access : accesses) {
       OpBuilder ab(access);
@@ -9124,6 +9155,65 @@ static void expandBf16Conversions(gpu::GPUModuleOp gpuModule) {
 /// why.
 ///
 /// Returns an empty image on failure, with `error` naming the stage.
+/// Rewrites `and (zext (or disjoint X, C1)), C2` in the LLVM IR of a kernel as
+/// `or disjoint (and (zext X), C2), C1 & C2`, and the same with `sext` when
+/// `C1` is not negative. LLVM keeps the first form when the `zext` has another
+/// use. Then `t[4 * j + k]` for `k` below 4 in a tile in shared memory gets a
+/// different swizzled place for each `k`, and the four stores stay apart. With
+/// the second form, InstCombine and CSE give the four places one base plus
+/// `k`, and the load-store vectorizer of NVPTX joins the stores.
+static void splitMasksOfDisjointOrs(llvm::Module &module) {
+  using namespace llvm::PatternMatch;
+  bool changed = false;
+  for (llvm::Function &f : module) {
+    for (llvm::Instruction &i :
+         llvm::make_early_inc_range(llvm::instructions(f))) {
+      llvm::Instruction *ext;
+      llvm::Value *x;
+      const llvm::APInt *mask, *low;
+      if (!match(&i, m_And(m_Instruction(ext), m_APInt(mask))) ||
+          !isa<llvm::ZExtInst, llvm::SExtInst>(ext))
+        continue;
+      auto *disjoint = dyn_cast<llvm::PossiblyDisjointInst>(ext->getOperand(0));
+      if (!disjoint || !disjoint->isDisjoint() ||
+          !match(disjoint, m_Or(m_Value(x), m_APInt(low))) ||
+          (isa<llvm::SExtInst>(ext) && low->isNegative()))
+        continue;
+      llvm::IRBuilder<> b(&i);
+      llvm::Value *wide =
+          b.CreateCast(cast<llvm::CastInst>(ext)->getOpcode(), x, i.getType());
+      llvm::Value *v =
+          b.CreateAnd(wide, llvm::ConstantInt::get(i.getType(), *mask));
+      llvm::APInt kept = low->zext(mask->getBitWidth()) & *mask;
+      if (!kept.isZero())
+        v = b.CreateOr(v, llvm::ConstantInt::get(i.getType(), kept), "",
+                       /*IsDisjoint=*/true);
+      i.replaceAllUsesWith(v);
+      i.eraseFromParent();
+      changed = true;
+    }
+  }
+  if (!changed)
+    return;
+  llvm::LoopAnalysisManager loops;
+  llvm::FunctionAnalysisManager functions;
+  llvm::CGSCCAnalysisManager calls;
+  llvm::ModuleAnalysisManager modules;
+  llvm::PassBuilder builder;
+  builder.registerModuleAnalyses(modules);
+  builder.registerCGSCCAnalyses(calls);
+  builder.registerFunctionAnalyses(functions);
+  builder.registerLoopAnalyses(loops);
+  builder.crossRegisterProxies(loops, functions, calls, modules);
+  llvm::FunctionPassManager cleanup;
+  cleanup.addPass(llvm::InstCombinePass());
+  cleanup.addPass(llvm::EarlyCSEPass());
+  cleanup.addPass(llvm::InstCombinePass());
+  llvm::ModulePassManager run;
+  run.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(cleanup)));
+  run.run(module, modules);
+}
+
 static DeviceImage deviceImageOf(gpu::GPUModuleOp gpuModule,
                                  std::string &error) {
   MLIRContext *context = gpuModule.getContext();
@@ -9196,13 +9286,6 @@ static DeviceImage deviceImageOf(gpu::GPUModuleOp gpuModule,
   // lifetime markers of a kernel's stack slots need it here.
   pm.addPass(createLifetimeMarkersOnAllocasPass());
 
-  PassManager toBinary(context, ModuleOp::getOperationName());
-  GpuModuleToBinaryPassOptions binary;
-  // "isa" stops at PTX text. "fatbin" and "cubin" would both invoke `ptxas`,
-  // which is a toolkit the compile host is not required to have.
-  binary.compilationTarget = "isa";
-  toBinary.addPass(createGpuModuleToBinaryPass(binary));
-
   // A square root must give the same bits as on the CPU. The NVVM conversion
   // turns `math.sqrt` into libdevice's `__nv_sqrtf`, which picks
   // `sqrt.approx.f32`, and `1.0 / sqrt.approx` then becomes `rsqrt.approx.f32`.
@@ -9267,7 +9350,21 @@ static DeviceImage deviceImageOf(gpu::GPUModuleOp gpuModule,
   if (!weakRelaxedAtomics(gpuModule))
     orderRelaxedReads(*device);
   fenceOrderedReadModifyWrites(*device);
-  if (failed(toBinary.run(*device))) {
+  // What `gpu-module-to-binary` does, with a step of our own on the optimized
+  // LLVM IR. "Assembly" stops at PTX text. A cubin or a fatbin would need
+  // `ptxas`, which is a toolkit the compile host is not required to have.
+  std::optional<SymbolTable> symbols;
+  gpu::TargetOptions binary(
+      /*toolkitPath=*/{}, /*librariesToLink=*/{}, /*cmdOptions=*/{},
+      /*elfSection=*/{}, gpu::CompilationTarget::Assembly,
+      [&]() -> SymbolTable * {
+        if (!symbols)
+          symbols.emplace(*device);
+        return &*symbols;
+      },
+      /*initialLlvmIRCallback=*/{}, /*linkedLlvmIRCallback=*/{},
+      splitMasksOfDisjointOrs);
+  if (failed(gpu::transformGpuModulesToBinaries(*device, nullptr, binary))) {
     error = "the NVPTX pipeline failed";
     return {};
   }
