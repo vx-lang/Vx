@@ -1221,7 +1221,7 @@ pub struct SubspaceInfo {
 /// `func.func private` declaration prepended. Order is load-bearing — the emit records which of
 /// these a function called as a bitmask over this array's indices, so inserting in the middle
 /// renumbers existing entries.
-const RUNTIME_HELPERS: [(&str, &str); 26] = [
+const RUNTIME_HELPERS: [(&str, &str); 28] = [
     ("printMemrefF32", "(memref<*xf32>)"),
     ("printMemrefF64", "(memref<*xf64>)"),
     ("printMemrefI32", "(memref<*xi32>)"),
@@ -1235,6 +1235,8 @@ const RUNTIME_HELPERS: [(&str, &str); 26] = [
     ("print_u16", "(i16) -> i32"),
     ("print_u32", "(i32) -> i32"),
     ("print_u64", "(i64) -> i32"),
+    ("print_i128", "(i64, i64) -> i32"),
+    ("print_u128", "(i64, i64) -> i32"),
     ("print_str", "(!llvm.ptr) -> i32"),
     ("vx_print_to_stderr", "(i32) -> i32"),
     ("vx_init_signals", "()"),
