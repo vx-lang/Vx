@@ -179,6 +179,10 @@ pub struct TransferExpr {
     /// Set by sema when the source is a `&` tensor and the edge is `: shared`. The result is still
     /// a copy, but the lowering may skip the copy when every use of it only reads.
     pub shared: bool,
+    /// Set by sema with `shared` when the source is memory that nothing can write: a view made
+    /// from a `*const` pointer. The lowering may then read it in place, also when it is not a
+    /// parameter.
+    pub read_only_source: bool,
     pub span: Span,
 }
 
@@ -206,6 +210,7 @@ impl TransferExpr {
             lowering: None,
             is_async: false,
             shared: false,
+            read_only_source: false,
             span,
         }
     }
@@ -1753,6 +1758,7 @@ impl Expr {
                 lowering: e.lowering.clone(),
                 is_async: e.is_async,
                 shared: e.shared,
+                read_only_source: e.read_only_source,
                 span: e.span,
             }),
             // Type substitution does not touch topologies; topology substitution is done

@@ -508,6 +508,9 @@ pub const TRANSFER_USER_LOWERED: u32 = 1 << 31;
 /// A bit of `Opcode::Transfer`'s `operand2`: the transfer is a `transfer_async`, so a device can
 /// copy in the background until a use of the tensor.
 pub const TRANSFER_ASYNC: u32 = 1 << 30;
+/// A bit of `Opcode::Transfer`'s `operand2`: the source is memory that nothing can write, a view
+/// made from a `*const` pointer. See `TransferExpr::read_only_source`.
+pub const TRANSFER_READ_ONLY_SOURCE: u32 = 1 << 29;
 
 /// `Opcode::TensorPad`'s `imm`: pad each axis (`t.pad(shape)`), not the flat row order.
 pub const TENSOR_PAD_EACH_AXIS: u64 = 1;
