@@ -4592,7 +4592,13 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             // pass as its first argument, and the call itself produces nothing -- the result is
             // that buffer (#643).
             let ret_slot = if gen.uses_return_slot(name, ret_ty) {
-                let alloc_op = OperationBuilder::new("memref.alloca", gen.loc())
+                // A large result goes on the heap, as a large local does.
+                let op = if crate::codegen::fits_on_the_stack(&ret_ty.to_string()) {
+                    "memref.alloca"
+                } else {
+                    "memref.alloc"
+                };
+                let alloc_op = OperationBuilder::new(op, gen.loc())
                     .add_attributes(&[(
                         Identifier::new(gen.context, "operandSegmentSizes"),
                         DenseI32ArrayAttribute::new(gen.context, &[0, 0]).into(),
