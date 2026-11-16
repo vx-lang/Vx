@@ -32,6 +32,41 @@ use crate::syntax::*;
 ///
 /// Enzyme recognizes the call by this name, so both backends have to spell it the same way:
 /// `__enzyme_fwddiff_jvp_f` for forward mode, `__enzyme_autodiff_grad_f` for reverse.
+/// The largest tensor that goes on the stack, in bytes. A larger one goes on the heap. It is the
+/// limit that `promoteOwnedBuffers` in `src/dialect/VxLowering.cpp` uses for a local tensor.
+pub const STACK_TENSOR_BYTES: u64 = 4096;
+
+/// Whether a buffer of the static memref type `memty`, such as `memref<4x8xf32>`, is at most
+/// `STACK_TENSOR_BYTES`. An element type that is not a number counts as 8 bytes.
+pub fn fits_on_the_stack(memty: &str) -> bool {
+    let Some(shape) = memty
+        .strip_prefix("memref<")
+        .and_then(|b| b.split([',', '>']).next())
+    else {
+        return false;
+    };
+    let mut parts: Vec<&str> = shape.split('x').collect();
+    let Some(elem) = parts.pop() else {
+        return false;
+    };
+    let bytes: u64 = match elem {
+        "f16" | "bf16" => 2,
+        "f32" => 4,
+        "f64" => 8,
+        e if e.starts_with('i') => e[1..].parse::<u64>().map_or(8, |bits| bits.div_ceil(8)),
+        e if e.starts_with("f8") || e.starts_with("f4") => 1,
+        _ => 8,
+    };
+    let mut total = bytes;
+    for d in parts {
+        let Ok(n) = d.parse::<u64>() else {
+            return false;
+        };
+        total = total.saturating_mul(n);
+    }
+    total <= STACK_TENSOR_BYTES
+}
+
 pub fn enzyme_wrapper_name(forward: bool, target: &str) -> String {
     if forward {
         format!("__enzyme_fwddiff_jvp_{target}")
