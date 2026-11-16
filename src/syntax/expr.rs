@@ -1316,9 +1316,19 @@ fn substitute_mlir_returns(ty: &Type, mapping: &std::collections::HashMap<Symbol
     }
 }
 
+/// The rank of the tensor that a view over raw memory has: 1 for `tensor_view_1d(ptr, len)`,
+/// 2 for `tensor_view_2d(ptr, rows, cols)`. `None` for any other function.
+pub fn tensor_view_rank(name: &str) -> Option<usize> {
+    match name {
+        "tensor_view_1d" => Some(1),
+        "tensor_view_2d" => Some(2),
+        _ => None,
+    }
+}
+
 /// Is this a tensor construction -- storage the compiler allocated?
 ///
-/// A view built with `tensor_view_2d` has the same type and a shape the checker enforces, but
+/// A view built with `tensor_view_1d` or `tensor_view_2d` has the same type and a shape the checker enforces, but
 /// names memory the compiler does not control: two views over one pointer are two names for one
 /// buffer, which no rule about names can see.
 pub fn is_tensor_construction(e: &Expr) -> bool {

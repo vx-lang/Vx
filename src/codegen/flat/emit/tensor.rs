@@ -391,9 +391,10 @@ impl FnEmit<'_> {
         self.names[reg] = placed;
     }
 
-    /// A rank-2 view over memory the caller owns (`tensor_view_2d(ptr, rows, cols)`): the memref
-    /// descriptor built by hand over `operand1`'s pointer -- both pointers at the storage, a zero
-    /// offset, the extents as sizes, row-major strides -- and cast into memref-typed IR the way
+    /// A rank-1 or rank-2 view over memory the caller owns (`tensor_view_1d(ptr, len)`,
+    /// `tensor_view_2d(ptr, rows, cols)`): the memref descriptor built by hand over `operand1`'s
+    /// pointer -- both pointers at the storage, a zero offset, the extents as sizes, row-major
+    /// strides -- and cast into memref-typed IR the way
     /// the memref-to-LLVM conversion materializes one. A `?` extent is the `Arg` before this
     /// instruction; a static one is the type's. Nothing here checks the extents against the
     /// memory: that is the caller's claim, which is why the surface form needs `unsafe`.
@@ -837,7 +838,8 @@ impl FnEmit<'_> {
             .get(&gid)
             .ok_or(crate::emitter_gap!())?
             .clone();
-        if shape.len() != 2 {
+        let rank = shape.len();
+        if rank != 1 && rank != 2 {
             return Err(crate::emitter_gap!());
         }
         let memty = tensor_memref_ty(&elem, &shape).ok_or(crate::emitter_gap!())?;
@@ -854,7 +856,7 @@ impl FnEmit<'_> {
             .pending_args
             .split_off(self.pending_args.len() - dyn_count);
         let mut ext = extents.into_iter();
-        let mut dims_i64: Vec<String> = Vec::with_capacity(2);
+        let mut dims_i64: Vec<String> = Vec::with_capacity(rank);
         for (k, d) in shape.iter().enumerate() {
             let v = format!("%tv{idx}_{k}");
             if d == DYN_DIM {
@@ -880,20 +882,31 @@ impl FnEmit<'_> {
         let one = format!("%tvo{idx}");
         self.body += &format!("  {zero} = arith.constant 0 : i64\n");
         self.body += &format!("  {one} = arith.constant 1 : i64\n");
-        let dty = "!llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>";
+        let dty =
+            format!("!llvm.struct<(ptr, ptr, i64, array<{rank} x i64>, array<{rank} x i64>)>");
         let mut d = format!("%tvd{idx}_0");
         self.body += &format!("  {d} = llvm.mlir.undef : {dty}\n");
-        // Fields in order: allocated, aligned, offset, sizes[0..1], strides[0..1]. Row-major, so
-        // the row stride is the column count and the column stride 1.
-        let fields: [(&str, &str); 7] = [
-            (&ptr, "0"),
-            (&ptr, "1"),
-            (&zero, "2"),
-            (&dims_i64[0], "3, 0"),
-            (&dims_i64[1], "3, 1"),
-            (&dims_i64[1], "4, 0"),
-            (&one, "4, 1"),
-        ];
+        // Fields in order: allocated, aligned, offset, sizes, strides. Row-major, so a row
+        // stride is the column count and the last stride 1.
+        let fields: Vec<(&str, &str)> = if rank == 1 {
+            vec![
+                (&ptr, "0"),
+                (&ptr, "1"),
+                (&zero, "2"),
+                (&dims_i64[0], "3, 0"),
+                (&one, "4, 0"),
+            ]
+        } else {
+            vec![
+                (&ptr, "0"),
+                (&ptr, "1"),
+                (&zero, "2"),
+                (&dims_i64[0], "3, 0"),
+                (&dims_i64[1], "3, 1"),
+                (&dims_i64[1], "4, 0"),
+                (&one, "4, 1"),
+            ]
+        };
         for (k, (val, pos)) in fields.iter().enumerate() {
             let nd = format!("%tvd{idx}_{}", k + 1);
             self.body += &format!("  {nd} = llvm.insertvalue {val}, {d}[{pos}] : {dty}\n");
