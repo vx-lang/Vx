@@ -21,6 +21,11 @@ use rayon::prelude::*;
 const KNOWN_DECLINES: &[&str] = &[
     // Empty: the flat path takes every program in the corpus. The tests of the fallback set
     // VX_FLAT_DECLINE in their RUN lines to make it decline a function.
+    //
+    // `maxnreg` has no flat lowering yet: the flat path declines a `SpawnOn` that carries it,
+    // and the AST path emits `vx.maxnreg` on `vx.spawn` and `.maxnreg N` in PTX. Shrinking this
+    // entry is the follow-up that adds flat support.
+    "backend/pass/spawn_with_maxnreg.vx",
 ];
 
 /// Every `.vx` file under `dir`, recursively, sorted for a stable report.

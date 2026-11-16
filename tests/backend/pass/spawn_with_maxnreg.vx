@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --machine fleet/h200.vx --action emit-ptx 2>&1 | FileCheck %s
+// RUN: vxc %s --machine fleet/h200.vx --action emit-ptx --legacy-codegen -o %t.ptx && FileCheck %s < %t.ptx
 // CHECK: .maxnreg 96
 
 fn scale(
@@ -14,8 +14,8 @@ inp: &Tensor<f32, [16, 256], Memory::GPU_HBM>,
 factor: f32
 ) -> void {
   spawn on(Topology::GPU[0]) maxnreg 96 {
-    for y in 0..16 across blocks {
-      for x in 0..256 across lanes(256) {
+    for y in 0..16 {
+      for x in 0..256 {
         out[y][x] = inp[y][x] * factor;
       }
     }
@@ -25,6 +25,8 @@ factor: f32
 fn main() -> i32 {
   let mut out = Tensor<f32, [16, 256], Memory::GPU_HBM>::fill(0.0);
   let inp = Tensor<f32, [16, 256], Memory::GPU_HBM>::fill(1.0);
+
   scale(&mut out, &inp, 2.0);
+
   return 0;
 }
