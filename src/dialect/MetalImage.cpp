@@ -87,6 +87,10 @@ struct KernelInliner : public InlinerInterface {
 // simdgroup matrices (src/dialect/VxLowering.cpp).
 constexpr StringLiteral simdgroupRegisters = "simdgroup_registers";
 
+// The threadgroup memory of a threadgroup on every Apple GPU (Metal Feature
+// Set Tables, "Maximum total threadgroup memory allocation").
+constexpr int64_t metalThreadgroupBytes = 32 * 1024;
+
 // Where a memref's elements are: `ptr[origin + i0 * strides[0] + ...]`.
 // `origin` is the index of the memref's first element in `ptr`.
 struct View {
@@ -489,6 +493,7 @@ bool Printer::kernel(gpu::GPUFuncOp f) {
 
   // Shared memory that this kernel uses.
   llvm::StringSet<> shared;
+  int64_t sharedBytes = 0;
   f.walk([&](memref::GetGlobalOp get) {
     if (!used.contains(get.getName()))
       return;
@@ -504,9 +509,16 @@ bool Printer::kernel(gpu::GPUFuncOp f) {
       return;
     line() << "threadgroup " << elem << " " << get.getName() << "["
            << std::max<int64_t>(t.getNumElements(), 1) << "];\n";
+    sharedBytes += std::max<int64_t>(t.getNumElements(), 1) *
+                   ((t.getElementTypeBitWidth() + 7) / 8);
   });
   if (!failure.empty())
     return false;
+  if (sharedBytes > metalThreadgroupBytes)
+    return fail(f, "the kernel needs " + Twine(sharedBytes) +
+                       " bytes of threadgroup memory, and the Apple GPU has " +
+                       Twine(metalThreadgroupBytes) +
+                       " bytes for each threadgroup");
   for (auto [number, pieces] : registerSums) {
     int64_t count = pieces.first * pieces.second;
     line() << "simdgroup_float8x8 vx_sums" << number << "[" << count << "];\n";

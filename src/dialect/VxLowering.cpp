@@ -7445,7 +7445,8 @@ struct ConvertVxToStandardPass
         // Static `.shared` storage is limited to 48 KiB a block. Past that the
         // tensors are views at offsets into dynamic shared memory, and the
         // kernel says how much it needs (`vx.dynamic_shared`), which the
-        // launch passes.
+        // launch passes. Metal has no such limit for static `threadgroup`
+        // arrays, and the Metal printer checks the limit of the device.
         auto alignOf = [](memref::AllocaOp a) -> int64_t {
           return a.getAlignment() ? (int64_t)a.getAlignment().value() : 16;
         };
@@ -7457,7 +7458,8 @@ struct ConvertVxToStandardPass
         int64_t total = 0;
         for (memref::AllocaOp a : smemAllocas)
           total = llvm::alignTo(total, alignOf(a)) + bytesOf(a);
-        if (total > kMaxStaticSharedBytes) {
+        if (total > kMaxStaticSharedBytes &&
+            pipelineOfKernel(kernel) != DevicePipeline::Metal) {
           OpBuilder atEntry(&gpuFunc.getBody().front(),
                             gpuFunc.getBody().front().begin());
           Location loc = gpuFunc.getLoc();
