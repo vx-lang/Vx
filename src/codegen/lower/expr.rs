@@ -5943,6 +5943,9 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintExpr {
         if self.to_stderr {
             switch_print_stream(gen, block, true)?;
         }
+        // Every argument is evaluated, left to right, before anything is printed, so a call in an
+        // argument that prints cannot split the line.
+        let mut values = Vec::with_capacity(self.args.len());
         for arg in &self.args {
             // A `println!(..);` statement expects no value, but each argument gives one. Without
             // this reset, an `if` or a `match` argument takes the `none` type of the statement.
@@ -5951,6 +5954,9 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintExpr {
             gen.expected_type = prev_expected;
             let (arg_val, arg_ty, next) = lowered?;
             block = next;
+            values.push((arg, arg_val, arg_ty));
+        }
+        for (arg, arg_val, arg_ty) in values {
             if let Some((fn_name, arg_val, arg_ty_str)) =
                 super::pick_scalar_print(gen, block, arg, arg_val, arg_ty)?
             {
