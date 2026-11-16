@@ -38,6 +38,7 @@ We transform the candidate sequence into two paths:
 The transformation lives in `src/dialect/VxLowering.cpp`:
 
 - Inside `ConvertVxToStandardPass::materializeGpuKernels` via helper `versionGuardedLoadBatches(gpu::GPUFuncOp func)`.
+- Restricted to Hopper targets (`sm_90+`) on the NVPTX pipeline (`pipeline == DevicePipeline::Nvptx && chipHasHopperPredicatePressure(...)`), avoiding non-Hopper chips and other GPU pipelines (such as Metal).
 - This runs directly on `gpu.func` operations in the GPU module before lowerings to LLVM and NVVM.
 - A compiler flag `-fguarded-load-versioning` / `-fno-guarded-load-versioning` in `src/driver.rs` allows toggling the optimization.
 
@@ -51,7 +52,7 @@ The optimization must verify all of the following rules before transforming a ca
    - If guards compare against different bounds (e.g. `cols` vs `cols2` in `neg_bound`), the sequence must be rejected.
 1. Strictly Monotonic Positive Offsets:
    - Offsets must be compile-time constants or statically provable positive increments.
-   - Negative or non-monotonic offsets invalidate the implication and must be rejected.
+   - Negative, decreasing, or non-monotonic offsets (e.g. `7 - k < 4` in `neg_decreasing`) invalidate the implication and must be rejected.
 1. No Intervening Aliasing Writes:
    - No memory store that may alias the loads can occur between steps in the batch (as in `neg_store`).
    - If an intervening write exists, the batch must not be hoisted.
@@ -59,20 +60,19 @@ The optimization must verify all of the following rules before transforming a ca
    - The fast path is reached only when the maximum index is proven in bounds.
    - Therefore, unconditional loads in the fast path cannot trigger out-of-bounds page faults.
 1. Minimum Batch Threshold:
-   - The transform applies when a batch has at least 4 steps (and especially $\\ge 7$ steps where Hopper predicate exhaustion occurs).
+   - The transform applies when a batch has at least 8 steps (where Hopper predicate exhaustion occurs due to the 7 hardware predicate registers $P_0..P_6$).
 
 ## 5. Verification Plan
 
 1. Positive LIT Test:
-   - Run `vxc test_issue3403.vx --host default --emit-ptx`.
+   - Run `vxc tests/optimizations/pass/guarded_load_batch_versioning.vx --host default --machine fleet/h100-sxm.vx --emit-ptx`.
    - Check with FileCheck:
-     - One single `setp` on the last step condition.
-     - 16 unguarded `ld.global.nc.b32` loads with no `setp` between them.
+     - Hoisted `setp` on the maximum offset (`c + 224 < cols`).
+     - 16 unguarded `ld.global.nc.b32` loads with no `setp` between them (`CHECK-NOT: setp`).
+     - `-fno-guarded-load-versioning` retains individual `setp` checks.
 1. Negative LIT Tests:
-   - Verify `inspect_sass_neg.vx`:
-     - `neg_bound`: no versioning when bounds differ.
-     - `neg_store`: no versioning across intervening stores.
-     - Confirm `diff on.ptx off.ptx` is empty.
-1. Runtime and Memory Safety Test:
-   - Run `inspect_sass.py` on Modal H100 with `compute-sanitizer --tool memcheck` across irregular column counts `[1, 31, 225, 255, 256, 257, 4099]`.
-   - Verify all numerical outputs match the reference implementation within `1e-4`.
+   - Run `vxc tests/optimizations/pass/guarded_load_batch_versioning_negative.vx --host default --machine fleet/h100-sxm.vx --emit-ptx`.
+   - Check with FileCheck:
+     - `neg_decreasing`: decreasing guard (`7 - k < 4`) is not versioned and stores `4.0` (`1082130432`).
+     - `neg_bound`: no versioning when bounds differ (`cols` vs `cols2`).
+     - `neg_store`: no versioning across intervening tensor stores.
