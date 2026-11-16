@@ -153,16 +153,12 @@ The cost `: shared` says that both sides address the same memory, as on a Mac wi
 The hop copies no bytes, so the cost model gives it a cost of 0 and the JSON report says
 `"cost_source": "shared"`.
 
-A transfer of a `&` tensor parameter to `CPU_DRAM` over a shared edge is still a copy for the type
-system. But when every use of the copy only reads it, the compiler skips the copy: the program
-waits for the GPU and reads the parameter in place. When a use writes the copy or keeps it, the copy
-stays and the compiler gives a warning that names the use. A transfer of an owned tensor, and a
-transfer to any other space, still copies.
-
-A shared edge also allows a pointer cast to the other space, in `unsafe`: with
-`transfer Memory::CPU_DRAM -> Memory::HBM : shared`, `p as *const u32 in Memory::HBM` makes a
-pointer to host memory into one that a GPU kernel reads. `tensor_view_2d` then views it as a tensor,
-with no copy. Without the edge, the cast is an error.
+A transfer of a `&` tensor parameter over a shared edge is still a copy for the type system. But
+when every use of the copy only reads it, the compiler skips the copy, and the use reads the
+parameter in place. A transfer to the CPU first waits for the GPU kernels that write the tensor.
+A transfer to the GPU gives the kernels the parameter itself. When a use writes the copy or keeps
+it, the copy stays and the compiler gives a warning that names the use. A transfer of an owned
+tensor still copies.
 
 ### Memory fields
 

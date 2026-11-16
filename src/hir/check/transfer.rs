@@ -1673,11 +1673,7 @@ impl<'a> TypeChecker<'a> {
             }
         };
         let target_mem = t.space.clone();
-        // The lowering skips the copy only where the CPU reads the device's memory in place.
-        // A `: shared` edge into a device lets a pointer cast reach it, but its transfers
-        // still copy.
         t.shared = shared_borrow
-            && target_mem == MemorySpace::CPUDRAM
             && self
                 .transfer_cost_graph
                 .is_shared_edge(&source_mem, &target_mem);

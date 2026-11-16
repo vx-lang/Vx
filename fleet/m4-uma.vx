@@ -86,10 +86,8 @@ Topology Device {
   // 3.1 and later. No fp8 or fp4 type exists in the language.
   dtypes: [f32, bf16, f16, i8, u8, i16, u16, i32, u32, i64, u64, bool],
   // The CPU and the GPU share one memory, so each reads the other's memory directly. A
-  // pointer to host memory can become a pointer `in Memory::HBM` with `as`, in `unsafe`, so
-  // that a kernel reads it with no copy. A `transfer` of a tensor is still a copy for the type
-  // system. When the program only reads the copy of a `&` tensor on the CPU, the CPU waits for
-  // the GPU and reads the tensor in place. An owned tensor is still copied.
+  // `transfer` of a tensor is still a copy for the type system. When the program only reads
+  // the copy of a `&` tensor, it reads the tensor in place. An owned tensor is still copied.
   transfer Memory::CPU_DRAM -> Memory::HBM : shared,
   transfer Memory::HBM -> Memory::CPU_DRAM : shared,
   transfer Memory::HBM -> Memory::L2,
