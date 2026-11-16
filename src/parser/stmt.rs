@@ -130,8 +130,33 @@ impl<'a> Parser<'a> {
                     type_annotation = Some(self.parse_type()?);
                 }
                 self.consume(&TokenType::Equals, "Expected '='")?;
-                let expr = self.parse_expr()?;
+                let mut expr = self.parse_expr()?;
                 self.consume(&TokenType::Semicolon, "Expected ';'")?;
+                // `let r = (v + w)[1]`: `r` is a row of the sum, so the sum must live as long as
+                // `r`, as Rust keeps a temporary that a `let` borrows. A `let` before this one
+                // holds the sum.
+                if let Some(value) = temporary_under_index(&mut expr) {
+                    let temp = format!(
+                        "{}{}",
+                        crate::syntax::expr::INDEXED_TEMPORARY,
+                        self.tuple_lets
+                    );
+                    self.tuple_lets += 1;
+                    let value = std::mem::replace(
+                        value,
+                        Expr::Identifier(IdentifierExpr {
+                            name: temp.clone().into(),
+                            span: value.span(),
+                        }),
+                    );
+                    self.prefix_stmts.push(Statement::LetDecl(LetDeclStmt {
+                        name: temp.into(),
+                        is_mut: false,
+                        ty_ann: None,
+                        expr: value,
+                        span: Span::default(),
+                    }));
+                }
                 Ok(Statement::LetDecl(LetDeclStmt {
                     // The `let` keyword's own token: a diagnostic about the binding (a type
                     // mismatch, an unused variable) points at the declaration, not at 0:0.
@@ -647,4 +672,23 @@ enum TuplePattern {
     /// A name, and whether it was written `mut`.
     Bind(String, bool),
     Tuple(Vec<TuplePattern>),
+}
+
+/// The value that `e` indexes, when `e` indexes a value that no variable holds: the sum in
+/// `(v + w)[1]` or `(v + w)[1][0]`, or the result of `f()` in `f()[1]`.
+fn temporary_under_index(e: &mut Expr) -> Option<&mut Expr> {
+    let Expr::IndexAccess(ix) = e else {
+        return None;
+    };
+    let mut root: &mut Expr = &mut ix.base;
+    while let Expr::IndexAccess(inner) = root {
+        root = &mut inner.base;
+    }
+    if matches!(
+        root,
+        Expr::Identifier(_) | Expr::MemberAccess(_) | Expr::Dereference(_)
+    ) {
+        return None;
+    }
+    Some(root)
 }
