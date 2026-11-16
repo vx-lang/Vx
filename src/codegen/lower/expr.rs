@@ -526,9 +526,18 @@ impl<'c> LowerToMelior<'c> for BorrowExpr {
         let ptr_ty = gen.ptr_ty;
         // `&mut s.t`, a struct's tensor field: a borrowed tensor is a `memref<memref<..>>`, whose
         // descriptor is `{ptr, ptr, offset}`. Pointing both at the field makes it a borrow of the
-        // field itself, so a callee that writes the tensor writes the struct's.
-        if ty == ptr_ty && matches!(&**expr, Expr::MemberAccess(_)) {
-            if let Some(field_ty @ syntax::Type::Tensor(..)) = gen.infer_ast_type(expr) {
+        // field itself, so a callee that writes the tensor writes the struct's. A tensor behind a
+        // raw pointer, `&self.data[i]` in `Vec::get_ref`, is stored the same way.
+        let stored_tensor = match &**expr {
+            Expr::MemberAccess(_) => gen.infer_ast_type(expr),
+            Expr::IndexAccess(ix) => match gen.infer_ast_type(&ix.base) {
+                Some(syntax::Type::Pointer(inner, ..)) => Some(*inner),
+                _ => None,
+            },
+            _ => None,
+        };
+        if ty == ptr_ty {
+            if let Some(field_ty @ syntax::Type::Tensor(..)) = stored_tensor {
                 let tensor_ty = gen.lower_type(&field_ty)?;
                 let box_ty =
                     Type::parse(gen.context, &format!("memref<{tensor_ty}>")).ok_or_else(|| {

@@ -2133,9 +2133,14 @@ impl<'r> Lowerer<'r> {
                 }
                 // `&self.data[i]`: the address of an element behind a raw pointer, as `Vec::get_ref`
                 // takes it. Lowering the element as a value would hand back a copy in this
-                // function's frame, which dangles once it returns.
+                // function's frame, which dangles once it returns. A tensor element is the
+                // exception: a reference to a tensor is the tensor, and the copy of its descriptor
+                // names the buffer that the element names.
                 if let Expr::IndexAccess(ix) = &*b.expr {
-                    if matches!(self.infer_ast_type(&ix.base), Some(Type::Pointer(..))) {
+                    if let Some(Type::Pointer(elem, ..)) = self.infer_ast_type(&ix.base) {
+                        if matches!(*elem, Type::Tensor(..)) {
+                            return self.lower_expr(&b.expr);
+                        }
                         let place = self.lower_place(&b.expr)?;
                         return Ok(Val {
                             reg: place.reg,
