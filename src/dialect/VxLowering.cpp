@@ -53,6 +53,7 @@
 #include "mlir/Transforms/Passes.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "vx_hardware_runtime.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/StringExtras.h"
@@ -1992,29 +1993,73 @@ static Value tensorsToWaitFor(OpBuilder &b, Location loc, func::FuncOp func,
   return payload;
 }
 
-// Skip the copy of a transfer that sema marked `shared`: its source is a `&`
-// tensor and the edge is `: shared`, so the CPU can read the GPU's memory. The
-// caller cannot change a `&` parameter during the call, so when every use of
-// the copy only reads it, the parameter can stand in for the copy. The transfer
-// then only waits for the GPU. Otherwise the copy stays, and a warning names
-// what needs it.
+// Waits at each return of `func` for every launch on `topology`, through
+// `VX_CTRL_WAIT`.
+static void waitForLaunchesAtReturns(func::FuncOp func, int32_t topology) {
+  ModuleOp module = func->getParentOfType<ModuleOp>();
+  MLIRContext *ctx = module.getContext();
+  OpBuilder b = OpBuilder::atBlockBegin(&func.front());
+  auto i32Type = b.getI32Type();
+  auto ptrType = LLVM::LLVMPointerType::get(ctx);
+  getOrDeclareRuntimeFn(b, module, UnknownLoc::get(ctx), "vx_plugin_control",
+                        i32Type, {i32Type, ptrType});
+  Value one = b.create<LLVM::ConstantOp>(func.getLoc(), b.getI64Type(),
+                                         b.getI64IntegerAttr(1));
+  Value slot = b.create<LLVM::AllocaOp>(func.getLoc(), ptrType, i32Type, one);
+  SmallVector<func::ReturnOp> returns;
+  func.walk([&](func::ReturnOp r) { returns.push_back(r); });
+  for (func::ReturnOp r : returns) {
+    b.setInsertionPoint(r);
+    Location loc = r.getLoc();
+    b.create<LLVM::StoreOp>(
+        loc,
+        b.create<LLVM::ConstantOp>(loc, i32Type, b.getI32IntegerAttr(topology)),
+        slot);
+    Value opcode = b.create<LLVM::ConstantOp>(loc, i32Type,
+                                              b.getI32IntegerAttr(kCtrlWait));
+    b.create<LLVM::CallOp>(loc, TypeRange{i32Type},
+                           SymbolRefAttr::get(ctx, "vx_plugin_control"),
+                           ValueRange{opcode, slot});
+  }
+}
+
+// Skip the copy of a transfer that sema marked `shared`: the edge is `:
+// shared`, so the target can read the source's memory. Its source is a `&`
+// tensor, or a view of memory from a `*const` pointer (`read_only_source`). The
+// caller cannot change a `&` parameter during the call, and nothing can change
+// memory behind a `*const` pointer. So when every use of the copy only reads
+// it, the source can stand in for the copy. Otherwise the copy stays, and a
+// warning names what needs it.
+//
+// A transfer to the CPU then waits for the GPU launches that write the source.
+// A transfer to a device reads host memory, which no launch writes. But the
+// device can still read a `&` parameter after the call returns, and then the
+// caller can change it. So each return of the function waits for the device.
 static void elideSharedTransfers(ModuleOp module) {
   SmallVector<vx::TransferOp> transfers;
   module.walk([&](vx::TransferOp t) {
     if (t->hasAttr("shared"))
       transfers.push_back(t);
   });
+  // The functions whose returns wait for a device, with its topology.
+  llvm::MapVector<func::FuncOp, int32_t> waitAtReturns;
   for (vx::TransferOp t : transfers) {
     Value src = t.getOperand();
     auto srcType = dyn_cast<MemRefType>(src.getType());
     auto copyType = dyn_cast<MemRefType>(t.getResult().getType());
     if (!srcType || !copyType)
       continue;
-    if (!isParameter(src)) {
-      t.emitWarning() << warningAt(t)
-                      << "this transfer copies the tensor. The CPU can read "
-                         "it in place only when it is a `&` parameter of this "
-                         "function.";
+    const bool toDevice = isDeviceTransfer(t);
+    const bool readOnlySource = t->hasAttr("read_only_source");
+    StringRef reader = toDevice ? "The device" : "The CPU";
+    StringRef transfer =
+        toDevice ? "a transfer to device memory" : "a transfer to CPU_DRAM";
+    if (!isParameter(src) && !readOnlySource) {
+      t.emitWarning() << warningAt(t) << "this transfer copies the tensor. "
+                      << reader
+                      << " can read it in place only when it is a `&` "
+                         "parameter of this function, or a view of memory "
+                         "from a `*const` pointer.";
       continue;
     }
     if (srcType.getShape() != copyType.getShape() ||
@@ -2028,34 +2073,41 @@ static void elideSharedTransfers(ModuleOp module) {
     SmallVector<vx::DropOp> drops;
     auto [user, through] = useThatNeedsTheCopy(t.getResult(), drops);
     if (user) {
-      user->emitWarning() << warningAt(user)
-                          << "a transfer to CPU_DRAM copies a tensor, because "
-                          << whyItNeedsTheCopy(user, through)
-                          << ". The CPU reads the tensor in place only when "
-                             "every use of the copy reads it.";
+      user->emitWarning() << warningAt(user) << transfer
+                          << " copies a tensor, because "
+                          << whyItNeedsTheCopy(user, through) << ". " << reader
+                          << " reads the tensor in place only when every use "
+                             "of the copy reads it.";
       continue;
     }
 
-    // Wait for the GPU launches that write `src`, through
-    // `vx_plugin_control(VX_CTRL_WAIT_FOR_TENSORS, ...)`.
     Location loc = t.getLoc();
     OpBuilder builder(t);
-    auto ptrType = LLVM::LLVMPointerType::get(module.getContext());
-    auto i32Type = builder.getI32Type();
-    assert(isTensorToWaitFor(srcType) &&
-           "a `&` tensor parameter is a strided memref of elements");
-    Value tensors =
-        tensorsToWaitFor(builder, loc, t->getParentOfType<func::FuncOp>(),
-                         sourceTopologyOf(t), ValueRange{src});
-    Value opcode = builder.create<LLVM::ConstantOp>(
-        loc, i32Type, builder.getI32IntegerAttr(kCtrlWaitForTensors));
-    // An unknown location: LLVM refuses a declaration with debug info.
-    getOrDeclareRuntimeFn(builder, module, UnknownLoc::get(module.getContext()),
-                          "vx_plugin_control", i32Type, {i32Type, ptrType});
-    builder.create<LLVM::CallOp>(
-        loc, TypeRange{i32Type},
-        SymbolRefAttr::get(module.getContext(), "vx_plugin_control"),
-        ValueRange{opcode, tensors});
+    auto func = t->getParentOfType<func::FuncOp>();
+    if (toDevice) {
+      if (!readOnlySource)
+        waitAtReturns.insert(
+            {func, static_cast<int32_t>(t.getTargetTopology())});
+    } else {
+      // Wait for the GPU launches that write `src`, through
+      // `vx_plugin_control(VX_CTRL_WAIT_FOR_TENSORS, ...)`.
+      auto ptrType = LLVM::LLVMPointerType::get(module.getContext());
+      auto i32Type = builder.getI32Type();
+      assert(isTensorToWaitFor(srcType) &&
+             "the source is a strided memref of elements");
+      Value tensors = tensorsToWaitFor(builder, loc, func, sourceTopologyOf(t),
+                                       ValueRange{src});
+      Value opcode = builder.create<LLVM::ConstantOp>(
+          loc, i32Type, builder.getI32IntegerAttr(kCtrlWaitForTensors));
+      // An unknown location: LLVM refuses a declaration with debug info.
+      getOrDeclareRuntimeFn(builder, module,
+                            UnknownLoc::get(module.getContext()),
+                            "vx_plugin_control", i32Type, {i32Type, ptrType});
+      builder.create<LLVM::CallOp>(
+          loc, TypeRange{i32Type},
+          SymbolRefAttr::get(module.getContext(), "vx_plugin_control"),
+          ValueRange{opcode, tensors});
+    }
 
     Value inPlace = src;
     if (srcType != copyType)
@@ -2065,6 +2117,8 @@ static void elideSharedTransfers(ModuleOp module) {
     t.getResult().replaceAllUsesWith(inPlace);
     t.erase();
   }
+  for (auto [func, topology] : waitAtReturns)
+    waitForLaunchesAtReturns(func, topology);
 }
 
 // Give every buffer a transfer allocates a `vx.free` after its last use.

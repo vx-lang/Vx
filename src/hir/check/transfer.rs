@@ -1677,6 +1677,12 @@ impl<'a> TypeChecker<'a> {
             && self
                 .transfer_cost_graph
                 .is_shared_edge(&source_mem, &target_mem);
+        // `transfer(&v, M)` of a view made from a `*const` pointer: nothing can write `v`.
+        let source_place = match &*t.expr {
+            Expr::Borrow(b) => &*b.expr,
+            e => e,
+        };
+        t.read_only_source = t.shared && self.const_pointer_in_place(source_place).is_some();
 
         // Capacity: a statically-shaped tensor transferred into a declared space must fit.
         if let Some((e, d)) = Self::tensor_of(&inner_ty) {
@@ -2374,6 +2380,7 @@ impl<'a> TypeChecker<'a> {
                 lowering: None,
                 is_async: false,
                 shared: false,
+                read_only_source: false,
                 span: t.span,
             });
         }
@@ -2387,6 +2394,7 @@ impl<'a> TypeChecker<'a> {
             lowering: None,
             is_async: t.is_async,
             shared: false,
+            read_only_source: false,
             span: t.span,
         });
         // Propagate the relaxed marker so each rewritten single-hop transfer is checked with the

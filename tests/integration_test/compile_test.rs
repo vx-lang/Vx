@@ -14,9 +14,8 @@
 //===----------------------------------------------------------------------===//
 use std::fs;
 use std::path::Path;
-use std::sync::{Mutex, Once};
+use std::sync::Mutex;
 
-static INIT_RAYON: Once = Once::new();
 static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
 use super::time_limit::{has_timeout, SECONDS as RUN_LINE_SECONDS};
@@ -56,18 +55,6 @@ fn has_thread_sanitizer() -> bool {
 /// `s` as one word for bash, in single quotes.
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
-}
-
-fn init_rayon() {
-    INIT_RAYON.call_once(|| {
-        let cores = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(2);
-        let threads = if cores > 2 { cores - 2 } else { 1 };
-        let _ = rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build_global();
-    });
 }
 
 use rayon::prelude::*;
@@ -1692,7 +1679,7 @@ fn run_directory_tests_inner<F>(
 where
     F: Fn(&std::path::Path) -> Result<(), String> + Sync + Send,
 {
-    init_rayon();
+    super::parallel::init_rayon();
     let _guard = TEST_MUTEX.lock().unwrap();
 
     if dir.exists() {

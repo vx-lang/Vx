@@ -3094,17 +3094,19 @@ impl<'c> MeliorGenerator<'c> {
                     let dims = dims.into_iter().map(syntax::Dim::Static).collect();
                     return Some(syntax::Type::Tensor(el_ty, dims, None));
                 }
-                // `tensor_view_2d(p, rows, cols)` over literal extents is a statically shaped
-                // view, which is how the checker types it. Recovering it here is what keeps an
-                // unannotated binding and a redundantly annotated one generating the same code;
-                // run-time extents stay unshaped, as they are for the checker too.
-                if name == "tensor_view_2d" && fc.args.len() == 3 {
-                    let dims: Vec<Expr> = fc.args[1..3]
+                // `tensor_view_1d(p, len)` or `tensor_view_2d(p, rows, cols)` over literal
+                // extents is a statically shaped view, which is how the checker types it.
+                // Recovering it here is what keeps an unannotated binding and a redundantly
+                // annotated one generating the same code; run-time extents stay unshaped, as
+                // they are for the checker too.
+                let view_rank = crate::syntax::expr::tensor_view_rank(&name);
+                if let Some(rank) = view_rank.filter(|r| fc.args.len() == r + 1) {
+                    let dims: Vec<Expr> = fc.args[1..rank + 1]
                         .iter()
                         .filter(|a| matches!(a, Expr::Number(_)))
                         .cloned()
                         .collect();
-                    if dims.len() == 2 {
+                    if dims.len() == rank {
                         let el_ty = match self.infer_ast_type(&fc.args[0]) {
                             Some(syntax::Type::Pointer(inner, _, _)) => match *inner {
                                 syntax::Type::Scalar(e) => Some(e),

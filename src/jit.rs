@@ -683,6 +683,12 @@ pub fn execute_mlir_streams(
         ),
         &runtime_lib,
     ]);
+    // libmlir_c_runner_utils needs libMLIR and libLLVM, and GNU ld reads all of their symbols to
+    // check the library, which took most of the time of a link. The loader still checks each
+    // symbol when the program starts, and the symbols of the program are still checked here.
+    if cfg!(target_os = "linux") {
+        clang_cmd.arg("-Wl,--allow-shlib-undefined");
+    }
 
     // The plain half-precision printers MLIR exports only packed. Linked here as well as handed to
     // the execution engine, because this path builds a native executable with clang rather than

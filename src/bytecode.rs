@@ -230,8 +230,8 @@ pub enum Opcode {
     /// `operand1` is the buffer, `operand2` the value. Lowers to `linalg.fill`, the same fill
     /// `TensorZero` emits, with the value the source wrote instead of a zero.
     TensorFill = 46,
-    /// A rank-2 view over memory the caller owns (`tensor_view_2d(ptr, rows, cols)`): `operand1`
-    /// is the pointer, `type_idx` the tensor type. A `?` extent is the `operand1` of an `Arg`
+    /// A rank-1 or rank-2 view over memory the caller owns (`tensor_view_1d(ptr, len)`,
+    /// `tensor_view_2d(ptr, rows, cols)`): `operand1` is the pointer, `type_idx` the tensor type. A `?` extent is the `operand1` of an `Arg`
     /// immediately before, one per `?` in order; a static one is the type's. Lowers to a memref
     /// descriptor built over the pointer, with row-major strides. The result is the view.
     TensorView = 47,
@@ -508,6 +508,9 @@ pub const TRANSFER_USER_LOWERED: u32 = 1 << 31;
 /// A bit of `Opcode::Transfer`'s `operand2`: the transfer is a `transfer_async`, so a device can
 /// copy in the background until a use of the tensor.
 pub const TRANSFER_ASYNC: u32 = 1 << 30;
+/// A bit of `Opcode::Transfer`'s `operand2`: the source is memory that nothing can write, a view
+/// made from a `*const` pointer. See `TransferExpr::read_only_source`.
+pub const TRANSFER_READ_ONLY_SOURCE: u32 = 1 << 29;
 
 /// `Opcode::TensorPad`'s `imm`: pad each axis (`t.pad(shape)`), not the flat row order.
 pub const TENSOR_PAD_EACH_AXIS: u64 = 1;

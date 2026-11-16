@@ -480,7 +480,9 @@ pub enum DiagnosticCode {
     /// the copy it keeps of a variable it uses (`|| &x`): each call has its own frame.
     E4005,
     /// An assignment through a shared reference: `*r = v`, `r.f = v` or `r[i] = v` where
-    /// `r` is a `&T`. A shared reference only reads; writing needs a `&mut T`.
+    /// `r` is a `&T`. A shared reference only reads; writing needs a `&mut T`. The same for a
+    /// `*const T` pointer and for a view of memory made from one: a write, a `&mut` borrow or a
+    /// `&mut self` call through it. Writing needs a `*mut T`.
     E4006,
     /// A value moved while a borrow of it is still used afterwards: `let r = &a; let b = a;`
     /// followed by a use of `r`. The borrow would point at a value that has moved away.

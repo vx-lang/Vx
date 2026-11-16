@@ -62,12 +62,15 @@
 #include "vx_stream_policy.h"
 #include "vx_view_copy.h"
 
+#include <algorithm>
 #include <atomic>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
@@ -397,6 +400,174 @@ static void forget_ended_copies() {
     } else {
       ++it;
     }
+  }
+}
+
+/* Pinned memory for `transfer_async`. CUDA copies from pageable memory through
+   small pinned buffers of its own, and that is slow. The program may reuse its
+   host memory when the call returns, so the GPU cannot copy from it later.
+   Instead the host copies each chunk into pinned memory of the runtime, and
+   the GPU copies one chunk while the host copies the next one.
+
+   On an H200 with PCIe 5, the GPU copies from pinned memory at about 54 GB/s.
+   One host thread copies at about 11 GB/s, and four at about 42 GB/s. So a few
+   threads copy each chunk. */
+static constexpr size_t staging_chunk_bytes = size_t(8) << 20;
+static constexpr int staging_chunks = 4;
+/// A smaller copy goes through CUDA's own buffers, as before.
+static constexpr size_t staging_min_bytes = size_t(1) << 20;
+
+struct StagingChunk {
+  void *host = nullptr;
+  /// Recorded after the GPU copy from `host`, so the next use waits for it.
+  cudaEvent_t copied = nullptr;
+};
+
+struct Staging {
+  std::mutex mutex;
+  StagingChunk chunks[staging_chunks];
+  int next = 0;
+};
+
+/// The pinned chunks of the current GPU, or null if CUDA could not pin them.
+static Staging *staging() {
+  static std::mutex mutex;
+  static std::unordered_map<int, Staging *> all;
+  int device = 0;
+  VX_CUDA_CHECK(cudaGetDevice(&device));
+  std::lock_guard<std::mutex> lock(mutex);
+  auto found = all.find(device);
+  if (found != all.end()) {
+    return found->second;
+  }
+  Staging *made = new Staging();
+  for (StagingChunk &chunk : made->chunks) {
+    if (cudaHostAlloc(&chunk.host, staging_chunk_bytes, cudaHostAllocDefault) !=
+        cudaSuccess) {
+      // Pinned memory is limited. Without it, the copy still works.
+      cudaGetLastError();
+      for (StagingChunk &allocated : made->chunks) {
+        if (allocated.host) {
+          VX_CUDA_CHECK(cudaFreeHost(allocated.host));
+        }
+        if (allocated.copied) {
+          VX_CUDA_CHECK(cudaEventDestroy(allocated.copied));
+        }
+      }
+      delete made;
+      made = nullptr;
+      break;
+    }
+    VX_CUDA_CHECK(
+        cudaEventCreateWithFlags(&chunk.copied, cudaEventDisableTiming));
+  }
+  all[device] = made;
+  return made;
+}
+
+/// Host threads that copy one block of memory together. The calling thread
+/// copies the first part.
+class CopyThreads {
+public:
+  CopyThreads() {
+    // A quarter of the CPUs, and at most four threads.
+    const unsigned cpus = std::thread::hardware_concurrency();
+    parts = std::max(1u, std::min(4u, cpus / 4));
+    for (unsigned i = 1; i < parts; ++i) {
+      std::thread([this, i] { work(i); }).detach();
+    }
+  }
+
+  void copy(void *dst, const void *src, size_t bytes) {
+    std::lock_guard<std::mutex> one_copy(busy);
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      job = {static_cast<char *>(dst), static_cast<const char *>(src), bytes};
+      unfinished = parts - 1;
+      ++generation;
+    }
+    wake.notify_all();
+    copy_part(0);
+    std::unique_lock<std::mutex> lock(mutex);
+    finished.wait(lock, [this] { return unfinished == 0; });
+  }
+
+private:
+  struct Job {
+    char *dst = nullptr;
+    const char *src = nullptr;
+    size_t bytes = 0;
+  };
+
+  void copy_part(unsigned i) {
+    const size_t part = (job.bytes / parts + 63) & ~size_t(63);
+    const size_t begin = std::min(job.bytes, part * i);
+    const size_t end =
+        i + 1 == parts ? job.bytes : std::min(job.bytes, begin + part);
+    memcpy(job.dst + begin, job.src + begin, end - begin);
+  }
+
+  void work(unsigned i) {
+    unsigned long long seen = 0;
+    for (;;) {
+      {
+        std::unique_lock<std::mutex> lock(mutex);
+        wake.wait(lock, [&] { return generation != seen; });
+        seen = generation;
+      }
+      copy_part(i);
+      std::lock_guard<std::mutex> lock(mutex);
+      if (--unfinished == 0) {
+        finished.notify_one();
+      }
+    }
+  }
+
+  unsigned parts = 1;
+  std::mutex busy;
+  std::mutex mutex;
+  std::condition_variable wake;
+  std::condition_variable finished;
+  Job job;
+  unsigned unfinished = 0;
+  unsigned long long generation = 0;
+};
+
+/// The copy threads. They live until the process ends, so they are never
+/// destroyed.
+static CopyThreads &copy_threads() {
+  static CopyThreads *threads = new CopyThreads();
+  return *threads;
+}
+
+/// Starts the copy of `bytes` from `host_ptr` to `device_ptr` on `stream`.
+/// When it returns, the program may reuse `host_ptr`.
+static void copy_to_device_async(void *device_ptr, const void *host_ptr,
+                                 size_t bytes, cudaStream_t stream) {
+  Staging *pinned = bytes >= staging_min_bytes ? staging() : nullptr;
+  if (!pinned) {
+    // From pageable memory, CUDA returns after it copied the bytes into its
+    // own pinned memory.
+    VX_CUDA_CHECK(cudaMemcpyAsync(device_ptr, host_ptr, bytes,
+                                  cudaMemcpyHostToDevice, stream));
+    return;
+  }
+  if (verbose()) {
+    fprintf(stderr, "[Vx CUDA] copy of %zu bytes through pinned memory\n",
+            bytes);
+  }
+  std::lock_guard<std::mutex> lock(pinned->mutex);
+  for (size_t done = 0; done < bytes; done += staging_chunk_bytes) {
+    const size_t n = std::min(staging_chunk_bytes, bytes - done);
+    StagingChunk &chunk = pinned->chunks[pinned->next];
+    pinned->next = (pinned->next + 1) % staging_chunks;
+    VX_CUDA_CHECK(cudaEventSynchronize(chunk.copied));
+    copy_threads().copy(chunk.host, static_cast<const char *>(host_ptr) + done,
+                        n);
+    VX_CUDA_CHECK(cudaMemcpyAsync(static_cast<char *>(device_ptr) + done,
+                                  chunk.host, n, cudaMemcpyHostToDevice,
+                                  stream));
+    VX_CUDA_CHECK(cudaEventRecord(chunk.copied, stream));
   }
 }
 
@@ -1099,11 +1270,8 @@ void *vx_plugin_alloc_and_transfer_async(size_t bytes, void *host_ptr,
   forget_ended_copies();
   void *device_ptr = nullptr;
   VX_CUDA_CHECK(device_alloc(&device_ptr, bytes));
-  // From pageable memory, CUDA returns after it copied the bytes into its own
-  // pinned memory. So the program may free `host_ptr` when this returns.
   cudaStream_t stream = copy_stream();
-  VX_CUDA_CHECK(cudaMemcpyAsync(device_ptr, host_ptr, bytes,
-                                cudaMemcpyHostToDevice, stream));
+  copy_to_device_async(device_ptr, host_ptr, bytes, stream);
   cudaEvent_t event = nullptr;
   VX_CUDA_CHECK(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
   VX_CUDA_CHECK(cudaEventRecord(event, stream));

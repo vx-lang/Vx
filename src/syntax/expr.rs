@@ -179,6 +179,10 @@ pub struct TransferExpr {
     /// Set by sema when the source is a `&` tensor and the edge is `: shared`. The result is still
     /// a copy, but the lowering may skip the copy when every use of it only reads.
     pub shared: bool,
+    /// Set by sema with `shared` when the source is memory that nothing can write: a view made
+    /// from a `*const` pointer. The lowering may then read it in place, also when it is not a
+    /// parameter.
+    pub read_only_source: bool,
     pub span: Span,
 }
 
@@ -206,6 +210,7 @@ impl TransferExpr {
             lowering: None,
             is_async: false,
             shared: false,
+            read_only_source: false,
             span,
         }
     }
@@ -1316,9 +1321,19 @@ fn substitute_mlir_returns(ty: &Type, mapping: &std::collections::HashMap<Symbol
     }
 }
 
+/// The rank of the tensor that a view over raw memory has: 1 for `tensor_view_1d(ptr, len)`,
+/// 2 for `tensor_view_2d(ptr, rows, cols)`. `None` for any other function.
+pub fn tensor_view_rank(name: &str) -> Option<usize> {
+    match name {
+        "tensor_view_1d" => Some(1),
+        "tensor_view_2d" => Some(2),
+        _ => None,
+    }
+}
+
 /// Is this a tensor construction -- storage the compiler allocated?
 ///
-/// A view built with `tensor_view_2d` has the same type and a shape the checker enforces, but
+/// A view built with `tensor_view_1d` or `tensor_view_2d` has the same type and a shape the checker enforces, but
 /// names memory the compiler does not control: two views over one pointer are two names for one
 /// buffer, which no rule about names can see.
 pub fn is_tensor_construction(e: &Expr) -> bool {
@@ -1753,6 +1768,7 @@ impl Expr {
                 lowering: e.lowering.clone(),
                 is_async: e.is_async,
                 shared: e.shared,
+                read_only_source: e.read_only_source,
                 span: e.span,
             }),
             // Type substitution does not touch topologies; topology substitution is done

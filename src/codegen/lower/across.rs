@@ -1056,6 +1056,7 @@ pub(crate) fn lower_count<'c>(
         lowering: None,
         is_async: false,
         shared: false,
+        read_only_source: false,
         span: s.span,
     });
     let lowered = gen.generate_expr(&transfer, block);
