@@ -189,6 +189,7 @@ private:
   bool laneMatmul(Operation *op);
   bool laneFill(Operation *op);
   bool laneCopy(Operation *op);
+  bool laneScaleRows(Operation *op);
   bool atomicAt(Operation *op, Value ptr, Type t, Address &out);
   void acquireFence(const Address &a);
   bool ifOp(scf::IfOp op);
@@ -456,8 +457,8 @@ bool Printer::kernel(gpu::GPUFuncOp f) {
     auto number = o->getAttrOfType<IntegerAttr>(simdgroupRegisters);
     if (!number)
       return;
-    // The tile is the first operand of a matmul or a fill, and the source of
-    // a copy.
+    // The tile is the first operand of a matmul, a fill or a scale, and the
+    // source of a copy.
     Value tile = o->getOperand(o->getName().getStringRef() == "vx.lane_copy");
     auto t = cast<MemRefType>(tile.getType());
     registerSums[number.getInt()] = {t.getDimSize(0) / 8, t.getDimSize(1) / 8};
@@ -660,6 +661,9 @@ bool Printer::op(Operation *o) {
   if (o->getName().getStringRef() == "vx.lane_copy" &&
       o->hasAttr(simdgroupRegisters))
     return laneCopy(o);
+  if (o->getName().getStringRef() == "vx.lane_scale_rows" &&
+      o->hasAttr(simdgroupRegisters))
+    return laneScaleRows(o);
   if (o->getName().getStringRef() == "nvvm.bar.warp.sync") {
     // The end of a lane loop in a subgroup loop. A subgroup is a SIMD-group
     // of 32 threads, and all of them wait, as with the mask of all lanes.
@@ -829,6 +833,39 @@ bool Printer::laneCopy(Operation *o) {
   else
     line() << "threadgroup_barrier(mem_flags::mem_device | "
               "mem_flags::mem_threadgroup);\n";
+  return true;
+}
+
+// A `vx.lane_scale_rows` of an accumulator in simdgroup matrices: each lane
+// multiplies its 2 elements of each piece by the scale of their row. They are
+// in row (l / 16) * 4 + (l / 2) % 4 of the piece, as in `laneCopy`. The
+// elements stay in the lane, so the lanes need not wait.
+bool Printer::laneScaleRows(Operation *o) {
+  auto number = o->getAttrOfType<IntegerAttr>(simdgroupRegisters);
+  auto pieces = registerSums[number.getInt()];
+  std::string sums = "vx_sums" + std::to_string(number.getInt());
+  View scale;
+  if (!viewOf(o->getOperand(1), scale, o))
+    return false;
+  if (scale.sizes.size() != 1)
+    return fail(o, "a scale of the rows that is not a tensor of 1 dimension");
+  std::string row = fresh("r");
+  line() << "{\n";
+  ++depth;
+  line() << "const int " << row
+         << " = (int)(vx_lane / 16) * 4 + (int)(vx_lane / 2) % 4;\n";
+  line() << "for (int i = 0; i < " << pieces.first << "; i++) {\n";
+  line() << "  const float s = " << scale.ptr << "[" << scale.origin
+         << " + (i * 8 + " << row << ") * " << scale.strides[0] << "];\n";
+  line() << "  for (int j = 0; j < " << pieces.second << "; j++) {\n";
+  line() << "    thread auto &e = " << sums << "[i * " << pieces.second
+         << " + j].thread_elements();\n";
+  line() << "    e[0] *= s;\n";
+  line() << "    e[1] *= s;\n";
+  line() << "  }\n";
+  line() << "}\n";
+  --depth;
+  line() << "}\n";
   return true;
 }
 
