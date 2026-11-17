@@ -13,8 +13,13 @@ pub(super) fn render(
     bytes: Range<usize>,
     config: &FormatConfig,
     state: &mut RenderState,
+    inside_syntax: bool,
 ) -> Result<String, String> {
-    ownership.validate_legacy_edit(bytes.clone())?;
+    if inside_syntax {
+        ownership.validate_region_edit(bytes.clone())?;
+    } else {
+        ownership.validate_legacy_edit(bytes.clone())?;
+    }
     let mut input = Vec::new();
     for original in &source.tokens[source.token_range(&bytes)] {
         if !super::source::overlaps(&original.bytes, &bytes) {

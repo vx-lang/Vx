@@ -69,9 +69,12 @@ Rules do not generate replacement token spellings or mutate rendered strings.
 The registry rejects duplicate owners for one syntax kind.
 The scheduler rejects identical or partially overlapping roots.
 An enclosing root owns its complete range and delegates children explicitly.
+A root can also hand part of its range back with `Document::Region`, such as the value of a struct field.
+The engine formats a region like any other code: with the roots inside it, and with the base formatting between them.
+A root that wants the base formatting for its whole range returns a region of that range.
 Protected source ranges take precedence over registered roots.
-The registry preserves a disabled owner's original source range.
-Legacy passes cannot rewrite that range.
+The engine does not schedule the roots of a switched-off rule.
+Their code gets the formatting it would get if the rule did not exist.
 
 The renderer requires each original content token exactly once, in source order.
 The final validator also checks token spelling and grammatical adjacency.

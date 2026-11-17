@@ -68,9 +68,13 @@ Bodies retain existing formatting through the bounded legacy adapter.
 The optional `format_declaration` helper composes a function document with an unchanged body.
 It is not a second full-file pipeline.
 
-`Document` supports original tokens, spaces, lines, concatenation, width reservations, layout alternatives, and exact source copies.
+`Document` supports original tokens, spaces, lines, concatenation, width reservations, layout alternatives, exact source copies, and regions.
+A region is source code that the engine formats the normal way, inside a rule's layout.
 `Shape` supplies column, indentation, indentation width, and available width.
 The renderer chooses flat or expanded layouts within the parent's budget.
+The width of a region is known only after rendering.
+So the renderer renders a one-line alternative that holds a region, and undoes it when it breaks a line or does not fit.
+`MaxWidth` limits part of a one-line alternative, such as the fields of a struct literal.
 Headers containing comments retain their original header text while supported surrounding code can still format.
 
 ## Ownership and state

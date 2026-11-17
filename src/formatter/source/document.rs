@@ -55,6 +55,19 @@ pub enum Document {
         bytes: Range<usize>,
         keep_column: bool,
     },
+    /// Source code that a rule does not lay out itself, such as the value of a struct field.
+    /// The engine formats it the normal way: with the rules that own code inside it, and with
+    /// the base formatting for the rest. New lines inside it start at `indent_level`.
+    Region {
+        bytes: Range<usize>,
+        indent_level: usize,
+    },
+    /// `child` must fit on one line of at most `width` columns. Use it inside the one-line
+    /// alternative of a `Choice`, which then falls back to its other alternative.
+    MaxWidth {
+        width: usize,
+        child: Box<Document>,
+    },
 }
 
 impl Document {
@@ -74,6 +87,19 @@ impl Document {
         }
     }
 
+    /// Whether the document holds a `Region`, whose width is known only after rendering.
+    fn has_region(&self) -> bool {
+        match self {
+            Self::Region { .. } => true,
+            Self::Concat(children) => children.iter().any(Self::has_region),
+            Self::Choice { flat, expanded } => flat.has_region() || expanded.has_region(),
+            Self::WithWidth { child, .. }
+            | Self::WithShape { child, .. }
+            | Self::MaxWidth { child, .. } => child.has_region(),
+            Self::Token(_) | Self::Space | Self::Line { .. } | Self::Preserve { .. } => false,
+        }
+    }
+
     pub fn flat_width(&self, source: &SourceFileView<'_>) -> Option<usize> {
         match self {
             Self::Token(id) => Some(source.token_text(*id).chars().count()),
@@ -86,6 +112,10 @@ impl Document {
             Self::WithWidth { child, .. } | Self::WithShape { child, .. } => {
                 child.flat_width(source)
             }
+            Self::MaxWidth { width, child } => child
+                .flat_width(source)
+                .filter(|child_width| child_width <= width),
+            Self::Region { .. } => None,
             Self::Preserve { bytes, .. } => {
                 let text = &source.text[bytes.clone()];
                 (!text.contains(['\r', '\n'])).then(|| text.chars().count())
@@ -201,30 +231,53 @@ pub struct RenderedDocument {
     pub exit_state: RenderState,
 }
 
+/// Formats the source bytes of a `Document::Region`, starting from the given renderer state.
+pub type RegionRenderer<'a> = dyn Fn(Range<usize>, &mut RenderState) -> Result<String, String> + 'a;
+
+/// Render a document that holds no `Region`.
 pub fn render(
     source: &SourceFileView<'_>,
     ownership: &OwnershipMap,
     document: &Document,
     consumed: Range<usize>,
     shape: Shape,
+    entry: RenderState,
+) -> Result<RenderedDocument, String> {
+    render_with_regions(
+        source,
+        ownership,
+        document,
+        consumed,
+        shape,
+        entry,
+        &|_, _| Err("This layout cannot format a region".into()),
+    )
+}
+
+pub fn render_with_regions(
+    source: &SourceFileView<'_>,
+    ownership: &OwnershipMap,
+    document: &Document,
+    consumed: Range<usize>,
+    shape: Shape,
     mut entry: RenderState,
+    regions: &RegionRenderer<'_>,
 ) -> Result<RenderedDocument, String> {
     if entry.column != shape.column || entry.indent_level != shape.indent_level {
         return Err("Layout shape does not match the enclosing renderer state".into());
     }
-    let mut text = String::new();
-    let mut segments = Vec::new();
-    let mut tokens = Vec::new();
-    render_part(
+    let renderer = Renderer {
         source,
         ownership,
-        document,
-        shape,
-        &mut entry,
-        &mut text,
-        &mut segments,
-        &mut tokens,
-    )?;
+        regions,
+    };
+    let mut output = Output::default();
+    renderer.part(document, shape, &mut entry, &mut output)?;
+    let Output {
+        text,
+        segments,
+        tokens,
+    } = output;
     let token_range = source.token_range(&consumed);
     let expected: Vec<_> = source.tokens[token_range.clone()]
         .iter()
@@ -296,141 +349,207 @@ pub fn render(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn render_part(
-    source: &SourceFileView<'_>,
-    ownership: &OwnershipMap,
-    document: &Document,
-    shape: Shape,
-    state: &mut RenderState,
-    text: &mut String,
-    segments: &mut Vec<OutputSegment>,
-    tokens: &mut Vec<TokenId>,
-) -> Result<(), String> {
-    match document {
-        Document::WithShape {
-            shape: child_shape,
-            child,
-        } => {
-            return render_part(
-                source,
-                ownership,
-                child,
-                Shape {
-                    column: state.column,
-                    width: shape
-                        .width
-                        .min(state.column.saturating_add(child_shape.remaining())),
-                    ..*child_shape
-                },
-                state,
-                text,
-                segments,
-                tokens,
-            );
-        }
-        Document::WithWidth { width, child } => {
-            return render_part(
-                source,
-                ownership,
-                child,
-                Shape {
-                    width: shape.width.min(*width),
-                    ..shape
-                },
-                state,
-                text,
-                segments,
-                tokens,
-            );
-        }
-        Document::Concat(children) => {
-            for child in children {
-                render_part(
-                    source, ownership, child, shape, state, text, segments, tokens,
-                )?;
-            }
-            return Ok(());
-        }
-        Document::Choice { flat, expanded } => {
-            let fits = flat
-                .flat_width(source)
-                .is_some_and(|width| width <= shape.width.saturating_sub(state.column));
-            return render_part(
-                source,
-                ownership,
-                if fits { flat } else { expanded },
-                shape,
-                state,
-                text,
-                segments,
-                tokens,
-            );
-        }
-        _ => {}
+struct Renderer<'a, 'source> {
+    source: &'a SourceFileView<'source>,
+    ownership: &'a OwnershipMap,
+    regions: &'a RegionRenderer<'a>,
+}
+
+#[derive(Default)]
+struct Output {
+    text: String,
+    segments: Vec<OutputSegment>,
+    tokens: Vec<TokenId>,
+}
+
+impl Output {
+    fn mark(&self) -> (usize, usize, usize) {
+        (self.text.len(), self.segments.len(), self.tokens.len())
     }
-    let (value, origin, owner) = match document {
-        Document::Token(id) => {
-            let token = &source.tokens[id.0];
-            if matches!(token.token.kind, TokenType::Whitespace(_) | TokenType::Eof) {
-                return Err("Layout token must reference non-whitespace source".into());
+
+    fn reset(&mut self, (text, segments, tokens): (usize, usize, usize)) {
+        self.text.truncate(text);
+        self.segments.truncate(segments);
+        self.tokens.truncate(tokens);
+    }
+}
+
+impl Renderer<'_, '_> {
+    fn part(
+        &self,
+        document: &Document,
+        shape: Shape,
+        state: &mut RenderState,
+        out: &mut Output,
+    ) -> Result<(), String> {
+        match document {
+            Document::WithShape {
+                shape: child_shape,
+                child,
+            } => {
+                return self.part(
+                    child,
+                    Shape {
+                        column: state.column,
+                        width: shape
+                            .width
+                            .min(state.column.saturating_add(child_shape.remaining())),
+                        ..*child_shape
+                    },
+                    state,
+                    out,
+                );
             }
-            let owner = ownership.owner_at(token.bytes.start);
-            if owner.preserves_bytes() {
-                return Err("Opaque source must use an exact preservation layout".into());
+            Document::WithWidth { width, child } => {
+                return self.part(
+                    child,
+                    Shape {
+                        width: shape.width.min(*width),
+                        ..shape
+                    },
+                    state,
+                    out,
+                );
             }
-            tokens.push(*id);
-            (
-                source.token_text(*id).to_string(),
-                Some(token.bytes.clone()),
-                owner,
-            )
-        }
-        Document::Space => (" ".into(), None, Owner::Syntax),
-        Document::Line { indent_level } => (
-            format!("\n{}", " ".repeat(indent_level * shape.indent_spaces)),
-            None,
-            Owner::Syntax,
-        ),
-        Document::Preserve { bytes, keep_column } => {
-            if *keep_column {
-                let line_start = source.text[..bytes.start]
-                    .rfind('\n')
-                    .map_or(0, |offset| offset + 1);
-                if state.column != source.text[line_start..bytes.start].chars().count() {
-                    return Err("Opaque source cannot move to a different column".into());
+            Document::Concat(children) => {
+                for child in children {
+                    self.part(child, shape, state, out)?;
                 }
+                return Ok(());
             }
-            let range = source.token_range(bytes);
-            for (index, token) in source.tokens[range.clone()]
-                .iter()
-                .enumerate()
-                .map(|(index, token)| (index + range.start, token))
-            {
-                if bytes.start <= token.bytes.start
-                    && token.bytes.end <= bytes.end
-                    && !matches!(token.token.kind, TokenType::Whitespace(_) | TokenType::Eof)
+            Document::Choice { flat, expanded } if flat.has_region() => {
+                // A region's width is known only after it is rendered. Render the one-line
+                // alternative, and undo it when it breaks a line or does not fit.
+                let mark = out.mark();
+                let saved = state.clone();
+                let fits = self.part(flat, shape, state, out).is_ok()
+                    && !out.text[mark.0..].contains('\n')
+                    && state.column <= shape.width;
+                if fits {
+                    return Ok(());
+                }
+                out.reset(mark);
+                *state = saved;
+                return self.part(expanded, shape, state, out);
+            }
+            Document::Choice { flat, expanded } => {
+                let fits = flat
+                    .flat_width(self.source)
+                    .is_some_and(|width| width <= shape.width.saturating_sub(state.column));
+                return self.part(if fits { flat } else { expanded }, shape, state, out);
+            }
+            Document::MaxWidth { width, child } => {
+                let start = out.text.len();
+                self.part(child, shape, state, out)?;
+                let rendered = &out.text[start..];
+                if rendered.contains('\n') || rendered.chars().count() > *width {
+                    return Err("A one-line layout does not fit its width".into());
+                }
+                return Ok(());
+            }
+            Document::Region {
+                bytes,
+                indent_level,
+            } => {
+                let saved_indent = state.indent_level;
+                let depth = state.delimiters.len();
+                state.indent_level = *indent_level;
+                let start = out.text.len();
+                let text = (self.regions)(bytes.clone(), state)?;
+                if state.delimiters.len() != depth || state.indent_level != *indent_level {
+                    return Err("A region must close every delimiter it opens".into());
+                }
+                state.indent_level = saved_indent;
+                out.text.push_str(&text);
+                let range = self.source.token_range(bytes);
+                out.tokens.extend(
+                    self.source.tokens[range.clone()]
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, token)| {
+                            bytes.start <= token.bytes.start
+                                && token.bytes.end <= bytes.end
+                                && !matches!(
+                                    token.token.kind,
+                                    TokenType::Whitespace(_) | TokenType::Eof
+                                )
+                        })
+                        .map(|(index, _)| TokenId(index + range.start)),
+                );
+                out.segments.push(OutputSegment {
+                    output: start..out.text.len(),
+                    source: Some(bytes.clone()),
+                    owner: Owner::Legacy,
+                    whitespace_only: false,
+                    preserved: false,
+                });
+                return Ok(());
+            }
+            _ => {}
+        }
+        let (value, origin, owner) = match document {
+            Document::Token(id) => {
+                let token = &self.source.tokens[id.0];
+                if matches!(token.token.kind, TokenType::Whitespace(_) | TokenType::Eof) {
+                    return Err("Layout token must reference non-whitespace source".into());
+                }
+                let owner = self.ownership.owner_at(token.bytes.start);
+                if owner.preserves_bytes() {
+                    return Err("Opaque source must use an exact preservation layout".into());
+                }
+                out.tokens.push(*id);
+                (
+                    self.source.token_text(*id).to_string(),
+                    Some(token.bytes.clone()),
+                    owner,
+                )
+            }
+            Document::Space => (" ".into(), None, Owner::Syntax),
+            Document::Line { indent_level } => (
+                format!("\n{}", " ".repeat(indent_level * shape.indent_spaces)),
+                None,
+                Owner::Syntax,
+            ),
+            Document::Preserve { bytes, keep_column } => {
+                if *keep_column {
+                    let line_start = self.source.text[..bytes.start]
+                        .rfind('\n')
+                        .map_or(0, |offset| offset + 1);
+                    if state.column != self.source.text[line_start..bytes.start].chars().count() {
+                        return Err("Opaque source cannot move to a different column".into());
+                    }
+                }
+                let range = self.source.token_range(bytes);
+                for (index, token) in self.source.tokens[range.clone()]
+                    .iter()
+                    .enumerate()
+                    .map(|(index, token)| (index + range.start, token))
                 {
-                    tokens.push(TokenId(index));
+                    if bytes.start <= token.bytes.start
+                        && token.bytes.end <= bytes.end
+                        && !matches!(token.token.kind, TokenType::Whitespace(_) | TokenType::Eof)
+                    {
+                        out.tokens.push(TokenId(index));
+                    }
                 }
+                (
+                    self.source.text[bytes.clone()].to_string(),
+                    Some(bytes.clone()),
+                    self.ownership.owner_at(bytes.start),
+                )
             }
-            (
-                source.text[bytes.clone()].to_string(),
-                Some(bytes.clone()),
-                ownership.owner_at(bytes.start),
-            )
-        }
-        _ => unreachable!(),
-    };
-    let start = text.len();
-    text.push_str(&value);
-    state.emitted(&value);
-    segments.push(OutputSegment {
-        output: start..text.len(),
-        source: origin,
-        owner,
-        whitespace_only: value.chars().all(char::is_whitespace),
-        preserved: matches!(document, Document::Preserve { .. }),
-    });
-    Ok(())
+            _ => unreachable!("composite documents return above"),
+        };
+        let start = out.text.len();
+        out.text.push_str(&value);
+        state.emitted(&value);
+        out.segments.push(OutputSegment {
+            output: start..out.text.len(),
+            source: origin,
+            owner,
+            whitespace_only: value.chars().all(char::is_whitespace),
+            preserved: matches!(document, Document::Preserve { .. }),
+        });
+        Ok(())
+    }
 }

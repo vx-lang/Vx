@@ -56,9 +56,10 @@ An unknown rule name is an error.
 | --- | --- | --- |
 | `function_headers` | `true` | Spacing, type spelling, and wrapping of function declarations. |
 
-A switched-off rule keeps the original text of the code it formats.
+A switched-off rule leaves its code to the base formatting, as if the rule did not exist.
+The base formatting changes only indentation and the line breaks around blocks.
 For example, `function_headers = false` keeps each header's spacing, wrapping, and contract-clause layout.
-Body formatting stays active, and width and colon settings do not change those headers.
+Width and colon settings then do not change those headers.
 
 The Vx repository's root `vx-format.toml` switches off `function_headers` to keep its existing mixed styles.
 CI and `scripts/pre-commit.sh` both use that file.

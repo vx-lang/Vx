@@ -77,9 +77,16 @@ pub struct NodeRegistry<'a> {
 }
 
 impl<'a> NodeRegistry<'a> {
-    pub fn roots<'source>(&self, source: &'source SourceFileView<'_>) -> Vec<SyntaxNode<'source>> {
+    /// The roots of the formatters whose rule `config` switches on. The code of a switched-off
+    /// rule gets the formatting it would get if the rule did not exist.
+    pub fn enabled_roots<'source>(
+        &self,
+        source: &'source SourceFileView<'_>,
+        config: &FormatConfig,
+    ) -> Vec<SyntaxNode<'source>> {
         self.formatters
             .iter()
+            .filter(|formatter| enabled(**formatter, config))
             .flat_map(|formatter| {
                 let nodes = formatter.roots(source);
                 assert!(
@@ -150,13 +157,10 @@ impl<'a> NodeRegistry<'a> {
                 message: "Unsupported syntax kind; preserve the enclosing structure".into(),
             });
         };
-        let enabled = formatter.rule().is_none_or(|rule| {
-            config.rule_enabled(rule.name, (rule.enabled_by_default)(config.style_edition))
-        });
-        if !enabled {
-            return Ok(Document::Preserve {
+        if !enabled(*formatter, config) {
+            return Ok(Document::Region {
                 bytes: source.token_bytes(node.tokens()),
-                keep_column: false,
+                indent_level: shape.indent_level,
             });
         }
         formatter.format(
@@ -169,6 +173,12 @@ impl<'a> NodeRegistry<'a> {
             shape,
         )
     }
+}
+
+fn enabled(formatter: &dyn NodeFormatter, config: &FormatConfig) -> bool {
+    formatter.rule().is_none_or(|rule| {
+        config.rule_enabled(rule.name, (rule.enabled_by_default)(config.style_edition))
+    })
 }
 
 pub struct NodeContext<'a, 'source, 'rules> {

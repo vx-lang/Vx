@@ -174,6 +174,18 @@ impl OwnershipMap {
         Ok(())
     }
 
+    /// Check an edit of the base formatting inside a range that a syntax rule owns. The rule
+    /// handed this range back, so only protected spans limit the edit.
+    pub fn validate_region_edit(&self, bytes: Range<usize>) -> Result<(), String> {
+        if bytes.end > self.length || bytes.start > bytes.end {
+            return Err("Invalid legacy edit range".into());
+        }
+        if self.overlapping(&bytes).next().is_some() {
+            return Err("Legacy edit crosses a protected ownership boundary".into());
+        }
+        Ok(())
+    }
+
     pub fn protected_spans(&self) -> impl Iterator<Item = &OwnedSpan> {
         self.spans
             .iter()

@@ -3,6 +3,7 @@ use super::document::{self, RenderState, Shape};
 use super::ownership::{Owner, OwnershipMap};
 use super::{builtin_registry, overlaps, CoverageWarning, SourceFileView};
 use crate::lexer::TokenType;
+use std::cell::RefCell;
 use std::ops::Range;
 use vx_config::FormatConfig;
 
@@ -114,136 +115,222 @@ fn render_file(
             .map(|warning| line_envelope(source, &warning.bytes)),
     );
     raw.sort_by_key(|range| (range.start, range.end));
-    let mut merged: Vec<Range<usize>> = Vec::new();
+    let mut protected: Vec<Range<usize>> = Vec::new();
     for range in raw {
-        if let Some(previous) = merged.last_mut() {
+        if let Some(previous) = protected.last_mut() {
             if range.start <= previous.end {
                 previous.end = previous.end.max(range.end);
                 continue;
             }
         }
-        merged.push(range);
+        protected.push(range);
     }
     let mut ownership = OwnershipMap::from_source(source);
     // Additional protection is installed in a fresh map to avoid overlapping opaque envelopes.
-    ownership.protect_union(&merged)?;
-    let mut units: Vec<_> = merged
-        .iter()
-        .cloned()
-        .map(|bytes| Unit {
-            bytes,
-            work: Work::Preserve,
-        })
+    ownership.protect_union(&protected)?;
+    let mut roots: Vec<_> = registry
+        .enabled_roots(source, config)
+        .into_iter()
+        .map(|node| (source.token_bytes(node.tokens()), node))
+        .filter(|(bytes, _)| !bytes.is_empty())
         .collect();
-    let mut roots = registry.roots(source);
-    roots.sort_by_key(|node| {
-        let bytes = source.token_bytes(node.tokens());
-        (bytes.start, std::cmp::Reverse(bytes.end))
-    });
-    let mut previous_root: Option<Range<usize>> = None;
-    for node in roots {
-        let bytes = source.token_bytes(node.tokens());
-        if let Some(previous) = &previous_root {
-            if bytes == *previous {
+    roots.sort_by_key(|(bytes, _)| (bytes.start, std::cmp::Reverse(bytes.end)));
+    // Roots may nest, but two roots never share a range or overlap partly.
+    let mut open: Vec<Range<usize>> = Vec::new();
+    for (bytes, _) in &roots {
+        while open.last().is_some_and(|outer| outer.end <= bytes.start) {
+            open.pop();
+        }
+        if let Some(outer) = open.last() {
+            if outer == bytes {
                 return Err("Competing syntax owners for one source range".into());
             }
-            if previous.start <= bytes.start && bytes.end <= previous.end {
-                continue;
-            }
-            if overlaps(previous, &bytes) {
+            if bytes.end > outer.end {
                 return Err("Partially overlapping syntax roots".into());
             }
         }
-        previous_root = Some(bytes.clone());
-        let protected = merged.partition_point(|range| range.end <= bytes.start);
-        if bytes.is_empty()
-            || merged
-                .get(protected)
-                .is_some_and(|range| overlaps(range, &bytes))
-        {
-            continue;
-        }
-        ownership.claim(bytes.clone(), Owner::Syntax)?;
-        units.push(Unit {
-            bytes,
-            work: Work::Syntax(node),
-        });
+        open.push(bytes.clone());
     }
-    units.sort_by_key(|unit| unit.bytes.start);
-    let mut output = String::new();
-    let shape = Shape {
+    let mut renderer = FileRenderer {
+        source,
+        config,
+        registry,
+        ownership,
+        protected,
+        roots,
+        warnings: RefCell::new(std::mem::take(warnings)),
+    };
+    for unit in renderer.units(0..source.text.len(), None) {
+        if let Work::Syntax(_) = unit.work {
+            renderer.ownership.claim(unit.bytes, Owner::Syntax)?;
+        }
+    }
+    let mut state = RenderState::new(Shape {
         column: 0,
         indent_level: 0,
         indent_spaces: config.indent,
         width: config.max_width,
-    };
-    let mut state = RenderState::new(shape);
-    let mut cursor = 0;
-    for unit in units {
-        if unit.bytes.start < cursor {
-            return Err("Overlapping formatter ownership".into());
-        }
-        if cursor < unit.bytes.start {
-            output.push_str(&super::super::legacy::render(
-                source,
-                &ownership,
-                cursor..unit.bytes.start,
-                config,
-                &mut state,
-            )?);
-        }
-        match unit.work {
-            Work::Preserve => {
-                output.push_str(&source.text[unit.bytes.clone()]);
-                state.consume_preserved(source, unit.bytes.clone())?;
-            }
-            Work::Syntax(node) => {
-                if state.column == 0 {
-                    let indent = " ".repeat(state.indent_level * config.indent);
-                    state.emitted(&indent);
-                    output.push_str(&indent);
-                }
-                let shape = Shape {
-                    column: state.column,
-                    indent_level: state.indent_level,
-                    ..shape
-                };
-                match registry.format(node, source, config, shape) {
-                    Ok(layout) => {
-                        let rendered = document::render(
-                            source,
-                            &ownership,
-                            &layout,
-                            unit.bytes.clone(),
-                            shape,
-                            state.clone(),
-                        )?;
-                        output.push_str(&rendered.text);
-                        state = rendered.exit_state;
-                    }
-                    Err(warning) => {
-                        // A failed owner preserves its source rather than guessing a layout.
-                        warnings.push(warning);
-                        output.push_str(&source.text[unit.bytes.clone()]);
-                        state.consume_preserved(source, unit.bytes.clone())?;
-                    }
-                }
-            }
-        }
-        cursor = unit.bytes.end;
-    }
-    if cursor < source.text.len() {
-        output.push_str(&super::super::legacy::render(
-            source,
-            &ownership,
-            cursor..source.text.len(),
-            config,
-            &mut state,
-        )?);
-    }
+    });
+    let output = renderer.render_range(0..source.text.len(), None, &mut state, false);
+    *warnings = renderer.warnings.into_inner();
+    let output = output?;
     if !state.delimiters.is_empty() {
         return Err("Incomplete renderer state after formatting".into());
     }
     source.verify_preservation(&output)?;
     Ok(output)
+}
+
+/// Formats one file: the syntax roots of the switched-on rules, the protected ranges, and the
+/// base formatting for the code between them.
+struct FileRenderer<'a, 'source> {
+    source: &'a SourceFileView<'source>,
+    config: &'a FormatConfig,
+    registry: &'a NodeRegistry<'a>,
+    ownership: OwnershipMap,
+    /// Ranges kept exactly as written: macros, exclusions, and code with a coverage warning.
+    protected: Vec<Range<usize>>,
+    /// The roots of the switched-on rules, sorted by start, each outer root before its inner ones.
+    roots: Vec<(Range<usize>, SyntaxNode<'a>)>,
+    warnings: RefCell<Vec<CoverageWarning>>,
+}
+
+impl<'a> FileRenderer<'a, '_> {
+    /// The protected ranges and the outermost roots inside `bytes`, sorted by start. `skip` is a
+    /// root that hands its own range back to normal formatting, so it is not a unit again.
+    fn units(&self, bytes: Range<usize>, skip: Option<&Range<usize>>) -> Vec<Unit<'a>> {
+        let inside = |range: &Range<usize>| bytes.start <= range.start && range.end <= bytes.end;
+        let mut units: Vec<Unit<'a>> = self
+            .protected
+            .iter()
+            .filter(|range| inside(range))
+            .map(|range| Unit {
+                bytes: range.clone(),
+                work: Work::Preserve,
+            })
+            .collect();
+        let first = self
+            .roots
+            .partition_point(|(range, _)| range.start < bytes.start);
+        let mut covered_until = bytes.start;
+        for (range, node) in &self.roots[first..] {
+            if range.start >= bytes.end {
+                break;
+            }
+            if !inside(range) || range.start < covered_until || Some(range) == skip {
+                continue;
+            }
+            let protected = self
+                .protected
+                .partition_point(|other| other.end <= range.start);
+            if self
+                .protected
+                .get(protected)
+                .is_some_and(|other| overlaps(other, range))
+            {
+                continue;
+            }
+            covered_until = range.end;
+            units.push(Unit {
+                bytes: range.clone(),
+                work: Work::Syntax(*node),
+            });
+        }
+        units.sort_by_key(|unit| unit.bytes.start);
+        units
+    }
+
+    /// Format `bytes`, starting from `state`. `skip` is the root whose layout asked for this
+    /// range, when the range is a region of that layout.
+    fn render_range(
+        &self,
+        bytes: Range<usize>,
+        skip: Option<&Range<usize>>,
+        state: &mut RenderState,
+        inside_syntax: bool,
+    ) -> Result<String, String> {
+        let mut output = String::new();
+        let mut cursor = bytes.start;
+        for unit in self.units(bytes.clone(), skip) {
+            if unit.bytes.start < cursor {
+                return Err("Overlapping formatter ownership".into());
+            }
+            if cursor < unit.bytes.start {
+                output.push_str(&super::super::legacy::render(
+                    self.source,
+                    &self.ownership,
+                    cursor..unit.bytes.start,
+                    self.config,
+                    state,
+                    inside_syntax,
+                )?);
+            }
+            match unit.work {
+                Work::Preserve => {
+                    output.push_str(&self.source.text[unit.bytes.clone()]);
+                    state.consume_preserved(self.source, unit.bytes.clone())?;
+                }
+                Work::Syntax(node) => {
+                    output.push_str(&self.render_root(node, &unit.bytes, state)?)
+                }
+            }
+            cursor = unit.bytes.end;
+        }
+        if cursor < bytes.end {
+            output.push_str(&super::super::legacy::render(
+                self.source,
+                &self.ownership,
+                cursor..bytes.end,
+                self.config,
+                state,
+                inside_syntax,
+            )?);
+        }
+        Ok(output)
+    }
+
+    fn render_root(
+        &self,
+        node: SyntaxNode<'_>,
+        bytes: &Range<usize>,
+        state: &mut RenderState,
+    ) -> Result<String, String> {
+        let mut output = String::new();
+        if state.column == 0 {
+            let indent = " ".repeat(state.indent_level * self.config.indent);
+            state.emitted(&indent);
+            output.push_str(&indent);
+        }
+        let shape = Shape {
+            column: state.column,
+            indent_level: state.indent_level,
+            indent_spaces: self.config.indent,
+            width: self.config.max_width,
+        };
+        match self.registry.format(node, self.source, self.config, shape) {
+            Ok(layout) => {
+                let regions = |region: Range<usize>, state: &mut RenderState| {
+                    self.render_range(region, Some(bytes), state, true)
+                };
+                let rendered = document::render_with_regions(
+                    self.source,
+                    &self.ownership,
+                    &layout,
+                    bytes.clone(),
+                    shape,
+                    state.clone(),
+                    &regions,
+                )?;
+                output.push_str(&rendered.text);
+                *state = rendered.exit_state;
+            }
+            Err(warning) => {
+                // A failed owner preserves its source rather than guessing a layout.
+                self.warnings.borrow_mut().push(warning);
+                output.push_str(&self.source.text[bytes.clone()]);
+                state.consume_preserved(self.source, bytes.clone())?;
+            }
+        }
+        Ok(output)
+    }
 }
