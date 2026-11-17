@@ -288,6 +288,10 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/blocks_write_at_rows_from_a_distinct_tensor.vx",
         // needs --machine
         "optimizations/pass/distinct_check_makes_rows_for_a_kernel.vx",
+        // needs --machine
+        "optimizations/pass/std_nn_moe_group_sorts_pairs_by_expert.vx",
+        // needs --machine
+        "optimizations/pass/emit_ptx_names_the_kernels_of_a_generic_function.vx",
     ];
     // Each program is its own run of vxc, so the programs run in parallel. `collect` keeps the
     // order of the corpus, so the messages below do not change from run to run.

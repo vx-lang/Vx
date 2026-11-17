@@ -10152,6 +10152,21 @@ nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule,
     StringRef name = fnName.getValue();
     Location loc = kernel.getLoc();
 
+    // An instance of a generic function, such as `nn_matvec$...`, gets the name
+    // of its function, or that name and `_1`, `_2` and so on when it is taken.
+    std::string instanceName;
+    if (size_t cut = name.find('$'); cut != StringRef::npos && cut > 0) {
+      StringRef base = name.take_front(cut);
+      instanceName = base.str();
+      for (int k = 1; taken.contains(instanceName) ||
+                      SymbolTable::lookupSymbolIn(gpuModule, instanceName);
+           ++k)
+        instanceName = (base + "_" + Twine(k)).str();
+    }
+    StringRef function = name;
+    if (!instanceName.empty())
+      name = instanceName;
+
     bool ptxName = !name.empty() && (llvm::isAlpha(name[0]) || name[0] == '_');
     for (char c : name)
       ptxName &= llvm::isAlnum(c) || c == '_';
@@ -10233,7 +10248,12 @@ nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule,
       params.push_back(std::move(p));
     }
     SymbolTable::setSymbolName(f, name);
-    llvm::json::Object entry{{"name", name}, {"params", std::move(params)}};
+    // A json value keeps a reference to a StringRef, and the name of an
+    // instance lives only in this loop, so the entry gets copies.
+    llvm::json::Object entry{{"name", name.str()},
+                             {"params", std::move(params)}};
+    if (function != name)
+      entry["function"] = function.str();
     // A launch of this kernel passes this many bytes of dynamic shared memory.
     if (auto bytes = f->getAttrOfType<IntegerAttr>("vx.dynamic_shared"))
       entry["dynamic_shared_bytes"] = bytes.getInt();
