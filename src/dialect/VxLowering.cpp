@@ -7883,9 +7883,10 @@ struct ConvertVxToStandardPass
     RewritePatternSet patterns(&getContext());
     patterns.add<SpawnOpLowering, TransferOpLowering>(&getContext());
 
-    // No block merging: it turns two branches that read different tensors into
-    // one block that takes the tensor as an argument, which a SPIR-V image
-    // cannot do.
+    // `Normal`, not the default `Aggressive`, which merges blocks. A merge
+    // turns two branches that read different tensors into one block that
+    // takes the tensor as an argument, which a SPIR-V image cannot do.
+    // `Disabled` would also stop the removal of dead block arguments.
     GreedyRewriteConfig config;
     config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
