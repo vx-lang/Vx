@@ -5476,7 +5476,8 @@ static bool collectDeviceCallees(Operation *op, ModuleOp module, bool inCallee,
   }
   // A barrier in a callee becomes `gpu.barrier` in its device copy, as in a
   // kernel body.
-  if (inCallee && isa<func::ReturnOp, vx::BarrierOp>(op))
+  if (inCallee &&
+      isa<func::ReturnOp, vx::BarrierOp, vx::SubgroupScheduleBarrierOp>(op))
     return true;
   if (inCallee && isa<memref::AllocOp>(op))
     return false;
@@ -5633,7 +5634,7 @@ static bool runsOnDevice(Operation *op, ModuleOp module,
   // Rewritten to `gpu.return` and `gpu.barrier` in the device clone (Vx#379).
   // A `vx.launch_dim` leaves the region when it is outlined.
   if (isa<vx::YieldOp, vx::ReturnOp, vx::BarrierOp, vx::LaunchDimOp,
-          vx::LaneOpInterface>(op))
+          vx::LaneOpInterface, vx::SubgroupScheduleBarrierOp>(op))
     return true;
   // The SPIR-V path's own rules, from the one place that holds them. NVPTX
   // compiles the shapes they name, so they apply to this pipeline alone.
@@ -7301,6 +7302,14 @@ struct ConvertVxToStandardPass
               b.create<gpu::BarrierOp>(bar.getLoc());
               bar.erase();
             }
+            // Only the Metal printer has a meaning for this hint.
+            if (pipelineOfKernel(kernel) != DevicePipeline::Metal) {
+              SmallVector<vx::SubgroupScheduleBarrierOp> hints;
+              copy->walk(
+                  [&](vx::SubgroupScheduleBarrierOp h) { hints.push_back(h); });
+              for (vx::SubgroupScheduleBarrierOp h : hints)
+                h.erase();
+            }
           }
       }
     }
@@ -8940,6 +8949,18 @@ struct BarrierOpLowering : public OpRewritePattern<vx::BarrierOp> {
   using OpRewritePattern<vx::BarrierOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(vx::BarrierOp op,
+                                PatternRewriter &rewriter) const override {
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+/// A scheduling hint of the Apple GPU means nothing on the CPU.
+struct SubgroupScheduleBarrierOpLowering
+    : public OpRewritePattern<vx::SubgroupScheduleBarrierOp> {
+  using OpRewritePattern<vx::SubgroupScheduleBarrierOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vx::SubgroupScheduleBarrierOp op,
                                 PatternRewriter &rewriter) const override {
     rewriter.eraseOp(op);
     return success();
@@ -10837,6 +10858,7 @@ struct ConvertVxToLLVMPass
     // pattern rather than letting the op leak to mlir-translate, which does
     // not know the vx dialect (Vx#379).
     target.addIllegalOp<vx::BarrierOp>();
+    target.addIllegalOp<vx::SubgroupScheduleBarrierOp>();
 
     LLVMTypeConverter typeConverter(&getContext());
     RewritePatternSet patterns(&getContext());
@@ -10848,6 +10870,7 @@ struct ConvertVxToLLVMPass
     patterns.add<KernelOpLowering>(&getContext());
     patterns.add<ReturnOpLowering>(&getContext());
     patterns.add<BarrierOpLowering>(&getContext());
+    patterns.add<SubgroupScheduleBarrierOpLowering>(&getContext());
     patterns.add<LaneOpLowering>(&getContext());
 
     adoptDeclaredRuntimeFns(getOperation());

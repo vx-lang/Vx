@@ -111,6 +111,12 @@ copy. `--emit-msl` writes the MSL and the same manifest as `--emit-ptx`.
   `_constant_matrix`, from device or shared memory. `leadDimension = 0` is the row stride of a
   memref of 2 dimensions, so the stride can be a value at run time. `gpu.subgroup_reduce` is
   `simd_sum` and the other functions of a SIMD-group.
+- A loop of constant bounds with at most 16 passes gets `#pragma clang loop unroll(full)`, as in
+  llama.cpp's kernels. The Metal compiler does not unroll such a loop by itself.
+- `vx.subgroup_schedule_barrier` in an `mlir!` block prints as
+  `simdgroup_barrier(mem_flags::mem_none)`: the threads of a SIMD-group meet there, and no memory
+  is ordered. It helps the Metal compiler schedule the loads before a simdgroup multiply. Other
+  code generators drop it.
 - Not yet: dynamic shared memory, and vectors or ops beyond the ones above. Each is a compile error
   that names the op. Kernels for two GPU architectures in one program are a compile error too.
 

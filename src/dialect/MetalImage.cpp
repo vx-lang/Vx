@@ -82,6 +82,13 @@ struct KernelInliner : public InlinerInterface {
     return isa<gpu::GPUFuncOp>(dest->getParentOp()) ||
            InlinerInterface::isLegalToInline(dest, src, wouldBeCloned, mapping);
   }
+  // The vx dialect has no inliner interface. Its scheduling hint, which an
+  // `mlir!` block can hold, depends on no value of the function.
+  bool isLegalToInline(Operation *op, Region *dest, bool wouldBeCloned,
+                       IRMapping &mapping) const override {
+    return op->getName().getStringRef() == "vx.subgroup_schedule_barrier" ||
+           InlinerInterface::isLegalToInline(op, dest, wouldBeCloned, mapping);
+  }
 };
 
 // The attribute of a lane matmul, fill or copy whose accumulator stays in
@@ -91,6 +98,9 @@ constexpr StringLiteral simdgroupRegisters = "simdgroup_registers";
 // The threadgroup memory of a threadgroup on every Apple GPU (Metal Feature
 // Set Tables, "Maximum total threadgroup memory allocation").
 constexpr int64_t metalThreadgroupBytes = 32 * 1024;
+
+// A loop of constant bounds with at most this many passes is unrolled.
+constexpr int64_t maxUnrolledTrips = 16;
 
 // Where a memref's elements are: `ptr[origin + i0 * strides[0] + ...]`.
 // `origin` is the index of the memref's first element in `ptr`.
@@ -704,6 +714,11 @@ bool Printer::op(Operation *o) {
   if (o->getName().getStringRef() == "vx.lane_scale_rows" &&
       o->hasAttr(simdgroupRegisters))
     return laneScaleRows(o);
+  if (o->getName().getStringRef() == "vx.subgroup_schedule_barrier") {
+    // A hint: the threads of the SIMD-group meet here, and no memory waits.
+    line() << "simdgroup_barrier(mem_flags::mem_none);\n";
+    return true;
+  }
   if (o->getName().getStringRef() == "nvvm.bar.warp.sync") {
     // The end of a lane loop in a subgroup loop. A subgroup is a SIMD-group
     // of 32 threads, and all of them wait, as with the mask of all lanes.
@@ -2144,6 +2159,15 @@ bool Printer::forOp(scf::ForOp f) {
   // The lifted loops that become `for` loops compare with a sign.
   if (f.getUnsignedCmp())
     return fail(f, "a for loop that compares without a sign");
+  // The Metal compiler does not unroll a short loop of constant bounds by
+  // itself, and llama.cpp's kernels ask for it. In an expert product, that
+  // took a kernel from 8.80 to 8.44 ms.
+  std::optional<int64_t> lo = getConstantIntValue(f.getLowerBound());
+  std::optional<int64_t> hi = getConstantIntValue(f.getUpperBound());
+  std::optional<int64_t> step = getConstantIntValue(f.getStep());
+  if (lo && hi && step && *step > 0 && *hi > *lo &&
+      (*hi - *lo + *step - 1) / *step <= maxUnrolledTrips)
+    line() << "#pragma clang loop unroll(full)\n";
   // The step wraps as the integer arithmetic of MLIR does: signed overflow is
   // undefined in MSL.
   line() << "for (" << ty << " " << iv << " = " << name(f.getLowerBound())
