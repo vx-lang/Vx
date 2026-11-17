@@ -1,5 +1,6 @@
 use super::*;
-use crate::parser::{formatting::ClauseKind, Parser};
+use crate::parser::formatting::{ClauseKind, RecordedKind};
+use crate::parser::Parser;
 
 fn trivia(kind: &TokenType<'_>) -> bool {
     matches!(
@@ -36,9 +37,8 @@ impl<'source> SourceFileView<'source> {
             .iter()
             .any(|warning| warning.bytes == (0..self.text.len()))
         {
-            self.find_functions(&significant);
+            self.find_syntax(&significant);
             self.relax_type_closers(&significant);
-            self.check_remaining_syntax(&significant);
         }
     }
 
@@ -242,200 +242,158 @@ impl<'source> SourceFileView<'source> {
         }
     }
 
-    fn find_functions(&mut self, significant: &[usize]) {
-        let input: Vec<_> = significant
-            .iter()
-            .map(|index| self.tokens[*index].token.clone())
-            .collect();
-        let contexts = self.function_contexts(significant, &input);
-        let (coverage_ids, coverage) = self.coverage_tokens(significant);
-        for (position, raw) in significant.iter().copied().enumerate() {
-            if !matches!(self.tokens[raw].token.kind, TokenType::Fn)
-                || self.is_opaque(TokenId(raw))
-                || self.is_excluded(&self.tokens[raw].bytes)
-            {
-                continue;
-            }
-            if !significant.get(position + 1).is_some_and(|next| {
-                matches!(self.tokens[*next].token.kind, TokenType::Identifier(_))
-            }) {
-                continue;
-            }
-            let parser_start = if position > 0
-                && matches!(
-                    self.tokens[significant[position - 1]].token.kind,
-                    TokenType::Unsafe
-                ) {
-                position - 1
-            } else {
-                position
-            };
-            let ids = &significant[parser_start..];
-            let mut parser = Parser::new(&input[parser_start..], self.text);
-            let (context, inherited) = &contexts[&position];
-            let context = *context;
-            parser.formatting_inherit_generics(inherited.clone());
-            let parsed = match parser.formatting_header() {
-                Ok(parsed) => parsed,
-                Err(_) => {
+    /// Parse the file with the compiler's parser and build the syntax views from the token
+    /// ranges that the parser records. Excluded text is left out, as `coverage_tokens` says.
+    fn find_syntax(&mut self, significant: &[usize]) {
+        let (ids, tokens) = self.coverage_tokens(significant);
+        let mut records = match Parser::new(&tokens, self.text).formatting_file() {
+            Ok(records) => records,
+            Err(_) => {
+                if Parser::new(&tokens, self.text)
+                    .formatting_statements()
+                    .is_err()
+                {
                     self.warnings.push(CoverageWarning {
                         bytes: 0..self.text.len(),
-                        message: "Unsupported complete function header; preserve the file".into(),
+                        message: "Unsupported source syntax; preserved the file unchanged".into(),
                     });
-                    continue;
                 }
-            };
-            let terminator = ids[parsed.terminator];
-            let declaration_end =
-                if matches!(self.tokens[terminator].token.kind, TokenType::LeftBrace) {
-                    let Some(close) = self.matching[terminator] else {
-                        continue;
-                    };
-                    close + 1
-                } else {
-                    terminator + 1
-                };
-            let mut start = ids[0];
-            if parser_start > 0
-                && matches!(
-                    self.tokens[significant[parser_start - 1]].token.kind,
-                    TokenType::Pub | TokenType::Safe
-                )
-            {
-                start = significant[parser_start - 1];
+                return;
             }
-            let body_start = coverage_ids.partition_point(|id| *id < terminator);
-            let body_end = coverage_ids.partition_point(|id| *id < declaration_end);
-            let mut body = Parser::new(&coverage[body_start..body_end], self.text);
-            body.formatting_inherit_generics(parser.formatting_generic_names());
-            if body.formatting_body().is_err() {
+        };
+        records.sort_by_key(|record| (record.tokens.start, std::cmp::Reverse(record.tokens.end)));
+        // The parser reads `tokens`. Convert its ranges to indices into `self.tokens`.
+        let to_source = |range: &Range<usize>| {
+            if range.is_empty() {
+                ids[range.start]..ids[range.start]
+            } else {
+                ids[range.start]..ids[range.end - 1] + 1
+            }
+        };
+        let inside = |kind: RecordedKind, outer: &Range<usize>| {
+            let outer = outer.clone();
+            records.iter().filter(move |record| {
+                record.kind == kind
+                    && outer.start <= record.tokens.start
+                    && record.tokens.end <= outer.end
+            })
+        };
+        for declaration in inside(RecordedKind::FunctionDeclaration, &(0..tokens.len())) {
+            let header = inside(RecordedKind::FunctionHeader, &declaration.tokens)
+                .next()
+                .expect("the parser records the header of each function it records");
+            let fn_keyword = (header.tokens.clone())
+                .find(|index| matches!(tokens[*index].kind, TokenType::Fn))
+                .expect("a function header contains `fn`");
+            let raw = ids[fn_keyword];
+            if self.is_opaque(TokenId(raw)) || self.is_excluded(&self.tokens[raw].bytes) {
+                continue;
+            }
+            let mut start = ids[header.tokens.start];
+            if header.tokens.start > 0
+                && matches!(tokens[header.tokens.start - 1].kind, TokenType::Pub)
+            {
+                start = ids[header.tokens.start - 1];
+            }
+            let terminator = ids[header.tokens.end];
+            let declaration_end = ids[declaration.tokens.end - 1] + 1;
+            let declaration_bytes = self.token_bytes(start..declaration_end);
+            let context = [
+                (RecordedKind::ImplBlock, DeclarationContext::Impl),
+                (RecordedKind::TraitBlock, DeclarationContext::Trait),
+                (RecordedKind::ExternBlock, DeclarationContext::Extern),
+            ]
+            .into_iter()
+            .find(|(kind, _)| {
+                records.iter().any(|block| {
+                    block.kind == *kind
+                        && block.tokens.start <= declaration.tokens.start
+                        && declaration.tokens.end <= block.tokens.end
+                })
+            })
+            .map_or(DeclarationContext::Root, |(_, context)| context);
+            if inside(RecordedKind::UnreadableBody, &declaration.tokens)
+                .next()
+                .is_some()
+            {
                 self.warnings.push(CoverageWarning {
-                    bytes: self.token_bytes(start..declaration_end),
+                    bytes: declaration_bytes.clone(),
                     message:
                         "Unsupported function body; preserved the enclosing declaration unchanged"
                             .into(),
                 });
             }
-            let ineligible = context == DeclarationContext::Other
-                || (matches!(
-                    context,
-                    DeclarationContext::Trait | DeclarationContext::Extern
-                ) && (!parsed.clauses.is_empty() || parsed.return_type.is_empty()))
-                || (context == DeclarationContext::Trait
-                    && self.tokens[start..raw].iter().any(|token| {
-                        matches!(
-                            token.token.kind,
-                            TokenType::Pub | TokenType::Unsafe | TokenType::Safe
-                        )
-                    }))
+            let parameter_list = inside(RecordedKind::ParameterList, &header.tokens)
+                .next()
+                .expect("the parser records the parameter list of each function header");
+            let generics = inside(RecordedKind::GenericParameters, &header.tokens)
+                .find(|generics| generics.tokens.start == fn_keyword + 2)
+                .map_or(
+                    ids[parameter_list.tokens.start]..ids[parameter_list.tokens.start],
+                    |generics| to_source(&generics.tokens),
+                );
+            let return_type = inside(RecordedKind::ReturnType, &header.tokens)
+                .next()
+                .map_or(terminator..terminator, |ty| to_source(&ty.tokens));
+            let clauses = records
+                .iter()
+                .filter(|record| header.tokens.start <= record.tokens.start)
+                .filter(|record| record.tokens.end <= header.tokens.end)
+                .filter_map(|record| match record.kind {
+                    RecordedKind::Clause(kind) => Some(HeaderClauseView {
+                        kind: match kind {
+                            ClauseKind::On => HeaderClauseKind::On,
+                            ClauseKind::Requires => HeaderClauseKind::Requires,
+                            ClauseKind::Ensures => HeaderClauseKind::Ensures,
+                            ClauseKind::Where => HeaderClauseKind::Where,
+                        },
+                        tokens: to_source(&record.tokens),
+                    }),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let ineligible = (matches!(
+                context,
+                DeclarationContext::Trait | DeclarationContext::Extern
+            ) && !clauses.is_empty())
                 || (context == DeclarationContext::Extern
                     && !matches!(self.tokens[terminator].token.kind, TokenType::Semicolon));
             if ineligible {
-                self.warnings.push(CoverageWarning { bytes: self.token_bytes(start..declaration_end), message: "Unsupported declaration context; preserved the enclosing declaration unchanged".into() });
+                self.warnings.push(CoverageWarning {
+                    bytes: declaration_bytes.clone(),
+                    message: "Unsupported declaration context; preserved the enclosing declaration unchanged".into(),
+                });
             }
-            let convert = |range: Range<usize>| {
-                if range.is_empty() {
-                    let point = ids[range.start];
-                    point..point
-                } else {
-                    ids[range.start]..ids[range.end - 1] + 1
-                }
-            };
+            let parameters = inside(RecordedKind::Parameter, &parameter_list.tokens)
+                .map(|parameter| ParameterView {
+                    tokens: to_source(&parameter.tokens),
+                    ty: TypeView {
+                        tokens: inside(RecordedKind::ParameterType, &parameter.tokens)
+                            .next()
+                            .map(|ty| to_source(&ty.tokens))
+                            .expect("the parser records the type of each parameter"),
+                    },
+                })
+                .collect();
             self.functions.push(FunctionDeclView {
                 context,
                 tokens: start..declaration_end,
-                bytes: self.token_bytes(start..declaration_end),
+                bytes: declaration_bytes,
                 header: FunctionHeaderView {
                     tokens: start..terminator,
-                    name: TokenId(ids[parsed.name]),
-                    generics: convert(parsed.generics),
-                    parameter_open: TokenId(ids[parsed.open]),
-                    parameter_close: TokenId(ids[parsed.close]),
-                    parameters: parsed
-                        .parameters
-                        .into_iter()
-                        .map(|(tokens, ty)| ParameterView {
-                            tokens: convert(tokens),
-                            ty: TypeView {
-                                tokens: convert(ty),
-                            },
-                        })
-                        .collect(),
+                    name: TokenId(ids[fn_keyword + 1]),
+                    generics,
+                    parameter_open: TokenId(ids[parameter_list.tokens.start]),
+                    parameter_close: TokenId(ids[parameter_list.tokens.end - 1]),
+                    parameters,
                     return_type: TypeView {
-                        tokens: convert(parsed.return_type),
+                        tokens: return_type,
                     },
-                    clauses: parsed
-                        .clauses
-                        .into_iter()
-                        .map(|(kind, tokens)| HeaderClauseView {
-                            kind: match kind {
-                                ClauseKind::On => HeaderClauseKind::On,
-                                ClauseKind::Requires => HeaderClauseKind::Requires,
-                                ClauseKind::Ensures => HeaderClauseKind::Ensures,
-                                ClauseKind::Where => HeaderClauseKind::Where,
-                            },
-                            tokens: convert(tokens),
-                        })
-                        .collect(),
+                    clauses,
                     terminator: TokenId(terminator),
                 },
             });
         }
-    }
-
-    fn function_contexts(
-        &self,
-        significant: &[usize],
-        input: &[Token<'_>],
-    ) -> std::collections::BTreeMap<usize, (DeclarationContext, Vec<String>)> {
-        let mut result = std::collections::BTreeMap::new();
-        let mut stack = vec![(DeclarationContext::Root, Vec::new())];
-        let mut pending = None;
-        for (position, index) in significant.iter().copied().enumerate() {
-            if self.is_opaque(TokenId(index)) {
-                continue;
-            }
-            let kind = match self.tokens[index].token.kind {
-                TokenType::Impl => Some(DeclarationContext::Impl),
-                TokenType::Trait => Some(DeclarationContext::Trait),
-                TokenType::Extern => Some(DeclarationContext::Extern),
-                TokenType::Struct | TokenType::Enum | TokenType::Memory | TokenType::Topology => {
-                    Some(DeclarationContext::Other)
-                }
-                _ => None,
-            };
-            if let Some(kind) = kind {
-                pending.get_or_insert((kind, position));
-            }
-            match self.tokens[index].token.kind {
-                TokenType::Fn => {
-                    result.insert(position, stack.last().unwrap().clone());
-                }
-                TokenType::LeftBrace => {
-                    let mut scope = stack.last().unwrap().clone();
-                    if let Some((kind, start)) = pending.take() {
-                        scope.0 = kind;
-                        if matches!(kind, DeclarationContext::Impl | DeclarationContext::Trait) {
-                            if let Ok(names) = Parser::new(&input[start..position], self.text)
-                                .formatting_scope_generics()
-                            {
-                                scope.1.extend(names);
-                            }
-                        }
-                    }
-                    stack.push(scope);
-                }
-                TokenType::RightBrace => {
-                    if stack.len() > 1 {
-                        stack.pop();
-                    }
-                    pending = None;
-                }
-                TokenType::Semicolon => pending = None,
-                _ => {}
-            }
-        }
-        result
     }
 
     /// Ignore excluded text in grammar probes, but retain delimiters that connect to outside code.
@@ -533,45 +491,6 @@ impl<'source> SourceFileView<'source> {
             }) {
                 gap.constraint = GapConstraint::Flexible;
             }
-        }
-    }
-
-    fn check_remaining_syntax(&mut self, significant: &[usize]) {
-        let (ids, tokens) = self.coverage_tokens(significant);
-        let mut ranges: Vec<_> = self
-            .functions
-            .iter()
-            .map(|function| function.tokens.clone())
-            .collect();
-        ranges.sort_by_key(|range| range.start);
-        let mut cursor = 0;
-        let input: Vec<_> = ids
-            .iter()
-            .zip(tokens)
-            .filter_map(|(index, token)| {
-                while cursor < ranges.len() && ranges[cursor].end <= *index {
-                    cursor += 1;
-                }
-                if ranges
-                    .get(cursor)
-                    .is_some_and(|range| range.contains(index))
-                {
-                    None
-                } else {
-                    Some(token)
-                }
-            })
-            .collect();
-        // AST results are discarded. Source views remain authoritative for every output range.
-        if Parser::new(&input, self.text).parse().is_err()
-            && Parser::new(&input, self.text)
-                .formatting_statements()
-                .is_err()
-        {
-            self.warnings.push(CoverageWarning {
-                bytes: 0..self.text.len(),
-                message: "Unsupported source syntax; preserved the file unchanged".into(),
-            });
         }
     }
 }

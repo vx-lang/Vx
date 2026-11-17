@@ -77,8 +77,8 @@ mod tests {
             (
                 40,
                 2,
-                "fn use_pair<T>(value: Tensor<T, [2, 2]>, pair: (i32, i32)) -> T;",
-                "fn use_pair<T>(\n  value: Tensor<T, [2, 2]>,\n  pair: (i32, i32)\n) -> T;",
+                "fn use_pair<T>(value: Tensor<T, [2, 2]>, pair: (i32, i32)) -> T {\nvalue\n}",
+                "fn use_pair<T>(\n  value: Tensor<T, [2, 2]>,\n  pair: (i32, i32)\n) -> T {\n  value\n}",
             ),
             (
                 100,
@@ -120,8 +120,8 @@ mod tests {
 
     #[test]
     fn signature_width_includes_return_type_brace_and_indentation() {
-        let input = "fn add(first: i32, second: i32) -> i32;";
-        let exact_width = input.chars().count();
+        let input = "fn add(first: i32, second: i32) -> i32 {\n  first\n}";
+        let exact_width = input.lines().next().unwrap().chars().count();
         let config = FormatConfig {
             indent: 2,
             fn_signature_width: exact_width,
@@ -134,7 +134,7 @@ mod tests {
         };
         assert_eq!(
             format_file_with_config(input, &config),
-            "fn add(\n  first: i32,\n  second: i32\n) -> i32;"
+            "fn add(\n  first: i32,\n  second: i32\n) -> i32 {\n  first\n}"
         );
     }
 
@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn signature_layout_leaves_calls_comments_and_disabled_text_to_existing_rules() {
         let cases = [
-            "fn call() {\n  add(first, second);\n}",
+            "fn call() -> i32 {\n  add(first, second)\n}",
             "fn add(\nfirst: i32, // first value\nsecond: i32\n) -> i32;",
             "//! vx-format: OFF\nfn   add(first: i32,second: i32)->i32;",
             "// vx-format-begin: OFF\nfn   add(first: i32,second: i32)->i32;\n// vx-format-end: OFF",
@@ -243,8 +243,8 @@ mod tests {
 
     #[test]
     fn test_format_off_block() {
-        let input = "fn foo() {\n// vx-format-begin: OFF\n      let   x = 1;\n// vx-format-end: OFF\nlet y = 2;\n}";
-        let expected = "fn foo() {\n// vx-format-begin: OFF\n      let   x = 1;\n// vx-format-end: OFF\n  let y = 2;\n}";
+        let input = "fn foo() -> i32 {\n// vx-format-begin: OFF\n      let   x = 1;\n// vx-format-end: OFF\nlet y = 2;\n}";
+        let expected = "fn foo() -> i32 {\n// vx-format-begin: OFF\n      let   x = 1;\n// vx-format-end: OFF\n  let y = 2;\n}";
         let formatted = format_file(input, 2);
         assert_eq!(formatted, expected);
     }

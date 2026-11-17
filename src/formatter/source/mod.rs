@@ -106,7 +106,6 @@ pub enum DeclarationContext {
     Impl,
     Trait,
     Extern,
-    Other,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

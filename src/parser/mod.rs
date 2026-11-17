@@ -104,6 +104,8 @@ pub struct Parser<'a> {
     match_is_statement: bool,
     /// Inside an impl block, the type the impl is for: what `Self` means there.
     impl_self: Option<crate::syntax::Type>,
+    /// Where each piece of syntax is, for the formatter. `None` when the compiler parses.
+    recorder: Option<Vec<formatting::SyntaxRecord>>,
 }
 
 impl<'a> Parser<'a> {
@@ -131,6 +133,7 @@ impl<'a> Parser<'a> {
             prefix_stmts: Vec::new(),
             match_is_statement: false,
             impl_self: None,
+            recorder: None,
         }
     }
 

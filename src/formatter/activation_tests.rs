@@ -59,13 +59,13 @@ fn impl_generics_remain_available_to_tensor_parameter_types() {
 }
 
 #[test]
-fn unrecognized_clauses_in_foreign_signatures_preserve_that_declaration() {
-    let input = "extern {\nfn future(value: i32) -> i32 requires value > 0;\nfn known(value: i32) -> i32;\n}";
+fn a_clause_on_an_extern_function_preserves_that_declaration() {
+    let input = "extern {\nfn future(value: i32) -> i32 ensures value > 0;\nfn known(value: i32) -> i32;\n}";
     let result = checked(input, 20);
     assert!(!result.warnings.is_empty());
     assert!(result
         .text
-        .contains("fn future(value: i32) -> i32 requires value > 0;"));
+        .contains("fn future(value: i32) -> i32 ensures value > 0;"));
     assert!(
         result
             .text
@@ -487,4 +487,40 @@ fn inline_contract_width_reserves_the_expression_and_body_delimiter() {
         wraps.text,
         "fn f(\n  a: i32\n) -> i32 requires a > 0 {\n  return a;\n}\n"
     );
+}
+
+#[test]
+fn a_name_defined_twice_does_not_stop_formatting() {
+    // A second definition is a compile error, not a syntax error, so the file is still formatted.
+    let input = "struct Point { x: i32 }\nstruct Point { x: i32 }\nfn twice(a : i32) -> i32 {\nreturn a;\n}\nfn twice(a : i32) -> i32 {\nreturn a;\n}";
+    let result = checked(input, 100);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(
+        result
+            .text
+            .matches("fn twice(a: i32) -> i32 {\n  return a;\n}")
+            .count(),
+        2,
+        "{}",
+        result.text
+    );
+}
+
+#[test]
+fn a_header_on_any_topology_is_formatted() {
+    let input = "fn clamp(v : i32, lo : i32) on Topology::Any -> i32 {\nreturn v;\n}";
+    let result = checked(input, 100);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(
+        result.text,
+        "fn clamp(v: i32, lo: i32) on Topology::Any -> i32 {\n  return v;\n}"
+    );
+}
+
+#[test]
+fn pub_belongs_to_the_function_header() {
+    let input = "pub\nfn add(a : i32) -> i32 {\nreturn a;\n}";
+    let result = checked(input, 100);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.text, "pub fn add(a: i32) -> i32 {\n  return a;\n}");
 }

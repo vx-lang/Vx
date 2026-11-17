@@ -1,10 +1,15 @@
-//! Read source ranges and check grammar coverage without compiler analysis or source transformations.
+//! Record where each piece of syntax starts and ends, for `vx-format`.
+//!
+//! The formatter parses a file with the compiler's own parser, so the two cannot disagree on the
+//! grammar. When `Parser::recorder` is set, the parse functions also record the token range of
+//! each piece of syntax that the formatter has a rule for. The compiler leaves it unset.
 
 use super::{ParseResult, Parser};
 use crate::lexer::TokenType;
+use crate::syntax::Statement;
 use std::ops::Range;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ClauseKind {
     On,
     Requires,
@@ -12,150 +17,118 @@ pub(crate) enum ClauseKind {
     Where,
 }
 
-#[derive(Debug)]
-pub(crate) struct HeaderRanges {
-    pub name: usize,
-    pub generics: Range<usize>,
-    pub open: usize,
-    pub close: usize,
-    pub parameters: Vec<(Range<usize>, Range<usize>)>,
-    pub return_type: Range<usize>,
-    pub clauses: Vec<(ClauseKind, Range<usize>)>,
-    pub terminator: usize,
+/// The kinds of syntax that the parser records. Add a kind here when a formatting rule needs
+/// one, and record it where the parser reads that syntax.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RecordedKind {
+    /// A function, trait method or extern function, from its first keyword to the end of its
+    /// body or its `;`. A `pub` before it is not included.
+    FunctionDeclaration,
+    /// The part of a function declaration before its body or `;`.
+    FunctionHeader,
+    /// The `<...>` of a function.
+    GenericParameters,
+    /// The parameters of a function, with their `(` and `)`.
+    ParameterList,
+    /// One parameter: `mut name: Type`.
+    Parameter,
+    /// The type of one parameter.
+    ParameterType,
+    /// The type after `->`.
+    ReturnType,
+    Clause(ClauseKind),
+    /// A function body that the parser could not read. See `parse_function_body`.
+    UnreadableBody,
+    ImplBlock,
+    TraitBlock,
+    ExternBlock,
 }
 
-impl Parser<'_> {
-    pub(crate) fn formatting_generic_names(&self) -> Vec<String> {
-        self.generic_params.clone()
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SyntaxRecord {
+    pub kind: RecordedKind,
+    /// Indices into the token slice that the parser reads.
+    pub tokens: Range<usize>,
+}
+
+impl<'a> Parser<'a> {
+    /// Parse a whole file and return the recorded syntax.
+    ///
+    /// Only the grammar is checked. A second definition of a name is a compile error, but the
+    /// formatter must still format that file.
+    pub(crate) fn formatting_file(&mut self) -> ParseResult<'a, Vec<SyntaxRecord>> {
+        self.recorder = Some(Vec::new());
+        self.parse()?;
+        Ok(self.recorder.take().unwrap_or_default())
     }
 
-    pub(crate) fn formatting_inherit_generics(&mut self, names: Vec<String>) {
-        self.generic_params.extend(names);
-    }
-
-    pub(crate) fn formatting_scope_generics(&mut self) -> ParseResult<'_, Vec<String>> {
-        if self.match_token(&TokenType::Impl) {
-        } else if self.match_token(&TokenType::Trait) {
-            self.expect_identifier("Expected trait name")?;
-        } else {
-            return Ok(Vec::new());
-        }
-        self.parse_generic_params()?;
-        Ok(self.generic_params.clone())
-    }
-
-    pub(crate) fn formatting_body(&mut self) -> ParseResult<'_, ()> {
-        if self.match_token(&TokenType::Semicolon) {
-            return Ok(());
-        }
-        self.consume(&TokenType::LeftBrace, "Expected function body")?;
-        while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
-            self.parse_statement_into(&mut Vec::new())?;
-        }
-        self.consume(&TokenType::RightBrace, "Expected closing body delimiter")?;
-        Ok(())
-    }
-
-    pub(crate) fn formatting_statements(&mut self) -> ParseResult<'_, ()> {
+    /// Parse statements outside any function, as in an editor selection or a short test input.
+    pub(crate) fn formatting_statements(&mut self) -> ParseResult<'a, ()> {
         while !self.check(&TokenType::Eof) {
             self.parse_statement_into(&mut Vec::new())?;
         }
         Ok(())
     }
 
-    pub(crate) fn formatting_header(&mut self) -> ParseResult<'_, HeaderRanges> {
-        self.match_token(&TokenType::Unsafe);
-        self.consume(&TokenType::Fn, "Expected 'fn'")?;
-        let name = self.pos;
-        self.expect_identifier("Expected function name")?;
-        let generic_start = self.pos;
-        self.parse_generic_params()?;
-        let generics = generic_start..self.pos;
-        let open = self.pos;
-        self.consume(&TokenType::LeftParen, "Expected '('")?;
-        let mut parameters = Vec::new();
-        while !self.check(&TokenType::RightParen) {
-            let start = self.pos;
-            self.match_token(&TokenType::Mut);
-            self.expect_identifier("Expected parameter name")?;
-            self.consume(&TokenType::Colon, "Expected ':'")?;
-            let type_start = self.pos;
-            self.parse_type()?;
-            parameters.push((start..self.pos, type_start..self.pos));
-            if !self.match_token(&TokenType::Comma) {
-                break;
-            }
-            if self.check(&TokenType::RightParen) {
-                return Err(self.error("Trailing parameter commas are not supported"));
-            }
+    pub(crate) fn recording(&self) -> bool {
+        self.recorder.is_some()
+    }
+
+    /// Record that the syntax `kind` spans the tokens from `start` to the current position.
+    pub(crate) fn record(&mut self, kind: RecordedKind, start: usize) {
+        if let Some(records) = &mut self.recorder {
+            records.push(SyntaxRecord {
+                kind,
+                tokens: start..self.pos,
+            });
         }
-        let close = self.pos;
-        self.consume(&TokenType::RightParen, "Expected ')'")?;
-        let mut clauses = Vec::new();
-        if self.check(&TokenType::On) {
-            let start = self.pos;
-            self.advance();
-            self.parse_topology()?;
-            clauses.push((ClauseKind::On, start..self.pos));
-        }
-        let return_type = if self.match_token(&TokenType::Arrow) {
-            let start = self.pos;
-            self.parse_return_type()?;
-            start..self.pos
-        } else if matches!(
-            self.peek().kind,
-            TokenType::LeftBrace | TokenType::Semicolon
-        ) {
-            // Keep support for incomplete editor signatures that the formatter already accepted.
-            self.pos..self.pos
-        } else {
-            return Err(self.error("Unsupported function header suffix"));
-        };
-        for (keyword, kind) in [
-            (TokenType::Requires, ClauseKind::Requires),
-            (TokenType::Ensures, ClauseKind::Ensures),
-        ] {
-            while self.check(&keyword) {
-                let start = self.pos;
-                self.advance();
-                self.parse_expr()?;
-                clauses.push((kind.clone(), start..self.pos));
+    }
+
+    /// Read the statements of a function body, up to its `}`. The `{` was read just before.
+    ///
+    /// For the formatter, a body that the parser cannot read is recorded and skipped. The
+    /// formatter then keeps that one declaration as written and still formats the rest of the
+    /// file. The compiler gets the error as usual.
+    pub(crate) fn parse_function_body(&mut self, body: &mut Vec<Statement>) -> ParseResult<'a, ()> {
+        let open = self.pos - 1;
+        let generics = self.generic_params.len();
+        while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+            let Err(error) = self.parse_statement_into(body) else {
+                continue;
+            };
+            let Some(close) = self.recording().then(|| self.closing_brace(open)).flatten() else {
+                return Err(error);
+            };
+            self.pos = close;
+            self.generic_params.truncate(generics);
+            self.pending_stmts.clear();
+            self.prefix_stmts.clear();
+            self.match_is_statement = false;
+            if let Some(records) = &mut self.recorder {
+                records.push(SyntaxRecord {
+                    kind: RecordedKind::UnreadableBody,
+                    tokens: open..close + 1,
+                });
             }
         }
-        if self.check(&TokenType::Where) {
-            let start = self.pos;
-            self.advance();
-            loop {
-                let constraint = self.expect_identifier("Expected Reachable constraint")?;
-                if constraint != "Reachable" {
-                    return Err(self.error("Unsupported where constraint"));
+        Ok(())
+    }
+
+    /// The `}` that closes the `{` at `open`.
+    fn closing_brace(&self, open: usize) -> Option<usize> {
+        let mut depth = 0usize;
+        for (index, token) in self.tokens.iter().enumerate().skip(open) {
+            match token.kind {
+                TokenType::LeftBrace => depth += 1,
+                TokenType::RightBrace => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(index);
+                    }
                 }
-                self.consume(&TokenType::LeftAngle, "Expected '<'")?;
-                self.expect_identifier("Expected topology name")?;
-                self.consume(&TokenType::Comma, "Expected ','")?;
-                self.expect_identifier("Expected topology name")?;
-                self.consume(&TokenType::RightAngle, "Expected '>'")?;
-                if !self.match_token(&TokenType::Comma) {
-                    break;
-                }
+                _ => {}
             }
-            clauses.push((ClauseKind::Where, start..self.pos));
         }
-        if !matches!(
-            self.peek().kind,
-            TokenType::LeftBrace | TokenType::Semicolon
-        ) {
-            return Err(self.error("Unsupported function header suffix"));
-        }
-        Ok(HeaderRanges {
-            name,
-            generics,
-            open,
-            close,
-            parameters,
-            return_type,
-            clauses,
-            terminator: self.pos,
-        })
+        None
     }
 }

@@ -22,7 +22,7 @@ The command adapter owns file access, configuration, warnings, and exit status.
 | Module | Responsibility |
 | --- | --- |
 | `src/formatter/source/mod.rs` | Original bytes, token ranges, syntax views, and final preservation checks. |
-| `src/parser/formatting.rs` | Parser-backed range recognition without imports, type checking, or macro expansion. |
+| `src/parser/formatting.rs` | The kinds of syntax whose token ranges the compiler's parser records for the formatter. |
 | `src/formatter/source/recognize.rs` | Coverage, declaration contexts, exclusions, macros, and grammatical gaps. |
 | `src/formatter/source/dispatch.rs` | Syntax ownership, root discovery, and child dispatch. |
 | `src/formatter/source/formatters.rs` | Built-in node formatters. |
@@ -33,7 +33,10 @@ The command adapter owns file access, configuration, warnings, and exit status.
 
 ## Adding an owner
 
-1. Use an existing syntax view, or extend the shared syntax layer for a new construct.
+1. Use an existing syntax view, or add one for a new construct.
+   Add a kind to `RecordedKind` in `src/parser/formatting.rs`.
+   Record it where the parser reads that syntax: save `self.pos` before it, and call `self.record` after it.
+   Build the view from those ranges in `recognize.rs`.
 1. Implement `NodeFormatter::kind` and `NodeFormatter::format` for that view.
 1. Implement `roots` when the formatter owns independent source ranges.
 1. Return child nodes from the parent's layout through `context.child` when the parent owns their range.

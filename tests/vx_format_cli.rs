@@ -4,7 +4,7 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
 
-const SOURCE: &str = "fn main() {\nlet value = 1;\n}\n";
+const SOURCE: &str = "fn main() -> i32 {\nlet value = 1;\n}\n";
 
 fn project(parent: &Path, name: &str, config: Option<&str>) -> Result<std::path::PathBuf> {
     let directory = parent.join(name);
@@ -94,7 +94,7 @@ fn check_reports_each_changed_file_without_writing() -> Result<()> {
     check_equal(&output.status.code(), &Some(1)).with_context(|| format!("{output:?}"))?;
     let report = String::from_utf8(output.stdout)?;
     let expected = |name| {
-        format!("--- {name}\n+++ {name} (formatted)\n@@ -1,3 +1,3 @@\n fn main() {{\n-let value = 1;\n+  let value = 1;\n }}\n")
+        format!("--- {name}\n+++ {name} (formatted)\n@@ -1,3 +1,3 @@\n fn main() -> i32 {{\n-let value = 1;\n+  let value = 1;\n }}\n")
     };
     let first = expected("main.vx");
     let second = expected("other.vx");
@@ -258,7 +258,7 @@ fn uses_project_indentation_and_explicit_overrides() -> Result<()> {
     ensure!(output.status.success(), "{output:?}");
     check_equal(
         &fs::read_to_string(project.join("main.vx"))?,
-        &"fn main() {\n    let value = 1;\n}\n",
+        &"fn main() -> i32 {\n    let value = 1;\n}\n",
     )?;
 
     let output = formatter(&project, &["--indent", "0", "main.vx"])?;
@@ -276,7 +276,7 @@ fn defaults_without_config_and_ignores_lint_config() -> Result<()> {
     ensure!(output.status.success(), "{output:?}");
     check_equal(
         &fs::read_to_string(project.join("main.vx"))?,
-        &"fn main() {\n  let value = 1;\n}\n",
+        &"fn main() -> i32 {\n  let value = 1;\n}\n",
     )?;
     Ok(())
 }
@@ -290,7 +290,7 @@ fn resolves_each_project_and_explicit_config_paths() -> Result<()> {
     ensure!(output.status.success(), "{output:?}");
     check_equal(
         &fs::read_to_string(first.join("main.vx"))?,
-        &"fn main() {\n    let value = 1;\n}\n",
+        &"fn main() -> i32 {\n    let value = 1;\n}\n",
     )?;
     check_equal(&fs::read_to_string(second.join("main.vx"))?, &SOURCE)?;
 
@@ -301,7 +301,7 @@ fn resolves_each_project_and_explicit_config_paths() -> Result<()> {
     ensure!(output.status.success(), "{output:?}");
     check_equal(
         &fs::read_to_string(second.join("main.vx"))?,
-        &"fn main() {\n    let value = 1;\n}\n",
+        &"fn main() -> i32 {\n    let value = 1;\n}\n",
     )?;
     Ok(())
 }

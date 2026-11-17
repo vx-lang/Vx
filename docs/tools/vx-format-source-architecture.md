@@ -31,18 +31,22 @@ Invocation arguments, trailing blocks, matchers, and transcribers remain opaque.
 Directive-like comments and declaration-like text inside macros cannot escape their envelopes.
 The engine preserves enclosing macro lines to retain embedded-language columns.
 
-A separate reader in `src/parser/formatting.rs` reuses the compiler's existing grammar routines.
-It records generics, parameters, return types, and ordered `on`, `requires`, `ensures`, and `where` clauses.
-Body and remaining-file probes discard parsed structures after checking coverage.
-These probes perform no import loading, type checking, macro expansion, or backend work.
-Ordinary compiler parsing entry points remain unchanged.
+The formatter parses each file once with the compiler's own parser, so the two use one grammar.
+For the formatter, the parser also records the token range of each piece of syntax that a rule needs.
+`src/parser/formatting.rs` lists these kinds.
+The compiler does not record anything, and parses as before.
+The parse loads no imports, checks no types, expands no macros, and does no backend work.
 
-Recognition records root, implementation, trait, and foreign declaration contexts.
-Implementation and trait generics remain available to type recognition.
+The formatter checks only the grammar.
+A file that defines a name twice is still formatted, because that is a compile error, not a syntax error.
+A file with a syntax error is preserved and gets a warning.
+This includes a function header without `->`, which the compiler rejects.
+A function body that the parser cannot read is the one exception.
+The parser skips that body, and the formatter preserves only that declaration.
+
+Recognition builds the syntax views from the recorded ranges.
+A function's context comes from the impl, trait, or extern block that contains it.
 Unsupported contextual clauses preserve their declaration.
-Unknown header boundaries preserve the file rather than accepting a partial header.
-Arrowless headers remain accepted for compatibility with existing formatter and editor inputs.
-This does not extend the compiler's accepted language.
 
 Types remain parser-confirmed token-backed views rather than a complete recursive syntax tree.
 Their formatter retains existing type whitespace normalization, including `Tensor<f32, [2, 2]>`.
