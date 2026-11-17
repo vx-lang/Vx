@@ -409,9 +409,7 @@ impl Walk<'_> {
                 continue;
             }
             let start = i;
-            while i < stmts.len() && !across_lanes::holds_across(&stmts[i]) {
-                i += 1;
-            }
+            i = across_lanes::stretch_end(stmts, start, &lane0);
             across_lanes::runs_on_lane0(&stmts[start..i], &mut lane0);
             after.extend(std::iter::repeat_n(lane0.clone(), i - start));
         }

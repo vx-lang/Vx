@@ -238,7 +238,10 @@ spawn on(Topology::Gpu) {
   `VX_METAL=0` the program stops with a message.
 - Each lane loop ends with a barrier. Lane 0 runs the code between lane loops that writes
   memory or changes a variable from outside it. A lane loop may not read a value that only lane 0
-  has. In the body of a loop, that includes a value that later code sets for the next turn.
+  has. In the body of a loop, that includes a value that later code sets for the next turn. The
+  `let`s at the start of such code that are not `mut`, write nothing, and read no value that only
+  lane 0 has are not part of it: every lane computes them. So put them before a fill of a shared
+  tile.
 - A condition or a bound around a lane loop may read an element of a `&` tensor parameter. Only
   an atomic operation can change one, and then every access must be atomic. So every lane reads
   the same value. A replayed CUDA graph gets a value such as the number of splits this way.
