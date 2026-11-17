@@ -1,0 +1,389 @@
+//===- expert_product_q4.vx - Vx Compiler ------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The expert product of a mixture-of-experts model with 4-bit weights (Q4_0), on the Apple GPU:
+// 4096 tokens in tiles of 32, each tile to one of 128 experts of 1536 x 2048. It times a kernel
+// in Vx against the same design as an `mlir!` block, 10 calls each, and prints the largest
+// difference between their outputs. See README.md.
+//
+// vx-bench flags: --host default --machine fleet/m4-uma.vx
+
+import core::convert;
+import core::num;
+import std::time;
+
+/// The expert product in Vx: subgroup loops, lane loops and `@` on shared tiles.
+fn mm_64x32f(y : &mut Tensor<f32, [?, ?], Memory::HBM>, w : &Tensor<u32, [?], Memory::HBM>, scales : &Tensor<f16, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>, list : &Tensor<i32, [?], Memory::HBM>, bases : &Tensor<i32, [?], Memory::HBM>, stride : i32, rows : i32, cols : i32, tiles : i32) -> void {
+  let words = cols / 8;
+  let groups = cols / 32;
+  spawn on(Topology::Device) {
+    for rb in 0..(rows + 63) / 64 across blocks {
+      for tb in 0..tiles across blocks {
+        // sw[sg]: columns (sg % 2) * 16 to + 15 of rows (sg / 2) * 32 to + 31 of the block, as [column][row].
+        // sx[sg]: tokens (sg / 2) * 16 to + 15 of the tile, columns (sg % 2) * 16 to + 15.
+        let mut sw = unsafe { Tensor<f16, [4, 16, 32], Memory::SMEM>::uninit() };
+        let mut sx = unsafe { Tensor<f16, [4, 16, 16], Memory::SMEM>::uninit() };
+        let mut acc = unsafe { Tensor<f32, [4, 16, 32], Memory::SMEM>::uninit() };
+        for sg in 0..4 across subgroups {
+          lanes::fill(&mut acc[sg], 0.0);
+        }
+        for g in 0..groups {
+          for sg in 0..4 across subgroups {
+            for l in 0..32 across lanes(32) {
+              let r = rb * 64 + (sg / 2) * 32 + l;
+              if r < rows {
+                let row = bases[tb] * stride + r;
+                let at = row * words + g * 4 + (sg % 2) * 2;
+                let sc = scales[row * groups + g] as f32;
+                let m = -8.0 * sc;
+                for i in 0..2 {
+                  let word = w[at + i];
+                  sw[sg][i * 8][l] = (((word & 15u32) as f32) * sc + m) as f16;
+                  sw[sg][i * 8 + 1][l] = ((((word >> 4u32) & 15u32) as f32) * sc + m) as f16;
+                  sw[sg][i * 8 + 2][l] = ((((word >> 8u32) & 15u32) as f32) * sc + m) as f16;
+                  sw[sg][i * 8 + 3][l] = ((((word >> 12u32) & 15u32) as f32) * sc + m) as f16;
+                  sw[sg][i * 8 + 4][l] = ((((word >> 16u32) & 15u32) as f32) * sc + m) as f16;
+                  sw[sg][i * 8 + 5][l] = ((((word >> 20u32) & 15u32) as f32) * sc + m) as f16;
+                  sw[sg][i * 8 + 6][l] = ((((word >> 24u32) & 15u32) as f32) * sc + m) as f16;
+                  sw[sg][i * 8 + 7][l] = ((((word >> 28u32) & 15u32) as f32) * sc + m) as f16;
+                }
+              } else {
+                for k in 0..16 {
+                  sw[sg][k][l] = 0.0 as f16;
+                }
+              }
+              // Lane l loads 8 columns of token l / 2 of the tile of subgroup sg.
+              let from = list[tb * 32 + (sg / 2) * 16 + l / 2];
+              for j in 0..8 {
+                let mut v : f32 = 0.0;
+                if from >= 0 {
+                  v = x[from][g * 32 + (sg % 2) * 16 + (l % 2) * 8 + j];
+                }
+                sx[sg][l / 2][(l % 2) * 8 + j] = v as f16;
+              }
+            }
+          }
+          // Subgroup sg makes tokens (sg / 2) * 16 to + 15 and rows (sg % 2) * 32 to + 31.
+          for sg in 0..4 across subgroups {
+            acc[sg] = acc[sg] + (sx[(sg / 2) * 2] as f32) @ (sw[(sg % 2) * 2] as f32);
+            acc[sg] = acc[sg] + (sx[(sg / 2) * 2 + 1] as f32) @ (sw[(sg % 2) * 2 + 1] as f32);
+          }
+        }
+        for sg in 0..4 across subgroups {
+          lanes::copy(y, &acc[sg], [tb * 32 + (sg / 2) * 16, rb * 64 + (sg % 2) * 32]);
+        }
+      }
+    }
+  }
+  return;
+}
+
+/// The same product as one `mlir!` block that the 128 threads of a threadgroup run. The sums stay
+/// in 8 simdgroup matrices for the whole loop over the columns.
+/// The design is that of llama.cpp (ggml/src/ggml-metal/kernels/mul_mm.metal), MIT License,
+/// Copyright (c) 2023-2026 The ggml authors.
+fn mm_mlir(y : &mut Tensor<f32, [?, ?], Memory::HBM>, w : &Tensor<u32, [?], Memory::HBM>, scales : &Tensor<f16, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>, list : &Tensor<i32, [?], Memory::HBM>, bases : &Tensor<i32, [?], Memory::HBM>, stride : i32, rows : i32, cols : i32, tiles : i32) -> void {
+  spawn on(Topology::Device) {
+    for rb in 0..(rows + 63) / 64 across blocks {
+      for tb in 0..tiles across blocks {
+        let mut sw = unsafe { Tensor<f16, [2048], Memory::SMEM>::uninit() };
+        let mut sx = unsafe { Tensor<f16, [1024], Memory::SMEM>::uninit() };
+        let _d = mlir!( threads : 128, inputs : (%sw = &mut sw : memref<2048xf16, 3>, %sx = &mut sx : memref<1024xf16, 3>, %y = y : memref<?x?xf32>, %w = w : memref<?xi32>, %sc = scales : memref<?xf16>, %x = x : memref<?x?xf32>, %list = list : memref<?xi32>, %bases = bases : memref<?xi32>, %stride = stride : i32, %cols = cols : i32, %rb = rb : i32, %tb = tb : i32), returns : i32, dialects : ["arith", "memref", "scf", "gpu", "vector"], ensures : [writes_only(sw), writes_only(sx), reads_only(w), reads_only(scales), reads_only(x), reads_only(list), reads_only(bases), writes_only(y[tb * 32..tb * 32 + 32][rb * 64..rb * 64 + 64])]) {
+          %c0 = arith.constant 0 : index
+          %c1 = arith.constant 1 : index
+          %c2 = arith.constant 2 : index
+          %c4 = arith.constant 4 : index
+          %c8 = arith.constant 8 : index
+          %c16 = arith.constant 16 : index
+          %c32 = arith.constant 32 : index
+          %c64 = arith.constant 64 : index
+          %c256 = arith.constant 256 : index
+          %c512 = arith.constant 512 : index
+          %tid = gpu.thread_id x
+          %sg = arith.divui %tid, %c32 : index
+          %l = arith.remui %tid, %c32 : index
+          %th = arith.divui %sg, %c2 : index
+          %rh = arith.remui %sg, %c2 : index
+          %rbi = arith.index_cast %rb : i32 to index
+          %tbi = arith.index_cast %tb : i32 to index
+          %stridei = arith.index_cast %stride : i32 to index
+          %colsi = arith.index_cast %cols : i32 to index
+          %G = arith.divui %colsi, %c32 : index
+          %WPR = arith.divui %colsi, %c8 : index
+          %base32 = memref.load %bases[%tbi] : memref<?xi32>
+          %base = arith.index_cast %base32 : i32 to index
+          %rb64 = arith.muli %rbi, %c64 : index
+          %th32 = arith.muli %th, %c32 : index
+          %rl = arith.addi %th32, %l : index
+          %r = arith.addi %rb64, %rl : index
+          %bs = arith.muli %base, %stridei : index
+          %row = arith.addi %bs, %r : index
+          %rw = arith.muli %row, %WPR : index
+          %kh2 = arith.muli %rh, %c2 : index
+          %wbase = arith.addi %rw, %kh2 : index
+          %sbase = arith.muli %row, %G : index
+          %swo = arith.muli %sg, %c512 : index
+          %swd = arith.addi %swo, %l : index
+          %th16 = arith.muli %th, %c16 : index
+          %l2 = arith.divui %l, %c2 : index
+          %lm = arith.remui %l, %c2 : index
+          %tl = arith.addi %th16, %l2 : index
+          %tb32 = arith.muli %tbi, %c32 : index
+          %li = arith.addi %tb32, %tl : index
+          %from32 = memref.load %list[%li] : memref<?xi32>
+          %zi = arith.constant 0 : i32
+          %live = arith.cmpi sge, %from32, %zi : i32
+          %fromc = arith.maxsi %from32, %zi : i32
+          %from = arith.index_cast %fromc : i32 to index
+          %rh16 = arith.muli %rh, %c16 : index
+          %lm8 = arith.muli %lm, %c8 : index
+          %cl = arith.addi %rh16, %lm8 : index
+          %sxo = arith.muli %sg, %c256 : index
+          %l16 = arith.muli %l2, %c16 : index
+          %sxa = arith.addi %sxo, %l16 : index
+          %sxd = arith.addi %sxa, %lm8 : index
+          %sxd4 = arith.addi %sxd, %c4 : index
+          %shl = arith.constant dense<[0, 4, 8, 12]> : vector<4xi32>
+          %shh = arith.constant dense<[16, 20, 24, 28]> : vector<4xi32>
+          %m15 = arith.constant dense<15> : vector<4xi32>
+          %vz = arith.constant dense<0.0> : vector<4xf32>
+          %m8 = arith.constant -8.0 : f16
+          %zf = arith.constant 0.0 : f32
+          %z = gpu.subgroup_mma_constant_matrix %zf : !gpu.mma_matrix<8x8xf32, "COp">
+          %res:8 = scf.for %g = %c0 to %G step %c1 iter_args(%a0 = %z, %a1 = %z, %a2 = %z, %a3 = %z, %a4 = %z, %a5 = %z, %a6 = %z, %a7 = %z) -> (!gpu.mma_matrix<8x8xf32, "COp">, !gpu.mma_matrix<8x8xf32, "COp">, !gpu.mma_matrix<8x8xf32, "COp">, !gpu.mma_matrix<8x8xf32, "COp">, !gpu.mma_matrix<8x8xf32, "COp">, !gpu.mma_matrix<8x8xf32, "COp">, !gpu.mma_matrix<8x8xf32, "COp">, !gpu.mma_matrix<8x8xf32, "COp">) {
+            %g4 = arith.muli %g, %c4 : index
+            %wa = arith.addi %wbase, %g4 : index
+            %q = vector.load %w[%wa] {alignment = 8} : memref<?xi32>, vector<2xi32>
+            %sa = arith.addi %sbase, %g : index
+            %s = memref.load %sc[%sa] : memref<?xf16>
+            %m = arith.mulf %s, %m8 : f16
+            %sv = vector.broadcast %s : f16 to vector<4xf16>
+            %mv = vector.broadcast %m : f16 to vector<4xf16>
+            %q0 = vector.extract %q[0] : i32 from vector<2xi32>
+            %qb0 = vector.broadcast %q0 : i32 to vector<4xi32>
+            %s00 = arith.shrui %qb0, %shl : vector<4xi32>
+            %n00 = arith.andi %s00, %m15 : vector<4xi32>
+            %f00 = arith.uitofp %n00 : vector<4xi32> to vector<4xf16>
+            %d00 = vector.fma %f00, %sv, %mv : vector<4xf16>
+            %s01 = arith.shrui %qb0, %shh : vector<4xi32>
+            %n01 = arith.andi %s01, %m15 : vector<4xi32>
+            %f01 = arith.uitofp %n01 : vector<4xi32> to vector<4xf16>
+            %d01 = vector.fma %f01, %sv, %mv : vector<4xf16>
+            %q1 = vector.extract %q[1] : i32 from vector<2xi32>
+            %qb1 = vector.broadcast %q1 : i32 to vector<4xi32>
+            %s10 = arith.shrui %qb1, %shl : vector<4xi32>
+            %n10 = arith.andi %s10, %m15 : vector<4xi32>
+            %f10 = arith.uitofp %n10 : vector<4xi32> to vector<4xf16>
+            %d10 = vector.fma %f10, %sv, %mv : vector<4xf16>
+            %s11 = arith.shrui %qb1, %shh : vector<4xi32>
+            %n11 = arith.andi %s11, %m15 : vector<4xi32>
+            %f11 = arith.uitofp %n11 : vector<4xi32> to vector<4xf16>
+            %d11 = vector.fma %f11, %sv, %mv : vector<4xf16>
+            %g32 = arith.muli %g, %c32 : index
+            %xc = arith.addi %g32, %cl : index
+            %xc4 = arith.addi %xc, %c4 : index
+            %x0r = vector.load %x[%from, %xc] : memref<?x?xf32>, vector<4xf32>
+            %x1r = vector.load %x[%from, %xc4] : memref<?x?xf32>, vector<4xf32>
+            %x0 = arith.select %live, %x0r, %vz : vector<4xf32>
+            %x1 = arith.select %live, %x1r, %vz : vector<4xf32>
+            %h0 = arith.truncf %x0 : vector<4xf32> to vector<4xf16>
+            %h1 = arith.truncf %x1 : vector<4xf32> to vector<4xf16>
+            gpu.barrier
+            %e0 = vector.extract %d00[0] : f16 from vector<4xf16>
+            memref.store %e0, %sw[%swd] : memref<2048xf16, 3>
+            %e1 = vector.extract %d00[1] : f16 from vector<4xf16>
+            %k1 = arith.constant 32 : index
+            %o1 = arith.addi %swd, %k1 : index
+            memref.store %e1, %sw[%o1] : memref<2048xf16, 3>
+            %e2 = vector.extract %d00[2] : f16 from vector<4xf16>
+            %k2 = arith.constant 64 : index
+            %o2 = arith.addi %swd, %k2 : index
+            memref.store %e2, %sw[%o2] : memref<2048xf16, 3>
+            %e3 = vector.extract %d00[3] : f16 from vector<4xf16>
+            %k3 = arith.constant 96 : index
+            %o3 = arith.addi %swd, %k3 : index
+            memref.store %e3, %sw[%o3] : memref<2048xf16, 3>
+            %e4 = vector.extract %d01[0] : f16 from vector<4xf16>
+            %k4 = arith.constant 128 : index
+            %o4 = arith.addi %swd, %k4 : index
+            memref.store %e4, %sw[%o4] : memref<2048xf16, 3>
+            %e5 = vector.extract %d01[1] : f16 from vector<4xf16>
+            %k5 = arith.constant 160 : index
+            %o5 = arith.addi %swd, %k5 : index
+            memref.store %e5, %sw[%o5] : memref<2048xf16, 3>
+            %e6 = vector.extract %d01[2] : f16 from vector<4xf16>
+            %k6 = arith.constant 192 : index
+            %o6 = arith.addi %swd, %k6 : index
+            memref.store %e6, %sw[%o6] : memref<2048xf16, 3>
+            %e7 = vector.extract %d01[3] : f16 from vector<4xf16>
+            %k7 = arith.constant 224 : index
+            %o7 = arith.addi %swd, %k7 : index
+            memref.store %e7, %sw[%o7] : memref<2048xf16, 3>
+            %e8 = vector.extract %d10[0] : f16 from vector<4xf16>
+            %k8 = arith.constant 256 : index
+            %o8 = arith.addi %swd, %k8 : index
+            memref.store %e8, %sw[%o8] : memref<2048xf16, 3>
+            %e9 = vector.extract %d10[1] : f16 from vector<4xf16>
+            %k9 = arith.constant 288 : index
+            %o9 = arith.addi %swd, %k9 : index
+            memref.store %e9, %sw[%o9] : memref<2048xf16, 3>
+            %e10 = vector.extract %d10[2] : f16 from vector<4xf16>
+            %k10 = arith.constant 320 : index
+            %o10 = arith.addi %swd, %k10 : index
+            memref.store %e10, %sw[%o10] : memref<2048xf16, 3>
+            %e11 = vector.extract %d10[3] : f16 from vector<4xf16>
+            %k11 = arith.constant 352 : index
+            %o11 = arith.addi %swd, %k11 : index
+            memref.store %e11, %sw[%o11] : memref<2048xf16, 3>
+            %e12 = vector.extract %d11[0] : f16 from vector<4xf16>
+            %k12 = arith.constant 384 : index
+            %o12 = arith.addi %swd, %k12 : index
+            memref.store %e12, %sw[%o12] : memref<2048xf16, 3>
+            %e13 = vector.extract %d11[1] : f16 from vector<4xf16>
+            %k13 = arith.constant 416 : index
+            %o13 = arith.addi %swd, %k13 : index
+            memref.store %e13, %sw[%o13] : memref<2048xf16, 3>
+            %e14 = vector.extract %d11[2] : f16 from vector<4xf16>
+            %k14 = arith.constant 448 : index
+            %o14 = arith.addi %swd, %k14 : index
+            memref.store %e14, %sw[%o14] : memref<2048xf16, 3>
+            %e15 = vector.extract %d11[3] : f16 from vector<4xf16>
+            %k15 = arith.constant 480 : index
+            %o15 = arith.addi %swd, %k15 : index
+            memref.store %e15, %sw[%o15] : memref<2048xf16, 3>
+            vector.store %h0, %sx[%sxd] : memref<1024xf16, 3>, vector<4xf16>
+            vector.store %h1, %sx[%sxd4] : memref<1024xf16, 3>, vector<4xf16>
+            gpu.barrier
+            %nx:8 = scf.for %t = %c0 to %c4 step %c1 iter_args(%b0 = %a0, %b1 = %a1, %b2 = %a2, %b3 = %a3, %b4 = %a4, %b5 = %a5, %b6 = %a6, %b7 = %a7) -> (!gpu.mma_matrix<8x8xf32, "COp">, !gpu.mma_matrix<8x8xf32, "COp">, !gpu.mma_matrix<8x8xf32, "COp">, !gpu.mma_matrix<8x8xf32, "COp">, !gpu.mma_matrix<8x8xf32, "COp">, !gpu.mma_matrix<8x8xf32, "COp">, !gpu.mma_matrix<8x8xf32, "COp">, !gpu.mma_matrix<8x8xf32, "COp">) {
+              %kk = arith.divui %t, %c2 : index
+              %tm = arith.remui %t, %c2 : index
+              %ks = arith.muli %tm, %c8 : index
+              %th2 = arith.muli %th, %c2 : index
+              %at = arith.addi %th2, %kk : index
+              %ato = arith.muli %at, %c256 : index
+              %aoff = arith.addi %ato, %ks : index
+              %rh2 = arith.muli %rh, %c2 : index
+              %bt = arith.addi %rh2, %kk : index
+              %bto = arith.muli %bt, %c512 : index
+              %k832 = arith.muli %ks, %c32 : index
+              %boff = arith.addi %bto, %k832 : index
+              %c128 = arith.constant 128 : index
+              %c24 = arith.constant 24 : index
+              %aoff1 = arith.addi %aoff, %c128 : index
+              %ma0 = gpu.subgroup_mma_load_matrix %sx[%aoff] {leadDimension = 16 : index} : memref<1024xf16, 3> -> !gpu.mma_matrix<8x8xf16, "AOp">
+              %ma1 = gpu.subgroup_mma_load_matrix %sx[%aoff1] {leadDimension = 16 : index} : memref<1024xf16, 3> -> !gpu.mma_matrix<8x8xf16, "AOp">
+              %mb0 = gpu.subgroup_mma_load_matrix %sw[%boff] {leadDimension = 32 : index} : memref<2048xf16, 3> -> !gpu.mma_matrix<8x8xf16, "BOp">
+              %bo1 = arith.addi %boff, %c8 : index
+              %mb1 = gpu.subgroup_mma_load_matrix %sw[%bo1] {leadDimension = 32 : index} : memref<2048xf16, 3> -> !gpu.mma_matrix<8x8xf16, "BOp">
+              %bo2 = arith.addi %boff, %c16 : index
+              %mb2 = gpu.subgroup_mma_load_matrix %sw[%bo2] {leadDimension = 32 : index} : memref<2048xf16, 3> -> !gpu.mma_matrix<8x8xf16, "BOp">
+              %bo3 = arith.addi %boff, %c24 : index
+              %mb3 = gpu.subgroup_mma_load_matrix %sw[%bo3] {leadDimension = 32 : index} : memref<2048xf16, 3> -> !gpu.mma_matrix<8x8xf16, "BOp">
+              %r0 = gpu.subgroup_mma_compute %ma0, %mb0, %b0 : !gpu.mma_matrix<8x8xf16, "AOp">, !gpu.mma_matrix<8x8xf16, "BOp"> -> !gpu.mma_matrix<8x8xf32, "COp">
+              %r1 = gpu.subgroup_mma_compute %ma0, %mb1, %b1 : !gpu.mma_matrix<8x8xf16, "AOp">, !gpu.mma_matrix<8x8xf16, "BOp"> -> !gpu.mma_matrix<8x8xf32, "COp">
+              %r2 = gpu.subgroup_mma_compute %ma0, %mb2, %b2 : !gpu.mma_matrix<8x8xf16, "AOp">, !gpu.mma_matrix<8x8xf16, "BOp"> -> !gpu.mma_matrix<8x8xf32, "COp">
+              %r3 = gpu.subgroup_mma_compute %ma0, %mb3, %b3 : !gpu.mma_matrix<8x8xf16, "AOp">, !gpu.mma_matrix<8x8xf16, "BOp"> -> !gpu.mma_matrix<8x8xf32, "COp">
+              %r4 = gpu.subgroup_mma_compute %ma1, %mb0, %b4 : !gpu.mma_matrix<8x8xf16, "AOp">, !gpu.mma_matrix<8x8xf16, "BOp"> -> !gpu.mma_matrix<8x8xf32, "COp">
+              %r5 = gpu.subgroup_mma_compute %ma1, %mb1, %b5 : !gpu.mma_matrix<8x8xf16, "AOp">, !gpu.mma_matrix<8x8xf16, "BOp"> -> !gpu.mma_matrix<8x8xf32, "COp">
+              %r6 = gpu.subgroup_mma_compute %ma1, %mb2, %b6 : !gpu.mma_matrix<8x8xf16, "AOp">, !gpu.mma_matrix<8x8xf16, "BOp"> -> !gpu.mma_matrix<8x8xf32, "COp">
+              %r7 = gpu.subgroup_mma_compute %ma1, %mb3, %b7 : !gpu.mma_matrix<8x8xf16, "AOp">, !gpu.mma_matrix<8x8xf16, "BOp"> -> !gpu.mma_matrix<8x8xf32, "COp">
+              scf.yield %r0, %r1, %r2, %r3, %r4, %r5, %r6, %r7 : !gpu.mma_matrix<8x8xf32, "COp">, !gpu.mma_matrix<8x8xf32, "COp">, !gpu.mma_matrix<8x8xf32, "COp">, !gpu.mma_matrix<8x8xf32, "COp">, !gpu.mma_matrix<8x8xf32, "COp">, !gpu.mma_matrix<8x8xf32, "COp">, !gpu.mma_matrix<8x8xf32, "COp">, !gpu.mma_matrix<8x8xf32, "COp">
+            }
+            scf.yield %nx#0, %nx#1, %nx#2, %nx#3, %nx#4, %nx#5, %nx#6, %nx#7 : !gpu.mma_matrix<8x8xf32, "COp">, !gpu.mma_matrix<8x8xf32, "COp">, !gpu.mma_matrix<8x8xf32, "COp">, !gpu.mma_matrix<8x8xf32, "COp">, !gpu.mma_matrix<8x8xf32, "COp">, !gpu.mma_matrix<8x8xf32, "COp">, !gpu.mma_matrix<8x8xf32, "COp">, !gpu.mma_matrix<8x8xf32, "COp">
+          }
+          %yr0 = arith.addi %tb32, %th16 : index
+          %yr1 = arith.addi %yr0, %c8 : index
+          %rh32 = arith.muli %rh, %c32 : index
+          %yc0 = arith.addi %rb64, %rh32 : index
+          %cj1 = arith.constant 8 : index
+          %yc1 = arith.addi %yc0, %cj1 : index
+          %cj2 = arith.constant 16 : index
+          %yc2 = arith.addi %yc0, %cj2 : index
+          %cj3 = arith.constant 24 : index
+          %yc3 = arith.addi %yc0, %cj3 : index
+          gpu.subgroup_mma_store_matrix %res#0, %y[%yr0, %yc0] {leadDimension = 0 : index} : !gpu.mma_matrix<8x8xf32, "COp">, memref<?x?xf32>
+          gpu.subgroup_mma_store_matrix %res#1, %y[%yr0, %yc1] {leadDimension = 0 : index} : !gpu.mma_matrix<8x8xf32, "COp">, memref<?x?xf32>
+          gpu.subgroup_mma_store_matrix %res#2, %y[%yr0, %yc2] {leadDimension = 0 : index} : !gpu.mma_matrix<8x8xf32, "COp">, memref<?x?xf32>
+          gpu.subgroup_mma_store_matrix %res#3, %y[%yr0, %yc3] {leadDimension = 0 : index} : !gpu.mma_matrix<8x8xf32, "COp">, memref<?x?xf32>
+          gpu.subgroup_mma_store_matrix %res#4, %y[%yr1, %yc0] {leadDimension = 0 : index} : !gpu.mma_matrix<8x8xf32, "COp">, memref<?x?xf32>
+          gpu.subgroup_mma_store_matrix %res#5, %y[%yr1, %yc1] {leadDimension = 0 : index} : !gpu.mma_matrix<8x8xf32, "COp">, memref<?x?xf32>
+          gpu.subgroup_mma_store_matrix %res#6, %y[%yr1, %yc2] {leadDimension = 0 : index} : !gpu.mma_matrix<8x8xf32, "COp">, memref<?x?xf32>
+          gpu.subgroup_mma_store_matrix %res#7, %y[%yr1, %yc3] {leadDimension = 0 : index} : !gpu.mma_matrix<8x8xf32, "COp">, memref<?x?xf32>
+          macro.yield %tb : i32
+        };
+      }
+    }
+  }
+  return;
+}
+
+fn words(n : i32, seed : u32) -> Tensor<u32, [?], Memory::HBM> {
+  let mut h = Tensor<u32>([n]);
+  let mut v = seed;
+  for i in 0..n {
+    v = v * 1664525u32 + 1013904223u32;
+    h[i] = v;
+  }
+  return transfer(h, Memory::HBM);
+}
+
+fn main() -> i32 {
+  let experts = 128;
+  let rows = 1536;
+  let cols = 2048;
+  let n = 4096;
+  let w = words(experts * rows * cols / 8, 3u32);
+  let mut sh = Tensor<f16>([experts * rows * cols / 32]);
+  for i in 0..experts * rows * cols / 32 {
+    sh[i] = (0.002 + ((i % 7) as f32) * 0.0005) as f16;
+  }
+  let sc = transfer(sh, Memory::HBM);
+  let mut xh = Tensor<f32>([512, cols]);
+  for t in 0..512 {
+    for c in 0..cols {
+      xh[t][c] = (((t * 7 + c * 3) % 23) as f32) * 0.05 - 0.5;
+    }
+  }
+  let x = transfer(xh, Memory::HBM);
+  let mut lh = Tensor<i32>([n]);
+  for i in 0..n {
+    lh[i] = (i * 37) % 512;
+  }
+  let list = transfer(lh, Memory::HBM);
+  // Each tile of 32 tokens goes to one expert.
+  let mut b32 = Tensor<i32>([n / 32]);
+  for t in 0..n / 32 {
+    b32[t] = t % experts;
+  }
+  let bases32 = transfer(b32, Memory::HBM);
+  let mut y2 = transfer(Tensor<f32>([n, rows]), Memory::HBM);
+  let mut y3 = transfer(Tensor<f32>([n, rows]), Memory::HBM);
+  for round in 0..3 {
+    let t0 = Instant::now();
+    for i in 0..10 {
+      mm_64x32f(&mut y2, &w, &sc, &x, &list, &bases32, rows, rows, cols, n / 32);
+    }
+    let h2 = transfer(&y2, Memory::CPU_DRAM);
+    let ms2 = f64::from(t0.elapsed().as_secs_f32()) * 100.0;
+    let t1 = Instant::now();
+    for i in 0..10 {
+      mm_mlir(&mut y3, &w, &sc, &x, &list, &bases32, rows, rows, cols, n / 32);
+    }
+    let h3 = transfer(&y3, Memory::CPU_DRAM);
+    let ms3 = f64::from(t1.elapsed().as_secs_f32()) * 100.0;
+    if round > 0 {
+      let mut d : f32 = 0.0;
+      for t in 0..n {
+        for r in 0..rows {
+          d = f32::max(d, f32::abs(h2[t][r] - h3[t][r]));
+        }
+      }
+      println!("Vx 64x32 {} ms | mlir! {} ms | largest difference {} | y[4095][1535] {} {}", ms2, ms3, d, h2[4095][1535], h3[4095][1535]);
+    }
+  }
+  return 0;
+}
