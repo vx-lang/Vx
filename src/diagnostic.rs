@@ -455,6 +455,10 @@ pub enum DiagnosticCode {
     /// body is not inside a loop around the closure, because the closure can run after the loop
     /// ends.
     E3064,
+    /// A range index `q[a..b]` with ends that are not literal numbers, or with no rows
+    /// (`q[2..2]`, `q[3..1]`). The number of rows, `b - a`, is part of the type of the range, so
+    /// it must be known while compiling. A range past the last row is E8003.
+    E3065,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable
@@ -476,7 +480,9 @@ pub enum DiagnosticCode {
     /// the copy it keeps of a variable it uses (`|| &x`): each call has its own frame.
     E4005,
     /// An assignment through a shared reference: `*r = v`, `r.f = v` or `r[i] = v` where
-    /// `r` is a `&T`. A shared reference only reads; writing needs a `&mut T`.
+    /// `r` is a `&T`. A shared reference only reads; writing needs a `&mut T`. The same for a
+    /// `*const T` pointer and for a view of memory made from one: a write, a `&mut` borrow or a
+    /// `&mut self` call through it. Writing needs a `*mut T`.
     E4006,
     /// A value moved while a borrow of it is still used afterwards: `let r = &a; let b = a;`
     /// followed by a use of `r`. The borrow would point at a value that has moved away.
@@ -599,16 +605,17 @@ pub enum DiagnosticCode {
     /// lowering with no functions (an empty body cannot move anything, and accepting it would
     /// make `impl transfer` an inert annotation rather than code).
     E6015,
-    /// A `Topology` or `Memory` declaration whose identity cannot be relied on. Three forms: the
-    /// declared name shadows a built-in topology (every use of `Topology::<Name>` resolves to the
-    /// built-in, so the declaration is silently ignored -- including its `arch:`); or two declared
-    /// names collide on one dispatch id (custom ids are derived from the name by hashing), in
-    /// which case which declaration is in force would be hash-iteration order -- observed as the
-    /// same program getting a device image on some runs and not others for a topology, and as a
-    /// `transfer` carrying the other space's capacity and granule for a memory space; or a
-    /// topology whose `arch:` is not `nvptx64` has `Memory::GPU_HBM` as its memory. That memory
-    /// belongs to the built-in NVIDIA GPU, so the tensors of the topology would go to that GPU,
-    /// and its kernels would run elsewhere. Give the memory another name.
+    /// A `Topology` or `Memory` declaration whose identity cannot be relied on. Three forms: a
+    /// declared topology tries to override hardware facts of a built-in topology (like `arch:`,
+    /// `chip:`, or transfer edges) -- the compiler refuses such overrides, though patching
+    /// `dtypes:` is allowed on a topology that owns its memory space (except `CPU`); or two declared names collide
+    /// on one dispatch id (custom ids are derived from the name by hashing), in which case which
+    /// declaration is in force would be hash-iteration order -- observed as the same program
+    /// getting a device image on some runs and not others for a topology, and as a `transfer`
+    /// carrying the other space's capacity and granule for a memory space; or a topology whose
+    /// `arch:` is not `nvptx64` has `Memory::GPU_HBM` as its memory. That memory belongs to the
+    /// built-in NVIDIA GPU, so the tensors of the topology would go to that GPU, and its kernels
+    /// would run elsewhere. Give the memory another name.
     E6016,
     /// A misuse of the `raw::` transfer-lowering primitives (Vx#353): a `raw::` call
     /// outside an `impl transfer` body, an unknown primitive name, a tile argument that
@@ -704,7 +711,9 @@ pub enum DiagnosticCode {
     /// topology does not name, a loop outside a `spawn on` region or in the wrong order, a size
     /// that is not known when the kernel is compiled or is over the limit, or a jump out of the
     /// loop. Also a lane reduction (`lanes::sum` and the others) outside the code of a loop of
-    /// blocks or subgroups, or with a tensor that is too large.
+    /// blocks or subgroups, or with a tensor that is too large. Also two passes of the loop that
+    /// may write the same element, or a pass that may read an element that another pass writes.
+    /// A row from a `Distinct` tensor parameter, as in `y[idx[b]]`, keeps the passes apart.
     E6032,
     /// An index into a tensor in a `scope: thread` space that is not known when compiling. Such
     /// a tensor stays in registers, and a register has no address. So each index must be a

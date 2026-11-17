@@ -1,0 +1,114 @@
+// A kernel for the Apple GPU with 56 KB of tiles in `Memory::SMEM`. `acc` (32 KB) stays in the
+// simdgroup matrices, so the kernel needs only the 24 KB of `sa` and `sb` in threadgroup memory,
+// and the Apple GPU has 32 KB. The products are whole numbers, so the GPU must give the exact
+// values that the CPU computes.
+//
+// The memories and the topology are those of fleet/m4-uma.vx, with `overcommit` on SMEM: the
+// check of the capacity counts `acc` too.
+//
+// REQUIRES: macos
+// RUN: env VX_DISPATCH_VERBOSE=1 vxc %s --host default 2>%t.gpu | FileCheck %s
+// RUN: FileCheck %s --check-prefix=GPU --input-file=%t.gpu
+// RUN: env VX_DISPATCH_VERBOSE=1 vxc %s --legacy-codegen --host default 2>%t.ast.gpu | FileCheck %s
+// RUN: FileCheck %s --check-prefix=GPU --input-file=%t.ast.gpu
+// RUN: env VX_METAL=0 vxc %s --host default | FileCheck %s
+// RUN: vxc %s --host default --emit-msl -o %t.metal && FileCheck %s --check-prefix=MSL --input-file=%t.metal
+//
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 2 x 1 x 1, block 128
+// CHECK: {{^}}wrong: 0{{$}}
+// MSL-NOT: {{^ *threadgroup [a-z0-9]+ }}
+// MSL: threadgroup float {{.*}}[4096];
+// MSL-NEXT: threadgroup float {{.*}}[2048];
+// MSL-NEXT: simdgroup_float8x8 vx_sums0[32];
+// MSL-NOT: {{^ *threadgroup [a-z0-9]+ }}
+
+Memory HBM {
+  capacity: 32 GiB, managed: explicit, scope: device
+}
+Memory L2 {
+  within: Memory::HBM, capacity: 16 MiB, managed: cached, scope: device
+}
+Memory SMEM {
+  within: Memory::L2, capacity: 32 KiB, granule: 1 KiB, managed: explicit, scope: sm, overcommit
+}
+Topology Device {
+  arch: applegpu,
+  levels: [blocks(max_lanes: 1024, memory: cta), subgroups(lanes: 32), lanes(memory: thread)],
+  memory: Memory::HBM,
+  visible: [Memory::HBM, Memory::L2, Memory::SMEM],
+  dtypes: [f32, bf16, f16, i8, u8, i16, u16, i32, u32, i64, u64, bool],
+  transfer Memory::CPU_DRAM -> Memory::HBM : shared,
+  transfer Memory::HBM -> Memory::CPU_DRAM : shared,
+  transfer Memory::HBM -> Memory::L2,
+  transfer Memory::L2 -> Memory::SMEM
+}
+
+pub fn mm(out : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<f16, [?, ?], Memory::HBM>, b : &Tensor<f16, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..2 across blocks {
+      let mut sa = unsafe { Tensor<f32, [4, 32, 32], Memory::SMEM>::uninit() };
+      let mut sb = unsafe { Tensor<f32, [1, 32, 64], Memory::SMEM>::uninit() };
+      let mut acc = unsafe {
+        Tensor<f32, [4, 32, 64], Memory::SMEM>::uninit()
+      };
+      for s in 0..4 across subgroups {
+        lanes::fill(&mut acc[s], 0.0);
+      }
+      for kb in 0..4 {
+        for s in 0..4 across subgroups {
+          for l in 0..32 across lanes(32) {
+            for i in 0..32 {
+              sa[s][i][l] = a[blk * 128 + s * 32 + i][kb * 32 + l] as f32;
+            }
+            for r in 0..8 {
+              for c in 0..2 {
+                sb[0][s * 8 + r][c * 32 + l] = b[kb * 32 + s * 8 + r][c * 32 + l] as f32;
+              }
+            }
+          }
+        }
+        for s in 0..4 across subgroups {
+          acc[s] = acc[s] + sa[s] @ sb[0];
+        }
+      }
+      for s in 0..4 across subgroups {
+        lanes::copy(out, &acc[s], [blk * 128 + s * 32, 0]);
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut ha = Tensor<f16>([256, 128]);
+  let mut hb = Tensor<f16>([128, 64]);
+  for i in 0..256 {
+    for k in 0..128 {
+      ha[i][k] = ((i + k) % 3 - 1) as f16;
+    }
+  }
+  for k in 0..128 {
+    for j in 0..64 {
+      hb[k][j] = ((k * j) % 5 - 2) as f16;
+    }
+  }
+  let a = transfer(&ha, Memory::HBM);
+  let b = transfer(&hb, Memory::HBM);
+  let mut out = transfer(Tensor<f32>([256, 64]), Memory::HBM);
+  mm(&mut out, &a, &b);
+  let h = transfer(&out, Memory::CPU_DRAM);
+  let mut wrong = 0;
+  for i in 0..256 {
+    for j in 0..64 {
+      let mut want = 0.0;
+      for k in 0..128 {
+        want = want + (ha[i][k] as f32) * (hb[k][j] as f32);
+      }
+      if h[i][j] != want {
+        wrong = wrong + 1;
+      }
+    }
+  }
+  println!("wrong: {}", wrong);
+  return 0;
+}

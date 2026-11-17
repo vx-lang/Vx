@@ -1,0 +1,124 @@
+//===- lane_scale_rows_keeps_the_sums_in_registers.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `lanes::scale_rows(&mut t, &s)` multiplies row `i` of the tile `t` by `s[i]`, as flash attention
+// does to its output sums between two matmuls. When the scale is on the row of a subgroup, the
+// tensor-core sums stay in registers, as with `lanes::fill` and `lanes::copy`: each lane multiplies
+// its registers by the scale of their rows. A scale of the whole tile in the code of the block
+// keeps the tile in shared memory.
+//
+// Each matmul adds 16 * (w + 1) to every element of `acc[w]`. The scale between the two matmuls
+// multiplies row `i` by `i + 1`, so element (i, j) ends at 16 * (w + 1) * (i + 2).
+//
+// RUN: vxc %s --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s < %t.ptx --implicit-check-not=local_depot
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ast.ptx
+// RUN: FileCheck %s < %t.ast.ptx --implicit-check-not=local_depot
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/a100-80.vx --run 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/a100-80.vx --run 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
+// OUT: in registers: 32 272 64 544
+// OUT-NEXT: in shared memory: 32 32 64 544
+
+// Only `sa`, `sb` and `alpha` are in shared memory: 1024, 512 and 128 bytes. `acc` would take
+// another 1024. Between the two `mma.sync`, the scale reads `alpha` and multiplies the registers,
+// with no store to shared memory. The copy stores the registers to `c`.
+// CHECK-LABEL: .entry in_registers(
+// CHECK-NOT: .shared .align
+// CHECK-COUNT-3: .shared .align {{[0-9]+}} .b8 {{.*}}[{{1024|512|128}}];
+// CHECK-NOT: .shared .align
+// CHECK: mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32
+// CHECK-NOT: st.shared
+// CHECK: ld.shared.b32
+// CHECK-NEXT: mul.rn.f32
+// CHECK-NOT: st.shared
+// CHECK: mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32
+// CHECK-NOT: ld.shared
+// CHECK: st.global.b32
+pub fn in_registers(c : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut sa = unsafe {
+        Tensor<bf16, [2, 16, 16], Memory::SMEM>::uninit()
+      };
+      let mut sb = unsafe { Tensor<bf16, [2, 16, 8], Memory::SMEM>::uninit() };
+      let mut acc = unsafe { Tensor<f32, [2, 16, 8], Memory::SMEM>::uninit() };
+      let mut alpha = unsafe { Tensor<f32, [2, 16], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        lanes::fill(&mut acc[w], 0.0);
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for k in 0..16 {
+              sa[w][i][k] = 1.0 as bf16;
+            }
+            for j in 0..8 {
+              sb[w][i][j] = (w + 1) as bf16;
+            }
+            alpha[w][i] = (i + 1) as f32;
+          }
+        }
+        acc[w] = acc[w] + (sa[w] as f32) @ (sb[w] as f32);
+        lanes::scale_rows(&mut acc[w], &alpha[w]);
+        acc[w] = acc[w] + (sa[w] as f32) @ (sb[w] as f32);
+        lanes::copy(c, &acc[w], [w * 16, 0]);
+      }
+    }
+  }
+  return;
+}
+
+// The block scales `acc[1]`, a row that the subgroups made, so `acc` stays in shared memory. The
+// kernel has four tiles: `sa` and `acc` of 1024 bytes, `sb` of 512 and `alpha` of 64. Row `i` of
+// `acc[1]` is 32 * (i + 1) after the scale, and 32 * (i + 2) after the second matmul.
+// CHECK-LABEL: .entry in_shared_memory(
+// CHECK-COUNT-4: .shared .align {{[0-9]+}} .b8 {{.*}}[{{1024|512|64}}];
+pub fn in_shared_memory(c : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut sa = unsafe {
+        Tensor<bf16, [2, 16, 16], Memory::SMEM>::uninit()
+      };
+      let mut sb = unsafe { Tensor<bf16, [2, 16, 8], Memory::SMEM>::uninit() };
+      let mut acc = unsafe { Tensor<f32, [2, 16, 8], Memory::SMEM>::uninit() };
+      let mut alpha = unsafe { Tensor<f32, [16], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        lanes::fill(&mut acc[w], 0.0);
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for k in 0..16 {
+              sa[w][i][k] = 1.0 as bf16;
+            }
+            for j in 0..8 {
+              sb[w][i][j] = (w + 1) as bf16;
+            }
+          }
+        }
+        acc[w] = acc[w] + (sa[w] as f32) @ (sb[w] as f32);
+      }
+      for i in 0..16 across lanes(64) {
+        alpha[i] = (i + 1) as f32;
+      }
+      lanes::scale_rows(&mut acc[1], &alpha);
+      for w in 0..2 across subgroups {
+        acc[w] = acc[w] + (sa[w] as f32) @ (sb[w] as f32);
+        lanes::copy(c, &acc[w], [w * 16, 0]);
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut c = transfer(Tensor<f32, [32, 8]>::fill(0.0), Memory::HBM);
+  in_registers(&mut c);
+  let r = transfer(c, Memory::CPU_DRAM);
+  println!("in registers: {} {} {} {}", r[0][0], r[15][7], r[16][0], r[31][7]);
+  let mut d = transfer(Tensor<f32, [32, 8]>::fill(0.0), Memory::HBM);
+  in_shared_memory(&mut d);
+  let s = transfer(d, Memory::CPU_DRAM);
+  println!("in shared memory: {} {} {} {}", s[0][0], s[15][7], s[16][0], s[31][7]);
+  return 0;
+}

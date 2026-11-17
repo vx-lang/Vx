@@ -1,0 +1,98 @@
+//===- lane_scale_rows_in_simdgroup_matrices_on_the_apple_gpu.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A matmul of tiles on the Apple GPU whose accumulator stays in simdgroup matrices, as in
+// lane_matmul_sums_in_simdgroup_matrices_on_the_apple_gpu.vx, and whose sums `lanes::scale_rows`
+// multiplies before each step, as an online softmax does. Row r gets 2 to the power
+// (r % 8) - 4, so each of the 8 rows of a piece of 8 x 8 gets its own scale. The inputs are small
+// integers, so each sum is exact. The last RUN line uses the CPU copy of the kernel.
+//
+// REQUIRES: macos
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_METAL=0 vxc %s --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}scaled: 1024 sums, 0 wrong{{$}}
+
+pub fn scaled_sums(c : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<f16, [?, ?], Memory::HBM>, b : &Tensor<f16, [?, ?], Memory::HBM>, k : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut sa = unsafe { Tensor<f16, [2, 16, 16], Memory::SMEM>::uninit() };
+      let mut sb = unsafe { Tensor<f16, [16, 32], Memory::SMEM>::uninit() };
+      let mut acc = unsafe {
+        Tensor<f32, [2, 16, 32], Memory::SMEM>::uninit()
+      };
+      let mut scale = unsafe { Tensor<f32, [2, 16], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        lanes::fill(&mut acc[w], 1.0);
+        for l in 0..32 across lanes(32) {
+          if l < 16 {
+            let mut s : f32 = 0.0625;
+            for q in 0..(w * 16 + l) % 8 {
+              s = s * 2.0;
+            }
+            scale[w][l] = s;
+          }
+        }
+      }
+      for kt in 0..k / 16 {
+        lanes::copy(&mut sb, b, [kt * 16, 0]);
+        lanes::copy(&mut sa[0], a, [0, kt * 16]);
+        lanes::copy(&mut sa[1], a, [16, kt * 16]);
+        for w in 0..2 across subgroups {
+          lanes::scale_rows(&mut acc[w], &scale[w]);
+          acc[w] = acc[w] + (sa[w] as f32) @ (sb as f32);
+        }
+      }
+      for w in 0..2 across subgroups {
+        lanes::copy(c, &acc[w], [w * 16, 0]);
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let k = 48;
+  let mut ha = Tensor<f16>([32, k]);
+  let mut hb = Tensor<f16>([k, 32]);
+  for i in 0..32 {
+    for j in 0..k {
+      ha[i][j] = (((i * 3 + j) % 5) - 2) as f16;
+    }
+  }
+  for i in 0..k {
+    for j in 0..32 {
+      hb[i][j] = (((i + j * 7) % 3) - 1) as f16;
+    }
+  }
+  let a = transfer(&ha, Memory::HBM);
+  let b = transfer(&hb, Memory::HBM);
+  let mut c = transfer(Tensor<f32>([32, 32]), Memory::HBM);
+  scaled_sums(&mut c, &a, &b, k);
+  let out = transfer(&c, Memory::CPU_DRAM);
+  let mut wrong = 0;
+  for r in 0..32 {
+    let mut s : f32 = 0.0625;
+    for q in 0..r % 8 {
+      s = s * 2.0;
+    }
+    for j in 0..32 {
+      let mut want : f32 = 1.0;
+      for kt in 0..k / 16 {
+        want = want * s;
+        for t in kt * 16..kt * 16 + 16 {
+          want = want + (ha[r][t] as f32) * (hb[t][j] as f32);
+        }
+      }
+      if out[r][j] != want {
+        wrong = wrong + 1;
+      }
+    }
+  }
+  println!("scaled: {} sums, {} wrong", 32 * 32, wrong);
+  return 0;
+}

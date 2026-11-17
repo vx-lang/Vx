@@ -65,8 +65,68 @@ the tile. In `c[(b / n) * 64 + i][(b % n) * 64 + j]`, the first index fixes `b /
 fixes `b % n`, so the two together fix `b`. `n` must be a number above zero, or a factor of the
 end of the loop, as in `for b in 0..m * n across blocks`. When `n` is zero, that loop has no passes.
 
+An index can also use `i / n` and `i % n`, where `i` is the variable of a loop in the block loop,
+with the same rule for `n`. With `i` below 4 and `j` below 32, `(i / 2) * 32 + j` is at most 63.
+So `c[b * 64 + (i / 2) * 32 + j]` fixes `b`.
+
 The same check refuses a read of an element that another pass writes, a write to a variable from
 outside the loop, `println!`, and a call that can write through its argument.
+
+## Rows from a tensor of indices
+
+An index can also come from a tensor, as in `y[idx[b]]`. The compiler cannot see the values in
+`idx`, so two passes may get the same row, and the write is E6032. A mixture-of-experts layer in
+a language model needs this write: the kernel of each expert writes its results to the rows of its
+tokens.
+
+When no two elements of `idx` are equal, say so in its type:
+`Distinct<Tensor<i32, [?], Memory::HBM>>`. Then `idx[b]` fixes `b`, as `b` does.
+
+`Distinct::check(t)` makes a `Distinct` tensor. It reads the values of `t` on the CPU, and returns
+`Some` with a `Distinct` tensor when no two are equal, and `None` when two are. A program that
+matches on the result imports `core::option`. In this program, the rows 5, 1 and 6 pass the check
+and move to GPU memory. Then block `b` adds row `b` of `x` to row `rows[b]` of `y`
+(`book_gpu_rows_from_a_distinct_tensor.vx`):
+
+```rust
+{{#include ../../../tests/optimizations/pass/book_gpu_rows_from_a_distinct_tensor.vx:program}}
+```
+
+It prints `column 0: 1 3 1 1 1 2 4 1` and the same line for column 63.
+
+`Distinct::check(t)` takes `t` by value: a tensor with one dimension of `i32`, `i64`, `u32` or
+`u64`. It sorts a copy of the values and compares each value with the next, so it costs one sort
+on the CPU. When two values are equal, it returns `None` and drops `t`. It cannot read a tensor in
+GPU memory, so check the tensor first, and then `transfer` the `Distinct` tensor. A `transfer` of
+a `Distinct` tensor gives a `Distinct` tensor in the new memory.
+
+When the program made the values itself and knows that no two are equal, `unsafe { Distinct(t) }`
+makes a `Distinct` tensor with no check. It takes a tensor of integers with one dimension, and it
+moves `t`, so no other name can change the values. If two elements are equal, two passes write the
+same element. That is a data race, and Vx makes no promise about the result. This is why
+`Distinct(t)` needs `unsafe`.
+
+A function of the library can make the claim for its caller. `nn_moe_group` in `std::nn` groups
+the token-expert pairs of a mixture-of-experts layer by expert, on the GPU. It returns the grouped
+order as a `Distinct` tensor. Its `unsafe { Distinct(order) }` is inside the library, so the caller
+needs no check and no `unsafe`.
+
+The compiler adds one fact, that no two elements are equal, and checks everything else as before:
+
+- A `Distinct` tensor is read only. A write to one of its elements is E4006, because a write could
+  make two elements equal. `rows.len()` gives its length.
+- Only a parameter of the function counts. A `Distinct` local or field, or a parameter whose name
+  the function binds again, does not fix `b`. So write the kernel in a function that takes the
+  tensor as a parameter, as `add_to_rows` does.
+- `rows[e]` fixes what `e` fixes, so `rows[b / 2]` does not fix `b`. A read of `y[b]`, or of
+  `y[rows[b + 1]]`, in the same loop is still E6032, because another pass may write that row.
+- The other rules for an index still apply. `(rows[b] as i64) * 4 + (l as i64)`, with `l` below 4,
+  fixes `b`, as `b * 4 + l` does. With `i64` elements, `rows[b] * 4` can wrap, so two different
+  elements can give the same index, and the write is E6032.
+
+A `Distinct` tensor does not help when two passes add to the same row. In a mixture-of-experts
+layer, a token goes to several experts, and their results add into the row of the token. Use
+[atomics](#atomics-on-the-elements-of-a-tensor) for that, or a separate pass.
 
 ## A tile in shared memory
 
@@ -85,6 +145,9 @@ program adds each row of a matrix in a block of its own (`book_gpu_row_sums_in_s
 It prints `row 0: 256, row 7: 2048`.
 
 Here each lane reads only the element that it wrote, so the compiler keeps `part` in registers.
+This also works through several lane loops. When every access to a tile is `t[..][l]`, or
+`t[w][..][l]` in subgroup `w`, with `l` the index of a lane loop over all the lanes, the compiler
+keeps each lane's elements of `t` in its registers.
 
 The library has other routines of this kind. `lanes::max` gives the largest element, and
 `lanes::argmax` its index. Write each call as the whole value of a `let`, in the code of a block.
@@ -144,6 +207,34 @@ The token holds the borrow of the tile. So a read of the tile before its `.wait(
 error, and a token with no `.wait()` gets the error E6036. On an H100 the copy uses TMA, and on an
 older NVIDIA GPU `cp.async`. Today the copy does not work on tiles of `f64` or of integers.
 `tests/optimizations/pass/lane_copies_on_the_cpu.vx` is a complete program.
+
+`lanes::copy_rows_async(&mut tile, &x, &ids, [first, col])` copies rows that a list of ids
+chooses, such as the cached rows of the tokens that an attention step reads. Row `r` of `tile` gets
+row `ids[first + r]` of `x`, from column `col`. A row whose id is below 0 or not a row of `x`, or
+past the end of `ids`, is zeros. `tile` and `x` have 2 dimensions, and `ids` is a tensor of `i32`
+with 1 dimension. The token works as the one of `lanes::copy_async`, and the copy uses `cp.async`.
+`tests/optimizations/pass/lane_copies_of_rows_by_id.vx` is a complete program.
+
+`lanes::copy(&mut dst, &src, [i, j])` copies a tile and ends before it returns. When `dst` is a
+tile in shared memory, the copy goes into it, as `lanes::copy_async` and `.wait()` do. Otherwise
+`src` is the tile, and the copy goes into the part of `dst` that starts at `[i, j]`. Past the end
+of `dst`, it writes nothing. So the subgroups of a block can store their tiles of a result:
+
+```rust
+for w in 0..4 across subgroups {
+  lanes::copy(c, &acc[w], [bm * 128 + w * 32, bn * 128]);
+}
+```
+
+Two blocks or two subgroups must not write the same element of `c` (E6032).
+`tests/optimizations/pass/lane_copy_into_and_out_of_a_tile.vx` is a complete program.
+
+`lanes::fill(&mut tile, v)` sets each element of a tile in shared memory to `v`. Every lane of the
+block or the subgroup sets a part of the tile, so it is faster than a loop on one lane.
+
+`lanes::scale_rows(&mut tile, &scale)` multiplies row `i` of a tile in shared memory by `scale[i]`.
+Flash attention does this to its output sums between two matmuls. The sums of a tensor-core
+matmul can then stay in registers.
 
 ## Math functions in a kernel
 

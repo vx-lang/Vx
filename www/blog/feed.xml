@@ -5,8 +5,17 @@
   <link href="https://vxlang.org/blog/feed.xml" rel="self"/>
   <link href="https://vxlang.org/blog/"/>
   <id>https://vxlang.org/blog/</id>
-  <updated>2026-11-15T18:00:00Z</updated>
+  <updated>2026-11-17T18:00:00Z</updated>
   <author><name>Aditya Kumar</name></author>
+
+  <entry>
+    <title>An escape hatch the size of one fact</title>
+    <link href="https://vxlang.org/blog/an-escape-hatch-the-size-of-one-fact.html"/>
+    <id>https://vxlang.org/blog/an-escape-hatch-the-size-of-one-fact.html</id>
+    <updated>2026-11-17T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>The kernel of one expert in a mixture-of-experts layer writes its results to the rows of its tokens, y[idx[b]]. The Vx compiler refused it, because it could not prove that two blocks never write the same row. No analysis can: the rows are data at run time. Iteration domains, the base of polyhedral compilation, prove that loops with linear indices can run in parallel, and stop at an index loaded from memory. Vx's new type Distinct lets the programmer state the one missing fact, that no two elements of idx are equal. Distinct::check makes one after a sort on the CPU, and unsafe makes one with no check. It is read only, it lives in the signature, and the compiler checks every other access as before. C's restrict states that pointers do not overlap and cannot state this fact. clang refused to vectorize the same scatter-add with every pointer restrict, and with the assume_safety pragma it vectorized the loop and printed 2 where the answer was 4.</summary>
+  </entry>
 
   <entry>
     <title>Vx meets Postgres</title>

@@ -384,6 +384,47 @@ pub fn remainder_too_wide_for_its_digit(c : &mut Tensor<f32, [?, ?], Memory::HBM
   return;
 }
 
+// `v % 4` can be 3, so blocks 3 and 4 both write `out[3]`.
+pub fn remainder_and_quotient_that_overlap(out : &mut Tensor<f32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for v in 0..8 across blocks {
+      // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:[[# @LINE + 1]]:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `v`
+      out[(v % 4) + 3 * (v / 4)] = 1.0;
+    }
+  }
+  return;
+}
+
+// `w / 2` can be 2 or 3, so subgroup 4 of block 0 writes the rows of block 1.
+pub fn subgroup_quotient_too_wide_for_its_digit(c : &mut Tensor<f32, [?, 64], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..4 across blocks {
+      for w in 0..8 across subgroups {
+        for j in 0..32 across lanes {
+          // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:[[# @LINE + 1]]:{{.*}}two passes of this block loop may write the same element of `c`: an index of the write must fix `blk`
+          c[blk * 64 + (w / 2) * 32 + j][(w % 2) * 32] = 0.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+// `w % 4` can be 2 or 3, so subgroup 2 of block 0 writes the rows of block 1.
+pub fn subgroup_remainder_too_wide_for_its_digit(c : &mut Tensor<f32, [?, 64], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..4 across blocks {
+      for w in 0..8 across subgroups {
+        for j in 0..32 across lanes {
+          // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:[[# @LINE + 1]]:{{.*}}two passes of this block loop may write the same element of `c`: an index of the write must fix `blk`
+          c[blk * 64 + (w % 4) * 32 + j][(w / 4) * 32] = 0.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
 fn main() -> i32 {
   return 0;
 }

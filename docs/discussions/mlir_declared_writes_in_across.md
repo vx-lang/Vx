@@ -2,7 +2,8 @@
 
 Status: proposed. The `atomic` predicate and `writes_only()` with no tensors are built, for
 functions and `mlir!` blocks (D2, D4 and the checks of D6), with `f32` and `f64` beside the integer
-types (#2139). Issue: #252. Builds on the L4 race proof (`src/hir/check/across_proof.rs`,
+types (#2139). For `mlir!` blocks, `writes_only(t)` and `writes_only(t[e0, ..])` are built too
+(#3554), with the elements written `t[e0][e1]` and a pass-local `t` passed as `&mut t` (D3). Issue: #252. Builds on the L4 race proof (`src/hir/check/across_proof.rs`,
 #2085) and on the contract clauses of `contracts_for_extern_and_unsafe_code.md` (X1, X3).
 
 The L4 proof refuses an `mlir!` block, a method call, an indirect call, and a call to any

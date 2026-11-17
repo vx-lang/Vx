@@ -1,0 +1,48 @@
+// `--emit-ptx` names a kernel after its function, so a program that loads the PTX can find it. An
+// instance of a generic function gets the name of the function, and `_1`, `_2` and so on after
+// the first instance. `fill` here has an instance for `f32` and one for `i32`. The manifest gives
+// the full name of the instance in `function`.
+//
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s --input-file=%t.ptx
+// RUN: FileCheck %s --check-prefix=JSON --input-file=%t.json
+//
+// CHECK-DAG: .entry fill(
+// CHECK-DAG: .entry fill_1(
+// CHECK-DAG: .entry plain(
+// JSON-DAG: "function": "fill$f32"
+// JSON-DAG: "function": "fill$i32"
+// JSON-DAG: "name": "fill_1"
+// JSON-DAG: "name": "plain"
+
+fn fill<T>(out : &mut Tensor<T, [?], Memory::HBM>, value : T, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for l in 0..1 across lanes {
+        out[b + l] = value;
+      }
+    }
+  }
+  return;
+}
+
+pub fn plain(out : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for l in 0..1 across lanes {
+        out[b + l] = 3.0;
+      }
+    }
+  }
+  return;
+}
+
+pub fn both(a : &mut Tensor<f32, [?], Memory::HBM>, b : &mut Tensor<i32, [?], Memory::HBM>, n : i32) -> void {
+  fill(a, 1.0, n);
+  fill(b, 2, n);
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -87,6 +87,12 @@ pub struct Parser<'a> {
     /// Set once tuple syntax is seen: the module then imports `core::tuple`, where the structs
     /// it stands for are declared.
     uses_tuples: bool,
+    /// Set once `Distinct::check` is seen: the module then imports `core::distinct`, where the
+    /// check is.
+    uses_distinct_check: bool,
+    /// The names that a `let` without `mut` binds to a string literal. `==` on such a name
+    /// compares text, so it needs `core::c_str` as a literal does.
+    string_literal_names: std::collections::HashSet<crate::symbol::Symbol>,
     /// Statements a desugaring produced after the one it returned: `let (a, b) = e;` is a `let`
     /// of `e` followed by one per name. `parse_statement_into` appends them.
     pending_stmts: Vec<crate::syntax::Statement>,
@@ -121,6 +127,8 @@ impl<'a> Parser<'a> {
             mut_params: Vec::new(),
             source,
             uses_tuples: false,
+            uses_distinct_check: false,
+            string_literal_names: std::collections::HashSet::new(),
             pending_stmts: Vec::new(),
             tuple_lets: 0,
             prefix_stmts: Vec::new(),
