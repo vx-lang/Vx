@@ -72,13 +72,46 @@ So `c[b * 64 + (i / 2) * 32 + j]` fixes `b`.
 The same check refuses a read of an element that another pass writes, a write to a variable from
 outside the loop, `println!`, and a call that can write through its argument.
 
+## Rows from a tensor of indices
+
 An index can also come from a tensor, as in `y[idx[b]]`. The compiler cannot see the values in
-`idx`, so two passes may get the same row. Give `idx` the type
-`Distinct<Tensor<i32, [?], Memory::HBM>>` to say that no two of its elements are equal. Then
-`idx[b]` fixes `b`, as `b` does. A `Distinct` tensor is read only, and `idx.len()` gives its
-length. `unsafe { Distinct(t) }` makes one from a tensor `t` of integers with one dimension. The
-program does not check the values, so make sure that no two are equal. If two are equal, two
-passes write the same element, and the result is wrong.
+`idx`, so two passes may get the same row, and the write is E6032. A mixture-of-experts layer in
+a language model needs this write: the kernel of each expert writes its results to the rows of its
+tokens.
+
+When no two elements of `idx` are equal, say so in its type:
+`Distinct<Tensor<i32, [?], Memory::HBM>>`. Then `idx[b]` fixes `b`, as `b` does. In this program,
+block `b` adds row `b` of `x` to row `rows[b]` of `y` (`book_gpu_rows_from_a_distinct_tensor.vx`):
+
+```rust
+{{#include ../../../tests/optimizations/pass/book_gpu_rows_from_a_distinct_tensor.vx:program}}
+```
+
+It prints `column 0: 1 3 1 1 1 2 4 1` and the same line for column 63.
+
+`unsafe { Distinct(t) }` makes a `Distinct` tensor from a tensor `t` of integers with one
+dimension. It moves `t`, so no other name can change the values. The compiler does not check the
+values. If two elements are equal, two passes write the same element. That is a data race, and Vx
+makes no promise about the result. This is why `Distinct(t)` needs `unsafe`. A function that checks
+the values on the host and returns a `Distinct` tensor is planned
+([Vx#3562](https://github.com/vx-lang/Vx/issues/3562)).
+
+The compiler adds one fact, that no two elements are equal, and checks everything else as before:
+
+- A `Distinct` tensor is read only. A write to one of its elements is E4006, because a write could
+  make two elements equal. `rows.len()` gives its length.
+- Only a parameter of the function counts. A `Distinct` local or field, or a parameter whose name
+  the function binds again, does not fix `b`. So write the kernel in a function that takes the
+  tensor as a parameter, as `add_to_rows` does.
+- `rows[e]` fixes what `e` fixes, so `rows[b / 2]` does not fix `b`. A read of `y[b]`, or of
+  `y[rows[b + 1]]`, in the same loop is still E6032, because another pass may write that row.
+- The other rules for an index still apply. `(rows[b] as i64) * 4 + (l as i64)`, with `l` below 4,
+  fixes `b`, as `b * 4 + l` does. With `i64` elements, `rows[b] * 4` can wrap, so two different
+  elements can give the same index, and the write is E6032.
+
+A `Distinct` tensor does not help when two passes add to the same row. In a mixture-of-experts
+layer, a token goes to several experts, and their results add into the row of the token. Use
+[atomics](#atomics-on-the-elements-of-a-tensor) for that, or a separate pass.
 
 ## A tile in shared memory
 

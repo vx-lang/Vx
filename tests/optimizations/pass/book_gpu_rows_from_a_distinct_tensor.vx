@@ -1,0 +1,55 @@
+//===- book_gpu_rows_from_a_distinct_tensor.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on GPU code (www/book/src/gpu.md): block `b` adds row `b` of `x`
+// to row `rows[b]` of `y`. The rows are 5, 1 and 6, and row `b` of `x` holds `b + 1`, so rows 5,
+// 1 and 6 of `y` become 2, 3 and 4. The other rows keep 1.
+//
+// The RUN lines run the CPU copy of the kernel (`CUDA_VISIBLE_DEVICES=`), with both code
+// generators.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}column 0: 1 3 1 1 1 2 4 1{{$}}
+// CHECK: {{^}}column 63: 1 3 1 1 1 2 4 1{{$}}
+
+// ANCHOR: program
+fn add_to_rows(y : &mut Tensor<f32, [?, ?], Memory::HBM>, rows : &Distinct<Tensor<i32, [?], Memory::HBM>>, x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..rows.len() across blocks {
+      for l in 0..64 across lanes(64) {
+        y[rows[b]][l] += x[b][l];
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut tokens = Tensor<i32, [3]>::fill(0);
+  tokens[0] = 5;
+  tokens[1] = 1;
+  tokens[2] = 6;
+  let rows = unsafe { Distinct(transfer(tokens, Memory::HBM)) };
+
+  let mut xh = Tensor<f32, [3, 64]>::fill(0.0);
+  for b in 0..3 {
+    for l in 0..64 {
+      xh[b][l] = (b + 1) as f32;
+    }
+  }
+  let x = transfer(xh, Memory::HBM);
+  let mut y = transfer(Tensor<f32, [8, 64]>::fill(1.0), Memory::HBM);
+  add_to_rows(&mut y, &rows, &x);
+
+  let back = transfer(y, Memory::CPU_DRAM);
+  for l in [0, 63] {
+    println!("column {}: {} {} {} {} {} {} {} {}", l, back[0][l], back[1][l], back[2][l], back[3][l], back[4][l], back[5][l], back[6][l], back[7][l]);
+  }
+  return 0;
+}
+// ANCHOR_END: program

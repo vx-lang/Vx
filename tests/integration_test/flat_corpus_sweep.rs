@@ -276,6 +276,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/book_gpu_blocks_and_lanes.vx", // needs --machine
         "optimizations/pass/book_gpu_histogram_with_atomics.vx", // needs --machine
         "optimizations/pass/book_gpu_row_sums_in_shared_memory.vx", // needs --machine
+        "optimizations/pass/book_gpu_rows_from_a_distinct_tensor.vx", // needs --machine
         "optimizations/pass/std_nn_kernels_match_loops_on_the_cpu.vx", // needs --machine
         "optimizations/pass/std_nn_fp8_kernels_match_loops_on_the_cpu.vx", // needs --machine
         "optimizations/pass/std_nn_moe_kernels_match_loops_on_the_cpu.vx", // needs --machine

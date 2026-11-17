@@ -54,7 +54,7 @@ the same in each run.
 | The same work on each element of a tensor | an `across` loop in a `spawn on` region |
 | A sum, a maximum or a sort over the lanes of a block | `lanes::sum`, `lanes::max`, `lanes::sort` |
 | Many passes that add to the same element of a tensor | `atomic_fetch_add_u32` and the other atomics on elements |
-| Each pass writes at a row that a tensor gives it | a `Distinct` tensor of rows |
+| Each pass writes at a row that a tensor gives it | a `Distinct` tensor of rows ([Rows from a tensor of indices](gpu.md#rows-from-a-tensor-of-indices)) |
 | A copy into a tile while the lanes work | `lanes::copy_async` |
 | A copy of a tile to or from shared memory | `lanes::copy` |
 | The same value in each element of a tile in shared memory | `lanes::fill` |
