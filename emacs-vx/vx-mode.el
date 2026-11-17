@@ -35,19 +35,19 @@ The default matches the output of `vx-format'."
 (defconst vx-keywords
   '("across" "as" "assert" "break" "comptime" "continue" "else" "ensures"
     "enum" "extern" "fn" "for" "grad" "if" "impl" "import" "in" "invariant"
-    "jvp" "let" "loop" "macro_rules" "match" "mut" "on" "requires" "return"
-    "safe" "self" "spawn" "struct" "tasks" "trait" "transfer" "type" "unroll"
-    "unsafe" "vjp" "where" "while")
+    "jvp" "let" "loop" "match" "mut" "on" "pub" "requires" "return" "safe"
+    "self" "spawn" "struct" "tasks" "trait" "transfer" "transfer_async" "type"
+    "unroll" "unsafe" "vjp" "where" "while")
   "Keywords of Vx, as listed in src/lexer.rs, plus `self'.")
 
 (defconst vx-builtin-types
-  '("Topology" "Memory" "Ref" "Verified" "Pinned" "HardwareState")
+  '("Topology" "Memory" "Ref" "Verified" "Distinct" "Pinned" "HardwareState")
   "Type names that the Vx lexer treats as keywords.")
 
 (defconst vx-primitive-types
-  '("i4" "i8" "i16" "i32" "i64" "i128"
-    "u4" "u8" "u16" "u32" "u64" "u128"
-    "f16" "bf16" "f32" "f64" "bool" "usize" "isize")
+  '("f4e2m1" "f8e4m3" "f8e5m2" "bf16" "f16" "f32" "f64"
+    "i4" "u4" "i8" "u8" "i16" "u16" "i32" "u32" "i64" "u64" "i128" "u128"
+    "usize" "bool")
   "Built-in number and boolean types.")
 
 (defconst vx-constants '("true" "false")
