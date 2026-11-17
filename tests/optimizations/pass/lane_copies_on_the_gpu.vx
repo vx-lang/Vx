@@ -79,16 +79,13 @@ pub fn sum_tiles(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, 
   return;
 }
 
-// Three tiles in flight, waited first, third and second. The first lets the two after it go on,
-// and the third none. The second then lets the third go on, which ended already.
-// CHECK: cp.async.wait_group 2;
-// CHECK-NEXT: bar.sync 0;
+// Three tiles in flight, waited first, third and second, one after another. Copies end in the
+// order they started, so one wait for the third does the work of all three.
+// CHECK-COUNT-3: cp.async.commit_group;
 // CHECK-NEXT: cp.async.wait_group 0;
 // CHECK-NEXT: bar.sync 0;
-// CHECK-NEXT: cp.async.wait_group 1;
-// CHECK-NEXT: bar.sync 0;
 // CHECK-NOT: cp.async
-// CHECK-LABEL: .entry rows_of_subgroups(
+// CHECK-LABEL: .entry reads_between_waits(
 pub fn three_in_flight(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
   spawn on(Topology::Device) {
     for b in 0..1 across blocks {
@@ -103,6 +100,120 @@ pub fn three_in_flight(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32
       second.wait();
       for t in 0..32 across lanes(32) {
         out[t] = tiles[0][0][t] + tiles[1][0][t] + tiles[2][0][t];
+      }
+    }
+  }
+  return;
+}
+
+// The same waits with a read of a tile after each, so each wait stays. The first lets the two
+// after it go on, and the third none. The second then lets the third go on, which ended already.
+// The read after the first wait is code of the block, not of a loop across lanes.
+// CHECK: cp.async.wait_group 2;
+// CHECK-NEXT: bar.sync 0;
+// CHECK: cp.async.wait_group 0;
+// CHECK-NEXT: bar.sync 0;
+// CHECK: cp.async.wait_group 1;
+// CHECK-NEXT: bar.sync 0;
+// CHECK-NOT: cp.async
+// CHECK-LABEL: .entry nine_in_flight(
+pub fn reads_between_waits(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tiles = unsafe {
+        Tensor<f32, [3, 8, 32], Memory::SMEM>::uninit()
+      };
+      let first = lanes::copy_async(&mut tiles[0], x, [0, 0]);
+      let second = lanes::copy_async(&mut tiles[1], x, [8, 0]);
+      let third = lanes::copy_async(&mut tiles[2], x, [16, 0]);
+      first.wait();
+      let corner = tiles[0][0][0];
+      third.wait();
+      for t in 0..32 across lanes(32) {
+        out[t] = corner + tiles[2][0][t];
+      }
+      second.wait();
+      for t in 0..32 across lanes(32) {
+        out[t] = out[t] + tiles[1][0][t];
+      }
+    }
+  }
+  return;
+}
+
+// Nine tiles in flight. The wait for the first can let at most 7 of the 8 after it go on.
+// CHECK: cp.async.wait_group 7;
+// CHECK-NEXT: bar.sync 0;
+// CHECK: cp.async.wait_group 0;
+// CHECK-NEXT: bar.sync 0;
+// CHECK-NOT: cp.async
+// CHECK-LABEL: .entry two_tiles_a_pass(
+pub fn nine_in_flight(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tiles = unsafe {
+        Tensor<f32, [9, 8, 32], Memory::SMEM>::uninit()
+      };
+      let t0 = lanes::copy_async(&mut tiles[0], x, [0, 0]);
+      let t1 = lanes::copy_async(&mut tiles[1], x, [8, 0]);
+      let t2 = lanes::copy_async(&mut tiles[2], x, [16, 0]);
+      let t3 = lanes::copy_async(&mut tiles[3], x, [24, 0]);
+      let t4 = lanes::copy_async(&mut tiles[4], x, [32, 0]);
+      let t5 = lanes::copy_async(&mut tiles[5], x, [40, 0]);
+      let t6 = lanes::copy_async(&mut tiles[6], x, [48, 0]);
+      let t7 = lanes::copy_async(&mut tiles[7], x, [56, 0]);
+      let t8 = lanes::copy_async(&mut tiles[8], x, [64, 0]);
+      t0.wait();
+      for t in 0..32 across lanes(32) {
+        out[t] = tiles[0][0][t];
+      }
+      t1.wait();
+      t2.wait();
+      t3.wait();
+      t4.wait();
+      t5.wait();
+      t6.wait();
+      t7.wait();
+      t8.wait();
+      for t in 0..32 across lanes(32) {
+        out[t] = out[t] + tiles[8][0][t];
+      }
+    }
+  }
+  return;
+}
+
+// Two copies and their two waits in each pass of a loop become one wait, with no other cases.
+// LLVM puts the code of the second copy, which ends with the wait, first in the text.
+// CHECK-NOT: cp.async.wait_group
+// CHECK: cp.async.commit_group;
+// CHECK-NEXT: cp.async.wait_group 0;
+// CHECK-NEXT: bar.sync 0;
+// CHECK-NOT: cp.async.wait_group
+// CHECK: cp.async.commit_group;
+// CHECK-NOT: cp.async.wait_group
+// CHECK-LABEL: .entry rows_of_subgroups(
+pub fn two_tiles_a_pass(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>, steps : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tiles = unsafe {
+        Tensor<f32, [2, 8, 32], Memory::SMEM>::uninit()
+      };
+      let mut acc = unsafe { Tensor<f32, [32], Memory::SMEM>::uninit() };
+      for t in 0..32 across lanes(32) {
+        acc[t] = 0.0;
+      }
+      for k in 0..steps {
+        let left = lanes::copy_async(&mut tiles[0], x, [0, 64 * k]);
+        let right = lanes::copy_async(&mut tiles[1], x, [0, 64 * k + 32]);
+        left.wait();
+        right.wait();
+        for t in 0..32 across lanes(32) {
+          acc[t] = acc[t] + tiles[0][0][t] + tiles[1][0][t];
+        }
+      }
+      for t in 0..32 across lanes(32) {
+        out[t] = acc[t];
       }
     }
   }
