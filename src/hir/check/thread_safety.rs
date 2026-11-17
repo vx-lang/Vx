@@ -105,7 +105,7 @@ impl<'a> TypeChecker<'a> {
                 is_mut: true,
                 ..
             } => self.thread_trait_fails(inner, which, visiting),
-            Type::Verified(inner) | Type::Pinned(inner, _) => {
+            Type::Verified(inner) | Type::Distinct(inner) | Type::Pinned(inner, _) => {
                 self.thread_trait_fails(inner, which, visiting)
             }
             Type::Struct(..) | Type::Enum(..) | Type::GenericInstance(..) => {

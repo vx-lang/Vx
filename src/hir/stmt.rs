@@ -4360,9 +4360,10 @@ impl MutReferenceTypes<'_> {
             match ty {
                 Type::Borrow { inner, is_mut, .. } => *is_mut || visit(types, inner, seen),
                 Type::Pointer(inner, _, is_mut) => *is_mut || visit(types, inner, seen),
-                Type::Ref(inner, _) | Type::Verified(inner) | Type::Pinned(inner, _) => {
-                    visit(types, inner, seen)
-                }
+                Type::Ref(inner, _)
+                | Type::Verified(inner)
+                | Type::Distinct(inner)
+                | Type::Pinned(inner, _) => visit(types, inner, seen),
                 Type::GenericInstance(base, args) => {
                     visit(types, base, seen) || args.iter().any(|arg| visit(types, arg, seen))
                 }

@@ -1,0 +1,75 @@
+//===- distinct_tensors_that_do_not_keep_blocks_apart.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// No two elements of a `Distinct` tensor are equal. Each function here still lets two blocks use
+// the same element of `y`, or it breaks the rules of a `Distinct` tensor.
+//
+// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
+
+// Block `b` writes row `idx[b]` and reads row `b`, which another block may write.
+pub fn reads_another_row(y : &mut Tensor<f32, [?, ?], Memory::HBM>, idx : &Distinct<Tensor<i32, [?], Memory::HBM>>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      // CHECK: Error[E6032] at {{.*}}:[[#@LINE+1]]:26: a pass of this block loop may read an element of `y` that another pass writes
+      y[idx[b]][0] = y[b][0] + 1.0;
+    }
+  }
+  return;
+}
+
+// Blocks 0 and 1 both write row `idx[0]`.
+pub fn two_blocks_share_an_index(y : &mut Tensor<f32, [?, ?], Memory::HBM>, idx : &Distinct<Tensor<i32, [?], Memory::HBM>>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      // CHECK: Error[E6032] at {{.*}}:[[#@LINE+1]]:7: two passes of this block loop may write the same element of `y`: an index of the write must fix `b`
+      y[idx[b / 2]][0] = 1.0;
+    }
+  }
+  return;
+}
+
+// Block `b` reads row `idx[b + 1]`, which block `b + 1` writes.
+pub fn reads_the_next_row(y : &mut Tensor<f32, [?, ?], Memory::HBM>, idx : &Distinct<Tensor<i32, [?], Memory::HBM>>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      // CHECK: Error[E6032] at {{.*}}:[[#@LINE+1]]:35: a pass of this block loop may read an element of `y` that another pass writes
+      y[idx[b]][0] = y[idx[b + 1]][0];
+    }
+  }
+  return;
+}
+
+// The `let` hides the parameter `idx` with a tensor that may hold two equal elements.
+pub fn a_hidden_parameter(y : &mut Tensor<f32, [?, ?], Memory::HBM>, idx : &Distinct<Tensor<i32, [?], Memory::HBM>>, other : &Tensor<i32, [?], Memory::HBM>, n : i32) -> void {
+  let idx = other;
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      // CHECK: Error[E6032] at {{.*}}:[[#@LINE+1]]:7: two passes of this block loop may write the same element of `y`: an index of the write must fix `b`
+      y[idx[b]][0] = 1.0;
+    }
+  }
+  return;
+}
+
+// A write could make two elements equal.
+pub fn writes_an_element(idx : &mut Distinct<Tensor<i32, [?]>>) -> void {
+  // CHECK: Error[E4006] at {{.*}}:[[#@LINE+1]]:6: a `Distinct` tensor is read only: a write could make two of its elements equal
+  idx[0] = 3;
+  // CHECK: Error[E4006] at {{.*}}:[[#@LINE+1]]:6: a `Distinct` tensor is read only
+  idx[1] += 3;
+  return;
+}
+
+fn main() -> i32 {
+  // CHECK: Error[E5001] at {{.*}}:[[#@LINE+1]]:15: `Distinct(t)` is unsafe and needs an `unsafe` block
+  let _rows = Distinct(Tensor<i32, [4]>::fill(0));
+  // CHECK: Error[E3004] at {{.*}}:[[#@LINE+1]]:25: `Distinct(t)` takes one tensor of integers with one dimension, by value
+  let _pairs = unsafe { Distinct(Tensor<i32, [2, 2]>::fill(0)) };
+  // CHECK: Error[E3004] at {{.*}}:[[#@LINE+1]]:26: `Distinct(t)` takes one tensor of integers with one dimension, by value
+  let _floats = unsafe { Distinct(Tensor<f32, [2]>::fill(0.0)) };
+  return 0;
+}

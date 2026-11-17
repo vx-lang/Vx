@@ -95,6 +95,9 @@ struct Walk<'g> {
     lane_matmuls: HashSet<Span>,
     /// The parameters of the function that are `&` tensors, not `&mut`.
     read_only: HashSet<String>,
+    /// The parameters that are `Distinct` tensors, with the type of their elements. A name that
+    /// the body binds again is not here.
+    distinct: HashMap<String, ElementType>,
 }
 
 /// A lane reduction in the code of a level.
@@ -121,6 +124,26 @@ impl crate::hir::TypeChecker<'_> {
                     if matches!(**inner, crate::syntax::Type::Tensor(..)))
             })
             .map(|(name, _)| name.as_ref().to_string())
+            .collect();
+        let bound = bound_names(body);
+        let distinct = params
+            .iter()
+            .filter(|(name, _)| !bound.contains(name.as_ref()))
+            .filter_map(|(name, ty)| {
+                let ty = match ty {
+                    crate::syntax::Type::Borrow { inner, .. } => inner,
+                    ty => ty,
+                };
+                match ty {
+                    crate::syntax::Type::Distinct(t) => match &**t {
+                        crate::syntax::Type::Tensor(el, ..) => {
+                            Some((name.as_ref().to_string(), el.clone()))
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            })
             .collect();
         let shared = self
             .env
@@ -153,6 +176,7 @@ impl crate::hir::TypeChecker<'_> {
             lane_calls: Vec::new(),
             lane_matmuls: HashSet::new(),
             read_only,
+            distinct,
         };
         walk.stmts(body, &Ctx::default());
         mark_stmts(body, &walk.found);
@@ -170,6 +194,59 @@ impl crate::hir::TypeChecker<'_> {
             );
         }
     }
+}
+
+/// The names that a `let`, a loop, a closure or a `match` arm in `stmts` binds, at any depth.
+fn bound_names(stmts: &[Statement]) -> HashSet<String> {
+    fn pattern(p: &crate::syntax::expr::Pattern, out: &mut HashSet<String>) {
+        match p {
+            crate::syntax::expr::Pattern::Identifier(n) => {
+                out.insert(n.as_ref().to_string());
+            }
+            crate::syntax::expr::Pattern::EnumVariant(_, _, Some(ps)) => {
+                ps.iter().for_each(|p| pattern(p, out));
+            }
+            _ => {}
+        }
+    }
+    fn walk(stmts: &[Statement], out: &mut HashSet<String>) {
+        for s in stmts {
+            match s {
+                Statement::LetDecl(l) => {
+                    out.insert(l.name.as_ref().to_string());
+                }
+                Statement::ForLoop(f) => {
+                    out.insert(f.iter.to_string());
+                    walk(&f.body, out);
+                }
+                Statement::Loop(l) => walk(&l.body, out),
+                _ => {}
+            }
+        }
+        crate::syntax::visit_exprs(stmts, &mut |e| match e {
+            Expr::If(i) => {
+                walk(&i.then_block, out);
+                if let Some(b) = &i.else_block {
+                    walk(b, out);
+                }
+            }
+            Expr::Match(m) => m.arms.iter().for_each(|a| {
+                pattern(&a.pattern, out);
+                walk(&a.body, out);
+            }),
+            Expr::UnsafeBlock(b) => walk(&b.stmts, out),
+            Expr::ComptimeBlock(b) => walk(&b.stmts, out),
+            Expr::SpawnOn(b) => walk(&b.stmts, out),
+            Expr::TaskBlock(b) => walk(&b.stmts, out),
+            Expr::Closure(c) => c.params.iter().for_each(|(n, _)| {
+                out.insert(n.as_ref().to_string());
+            }),
+            _ => {}
+        });
+    }
+    let mut out = HashSet::new();
+    walk(stmts, &mut out);
+    out
 }
 
 /// The integer that `e` is when it is a literal.
@@ -1331,6 +1408,7 @@ impl Walk<'_> {
             &self.contracts,
             &self.templates,
             &self.lane_copies_out,
+            &self.distinct,
         ) {
             Err((why, at)) => self.error(why, at),
             Ok(ends) => {

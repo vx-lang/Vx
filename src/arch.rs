@@ -1477,7 +1477,7 @@ impl TransferCostGraph {
     fn passed_by_value(ty: &Type) -> bool {
         match ty {
             Type::Scalar(_) | Type::Pointer(..) | Type::Simd(..) | Type::Function(..) => true,
-            Type::Verified(inner) => Self::passed_by_value(inner),
+            Type::Verified(inner) | Type::Distinct(inner) => Self::passed_by_value(inner),
             _ => false,
         }
     }

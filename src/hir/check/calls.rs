@@ -2889,6 +2889,33 @@ impl<'a> TypeChecker<'a> {
             }
             let inner_ty = arg_types[0].clone();
             Some(Type::Verified(Box::new(inner_ty)))
+        } else if resolved_name == "Distinct" {
+            // The checker cannot see the values, so the program states that no two are equal.
+            if self.unsafe_is_missing() {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E5001,
+                    "`Distinct(t)` is unsafe and needs an `unsafe` block: it states that no two \
+                     elements of `t` are equal, and the program does not check it. Two blocks \
+                     that write at the rows it gives may then write the same row",
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&call_span)),
+                );
+            }
+            match arg_types {
+                [ty @ Type::Tensor(elem, dims, _)]
+                    if dims.len() == 1 && (elem.is_signed_int() || elem.is_unsigned_int()) =>
+                {
+                    Some(Type::Distinct(Box::new(ty.clone())))
+                }
+                _ => {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3004,
+                        "`Distinct(t)` takes one tensor of integers with one dimension, by value"
+                            .to_string(),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&call_span)),
+                    );
+                    Some(Type::Unknown)
+                }
+            }
         // The older spelling, `Tensor<f32>([2, 3])`, names the constructor by its prefix. A name
         // holding `::` is a path -- the four constructors above are matched exactly, so anything
         // else is a method nothing defines, and reporting it undefined beats building a tensor
@@ -3707,7 +3734,16 @@ impl<'a> TypeChecker<'a> {
                 // Typed `i32` like `extent` and like `Vec::len`. A rank-0 tensor holds one value
                 // and has no axis to count, so it is refused rather than answered.
                 if _method.as_ref() == "len" {
-                    if let Some((_, dims, _)) = Self::as_tensor_operand(&base_ty) {
+                    // A `Distinct` tensor has the length of its tensor.
+                    let counted = match &base_ty {
+                        Type::Borrow { inner, .. } => inner.as_ref(),
+                        t => t,
+                    };
+                    let counted = match counted {
+                        Type::Distinct(t) => t.as_ref(),
+                        _ => &base_ty,
+                    };
+                    if let Some((_, dims, _)) = Self::as_tensor_operand(counted) {
                         if !args.is_empty() {
                             self.errors.error_with_code(
                                 crate::diagnostic::DiagnosticCode::E3025,

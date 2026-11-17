@@ -858,6 +858,11 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
+        if let (Type::Distinct(inner_target), Type::Distinct(inner_source)) = (target, source) {
+            if self.is_assignable(inner_target, inner_source) {
+                return true;
+            }
+        }
 
         // Note: Verified<T> should NOT implicitly coerce to T if the user strictly expected T in tests,
         // or perhaps we shouldn't strip it here. Let's revert this coercion so type_mismatch fails again.
@@ -935,9 +940,10 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn tensor_of(ty: &Type) -> Option<(&ElementType, &[Dim])> {
         match ty {
             Type::Tensor(e, d, _) => Some((e, d.as_slice())),
-            Type::Ref(inner, _) | Type::Pinned(inner, _) | Type::Verified(inner) => {
-                Self::tensor_of(inner)
-            }
+            Type::Ref(inner, _)
+            | Type::Pinned(inner, _)
+            | Type::Verified(inner)
+            | Type::Distinct(inner) => Self::tensor_of(inner),
             _ => None,
         }
     }

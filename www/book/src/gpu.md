@@ -72,6 +72,14 @@ So `c[b * 64 + (i / 2) * 32 + j]` fixes `b`.
 The same check refuses a read of an element that another pass writes, a write to a variable from
 outside the loop, `println!`, and a call that can write through its argument.
 
+An index can also come from a tensor, as in `y[idx[b]]`. The compiler cannot see the values in
+`idx`, so two passes may get the same row. Give `idx` the type
+`Distinct<Tensor<i32, [?], Memory::HBM>>` to say that no two of its elements are equal. Then
+`idx[b]` fixes `b`, as `b` does. A `Distinct` tensor is read only, and `idx.len()` gives its
+length. `unsafe { Distinct(t) }` makes one from a tensor `t` of integers with one dimension. The
+program does not check the values, so make sure that no two are equal. If two are equal, two
+passes write the same element, and the result is wrong.
+
 ## A tile in shared memory
 
 `Memory::SMEM` is the fast memory of a block. A tensor in it, a tile, lives as long as the code of

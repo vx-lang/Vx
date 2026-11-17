@@ -512,6 +512,7 @@ fn nominal_struct_name(ty: &syntax::Type) -> Option<crate::symbol::Symbol> {
         Type::Ref(inner, _)
         | Type::Pointer(inner, _, _)
         | Type::Verified(inner)
+        | Type::Distinct(inner)
         | Type::Pinned(inner, _) => nominal_struct_name(inner),
         Type::Borrow { inner, .. } => nominal_struct_name(inner),
         _ => None,

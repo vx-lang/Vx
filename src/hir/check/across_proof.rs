@@ -30,6 +30,10 @@
 // An access in `if v == c`, where `v` is the loop's variable and `c` a number, is made by one
 // pass only. Two such accesses with the same `c` are made by the same pass, so they never race.
 //
+// No two elements of a `Distinct` tensor are equal. So a read `idx[e]` of one is a variable of
+// the pass that fixes whatever `e` fixes: two passes that read the same value read it at the
+// same `e`.
+//
 //===----------------------------------------------------------------------===//
 
 use crate::hir::comptime_interpreter::ComptimeInterpreter;
@@ -37,6 +41,7 @@ use crate::hir::flatten::is_tensor_alloc_call;
 use crate::syntax::stmt::{AcrossClause, ForLoopStmt, Statement};
 use crate::syntax::types::{scalar_of, ElementType};
 use crate::syntax::{BinaryOp, Expr, LogicalOp, RelationalOp, Span, UnaryOp};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// `Σ coefficient · variable + constant`. A variable is a loop index of this pass, by a name that
@@ -148,6 +153,11 @@ struct Proof<'c> {
     slots: HashMap<String, (String, i64)>,
     /// The tensor argument of each call that takes a slot.
     slot_calls: HashSet<Span>,
+    /// The `Distinct` tensors from outside the loop, with the type of their elements.
+    distinct: &'c HashMap<String, ElementType>,
+    /// Each read `idx[e]` of a `Distinct` tensor: the tensor and the form of `e`. The key of the
+    /// read as a variable is the tensor, then `#distinct` and its place in this list.
+    distinct_reads: RefCell<Vec<(String, Affine)>>,
 }
 
 /// The position of an `across` clause, the largest end that its loop may have, and the type of
@@ -170,6 +180,7 @@ pub(crate) fn across_loop_race(
     contracts: &HashMap<String, Vec<usize>>,
     templates: &HashSet<String>,
     copies_out: &HashMap<Span, Vec<u64>>,
+    distinct: &HashMap<String, ElementType>,
 ) -> Result<Vec<LargestEnd>, (String, Span)> {
     let range = match &*f.iterable {
         Expr::Range(r) => int(&r.start).zip(int(&r.end)),
@@ -202,6 +213,8 @@ pub(crate) fn across_loop_race(
             pass: None,
             slots: HashMap::new(),
             slot_calls: HashSet::new(),
+            distinct,
+            distinct_reads: RefCell::new(Vec::new()),
         };
         p.own = p.bind_index(&f.iter, &f.iterable, range, f.across.as_ref());
         p.stmts(&f.body);
@@ -921,6 +934,25 @@ impl Proof<'_> {
                 // From outside the loop: the same in every pass.
                 None => Some(Affine::var(format!("{}#outside", id.name))),
             },
+            Expr::IndexAccess(ix) => {
+                let Expr::Identifier(id) = &*ix.base else {
+                    return None;
+                };
+                let name = id.name.as_ref();
+                if !self.outside(name) || !self.distinct.contains_key(name) {
+                    return None;
+                }
+                let index = self.affine(&ix.index)?;
+                let mut reads = self.distinct_reads.borrow_mut();
+                let at = match reads.iter().position(|(t, f)| t == name && *f == index) {
+                    Some(at) => at,
+                    None => {
+                        reads.push((name.to_string(), index));
+                        reads.len() - 1
+                    }
+                };
+                Some(Affine::var(format!("{name}#distinct{at}")))
+            }
             Expr::AsCast(c) => {
                 let form = self.affine(&c.expr)?;
                 let (min, max) = scalar_of(&c.target_ty)
@@ -1042,8 +1074,22 @@ impl Proof<'_> {
         }
     }
 
+    /// The tensor and the form of the index of the read of a `Distinct` tensor whose key is
+    /// `v`.
+    fn distinct_read(&self, v: &str) -> Option<(String, Affine)> {
+        let (_, at) = v.rsplit_once("#distinct")?;
+        self.distinct_reads
+            .borrow()
+            .get(at.parse::<usize>().ok()?)
+            .cloned()
+    }
+
     /// The least and the greatest value of the loop index `v`, from its range or its type.
     fn index_range(&self, v: &str) -> Option<(i128, i128)> {
+        // A read of a `Distinct` tensor is any value of its element type.
+        if let Some((tensor, _)) = self.distinct_read(v) {
+            return ComptimeInterpreter::integer_range(&self.distinct[&tensor]);
+        }
         // `v` is never below zero. A remainder is below `n`, and neither part is above `v`.
         if let Some((index, quotient, n)) = Self::part_of(v) {
             let (lo, hi) = self.index_range(index)?;
@@ -1120,7 +1166,14 @@ impl Proof<'_> {
 
     /// As `fixes_own_with`, for the variable `key` of the pass.
     fn fixes_with(&self, form: &Affine, key: &str, gap: Option<i64>) -> bool {
-        if !form.terms.contains_key(key) {
+        // Two passes with the same value of `idx[e]` have the same `e`.
+        let fixes = |v: &String| {
+            v == key
+                || self
+                    .distinct_read(v)
+                    .is_some_and(|(_, index)| self.fixes_with(&index, key, None))
+        };
+        if !form.terms.keys().any(fixes) {
             return false;
         }
         // A value from outside the loop is the same in both passes, so it cancels.
