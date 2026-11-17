@@ -723,23 +723,18 @@ impl<'a> TypeChecker<'a> {
                 // slice's shape (here `*` is elementwise; matmul is `@`/MatMul, handled above).
                 // These lower to vector ops (load/broadcast + arith.{mulf,addf,subf,divf}).
                 //
-                // Half-precision slices participate as STORAGE (Vx#320): they widen to f32 on
-                // load, so any op touching an f16/bf16 slice yields an F32 slice -- storage
-                // precision and arithmetic precision are separate decisions, and arithmetic is
-                // always f32. Narrowing back happens only at an explicit store into a half
-                // tensor, which the assignment rules govern.
+                // Two operands of one element type give that type, as scalars and tensors of
+                // rank 2 do: f16 + f16 is f16. Operands of two float types, such as an f16
+                // slice and an f32 scalar, give f32, which holds every f16 and bf16 value.
                 if matches!(
                     op,
                     BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
                 ) {
-                    let l_half = Self::is_half_slice(&lhs_ty);
-                    let r_half = Self::is_half_slice(&rhs_ty);
-                    let l_slice = Self::is_f32_slice(&lhs_ty) || l_half;
-                    let r_slice = Self::is_f32_slice(&rhs_ty) || r_half;
+                    let l_slice = Self::is_f32_slice(&lhs_ty) || Self::is_half_slice(&lhs_ty);
+                    let r_slice = Self::is_f32_slice(&rhs_ty) || Self::is_half_slice(&rhs_ty);
                     // A half scalar is admitted alongside f32 for the same reason a half slice
-                    // is (Vx#320): it widens to f32 and the arithmetic happens there. Refusing
-                    // it here left `slice * f16_scalar` to fall through to the splat rule, which
-                    // typed it as a half slice and crashed the emitter.
+                    // is. Refusing it here left `slice * f16_scalar` to fall through to the
+                    // splat rule, which crashed the emitter.
                     let float_scalar = |t: &Type| {
                         matches!(
                             t,
@@ -750,14 +745,6 @@ impl<'a> TypeChecker<'a> {
                     };
                     let l_scalar = float_scalar(&lhs_ty);
                     let r_scalar = float_scalar(&rhs_ty);
-                    let l_half_scalar = matches!(
-                        lhs_ty,
-                        Type::Scalar(ElementType::F16) | Type::Scalar(ElementType::BF16)
-                    );
-                    let r_half_scalar = matches!(
-                        rhs_ty,
-                        Type::Scalar(ElementType::F16) | Type::Scalar(ElementType::BF16)
-                    );
                     // At least one slice operand; the other must be a slice or an f32 scalar.
                     let slice_op = match (l_slice, r_slice) {
                         (true, true) => true,      // slice OP slice
@@ -767,9 +754,15 @@ impl<'a> TypeChecker<'a> {
                     };
                     if slice_op {
                         let shape_side = if l_slice { &lhs_ty } else { &rhs_ty };
-                        if l_half || r_half || l_half_scalar || r_half_scalar {
-                            // The widened result: same shape and placement, f32 element.
-                            if let Type::Tensor(_, dims, top) = shape_side {
+                        let elem = |t: &Type| match t {
+                            Type::Scalar(e) => Some(e.clone()),
+                            other => Self::as_tensor_operand(other).map(|(e, _, _)| e.clone()),
+                        };
+                        let shape_elem = elem(shape_side);
+                        if elem(&lhs_ty) != elem(&rhs_ty) && shape_elem != Some(ElementType::F32) {
+                            // A half slice with another float type: the f32 result is a new
+                            // tensor of the same shape and placement, not a borrow.
+                            if let Some((_, dims, top)) = Self::as_tensor_operand(shape_side) {
                                 return Type::Tensor(ElementType::F32, dims.clone(), top.clone());
                             }
                         }

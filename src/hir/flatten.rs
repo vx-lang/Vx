@@ -1585,15 +1585,20 @@ impl<'r> Lowerer<'r> {
                 // carries the left operand's type. When either operand is a tensor the op is
                 // *elementwise* and the result is the tensor type (a scalar operand broadcasts) -- an
                 // arith opcode with a tensor result type is the flat HIR's elementwise form, mirroring
-                // `arith.mulf` on a vector in codegen. A rank-1 HALF tensor operand widens the
-                // result to f32 (Vx#320): the checker types it so, and codegen loads the half row
-                // through an extf. The checker keeps the half type from rank 2 up, so this does too.
+                // `arith.mulf` on a vector in codegen. A rank-1 HALF tensor with an operand of
+                // another float type gives f32, as the checker types it, and codegen loads the
+                // half row through an extf. Two operands of one type keep that type.
+                let elem_of = |t: &LoweredTy| match t {
+                    LoweredTy::Scalar(e) | LoweredTy::Tensor { elem: e, .. } => Some(e.clone()),
+                    _ => None,
+                };
+                let mixed = elem_of(&l.ty) != elem_of(&r.ty);
                 let widen = |t: &LoweredTy| -> LoweredTy {
                     match t {
                         LoweredTy::Tensor {
                             elem: ElementType::F16 | ElementType::BF16,
                             shape,
-                        } if shape.len() == 1 => LoweredTy::Tensor {
+                        } if mixed && shape.len() == 1 => LoweredTy::Tensor {
                             elem: ElementType::F32,
                             shape: shape.clone(),
                         },

@@ -5,24 +5,12 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// `as` over a slice: the elementwise cast that stores a widened row back.
+// `as` over a slice: the elementwise cast that stores a row back into a half tensor.
 //
-// A half slice is storage. It widens to f32 on load, the arithmetic happens in
-// f32, and getting back to half storage is a narrowing conversion the program
-// has to write -- the fail sibling pins that omitting it is E3004.
-//
-// What the lowering has to get right, and did not:
-//
-//   The row widens on load (`arith.extf` over the vector).
-//   A half *scalar* widens too, before it is broadcast. Broadcasting it as if
-//   it were already f32 names the wrong type for the value and the module does
-//   not parse.
-//   The result narrows on the way out (`arith.truncf`), and the store is
-//   `vector<Nxf16>` into `memref<Nxf16>` rather than a f32 vector into half
-//   storage.
-//
-// f32 slices are unchanged: no conversion appears around them at all, which is
-// the regression this file also pins.
+// A half row with an f32 value computes in f32. The row widens on load (`arith.extf`), and
+// `as f16` narrows the result (`arith.truncf`), so the store is `vector<Nxf16>` into
+// `memref<Nxf16>`. A half scalar with an f32 row widens before it is broadcast. A half row
+// with a scalar of the same half type computes in that type, and nothing converts.
 //
 // Every row is filled with distinct non-zero values, and each differs per lane.
 // A zero-filled row makes the arithmetic return zero whatever the conversion
@@ -45,6 +33,7 @@ fn main() -> i32 {
     h[1][d] = 3.0 + (d as f16);
     b[0][d] = 2.5 + (d as bf16);
     f[0][d] = 4.0 + (d as f32);
+    f[1][d] = 5.0 + (d as f32);
   }
 
   // An f16 row against an f32 scalar: the row widens, the result narrows back.
@@ -56,15 +45,16 @@ fn main() -> i32 {
   // CHECK: vector.store {{.*}} vector<4xf16>
   h[0] = (h[0] * s32) as f16;
 
-  // An f16 row against an f16 scalar: the scalar widens before the broadcast.
+  // An f16 row against an f16 scalar: the product is f16, and `as f16` changes nothing.
   let s16 : f16 = 2.0;
-  // CHECK: arith.extf {{.*}} : vector<4xf16> to vector<4xf32>
-  // CHECK: arith.extf {{.*}} : f16 to f32
-  // CHECK: vector.broadcast {{.*}} : f32 to vector<4xf32>
-  // CHECK: arith.truncf {{.*}} : vector<4xf32> to vector<4xf16>
+  // CHECK-NOT: arith.extf
+  // CHECK: vector.broadcast {{.*}} : f16 to vector<4xf16>
+  // CHECK: arith.mulf {{.*}} : vector<4xf16>
+  // CHECK-NOT: arith.truncf
+  // CHECK: vector.store {{.*}} vector<4xf16>
   h[1] = (h[1] * s16) as f16;
 
-  // bf16 is half storage on the same terms.
+  // A bf16 row against an f32 scalar works the same way.
   // CHECK: arith.extf {{.*}} : vector<4xbf16> to vector<4xf32>
   // CHECK: arith.truncf {{.*}} : vector<4xf32> to vector<4xbf16>
   // CHECK: vector.store {{.*}} vector<4xbf16>
@@ -75,6 +65,11 @@ fn main() -> i32 {
   // CHECK-NOT: arith.truncf
   // CHECK: vector.store {{.*}} vector<4xf32>
   f[0] = f[0] * s32;
+
+  // An f32 row against an f16 scalar: the scalar widens before the broadcast.
+  // CHECK: arith.extf {{.*}} : f16 to f32
+  // CHECK-NEXT: vector.broadcast {{.*}} : f32 to vector<4xf32>
+  f[1] = f[1] * s16;
 
   print(h[0][0]);
   print(h[1][0]);
