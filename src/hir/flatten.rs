@@ -2324,7 +2324,7 @@ impl<'r> Lowerer<'r> {
             // value, the trailing expression of an `unsafe` block, gets the placeholder a void
             // call gets: a type never read.
             Expr::SpawnOn(sp) => {
-                if sp.maxnreg.is_some() {
+                if sp.max_registers.is_some() {
                     return Err(Decline::UnsupportedExpr("SpawnOn with maxnreg"));
                 }
 

@@ -129,7 +129,6 @@ pub enum TokenTypeBase<S, C> {
     Comment(S),
     DocComment(S),
     Whitespace(S),
-    Maxnreg,
 }
 
 pub type TokenType<'a> = TokenTypeBase<&'a str, std::borrow::Cow<'a, str>>;
@@ -243,7 +242,6 @@ impl<S: std::fmt::Display, C: std::fmt::Display> std::fmt::Display for TokenType
             TokenTypeBase::Whitespace(s) => write!(f, "{}", s),
             TokenTypeBase::Unknown(c) => write!(f, "{}", c),
             TokenTypeBase::Eof => write!(f, ""),
-            TokenTypeBase::Maxnreg => write!(f, "maxnreg"),
         }
     }
 }
@@ -301,7 +299,6 @@ impl<S, C> TokenTypeBase<S, C> {
                 | TokenTypeBase::Verified
                 | TokenTypeBase::Pinned
                 | TokenTypeBase::HardwareState
-                | TokenTypeBase::Maxnreg
         )
     }
 }
@@ -372,7 +369,6 @@ static KEYWORDS: Lazy<
     m.insert("requires", TokenTypeBase::Requires);
     m.insert("ensures", TokenTypeBase::Ensures);
     m.insert("invariant", TokenTypeBase::Invariant);
-    m.insert("maxnreg", TokenTypeBase::Maxnreg);
     m
 });
 
@@ -1028,7 +1024,6 @@ impl<'a> Token<'a> {
             TokenTypeBase::Whitespace(s) => {
                 TokenTypeBase::Whitespace(crate::symbol::Symbol::from(s))
             }
-            TokenTypeBase::Maxnreg => TokenTypeBase::Maxnreg,
         };
         OwnedToken {
             kind,
@@ -1146,7 +1141,6 @@ impl OwnedToken {
             TokenTypeBase::Comment(s) => TokenTypeBase::Comment(&**s),
             TokenTypeBase::DocComment(s) => TokenTypeBase::DocComment(&**s),
             TokenTypeBase::Whitespace(s) => TokenTypeBase::Whitespace(&**s),
-            TokenTypeBase::Maxnreg => TokenTypeBase::Maxnreg,
         };
         Token {
             kind,

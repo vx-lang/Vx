@@ -313,7 +313,7 @@ fn lower_spawn_region<'c>(
         spawn_builder = spawn_builder.add_results(&result_types);
     }
 
-    if let Some(maxnreg) = this.maxnreg {
+    if let Some(maxnreg) = this.max_registers {
         let maxnreg_attr =
             melior::ir::attribute::IntegerAttribute::new(gen.i32_ty, maxnreg as i64).into();
         spawn_builder = spawn_builder

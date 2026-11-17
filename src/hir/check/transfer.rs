@@ -2675,7 +2675,7 @@ impl<'a> TypeChecker<'a> {
                 ret,
                 span,
                 arrivals,
-                maxnreg: _,
+                max_registers,
             }) => {
                 let spawn_span = *span;
                 let mut actual_top = top.clone();
@@ -2690,6 +2690,37 @@ impl<'a> TypeChecker<'a> {
                         );
                     }
                     actual_top = self.active_topology.clone();
+                }
+
+                if let Some(regs) = max_registers {
+                    if *regs == 0 || *regs > 255 {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E6044,
+                            format!("`max_registers` must be between 1 and 255, got {regs}"),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&spawn_span)),
+                        );
+                    }
+                    let desc = self.transfer_cost_graph.descriptor(&actual_top.kind());
+                    let arch = match desc.and_then(|d| d.arch.as_deref()) {
+                        Some(a) => Some(a),
+                        None if matches!(actual_top.kind(), crate::syntax::TopologyKind::GPU) => {
+                            Some("nvptx64")
+                        }
+                        _ => None,
+                    };
+                    if arch != Some("nvptx64") {
+                        let target_desc = match arch {
+                            Some(a) => format!("arch `{a}`"),
+                            None => "no `arch:`".to_string(),
+                        };
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E6043,
+                            format!(
+                                "`max_registers` is only supported on NVIDIA GPU targets (`arch: nvptx64`), but `{actual_top}` has {target_desc}"
+                            ),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&spawn_span)),
+                        );
+                    }
                 }
                 // Code after the `across` nest runs once, in the last pass to end. That pass
                 // knows it is the last from a count in the region's own memory.

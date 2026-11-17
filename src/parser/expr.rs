@@ -1412,22 +1412,56 @@ impl<'a> Parser<'a> {
                         self.consume(&TokenType::On, "Expected 'on' or '{' after 'spawn'")?;
                         self.consume(&TokenType::LeftParen, "Expected '('")?;
                         let top = self.parse_topology()?;
-                        self.consume(&TokenType::RightParen, "Expected ')'")?;
-                        let mut maxnreg = None;
-                        if self.match_token(&TokenType::Maxnreg) {
-                            if let TokenType::Number(n_str) = self.peek().kind.clone() {
-                                self.advance();
-                                if let Ok(val) = n_str.parse::<u32>() {
-                                    maxnreg = Some(val);
-                                } else {
-                                    return Err(
-                                        self.error("Expected a valid integer after maxnreg")
-                                    );
+                        let mut max_registers = None;
+                        while self.match_token(&TokenType::Comma) {
+                            if self.check(&TokenType::RightParen) {
+                                break;
+                            }
+                            let opt_token = self.peek().clone();
+                            let opt_name = match &opt_token.kind {
+                                TokenType::Identifier(id) => (*id).to_string(),
+                                _ => {
+                                    return Err(self.error_at(
+                                        &opt_token,
+                                        "Expected option name in 'on(...)'",
+                                    ));
                                 }
-                            } else {
-                                return Err(self.error("Expected a number after maxnreg"));
+                            };
+                            self.advance();
+                            match opt_name.as_ref() {
+                                "max_registers" => {
+                                    self.consume(
+                                        &TokenType::Colon,
+                                        "Expected ':' after 'max_registers'",
+                                    )?;
+                                    let val_token = self.peek().clone();
+                                    if let TokenType::Number(n_str) = val_token.kind {
+                                        self.advance();
+                                        match n_str.parse::<u32>() {
+                                            Ok(val) => max_registers = Some(val),
+                                            Err(_) => {
+                                                return Err(self.error_at(
+                                                    &val_token,
+                                                    "Expected a valid integer for 'max_registers'",
+                                                ));
+                                            }
+                                        }
+                                    } else {
+                                        return Err(self.error_at(
+                                            &val_token,
+                                            "Expected a number after 'max_registers:'",
+                                        ));
+                                    }
+                                }
+                                other => {
+                                    return Err(self.error_at(
+                                        &opt_token,
+                                        &format!("Unknown option '{}' in 'on(...)'", other),
+                                    ));
+                                }
                             }
                         }
+                        self.consume(&TokenType::RightParen, "Expected ')'")?;
                         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
                         let mut stmts = Vec::new();
                         let mut ret_expr = None;
@@ -1465,14 +1499,13 @@ impl<'a> Parser<'a> {
                             },
                         );
 
-                        spawn_expr.maxnreg = maxnreg;
+                        spawn_expr.max_registers = max_registers;
 
                         Expr::SpawnOn(spawn_expr)
                     }
                     TokenType::Unknown('"') => {
                         return Err(self.error_at(&token, super::UNCLOSED_STRING))
                     }
-
                     TokenType::UnknownEscape(c, _) => {
                         return Err(self.error_at(
                             &token,
@@ -3162,10 +3195,10 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_spawn_with_maxnreg() {
+    fn test_parse_spawn_with_max_registers() {
         let input = r#"
             fn main() -> i32 {
-                spawn on(Topology::GPU) maxnreg 96 {
+                spawn on(Topology::GPU, max_registers: 96) {
                     let x = 1;
                 }
                 return 0;
@@ -3177,7 +3210,11 @@ mod tests {
         match &func.body[0] {
             Statement::ExprStmt(stmt) => match &stmt.expr {
                 Expr::SpawnOn(spawn) => {
-                    assert_eq!(spawn.maxnreg, Some(96), "maxnreg was not parsed correctly");
+                    assert_eq!(
+                        spawn.max_registers,
+                        Some(96),
+                        "max_registers was not parsed correctly"
+                    );
                 }
                 other => panic!("Expected SpawnOn, got {:?}", other),
             },

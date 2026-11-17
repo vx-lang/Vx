@@ -141,7 +141,7 @@ pub struct SpawnOnExpr {
         crate::syntax::MemorySpace,
         Option<crate::syntax::MemorySpace>,
     )>,
-    pub maxnreg: Option<u32>,
+    pub max_registers: Option<u32>,
 }
 impl SpawnOnExpr {
     pub fn new(top: Topology, stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self {
@@ -151,7 +151,7 @@ impl SpawnOnExpr {
             ret,
             span,
             arrivals: None,
-            maxnreg: None,
+            max_registers: None,
         }
     }
 }
@@ -1983,7 +1983,7 @@ impl Expr {
                 ret: e.ret.as_ref().map(|r| Box::new(r.substitute(mapping))),
                 span: e.span,
                 arrivals: e.arrivals.clone(),
-                maxnreg: e.maxnreg,
+                max_registers: e.max_registers,
             }),
             Expr::TaskBlock(e) => Expr::TaskBlock(TaskBlockExpr {
                 kind: e.kind,
