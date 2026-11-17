@@ -877,3 +877,24 @@ fn a_legacy_compiled_spirv_kernel_gets_a_spirv_module() {
         }
     }
 }
+
+/// A kernel that reads, computes on and writes bf16 gets a SPIR-V module, with
+/// no bf16 type in it. LLVM's SPIR-V backend stops the compiler on that type.
+#[test]
+fn a_bf16_kernel_gets_a_valid_spirv_module() {
+    let ir = emit_llvm("spirv_device_image_bf16.vx");
+    for kernel in ["vx_npu_kernel_0", "vx_npu_kernel_1"] {
+        let payload = payload_bytes(&ir, kernel);
+        let section = payload_section(&payload);
+        assert_eq!(
+            &section[..4],
+            &[0x03, 0x02, 0x23, 0x07],
+            "{kernel}: the section does not start with SPIR-V's magic number 0x07230203"
+        );
+        match spirv_val(section) {
+            Some(Ok(())) => {}
+            Some(Err(report)) => panic!("{kernel}: spirv-val rejected the module:\n{report}"),
+            None => println!("spirv-val is not installed, so the module was not validated"),
+        }
+    }
+}
