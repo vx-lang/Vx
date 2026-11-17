@@ -212,6 +212,20 @@ def Vx_BarrierOp : Vx_Op<"barrier", [MemoryEffects<[MemRead, MemWrite]>]> {
     let assemblyFormat = "attr-dict";
 }
 
+// A hint for the scheduler of the Apple GPU, which an `mlir!` block can write
+// between its simdgroup loads and its multiplies. It orders no memory. NOT
+// Pure, so that nothing moves or removes it before the Metal printer.
+def Vx_SubgroupScheduleBarrierOp : Vx_Op<"subgroup_schedule_barrier",
+                                         [MemoryEffects<[MemRead, MemWrite]>]> {
+    let summary = "The threads of a subgroup meet here. No memory is ordered.";
+    let description = [{
+        The Metal printer writes `simdgroup_barrier(mem_flags::mem_none)`. Every
+        other code generator drops the op. Every thread of the subgroup must
+        reach it.
+    }];
+    let assemblyFormat = "attr-dict";
+}
+
 // The op of a lane routine. Each one has two expansions, and each expansion
 // writes its code before the op. The caller then erases the op.
 def Vx_LaneOpInterface : OpInterface<"LaneOpInterface"> {
