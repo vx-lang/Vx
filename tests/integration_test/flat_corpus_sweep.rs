@@ -240,6 +240,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/apple_gpu_short_loops_of_constant_bounds_are_unrolled.vx",
         // needs --machine
         "optimizations/pass/apple_gpu_shared_memory_offsets_go_in_the_address.vx",
+        // needs --machine and the path of a file
+        "optimizations/pass/apple_gpu_reads_a_mapped_file_with_no_copy.vx",
         // needs --machine
         "optimizations/pass/nvidia_gpu_short_loops_of_constant_bounds_are_unrolled.vx",
         // split-file

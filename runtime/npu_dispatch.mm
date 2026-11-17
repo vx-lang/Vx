@@ -697,6 +697,7 @@ void vx_metal_wait_for_launch(const void *payload, size_t payload_size,
 // GPU memory with one Metal buffer for its whole life. vx_metal_alloc returns
 // null for memory that `malloc` gives instead.
 void *vx_metal_alloc(size_t bytes);
+void *vx_metal_map_copy(const void *source, size_t bytes);
 int vx_metal_free(void *memory);
 
 static void *alloc_gpu_memory(size_t bytes) {
@@ -720,6 +721,11 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
   void *remote = nullptr;
   if (vx_routing_try_alloc(bytes, host_ptr, topology_id, &remote)) {
     return remote;
+  }
+  // A read-only mapping of a file, such as the weights of a model, needs no
+  // copy.
+  if (void *mapped = vx_metal_map_copy(host_ptr, bytes)) {
+    return mapped;
   }
   void *ptr = alloc_gpu_memory(bytes);
   if (host_ptr) {
