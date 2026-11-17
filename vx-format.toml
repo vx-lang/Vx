@@ -9,3 +9,4 @@ function_headers = false
 # Switch these on in a separate change that formats the repository again.
 struct_literals = false
 match_arms = false
+if_values = false

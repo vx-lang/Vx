@@ -396,6 +396,7 @@ impl<'source> SourceFileView<'source> {
         }
         self.find_struct_literals(&records, &to_source);
         self.find_matches(&records, &to_source);
+        self.find_if_values(&records, &to_source);
     }
 
     fn find_struct_literals(
@@ -514,6 +515,82 @@ impl<'source> SourceFileView<'source> {
                 close: TokenId(close),
                 arms: own,
                 commas,
+                tokens,
+            });
+        }
+    }
+
+    fn find_if_values(
+        &mut self,
+        records: &[SyntaxRecord],
+        to_source: &dyn Fn(&Range<usize>) -> Range<usize>,
+    ) {
+        let branches: Vec<_> = records
+            .iter()
+            .filter(|record| record.kind == RecordedKind::IfValueBranch)
+            .map(|record| to_source(&record.tokens))
+            .collect();
+        for record in records
+            .iter()
+            .filter(|record| record.kind == RecordedKind::IfValue)
+        {
+            let tokens = to_source(&record.tokens);
+            // Only an `if` where a value goes: after `=`, `(`, `,`, `:`, `return` or `=>`.
+            let is_value = self
+                .previous_significant(tokens.start)
+                .is_some_and(|before| {
+                    matches!(
+                        self.tokens[before].token.kind,
+                        TokenType::Equals
+                            | TokenType::LeftParen
+                            | TokenType::Comma
+                            | TokenType::Colon
+                            | TokenType::Return
+                            | TokenType::FatArrow
+                    )
+                });
+            if !is_value {
+                continue;
+            }
+            // The two branches of this `if` are the last outermost branches inside it.
+            let mut own: Vec<Range<usize>> = Vec::new();
+            for branch in branches
+                .iter()
+                .filter(|branch| tokens.start < branch.start && branch.end <= tokens.end)
+            {
+                if own.last().is_none_or(|last| last.end <= branch.start) {
+                    own.push(branch.clone());
+                }
+            }
+            let [.., then_branch, else_branch] = own.as_slice() else {
+                unreachable!("the parser records two branches for each if value");
+            };
+            let branch = |range: &Range<usize>| {
+                let open = range.start;
+                let close = range.end - 1;
+                let value_start = self
+                    .next_significant(open + 1)
+                    .expect("a branch has a value");
+                let value_end = self
+                    .previous_significant(close)
+                    .expect("a branch has a value")
+                    + 1;
+                (TokenId(open), value_start..value_end, TokenId(close))
+            };
+            let condition_start = self
+                .next_significant(tokens.start + 1)
+                .expect("an if has a condition");
+            let condition_end = self
+                .previous_significant(then_branch.start)
+                .expect("an if has a condition")
+                + 1;
+            let else_keyword = self
+                .next_significant(then_branch.end)
+                .expect("an if value has `else`");
+            self.if_values.push(IfValueView {
+                condition: condition_start..condition_end,
+                branches: [branch(then_branch), branch(else_branch)],
+                else_keyword: TokenId(else_keyword),
                 tokens,
             });
         }

@@ -23,6 +23,7 @@ pub fn builtin_registry() -> NodeRegistry<'static> {
         &TypeFormatter,
         &super::struct_literals::StructLiteralFormatter,
         &super::match_arms::MatchArmsFormatter,
+        &super::if_values::IfValueFormatter,
     ];
     NodeRegistry::new(FORMATTERS).expect("built-in syntax owners must be unique")
 }

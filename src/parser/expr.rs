@@ -10,7 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-use super::formatting::RecordedKind;
+use super::formatting::{RecordedKind, SyntaxRecord};
 use super::*;
 
 /// Split a numeric literal token into its numeric part and *explicit* element type.
@@ -1581,18 +1581,22 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_if_expr(&mut self) -> ParseResult<'a, IfExpr> {
+        let start = self.pos;
         let if_span = self.next_span();
         self.advance();
         let is_comptime = self.match_token(&TokenType::Comptime);
         let cond = self.parse_expr()?;
+        let then_start = self.pos;
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
         let mut then_block = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
             self.parse_statement_into(&mut then_block)?;
         }
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
+        let then_end = self.pos;
 
         let mut else_block = None;
+        let mut else_range = None;
         if self.match_token(&TokenType::Else) {
             if self.check(&TokenType::If) {
                 // `else if`
@@ -1603,13 +1607,43 @@ impl<'a> Parser<'a> {
                     span: Span::default(),
                 })]);
             } else {
+                let else_start = self.pos;
                 self.consume(&TokenType::LeftBrace, "Expected '{'")?;
                 let mut block = Vec::new();
                 while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
                     self.parse_statement_into(&mut block)?;
                 }
                 self.consume(&TokenType::RightBrace, "Expected '}'")?;
+                else_range = Some(else_start..self.pos);
                 else_block = Some(block);
+            }
+        }
+        // For the formatter: an `if` value that can stay on one line, as in
+        // `if c { 1 } else { 0 }`, with one value and no statement in each branch.
+        let one_value = |block: &[Statement]| {
+            matches!(
+                block,
+                [Statement::ExprStmt(ExprStmtStmt {
+                    has_semi: false,
+                    ..
+                })]
+            )
+        };
+        if let (Some(else_range), Some(else_statements)) = (&else_range, &else_block) {
+            if self.recording()
+                && !is_comptime
+                && one_value(&then_block)
+                && one_value(else_statements)
+            {
+                if let Some(records) = &mut self.recorder {
+                    for tokens in [then_start..then_end, else_range.clone()] {
+                        records.push(SyntaxRecord {
+                            kind: RecordedKind::IfValueBranch,
+                            tokens,
+                        });
+                    }
+                }
+                self.record(RecordedKind::IfValue, start);
             }
         }
         Ok(IfExpr {

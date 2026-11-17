@@ -4,6 +4,7 @@ pub mod dispatch;
 pub mod document;
 pub(crate) mod engine;
 mod formatters;
+mod if_values;
 mod match_arms;
 pub mod ownership;
 mod recognize;
@@ -131,6 +132,17 @@ pub struct MatchView {
     pub commas: Vec<Option<TokenId>>,
 }
 
+/// `if condition { value } else { value }` where a value goes, with one value in each branch.
+#[derive(Clone, Debug)]
+pub struct IfValueView {
+    pub tokens: Range<usize>,
+    /// The tokens of the condition.
+    pub condition: Range<usize>,
+    /// Each branch: its `{`, the tokens of its value, and its `}`.
+    pub branches: [(TokenId, Range<usize>, TokenId); 2],
+    pub else_keyword: TokenId,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeclarationContext {
     Root,
@@ -165,6 +177,7 @@ pub struct SourceFileView<'a> {
     pub functions: Vec<FunctionDeclView>,
     pub struct_literals: Vec<StructLiteralView>,
     pub matches: Vec<MatchView>,
+    pub if_values: Vec<IfValueView>,
     pub gaps: Vec<ConstrainedGap>,
     pub warnings: Vec<CoverageWarning>,
     matching: Vec<Option<usize>>,
@@ -408,6 +421,7 @@ impl<'a> SourceFileView<'a> {
             functions: Vec::new(),
             struct_literals: Vec::new(),
             matches: Vec::new(),
+            if_values: Vec::new(),
             gaps: Vec::new(),
             warnings: Vec::new(),
         }

@@ -15,11 +15,13 @@ max_width = 100
 fn_signature_width = 100
 space_before_colon = false
 struct_lit_width = 18
+single_line_if_else_max_width = 50
 
 [format.rules]
 function_headers = true
 struct_literals = true
 match_arms = true
+if_values = true
 ```
 
 Only `indent` is required.
@@ -49,7 +51,10 @@ This setting does not change colon spacing in function bodies or struct declarat
 The added spaces count toward `fn_signature_width`.
 
 `struct_lit_width` sets how wide the fields of a struct literal may be, for the literal to stay on one line.
-It defaults to 18, as in Rustfmt, and must not be greater than `max_width`.
+It defaults to 18% of `max_width`, as in Rustfmt, and must not be greater than `max_width`.
+
+`single_line_if_else_max_width` sets how wide an `if` value may be, for it to stay on one line.
+It defaults to 50% of `max_width`, as in Rustfmt, and must not be greater than `max_width`.
 
 ## Formatting rules
 
@@ -63,6 +68,7 @@ An unknown rule name is an error.
 | `function_headers` | `true` | Spacing, type spelling, and wrapping of function declarations. |
 | `struct_literals` | `true` | Puts a short struct literal on one line, and a long one with one field on each line. |
 | `match_arms` | `true` | Starts each arm of a `match` on a line of its own. |
+| `if_values` | `true` | Puts a short `if` value, such as `if c { 1 } else { 0 }`, on one line. |
 
 A switched-off rule leaves its code to the base formatting, as if the rule did not exist.
 The base formatting changes only indentation and the line breaks around blocks.
@@ -104,11 +110,13 @@ max_width = 100
 fn_signature_width = 100
 space_before_colon = false
 struct_lit_width = 18
+single_line_if_else_max_width = 50
 
 [format.rules]
 function_headers = true
 struct_literals = true
 match_arms = true
+if_values = true
 ```
 
 Save it with `vx-format --print-config default > vx-format.toml`.
@@ -258,6 +266,17 @@ match dot {
 A comment between arms stays on its line, and so does a comment at the end of an arm's line.
 One blank line between arms stays.
 A match with a comment before its `{`, or between an arm and its comma, gets the base formatting.
+
+## If values
+
+An `if` where a value goes stays on one line when each branch holds one value, and the `if` fits in `single_line_if_else_max_width`:
+
+```text
+let a = if c > 0 { 1 } else { 0 };
+```
+
+A value goes after `=`, `(`, `,`, `:`, `return`, or `=>`.
+An `if` statement, an `if` with a statement in a branch, an `else if`, and an `if` with a comment get the base formatting, which gives each branch lines of its own.
 
 ## Extending the formatter
 

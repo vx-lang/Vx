@@ -69,7 +69,11 @@ pub struct FormatConfig {
     /// Add a space before single colons in function headers.
     pub space_before_colon: bool,
     /// The widest that the fields of a struct literal may be, for the literal to stay on one line.
+    /// When unset, 18% of `max_width`.
     pub struct_lit_width: usize,
+    /// The widest that an `if` value may be, for it to stay on one line. When unset, 50% of
+    /// `max_width`.
+    pub single_line_if_else_max_width: usize,
     /// Formatting rules switched on or off by name. A rule that is not named uses its default.
     pub rules: BTreeMap<String, bool>,
 }
@@ -85,6 +89,7 @@ impl FormatConfig {
                 fn_signature_width: 100,
                 space_before_colon: false,
                 struct_lit_width: 18,
+                single_line_if_else_max_width: 50,
                 rules: BTreeMap::new(),
             },
         }
@@ -118,6 +123,7 @@ struct FileSettings {
     fn_signature_width: Option<usize>,
     space_before_colon: Option<bool>,
     struct_lit_width: Option<usize>,
+    single_line_if_else_max_width: Option<usize>,
     #[serde(default)]
     rules: BTreeMap<String, bool>,
 }
@@ -144,10 +150,22 @@ impl FileSettings {
                 "fn_signature_width ({fn_signature_width}) must not be greater than max_width ({max_width})"
             ));
         }
-        let struct_lit_width = self.struct_lit_width.unwrap_or(defaults.struct_lit_width);
+        // As in Rustfmt, a narrower width that the file does not set is a share of max_width.
+        let share = |default: usize| default * max_width / defaults.max_width;
+        let struct_lit_width = self
+            .struct_lit_width
+            .unwrap_or(share(defaults.struct_lit_width));
         if struct_lit_width > max_width {
             return Err(format!(
                 "struct_lit_width ({struct_lit_width}) must not be greater than max_width ({max_width})"
+            ));
+        }
+        let single_line_if_else_max_width = self
+            .single_line_if_else_max_width
+            .unwrap_or(share(defaults.single_line_if_else_max_width));
+        if single_line_if_else_max_width > max_width {
+            return Err(format!(
+                "single_line_if_else_max_width ({single_line_if_else_max_width}) must not be greater than max_width ({max_width})"
             ));
         }
         Ok(FormatConfig {
@@ -158,6 +176,7 @@ impl FileSettings {
                 .space_before_colon
                 .unwrap_or(defaults.space_before_colon),
             struct_lit_width,
+            single_line_if_else_max_width,
             rules: self.rules,
             ..defaults
         })
@@ -169,13 +188,14 @@ impl FileSettings {
 pub fn default_format_config_toml(rules: &[(&str, bool)]) -> String {
     let defaults = FormatConfig::default();
     let mut text = format!(
-        "[format]\nstyle_edition = \"{}\"\nindent = {}\nmax_width = {}\nfn_signature_width = {}\nspace_before_colon = {}\nstruct_lit_width = {}\n",
+        "[format]\nstyle_edition = \"{}\"\nindent = {}\nmax_width = {}\nfn_signature_width = {}\nspace_before_colon = {}\nstruct_lit_width = {}\nsingle_line_if_else_max_width = {}\n",
         defaults.style_edition,
         defaults.indent,
         defaults.max_width,
         defaults.fn_signature_width,
         defaults.space_before_colon,
-        defaults.struct_lit_width
+        defaults.struct_lit_width,
+        defaults.single_line_if_else_max_width
     );
     if !rules.is_empty() {
         text.push_str("\n[format.rules]\n");
@@ -412,6 +432,7 @@ mod tests {
             "[format]\nindent = 2\nfn_signature_width = 101",
             "[format]\nindent = 2\nmax_width = 80\nfn_signature_width = 90",
             "[format]\nindent = 2\nstruct_lit_width = 101",
+            "[format]\nindent = 2\nsingle_line_if_else_max_width = 101",
             "[format]\nindent = 2\nmax_width = 40\nstruct_lit_width = 50",
             "[format]\nindent = 2\nstruct_lit_width = -1",
             "[format]\nindent = 2\nspace_before_colon = 'true'",
@@ -475,6 +496,11 @@ mod tests {
         );
         let config = parse("[format]\nindent = 2\nstruct_lit_width = 40\n").unwrap();
         assert_eq!(config.struct_lit_width, 40);
+        let config = parse("[format]\nindent = 2\nsingle_line_if_else_max_width = 30\n").unwrap();
+        assert_eq!(config.single_line_if_else_max_width, 30);
+        let config = parse("[format]\nindent = 2\nmax_width = 60\n").unwrap();
+        assert_eq!(config.struct_lit_width, 10);
+        assert_eq!(config.single_line_if_else_max_width, 30);
     }
 
     #[test]

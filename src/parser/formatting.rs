@@ -50,6 +50,10 @@ pub(crate) enum RecordedKind {
     Match,
     /// One `pattern => body` of a match, without the comma after it.
     MatchArm,
+    /// `if condition { value } else { value }`, with one value and no statement in each branch.
+    IfValue,
+    /// One `{ value }` branch of an `IfValue`.
+    IfValueBranch,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
