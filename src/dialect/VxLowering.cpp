@@ -10638,9 +10638,12 @@ struct ConvertVxToLLVMPass
       }
       // Of those, the ones that hold GPU ops or call one that does. So the
       // message names the function the program wrote, not an `mlir!` block.
+      // An `mlir!` block with `threads` is one too: every thread of a
+      // threadgroup runs it together.
       llvm::SmallPtrSet<Operation *, 8> gpuOnly;
       for (Operation *f : kernelOnly)
-        if (holdsGpuOps(cast<func::FuncOp>(f)))
+        if (holdsGpuOps(cast<func::FuncOp>(f)) ||
+            f->hasAttr("vx.threadgroup_block"))
           gpuOnly.insert(f);
       for (bool changed = true; changed;) {
         changed = false;
@@ -10668,6 +10671,11 @@ struct ConvertVxToLLVMPass
                             "' runs only on a GPU, but no GPU ran the kernel "
                             "that calls it, so the CPU did\n")
                                .str();
+        if (auto at = f->getAttrOfType<StringAttr>("vx.threadgroup_block"))
+          text = ("vx: the `mlir!` block with `threads` at " + at.getValue() +
+                  " runs only on a GPU, but no GPU ran its kernel, so the CPU "
+                  "did\n")
+                     .str();
         Value message = LLVM::createGlobalString(
             loc, b, ("__vx_gpu_only_" + f.getSymName()).str(), text,
             LLVM::Linkage::Internal);

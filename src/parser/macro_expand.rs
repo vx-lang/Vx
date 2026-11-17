@@ -965,6 +965,7 @@ impl<'a> MacroExpander<'a> {
         let mut returns = None;
         let mut dialects = Vec::new();
         let mut ensures = Vec::new();
+        let mut threads = None;
 
         let tokens = match tt {
             TokenTree::Delimited(_, inner) => {
@@ -993,7 +994,8 @@ impl<'a> MacroExpander<'a> {
                 crate::lexer::TokenType::Ensures => "ensures".to_string(),
                 _ => {
                     return Err(
-                        "Expected 'inputs', 'clobbers', 'returns', 'dialects' or 'ensures'"
+                        "Expected 'inputs', 'clobbers', 'returns', 'dialects', 'ensures' or \
+                         'threads'"
                             .to_string(),
                     )
                 }
@@ -1135,6 +1137,19 @@ impl<'a> MacroExpander<'a> {
                         .consume(&crate::lexer::TokenType::RightBracket, "Expected ']'")
                         .map_err(|e| e.format("", None))?;
                 }
+                // Every thread of a threadgroup of at least this many runs the block.
+                "threads" => match &parser.advance().kind {
+                    crate::lexer::TokenType::Number(n) => match n.parse::<u32>() {
+                        Ok(n) if n > 0 => threads = Some(n),
+                        _ => {
+                            return Err(format!(
+                                "`threads` of an mlir! block is a number of threads above 0, \
+                                 not '{n}'"
+                            ))
+                        }
+                    },
+                    _ => return Err("`threads` of an mlir! block is a number".to_string()),
+                },
                 _ => return Err(format!("Unknown field '{}' in mlir! macro", field_name)),
             }
 
@@ -1214,6 +1229,7 @@ impl<'a> MacroExpander<'a> {
             returns,
             dialects,
             ensures,
+            threads,
             block_str,
             span,
         }))

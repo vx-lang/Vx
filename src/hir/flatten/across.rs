@@ -205,12 +205,15 @@ pub(crate) fn is_last_block() -> &'static str {
     IS_LAST
 }
 
-/// The lanes of a block of a region with `across` loops: the most that a lane loop or a subgroup
-/// loop asks for, and 1 with none. `None` for a region with no loop of blocks.
+/// The lanes of a block of a region with `across` loops: the most that a lane loop, a subgroup
+/// loop or an `mlir!` block with `threads` asks for, and 1 with none. `None` for a region with no loop of blocks.
 pub(crate) fn across_block_lanes(stmts: &[Statement]) -> Option<u64> {
     blocks_loop(stmts)?;
     let mut lanes = 1;
     across_lanes::visit_stmts(stmts, &mut |s| {
+        if let Some(n) = across_lanes::threadgroup_block(s).and_then(|m| m.threads) {
+            lanes = lanes.max(u64::from(n));
+        }
         if let Statement::ForLoop(f) = s {
             let width = across_width(f).unwrap_or(1);
             match f.across.as_ref().and_then(|a| a.kind) {
@@ -362,6 +365,11 @@ impl Lowerer<'_> {
         while i < stmts.len() {
             if across_lanes::holds_across(&stmts[i]) {
                 self.lower_stmt(&stmts[i])?;
+                // The code after an `mlir!` block with `threads` may read what any thread of it
+                // wrote.
+                if across_lanes::threadgroup_block(&stmts[i]).is_some() {
+                    self.barrier(level);
+                }
                 i += 1;
                 continue;
             }
@@ -493,6 +501,7 @@ impl Lowerer<'_> {
             void,
             line: 0,
             column: 0,
+            threads: false,
         });
         self.emit_typed(
             Opcode::InlineMlir,

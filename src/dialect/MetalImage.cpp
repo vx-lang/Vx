@@ -36,6 +36,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/Matchers.h"
@@ -188,6 +189,8 @@ private:
   bool memrefOp(Operation *op);
   bool gpuOp(Operation *op);
   bool mathOp(Operation *op);
+  bool vectorOp(Operation *op);
+  bool mmaOp(Operation *op);
   bool llvmOp(Operation *op);
   bool atomicOp(Operation *op);
   bool laneMatmul(Operation *op);
@@ -225,7 +228,25 @@ bool Printer::type(Type t, std::string &out, Operation *op) {
     out = "bfloat";
   else if (t.isF32())
     out = "float";
-  else {
+  else if (auto v = dyn_cast<VectorType>(t)) {
+    if (v.getRank() != 1 || v.isScalable() || v.getNumElements() < 2 ||
+        v.getNumElements() > 4)
+      return fail(op, "a vector of other than 2, 3 or 4 elements, which "
+                      "Metal has no type for");
+    if (!type(v.getElementType(), out, op))
+      return false;
+    out += std::to_string(v.getNumElements());
+  } else if (auto m = dyn_cast<gpu::MMAMatrixType>(t)) {
+    // A simdgroup matrix of the Apple GPU is 8 x 8.
+    if (m.getShape() != ArrayRef<int64_t>{8, 8})
+      return fail(op, "a simdgroup matrix that is not 8 x 8");
+    if (m.getElementType().isF16())
+      out = "simdgroup_half8x8";
+    else if (m.getElementType().isF32())
+      out = "simdgroup_float8x8";
+    else
+      return fail(op, "a simdgroup matrix of other than f16 or f32");
+  } else {
     std::string s;
     llvm::raw_string_ostream ts(s);
     ts << t;
@@ -245,7 +266,12 @@ bool Printer::unsignedType(Type t, std::string &out, Operation *op) {
     out = "uint";
   else if (t.isInteger(64))
     out = "ulong";
-  else
+  else if (auto v = dyn_cast<VectorType>(t);
+           v && isa<IntegerType, IndexType>(v.getElementType())) {
+    if (!type(t, out, op) || !unsignedType(v.getElementType(), out, op))
+      return false;
+    out += std::to_string(v.getNumElements());
+  } else
     return type(t, out, op);
   return true;
 }
@@ -665,6 +691,8 @@ bool Printer::op(Operation *o) {
     return llvmOp(o);
   if (ns == "math")
     return mathOp(o);
+  if (ns == "vector")
+    return vectorOp(o);
   if (o->getName().getStringRef() == "vx.lane_matmul")
     return laneMatmul(o);
   if (o->getName().getStringRef() == "vx.lane_fill" &&
@@ -895,21 +923,27 @@ bool Printer::arith(Operation *o) {
     std::string ty;
     if (!type(t, ty, o))
       return false;
-    std::string value;
-    if (auto i = dyn_cast<IntegerAttr>(c.getValue())) {
-      APInt v = i.getValue();
-      if (t.isIndex()) {
-        if (!v.isSignedIntN(32))
-          return fail(o, "an index constant that does not fit in 32 bits");
-        v = v.trunc(32);
+    // The MSL literal of a number of type `t`, which MSL calls `ty`.
+    auto literal = [&](Attribute a, Type t, const std::string &ty,
+                       std::string &value) -> bool {
+      if (auto i = dyn_cast<IntegerAttr>(a)) {
+        APInt v = i.getValue();
+        if (t.isIndex()) {
+          if (!v.isSignedIntN(32))
+            return fail(o, "an index constant that does not fit in 32 bits");
+          v = v.trunc(32);
+        }
+        if (t.isInteger(1))
+          value = v.isZero() ? "false" : "true";
+        else if (t.isInteger(64))
+          value = "(long)" + std::to_string(v.getZExtValue()) + "ul";
+        else
+          value = "(" + ty + ")" + std::to_string(v.getZExtValue()) + "u";
+        return true;
       }
-      if (t.isInteger(1))
-        value = v.isZero() ? "false" : "true";
-      else if (t.isInteger(64))
-        value = "(long)" + std::to_string(v.getZExtValue()) + "ul";
-      else
-        value = "(" + ty + ")" + std::to_string(v.getZExtValue()) + "u";
-    } else if (auto fl = dyn_cast<FloatAttr>(c.getValue())) {
+      auto fl = dyn_cast<FloatAttr>(a);
+      if (!fl)
+        return fail(o, "a constant that is not a number");
       APFloat v = fl.getValue();
       // A decimal literal only when it reads back as the same bits.
       SmallString<32> s;
@@ -934,8 +968,25 @@ bool Printer::arith(Operation *o) {
                 ")0x" + llvm::utohexstr(v.bitcastToAPInt().getZExtValue()) +
                 "u)";
       }
-    } else {
-      return fail(o, "a constant that is not a number");
+      return true;
+    };
+    std::string value;
+    if (auto dense = dyn_cast<DenseElementsAttr>(c.getValue())) {
+      // A vector: `float4(a, b, c, d)`.
+      Type elem = dense.getElementType();
+      std::string ety;
+      if (!type(elem, ety, o))
+        return false;
+      value = ty + "(";
+      for (auto [k, a] : llvm::enumerate(dense.getValues<Attribute>())) {
+        std::string v;
+        if (!literal(a, elem, ety, v))
+          return false;
+        value += (k ? ", " : "") + v;
+      }
+      value += ")";
+    } else if (!literal(c.getValue(), t, ty, value)) {
+      return false;
     }
     line() << ty << " " << define(c.getResult()) << " = " << value << ";\n";
     return true;
@@ -950,6 +1001,35 @@ bool Printer::arith(Operation *o) {
     return false;
   auto a = [&](unsigned k) { return name(o->getOperand(k)); };
   std::string expr;
+
+  // MSL applies most ops to each element of a vector. Not a comparison that
+  // tests for NaN with `||`, nor the ops below.
+  if (isa<VectorType>(t) || isa<VectorType>(o->getOperand(0).getType())) {
+    bool each = !isa<arith::MaximumFOp, arith::MinimumFOp>(o);
+    if (auto cmp = dyn_cast<arith::CmpFOp>(o)) {
+      using P = arith::CmpFPredicate;
+      P q = cmp.getPredicate();
+      each = q == P::OEQ || q == P::OGT || q == P::OGE || q == P::OLT ||
+             q == P::OLE || q == P::UNE;
+    }
+    bool bits = getElementTypeOrSelf(t).isInteger(1) ||
+                getElementTypeOrSelf(o->getOperand(0).getType()).isInteger(1);
+    if (bits && !isa<arith::CmpIOp, arith::CmpFOp, arith::SelectOp,
+                     arith::AndIOp, arith::OrIOp, arith::XOrIOp>(o))
+      each = false;
+    if (!each && isa<arith::CmpFOp>(o))
+      return fail(o, "a comparison of vectors that tests for NaN. Metal "
+                     "compares vectors only with ==, !=, <, <=, > and >=");
+    if (!each)
+      return fail(o, "this op on vectors, which Metal does not apply to each "
+                     "element");
+    if (isa<arith::SelectOp>(o) &&
+        isa<VectorType>(o->getOperand(0).getType())) {
+      line() << ty << " " << define(r) << " = select(" << a(2) << ", " << a(1)
+             << ", " << a(0) << ");\n";
+      return true;
+    }
+  }
 
   // Integer arithmetic wraps in MLIR. The printer uses unsigned types for it,
   // because signed overflow is undefined in MSL.
@@ -1457,6 +1537,64 @@ bool Printer::gpuOp(Operation *o) {
               "mem_flags::mem_threadgroup);\n";
     return true;
   }
+  if (isa<gpu::SubgroupMmaLoadMatrixOp, gpu::SubgroupMmaStoreMatrixOp,
+          gpu::SubgroupMmaComputeOp, gpu::SubgroupMmaConstantMatrixOp>(o))
+    return mmaOp(o);
+  if (auto i = dyn_cast<gpu::SubgroupIdOp>(o)) {
+    line() << "int " << define(i.getResult())
+           << " = (int)(vx_tid.x / vx_simd);\n";
+    return true;
+  }
+  if (auto i = dyn_cast<gpu::NumSubgroupsOp>(o)) {
+    line() << "int " << define(i.getResult())
+           << " = (int)((vx_tptg.x + vx_simd - 1) / vx_simd);\n";
+    return true;
+  }
+  if (auto red = dyn_cast<gpu::SubgroupReduceOp>(o)) {
+    // The whole SIMD-group of 32 threads, as `simd_sum` and the others.
+    if (red.getClusterSize() || isa<VectorType>(red.getType()))
+      return fail(o, "a subgroup reduction of a cluster or of a vector");
+    std::string ty, uty;
+    if (!type(red.getType(), ty, o) || !unsignedType(red.getType(), uty, o))
+      return false;
+    std::string x = name(red.getValue()), expr;
+    using R = gpu::AllReduceOperation;
+    switch (red.getOp()) {
+    case R::ADD:
+      expr = "simd_sum(" + x + ")";
+      break;
+    case R::MUL:
+      expr = "simd_product(" + x + ")";
+      break;
+    case R::MINNUMF:
+    case R::MINSI:
+      expr = "simd_min(" + x + ")";
+      break;
+    case R::MAXNUMF:
+    case R::MAXSI:
+      expr = "simd_max(" + x + ")";
+      break;
+    case R::MINUI:
+      expr = "(" + ty + ")simd_min((" + uty + ")" + x + ")";
+      break;
+    case R::MAXUI:
+      expr = "(" + ty + ")simd_max((" + uty + ")" + x + ")";
+      break;
+    case R::AND:
+      expr = "simd_and(" + x + ")";
+      break;
+    case R::OR:
+      expr = "simd_or(" + x + ")";
+      break;
+    case R::XOR:
+      expr = "simd_xor(" + x + ")";
+      break;
+    default:
+      return fail(o, "a subgroup reduction that Metal has no function for");
+    }
+    line() << ty << " " << define(red.getResult()) << " = " << expr << ";\n";
+    return true;
+  }
   if (auto s = dyn_cast<gpu::ShuffleOp>(o)) {
     // A SIMD-group has 32 threads, so only a shuffle across 32 lanes is the
     // same operation.
@@ -1496,6 +1634,232 @@ bool Printer::gpuOp(Operation *o) {
     return true;
   }
   return fail(o, "the Metal code generator cannot print this op");
+}
+
+// Whether the type of `memref` says that its last stride is 1.
+static bool unitLastStride(Value memref) {
+  SmallVector<int64_t> strides;
+  int64_t offset;
+  auto t = cast<MemRefType>(memref.getType());
+  return succeeded(t.getStridesAndOffset(strides, offset)) &&
+         !strides.empty() && strides.back() == 1;
+}
+
+// The vector ops of an `mlir!` block. A vector has 2, 3 or 4 elements, as the
+// vectors of MSL have.
+bool Printer::vectorOp(Operation *o) {
+  if (isa<vector::LoadOp, vector::StoreOp>(o)) {
+    bool load = isa<vector::LoadOp>(o);
+    auto ld = dyn_cast<vector::LoadOp>(o);
+    auto st = dyn_cast<vector::StoreOp>(o);
+    Value memref = load ? ld.getBase() : st.getBase();
+    ValueRange indices = load ? ld.getIndices() : st.getIndices();
+    VectorType vt = load ? ld.getVectorType() : st.getVectorType();
+    std::optional<uint64_t> align =
+        load ? ld.getAlignment() : st.getAlignment();
+    Type elem = vt.getElementType();
+    if (vt.getRank() != 1 ||
+        cast<MemRefType>(memref.getType()).getElementType() != elem)
+      return fail(o, "a vector load or store of a type other than the "
+                     "elements of its memref");
+    View v;
+    if (!viewOf(memref, v, o))
+      return false;
+    if (!unitLastStride(memref))
+      return fail(o, "a vector load or store from a memref whose type does "
+                     "not say that its last stride is 1");
+    std::string ty;
+    if (!type(vt, ty, o))
+      return false;
+    // MSL aligns a vector of 3 elements as one of 4. Without the alignment,
+    // the packed type reads the elements at any address.
+    int64_t n = vt.getNumElements();
+    int64_t need = (n == 3 ? 4 : n) * ((elem.getIntOrFloatBitWidth() + 7) / 8);
+    bool aligned = align && static_cast<int64_t>(*align) >= need;
+    if (!aligned && (elem.isBF16() || elem.isInteger(1) || elem.isInteger(64)))
+      return fail(o, "a vector load or store of bf16, i1 or i64 with no "
+                     "alignment attribute of the size of the vector");
+    std::string target = aligned ? ty : "packed_" + ty;
+    std::string at = "*(" + std::string(load ? "const " : "") + v.space + " " +
+                     target + " *)&" + element(v, indices);
+    if (load)
+      line() << ty << " " << define(ld.getResult()) << " = "
+             << (aligned ? at : ty + "(" + at + ")") << ";\n";
+    else
+      line() << at << " = "
+             << (aligned ? name(st.getValueToStore())
+                         : target + "(" + name(st.getValueToStore()) + ")")
+             << ";\n";
+    return true;
+  }
+  if (o->getNumResults() != 1)
+    return fail(o, "the Metal code generator cannot print this op");
+  Value r = o->getResult(0);
+  std::string ty;
+  if (!type(r.getType(), ty, o))
+    return false;
+  // A position of `vector.extract` or `vector.insert` in a vector of rank 1.
+  auto position = [&](ArrayRef<OpFoldResult> at, std::string &out) {
+    if (at.size() != 1)
+      return fail(o, "a position in a vector of more than one dimension");
+    out = foldResult(at[0]);
+    return true;
+  };
+  std::string expr;
+  if (auto x = dyn_cast<vector::ExtractOp>(o)) {
+    std::string at;
+    if (!position(x.getMixedPosition(), at))
+      return false;
+    expr = name(x.getSource()) + "[" + at + "]";
+  } else if (auto x = dyn_cast<vector::InsertOp>(o)) {
+    std::string at;
+    if (!position(x.getMixedPosition(), at))
+      return false;
+    line() << ty << " " << define(r) << " = " << name(x.getDest()) << ";\n";
+    line() << name(r) << "[" << at << "] = " << name(x.getValueToStore())
+           << ";\n";
+    return true;
+  } else if (auto x = dyn_cast<vector::BitCastOp>(o)) {
+    expr = "as_type<" + ty + ">(" + name(x.getSource()) + ")";
+  } else if (auto x = dyn_cast<vector::BroadcastOp>(o)) {
+    if (isa<VectorType>(x.getSource().getType()))
+      return fail(o, "a broadcast of a vector");
+    expr = ty + "(" + name(x.getSource()) + ")";
+  } else if (auto x = dyn_cast<vector::FromElementsOp>(o)) {
+    expr = ty + "(";
+    for (auto [k, e] : llvm::enumerate(x.getElements()))
+      expr += (k ? ", " : "") + name(e);
+    expr += ")";
+  } else if (auto x = dyn_cast<vector::FMAOp>(o)) {
+    expr = "fma(" + name(x.getLhs()) + ", " + name(x.getRhs()) + ", " +
+           name(x.getAcc()) + ")";
+  } else if (auto x = dyn_cast<vector::ReductionOp>(o)) {
+    // In order from the first element, as LLVM reduces a float vector with
+    // no fast-math flags.
+    std::string uty;
+    if (!unsignedType(r.getType(), uty, o))
+      return false;
+    bool isFloat = isa<FloatType>(r.getType());
+    std::string v = name(x.getVector());
+    int64_t n = x.getSourceVectorType().getNumElements();
+    std::string acc = x.getAcc() ? name(x.getAcc()) : "";
+    using K = vector::CombiningKind;
+    K kind = x.getKind();
+    auto combine = [&](const std::string &l,
+                       const std::string &e) -> std::string {
+      switch (kind) {
+      case K::ADD:
+        return isFloat ? "(" + l + " + " + e + ")"
+                       : "(" + ty + ")((" + uty + ")" + l + " + (" + uty + ")" +
+                             e + ")";
+      case K::MUL:
+        return isFloat ? "(" + l + " * " + e + ")"
+                       : "(" + ty + ")((" + uty + ")" + l + " * (" + uty + ")" +
+                             e + ")";
+      case K::MAXNUMF:
+        return "fmax(" + l + ", " + e + ")";
+      case K::MINNUMF:
+        return "fmin(" + l + ", " + e + ")";
+      case K::MAXSI:
+        return "max(" + l + ", " + e + ")";
+      case K::MINSI:
+        return "min(" + l + ", " + e + ")";
+      case K::AND:
+        return "(" + l + " & " + e + ")";
+      case K::OR:
+        return "(" + l + " | " + e + ")";
+      case K::XOR:
+        return "(" + l + " ^ " + e + ")";
+      default:
+        return "";
+      }
+    };
+    expr = acc.empty() ? v + "[0]" : combine(acc, v + "[0]");
+    for (int64_t k = 1; k < n && !expr.empty(); ++k)
+      expr = combine(expr, v + "[" + std::to_string(k) + "]");
+    if (expr.empty() || combine("a", "b").empty())
+      return fail(o, "a vector reduction that the Metal code generator cannot "
+                     "print");
+  } else {
+    return fail(o, "the Metal code generator cannot print this op");
+  }
+  line() << ty << " " << define(r) << " = " << expr << ";\n";
+  return true;
+}
+
+// The simdgroup matrices of an `mlir!` block: the `gpu.subgroup_mma_*` ops.
+// The threads of a SIMD-group run each of them together.
+bool Printer::mmaOp(Operation *o) {
+  // `&p[..]` and the elements of a row, for a matrix at `indices` of `memref`.
+  // A `leadDimension` of 0 is the row stride of a memref of 2 dimensions.
+  auto place = [&](Value memref, ValueRange indices, int64_t lead, Type elem,
+                   std::string &at, std::string &rowLength) {
+    View v;
+    if (!viewOf(memref, v, o))
+      return false;
+    if (cast<MemRefType>(memref.getType()).getElementType() != elem)
+      return fail(o, "a simdgroup matrix of a type other than the elements "
+                     "of its memref");
+    if (!unitLastStride(memref))
+      return fail(o, "a simdgroup matrix in a memref whose type does not say "
+                     "that its last stride is 1");
+    if (lead > 0)
+      rowLength = std::to_string(lead);
+    else if (v.strides.size() == 2)
+      rowLength = v.strides[0];
+    else
+      return fail(o, "`leadDimension = 0` in a memref that does not have 2 "
+                     "dimensions");
+    at = "&" + element(v, indices);
+    return true;
+  };
+  if (auto c = dyn_cast<gpu::SubgroupMmaConstantMatrixOp>(o)) {
+    std::string ty, ety;
+    auto m = cast<gpu::MMAMatrixType>(c.getType());
+    if (!type(m, ty, o) || !type(m.getElementType(), ety, o))
+      return false;
+    line() << ty << " " << define(c.getResult())
+           << " = make_filled_simdgroup_matrix<" << ety << ", 8, 8>("
+           << name(c.getValue()) << ");\n";
+    return true;
+  }
+  if (auto load = dyn_cast<gpu::SubgroupMmaLoadMatrixOp>(o)) {
+    auto m = cast<gpu::MMAMatrixType>(load.getRes().getType());
+    std::string ty, at, row;
+    if (!type(m, ty, o) || !place(load.getSrcMemref(), load.getIndices(),
+                                  load.getLeadDimension().getSExtValue(),
+                                  m.getElementType(), at, row))
+      return false;
+    line() << ty << " " << define(load.getRes()) << ";\n";
+    line() << "simdgroup_load(" << name(load.getRes()) << ", " << at
+           << ", (ulong)" << row << ", ulong2(0, 0), "
+           << (load.getTranspose() ? "true" : "false") << ");\n";
+    return true;
+  }
+  if (auto store = dyn_cast<gpu::SubgroupMmaStoreMatrixOp>(o)) {
+    auto m = cast<gpu::MMAMatrixType>(store.getSrc().getType());
+    std::string at, row;
+    if (!place(store.getDstMemref(), store.getIndices(),
+               store.getLeadDimension().getSExtValue(), m.getElementType(), at,
+               row))
+      return false;
+    line() << "simdgroup_store(" << name(store.getSrc()) << ", " << at
+           << ", (ulong)" << row << ", ulong2(0, 0), "
+           << (store.getTranspose() ? "true" : "false") << ");\n";
+    return true;
+  }
+  auto mul = cast<gpu::SubgroupMmaComputeOp>(o);
+  if (mul.getATranspose() || mul.getBTranspose())
+    return fail(o, "a simdgroup multiply with a transposed operand: load the "
+                   "operand with `transpose` instead");
+  std::string ty;
+  if (!type(mul.getRes().getType(), ty, o))
+    return false;
+  line() << ty << " " << define(mul.getRes()) << ";\n";
+  line() << "simdgroup_multiply_accumulate(" << name(mul.getRes()) << ", "
+         << name(mul.getOpA()) << ", " << name(mul.getOpB()) << ", "
+         << name(mul.getOpC()) << ");\n";
+  return true;
 }
 
 bool Printer::memrefOp(Operation *o) {

@@ -101,9 +101,18 @@ copy. `--emit-msl` writes the MSL and the same manifest as `--emit-ptx`.
   atomic on a 64-bit integer or a float, and an atomic on memory of one thread are compile errors
   that give the reason. The Apple GPU has 64-bit atomics only for min and max, and they do not
   give the old value.
-- Not yet: dynamic shared memory and `vector` ops. Each is a compile
-  error that names the op. Kernels for two GPU architectures in one program
-  are a compile error too.
+- An `mlir!` block in a kernel can use vectors of 2, 3 or 4 elements: `vector.load`,
+  `vector.store`, `vector.bitcast`, `extract`, `insert`, `broadcast`, `fma`, `reduction`, and
+  `arith` on vectors. A load or a store with an `alignment` of the vector's size uses the type,
+  such as `float4`. Without it, the packed type reads at any address. The memref's type must say
+  that its last stride is 1.
+- An `mlir!` block can also use the simdgroup matrices of 8 x 8 elements of `f16` or `f32`:
+  `gpu.subgroup_mma_load_matrix` (with `transpose`), `_store_matrix`, `_compute` and
+  `_constant_matrix`, from device or shared memory. `leadDimension = 0` is the row stride of a
+  memref of 2 dimensions, so the stride can be a value at run time. `gpu.subgroup_reduce` is
+  `simd_sum` and the other functions of a SIMD-group.
+- Not yet: dynamic shared memory, and vectors or ops beyond the ones above. Each is a compile error
+  that names the op. Kernels for two GPU architectures in one program are a compile error too.
 
 **The Neural Engine.** On a Mac, CoreML runs some kernels placed on `Topology::NPU[i]` or
 `Topology::ANE`: a matmul or an affine map in a shape that has a compiled model. `build.rs`

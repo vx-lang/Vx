@@ -5061,9 +5061,18 @@ impl<'c> LowerToMelior<'c> for InlineMlirExpr {
 
         let block_str = self.block_str.replace("macro.yield", "return");
 
+        // The CPU copy of a kernel cannot run a block that every thread of a threadgroup runs.
+        let attrs = if self.threads.is_some() {
+            format!(
+                "attributes {{vx.threadgroup_block = \"line {}, column {}\"}}",
+                self.span.line, self.span.column
+            )
+        } else {
+            String::new()
+        };
         let mlir_source = format!(
-            "module {{\n    func.func private @{}({}) {} {{\n{}\n    }}\n}}",
-            unique_id, args_str, ret_str, block_str
+            "module {{\n    func.func private @{}({}) {} {} {{\n{}\n    }}\n}}",
+            unique_id, args_str, ret_str, attrs, block_str
         );
 
         gen.context.set_allow_unregistered_dialects(true);
