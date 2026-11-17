@@ -29,8 +29,9 @@ impl FnEmit<'_> {
 
     // Arithmetic: scalar (a scalar-GID result) or *elementwise* over a rank-1 float slice (a
     // tensor-GID result). The scalar form is `arith.{addi,mulf,…}`; the elementwise form
-    // coerces each operand to a `vector<Nxf32>` (`vector.load`/`broadcast`), applies
-    // `arith.{addf,subf,mulf,divf}`, and yields a vector that a row `TensorStore` writes back.
+    // coerces each operand to a vector of the result's element type (`vector.load`/`broadcast`),
+    // applies `arith.{addf,subf,mulf,divf}`, and yields a vector that a row `TensorStore` writes
+    // back.
     pub(crate) fn op_binary(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let result_gid = *self
             .types
@@ -69,15 +70,15 @@ impl FnEmit<'_> {
             }
             self.names[idx] = n;
             self.etypes[idx] = Some(e);
-        } else if let (Some(Some(va)), Some(Some(vb))) = (
+        } else if let Some(vecty) = match (
             self.vec_of.get(ins.operand1.0 as usize),
             self.vec_of.get(ins.operand2.0 as usize),
         ) {
-            // `a + b` on two `<N x T>` values: the same op on each lane.
-            if va != vb {
-                return Err(crate::emitter_gap!());
-            }
-            let vecty = va.clone();
+            // `a + b` on two `<N x T>` values of one type: the same op on each lane. Two
+            // types take the path below, which widens the half one.
+            (Some(Some(va)), Some(Some(vb))) if va == vb => Some(va.clone()),
+            _ => None,
+        } {
             let float = vecty.contains("xf") || vecty.contains("xbf");
             let op = match (ins.opcode, float) {
                 (Opcode::Add, true) => "arith.addf",

@@ -2159,14 +2159,23 @@ fn coerce_vector(
             what: "an operand with no emitted name",
         })?
         .clone();
-    if vec_of
+    if let Some(have) = vec_of
         .get(op_reg as usize)
         .ok_or(Decline::TypeNotModelled {
             what: "an operand with no vector record",
         })?
-        .is_some()
     {
-        return Ok(name); // already a vector (a prior elementwise result)
+        // A prior elementwise result. A half one widens when this op computes in f32, as
+        // in `(a + b) * x` with f16 `a` and `b` and an f32 `x`.
+        if have == vecty {
+            return Ok(name);
+        }
+        if !vecty.ends_with("xf32>") || !(have.ends_with("xf16>") || have.ends_with("xbf16>")) {
+            return Err(crate::emitter_gap!());
+        }
+        let v = format!("%vx{tag}");
+        body.push_str(&format!("  {v} = arith.extf {name} : {have} to {vecty}\n"));
+        return Ok(v);
     }
     if let Some(m) = mem_of
         .get(op_reg as usize)
