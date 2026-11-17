@@ -9,7 +9,8 @@
 //
 // A tensor local that is given a new value in a function with a branch is kept
 // in a stack slot that holds its memref. `&mut t` still means the tensor, so a
-// call can pass it and the kernel it reaches still gets a SPIR-V image.
+// call can pass it and the kernel that contains the call still gets a SPIR-V
+// image.
 //
 // The checks show that the flat code generator built this module and that the
 // spawn region targets a `spirv64` device. Whether that region really becomes a

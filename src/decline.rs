@@ -211,7 +211,7 @@ mod tests {
     /// was found in. It names no instruction: an opcode is a compiler instruction, and the
     /// author never wrote one.
     #[test]
-    fn a_gap_names_the_function_it_was_found_in() {
+    fn a_gap_message_names_the_function() {
         let named = Decline::EmitterGap {
             site: "src/example.rs:1",
             function: None,

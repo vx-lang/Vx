@@ -607,7 +607,7 @@ fn a_kernel_with_a_struct_local_gets_a_spirv_module() {
 }
 
 /// The flat code generator carries a program that borrows a tensor local, and
-/// the kernel it reaches still gets a SPIR-V image.
+/// the kernel that contains the call still gets a SPIR-V image.
 ///
 /// A tensor local given a new value in a function with a branch is kept in a
 /// slot holding its memref. The flat emitter had no type for that slot as a call
