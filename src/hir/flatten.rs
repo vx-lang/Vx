@@ -419,10 +419,11 @@ enum Binding {
 }
 
 /// The launch shape of a `spawn` region: each size with its axis, from its `across` loops, and
-/// whether it has `across` loops.
+/// whether it has `across` loops. `max_registers` is the register budget of `on(...)`, or 0.
 struct RegionLaunch<'a> {
     shape: &'a [(u64, Val)],
     across: bool,
+    max_registers: u32,
 }
 
 /// A name a `let` in a block shadows, with the binding and type it had before the block.
@@ -4073,12 +4074,12 @@ impl<'r> Lowerer<'r> {
             RegionLaunch {
                 shape: &shape,
                 across: lanes.is_some(),
+                max_registers: s.max_registers.unwrap_or(0),
             },
             &s.stmts,
             s.ret.as_deref(),
             want_value,
             true,
-            s.max_registers.unwrap_or(0),
         );
         self.across = outer;
         if let (Ok(_), Some(count)) = (&lowered, count) {
@@ -4179,6 +4180,7 @@ impl<'r> Lowerer<'r> {
         let launch = RegionLaunch {
             shape: &[],
             across: false,
+            max_registers: 0,
         };
         let exits = kind == crate::syntax::TaskBlockKind::Tasks && has_tasks_exit(&u.stmts);
         if !exits {
@@ -4200,7 +4202,6 @@ impl<'r> Lowerer<'r> {
                 u.ret.as_deref(),
                 want_value,
                 false,
-                0,
             );
             if task {
                 self.task_bodies.pop();
@@ -4263,7 +4264,6 @@ impl<'r> Lowerer<'r> {
             u.ret.as_deref(),
             false,
             false,
-            0,
         );
         let exits = self.tasks_exits.pop().expect("pushed above").exits;
         lowered?;
@@ -4448,11 +4448,15 @@ impl<'r> Lowerer<'r> {
         ret: Option<&Expr>,
         want_value: bool,
         offer_parallel: bool,
-        max_registers: u32,
     ) -> Lowered<Option<Val>> {
         let tail_slot = self.region_tail_slot.take();
         let cancels_on_err = self.region_cancels_on_err.take();
-        self.emit_effect(Opcode::Spawn, Register(max_registers), Register(0), imm);
+        self.emit_effect(
+            Opcode::Spawn,
+            Register(launch.max_registers),
+            Register(0),
+            imm,
+        );
         if launch.across {
             self.emit_effect(Opcode::AcrossRegion, Register(0), Register(0), 0);
         }
