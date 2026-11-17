@@ -1856,6 +1856,16 @@ impl<'a> Parser<'a> {
                 path: vec!["core".into(), "tuple".into()],
             });
         }
+        // `Distinct::check(t)` is a call of a function in `core::distinct`.
+        if self.uses_distinct_check
+            && !imports.iter().any(|i: &ImportDecl| {
+                i.path.len() == 2 && &*i.path[0] == "core" && &*i.path[1] == "distinct"
+            })
+        {
+            imports.push(ImportDecl {
+                path: vec!["core".into(), "distinct".into()],
+            });
+        }
         // `==` with a string literal is a call of `core::c_str`'s `c_str_equals`, so it brings
         // that module with it. The module itself compares no literals, so it does not import
         // itself.
