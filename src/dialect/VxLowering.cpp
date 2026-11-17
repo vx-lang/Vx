@@ -10681,19 +10681,39 @@ struct ConvertVxToLLVMPass
             LLVM::Linkage::Internal);
         auto i32 = IntegerType::get(ctx, 32);
         auto i64 = IntegerType::get(ctx, 64);
-        auto write =
-            LLVM::lookupOrCreateFn(b, module, "write", {i32, ptrTy, i64}, i64);
-        auto abortFn = LLVM::lookupOrCreateFn(b, module, "abort", {},
-                                              LLVM::LLVMVoidType::get(ctx));
-        if (succeeded(write)) {
+        auto none = LLVM::LLVMVoidType::get(ctx);
+        // Whether the module has no `name`, or only libc's declaration of it.
+        // A program can define its own `write` or `abort`, and a second
+        // declaration of the name would clash with it.
+        auto libc = [&](StringRef name, LLVM::LLVMFunctionType ty) {
+          auto declared =
+              dyn_cast_or_null<LLVM::LLVMFuncOp>(module.lookupSymbol(name));
+          return !module.lookupSymbol(name) ||
+                 (declared && declared.isExternal() &&
+                  declared.getFunctionType() == ty);
+        };
+        Value size = b.create<LLVM::ConstantOp>(loc, i64, text.size());
+        if (libc("write",
+                 LLVM::LLVMFunctionType::get(i64, {i32, ptrTy, i64}))) {
+          auto write = LLVM::lookupOrCreateFn(b, module, "write",
+                                              {i32, ptrTy, i64}, i64);
+          assert(succeeded(write) && "libc's write has one declaration");
           Value fd = b.create<LLVM::ConstantOp>(loc, i32, 2);
-          Value size = b.create<LLVM::ConstantOp>(loc, i64, text.size());
           b.create<LLVM::CallOp>(loc, *write, ValueRange{fd, message, size});
+        } else {
+          auto write = LLVM::lookupOrCreateFn(b, module, "vx_stderr_write",
+                                              {ptrTy, i64}, i64);
+          assert(succeeded(write) &&
+                 "the runtime function has one declaration");
+          b.create<LLVM::CallOp>(loc, *write, ValueRange{message, size});
         }
-        if (succeeded(abortFn))
+        if (libc("abort", LLVM::LLVMFunctionType::get(none, {}))) {
+          auto abortFn = LLVM::lookupOrCreateFn(b, module, "abort", {}, none);
+          assert(succeeded(abortFn) && "libc's abort has one declaration");
           b.create<LLVM::CallOp>(loc, *abortFn, ValueRange{});
-        else
+        } else {
           b.create<LLVM::Trap>(loc);
+        }
         b.create<LLVM::UnreachableOp>(loc);
       }
     }
