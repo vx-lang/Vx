@@ -30,7 +30,7 @@ use crate::bytecode::{HirInstruction, Opcode, AFFINE_FOR_BRANCHES};
 use crate::decline::{Decline, Lowered};
 use crate::gid::TypeId;
 use crate::hir::flatten::{ptr_gid, scalar_gid, tensor_gid_of, DYN_DIM};
-use crate::mlir_ty::{mlir_scalar, mlir_vector};
+use crate::mlir_ty::{mlir_scalar, mlir_vector, VectorTy};
 use crate::registry::ImmutableGlobalRegistry;
 use crate::syntax::scalar_of;
 use crate::syntax::{is_void_ty, Dim, ElementType, Function, Type};
@@ -674,8 +674,8 @@ pub struct Callee {
     /// The memref spelling when the callee returns a statically shaped tensor (wrappers peeled) --
     /// the call's result is then a memref value tracked in `mem_of`.
     pub ret_tensor: Option<String>,
-    /// The `vector<NxT>` a callee returning `<N x T>` gives back.
-    pub ret_vec: Option<String>,
+    /// The vector type a callee returning `<N x T>` gives back.
+    pub ret_vec: Option<VectorTy>,
     /// Whether the returned tensor is placed in another memory. Such a result is handed back
     /// as a buffer, never through a slot on the caller's stack.
     pub ret_placed: bool,
@@ -824,7 +824,7 @@ pub fn build_callee_map(
                 ret_tensor: tensor_memref_of_type(&sig.ret_ty)
                     .or_else(|| borrowed_tensor_memref(&sig.ret_ty)),
                 ret_vec: match peel_wrappers(&sig.ret_ty) {
-                    Type::Simd(e, lanes) => mlir_vector(e, *lanes),
+                    Type::Simd(e, lanes) => VectorTy::new(e, *lanes),
                     _ => None,
                 },
                 ret_placed: crate::codegen::generator::written_placement(&sig.ret_ty).is_some(),
@@ -2071,6 +2071,12 @@ fn memref_elem(memty: &str) -> Option<&str> {
     memref_lead_dims_and_elem(memty).map(|(_, e)| e)
 }
 
+/// The element type of a memref type string. An integer reads as its signed type, as in
+/// [`elem_from_mlir_scalar`].
+fn memref_elem_type(memty: &str) -> Option<ElementType> {
+    memref_elem(memty).and_then(elem_from_mlir_scalar)
+}
+
 /// The dims prefix (`2x4x`) and element (`f32`) of a memref type string. `memref<2x4xf32> ->
 /// ("2x4x", "f32")`; a layout suffix (`, strided<…>`) is dropped.
 pub(crate) fn memref_lead_dims_and_elem(memty: &str) -> Option<(&str, &str)> {
@@ -2099,7 +2105,6 @@ fn memref_lead_dim(memty: &str) -> Option<i64> {
     parts[0].parse::<i64>().ok()
 }
 
-/// Coerce a slice-elementwise operand register to a `vector<Nxf32>` value (matching the AST's
 /// ` {alignment = 16 : i64}` when a whole-row vector access is provably 16-byte aligned, else
 /// nothing. Without it the memref lowering stamps the element's alignment (4 for f32), NVPTX
 /// cannot fuse the access, and a `vector.load` of a row arrives on the device as N scalar
@@ -2111,48 +2116,47 @@ fn memref_lead_dim(memty: &str) -> Option<i64> {
 /// from (`malloc` guarantees 16 on the host paths, `cudaMalloc` 256 on the device), so the row is
 /// 16-byte aligned exactly when `rowbytes` is a multiple of 16 -- which is what this checks, from
 /// the vector type's own width and element.
-fn vector_align_attr(vecty: &str) -> &'static str {
-    let Some(inner) = vecty
-        .strip_prefix("vector<")
-        .and_then(|s| s.strip_suffix('>'))
-    else {
-        return "";
-    };
-    let mut parts = inner.splitn(2, 'x');
-    let (Some(n), Some(et)) = (parts.next(), parts.next()) else {
-        return "";
-    };
-    let Ok(n) = n.parse::<u64>() else {
-        return "";
-    };
-    let esize = match et {
-        "f32" | "i32" => 4,
-        "f64" | "i64" => 8,
-        "f16" | "bf16" => 2,
+fn vector_align_attr(vecty: &VectorTy) -> &'static str {
+    use ElementType::*;
+    let esize = match vecty.elem() {
+        F32 | I32 | U32 => 4,
+        F64 | I64 | U64 | USize => 8,
+        F16 | BF16 => 2,
         _ => return "",
     };
-    if n * esize % 16 == 0 {
+    if (vecty.lanes() * esize).is_multiple_of(16) {
         " {alignment = 16 : i64}"
     } else {
         ""
     }
 }
 
+/// Coerce a slice-elementwise operand register to a vector of type `want` (matching the AST's
 /// `to_vector`): an already-vector operand passes through, a rank-1 memref is `vector.load`ed, and a
-/// scalar is `vector.broadcast`ed to the slice width. Emits into `body`; returns the vector SSA name.
-/// `tag` disambiguates the emitted SSA names.
+/// scalar is `vector.broadcast`ed to the slice width. A half operand widens when `want` is f32.
+/// Emits into `body`; returns the vector SSA name. `tag` disambiguates the emitted SSA names.
 #[allow(clippy::too_many_arguments)]
 fn coerce_vector(
     body: &mut String,
     tag: &str,
     op_reg: u32,
-    vecty: &str,
-    et: &str,
+    want: &VectorTy,
     names: &[String],
     mem_of: &[Option<String>],
-    vec_of: &[Option<String>],
+    vec_of: &[Option<VectorTy>],
     etypes: &[Option<ElementType>],
 ) -> Lowered<String> {
+    // Whether a value of element type `have` becomes a `want` lane: it is one already, or it is
+    // a half value that widens to f32.
+    let widens = |have: &ElementType| {
+        if have == want.elem() {
+            Ok(false)
+        } else if have.is_half() && *want.elem() == ElementType::F32 {
+            Ok(true)
+        } else {
+            Err(crate::emitter_gap!())
+        }
+    };
     let name = names
         .get(op_reg as usize)
         .ok_or(Decline::TypeNotModelled {
@@ -2167,14 +2171,14 @@ fn coerce_vector(
     {
         // A prior elementwise result. A half one widens when this op computes in f32, as
         // in `(a + b) * x` with f16 `a` and `b` and an f32 `x`.
-        if have == vecty {
-            return Ok(name);
-        }
-        if !vecty.ends_with("xf32>") || !(have.ends_with("xf16>") || have.ends_with("xbf16>")) {
+        if have.lanes() != want.lanes() {
             return Err(crate::emitter_gap!());
         }
+        if !widens(have.elem())? {
+            return Ok(name);
+        }
         let v = format!("%vx{tag}");
-        body.push_str(&format!("  {v} = arith.extf {name} : {have} to {vecty}\n"));
+        body.push_str(&format!("  {v} = arith.extf {name} : {have} to {want}\n"));
         return Ok(v);
     }
     if let Some(m) = mem_of
@@ -2185,40 +2189,23 @@ fn coerce_vector(
         let c0 = format!("%vc{tag}");
         let v = format!("%vl{tag}");
         body.push_str(&format!("  {c0} = arith.constant 0 : index\n"));
-        // Half-precision STORAGE widens on load (Vx#320): when the row's element is
-        // f16/bf16 and the op wants f32 lanes, load the narrow vector and `arith.extf`
-        // it wide. The narrow row still earns the alignment attribute on its own terms
-        // (64 halves are 128 bytes -- v8 packs).
-        let row_elem = m
-            .rsplit('x')
-            .next()
-            .ok_or(crate::emitter_gap!())?
-            .trim_end_matches('>');
-        let row_elem = row_elem
-            .split(',')
-            .next()
-            .ok_or(crate::emitter_gap!())?
-            .trim();
-        if (row_elem == "f16" || row_elem == "bf16") && vecty.ends_with("xf32>") {
-            let lanes = vecty
-                .strip_prefix("vector<")
-                .ok_or(crate::emitter_gap!())?
-                .split('x')
-                .next()
-                .ok_or(crate::emitter_gap!())?
-                .to_string();
-            let nvec = format!("vector<{lanes}x{row_elem}>");
+        let row_elem = memref_elem_type(&m).ok_or(crate::emitter_gap!())?;
+        // Half-precision STORAGE widens on load (Vx#320): load the narrow vector and
+        // `arith.extf` it wide. The narrow row still earns the alignment attribute on its own
+        // terms (64 halves are 128 bytes -- v8 packs).
+        if widens(&row_elem)? {
+            let nvec = want.with_elem(&row_elem).ok_or(crate::emitter_gap!())?;
             let nal = vector_align_attr(&nvec);
             let nv = format!("%vn{tag}");
             body.push_str(&format!(
                 "  {nv} = vector.load {name}[{c0}]{nal} : {m}, {nvec}\n"
             ));
-            body.push_str(&format!("  {v} = arith.extf {nv} : {nvec} to {vecty}\n"));
+            body.push_str(&format!("  {v} = arith.extf {nv} : {nvec} to {want}\n"));
             return Ok(v);
         }
-        let al = vector_align_attr(vecty);
+        let al = vector_align_attr(want);
         body.push_str(&format!(
-            "  {v} = vector.load {name}[{c0}]{al} : {m}, {vecty}\n"
+            "  {v} = vector.load {name}[{c0}]{al} : {m}, {want}\n"
         ));
         return Ok(v);
     }
@@ -2228,23 +2215,24 @@ fn coerce_vector(
         .clone()
     {
         // A half scalar widens before it is broadcast, the same way a half row does
-        // (Vx#320). Broadcasting it as if it were already `et` names the wrong type for
-        // the value and the module does not parse.
+        // (Vx#320). Broadcasting it as if it were already the lane type names the wrong type
+        // for the value and the module does not parse.
         let mut name = name;
-        let se_mlir = crate::mlir_ty::mlir_scalar(&se).ok_or(crate::emitter_gap!())?;
-        if se_mlir != et {
+        let et = mlir_scalar(want.elem()).ok_or(crate::emitter_gap!())?;
+        if se != *want.elem() {
             if !se.is_float() {
                 return Err(Decline::TypeNotModelled {
                     what: "a non-float scalar operand of an elementwise slice op",
                 });
             }
+            let se_mlir = mlir_scalar(&se).ok_or(crate::emitter_gap!())?;
             let w = format!("%vw{tag}");
             body.push_str(&format!("  {w} = arith.extf {name} : {se_mlir} to {et}\n"));
             name = w;
         }
         let v = format!("%vb{tag}");
         body.push_str(&format!(
-            "  {v} = vector.broadcast {name} : {et} to {vecty}\n"
+            "  {v} = vector.broadcast {name} : {et} to {want}\n"
         ));
         return Ok(v);
     }
@@ -2377,9 +2365,9 @@ pub(crate) struct FnEmit<'a> {
     /// `llvm.store %v, %place : {elem}, !llvm.ptr`. The place register itself already holds the
     /// GEP'd element pointer (in `names`).
     pub(crate) pptr_elem: Vec<Option<String>>,
-    /// The `vector<Nxf32>` type of each register holding an elementwise (slice) result, so a row
+    /// The vector type of each register holding an elementwise (slice) result, so a row
     /// `TensorStore` `vector.store`s it and a further elementwise passes it through.
-    pub(crate) vec_of: Vec<Option<String>>,
+    pub(crate) vec_of: Vec<Option<VectorTy>>,
     /// Whether each register holds an opaque `!llvm.ptr` *value* (a string const, a pointer param,
     /// a pointer-returning call, or a load from a pointer slot) — so a `Call` arg / `func.return`
     /// types it as `!llvm.ptr`. The pointer analogue of `etypes`.

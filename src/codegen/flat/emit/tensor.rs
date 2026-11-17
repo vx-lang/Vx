@@ -696,14 +696,10 @@ impl FnEmit<'_> {
             .cloned()
             .flatten()
             .ok_or(crate::emitter_gap!())?;
-        // The element type is the last part of the memref's shape: `memref<2x4xbf16, ...>`.
-        let src_el = src_mem
-            .strip_prefix("memref<")
-            .and_then(|t| t.split([',', '>']).next())
-            .and_then(|t| t.rsplit('x').next())
-            .ok_or(crate::emitter_gap!())?
-            .to_string();
-        let src_ty = crate::mlir_ty::float_elem_of_mlir(&src_el).ok_or(crate::emitter_gap!())?;
+        let src_ty = memref_elem_type(&src_mem)
+            .filter(|e| e.is_float() && !e.is_narrow_float())
+            .ok_or(crate::emitter_gap!())?;
+        let src_el = mlir_scalar(&src_ty).ok_or(crate::emitter_gap!())?;
         let (src_bits, dst_bits) = (
             src_ty.bits().ok_or(crate::emitter_gap!())?,
             elem.bits().ok_or(crate::emitter_gap!())?,
@@ -735,7 +731,7 @@ impl FnEmit<'_> {
         );
         let (i, r) = (format!("%tci{idx}"), format!("%tcr{idx}"));
         self.body += &format!("  ^bb0({i}: {src_el}, %tco{idx}: {dst}):\n");
-        let out = if src_el == dst {
+        let out = if src_ty == elem {
             i
         } else if src_bits < dst_bits {
             self.body += &format!("    {r} = arith.extf {i} : {src_el} to {dst}\n");
@@ -1776,8 +1772,8 @@ impl FnEmit<'_> {
                 // written from an array literal's buffer. Read the whole source row as a vector
                 // and store it; the checker already matched the two lengths.
                 let d = memref_lead_dim(&srcty).ok_or(crate::emitter_gap!())?;
-                let et = memref_elem(&srcty).ok_or(crate::emitter_gap!())?;
-                let vecty = format!("vector<{d}x{et}>");
+                let et = memref_elem_type(&srcty).ok_or(crate::emitter_gap!())?;
+                let vecty = VectorTy::new(&et, d as usize).ok_or(crate::emitter_gap!())?;
                 let al = vector_align_attr(&vecty);
                 let v = format!("%svl{idx}");
                 self.body += &format!("  {c0} = arith.constant 0 : index\n");

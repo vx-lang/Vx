@@ -1291,6 +1291,11 @@ impl ElementType {
         )
     }
 
+    /// Whether this is a 16-bit float type (`f16` or `bf16`).
+    pub fn is_half(&self) -> bool {
+        matches!(self, ElementType::F16 | ElementType::BF16)
+    }
+
     /// Storage width in bits — the single source of truth for element widths, from which
     /// `hir::memory::element_bits` (dense bits) and `layout::scalar_size_align` (padded bytes =
     /// `ceil(bits/8)`) both derive, so the two can no longer drift (they disagreed on `I4` before:

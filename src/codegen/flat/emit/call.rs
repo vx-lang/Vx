@@ -47,7 +47,7 @@ impl FnEmit<'_> {
         } else if callee.ret_ptr {
             "!llvm.ptr".to_string() // an FFI pointer-returning callee (#235)
         } else if let Some(v) = &callee.ret_vec {
-            v.clone()
+            v.to_string()
         } else if callee.ret_void {
             "()".to_string()
         } else {
@@ -86,7 +86,7 @@ impl FnEmit<'_> {
             } else if self.is_pointer_value(*a as usize)? {
                 "!llvm.ptr".to_string()
             } else if let Some(v) = self.vec_of.get(*a as usize).cloned().flatten() {
-                v
+                v.to_string()
             } else {
                 self.mem_of
                     .get(*a as usize)
@@ -505,7 +505,7 @@ impl FnEmit<'_> {
             } else if self.is_pointer_value(*a as usize)? {
                 "!llvm.ptr".to_string()
             } else if let Some(v) = self.vec_of.get(*a as usize).cloned().flatten() {
-                v
+                v.to_string()
             } else {
                 self.mem_of
                     .get(*a as usize)

@@ -7,7 +7,8 @@ use melior::ir::{
         IntegerAttribute, StringAttribute, TypeAttribute,
     },
     operation::OperationBuilder,
-    Attribute, Identifier, Region, Type, Value,
+    r#type::{DimSize, MemRefType, ShapedTypeLike, TypeLike},
+    Attribute, AttributeLike, Identifier, Region, Type, Value,
 };
 
 /// Whether this name holds a reference rather than a value of its own.
@@ -1216,20 +1217,21 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
             op,
             BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
         ) {
-            let lhs_ty_s = lhs_ty.to_string();
-            let rhs_ty_s = rhs_ty.to_string();
-            let is_slice = is_slice_operand(&lhs_ty_s) || is_slice_operand(&rhs_ty_s);
+            let is_slice = is_slice_operand(lhs_ty) || is_slice_operand(rhs_ty);
             if let Some(d) = is_slice
-                .then(|| slice_vec_len(&lhs_ty_s).or_else(|| slice_vec_len(&rhs_ty_s)))
+                .then(|| slice_vec_len(lhs_ty).or_else(|| slice_vec_len(rhs_ty)))
                 .flatten()
             {
                 // Two operands of one element type compute in it. Two types compute in f32.
-                let (le, re) = (slice_operand_elem(&lhs_ty_s), slice_operand_elem(&rhs_ty_s));
-                let elem = if le == re { le } else { "f32" }.to_string();
-                let va = to_vector(gen, lhs_val, &lhs_ty_s, d, &elem, block)?;
-                let vb = to_vector(gen, rhs_val, &rhs_ty_s, d, &elem, block)?;
-                let vec_ty = Type::parse(gen.context, &format!("vector<{d}x{elem}>"))
-                    .ok_or_else(|| LowerError::ParseType(format!("vector<{d}x{elem}>")))?;
+                let (le, re) = (slice_operand_elem(lhs_ty), slice_operand_elem(rhs_ty));
+                let elem = if le == re {
+                    le
+                } else {
+                    Type::float32(gen.context)
+                };
+                let va = to_vector(gen, lhs_val, lhs_ty, d, elem, block)?;
+                let vb = to_vector(gen, rhs_val, rhs_ty, d, elem, block)?;
+                let vec_ty = Type::vector(&[d], elem);
                 let op_name = match op {
                     BinaryOp::Add => "arith.addf",
                     BinaryOp::Sub => "arith.subf",
@@ -3302,21 +3304,45 @@ fn lower_tensor_initializer<'c>(
     Ok((buf, tensor_ty, cur))
 }
 
-/// Static length D of a rank-1 f32 slice value, from its melior type string. Matches a
-/// `vector<Dxf32>` or a rank-1 `memref<Dxf32, ...>` (the S1 row view); returns `None` for
-/// scalars, dynamic dims, and higher-rank memrefs (which are not slice operands).
-fn slice_vec_len(ty_str: &str) -> Option<i64> {
-    let inner = ty_str
-        .strip_prefix("vector<")
-        .or_else(|| ty_str.strip_prefix("memref<"))?;
-    // Shape is the text before any `, strided<...>` layout, e.g. `4xf32`; require exactly one
-    // `x` (rank 1) and a float element that `to_vector` widens to `f32`.
-    let shape = inner.split(',').next()?.trim_end_matches('>');
-    let parts: Vec<&str> = shape.split('x').collect();
-    if parts.len() == 2 && matches!(parts[1], "f32" | "f16" | "bf16") {
-        return parts[0].parse().ok();
+/// Static length D of a rank-1 f32, f16 or bf16 slice value. Matches a `vector<Dxf32>` or a
+/// rank-1 `memref<Dxf32, ...>` (the S1 row view). Returns `None` for scalars, dynamic dims, and
+/// higher-rank memrefs (which are not slice operands).
+fn slice_vec_len(ty: Type<'_>) -> Option<u64> {
+    let (d, elem) = rank1_shape(ty)?;
+    (elem.is_f32() || is_half(elem)).then_some(d)
+}
+
+/// Whether a type is a 16-bit float type (`f16` or `bf16`).
+fn is_half(ty: Type<'_>) -> bool {
+    ty.is_f16() || ty.is_bf16()
+}
+
+/// A vector type. Melior has no wrapper for it, and this one gives it the methods of a shaped
+/// type: its rank, its dimensions and its element type.
+#[derive(Clone, Copy)]
+struct VectorType<'c>(Type<'c>);
+
+impl<'c> TypeLike<'c> for VectorType<'c> {
+    fn to_raw(&self) -> mlir_sys::MlirType {
+        self.0.to_raw()
     }
-    None
+}
+
+impl<'c> ShapedTypeLike<'c> for VectorType<'c> {}
+
+/// The length and element type of a vector or memref of rank 1 with a static length.
+fn rank1_shape(ty: Type<'_>) -> Option<(u64, Type<'_>)> {
+    fn of<'c>(t: &impl ShapedTypeLike<'c>) -> Option<(u64, Type<'c>)> {
+        match (t.rank(), t.dim_size(0)) {
+            (1, Ok(DimSize::Static(d))) => Some((d, t.element())),
+            _ => None,
+        }
+    }
+    if ty.is_vector() {
+        of(&VectorType(ty))
+    } else {
+        of(&MemRefType::try_from(ty).ok()?)
+    }
 }
 
 /// Emit `linalg.fill(0)` over an existing buffer.
@@ -3880,53 +3906,47 @@ pub(super) fn move_view_pointer<'c>(
 /// value or a strided slice view (`memref<..., strided<...>>`, as produced by S1). A plain
 /// contiguous `memref<Nxf32>` (a whole 1-D tensor) is deliberately excluded -- those keep the
 /// loop-based lowering that the optimization-pass tests exercise (scf-to-cf, loop unroll).
-fn is_slice_operand(ty_str: &str) -> bool {
-    ty_str.starts_with("vector<") || (ty_str.starts_with("memref<") && ty_str.contains("strided"))
+fn is_slice_operand(ty: Type<'_>) -> bool {
+    ty.is_vector() || MemRefType::try_from(ty).is_ok_and(|m| m.layout().is_strided_layout())
 }
 
-/// The element type of a slice-elementwise operand: of a vector, a rank-1 memref or a scalar.
-fn slice_operand_elem(ty_str: &str) -> &str {
-    if let Some(rest) = ty_str
-        .strip_prefix("vector<")
-        .or_else(|| ty_str.strip_prefix("memref<"))
-    {
-        let shape = rest.split([',', '>']).next().unwrap_or("");
-        shape.rsplit('x').next().unwrap_or(shape)
+/// The element type of a slice-elementwise operand: of a vector, a memref or a scalar.
+fn slice_operand_elem(ty: Type<'_>) -> Type<'_> {
+    if ty.is_vector() {
+        VectorType(ty).element()
+    } else if let Ok(m) = MemRefType::try_from(ty) {
+        m.element()
     } else {
-        ty_str
+        ty
     }
 }
 
-/// Coerce a slice-elementwise operand to `vector<Dx{elem}>`: a rank-1 memref is
-/// `vector.load`ed, and a scalar is `vector.broadcast`ed to the slice width. A half (`f16` or
-/// `bf16`) value widens when `elem` is `f32`.
+/// Coerce a slice-elementwise operand of type `ty` to a vector of `d` lanes of `elem`: a rank-1
+/// memref is `vector.load`ed, and a scalar is `vector.broadcast`ed to the slice width. A half
+/// (`f16` or `bf16`) value widens when `elem` is `f32`.
 fn to_vector<'c>(
     gen: &mut MeliorGenerator<'c>,
     val: Value<'c, 'c>,
-    ty_str: &str,
-    d: i64,
-    elem: &str,
+    ty: Type<'c>,
+    d: u64,
+    elem: Type<'c>,
     block: melior::ir::BlockRef<'c, 'c>,
 ) -> Result<Value<'c, 'c>, LowerError> {
-    let parse = |text: String| {
-        Type::parse(gen.context, &text).ok_or_else(|| LowerError::ParseType(text.clone()))
+    let vec_ty = Type::vector(&[d], elem);
+    let own_elem = slice_operand_elem(ty);
+    let widen = if own_elem == elem && (elem.is_f32() || is_half(elem)) {
+        false
+    } else if is_half(own_elem) && elem.is_f32() {
+        true
+    } else {
+        return Err(LowerError::from(format!(
+            "a slice operation on `{own_elem}` values has no lowering on the AST code generator"
+        )));
     };
-    let vec_ty = parse(format!("vector<{d}x{elem}>"))?;
-    let own_elem = slice_operand_elem(ty_str);
-    let widen = match (own_elem, elem) {
-        (a, b) if a == b && matches!(a, "f32" | "f16" | "bf16") => false,
-        ("f16" | "bf16", "f32") => true,
-        (other, _) => {
-            return Err(LowerError::from(format!(
-                "a slice operation on `{other}` values has no lowering on the AST code generator"
-            )))
-        }
-    };
-    let is_memref = ty_str.starts_with("memref<");
-    let own_ty = parse(format!("vector<{d}x{own_elem}>"))?;
-    let own: Value = if ty_str.starts_with("vector<") {
+    let own_ty = Type::vector(&[d], own_elem);
+    let own: Value = if ty.is_vector() {
         val
-    } else if is_memref {
+    } else if ty.is_mem_ref() {
         let index_ty = Type::index(gen.context);
         let c0_op = OperationBuilder::new("arith.constant", gen.loc())
             .add_attributes(&[(
@@ -6212,37 +6232,33 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
         {
             let (val, val_ty, block) = gen.generate_expr(&self.expr, block)?;
             // A tensor in memory: a new tensor of each element cast.
-            if val_ty.to_string().starts_with("memref<") {
+            if val_ty.is_mem_ref() {
                 let target = gen.lower_type(&self.target_ty)?.to_string();
                 return lower_tensor_cast(gen, block, val, val_ty, &target);
             }
             {
                 let d = dims[0]
                     .literal()
-                    .and_then(|v| v.parse::<i64>().ok())
+                    .and_then(|v| v.parse::<u64>().ok())
                     .ok_or_else(|| {
                         LowerError::from(
                             "a cast over a slice whose length is not known".to_string(),
                         )
                     })?;
-                let wide = to_vector(gen, val, &val_ty.to_string(), d, "f32", block)?;
-                let target = gen.lower_type(&self.target_ty)?.to_string();
-                let result = match target.as_str() {
-                    "f32" => wide,
-                    "f16" | "bf16" => {
-                        let ty = Type::parse(gen.context, &format!("vector<{d}x{target}>"))
-                            .ok_or_else(|| LowerError::ParseType(target.clone()))?;
-                        let op = OperationBuilder::new("arith.truncf", gen.loc())
-                            .add_operands(&[wide])
-                            .add_results(&[ty])
-                            .build()?;
-                        block.append_operation(op).result(0)?.into()
-                    }
-                    other => {
-                        return Err(LowerError::from(format!(
-                        "a cast of a slice to `{other}` has no lowering on the AST code generator"
-                    )))
-                    }
+                let wide = to_vector(gen, val, val_ty, d, Type::float32(gen.context), block)?;
+                let target = gen.lower_type(&self.target_ty)?;
+                let result = if target.is_f32() {
+                    wide
+                } else if is_half(target) {
+                    let op = OperationBuilder::new("arith.truncf", gen.loc())
+                        .add_operands(&[wide])
+                        .add_results(&[Type::vector(&[d], target)])
+                        .build()?;
+                    block.append_operation(op).result(0)?.into()
+                } else {
+                    return Err(LowerError::from(format!(
+                        "a cast of a slice to `{target}` has no lowering on the AST code generator"
+                    )));
                 };
                 let result_ty = result.r#type();
                 return Ok((result, result_ty, block));

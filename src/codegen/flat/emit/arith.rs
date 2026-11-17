@@ -79,8 +79,7 @@ impl FnEmit<'_> {
             (Some(Some(va)), Some(Some(vb))) if va == vb => Some(va.clone()),
             _ => None,
         } {
-            let float = vecty.contains("xf") || vecty.contains("xbf");
-            let op = match (ins.opcode, float) {
+            let op = match (ins.opcode, vecty.elem().is_float()) {
                 (Opcode::Add, true) => "arith.addf",
                 (Opcode::Sub, true) => "arith.subf",
                 (Opcode::Mul, true) => "arith.mulf",
@@ -107,7 +106,6 @@ impl FnEmit<'_> {
                     what: "an elementwise op on non-float elements",
                 });
             }
-            let et = mlir_scalar(elem).ok_or(crate::emitter_gap!())?;
             // Rank 1 takes the vector path below: the operands are read with a single-index
             // `vector.load`, which a rank-2 memref rejects ("requires 2 indices"). Anything
             // deeper is a named linalg op over the operand memrefs.
@@ -115,14 +113,15 @@ impl FnEmit<'_> {
                 let (elem, shape) = (elem.clone(), shape.clone());
                 return self.elementwise_linalg(idx, ins, &elem, &shape);
             }
-            let d: i64 = shape[0].parse::<i64>().map_err(|_| crate::emitter_gap!())?;
-            let vecty = format!("vector<{d}x{et}>");
+            let d = shape[0]
+                .parse::<usize>()
+                .map_err(|_| crate::emitter_gap!())?;
+            let vecty = VectorTy::new(elem, d).ok_or(crate::emitter_gap!())?;
             let va = coerce_vector(
                 &mut self.body,
                 &format!("{idx}a"),
                 ins.operand1.0,
                 &vecty,
-                et,
                 &self.names,
                 &self.mem_of,
                 &self.vec_of,
@@ -133,7 +132,6 @@ impl FnEmit<'_> {
                 &format!("{idx}b"),
                 ins.operand2.0,
                 &vecty,
-                et,
                 &self.names,
                 &self.mem_of,
                 &self.vec_of,
@@ -472,40 +470,30 @@ impl FnEmit<'_> {
         idx: usize,
         ins: &HirInstruction,
         elem: &ElementType,
-        src_vec: &str,
+        src_vec: &VectorTy,
     ) -> Lowered<()> {
         if !elem.is_float() {
             return Err(Decline::TypeNotModelled {
                 what: "a slice cast to a non-float element type",
             });
         }
-        let lanes = src_vec
-            .strip_prefix("vector<")
-            .ok_or(crate::emitter_gap!())?
-            .split('x')
-            .next()
-            .ok_or(crate::emitter_gap!())?
-            .to_string();
-        let src_elem = src_vec
-            .rsplit('x')
-            .next()
-            .ok_or(crate::emitter_gap!())?
-            .trim_end_matches('>')
-            .to_string();
-        let et = mlir_scalar(elem).ok_or(crate::emitter_gap!())?;
-        let dst_vec = format!("vector<{lanes}x{et}>");
+        let dst_vec = src_vec.with_elem(elem).ok_or(crate::emitter_gap!())?;
         let a = self
             .names
             .get(ins.operand1.0 as usize)
             .ok_or(crate::emitter_gap!())?
             .clone();
-        if src_elem == et {
+        if src_vec.elem() == elem {
             self.names[idx] = a;
             self.vec_of[idx] = Some(dst_vec);
             return Ok(());
         }
-        let src_ty = crate::mlir_ty::float_elem_of_mlir(&src_elem).ok_or(crate::emitter_gap!())?;
-        let src_bits = src_ty.bits().ok_or(crate::emitter_gap!())?;
+        if !src_vec.elem().is_float() || src_vec.elem().is_narrow_float() {
+            return Err(Decline::TypeNotModelled {
+                what: "a slice cast from an element type other than f16, bf16, f32 or f64",
+            });
+        }
+        let src_bits = src_vec.elem().bits().ok_or(crate::emitter_gap!())?;
         let dst_bits = elem.bits().ok_or(crate::emitter_gap!())?;
         // f16 and bf16 are both 16 bits and neither `truncf` nor `extf` converts between
         // them, so that pair declines rather than emitting a conversion that lies.
