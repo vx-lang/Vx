@@ -60,6 +60,8 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/TypeSwitch.h"
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InstIterator.h"
@@ -77,6 +79,8 @@
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Scalar/EarlyCSE.h"
+#include "llvm/Transforms/Scalar/SROA.h"
+#include "llvm/Transforms/Utils/LoopUtils.h"
 
 #include <atomic>
 #include <set>
@@ -9357,6 +9361,48 @@ static std::optional<DisjointConstant> disjointConstant(llvm::Value *v) {
   return DisjointConstant{c->zext(v->getType()->getScalarSizeInBits()), x, ext};
 }
 
+/// Asks LLVM to unroll each loop of a kernel that runs at most 16 times and
+/// holds no other loop. LLVM unrolls such a loop by itself only when its body
+/// is small. Unrolled, a loop such as `for j in 0..8` that picks one of eight
+/// values with `j == 1`, `j == 2` and so on has a constant `j` in each copy,
+/// and the picks fold. The Metal code generator unrolls outer loops too, but
+/// on NVIDIA that added register spills to a top-k kernel. The loop counters
+/// are still in stack slots here, so SROA moves them to registers first:
+/// without that, LLVM cannot count the trips.
+static void unrollShortLoops(llvm::Module &module) {
+  constexpr unsigned maxUnrolledTrips = 16;
+  llvm::LoopAnalysisManager loops;
+  llvm::FunctionAnalysisManager functions;
+  llvm::CGSCCAnalysisManager calls;
+  llvm::ModuleAnalysisManager modules;
+  llvm::PassBuilder builder;
+  builder.registerModuleAnalyses(modules);
+  builder.registerCGSCCAnalyses(calls);
+  builder.registerFunctionAnalyses(functions);
+  builder.registerLoopAnalyses(loops);
+  builder.crossRegisterProxies(loops, functions, calls, modules);
+  llvm::FunctionPassManager cleanup;
+  cleanup.addPass(llvm::SROAPass(llvm::SROAOptions::ModifyCFG));
+  for (llvm::Function &f : module) {
+    if (f.isDeclaration())
+      continue;
+    cleanup.run(f, functions);
+    llvm::LoopInfo &info = functions.getResult<llvm::LoopAnalysis>(f);
+    llvm::ScalarEvolution &evolution =
+        functions.getResult<llvm::ScalarEvolutionAnalysis>(f);
+    for (llvm::Loop *loop : info.getLoopsInPreorder()) {
+      // A loop that tests its condition at the top runs its header once more
+      // than its body.
+      unsigned trips = evolution.getSmallConstantTripCount(loop);
+      llvm::BasicBlock *latch = loop->getLoopLatch();
+      if (trips > 0 && latch && !loop->isLoopExiting(latch))
+        --trips;
+      if (loop->isInnermost() && trips > 0 && trips <= maxUnrolledTrips)
+        llvm::addStringMetadataToLoop(loop, "llvm.loop.unroll.full");
+    }
+  }
+}
+
 /// Moves a constant that a disjoint `or` adds to an index outward, in the LLVM
 /// IR of a kernel, where known bits show that this is exact. Here `D` is
 /// `or disjoint X, C`, or a `zext` or a `sext` of it, and `Y` is `X` or its
@@ -9602,8 +9648,7 @@ static DeviceImage deviceImageOf(gpu::GPUModuleOp gpuModule,
           symbols.emplace(*device);
         return &*symbols;
       },
-      /*initialLlvmIRCallback=*/{}, /*linkedLlvmIRCallback=*/{},
-      moveDisjointConstantsOut);
+      /*initialLlvmIRCallback=*/{}, unrollShortLoops, moveDisjointConstantsOut);
   if (failed(gpu::transformGpuModulesToBinaries(*device, nullptr, binary))) {
     error = "the NVPTX pipeline failed";
     return {};
