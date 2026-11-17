@@ -922,8 +922,8 @@ fn integer_instructions_on_bool(module: &[u8]) -> Vec<u32> {
     found
 }
 
-/// A kernel that multiplies, divides, shifts, or takes the min or max of `i1`
-/// values gets a SPIR-V module with no integer instruction on `bool`.
+/// A kernel that does arithmetic on `i1` values gets a SPIR-V module with no
+/// integer instruction on `bool`.
 #[test]
 fn one_bit_arithmetic_gets_a_valid_spirv_module() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))

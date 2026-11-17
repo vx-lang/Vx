@@ -9781,6 +9781,8 @@ static void legalizeOneBitArithmetic(llvm::Module &module) {
         case llvm::Instruction::SRem:
           logic = llvm::Constant::getNullValue(inst.getType());
           break;
+        // The backend already writes `add` and `sub` of `i1` as
+        // `OpLogicalNotEqual`, which is xor.
         default:
           break;
         }
