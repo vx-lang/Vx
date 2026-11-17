@@ -9,7 +9,7 @@
 //
 // `+`, `-`, `*` and `/` take numbers, so a `bool` operand is an error, also in `+=` and on a
 // tensor of bools. As 1-bit integers, `true + true` would be `false`. `&`, `|` and `^` take
-// bools.
+// bools, but not tensors yet, so the error on tensors gives no hint.
 
 fn main() -> i32 {
   let a = true;
@@ -27,9 +27,13 @@ fn main() -> i32 {
   c += b;
   let t = Tensor<bool>([4]);
   let u = Tensor<bool>([4]);
-  // CHECK: Error[E3030] at {{.*}}arithmetic_on_bools.vx:[[@LINE+1]]:13: `*` takes two numbers, got Tensor<bool, [4]> and Tensor<bool, [4]>
+  // CHECK: Error[E3030] at {{.*}}arithmetic_on_bools.vx:[[@LINE+1]]:13: `*` takes two numbers, got Tensor<bool, [4]> and Tensor<bool, [4]>{{$}}
   let v = t * u;
+  let p = Tensor<bool>([4]);
+  let q = Tensor<bool>([4]);
+  // CHECK: Error[E3030] at {{.*}}arithmetic_on_bools.vx:[[@LINE+1]]:13: `&` takes two integers or bools, got Tensor<bool, [4]> and Tensor<bool, [4]>
+  let w = p & q;
   let ok = (a & b) | (a ^ b);
   return 0;
 }
-// CHECK: 6 error(s) emitted
+// CHECK: 7 error(s) emitted
