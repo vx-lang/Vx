@@ -374,9 +374,7 @@ impl Lowerer<'_> {
                 continue;
             }
             let start = i;
-            while i < stmts.len() && !across_lanes::holds_across(&stmts[i]) {
-                i += 1;
-            }
+            i = across_lanes::stretch_end(stmts, start, &self.across.lane0);
             let part = &stmts[start..i];
             let on_lane0 = across_lanes::runs_on_lane0(part, &mut self.across.lane0);
             let outer = self.across.level.take();

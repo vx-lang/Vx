@@ -781,11 +781,9 @@ fn lower_stretches<'c>(
             continue;
         }
         let start = i;
-        while i < stmts.len() && !holds(&stmts[i]) {
-            i += 1;
-        }
-        let part = &stmts[start..i];
         let map = gen.across_map.as_mut().expect("a mapped region");
+        i = crate::hir::check::across_lanes::stretch_end(stmts, start, &map.lane0);
+        let part = &stmts[start..i];
         if !crate::hir::check::across_lanes::runs_on_lane0(part, &mut map.lane0) {
             // Every lane runs the stretch. The code in it is not the code of a level.
             map.level = None;

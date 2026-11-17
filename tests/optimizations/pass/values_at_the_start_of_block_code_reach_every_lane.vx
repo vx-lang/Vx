@@ -1,0 +1,52 @@
+// Block code that writes memory, such as filling a tile in shared memory, runs on lane 0 only.
+// The `let`s at the start of that code write nothing, so every lane computes them, and a later
+// lane loop can read them. Here `chunk` and `need` come from a value in memory before the fill.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s --check-prefix=PTX --input-file=%t.ptx
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.legacy.ptx
+// RUN: FileCheck %s --check-prefix=PTX --input-file=%t.legacy.ptx
+//
+// On the GPU, each lane loads `step[1]` itself, before the branch that lets only lane 0 fill the
+// tile.
+// PTX-LABEL: .entry fill_rows(
+// PTX: ld.global.nc.b32 {{%r[0-9]+}}, [{{%rd[0-9]+}}+4];
+// PTX: @%p{{[0-9]+}} bra
+// PTX-NEXT: st.shared.b32
+//
+// tokens = 5000, so chunk = (5000 + 4095) / 4096 * 128 = 256 and need = min(7, 5000) = 7.
+// Lane l writes chunk + need + l, and then the value that lane 0 put in the tile.
+// CHECK: {{^}}263 518 1{{$}}
+
+fn fill_rows(out : &mut Tensor<i32, [?], Memory::HBM>, step : &Tensor<i32, [?], Memory::HBM>, k : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let tokens = step[1];
+      let chunk = (tokens + 4095) / 4096 * 128;
+      let need = if k < tokens {
+        k
+      } else {
+        tokens
+      };
+      let seen = Tensor<i32, [1], Memory::SMEM>::fill(1);
+      for l in 0..256 across lanes {
+        out[l] = chunk + need + l;
+        out[256 + l] = seen[0];
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut s = Tensor<i32, [?]>::new([2]);
+  s[0] = 0;
+  s[1] = 5000;
+  let mut out = transfer(Tensor<i32, [?]>::new([512]), Memory::HBM);
+  fill_rows(&mut out, &transfer(s, Memory::HBM), 7);
+  let got = transfer(out, Memory::CPU_DRAM);
+  println!("{} {} {}", got[0], got[255], got[511]);
+  return 0;
+}
