@@ -912,8 +912,9 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// The operand rule for `%`, the bitwise operators and the shifts: the three that have
-    /// no elementwise lowering and are not defined on every element type. Returns false,
-    /// having reported E3030, when the operands are outside what the operator accepts.
+    /// no elementwise lowering and are not defined on every element type. `+`, `-`, `*`
+    /// and `/` only refuse two bools. Returns false, having reported E3030, when the operands
+    /// are outside what the operator accepts.
     ///
     /// Shared by `a % b` and `a %= b` so the two cannot drift apart. Before this was
     /// shared, the compound form was checked by the plain assignment rule, which does not
@@ -937,6 +938,38 @@ impl<'a> TypeChecker<'a> {
     ) -> bool {
         let bitwise = matches!(op, BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor);
         let shift = matches!(op, BinaryOp::Shl | BinaryOp::Shr);
+        // The other arithmetic operators take tensors too, so they refuse only two bools.
+        // As 1-bit integers, `true + true` would be `false`.
+        if matches!(
+            op,
+            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
+        ) {
+            let is_bool = |t: &Type| Self::scalar_elem(t) == Some(ElementType::Bool);
+            // One `bool` and one number is a type mismatch, which the caller reports.
+            if !(is_bool(lhs_ty) && is_bool(rhs_ty)) {
+                return true;
+            }
+            // A shaped tensor has no `&`, `|` or `^` either, so the hint is for single values.
+            let hint = if Self::single_value_elem(lhs_ty).is_some()
+                && Self::single_value_elem(rhs_ty).is_some()
+            {
+                ". For bools, use `&` (and), `|` (or) or `^` (xor)"
+            } else {
+                ""
+            };
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3030,
+                format!(
+                    "`{}` takes two numbers, got {} and {}{}",
+                    binary_op_symbol(op),
+                    lhs_ty,
+                    rhs_ty,
+                    hint
+                ),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
+            return false;
+        }
         if *op != BinaryOp::Rem && !bitwise && !shift {
             return true;
         }

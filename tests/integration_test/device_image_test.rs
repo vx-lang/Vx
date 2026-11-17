@@ -673,6 +673,27 @@ fn a_kernel_with_a_struct_local_gets_a_spirv_module() {
     }
 }
 
+/// Kernels that read and write 8-bit and 4-bit floats each get a SPIR-V module
+/// that `spirv-val` accepts. LLVM has no type for these floats, so the image
+/// must store them as integers.
+#[test]
+fn fp8_and_fp4_kernels_get_a_valid_spirv_module() {
+    let ir = emit_llvm("spirv_device_image_fp8_and_fp4.vx");
+    for kernel in ["vx_npu_kernel_0", "vx_npu_kernel_1"] {
+        let payload = payload_bytes(&ir, kernel);
+        let has = |needle: &[u8]| payload.windows(needle.len()).any(|w| w == needle);
+        assert!(
+            has(b"format=spirv\0"),
+            "{kernel} has no SPIR-V image in its payload"
+        );
+        match spirv_val(payload_section(&payload)) {
+            Some(Ok(())) => {}
+            Some(Err(report)) => panic!("spirv-val rejected the module of {kernel}:\n{report}"),
+            None => println!("spirv-val is not installed, so the module was not validated"),
+        }
+    }
+}
+
 /// A placed region that calls the runtime -- `print` inside the region -- also
 /// reaches no device image, and now says so, naming the callee it could not
 /// bring along (#1137).
@@ -896,5 +917,86 @@ fn a_bf16_kernel_gets_a_valid_spirv_module() {
             Some(Err(report)) => panic!("{kernel}: spirv-val rejected the module:\n{report}"),
             None => println!("spirv-val is not installed, so the module was not validated"),
         }
+    }
+}
+
+/// The opcodes of the SPIR-V integer instructions that take a result type.
+/// SPIR-V allows none of them on `bool`: `OpIAdd`, `OpISub`, `OpIMul`,
+/// `OpUDiv`, `OpSDiv`, `OpUMod`, `OpSRem`, `OpSMod` and the three shifts.
+const INTEGER_OPCODES: [u32; 11] = [128, 130, 132, 134, 135, 137, 138, 139, 194, 195, 196];
+
+/// The opcode of each integer instruction in a SPIR-V module whose result is a
+/// `bool` or a vector of `bool`.
+fn integer_instructions_on_bool(module: &[u8]) -> Vec<u32> {
+    let words: Vec<u32> = module
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|w| u32::from_le_bytes(*w))
+        .collect();
+    let mut bools = std::collections::HashSet::new();
+    let mut found = Vec::new();
+    // The header is five words. Each instruction starts with its word count
+    // and its opcode, and a result type comes first after that.
+    let mut at = 5;
+    while at < words.len() {
+        let count = (words[at] >> 16) as usize;
+        let opcode = words[at] & 0xffff;
+        assert!(
+            count > 0 && at + count <= words.len(),
+            "a SPIR-V instruction runs past the end of the module"
+        );
+        let operands = &words[at + 1..at + count];
+        match opcode {
+            // OpTypeBool %result
+            20 => {
+                bools.insert(operands[0]);
+            }
+            // OpTypeVector %result %component %count
+            23 if bools.contains(&operands[1]) => {
+                bools.insert(operands[0]);
+            }
+            op if INTEGER_OPCODES.contains(&op) && bools.contains(&operands[0]) => found.push(op),
+            _ => {}
+        }
+        at += count;
+    }
+    found
+}
+
+/// A kernel that does arithmetic on `i1` values gets a SPIR-V module with no
+/// integer instruction on `bool`.
+#[test]
+fn one_bit_arithmetic_gets_a_valid_spirv_module() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/optimizations/pass/spirv_one_bit_arithmetic_becomes_logic.mlr");
+    let out = Command::new(env!("CARGO_BIN_EXE_vx-opt"))
+        .arg(&path)
+        .arg("--vx-to-llvm")
+        .output()
+        .unwrap_or_else(|e| panic!("could not run vx-opt: {e}"));
+    assert!(
+        out.status.success(),
+        "vx-opt --vx-to-llvm failed on {}:\n{}",
+        path.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let ir = String::from_utf8_lossy(&out.stdout);
+    let payload = payload_bytes(&ir, "bits");
+    let section = payload_section(&payload);
+    assert_eq!(
+        &section[..4],
+        &[0x03, 0x02, 0x23, 0x07],
+        "the section does not start with SPIR-V's magic number 0x07230203"
+    );
+    assert_eq!(
+        integer_instructions_on_bool(section),
+        Vec::<u32>::new(),
+        "the module has integer instructions on `bool`, which SPIR-V does not allow. `left` lists their opcodes"
+    );
+    match spirv_val(section) {
+        Some(Ok(())) => {}
+        Some(Err(report)) => panic!("spirv-val rejected the module:\n{report}"),
+        None => println!("spirv-val is not installed, so the module was not validated"),
     }
 }

@@ -127,7 +127,7 @@ pub enum DiagnosticCode {
     /// The loop of a `spawn` region runs on one thread although each pass writes only memory of
     /// its own, so its passes could run at the same time. The warning points at what stops it: a
     /// call the compiler cannot show writes nothing, inline MLIR, a read of a row another pass
-    /// writes, bounds not known when compiling, and the like. A region that calls `barrier()` asks
+    /// writes, a `break` out of the loop, and the like. A region that calls `barrier()` asks
     /// for blocks and threads, so it is warned about whenever it runs on one thread, with the
     /// first thing that stopped the split: two threads that may write the same element, a `break`
     /// out of a loop that holds a `barrier()`, a write to block-shared memory with no `barrier()`
@@ -307,10 +307,11 @@ pub enum DiagnosticCode {
     /// parses as a user nominal, so without this a typo -- or a type constructor removed from the
     /// language -- compiled silently and did nothing.
     E3029,
-    /// An operator applied to operand types it is not defined on -- `%` on a shaped tensor or on
-    /// a `bool`, or `-` on an unsigned integer or a `bool`. For `%`, the flat emitter would
-    /// decline and fall back to a path that cannot lower it either, and an `i1` operand would
-    /// reach `arith.remsi` and verify. `-` on an unsigned integer would wrap with no error.
+    /// An operator applied to operand types it is not defined on -- `%` on a shaped tensor,
+    /// `+`, `-`, `*`, `/` or `%` on a `bool`, or `-` on an unsigned integer or a `bool`. For
+    /// `%`, the flat emitter would decline and fall back to a path that cannot lower it
+    /// either, and an `i1` operand would reach `arith.remsi` and verify. `-` on an unsigned
+    /// integer would wrap with no error, and `true + true` would be `false`.
     E3030,
     /// `impl Copy for X` where one of `X`'s fields is a type that moves. `Copy` promises a
     /// value survives being assigned elsewhere, and a field that does not survive it breaks

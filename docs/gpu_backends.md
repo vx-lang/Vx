@@ -76,6 +76,16 @@ copy. `--emit-msl` writes the MSL and the same manifest as `--emit-ptx`.
 - Each tensor is one buffer over the pages that it touches, made with no copy.
   Its sizes and strides go in a buffer of 32-bit words, so `index` is 32 bits,
   and the runtime refuses a tensor of 2^31 elements or more.
+- A transfer to GPU memory gets pages with one buffer for their whole life. A
+  Metal residency set keeps those buffers resident, so a command buffer does
+  not make them resident again.
+- A transfer to GPU memory of a view of a read-only, shared mapping of a file
+  makes no copy, when the view starts on a page. The runtime makes one private
+  mapping of the file, and gives the tensor its pages of it. So a model can map
+  its weight file, and the GPU reads the weights from the file cache. A write
+  to the tensor copies only the page that it changes, and the file keeps its
+  bytes. `tests/optimizations/pass/apple_gpu_reads_a_mapped_file_with_no_copy.vx`
+  shows the steps.
 - `VX_METAL=0`, or `vx_metal_set_enabled(0)` on one thread, runs the CPU copy
   of each kernel on the same memory instead.
 - The GPU flushes a subnormal `f32` to 0, and the CPU copy does too, so the two
@@ -113,6 +123,10 @@ copy. `--emit-msl` writes the MSL and the same manifest as `--emit-ptx`.
   `simd_sum` and the other functions of a SIMD-group.
 - A loop of constant bounds with at most 16 passes gets `#pragma clang loop unroll(full)`, as in
   llama.cpp's kernels. The Metal compiler does not unroll such a loop by itself.
+- Before printing, an access to shared memory at an index `x + c`, with a number `c`, becomes an
+  access at `c` of a view that starts at `x` (`splitSharedOffsets`). It prints as `(tile + o)[c]`,
+  so the Metal compiler puts `c` in the address. With `tile[x + c]` it computed each address, and
+  an expert product took 6% longer. Device memory keeps `p[..]`, which was faster there.
 - `vx.subgroup_schedule_barrier` in an `mlir!` block prints as
   `simdgroup_barrier(mem_flags::mem_none)`: the threads of a SIMD-group meet there, and no memory
   is ordered. It helps the Metal compiler schedule the loads before a simdgroup multiply. Other

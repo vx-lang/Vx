@@ -82,7 +82,8 @@ pub enum Opcode {
     /// it. The host path ignores it entirely (#251). Under `SPAWN_TWO_LEVEL` (bit 62, Vx#379) the
     /// low bits are a BLOCK count and bits 32..47 the thread width; `SPAWN_COOP` (bit 61, stage C)
     /// additionally marks the thread loop as cooperative — barriers inside it, no serial
-    /// schedule, so the host refuses the region instead of running it.
+    /// schedule, so the host refuses the region instead of running it. `SPAWN_RUN_TIME_TRIP`
+    /// (bit 60) marks a parallel loop whose trip count is known only at run time.
     SpawnEnd = 21,
     /// Load a struct field: `operand1` is the aggregate's slot handle (from `Alloca`), `imm` the
     /// encoded field index (`encode_field_index`), and `type_idx` the field's type. The result
