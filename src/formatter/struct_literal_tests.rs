@@ -1,21 +1,8 @@
 //! Tests of the `struct_literals` rule. Each input sits in a function body, where struct literals
 //! are written.
 
+use super::rule_test_helpers::{format_body, in_main};
 use super::*;
-
-/// Format `body` inside `fn main`, with `config`, and check that a second run changes nothing.
-fn format_body(body: &str, config: &FormatConfig) -> String {
-    let input = format!("fn main() -> i32 {{\n{body}\n}}\n");
-    let result = format_file_with_report(&input, config);
-    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
-    let again = format_file_with_report(&result.text, config);
-    assert_eq!(again.text, result.text, "a second run changed the output");
-    result.text
-}
-
-fn in_main(body: &str) -> String {
-    format!("fn main() -> i32 {{\n{body}\n}}\n")
-}
 
 #[test]
 fn a_short_struct_literal_is_joined_on_one_line() {
@@ -106,5 +93,18 @@ fn a_switched_off_rule_gives_the_base_formatting() {
     assert_eq!(
         format_body(body, &switched_off),
         in_main("  let p = Point {\n    x: 1, y: 2\n  };")
+    );
+}
+
+#[test]
+fn an_unsafe_block_that_holds_a_struct_literal_keeps_its_layout_in_a_second_run() {
+    // The base formatting puts a short `unsafe` block on one line, but it cannot measure the
+    // literal, whose rule may need several lines. So the block gets lines of its own.
+    let body = "  unsafe { write(slot, Triple { a : k, b : 10 * k, c : 100 * k }); }";
+    assert_eq!(
+        format_body(body, &FormatConfig::default()),
+        in_main(
+            "  unsafe {\n    write(slot, Triple {\n      a : k,\n      b : 10 * k,\n      c : 100 * k\n    });\n  }"
+        )
     );
 }

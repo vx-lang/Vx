@@ -19,6 +19,7 @@ struct_lit_width = 18
 [format.rules]
 function_headers = true
 struct_literals = true
+match_arms = true
 ```
 
 Only `indent` is required.
@@ -61,6 +62,7 @@ An unknown rule name is an error.
 | --- | --- | --- |
 | `function_headers` | `true` | Spacing, type spelling, and wrapping of function declarations. |
 | `struct_literals` | `true` | Puts a short struct literal on one line, and a long one with one field on each line. |
+| `match_arms` | `true` | Starts each arm of a `match` on a line of its own. |
 
 A switched-off rule leaves its code to the base formatting, as if the rule did not exist.
 The base formatting changes only indentation and the line breaks around blocks.
@@ -106,6 +108,7 @@ struct_lit_width = 18
 [format.rules]
 function_headers = true
 struct_literals = true
+match_arms = true
 ```
 
 Save it with `vx-format --print-config default > vx-format.toml`.
@@ -236,6 +239,25 @@ A literal with a comma after its last field always has one field on each line, b
 A literal with a comment between its fields gets the base formatting.
 The rule formats a struct literal inside a field value the same way.
 The base formatting formats the field values themselves.
+
+## Match arms
+
+Each arm of a `match` starts a line of its own:
+
+```text
+match dot {
+  Shape::Dot(d) => {
+    n = d.x;
+  },
+  Shape::Line(u, _) => {
+    n = u.y;
+  }
+}
+```
+
+A comment between arms stays on its line, and so does a comment at the end of an arm's line.
+One blank line between arms stays.
+A match with a comment before its `{`, or between an arm and its comma, gets the base formatting.
 
 ## Extending the formatter
 

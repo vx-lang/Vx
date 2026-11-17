@@ -251,40 +251,42 @@ impl<'a> FileRenderer<'a, '_> {
     ) -> Result<String, String> {
         let mut output = String::new();
         let mut cursor = bytes.start;
-        for unit in self.units(bytes.clone(), skip) {
-            if unit.bytes.start < cursor {
+        // The base formatting formats the code between protected ranges in one piece, with
+        // each syntax root as one placeholder, so that it sees whole blocks around the roots.
+        let mut roots: Vec<(Range<usize>, SyntaxNode<'a>)> = Vec::new();
+        let units = self.units(bytes.clone(), skip);
+        for unit in units.iter().map(Some).chain(std::iter::once(None)) {
+            if let Some(Unit {
+                bytes: root,
+                work: Work::Syntax(node),
+            }) = unit
+            {
+                roots.push((root.clone(), *node));
+                continue;
+            }
+            let end = unit.map_or(bytes.end, |unit| unit.bytes.start);
+            if end < cursor {
                 return Err("Overlapping formatter ownership".into());
             }
-            if cursor < unit.bytes.start {
+            if cursor < end {
+                let ranges: Vec<_> = roots.iter().map(|(root, _)| root.clone()).collect();
                 output.push_str(&super::super::legacy::render(
                     self.source,
                     &self.ownership,
-                    cursor..unit.bytes.start,
+                    cursor..end,
                     self.config,
                     state,
                     inside_syntax,
+                    &ranges,
+                    &mut |index, state| self.render_root(roots[index].1, &roots[index].0, state),
                 )?);
             }
-            match unit.work {
-                Work::Preserve => {
-                    output.push_str(&self.source.text[unit.bytes.clone()]);
-                    state.consume_preserved(self.source, unit.bytes.clone())?;
-                }
-                Work::Syntax(node) => {
-                    output.push_str(&self.render_root(node, &unit.bytes, state)?)
-                }
+            roots.clear();
+            if let Some(unit) = unit {
+                output.push_str(&self.source.text[unit.bytes.clone()]);
+                state.consume_preserved(self.source, unit.bytes.clone())?;
+                cursor = unit.bytes.end;
             }
-            cursor = unit.bytes.end;
-        }
-        if cursor < bytes.end {
-            output.push_str(&super::super::legacy::render(
-                self.source,
-                &self.ownership,
-                cursor..bytes.end,
-                self.config,
-                state,
-                inside_syntax,
-            )?);
         }
         Ok(output)
     }

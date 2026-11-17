@@ -994,6 +994,7 @@ impl<'a> Parser<'a> {
                 length: self.peek().length,
                 expansion: self.expansion(),
             };
+            let match_start = self.pos;
             self.advance();
             let at_statement = std::mem::take(&mut self.match_is_statement);
             let expr = self.parse_expr()?;
@@ -1002,6 +1003,7 @@ impl<'a> Parser<'a> {
             let mut tuple_arms = Vec::new();
             while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
                 let arm_token = self.peek().clone();
+                let arm_start = self.pos;
                 let pattern = self.parse_arm_pattern()?;
                 self.consume(&TokenType::FatArrow, "Expected '=>' after pattern")?;
                 let mut body = Vec::new();
@@ -1010,14 +1012,17 @@ impl<'a> Parser<'a> {
                         self.parse_statement_into(&mut body)?;
                     }
                     self.consume(&TokenType::RightBrace, "Expected '}'")?;
+                    self.record(RecordedKind::MatchArm, arm_start);
                     self.match_token(&TokenType::Comma); // optional comma
                 } else {
                     self.parse_statement_into(&mut body)?;
+                    self.record(RecordedKind::MatchArm, arm_start);
                     self.match_token(&TokenType::Comma); // optional comma
                 }
                 tuple_arms.push((pattern, body, arm_token));
             }
             self.consume(&TokenType::RightBrace, "Expected '}'")?;
+            self.record(RecordedKind::Match, match_start);
             if tuple_arms
                 .iter()
                 .any(|(p, _, _)| matches!(p, tuple_match::ArmPattern::Tuple(_)))

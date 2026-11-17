@@ -65,6 +65,12 @@ pub fn format_file_with_registry(
 mod activation_tests;
 
 #[cfg(test)]
+mod match_arm_tests;
+
+#[cfg(test)]
+mod rule_test_helpers;
+
+#[cfg(test)]
 mod struct_literal_tests;
 
 #[cfg(test)]

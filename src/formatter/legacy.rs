@@ -7,6 +7,20 @@ use std::collections::HashMap;
 use std::ops::Range;
 use vx_config::FormatConfig;
 
+/// Stands for a unit that the engine formats itself, such as a nested syntax rule. The base
+/// formatting sees one token in its place, so it still sees the braces on both sides of it.
+const UNIT: &str = "\u{0}formatted elsewhere";
+/// The same as `UNIT`, for a unit whose source ends with whitespace, such as a function header
+/// before its `{`.
+const UNIT_ENDING_IN_SPACE: &str = "\u{0}formatted elsewhere, then a space";
+
+fn is_unit(kind: &TokenType<'_>) -> bool {
+    matches!(kind, TokenType::Identifier(text) if *text == UNIT || *text == UNIT_ENDING_IN_SPACE)
+}
+
+/// Format `bytes` with the base formatting. Each range in `units` is formatted by `render_unit`,
+/// with the unit's index, at its place in the output.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render(
     source: &SourceFileView<'_>,
     ownership: &OwnershipMap,
@@ -14,16 +28,43 @@ pub(super) fn render(
     config: &FormatConfig,
     state: &mut RenderState,
     inside_syntax: bool,
+    units: &[Range<usize>],
+    render_unit: &mut dyn FnMut(usize, &mut RenderState) -> Result<String, String>,
 ) -> Result<String, String> {
-    if inside_syntax {
-        ownership.validate_region_edit(bytes.clone())?;
-    } else {
-        ownership.validate_legacy_edit(bytes.clone())?;
+    let mut cursor = bytes.start;
+    for unit in units.iter().chain(std::iter::once(&(bytes.end..bytes.end))) {
+        if cursor < unit.start {
+            if inside_syntax {
+                ownership.validate_region_edit(cursor..unit.start)?;
+            } else {
+                ownership.validate_legacy_edit(cursor..unit.start)?;
+            }
+        }
+        cursor = unit.end;
     }
     let mut input = Vec::new();
+    let mut next_unit = 0;
     for original in &source.tokens[source.token_range(&bytes)] {
         if !super::source::overlaps(&original.bytes, &bytes) {
             continue;
+        }
+        if let Some(unit) = units.get(next_unit) {
+            if unit.start <= original.bytes.start {
+                if original.bytes.end >= unit.end {
+                    let mut token = original.token.clone();
+                    token.kind = TokenType::Identifier(
+                        if matches!(original.token.kind, TokenType::Whitespace(_)) {
+                            UNIT_ENDING_IN_SPACE
+                        } else {
+                            UNIT
+                        },
+                    );
+                    token.length = unit.len();
+                    input.push(token);
+                    next_unit += 1;
+                }
+                continue;
+            }
         }
         let start = original.bytes.start.max(bytes.start);
         let end = original.bytes.end.min(bytes.end);
@@ -37,6 +78,10 @@ pub(super) fn render(
         }
         input.push(token);
     }
+    if next_unit != units.len() {
+        return Err("A unit does not end at a source token".into());
+    }
+    let mut unit_index = 0;
     let tokens = adjust_spacing(normalize_and_expand_blocks(input));
     let mut tokens = tokens.iter().peekable();
     let mut output = String::new();
@@ -53,6 +98,11 @@ pub(super) fn render(
             {
                 emit(text, state, &mut output);
             }
+            continue;
+        }
+        if is_unit(&token.kind) {
+            output.push_str(&render_unit(unit_index, state)?);
+            unit_index += 1;
             continue;
         }
         let closing = match token.kind {
@@ -113,6 +163,10 @@ fn normalize_and_expand_blocks(mut tokens: Vec<Token>) -> Vec<Token> {
         if let TokenType::LeftBrace = token.kind {
             if !spaced_tokens.is_empty()
                 && !matches!(spaced_tokens.last().unwrap().kind, TokenType::Whitespace(_))
+                && !matches!(
+                    spaced_tokens.last().unwrap().kind,
+                    TokenType::Identifier(text) if text == UNIT_ENDING_IN_SPACE
+                )
             {
                 spaced_tokens.push(Token {
                     kind: TokenType::Whitespace(" "),
@@ -178,7 +232,10 @@ fn normalize_and_expand_blocks(mut tokens: Vec<Token>) -> Vec<Token> {
                 let holds_comment = tokens[lb_idx..=rb_idx]
                     .iter()
                     .any(|t| matches!(t.kind, TokenType::Comment(_) | TokenType::DocComment(_)));
-                if is_unsafe_block && !holds_comment {
+                // A unit's width is known only after a rule lays it out, so the length test
+                // below cannot measure it.
+                let holds_unit = tokens[lb_idx..=rb_idx].iter().any(|t| is_unit(&t.kind));
+                if is_unsafe_block && !holds_comment && !holds_unit {
                     // Try to measure the total length if we collapsed it to a single line
                     let mut collapsed_len = 0;
                     for j in (0..new_tokens.len()).rev() {

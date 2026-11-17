@@ -46,6 +46,10 @@ pub(crate) enum RecordedKind {
     StructLiteral,
     /// One `field: value` of a struct literal.
     StructField,
+    /// `match value { arms }`, from `match` to the `}`.
+    Match,
+    /// One `pattern => body` of a match, without the comma after it.
+    MatchArm,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

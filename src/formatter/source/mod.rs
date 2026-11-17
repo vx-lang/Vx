@@ -4,6 +4,7 @@ pub mod dispatch;
 pub mod document;
 pub(crate) mod engine;
 mod formatters;
+mod match_arms;
 pub mod ownership;
 mod recognize;
 mod struct_literals;
@@ -115,6 +116,21 @@ pub struct StructLiteralView {
     pub commas: Vec<Option<TokenId>>,
 }
 
+/// `match value { pattern => body, ... }`.
+#[derive(Clone, Debug)]
+pub struct MatchView {
+    pub tokens: Range<usize>,
+    pub keyword: TokenId,
+    /// The tokens of the value that the match tests.
+    pub scrutinee: Range<usize>,
+    pub open: TokenId,
+    pub close: TokenId,
+    /// The tokens of each `pattern => body`, without the comma after it.
+    pub arms: Vec<Range<usize>>,
+    /// The comma after each arm, when there is one.
+    pub commas: Vec<Option<TokenId>>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeclarationContext {
     Root,
@@ -148,6 +164,7 @@ pub struct SourceFileView<'a> {
     pub exclusions: Vec<Range<usize>>,
     pub functions: Vec<FunctionDeclView>,
     pub struct_literals: Vec<StructLiteralView>,
+    pub matches: Vec<MatchView>,
     pub gaps: Vec<ConstrainedGap>,
     pub warnings: Vec<CoverageWarning>,
     matching: Vec<Option<usize>>,
@@ -390,6 +407,7 @@ impl<'a> SourceFileView<'a> {
             exclusions: Vec::new(),
             functions: Vec::new(),
             struct_literals: Vec::new(),
+            matches: Vec::new(),
             gaps: Vec::new(),
             warnings: Vec::new(),
         }

@@ -395,6 +395,7 @@ impl<'source> SourceFileView<'source> {
             });
         }
         self.find_struct_literals(&records, &to_source);
+        self.find_matches(&records, &to_source);
     }
 
     fn find_struct_literals(
@@ -455,6 +456,74 @@ impl<'source> SourceFileView<'source> {
                 commas,
             });
         }
+    }
+
+    fn find_matches(
+        &mut self,
+        records: &[SyntaxRecord],
+        to_source: &dyn Fn(&Range<usize>) -> Range<usize>,
+    ) {
+        let arms: Vec<_> = records
+            .iter()
+            .filter(|record| record.kind == RecordedKind::MatchArm)
+            .map(|record| to_source(&record.tokens))
+            .collect();
+        for record in records
+            .iter()
+            .filter(|record| record.kind == RecordedKind::Match)
+        {
+            let tokens = to_source(&record.tokens);
+            let close = tokens.end - 1;
+            let first_arm = arms
+                .iter()
+                .find(|arm| tokens.start < arm.start && arm.end <= close);
+            // A match with no arms keeps the base formatting.
+            let Some(open) = first_arm.and_then(|arm| self.previous_significant(arm.start)) else {
+                continue;
+            };
+            assert!(matches!(self.tokens[open].token.kind, TokenType::LeftBrace));
+            // The arms of this match, not those of a match inside one of its arms.
+            let mut own: Vec<Range<usize>> = Vec::new();
+            for arm in arms
+                .iter()
+                .filter(|arm| open < arm.start && arm.end <= close)
+            {
+                if own.last().is_none_or(|last| last.end <= arm.start) {
+                    own.push(arm.clone());
+                }
+            }
+            let commas = own
+                .iter()
+                .map(|arm| {
+                    self.next_significant(arm.end)
+                        .filter(|index| matches!(self.tokens[*index].token.kind, TokenType::Comma))
+                        .map(TokenId)
+                })
+                .collect();
+            let scrutinee_start = self
+                .next_significant(tokens.start + 1)
+                .expect("a match has a value");
+            let scrutinee_end = self
+                .previous_significant(open)
+                .expect("a match has a value")
+                + 1;
+            self.matches.push(MatchView {
+                keyword: TokenId(tokens.start),
+                scrutinee: scrutinee_start..scrutinee_end,
+                open: TokenId(open),
+                close: TokenId(close),
+                arms: own,
+                commas,
+                tokens,
+            });
+        }
+    }
+
+    /// The last token before `before` that is not whitespace or a comment.
+    fn previous_significant(&self, before: usize) -> Option<usize> {
+        (0..before)
+            .rev()
+            .find(|index| !trivia(&self.tokens[*index].token.kind))
     }
 
     /// The first token from `from` on that is not whitespace or a comment.
