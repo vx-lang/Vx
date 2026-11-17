@@ -235,6 +235,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/code_after_the_blocks_in_a_kernel_for_emit_ptx.vx", // needs --machine
         "optimizations/pass/a_shared_tile_in_the_code_after_the_blocks.vx", // needs --machine
         "optimizations/pass/a_tensor_in_gpu_memory_in_a_struct_or_enum_is_freed_by_its_plugin.vx", // split-file
+        // split-file
+        "optimizations/pass/gpu_only_code_on_the_cpu_with_the_programs_own_write.vx",
         "optimizations/pass/gpu_region_that_ends_in_a_value_runs_on_the_gpu.vx", // needs --machine
         "optimizations/pass/lane_copies_of_rows_by_id.vx", // needs --machine
         "optimizations/pass/lane_copies_of_rows_on_the_gpu.vx", // needs --machine
