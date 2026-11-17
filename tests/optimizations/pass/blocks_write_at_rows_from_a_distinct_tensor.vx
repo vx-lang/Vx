@@ -1,0 +1,72 @@
+//===- blocks_write_at_rows_from_a_distinct_tensor.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Block `b` writes row `idx[b]` of `y`. No two elements of a `Distinct` tensor are equal, so no
+// two blocks write the same row, and the compiler accepts the kernel. `idx` is [2, 0, 3, 1], and
+// block `b` and lane `l` write `100 * b + l`. `flat` writes the same rows as one index,
+// `idx[b] * 4 + l`, with `idx` [1, 2, 0]. The index is an `i64` made from an `i32`, so the
+// product cannot wrap.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+
+// CHECK: y row 0: 100 101 102
+// CHECK-NEXT: y row 1: 300 301 302
+// CHECK-NEXT: y row 2: 0 1 2
+// CHECK-NEXT: y row 3: 200 201 202
+// CHECK-NEXT: flat: 200 203 0 3 100 103
+
+fn scatter(y : &mut Tensor<f32, [?, ?], Memory::HBM>, idx : &Distinct<Tensor<i32, [?], Memory::HBM>>, cols : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..idx.len() across blocks {
+      for l in 0..32 across lanes(32) {
+        let row = idx[b];
+        if l < cols {
+          y[row][l] = (100 * b + l) as f32;
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn flat(out : &mut Tensor<f32, [?], Memory::HBM>, idx : &Distinct<Tensor<i32, [?], Memory::HBM>>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..idx.len() across blocks {
+      for l in 0..4 across lanes(32) {
+        out[(idx[b] as i64) * 4 + (l as i64)] = (100 * b + l) as f32;
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut order = Tensor<i32, [4]>::fill(0);
+  order[0] = 2;
+  order[1] = 0;
+  order[2] = 3;
+  order[3] = 1;
+  let rows = unsafe { Distinct(transfer(order, Memory::HBM)) };
+  let mut y = transfer(Tensor<f32, [4, 3]>::fill(-1.0), Memory::HBM);
+  scatter(&mut y, &rows, 3);
+  let yh = transfer(y, Memory::CPU_DRAM);
+  for r in 0..4 {
+    println!("y row {}: {} {} {}", r, yh[r][0], yh[r][1], yh[r][2]);
+  }
+
+  let mut starts = Tensor<i32, [3]>::fill(0);
+  starts[0] = 1;
+  starts[1] = 2;
+  starts[2] = 0;
+  let parts = unsafe { Distinct(transfer(starts, Memory::HBM)) };
+  let mut o = transfer(Tensor<f32, [12]>::fill(-1.0), Memory::HBM);
+  flat(&mut o, &parts);
+  let h = transfer(o, Memory::CPU_DRAM);
+  println!("flat: {} {} {} {} {} {}", h[0], h[3], h[4], h[7], h[8], h[11]);
+  return 0;
+}

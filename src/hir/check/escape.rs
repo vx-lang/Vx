@@ -595,7 +595,7 @@ impl<'a> TypeChecker<'a> {
             } => self.type_can_hold_reference(inner),
             // Nothing can be written through a shared reference.
             Type::Borrow { .. } => false,
-            Type::Pinned(inner, _) | Type::Verified(inner) => {
+            Type::Pinned(inner, _) | Type::Verified(inner) | Type::Distinct(inner) => {
                 self.type_can_write_reference_in(inner, seen)
             }
             Type::Struct(name, _) | Type::Enum(name, _) => {

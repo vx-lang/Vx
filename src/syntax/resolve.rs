@@ -175,6 +175,7 @@ impl Type {
             Type::Ref(inner, _)
             | Type::Borrow { inner, .. }
             | Type::Verified(inner)
+            | Type::Distinct(inner)
             | Type::Pinned(inner, _) => {
                 inner.resolve_names(scope);
             }

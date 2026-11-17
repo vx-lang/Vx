@@ -1120,6 +1120,24 @@ impl<'a> Parser<'a> {
                     span: Span::default(),
                 })
             }
+            TokenType::Distinct => {
+                self.advance();
+                self.consume(&TokenType::LeftParen, "Expected '(' after Distinct")?;
+                let inner = self.parse_expr()?;
+                self.consume(&TokenType::RightParen, "Expected ')'")?;
+                Expr::FunctionCall(FunctionCallExpr {
+                    owner_type_args: None,
+                    name: "Distinct".to_string().into(),
+                    type_args: None,
+                    args: vec![inner],
+                    span: Span {
+                        line: peeked_token.line,
+                        column: peeked_token.column,
+                        length: peeked_token.length,
+                        expansion: self.expansion(),
+                    },
+                })
+            }
             TokenType::Grad => {
                 self.advance();
                 self.consume(&TokenType::LeftParen, "Expected '(' after 'grad'")?;

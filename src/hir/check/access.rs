@@ -292,6 +292,7 @@ impl<'a> TypeChecker<'a> {
             | Type::Ref(inner, _)
             | Type::Borrow { inner, .. }
             | Type::Verified(inner)
+            | Type::Distinct(inner)
             | Type::Pinned(inner, _) => self.fold_extents(inner),
             Type::GenericInstance(base, args) => {
                 self.fold_extents(base);
@@ -1698,6 +1699,10 @@ impl<'a> TypeChecker<'a> {
                     Type::Borrow { inner, .. } => inner.as_ref(),
                     other => other,
                 };
+                let read_ty = match read_ty {
+                    Type::Distinct(inner) => inner.as_ref(),
+                    other => other,
+                };
                 let located_on = match read_ty {
                     Type::Pinned(_, top) => Some(top.clone()),
                     _ => read_ty.placement().map(|p| p.topology.clone()),
@@ -1756,7 +1761,10 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
+                // The index of a write is a read: `idx[b]` in `y[idx[b]] = v` writes only `y`.
+                let lhs = std::mem::replace(&mut self.checking_assign_lhs, false);
                 self.check_expr_type(idx);
+                self.checking_assign_lhs = lhs;
 
                 // Look through a Pinned/Ref device wrapper to the underlying tensor so that
                 // indexing a transferred tensor follows the same rule as a local one.
@@ -1766,6 +1774,22 @@ impl<'a> TypeChecker<'a> {
                     // the row. Answering with the inner type applied the index to nothing, so
                     // `t[0][0]` was the row rather than the element (Vx#417).
                     Type::Borrow { inner, .. } => *inner,
+                    other => other,
+                };
+                // A `Distinct` reads as its tensor. A write could make two elements equal.
+                let base = match base {
+                    Type::Distinct(inner) => {
+                        if self.checking_assign_lhs && !self.speculating {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E4006,
+                                "a `Distinct` tensor is read only: a write could make two of its \
+                                 elements equal"
+                                    .to_string(),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&ix_span)),
+                            );
+                        }
+                        *inner
+                    }
                     other => other,
                 };
 
@@ -2506,9 +2530,10 @@ impl<'a> TypeChecker<'a> {
             },
             // A raw pointer has no lifetime of its own, but what it points at may hold
             // references: `Vec<&i32>` keeps them behind its `*mut T`.
-            Type::Pointer(inner, ..) | Type::Pinned(inner, _) | Type::Verified(inner) => {
-                self.type_can_hold_reference_in(inner, seen)
-            }
+            Type::Pointer(inner, ..)
+            | Type::Pinned(inner, _)
+            | Type::Verified(inner)
+            | Type::Distinct(inner) => self.type_can_hold_reference_in(inner, seen),
             _ => false,
         }
     }

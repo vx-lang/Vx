@@ -545,6 +545,7 @@ impl<'a> TypeChecker<'a> {
                 Type::Tensor(_, _, Some(_)) | Type::Pinned(..) => {}
                 Type::Ref(inner, _)
                 | Type::Verified(inner)
+                | Type::Distinct(inner)
                 | Type::Borrow { inner, .. }
                 | Type::Pointer(inner, _, _) => stack.push(*inner),
                 Type::Struct(..) | Type::GenericInstance(..) => {
@@ -1374,6 +1375,7 @@ impl<'a> TypeChecker<'a> {
             | Type::Borrow { inner, .. }
             | Type::Pointer(inner, _, _)
             | Type::Verified(inner)
+            | Type::Distinct(inner)
             | Type::Pinned(inner, _) => self.collect_placed_tensors(inner, out),
             // A channel end holds no tensor: `channel` counts the room of the channel.
             Type::GenericInstance(base, _) if Self::is_channel_end(base) => return,

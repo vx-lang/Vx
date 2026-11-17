@@ -192,6 +192,11 @@ pub fn tensor_gid_of(ty: &Type) -> Option<TypeId> {
 /// element, or a dim that isn't a literal/name). The shape is what the flat lowerer rank-reduces on
 /// indexing.
 fn tensor_elem_shape(ty: &Type) -> Option<(ElementType, Vec<String>)> {
+    // At run time, a `Distinct` tensor is its tensor.
+    let ty = match ty {
+        Type::Distinct(inner) => inner.as_ref(),
+        ty => ty,
+    };
     let Type::Tensor(elem, dims, _) = ty else {
         return None;
     };
@@ -6584,7 +6589,7 @@ impl<'r> Lowerer<'r> {
     fn lower_call(&mut self, fc: &crate::syntax::FunctionCallExpr) -> Lowered<Val> {
         // `Verified(x)` is the checker-level wrapper in value position -- the identity at
         // runtime, exactly as the AST path erases it. Lower the wrapped value directly.
-        if fc.name.as_ref() == "Verified" && fc.args.len() == 1 {
+        if matches!(fc.name.as_ref(), "Verified" | "Distinct") && fc.args.len() == 1 {
             return self.lower_expr(&fc.args[0]);
         }
         // An indirect call: the callee name is a local holding a function pointer (a fn-pointer
@@ -8013,9 +8018,10 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
         Type::GenericInstance(base, _) => lowered_ty(base, registry),
         // `Verified<T>`, `Ref<T, Memory>`, `Pinned<T, Topology>` are checker-level wrappers; the
         // runtime value is the inner type, exactly as the AST codegen's `lower_type` peels them.
-        Type::Verified(inner) | Type::Ref(inner, _) | Type::Pinned(inner, _) => {
-            lowered_ty(inner, registry)
-        }
+        Type::Verified(inner)
+        | Type::Distinct(inner)
+        | Type::Ref(inner, _)
+        | Type::Pinned(inner, _) => lowered_ty(inner, registry),
         _ => None,
     }
 }
@@ -8027,9 +8033,10 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
 fn is_dyn_tensor(ty: &Type) -> bool {
     match ty {
         Type::Tensor(_, dims, _) => dims.iter().any(|d| matches!(d, Dim::Dyn)),
-        Type::Verified(inner) | Type::Ref(inner, _) | Type::Pinned(inner, _) => {
-            is_dyn_tensor(inner)
-        }
+        Type::Verified(inner)
+        | Type::Distinct(inner)
+        | Type::Ref(inner, _)
+        | Type::Pinned(inner, _) => is_dyn_tensor(inner),
         Type::Borrow { inner, .. } => is_dyn_tensor(inner),
         _ => false,
     }
