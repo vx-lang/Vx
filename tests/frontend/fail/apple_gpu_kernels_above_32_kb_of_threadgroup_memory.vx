@@ -1,0 +1,97 @@
+// A kernel for the Apple GPU may use at most 32 KB of threadgroup memory. Above that, the compile
+// stops with an error that gives the size. Each machine here is fleet/m4-uma.vx with `overcommit`
+// on SMEM, so the check of the capacity lets the program through to the Metal code generator.
+// - `three_tiles`: 72 KB. Above 48 KB, the tiles of a CUDA kernel go to dynamic shared memory,
+//   but the tiles of a Metal kernel stay `threadgroup` arrays.
+// - `two_tiles`: 40 KB.
+//
+// RUN: split-file %s %t
+// RUN: not vxc %t/three_tiles.vx --host default --emit-msl -o /dev/null 2>&1 | FileCheck %s --check-prefix=THREE
+// RUN: not vxc %t/two_tiles.vx --host default --emit-msl -o /dev/null 2>&1 | FileCheck %s --check-prefix=TWO
+//
+// THREE: cannot compile kernel `three_tiles`: 'gpu.func': the kernel needs 73728 bytes of threadgroup memory, and the Apple GPU has 32768 bytes for each threadgroup
+// TWO: cannot compile kernel `two_tiles`: 'gpu.func': the kernel needs 40960 bytes of threadgroup memory, and the Apple GPU has 32768 bytes for each threadgroup
+
+//--- three_tiles.vx
+Memory HBM {
+  capacity: 32 GiB, managed: explicit, scope: device
+}
+Memory L2 {
+  within: Memory::HBM, capacity: 16 MiB, managed: cached, scope: device
+}
+Memory SMEM {
+  within: Memory::L2, capacity: 32 KiB, granule: 1 KiB, managed: explicit, scope: sm, overcommit
+}
+Topology Device {
+  arch: applegpu,
+  levels: [blocks(max_lanes: 1024, memory: cta), subgroups(lanes: 32), lanes(memory: thread)],
+  memory: Memory::HBM,
+  visible: [Memory::HBM, Memory::L2, Memory::SMEM],
+  dtypes: [f32, bf16, f16, i8, u8, i16, u16, i32, u32, i64, u64, bool],
+  transfer Memory::CPU_DRAM -> Memory::HBM : shared,
+  transfer Memory::HBM -> Memory::CPU_DRAM : shared,
+  transfer Memory::HBM -> Memory::L2,
+  transfer Memory::L2 -> Memory::SMEM
+}
+
+pub fn three_tiles(out : &mut Tensor<f32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut x = unsafe { Tensor<f32, [24, 256], Memory::SMEM>::uninit() };
+      let mut y = unsafe { Tensor<f32, [24, 256], Memory::SMEM>::uninit() };
+      let mut z = unsafe { Tensor<f32, [24, 256], Memory::SMEM>::uninit() };
+      for l in 0..256 across lanes(256) {
+        for i in 0..24 {
+          x[i][l] = 1.0;
+          y[i][l] = 2.0;
+          z[i][l] = 3.0;
+        }
+      }
+      for l in 0..256 across lanes(256) {
+        out[l] = x[23][255 - l] + y[0][255 - l] + z[5][255 - l];
+      }
+    }
+  }
+  return;
+}
+
+//--- two_tiles.vx
+Memory HBM {
+  capacity: 32 GiB, managed: explicit, scope: device
+}
+Memory L2 {
+  within: Memory::HBM, capacity: 16 MiB, managed: cached, scope: device
+}
+Memory SMEM {
+  within: Memory::L2, capacity: 32 KiB, granule: 1 KiB, managed: explicit, scope: sm, overcommit
+}
+Topology Device {
+  arch: applegpu,
+  levels: [blocks(max_lanes: 1024, memory: cta), subgroups(lanes: 32), lanes(memory: thread)],
+  memory: Memory::HBM,
+  visible: [Memory::HBM, Memory::L2, Memory::SMEM],
+  dtypes: [f32, bf16, f16, i8, u8, i16, u16, i32, u32, i64, u64, bool],
+  transfer Memory::CPU_DRAM -> Memory::HBM : shared,
+  transfer Memory::HBM -> Memory::CPU_DRAM : shared,
+  transfer Memory::HBM -> Memory::L2,
+  transfer Memory::L2 -> Memory::SMEM
+}
+
+pub fn two_tiles(out : &mut Tensor<f32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut x = unsafe { Tensor<f32, [20, 256], Memory::SMEM>::uninit() };
+      let mut y = unsafe { Tensor<f32, [20, 256], Memory::SMEM>::uninit() };
+      for l in 0..256 across lanes(256) {
+        for i in 0..20 {
+          x[i][l] = 1.0;
+          y[i][l] = 2.0;
+        }
+      }
+      for l in 0..256 across lanes(256) {
+        out[l] = x[19][255 - l] + y[0][255 - l];
+      }
+    }
+  }
+  return;
+}

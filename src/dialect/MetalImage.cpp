@@ -87,6 +87,10 @@ struct KernelInliner : public InlinerInterface {
 // simdgroup matrices (src/dialect/VxLowering.cpp).
 constexpr StringLiteral simdgroupRegisters = "simdgroup_registers";
 
+// The threadgroup memory of a threadgroup on every Apple GPU (Metal Feature
+// Set Tables, "Maximum total threadgroup memory allocation").
+constexpr int64_t metalThreadgroupBytes = 32 * 1024;
+
 // Where a memref's elements are: `ptr[origin + i0 * strides[0] + ...]`.
 // `origin` is the index of the memref's first element in `ptr`.
 struct View {
@@ -189,6 +193,7 @@ private:
   bool laneMatmul(Operation *op);
   bool laneFill(Operation *op);
   bool laneCopy(Operation *op);
+  bool laneScaleRows(Operation *op);
   bool atomicAt(Operation *op, Value ptr, Type t, Address &out);
   void acquireFence(const Address &a);
   bool ifOp(scf::IfOp op);
@@ -456,8 +461,8 @@ bool Printer::kernel(gpu::GPUFuncOp f) {
     auto number = o->getAttrOfType<IntegerAttr>(simdgroupRegisters);
     if (!number)
       return;
-    // The tile is the first operand of a matmul or a fill, and the source of
-    // a copy.
+    // The tile is the first operand of a matmul, a fill or a scale, and the
+    // source of a copy.
     Value tile = o->getOperand(o->getName().getStringRef() == "vx.lane_copy");
     auto t = cast<MemRefType>(tile.getType());
     registerSums[number.getInt()] = {t.getDimSize(0) / 8, t.getDimSize(1) / 8};
@@ -489,6 +494,7 @@ bool Printer::kernel(gpu::GPUFuncOp f) {
 
   // Shared memory that this kernel uses.
   llvm::StringSet<> shared;
+  int64_t sharedBytes = 0;
   f.walk([&](memref::GetGlobalOp get) {
     if (!used.contains(get.getName()))
       return;
@@ -504,9 +510,16 @@ bool Printer::kernel(gpu::GPUFuncOp f) {
       return;
     line() << "threadgroup " << elem << " " << get.getName() << "["
            << std::max<int64_t>(t.getNumElements(), 1) << "];\n";
+    sharedBytes += std::max<int64_t>(t.getNumElements(), 1) *
+                   ((t.getElementTypeBitWidth() + 7) / 8);
   });
   if (!failure.empty())
     return false;
+  if (sharedBytes > metalThreadgroupBytes)
+    return fail(f, "the kernel needs " + Twine(sharedBytes) +
+                       " bytes of threadgroup memory, and the Apple GPU has " +
+                       Twine(metalThreadgroupBytes) +
+                       " bytes for each threadgroup");
   for (auto [number, pieces] : registerSums) {
     int64_t count = pieces.first * pieces.second;
     line() << "simdgroup_float8x8 vx_sums" << number << "[" << count << "];\n";
@@ -660,6 +673,9 @@ bool Printer::op(Operation *o) {
   if (o->getName().getStringRef() == "vx.lane_copy" &&
       o->hasAttr(simdgroupRegisters))
     return laneCopy(o);
+  if (o->getName().getStringRef() == "vx.lane_scale_rows" &&
+      o->hasAttr(simdgroupRegisters))
+    return laneScaleRows(o);
   if (o->getName().getStringRef() == "nvvm.bar.warp.sync") {
     // The end of a lane loop in a subgroup loop. A subgroup is a SIMD-group
     // of 32 threads, and all of them wait, as with the mask of all lanes.
@@ -829,6 +845,39 @@ bool Printer::laneCopy(Operation *o) {
   else
     line() << "threadgroup_barrier(mem_flags::mem_device | "
               "mem_flags::mem_threadgroup);\n";
+  return true;
+}
+
+// A `vx.lane_scale_rows` of an accumulator in simdgroup matrices: each lane
+// multiplies its 2 elements of each piece by the scale of their row. They are
+// in row (l / 16) * 4 + (l / 2) % 4 of the piece, as in `laneCopy`. The
+// elements stay in the lane, so the lanes need not wait.
+bool Printer::laneScaleRows(Operation *o) {
+  auto number = o->getAttrOfType<IntegerAttr>(simdgroupRegisters);
+  auto pieces = registerSums[number.getInt()];
+  std::string sums = "vx_sums" + std::to_string(number.getInt());
+  View scale;
+  if (!viewOf(o->getOperand(1), scale, o))
+    return false;
+  if (scale.sizes.size() != 1)
+    return fail(o, "a scale of the rows that is not a tensor of 1 dimension");
+  std::string row = fresh("r");
+  line() << "{\n";
+  ++depth;
+  line() << "const int " << row
+         << " = (int)(vx_lane / 16) * 4 + (int)(vx_lane / 2) % 4;\n";
+  line() << "for (int i = 0; i < " << pieces.first << "; i++) {\n";
+  line() << "  const float s = " << scale.ptr << "[" << scale.origin
+         << " + (i * 8 + " << row << ") * " << scale.strides[0] << "];\n";
+  line() << "  for (int j = 0; j < " << pieces.second << "; j++) {\n";
+  line() << "    thread auto &e = " << sums << "[i * " << pieces.second
+         << " + j].thread_elements();\n";
+  line() << "    e[0] *= s;\n";
+  line() << "    e[1] *= s;\n";
+  line() << "  }\n";
+  line() << "}\n";
+  --depth;
+  line() << "}\n";
   return true;
 }
 

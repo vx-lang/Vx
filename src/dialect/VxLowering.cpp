@@ -1126,6 +1126,9 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       kernelOp->setAttr("chip", chip);
     if (auto maxnreg = op->getAttrOfType<IntegerAttr>("vx.maxnreg"))
        kernelOp->setAttr("vx.maxnreg", maxnreg);
+
+    if (auto bytes = op->getAttrOfType<IntegerAttr>("shared_bytes"))
+      kernelOp->setAttr("shared_bytes", bytes);
     // The function that holds the region, and the function parameter that
     // fills each kernel parameter (-1 for a value that is not a parameter).
     // `--emit-ptx` names the kernel and describes its parameters from these.
@@ -3682,9 +3685,58 @@ static void expandLaneCopyNowOnHost(OpBuilder &b, vx::LaneCopyOp op) {
                      });
 }
 
+/// Whether the whole tile of a `vx.lane_copy` is inside its tensor, and the
+/// elements of a row of the tensor are next to each other. Then also a view of
+/// the tensor whose last stride is the number 1.
+static std::pair<Value, Value> laneCopyNowInside(OpBuilder &b, Location loc,
+                                                 vx::LaneCopyOp op,
+                                                 const LaneCopyNow &c) {
+  auto tile = cast<MemRefType>(c.tile.getType());
+  auto tensor = cast<MemRefType>(c.tensor.getType());
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  auto meta = b.create<memref::ExtractStridedMetadataOp>(loc, c.tensor);
+  int64_t last = tensor.getRank() - 1;
+  Value inside = b.create<arith::CmpIOp>(
+      loc, arith::CmpIPredicate::eq, meta.getStrides()[last],
+      b.create<arith::ConstantIndexOp>(loc, 1));
+  for (int64_t d = 0; d <= last; ++d) {
+    Value at =
+        b.create<arith::IndexCastOp>(loc, b.getIndexType(), op.getPlace()[d]);
+    Value end = b.create<arith::AddIOp>(
+        loc, at, b.create<arith::ConstantIndexOp>(loc, tile.getDimSize(d)));
+    inside = b.create<arith::AndIOp>(
+        loc, inside,
+        b.create<arith::AndIOp>(
+            loc,
+            b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge, at, zero),
+            b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sle, end,
+                                    meta.getSizes()[d])));
+  }
+  SmallVector<int64_t> strides(tensor.getRank(), ShapedType::kDynamic);
+  strides[last] = 1;
+  auto rowsType = MemRefType::get(
+      tensor.getShape(), tensor.getElementType(),
+      StridedLayoutAttr::get(b.getContext(), ShapedType::kDynamic, strides),
+      tensor.getMemorySpace());
+  SmallVector<OpFoldResult> sizes;
+  for (int64_t d = 0; d <= last; ++d)
+    sizes.push_back(tensor.isDynamicDim(d)
+                        ? OpFoldResult(meta.getSizes()[d])
+                        : OpFoldResult(b.getIndexAttr(tensor.getDimSize(d))));
+  SmallVector<OpFoldResult> mixed(meta.getStrides().begin(),
+                                  meta.getStrides().end());
+  mixed[last] = b.getIndexAttr(1);
+  Value rows = b.create<memref::ReinterpretCastOp>(
+      loc, rowsType, meta.getBaseBuffer(), OpFoldResult(meta.getOffset()),
+      sizes, mixed);
+  return {inside, rows};
+}
+
 /// A `vx.lane_copy` on the GPU: each lane copies the elements `lane`,
 /// `lane + lanes`, and so on, of the tile, and then every lane of the block or
-/// the subgroup waits, so each lane sees the whole copy.
+/// the subgroup waits, so each lane sees the whole copy. When the whole tile
+/// is inside the tensor and its rows are next to each other, which is the
+/// usual case, no element needs a check.
 static void expandLaneCopyNowOnDevice(OpBuilder &b, vx::LaneCopyOp op) {
   Location loc = op.getLoc();
   LaneCopyNow c = laneCopyNowOf(op);
@@ -3696,20 +3748,49 @@ static void expandLaneCopyNowOnDevice(OpBuilder &b, vx::LaneCopyOp op) {
                    ? b.create<arith::RemUIOp>(
                          loc, tid, b.create<arith::ConstantIndexOp>(loc, lanes))
                    : tid;
-  b.create<scf::ForOp>(
-      loc, lane, b.create<arith::ConstantIndexOp>(loc, tile.getNumElements()),
-      b.create<arith::ConstantIndexOp>(loc, lanes), ValueRange{},
-      [&](OpBuilder &nb, Location l, Value e, ValueRange) {
-        SmallVector<Value> ivs(tile.getRank());
-        Value rest = e;
-        for (int64_t d = tile.getRank() - 1; d >= 0; --d) {
-          Value size = nb.create<arith::ConstantIndexOp>(l, tile.getDimSize(d));
-          ivs[d] = nb.create<arith::RemUIOp>(l, rest, size);
-          rest = nb.create<arith::DivUIOp>(l, rest, size);
-        }
-        laneCopyNowElement(nb, l, op, c, ivs);
-        nb.create<scf::YieldOp>(l);
-      });
+  auto elements = [&](OpBuilder &ob, Value rows) {
+    ob.create<scf::ForOp>(
+        loc, lane,
+        ob.create<arith::ConstantIndexOp>(loc, tile.getNumElements()),
+        ob.create<arith::ConstantIndexOp>(loc, lanes), ValueRange{},
+        [&](OpBuilder &nb, Location l, Value e, ValueRange) {
+          SmallVector<Value> ivs(tile.getRank());
+          Value rest = e;
+          for (int64_t d = tile.getRank() - 1; d >= 0; --d) {
+            Value size =
+                nb.create<arith::ConstantIndexOp>(l, tile.getDimSize(d));
+            ivs[d] = nb.create<arith::RemUIOp>(l, rest, size);
+            rest = nb.create<arith::DivUIOp>(l, rest, size);
+          }
+          if (!rows) {
+            laneCopyNowElement(nb, l, op, c, ivs);
+          } else {
+            SmallVector<Value> at;
+            for (auto [d, i] : llvm::enumerate(ivs))
+              at.push_back(nb.create<arith::AddIOp>(
+                  l,
+                  nb.create<arith::IndexCastOp>(l, nb.getIndexType(),
+                                                op.getPlace()[d]),
+                  i));
+            if (c.toTensor)
+              nb.create<memref::StoreOp>(
+                  l, nb.create<memref::LoadOp>(l, c.tile, ivs), rows, at);
+            else
+              nb.create<memref::StoreOp>(
+                  l, nb.create<memref::LoadOp>(l, rows, at), c.tile, ivs);
+          }
+          nb.create<scf::YieldOp>(l);
+        });
+  };
+  auto [inside, rows] = laneCopyNowInside(b, loc, op, c);
+  auto pick = b.create<scf::IfOp>(loc, inside, /*withElseRegion=*/true);
+  {
+    OpBuilder::InsertionGuard guard(b);
+    b.setInsertionPoint(pick.getThenRegion().front().getTerminator());
+    elements(b, rows);
+    b.setInsertionPoint(pick.getElseRegion().front().getTerminator());
+    elements(b, Value());
+  }
   if (op.getSubgroup()) {
     auto bar = b.create<vx::BarrierOp>(loc);
     bar->setAttr("subgroup", b.getUnitAttr());
@@ -4451,12 +4532,12 @@ constexpr StringLiteral simdgroupRegistersAttr = "simdgroup_registers";
 /// matrices of each subgroup in the whole kernel, and gives its tile no shared
 /// memory, as `expandLaneMatmulWithoutTile` does on the tensor cores. This
 /// happens when each other use of the tile is a `vx.lane_fill` of it, a
-/// `vx.lane_copy` out of it to an f32 tensor of 2 dimensions, or another
-/// matmul that adds to it. Each of them takes the row of its subgroup
-/// (`subgroup_row`), so each subgroup holds the same row in all of them. Marks
-/// them with `simdgroup_registers` = `number`, and leaves them to the Metal
-/// printer (src/dialect/MetalImage.cpp). Puts the other matmuls in `marked`.
-/// Returns false, and changes nothing, when the tile has another use.
+/// `vx.lane_scale_rows` of it, a `vx.lane_copy` out of it to an f32 tensor of
+/// 2 dimensions, or another matmul that adds to it. Each of them takes the row
+/// of its subgroup (`subgroup_row`), so each subgroup holds the same row in all
+/// of them. Marks them with `simdgroup_registers` = `number`, and leaves them
+/// to the Metal printer (src/dialect/MetalImage.cpp). Puts the other matmuls in
+/// `marked`. Returns false, and changes nothing, when the tile has another use.
 static bool keepSimdgroupSumsInRegisters(vx::LaneMatmulOp op, int64_t number,
                                          SmallPtrSetImpl<Operation *> &marked) {
   Type accType = op.getAcc().getType();
@@ -4488,6 +4569,13 @@ static bool keepSimdgroupSumsInRegisters(vx::LaneMatmulOp op, int64_t number,
     if (fill && fill.getSubgroupRow() && !fill.getSerial() &&
         fill.getTile().getType() == accType) {
       others.push_back(fill);
+      continue;
+    }
+    auto scale = dyn_cast<vx::LaneScaleRowsOp>(use);
+    if (scale && scale.getSubgroupRow() && !scale.getSerial() &&
+        scale.getTile().getType() == accType &&
+        laneCopyTileAlloca(scale.getScale()) != tile) {
+      others.push_back(scale);
       continue;
     }
     auto copy = dyn_cast<vx::LaneCopyOp>(use);
@@ -7448,10 +7536,26 @@ struct ConvertVxToStandardPass
           if (space && space.getInt() == 3 && t.hasStaticShape())
             smemAllocas.push_back(a);
         });
+        // A tile in simdgroup matrices keeps its alloca, which the Metal
+        // printer gives no memory. It becomes a global below, but takes no
+        // part in the size of the shared memory.
+        SmallVector<memref::AllocaOp> inRegisters;
+        llvm::erase_if(smemAllocas, [&](memref::AllocaOp a) {
+          SmallVector<Operation *> uses;
+          accessesOf(a.getResult(), uses);
+          bool registers =
+              !uses.empty() && llvm::all_of(uses, [](Operation *u) {
+                return u->hasAttr(simdgroupRegistersAttr);
+              });
+          if (registers)
+            inRegisters.push_back(a);
+          return registers;
+        });
         // Static `.shared` storage is limited to 48 KiB a block. Past that the
         // tensors are views at offsets into dynamic shared memory, and the
         // kernel says how much it needs (`vx.dynamic_shared`), which the
-        // launch passes.
+        // launch passes. Metal has no such limit for static `threadgroup`
+        // arrays, and the Metal printer checks the limit of the device.
         auto alignOf = [](memref::AllocaOp a) -> int64_t {
           return a.getAlignment() ? (int64_t)a.getAlignment().value() : 16;
         };
@@ -7463,7 +7567,21 @@ struct ConvertVxToStandardPass
         int64_t total = 0;
         for (memref::AllocaOp a : smemAllocas)
           total = llvm::alignTo(total, alignOf(a)) + bytesOf(a);
-        if (total > kMaxStaticSharedBytes) {
+        // The checker leaves out a tile of sums that it expects in registers.
+        // When the lowering kept such a tile in shared memory, the kernel can
+        // need more than the memory has.
+        if (auto limit = kernel->getAttrOfType<IntegerAttr>("shared_bytes");
+            limit && total > limit.getInt()) {
+          kernel.emitError("this GPU kernel needs ")
+              << total << " bytes of shared memory, but its memory has "
+              << limit.getInt()
+              << ". The checker may have expected the sums of a lane matmul "
+                 "in registers, which the lowering kept in shared memory";
+          signalPassFailure();
+          return;
+        }
+        if (total > kMaxStaticSharedBytes &&
+            pipelineOfKernel(kernel) != DevicePipeline::Metal) {
           OpBuilder atEntry(&gpuFunc.getBody().front(),
                             gpuFunc.getBody().front().begin());
           Location loc = gpuFunc.getLoc();
@@ -7501,6 +7619,7 @@ struct ConvertVxToStandardPass
                            atEntry.getI64IntegerAttr(most));
           smemAllocas.clear();
         }
+        smemAllocas.append(inRegisters.begin(), inRegisters.end());
         int smemIdx = 0;
         for (memref::AllocaOp a : smemAllocas) {
           std::string gname =
@@ -11949,6 +12068,13 @@ struct BoundedInlinerPass
   static bool worthInlining(const Inliner::ResolvedCall &call) {
     Region *body = call.targetNode->getCallableRegion();
     if (!body)
+      return false;
+    // MLIR's inliner takes the last operation of a `func.func` with one block
+    // to be a return. An `mlir!` block that ends in `llvm.unreachable` has that
+    // shape, and the inliner lost the `llvm.unreachable`. Such a callee stays a
+    // call.
+    if (isa<func::FuncOp>(body->getParentOp()) && body->hasOneBlock() &&
+        (body->front().empty() || !isa<func::ReturnOp>(body->front().back())))
       return false;
     unsigned ops = 0;
     body->walk([&](Operation *) { ++ops; });

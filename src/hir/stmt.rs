@@ -648,14 +648,19 @@ impl<'a> TypeChecker<'a> {
                 self.prove_invariants_for_the_next_pass(Some(c.span));
                 self.drops_exit("continue", &c.span, crate::hir::check::drops::ExitTo::Loop)
             }
-            Statement::Assign(AssignStmt { lhs, rhs, span }) => {
+            Statement::Assign(AssignStmt {
+                lhs,
+                rhs,
+                span,
+                in_place,
+            }) => {
                 let span = *span;
                 self.check_token_overwrite(lhs, &span);
                 if let Some(call) = self.container_store(lhs, None, rhs, span) {
                     *stmt = Statement::ExprStmt(ExprStmtStmt::new(call, true, span));
                     self.check_statement(stmt, return_type, consume);
                 } else {
-                    self.check_assign_stmt(lhs, None, rhs, consume, None)
+                    *in_place = self.check_assign_stmt(lhs, None, rhs, consume, None);
                 }
             }
             Statement::CompoundAssign(CompoundAssignStmt {
@@ -688,17 +693,13 @@ impl<'a> TypeChecker<'a> {
                         span,
                         operand_ty: None,
                     });
-                    *stmt = Statement::Assign(AssignStmt {
-                        lhs: lhs.clone(),
-                        rhs: value,
-                        span,
-                    });
+                    *stmt = Statement::Assign(AssignStmt::new(lhs.clone(), value, span));
                     self.check_statement(stmt, return_type, consume);
                 } else if let Some(call) = self.container_store(lhs, Some(&op), rhs, span) {
                     *stmt = Statement::ExprStmt(ExprStmtStmt::new(call, true, span));
                     self.check_statement(stmt, return_type, consume);
                 } else {
-                    self.check_assign_stmt(lhs, Some(&op), rhs, consume, Some(operand_ty))
+                    self.check_assign_stmt(lhs, Some(&op), rhs, consume, Some(operand_ty));
                 }
             }
             Statement::Return(ret) => {
@@ -784,6 +785,11 @@ impl<'a> TypeChecker<'a> {
             e => e,
         };
         let from_literal = ty_ann.is_none() && matches!(bare, Expr::Number(n) if n.ty.is_none());
+        // `let s = "abc"` makes `s` a name for the text, so `==` on `s` compares the text.
+        let text_len = match &*expr {
+            Expr::StringLiteral(l) if !*_is_mut => Some(l.value.as_ref().len()),
+            _ => None,
+        };
         let prev_expected = self.expected_type.take();
         self.expected_type = ty_ann.clone();
         self.let_closure = matches!(&*expr, Expr::Closure(_)).then_some(*span);
@@ -791,6 +797,9 @@ impl<'a> TypeChecker<'a> {
         if matches!(&*expr, Expr::Transfer(_)) {
             self.traffic.tile_holder = Some(name.to_string());
         }
+        // The parser's `let` for the sum in `let r = (v + w)[1]` holds what was the base of an
+        // index. Reading an index does not move its base, so `v` and `w` stay usable.
+        let consume = consume && !name.starts_with(crate::syntax::expr::INDEXED_TEMPORARY);
         let ty = self.check_whole_value(expr, |c, e| c.check_expr_type_flag(e, consume));
         self.traffic.tile_holder = prev_holder;
         self.let_closure = None;
@@ -872,6 +881,13 @@ impl<'a> TypeChecker<'a> {
             }
             ty
         };
+        let depth = self.current_scope_depth();
+        if let Some(len) = text_len {
+            self.string_literal_lets
+                .insert(name.to_string(), (depth, len));
+        } else if self.string_literal_lets.get(name.as_ref()).map(|(d, _)| *d) == Some(depth) {
+            self.string_literal_lets.remove(name.as_ref());
+        }
 
         // The region's device has to represent what the body builds. A type annotation, or a
         // type inferred from an untyped literal, has no expression that carries it, so the
@@ -2203,7 +2219,7 @@ impl<'a> TypeChecker<'a> {
         rhs: &mut Expr,
         consume: bool,
         operand_ty: Option<&mut Option<crate::syntax::ElementType>>,
-    ) {
+    ) -> bool {
         self.strip_tensor_deref_at_root(lhs);
         // Assigning to a moved variable gives it a value again. A write does not read what
         // was there, so the move stops being in the way -- and the mark has to go before the
@@ -2212,11 +2228,14 @@ impl<'a> TypeChecker<'a> {
         // Only a plain `x = v`. `x op= v` reads `x` first, and `a[i] = v` writes *through* a
         // value the name no longer owns; both stay refused.
         let mut owner_before = None;
+        let mut holds_its_buffer = false;
+        let mut in_place = false;
         let mut moved_fields_before = Vec::new();
         let moved_before = self.moved_snapshot();
         if op.is_none() {
             if let Expr::Identifier(id) = lhs {
                 owner_before = self.drops_owner_state(id.name.as_ref());
+                holds_its_buffer = self.holds_its_buffer(id.name.as_ref());
                 self.unconsume(id.name.as_ref());
             }
             // `p.a = v` after `p.a` was moved out gives the field a value again.
@@ -2370,7 +2389,8 @@ impl<'a> TypeChecker<'a> {
         if op.is_none() {
             self.check_view_assign(lhs, rhs, &rhs_ty);
             if let Expr::Identifier(id) = lhs {
-                self.drops_note_assign(id.name.as_ref(), owner_before, rhs, id.span.line);
+                in_place = holds_its_buffer && self.writes_in_place(id.name.as_ref(), rhs);
+                self.drops_note_assign(id.name.as_ref(), owner_before, id.span.line, in_place);
                 self.unconsume(id.name.as_ref());
                 self.borrow.views.remove(id.name.as_ref());
                 if let Expr::Identifier(from) = &*rhs {
@@ -2398,7 +2418,7 @@ impl<'a> TypeChecker<'a> {
         if let Some(op) = op {
             let span = lhs.span();
             if !self.check_restricted_operands(op, &lhs_ty, &rhs_ty, &span) {
-                return;
+                return false;
             }
             let narrow = [&lhs_ty, &rhs_ty]
                 .iter()
@@ -2413,7 +2433,7 @@ impl<'a> TypeChecker<'a> {
                     ),
                     Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                 );
-                return;
+                return false;
             }
         }
         // A moved variable reads as `Unknown`, and E4001 already reported it.
@@ -2574,6 +2594,7 @@ impl<'a> TypeChecker<'a> {
             }
             _ => {}
         }
+        in_place
     }
 
     /// Which constant scope each known name currently lives in, innermost winning.
@@ -4120,7 +4141,7 @@ impl<'a> TypeChecker<'a> {
             Statement::Assign(AssignStmt {
                 lhs: Expr::Identifier(IdentifierExpr { name, span: _ }),
                 rhs,
-                span: _,
+                ..
             }) => {
                 match self.eval_expr(rhs, env) {
                     Some(val) => env.insert(name.clone(), val),
@@ -4141,11 +4162,7 @@ impl<'a> TypeChecker<'a> {
                     operand_ty: None,
                 });
                 self.eval_statement(
-                    &Statement::Assign(AssignStmt {
-                        lhs: lhs.clone(),
-                        rhs: folded,
-                        span: *span,
-                    }),
+                    &Statement::Assign(AssignStmt::new(lhs.clone(), folded, *span)),
                     env,
                 )
             }
@@ -4159,7 +4176,7 @@ impl<'a> TypeChecker<'a> {
                         span: _,
                     }),
                 rhs,
-                span: _,
+                ..
             }) => {
                 if let Some(root) = Self::place_root(lhs) {
                     // Only a write straight into a variable is carried out. A nested place

@@ -1862,7 +1862,9 @@ impl<'a> Parser<'a> {
         let compares_text = functions
             .iter()
             .chain(impls.iter().flat_map(|i: &ImplBlock| i.methods.iter()))
-            .any(|f: &Function| crate::syntax::compares_with_a_string_literal(&f.body));
+            .any(|f: &Function| {
+                crate::syntax::compares_with_a_string_literal(&f.body, &self.string_literal_names)
+            });
         if compares_text
             && !imports.iter().any(|i: &ImportDecl| {
                 i.path.len() == 2 && &*i.path[0] == "core" && &*i.path[1] == "c_str"
@@ -2441,7 +2443,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
                 panic!("Expected Range expression for iterable");
             }
             assert_eq!(body.len(), 1);
-            if let Statement::Assign(AssignStmt { lhs, rhs, span: _ }) = &body[0] {
+            if let Statement::Assign(AssignStmt { lhs, rhs, .. }) = &body[0] {
                 if let Expr::Identifier(id) = lhs {
                     assert_eq!(id.name.as_ref(), "x");
                 } else {

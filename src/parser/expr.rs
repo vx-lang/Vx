@@ -1318,7 +1318,10 @@ impl<'a> Parser<'a> {
                         let mut stmts = Vec::new();
                         let mut ret_expr = None;
                         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+                            // A statement that a desugaring puts before this one goes in the block.
+                            let mark = self.prefix_stmts.len();
                             let stmt = self.parse_statement()?;
+                            stmts.extend(self.prefix_stmts.drain(mark..));
                             // Only a last expression with no `;` is the block's value. A last
                             // statement that ends with `;` stays one of the block's statements.
                             if self.check(&TokenType::RightBrace) {
@@ -1429,7 +1432,10 @@ impl<'a> Parser<'a> {
                         let mut stmts = Vec::new();
                         let mut ret_expr = None;
                         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+                            // A statement that a desugaring puts before this one goes in the block.
+                            let mark = self.prefix_stmts.len();
                             let stmt = self.parse_statement()?;
+                            stmts.extend(self.prefix_stmts.drain(mark..));
                             if self.check(&TokenType::RightBrace) {
                                 if let Statement::ExprStmt(ExprStmtStmt {
                                     expr: e,
@@ -1467,6 +1473,15 @@ impl<'a> Parser<'a> {
                         return Err(self.error_at(&token, super::UNCLOSED_STRING))
                     }
 
+                    TokenType::UnknownEscape(c, _) => {
+                        return Err(self.error_at(
+                            &token,
+                            &format!(
+                                "this string has the escape `\\{c}`, which Vx does not know. A \
+                                 string can use `\\n`, `\\t`, `\\r`, `\\\"` and `\\\\`"
+                            ),
+                        ))
+                    }
                     _ => {
                         return Err(self.error_at(
                             &token,

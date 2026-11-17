@@ -183,6 +183,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/across_loops_run_in_order_on_the_cpu.vx",         // needs --machine
         "optimizations/pass/atomic_adds_in_across_loops.vx",                  // needs --machine
         "optimizations/pass/functions_generic_over_memory.vx",                // needs --machine
+        "optimizations/pass/whole_tensor_assignments_write_into_the_destination.vx", // needs --machine
         "optimizations/pass/a_tensor_from_gpu_memory_is_passed_by_value_and_freed_once.vx", // needs --machine
         "optimizations/pass/functions_that_run_where_they_are_called.vx",     // needs --machine
         "optimizations/pass/element_atomics_in_across_loops.vx",              // needs --machine
@@ -215,6 +216,10 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/lane_scale_rows_keeps_the_sums_in_registers.vx",  // needs --machine
         "optimizations/pass/a_gpu_kernel_reads_a_borrowed_host_tensor_with_no_copy.vx", // needs --machine
         "optimizations/pass/weights_in_a_struct_reach_the_gpu_with_no_copy.vx", // needs --machine
+        "optimizations/pass/lane_copies_check_the_whole_tile_once.vx", // needs --machine
+        "optimizations/pass/lane_matmul_sums_in_registers_take_no_shared_memory.vx", // needs --machine
+        "optimizations/pass/lane_matmul_sums_in_simdgroup_matrices_take_no_threadgroup_memory.vx", // needs --machine
+        "optimizations/pass/a_tile_copied_into_a_row_of_a_tensor_parameter.vx", // needs --machine
         "optimizations/pass/lane_stores_of_neighbouring_bf16_join_into_one.vx", // needs --machine
         "optimizations/pass/lane_matmul_result_goes_from_registers_to_the_tensor.vx", // needs --machine
         "optimizations/pass/lane_copies_with_tma.vx",                         // needs --machine

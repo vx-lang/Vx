@@ -1822,53 +1822,22 @@ impl CompilerDriver {
                     p
                 });
 
-                // `grad`, `vjp` and `jvp` are calls that the Enzyme pass in `opt` fills in.
-                // The execution engine below never runs it, so such a program is built the
-                // way `run-jit` builds one.
+                // Built as `run-jit` builds a program. MLIR's execution engine, used before, gave
+                // each function an exported wrapper `_mlir_<name>`, after the program's symbols
+                // were hidden. The engine's machine code shared stack slots also at `-O0`, as
+                // `llc` does only from `-O1` up, so `llc` runs at `-O2` or higher.
                 let mlir_str = format!("{}", module.as_operation());
-                if mlir_str.contains("__enzyme_") {
-                    let temp_dir = tempfile::tempdir().map_err(|e| e.to_string())?;
-                    let obj = crate::jit::compile_mlir_to_object(
-                        &mlir_str,
-                        temp_dir.path(),
-                        self.options.opt_level,
-                        self.options.disable_llvm_optimizations,
-                        false,
-                    )?;
-                    std::fs::copy(&obj, &output_path)
-                        .map_err(|e| format!("could not write '{}': {e}", output_path.display()))?;
-                    return Ok(());
-                }
-
-                // One resolution, shared with the JIT. This arm used to build its own list from
-                // bare filenames, which MLIR resolves against the process CWD, so it looked for
-                // `libmlir_runner_utils` in the repo root; and for the dispatch plugin under
-                // `target/jit/`, which the build never writes. Both failed by printing to stderr
-                // and producing no object.
-                let engine =
-                    crate::jit::ObjectEmitter::new(&module, self.options.opt_level as usize)?;
-
-                // Whether an object was actually written is the only thing that says this
-                // succeeded. `dump_to_object_file` returns nothing and the arm returned `Ok(())`
-                // regardless, so emit-obj reported success in three distinct failure modes: a
-                // library it could not load, a symbol it could not resolve, and a module the
-                // verifier rejected. Anything gating on the exit status learned nothing.
-                let existed_before = output_path.exists();
-                let mtime_before = std::fs::metadata(&output_path)
-                    .and_then(|m| m.modified())
-                    .ok();
-                engine.dump_to_object_file(output_path.to_str().unwrap())?;
-                let wrote = match std::fs::metadata(&output_path) {
-                    Ok(m) => m.len() > 0 && (!existed_before || m.modified().ok() != mtime_before),
-                    Err(_) => false,
-                };
-                if !wrote {
-                    return Err(format!(
-                        "emit-obj produced no object at '{}'; the module could not be compiled \
-                         (see the diagnostics above)",
-                        output_path.display()
-                    ));
-                }
+                let temp_dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+                let obj = crate::jit::compile_mlir_to_object_with_codegen_level(
+                    &mlir_str,
+                    temp_dir.path(),
+                    self.options.opt_level,
+                    Some(self.options.opt_level.max(2)),
+                    self.options.disable_llvm_optimizations,
+                    false,
+                )?;
+                std::fs::copy(&obj, &output_path)
+                    .map_err(|e| format!("could not write '{}': {e}", output_path.display()))?;
                 crate::jit::set_macos_minimum_version(output_path.to_str().unwrap())?;
             }
             _ => {}

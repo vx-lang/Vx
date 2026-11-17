@@ -991,25 +991,36 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The length of the text that `e` names: a string literal, or a `let` without `mut` whose
+    /// value is one.
+    fn text_len(&self, e: &Expr) -> Option<usize> {
+        match e {
+            Expr::StringLiteral(l) => Some(l.value.as_ref().len()),
+            Expr::Identifier(id) => {
+                let (depth, len) = self.string_literal_lets.get(id.name.as_ref())?;
+                (*depth == self.scope_depth_of(&id.name)).then_some(*len)
+            }
+            _ => None,
+        }
+    }
+
     /// `s == "hello"` as `c_str_equals(s, "hello", 6)`, and `!=` as its `!`. The bound is the
-    /// literal's length and its NUL. When both sides are literals, the call is in a `comptime`
-    /// block, so the comparison becomes `true` or `false` while compiling.
-    fn text_compare(expr: &Expr) -> Option<Expr> {
+    /// length of the text and its NUL. A name for a string literal counts as the literal. When
+    /// both sides are literals, the call is in a `comptime` block, so the comparison becomes
+    /// `true` or `false` while compiling.
+    fn text_compare(&self, expr: &Expr) -> Option<Expr> {
         let Expr::RelationalOp(RelationalOpExpr {
             lhs, op, rhs, span, ..
         }) = expr
         else {
             return None;
         };
-        let literal = match (&**lhs, &**rhs) {
-            (Expr::StringLiteral(l), _) | (_, Expr::StringLiteral(l)) => l,
-            _ => return None,
-        };
+        let len = self.text_len(lhs).or_else(|| self.text_len(rhs))?;
         if !matches!(op, RelationalOp::Eq | RelationalOp::NotEq) {
             return None;
         }
         let bound = Expr::Number(crate::syntax::NumberExpr::new(
-            (literal.value.as_ref().len() + 1).to_string(),
+            (len + 1).to_string(),
             Some(ElementType::I64),
             *span,
         ));
@@ -1054,7 +1065,7 @@ impl<'a> TypeChecker<'a> {
         }
         // `==` or `!=` with a string literal compares the text: it is a call of `core::c_str`'s
         // `c_str_equals`, which the parser imports for such a program.
-        if let Some(call) = Self::text_compare(expr) {
+        if let Some(call) = self.text_compare(expr) {
             *expr = call;
             return self.check_expr_type_flag(expr, false);
         }
@@ -1178,6 +1189,30 @@ impl<'a> TypeChecker<'a> {
                 {
                     return Type::Scalar(ElementType::Bool);
                 }
+                // `&a == &b` compares the values, as in Rust, but a reference does not compare
+                // with a value: `r < 6.0` with `r : &f32` needs `*r`.
+                // The number of `&` around a type, and the type inside them.
+                let borrows = |mut ty: &Type| {
+                    let mut depth = 0;
+                    while let Type::Borrow { inner, .. } = ty {
+                        depth += 1;
+                        ty = inner;
+                    }
+                    (depth, ty.clone())
+                };
+                let ((ld, li), (rd, ri)) = (borrows(&lhs_ty), borrows(&rhs_ty));
+                // An `Unknown` side already has its error, a name with no `let` say.
+                if ld != rd && li != Type::Unknown && ri != Type::Unknown {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3005,
+                        format!(
+                            "`{symbol}` cannot compare {lhs_ty} with {rhs_ty}. Write `*` before \
+                             the reference to compare the value it points to"
+                        ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                    );
+                    return Type::Scalar(ElementType::Bool);
+                }
                 if self.is_struct_type(&lhs_ty) {
                     let at = if *span == crate::syntax::Span::default() {
                         lhs.span()
@@ -1201,7 +1236,7 @@ impl<'a> TypeChecker<'a> {
                         (Some(a), Some(b)) if a == b
                     );
                 // An `Unknown` side already has its error, a use of a moved value say.
-                if !compatible && lhs_ty != Type::Unknown && rhs_ty != Type::Unknown {
+                if !compatible && li != Type::Unknown && ri != Type::Unknown {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3005,
                         format!(

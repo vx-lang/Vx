@@ -526,9 +526,18 @@ impl<'c> LowerToMelior<'c> for BorrowExpr {
         let ptr_ty = gen.ptr_ty;
         // `&mut s.t`, a struct's tensor field: a borrowed tensor is a `memref<memref<..>>`, whose
         // descriptor is `{ptr, ptr, offset}`. Pointing both at the field makes it a borrow of the
-        // field itself, so a callee that writes the tensor writes the struct's.
-        if ty == ptr_ty && matches!(&**expr, Expr::MemberAccess(_)) {
-            if let Some(field_ty @ syntax::Type::Tensor(..)) = gen.infer_ast_type(expr) {
+        // field itself, so a callee that writes the tensor writes the struct's. A tensor behind a
+        // raw pointer, `&self.data[i]` in `Vec::get_ref`, is stored the same way.
+        let stored_tensor = match &**expr {
+            Expr::MemberAccess(_) => gen.infer_ast_type(expr),
+            Expr::IndexAccess(ix) => match gen.infer_ast_type(&ix.base) {
+                Some(syntax::Type::Pointer(inner, ..)) => Some(*inner),
+                _ => None,
+            },
+            _ => None,
+        };
+        if ty == ptr_ty {
+            if let Some(field_ty @ syntax::Type::Tensor(..)) = stored_tensor {
                 let tensor_ty = gen.lower_type(&field_ty)?;
                 let box_ty =
                     Type::parse(gen.context, &format!("memref<{tensor_ty}>")).ok_or_else(|| {
@@ -819,6 +828,18 @@ impl<'c> LowerToMelior<'c> for DereferenceExpr {
     }
 }
 
+/// The extents of a memref type spelled `memref<4x?xf32, ..>`, with `None` for each `?`.
+fn memref_dims(ty: &str) -> Vec<Option<i64>> {
+    let Some(body) = ty.strip_prefix("memref<") else {
+        return Vec::new();
+    };
+    let shape = body.split([',', '>']).next().unwrap_or("");
+    let mut parts: Vec<&str> = shape.split('x').collect();
+    // The last part is the element type.
+    parts.pop();
+    parts.iter().map(|d| d.trim().parse::<i64>().ok()).collect()
+}
+
 impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
     fn lower(
@@ -978,6 +999,13 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
                     .map(|d| d.literal().and_then(|v| v.parse::<i64>().ok()))
                     .collect(),
                 _ => Vec::new(),
+            };
+            // A local made from `v + w` has no type in the checker's table. Its memref type has
+            // the rank, and the extents known while compiling.
+            let base_dims = if base_dims.is_empty() {
+                memref_dims(&base_ty_str)
+            } else {
+                base_dims
             };
             let rank = base_dims.len();
             if rank >= 2 && indices.len() < rank {
@@ -4583,7 +4611,13 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             // pass as its first argument, and the call itself produces nothing -- the result is
             // that buffer (#643).
             let ret_slot = if gen.uses_return_slot(name, ret_ty) {
-                let alloc_op = OperationBuilder::new("memref.alloca", gen.loc())
+                // A large result goes on the heap, as a large local does.
+                let op = if crate::codegen::fits_on_the_stack(&ret_ty.to_string()) {
+                    "memref.alloca"
+                } else {
+                    "memref.alloc"
+                };
+                let alloc_op = OperationBuilder::new(op, gen.loc())
                     .add_attributes(&[(
                         Identifier::new(gen.context, "operandSegmentSizes"),
                         DenseI32ArrayAttribute::new(gen.context, &[0, 0]).into(),
@@ -5341,7 +5375,7 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
                     expr,
                     has_semi: false,
                     ..
-                })) => Some((arm, expr)),
+                })) if syntax::expr::block_gives_a_value(&arm.body) => Some((arm, expr)),
                 _ => None,
             })
             .collect();
@@ -5943,6 +5977,9 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintExpr {
         if self.to_stderr {
             switch_print_stream(gen, block, true)?;
         }
+        // Every argument is evaluated, left to right, before anything is printed, so a call in an
+        // argument that prints cannot split the line.
+        let mut values = Vec::with_capacity(self.args.len());
         for arg in &self.args {
             // A `println!(..);` statement expects no value, but each argument gives one. Without
             // this reset, an `if` or a `match` argument takes the `none` type of the statement.
@@ -5951,6 +5988,9 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintExpr {
             gen.expected_type = prev_expected;
             let (arg_val, arg_ty, next) = lowered?;
             block = next;
+            values.push((arg, arg_val, arg_ty));
+        }
+        for (arg, arg_val, arg_ty) in values {
             if let Some((fn_name, arg_val, arg_ty_str)) =
                 super::pick_scalar_print(gen, block, arg, arg_val, arg_ty)?
             {
