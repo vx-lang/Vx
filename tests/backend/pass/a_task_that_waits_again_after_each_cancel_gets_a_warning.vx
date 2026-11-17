@@ -7,7 +7,8 @@
 //===----------------------------------------------------------------------===//
 // A task calls `recv` 2000 times, and drops each error. The code of its block returns early, so
 // the block cancels the task, and each `recv` after that gives `Cancelled` at once. The runtime
-// warns once, with the line of the task's `spawn`. The program still ends.
+// warns once, with the line of the `recv` and the line of the task's `spawn`. The program still
+// ends.
 //
 // First, two tasks get 600 `Cancelled` each. The count is for each task, so neither gets the
 // warning, also when both run on one thread of the shared runtime.
@@ -50,7 +51,8 @@ fn leave_early(times : i64) -> i64 {
 
 // CHECK: {{^}}leave_early gave 7{{$}}
 // CHECK-NEXT: {{^}}vx: warning: a task saw the cancel of its `tasks` block 1000 times. A loop may wait again after each `Cancelled`.{{$}}
-// CHECK-NEXT: {{^}}  in the task from the `spawn` at {{.*}}.vx:38{{$}}
+// CHECK-NEXT: {{^}}  at {{.*}}a_task_that_waits_again_after_each_cancel_gets_a_warning.vx:25{{$}}
+// CHECK-NEXT: {{^}}  in the task from the `spawn` at {{.*}}.vx:39{{$}}
 // CHECK-NOT: vx: warning
 // CHECK: {{^}}leave_early gave 7{{$}}
 fn main() -> i32 {

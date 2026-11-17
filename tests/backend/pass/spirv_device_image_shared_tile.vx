@@ -17,19 +17,19 @@
 // EXPECT:  [1,   2]]
 
 Memory CPU_DRAM {}
-Memory GPU_HBM {
+Memory DEV_HBM {
   within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
 }
 Memory SMEM {
-  within: Memory::GPU_HBM, capacity: 228 KiB, bandwidth: 128 B/cyc,
+  within: Memory::DEV_HBM, capacity: 228 KiB, bandwidth: 128 B/cyc,
   granule: 1 KiB, managed: explicit, scope: sm
 }
 Topology Dev {
   arch: spirv64,
-  memory: Memory::GPU_HBM,
-  visible: [Memory::GPU_HBM, Memory::SMEM],
-  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s,
-  transfer Memory::GPU_HBM -> Memory::SMEM
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 63 GB/s,
+  transfer Memory::DEV_HBM -> Memory::SMEM
 }
 
 fn main() -> i32 {
@@ -41,8 +41,8 @@ fn main() -> i32 {
       o[i][d] = 0.0;
     }
   }
-  let ad = transfer(a, Memory::GPU_HBM);
-  let mut od = transfer(o, Memory::GPU_HBM);
+  let ad = transfer(a, Memory::DEV_HBM);
+  let mut od = transfer(o, Memory::DEV_HBM);
   spawn on(Topology::Dev) {
     let tile = transfer(ad, Memory::SMEM);
     for i in 0..2 {

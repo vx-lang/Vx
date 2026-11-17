@@ -78,9 +78,11 @@ fn table_hash(inverse : bool, count : i64) -> u64 {
     if i >= count {
       break;
     }
-    let mut v = ryu_pow5(i);
+    let mut v = 0u128;
     if inverse {
       v = ryu_inv_pow5(i);
+    } else {
+      v = ryu_pow5(i);
     }
     h = (h * 31u64) ^ (v as u64);
     h = (h * 31u64) ^ ((v >> 64u128) as u64);

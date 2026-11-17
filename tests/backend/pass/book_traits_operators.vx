@@ -1,0 +1,87 @@
+//===- book_traits_operators.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on operators and standard traits
+// (www/book/src/operators-and-traits.md): a struct gets `+`, `-`, unary `-`, `==` and `!=` from
+// `Add`, `Sub`, `Neg` and `PartialEq`.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}total 300{{$}}
+// CHECK: {{^}}change 700{{$}}
+// CHECK: {{^}}refund -50{{$}}
+// CHECK: {{^}}equal true, different true{{$}}
+// CHECK: {{^}}sums 600 6{{$}}
+
+// ANCHOR: program
+import core::cmp;
+import core::marker;
+import core::ops;
+
+struct Money {
+  cents : i64,
+}
+
+impl Copy for Money {}
+
+impl Add for Money {
+  type Output = Money;
+  fn add(self : Money, rhs : Money) -> Money {
+    return Money {
+      cents: self.cents + rhs.cents
+    };
+  }
+}
+
+impl Sub for Money {
+  type Output = Money;
+  fn sub(self : Money, rhs : Money) -> Money {
+    return Money {
+      cents: self.cents - rhs.cents
+    };
+  }
+}
+
+impl Neg for Money {
+  type Output = Money;
+  fn neg(self : Money) -> Money {
+    return Money {
+      cents: 0 - self.cents
+    };
+  }
+}
+
+impl PartialEq for Money {
+  fn eq(self : &Money, other : &Money) -> bool {
+    return self.cents == other.cents;
+  }
+}
+
+fn sum3<T : Add>(a : T, b : T, c : T) -> T {
+  return a + b + c;
+}
+
+fn main() -> i32 {
+  let price = Money {
+    cents: 250
+  };
+  let tip = Money {
+    cents: 50
+  };
+  let total = price + tip;
+  println!("total {}", total.cents);
+  println!("change {}", (Money {
+    cents: 1000
+  } - total).cents);
+  println!("refund {}", (-tip).cents);
+  println!("equal {}, different {}", total == Money {
+    cents: 300
+  }, total != price);
+  println!("sums {} {}", sum3(price, tip, total).cents, sum3(1, 2, 3));
+  return 0;
+}
+// ANCHOR_END: program

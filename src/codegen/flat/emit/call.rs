@@ -123,11 +123,18 @@ impl FnEmit<'_> {
         let ret_slot_ty = callee
             .ret_tensor
             .as_ref()
-            .filter(|mt| !mt.contains(DYN_DIM) && !callee.ret_placed)
+            .filter(|mt| !mt.contains(DYN_DIM) && !callee.ret_placed && !callee.ret_reference)
             .cloned();
         if let Some(slot_ty) = &ret_slot_ty {
             let slot = format!("%rs{idx}");
-            self.emit_slot(&format!("  {slot} = memref.alloca() : {slot_ty}\n"));
+            if crate::codegen::fits_on_the_stack(slot_ty) {
+                self.emit_slot(&format!("  {slot} = memref.alloca() : {slot_ty}\n"));
+            } else {
+                // A large result goes on the heap, as a large local does: 50 MB on the stack
+                // overflowed it. The buffer is made here, not in the entry block, because the drop
+                // of the result frees it once for each call.
+                self.body += &format!("  {slot} = memref.alloc() : {slot_ty}\n");
+            }
             arg_names.insert(0, slot.clone());
             arg_types.insert(0, slot_ty.clone());
             self.names[idx] = slot;

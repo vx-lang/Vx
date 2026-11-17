@@ -75,7 +75,8 @@ impl<T : Clone> Clone for Option<T> {
   /// The option with its value cloned, if it has one.
   fn clone(self : &Option<T>) -> Option<T> {
     let mut out = Option<T>::None();
-    match *self {
+    // A match on the reference leaves `v` in place. A match on `*self` moves it out (E4008).
+    match self {
       Option<T>::Some(v) => {
         out = Option<T>::Some(v.clone());
       }
@@ -93,7 +94,7 @@ impl<T : Clone> Clone for Option<T> {
 impl<T : Clone, E : Clone> Clone for Result<T, E> {
   /// The result with whichever side it holds cloned.
   fn clone(self : &Result<T, E>) -> Result<T, E> {
-    match *self {
+    match self {
       Result<T, E>::Ok(v) => {
         return Result<T, E>::Ok(v.clone());
       }

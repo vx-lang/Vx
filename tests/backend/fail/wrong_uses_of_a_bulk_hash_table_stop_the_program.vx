@@ -1,0 +1,130 @@
+//===- wrong_uses_of_a_bulk_hash_table_stop_the_program.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each program uses `std::bulk_hash` in a wrong way, and an assert stops it with a message. The
+// kernels run on the CPU, because the programs compile for an NVIDIA machine and the run hides
+// the GPUs.
+//
+// - `full`: a table of 16 slots holds 10 keys, and a batch of 6 more leaves no empty slot.
+// - `empty_key`: a key is 4294967295, the key of an empty slot. The insert kernel stops.
+// - `twelve_slots`: a table of 12 slots, which is not a power of 2.
+// - `short_values`, `short_vals` and `short_out`: a tensor that must match another in size
+//   does not.
+//
+// RUN: split-file %s %t
+// RUN: env CUDA_VISIBLE_DEVICES= not vxc %t/full.vx --host default --machine fleet/h100-sxm.vx 2>&1 | FileCheck %s --check-prefix=FULL
+// RUN: env CUDA_VISIBLE_DEVICES= not vxc %t/empty_key.vx --host default --machine fleet/h100-sxm.vx 2>&1 | FileCheck %s --check-prefix=EMPTY-KEY
+// RUN: env CUDA_VISIBLE_DEVICES= not vxc %t/twelve_slots.vx --host default --machine fleet/h100-sxm.vx 2>&1 | FileCheck %s --check-prefix=TWELVE
+// RUN: env CUDA_VISIBLE_DEVICES= not vxc %t/short_values.vx --host default --machine fleet/h100-sxm.vx 2>&1 | FileCheck %s --check-prefix=VALUES
+// RUN: env CUDA_VISIBLE_DEVICES= not vxc %t/short_vals.vx --host default --machine fleet/h100-sxm.vx 2>&1 | FileCheck %s --check-prefix=VALS
+// RUN: env CUDA_VISIBLE_DEVICES= not vxc %t/short_out.vx --host default --machine fleet/h100-sxm.vx 2>&1 | FileCheck %s --check-prefix=OUT
+//
+// A machine with the CUDA library but no GPU prints a note between these two lines.
+// FULL: {{^}}held 10{{$}}
+// FULL: bulk_hash_insert_all: the keys do not fit. The table must keep one empty slot
+// FULL-NOT: not printed
+// EMPTY-KEY: bulk_hash_insert_all: a key cannot be 4294967295, the key of an empty slot
+// EMPTY-KEY-NOT: not printed
+// TWELVE: bulk_hash: the number of slots must be a power of 2
+// TWELVE-NOT: not printed
+// VALUES: bulk_hash: `values` must have as many elements as `slots`
+// VALUES-NOT: not printed
+// VALS: bulk_hash_insert_all: `vals` must have as many elements as `keys`
+// VALS-NOT: not printed
+// OUT: bulk_hash_find_all: `out` must have as many elements as `keys`
+// OUT-NOT: not printed
+
+//--- full.vx
+import std::bulk_hash;
+
+fn main() -> i32 {
+  let mut host_keys = Tensor<u32, [10]>::fill(0u32);
+  let mut host_more = Tensor<u32, [6]>::fill(0u32);
+  for i in 0..10 {
+    host_keys[i] = i as u32;
+  }
+  for i in 0..6 {
+    host_more[i] = (i + 10) as u32;
+  }
+  let keys = transfer(host_keys, Memory::HBM);
+  let vals = transfer(Tensor<u32, [10]>::fill(1u32), Memory::HBM);
+  let more = transfer(host_more, Memory::HBM);
+  let more_vals = transfer(Tensor<u32, [6]>::fill(2u32), Memory::HBM);
+  let slots = transfer(Tensor<u32, [16]>::fill(BULK_HASH_EMPTY), Memory::HBM);
+  let values = transfer(Tensor<u32, [16]>::fill(0u32), Memory::HBM);
+  let held = bulk_hash_insert_all(&slots, &values, &keys, &vals, 0);
+  println!("held {}", held);
+  let _h = bulk_hash_insert_all(&slots, &values, &more, &more_vals, held);
+  println!("not printed");
+  return 0;
+}
+
+//--- empty_key.vx
+import std::bulk_hash;
+
+fn main() -> i32 {
+  let keys = transfer(Tensor<u32, [4]>::fill(4294967295u32), Memory::HBM);
+  let vals = transfer(Tensor<u32, [4]>::fill(1u32), Memory::HBM);
+  let slots = transfer(Tensor<u32, [16]>::fill(BULK_HASH_EMPTY), Memory::HBM);
+  let values = transfer(Tensor<u32, [16]>::fill(0u32), Memory::HBM);
+  let _h = bulk_hash_insert_all(&slots, &values, &keys, &vals, 0);
+  let table = transfer(slots, Memory::CPU_DRAM);
+  println!("not printed {}", table[0]);
+  return 0;
+}
+
+//--- twelve_slots.vx
+import std::bulk_hash;
+
+fn main() -> i32 {
+  let keys = transfer(Tensor<u32, [4]>::fill(1u32), Memory::HBM);
+  let vals = transfer(Tensor<u32, [4]>::fill(1u32), Memory::HBM);
+  let slots = transfer(Tensor<u32, [12]>::fill(BULK_HASH_EMPTY), Memory::HBM);
+  let values = transfer(Tensor<u32, [12]>::fill(0u32), Memory::HBM);
+  let _h = bulk_hash_insert_all(&slots, &values, &keys, &vals, 0);
+  println!("not printed");
+  return 0;
+}
+
+//--- short_values.vx
+import std::bulk_hash;
+
+fn main() -> i32 {
+  let keys = transfer(Tensor<u32, [4]>::fill(1u32), Memory::HBM);
+  let vals = transfer(Tensor<u32, [4]>::fill(1u32), Memory::HBM);
+  let slots = transfer(Tensor<u32, [16]>::fill(BULK_HASH_EMPTY), Memory::HBM);
+  let values = transfer(Tensor<u32, [8]>::fill(0u32), Memory::HBM);
+  let _h = bulk_hash_insert_all(&slots, &values, &keys, &vals, 0);
+  println!("not printed");
+  return 0;
+}
+
+//--- short_vals.vx
+import std::bulk_hash;
+
+fn main() -> i32 {
+  let keys = transfer(Tensor<u32, [4]>::fill(1u32), Memory::HBM);
+  let vals = transfer(Tensor<u32, [3]>::fill(1u32), Memory::HBM);
+  let slots = transfer(Tensor<u32, [16]>::fill(BULK_HASH_EMPTY), Memory::HBM);
+  let values = transfer(Tensor<u32, [16]>::fill(0u32), Memory::HBM);
+  let _h = bulk_hash_insert_all(&slots, &values, &keys, &vals, 0);
+  println!("not printed");
+  return 0;
+}
+
+//--- short_out.vx
+import std::bulk_hash;
+
+fn main() -> i32 {
+  let keys = transfer(Tensor<u32, [4]>::fill(1u32), Memory::HBM);
+  let slots = transfer(Tensor<u32, [16]>::fill(BULK_HASH_EMPTY), Memory::HBM);
+  let values = transfer(Tensor<u32, [16]>::fill(0u32), Memory::HBM);
+  let mut out = transfer(Tensor<u32, [2]>::fill(0u32), Memory::HBM);
+  bulk_hash_find_all(&slots, &values, &keys, &mut out);
+  println!("not printed");
+  return 0;
+}

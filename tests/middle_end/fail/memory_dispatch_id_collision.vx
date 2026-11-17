@@ -1,4 +1,5 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s 2>&1 | FileCheck %s --check-prefix=PLACE
 // The same coin-flip identity the topology check refuses, for memory spaces. Codegen keys its
 // descriptors by the dispatch id, so a `transfer` into the second space was emitted with the
 // first space's name, capacity, granule and scope -- a 64 KiB tile placed in a 60 MiB L2
@@ -7,6 +8,8 @@
 // DO2TX and DSC0A both hash to 117023822. Finding that pair took a search over a million
 // candidates; back when the range was a thousand wide, L2_GPU5 and GPU6_VMEM collided on sight.
 // CHECK: E6016
+// The console also names the place in the source.
+// PLACE: Error[E6016] at {{.*}}memory_dispatch_id_collision.vx:21:8:
 // CHECK: collide on dispatch id 117023822
 Memory CPU_DRAM {}
 Memory GPU_HBM {

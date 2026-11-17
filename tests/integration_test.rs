@@ -50,6 +50,7 @@ mod integration_test {
     #[cfg(target_os = "macos")]
     mod objects_need_the_macos_of_the_host;
     mod output_does_not_depend_on_the_current_directory;
+    mod parallel;
     mod payload_test;
     mod pipeline_scale_test;
     mod registry_test;
@@ -60,6 +61,7 @@ mod integration_test {
     mod runtime_test_build;
     mod shipped_programs_compile;
     mod solver_policy_test;
+    mod solver_questions_of_raw_pointer_writes;
     mod tensors_with_gaps_from_c;
     mod time_limit;
     mod traffic_test;

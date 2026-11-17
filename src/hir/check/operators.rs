@@ -206,6 +206,9 @@ impl<'a> TypeChecker<'a> {
             _ => None,
         };
         let expected = std::mem::replace(&mut self.expected_type, operand_expected);
+        // A cast to a number only reads its operand: a tensor cast makes a new tensor, and the
+        // operand stays usable.
+        let consume = consume && !matches!(expr.target_ty, Type::Scalar(_));
         let source_ty = self.check_expr_type_flag(&mut expr.expr, consume);
         self.expected_type = expected;
         let target_ty = expr.target_ty.clone();
@@ -263,16 +266,37 @@ impl<'a> TypeChecker<'a> {
                     return Type::Unknown;
                 }
             }
-            // `slice as f16`: an elementwise cast over a rank-1 float slice, yielding a
-            // slice of the target element type. This is the spelling that narrows a
-            // widened slice back into half storage, which the assignment rules require
-            // rather than performing silently.
+            // `t as f32`: a cast of each element of a float tensor, to a tensor of the same
+            // shape. On a slice, it narrows a widened slice back into half storage, which the
+            // assignment rules require rather than performing silently.
             (Type::Tensor(src_el, dims, top), Type::Scalar(dst_el))
-                if dims.len() == 1 && src_el.is_float() && dst_el.is_float() =>
+                if src_el.is_float() && dst_el.is_float() =>
             {
                 return Type::Tensor(dst_el.clone(), dims.clone(), top.clone());
             }
+            // A borrowed tensor, such as a parameter `a : &Tensor<bf16, ..>`.
+            (Type::Borrow { inner, .. }, Type::Scalar(dst_el)) if dst_el.is_float() => {
+                if let Type::Tensor(src_el, dims, top) = &**inner {
+                    if src_el.is_float() {
+                        return Type::Tensor(dst_el.clone(), dims.clone(), top.clone());
+                    }
+                }
+            }
             (Type::Scalar(src), Type::Scalar(dst)) => {
+                // Rust's rule: only a `bool` casts to a `bool`. From an integer the cast kept
+                // the lowest bit, so `2 as bool` was `false`.
+                if *dst == ElementType::Bool && *src != ElementType::Bool {
+                    let zero = if src.is_float() { "0.0" } else { "0" };
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3011,
+                        format!(
+                            "cannot cast `{src}` to `bool`: compare it with zero instead, as in \
+                             `x != {zero}`"
+                        ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&expr.span)),
+                    );
+                    return Type::Unknown;
+                }
                 // A literal is left alone, since a cast is one way to give a number its type.
                 // So is a generic instance: there `x as T` converts for every other `T`.
                 let literal = match &*expr.expr {
@@ -307,7 +331,13 @@ impl<'a> TypeChecker<'a> {
                     {
                         self.errors.warn(
                             crate::diagnostic::DiagnosticCode::W1014,
-                            format!("{v} does not fit in {dst}, so `as` changes its value"),
+                            if *dst == ElementType::USize {
+                                format!(
+                                    "{v} does not fit in usize, so this cast will stop the program"
+                                )
+                            } else {
+                                format!("{v} does not fit in {dst}, so `as` changes its value")
+                            },
                             Some(crate::diagnostic::SourceSpan::from_ast_span(&expr.span)),
                         );
                     }
@@ -341,8 +371,7 @@ impl<'a> TypeChecker<'a> {
         }
 
         self.errors.push(format!(
-            "Unsupported cast: cannot cast from {:?} to {:?}",
-            source_ty, target_ty
+            "Unsupported cast: cannot cast from `{source_ty}` to `{target_ty}`"
         ));
         Type::Unknown
     }
@@ -392,6 +421,18 @@ impl<'a> TypeChecker<'a> {
             span,
         });
         Some((**inner).clone())
+    }
+
+    /// The value that the reference `e` points at: `x` for `&x`, and `*e` for another reference.
+    fn through_reference(e: &Expr, inner: &Type) -> Expr {
+        if let Expr::Borrow(b) = e {
+            return (*b.expr).clone();
+        }
+        Expr::Dereference(DereferenceExpr {
+            expr: Box::new(e.clone()),
+            ty: Some(inner.clone()),
+            span: e.span(),
+        })
     }
 
     /// `a + b` on a struct or an enum whose type has the operator's trait method: the call
@@ -950,25 +991,36 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The length of the text that `e` names: a string literal, or a `let` without `mut` whose
+    /// value is one.
+    fn text_len(&self, e: &Expr) -> Option<usize> {
+        match e {
+            Expr::StringLiteral(l) => Some(l.value.as_ref().len()),
+            Expr::Identifier(id) => {
+                let (depth, len) = self.string_literal_lets.get(id.name.as_ref())?;
+                (*depth == self.scope_depth_of(&id.name)).then_some(*len)
+            }
+            _ => None,
+        }
+    }
+
     /// `s == "hello"` as `c_str_equals(s, "hello", 6)`, and `!=` as its `!`. The bound is the
-    /// literal's length and its NUL. When both sides are literals, the call is in a `comptime`
-    /// block, so the comparison becomes `true` or `false` while compiling.
-    fn text_compare(expr: &Expr) -> Option<Expr> {
+    /// length of the text and its NUL. A name for a string literal counts as the literal. When
+    /// both sides are literals, the call is in a `comptime` block, so the comparison becomes
+    /// `true` or `false` while compiling.
+    fn text_compare(&self, expr: &Expr) -> Option<Expr> {
         let Expr::RelationalOp(RelationalOpExpr {
             lhs, op, rhs, span, ..
         }) = expr
         else {
             return None;
         };
-        let literal = match (&**lhs, &**rhs) {
-            (Expr::StringLiteral(l), _) | (_, Expr::StringLiteral(l)) => l,
-            _ => return None,
-        };
+        let len = self.text_len(lhs).or_else(|| self.text_len(rhs))?;
         if !matches!(op, RelationalOp::Eq | RelationalOp::NotEq) {
             return None;
         }
         let bound = Expr::Number(crate::syntax::NumberExpr::new(
-            (literal.value.as_ref().len() + 1).to_string(),
+            (len + 1).to_string(),
             Some(ElementType::I64),
             *span,
         ));
@@ -1013,7 +1065,7 @@ impl<'a> TypeChecker<'a> {
         }
         // `==` or `!=` with a string literal compares the text: it is a call of `core::c_str`'s
         // `c_str_equals`, which the parser imports for such a program.
-        if let Some(call) = Self::text_compare(expr) {
+        if let Some(call) = self.text_compare(expr) {
             *expr = call;
             return self.check_expr_type_flag(expr, false);
         }
@@ -1032,6 +1084,37 @@ impl<'a> TypeChecker<'a> {
                 RelationalOp::Ge => "ge",
             };
             let span = *span;
+            // `&a == &b` compares the values, as Rust's impls for references do. Two references
+            // to numbers compare the numbers, and two references to a struct pass themselves to
+            // its `eq`.
+            if let (Type::Borrow { inner: li, .. }, Type::Borrow { inner: ri, .. }) =
+                (self.operand_type(lhs), self.operand_type(rhs))
+            {
+                if Self::is_user_type(&li)
+                    && self
+                        .resolve_method_in_impls(
+                            &li,
+                            &method.into(),
+                            &mut std::collections::HashMap::new(),
+                        )
+                        .is_some()
+                {
+                    let mut call = Expr::MethodCall(crate::syntax::MethodCallExpr {
+                        base: Box::new(Self::through_reference(lhs, &li)),
+                        method_name: method.into(),
+                        type_args: None,
+                        args: vec![(**rhs).clone()],
+                        span,
+                    });
+                    let ty = self.check_expr_type_flag(&mut call, false);
+                    *expr = call;
+                    return ty;
+                }
+                if matches!(*li, Type::Scalar(_)) && matches!(*ri, Type::Scalar(_)) {
+                    **lhs = Self::through_reference(lhs, &li);
+                    **rhs = Self::through_reference(rhs, &ri);
+                }
+            }
             let rhs_ref = Expr::Borrow(crate::syntax::expr::BorrowExpr {
                 expr: rhs.clone(),
                 is_mut: false,
@@ -1106,6 +1189,30 @@ impl<'a> TypeChecker<'a> {
                 {
                     return Type::Scalar(ElementType::Bool);
                 }
+                // `&a == &b` compares the values, as in Rust, but a reference does not compare
+                // with a value: `r < 6.0` with `r : &f32` needs `*r`.
+                // The number of `&` around a type, and the type inside them.
+                let borrows = |mut ty: &Type| {
+                    let mut depth = 0;
+                    while let Type::Borrow { inner, .. } = ty {
+                        depth += 1;
+                        ty = inner;
+                    }
+                    (depth, ty.clone())
+                };
+                let ((ld, li), (rd, ri)) = (borrows(&lhs_ty), borrows(&rhs_ty));
+                // An `Unknown` side already has its error, a name with no `let` say.
+                if ld != rd && li != Type::Unknown && ri != Type::Unknown {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3005,
+                        format!(
+                            "`{symbol}` cannot compare {lhs_ty} with {rhs_ty}. Write `*` before \
+                             the reference to compare the value it points to"
+                        ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                    );
+                    return Type::Scalar(ElementType::Bool);
+                }
                 if self.is_struct_type(&lhs_ty) {
                     let at = if *span == crate::syntax::Span::default() {
                         lhs.span()
@@ -1129,7 +1236,7 @@ impl<'a> TypeChecker<'a> {
                         (Some(a), Some(b)) if a == b
                     );
                 // An `Unknown` side already has its error, a use of a moved value say.
-                if !compatible && lhs_ty != Type::Unknown && rhs_ty != Type::Unknown {
+                if !compatible && li != Type::Unknown && ri != Type::Unknown {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3005,
                         format!(
@@ -1252,6 +1359,33 @@ impl<'a> TypeChecker<'a> {
                 Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
             );
             return Type::Unknown;
+        }
+        // Rust's rule: `-` takes a signed integer or a float. On another unsigned type it
+        // would wrap with no error, and on a `bool` it does nothing. A negative literal is
+        // left to the check that a literal fits its type (E3045).
+        if *op == UnaryOp::Neg && !matches!(inner, Expr::Number(_)) {
+            let elem = match &inner_ty {
+                Type::Simd(e, _) => Some(e.clone()),
+                _ => Self::scalar_elem(&inner_ty),
+            };
+            let why = match elem {
+                Some(ElementType::Bool) => {
+                    Some("`-` does not apply to a `bool`: use `!` to flip it".to_string())
+                }
+                Some(e) if e.is_unsigned_int() => Some(format!(
+                    "`-` does not apply to a `{e}`, which is never negative: cast it to a \
+                     signed type first, or call `wrapping_neg()` from `core::num`"
+                )),
+                _ => None,
+            };
+            if let Some(why) = why {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3030,
+                    why,
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                );
+                return Type::Unknown;
+            }
         }
         let symbol = match op {
             UnaryOp::Neg => "-",

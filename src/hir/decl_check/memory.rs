@@ -28,12 +28,22 @@ impl TypeChecker<'_> {
         // source file emitted `space = "L2_GPU5"` on 8 of 20 runs and `space = "GPU6_VMEM"` on the
         // other 12, with a 64 KiB tile placed in a 60 MiB L2 instead of 24 GiB of VRAM and no
         // diagnostic either way.
+        // Each error points at the declaration of the space that it names.
+        let outside = self.errors.here();
+        let place_of = |name: &str| {
+            self.env
+                .memories
+                .get(name)
+                .map(|m| m.place.clone())
+                .unwrap_or_default()
+        };
         {
             let mut by_id: std::collections::HashMap<i32, crate::symbol::Symbol> =
                 std::collections::HashMap::new();
             let mut sorted: Vec<&crate::symbol::Symbol> = self.env.memories.keys().collect();
             sorted.sort_by(|a, b| a.as_ref().cmp(b.as_ref()));
             for name in sorted {
+                self.errors.point_at(&place_of(name.as_ref()), &outside);
                 let space = crate::syntax::MemorySpace::from_name(name.as_ref());
                 let id = crate::arch::memory_space_dispatch_id(&space);
                 if let Some(prev) = by_id.insert(id, name.clone()) {
@@ -53,8 +63,17 @@ impl TypeChecker<'_> {
                 }
             }
         }
+        self.errors.point_back(outside.clone());
         let issues = MemoryHierarchy::build(self.env.memories.values().copied()).coherence_issues();
         for issue in issues {
+            let space = match &issue {
+                MemoryCoherenceIssue::UndeclaredParent { child, .. }
+                | MemoryCoherenceIssue::CapacityExceedsParent { child, .. }
+                | MemoryCoherenceIssue::ScopeWidensInChild { child, .. } => child,
+                MemoryCoherenceIssue::Cycle { space }
+                | MemoryCoherenceIssue::NonPositiveProperty { space, .. } => space,
+            };
+            self.errors.point_at(&place_of(&space.name()), &outside);
             match issue {
                 MemoryCoherenceIssue::UndeclaredParent { child, parent } => {
                     self.errors.error_with_code(
@@ -131,5 +150,6 @@ impl TypeChecker<'_> {
                 }
             }
         }
+        self.errors.point_back(outside);
     }
 }

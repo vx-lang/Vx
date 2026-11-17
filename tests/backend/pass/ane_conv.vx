@@ -114,17 +114,18 @@ fn main() -> i32 {
 // CHECK-LABEL: func.func @main() -> i32 {
 // CHECK: vx.spawn topology(100) {
 // CHECK: arith.mulf
-// CHECK: } {topology_name = "NPU[0]"}
+// CHECK: } {topology_name = "NPU[0]", vx_parallel_trip = 4 : i64}
 
 // convert-vx-to-standard outlines the region: the site becomes a vx.launch naming a vx.kernel
 // that carries the topology, and the operands travel as memref descriptors.
-// STD: vx.launch @[[K:[a-z0-9_]+]]({{.*}}) {topology = 100 : i32, vx.topology_name = "NPU[0]"}
-// STD: vx.kernel @[[K]](100) :
+// STD: vx.launch @[[K:[a-z0-9_]+]]({{.*}}) {topology = 100 : i32, vx.topology_name = "NPU[0]", vx_parallel_trip = 4 : i64}
+// STD: vx.kernel @[[K]](100) {vx_parallel_trip = 4 : i64} :
 // STD: vx.return
 
 // vx-to-llvm replaces the launch with the vendor-neutral plugin call and a descriptor string
-// carrying the kernel name, its topology id and the topology's name -- the ABI a worker reads.
+// carrying the kernel name, its topology id, the topology's name and the trip of its parallel
+// loop -- the ABI a worker reads.
 // LLVM: llvm.func {{(hidden )?}}@vx_plugin_dispatch_async(!llvm.ptr, i64, !llvm.ptr, !llvm.ptr, i64) -> i64
-// LLVM: llvm.mlir.global internal constant @[[K:[a-z0-9_]+]]_str("[[K]]\00abi=1\00topo=100\00toponame=NPU[0]\00")
+// LLVM: llvm.mlir.global internal constant @[[K:[a-z0-9_]+]]_str("[[K]]\00abi=1\00topo=100\00toponame=NPU[0]\00launch=4\00")
 // LLVM: llvm.call @vx_plugin_dispatch_async(
 // LLVM: llvm.func {{(hidden )?}}@[[K]](

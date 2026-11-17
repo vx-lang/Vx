@@ -1,0 +1,123 @@
+//===- bulk_hash.vx - Vx Standard Library -------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A hash table of `u32` keys and `u32` values that inserts and finds a whole batch of keys in one
+// call. Each call is one kernel launch on `Topology::Device`, with one lane for each key.
+//
+// The table is two tensors of the same power-of-2 size `N`: `slots` holds the keys and `values`
+// holds their values. Make `slots` with `Tensor<u32, [N]>::fill(BULK_HASH_EMPTY)`. Put the two
+// tensors, and the keys and values of each call, in one memory that the device can read, such as
+// `Memory::HBM`.
+//
+// The search for a key reads slot `bulk_hash_fmix32(key) % N` first, then the slots after it.
+// After the last slot comes slot 0. A key goes in the first of these slots that is empty or holds
+// the key (linear probing). The insert kernel claims a slot with a compare-and-swap, so two lanes
+// never claim the same slot.
+//
+// The table has no delete and no resize. A key cannot be `BULK_HASH_EMPTY`.
+import core::sync::atomic;
+
+/// The key of an empty slot, and the value that `bulk_hash_find_all` gives for a missing key.
+const BULK_HASH_EMPTY : u32 = 4294967295u32;
+
+/// The 32-bit finalizer of MurmurHash3. It gives each `u32` a different `u32`.
+fn bulk_hash_fmix32(key : u32) on Topology::Any -> u32
+ensures writes_only()
+{
+  let mut h = key;
+  h = h ^ (h >> 16u32);
+  h = h * 2246822507u32;
+  h = h ^ (h >> 13u32);
+  h = h * 3266489909u32;
+  h = h ^ (h >> 16u32);
+  return h;
+}
+
+/// The number of blocks of 256 lanes for `n` keys, and an assert that the table is a power of 2.
+fn bulk_hash_blocks<M : Memory>(slots : &Tensor<u32, [?], Memory::M>, values : &Tensor<u32, [?], Memory::M>, n : i32) -> i32 {
+  let size = slots.len();
+  assert(size > 0 && (size & (size - 1)) == 0, "bulk_hash: the number of slots must be a power of 2");
+  assert(values.len() == size, "bulk_hash: `values` must have as many elements as `slots`");
+  return (n - 1) / 256 + 1;
+}
+
+/// Puts each `keys[i]` in the table with the value `vals[i]`. A key that the table holds already
+/// gets the new value. When a key is two times in `keys`, the table keeps one of its values, and
+/// which one is not defined.
+///
+/// `held` is the number of keys that earlier calls put in the table, or a larger number. The call
+/// returns `held` plus `keys.len()`, which is the `held` of the next call. The call stops the
+/// program when the table then has no empty slot, because a search for a missing key ends only at
+/// an empty slot.
+fn bulk_hash_insert_all<M : Memory>(slots : &Tensor<u32, [?], Memory::M>, values : &Tensor<u32, [?], Memory::M>, keys : &Tensor<u32, [?], Memory::M>, vals : &Tensor<u32, [?], Memory::M>, held : i32) -> i32 {
+  let n = keys.len();
+  assert(vals.len() == n, "bulk_hash_insert_all: `vals` must have as many elements as `keys`");
+  assert(held >= 0 && n < slots.len() - held, "bulk_hash_insert_all: the keys do not fit. The table must keep one empty slot");
+  if n == 0 {
+    return held;
+  }
+  let nblocks = bulk_hash_blocks(slots, values, n);
+  let mask = (slots.len() - 1) as u32;
+  spawn on(Topology::Device) {
+    for b in 0..nblocks across blocks {
+      for l in 0..256 across lanes {
+        let i = b * 256 + l;
+        if i < n {
+          let k = keys[i];
+          assert(k != BULK_HASH_EMPTY, "bulk_hash_insert_all: a key cannot be 4294967295, the key of an empty slot");
+          let mut s = bulk_hash_fmix32(k) & mask;
+          loop {
+            let found = atomic_compare_and_swap_u32(slots, s as i32, BULK_HASH_EMPTY, k, AtomicOrdering::Relaxed);
+            if found == BULK_HASH_EMPTY || found == k {
+              atomic_store_u32(values, s as i32, vals[i], AtomicOrdering::Relaxed);
+              break;
+            }
+            s = (s + 1u32) & mask;
+          }
+        }
+      }
+    }
+  }
+  return held + n;
+}
+
+/// Writes the value of each `keys[i]` to `out[i]`, or `BULK_HASH_EMPTY` when the table does not
+/// hold the key. So a value of `BULK_HASH_EMPTY` looks like a missing key.
+fn bulk_hash_find_all<M : Memory>(slots : &Tensor<u32, [?], Memory::M>, values : &Tensor<u32, [?], Memory::M>, keys : &Tensor<u32, [?], Memory::M>, out : &mut Tensor<u32, [?], Memory::M>) -> void {
+  let n = keys.len();
+  assert(out.len() == n, "bulk_hash_find_all: `out` must have as many elements as `keys`");
+  if n == 0 {
+    return;
+  }
+  let nblocks = bulk_hash_blocks(slots, values, n);
+  let mask = (slots.len() - 1) as u32;
+  spawn on(Topology::Device) {
+    for b in 0..nblocks across blocks {
+      for l in 0..256 across lanes {
+        let i = b * 256 + l;
+        if i < n {
+          let k = keys[i];
+          let mut s = bulk_hash_fmix32(k) & mask;
+          let mut v = BULK_HASH_EMPTY;
+          loop {
+            let held = slots[s as i32];
+            if held == BULK_HASH_EMPTY {
+              break;
+            }
+            if held == k {
+              v = values[s as i32];
+              break;
+            }
+            s = (s + 1u32) & mask;
+          }
+          out[i] = v;
+        }
+      }
+    }
+  }
+  return;
+}

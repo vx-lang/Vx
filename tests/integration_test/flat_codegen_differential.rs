@@ -1567,6 +1567,73 @@ fn non_generic_struct_with_an_option_field_runs(#[case] jobs: Option<usize>) {
 #[rstest::rstest]
 #[case::normal(None)]
 #[case::parallel(Some(2))]
+fn result_holds_an_error_with_an_optional_code(#[case] jobs: Option<usize>) {
+    assert_generated_aggregate_runs(
+        "result_holds_an_error_with_an_optional_code.vx",
+        &["4294967301", "22", "33", "-7", "11", "44", "99"],
+        jobs,
+    );
+}
+
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn result_holds_structs_with_different_enum_fields(#[case] jobs: Option<usize>) {
+    assert_generated_aggregate_runs(
+        "result_holds_structs_with_different_enum_fields.vx",
+        &["-9000000000", "77", "3", "-7", "42", "99", "-5"],
+        jobs,
+    );
+}
+
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn struct_with_an_option_field_in_different_enums(#[case] jobs: Option<usize>) {
+    assert_generated_aggregate_runs(
+        "struct_with_an_option_field_in_different_enums.vx",
+        &[
+            "55",
+            "-7",
+            "4294967301",
+            "99",
+            "41",
+            "7",
+            "2",
+            "-9000000000",
+            "1",
+            "-3",
+        ],
+        jobs,
+    );
+}
+
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn result_holds_an_error_from_another_module(#[case] jobs: Option<usize>) {
+    assert_generated_aggregate_runs(
+        "result_holds_an_error_from_another_module.vx",
+        &["4294967301", "2", "-9000000000"],
+        jobs,
+    );
+}
+
+// Only the last line of the fixture is read: the `Result<Option<i32>, Error>` and `Pair` cases.
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn enum_inside_an_enum_payload_runs(#[case] jobs: Option<usize>) {
+    assert_generated_aggregate_runs(
+        "enum_inside_an_enum_payload.vx",
+        &["303", "-9", "-1011", "31", "-13", "-47", "99"],
+        jobs,
+    );
+}
+
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
 fn enum_payload_with_empty_fields_runs(
     #[case] jobs: Option<usize>,
     #[values(0, 2)] optimization: u8,
@@ -1728,9 +1795,12 @@ fn assert_generated_aggregate_runs_at_optimization(
     )
     .expect("read fixture");
     std::fs::write(&path, source).expect("write fixture");
+    // A fixture may import a helper module, such as `tests::modules::pass_a_result_through`.
+    let tests_package = format!("tests={}", concat!(env!("CARGO_MANIFEST_DIR"), "/tests"));
     let mut command = super::time_limit::vxc();
     command
         .arg(&path)
+        .args(["--package", &tests_package])
         .arg("--run")
         .arg(format!("-O{optimization}"))
         .env("VX_FLAT_DBG", "1");
@@ -1751,9 +1821,11 @@ fn assert_generated_aggregate_runs_at_optimization(
     };
     assert!(log.contains(marker), "flat path with jobs={jobs:?}: {log}");
     // Native compilation prints progress before the program's final output line.
+    // A program that ends with `println!` leaves an empty line after it.
     let values = stdout
         .lines()
-        .last()
+        .rev()
+        .find(|line| !line.trim().is_empty())
         .expect("program prints its payload values");
     let actual: Vec<_> = values.split_whitespace().collect();
     assert_eq!(
@@ -3172,10 +3244,9 @@ fn driver_link_interface_declines_cleanly_outside_flat_subset() {
         dir.join("reflib.vxlib"),
     );
     std::fs::write(&lib, "fn double(x : i32) -> i32 { return x * 2; }\n").unwrap();
-    // `main` matches on an `i64`, which the flat path declines, while also calling the imported
-    // `double`. The decline forces the AST path, which has no AST for the imported body, so the
-    // driver must emit a clean diagnostic rather than ICE. (A tensor whose extent is a local,
-    // the construct this test used before, now lowers on the flat path.)
+    // VX_FLAT_DECLINE makes the flat path decline `main`, which calls the imported `double`.
+    // The decline forces the AST path, which has no AST for the imported body, so the driver
+    // must emit a clean diagnostic rather than ICE.
     std::fs::write(
         &app,
         "fn main() -> i32 { let n = 0i64; let k = match n { 0i64 => { 1 } _ => { 2 } }; \
@@ -3203,6 +3274,7 @@ fn driver_link_interface_declines_cleanly_outside_flat_subset() {
             app.to_str().unwrap(),
             "--run",
         ])
+        .env("VX_FLAT_DECLINE", "main")
         .output()
         .expect("run");
     let out = format!(
@@ -3814,8 +3886,8 @@ fn flat_matches_ast_corpus_tensor_view_2d() {
     // yet; they are row-major, as the oracle's.)
     assert_parity(
         "extern \"C\" { fn vx_alloc_f32(n : i32) -> *mut f32; fn vx_free_f32(p : *mut f32, n : i32) -> void; }\n\
-         fn view(p : *mut f32, r : i32, c : i32) -> Tensor<f32, [?, ?]> { \
-           let v = unsafe { tensor_view_2d(p, r, c) }; return v; }\n\
+         fn view(p : *mut f32, r : i32, c : i32) -> &Tensor<f32, [?, ?]> { \
+           let v = unsafe { tensor_view_2d(p, r, c) }; return &v; }\n\
          fn main() -> i32 { let p : *mut f32 = unsafe { vx_alloc_f32(6) }; \
            unsafe { for i in 0..6 { p[i] = (i + 1) as f32; } } \
            let a = view(p, 2, 3); let x = a[1][2]; let w = a.extent(1); \
@@ -4769,4 +4841,73 @@ fn match_constructs_a_payload_free_enum_result(#[case] subject: i32, #[case] exp
     );
     assert_eq!(ast_exit_code(&src), expected);
     assert_parity(&src, expected);
+}
+
+// The index function prints 3, the right side prints 4, and the updated element prints 7.
+// A repeated index call adds an extra 3 between 4 and 7.
+const INDEXED_COMPOUND_ASSIGNMENT: &str = r#"
+    fn note(tag: i32, value: i32) -> i32 {
+        print(tag);
+        print!(" ");
+        return value;
+    }
+
+    fn main() -> i32 {
+        let mut t = Tensor<i32, [4]>::fill(0);
+        t[note(3, 1)] += note(4, 7);
+        print(t[1]);
+        return 0;
+    }
+"#;
+
+#[test]
+fn flat_indexed_compound_assignment_calls_index_once() {
+    let mlir = flat_llvm(INDEXED_COMPOUND_ASSIGNMENT)
+        .expect("the flat generator supports this indexed compound assignment");
+    let output = run_output(&mlir);
+    let values: Vec<_> = output.split_whitespace().collect();
+    assert_eq!(values, ["3", "4", "7"], "flat generator output: {output}");
+}
+
+#[test]
+fn ast_indexed_compound_assignment_calls_index_once() {
+    let output = run_output(&ast_llvm(INDEXED_COMPOUND_ASSIGNMENT));
+    let values: Vec<_> = output.split_whitespace().collect();
+    assert_eq!(values, ["3", "4", "7"], "AST generator output: {output}");
+}
+
+// The first call selects element 1. A second call would select element 2 instead.
+const COMPOUND_ASSIGNMENT_WITH_CHANGING_INDEX: &str = r#"
+    fn next_index(calls: &mut i32) -> i32 {
+        *calls += 1;
+        return *calls;
+    }
+
+    fn main() -> i32 {
+        let mut calls = 0;
+        let mut t = Tensor<i32, [4]>::fill(10);
+        t[next_index(&mut calls)] += 7;
+        print(calls);
+        print!(" ");
+        print(t[1]);
+        print!(" ");
+        print(t[2]);
+        return 0;
+    }
+"#;
+
+#[test]
+fn flat_compound_assignment_updates_the_element_it_read() {
+    let mlir = flat_llvm(COMPOUND_ASSIGNMENT_WITH_CHANGING_INDEX)
+        .expect("the flat generator supports an index that changes a counter");
+    let output = run_output(&mlir);
+    let values: Vec<_> = output.split_whitespace().collect();
+    assert_eq!(values, ["1", "17", "10"], "flat generator output: {output}");
+}
+
+#[test]
+fn ast_compound_assignment_updates_the_element_it_read() {
+    let output = run_output(&ast_llvm(COMPOUND_ASSIGNMENT_WITH_CHANGING_INDEX));
+    let values: Vec<_> = output.split_whitespace().collect();
+    assert_eq!(values, ["1", "17", "10"], "AST generator output: {output}");
 }

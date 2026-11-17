@@ -185,7 +185,12 @@ Markers a fixture can carry:
 | `// REQUIRES: ane` | Skipped without Apple Neural Engine models. |
 | `// REQUIRES: z3` | Skipped without the z3 prover. |
 | `// REQUIRES: flat-codegen` | Only meaningful on the flat path. |
+| `# flat-codegen` at the end of a `// RUN:` line | The line checks text that only the flat code generator writes, such as its MLIR. The parity mode runs it unchanged. |
 | `// XFAIL: *` | Known to fail because the compiler is wrong. The command still runs, and the day it passes the test reports that the marker should go. |
+
+`VX_LEGACY_PARITY=1 cargo test --test integration_test compile_test` is the parity mode. After
+the RUN lines of a file pass, it runs them again in order, with `--legacy-codegen` added to each
+`vxc` command. A failure in this second pass is a file that fails only on the AST code generator.
 
 One trap: `FileCheck` reads `CHECK:` **anywhere** on a line, including inside prose. Do not write
 the word followed by a colon in a comment unless you mean it.

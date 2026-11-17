@@ -269,6 +269,47 @@ macro_rules stamp_cmp {
         }
         return Ordering::Equal();
       }
+
+      // These three compare the values directly. The defaults go through `cmp` and references,
+      // and an `across` loop cannot call a function that takes a reference.
+
+      /// The greater of the two: `other` when they are equal.
+      fn max(self : $t, other : $t) -> $t
+      ensures writes_only()
+      {
+        if self > other {
+          return self;
+        }
+        return other;
+      }
+
+      /// The lesser of the two: `self` when they are equal.
+      fn min(self : $t, other : $t) -> $t
+      ensures writes_only()
+      {
+        if self <= other {
+          return self;
+        }
+        return other;
+      }
+
+      /// This value brought inside the range, so `lo` below it and `hi` above it.
+      ///
+      /// # Panics
+      ///
+      /// When `lo` is greater than `hi`.
+      fn clamp(self : $t, lo : $t, hi : $t) -> $t
+      ensures writes_only()
+      {
+        assert(lo <= hi, "clamp needs lo <= hi");
+        if self < lo {
+          return lo;
+        }
+        if self > hi {
+          return hi;
+        }
+        return self;
+      }
     }
   };
 }

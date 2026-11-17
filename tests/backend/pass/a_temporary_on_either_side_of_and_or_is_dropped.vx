@@ -1,0 +1,122 @@
+//===- a_temporary_on_either_side_of_and_or_is_dropped.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A value that one side of `&&` or `||` makes and nothing names, `n(1)` in
+// `if n(1).id == 1 && n(2).id == 2`, is dropped when that side ends, as in Rust. Both code
+// generators leaked it. Each `drop` prints `d` and its number. A right side that does not run
+// makes no value, so `an_and_that_stops` prints no `d4`, and `an_or_that_stops` no `d8`.
+//
+// EXPECT: d1 d2 then x | d3 x | d5 d6 then x | d7 then x | d9 d10 d11 then x | d12 d13 d14 then x | d15 d16 oktrue | d17 d18 rfalse | d19 w d20 w x | d22 then x | end
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print!("d{} ", self.id);
+  }
+}
+
+fn n(id : i32) -> Noisy {
+  return Noisy {
+    id: id
+  };
+}
+
+fn an_and() -> void {
+  if n(1).id == 1 && n(2).id == 2 {
+    print!("then ");
+  }
+  print!("x ");
+}
+
+fn an_and_that_stops() -> void {
+  if n(3).id == 0 && n(4).id == 4 {
+    print!("then ");
+  }
+  print!("x ");
+}
+
+fn an_or() -> void {
+  if n(5).id == 0 || n(6).id == 6 {
+    print!("then ");
+  }
+  print!("x ");
+}
+
+fn an_or_that_stops() -> void {
+  if n(7).id == 7 || n(8).id == 8 {
+    print!("then ");
+  }
+  print!("x ");
+}
+
+fn a_chain() -> void {
+  if n(9).id == 9 && n(10).id == 10 && n(11).id == 11 {
+    print!("then ");
+  }
+  print!("x ");
+}
+
+fn an_or_inside_an_and() -> void {
+  if (n(12).id == 0 || n(13).id == 13) && n(14).id == 14 {
+    print!("then ");
+  }
+  print!("x ");
+}
+
+fn a_let() -> void {
+  let ok = n(15).id == 0 || n(16).id == 16;
+  print!("ok{} ", ok);
+}
+
+fn a_return() -> bool {
+  return n(17).id == 17 && n(18).id == 0;
+}
+
+fn a_while() -> void {
+  let mut i = 0;
+  while i < 2 && n(19 + i).id > 0 {
+    print!("w ");
+    i = i + 1;
+  }
+  print!("x ");
+}
+
+fn only_the_left_side() -> void {
+  let k = 1;
+  if n(22).id == 22 && k == 1 {
+    print!("then ");
+  }
+  print!("x ");
+}
+
+fn main() -> i32 {
+  an_and();
+  print!("| ");
+  an_and_that_stops();
+  print!("| ");
+  an_or();
+  print!("| ");
+  an_or_that_stops();
+  print!("| ");
+  a_chain();
+  print!("| ");
+  an_or_inside_an_and();
+  print!("| ");
+  a_let();
+  print!("| ");
+  let r = a_return();
+  print!("r{} ", r);
+  print!("| ");
+  a_while();
+  print!("| ");
+  only_the_left_side();
+  print!("| end\n");
+  return 0;
+}

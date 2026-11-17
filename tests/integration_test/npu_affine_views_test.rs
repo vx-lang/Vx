@@ -32,7 +32,6 @@ fn an_affine_kernel_on_a_view_gives_the_right_elements() {
         .current_dir(&root)
         // build.rs allows the deprecated CBLAS calls in npu_dispatch.mm too.
         .args(["-Wno-deprecated-declarations", "-fobjc-arc"])
-        .arg("-DVX_ENABLE_CPU_FALLBACK")
         .args([
             "runtime/npu_dispatch.mm",
             "runtime/metal_dispatch.mm",

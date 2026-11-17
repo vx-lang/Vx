@@ -1,0 +1,61 @@
+//===- saved_result_keeps_its_bounds_after_a_buffer_write.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A number that a function returns keeps its `ensures` bounds after a later write to a
+// buffer, and the result of a call nested in a call keeps its bounds too.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Error
+
+fn bounded_from_buffer(_data : *const i32, k : i32) -> i32
+requires k > 0
+ensures return >= 0 && return < k {
+  return k - 1;
+}
+
+fn write_buffer(p : *mut i32) -> void
+requires valid(p, 1) {
+  unsafe { p[0] = 0; }
+}
+
+fn consume_index(k : i32, index : i32) -> i32
+requires k > 0 && index >= 0 && index < k {
+  return index;
+}
+
+fn bound_survives_a_buffer_write(p : *mut i32, k : i32) -> i32
+requires valid(p, 1)
+requires k > 0 {
+  let index = bounded_from_buffer(p as *const i32, k);
+  write_buffer(p);
+  return consume_index(k, index);
+}
+
+fn plus_one(k : i32) -> i32
+requires k < 1000
+ensures return == k + 1 {
+  return k + 1;
+}
+
+fn below(n : i32) -> i32
+requires n > 0
+ensures return >= 0 && return < n {
+  return n - 1;
+}
+
+fn a_nested_call_keeps_its_bound(k : i32) -> i32
+requires k > 0 && k < 1000 {
+  let i = below(plus_one(k));
+  return consume_index(k + 1, i);
+}
+
+fn main() -> i32 {
+  let mut cell = 0;
+  let p : *mut i32 = &mut cell;
+  return bound_survives_a_buffer_write(p, 4) + a_nested_call_keeps_its_bound(4);
+}
+
+// CHECK: func.func @main

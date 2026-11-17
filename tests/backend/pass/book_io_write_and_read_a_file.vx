@@ -1,0 +1,68 @@
+//===- book_io_write_and_read_a_file.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on files, input and time (www/book/src/files-input-time.md):
+// it writes a file, reads it back byte by byte, and moves the position with `seek`.
+// The RUN lines give the path in NOTES. The test runner gives no such variable, so NO_EXEC.
+//
+// NO_EXEC
+// RUN: env NOTES=%t vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env NOTES=%t vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: rm -f %t
+// CHECK: {{^}}wrote 14 bytes{{$}}
+// CHECK: {{^}}read 3 lines{{$}}
+// CHECK: {{^}}the file ends at byte 14{{$}}
+// CHECK: {{^}}byte 4 is 116, the letter t{{$}}
+
+// ANCHOR: program
+import std::fs;
+import std::string;
+import std::vec;
+
+extern {
+  fn getenv(name : *const i8) -> *const i8;
+}
+
+// Writes `text` to a new file at `path`. The file closes when `out` goes out of scope.
+fn write_text(path : *const i8, text : *const i8) -> void {
+  let mut bytes = Vec<u8>::new();
+  let length = unsafe { string_length(text) };
+  for i in 0..length {
+    bytes.push(unsafe { text[i] } as u8);
+  }
+  let mut out = unsafe { File::open(path, OpenMode::Write()) };
+  let written = unsafe {
+    out.write(bytes.as_mut_ptr() as *const u8, length as u64)
+  };
+  println!("wrote {} bytes", written);
+}
+
+fn main() -> i32 {
+  let path = unsafe { getenv("NOTES") };
+  write_text(path, "one\ntwo\nthree\n");
+
+  let mut input = unsafe { File::open(path, OpenMode::Read()) };
+  let mut byte : u8 = 0;
+  let mut lines = 0;
+  loop {
+    let n = unsafe { input.read((&mut byte) as *mut u8, 1) };
+    if n == 0 {
+      break;
+    }
+    if byte == 10 {
+      lines = lines + 1;
+    }
+  }
+  println!("read {} lines", lines);
+  println!("the file ends at byte {}", input.seek(0, 2));
+
+  input.seek(4, 0);
+  unsafe { input.read((&mut byte) as *mut u8, 1) };
+  println!("byte 4 is {}, the letter t", byte);
+  return 0;
+}
+// ANCHOR_END: program

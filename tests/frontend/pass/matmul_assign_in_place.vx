@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // `c = a @ b` fills the buffer `c` already names. It used to allocate a second one and rebind
 // `c` to it, leaving the declared buffer written by nothing and freed by nothing (Vx#391).
 //

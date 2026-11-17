@@ -16,5 +16,5 @@ fn main() -> i32 {
 // A parallel compile (`-j`) reports the error directly, instead of falling back to a normal
 // compile.
 // JOBS-NOT: using the sequential driver
-// CHECK: in {{.*}}library_that_uses_its_type_error.vx: in `wrong_field`, imported from `tests::modules::library_that_uses_its_type_error` and used by this program: Struct 'Point' has no field 'y'
+// CHECK: at {{.*}}library_that_uses_its_type_error.vx:19:3: in `wrong_field`, imported from `tests::modules::library_that_uses_its_type_error` and used by this program: Struct 'Point' has no field 'y'
 // JOBS: Semantic check failed on '{{.*}}using_an_imported_function_with_a_type_error.vx': 1 error(s) emitted

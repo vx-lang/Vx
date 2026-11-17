@@ -1,0 +1,53 @@
+//===- a_gpu_kernel_reads_a_borrowed_host_tensor_with_no_copy.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// On the M4, the CPU and the GPU share one memory, and the machine file says so with a
+// `transfer Memory::CPU_DRAM -> Memory::HBM : shared` edge. So `transfer(t, Memory::HBM)` of a
+// `&` parameter that the kernel only reads makes no copy: the kernel gets the parameter itself.
+//
+// The kernel doubles each element. On a computer with no GPU, it runs its CPU copy.
+//
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/m4-uma.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx --emit-mlir -o - 2>/dev/null | vx-opt --pass-pipeline="builtin.module(convert-vx-to-standard)" 2>/dev/null | FileCheck %s --check-prefix=LOW
+// CHECK: doubled: 0 14 34
+//
+// `run` makes no buffer for the copy, and passes its parameter `t` (%arg0) to the kernel.
+// LOW-LABEL: func.func @run(
+// LOW-NOT: vx_plugin_alloc
+// LOW: call @double(%arg1, %arg0)
+
+fn double(y : &mut Tensor<f32, [2, 8], Memory::HBM>, x : &Tensor<f32, [2, 8], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for i in 0..2 across blocks {
+      for k in 0..8 across lanes(32) {
+        y[i][k] = x[i][k] * 2.0;
+      }
+    }
+  }
+  return;
+}
+
+pub fn run(t : &Tensor<f32, [2, 8]>, y : &mut Tensor<f32, [2, 8], Memory::HBM>) -> void {
+  let g = transfer(t, Memory::HBM);
+  double(y, &g);
+  return;
+}
+
+fn main() -> i32 {
+  let mut host = Tensor<f32, [2, 8]>::new();
+  for i in 0..2 {
+    for k in 0..8 {
+      host[i][k] = (i * 10 + k) as f32;
+    }
+  }
+  let mut y = transfer(Tensor<f32, [2, 8]>::fill(0.0), Memory::HBM);
+  run(&host, &mut y);
+  let r = transfer(y, Memory::CPU_DRAM);
+  println!("doubled: {} {} {}", r[0][0], r[0][7], r[1][7]);
+  return 0;
+}

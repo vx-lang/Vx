@@ -198,8 +198,8 @@ spawn on(Topology::Gpu) {
 - Each loop of blocks is a grid axis, and the lane and subgroup loops give the lanes of a
   block. The host computes each bound before the region. The levels come from the topology's
   `levels:` in the fleet file, and the NVIDIA files give `blocks`, `subgroups` and `lanes`.
-- Only `nvptx64` launches the levels. On another arch, `-fauto-schedule-levels` runs each
-  `across` loop as a plain `for` that carries its level as metadata (`fleet/README.md`).
+- `nvptx64` and `applegpu` launch the levels. On another arch, `-fauto-schedule-levels` runs
+  each `across` loop as a plain `for` that carries its level as metadata (`fleet/README.md`).
 - E6032 checks the place and the size of each `across` loop. It also checks that no pass
   touches what another pass writes (L4), and that every lane reaches the end of each lane loop
   (L5, L8, L10).
@@ -225,7 +225,8 @@ spawn on(Topology::Gpu) {
   read. The function may only read elements of `t`, ask for its length, or pass it to code that
   says `reads_only` for it.
 - Each lane loop ends with a barrier. Lane 0 runs the code between lane loops that writes
-  memory.
+  memory or changes a variable from outside it. A lane loop may not read a value that only lane 0
+  has. In the body of a loop, that includes a value that later code sets for the next turn.
 - A condition or a bound around a lane loop may read an element of a `&` tensor parameter. Only
   an atomic operation can change one, and then every access must be atomic. So every lane reads
   the same value. A replayed CUDA graph gets a value such as the number of splits this way.

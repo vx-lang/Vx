@@ -1,0 +1,55 @@
+//===- book_closures_as_arguments.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on closures (www/book/src/closures.md): functions that take a
+// closure, a closure in a variable given with `as`, and `Option::map` from the standard library.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}twice 13{{$}}
+// CHECK: {{^}}apply 21{{$}}
+// CHECK: {{^}}calls 3 count 2{{$}}
+// CHECK: {{^}}map 15{{$}}
+
+// ANCHOR: program
+import core::option;
+
+// `f` is a closure that takes an i64 and returns an i64.
+fn twice(f : |i64| -> i64, x : i64) -> i64 {
+  return f(f(x));
+}
+
+// A generic function: `T` comes from the arguments.
+fn apply<T>(x : T, f : |T| -> T) -> T {
+  return f(x);
+}
+
+fn call_twice(f : || -> i64) -> i64 {
+  let a = f();
+  return a + f();
+}
+
+fn main() -> i32 {
+  let step : i64 = 4;
+  println!("twice {}", twice(|x : i64| x + step, 5));
+  println!("apply {}", apply(7i64, |v : i64| v * 3));
+
+  // A closure in a variable needs `as` and the closure type.
+  let mut count : i64 = 0;
+  let next = || -> i64 {
+    count += 1;
+    count
+  };
+  println!("calls {} count {}", call_twice(next as || -> i64), count);
+
+  // `Option::map` takes a `Closure1<T, U>`.
+  let ten : i64 = 10;
+  let m = Option<i64>::Some(5).map(|x : i64| x + ten);
+  println!("map {}", m.unwrap_or(0));
+  return 0;
+}
+// ANCHOR_END: program

@@ -15,7 +15,7 @@
 // Writing the shape in the type leaves nothing to match on, and the function is now the
 // elementwise multiply it always read as (Vx#429).
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: call @tensor_add() : () -> ()
 // CHECK: call @matmul_basic() : () -> ()

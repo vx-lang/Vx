@@ -1,0 +1,47 @@
+//===- spirv_view_with_a_run_time_offset_adds_the_offset.mlr ----*- MLIR -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A kernel can take a view that starts partway through a buffer, for example
+// row 1 of a tensor that the host sliced. The type of that view says its offset
+// is known only at run time (`offset: ?`). The SPIR-V argument flattening adds
+// that offset, the third flattened parameter, to each address the kernel reads.
+//
+// `@load` reads the view directly. `@row` reads a row of a 2-D view through
+// `memref.extract_strided_metadata`, which is how the code generator writes
+// `m[j][k]`. Both addresses start at the offset of the view.
+//
+// RUN: vx-opt %s --pass-pipeline="builtin.module(gpu.module(vx-flatten-spirv-kernel-args))" | FileCheck %s
+// CHECK-LABEL: gpu.func @load(%arg0: !llvm.ptr<1>, %arg1: !llvm.ptr<1>, %arg2: i64, %arg3: i64, %arg4: i64, %arg5: index
+// CHECK: %[[I:[a-z0-9]+]] = arith.index_cast %arg5 : index to i64
+// CHECK: %[[LINEAR:[a-z0-9]+]] = llvm.add %arg2, %[[I]] : i64
+// CHECK: llvm.getelementptr inbounds %arg1[%[[LINEAR]]]
+// CHECK-LABEL: gpu.func @row(%arg0: !llvm.ptr<1>, %arg1: !llvm.ptr<1>, %arg2: i64, %arg3: i64, %arg4: i64, %arg5: i64, %arg6: i64, %arg7: index, %arg8: index
+// CHECK: %[[OFFSET:[a-z0-9]+]] = arith.index_cast %arg2 : i64 to index
+// CHECK: %[[START:[a-z0-9]+]] = arith.addi %[[OFFSET]], %{{[a-z0-9]+}} : index
+// CHECK: %[[START64:[a-z0-9]+]] = arith.index_cast %[[START]] : index to i64
+// CHECK: %[[ROWLINEAR:[a-z0-9]+]] = llvm.add %[[START64]], %{{[a-z0-9]+}} : i64
+// CHECK: llvm.getelementptr inbounds %arg1[%[[ROWLINEAR]]]
+
+module {
+  gpu.module @kernels {
+    gpu.func @load(%src: memref<4xf32, strided<[1], offset: ?>>, %i: index) kernel {
+      %value = memref.load %src[%i] : memref<4xf32, strided<[1], offset: ?>>
+      memref.store %value, %src[%i] : memref<4xf32, strided<[1], offset: ?>>
+      gpu.return
+    }
+    gpu.func @row(%src: memref<2x3xf32, strided<[3, 1], offset: ?>>, %j: index, %k: index) kernel {
+      %c3 = arith.constant 3 : index
+      %base, %offset, %sizes:2, %strides:2 = memref.extract_strided_metadata %src : memref<2x3xf32, strided<[3, 1], offset: ?>> -> memref<f32>, index, index, index, index, index
+      %step = arith.muli %j, %c3 : index
+      %start = arith.addi %offset, %step : index
+      %view = memref.reinterpret_cast %base to offset: [%start], sizes: [3], strides: [1] : memref<f32> to memref<3xf32, strided<[1], offset: ?>>
+      %value = memref.load %view[%k] : memref<3xf32, strided<[1], offset: ?>>
+      memref.store %value, %view[%k] : memref<3xf32, strided<[1], offset: ?>>
+      gpu.return
+    }
+  }
+}

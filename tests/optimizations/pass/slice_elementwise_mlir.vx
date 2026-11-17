@@ -12,7 +12,7 @@
 //   cargo run --bin update_mlir_test_checks -- tests/optimizations/pass/slice_elementwise_mlir.vx
 //
 // The elementwise ops are vectorized by construction: no scalar per-element loop.
-// RUN: vxc %s --emit-mlir -O0 2>&1 | FileCheck %s --implicit-check-not=scf.for --implicit-check-not=affine.for
+// RUN: vxc %s --emit-mlir -O0 2>&1 | FileCheck %s --implicit-check-not=scf.for --implicit-check-not=affine.for # flat-codegen
 
 fn o_update(mut o : Tensor<f32, [2, 4]>, v : Tensor<f32, [2, 4]>, s : f32) -> i32 {
   o[0] = o[0] + s * v[0];

@@ -1,0 +1,90 @@
+// A C function can read GPU memory as soon as it gets a pointer to it. So on the Apple GPU, a
+// call to a C function with a pointer into GPU memory first waits for every kernel. The pointer
+// gives no size, so the call cannot wait for fewer kernels.
+//
+// - `fill` writes `w` and then `v` on the GPU. Between the two kernels, `memset` gets only host
+//   pointers, so it does not wait. Both kernels then run at one wait.
+// - `copy_to_host` gets a pointer into `w`, and gives it to `memcpy`. A Vx function cannot read
+//   GPU memory, so the call to `copy_to_host` does not wait. The call to `memcpy` waits for both
+//   kernels, and so it copies 65535.
+//
+// A CUDA program does not wait there, because a CUDA launch does not wait for the GPU
+// (docs/lang/abi.md §3.6).
+//
+// REQUIRES: macos
+// RUN: env VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/m4-uma.vx 2>%t.gpu | FileCheck %s --check-prefix=OUT
+// RUN: grep -e "Vx Metal" %t.gpu | grep -v -e "bytes of GPU memory" -e "bytes for a batch" | FileCheck %s --check-prefix=GPU
+// RUN: env VX_METAL=0 vxc %s --host default --machine fleet/m4-uma.vx | FileCheck %s --check-prefix=OUT
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx --action emit-llvm -o - 2>/dev/null | FileCheck %s --check-prefix=APPLE
+// RUN: vxc %s --host default --machine fleet/a100-80.vx --action emit-llvm -o - 2>/dev/null | FileCheck %s --check-prefix=CUDA
+//
+// OUT: {{^}}C read 65535 0{{$}}
+// OUT-NEXT: {{^}}v 131070{{$}}
+//
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
+// GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
+// GPU-NEXT: [Vx Metal] waited for 2 kernels,{{.*}}
+// GPU-NOT: {{.}}
+//
+// APPLE-LABEL: llvm.func @main(
+// APPLE: llvm.call @fill(
+// APPLE-NOT: llvm.call @vx_plugin_control(
+// APPLE: llvm.call @memset(
+// APPLE-NOT: llvm.call @vx_plugin_control(
+// APPLE: llvm.call @fill(
+// APPLE-NOT: llvm.call @vx_plugin_control(
+// APPLE: llvm.call @copy_to_host(
+//
+// The wait is opcode 5, VX_CTRL_WAIT, right before `memcpy`.
+// APPLE-LABEL: llvm.func hidden @copy_to_host(
+// APPLE: [[WAIT:%[0-9]+]] = llvm.mlir.constant(5 : i32) : i32
+// APPLE-NOT: llvm.call @memcpy(
+// APPLE: llvm.store {{%[0-9]+}}, [[SLOT:%[0-9]+]] : i32, !llvm.ptr
+// APPLE-NEXT: llvm.call @vx_plugin_control([[WAIT]], [[SLOT]])
+// APPLE-NEXT: llvm.call @memcpy(
+//
+// CUDA-LABEL: llvm.func hidden @copy_to_host(
+// CUDA-NOT: llvm.call @vx_plugin_control(
+// CUDA: llvm.call @memcpy(
+
+extern "C" {
+  fn memcpy(dst : *mut f32, src : *const f32 in Memory::HBM, bytes : i64) -> *mut f32;
+  fn memset(dst : *mut f32, value : i32, bytes : i64) -> *mut f32;
+}
+
+// dst = position * scale
+fn fill(dst : &mut Tensor<f32, [?], Memory::HBM>, n : i32, scale : f32) -> void {
+  spawn on(Topology::Device) {
+    for g in 0..(n + 255) / 256 across blocks {
+      for l in 0..256 across lanes(256) {
+        let i = g * 256 + l;
+        if i < n {
+          dst[i] = (i as f32) * scale;
+        }
+      }
+    }
+  }
+  return;
+}
+
+// Copies `bytes` from GPU memory to host memory, in C.
+fn copy_to_host(dst : *mut f32, src : *const f32 in Memory::HBM, bytes : i64) -> void {
+  unsafe { memcpy(dst, src, bytes); }
+  return;
+}
+
+fn main() -> i32 {
+  let n : i32 = 65536;
+  let mut w = transfer(Tensor<f32, [65536]>::fill(0.0), Memory::HBM);
+  let mut v = transfer(Tensor<f32, [65536]>::fill(0.0), Memory::HBM);
+  let mut host = Tensor<f32, [65536]>::fill(-7.0);
+  let mut other = Tensor<f32, [65536]>::fill(-7.0);
+  fill(&mut w, n, 1.0);
+  unsafe { memset(other.as_mut_ptr(), 0, 262144); }
+  fill(&mut v, n, 2.0);
+  copy_to_host(host.as_mut_ptr(), w.as_ptr(), 262144);
+  println!("C read {} {}", host[65535], other[65535]);
+  let back = transfer(v, Memory::CPU_DRAM);
+  println!("v {}", back[65535]);
+  return 0;
+}

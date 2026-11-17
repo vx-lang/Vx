@@ -1,0 +1,73 @@
+//===- match_arm_of_an_i128_above_the_largest_i64.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `match` on an `i128` or a `u128` can have an arm above the largest `i64`, and each arm is
+// selected by its own value. An `i128` arm of 2^63 used to match -2^63, and an arm above 2^64
+// stopped the compiler. The values come from arithmetic, so only the arms are literals.
+//
+// EXPECT: 1 0 2 0 3 1 2 0
+
+fn pick(x : i128) -> i32 {
+  let mut found = 0;
+  match x {
+    18446744073709551615 => {
+      found = 1;
+    }
+    9223372036854775808 => {
+      found = 2;
+    }
+    18446744073709551616 => {
+      found = 3;
+    }
+    _ => {
+      found = 0;
+    }
+  }
+  return found;
+}
+
+fn pick_unsigned(x : u128) -> i32 {
+  let mut found = 0;
+  match x {
+    18446744073709551616 => {
+      found = 1;
+    }
+    170141183460469231731687303715884105728 => {
+      found = 2;
+    }
+    _ => {
+      found = 0;
+    }
+  }
+  return found;
+}
+
+fn main() -> i32 {
+  let zero : i128 = 0;
+  let two_32 : i128 = 4294967296;
+  let two_63 : i128 = two_32 * 2147483648;
+  let two_64 : i128 = two_32 * two_32;
+  print(pick(two_64 - 1));
+  print(" ");
+  print(pick(zero - 1));
+  print(" ");
+  print(pick(two_63));
+  print(" ");
+  print(pick(zero - two_63));
+  print(" ");
+  print(pick(two_64));
+  print(" ");
+
+  let unsigned_two_32 : u128 = 4294967296;
+  let unsigned_two_64 : u128 = unsigned_two_32 * unsigned_two_32;
+  print(pick_unsigned(unsigned_two_64));
+  print(" ");
+  print(pick_unsigned(unsigned_two_64 * unsigned_two_32 * 2147483648));
+  print(" ");
+  print(pick_unsigned(unsigned_two_64 - 1));
+  return 0;
+}

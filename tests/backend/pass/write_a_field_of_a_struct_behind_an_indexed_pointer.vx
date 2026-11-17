@@ -1,0 +1,43 @@
+//===- write_a_field_of_a_struct_behind_an_indexed_pointer.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `p[i].n = v` writes one field of the struct at index `i` of a raw pointer, in place.
+// `p[i].n` reads it back. Both code generators run it. The first RUN line also checks that the
+// default code generator compiles the program itself and does not pass it to the other one.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=flat-codegen
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}1 5{{$}}
+// CHECK-NEXT: {{^}}2 11{{$}}
+
+extern "C" {
+  fn malloc(n : u64) -> *mut i8;
+}
+
+struct R {
+  m : u64,
+  n : u64,
+}
+
+impl Copy for R {}
+
+fn main() -> i32 {
+  let raw : *mut i8 = unsafe { malloc(32u64) };
+  let p : *mut R = raw;
+  for i in 0..2 {
+    let k = i as u64;
+    unsafe { p[k].m = k + 1u64; p[k].n = k + 10u64; }
+  }
+  unsafe { p[0u64].n = 5u64; }
+  for i in 0..2 {
+    let k = i as u64;
+    let m = unsafe { p[k].m };
+    let n = unsafe { p[k].n };
+    println!("{} {}", m, n);
+  }
+  return 0;
+}

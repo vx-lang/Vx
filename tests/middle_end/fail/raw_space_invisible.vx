@@ -1,7 +1,10 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s 2>&1 | FileCheck %s --check-prefix=PLACE
 // The topology declares the edge but cannot see one of its endpoints: the
 // lowering would run on a part that cannot address the space it fills.
 // CHECK: E6022
+// The console also names the place in the source.
+// PLACE: Error[E6022] at {{.*}}raw_space_invisible.vx:15:1:
 // CHECK: cannot see
 Topology Dev {
   memory: Memory::L2,

@@ -17,15 +17,22 @@ use std::path::Path;
 use std::process::Command;
 
 const FILL: &str = "
-pub fn NAME(out: &mut Tensor<f32, [?], Memory::HBM>, n: i32EXTRA) -> void {
+Memory CPU_DRAM {}
+
+pub fn NAME(out: &mut Tensor<f32, [?]>, n: i32EXTRA) -> void {
+  let mut d = transfer(Tensor<f32, [?]>::new([n as i64]), Memory::HBM);
   spawn on(Topology::Device) {
     for b in 0..(n + 255) / 256 across blocks {
       for t in 0..256 across lanes {
         if b * 256 + t < n {
-          out[b * 256 + t] = VALUE;
+          d[b * 256 + t] = VALUE;
         }
       }
     }
+  }
+  let h = transfer(d, Memory::CPU_DRAM);
+  for i in 0..n {
+    out[i] = h[i];
   }
   return;
 }

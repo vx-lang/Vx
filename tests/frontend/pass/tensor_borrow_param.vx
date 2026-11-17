@@ -13,7 +13,7 @@
 // The borrow checker's guarantee still rides on the parameter -- `&mut` is exclusive, `&` is
 // never written through -- which is the whole reason to keep the two spellings apart.
 //
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // CHECK-LABEL: func.func @total(%arg0: memref<2x2xf32> {llvm.readonly}) -> f32
 // CHECK: memref.load
 // CHECK: arith.addf

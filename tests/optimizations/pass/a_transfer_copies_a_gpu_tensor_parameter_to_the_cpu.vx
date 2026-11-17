@@ -1,0 +1,51 @@
+// `transfer(t, Memory::CPU_DRAM)` of a GPU tensor that a function takes by value fetches the copy
+// from the GPU through the runtime. The type of the parameter says that the tensor is on the GPU.
+// A plain copy of the memory would not wait for the GPU kernels that write the tensor.
+//
+// The RUN lines name the code generator themselves: plain is the flat path, and
+// `--legacy-codegen` is the AST path.
+// REQUIRES: flat-codegen
+// RUN: vxc %s 2>&1 | FileCheck %s --check-prefix=OUT
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --check-prefix=OUT
+// RUN: vxc %s --action emit-llvm 2>/dev/null | FileCheck %s --check-prefix=LLVM
+// RUN: vxc %s --action emit-llvm --legacy-codegen 2>/dev/null | FileCheck %s --check-prefix=LLVM
+//
+// OUT: sum=36;
+//
+// LLVM-LABEL: llvm.func hidden @sum_on_cpu(
+// LLVM: %[[COPY:[0-9]+]] = llvm.call @vx_plugin_alloc_and_transfer(
+// LLVM: llvm.call @vx_plugin_transfer_device_to_host({{.*}}, %[[COPY]],
+
+Memory CPU_DRAM {}
+Memory HBM {
+  capacity: 1 GiB, managed: explicit, scope: device
+}
+Topology Gpu {
+  memory: Memory::HBM,
+  visible: [Memory::HBM],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 64 GB/s,
+  transfer Memory::HBM -> Memory::CPU_DRAM : 64 GB/s
+}
+
+fn sum_on_cpu(t : Tensor<i32, [?, ?], Memory::HBM>, h : i32, w : i32) -> i32 {
+  let host = transfer(t, Memory::CPU_DRAM);
+  let mut s = 0;
+  for y in 0..h {
+    for x in 0..w {
+      s = s + host[y][x];
+    }
+  }
+  return s;
+}
+
+fn main() -> i32 {
+  let mut a = Tensor<i32, [2, 3]>::fill(0);
+  for y in 0..2 {
+    for x in 0..3 {
+      a[y][x] = y * 10 + x;
+    }
+  }
+  let g = transfer(a, Memory::HBM);
+  println!("sum={};", sum_on_cpu(g, 2, 3));
+  return 0;
+}

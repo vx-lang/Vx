@@ -32,7 +32,7 @@ jobs:
     name: Check markdown links
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Pinned to the commit behind v2.9.0 rather than the tag. A tag can be moved; this job
       # only needs a network client, but the pin keeps the checker itself fixed.

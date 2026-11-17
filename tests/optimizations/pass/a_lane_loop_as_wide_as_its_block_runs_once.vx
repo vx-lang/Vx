@@ -1,0 +1,41 @@
+//===- a_lane_loop_as_wide_as_its_block_runs_once.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each launch of this kernel has blocks of 256 threads, so the GPU code knows the block size. A
+// lane loop of 256 passes then runs once on each lane, and the PTX has no loop over the lanes. It
+// does not read the block size (`%ntid.x`) or test that a lane is below 256, and it takes each
+// address from the element index.
+// A block of 256 threads gets no `.maxntid`.
+//
+// RUN: vxc %s --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s < %t.ptx --implicit-check-not=ntid
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ast.ptx
+// RUN: FileCheck %s < %t.ast.ptx --implicit-check-not=ntid
+
+// CHECK-LABEL: .entry double_each(
+// CHECK: mov.u32 %r[[LANE:[0-9]+]], %tid.x;
+// CHECK: {{or.b32|add.s32}} %r[[I:[0-9]+]], %r[[LANE]], %r{{[0-9]+}};
+// CHECK-NOT: %r[[LANE]], 255;
+// CHECK: mul.wide.s32 %rd[[OFFSET:[0-9]+]], %r[[I]], 4;
+// CHECK-NEXT: add.s64 %rd[[AT:[0-9]+]], %rd{{[0-9]+}}, %rd[[OFFSET]];
+// CHECK-NEXT: ld.global.b32 %r{{[0-9]+}}, [%rd[[AT]]];
+// CHECK-NOT: bra
+// CHECK: st.global.b32 [%rd[[AT]]],
+pub fn double_each(x : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for l in 0..256 across lanes {
+        x[b * 256 + l] = x[b * 256 + l] * 2.0;
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

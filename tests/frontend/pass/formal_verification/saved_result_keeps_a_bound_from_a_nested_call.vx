@@ -1,0 +1,49 @@
+//===- saved_result_keeps_a_bound_from_a_nested_call.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `index` is below `read(&cell)`, and nothing changes `cell` after the call. So the
+// compiler proves that `index` is below a second `read(&cell)`.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Error
+
+struct Cell {
+  value : i32,
+}
+
+fn read(c : &Cell) -> i32
+ensures return == c.value {
+  return c.value;
+}
+
+fn below(n : i32, other : &mut i32) -> i32
+requires n > 0
+ensures return >= 0 && return < n {
+  *other = 0;
+  return n - 1;
+}
+
+fn consume_index(limit : i32, index : i32) -> i32
+requires limit > 0 && index >= 0 && index < limit {
+  return index;
+}
+
+fn bound_from_a_nested_call(cell : Cell) -> i32 {
+  if cell.value <= 0 {
+    return 0;
+  }
+  let mut other = 0;
+  let index = below(read(&cell), &mut other);
+  return consume_index(read(&cell), index);
+}
+
+fn main() -> i32 {
+  return bound_from_a_nested_call(Cell {
+    value: 4
+  });
+}
+
+// CHECK: func.func @main

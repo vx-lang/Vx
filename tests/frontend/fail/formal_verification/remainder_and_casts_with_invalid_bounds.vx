@@ -1,0 +1,53 @@
+// RUN: not vxc %s --action emit-mlir 2>&1 | FileCheck %s
+
+fn negative_remainder(value : i32) -> i32
+requires value == -1
+ensures return >= 0 {
+  // CHECK: Error[E8001]
+  // CHECK-SAME: Function 'negative_remainder' cannot prove postcondition
+  return value % 10;
+}
+
+fn zero_divisor(value : i32) -> i32
+requires value >= 0
+ensures return >= 0 && return < 10 {
+  // CHECK: Error[E8001]
+  // CHECK-SAME: Function 'zero_divisor' cannot prove postcondition
+  return value % 0;
+}
+
+fn narrow_changes_value(value : i64) -> i32
+requires value == 2147483648i64
+ensures return == value {
+  // CHECK: Error[E8001]
+  // CHECK-SAME: Function 'narrow_changes_value' cannot prove postcondition
+  return value as i32;
+}
+
+fn negative_divisor_bound(value : i32) -> i32
+requires value == -8
+ensures return >= 0 {
+  // CHECK: Error[E8001]
+  // CHECK-SAME: Function 'negative_divisor_bound' cannot prove postcondition
+  return value % -7;
+}
+
+fn signed_remainder_overflow(value : i32, divisor : i32) -> i32
+requires value == -2147483648i64 && divisor == -1
+ensures return == 0 {
+  // CHECK: Error[E8001]
+  // CHECK-SAME: Function 'signed_remainder_overflow' cannot prove postcondition
+  return value % divisor;
+}
+
+fn unsigned_zero_divisor(value : u64, divisor : u64) -> u64
+requires value >= 0u64 && divisor == 0u64
+ensures return < 10u64 {
+  // CHECK: Error[E8001]
+  // CHECK-SAME: Function 'unsigned_zero_divisor' cannot prove postcondition
+  return value % divisor;
+}
+
+fn main() -> i32 {
+  return 0;
+}

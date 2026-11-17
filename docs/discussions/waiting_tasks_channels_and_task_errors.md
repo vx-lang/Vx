@@ -505,6 +505,8 @@ of the block (F2). A `join()` of a task that failed leaves the block the same wa
 - A `Task<T>` that leaves its `tasks` block (T3): the line where it leaves.
 - A host wait in a device body, such as `recv` (W5, M6): the call, and the `spawn on` that puts the
   body on the device.
+  Done for a channel end and a lock: E6038 names the variable, the field that holds one, and the
+  line of the `spawn on`. A call of a host function, such as `sleep`, gets E6001.
 
 **F9. Run-time reports.**
 
@@ -540,13 +542,14 @@ tasks makes that real. So:
   count. `hir/memory.rs` already reads these clauses.
 
 Done: the tasks of one block add up. A call in a task adds the largest callee peak of each other
-task, and the tiles of each other task, in `capacity_fold.rs`. A join does not end a task there
-yet, so the check can count two tasks that never overlap.
+task, and the tiles of each other task, in `capacity_fold.rs`. A join that always runs ends its
+task, so the code after it and a task that starts after it do not add the task's memory.
 
 Done: a `spawn` in a loop of its block. A `for` loop over a constant range multiplies the tasks
 by its count of passes. A join in the same pass keeps one task at a time. Another loop gives
 E6039, and an `invariant` that bounds the count does not help yet. Not done: the values in a
-channel, and the stack of each task.
+channel, which waits for #2970, and the stack of each task. The check does not count host memory
+yet.
 
 ## 6. The runtime work
 

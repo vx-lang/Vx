@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The promise of Vx</title>
+<meta name="author" content="Aditya Kumar">
+<meta name="description" content="The computer on your desk has many cores, memory in banks and a GPU, and the apps you download use little of it. Most of them were written before LLMs, for one core. The promise of Vx is that you write the small app you need, with an assistant if you like, and the compiler spreads it over the machine you have. What works today, on a Mac and on Linux, and what is still a promise.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="The promise of Vx">
+<meta property="og:description" content="Your desktop has many cores, memory in banks and a GPU. The apps you download use little of it. Vx lets you write the app you need and use all of it.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-11-09T18:00:00Z">
+<meta property="og:url" content="https://vxlang.org/blog/the-promise-of-vx.html">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>The promise of Vx</h1>
+<p class="post-meta">Aditya Kumar &middot; 9 November 2026</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> — The computer on your desk has many cores, memory
+in banks and a GPU. The apps you download use little of it, because most of them were written
+for one core, long before LLMs could help anyone write code. The promise of Vx is that you write
+the small app you need, and the compiler spreads it over the machine you have: its cores, its
+memories and its GPU. This post is about where Vx is going. A table near the end says what works
+today and what does not.</blockquote>
+
+<p class="lede">A laptop from this year has more parallel hardware than a supercomputer had
+thirty years ago. Most of the time, almost all of it does nothing.</p>
+
+<h2 id="the-computer-on-your-desk"><a href="#the-computer-on-your-desk">The computer on your desk</a></h2>
+
+<p>Look at what a normal desktop or laptop has now:</p>
+
+<ul>
+<li><strong>Many cores.</strong> Eight, twelve, sixteen or more, often of two kinds: fast cores
+and cores that use less power.</li>
+<li><strong>Memory in parts.</strong> A large workstation has NUMA nodes: each group of cores
+has memory that is near to it and memory that is far away. A small machine has the same idea in
+smaller form, as banks and channels in the memory chips. Where the data is changes how fast a
+program runs.</li>
+<li><strong>A GPU.</strong> Thousands of small lanes that do arithmetic in parallel. On a Mac it
+shares one memory with the CPU. On most PCs it has a memory of its own.</li>
+</ul>
+
+<p>Now look at what uses it. A photo tool that resizes a folder of pictures one at a time. A
+script that reads a large CSV on one core while fifteen other cores wait. A video tool that uses
+the GPU for one filter and the CPU for the rest. The hardware is there. The software does not
+know about it.</p>
+
+<h2 id="why-the-apps-you-download-do-not-use-it"><a href="#why-the-apps-you-download-do-not-use-it">Why the apps you download do not use it</a></h2>
+
+<p>It is not because their authors were careless. Most of these apps were written years ago, and
+the code that does the work is older still. Making old code use many cores is hard: shared data
+needs locks, and a missing lock gives a bug that shows up once a week. Making it use the GPU is
+harder: that is a second language, a second toolchain and a second copy of the data, often for
+one vendor only. And the work is never done, because the next machine has a different number of
+cores and a different GPU.</p>
+
+<p>So most apps choose one core, or one core and one fixed GPU path, and the rest of the machine
+stays idle.</p>
+
+<h2 id="the-promise"><a href="#the-promise">The promise</a></h2>
+
+<p>Two things changed. First, you can now write your own small app. An LLM assistant can write a
+first version of the program you need in an afternoon: the folder resizer, the log searcher, the
+simulation for a class. You do not have to wait for someone to ship it.</p>
+
+<p>Second, a language can know about the machine. In Vx, the cores, the memories and the
+devices are part of the program. You say what can run in parallel, and where. The compiler
+checks that it is safe and generates the code for each device. That is the promise of Vx:</p>
+
+<ul>
+<li><strong>You write the app once,</strong> in one language, for the CPU and the GPU
+together.</li>
+<li><strong>The compiler checks the parallel parts.</strong> Two lanes that can write the same
+element, a task that keeps a borrow too long, a tensor that does not fit in a memory: the
+compiler refuses them before the program runs. This matters even more when an assistant writes
+the first version, because the mistakes of parallel code do not show up in a quick test.</li>
+<li><strong>The program uses the machine it runs on.</strong> A machine file describes the
+cores, the memories and the GPU. The same source runs on another machine with a different
+file.</li>
+</ul>
+
+<h2 id="three-small-programs"><a href="#three-small-programs">Three small programs</a></h2>
+
+<h3 id="use-two-cores"><a href="#use-two-cores">Use two cores</a></h3>
+
+<p>This program adds the numbers 1 to 100 with two tasks. Each task runs on a thread of its own
+and borrows the vector from <code>main</code>. The <code>tasks</code> block ends only after both
+tasks end, so the compiler knows the borrow is safe. No locks are needed.</p>
+
+<pre><code>import std::vec;
+
+fn sum_range(v : &amp;Vec&lt;i64&gt;, from : i32, to : i32) -&gt; i64 {
+  let mut sum : i64 = 0;
+  for i in from..to {
+    sum = sum + *v.get_ref(i);
+  }
+  return sum;
+}
+
+fn main() -&gt; i32 {
+  let mut v = Vec&lt;i64&gt;::new();
+  for i in 1..101 {
+    v.push(i as i64);
+  }
+  let total = tasks {
+    let low = spawn {
+      sum_range(&amp;v, 0, 50)
+    };
+    let high = spawn {
+      sum_range(&amp;v, 50, 100)
+    };
+    low.join() + high.join()
+  };
+  println!("total {}", total);
+  return 0;
+}</code></pre>
+
+<p>Change <code>sum_range</code> to resize a picture, and the two tasks resize two halves of a
+folder.</p>
+
+<h3 id="use-the-gpu"><a href="#use-the-gpu">Use the GPU</a></h3>
+
+<p>This program blurs each row of a 1920 x 1080 image. <code>spawn on(Topology::Device)</code>
+puts the region on the GPU. Each row is a block, and each pixel of a row is a lane. The
+compiler proves that no two lanes write the same pixel.</p>
+
+<pre><code>pub fn blur_rows(dst : &amp;mut Tensor&lt;f32, [?, ?], Memory::HBM&gt;, src : &amp;Tensor&lt;f32, [?, ?], Memory::HBM&gt;, h : i32, w : i32) -&gt; void {
+  spawn on(Topology::Device) {
+    for y in 0..h across blocks {
+      for x in 0..w across lanes(256) {
+        let mut acc : f32 = 0.0;
+        for d in 0..9 {
+          let mut xx = x + d - 4;
+          if xx &lt; 0 {
+            xx = 0;
+          }
+          if xx &gt; w - 1 {
+            xx = w - 1;
+          }
+          acc = acc + src[y][xx];
+        }
+        dst[y][x] = acc / 9.0;
+      }
+    }
+  }
+  return;
+}
+
+fn main() -&gt; i32 {
+  let src = transfer(Tensor&lt;f32, [1080, 1920]&gt;::fill(1.0), Memory::HBM);
+  let mut dst = transfer(Tensor&lt;f32, [1080, 1920]&gt;::fill(0.0), Memory::HBM);
+  blur_rows(&amp;mut dst, &amp;src, 1080, 1920);
+  let out = transfer(dst, Memory::CPU_DRAM);
+  println!("{}", out[540][960]);
+  return 0;
+}</code></pre>
+
+<p>On a MacBook with an M4, the compiler writes the kernel in Metal Shading Language, and the
+blur runs on the Apple GPU. On a Linux machine with an NVIDIA GPU, the same source becomes PTX.
+On a machine with no GPU, the same kernel runs on the CPU and prints the same answer.</p>
+
+<pre><code>vxc blur.vx --host default --machine fleet/m4-uma.vx --run</code></pre>
+
+<h3 id="put-the-data-near-the-cores"><a href="#put-the-data-near-the-cores">Put the data near the cores</a></h3>
+
+<p>On a machine with two NUMA nodes, the machine file names each node and its memory. When a
+program places a tensor in the memory of node 1, Vx puts its pages there and runs the work that
+reads it on the cores of node 1. On a two-socket Xeon we measured 1.34 times the bandwidth of the best placement that
+needs no change to the program, and 2.5 times that of the default placement
+(<a href="/docs/numa.html">NUMA and the host's memory domains</a>). The program does not change
+for a machine with one node. Only the machine file changes.</p>
+
+<h2 id="what-works-today"><a href="#what-works-today">What works today</a></h2>
+
+<p>This post is about a promise, so here is the honest part.</p>
+
+<table>
+<thead>
+<tr><th>Machine</th><th>Today</th></tr>
+</thead>
+<tbody>
+<tr><td>Mac with Apple silicon</td><td>Works. Kernels run on the Apple GPU through Metal. Matmuls
+go to Metal Performance Shaders and Core ML.</td></tr>
+<tr><td>Linux with an NVIDIA GPU</td><td>Works. Kernels become PTX, and matmuls go to cuBLAS.
+Tiles of bf16 and f16 are starting to use the tensor cores.</td></tr>
+<tr><td>Linux on a multi-socket machine</td><td>Works. Tensors are placed on NUMA nodes. The
+CPU copy of a kernel still runs on one thread.</td></tr>
+<tr><td>Linux with an AMD GPU</td><td>Not yet. A machine file exists. The backend does not.</td></tr>
+<tr><td>Linux with an Intel GPU</td><td>Not yet. A contributor is planning a SPIR-V
+backend.</td></tr>
+<tr><td>Windows</td><td>Not yet. The compiler does not build or run on Windows.</td></tr>
+</tbody>
+</table>
+
+<p>The language does not change from one row to the next. A new row is a new backend in the
+compiler and a new machine file, not a new language. That is why the promise covers Windows and
+AMD too: the program you write today on a Mac is the program that will run there.</p>
+
+<h2 id="try-it"><a href="#try-it">Try it</a></h2>
+
+<p><a href="/docs/getting-started.html">Install Vx</a>, then write the program you wished an
+app did for you. If you use an assistant, give it the
+<a href="/docs/tour.html">language tour</a> first. Tell us what you made, and what the compiler
+refused, on <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
+</footer>
+
+<script src="/blog/copy-code.js" defer></script>
+</body>
+</html>

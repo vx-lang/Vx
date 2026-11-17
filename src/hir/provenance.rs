@@ -110,7 +110,7 @@ fn type_is_ref(ty: &Type) -> bool {
 fn holds_nothing(ty: &Type) -> bool {
     match ty {
         Type::Scalar(e) => !matches!(e, ElementType::Generic(_)),
-        Type::Tensor(..) | Type::Matrix | Type::Simd(..) | Type::Function(..) => true,
+        Type::Tensor(..) | Type::Simd(..) | Type::Function(..) => true,
         _ => false,
     }
 }

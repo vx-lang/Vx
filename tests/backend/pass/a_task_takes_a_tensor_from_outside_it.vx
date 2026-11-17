@@ -1,0 +1,84 @@
+//===- a_task_takes_a_tensor_from_outside_it.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A task can take a tensor from the function that starts it. The task then frees the tensor, or
+// passes it on by value. A task takes a tensor that it moves, and a tensor whose scope ends before
+// its `tasks` block does. The compiler did not compile these programs: "vx.drop of a buffer this
+// function does not own".
+//
+// RUN: vxc %s 2>&1 | FileCheck %s
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s
+//
+// The tasks of the loop run at the same time, so their lines come in any order.
+// CHECK-DAG: {{^}}pass sees 0{{$}}
+// CHECK-DAG: {{^}}pass sees 1{{$}}
+// CHECK-DAG: {{^}}pass sees 2{{$}}
+// CHECK: {{^}}loop done{{$}}
+// CHECK-NEXT: {{^}}in an if 3{{$}}
+// CHECK-NEXT: {{^}}show 4{{$}}
+// CHECK-NEXT: {{^}}show 5{{$}}
+// CHECK-NEXT: {{^}}end{{$}}
+
+fn make(x : f32) -> Tensor<f32, [4]> {
+  return Tensor<f32, [4]>::fill(x);
+}
+
+fn show(t : Tensor<f32, [4]>) -> void {
+  println!("show {}", t[0]);
+}
+
+// `b` ends with its pass, so each task takes its own `b`.
+fn a_new_tensor_on_each_pass() -> void {
+  tasks {
+    let mut i = 0;
+    while i < 3 {
+      let b = Tensor<f32, [4]>::fill(i as f32);
+      spawn {
+        println!("pass sees {}", b[0]);
+      };
+      i = i + 1;
+    }
+  };
+  println!("loop done");
+}
+
+fn made_in_an_if(go : bool) -> void {
+  let mut seen = 0.0;
+  tasks {
+    if go {
+      let b = make(3.0);
+      spawn {
+        seen = b[0];
+      };
+    }
+  };
+  println!("in an if {}", seen);
+}
+
+// `make` gives its result in a stack slot of the caller, and `fill` gives a heap buffer.
+fn passed_on_by_value() -> void {
+  let a = make(4.0);
+  tasks {
+    spawn {
+      show(a);
+    };
+  };
+  let b = Tensor<f32, [4]>::fill(5.0);
+  tasks {
+    spawn {
+      show(b);
+    };
+  };
+}
+
+fn main() -> i32 {
+  a_new_tensor_on_each_pass();
+  made_in_an_if(true);
+  passed_on_by_value();
+  println!("end");
+  return 0;
+}

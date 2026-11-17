@@ -14,8 +14,32 @@
 // shuffles, 1 in registers, and 20 in shared memory. The only shared memory is the tensor itself.
 // In the code of a subgroup, every step stays in its warp, so no step needs a barrier.
 //
+// The manifest next to the PTX describes each parameter of a kernel. A reference to a tensor is a
+// tensor of rank 1, on both code generators.
+//
 // RUN: vxc %s --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ptx
 // RUN: FileCheck %s < %t.ptx --implicit-check-not=local_depot
+// RUN: FileCheck %s --check-prefix=JSON < %t.json
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ast.ptx
+// RUN: FileCheck %s < %t.ast.ptx --implicit-check-not=local_depot
+// RUN: FileCheck %s --check-prefix=JSON < %t.ast.json
+
+// JSON: "name": "sort_2048",
+// JSON-NEXT: "params": [
+// JSON-NEXT: {
+// JSON-NEXT: "element": "i64",
+// JSON-NEXT: "kind": "tensor",
+// JSON-NEXT: "mutable": true,
+// JSON-NEXT: "name": "out",
+// JSON-NEXT: "rank": 1,
+// JSON: "element": "i64",
+// JSON-NEXT: "kind": "tensor",
+// JSON-NEXT: "mutable": false,
+// JSON-NEXT: "name": "x",
+// JSON-NEXT: "rank": 1,
+// JSON: "kind": "scalar",
+// JSON-NEXT: "mutable": false,
+// JSON-NEXT: "name": "n",
 
 // CHECK-LABEL: .entry sort_2048(
 // CHECK: .shared .align 16 .b8 {{.*}}[16384];

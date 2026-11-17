@@ -8,7 +8,7 @@
 // A number literal passed to grad takes the type of the parameter it is passed to, as in an
 // ordinary call: 0.25, 2.0 and 3.0 are f64 constants in the Enzyme calls, and 4 is an i32.
 //
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 
 fn half_square(x : f64) -> f64 {
   return 0.5 * x * x;

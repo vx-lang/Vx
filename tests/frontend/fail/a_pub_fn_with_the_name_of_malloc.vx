@@ -1,0 +1,19 @@
+//===- a_pub_fn_with_the_name_of_malloc.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The compiler calls C's `malloc`, so a Vx function named `malloc` gets another name. A C
+// program calls a `pub fn` by its name, so a `pub fn malloc` is an error.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: a_pub_fn_with_the_name_of_malloc.vx:[[@LINE+1]]: `pub fn malloc` cannot keep its name, because the C function `malloc` has that name. Choose another name
+pub fn malloc(_size : usize) -> *mut i8 {
+  return unsafe { 0 as *mut i8 };
+}
+
+fn main() -> i32 {
+  return 0;
+}

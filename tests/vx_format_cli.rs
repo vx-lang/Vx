@@ -307,6 +307,32 @@ fn resolves_each_project_and_explicit_config_paths() -> Result<()> {
 }
 
 #[test]
+fn input_read_errors_prevent_writes_to_every_input() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let first = project(directory.path(), "first", Some("[format]\nindent = 4\n"))?;
+    let second = project(directory.path(), "second", None)?;
+    let invalid_utf8 = b"fn second() {}\n\xff";
+    fs::write(second.join("main.vx"), invalid_utf8)?;
+
+    let needs_formatting = formatter(directory.path(), &["--check", "first/main.vx"])?;
+    check_equal(&needs_formatting.status.code(), &Some(1))
+        .with_context(|| format!("{needs_formatting:?}"))?;
+
+    // One worker makes deferred reads process the valid file before the invalid file.
+    let output = Command::new(env!("CARGO_BIN_EXE_vx-format"))
+        .current_dir(directory.path())
+        .env("RAYON_NUM_THREADS", "1")
+        .args(["first/main.vx", "second/main.vx"])
+        .output()?;
+    check_equal(&output.status.code(), &Some(2)).with_context(|| format!("{output:?}"))?;
+    check_equal(&fs::read_to_string(first.join("main.vx"))?, &SOURCE)?;
+    check_equal(&fs::read(second.join("main.vx"))?, &invalid_utf8.to_vec())?;
+    ensure!(output.stdout.is_empty(), "{output:?}");
+    ensure!(String::from_utf8_lossy(&output.stderr).contains("second/main.vx"));
+    Ok(())
+}
+
+#[test]
 fn configuration_errors_prevent_writes_to_every_input() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let first = project(directory.path(), "first", Some("[format]\nindent = 4\n"))?;

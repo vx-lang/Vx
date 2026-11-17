@@ -1,0 +1,22 @@
+//===- sizeof_a_tensor_is_its_descriptor.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A buffer of tensors, such as the buffer of a channel, holds the descriptor of each tensor:
+// two pointers, an offset, and a size and a stride for each dimension. So `sizeof` of a tensor
+// is 24 bytes plus 16 for each dimension: 40 for rank 1 and 56 for rank 2.
+//
+// EXPECT: 40 56 40
+//===----------------------------------------------------------------------===//
+
+fn size_of_t<T>() -> i64 {
+  return sizeof<T>();
+}
+
+fn main() -> i32 {
+  print!("{} {} {}", size_of_t<Tensor<f32, [4]>>(), sizeof<Tensor<i8, [2, 3]>>(), sizeof<Tensor<f64, [100]>>());
+  return 0;
+}

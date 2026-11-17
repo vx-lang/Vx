@@ -439,13 +439,27 @@ Vx provides a comprehensive set of primitive types:
 
 - **Signed Integers**: `i4`, `i8`, `i16`, `i32`, `i64`, `i128`
 - **Unsigned Integers**: `u4`, `u8`, `u16`, `u32`, `u64`, `u128`
+- **Size**: `usize`, which holds 0 up to `i64::MAX`
 - **Floating Point**: `f16`, `bf16`, `f32`, `f64`
 - **Boolean**: `bool`
 
-### Arrays, Tensors, and Matrices
+### Integer casts
+
+`x as T` converts the integer `x` to the integer type `T`. A value that fits in `T` stays the
+same. A value that does not fit wraps at the width of `T`: `300 as u8` is 44.
+
+`usize` is the exception: a cast to it never wraps. A cast of a value outside 0 to `i64::MAX`
+stops the program with "cast to usize is out of range". When the compiler knows the value while
+it compiles, it also gives warning W1014. A cast from `u8`, `u16` or `u32` always fits, so it has
+no run-time check.
+
+In a contract, the prover reads a cast to `usize` as its value only for a value in range. So
+`requires (x as usize) < 10` holds only when `x` is in 0..10.
+
+### Arrays and Tensors
 
 - **Arrays**: Fixed-size arrays are supported using the `[T; N]` syntax.
-- **Tensors and Matrices**: Built-in `Tensor<T, Shape>` and `Matrix` types are first-class constructs natively understood by the compiler for high-performance algebraic operations.
+- **Tensors**: The built-in `Tensor<T, Shape>` type is a first-class construct that the compiler understands, for high-performance algebraic operations. A matrix is a tensor of rank 2.
 - **Vectors**: `<N x T>` is N lanes of a scalar type `T` (`<4 x f32>`): one value, lowered to `vector<NxT>`. Arithmetic between two `<N x T>` values is lane-wise. A vector is loaded and stored through a pointer to the vector type (`*mut <4 x f32>`). There is no implicit conversion between `<N x T>` and `T`: an `f32` is not a `<1 x f32>`, and a `*mut f32` dereferences to one `f32`.
 
 ## 9. Linear (Affine) Types vs. Copyable Types
@@ -466,7 +480,6 @@ visits every position `t[i]` accepts. A rank-0 tensor has no `len()`.
 |------|---------|
 | `Tensor<T, Shape>` | `let a : Tensor<f32, []> = 1.0;` |
 | `Tensor<T, Shape, Memory>` | `let d = unsafe { Tensor<f32, [4, 4], Memory::NPU_HBM>::uninit() };` |
-| `Matrix` | `let m : Matrix = ...;` |
 | `Verified<T>` | `let v : Verified<Tensor<f32, [4, 4]>> = ...;` |
 | `Pinned<T, Topology>` | `let p : Pinned<Tensor<f32, [4, 4]>, Topology::NPU[0]> = ...;` |
 | `struct` instances | `let cfg = Config { value: 1.0 };` |

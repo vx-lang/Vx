@@ -1,0 +1,39 @@
+//===- wrong_uses_of_a_rank_1_view_of_raw_memory.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `tensor_view_1d(p, len)` takes a pointer to a scalar and a length, and it needs `unsafe`.
+// A function that returns such a view by value would give its caller a copy, so it is E4011.
+//
+// CHECK: :19:{{.*}}Viewing raw memory as a tensor requires an unsafe block
+// CHECK: E4011{{.*}}:24:{{.*}}returns a view of memory from a raw pointer as a tensor of its own
+// CHECK: :28:{{.*}}Function 'tensor_view_1d' expects (ptr, len)
+// CHECK: :33:{{.*}}Function 'tensor_view_1d' expects a pointer to a scalar
+
+fn not_unsafe(p : *mut f32) -> f32 {
+  let v = tensor_view_1d(p, 4);
+  return v[0];
+}
+
+fn view_of(p : *mut f32) -> Tensor<f32, [4]> {
+  return unsafe { tensor_view_1d(p, 4) };
+}
+
+fn two_lengths(p : *mut f32) -> f32 {
+  let _v = unsafe { tensor_view_1d(p, 2, 2) };
+  return 0.0;
+}
+
+fn not_a_pointer(x : f32) -> f32 {
+  let _v = unsafe { tensor_view_1d(x, 4) };
+  return 0.0;
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -1,0 +1,122 @@
+//===- a_time_limit_of_zero_does_not_wait_and_a_very_long_one_is_no_limit.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A time limit of zero does not wait, but it still takes a value or a place that is ready. A
+// limit as long as `Duration::max_value()` does not overflow: it is the same as no limit.
+//
+// - On a channel with room for 1, `send_for(1, zero)` sends. Then the channel is full, so
+//   `send_for(2, zero)` gives `TimedOut` and gives 2 back. Its place in the channel is passed:
+//   `recv_for(zero)` gives 1, and then `TimedOut` on the empty channel.
+// - A `send` and `recv` after these still work, so the passed place does not stop them.
+// - With the longest limit, `send_for` and `recv_for` work. A `recv_for` waits 0.1 seconds for a
+//   value from a task, and gets it. A `recv_for` gives `Closed` after the `Sender` is dropped.
+// - `within(zero)` makes a `recv` on an empty channel give up at once.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}send 1 with no wait: Ok{{$}}
+// CHECK-NEXT: {{^}}send 2 to a full channel with no wait: TimedOut, gave back 2{{$}}
+// CHECK-NEXT: {{^}}recv with no wait: 1{{$}}
+// CHECK-NEXT: {{^}}recv with no wait: TimedOut{{$}}
+// CHECK-NEXT: {{^}}send 3: Ok{{$}}
+// CHECK-NEXT: {{^}}recv: 3{{$}}
+// CHECK-NEXT: {{^}}send 4 with the longest limit: Ok{{$}}
+// CHECK-NEXT: {{^}}recv with the longest limit: 4{{$}}
+// CHECK-NEXT: {{^}}recv that waits, with the longest limit: 5{{$}}
+// CHECK-NEXT: {{^}}recv with the longest limit: Closed{{$}}
+// CHECK-NEXT: {{^}}recv in within(zero): Cancelled{{$}}
+// CHECK-NEXT: {{^}}no wait took 5 seconds: true{{$}}
+
+import core::time;
+import std::sync::channel;
+import std::sync::wait;
+import std::time;
+
+fn name(e : RecvError) -> *const i8 {
+  match e {
+    RecvError::Closed => {
+      return "Closed";
+    }
+    RecvError::Cancelled => {
+      return "Cancelled";
+    }
+    RecvError::TimedOut => {
+      return "TimedOut";
+    }
+  }
+}
+
+fn say_send_error(what : *const i8, e : SendError<i64>) -> void {
+  if e.timed_out {
+    println!("{}: TimedOut, gave back {}", what, e.value);
+  } else {
+    println!("{}: failed, gave back {}", what, e.value);
+  }
+}
+
+fn say_send(what : *const i8, r : Result<void, SendError<i64>>) -> void {
+  match r {
+    Result<void, SendError<i64>>::Ok() => {
+      println!("{}: Ok", what);
+    }
+    Result<void, SendError<i64>>::Err(e) => {
+      say_send_error(what, e);
+    }
+  }
+}
+
+fn say_recv(what : *const i8, r : Result<i64, RecvError>) -> void {
+  match r {
+    Result<i64, RecvError>::Ok(v) => {
+      println!("{}: {}", what, v);
+    }
+    Result<i64, RecvError>::Err(e) => {
+      println!("{}: {}", what, name(e));
+    }
+  }
+}
+
+fn send_5_later(tx : Sender<i64>) -> void {
+  sleep(Duration::from_millis(100));
+  match tx.send(5) {
+    Result<void, SendError<i64>>::Ok() => {}
+    Result<void, SendError<i64>>::Err(e) => {
+      say_send_error("the send of 5", e);
+    }
+  }
+}
+
+fn main() -> i32 {
+  let start = Instant::now();
+  let (tx, rx) = channel<i64>(1);
+  say_send("send 1 with no wait", tx.send_for(1, Duration::zero()));
+  say_send("send 2 to a full channel with no wait", tx.send_for(2, Duration::zero()));
+  say_recv("recv with no wait", rx.recv_for(Duration::zero()));
+  say_recv("recv with no wait", rx.recv_for(Duration::zero()));
+  say_send("send 3", tx.send(3));
+  say_recv("recv", rx.recv());
+
+  say_send("send 4 with the longest limit", tx.send_for(4, Duration::max_value()));
+  say_recv("recv with the longest limit", rx.recv_for(Duration::max_value()));
+  let later = tx.clone();
+  tasks {
+    spawn {
+      send_5_later(later);
+    };
+    say_recv("recv that waits, with the longest limit", rx.recv_for(Duration::max_value()));
+  };
+  drop(tx);
+  say_recv("recv with the longest limit", rx.recv_for(Duration::max_value()));
+
+  let (tx2, rx2) = channel<i64>(1);
+  within(Duration::zero(), || -> void {
+    say_recv("recv in within(zero)", rx2.recv());
+  });
+  drop(tx2);
+  println!("no wait took 5 seconds: {}", start.elapsed() < Duration::from_secs(5));
+  return 0;
+}

@@ -1,0 +1,171 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=Warning # flat-codegen
+
+fn signed_count(value : i64) -> usize
+requires value >= 0i64
+ensures return == value {
+  return value as usize;
+}
+
+fn unsigned_count(value : u64) -> usize
+requires value <= 9223372036854775807u64
+ensures return == value {
+  return value as usize;
+}
+
+fn wide_signed_count(value : i128) -> usize
+requires value >= 0i128 && value <= 9223372036854775807i128
+ensures return == value {
+  return value as usize;
+}
+
+fn wide_unsigned_count(value : u128) -> usize
+requires value <= 9223372036854775807u128
+ensures return == value {
+  return value as usize;
+}
+
+fn consume_count(value : usize) -> usize
+requires value < 100usize
+ensures return == value {
+  return value;
+}
+
+fn cast_argument(value : i128) -> usize
+requires value >= 0i128 && value < 100i128
+ensures return == value {
+  return consume_count(value as usize);
+}
+
+fn narrow_count(value : usize) -> i32
+requires value < 100usize
+ensures return == value {
+  return value as i32;
+}
+
+fn main() -> i32 {
+  let zero = signed_count(0i64);
+  let maximum = unsigned_count(9223372036854775807u64);
+  let wide_zero = wide_signed_count(0i128);
+  let wide_maximum = wide_unsigned_count(9223372036854775807u128);
+  let index = cast_argument(99i128);
+  if zero != 0usize || maximum != 9223372036854775807usize || wide_zero != 0usize || wide_maximum != maximum {
+    return 1;
+  }
+  return narrow_count(index) - 99;
+}
+
+// CHECK: module attributes {vx.drops} {
+// CHECK:   func.func private @vx_init_signals()
+// CHECK:   func.func @main() -> i32 {
+// CHECK:     call @vx_init_signals() : () -> ()
+// CHECK:     %alloca = memref.alloca() : memref<i1>
+// CHECK:     %alloca_0 = memref.alloca() : memref<i1>
+// CHECK:     %alloca_1 = memref.alloca() : memref<i1>
+// CHECK:     %c0_i64 = arith.constant 0 : i64
+// CHECK:     %0 = call @signed_count(%c0_i64) : (i64) -> i64
+// CHECK:     %c9223372036854775807_i64 = arith.constant 9223372036854775807 : i64
+// CHECK:     %1 = call @unsigned_count(%c9223372036854775807_i64) : (i64) -> i64
+// CHECK:     %c0_i128 = arith.constant 0 : i128
+// CHECK:     %2 = call @wide_signed_count(%c0_i128) : (i128) -> i64
+// CHECK:     %c9223372036854775807_i128 = arith.constant 9223372036854775807 : i128
+// CHECK:     %3 = call @wide_unsigned_count(%c9223372036854775807_i128) : (i128) -> i64
+// CHECK:     %c99_i128 = arith.constant 99 : i128
+// CHECK:     %4 = call @cast_argument(%c99_i128) : (i128) -> i64
+// CHECK:     %c0_i64_2 = arith.constant 0 : i64
+// CHECK:     %5 = arith.cmpi ne, %0, %c0_i64_2 : i64
+// CHECK:     cf.cond_br %5, ^bb2, ^bb1
+// CHECK:   ^bb1:  // pred: ^bb0
+// CHECK:     %c9223372036854775807_i64_3 = arith.constant 9223372036854775807 : i64
+// CHECK:     %6 = arith.cmpi ne, %1, %c9223372036854775807_i64_3 : i64
+// CHECK:     memref.store %6, %alloca_1[] : memref<i1>
+// CHECK:     cf.br ^bb3
+// CHECK:   ^bb2:  // pred: ^bb0
+// CHECK:     %true = arith.constant true
+// CHECK:     memref.store %true, %alloca_1[] : memref<i1>
+// CHECK:     cf.br ^bb3
+// CHECK:   ^bb3:  // 2 preds: ^bb1, ^bb2
+// CHECK:     %7 = memref.load %alloca_1[] : memref<i1>
+// CHECK:     cf.cond_br %7, ^bb5, ^bb4
+// CHECK:   ^bb4:  // pred: ^bb3
+// CHECK:     %c0_i64_4 = arith.constant 0 : i64
+// CHECK:     %8 = arith.cmpi ne, %2, %c0_i64_4 : i64
+// CHECK:     memref.store %8, %alloca_0[] : memref<i1>
+// CHECK:     cf.br ^bb6
+// CHECK:   ^bb5:  // pred: ^bb3
+// CHECK:     %true_5 = arith.constant true
+// CHECK:     memref.store %true_5, %alloca_0[] : memref<i1>
+// CHECK:     cf.br ^bb6
+// CHECK:   ^bb6:  // 2 preds: ^bb4, ^bb5
+// CHECK:     %9 = memref.load %alloca_0[] : memref<i1>
+// CHECK:     cf.cond_br %9, ^bb8, ^bb7
+// CHECK:   ^bb7:  // pred: ^bb6
+// CHECK:     %10 = arith.cmpi ne, %3, %1 : i64
+// CHECK:     memref.store %10, %alloca[] : memref<i1>
+// CHECK:     cf.br ^bb9
+// CHECK:   ^bb8:  // pred: ^bb6
+// CHECK:     %true_6 = arith.constant true
+// CHECK:     memref.store %true_6, %alloca[] : memref<i1>
+// CHECK:     cf.br ^bb9
+// CHECK:   ^bb9:  // 2 preds: ^bb7, ^bb8
+// CHECK:     %11 = memref.load %alloca[] : memref<i1>
+// CHECK:     cf.cond_br %11, ^bb10, ^bb11
+// CHECK:   ^bb10:  // pred: ^bb9
+// CHECK:     %c1_i32 = arith.constant 1 : i32
+// CHECK:     return %c1_i32 : i32
+// CHECK:   ^bb11:  // pred: ^bb9
+// CHECK:     %12 = call @narrow_count(%4) : (i64) -> i32
+// CHECK:     %c99_i32 = arith.constant 99 : i32
+// CHECK:     %13 = arith.subi %12, %c99_i32 : i32
+// CHECK:     return %13 : i32
+// CHECK:   }
+// CHECK:   func.func @wide_unsigned_count(%arg0: i128) -> i64 {
+// CHECK:     %c9223372036854775807_i128 = arith.constant 9223372036854775807 : i128
+// CHECK:     %0 = arith.cmpi ule, %arg0, %c9223372036854775807_i128 : i128
+// CHECK:     cf.assert %0, "cast to usize is out of range"
+// CHECK:     %1 = arith.trunci %arg0 : i128 to i64
+// CHECK:     return %1 : i64
+// CHECK:   }
+// CHECK:   func.func @wide_signed_count(%arg0: i128) -> i64 {
+// CHECK:     %c0_i128 = arith.constant 0 : i128
+// CHECK:     %0 = arith.cmpi sge, %arg0, %c0_i128 : i128
+// CHECK:     cf.assert %0, "cast to usize is out of range"
+// CHECK:     %c9223372036854775807_i128 = arith.constant 9223372036854775807 : i128
+// CHECK:     %1 = arith.cmpi sle, %arg0, %c9223372036854775807_i128 : i128
+// CHECK:     cf.assert %1, "cast to usize is out of range"
+// CHECK:     %2 = arith.trunci %arg0 : i128 to i64
+// CHECK:     return %2 : i64
+// CHECK:   }
+// CHECK:   func.func @unsigned_count(%arg0: i64) -> i64 {
+// CHECK:     %c9223372036854775807_i64 = arith.constant 9223372036854775807 : i64
+// CHECK:     %0 = arith.cmpi ule, %arg0, %c9223372036854775807_i64 : i64
+// CHECK:     cf.assert %0, "cast to usize is out of range"
+// CHECK:     return %arg0 : i64
+// CHECK:   }
+// CHECK:   func.func @signed_count(%arg0: i64) -> i64 {
+// CHECK:     %c0_i64 = arith.constant 0 : i64
+// CHECK:     %0 = arith.cmpi sge, %arg0, %c0_i64 : i64
+// CHECK:     cf.assert %0, "cast to usize is out of range"
+// CHECK:     %c9223372036854775807_i64 = arith.constant 9223372036854775807 : i64
+// CHECK:     %1 = arith.cmpi sle, %arg0, %c9223372036854775807_i64 : i64
+// CHECK:     cf.assert %1, "cast to usize is out of range"
+// CHECK:     return %arg0 : i64
+// CHECK:   }
+// CHECK:   func.func @narrow_count(%arg0: i64) -> i32 {
+// CHECK:     %0 = arith.trunci %arg0 : i64 to i32
+// CHECK:     return %0 : i32
+// CHECK:   }
+// CHECK:   func.func @cast_argument(%arg0: i128) -> i64 {
+// CHECK:     %c0_i128 = arith.constant 0 : i128
+// CHECK:     %0 = arith.cmpi sge, %arg0, %c0_i128 : i128
+// CHECK:     cf.assert %0, "cast to usize is out of range"
+// CHECK:     %c9223372036854775807_i128 = arith.constant 9223372036854775807 : i128
+// CHECK:     %1 = arith.cmpi sle, %arg0, %c9223372036854775807_i128 : i128
+// CHECK:     cf.assert %1, "cast to usize is out of range"
+// CHECK:     %2 = arith.trunci %arg0 : i128 to i64
+// CHECK:     %3 = call @consume_count(%2) : (i64) -> i64
+// CHECK:     return %3 : i64
+// CHECK:   }
+// CHECK:   func.func @consume_count(%arg0: i64) -> i64 {
+// CHECK:     return %arg0 : i64
+// CHECK:   }
+// CHECK: }

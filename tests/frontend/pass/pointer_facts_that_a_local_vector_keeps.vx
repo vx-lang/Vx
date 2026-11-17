@@ -1,0 +1,81 @@
+//===- pointer_facts_that_a_local_vector_keeps.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Vec<i64>::new()` gets no argument, so the vector owns only new memory, and `p` cannot point
+// into it. A `push`, a move into a call or the drop of such a vector frees only that memory. So
+// the facts about `p` stay, and each call to `first` meets its `requires`.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-NOT: E8006
+// CHECK: func.func @main
+
+import std::vec;
+import std::box;
+
+fn first(p : *const i64) -> i64
+requires valid(p, 1i64)
+requires initialized(p, 1i64)
+{
+  return unsafe { p[0] };
+}
+
+fn consume(_v : Vec<i64>) -> void {}
+
+fn after_a_push(p : *const i64) -> i64
+requires valid(p, 1i64)
+requires initialized(p, 1i64)
+{
+  let mut v = Vec<i64>::new();
+  v.push(1i64);
+  return first(p);
+}
+
+fn after_the_vector_drops(p : *const i64, c : bool) -> i64
+requires valid(p, 1i64)
+requires initialized(p, 1i64)
+{
+  if c {
+    let mut v = Vec<i64>::new();
+    v.push(1i64);
+  }
+  return first(p);
+}
+
+fn after_a_move_into_a_call(p : *const i64) -> i64
+requires valid(p, 1i64)
+requires initialized(p, 1i64)
+{
+  let mut v = Vec<i64>::new();
+  v.push(1i64);
+  consume(v);
+  return first(p);
+}
+
+// The box is new memory too.
+fn after_a_box_of_the_function_moves_in(p : *const i64) -> i64
+requires valid(p, 1i64)
+requires initialized(p, 1i64)
+{
+  let mut v = Vec<Box<i64>>::new();
+  let b = Box<i64>::new(1i64);
+  v.push(b);
+  return first(p);
+}
+
+fn returns_the_vector(p : *const i64) -> Vec<i64>
+requires valid(p, 1i64)
+requires initialized(p, 1i64)
+{
+  let mut v = Vec<i64>::new();
+  v.push(first(p));
+  v.push(first(p));
+  return v;
+}
+
+fn main() -> i32 {
+  return 0;
+}

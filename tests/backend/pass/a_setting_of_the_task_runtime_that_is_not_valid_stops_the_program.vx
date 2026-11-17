@@ -1,0 +1,80 @@
+//===- a_setting_of_the_task_runtime_that_is_not_valid_stops_the_program.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each setting of the task runtime that is not valid stops the program with a message, before
+// the first task starts. The last RUN line makes a channel with no room, through ROOM=0.
+//
+// NO_EXEC
+// RUN: env VX_TASK_RUNTIME=shared vxc %s 2>&1 | FileCheck %s --check-prefix=GOOD
+// RUN: env VX_TASK_RUNTIME=threads vxc %s 2>&1 | FileCheck %s --check-prefix=GOOD
+// RUN: env VX_TASK_RUNTIME=shard not vxc %s 2>&1 | FileCheck %s --check-prefix=RUNTIME --implicit-check-not="the task ran"
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=0 not vxc %s 2>&1 | FileCheck %s --check-prefix=ZERO --implicit-check-not="the task ran"
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=many not vxc %s 2>&1 | FileCheck %s --check-prefix=MANY --implicit-check-not="the task ran"
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=4 VX_TASK_MAX_WORKERS=2 not vxc %s 2>&1 | FileCheck %s --check-prefix=MAX --implicit-check-not="the task ran"
+// RUN: env VX_TASK_RUNTIME=threads VX_TASK_SEED=1 not vxc %s 2>&1 | FileCheck %s --check-prefix=SEED --implicit-check-not="the task ran"
+// RUN: env ROOM=0 not vxc %s 2>&1 | FileCheck %s --check-prefix=ROOM --implicit-check-not="the task ran"
+// GOOD: {{^}}the task ran: TimedOut{{$}}
+// RUNTIME: {{^}}vx: VX_TASK_RUNTIME must be shared or threads, not 'shard'{{$}}
+// ZERO: {{^}}vx: VX_TASK_WORKERS must be a number above 0, not '0'{{$}}
+// MANY: {{^}}vx: VX_TASK_WORKERS must be a number above 0, not 'many'{{$}}
+// MAX: {{^}}vx: VX_TASK_MAX_WORKERS (2) is less than VX_TASK_WORKERS (4){{$}}
+// SEED: {{^}}vx: VX_TASK_SEED needs VX_TASK_RUNTIME=shared, or no VX_TASK_RUNTIME{{$}}
+// ROOM: channel: the room must be at least 1
+
+import core::time;
+import std::sync::channel;
+
+extern "C" {
+  fn getenv(name : *const i8) -> *const i8;
+  fn atol(text : *const i8) -> i64;
+}
+
+// The room of the channel: ROOM, or 1 when ROOM is not set.
+fn room() -> i64 {
+  let text = unsafe { getenv("ROOM") };
+  if text == null<i8>() {
+    return 1;
+  }
+  return unsafe { atol(text) };
+}
+
+fn name(e : RecvError) -> *const i8 {
+  match e {
+    RecvError::Closed => {
+      return "Closed";
+    }
+    RecvError::Cancelled => {
+      return "Cancelled";
+    }
+    RecvError::TimedOut => {
+      return "TimedOut";
+    }
+  }
+}
+
+// A task that waits a little, so that the program uses the task runtime.
+fn wait_a_little(rx : Receiver<i64>) -> void {
+  match rx.recv_for(Duration::from_millis(10)) {
+    Result<i64, RecvError>::Ok(v) => {
+      println!("the task ran: got {}", v);
+    }
+    Result<i64, RecvError>::Err(e) => {
+      println!("the task ran: {}", name(e));
+    }
+  }
+}
+
+fn main() -> i32 {
+  let (tx, rx) = channel<i64>(room());
+  tasks {
+    spawn {
+      wait_a_little(rx);
+    };
+  };
+  drop(tx);
+  return 0;
+}

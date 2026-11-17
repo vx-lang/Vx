@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // The same program as custom_topology_device_image.vx with the ONE difference
 // that the topology declares no `arch:`. No device image is produced -- the
 // compiler refuses to guess what code to emit for a machine that did not say --
@@ -30,7 +30,7 @@ Memory SMEM {
 Topology Dev {
   // Deliberately NO arch: a topology that does not say what code to emit for it
   // gets no device image -- refusing to guess, the same policy fleet/m4-uma.vx
-  // documents for its own arch field (Vx#352).
+  // documents for its own arch field.
   memory: Memory::GPU_HBM,
   visible: [Memory::GPU_HBM, Memory::SMEM],
   transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s,

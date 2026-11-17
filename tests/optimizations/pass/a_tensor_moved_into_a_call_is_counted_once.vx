@@ -1,0 +1,83 @@
+//===- a_tensor_moved_into_a_call_is_counted_once.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The capacity check counts a tensor in GPU memory until a statement moves it out of its
+// variable. `W` holds 4096 bytes, and each small tensor is 512 bytes.
+//
+// - `give_back`: `a` moves into `b`, so `big`, `a` and `b` are 3712 bytes, not 4224.
+// - `send_one`: a room of 7 tensors is 3584 bytes. `a` moves into the room, and the result of
+//   `send` holds it only when the send fails, so the total is 4096 bytes.
+// - `free_then_place`: `free(a)` moves `a`, so `a` and `b` are never in `W` at the same time.
+// - `free_then_call`: `a` is not in `W` while `place_big` places its own tensor.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//===----------------------------------------------------------------------===//
+
+import std::sync::channel;
+
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 4 KiB, managed: explicit, scope: device
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10,
+  transfer Memory::W -> Memory::CPU_DRAM : 10
+}
+
+fn id(t : Tensor<f32, [128], Memory::W>) -> Tensor<f32, [128], Memory::W> {
+  return t;
+}
+
+fn free(t : Tensor<f32, [800], Memory::W>) -> void {
+  let _h = transfer(t, Memory::CPU_DRAM);
+}
+
+fn place_big() -> f32 {
+  let t = transfer(Tensor<f32, [800]>::fill(4.0), Memory::W);
+  let h = transfer(t, Memory::CPU_DRAM);
+  return h[0];
+}
+
+fn free_then_place() -> f32 {
+  let a = transfer(Tensor<f32, [800]>::fill(1.0), Memory::W);
+  free(a);
+  let b = transfer(Tensor<f32, [800]>::fill(5.0), Memory::W);
+  let c = transfer(b, Memory::CPU_DRAM);
+  return c[0];
+}
+
+fn free_then_call() -> f32 {
+  let a = transfer(Tensor<f32, [800]>::fill(1.0), Memory::W);
+  free(a);
+  return place_big();
+}
+
+fn give_back() -> f32 {
+  let big = transfer(Tensor<f32, [800]>::fill(1.0), Memory::W);
+  let a = transfer(Tensor<f32, [128]>::fill(2.0), Memory::W);
+  let b = id(a);
+  let c = transfer(b, Memory::CPU_DRAM);
+  let d = transfer(big, Memory::CPU_DRAM);
+  return c[0] + d[0];
+}
+
+fn send_one() -> i32 {
+  let (tx, _rx) = channel<Tensor<f32, [128], Memory::W>>(7);
+  let a = transfer(Tensor<f32, [128]>::fill(1.0), Memory::W);
+  let _ = tx.send(a);
+  return 1;
+}
+
+fn main() -> i32 {
+  print!("{} {} {} {}", give_back(), send_one(), free_then_place(), free_then_call());
+  return 0;
+}
+
+// CHECK: {{^}}3 1 5 4{{$}}

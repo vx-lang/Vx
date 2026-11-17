@@ -1,4 +1,4 @@
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: call @"Vec::new$i32"() : () -> !llvm.struct<(ptr, i32, i32)>
 // CHECK: call @ref$mut$Vec$i32$push$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32

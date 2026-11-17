@@ -1,0 +1,51 @@
+//===- a_deadlock_report_prints_the_cycle_of_two_tasks_that_wait_for_each_others_lock.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each task holds one lock and waits for the lock of the other task. The main code waits for the
+// end of the first task, so it waits for the cycle but is not in it. The report names the holder
+// of each lock, and prints the cycle.
+//
+// RUN: not vxc %s --run 2>&1 | FileCheck %s
+// RUN: not vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+// RUN: env VX_TASK_RUNTIME=shared not vxc %s --run 2>&1 | FileCheck %s
+
+// CHECK: vx: deadlock: each task of the program waits, and nothing can wake one. The program stops.
+// CHECK-NEXT: {{^}}  the main code waits for the end of the task from the `spawn` at {{.*}}.vx:43{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `lock` at {{.*}}.vx:35 on lock 1, made at {{.*}}.vx:40, held by the task from the `spawn` at {{.*}}.vx:46{{$}}
+// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:43{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `lock` at {{.*}}.vx:35 on lock 2, made at {{.*}}.vx:39, held by the task from the `spawn` at {{.*}}.vx:43{{$}}
+// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:46{{$}}
+// CHECK-NEXT: {{^}}  the waits form a cycle:{{$}}
+// CHECK-NEXT: {{^}}    the task from the `spawn` at {{.*}}.vx:43 waits in `lock` at {{.*}}.vx:35 on lock 1, made at {{.*}}.vx:40, held by the task from the `spawn` at {{.*}}.vx:46{{$}}
+// CHECK-NEXT: {{^}}    the task from the `spawn` at {{.*}}.vx:46 waits in `lock` at {{.*}}.vx:35 on lock 2, made at {{.*}}.vx:39, held by the task from the `spawn` at {{.*}}.vx:43{{$}}
+// CHECK-NEXT: {{^}}Program was killed by signal 6
+
+import std::sync::mutex;
+import core::sync::atomic;
+
+// Takes `mine`, and then `theirs` once the other task holds `theirs`.
+fn hold_one_and_take_the_other(mine : &Mutex<i64>, theirs : &Mutex<i64>, i_hold : &AtomicI64, they_hold : &AtomicI64) -> void {
+  let _g = mine.lock();
+  i_hold.store(1, AtomicOrdering::SeqCst);
+  while they_hold.load(AtomicOrdering::SeqCst) == 0 {}
+  let _h = theirs.lock();
+}
+
+fn main() -> i32 {
+  let b = Mutex<i64>::new(0);
+  let a = Mutex<i64>::new(0);
+  let (a_held, b_held) = (AtomicI64::new(0), AtomicI64::new(0));
+  tasks {
+    spawn {
+      hold_one_and_take_the_other(&b, &a, &b_held, &a_held);
+    };
+    spawn {
+      hold_one_and_take_the_other(&a, &b, &a_held, &b_held);
+    };
+  };
+  return 0;
+}

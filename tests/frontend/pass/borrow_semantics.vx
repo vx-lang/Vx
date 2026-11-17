@@ -8,7 +8,7 @@
 // Test borrow and pointer semantics: immutable borrows, mutable borrows,
 // pointer operations, and unsafe blocks.
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: call @read_value(%{{.*}}) : (!llvm.ptr) -> i32
 // CHECK: call @increment(%{{.*}}) : (!llvm.ptr) -> ()

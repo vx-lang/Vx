@@ -1,0 +1,106 @@
+//===- lane_copies_of_rows_with_wrong_arguments.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `lanes::copy_rows_async(&mut tile, &x, &ids, [first, col])` takes a tile with 2 dimensions in
+// shared memory, a tensor with 2 dimensions of the same element type, a tensor of `i32` ids with
+// 1 dimension, and a place of 2 integers. Each function below breaks one rule. Its token holds the
+// tile until its wait, as the token of `lanes::copy_async` does.
+//
+// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: Error[E3003] at {{.*}}lane_copies_of_rows_with_wrong_arguments.vx:28:{{.*}}`lanes::copy_rows_async` takes 4 arguments
+// CHECK: Error[E3003] at {{.*}}lane_copies_of_rows_with_wrong_arguments.vx:42:{{.*}}the first argument of `lanes::copy_rows_async` must borrow a tile with 2 dimensions in shared memory
+// CHECK: Error[E3003] at {{.*}}lane_copies_of_rows_with_wrong_arguments.vx:56:{{.*}}the second argument of `lanes::copy_rows_async` must borrow a tensor of `f32` with 2 dimensions
+// CHECK: Error[E3003] at {{.*}}lane_copies_of_rows_with_wrong_arguments.vx:70:{{.*}}the third argument of `lanes::copy_rows_async` must borrow a tensor of `i32` ids with 1 dimension
+// CHECK: Error[E3003] at {{.*}}lane_copies_of_rows_with_wrong_arguments.vx:84:{{.*}}the fourth argument of `lanes::copy_rows_async` is `[first, col]`
+// CHECK: Error[E4002] at {{.*}}lane_copies_of_rows_with_wrong_arguments.vx:100:{{.*}}Cannot access 'tiles' because it is mutably borrowed.
+
+// The ids are missing.
+pub fn no_ids(x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tiles = unsafe {
+        Tensor<f32, [2, 4, 32], Memory::SMEM>::uninit()
+      };
+      let copy = lanes::copy_rows_async(&mut tiles[0], x, [0, 0]);
+      copy.wait();
+    }
+  }
+  return;
+}
+
+// The tile has 3 dimensions.
+pub fn tile_of_three_dimensions(x : &Tensor<f32, [?, ?], Memory::HBM>, ids : &Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tiles = unsafe {
+        Tensor<f32, [2, 4, 32], Memory::SMEM>::uninit()
+      };
+      let copy = lanes::copy_rows_async(&mut tiles, x, ids, [0, 0]);
+      copy.wait();
+    }
+  }
+  return;
+}
+
+// `x` has `bf16` elements, and the tile has `f32` elements.
+pub fn other_element_type(x : &Tensor<bf16, [?, ?], Memory::HBM>, ids : &Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tiles = unsafe {
+        Tensor<f32, [2, 4, 32], Memory::SMEM>::uninit()
+      };
+      let copy = lanes::copy_rows_async(&mut tiles[0], x, ids, [0, 0]);
+      copy.wait();
+    }
+  }
+  return;
+}
+
+// The ids are `i64`.
+pub fn ids_of_i64(x : &Tensor<f32, [?, ?], Memory::HBM>, ids : &Tensor<i64, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tiles = unsafe {
+        Tensor<f32, [2, 4, 32], Memory::SMEM>::uninit()
+      };
+      let copy = lanes::copy_rows_async(&mut tiles[0], x, ids, [0, 0]);
+      copy.wait();
+    }
+  }
+  return;
+}
+
+// The place has 3 integers.
+pub fn place_of_three(x : &Tensor<f32, [?, ?], Memory::HBM>, ids : &Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tiles = unsafe {
+        Tensor<f32, [2, 4, 32], Memory::SMEM>::uninit()
+      };
+      let copy = lanes::copy_rows_async(&mut tiles[0], x, ids, [0, 0, 0]);
+      copy.wait();
+    }
+  }
+  return;
+}
+
+// The lanes read the tile before the copy ends.
+pub fn read_before_the_wait(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>, ids : &Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tiles = unsafe {
+        Tensor<f32, [2, 4, 32], Memory::SMEM>::uninit()
+      };
+      let copy = lanes::copy_rows_async(&mut tiles[0], x, ids, [0, 0]);
+      for t in 0..32 across lanes(32) {
+        out[t] = tiles[0][0][t];
+      }
+      copy.wait();
+    }
+  }
+  return;
+}

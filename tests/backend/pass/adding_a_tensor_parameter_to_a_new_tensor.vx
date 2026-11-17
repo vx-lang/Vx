@@ -1,0 +1,35 @@
+//===- adding_a_tensor_parameter_to_a_new_tensor.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `t + b` adds a tensor parameter to a new tensor of the same shape. The AST code
+// generator gives the new tensor a run-time size and the parameter a fixed size,
+// so it converts the parameter with `memref.cast`.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Warning
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Warning
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck --check-prefix=MLIR %s
+// CHECK: 1 2 3 4
+// MLIR-LABEL: func.func @add_to_new
+// MLIR: memref.cast %arg1 : memref<4xf32> to memref<?xf32>
+// MLIR-NOT: unrealized_conversion_cast
+// MLIR: linalg.add
+
+fn add_to_new(b : Tensor<f32, [4]>) -> Tensor<f32, [4]> {
+  let mut t = Tensor<f32, [4]>::new();
+  t = t + b;
+  return t;
+}
+
+fn main() -> i32 {
+  let mut b = Tensor<f32, [4]>::new();
+  for i in 0..4 {
+    b[i] = (i + 1) as f32;
+  }
+  let t = add_to_new(b);
+  println!("{} {} {} {}", t[0], t[1], t[2], t[3]);
+  return 0;
+}

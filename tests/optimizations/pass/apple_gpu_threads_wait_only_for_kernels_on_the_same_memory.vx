@@ -17,11 +17,12 @@
 // `main` reads `f` after `g`, and `w` at the end. Otherwise the program frees each one after its
 // last use, and the free waits for each kernel that reads it.
 //
-// The GPU run and the CPU copy of each kernel (VX_METAL=0) print the same numbers.
+// The GPU run and the CPU copy of each kernel (VX_METAL=0) print the same numbers. The checks
+// leave out the lines about buffers.
 //
 // REQUIRES: macos
 // RUN: env VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/m4-uma.vx 2>%t.gpu | FileCheck %s --check-prefix=OUT
-// RUN: grep -e "Vx Metal" -e "Falling back" %t.gpu | FileCheck %s --check-prefix=GPU
+// RUN: grep -e "Vx Metal" -e "Falling back" %t.gpu | grep -v -e "bytes of GPU memory" -e "bytes for a batch" | FileCheck %s --check-prefix=GPU
 // RUN: env VX_METAL=0 vxc %s --host default --machine fleet/m4-uma.vx | FileCheck %s --check-prefix=OUT
 //
 // w = position, and the last position is 65535.

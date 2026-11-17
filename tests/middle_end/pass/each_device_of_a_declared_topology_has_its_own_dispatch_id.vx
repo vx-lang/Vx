@@ -1,0 +1,69 @@
+//===- each_device_of_a_declared_topology_has_its_own_dispatch_id.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=WARN
+//
+// `Card` declares `count: 2`, so it has two devices. Each device, and a slice
+// of them, gets a device number of its own. `One` has no `count:`, so
+// `Topology::One` and `Topology::One[0]` name its one device and get one number.
+// An index that is not a constant falls back to device 0, with a warning.
+//
+// The test harness also checks the MLIR alone, with no warnings, so the
+// warning has a prefix of its own.
+// WARN: Warning[W1030] {{.*}} device index of 'Card[i]' is the runtime value 'i'
+// The spawns are generated in source order, so the checks are too.
+// CHECK: vx.spawn topology([[CARD0:139805751]])
+// CHECK: vx.spawn topology(1215037638)
+// CHECK: vx.spawn topology(2440)
+// CHECK: vx.spawn topology([[ONE:[0-9]+]])
+// CHECK: vx.spawn topology([[ONE]])
+// CHECK: vx.spawn topology([[CARD0]])
+
+Memory CARD_RAM {
+  scope: device, capacity: 1 GB, bandwidth: 1 TB/s
+}
+
+Topology Card {
+  count: 2,
+  memory: Memory::CARD_RAM,
+  visible: [Memory::CARD_RAM],
+  transfer Memory::CPU_DRAM -> Memory::CARD_RAM : 100,
+}
+
+Memory ONE_RAM {
+  scope: device, capacity: 1 GB, bandwidth: 1 TB/s
+}
+
+Topology One {
+  memory: Memory::ONE_RAM,
+  visible: [Memory::ONE_RAM],
+  transfer Memory::CPU_DRAM -> Memory::ONE_RAM : 100,
+}
+
+fn main() -> i32 {
+  spawn on(Topology::Card[0]) {
+    let _a = 1;
+  }
+  spawn on(Topology::Card[1]) {
+    let _a = 2;
+  }
+  spawn on(Topology::Card[0..2]) {
+    let _a = 3;
+  }
+  spawn on(Topology::One) {
+    let _a = 4;
+  }
+  spawn on(Topology::One[0]) {
+    let _a = 5;
+  }
+  let i = 1;
+  spawn on(Topology::Card[i]) {
+    let _a = 6;
+  }
+  return 0;
+}

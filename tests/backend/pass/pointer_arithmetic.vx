@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR # flat-codegen
 // RUN: vxc %s --action run-jit 2>&1 | FileCheck %s
 
 import std::io;

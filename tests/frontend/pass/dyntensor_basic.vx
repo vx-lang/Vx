@@ -10,7 +10,7 @@
 // shaped tensor -- passing one forgets the shape, which is the whole point of
 // keeping the two spellings apart.
 //
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 
 // The declared parameter is dynamic, so the callee takes a fully dynamic memref, and the
 // shaped argument is accepted there -- passing it forgets the shape, which is the point.

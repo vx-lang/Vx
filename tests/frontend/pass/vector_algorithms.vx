@@ -1,4 +1,4 @@
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // CHECK-DAG: func.func private @print_str(
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: call @Tensor$f32$10x10$fill$f32(%{{.*}}, %{{.*}}) : (memref<?x?xf32>, f32) -> ()

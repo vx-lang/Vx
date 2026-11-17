@@ -1,4 +1,4 @@
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // A loop with a break, a match over an integer literal, and a match over a data-carrying
 // enum: each is a compare-and-branch chain. The program compiles on the flat path; the AST
 // path still fails verification on the payload match (Vx#398).

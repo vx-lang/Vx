@@ -14,7 +14,7 @@
 //
 // The buffer has the static shape written in the type, and the fill writes into it.
 //
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: %[[BUF:.*]] = memref.alloc() : memref<2x2xf32>
 // CHECK: %[[V:.*]] = arith.constant 7.000000e+00 : f32

@@ -1,0 +1,69 @@
+//===- a_channel_of_gpu_tensors_that_fits.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The capacity check counts the room of a channel of tensors in a memory with a capacity. Each
+// tensor here is 512 bytes, and `W` and `O` hold 4096 each.
+//
+// - `fits`: a room of 3 tensors and one more tensor, 2048 bytes, fit in `W`.
+// - `room_not_known`: a room that is a parameter has no bound. `O` is `overcommit`, so this is
+//   a warning.
+// - `on_the_host`: host memory has no capacity, so a room of 1000 tensors is not counted.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+//===----------------------------------------------------------------------===//
+
+import std::sync::channel;
+
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 4 KiB, managed: explicit, scope: device
+}
+Memory O {
+  within: Memory::CPU_DRAM, capacity: 4 KiB, managed: explicit, scope: device, overcommit
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W, Memory::O],
+  transfer Memory::CPU_DRAM -> Memory::W : 10,
+  transfer Memory::W -> Memory::CPU_DRAM : 10,
+  transfer Memory::CPU_DRAM -> Memory::O : 10,
+  transfer Memory::O -> Memory::CPU_DRAM : 10
+}
+
+fn fits() -> f32 {
+  let (tx, rx) = channel<Tensor<f32, [128], Memory::W>>(3);
+  let _ = tx.send(transfer(Tensor<f32, [128]>::fill(2.0), Memory::W));
+  let mut got = 0.0;
+  match rx.recv() {
+    Result<Tensor<f32, [128], Memory::W>, RecvError>::Ok(b) => {
+      let h = transfer(b, Memory::CPU_DRAM);
+      got = h[0];
+    }
+    Result<Tensor<f32, [128], Memory::W>, RecvError>::Err(_e) => {}
+  }
+  return got;
+}
+
+fn room_not_known(n : i64) -> void {
+  // CHECK: Warning[W1028] at {{.*}}.vx:[[@LINE+1]]:20: this channel holds `Tensor<f32, [128], Memory::O>`, which lives in memory space 'O', and its room is not known at compile time. {{.*}} This is allowed because 'O' is `overcommit`
+  let (_tx, _rx) = channel<Tensor<f32, [128], Memory::O>>(n);
+}
+
+fn on_the_host() -> i32 {
+  let (_tx, _rx) = channel<Tensor<f32, [128]>>(1000);
+  return 0;
+}
+
+fn main() -> i32 {
+  room_not_known(2);
+  print!("{} {}", fits(), on_the_host());
+  return 0;
+}
+
+// CHECK: {{^}}2 0{{$}}

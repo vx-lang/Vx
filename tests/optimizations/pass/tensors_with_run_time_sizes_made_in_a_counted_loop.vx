@@ -1,0 +1,86 @@
+//===- tensors_with_run_time_sizes_made_in_a_counted_loop.vx - Vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s -O1 --run | FileCheck %s --check-prefix=OUT
+// RUN: vxc %s -O1 --emit-mlir | FileCheck %s
+//
+// At -O1 a counted loop is an affine loop, and the zeros of a new tensor become loops with its
+// sizes as bounds. A size that the loop computes cannot be the bound of an affine loop, so those
+// zeros become plain loops. Before, each function here failed to compile at -O1.
+//
+// The sums alone cannot show the zeros: at -O1, a load of memory that nothing wrote can fold to
+// any value, 0 too. So the checks also find a store of 0 into each new table.
+// OUT: {{^}}sizes from parameters: 0{{$}}
+// OUT: {{^}}sizes from fields: 0{{$}}
+// OUT: {{^}}three axes: 0{{$}}
+//
+// CHECK-LABEL: func.func @three_axes(
+// CHECK: %[[ZERO:[a-z_0-9]+]] = arith.constant 0.000000e+00 : f32
+// CHECK: %[[T:[a-z_0-9]+]] = memref.alloc(
+// CHECK: memref.store %[[ZERO]], %[[T]][
+// CHECK-LABEL: func.func @from_parameters(
+// CHECK: %[[ZERO:[a-z_0-9]+]] = arith.constant 0.000000e+00 : f32
+// CHECK: %[[T:[a-z_0-9]+]] = memref.alloc(
+// CHECK: memref.store %[[ZERO]], %[[T]][
+// CHECK-LABEL: func.func @from_fields(
+// CHECK: %[[ZERO:[a-z_0-9]+]] = arith.constant 0.000000e+00 : f32
+// CHECK: %[[T:[a-z_0-9]+]] = memref.alloc(
+// CHECK: memref.store %[[ZERO]], %[[T]][
+
+struct Shape {
+  count : i32,
+  rows : i32,
+  cols : i32,
+}
+
+fn from_parameters(count : i32, rows : i32, cols : i32) -> f32 {
+  let mut total : f32 = 0.0;
+  for i in 0..count {
+    let t = Tensor<f32>([rows, cols]);
+    total = total + t[0][0] + t[1][2];
+  }
+  return total;
+}
+
+fn from_fields(s : &Shape) -> f32 {
+  let mut total : f32 = 0.0;
+  for i in 0..s.count {
+    let t = Tensor<f32>([s.rows, s.cols]);
+    for r in 0..s.rows {
+      for c in 0..s.cols {
+        total = total + t[r][c];
+      }
+    }
+  }
+  return total;
+}
+
+// As the KV cache of a model: one table of positions x heads x values for each layer.
+fn three_axes(s : &Shape, positions : i32) -> f32 {
+  let mut total : f32 = 0.0;
+  for layer in 0..s.count {
+    let t = Tensor<f32>([positions, s.rows, s.cols]);
+    for p in 0..positions {
+      for r in 0..s.rows {
+        for c in 0..s.cols {
+          total = total + t[p][r][c];
+        }
+      }
+    }
+  }
+  return total;
+}
+
+fn main() -> i32 {
+  let s = Shape {
+    count: 3, rows: 4, cols: 5
+  };
+  println!("sizes from parameters: {}", from_parameters(3, 4, 5));
+  println!("sizes from fields: {}", from_fields(&s));
+  println!("three axes: {}", three_axes(&s, 6));
+  return 0;
+}

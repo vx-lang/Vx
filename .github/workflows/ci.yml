@@ -13,17 +13,19 @@ env:
 jobs:
   # Vx is built and tested against its own LLVM, from scripts/provision/build_llvm.sh, kept in
   # the GitHub Actions cache. This job builds it only when the cache does not have it; the test
-  # jobs wait for it and restore it.
+  # jobs wait for it and restore it. The cache key names the Ubuntu release, so each job that
+  # builds or restores LLVM names its release too. With `ubuntu-latest`, a new release made every
+  # run build LLVM again.
   llvm:
     name: Build LLVM
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 360
     outputs:
       key: ${{ steps.llvm.outputs.key }}
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Build LLVM if the cache does not have it
         id: llvm
@@ -39,7 +41,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # The packages of the CUDA job in release.yml, which says why cuda-nvcc is needed.
       - name: Install the CUDA toolkit
@@ -62,7 +64,7 @@ jobs:
   test:
     name: Run Tests
     needs: llvm
-    runs-on: ubuntu-latest # Free Linux Tier
+    runs-on: ubuntu-26.04 # Free Linux Tier
     env:
       # Link with lld (installed below) -- much faster than the default linker
       # for the large MLIR/LLVM libraries that get linked into many binaries.
@@ -70,7 +72,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -242,6 +244,18 @@ jobs:
             echo "Skipping stress tests. They run every 10th commit (current run: $GITHUB_RUN_NUMBER)."
           fi
 
+      # Each test of tasks again, under other orders of its tasks: 3 seeds on each run, and 20
+      # on every 10th run. "1 passed" fails the step if the test was renamed or did not run.
+      - name: Run the tests of tasks under many schedules
+        run: |
+          seeds=3
+          if [ $((GITHUB_RUN_NUMBER % 10)) -eq 0 ]; then seeds=20; fi
+          echo "Running the tests of tasks with $seeds seeds"
+          out=$(VX_TEST_TASK_SEEDS=$seeds cargo test --release --test integration_test -- \
+            --ignored --exact integration_test::compile_test::test_tasks_under_many_schedules 2>&1) \
+            || { echo "$out"; exit 1; }
+          grep -q "1 passed" <<<"$out" || { echo "$out"; echo "The test did not run"; exit 1; }
+
       - name: Run benchmarks (Every 10th Commit, offset by 1)
         run: |
           if [ $(((GITHUB_RUN_NUMBER + 1) % 10)) -eq 0 ]; then
@@ -261,13 +275,13 @@ jobs:
   test-debug:
     name: Run Tests (debug profile)
     needs: llvm
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     env:
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -325,7 +339,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -337,7 +351,7 @@ jobs:
 
       - name: Cache QEMU
         id: qemu-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/qemu
           key: qemu-aarch64-linux-user-${{ env.VX_QEMU_RELEASE }}-${{ runner.os }}

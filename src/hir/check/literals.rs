@@ -111,30 +111,30 @@ impl<'a> TypeChecker<'a> {
                                         // An untyped literal takes the payload's type:
                                         // `Pair<i32, f64>::Of(1, 2.5)` holds an `f64`.
                                         let expected_ty = exp_types[i].substitute(&mapping);
-                                        let expr_ty = if matches!(
+                                        let generic = matches!(
                                             expected_ty,
                                             Type::Generic(..)
                                                 | Type::Scalar(ElementType::Generic(_))
-                                        ) {
-                                            self.check_expr_type_flag(expr, consume)
-                                        } else {
-                                            self.check_expr_expecting(
-                                                expr,
-                                                Some(expected_ty.clone()),
-                                                consume,
-                                            )
-                                        };
-                                        // A tensor payload has no lowering: the variant's slot is
-                                        // built with `llvm.insertvalue`, which takes primitives,
-                                        // and the AST path emitted the tag and dropped the tensor
-                                        // without saying so.
-                                        if Self::is_tensor_payload(&expected_ty) {
+                                        );
+                                        let expr_ty = self.check_whole_value(expr, |c, e| {
+                                            if generic {
+                                                c.check_expr_type_flag(e, consume)
+                                            } else {
+                                                c.check_expr_expecting(
+                                                    e,
+                                                    Some(expected_ty.clone()),
+                                                    consume,
+                                                )
+                                            }
+                                        });
+                                        if Self::is_located_tensor_payload(&expected_ty) {
                                             if !self.speculating {
                                                 self.errors.error_with_code(
                                                     crate::diagnostic::DiagnosticCode::E3021,
                                                     format!(
-                                                        "payload argument {} of {}::{} is {}; an \
-                                                         enum variant cannot carry a tensor",
+                                                        "payload argument {} of {}::{} is {}. An \
+                                                         enum variant cannot carry a `Pinned` or \
+                                                         `Ref` tensor yet",
                                                         i + 1,
                                                         actual_enum_name,
                                                         variant,
@@ -305,8 +305,7 @@ impl<'a> TypeChecker<'a> {
             } else {
                 format!("{text} does not fit `{ty}`")
             };
-            // A number literal has no span of its own: spans take part in comparing types,
-            // and a literal is also a tensor dimension. The `-` before one has a span.
+            // A number the compiler wrote has no place in the source.
             let at = (span != Span::default())
                 .then(|| crate::diagnostic::SourceSpan::from_ast_span(&span));
             self.errors
@@ -476,21 +475,19 @@ impl<'a> TypeChecker<'a> {
         )
     }
 
-    /// A short human name for a type, for diagnostics that only need to say what KIND of thing
-    /// the programmer wrote. The `{:?}` rendering used elsewhere prints the whole AST of every
-    /// dimension expression, which buries the one word the reader needs.
-    /// Whether a payload type is a tensor, through the wrappers that restate where it lives
-    /// without changing how it is represented.
-    fn is_tensor_payload(t: &Type) -> bool {
+    /// Whether a payload type is a tensor that `Pinned` or `Ref` gives a location. The drop of
+    /// such a payload does not know where the tensor lives.
+    fn is_located_tensor_payload(t: &Type) -> bool {
         match t {
-            Type::Tensor(..) => true,
-            Type::Verified(inner) | Type::Pinned(inner, _) | Type::Ref(inner, _) => {
-                Self::is_tensor_payload(inner)
-            }
+            Type::Pinned(inner, _) | Type::Ref(inner, _) => matches!(**inner, Type::Tensor(..)),
+            Type::Verified(inner) => Self::is_located_tensor_payload(inner),
             _ => false,
         }
     }
 
+    /// A short human name for a type, for diagnostics that only need to say what KIND of thing
+    /// the programmer wrote. The `{:?}` rendering used elsewhere prints the whole AST of every
+    /// dimension expression, which buries the one word the reader needs.
     pub(crate) fn short_type_name(t: &Type) -> String {
         match t {
             Type::Scalar(e) => format!("a scalar {e:?}"),
@@ -829,7 +826,8 @@ impl<'a> TypeChecker<'a> {
                                         struct_fields[prev].0,
                                         order.join(", ")
                                     ),
-                                    // A number literal has no position, so the literal's is used.
+                                    // At the field's value, or at the struct literal when the
+                                    // value has no place.
                                     Some(crate::diagnostic::SourceSpan::from_ast_span(
                                         &Some(f_expr.span())
                                             .filter(|s| s.line > 0)
@@ -847,8 +845,9 @@ impl<'a> TypeChecker<'a> {
                         // The field's type is the expected type of what initializes it, so
                         // `Counter { n : 0 }` writes a `u64` zero into a `u64` field rather than
                         // an `i32` one the field then refuses.
-                        let f_type =
-                            self.check_expr_expecting(f_expr, Some(expected_type.clone()), consume);
+                        let f_type = self.check_whole_value(f_expr, |c, e| {
+                            c.check_expr_expecting(e, Some(expected_type.clone()), consume)
+                        });
                         self.check_view_stored(&format!("the field `{f_name}`"), f_expr, &f_type);
                         if let (Expr::Identifier(id), Some(holder)) =
                             (&*f_expr, self.current_assignment_target.clone())

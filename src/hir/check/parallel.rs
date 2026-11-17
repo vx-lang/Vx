@@ -119,15 +119,19 @@ fn only_scratch_drops_after(stmts: &[Statement], idx: usize) -> bool {
 /// concurrent device threads instead of one (#251)?
 ///
 /// Splitting a loop across threads is only sound when no iteration can observe another. The proof
-/// obligation is about **captured memory** — everything a thread declares itself is
+/// obligation is mostly about **captured memory** — everything a thread declares itself is
 /// thread-private on a GPU by construction (an entry-block alloca is in the thread's own local
-/// depot, so even the region's pre-loop scratch declarations replicate harmlessly). So the rule
-/// this walker enforces, conservatively and syntactically, is:
+/// depot). The region's pre-loop declarations replicate too, but one thread keeps its copy for
+/// all of its passes. So the rule this walker enforces, conservatively and syntactically, is:
 ///
 /// - the region is `[zero or more local declarations] for iv in lo..hi { body }` and nothing else,
 ///   with literal integer bounds (the trip count sizes the launch);
 /// - every write in the body lands either in a name declared inside the region, or in a captured
 ///   tensor indexed **first by `iv`** — each iteration then owns row `iv` and no other;
+/// - a pass reads a name declared before the loop that the body writes only after it set that
+///   name itself: a variable with `v = e` at the top of the body, an element with a write at the
+///   top of the body to the same index. Else a thread would read what its own earlier pass left,
+///   not what the pass before it left;
 /// - a captured tensor the body writes is read only at the iteration's own row, since any other
 ///   row may be another iteration's, written at the same time;
 /// - nothing in the body can write through a side door: no free calls, no prints, no transfers, no
@@ -224,7 +228,7 @@ fn outer_for(stmts: &[Statement], explain: bool) -> Verdict {
             return Verdict::NotSplittable;
         }
     }
-    if !scan.declare(&f.iter, f.span) || !scan.stmts(&f.body, 0) {
+    if !scan.declare(&f.iter, f.span) || !scan.split_body(&f.body) {
         return Verdict::NotSplittable;
     }
     if scan.shared_write {
@@ -482,7 +486,7 @@ impl TwoLevelWalk {
                 // redundant-per-thread and harmless; a captured or block-shared write at
                 // block scope is every thread racing.
                 S::Assign(a) => {
-                    (matches!(&a.lhs, Expr::Identifier(id)
+                    let ok = (matches!(&a.lhs, Expr::Identifier(id)
                         if self.scan.declared.contains(&*id.name)
                             && !self.scan.smem.contains(&*id.name))
                         || self.scan.fail(
@@ -490,7 +494,12 @@ impl TwoLevelWalk {
                              every thread of the block would write",
                             a.span,
                         ))
-                        && self.scan.expr(&a.rhs)
+                        && self.scan.expr(&a.rhs);
+                    // Every thread sets it to the same value again.
+                    if let Expr::Identifier(id) = &a.lhs {
+                        self.scan.per_thread.remove(&*id.name);
+                    }
+                    ok
                 }
                 S::ExprStmt(_) => {
                     let b = is_barrier(s);
@@ -579,7 +588,7 @@ impl TwoLevelWalk {
         // "dirt since the last barrier", and a thread loop's writes meeting a neighbour's
         // un-barriered reads from the PREVIOUS loop are the same race as within one loop. The
         // access-time seam checks in `target` and `expr` enforce both directions.
-        let ok = self.scan.stmts(&inner.body, 0);
+        let ok = self.scan.split_body(&inner.body);
         self.scan.iv = saved_iv;
         self.scan.affine = saved_affine;
         if ok {
@@ -620,6 +629,7 @@ impl TwoLevelWalk {
         let saved_captured = self.scan.used_captured.clone();
         let saved_written = self.scan.smem_written.clone();
         let saved_read = self.scan.smem_nonown_read.clone();
+        let saved_per_thread = self.scan.per_thread.clone();
         let saved_iv = std::mem::replace(&mut self.scan.iv, inner.iter.to_string());
         let saved_affine = self.scan.affine.take();
         self.scan.affine = Some((self.block_iv.clone(), trip));
@@ -627,7 +637,7 @@ impl TwoLevelWalk {
         self.scan.barrier_ok = true;
         // Twice: the block loop grid-strides, so this body's end wraps to its own beginning
         // (next bq, same block) -- pass two walks that seam.
-        let ok = self.scan.stmts(&inner.body, 0) && self.scan.stmts(&inner.body, 0);
+        let ok = self.scan.split_body(&inner.body) && self.scan.split_body(&inner.body);
         self.scan.coop = false;
         self.scan.barrier_ok = false;
         self.scan.iv = saved_iv;
@@ -637,6 +647,7 @@ impl TwoLevelWalk {
             self.scan.used_captured = saved_captured;
             self.scan.smem_written = saved_written;
             self.scan.smem_nonown_read = saved_read;
+            self.scan.per_thread = saved_per_thread;
             return false;
         }
         self.saw_thread_loop = true;
@@ -648,6 +659,72 @@ impl TwoLevelWalk {
         };
         self.threads.push(addr);
         true
+    }
+}
+
+/// The names that `body` gives a value to: by `let`, by assignment to them or to an element of
+/// them, or as a loop variable.
+fn names_set(body: &[Statement], out: &mut HashSet<String>) {
+    use crate::syntax::stmt::Statement as S;
+    fn base(e: &Expr) -> Option<&str> {
+        match e {
+            Expr::Identifier(id) => Some(&id.name),
+            Expr::IndexAccess(ix) => base(&ix.base),
+            Expr::MemberAccess(m) => base(&m.base),
+            _ => None,
+        }
+    }
+    for s in body {
+        match s {
+            S::LetDecl(d) => {
+                out.insert(d.name.to_string());
+            }
+            S::Assign(a) => out.extend(base(&a.lhs).map(str::to_string)),
+            S::CompoundAssign(a) => out.extend(base(&a.lhs).map(str::to_string)),
+            S::ForLoop(f) => {
+                out.insert(f.iter.to_string());
+                names_set(&f.body, out);
+            }
+            S::Loop(l) => names_set(&l.body, out),
+            S::ExprStmt(e) => {
+                if let Expr::If(i) = &e.expr {
+                    names_set(&i.then_block, out);
+                    names_set(i.else_block.as_deref().unwrap_or_default(), out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Whether each pass of a loop with this body sets `name` before it reads it: the first statement
+/// at the top of the body that mentions `name` is `name = e`, and `e` does not mention `name`.
+fn sets_first(body: &[Statement], name: &str) -> bool {
+    use crate::hir::check::raw::expr_mentions;
+    use crate::syntax::stmt::Statement as S;
+    fn mentions(s: &Statement, name: &str) -> bool {
+        match s {
+            S::LetDecl(d) => *d.name == *name || expr_mentions(&d.expr, name),
+            S::Assign(a) => expr_mentions(&a.lhs, name) || expr_mentions(&a.rhs, name),
+            S::CompoundAssign(a) => expr_mentions(&a.lhs, name) || expr_mentions(&a.rhs, name),
+            S::ExprStmt(e) => expr_mentions(&e.expr, name),
+            S::ForLoop(f) => {
+                *f.iter == *name
+                    || expr_mentions(&f.iterable, name)
+                    || f.body.iter().any(|s| mentions(s, name))
+            }
+            S::Loop(l) => l.body.iter().any(|s| mentions(s, name)),
+            S::Break(_) | S::Continue(_) => false,
+            S::Drop(d) => *d.name == *name,
+            _ => true,
+        }
+    }
+    match body.iter().find(|s| mentions(s, name)) {
+        Some(S::Assign(a)) => {
+            matches!(&a.lhs, Expr::Identifier(id) if *id.name == *name)
+                && !expr_mentions(&a.rhs, name)
+        }
+        _ => false,
     }
 }
 
@@ -824,6 +901,38 @@ struct ParallelScan {
     /// For each tensor from outside the region, where a pass first reaches a row another pass
     /// may own: a read of another row, or a second first index (see `row_keys`).
     other_row_at: HashMap<String, Span>,
+    /// The names of the region that the loop split across threads sees from before it. A thread
+    /// runs many passes of that loop with one copy of each such name.
+    before_split: HashSet<String>,
+    /// The names of `before_split` that each pass sets first, with `v = e` at the top of the loop.
+    set_each_pass: HashSet<String>,
+    /// The names that a loop split across threads set. After that loop, each thread has the value
+    /// of its own last pass, not the value of the last pass of the loop.
+    per_thread: HashSet<String>,
+    /// The names of `before_split` that a pass writes but does not set first: a tensor that a pass
+    /// writes an element of, or a value it adds to. A pass may read only the elements of such a
+    /// tensor that it wrote itself.
+    carried: HashSet<String>,
+    /// One for the split loop's body and one for each loop inside it that the walk is in.
+    turns: Vec<Turn>,
+    /// The element that the statement being walked writes, with the turn it belongs to. It counts
+    /// as written when the statement ends, after its own reads.
+    pending_element: Option<(usize, String)>,
+    /// How many `if` blocks the walk is inside. A write in one may not happen.
+    branch_depth: u32,
+}
+
+/// One turn of a loop in the body of a loop split across threads, or one pass of that body.
+struct Turn {
+    /// The loop depth and the `if` depth of a statement at the top of the loop's body.
+    depth: u32,
+    branch_depth: u32,
+    /// The names that the loop's body gives a value to. An index with one of them may point at
+    /// another element when the turn reads it than when it wrote it.
+    set_in_body: HashSet<String>,
+    /// The elements of `carried` tensors that this turn wrote at the top of the body, as
+    /// `name[index]..` written out by `element_key`.
+    written: HashSet<String>,
 }
 
 impl ParallelScan {
@@ -850,7 +959,123 @@ impl ParallelScan {
             refusal: None,
             shared_write: false,
             other_row_at: HashMap::new(),
+            before_split: HashSet::new(),
+            set_each_pass: HashSet::new(),
+            per_thread: HashSet::new(),
+            carried: HashSet::new(),
+            turns: Vec::new(),
+            pending_element: None,
+            branch_depth: 0,
         }
+    }
+
+    /// Walk the body of a loop whose passes are split across threads.
+    fn split_body(&mut self, body: &[Statement]) -> bool {
+        let mut before = self.declared.clone();
+        before.remove(&self.iv);
+        let set: HashSet<String> = before
+            .iter()
+            .filter(|v| sets_first(body, v))
+            .cloned()
+            .collect();
+        let mut set_in_body = HashSet::new();
+        names_set(body, &mut set_in_body);
+        let carried = before
+            .iter()
+            .filter(|v| !set.contains(*v) && !self.smem.contains(*v) && set_in_body.contains(*v))
+            .cloned()
+            .collect();
+        let saved_before = std::mem::replace(&mut self.before_split, before);
+        let saved_set = std::mem::replace(&mut self.set_each_pass, set);
+        let saved_carried = std::mem::replace(&mut self.carried, carried);
+        let saved_turns = std::mem::take(&mut self.turns);
+        let ok = self.turn(body, 0, set_in_body);
+        self.turns = saved_turns;
+        let set = std::mem::replace(&mut self.set_each_pass, saved_set);
+        let carried = std::mem::replace(&mut self.carried, saved_carried);
+        self.per_thread.extend(set);
+        self.per_thread.extend(carried);
+        self.before_split = saved_before;
+        ok
+    }
+
+    /// Walk one turn of a loop body at `depth`, whose statements give a value to `set_in_body`.
+    fn turn(&mut self, body: &[Statement], depth: u32, set_in_body: HashSet<String>) -> bool {
+        self.turns.push(Turn {
+            depth,
+            branch_depth: self.branch_depth,
+            set_in_body,
+            written: HashSet::new(),
+        });
+        let ok = self.stmts(body, depth);
+        self.turns.pop();
+        ok
+    }
+
+    /// Walk one turn of a loop inside the split loop's body.
+    fn loop_turn(&mut self, body: &[Statement], depth: u32) -> bool {
+        if self.turns.is_empty() {
+            return self.stmts(body, depth);
+        }
+        let mut set_in_body = HashSet::new();
+        names_set(body, &mut set_in_body);
+        self.turn(body, depth, set_in_body)
+    }
+
+    /// An element of `name` at `indices` (outermost last), written out the same way at each
+    /// access in one turn of `turn`. `None` when an index uses a name the turn may change.
+    fn element_key(&self, name: &str, indices: &[&Expr], turn: &Turn) -> Option<String> {
+        let mut key = name.to_string();
+        for e in indices.iter().rev() {
+            if turn
+                .set_in_body
+                .iter()
+                .any(|n| crate::hir::check::raw::expr_mentions(e, n))
+            {
+                return None;
+            }
+            key.push_str(&format!("[{}]", index_key(e, &self.iv)?));
+        }
+        Some(key)
+    }
+
+    /// Whether a value of `name` may differ between threads at this point: a pass carries it to
+    /// the next, or a loop that the threads share set it before.
+    fn per_thread_here(&self, name: &str) -> bool {
+        self.carried.contains(name)
+            || (self.per_thread.contains(name) && !self.set_each_pass.contains(name))
+    }
+
+    /// A read of the element of `name` at `indices` (outermost last).
+    fn element_read_ok(&mut self, name: &str, indices: &[&Expr], span: Span) -> bool {
+        !self.per_thread_here(name)
+            || self.turns.iter().any(|t| {
+                self.element_key(name, indices, t)
+                    .is_some_and(|k| t.written.contains(&k))
+            })
+            || self.refuse_write(
+                &format!(
+                    "a pass reads an element of `{name}` that it did not write first, and each \
+                     thread has its own `{name}`"
+                ),
+                span,
+            )
+    }
+
+    /// The element that the statement just walked wrote now belongs to its turn.
+    fn commit_element(&mut self) {
+        if let Some((i, key)) = self.pending_element.take() {
+            self.turns[i].written.insert(key);
+        }
+    }
+
+    /// A read of `name`. After a loop split across threads set it, each thread has its own value.
+    fn read_ok(&mut self, name: &str, span: Span) -> bool {
+        !self.per_thread_here(name)
+            || self.refuse_write(
+                &format!("it reads `{name}`, and each thread has a value of its own for `{name}`"),
+                span,
+            )
     }
 
     /// Stop the split because of `why`, at `span`. Answers whether the walk goes on: only when
@@ -951,9 +1176,17 @@ impl ParallelScan {
         self.depth = depth;
         match s {
             S::LetDecl(d) => self.expr(&d.expr) && self.declare(&d.name, d.span),
-            S::Assign(a) => self.target(&a.lhs) && self.expr(&a.rhs),
+            S::Assign(a) => {
+                let ok = self.target(&a.lhs) && self.expr(&a.rhs);
+                self.commit_element();
+                ok
+            }
             // `x op= e` both reads and writes x; `target` covers the write, `expr` the read.
-            S::CompoundAssign(a) => self.target(&a.lhs) && self.expr(&a.lhs) && self.expr(&a.rhs),
+            S::CompoundAssign(a) => {
+                let ok = self.target(&a.lhs) && self.expr(&a.lhs) && self.expr(&a.rhs);
+                self.commit_element();
+                ok
+            }
             S::ForLoop(inner) => {
                 let Expr::Range(r) = &*inner.iterable else {
                     return self.refuse(
@@ -993,8 +1226,8 @@ impl ParallelScan {
                 // A synchronizing loop wraps: its end meets its own beginning on the next
                 // iteration, and the ledgers a mid-body barrier cleared hide that seam from a
                 // single pass -- so walk the body twice.
-                let ok = self.stmts(&inner.body, depth + 1)
-                    && (!synchronizes || self.stmts(&inner.body, depth + 1));
+                let ok = self.loop_turn(&inner.body, depth + 1)
+                    && (!synchronizes || self.loop_turn(&inner.body, depth + 1));
                 self.loop_barrier_stack.pop();
                 self.declared = outer;
                 ok
@@ -1110,7 +1343,19 @@ impl ParallelScan {
                 }
                 if self.declared.contains(&*id.name) {
                     if !self.smem.contains(&*id.name) {
-                        return true; // thread-private: any indexing is this thread's own
+                        // Thread-private: any indexing is this thread's own. A write at the top of
+                        // a loop's body gives the rest of that turn the element.
+                        if let Some(t) = self.turns.last() {
+                            if self.before_split.contains(&*id.name)
+                                && self.depth == t.depth
+                                && self.branch_depth == t.branch_depth
+                            {
+                                self.pending_element = self
+                                    .element_key(&id.name, &indices, t)
+                                    .map(|k| (self.turns.len() - 1, k));
+                            }
+                        }
+                        return true;
                     }
                     // Block-shared (Vx#379 stage B): writable only from a thread loop
                     // (`affine` is Some exactly there), one row per iteration, the row being
@@ -1365,6 +1610,9 @@ impl ParallelScan {
             // A name read whole may read every row of it.
             Expr::Identifier(id) => {
                 self.note(&id.name);
+                if !self.read_ok(&id.name, id.span) {
+                    return false;
+                }
                 if !self.declared.contains(&*id.name) {
                     self.captured_nonown_read
                         .entry(id.name.to_string())
@@ -1437,7 +1685,8 @@ impl ParallelScan {
                     }
                 }
                 self.note(&id.name);
-                indices.iter().all(|i| self.expr(i))
+                self.element_read_ok(&id.name, &indices, id.span)
+                    && indices.iter().all(|i| self.expr(i))
             }
             Expr::MemberAccess(m) => self.expr(&m.base),
             Expr::Array(a) => a.elements.iter().all(|el| self.expr(el)),
@@ -1487,9 +1736,11 @@ impl ParallelScan {
                 let outer = self.multiple_of.len();
                 let multiple = self.multiple_required(&i.cond);
                 self.multiple_of.extend(multiple);
+                self.branch_depth += 1;
                 let then_ok = self.expr(&i.cond) && self.stmts(&i.then_block, depth);
                 self.multiple_of.truncate(outer);
                 let ok = then_ok && i.else_block.as_ref().is_none_or(|b| self.stmts(b, depth));
+                self.branch_depth -= 1;
                 self.barrier_ok = saved;
                 ok
             }

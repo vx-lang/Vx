@@ -1,0 +1,92 @@
+//===- clone_and_is_ok_of_a_payload_that_is_not_copy.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `clone` of an `Option` or a `Result`, and `Result::is_ok` and `is_err`, work on a payload that
+// is not `Copy`. Each matched on `*self` and named the payload, and the checker refused that move
+// (E4008). A clone of a `Noisy` adds 10 to its number. Each `drop` prints `d` and its number.
+//
+// EXPECT: c11 d11 d1 | ok12 d12 err13 d13 d3 d2 | true false false true d4 | end
+
+import core::clone;
+import core::option;
+import core::result;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Clone for Noisy {
+  fn clone(self : &Noisy) -> Noisy {
+    return Noisy {
+      id: self.id + 10
+    };
+  }
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print!("d{} ", self.id);
+  }
+}
+
+fn clone_an_option() -> void {
+  let o = Option<Noisy>::Some(Noisy {
+    id: 1
+  });
+  let c = o.clone();
+  match c {
+    Option<Noisy>::Some(v) => {
+      print!("c{} ", v.id);
+    }
+    Option<Noisy>::None => {}
+  }
+}
+
+fn clone_a_result() -> void {
+  let ok = Result<Noisy, Noisy>::Ok(Noisy {
+    id: 2
+  });
+  let err = Result<Noisy, Noisy>::Err(Noisy {
+    id: 3
+  });
+  let a = ok.clone();
+  let b = err.clone();
+  match a {
+    Result<Noisy, Noisy>::Ok(v) => {
+      print!("ok{} ", v.id);
+    }
+    Result<Noisy, Noisy>::Err(e) => {
+      print!("err{} ", e.id);
+    }
+  }
+  match b {
+    Result<Noisy, Noisy>::Ok(v) => {
+      print!("ok{} ", v.id);
+    }
+    Result<Noisy, Noisy>::Err(e) => {
+      print!("err{} ", e.id);
+    }
+  }
+}
+
+fn ask_a_result() -> void {
+  let ok = Result<i64, Noisy>::Ok(5);
+  let err = Result<i64, Noisy>::Err(Noisy {
+    id: 4
+  });
+  print!("{} {} {} {} ", ok.is_ok(), ok.is_err(), err.is_ok(), err.is_err());
+}
+
+fn main() -> i32 {
+  clone_an_option();
+  print!("| ");
+  clone_a_result();
+  print!("| ");
+  ask_a_result();
+  print!("| end\n");
+  return 0;
+}

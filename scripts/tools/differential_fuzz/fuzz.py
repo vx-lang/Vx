@@ -59,6 +59,7 @@ def check(job):
     generator, seed, vxc, configs, timeout, use_rust, heap = job
     program = fuzzlib.load_generator(generator).generate(seed)
     rust = program.source("rs") if use_rust else None
+    configs = fuzzlib.for_seed(configs, seed)
     with tempfile.TemporaryDirectory() as work:
         outputs = fuzzlib.run_all(program.source("vx"), rust, vxc, configs, timeout, work,
                                   heap=heap)
@@ -109,6 +110,7 @@ def cmd_show(args, configs):
 def cmd_reduce(args, configs):
     program = fuzzlib.load_generator(args.generator).generate(args.seed)
     use_rust = not args.no_rust and program.source("rs") is not None
+    configs = fuzzlib.for_seed(configs, args.seed)
 
     def outputs_of(p):
         return fuzzlib.run_all(p.source("vx"), p.source("rs") if use_rust else None,
@@ -153,6 +155,7 @@ def cmd_compare(args, configs):
     if len(configs) < 2 and not args.heap:
         print("compare needs two configurations or more, or --heap", file=sys.stderr)
         return 2
+    configs = fuzzlib.for_seed(configs, 1)
     jobs = [(path, args.vxc, configs, args.timeout, args.ignore, args.heap)
             for path in args.files]
     with multiprocessing.Pool(args.jobs) as pool:
@@ -209,12 +212,20 @@ def main():
                       help="replace what this matches before comparing, e.g. a timing")
 
     args = parser.parse_args()
-    configs = [fuzzlib.parse_config(c) for c in args.config] if args.config else fuzzlib.DEFAULT_CONFIGS
+    if args.config:
+        configs = [fuzzlib.parse_config(c) for c in args.config]
+    elif getattr(args, "generator", None):
+        # A generator can name its own configurations, such as the task runtimes.
+        configs = getattr(fuzzlib.load_generator(args.generator), "CONFIGS",
+                          fuzzlib.DEFAULT_CONFIGS)
+    else:
+        configs = fuzzlib.DEFAULT_CONFIGS
     if args.heap:
         work = tempfile.mkdtemp()
         atexit.register(shutil.rmtree, work, True)
         library = fuzzlib.build_heap_counter(work)
-        args.heap = (library, fuzzlib.empty_program_blocks(args.vxc, configs, library,
+        args.heap = (library, fuzzlib.empty_program_blocks(args.vxc, fuzzlib.for_seed(configs, 1),
+                                                           library,
                                                            args.timeout))
     else:
         args.heap = None

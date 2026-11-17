@@ -1,0 +1,246 @@
+// Each fp8 kernel of `std::nn` on random codes and scales, against a plain loop on the CPU in f64.
+// The loop finds the value of each code from the definition of f8e4m3 (bias 7). A line says `ok`
+// when the largest difference is below 1e-5 of the largest value of the loop. Some shapes have a
+// number of rows that is not a multiple of 128, and one has more than 1024 columns.
+//
+// The first run uses the Apple GPU on a Mac, and the CPU copy of each kernel elsewhere. The
+// second run uses the CPU copy everywhere.
+//
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx | FileCheck %s
+// RUN: env VX_METAL=0 vxc %s --host default --machine fleet/m4-uma.vx | FileCheck %s
+//
+// CHECK: {{^}}nn_matvec_fp8 296 x 896: ok{{$}}
+// CHECK-NEXT: {{^}}nn_matvec_fp8_add 296 x 896: ok{{$}}
+// CHECK-NEXT: {{^}}nn_matvec_fp8 64 x 4864: ok{{$}}
+// CHECK-NEXT: {{^}}nn_matvec_fp8_add 64 x 4864: ok{{$}}
+// CHECK-NEXT: {{^}}nn_matvec_fp8_heads_add 200 x 896: ok{{$}}
+// CHECK-NEXT: {{^}}nn_qkv_fp8 q: ok{{$}}
+// CHECK-NEXT: {{^}}nn_qkv_fp8 k: ok{{$}}
+// CHECK-NEXT: {{^}}nn_qkv_fp8 v: ok{{$}}
+// CHECK-NEXT: {{^}}nn_swiglu_fp8 200 x 896: ok{{$}}
+import core::convert;
+import core::num;
+import std::nn;
+
+fn mix(x : u32) on Topology::Any -> u32
+ensures writes_only()
+{
+  let mut h = x * 2654435761u32;
+  h = h ^ (h >> 15u32);
+  h = h * 2246822519u32;
+  h = h ^ (h >> 13u32);
+  return h;
+}
+
+// A value in [-scale, scale) for index i of the random tensor `seed`.
+fn random(seed : u32, i : i32, scale : f32) -> f32 {
+  return (((mix(seed * 7919u32 + (i as u32)) >> 8u32) as f32) * 0.00000011920929 - 1.0) * scale;
+}
+
+// A word of 4 random codes, with no NaN code (0x7f or 0xff).
+fn random_word(seed : u32, i : i32) -> u32 {
+  let mut word = mix(seed * 7919u32 + (i as u32));
+  for k in 0..4 {
+    if ((word >> (8u32 * (k as u32))) & 127u32) == 127u32 {
+      word = word - (1u32 << (8u32 * (k as u32)));
+    }
+  }
+  return word;
+}
+
+// An fp8 matrix of rows x cols on the host, and its scales of [ceil(rows / 128), cols / 128].
+fn random_codes(rows : i32, cols : i32, seed : u32) -> Tensor<u32, [?]> {
+  let mut w = Tensor<u32>([rows * cols / 4]);
+  for i in 0..rows * cols / 4 {
+    w[i] = random_word(seed, i);
+  }
+  return w;
+}
+
+fn random_scales(rows : i32, cols : i32, seed : u32) -> Tensor<f32, [?]> {
+  let n = ((rows + 127) / 128) * (cols / 128);
+  let mut s = Tensor<f32>([n]);
+  for i in 0..n {
+    s[i] = 0.002 + 0.001 * random(seed, i, 1.0);
+  }
+  return s;
+}
+
+fn random_f32(n : i32, seed : u32, scale : f32) -> Tensor<f32, [?]> {
+  let mut t = Tensor<f32>([n]);
+  for i in 0..n {
+    t[i] = random(seed, i, scale);
+  }
+  return t;
+}
+
+// The value of an f8e4m3 code, from its definition.
+fn e4m3(code : u32) -> f64 {
+  let e = ((code >> 3u32) & 15u32) as i32;
+  let m = f64::from(code & 7u32);
+  let mut v : f64 = 0.0;
+  if e == 0 {
+    v = m / 8.0 * f64::powi(2.0, -6);
+  } else {
+    v = (1.0 + m / 8.0) * f64::powi(2.0, e - 7);
+  }
+  if code >= 128u32 {
+    v = 0.0 - v;
+  }
+  return v;
+}
+
+// Row r of the fp8 matrix times x, in f64.
+fn dot(w : &Tensor<u32, [?]>, s : &Tensor<f32, [?]>, r : i32, x : &Tensor<f32, [?]>, cols : i32) -> f64 {
+  let mut sum : f64 = 0.0;
+  for c in 0..cols {
+    let code = (w[(r * cols + c) / 4] >> (8u32 * ((c % 4) as u32))) & 255u32;
+    sum = sum + e4m3(code) * f64::from(s[(r / 128) * (cols / 128) + c / 128]) * f64::from(x[c]);
+  }
+  return sum;
+}
+
+// `ok`, or the largest difference between got and want, over the largest |want|.
+fn report(name : *const i8, got : &Tensor<f32, [?]>, want : &Tensor<f64, [?]>, n : i32) -> void {
+  let mut worst : f64 = 0.0;
+  let mut biggest : f64 = 0.0;
+  for i in 0..n {
+    worst = f64::max(worst, f64::abs(f64::from(got[i]) - want[i]));
+    biggest = f64::max(biggest, f64::abs(want[i]));
+  }
+  if worst <= 0.00001 * biggest {
+    println!("{}: ok", name);
+  } else {
+    println!("{}: error {}", name, worst / biggest);
+  }
+  return;
+}
+
+fn check_matvec(rows : i32, cols : i32) -> void {
+  let hw = random_codes(rows, cols, 1u32);
+  let hs = random_scales(rows, cols, 2u32);
+  let hx = random_f32(cols, 3u32, 1.0);
+  let w = transfer(random_codes(rows, cols, 1u32), Memory::HBM);
+  let s = transfer(random_scales(rows, cols, 2u32), Memory::HBM);
+  let x = transfer(random_f32(cols, 3u32, 1.0), Memory::HBM);
+  let mut y = transfer(Tensor<f32>([rows]), Memory::HBM);
+  let mut ya = transfer(random_f32(rows, 4u32, 1.0), Memory::HBM);
+  nn_matvec_fp8(&mut y, &w, &s, &x, rows, cols);
+  nn_matvec_fp8_add(&mut ya, &w, &s, &x, rows, cols);
+  let mut want = Tensor<f64>([rows]);
+  let mut want_add = Tensor<f64>([rows]);
+  for r in 0..rows {
+    want[r] = dot(&hw, &hs, r, &hx, cols);
+    want_add[r] = f64::from(random(4u32, r, 1.0)) + want[r];
+  }
+  let hy = transfer(&y, Memory::CPU_DRAM);
+  let hya = transfer(&ya, Memory::CPU_DRAM);
+  if rows == 296 {
+    report("nn_matvec_fp8 296 x 896", &hy, &want, rows);
+    report("nn_matvec_fp8_add 296 x 896", &hya, &want_add, rows);
+  } else {
+    report("nn_matvec_fp8 64 x 4864", &hy, &want, rows);
+    report("nn_matvec_fp8_add 64 x 4864", &hya, &want_add, rows);
+  }
+  return;
+}
+
+fn check_heads_add(rows : i32, heads : i32, head_dim : i32) -> void {
+  let cols = heads * head_dim;
+  let hw = random_codes(rows, cols, 11u32);
+  let hs = random_scales(rows, cols, 12u32);
+  let hx = random_f32(cols, 13u32, 1.0);
+  let mut hx2 = Tensor<f32>([heads, head_dim]);
+  for c in 0..cols {
+    hx2[c / head_dim][c % head_dim] = hx[c];
+  }
+  let w = transfer(random_codes(rows, cols, 11u32), Memory::HBM);
+  let s = transfer(random_scales(rows, cols, 12u32), Memory::HBM);
+  let x = transfer(hx2, Memory::HBM);
+  let mut y = transfer(random_f32(rows, 14u32, 1.0), Memory::HBM);
+  nn_matvec_fp8_heads_add(&mut y, &w, &s, &x, rows, heads, head_dim);
+  let mut want = Tensor<f64>([rows]);
+  for r in 0..rows {
+    want[r] = f64::from(random(14u32, r, 1.0)) + dot(&hw, &hs, r, &hx, cols);
+  }
+  let hy = transfer(&y, Memory::CPU_DRAM);
+  report("nn_matvec_fp8_heads_add 200 x 896", &hy, &want, rows);
+  return;
+}
+
+fn check_qkv(q_heads : i32, kv_heads : i32, head_dim : i32, cols : i32) -> void {
+  let rows = (q_heads + 2 * kv_heads) * head_dim;
+  let hw = random_codes(rows, cols, 21u32);
+  let hs = random_scales(rows, cols, 22u32);
+  let hx = random_f32(cols, 23u32, 1.0);
+  let mut hb = Tensor<bf16>([rows]);
+  for r in 0..rows {
+    hb[r] = random(24u32, r, 4.0) as bf16;
+  }
+  let mut want = Tensor<f64>([rows]);
+  for r in 0..rows {
+    want[r] = dot(&hw, &hs, r, &hx, cols) + f64::from(hb[r] as f32);
+  }
+  let w = transfer(random_codes(rows, cols, 21u32), Memory::HBM);
+  let s = transfer(random_scales(rows, cols, 22u32), Memory::HBM);
+  let x = transfer(random_f32(cols, 23u32, 1.0), Memory::HBM);
+  let b = transfer(hb, Memory::HBM);
+  let mut q = transfer(Tensor<f32>([q_heads, head_dim]), Memory::HBM);
+  let mut k = transfer(Tensor<f32>([kv_heads, head_dim]), Memory::HBM);
+  let mut v = transfer(Tensor<f32>([kv_heads, head_dim]), Memory::HBM);
+  nn_qkv_fp8(&mut q, &mut k, &mut v, &w, &s, &b, &x, q_heads, kv_heads, head_dim, cols);
+  let hq = transfer(&q, Memory::CPU_DRAM);
+  let hk = transfer(&k, Memory::CPU_DRAM);
+  let hv = transfer(&v, Memory::CPU_DRAM);
+  let nq = q_heads * head_dim;
+  let nkv = kv_heads * head_dim;
+  let mut got_q = Tensor<f32>([nq]);
+  let mut want_q = Tensor<f64>([nq]);
+  let mut got_k = Tensor<f32>([nkv]);
+  let mut want_k = Tensor<f64>([nkv]);
+  let mut got_v = Tensor<f32>([nkv]);
+  let mut want_v = Tensor<f64>([nkv]);
+  for i in 0..nq {
+    got_q[i] = hq[i / head_dim][i % head_dim];
+    want_q[i] = want[i];
+  }
+  for i in 0..nkv {
+    got_k[i] = hk[i / head_dim][i % head_dim];
+    want_k[i] = want[nq + i];
+    got_v[i] = hv[i / head_dim][i % head_dim];
+    want_v[i] = want[nq + nkv + i];
+  }
+  report("nn_qkv_fp8 q", &got_q, &want_q, nq);
+  report("nn_qkv_fp8 k", &got_k, &want_k, nkv);
+  report("nn_qkv_fp8 v", &got_v, &want_v, nkv);
+  return;
+}
+
+fn check_swiglu(rows : i32, cols : i32) -> void {
+  let hw = random_codes(2 * rows, cols, 31u32);
+  let hs = random_scales(2 * rows, cols, 32u32);
+  let hx = random_f32(cols, 33u32, 1.0);
+  let w = transfer(random_codes(2 * rows, cols, 31u32), Memory::HBM);
+  let s = transfer(random_scales(2 * rows, cols, 32u32), Memory::HBM);
+  let x = transfer(random_f32(cols, 33u32, 1.0), Memory::HBM);
+  let mut out = transfer(Tensor<f32>([rows]), Memory::HBM);
+  nn_swiglu_fp8(&mut out, &w, &s, &x, rows, cols);
+  let mut want = Tensor<f64>([rows]);
+  for r in 0..rows {
+    let g = dot(&hw, &hs, r, &hx, cols);
+    let u = dot(&hw, &hs, rows + r, &hx, cols);
+    want[r] = g / (1.0 + f64::exp(0.0 - g)) * u;
+  }
+  let ho = transfer(&out, Memory::CPU_DRAM);
+  report("nn_swiglu_fp8 200 x 896", &ho, &want, rows);
+  return;
+}
+
+fn main() -> i32 {
+  check_matvec(296, 896);
+  check_matvec(64, 4864);
+  check_heads_add(200, 14, 64);
+  check_qkv(14, 2, 64, 896);
+  check_swiglu(200, 896);
+  return 0;
+}

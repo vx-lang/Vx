@@ -123,10 +123,19 @@ pub struct AssignStmt {
     pub lhs: Expr,
     pub rhs: Expr,
     pub span: Span,
+    /// Set by the checker: `c = a @ b` or `c = a + b` on whole tensors writes the result into
+    /// the buffer that `c` holds, and the old value of `c` is not dropped. Both code generators
+    /// follow it.
+    pub in_place: bool,
 }
 impl AssignStmt {
     pub fn new(lhs: Expr, rhs: Expr, span: Span) -> Self {
-        Self { lhs, rhs, span }
+        Self {
+            lhs,
+            rhs,
+            span,
+            in_place: false,
+        }
     }
 }
 
@@ -289,6 +298,8 @@ pub struct DropStmt {
     /// With `call`: how long the waits in the `drop` can take, in nanoseconds. The call
     /// `wait_limit_nanos(&name.path)`, or the default when the impl has no copy of it.
     pub limit: Option<Box<super::Expr>>,
+    /// The memory of the tensor freed, when the type names one. Its plugin frees it.
+    pub placement: Option<crate::syntax::Placement>,
 }
 
 impl DropStmt {
@@ -438,6 +449,7 @@ impl Statement {
                 lhs: e.lhs.substitute(mapping),
                 rhs: e.rhs.substitute(mapping),
                 span: e.span,
+                in_place: e.in_place,
             }),
             Statement::CompoundAssign(e) => Statement::CompoundAssign(CompoundAssignStmt {
                 lhs: e.lhs.substitute(mapping),

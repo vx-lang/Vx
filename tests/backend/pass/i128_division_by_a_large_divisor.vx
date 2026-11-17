@@ -1,0 +1,34 @@
+//===- i128_division_by_a_large_divisor.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The smallest `i128` divided by 2^64 - 1 does not overflow, so the program does not stop. The
+// overflow check compares the divisor with -1, and for `i128` that -1 must have 128 one bits.
+// With only 64, the check took 2^64 - 1 for -1.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+// RUN: vxc %s --run -O2 2>&1 | FileCheck %s
+// CHECK: quotient -9223372036854775808
+// CHECK-NEXT: remainder -9223372036854775808
+
+fn divide(a : i128, b : i128) -> i128 {
+  return a / b;
+}
+
+fn remainder(a : i128, b : i128) -> i128 {
+  return a % b;
+}
+
+fn main() -> i32 {
+  let min = (1u128 << 127u128) as i128;
+  let divisor = ((1u128 << 64u128) - 1u128) as i128;
+  let q = divide(min, divisor) as i64;
+  println!("quotient {}", q);
+  let r = remainder(min, divisor) as i64;
+  println!("remainder {}", r);
+  return 0;
+}

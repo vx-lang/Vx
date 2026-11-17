@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 // Test deeply nested control flow: loops, conditionals, break, continue.
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: call @fibonacci(%{{.*}}) : (i32) -> i32
 // CHECK: call @count_evens(%{{.*}}) : (i32) -> i32

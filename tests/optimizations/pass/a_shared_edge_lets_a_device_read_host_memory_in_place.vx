@@ -1,0 +1,152 @@
+//===- a_shared_edge_lets_a_device_read_host_memory_in_place.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The machine below declares both directions `: shared`: the GPU can read host memory, and the
+// CPU can read the GPU's memory. A transfer of a borrowed tensor is still a copy, so every
+// function prints what a copy gives. But when nothing can change the source while the copy is
+// used, and the program only reads the copy, the compiler skips the copy and reads the source.
+//
+// - `param_in_place` gives the GPU a `&` parameter in place. The caller can change the tensor
+//   after the call, so the function waits for the GPU before it returns (`VX_CTRL_WAIT`, 5).
+// - `const_view_in_place` gives the GPU a view of a `*const` pointer in place. Nothing can
+//   change that memory, so there is no wait.
+// - `mut_view_copies` gives it a view of a `*mut` pointer, which can change, so it copies and
+//   warns.
+// - `gpu_view_to_cpu` reads a view of a `*const` pointer into GPU memory on the CPU, in place.
+//   It first waits for the GPU launches that write the view (`VX_CTRL_WAIT_FOR_TENSORS`, 6).
+//
+// The AST code generator copies whenever the copy goes to a function call, and warns.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s 2>&1 | FileCheck %s --check-prefixes=FLAT,OUT --implicit-check-not="copies a tensor" --implicit-check-not="copies the tensor"
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --check-prefixes=AST,OUT --implicit-check-not="copies a tensor" --implicit-check-not="copies the tensor"
+// RUN: vxc %s --action emit-llvm 2>/dev/null | FileCheck %s --check-prefix=IR
+// RUN: vxc %s --action emit-llvm --legacy-codegen 2>/dev/null | FileCheck %s --check-prefix=AST_IR
+//
+// FLAT: Warning in function `mut_view_copies`: this transfer copies the tensor. The device can read it in place only when it is a `&` parameter of this function or reached through one, or a view of memory from a `*const` pointer.
+// The AST code generator's warnings come in the order of its module.
+// AST: .vx:115:{{[0-9]+}}: a transfer to device memory copies a tensor, because the call to `sum_on_device` can change the copy or keep it.
+// AST: .vx:131:{{[0-9]+}}: this transfer copies the tensor. The device can read it in place only when it is a `&` parameter of this function or reached through one, or a view of memory from a `*const` pointer.
+// AST: .vx:124:{{[0-9]+}}: a transfer to device memory copies a tensor, because the call to `sum_on_device` can change the copy or keep it.
+//
+// OUT: param=150;
+// OUT-NEXT: const_view=150;
+// OUT-NEXT: mut_view=150;
+//
+// The two transfers in `param_in_place` and `const_view_in_place` are of `out`, to the GPU and
+// back.
+// IR-LABEL: llvm.func hidden @param_in_place(
+// IR: %[[FIVE:[0-9]+]] = llvm.mlir.constant(5 : i32) : i32
+// IR-NOT: llvm.func
+// IR: llvm.call @vx_plugin_alloc_and_transfer(
+// IR-NOT: llvm.func
+// IR: llvm.call @vx_plugin_alloc_and_transfer(
+// IR-NOT: vx_plugin_alloc_and_transfer
+// IR-NOT: llvm.func
+// IR: llvm.call @vx_plugin_control(%[[FIVE]],
+// IR-NEXT: llvm.return
+//
+// The functions come in the order of the module.
+// IR-LABEL: llvm.func hidden @mut_view_copies(
+// IR-NOT: llvm.func
+// IR: llvm.call @vx_plugin_alloc_and_transfer({{.*}}%arg0,
+//
+// IR-LABEL: llvm.func hidden @const_view_in_place(
+// IR-NOT: llvm.func
+// IR: llvm.call @vx_plugin_alloc_and_transfer(
+// IR-NOT: llvm.func
+// IR: llvm.call @vx_plugin_alloc_and_transfer(
+// IR-NOT: vx_plugin_alloc_and_transfer
+// IR-NOT: vx_plugin_control
+// IR: llvm.return
+//
+// IR-LABEL: llvm.func hidden @gpu_view_to_cpu(
+// IR-DAG: %[[SIX:[0-9]+]] = llvm.mlir.constant(6 : i32) : i32
+// IR-NOT: llvm.func
+// IR: llvm.call @vx_plugin_control(%[[SIX]],
+// IR-NOT: vx_plugin_transfer_device_to_host
+// IR-NOT: vx_plugin_alloc_and_transfer
+// IR: llvm.return
+//
+// The AST code generator reads the view in `gpu_view_to_cpu` in place too.
+// AST_IR-LABEL: llvm.func hidden @gpu_view_to_cpu(
+// AST_IR-DAG: %[[SIX:[0-9]+]] = llvm.mlir.constant(6 : i32) : i32
+// AST_IR-NOT: llvm.func
+// AST_IR: llvm.call @vx_plugin_control(%[[SIX]],
+// AST_IR-NOT: vx_plugin_transfer_device_to_host
+// AST_IR-NOT: vx_plugin_alloc_and_transfer
+// AST_IR: llvm.return
+
+extern "C" {
+  fn calloc(count : i64, size : i64) -> *mut f32;
+}
+
+Memory CPU_DRAM {}
+Memory HBM {
+  capacity: 1 GiB, managed: explicit, scope: device
+}
+Topology Gpu {
+  memory: Memory::HBM,
+  visible: [Memory::HBM],
+  transfer Memory::CPU_DRAM -> Memory::HBM : shared,
+  transfer Memory::HBM -> Memory::CPU_DRAM : shared
+}
+
+// Sums `t` on the device into `out[0]`.
+fn sum_on_device(out : &mut Tensor<f32, [1], Memory::HBM>, t : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Gpu) {
+    let mut s = 0.0;
+    for y in 0..2 {
+      for x in 0..3 {
+        s = s + t[y][x];
+      }
+    }
+    out[0] = s;
+  }
+}
+
+fn param_in_place(t : &Tensor<f32, [?, ?]>) -> f32 {
+  let g = transfer(t, Memory::HBM);
+  let mut out = transfer(Tensor<f32, [1]>::fill(0.0), Memory::HBM);
+  sum_on_device(&mut out, &g);
+  let back = transfer(out, Memory::CPU_DRAM);
+  return back[0];
+}
+
+fn const_view_in_place(p : *const f32) -> f32 {
+  let v = unsafe { tensor_view_2d(p, 2, 3) };
+  let g = transfer(&v, Memory::HBM);
+  let mut out = transfer(Tensor<f32, [1]>::fill(0.0), Memory::HBM);
+  sum_on_device(&mut out, &g);
+  let back = transfer(out, Memory::CPU_DRAM);
+  return back[0];
+}
+
+fn mut_view_copies(p : *mut f32) -> f32 {
+  let v = unsafe { tensor_view_2d(p, 2, 3) };
+  let g = transfer(&v, Memory::HBM);
+  let mut out = transfer(Tensor<f32, [1]>::fill(0.0), Memory::HBM);
+  sum_on_device(&mut out, &g);
+  let back = transfer(out, Memory::CPU_DRAM);
+  return back[0];
+}
+
+fn gpu_view_to_cpu(p : *const f32 in Memory::HBM) -> f32 {
+  let v = unsafe { tensor_view_2d(p, 2, 3) };
+  let h = transfer(&v, Memory::CPU_DRAM);
+  return h[1][2];
+}
+
+fn main() -> i32 {
+  let p = unsafe { calloc(6, 4) };
+  unsafe { for i in 0..6 { p[i] = (i * 10) as f32; } }
+  let t = unsafe { tensor_view_2d(p as *const f32, 2, 3) };
+  println!("param={};", param_in_place(&t));
+  println!("const_view={};", const_view_in_place(p as *const f32));
+  println!("mut_view={};", mut_view_copies(p));
+  return 0;
+}

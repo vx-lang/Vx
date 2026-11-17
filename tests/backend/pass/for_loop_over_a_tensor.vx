@@ -10,9 +10,19 @@
 // - an array literal: 1 + 2 + 3 = 6;
 // - an array literal in a variable: 10 + 20 = 30;
 // - a tensor of run-time size: 0.5 + 1.5 + 2.0 = 4;
-// - a 2-D tensor gives its rows: 7 + 9 = 16, the last item of each row.
+// - a 2-D tensor gives its rows: 7 + 9 = 16, the last item of each row;
+// - a reference to a tensor, as `r`, `&d`, `&mut` and a parameter: 4 + 4 + 4 + 4 = 16;
+// - two loops over a 2-D tensor read it row by row: 1 2 3 4 5 6.
 //
-// EXPECT: 6 30 4 16
+// EXPECT: 6 30 4 16 16 123456
+
+fn sum(t: &Tensor<f32, [?]>) -> f32 {
+  let mut s = 0.0;
+  for v in t {
+    s = s + v;
+  }
+  return s;
+}
 
 fn main() -> i32 {
   let mut a = 0;
@@ -50,5 +60,29 @@ fn main() -> i32 {
     e = e + row[2];
   }
   print(e);
+  print!(" ");
+
+  let r = &d;
+  let mut f = 0.0;
+  for v in r {
+    f = f + v;
+  }
+  for v in &d {
+    f = f + v;
+  }
+  let w = &mut d;
+  for v in w {
+    f = f + v;
+  }
+  print(f + sum(&d));
+  print!(" ");
+
+  let rows = Tensor<i32>([[1, 2, 3], [4, 5, 6]]);
+  let rr = &rows;
+  for row in rr {
+    for x in row {
+      print(x);
+    }
+  }
   return 0;
 }

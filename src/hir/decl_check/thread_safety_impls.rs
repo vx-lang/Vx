@@ -19,15 +19,27 @@ impl TypeChecker<'_> {
     /// The compiler derives `Send` and `Sync` from the fields. An impl of one adds a claim that
     /// the compiler cannot check, for a type that holds a raw pointer, so it must say `unsafe`.
     pub fn check_thread_safety_impls(&mut self) {
-        let mut found: Vec<(crate::symbol::Symbol, String, bool)> = Vec::new();
+        let mut found: Vec<(
+            crate::symbol::Symbol,
+            String,
+            bool,
+            crate::syntax::DeclPlace,
+        )> = Vec::new();
         for (trait_name, blocks) in &self.env.impls {
             for ib in blocks {
-                found.push((trait_name.clone(), ib.target_type.to_string(), ib.is_unsafe));
+                found.push((
+                    trait_name.clone(),
+                    ib.target_type.to_string(),
+                    ib.is_unsafe,
+                    ib.place.clone(),
+                ));
             }
         }
         // The impl table is a hash map. Sorted, the errors come in the same order each time.
-        found.sort();
-        for (trait_name, target, is_unsafe) in found {
+        found.sort_by(|a, b| (&a.0, &a.1, a.2).cmp(&(&b.0, &b.1, b.2)));
+        let outside = self.errors.here();
+        for (trait_name, target, is_unsafe, place) in found {
+            self.errors.point_at(&place, &outside);
             let is_thread_trait =
                 crate::hir::check::thread_safety::ThreadTrait::from_name(&trait_name).is_some();
             if is_thread_trait && !is_unsafe {
@@ -59,5 +71,6 @@ impl TypeChecker<'_> {
                 );
             }
         }
+        self.errors.point_back(outside);
     }
 }

@@ -1,0 +1,87 @@
+// Kernels for the Apple GPU read and write tensors of rank 3, with sizes that are numbers and
+// with sizes known only at run time. Element [i][j][k] of `x` is i * 100 + j * 10 + k, and each
+// kernel writes each row of `x` in reverse order to `y`. The GPU and the CPU copy of each kernel
+// (VX_METAL=0) must print the same values.
+//
+// REQUIRES: macos
+// RUN: env VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/m4-uma.vx 2>%t.gpu | FileCheck %s --check-prefix=OUT
+// RUN: FileCheck %s --check-prefix=GPU --input-file=%t.gpu
+// RUN: env VX_METAL=0 vxc %s --host default --machine fleet/m4-uma.vx | FileCheck %s --check-prefix=OUT
+//
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 2 x 3 x 1, block 32
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 2 x 3 x 1, block 32
+//
+// The weighted sum adds y[i][j][k] * (k + 1), so a value in the wrong place changes it.
+// OUT: {{^}}fixed: y[0][0][0] = 4, y[1][2][4] = 120, weighted sum 5520{{$}}
+// OUT-NEXT: {{^}}run-time: y[0][0][0] = 4, y[1][2][4] = 120, weighted sum 5520{{$}}
+
+fn reverse_rows_fixed(y : &mut Tensor<f32, [2, 3, 5], Memory::HBM>, x : &Tensor<f32, [2, 3, 5], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for i in 0..2 across blocks {
+      for j in 0..3 across blocks {
+        for k in 0..5 across lanes(32) {
+          y[i][j][k] = x[i][j][4 - k];
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn reverse_rows(y : &mut Tensor<f32, [?, ?, ?], Memory::HBM>, x : &Tensor<f32, [?, ?, ?], Memory::HBM>, a : i32, b : i32, c : i32) -> void {
+  spawn on(Topology::Device) {
+    for i in 0..a across blocks {
+      for j in 0..b across blocks {
+        for k in 0..c across lanes(32) {
+          y[i][j][k] = x[i][j][c - 1 - k];
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn weighted_sum(y : &Tensor<f32, [?, ?, ?]>, a : i32, b : i32, c : i32) -> f32 {
+  let mut s : f32 = 0.0;
+  for i in 0..a {
+    for j in 0..b {
+      for k in 0..c {
+        s = s + y[i][j][k] * ((k + 1) as f32);
+      }
+    }
+  }
+  return s;
+}
+
+fn main() -> i32 {
+  let mut h = Tensor<f32, [2, 3, 5]>::new();
+  let mut hd = Tensor<f32>([2, 3, 5]);
+  for i in 0..2 {
+    for j in 0..3 {
+      for k in 0..5 {
+        h[i][j][k] = (i * 100 + j * 10 + k) as f32;
+        hd[i][j][k] = (i * 100 + j * 10 + k) as f32;
+      }
+    }
+  }
+  let x = transfer(h, Memory::HBM);
+  let mut y = transfer(Tensor<f32, [2, 3, 5]>::new(), Memory::HBM);
+  reverse_rows_fixed(&mut y, &x);
+  let fy = transfer(y, Memory::CPU_DRAM);
+  let mut fd = Tensor<f32>([2, 3, 5]);
+  for i in 0..2 {
+    for j in 0..3 {
+      for k in 0..5 {
+        fd[i][j][k] = fy[i][j][k];
+      }
+    }
+  }
+  println!("fixed: y[0][0][0] = {}, y[1][2][4] = {}, weighted sum {}", fy[0][0][0], fy[1][2][4], weighted_sum(&fd, 2, 3, 5));
+
+  let xd = transfer(hd, Memory::HBM);
+  let mut yd = transfer(Tensor<f32>([2, 3, 5]), Memory::HBM);
+  reverse_rows(&mut yd, &xd, 2, 3, 5);
+  let ry = transfer(yd, Memory::CPU_DRAM);
+  println!("run-time: y[0][0][0] = {}, y[1][2][4] = {}, weighted sum {}", ry[0][0][0], ry[1][2][4], weighted_sum(&ry, 2, 3, 5));
+  return 0;
+}

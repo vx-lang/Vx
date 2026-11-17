@@ -67,10 +67,6 @@ fn process_file(
     check: bool,
 ) -> anyhow::Result<bool> {
     let path = Path::new(file_path);
-    if !path.exists() {
-        anyhow::bail!("File not found: {}", file_path);
-    }
-
     let outcome = format_file_with_report(content, config);
     for warning in &outcome.warnings {
         eprintln!("{}", warning.render(file_path, content));

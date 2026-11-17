@@ -123,6 +123,47 @@ Declared topologies are checked for *coherence* (e.g. the default space must be 
 reachable from the host); see [`seam_obligations.md`](./seam_obligations.md) and the
 [`hardware_monad.md`](./hardware_monad.md) design note.
 
+#### More than one device: `count:`
+
+A machine can have several devices of one kind, such as a node with two GPUs. `count: N` gives a
+declared topology N devices. `Topology::X[i]` names device `i`, and `Topology::X[a..b]` names the
+devices `a` to `b - 1`, as for the built-in `GPU`.
+
+```rust
+Memory CARD_RAM {
+    scope: device, capacity: 16 GiB
+}
+
+Topology Card {
+    count: 2,
+    memory: Memory::CARD_RAM,
+    transfer Memory::CPU_DRAM -> Memory::CARD_RAM : 25 GB/s,
+}
+
+fn main() -> i32 {
+    spawn on(Topology::Card[0]) {
+        let _prefill = 1;
+    }
+    spawn on(Topology::Card[1]) {
+        let _decode = 2;
+    }
+    return 0;
+}
+```
+
+- A topology with no `count:` has one device. `Topology::X` and `Topology::X[0]` both name it.
+- When a topology has more than one device, a use must name one. A bare `Topology::Card` is error
+  E6025.
+- A constant index outside `0..N` is error E6025. An index that is not a constant gets warning
+  W1030, as `GPU[i]` does.
+- Each device has its own dispatch id. Device 0 keeps the id of the name.
+- On a declared GPU (`arch: nvptx64`), only device 0 can run code for now. A `spawn` or an `on`
+  clause on a later device is error E6042, because the CUDA runtime gets only device 0.
+- Each device has its own copy of the memory of its topology, and the capacity check counts each
+  copy on its own. So `Memory::CARD_RAM` alone does not say which copy, and it is error E6025 in a
+  type or a `transfer`. Name the device instead: `Tensor<f32, [4], Topology::Card[1]>`, or
+  `transfer(x, Topology::Card[1])`, which moves `x` into the memory of `Card[1]`.
+
 ### 3.2 Topology-Polymorphic Functions
 
 A function can be generic over a topology with a `D: Topology` bound. Inside the signature

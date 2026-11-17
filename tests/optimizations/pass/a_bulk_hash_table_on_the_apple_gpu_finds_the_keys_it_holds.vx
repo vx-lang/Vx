@@ -1,0 +1,105 @@
+//===- a_bulk_hash_table_on_the_apple_gpu_finds_the_keys_it_holds.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `std::bulk_hash` on the Apple GPU, and again with VX_METAL=0, which runs the CPU copy of each
+// kernel. Both runs must print the same lines.
+//
+// The table has 2^21 slots. The program puts in the 2^20 odd keys 1, 3, 5 and so on, with the
+// value 3 * i for key 2 * i + 1. A second batch gives the first 1000 keys the value 7. It is not
+// a whole number of blocks of 256 lanes. Then the program finds every key, and the 2^20 even keys
+// 2, 4, 6 and so on, which the table does not hold.
+//
+// The host reads nothing between the four launches. So on the GPU, one wait runs them all, and
+// each launch must see what the launches before it wrote.
+//
+// REQUIRES: macos
+// RUN: env VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/m4-uma.vx 2>%t.gpu | FileCheck %s
+// RUN: FileCheck %s --check-prefix=GPU --input-file=%t.gpu
+// RUN: env VX_METAL=0 VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/m4-uma.vx 2>%t.cpu | FileCheck %s
+// RUN: FileCheck %s --check-prefix=CPU --input-file=%t.cpu
+//
+// CHECK: {{^}}held 1049576{{$}}
+// CHECK-NEXT: {{^}}new values 1000 old values 1047576 wrong 0{{$}}
+// CHECK-NEXT: {{^}}missing keys found 0{{$}}
+//
+// The two inserts, then the two lookups, with no wait between them.
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 4096 x 1 x 1, block 256
+// GPU-NOT: waited
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 4 x 1 x 1, block 256
+// GPU-NOT: waited
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 4096 x 1 x 1, block 256
+// GPU-NOT: waited
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 4096 x 1 x 1, block 256
+// GPU-NEXT: [Vx Metal] waited for 4 kernels
+// CPU-NOT: [Vx Metal]
+// CPU: Falling back to CPU libffi dispatch
+import std::bulk_hash;
+
+fn main() -> i32 {
+  let mut host_keys = Tensor<u32, [1048576]>::fill(0u32);
+  let mut host_vals = Tensor<u32, [1048576]>::fill(0u32);
+  let mut host_missing = Tensor<u32, [1048576]>::fill(0u32);
+  for i in 0..1048576 {
+    host_keys[i] = (2 * i + 1) as u32;
+    host_vals[i] = (3 * i) as u32;
+    host_missing[i] = (2 * i + 2) as u32;
+  }
+  let mut host_first = Tensor<u32, [1000]>::fill(0u32);
+  for i in 0..1000 {
+    host_first[i] = (2 * i + 1) as u32;
+  }
+  let keys = transfer(host_keys, Memory::HBM);
+  let vals = transfer(host_vals, Memory::HBM);
+  let missing = transfer(host_missing, Memory::HBM);
+  let first = transfer(host_first, Memory::HBM);
+  let sevens = transfer(Tensor<u32, [1000]>::fill(7u32), Memory::HBM);
+  let slots = transfer(Tensor<u32, [2097152]>::fill(BULK_HASH_EMPTY), Memory::HBM);
+  let values = transfer(Tensor<u32, [2097152]>::fill(0u32), Memory::HBM);
+  let mut found = transfer(Tensor<u32, [1048576]>::fill(0u32), Memory::HBM);
+  let mut not_found = transfer(Tensor<u32, [1048576]>::fill(0u32), Memory::HBM);
+
+  let mut held = bulk_hash_insert_all(&slots, &values, &keys, &vals, 0);
+  held = bulk_hash_insert_all(&slots, &values, &first, &sevens, held);
+  bulk_hash_find_all(&slots, &values, &keys, &mut found);
+  bulk_hash_find_all(&slots, &values, &missing, &mut not_found);
+
+  // The runtime waits for a launch before it frees memory that the launch uses. So the program
+  // reads the inputs back here, and they are not freed between the launches.
+  let f = transfer(found, Memory::CPU_DRAM);
+  let nf = transfer(not_found, Memory::CPU_DRAM);
+  let k = transfer(keys, Memory::CPU_DRAM);
+  let v = transfer(vals, Memory::CPU_DRAM);
+  let k2 = transfer(first, Memory::CPU_DRAM);
+  let v2 = transfer(sevens, Memory::CPU_DRAM);
+  let mut new_values = 0;
+  let mut old_values = 0;
+  let mut wrong = 0;
+  for i in 0..1000 {
+    if k2[i] == k[i] && f[i] == v2[i] {
+      new_values = new_values + 1;
+    } else {
+      wrong = wrong + 1;
+    }
+  }
+  for i in 1000..1048576 {
+    if f[i] == v[i] {
+      old_values = old_values + 1;
+    } else {
+      wrong = wrong + 1;
+    }
+  }
+  let mut missing_found = 0;
+  for i in 0..1048576 {
+    if nf[i] != BULK_HASH_EMPTY {
+      missing_found = missing_found + 1;
+    }
+  }
+  println!("held {}", held);
+  println!("new values {} old values {} wrong {}", new_values, old_values, wrong);
+  println!("missing keys found {}", missing_found);
+  return 0;
+}

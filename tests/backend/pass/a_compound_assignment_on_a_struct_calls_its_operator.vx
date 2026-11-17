@@ -1,0 +1,79 @@
+//===- a_compound_assignment_on_a_struct_calls_its_operator.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `a += b` on a struct is `a = a + b`, through the struct's `Add`, and `-=` goes through
+// `Sub`. The left side can be a variable, a field of one, or `*r` for a reference `r`.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}after += 3{{$}}
+// CHECK-NEXT: {{^}}after -= 2{{$}}
+// CHECK-NEXT: {{^}}a field: 15{{$}}
+// CHECK-NEXT: {{^}}through a reference: 20{{$}}
+
+import core::marker;
+import core::ops;
+
+struct Money {
+  cents : i64,
+}
+
+impl Copy for Money {}
+
+impl Add for Money {
+  type Output = Money;
+  fn add(self : Money, other : Money) -> Money {
+    return Money {
+      cents : self.cents + other.cents
+    };
+  }
+}
+
+impl Sub for Money {
+  type Output = Money;
+  fn sub(self : Money, other : Money) -> Money {
+    return Money {
+      cents : self.cents - other.cents
+    };
+  }
+}
+
+fn pay(r : &mut Money, m : Money) -> void {
+  *r += m;
+}
+
+struct Wallet {
+  cash : Money,
+}
+
+fn main() -> i32 {
+  let mut a = Money {
+    cents : 1
+  };
+  a += Money {
+    cents : 2
+  };
+  println!("after += {}", a.cents);
+  a -= Money {
+    cents : 1
+  };
+  println!("after -= {}", a.cents);
+  let mut w = Wallet {
+    cash : Money {
+      cents : 10
+    }
+  };
+  w.cash += Money {
+    cents : 5
+  };
+  println!("a field: {}", w.cash.cents);
+  pay(&mut w.cash, Money {
+    cents : 5
+  });
+  println!("through a reference: {}", w.cash.cents);
+  return 0;
+}

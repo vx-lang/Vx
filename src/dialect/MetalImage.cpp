@@ -15,6 +15,9 @@
 // - A comment line `// vx.kernel <name> <param>...` before each kernel gives
 //   its parameters: `m<rank>` for a memref, with `r` when the kernel only
 //   reads it, and the MLIR type of a scalar (`i32`, `f32`, `index`, ...).
+// - A kernel with asserts has a line `// vx.assert <name> <number> <message>`
+//   for each, numbered from 1, with the message percent-encoded. It takes one
+//   more buffer, a zeroed `uint`. A failed assert stores its number there.
 // - `index` is a 32-bit `int`. The runtime refuses a buffer of 2^31 elements
 //   or more, so no index can overflow.
 
@@ -31,6 +34,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/MemRef/IR/MemRefMemorySlot.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dominance.h"
@@ -38,6 +42,7 @@
 #include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/CFGToSCF.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/Inliner.h"
 #include "mlir/Transforms/InliningUtils.h"
 #include "mlir/Transforms/Mem2Reg.h"
@@ -48,6 +53,8 @@
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
+#include <functional>
+#include <map>
 
 #include <string>
 
@@ -76,6 +83,14 @@ struct KernelInliner : public InlinerInterface {
   }
 };
 
+// The attribute of a lane matmul, fill or copy whose accumulator stays in
+// simdgroup matrices (src/dialect/VxLowering.cpp).
+constexpr StringLiteral simdgroupRegisters = "simdgroup_registers";
+
+// The threadgroup memory of a threadgroup on every Apple GPU (Metal Feature
+// Set Tables, "Maximum total threadgroup memory allocation").
+constexpr int64_t metalThreadgroupBytes = 32 * 1024;
+
 // Where a memref's elements are: `ptr[origin + i0 * strides[0] + ...]`.
 // `origin` is the index of the memref's first element in `ptr`.
 struct View {
@@ -86,17 +101,32 @@ struct View {
   std::string base;
   SmallVector<std::string> sizes;
   SmallVector<std::string> strides;
+  // The MSL address space of `ptr`: `device`, `threadgroup`, `constant` or
+  // `thread`.
+  std::string space;
+};
+
+// The element that a pointer of the element atomics points to: `ptr[at]`.
+// `type` is the element type of the tensor.
+struct Address {
+  std::string ptr;
+  std::string at;
+  std::string space;
+  Type type;
 };
 
 class Printer {
 public:
-  explicit Printer(gpu::GPUModuleOp module) : module(module), os(text) {}
+  Printer(gpu::GPUModuleOp module, bool weakRelaxed)
+      : module(module), weakRelaxed(weakRelaxed), os(text) {}
 
   // Prints the whole module. Returns false with `error` set on failure.
   bool print(std::string &out, std::string &error);
 
 private:
   gpu::GPUModuleOp module;
+  // `-fweak-relaxed-atomics`: a Relaxed read gets no acquire fence.
+  bool weakRelaxed;
   std::string text;
   llvm::raw_string_ostream os;
   std::string failure;
@@ -104,6 +134,17 @@ private:
   unsigned next = 0;
   DenseMap<Value, std::string> names;
   DenseMap<Value, View> views;
+  // The number of each assert in the kernel, from 1.
+  DenseMap<Operation *, unsigned> asserts;
+  // The pointers that the element atomics make, from the aligned pointer of
+  // a memref. They are not printed.
+  DenseMap<Value, Address> addresses;
+  // The value that each compare-and-swap found, and whether it wrote.
+  DenseMap<Value, std::pair<std::string, std::string>> exchanges;
+  // For each accumulator that stays in the simdgroup matrices of the
+  // subgroups (`simdgroup_registers`), the numbers of rows and columns of its
+  // 8 x 8 pieces.
+  std::map<int64_t, std::pair<int64_t, int64_t>> registerSums;
 
   bool fail(Operation *op, const Twine &why) {
     if (failure.empty()) {
@@ -147,6 +188,14 @@ private:
   bool memrefOp(Operation *op);
   bool gpuOp(Operation *op);
   bool mathOp(Operation *op);
+  bool llvmOp(Operation *op);
+  bool atomicOp(Operation *op);
+  bool laneMatmul(Operation *op);
+  bool laneFill(Operation *op);
+  bool laneCopy(Operation *op);
+  bool laneScaleRows(Operation *op);
+  bool atomicAt(Operation *op, Value ptr, Type t, Address &out);
+  void acquireFence(const Address &a);
   bool ifOp(scf::IfOp op);
   bool whileOp(scf::WhileOp op);
   bool forOp(scf::ForOp op);
@@ -320,10 +369,30 @@ bool Printer::constantTable(memref::GlobalOp g) {
   return true;
 }
 
+// `s` on one line, with `%`, `\` and control characters as `%XX`. A `\` at the
+// end of a comment line would join the next line to the comment.
+static std::string percentEncoded(StringRef s) {
+  std::string out;
+  for (unsigned char c : s) {
+    if (c == '%' || c == '\\' || c < 0x20 || c == 0x7f)
+      out += "%" + llvm::utohexstr(c, /*LowerCase=*/false, /*Width=*/2);
+    else
+      out += c;
+  }
+  return out;
+}
+
 bool Printer::kernel(gpu::GPUFuncOp f) {
   names.clear();
   views.clear();
+  asserts.clear();
+  addresses.clear();
+  exchanges.clear();
   next = 0;
+  SmallVector<cf::AssertOp> checks;
+  f.walk([&](cf::AssertOp a) { checks.push_back(a); });
+  for (auto [k, a] : llvm::enumerate(checks))
+    asserts[a] = k + 1;
   auto access = f->getAttrOfType<ArrayAttr>("vx.arg_access");
 
   auto readonly = [&](unsigned i) {
@@ -348,9 +417,16 @@ bool Printer::kernel(gpu::GPUFuncOp f) {
     }
   }
   os << "\n";
-  // Metal binds at most 31 buffers to a kernel, and one holds the words.
+  for (auto [k, a] : llvm::enumerate(checks))
+    os << "// vx.assert " << f.getName() << " " << k + 1 << " "
+       << percentEncoded(a.getMsg()) << "\n";
+  // Metal binds at most 31 buffers to a kernel. One holds the words, and one
+  // holds the number of a failed assert.
   if (buffers > 30)
     return fail(f, "a kernel with more than 30 tensor parameters");
+  if (buffers > 29 && !checks.empty())
+    return fail(f,
+                "a kernel with an assert and more than 29 tensor parameters");
 
   os << "kernel void " << f.getName() << "(\n";
   unsigned binding = 0;
@@ -366,6 +442,9 @@ bool Printer::kernel(gpu::GPUFuncOp f) {
     names[f.getArgument(i)] = "p" + std::to_string(i);
   }
   os << "    constant uint *vx_w [[buffer(" << buffers << ")]],\n";
+  if (!checks.empty())
+    os << "    device atomic_uint *vx_fail [[buffer(" << buffers + 1
+       << ")]],\n";
   os << "    uint3 vx_tgid [[threadgroup_position_in_grid]],\n";
   os << "    uint3 vx_tid [[thread_position_in_threadgroup]],\n";
   os << "    uint3 vx_ntg [[threadgroups_per_grid]],\n";
@@ -374,9 +453,51 @@ bool Printer::kernel(gpu::GPUFuncOp f) {
   os << "    uint vx_simd [[threads_per_simdgroup]]) {\n";
   depth = 1;
 
+  // The accumulators that stay in simdgroup matrices. Each lane matmul, fill
+  // and copy of one has `simdgroup_registers`, and its tile has no shared
+  // memory (`keepSimdgroupSumsInRegisters` in src/dialect/VxLowering.cpp).
+  registerSums.clear();
+  f.walk([&](Operation *o) {
+    auto number = o->getAttrOfType<IntegerAttr>(simdgroupRegisters);
+    if (!number)
+      return;
+    // The tile is the first operand of a matmul, a fill or a scale, and the
+    // source of a copy.
+    Value tile = o->getOperand(o->getName().getStringRef() == "vx.lane_copy");
+    auto t = cast<MemRefType>(tile.getType());
+    registerSums[number.getInt()] = {t.getDimSize(0) / 8, t.getDimSize(1) / 8};
+  });
+  // Whether only those ops use the memref `v`, through its views.
+  std::function<bool(Value)> onlyInRegisters = [&](Value v) {
+    for (Operation *user : v.getUsers()) {
+      if (auto meta = dyn_cast<memref::ExtractStridedMetadataOp>(user)) {
+        if (!onlyInRegisters(meta.getBaseBuffer()))
+          return false;
+        continue;
+      }
+      if (isa<memref::CastOp, memref::MemorySpaceCastOp,
+              memref::ReinterpretCastOp, memref::SubViewOp>(user)) {
+        if (!onlyInRegisters(user->getResult(0)))
+          return false;
+        continue;
+      }
+      if (!user->hasAttr(simdgroupRegisters))
+        return false;
+    }
+    return true;
+  };
+  llvm::StringSet<> used;
+  f.walk([&](memref::GetGlobalOp get) {
+    if (!onlyInRegisters(get.getResult()))
+      used.insert(get.getName());
+  });
+
   // Shared memory that this kernel uses.
   llvm::StringSet<> shared;
+  int64_t sharedBytes = 0;
   f.walk([&](memref::GetGlobalOp get) {
+    if (!used.contains(get.getName()))
+      return;
     auto t = get.getType();
     auto space = dyn_cast_or_null<IntegerAttr>(t.getMemorySpace());
     if (!(space && space.getInt() == 3) &&
@@ -389,9 +510,22 @@ bool Printer::kernel(gpu::GPUFuncOp f) {
       return;
     line() << "threadgroup " << elem << " " << get.getName() << "["
            << std::max<int64_t>(t.getNumElements(), 1) << "];\n";
+    sharedBytes += std::max<int64_t>(t.getNumElements(), 1) *
+                   ((t.getElementTypeBitWidth() + 7) / 8);
   });
   if (!failure.empty())
     return false;
+  if (sharedBytes > metalThreadgroupBytes)
+    return fail(f, "the kernel needs " + Twine(sharedBytes) +
+                       " bytes of threadgroup memory, and the Apple GPU has " +
+                       Twine(metalThreadgroupBytes) +
+                       " bytes for each threadgroup");
+  for (auto [number, pieces] : registerSums) {
+    int64_t count = pieces.first * pieces.second;
+    line() << "simdgroup_float8x8 vx_sums" << number << "[" << count << "];\n";
+    line() << "for (int i = 0; i < " << count << "; i++)\n";
+    line() << "  vx_sums" << number << "[i] = simdgroup_float8x8(0);\n";
+  }
 
   // The parameters, from the words.
   unsigned word = 0;
@@ -410,6 +544,7 @@ bool Printer::kernel(gpu::GPUFuncOp f) {
       View v;
       v.ptr = p;
       v.base = p + "_b";
+      v.space = "device";
       line() << "const int " << p << "_b = " << fromWord(word) << ";\n";
       line() << "const int " << p << "_o = " << p << "_b + "
              << (ShapedType::isDynamic(fixedOffset)
@@ -474,8 +609,28 @@ bool Printer::block(Block &b) {
 }
 
 bool Printer::op(Operation *o) {
+  // A pointer that the element atomics make is only followed to its tensor.
+  bool followsPointers =
+      isa<arith::IndexCastOp, arith::IndexCastUIOp, LLVM::IntToPtrOp,
+          LLVM::GEPOp, LLVM::LoadOp, LLVM::StoreOp, LLVM::AtomicRMWOp,
+          LLVM::AtomicCmpXchgOp>(o);
+  for (Value v : o->getOperands())
+    if ((addresses.count(v) && !followsPointers) ||
+        (exchanges.count(v) && !isa<LLVM::ExtractValueOp>(o)))
+      return fail(o, "a pointer into a tensor, used in a way that the Metal "
+                     "code generator cannot follow");
   if (isa<scf::YieldOp, scf::ConditionOp>(o))
     return true; // The parent op prints what these give.
+  if (auto a = dyn_cast<cf::AssertOp>(o)) {
+    // Metal cannot stop a kernel. The runtime reads the number when it waits
+    // for the launch, and stops the program with the message.
+    line() << "if (!" << name(a.getArg()) << ") {\n";
+    line() << "  atomic_store_explicit(vx_fail, " << asserts.lookup(o)
+           << "u, memory_order_relaxed);\n";
+    line() << "  return;\n";
+    line() << "}\n";
+    return true;
+  }
   if (auto i = dyn_cast<scf::IfOp>(o))
     return ifOp(i);
   if (auto w = dyn_cast<scf::WhileOp>(o))
@@ -506,12 +661,235 @@ bool Printer::op(Operation *o) {
     return memrefOp(o);
   if (ns == "gpu")
     return gpuOp(o);
+  if (ns == "llvm")
+    return llvmOp(o);
   if (ns == "math")
     return mathOp(o);
+  if (o->getName().getStringRef() == "vx.lane_matmul")
+    return laneMatmul(o);
+  if (o->getName().getStringRef() == "vx.lane_fill" &&
+      o->hasAttr(simdgroupRegisters))
+    return laneFill(o);
+  if (o->getName().getStringRef() == "vx.lane_copy" &&
+      o->hasAttr(simdgroupRegisters))
+    return laneCopy(o);
+  if (o->getName().getStringRef() == "vx.lane_scale_rows" &&
+      o->hasAttr(simdgroupRegisters))
+    return laneScaleRows(o);
+  if (o->getName().getStringRef() == "nvvm.bar.warp.sync") {
+    // The end of a lane loop in a subgroup loop. A subgroup is a SIMD-group
+    // of 32 threads, and all of them wait, as with the mask of all lanes.
+    IntegerAttr mask;
+    if (!matchPattern(o->getOperand(0), m_Constant(&mask)) ||
+        mask.getInt() != -1)
+      return fail(o, "a barrier for only some lanes of a subgroup");
+    line() << "simdgroup_barrier(mem_flags::mem_device | "
+              "mem_flags::mem_threadgroup);\n";
+    return true;
+  }
   return fail(o, "the Metal code generator cannot print this op");
 }
 
+// A matmul of tiles that the lowering left for the simdgroup matrices
+// (`fitsSimdgroupMatrices` in src/dialect/VxLowering.cpp). Each 8 x 8 piece of
+// the result is a simdgroup_float8x8. With `accumulate` it starts from the old
+// value, and each 8 columns of the left tile add one product to it. The GPU
+// adds in an order of its own, so the last bits can differ from the CPU copy.
+bool Printer::laneMatmul(Operation *o) {
+  View tiles[3];
+  std::string matrix[3], stride[3];
+  for (unsigned k = 0; k < 3; ++k) {
+    auto t = cast<MemRefType>(o->getOperand(k).getType());
+    SmallVector<int64_t> strides;
+    int64_t offset;
+    if (!viewOf(o->getOperand(k), tiles[k], o))
+      return false;
+    if (tiles[k].space != "threadgroup" || t.getRank() != 2 ||
+        !t.hasStaticShape() || failed(t.getStridesAndOffset(strides, offset)) ||
+        strides[1] != 1)
+      return fail(o, "a matmul of tiles whose rows are not next to each "
+                     "other in shared memory");
+    if (t.getElementType().isF32())
+      matrix[k] = "simdgroup_float8x8";
+    else if (t.getElementType().isF16() && k > 0)
+      matrix[k] = "simdgroup_half8x8";
+    else
+      return fail(o, "a matmul of tiles with a type that has no simdgroup "
+                     "matrix");
+    stride[k] = "(ulong)" + tiles[k].strides[0];
+  }
+  auto acc = cast<MemRefType>(o->getOperand(0).getType());
+  auto lhs = cast<MemRefType>(o->getOperand(1).getType());
+  int64_t rows = acc.getDimSize(0) / 8, cols = acc.getDimSize(1) / 8;
+  int64_t inner = lhs.getDimSize(1);
+  assert(rows > 0 && cols > 0 && inner % 8 == 0 && acc.getDimSize(0) % 8 == 0 &&
+         acc.getDimSize(1) % 8 == 0 &&
+         "the lowering left only matmuls of whole 8 x 8 pieces");
+  auto at = [&](unsigned k) { return tiles[k].ptr + " + " + tiles[k].origin; };
+  // With `simdgroup_registers`, the pieces of the result are the matrices of
+  // the kernel that hold the accumulator, and they stay there.
+  auto number = o->getAttrOfType<IntegerAttr>(simdgroupRegisters);
+  std::string c =
+      number ? "vx_sums" + std::to_string(number.getInt()) : fresh("mm");
+  std::string a = fresh("ma"), b = fresh("mb");
+  std::string r = std::to_string(rows), n = std::to_string(cols);
+  line() << "{\n";
+  ++depth;
+  // The lowering marks only a matmul that adds to its accumulator, so the
+  // matrices of the kernel already hold the value it starts from.
+  if (!number) {
+    line() << "simdgroup_float8x8 " << c << "[" << rows * cols << "];\n";
+    line() << "for (int i = 0; i < " << r << "; i++)\n";
+    line() << "  for (int j = 0; j < " << n << "; j++)\n";
+    if (o->hasAttr("accumulate"))
+      line() << "    simdgroup_load(" << c << "[i * " << n << " + j], " << at(0)
+             << " + i * 8 * " << stride[0] << " + j * 8, " << stride[0]
+             << ");\n";
+    else
+      line() << "    " << c << "[i * " << n
+             << " + j] = simdgroup_float8x8(0);\n";
+  }
+  line() << "for (int k = 0; k < " << inner << "; k += 8) {\n";
+  line() << "  " << matrix[1] << " " << a << "[" << r << "];\n";
+  line() << "  " << matrix[2] << " " << b << "[" << n << "];\n";
+  line() << "  for (int i = 0; i < " << r << "; i++)\n";
+  line() << "    simdgroup_load(" << a << "[i], " << at(1) << " + i * 8 * "
+         << stride[1] << " + k, " << stride[1] << ");\n";
+  line() << "  for (int j = 0; j < " << n << "; j++)\n";
+  line() << "    simdgroup_load(" << b << "[j], " << at(2) << " + k * "
+         << stride[2] << " + j * 8, " << stride[2] << ");\n";
+  line() << "  for (int i = 0; i < " << r << "; i++)\n";
+  line() << "    for (int j = 0; j < " << n << "; j++)\n";
+  line() << "      simdgroup_multiply_accumulate(" << c << "[i * " << n
+         << " + j], " << a << "[i], " << b << "[j], " << c << "[i * " << n
+         << " + j]);\n";
+  line() << "}\n";
+  if (!number) {
+    line() << "for (int i = 0; i < " << r << "; i++)\n";
+    line() << "  for (int j = 0; j < " << n << "; j++)\n";
+    line() << "    simdgroup_store(" << c << "[i * " << n << " + j], " << at(0)
+           << " + i * 8 * " << stride[0] << " + j * 8, " << stride[0] << ");\n";
+  }
+  --depth;
+  line() << "}\n";
+  return true;
+}
+
+// A `vx.lane_fill` of an accumulator in simdgroup matrices: each element of
+// each piece gets the value. (`simdgroup_float8x8(v)` sets only the diagonal.)
+bool Printer::laneFill(Operation *o) {
+  auto number = o->getAttrOfType<IntegerAttr>(simdgroupRegisters);
+  auto pieces = registerSums[number.getInt()];
+  std::string sums = "vx_sums" + std::to_string(number.getInt());
+  line() << "for (int i = 0; i < " << pieces.first * pieces.second
+         << "; i++)\n";
+  line() << "  " << sums << "[i] = make_filled_simdgroup_matrix<float, 8, 8>("
+         << name(o->getOperand(1)) << ");\n";
+  return true;
+}
+
+// A `vx.lane_copy` of an accumulator in simdgroup matrices to the part of an
+// f32 tensor at `place`. A piece that is inside the tensor goes with one
+// `simdgroup_store`. Otherwise each lane stores its 2 elements of the piece
+// that are inside. Lane l holds row (l / 16) * 4 + (l / 2) % 4 of the piece,
+// and the columns from ((l / 8) % 2) * 4 + (l % 2) * 2, in
+// `thread_elements()`: the layout of the Apple GPU, which
+// tests/optimizations/pass/lane_matmul_sums_stay_in_simdgroup_matrices.vx
+// checks. Then the lanes wait, as after the copy that the lowering expands.
+bool Printer::laneCopy(Operation *o) {
+  auto number = o->getAttrOfType<IntegerAttr>(simdgroupRegisters);
+  auto pieces = registerSums[number.getInt()];
+  std::string sums = "vx_sums" + std::to_string(number.getInt());
+  View dst;
+  if (!viewOf(o->getOperand(0), dst, o))
+    return false;
+  if (dst.space != "device" || dst.sizes.size() != 2 ||
+      o->getNumOperands() != 4)
+    return fail(o, "a copy of simdgroup matrices to a tensor that is not a "
+                   "tensor of 2 dimensions in device memory");
+  std::string top = fresh("r"), left = fresh("c");
+  line() << "{\n";
+  ++depth;
+  line() << "const int " << top << " = (int)" << name(o->getOperand(2))
+         << ";\n";
+  line() << "const int " << left << " = (int)" << name(o->getOperand(3))
+         << ";\n";
+  line() << "for (int i = 0; i < " << pieces.first << "; i++)\n";
+  line() << "  for (int j = 0; j < " << pieces.second << "; j++) {\n";
+  line() << "    const int r = " << top << " + i * 8, c = " << left
+         << " + j * 8;\n";
+  line() << "    if (r >= 0 && c >= 0 && r + 8 <= " << dst.sizes[0]
+         << " && c + 8 <= " << dst.sizes[1] << ") {\n";
+  line() << "      simdgroup_store(" << sums << "[i * " << pieces.second
+         << " + j], " << dst.ptr << " + " << dst.origin << " + r * "
+         << dst.strides[0] << " + c, (ulong)" << dst.strides[0] << ");\n";
+  line() << "    } else {\n";
+  line() << "      thread auto &e = " << sums << "[i * " << pieces.second
+         << " + j].thread_elements();\n";
+  line() << "      const int er = r + (int)(vx_lane / 16) * 4 + (int)(vx_lane "
+            "/ 2) % 4;\n";
+  line() << "      const int ec = c + (int)((vx_lane / 8) % 2) * 4 + "
+            "(int)(vx_lane % 2) * 2;\n";
+  line() << "      for (int k = 0; k < 2; k++)\n";
+  line() << "        if ((uint)er < (uint)" << dst.sizes[0]
+         << " && (uint)(ec + k) < (uint)" << dst.sizes[1] << ")\n";
+  line() << "          " << dst.ptr << "[" << dst.origin << " + er * "
+         << dst.strides[0] << " + ec + k] = e[k];\n";
+  line() << "    }\n";
+  line() << "  }\n";
+  --depth;
+  line() << "}\n";
+  if (o->hasAttr("subgroup"))
+    line() << "simdgroup_barrier(mem_flags::mem_device | "
+              "mem_flags::mem_threadgroup);\n";
+  else
+    line() << "threadgroup_barrier(mem_flags::mem_device | "
+              "mem_flags::mem_threadgroup);\n";
+  return true;
+}
+
+// A `vx.lane_scale_rows` of an accumulator in simdgroup matrices: each lane
+// multiplies its 2 elements of each piece by the scale of their row. They are
+// in row (l / 16) * 4 + (l / 2) % 4 of the piece, as in `laneCopy`. The
+// elements stay in the lane, so the lanes need not wait.
+bool Printer::laneScaleRows(Operation *o) {
+  auto number = o->getAttrOfType<IntegerAttr>(simdgroupRegisters);
+  auto pieces = registerSums[number.getInt()];
+  std::string sums = "vx_sums" + std::to_string(number.getInt());
+  View scale;
+  if (!viewOf(o->getOperand(1), scale, o))
+    return false;
+  if (scale.sizes.size() != 1)
+    return fail(o, "a scale of the rows that is not a tensor of 1 dimension");
+  std::string row = fresh("r");
+  line() << "{\n";
+  ++depth;
+  line() << "const int " << row
+         << " = (int)(vx_lane / 16) * 4 + (int)(vx_lane / 2) % 4;\n";
+  line() << "for (int i = 0; i < " << pieces.first << "; i++) {\n";
+  line() << "  const float s = " << scale.ptr << "[" << scale.origin
+         << " + (i * 8 + " << row << ") * " << scale.strides[0] << "];\n";
+  line() << "  for (int j = 0; j < " << pieces.second << "; j++) {\n";
+  line() << "    thread auto &e = " << sums << "[i * " << pieces.second
+         << " + j].thread_elements();\n";
+  line() << "    e[0] *= s;\n";
+  line() << "    e[1] *= s;\n";
+  line() << "  }\n";
+  line() << "}\n";
+  --depth;
+  line() << "}\n";
+  return true;
+}
+
 bool Printer::arith(Operation *o) {
+  if (isa<arith::IndexCastOp, arith::IndexCastUIOp>(o)) {
+    auto it = addresses.find(o->getOperand(0));
+    if (it != addresses.end()) {
+      Address a = it->second;
+      addresses[o->getResult(0)] = a;
+      return true;
+    }
+  }
   if (auto c = dyn_cast<arith::ConstantOp>(o)) {
     Type t = c.getType();
     std::string ty;
@@ -802,6 +1180,253 @@ bool Printer::mathOp(Operation *o) {
   return true;
 }
 
+// The element atomics of `core::sync::atomic` make a pointer from the aligned
+// pointer of a memref. These ops follow it back to the buffer and the index,
+// so the cast from an integer to a pointer is not printed.
+bool Printer::llvmOp(Operation *o) {
+  if (auto c = dyn_cast<LLVM::IntToPtrOp>(o)) {
+    auto it = addresses.find(c.getArg());
+    if (it == addresses.end())
+      return fail(o, "a pointer made from an integer that does not come from "
+                     "a tensor");
+    Address a = it->second;
+    addresses[c.getResult()] = a;
+    return true;
+  }
+  if (auto g = dyn_cast<LLVM::GEPOp>(o)) {
+    auto it = addresses.find(g.getBase());
+    if (it == addresses.end())
+      return fail(o, "a pointer that does not come from a tensor");
+    Address a = it->second;
+    auto indices = g.getIndices();
+    if (indices.size() != 1 || g.getElemType() != a.type)
+      return fail(o, "a pointer step that is not a number of elements of its "
+                     "tensor");
+    auto step = *indices.begin();
+    a.at =
+        "(" + a.at + " + " +
+        (isa<Value>(step) ? name(cast<Value>(step))
+                          : std::to_string(cast<IntegerAttr>(step).getInt())) +
+        ")";
+    addresses[g.getResult()] = a;
+    return true;
+  }
+  if (auto x = dyn_cast<LLVM::ExtractValueOp>(o)) {
+    auto it = exchanges.find(x.getContainer());
+    if (it == exchanges.end() || x.getPosition().size() != 1)
+      return fail(o, "a field of a value that is not a compare-and-swap");
+    names[x.getResult()] =
+        x.getPosition()[0] == 0 ? it->second.first : it->second.second;
+    return true;
+  }
+  if (isa<LLVM::LoadOp, LLVM::StoreOp, LLVM::AtomicRMWOp,
+          LLVM::AtomicCmpXchgOp>(o))
+    return atomicOp(o);
+  return fail(o, "the Metal code generator cannot print this op");
+}
+
+// The Vx name of an atomic order.
+static StringRef vxOrder(LLVM::AtomicOrdering o) {
+  switch (o) {
+  case LLVM::AtomicOrdering::monotonic:
+    return "Relaxed";
+  case LLVM::AtomicOrdering::acquire:
+    return "Acquire";
+  case LLVM::AtomicOrdering::release:
+    return "Release";
+  case LLVM::AtomicOrdering::acq_rel:
+    return "AcqRel";
+  case LLVM::AtomicOrdering::seq_cst:
+    return "SeqCst";
+  default:
+    return stringifyAtomicOrdering(o);
+  }
+}
+
+// Sets `out` to the element that `ptr` points to, when Metal has an atomic on
+// it that holds a `t`.
+bool Printer::atomicAt(Operation *o, Value ptr, Type t, Address &out) {
+  auto it = addresses.find(ptr);
+  if (it == addresses.end())
+    return fail(o, "an atomic on a pointer that does not come from a tensor");
+  out = it->second;
+  if (t.isInteger(64))
+    return fail(o, "a 64-bit atomic. The Apple GPU has 64-bit atomics only "
+                   "for min and max, and they do not give the old value");
+  if (!t.isInteger(32) || t != out.type) {
+    std::string s;
+    llvm::raw_string_ostream ts(s);
+    ts << t;
+    return fail(o, "an atomic on " + s +
+                       ". The Metal code generator prints atomics only on "
+                       "i32 and u32");
+  }
+  if (out.space == "thread")
+    return fail(o, "an atomic on a tensor in the memory of one thread");
+  if (out.space != "device" && out.space != "threadgroup")
+    return fail(o, "an atomic on a table of constants");
+  return true;
+}
+
+// A Relaxed read is an Acquire read in Vx (docs/lang/semantics.md, section
+// 2.5). Metal atomics take only `memory_order_relaxed`, so a fence after the
+// read gives the Acquire.
+void Printer::acquireFence(const Address &a) {
+  if (weakRelaxed)
+    return;
+  if (a.space == "threadgroup")
+    line() << "atomic_thread_fence(mem_flags::mem_threadgroup, "
+              "memory_order_acquire, thread_scope_threadgroup);\n";
+  else
+    line() << "atomic_thread_fence(mem_flags::mem_device, "
+              "memory_order_acquire, thread_scope_device);\n";
+}
+
+bool Printer::atomicOp(Operation *o) {
+  using LLVM::AtomicOrdering;
+  auto relaxedOnly = [&](AtomicOrdering order) {
+    if (order == AtomicOrdering::monotonic)
+      return true;
+    return fail(o, "an atomic with the order " + vxOrder(order) +
+                       ". Metal atomics on the Apple GPU take only Relaxed");
+  };
+  // The element as a Metal atomic, signed or not.
+  auto object = [](const Address &a, bool isSigned) {
+    return "(" + a.space + (isSigned ? " atomic_int *)&" : " atomic_uint *)&") +
+           a.ptr + "[" + a.at + "]";
+  };
+  constexpr const char *relaxed = "memory_order_relaxed";
+  Address a;
+
+  if (auto load = dyn_cast<LLVM::LoadOp>(o)) {
+    if (load.getOrdering() == AtomicOrdering::not_atomic)
+      return fail(o, "a load through a pointer that is not atomic");
+    if (!atomicAt(o, load.getAddr(), load.getType(), a) ||
+        !relaxedOnly(load.getOrdering()))
+      return false;
+    line() << "int " << define(load.getRes()) << " = atomic_load_explicit("
+           << object(a, true) << ", " << relaxed << ");\n";
+    acquireFence(a);
+    return true;
+  }
+
+  if (auto store = dyn_cast<LLVM::StoreOp>(o)) {
+    if (store.getOrdering() == AtomicOrdering::not_atomic)
+      return fail(o, "a store through a pointer that is not atomic");
+    if (addresses.count(store.getValue()))
+      return fail(o, "a store of a pointer into a tensor");
+    if (!atomicAt(o, store.getAddr(), store.getValue().getType(), a) ||
+        !relaxedOnly(store.getOrdering()))
+      return false;
+    line() << "atomic_store_explicit(" << object(a, true) << ", "
+           << name(store.getValue()) << ", " << relaxed << ");\n";
+    return true;
+  }
+
+  if (auto rmw = dyn_cast<LLVM::AtomicRMWOp>(o)) {
+    if (addresses.count(rmw.getVal()))
+      return fail(o, "an atomic on a pointer into a tensor");
+    if (!atomicAt(o, rmw.getPtr(), rmw.getVal().getType(), a) ||
+        !relaxedOnly(rmw.getOrdering()))
+      return false;
+    std::string r = define(rmw.getRes()), x = name(rmw.getVal());
+    using LLVM::AtomicBinOp;
+    if (rmw.getBinOp() == AtomicBinOp::uinc_wrap) {
+      // Metal has no such atomic, so a compare-and-swap writes it. The new
+      // value is 0 when the old one is `x` or more, and the old one plus 1
+      // otherwise.
+      std::string old = fresh("w");
+      line() << "int " << r << ";\n";
+      line() << "{\n";
+      line() << "  uint " << old << " = atomic_load_explicit("
+             << object(a, false) << ", " << relaxed << ");\n";
+      line() << "  while (!atomic_compare_exchange_weak_explicit("
+             << object(a, false) << ", &" << old << ", " << old << " >= (uint)"
+             << x << " ? 0u : " << old << " + 1u, " << relaxed << ", "
+             << relaxed << ")) {\n";
+      line() << "  }\n";
+      line() << "  " << r << " = (int)" << old << ";\n";
+      line() << "}\n";
+      acquireFence(a);
+      return true;
+    }
+    // A signed max or min compares with the sign. The others give the same
+    // bits on a signed and an unsigned atomic.
+    const char *fn = nullptr;
+    bool isSigned = false;
+    switch (rmw.getBinOp()) {
+    case AtomicBinOp::xchg:
+      fn = "atomic_exchange_explicit";
+      break;
+    case AtomicBinOp::add:
+      fn = "atomic_fetch_add_explicit";
+      break;
+    case AtomicBinOp::sub:
+      fn = "atomic_fetch_sub_explicit";
+      break;
+    case AtomicBinOp::_and:
+      fn = "atomic_fetch_and_explicit";
+      break;
+    case AtomicBinOp::_or:
+      fn = "atomic_fetch_or_explicit";
+      break;
+    case AtomicBinOp::_xor:
+      fn = "atomic_fetch_xor_explicit";
+      break;
+    case AtomicBinOp::max:
+      fn = "atomic_fetch_max_explicit";
+      isSigned = true;
+      break;
+    case AtomicBinOp::min:
+      fn = "atomic_fetch_min_explicit";
+      isSigned = true;
+      break;
+    case AtomicBinOp::umax:
+      fn = "atomic_fetch_max_explicit";
+      break;
+    case AtomicBinOp::umin:
+      fn = "atomic_fetch_min_explicit";
+      break;
+    default:
+      return fail(o, "the atomic operation '" +
+                         stringifyAtomicBinOp(rmw.getBinOp()) +
+                         "', which Metal does not have");
+    }
+    line() << "int " << r << " = (int)" << fn << "(" << object(a, isSigned)
+           << ", " << (isSigned ? "" : "(uint)") << x << ", " << relaxed
+           << ");\n";
+    acquireFence(a);
+    return true;
+  }
+
+  auto cas = cast<LLVM::AtomicCmpXchgOp>(o);
+  if (addresses.count(cas.getCmp()) || addresses.count(cas.getVal()))
+    return fail(o, "a compare-and-swap of a pointer into a tensor");
+  if (!atomicAt(o, cas.getPtr(), cas.getVal().getType(), a) ||
+      !relaxedOnly(cas.getSuccessOrdering()) ||
+      !relaxedOnly(cas.getFailureOrdering()))
+    return false;
+  std::string found = fresh(), wrote = fresh(), expected = fresh("e");
+  std::string current = name(cas.getCmp());
+  line() << "int " << found << ";\n";
+  line() << "bool " << wrote << ";\n";
+  line() << "{\n";
+  line() << "  uint " << expected << " = (uint)" << current << ";\n";
+  // MSL has only a weak compare-and-swap, which can fail with no change. Then
+  // the value it found is `current`, and it tries again.
+  line() << "  do {\n";
+  line() << "    " << wrote << " = atomic_compare_exchange_weak_explicit("
+         << object(a, false) << ", &" << expected << ", (uint)"
+         << name(cas.getVal()) << ", " << relaxed << ", " << relaxed << ");\n";
+  line() << "  } while (" << (cas.getWeak() ? "false" : "!" + wrote) << " && "
+         << expected << " == (uint)" << current << ");\n";
+  line() << "  " << found << " = (int)" << expected << ";\n";
+  line() << "}\n";
+  exchanges[cas.getRes()] = {found, wrote};
+  acquireFence(a);
+  return true;
+}
+
 bool Printer::gpuOp(Operation *o) {
   auto builtin = [&](StringRef var, gpu::Dimension d, Value r) {
     static const char *axis[] = {"x", "y", "z"};
@@ -904,11 +1529,22 @@ bool Printer::memrefOp(Operation *o) {
            << ";\n";
     return true;
   }
-  if (auto cast = dyn_cast<memref::CastOp>(o)) {
+  if (auto e = dyn_cast<memref::ExtractAlignedPointerAsIndexOp>(o)) {
     View v;
-    if (!viewOf(cast.getSource(), v, o))
+    if (!viewOf(e.getSource(), v, o))
       return false;
-    views[cast.getResult()] = v;
+    Type elem = cast<MemRefType>(e.getSource().getType()).getElementType();
+    addresses[e.getResult()] = {v.ptr, v.base, v.space, elem};
+    return true;
+  }
+  // A cast to another memory space changes only the type. The elements stay
+  // in the memory of the source, for example shared memory that a function
+  // for a tensor in any memory gets.
+  if (isa<memref::CastOp, memref::MemorySpaceCastOp>(o)) {
+    View v;
+    if (!viewOf(o->getOperand(0), v, o))
+      return false;
+    views[o->getResult(0)] = v;
     return true;
   }
   if (auto rc = dyn_cast<memref::ReinterpretCastOp>(o)) {
@@ -918,6 +1554,7 @@ bool Printer::memrefOp(Operation *o) {
     View v;
     v.ptr = src.ptr;
     v.base = src.base;
+    v.space = src.space;
     v.origin = fresh("o");
     line() << "const int " << v.origin << " = " << src.base << " + "
            << foldResult(rc.getMixedOffsets()[0]) << ";\n";
@@ -935,6 +1572,7 @@ bool Printer::memrefOp(Operation *o) {
     View v;
     v.ptr = src.ptr;
     v.base = src.base;
+    v.space = src.space;
     v.origin = fresh("o");
     std::string at = src.origin;
     for (auto [k, off] : llvm::enumerate(sv.getMixedOffsets()))
@@ -951,12 +1589,38 @@ bool Printer::memrefOp(Operation *o) {
     views[sv.getResult()] = v;
     return true;
   }
+  // The parts of a view. A reinterpret_cast of the base buffer with them gives
+  // the view back, as for a row of a row of a tensor of rank 3.
+  if (auto meta = dyn_cast<memref::ExtractStridedMetadataOp>(o)) {
+    View src;
+    if (!viewOf(meta.getSource(), src, o))
+      return false;
+    View buffer;
+    buffer.ptr = src.ptr;
+    buffer.base = src.base;
+    buffer.origin = src.base;
+    buffer.space = src.space;
+    views[meta.getBaseBuffer()] = buffer;
+    line() << "const int " << define(meta.getOffset()) << " = " << src.origin
+           << " - " << src.base << ";\n";
+    for (auto [k, size] : llvm::enumerate(meta.getSizes()))
+      line() << "const int " << define(size) << " = " << src.sizes[k] << ";\n";
+    for (auto [k, stride] : llvm::enumerate(meta.getStrides()))
+      line() << "const int " << define(stride) << " = " << src.strides[k]
+             << ";\n";
+    return true;
+  }
   if (auto get = dyn_cast<memref::GetGlobalOp>(o)) {
     MemRefType t = get.getType();
     View v;
     v.ptr = get.getName().str();
     v.base = "0";
     v.origin = "0";
+    auto space = dyn_cast_or_null<IntegerAttr>(t.getMemorySpace());
+    v.space = (space && space.getInt() == 3) ||
+                      isa_and_nonnull<gpu::AddressSpaceAttr>(t.getMemorySpace())
+                  ? "threadgroup"
+                  : "constant";
     for (int64_t s : t.getShape())
       v.sizes.push_back(std::to_string(s));
     if (!layoutStrides(t, v.sizes, v.strides, o))
@@ -975,6 +1639,7 @@ bool Printer::memrefOp(Operation *o) {
     v.ptr = fresh("a");
     v.base = "0";
     v.origin = "0";
+    v.space = "thread";
     line() << "thread " << elem << " " << v.ptr << "["
            << std::max<int64_t>(t.getNumElements(), 1) << "];\n";
     for (int64_t s : t.getShape())
@@ -1109,9 +1774,18 @@ bool Printer::forOp(scf::ForOp f) {
     line() << it << " " << carried.back() << " = " << name(init) << ";\n";
   }
   std::string iv = define(f.getInductionVar());
+  std::string uty;
+  if (!unsignedType(f.getInductionVar().getType(), uty, f))
+    return false;
+  // The lifted loops that become `for` loops compare with a sign.
+  if (f.getUnsignedCmp())
+    return fail(f, "a for loop that compares without a sign");
+  // The step wraps as the integer arithmetic of MLIR does: signed overflow is
+  // undefined in MSL.
   line() << "for (" << ty << " " << iv << " = " << name(f.getLowerBound())
          << "; " << iv << " < " << name(f.getUpperBound()) << "; " << iv
-         << " += " << name(f.getStep()) << ") {\n";
+         << " = (" << ty << ")((" << uty << ")" << iv << " + (" << uty << ")"
+         << name(f.getStep()) << ")) {\n";
   ++depth;
   for (auto [arg, c] : llvm::zip(f.getRegionIterArgs(), carried)) {
     std::string at;
@@ -1251,6 +1925,14 @@ LogicalResult structure(gpu::GPUModuleOp m, std::string &error) {
       return failure();
     }
   }
+  // The lifted loops are `scf.while`. The Metal compiler unrolls a `for` with
+  // a constant bound, and it left the same loop as a `while (true)` as it was.
+  RewritePatternSet uplift(context);
+  scf::populateUpliftWhileToForPatterns(uplift);
+  if (failed(applyPatternsGreedily(m, std::move(uplift)))) {
+    error = "making the loops of a kernel `for` loops failed";
+    return failure();
+  }
   return success();
 }
 
@@ -1272,8 +1954,11 @@ std::string mslImageOf(gpu::GPUModuleOp gpuModule, std::string &error) {
   auto copy = cast<gpu::GPUModuleOp>(holder->getBody()->front());
   if (failed(structure(copy, error)))
     return {};
+  // `-fweak-relaxed-atomics` marks the module that holds the device module.
+  auto parent = gpuModule->getParentOfType<ModuleOp>();
+  bool weakRelaxed = parent && parent->hasAttr("vx.weak_relaxed_atomics");
   std::string image;
-  Printer printer(copy);
+  Printer printer(copy, weakRelaxed);
   if (!printer.print(image, error))
     return {};
   return image;

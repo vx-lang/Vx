@@ -276,6 +276,15 @@ fn tensor_memref_of_type(ty: &Type) -> Option<String> {
     }
 }
 
+/// The memref of the tensor that a `&Tensor` or `&mut Tensor` names. A function that returns
+/// such a reference returns the memref, as a parameter of that type is the memref.
+pub(crate) fn borrowed_tensor_memref(ty: &Type) -> Option<String> {
+    match peel_wrappers(ty) {
+        Type::Borrow { inner, .. } => tensor_memref_of_type(inner),
+        _ => None,
+    }
+}
+
 /// The memref spelling of a return type that travels through a caller-allocated slot: a tensor
 /// whose extents are all known at compile time.
 ///
@@ -670,6 +679,9 @@ pub struct Callee {
     /// Whether the returned tensor is placed in another memory. Such a result is handed back
     /// as a buffer, never through a slot on the caller's stack.
     pub ret_placed: bool,
+    /// The callee returns a reference to a tensor. The call returns the memref of a tensor that
+    /// already exists, so the caller makes no slot for it.
+    pub ret_reference: bool,
     /// The memref spelling of each tensor parameter, by value or by reference; `None` for any
     /// other parameter. A row passed in is a strided view, and is cast to this at the call.
     pub param_tensors: Vec<Option<String>>,
@@ -801,7 +813,7 @@ pub fn build_callee_map(
                     agg_names,
                     registry.aggregate_identities(),
                 ),
-                ret_ptr: is_ptr_ty(&sig.ret_ty),
+                ret_ptr: is_ptr_ty(&sig.ret_ty) && borrowed_tensor_memref(&sig.ret_ty).is_none(),
                 ret_pointee: match peel_wrappers(&sig.ret_ty) {
                     Type::Borrow { inner, .. } | Type::Pointer(inner, ..) => {
                         resolve_agg_gid(inner, aggs, agg_names, registry.aggregate_identities())
@@ -809,12 +821,14 @@ pub fn build_callee_map(
                     _ => None,
                 },
                 ret_void: is_void_ty(&sig.ret_ty),
-                ret_tensor: tensor_memref_of_type(&sig.ret_ty),
+                ret_tensor: tensor_memref_of_type(&sig.ret_ty)
+                    .or_else(|| borrowed_tensor_memref(&sig.ret_ty)),
                 ret_vec: match peel_wrappers(&sig.ret_ty) {
                     Type::Simd(e, lanes) => mlir_vector(e, *lanes),
                     _ => None,
                 },
                 ret_placed: crate::codegen::generator::written_placement(&sig.ret_ty).is_some(),
+                ret_reference: borrowed_tensor_memref(&sig.ret_ty).is_some(),
                 param_tensors: sig
                     .params
                     .iter()
@@ -1147,11 +1161,9 @@ pub struct EmitCtx {
     /// carries no memory decls, so this is threaded in from the per-compilation env. Empty for a program
     /// with no declared sub-spaces.
     pub subspaces: HashMap<u64, SubspaceInfo>,
-    /// Declared topology arch by dispatch id, so a `vx.spawn` can carry the arch its machine file
-    /// declared and the device pipeline can gate on the DECLARATION rather than on the dispatch-id
-    /// band -- which a custom topology can never enter (declared ids start at 3000 by
-    /// construction, and the GPU band is [500, 600)). Built-in topologies are not in this map and
-    /// keep riding the band.
+    /// Declared topology arch by dispatch id, so a `vx.spawn` can carry the arch declared for
+    /// the topology (both custom and built-in) and the device pipeline can gate on the
+    /// declared architecture attribute.
     pub topo_archs: HashMap<i64, DeclaredArch>,
     /// The program's `const` tables as (global name, memref type), in the registry's order, which
     /// is what a `ConstTable` instruction's `imm` counts in.
@@ -1209,7 +1221,7 @@ pub struct SubspaceInfo {
 /// `func.func private` declaration prepended. Order is load-bearing — the emit records which of
 /// these a function called as a bitmask over this array's indices, so inserting in the middle
 /// renumbers existing entries.
-const RUNTIME_HELPERS: [(&str, &str); 26] = [
+const RUNTIME_HELPERS: [(&str, &str); 28] = [
     ("printMemrefF32", "(memref<*xf32>)"),
     ("printMemrefF64", "(memref<*xf64>)"),
     ("printMemrefI32", "(memref<*xi32>)"),
@@ -1223,6 +1235,8 @@ const RUNTIME_HELPERS: [(&str, &str); 26] = [
     ("print_u16", "(i16) -> i32"),
     ("print_u32", "(i32) -> i32"),
     ("print_u64", "(i64) -> i32"),
+    ("print_i128", "(i64, i64) -> i32"),
+    ("print_u128", "(i64, i64) -> i32"),
     ("print_str", "(!llvm.ptr) -> i32"),
     ("vx_print_to_stderr", "(i32) -> i32"),
     ("vx_init_signals", "()"),
@@ -1272,22 +1286,21 @@ pub fn local_devices_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i32, i32)>
 pub struct DeclaredArch {
     pub arch: String,
     pub chip: Option<String>,
-    pub offload: bool,
+    pub offload: Option<bool>,
+    /// `crate::arch::shared_memory_capacity`.
+    pub shared_bytes: Option<u64>,
 }
 
 /// The declared-arch table for `EmitCtx::topo_archs`, from the per-compilation env: one entry per
-/// user-declared topology that states an `arch:`. A topology that declines to declare one gets no
-/// entry, no `arch` attribute, and therefore no device compilation -- refusing to guess is the
-/// same policy `fleet/m4-uma.vx` documents for its own arch field.
+/// device of each user-declared topology that states an `arch:`. A topology that declines to
+/// declare one gets no entry, no `arch` attribute, and therefore no device compilation -- refusing
+/// to guess is the same policy `fleet/m4-uma.vx` documents for its own arch field.
 pub fn topo_archs_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i64, DeclaredArch)> {
     let mut out: Vec<(i64, DeclaredArch)> = env
         .topologies
         .values()
         .filter_map(|decl| {
             let arch = decl.descriptor.arch.as_ref()?;
-            let id = crate::arch::topology_dispatch_id(&crate::syntax::Topology::Custom(
-                decl.name.clone(),
-            ));
             let declared = DeclaredArch {
                 arch: arch.as_ref().to_string(),
                 chip: decl
@@ -1295,11 +1308,18 @@ pub fn topo_archs_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i64, Declared
                     .chip
                     .as_ref()
                     .map(|c| c.as_ref().to_string()),
-                offload: decl.descriptor.offload,
+                offload: Some(decl.descriptor.offload),
+                shared_bytes: crate::arch::shared_memory_capacity(
+                    &decl.descriptor,
+                    env.memories.values().copied(),
+                ),
             };
-            Some((id as i64, declared))
+            let ids = crate::arch::declared_dispatch_ids(&decl.name, decl.descriptor.count);
+            Some(ids.into_iter().map(move |id| (id as i64, declared.clone())))
         })
+        .flatten()
         .collect();
+
     // Sorted, because `env.topologies` is a HashMap and iteration order would otherwise decide
     // which entry wins an id collision -- the coin-flip E6016 refuses upstream, kept impossible
     // here too so the emitted MLIR is byte-reproducible (the freeze protocol depends on that).
@@ -1349,6 +1369,21 @@ pub fn subspaces_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<SubspaceInfo> {
 }
 
 impl EmitCtx {
+    pub fn topo_arch(&self, topo: i64) -> Option<DeclaredArch> {
+        if let Some(declared) = self.topo_archs.get(&topo) {
+            return Some(declared.clone());
+        }
+        let kind = crate::arch::builtin_kind_from_dispatch_id(topo)?;
+        let desc = crate::arch::builtin_descriptors().remove(&kind)?;
+        let arch = desc.arch?;
+        Some(DeclaredArch {
+            arch: arch.to_string(),
+            chip: desc.chip.map(|c| c.to_string()),
+            offload: None,
+            shared_bytes: None,
+        })
+    }
+
     fn registry_layout_agrees(
         registry: &ImmutableGlobalRegistry,
         definition: &crate::registry::TypeDefinition,
@@ -1926,8 +1961,18 @@ pub fn emit_module_mlir(
         } else {
             format!(" -> {ret}")
         };
+        let mark = match registry.fn_sigs.get(name.as_str()) {
+            Some(sig)
+                if crate::codegen::generator::gets_device_pointer(
+                    sig.params.iter().map(peel_wrappers),
+                ) =>
+            {
+                " attributes {vx.gets_device_pointer}"
+            }
+            _ => "",
+        };
         decls += &format!(
-            "  func.func private {}({}){ret_sig}\n",
+            "  func.func private {}({}){ret_sig}{mark}\n",
             sym_ref(name),
             arg_types.join(", ")
         );
@@ -2250,6 +2295,8 @@ pub(crate) struct FnEmit<'a> {
     /// `StringConst` reach their bytes through a module-level global; `Abort` needs the text
     /// itself, because `cf.assert` carries its message as an inline attribute.
     pub(crate) strings: &'a [String],
+    /// The file the function is written in, which each `spawn` of a task in it names.
+    pub(crate) file: Option<&'a str>,
     /// This function's inline `mlir!` blocks and the base their wrappers are numbered from.
     pub(crate) inline_base: usize,
     pub(crate) inline_blocks: &'a [crate::hir::flatten::InlineBlock],
@@ -2568,6 +2615,7 @@ impl<'a> FnEmit<'a> {
             Opcode::TensorTranspose => self.op_tensor_transpose(idx, ins),
             Opcode::TensorPad => self.op_tensor_pad(idx, ins),
             Opcode::TensorMap => self.op_tensor_map(idx, ins),
+            Opcode::TensorCast => self.op_tensor_cast(idx, ins),
             Opcode::TensorReduce => self.op_tensor_reduce(idx, ins),
             Opcode::TensorClone => self.op_tensor_clone(idx, ins),
             Opcode::TensorDataPtr => self.op_tensor_data_ptr(idx, ins),
@@ -2578,6 +2626,8 @@ impl<'a> FnEmit<'a> {
             // tensor GID) rank-reduces the base to a row via `memref.reinterpret_cast` (contiguous
             // base only; a further sub-view of a strided row is deferred).
             Opcode::TensorIndex => self.op_tensor_index(idx, ins),
+            // `q[a..b]`: rows `a` to `b - 1` as a window onto `q`'s memory (contiguous base only).
+            Opcode::TensorRange => self.op_tensor_range(idx, ins),
             // Reduce a rank-1 float slice to a scalar. `operand1` (and `operand2` for `dot`) are the
             // slices; `imm` the kind (0 = dot, 1 = sum, 2 = max, 3 = min). Each slice is `vector.load`ed
             // to a `vector<Nxf32>`; `dot` fuses the two with `arith.mulf`; then `vector.reduction`.
@@ -2588,6 +2638,7 @@ impl<'a> FnEmit<'a> {
             // cuBLAS. The destination register rides the imm (see `Opcode::MatmulInto`).
             Opcode::Matmul => self.op_matmul(idx, ins),
             Opcode::MatmulInto => self.op_matmul_into(idx, ins),
+            Opcode::ElementwiseInto => self.op_elementwise_into(ins),
             // Store into a tensor place (no result). A scalar-element place (an `imm = 1`
             // `TensorIndex`) → `memref.store`; a row/sub-view place (an `imm = 0` `TensorIndex`, a row
             // memref in `mem_of`) takes an elementwise vector value → `vector.store`.
@@ -2616,7 +2667,8 @@ impl<'a> FnEmit<'a> {
             // the enclosing block (which the spawn op did not terminate).
             Opcode::SpawnEnd => self.op_spawn_end(idx, ins),
             Opcode::TasksWait => {
-                self.body += "  \"vx.tasks_wait\"() : () -> ()\n";
+                let join = if ins.imm == 1 { " {join}" } else { "" };
+                self.body += &format!("  \"vx.tasks_wait\"(){join} : () -> ()\n");
                 Ok(())
             }
             Opcode::TaskFailed => {
@@ -2775,6 +2827,8 @@ pub fn emit_function_mlir(
         Some(mlir_scalar(e).ok_or(crate::emitter_gap!())?.to_string())
     } else if let Some(et) = enum_scalar(&func.return_type, ctx) {
         Some(et.to_string())
+    } else if let Some(mt) = borrowed_tensor_memref(&func.return_type) {
+        Some(mt)
     } else if is_ptr_ty(&func.return_type) {
         Some("!llvm.ptr".to_string()) // a pointer-returning function (#235)
     } else if let Some(gid) = ctx.agg_gid(&func.return_type) {
@@ -2837,6 +2891,7 @@ pub fn emit_function_mlir(
         ctx,
         str_base,
         strings,
+        file: func.file.as_deref(),
         inline_base,
         inline_blocks,
         wrappers: String::new(),
@@ -2907,6 +2962,8 @@ pub fn emit_function_mlir(
         Some(Some(p)) if returns_through_slot(&func.return_type).is_none() => {
             format!(" {}", placed_attr(&p, ctx))
         }
+        // A returned reference names a tensor that the caller does not own, so it is not freed.
+        _ if borrowed_tensor_memref(&func.return_type).is_some() => " {vx.reference}".to_string(),
         _ => String::new(),
     };
     let mut ret_sig = match &ret_mlir {

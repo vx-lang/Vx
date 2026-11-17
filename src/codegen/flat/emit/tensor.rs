@@ -23,11 +23,11 @@ impl FnEmit<'_> {
     pub(crate) fn shared_addrspace(&self) -> i32 {
         // Read only the frame's first field, the topology, so a new field in the frame does not
         // break this lookup.
-        let arch = self
+        let arch_decl = self
             .spawn_stack
             .last()
-            .and_then(|open| self.ctx.topo_archs.get(&open.0))
-            .map(|a| a.arch.as_str());
+            .and_then(|open| self.ctx.topo_arch(open.0));
+        let arch = arch_decl.as_ref().map(|a| a.arch.as_str());
         crate::arch::address_space_for_arch(arch, crate::arch::AddressSpace::Workgroup)
     }
 
@@ -86,7 +86,7 @@ impl FnEmit<'_> {
             return Err(crate::emitter_gap!());
         }
         // Each stride must be the product of the sizes after it. A `?` cannot be checked here;
-        // only indexing a row out of a tensor makes one, and a row of a tensor is contiguous.
+        // only a row or a range of rows makes one, and both are contiguous.
         let mut expect = Some(1i64);
         for k in (0..dims.len()).rev() {
             if let (Some(e), Ok(s)) = (expect, strides[k].parse::<i64>()) {
@@ -197,10 +197,11 @@ impl FnEmit<'_> {
         } else {
             String::new()
         };
-        let field = if ins.imm & crate::bytecode::TENSOR_DROP_FIELD != 0 {
-            " {field}"
-        } else {
-            ""
+        let placed = ins.imm >> crate::bytecode::TENSOR_DROP_PLACED_SHIFT;
+        let field = match super::super::placed_device(placed, self.ctx) {
+            _ if ins.imm & crate::bytecode::TENSOR_DROP_FIELD == 0 => String::new(),
+            Some(device) => format!(" {{field, placed = {device} : i32}}"),
+            None => " {field}".to_string(),
         };
         self.body += &format!("  vx.drop {name}{unless}{field} : {ty}\n");
         Ok(())
@@ -390,9 +391,10 @@ impl FnEmit<'_> {
         self.names[reg] = placed;
     }
 
-    /// A rank-2 view over memory the caller owns (`tensor_view_2d(ptr, rows, cols)`): the memref
-    /// descriptor built by hand over `operand1`'s pointer -- both pointers at the storage, a zero
-    /// offset, the extents as sizes, row-major strides -- and cast into memref-typed IR the way
+    /// A rank-1 or rank-2 view over memory the caller owns (`tensor_view_1d(ptr, len)`,
+    /// `tensor_view_2d(ptr, rows, cols)`): the memref descriptor built by hand over `operand1`'s
+    /// pointer -- both pointers at the storage, a zero offset, the extents as sizes, row-major
+    /// strides -- and cast into memref-typed IR the way
     /// the memref-to-LLVM conversion materializes one. A `?` extent is the `Arg` before this
     /// instruction; a static one is the type's. Nothing here checks the extents against the
     /// memory: that is the caller's claim, which is why the surface form needs `unsafe`.
@@ -667,6 +669,94 @@ impl FnEmit<'_> {
         Ok(())
     }
 
+    // `TensorCast`: a fresh buffer of the source's shape, each element of the source cast to the
+    // result's element type, as a `linalg.generic`. A `?` extent is read off the source.
+    pub(crate) fn op_tensor_cast(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let gid = *self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let (elem, shape) = self
+            .ctx
+            .tensors
+            .get(&gid)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let memty = tensor_memref_ty(&elem, &shape).ok_or(crate::emitter_gap!())?;
+        let dst = mlir_scalar(&elem).ok_or(crate::emitter_gap!())?;
+        let s = ins.operand1.0 as usize;
+        // A slice value from an elementwise operation is a vector, not a buffer.
+        if let Some(src_vec) = self.vec_of.get(s).cloned().flatten() {
+            return self.cast_vector(idx, ins, &elem, &src_vec);
+        }
+        let src = self.names.get(s).ok_or(crate::emitter_gap!())?.clone();
+        let src_mem = self
+            .mem_of
+            .get(s)
+            .cloned()
+            .flatten()
+            .ok_or(crate::emitter_gap!())?;
+        // The element type is the last part of the memref's shape: `memref<2x4xbf16, ...>`.
+        let src_el = src_mem
+            .strip_prefix("memref<")
+            .and_then(|t| t.split([',', '>']).next())
+            .and_then(|t| t.rsplit('x').next())
+            .ok_or(crate::emitter_gap!())?
+            .to_string();
+        let src_ty = crate::mlir_ty::float_elem_of_mlir(&src_el).ok_or(crate::emitter_gap!())?;
+        let (src_bits, dst_bits) = (
+            src_ty.bits().ok_or(crate::emitter_gap!())?,
+            elem.bits().ok_or(crate::emitter_gap!())?,
+        );
+        let mut sizes: Vec<String> = Vec::new();
+        for (k, d) in shape.iter().enumerate() {
+            if d == DYN_DIM {
+                let c = format!("%tcc{idx}_{k}");
+                let sz = format!("%tcs{idx}_{k}");
+                self.body += &format!("  {c} = arith.constant {k} : index\n");
+                self.body += &format!("  {sz} = memref.dim {src}, {c} : {src_mem}\n");
+                sizes.push(sz);
+            }
+        }
+        let n = match self.nrvo_slot(idx, &memty) {
+            Some(slot) => slot,
+            None => {
+                let n = format!("%v{idx}");
+                self.body += &format!("  {n} = memref.alloc({}) : {memty}\n", sizes.join(", "));
+                n
+            }
+        };
+        let dims: Vec<String> = (0..shape.len()).map(|i| format!("d{i}")).collect();
+        let map = format!("affine_map<({0}) -> ({0})>", dims.join(", "));
+        let iters: Vec<&str> = shape.iter().map(|_| "\"parallel\"").collect();
+        self.body += &format!(
+            "  linalg.generic {{indexing_maps = [{map}, {map}], iterator_types = [{}]}} ins({src} : {src_mem}) outs({n} : {memty}) {{\n",
+            iters.join(", ")
+        );
+        let (i, r) = (format!("%tci{idx}"), format!("%tcr{idx}"));
+        self.body += &format!("  ^bb0({i}: {src_el}, %tco{idx}: {dst}):\n");
+        let out = if src_el == dst {
+            i
+        } else if src_bits < dst_bits {
+            self.body += &format!("    {r} = arith.extf {i} : {src_el} to {dst}\n");
+            r
+        } else if src_bits > dst_bits {
+            self.body += &format!("    {r} = arith.truncf {i} : {src_el} to {dst}\n");
+            r
+        } else {
+            // Two float types of one width (`f16` and `bf16`): neither `extf` nor `truncf`
+            // converts between them. f32 holds every value of both, so this rounds once.
+            let w = format!("%tcw{idx}");
+            self.body += &format!("    {w} = arith.extf {i} : {src_el} to f32\n");
+            self.body += &format!("    {r} = arith.truncf {w} : f32 to {dst}\n");
+            r
+        };
+        self.body += &format!("    linalg.yield {out} : {dst}\n  }}\n");
+        self.names[idx] = n;
+        self.mem_of[idx] = Some(memty);
+        Ok(())
+    }
+
     // `TensorReduce`: every element combined with the closure adapter into one scalar, starting
     // from the preceding `Arg`. The accumulator is a rank-0 buffer the `linalg.generic` reduces
     // into. `vx.reassoc` marks it for `vx-reorderable-reductions`, which lets the closure's
@@ -748,7 +838,8 @@ impl FnEmit<'_> {
             .get(&gid)
             .ok_or(crate::emitter_gap!())?
             .clone();
-        if shape.len() != 2 {
+        let rank = shape.len();
+        if rank != 1 && rank != 2 {
             return Err(crate::emitter_gap!());
         }
         let memty = tensor_memref_ty(&elem, &shape).ok_or(crate::emitter_gap!())?;
@@ -765,7 +856,7 @@ impl FnEmit<'_> {
             .pending_args
             .split_off(self.pending_args.len() - dyn_count);
         let mut ext = extents.into_iter();
-        let mut dims_i64: Vec<String> = Vec::with_capacity(2);
+        let mut dims_i64: Vec<String> = Vec::with_capacity(rank);
         for (k, d) in shape.iter().enumerate() {
             let v = format!("%tv{idx}_{k}");
             if d == DYN_DIM {
@@ -791,20 +882,31 @@ impl FnEmit<'_> {
         let one = format!("%tvo{idx}");
         self.body += &format!("  {zero} = arith.constant 0 : i64\n");
         self.body += &format!("  {one} = arith.constant 1 : i64\n");
-        let dty = "!llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>";
+        let dty =
+            format!("!llvm.struct<(ptr, ptr, i64, array<{rank} x i64>, array<{rank} x i64>)>");
         let mut d = format!("%tvd{idx}_0");
         self.body += &format!("  {d} = llvm.mlir.undef : {dty}\n");
-        // Fields in order: allocated, aligned, offset, sizes[0..1], strides[0..1]. Row-major, so
-        // the row stride is the column count and the column stride 1.
-        let fields: [(&str, &str); 7] = [
-            (&ptr, "0"),
-            (&ptr, "1"),
-            (&zero, "2"),
-            (&dims_i64[0], "3, 0"),
-            (&dims_i64[1], "3, 1"),
-            (&dims_i64[1], "4, 0"),
-            (&one, "4, 1"),
-        ];
+        // Fields in order: allocated, aligned, offset, sizes, strides. Row-major, so a row
+        // stride is the column count and the last stride 1.
+        let fields: Vec<(&str, &str)> = if rank == 1 {
+            vec![
+                (&ptr, "0"),
+                (&ptr, "1"),
+                (&zero, "2"),
+                (&dims_i64[0], "3, 0"),
+                (&one, "4, 0"),
+            ]
+        } else {
+            vec![
+                (&ptr, "0"),
+                (&ptr, "1"),
+                (&zero, "2"),
+                (&dims_i64[0], "3, 0"),
+                (&dims_i64[1], "3, 1"),
+                (&dims_i64[1], "4, 0"),
+                (&one, "4, 1"),
+            ]
+        };
         for (k, (val, pos)) in fields.iter().enumerate() {
             let nd = format!("%tvd{idx}_{}", k + 1);
             self.body += &format!("  {nd} = llvm.insertvalue {val}, {d}[{pos}] : {dty}\n");
@@ -1012,7 +1114,7 @@ impl FnEmit<'_> {
         if let (Some(Some(vecty)), Some(e), false) = (
             self.vec_of.get(ins.operand1.0 as usize).cloned(),
             elem_of_gid(result_gid),
-            ins.imm == 1,
+            ins.imm & 1 == 1,
         ) {
             let imt = mlir_scalar(&self.elem_at(ins.operand2.0).ok_or(crate::emitter_gap!())?)
                 .ok_or(crate::emitter_gap!())?;
@@ -1049,11 +1151,17 @@ impl FnEmit<'_> {
         if let Some(e) = elem_of_gid(result_gid) {
             // Scalar element: a value read or a store place (works on a contiguous or a
             // strided-row base — `memref.load`/`store` handle both).
-            if ins.imm == 1 {
+            if ins.imm & 1 == 1 {
                 self.place_of[idx] = Some((base, ic, base_memty));
             } else {
                 let n = format!("%v{idx}");
-                self.body += &format!("  {n} = memref.load {base}[{ic}] : {base_memty}\n");
+                let own = lane_own_attrs(ins.imm);
+                let attrs = if own.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {{{}}}", own.join(", "))
+                };
+                self.body += &format!("  {n} = memref.load {base}[{ic}]{attrs} : {base_memty}\n");
                 self.names[idx] = n;
                 self.etypes[idx] = Some(e);
             }
@@ -1122,6 +1230,143 @@ impl FnEmit<'_> {
             self.names[idx] = n;
             self.mem_of[idx] = Some(result_ty);
         }
+        Ok(())
+    }
+
+    /// `q[a..b]`: rows `a` to `b - 1` of a tensor, as a view of the same memory. `operand1` is
+    /// the tensor and `operand2` is `a`, and the result type holds the number of rows. Each other
+    /// size and each stride is the tensor's: a literal where its type has one, else a value read
+    /// from the tensor. The offset is the tensor's own offset plus `a` rows. The cast reads the
+    /// tensor itself, so `-fbounds-checks` checks the range against it.
+    pub(crate) fn op_tensor_range(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let result_gid = *self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let base = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        // A one-dimensional result of arithmetic stays in a vector register, with no memory.
+        if matches!(self.vec_of.get(ins.operand1.0 as usize), Some(Some(_))) {
+            return Err(Decline::TypeNotModelled {
+                what: "a range of a one-dimensional result that is kept in registers",
+            });
+        }
+        let base_memty = self
+            .mem_of
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone()
+            .ok_or(crate::emitter_gap!())?;
+        let (dims_x, et) = memref_lead_dims_and_elem(&base_memty).ok_or(crate::emitter_gap!())?;
+        let et = et.to_string();
+        let dims: Vec<String> = dims_x
+            .split('x')
+            .filter(|d| !d.is_empty())
+            .map(str::to_string)
+            .collect();
+        let rank = dims.len();
+        let rows = self
+            .ctx
+            .tensors
+            .get(&result_gid)
+            .and_then(|(_, shape)| shape.first().cloned())
+            .ok_or(crate::emitter_gap!())?;
+        // The strides of the tensor as its type gives them: from its layout, or row-major when
+        // it has none.
+        let layout = base_memty.contains("strided<");
+        let strides: Vec<String> = if layout {
+            base_memty
+                .split("strided<[")
+                .nth(1)
+                .and_then(|s| s.split(']').next())
+                .ok_or(crate::emitter_gap!())?
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect()
+        } else {
+            let mut s = vec!["1".to_string(); rank];
+            for k in (0..rank.saturating_sub(1)).rev() {
+                s[k] = match (s[k + 1].parse::<i64>(), dims[k + 1].parse::<i64>()) {
+                    (Ok(a), Ok(b)) => (a * b).to_string(),
+                    _ => DYN_DIM.to_string(),
+                };
+            }
+            s
+        };
+        if rank == 0 || strides.len() != rank {
+            return Err(crate::emitter_gap!());
+        }
+        let shared = self.shared_addrspace();
+        let space_sfx = if base_memty.ends_with(&format!(", {shared}>")) {
+            format!(", {shared}")
+        } else {
+            String::new()
+        };
+        // The offset of a view, and each size or stride that is `?` in the type, come from the
+        // descriptor of the tensor: result 1 is the offset, then the sizes, then the strides.
+        let meta = format!("%rgm{idx}");
+        if layout || dims.iter().chain(&strides).any(|d| d == DYN_DIM) {
+            self.body += &format!(
+                "  {meta}:{} = memref.extract_strided_metadata {base} : {base_memty} -> memref<{et}{space_sfx}>, {}\n",
+                2 + 2 * rank,
+                vec!["index"; 1 + 2 * rank].join(", ")
+            );
+        }
+        let value = |txt: &str, result: usize| {
+            if txt == DYN_DIM {
+                format!("{meta}#{result}")
+            } else {
+                txt.to_string()
+            }
+        };
+        let imt = mlir_scalar(&self.elem_at(ins.operand2.0).ok_or(crate::emitter_gap!())?)
+            .ok_or(crate::emitter_gap!())?;
+        let start = self
+            .names
+            .get(ins.operand2.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let ic = format!("%ic{idx}");
+        self.body += &format!("  {ic} = arith.index_cast {start} : {imt} to index\n");
+        let row_stride = if strides[0] == DYN_DIM {
+            value(&strides[0], 2 + rank)
+        } else {
+            let c = format!("%rgc{idx}");
+            self.body += &format!("  {c} = arith.constant {} : index\n", strides[0]);
+            c
+        };
+        let mut off = format!("%rgo{idx}");
+        self.body += &format!("  {off} = arith.muli {ic}, {row_stride} : index\n");
+        if layout {
+            let o = format!("%rga{idx}");
+            self.body += &format!("  {o} = arith.addi {meta}#1, {off} : index\n");
+            off = o;
+        }
+        let sizes: Vec<String> = std::iter::once(rows.clone())
+            .chain((1..rank).map(|k| value(&dims[k], 2 + k)))
+            .collect();
+        let stride_values: Vec<String> = (0..rank)
+            .map(|k| value(&strides[k], 2 + rank + k))
+            .collect();
+        let dimx: String = std::iter::once(&rows)
+            .chain(&dims[1..])
+            .map(|d| format!("{d}x"))
+            .collect();
+        let result_ty = format!(
+            "memref<{dimx}{et}, strided<[{}], offset: ?>{space_sfx}>",
+            strides.join(", ")
+        );
+        let n = format!("%v{idx}");
+        self.body += &format!(
+            "  {n} = memref.reinterpret_cast {base} to offset: [{off}], sizes: [{}], strides: [{}] : {base_memty} to {result_ty}\n",
+            sizes.join(", "),
+            stride_values.join(", ")
+        );
+        self.names[idx] = n;
+        self.mem_of[idx] = Some(result_ty);
         Ok(())
     }
 
@@ -1445,17 +1690,24 @@ impl FnEmit<'_> {
             // docs/lane_reductions.md: the device copy of a kernel keeps this lane's element in a
             // register.
             let row = ins.imm >> crate::bytecode::LANE_ROW_SHIFT;
-            let lane = match ins.imm & ((1 << crate::bytecode::LANE_ROW_SHIFT) - 1) {
+            let mut attrs = match ins.imm & 3 {
                 crate::bytecode::TENSOR_STORE_BLOCK_LANE_ELEMENT => {
-                    " {vx.lane_element = \"block\"}".to_string()
+                    vec!["vx.lane_element = \"block\"".to_string()]
                 }
-                crate::bytecode::TENSOR_STORE_SUBGROUP_LANE_ELEMENT if row > 0 => {
-                    format!(" {{vx.lane_element = \"subgroup\", vx.lane_row = {row} : i64}}")
-                }
+                crate::bytecode::TENSOR_STORE_SUBGROUP_LANE_ELEMENT if row > 0 => vec![
+                    "vx.lane_element = \"subgroup\"".to_string(),
+                    format!("vx.lane_row = {row} : i64"),
+                ],
                 crate::bytecode::TENSOR_STORE_SUBGROUP_LANE_ELEMENT => {
-                    " {vx.lane_element = \"subgroup\"}".to_string()
+                    vec!["vx.lane_element = \"subgroup\"".to_string()]
                 }
-                _ => String::new(),
+                _ => Vec::new(),
+            };
+            attrs.extend(lane_own_attrs(ins.imm));
+            let lane = if attrs.is_empty() {
+                String::new()
+            } else {
+                format!(" {{{}}}", attrs.join(", "))
             };
             self.body += &format!("  memref.store {val}, {base}[{ic}]{lane} : {memty}\n");
         } else if let Some(rowty) = self
@@ -1514,6 +1766,12 @@ impl FnEmit<'_> {
                 .ok_or(crate::emitter_gap!())?
                 .clone()
             {
+                // A tile into a row of a larger tensor, `acc[w] = acc[w] + p`: a copy into the
+                // row's view. The checker matched the shapes and the element types.
+                if memref_lead_dims_and_elem(&srcty).is_some_and(|(d, _)| d.len() >= 2) {
+                    self.body += &format!("  memref.copy {vecname}, {dst} : {srcty} to {rowty}\n");
+                    return Ok(());
+                }
                 // The stored value is a rank-1 tensor, not a vector -- `m[0] = [10.0, ..]`, a row
                 // written from an array literal's buffer. Read the whole source row as a vector
                 // and store it; the checker already matched the two lengths.
@@ -1560,4 +1818,22 @@ fn i64_list(v: &[i64]) -> String {
         .map(|x| x.to_string())
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// The `vx.lane_own` and `vx.lanes` attributes of an element access whose `imm` has
+/// `LANE_OWN_SUBGROUP` or `LANE_OWN_WHOLE` (docs/lane_reductions.md).
+fn lane_own_attrs(imm: u64) -> Vec<String> {
+    let form = if imm & crate::bytecode::LANE_OWN_SUBGROUP != 0 {
+        "subgroup"
+    } else if imm & crate::bytecode::LANE_OWN_WHOLE != 0 {
+        "whole"
+    } else {
+        return Vec::new();
+    };
+    let lanes = (imm >> crate::bytecode::LANE_OWN_LANES_SHIFT)
+        & ((1 << (crate::bytecode::LANE_ROW_SHIFT - crate::bytecode::LANE_OWN_LANES_SHIFT)) - 1);
+    vec![
+        format!("vx.lane_own = \"{form}\""),
+        format!("vx.lanes = {lanes} : i64"),
+    ]
 }

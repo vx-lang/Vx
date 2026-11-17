@@ -1,0 +1,72 @@
+//===- the_room_of_a_channel_of_gpu_tensors_counts.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A channel of tensors in the GPU memory `W` can hold `n` of them at once. So the capacity check
+// counts `n` tensors from the `channel(n)` call until the function that calls it returns. Each
+// tensor here is 512 bytes, and `W` holds 4096.
+//
+// - `too_big`: a room of 9 tensors is 4608 bytes, more than all of `W`.
+// - `with_a_call`: a room of 7 tensors, 3584 bytes, stays while `place_two` places 1024 more.
+// - `room_not_known`: the room is a parameter, so the check has no bound.
+// - `make`: the room is counted in `make`, so `make` cannot give the ends to its caller.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//===----------------------------------------------------------------------===//
+
+import std::sync::channel;
+import core::mem;
+
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 4 KiB, managed: explicit, scope: device
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10,
+  transfer Memory::W -> Memory::CPU_DRAM : 10
+}
+
+fn too_big() -> void {
+  // CHECK-DAG: Error[E6009] at {{.*}}.vx:[[@LINE+1]]:18: the room of this channel, 9 of `Tensor<f32, [128], Memory::W>`, needs 4608 bytes but memory space 'W' has capacity 4096 bytes
+  let (tx, rx) = channel<Tensor<f32, [128], Memory::W>>(9);
+}
+
+fn place_two() -> f32 {
+  let a = transfer(Tensor<f32, [128]>::fill(1.0), Memory::W);
+  let b = transfer(Tensor<f32, [128]>::fill(2.0), Memory::W);
+  let c = transfer(a, Memory::CPU_DRAM);
+  let d = transfer(b, Memory::CPU_DRAM);
+  return c[0] + d[0];
+}
+
+fn with_a_call() -> f32 {
+  let (tx, rx) = channel<Tensor<f32, [128], Memory::W>>(7);
+  // CHECK-DAG: Error[E6027] at {{.*}}.vx:[[@LINE+1]]:10: the working set along call path 'with_a_call -> place_two' in memory space 'W' peaks at 4608 bytes, over its 4096 byte capacity: 'with_a_call' holds 3584 bytes across its call, 'place_two' itself peaks at 1024 bytes
+  return place_two();
+}
+
+fn room_not_known(n : i64) -> void {
+  // CHECK-DAG: Error[E6040] at {{.*}}.vx:[[@LINE+1]]:18: this channel holds `Tensor<f32, [128], Memory::W>`, which lives in memory space 'W', and its room is not known at compile time. The channel can hold that many tensors at once, so the working set of 'W' has no bound. Give `channel` a constant room
+  let (tx, rx) = channel<Tensor<f32, [128], Memory::W>>(n);
+}
+
+fn make() -> (Sender<Tensor<f32, [128], Memory::W>>, Receiver<Tensor<f32, [128], Memory::W>>) {
+  // CHECK-DAG: Error[E6041] at {{.*}}.vx:[[@LINE+1]]:10: 'make' makes a channel of tensors in a memory with a capacity, and returns an end of a channel. The room of the channel is counted in the function that calls `channel`, only until it returns. Make the channel in the function that uses its ends
+  return channel<Tensor<f32, [128], Memory::W>>(2);
+}
+
+fn main() -> i32 {
+  too_big();
+  let _x = with_a_call();
+  room_not_known(2);
+  let (_tx, _rx) = make();
+  return 0;
+}
+
+// CHECK: {{^}}Semantic check failed on {{.*}}: 4 error(s) emitted

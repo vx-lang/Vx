@@ -1,0 +1,89 @@
+// The runtime commits the command buffer of a batch after every 16 launches, and goes on in a new
+// command buffer. Metal orders two launches only when they use the same buffer object. So the
+// launches in the new command buffer use the buffers of the batch.
+//
+// Here launch 16, `slow_count`, runs a long loop on one block of the GPU and writes `x`. Launch
+// 17, `plus_one`, is the first launch of the next command buffer, and it reads `x`. When the next
+// command buffer used new buffers for the same memory, `plus_one` read `x` before `slow_count`
+// wrote it, and `y` was 1.
+//
+// `main` reads `ones` at the end. Otherwise the program frees `ones` after `slow_count`, and the
+// free waits for the batch.
+//
+// REQUIRES: macos
+// RUN: env VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/m4-uma.vx 2>%t.gpu | FileCheck %s --check-prefix=OUT
+// RUN: grep -e "Vx Metal" %t.gpu | grep -v -e "bytes of GPU memory" -e "bytes for a batch" | FileCheck %s --check-prefix=GPU
+// RUN: env VX_METAL=0 vxc %s --host default --machine fleet/m4-uma.vx | FileCheck %s --check-prefix=OUT
+//
+// OUT: {{^}}y 1000001 1000001{{$}}
+// OUT-NEXT: {{^}}x 1000000 a 15 ones 1{{$}}
+//
+// GPU-NOT: waited
+// GPU: [Vx Metal] committed 16 kernels before the wait
+// GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 1 x 1 x 1, block 256
+// GPU-NEXT: [Vx Metal] waited for 17 kernels,{{.*}}
+// GPU-NOT: {{.}}
+
+// x[i] = x[i] + 1
+fn add_one(x : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for g in 0..(n + 255) / 256 across blocks {
+      for l in 0..256 across lanes(256) {
+        let i = g * 256 + l;
+        if i < n {
+          x[i] = x[i] + 1.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+// dst[l] = the sum of `steps` elements of `ones`, so `steps`. One block runs the long loop, and
+// the other cores of the GPU stay free for a launch that does not wait for it.
+fn slow_count(dst : &mut Tensor<f32, [?], Memory::HBM>, ones : &Tensor<f32, [?], Memory::HBM>, steps : i32) -> void {
+  spawn on(Topology::Device) {
+    for g in 0..1 across blocks {
+      for l in 0..256 across lanes(256) {
+        let mut v = 0.0;
+        for k in 0..steps {
+          v = v + ones[(l + k) % 256];
+        }
+        dst[l] = v;
+      }
+    }
+  }
+  return;
+}
+
+// dst = src + 1
+fn plus_one(dst : &mut Tensor<f32, [?], Memory::HBM>, src : &Tensor<f32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for g in 0..1 across blocks {
+      for l in 0..256 across lanes(256) {
+        dst[l] = src[l] + 1.0;
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  // Each tensor fills pages of its own, so two tensors never share a buffer.
+  let mut a = transfer(Tensor<f32, [65536]>::fill(0.0), Memory::HBM);
+  let ones = transfer(Tensor<f32, [65536]>::fill(1.0), Memory::HBM);
+  let mut x = transfer(Tensor<f32, [65536]>::fill(0.0), Memory::HBM);
+  let mut y = transfer(Tensor<f32, [65536]>::fill(0.0), Memory::HBM);
+  for k in 0..15 {
+    add_one(&mut a, 256);
+  }
+  slow_count(&mut x, &ones, 1000000);
+  plus_one(&mut y, &x);
+  let hy = transfer(y, Memory::CPU_DRAM);
+  let hx = transfer(x, Memory::CPU_DRAM);
+  let ha = transfer(a, Memory::CPU_DRAM);
+  let h1 = transfer(ones, Memory::CPU_DRAM);
+  println!("y {} {}", hy[0], hy[255]);
+  println!("x {} a {} ones {}", hx[255], ha[255], h1[255]);
+  return 0;
+}

@@ -142,7 +142,7 @@ impl AstPrinter {
                     )?;
                     Self::print_expr(w, expr, &indent.child(is_last), true)?;
                 }
-                Statement::Assign(AssignStmt { lhs, rhs, span: _ }) => {
+                Statement::Assign(AssignStmt { lhs, rhs, .. }) => {
                     indent.print(w)?;
                     writeln!(w, "{}Assign", prefix)?;
                     Self::print_expr(w, lhs, &indent.child(is_last), false)?;
@@ -153,6 +153,7 @@ impl AstPrinter {
                     path,
                     call,
                     limit: _,
+                    placement: _,
                     expr,
                     flag,
                     after_value,

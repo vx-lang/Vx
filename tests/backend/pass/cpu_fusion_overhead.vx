@@ -1,5 +1,5 @@
 //===- cpu_fusion_overhead.vx ------------------------------*- Vx -*-===//
-// RUN: vxc %s --emit-mlir -O0 | FileCheck %s --check-prefix=MLIR
+// RUN: vxc %s --emit-mlir -O0 | FileCheck %s --check-prefix=MLIR # flat-codegen
 // RUN: vxc %s --emit-mlir -O3 | FileCheck %s --check-prefix=MLIR
 // RUN: vxc %s --emit-llvm -O3 | FileCheck %s --check-prefix=LLVM
 

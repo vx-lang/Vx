@@ -1,0 +1,34 @@
+fn signed_byte(value : i8) -> usize {
+  return value as usize;
+}
+
+fn signed_word(value : i64) -> usize {
+  return value as usize;
+}
+
+fn unsigned_word(value : u64) -> usize {
+  return value as usize;
+}
+
+fn signed_wide(value : i128) -> usize {
+  return value as usize;
+}
+
+fn unsigned_wide(value : u128) -> usize {
+  return value as usize;
+}
+
+fn main() -> i32 {
+  print(signed_byte(0));
+  print!(" ");
+  print(signed_word(9223372036854775807i64));
+  print!(" ");
+  print(unsigned_word(9223372036854775807u64));
+  print!(" ");
+  print(signed_wide(9223372036854775807i128));
+  print!(" ");
+  print(unsigned_wide(9223372036854775807u128));
+  return 0;
+}
+
+// EXPECT: 0 9223372036854775807 9223372036854775807 9223372036854775807 9223372036854775807

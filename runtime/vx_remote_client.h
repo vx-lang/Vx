@@ -42,6 +42,7 @@
 #include "vx_view_copy.h"
 #include "vx_wire.h"
 
+#include <errno.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -66,6 +67,72 @@ typedef struct {
 
 static inline void vx_remote_pool_init(vx_remote_pool *p) { p->count = 0; }
 
+/// The seconds that a host waits for an answer from the machine of a worker
+/// before it gives up. VX_REMOTE_LINK_TIMEOUT changes it.
+static inline int vx_remote_link_timeout(void) {
+  const char *v = getenv("VX_REMOTE_LINK_TIMEOUT");
+  int seconds = v ? atoi(v) : 0;
+  return seconds > 0 ? seconds : 30;
+}
+
+/// Makes a lost machine or link an error on `fd`. Neither sends EOF, so a host
+/// that waits for a reply would wait forever. A time limit on the reply is
+/// wrong, because a DISPATCH can run a kernel for minutes. So the operating
+/// system sends TCP keepalive probes. The machine of the worker answers them
+/// while a kernel runs there, and a lost machine or link does not.
+static inline void vx_remote_watch_link(int fd) {
+  int limit = vx_remote_link_timeout();
+  int one = 1;
+  int idle = limit / 3 > 0 ? limit / 3 : 1;
+  int count = 4;
+  int interval = (limit - idle) / count > 0 ? (limit - idle) / count : 1;
+  setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(one));
+#if defined(TCP_KEEPIDLE)
+  setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
+#elif defined(TCP_KEEPALIVE)
+  setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, &idle, sizeof(idle));
+#endif
+  setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval));
+  setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &count, sizeof(count));
+#if defined(TCP_USER_TIMEOUT)
+  /* Also for a send whose bytes the worker never acknowledges. */
+  {
+    unsigned int ms = (unsigned int)limit * 1000u;
+    setsockopt(fd, IPPROTO_TCP, TCP_USER_TIMEOUT, &ms, sizeof(ms));
+  }
+#endif
+}
+
+/// Says why a send or a receive on a worker connection failed, when the reason
+/// is a lost machine or link. The caller then stops with a message that names
+/// the worker.
+static inline void vx_remote_report_link(void) {
+  if (errno == ETIMEDOUT || errno == EHOSTUNREACH || errno == ENETUNREACH) {
+    fprintf(stderr,
+            "[Vx remote] the machine of a worker did not answer for %d s. The "
+            "machine or the link to it may be lost.\n",
+            vx_remote_link_timeout());
+  }
+}
+
+static inline int vx_remote_send(int fd, uint32_t type, const void *body,
+                                 uint64_t body_len) {
+  int rc = vx_transport_send(fd, type, body, body_len);
+  if (rc == VX_TRANSPORT_ERROR) {
+    vx_remote_report_link();
+  }
+  return rc;
+}
+
+static inline int vx_remote_recv(int fd, uint32_t *type, void *body,
+                                 uint64_t capacity, uint64_t *body_len) {
+  int rc = vx_transport_recv(fd, type, body, capacity, body_len);
+  if (rc == VX_TRANSPORT_ERROR) {
+    vx_remote_report_link();
+  }
+  return rc;
+}
+
 /// Open a connection, or return the one already open for this worker.
 ///
 /// Returns -1 on failure, having said which worker and why on stderr. A
@@ -83,9 +150,10 @@ static inline int vx_remote_connect(vx_remote_pool *pool,
   /* Keyed by where the worker is, not what it is called. One machine can serve
      several names -- a program placing data in `Memory::HBM_A` and dispatching
      to `Topology::DevA` names two things that are one process, and a two-GPU
-     pod is exactly that shape. Keyed by name, the second name opened a second
-     socket to a worker that accepts one connection at a time and serves it to
-     completion, so the second connect blocked forever and the program hung
+     pod is exactly that shape. A worker gives each connection its own
+     handles, so a buffer placed through one name must be used through the
+     same connection. Keyed by name, the second name opened a second socket.
+     The worker then served one connection to completion, so the program hung
      after its last transfer with no error anywhere (#348). */
   for (i = 0; i < pool->count; ++i) {
     if (pool->conns[i].port == w->port &&
@@ -133,6 +201,7 @@ static inline int vx_remote_connect(vx_remote_pool *pool,
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
   }
+  vx_remote_watch_link(fd);
 
   snprintf(pool->conns[pool->count].host, VX_MANIFEST_MAX_HOST, "%s", w->host);
   pool->conns[pool->count].port = w->port;
@@ -173,11 +242,10 @@ static inline uint64_t vx_remote_transfer(int fd, const void *bytes,
             (unsigned long long)nbytes);
     return 0;
   }
-  if (vx_transport_send(fd, VX_WIRE_TRANSFER, scratch, w.len) !=
-      VX_TRANSPORT_OK) {
+  if (vx_remote_send(fd, VX_WIRE_TRANSFER, scratch, w.len) != VX_TRANSPORT_OK) {
     return 0;
   }
-  if (vx_transport_recv(fd, &type, reply, sizeof(reply), &reply_len) !=
+  if (vx_remote_recv(fd, &type, reply, sizeof(reply), &reply_len) !=
       VX_TRANSPORT_OK) {
     return 0;
   }
@@ -196,10 +264,10 @@ static inline int vx_remote_fetch(int fd, uint64_t handle, void *dst,
 
   vx_wire_writer_init(&w, request, sizeof(request));
   vx_wire_put_fetch(&w, handle, nbytes);
-  if (vx_transport_send(fd, VX_WIRE_FETCH, request, w.len) != VX_TRANSPORT_OK) {
+  if (vx_remote_send(fd, VX_WIRE_FETCH, request, w.len) != VX_TRANSPORT_OK) {
     return 0;
   }
-  rc = vx_transport_recv(fd, &type, dst, nbytes, &got);
+  rc = vx_remote_recv(fd, &type, dst, nbytes, &got);
   /* An empty reply is the worker saying it could not honour the handle. Short
      of that, a length that is not what was asked for means the two sides
      disagree about the buffer, which is worse than a refusal. */
@@ -466,11 +534,10 @@ vx_remote_dispatch_staged(int fd, const void *payload, uint64_t payload_len,
   if (w.overflow) {
     return 0;
   }
-  if (vx_transport_send(fd, VX_WIRE_DISPATCH, scratch, w.len) !=
-      VX_TRANSPORT_OK) {
+  if (vx_remote_send(fd, VX_WIRE_DISPATCH, scratch, w.len) != VX_TRANSPORT_OK) {
     return 0;
   }
-  if (vx_transport_recv(fd, &type, reply, sizeof(reply), &reply_len) !=
+  if (vx_remote_recv(fd, &type, reply, sizeof(reply), &reply_len) !=
       VX_TRANSPORT_OK) {
     return 0;
   }
@@ -582,10 +649,10 @@ static inline int vx_remote_free(int fd, uint64_t handle) {
 
   vx_wire_writer_init(&w, request, sizeof(request));
   vx_wire_put_free(&w, handle);
-  if (vx_transport_send(fd, VX_WIRE_FREE, request, w.len) != VX_TRANSPORT_OK) {
+  if (vx_remote_send(fd, VX_WIRE_FREE, request, w.len) != VX_TRANSPORT_OK) {
     return 0;
   }
-  return vx_transport_recv(fd, &type, reply, sizeof(reply), &reply_len) ==
+  return vx_remote_recv(fd, &type, reply, sizeof(reply), &reply_len) ==
          VX_TRANSPORT_OK;
 }
 

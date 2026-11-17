@@ -420,9 +420,16 @@ fn write_topology(w: &mut Writer, t: &Topology) -> Result<(), String> {
         CpuAvx512 => w.u8(4),
         CpuNeon => w.u8(5),
         Current => w.u8(6),
-        Custom(s) => {
+        Custom(s, None) => {
             w.u8(7);
             w.sym(s);
+        }
+        Custom(s, Some(e)) => {
+            let idx = crate::arch::const_topology_index(e)
+                .ok_or_else(|| format!("vxlib: device index of '{s}' is not a constant"))?;
+            w.u8(8);
+            w.sym(s);
+            w.u64(idx as u64);
         }
         NPU(_) | AccCore(_) | Slice(..) => {
             return Err(
@@ -443,7 +450,11 @@ fn read_topology(r: &mut Reader) -> Result<Topology, String> {
         4 => CpuAvx512,
         5 => CpuNeon,
         6 => Current,
-        7 => Custom(r.sym()?),
+        7 => Custom(r.sym()?, None),
+        8 => {
+            let name = r.sym()?;
+            Topology::declared_device(name, r.u64()? as i64)
+        }
         t => return Err(format!("vxlib: bad Topology tag {t}")),
     })
 }
@@ -564,7 +575,6 @@ fn write_type(w: &mut Writer, ty: &Type) -> Result<(), String> {
             write_element_type(w, e);
             w.u64(*n as u64);
         }
-        Matrix => w.u8(13),
         Unknown => w.u8(14),
         // A dimension is `?` or a literal. A const-generic name or an arithmetic dimension
         // belongs to a template, and a template is not an interface.
@@ -657,7 +667,7 @@ fn read_type(r: &mut Reader) -> Result<Type, String> {
             Closure(params, ret)
         }
         12 => Simd(read_element_type(r)?, r.u64()? as usize),
-        13 => Matrix,
+        // No type has tag 13. A `.vxlib` from an older compiler may hold it.
         14 => Unknown,
         15 => {
             let e = read_element_type(r)?;

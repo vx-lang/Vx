@@ -5,6 +5,18 @@
 //
 // RUN: env VX_METAL=0 VX_HOST_THREADS=1 vxc %s --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: env VX_METAL=0 VX_HOST_THREADS=4 vxc %s --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_METAL=0 VX_HOST_THREADS=1 vxc %s --legacy-codegen --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_METAL=0 VX_HOST_THREADS=4 vxc %s --legacy-codegen --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// Both code generators write the same Metal kernel for `halve`. It only reads `src`.
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx --emit-msl -o %t.metal
+// RUN: FileCheck %s --check-prefix=MSL --input-file=%t.metal
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/m4-uma.vx --emit-msl -o %t.ast.metal
+// RUN: FileCheck %s --check-prefix=MSL --input-file=%t.ast.metal
+// MSL-LABEL: kernel void halve(
+// MSL-NEXT: device float *p0 {{\[\[}}buffer(0){{\]\]}},
+// MSL-NEXT: device const float *p1 {{\[\[}}buffer(1){{\]\]}},
+//
 // CHECK: halve 14272477 0 0 1056964608
 // CHECK-NEXT: halve 14272477 0 0 1056964608
 // CHECK-NEXT: halve 14272477 0 0 1056964608

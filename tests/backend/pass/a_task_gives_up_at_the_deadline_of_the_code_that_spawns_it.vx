@@ -1,0 +1,95 @@
+//===- a_task_gives_up_at_the_deadline_of_the_code_that_spawns_it.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A task gets the time limit of the code that spawns it. Each task here waits in `recv` for a
+// value that never comes, because the code around the `tasks` block holds the `Sender`. Without
+// the limit, the join at the end of the block waits forever.
+//
+// - A task in a call of `within`, and a task that this task spawns, give up at the limit.
+// - A task in a `drop` gives up at the `wait_limit` of the `drop`.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=Warning
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=Warning
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=Warning
+// CHECK: {{^}}the task in within gave up: true{{$}}
+// CHECK-NEXT: {{^}}the task in a task gave up: true{{$}}
+// CHECK-NEXT: {{^}}within took less than 5 seconds: true{{$}}
+// CHECK-NEXT: {{^}}the task in a drop gave up: true{{$}}
+// CHECK-NEXT: {{^}}the drop took less than 5 seconds: true{{$}}
+
+import core::time;
+import std::sync::channel;
+import std::sync::wait;
+import std::time;
+
+// Whether the `recv` gave up, and did not get a value.
+fn gave_up(rx : Receiver<i64>) -> bool {
+  match rx.recv() {
+    Result<i64, RecvError>::Ok(_v) => {
+      return false;
+    }
+    Result<i64, RecvError>::Err(_e) => {
+      return true;
+    }
+  }
+}
+
+fn wait_in_an_inner_task(rx : Receiver<i64>) -> void {
+  tasks {
+    spawn {
+      println!("the task in a task gave up: {}", gave_up(rx));
+    };
+  };
+}
+
+struct WaitsInATask {
+  n : i64,
+}
+
+impl Drop for WaitsInATask {
+  fn drop(self : &mut WaitsInATask) -> void {
+    let (tx, rx) = channel<i64>(1);
+    tasks {
+      spawn {
+        println!("the task in a drop gave up: {}", gave_up(rx));
+      };
+    };
+    drop(tx);
+  }
+
+  fn wait_limit(self : &WaitsInATask) -> Duration {
+    return Duration::from_millis(200);
+  }
+}
+
+fn main() -> i32 {
+  let (tx, rx) = channel<i64>(1);
+  let (inner_tx, inner_rx) = channel<i64>(1);
+  let start = Instant::now();
+  within(Duration::from_millis(200), || -> void {
+    tasks {
+      let first = spawn {
+        println!("the task in within gave up: {}", gave_up(rx));
+      };
+      first.join();
+      spawn {
+        wait_in_an_inner_task(inner_rx);
+      };
+    };
+  });
+  println!("within took less than 5 seconds: {}", start.elapsed() < Duration::from_secs(5));
+  drop(tx);
+  drop(inner_tx);
+
+  let w = WaitsInATask {
+    n : 1
+  };
+  let drop_start = Instant::now();
+  drop(w);
+  println!("the drop took less than 5 seconds: {}", drop_start.elapsed() < Duration::from_secs(5));
+  return 0;
+}

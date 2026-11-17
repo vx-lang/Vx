@@ -1,0 +1,104 @@
+// The MSL that vxc writes for the 32-bit element atomics of `core::sync::atomic` on the Apple GPU
+// (`fleet/m4-uma.vx`). Metal atomics take only `memory_order_relaxed`. Vx makes each Relaxed read
+// an Acquire read (docs/lang/semantics.md, section 2.5), so an acquire fence follows each atomic
+// that reads. With `-fweak-relaxed-atomics`, no fence follows. The CHECK lines hold for both code
+// generators. The test needs no GPU.
+//
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx --emit-msl -o %t.metal
+// RUN: FileCheck %s --input-file=%t.metal
+// RUN: vxc %s -fweak-relaxed-atomics --host default --machine fleet/m4-uma.vx --emit-msl -o %t.weak.metal
+// RUN: FileCheck %s --check-prefix=WEAK --input-file=%t.weak.metal --implicit-check-not=atomic_thread_fence
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/m4-uma.vx --emit-msl -o %t.ast.metal
+// RUN: FileCheck %s --input-file=%t.ast.metal
+import core::sync::atomic;
+
+// `insert_all` takes the table as a `&`, but a compare-and-swap writes it. So the table is not
+// `const`, and the line that the runtime reads has no `r` for it: the runtime counts the kernel
+// as a writer of the table. The keys are only read.
+// CHECK-LABEL: // vx.kernel insert_all m1 m1r i32 i32
+// CHECK: device int *p0 {{\[\[}}buffer(0){{\]\]}},
+// CHECK-NEXT: device const int *p1 {{\[\[}}buffer(1){{\]\]}},
+//
+// MSL has only a weak compare-and-swap, which can fail and change nothing. Then the value that
+// it found is the one it expected, and it runs again. So it acts as the compare-and-swap of LLVM,
+// which fails only when it finds another value.
+// CHECK: uint [[E:e[0-9]+]] = (uint)[[EMPTY:v[0-9]+]];
+// CHECK-NEXT: do {
+// CHECK-NEXT: [[OK:v[0-9]+]] = atomic_compare_exchange_weak_explicit((device atomic_uint *)&p0[(p0_b + {{v[0-9]+}})], &[[E]], (uint){{v[0-9]+}}, memory_order_relaxed, memory_order_relaxed);
+// CHECK-NEXT: } while (![[OK]] && [[E]] == (uint)[[EMPTY]]);
+// CHECK-NEXT: [[FOUND:v[0-9]+]] = (int)[[E]];
+// CHECK-NEXT: }
+// CHECK-NEXT: atomic_thread_fence(mem_flags::mem_device, memory_order_acquire, thread_scope_device);
+// CHECK-NEXT: bool {{v[0-9]+}} = [[FOUND]] == [[EMPTY]];
+// WEAK-LABEL: // vx.kernel insert_all m1 m1r i32 i32
+// WEAK: } while (!{{v[0-9]+}} && {{e[0-9]+}} == (uint){{v[0-9]+}});
+
+pub fn insert_all(slots : &Tensor<u32, [?], Memory::HBM>, keys : &Tensor<u32, [?], Memory::HBM>, nblocks : i32, mask : u32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..nblocks across blocks {
+      for l in 0..64 across lanes {
+        let k = keys[b * 64 + l];
+        let mut s = (k * 13u32) & mask;
+        loop {
+          let found = atomic_compare_and_swap_u32(slots, s as i32, 4294967295u32, k, AtomicOrdering::Relaxed);
+          if found == 4294967295u32 || found == k {
+            break;
+          }
+          s = (s + 1u32) & mask;
+        }
+      }
+    }
+  }
+  return;
+}
+
+// An add gives the same bits on a signed and an unsigned atomic. A max or a min of `i32` compares
+// with the sign, and one of `u32` without it. Metal has no atomic that counts and starts again
+// from 0, so a compare-and-swap loop writes the new value. A store reads nothing, so no fence
+// follows it. `hits` is in shared memory, so its fence is for the threadgroup.
+// CHECK-LABEL: // vx.kernel count m1 m1 m1 m1 m1 m1 m1
+// CHECK: threadgroup int [[HITS:vx_npu_kernel_[0-9]+_smem_0]][1];
+// CHECK: int [[OLD:v[0-9]+]] = (int)atomic_fetch_add_explicit((device atomic_uint *)&p0[p0_b], (uint){{v[0-9]+}}, memory_order_relaxed);
+// CHECK-NEXT: atomic_thread_fence(mem_flags::mem_device, memory_order_acquire, thread_scope_device);
+// CHECK: = (int)atomic_fetch_max_explicit((device atomic_int *)&p1[p1_b], {{v[0-9]+}}, memory_order_relaxed);
+// CHECK-NEXT: atomic_thread_fence(mem_flags::mem_device, memory_order_acquire, thread_scope_device);
+// CHECK: = (int)atomic_fetch_min_explicit((device atomic_uint *)&p2[p2_b], (uint){{v[0-9]+}}, memory_order_relaxed);
+// CHECK-NEXT: atomic_thread_fence(mem_flags::mem_device, memory_order_acquire, thread_scope_device);
+// CHECK: uint [[W:w[0-9]+]] = atomic_load_explicit((device atomic_uint *)&p3[p3_b], memory_order_relaxed);
+// CHECK-NEXT: while (!atomic_compare_exchange_weak_explicit((device atomic_uint *)&p3[p3_b], &[[W]], [[W]] >= (uint){{v[0-9]+}} ? 0u : [[W]] + 1u, memory_order_relaxed, memory_order_relaxed)) {
+// CHECK-NEXT: }
+// CHECK-NEXT: = (int)[[W]];
+// CHECK-NEXT: }
+// CHECK-NEXT: atomic_thread_fence(mem_flags::mem_device, memory_order_acquire, thread_scope_device);
+// CHECK: atomic_store_explicit((device atomic_int *)&p4[p4_b], {{v[0-9]+}}, memory_order_relaxed);
+// CHECK-NOT: atomic_thread_fence
+// CHECK: = (int)atomic_fetch_add_explicit((threadgroup atomic_uint *)&[[HITS]][0], (uint){{v[0-9]+}}, memory_order_relaxed);
+// CHECK-NEXT: atomic_thread_fence(mem_flags::mem_threadgroup, memory_order_acquire, thread_scope_threadgroup);
+// CHECK: int [[LOADED:v[0-9]+]] = atomic_load_explicit((device atomic_int *)&p5[p5_b], memory_order_relaxed);
+// CHECK-NEXT: atomic_thread_fence(mem_flags::mem_device, memory_order_acquire, thread_scope_device);
+// CHECK-NEXT: int {{v[0-9]+}} = (int)((uint)[[LOADED]] + (uint)[[OLD]]);
+// WEAK-LABEL: // vx.kernel count m1 m1 m1 m1 m1 m1 m1
+// WEAK: atomic_fetch_add_explicit((threadgroup atomic_uint *)
+// WEAK: atomic_load_explicit((device atomic_int *)&p5[p5_b], memory_order_relaxed);
+pub fn count(adds : &Tensor<u32, [?], Memory::HBM>, top : &Tensor<i32, [?], Memory::HBM>, bottom : &Tensor<u32, [?], Memory::HBM>, ring : &Tensor<u32, [?], Memory::HBM>, flag : &Tensor<i32, [?], Memory::HBM>, fixed : &Tensor<i32, [?], Memory::HBM>, out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      let hits = Tensor<u32, [1], Memory::SMEM>::fill(0u32);
+      for l in 0..32 across lanes {
+        let n = b * 32 + l;
+        let old = atomic_fetch_add_u32(adds, 0, 1u32, AtomicOrdering::Relaxed);
+        let _t = atomic_fetch_max_i32(top, 0, n - 64, AtomicOrdering::Relaxed);
+        let _m = atomic_fetch_min_u32(bottom, 0, n as u32, AtomicOrdering::Relaxed);
+        let _r = atomic_fetch_inc_wrap_u32(ring, 0, 9u32, AtomicOrdering::Relaxed);
+        atomic_store_i32(flag, 0, 1, AtomicOrdering::Relaxed);
+        let _h = atomic_fetch_add_u32(&hits, 0, 1u32, AtomicOrdering::Relaxed);
+        out[n] = atomic_load_i32(fixed, 0, AtomicOrdering::Relaxed) + (old as i32);
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

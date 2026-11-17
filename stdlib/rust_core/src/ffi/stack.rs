@@ -13,8 +13,8 @@
 // park gets a fixed stack from a pool, with a guard page below it. `switch` saves the registers
 // of the running code on its stack, and continues the code that another stack holds.
 //
-// With shadow stacks on (arm64's Guarded Control Stack), each stack also gets a shadow stack,
-// and `switch` moves both. docs/testing_shadow_stacks_with_qemu.md says how to test this.
+// With shadow stacks on (arm64's Guarded Control Stack, or Intel CET on x86-64), each stack also
+// gets a shadow stack, and `switch` moves both. docs/testing_shadow_stacks_with_qemu.md says how to test this.
 //
 //===----------------------------------------------------------------------===//
 
@@ -67,12 +67,6 @@ impl StackPool {
     /// A pool of stacks with room for `stack_bytes` each, rounded up to a page.
     pub fn new(stack_bytes: usize) -> StackPool {
         let shadow = shadow_stacks_are_on();
-        // The x86-64 switch does not move a shadow stack yet. With shadow stacks on, the first
-        // switch to a new stack would stop the program with a fault that names no cause.
-        if shadow && !cfg!(target_arch = "aarch64") {
-            eprintln!("vx: the task stacks do not support shadow stacks on this machine yet");
-            std::process::abort();
-        }
         let page = page_bytes();
         StackPool {
             stack_bytes: stack_bytes.div_ceil(page) * page,
@@ -285,9 +279,13 @@ pub unsafe fn switch(from: *mut *mut u8, to: *mut u8) {
 mod arch {
     use super::StackEntry;
 
-    // The saved frame, from the stack pointer up: MXCSR and the x87 control word, r15, r14, r13,
-    // r12, rbx, rbp, and the address that `ret` continues at.
-    const SAVED_WORDS: usize = 8;
+    // The saved frame, from the stack pointer up: the shadow word, MXCSR and the x87 control word,
+    // r15, r14, r13, r12, rbx, rbp, and the address that the switch continues at.
+    //
+    // The shadow word is the address of the restore token on the shadow stack of the frame, or 0
+    // with shadow stacks off. Bit 0 says that the frame is new: no call put `start` on its shadow
+    // stack, so the switch jumps to it and does not return to it.
+    const SAVED_WORDS: usize = 9;
 
     pub unsafe fn first_frame(
         top: *mut usize,
@@ -295,10 +293,11 @@ mod arch {
         arg: *mut u8,
         shadow_token: usize,
     ) -> *mut u8 {
-        assert_eq!(shadow_token, 0, "this switch does not move a shadow stack");
-        // After the `ret` into `start`, the stack pointer is a multiple of 16, as a call needs.
+        // After the switch takes the address of `start`, the stack pointer is a multiple of 16, as
+        // a call needs.
         let frame = top.sub(SAVED_WORDS + 2);
         let words: [usize; SAVED_WORDS] = [
+            shadow_token | 1,
             0x037F_0000_1F80, // the default MXCSR, and the default x87 control word above it
             0,
             0,
@@ -312,35 +311,60 @@ mod arch {
         frame as *mut u8
     }
 
+    // The switch jumps here, so it starts with `endbr64`.
     #[unsafe(naked)]
     unsafe extern "C" fn start() {
-        core::arch::naked_asm!("mov rdi, r13", "call r12", "ud2")
+        core::arch::naked_asm!("endbr64", "mov rdi, r13", "call r12", "ud2")
     }
 
     #[unsafe(naked)]
     pub unsafe extern "C" fn vx_stack_switch(from: *mut *mut u8, to: *mut u8) {
         core::arch::naked_asm!(
+            "endbr64",
             "push rbp",
             "push rbx",
             "push r12",
             "push r13",
             "push r14",
             "push r15",
-            "sub rsp, 8",
-            "stmxcsr [rsp]",
-            "fnstcw [rsp + 4]",
+            "sub rsp, 16",
+            "stmxcsr [rsp + 8]",
+            "fnstcw [rsp + 12]",
+            "mov qword ptr [rsp], 0",
+            // `rdsspq` reads the shadow-stack pointer. A CPU with shadow stacks off runs it as a
+            // no-op, and rax stays 0.
+            "xor eax, eax",
+            "rdsspq rax",
+            "test rax, rax",
+            "jz 1f",
+            // Move to the shadow stack of `to` (`rstorssp`). Then put a restore token on the old
+            // one, below the return address of this switch (`saveprevssp`), and keep its address
+            // in the frame that this switch saves.
+            "mov rcx, [rsi]",
+            "and rcx, -2",
+            "rstorssp [rcx]",
+            "saveprevssp",
+            "sub rax, 8",
+            "mov [rsp], rax",
+            "1:",
             "mov [rdi], rsp",
             "mov rsp, rsi",
-            "ldmxcsr [rsp]",
-            "fldcw [rsp + 4]",
-            "add rsp, 8",
+            "ldmxcsr [rsp + 8]",
+            "fldcw [rsp + 12]",
+            "mov rcx, [rsp]",
+            "add rsp, 16",
             "pop r15",
             "pop r14",
             "pop r13",
             "pop r12",
             "pop rbx",
             "pop rbp",
+            "test cl, 1",
+            "jnz 2f",
             "ret",
+            "2:",
+            "pop rcx",
+            "jmp rcx",
         )
     }
 }
@@ -435,6 +459,27 @@ mod arch {
 
 /// Turns on shadow stacks for this thread, with a system call that returns through no
 /// function. False when the CPU or the kernel has none.
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+#[inline(always)]
+pub(crate) fn turn_on_shadow_stacks() -> bool {
+    const ARCH_SHSTK_ENABLE: i64 = 0x5001;
+    const ARCH_SHSTK_SHSTK: i64 = 1;
+    let r: i64;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            inlateout("rax") libc::SYS_arch_prctl => r,
+            in("rdi") ARCH_SHSTK_ENABLE,
+            in("rsi") ARCH_SHSTK_SHSTK,
+            lateout("rcx") _,
+            lateout("r11") _,
+        );
+    }
+    r == 0
+}
+
+/// Turns on shadow stacks for this thread, with a system call that returns through no
+/// function. False when the CPU or the kernel has none.
 #[cfg(all(test, target_os = "linux", target_arch = "aarch64"))]
 #[inline(always)]
 pub(crate) fn turn_on_shadow_stacks() -> bool {
@@ -457,7 +502,7 @@ pub(crate) fn turn_on_shadow_stacks() -> bool {
 
 /// A test with shadow stacks found none. When VX_REQUIRE_SHADOW_STACKS is not empty, as in CI,
 /// the test fails. Otherwise it passes and says that it checked nothing.
-#[cfg(all(test, target_os = "linux", target_arch = "aarch64"))]
+#[cfg(all(test, target_os = "linux"))]
 pub(crate) fn found_no_shadow_stacks() {
     let message = "this CPU or kernel has no shadow stacks, so the test checked nothing";
     if std::env::var_os("VX_REQUIRE_SHADOW_STACKS").is_some_and(|v| !v.is_empty()) {
@@ -695,10 +740,10 @@ mod tests {
     }
 
     /// Exit codes of the child process.
-    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    #[cfg(target_os = "linux")]
     const NO_SHADOW_STACKS: i32 = 77;
 
-    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    #[cfg(target_os = "linux")]
     #[test]
     fn tasks_switch_with_shadow_stacks_on() {
         // A return to a frame from before shadow stacks were on fails, so the child turns them

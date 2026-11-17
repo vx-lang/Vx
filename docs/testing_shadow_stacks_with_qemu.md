@@ -23,8 +23,8 @@ program stops with a fault that names no cause.
 
 So each task stack needs a shadow stack of its own, and the switch must move both. The design
 says that the first stack switch must have this, because it costs the most to add later
-(section 7 of `docs/discussions/waiting_tasks_channels_and_task_errors.md`). Until the runtime
-does it, `StackPool::new` stops the program when shadow stacks are on.
+(section 7 of `docs/discussions/waiting_tasks_channels_and_task_errors.md`). The switch does
+this on arm64 and on x86-64.
 
 ## Why QEMU
 
@@ -138,3 +138,30 @@ checked nothing", and passes. So check the output for this line. With
 
 To see a test fail, make the switch skip its shadow-stack part: in `vx_stack_switch`, change
 `"tbnz x16, #0, 1f"` to `"b 1f"`. Each test then reports that the child stopped with signal 11.
+
+## Run the runtime tests with CET on x86-64
+
+QEMU does not emulate CET, so these tests need a machine with it. Many cloud VMs do not pass
+CET to the guest. A bare-metal instance, for example EC2 `m7i.metal-24xl`, has it.
+
+Check the machine first:
+
+```sh
+grep -o -w user_shstk /proc/cpuinfo | head -1    # prints user_shstk
+uname -r                                         # 6.6 or later
+```
+
+Then run the two tests:
+
+```sh
+cd stdlib/rust_core
+VX_REQUIRE_SHADOW_STACKS=1 cargo test --lib shadow -- --nocapture
+```
+
+The same two tests run as on arm64. Each child turns CET shadow stacks on with
+`arch_prctl(ARCH_SHSTK_ENABLE)`. If the line "this CPU or kernel has no shadow stacks" shows,
+the tests checked nothing.
+
+To see a test fail, make the switch skip its shadow-stack part: in the x86-64
+`vx_stack_switch`, change `"jz 1f"` to `"jmp 1f"`. Each test then reports that the child stopped
+with signal 11.

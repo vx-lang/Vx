@@ -107,7 +107,14 @@ impl FnEmit<'_> {
         }
         // The count of the passes of a nest of blocks, which `--emit-ptx` names by its length.
         let user_lowered = ins.operand2.0 & crate::bytecode::TRANSFER_USER_LOWERED;
-        let arrivals = ins.operand2.0 & !crate::bytecode::TRANSFER_USER_LOWERED;
+        let is_async = ins.operand2.0 & crate::bytecode::TRANSFER_ASYNC;
+        let read_only_source = ins.operand2.0 & crate::bytecode::TRANSFER_READ_ONLY_SOURCE;
+        let borrowed_for_call = ins.operand2.0 & crate::bytecode::TRANSFER_SOURCE_BORROWED_FOR_CALL;
+        let arrivals = ins.operand2.0
+            & !(crate::bytecode::TRANSFER_USER_LOWERED
+                | crate::bytecode::TRANSFER_ASYNC
+                | crate::bytecode::TRANSFER_READ_ONLY_SOURCE
+                | crate::bytecode::TRANSFER_SOURCE_BORROWED_FOR_CALL);
         if let Some(i) = (arrivals as usize).checked_sub(1) {
             let length = self.strings.get(i).ok_or(crate::emitter_gap!())?;
             attrs += &format!(", vx.arrivals = \"{length}\"");
@@ -115,6 +122,16 @@ impl FnEmit<'_> {
         // The body of a user lowering copies the tile, so the backend only places it.
         if user_lowered != 0 {
             attrs += ", user_lowered";
+        }
+        // A `transfer_async`: a device copies in the background until a use of the tensor.
+        if is_async != 0 {
+            attrs += ", async";
+        }
+        if read_only_source != 0 {
+            attrs += ", read_only_source";
+        }
+        if borrowed_for_call != 0 {
+            attrs += ", source_borrowed_for_call";
         }
         self.body +=
             &format!("  {n} = \"vx.transfer\"({src}) {{{attrs}}} : ({srcty}) -> {dstty}\n");
@@ -203,7 +220,13 @@ impl FnEmit<'_> {
         // has no name: its high half is the line of its `spawn`.
         let name = match name.checked_sub(1) {
             _ if topo == crate::arch::TASK_DISPATCH_ID as i64 => {
-                format!(", vx.line = {name} : i64")
+                let file = self.file.map_or(String::new(), |f| {
+                    format!(
+                        ", vx.file = \"{}\"",
+                        f.replace('\\', "\\\\").replace('"', "\\\"")
+                    )
+                });
+                format!(", vx.line = {name} : i64{file}")
             }
             Some(i) => {
                 let s = self.strings.get(i as usize).ok_or(crate::emitter_gap!())?;
@@ -237,9 +260,9 @@ impl FnEmit<'_> {
             self.body += "  \"vx.yield\"() : () -> ()\n";
         }
         let result_ty = result_ty.unwrap_or_default();
-        // A topology that declared an `arch:` sends it along, so the device pipeline can
-        // gate on the declaration instead of the dispatch-id band (Vx#352). Discardable
-        // attribute on the generic form -- no dialect change involved.
+        // The topology gives its `arch:` when it has one, so the device pipeline can
+        // gate on the architecture. Discardable attribute on the generic form -- no
+        // dialect change involved.
         //
         // A nonzero `imm` is the trip count `parallel_outer_for` proved for the region's
         // outermost loop: `vx_parallel_trip` rides the same attribute dict, telling the
@@ -272,21 +295,26 @@ impl FnEmit<'_> {
         } else {
             String::new()
         };
-        if let Some(declared) = self.ctx.topo_archs.get(&topo) {
-            let arch = &declared.arch;
-            let chip = match &declared.chip {
-                Some(chip) => format!(", chip = \"{chip}\""),
-                None => String::new(),
-            };
-            let offload = declared.offload;
-            self.body += &format!(
-                "  }}) {{arch = \"{arch}\"{chip}, offload = {offload}, topology = {topo} : i32{name}{trip}{across}}} : () -> ({result_ty})\n"
-            );
-        } else {
-            self.body += &format!(
-                "  }}) {{topology = {topo} : i32{name}{trip}{across}}} : () -> ({result_ty})\n"
-            );
+
+        let mut attrs = String::new();
+        if let Some(declared) = self.ctx.topo_arch(topo) {
+            if !declared.arch.is_empty() {
+                attrs.push_str(&format!("arch = \"{}\", ", declared.arch));
+            }
+            if let Some(offload) = declared.offload {
+                attrs.push_str(&format!("offload = {}, ", offload));
+            }
+            if let Some(chip) = &declared.chip {
+                attrs.push_str(&format!("chip = \"{}\", ", chip));
+            }
+            if let Some(bytes) = declared.shared_bytes {
+                attrs.push_str(&format!("shared_bytes = {bytes} : i64, "));
+            }
         }
+
+        self.body += &format!(
+            "  }}) {{{attrs}topology = {topo} : i32{name}{trip}{across}}} : () -> ({result_ty})\n"
+        );
         self.terminated = false;
         Ok(())
     }
@@ -315,6 +343,42 @@ impl FnEmit<'_> {
         Ok(())
     }
 
+    /// `vx.lane_matmul`: `operand1` is the accumulator, `operand2` the left tile, and the `Arg`
+    /// before is the right tile.
+    fn op_lane_matmul(&mut self, ins: &HirInstruction) -> Lowered<()> {
+        let rhs = self.pending_args.pop().ok_or(crate::emitter_gap!())?;
+        let mut names = Vec::new();
+        let mut types = Vec::new();
+        for r in [ins.operand1.0, ins.operand2.0, rhs] {
+            names.push(
+                self.names
+                    .get(r as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone(),
+            );
+            types.push(
+                self.mem_of
+                    .get(r as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone()
+                    .ok_or(crate::emitter_gap!())?,
+            );
+        }
+        let mut attrs = String::from("subgroup");
+        if ins.imm & crate::bytecode::LANE_REDUCE_ACCUMULATE != 0 {
+            attrs += ", accumulate";
+        }
+        if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP_ROW != 0 {
+            attrs += ", subgroup_row";
+        }
+        self.body += &format!(
+            "  \"vx.lane_matmul\"({}) {{{attrs}}} : ({}) -> ()\n",
+            names.join(", "),
+            types.join(", ")
+        );
+        Ok(())
+    }
+
     /// `vx.lane_reduce`: the lowering of each copy of the kernel expands it, into shuffles on the
     /// GPU and into loops on the CPU.
     pub(crate) fn op_lane_reduce(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
@@ -334,6 +398,15 @@ impl FnEmit<'_> {
         }
         if ins.imm & crate::bytecode::LANE_REDUCE_COPY != 0 {
             return self.op_lane_copy(idx, ins);
+        }
+        if ins.imm & crate::bytecode::LANE_REDUCE_FILL != 0 {
+            return self.op_lane_fill(ins);
+        }
+        if ins.imm & crate::bytecode::LANE_REDUCE_SCALE_ROWS != 0 {
+            return self.op_lane_scale_rows(ins);
+        }
+        if ins.imm & crate::bytecode::LANE_REDUCE_MATMUL != 0 {
+            return self.op_lane_matmul(ins);
         }
         let t = self
             .names
@@ -397,6 +470,9 @@ impl FnEmit<'_> {
         if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
             add("subgroup");
         }
+        if ins.imm & crate::bytecode::LANE_REDUCE_LANE_OWN != 0 {
+            add("vx.lane_own");
+        }
         if ins.imm & crate::bytecode::LANE_REDUCE_OWN_ROW != 0 {
             add("own_row");
             let row = ins.imm >> crate::bytecode::LANE_ROW_SHIFT;
@@ -432,17 +508,81 @@ impl FnEmit<'_> {
         Ok(())
     }
 
+    /// `vx.lane_fill`: the tile and the value of each element.
+    fn op_lane_fill(&mut self, ins: &HirInstruction) -> Lowered<()> {
+        let name = |r: u32| {
+            self.names
+                .get(r as usize)
+                .cloned()
+                .ok_or(crate::emitter_gap!())
+        };
+        let (t, v) = (name(ins.operand1.0)?, name(ins.operand2.0)?);
+        let memty = self
+            .mem_of
+            .get(ins.operand1.0 as usize)
+            .cloned()
+            .flatten()
+            .ok_or(crate::emitter_gap!())?;
+        let e = self
+            .etypes
+            .get(ins.operand2.0 as usize)
+            .cloned()
+            .flatten()
+            .ok_or(crate::emitter_gap!())?;
+        let vty = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
+        let mut subgroup = if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
+            ", subgroup".to_string()
+        } else {
+            String::new()
+        };
+        if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP_ROW != 0 {
+            subgroup += ", subgroup_row";
+        }
+        self.body += &format!(
+            "  \"vx.lane_fill\"({t}, {v}) {{lanes = {} : i64{subgroup}}} : ({memty}, {vty}) -> ()\n",
+            ins.imm >> 32
+        );
+        Ok(())
+    }
+
+    /// `vx.lane_scale_rows`: the tile and the tile of the scale of each row.
+    fn op_lane_scale_rows(&mut self, ins: &HirInstruction) -> Lowered<()> {
+        let operand = |r: u32| {
+            let name = self.names.get(r as usize).cloned();
+            let memty = self.mem_of.get(r as usize).cloned().flatten();
+            name.zip(memty).ok_or(crate::emitter_gap!())
+        };
+        let ((t, tty), (s, sty)) = (operand(ins.operand1.0)?, operand(ins.operand2.0)?);
+        let mut attrs = format!("lanes = {} : i64", ins.imm >> 32);
+        if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
+            attrs += ", subgroup";
+        }
+        if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP_ROW != 0 {
+            attrs += ", subgroup_row";
+        }
+        self.body +=
+            &format!("  \"vx.lane_scale_rows\"({t}, {s}) {{{attrs}}} : ({tty}, {sty}) -> ()\n");
+        Ok(())
+    }
+
     /// `vx.lane_copy_async`: the tile, the tensor and the place of the tile, which the `Arg`s
-    /// before hold. The result is the token.
+    /// before hold. The result is the token. `vx.lane_copy` takes the tensor that it writes and
+    /// the one that it reads, and has no result.
     fn op_lane_copy(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let rank = ((ins.imm >> 16) & 0xff) as usize;
         if self.pending_args.len() < rank {
             return Err(crate::emitter_gap!());
         }
         let at = self.pending_args.split_off(self.pending_args.len() - rank);
+        // `lanes::copy_rows_async`: the tensor of ids is the `Arg` before the place.
+        let rows = ins.imm & crate::bytecode::LANE_REDUCE_COPY_ROWS != 0;
+        let mut tensors = vec![ins.operand1.0, ins.operand2.0];
+        if rows {
+            tensors.push(self.pending_args.pop().ok_or(crate::emitter_gap!())?);
+        }
         let mut operands = Vec::new();
         let mut types = Vec::new();
-        for r in [ins.operand1.0, ins.operand2.0] {
+        for r in tensors {
             operands.push(
                 self.names
                     .get(r as usize)
@@ -473,17 +613,36 @@ impl FnEmit<'_> {
             types.push(mlir_scalar(&e).ok_or(crate::emitter_gap!())?.to_string());
         }
         let v = format!("%v{idx}");
-        self.body += &format!(
-            "  {v} = \"vx.lane_copy_async\"({}) {{lanes = {} : i64{}}} : ({}) -> i32\n",
-            operands.join(", "),
-            ins.imm >> 32,
-            if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
-                ", subgroup"
+        let mut subgroup = if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
+            ", subgroup".to_string()
+        } else {
+            String::new()
+        };
+        if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP_ROW != 0 {
+            subgroup += ", subgroup_row";
+        }
+        if ins.imm & crate::bytecode::LANE_REDUCE_COPY_NOW != 0 {
+            // `lanes::copy` gives no token, so its value is a 0 that nothing reads.
+            self.body += &format!(
+                "  \"vx.lane_copy\"({}) {{lanes = {} : i64{subgroup}}} : ({}) -> ()\n  {v} = \
+                 arith.constant 0 : i32\n",
+                operands.join(", "),
+                ins.imm >> 32,
+                types.join(", ")
+            );
+        } else {
+            let op = if rows {
+                "vx.lane_copy_rows_async"
             } else {
-                ""
-            },
-            types.join(", ")
-        );
+                "vx.lane_copy_async"
+            };
+            self.body += &format!(
+                "  {v} = \"{op}\"({}) {{lanes = {} : i64{subgroup}}} : ({}) -> i32\n",
+                operands.join(", "),
+                ins.imm >> 32,
+                types.join(", ")
+            );
+        }
         self.names[idx] = v;
         self.etypes[idx] = Some(ElementType::I32);
         Ok(())

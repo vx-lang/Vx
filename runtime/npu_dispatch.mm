@@ -10,6 +10,9 @@
 #include <ffi/ffi.h>
 #include <iostream>
 #include <malloc/malloc.h>
+#include <mutex>
+#include <string>
+#include <unordered_set>
 #include <vector>
 
 /// Whether to narrate what the dispatcher is doing.
@@ -42,6 +45,20 @@ static bool vx_npu_verbose() {
     }                                                                          \
   } while (0)
 
+/// Why the CoreML route of the current dispatch did not run, or empty. The CPU
+/// fallback reports it.
+static thread_local std::string vx_ane_miss;
+
+/// Records why a CoreML route stopped, with CoreML's error if it gave one.
+static void vx_ane_gave_up(const std::string &why, NSError *error) {
+  vx_ane_miss = why;
+  if (error) {
+    vx_ane_miss += ": ";
+    vx_ane_miss += [[error localizedDescription] UTF8String];
+  }
+  VX_NPU_LOG("[Vx Dispatcher] %s\n", vx_ane_miss.c_str());
+}
+
 /// Where a compiled CoreML primitive is looked for.
 ///
 /// These bundles are build output: build.rs compiles them with `coremlc` into
@@ -53,7 +70,8 @@ static bool vx_npu_verbose() {
 /// Most specific first: an explicit setting, then the directory the running
 /// binary sits in, then the build output, then the working directory as it
 /// behaved before. Returns nil when no candidate has the bundle, which is the
-/// caller's signal to fall back to the CPU.
+/// caller's signal to fall back to the CPU. It then records the directories
+/// that it searched in `vx_ane_miss`.
 static NSURL *vx_find_ane_model(NSString *name) {
   NSMutableArray<NSString *> *dirs = [NSMutableArray array];
 
@@ -75,8 +93,23 @@ static NSURL *vx_find_ane_model(NSString *name) {
       return [NSURL fileURLWithPath:candidate];
     }
   }
-  VX_NPU_LOG("[Vx Dispatcher] no %s on the model search path\n",
-             [name UTF8String]);
+  // The search reads a relative directory in the working directory, so the
+  // message names the full path.
+  NSString *cwd = [fm currentDirectoryPath];
+  std::string searched;
+  for (NSString *dir in dirs) {
+    NSString *full = dir;
+    if ([dir isEqualToString:@"."]) {
+      full = cwd;
+    } else if (![dir isAbsolutePath]) {
+      full = [cwd stringByAppendingPathComponent:dir];
+    }
+    searched += searched.empty() ? "" : ", ";
+    searched += [full UTF8String];
+  }
+  vx_ane_gave_up(std::string("no ") + [name UTF8String] + " in " + searched +
+                     ". Set VX_ANE_MODEL_DIR to the directory of the model",
+                 nil);
   return nil;
 }
 
@@ -266,11 +299,12 @@ extern "C" int vx_dispatch_gpu(float *xout, float *x, float *w, int n, int d) {
 // only ever have run the one primitive it was written against.
 //
 // Precision is still a real constraint rather than a lookup: asked through
-// MLComputePlan which device it prefers, CoreML answers CPU for every fp32
-// matmul at every size tried, and for fp16 up to 384, switching to the Neural
-// Engine at 512. So an fp32 model never reaches the ANE however large, and a
-// small f16 one does not either -- which is why only f16 is routed here, and why
-// generating a 64x64 primitive would add a model that runs on the CPU.
+// MLComputePlan which device it prefers, CoreML answers the CPU for every fp32
+// matmul up to 512x512 and the GPU at 1024x1024, never the Neural Engine. For
+// fp16 it answers the CPU up to 384 and the Neural Engine from 512. So an fp32
+// model never reaches the ANE however large, and a small f16 one does not
+// either. That is why only f16 is routed here, and why generating a 64x64
+// primitive would add a model that runs on the CPU.
 
 // The fp16 matmul, which is the one that reaches the Neural Engine.
 //
@@ -307,8 +341,9 @@ extern "C" int vx_dispatch_ane_f16(void *xout, const void *x, const void *w,
                                 configuration:config
                                         error:&error];
       if (!model) {
-        VX_NPU_LOG("[Vx Dispatcher] no %s; using the CPU shim\n",
-                   [name UTF8String]);
+        vx_ane_gave_up(std::string("CoreML could not load ") +
+                           [[modelURL path] UTF8String],
+                       error);
         return 0;
       }
       vx_log_planned_device(modelURL, config, [name UTF8String]);
@@ -317,12 +352,15 @@ extern "C" int vx_dispatch_ane_f16(void *xout, const void *x, const void *w,
 
     const size_t elems = (size_t)d * (size_t)n;
 
-    // The model computes in fp16 on the Neural Engine, and its *interface* is
-    // fp32 regardless: CoreML normalises an mlprogram's boundary to fp32 even
-    // when the MIL spec asks for fp16 inputs. So the halves are widened here and
-    // narrowed on the way back. Widening is exact, and the narrowing is over
-    // values the ANE already produced in fp16, so nothing is lost that the
-    // program did not already ask for by declaring `f16`.
+    // The model computes in fp16 on the Neural Engine, but its interface is
+    // fp32: generate_ane_primitives.py declares fp32 inputs and asks only for
+    // fp16 compute, so the model casts at its edges. CoreML itself takes fp16
+    // arrays. An fp16 interface needs fp16 input specs and a MIL opset of
+    // iOS 16 or later; at the default iOS 15 opset, coremltools turns fp16
+    // inputs back into fp32. Until the primitive changes, the halves are
+    // widened here and narrowed on the way back. Widening is exact, and the
+    // narrowing is over values the ANE already produced in fp16, so nothing is
+    // lost that the program did not already ask for by declaring `f16`.
     const __fp16 *w16 = (const __fp16 *)w;
     const __fp16 *x16 = (const __fp16 *)x;
     __fp16 *out16 = (__fp16 *)xout;
@@ -332,6 +370,7 @@ extern "C" int vx_dispatch_ane_f16(void *xout, const void *x, const void *w,
                                    dataType:MLMultiArrayDataTypeFloat32
                                       error:&error];
     if (!arrayW) {
+      vx_ane_gave_up("CoreML could not make the array of w", error);
       return 0;
     }
     {
@@ -346,6 +385,7 @@ extern "C" int vx_dispatch_ane_f16(void *xout, const void *x, const void *w,
                                    dataType:MLMultiArrayDataTypeFloat32
                                       error:&error];
     if (!arrayX) {
+      vx_ane_gave_up("CoreML could not make the array of x", error);
       return 0;
     }
     {
@@ -361,8 +401,7 @@ extern "C" int vx_dispatch_ane_f16(void *xout, const void *x, const void *w,
     id<MLFeatureProvider> outputFeatures =
         [model predictionFromFeatures:inputFeatures error:&error];
     if (error || !outputFeatures) {
-      VX_NPU_LOG("[Vx Dispatcher] fp16 CoreML prediction failed; using the CPU "
-                 "shim\n");
+      vx_ane_gave_up("the CoreML prediction of the fp16 matmul failed", error);
       return 0;
     }
 
@@ -370,6 +409,7 @@ extern "C" int vx_dispatch_ane_f16(void *xout, const void *x, const void *w,
     MLMultiArray *outArray =
         [outputFeatures featureValueForName:outputName].multiArrayValue;
     if (!outArray || !outArray.dataPointer) {
+      vx_ane_gave_up("CoreML gave no result array for the fp16 matmul", nil);
       return 0;
     }
     {
@@ -396,9 +436,6 @@ extern "C" int vx_dispatch_ane(float *xout, float *x, float *w, int n, int d) {
     if (!model) {
       NSURL *modelURL = vx_find_ane_model(@"matmul_4x4.mlmodelc");
       if (!modelURL) {
-        std::cerr << "[Vx Dispatcher] WARNING: no matmul_4x4.mlmodelc on the "
-                     "model search path. Falling back to CPU."
-                  << std::endl;
         return 0;
       }
       MLModelConfiguration *config = [[MLModelConfiguration alloc] init];
@@ -407,9 +444,9 @@ extern "C" int vx_dispatch_ane(float *xout, float *x, float *w, int n, int d) {
                                 configuration:config
                                         error:&error];
       if (!model) {
-        std::cerr << "[Vx Dispatcher] WARNING: Failed to load ANE model "
-                     "(matmul_4x4.mlmodelc)! Falling back to CPU."
-                  << std::endl;
+        vx_ane_gave_up(std::string("CoreML could not load ") +
+                           [[modelURL path] UTF8String],
+                       error);
         return 0;
       }
       vx_log_planned_device(modelURL, config, "matmul_4x4.mlmodelc");
@@ -487,9 +524,6 @@ extern "C" int vx_dispatch_ane_affine(float *out, float *x, float alpha,
     if (!affineModel) {
       NSURL *modelURL = vx_find_ane_model(@"affine_4.mlmodelc");
       if (!modelURL) {
-        std::cerr << "[Vx Dispatcher] WARNING: no affine_4.mlmodelc on the "
-                     "model search path. Falling back to CPU."
-                  << std::endl;
         return 0;
       }
       MLModelConfiguration *config = [[MLModelConfiguration alloc] init];
@@ -498,9 +532,9 @@ extern "C" int vx_dispatch_ane_affine(float *out, float *x, float alpha,
                                       configuration:config
                                               error:&error];
       if (!affineModel) {
-        std::cerr << "[Vx Dispatcher] WARNING: Failed to load "
-                     "affine_4.mlmodelc. Falling back to CPU."
-                  << std::endl;
+        vx_ane_gave_up(std::string("CoreML could not load ") +
+                           [[modelURL path] UTF8String],
+                       error);
         return 0;
       }
       vx_log_planned_device(modelURL, config, "affine_4.mlmodelc");
@@ -566,6 +600,81 @@ extern "C" int vx_dispatch_ane_affine(float *out, float *x, float alpha,
 #include "vx_remote_routing.h"
 #include <cstdlib>
 
+/// The placement that a topology id names, as the program wrote it.
+static std::string vx_placement_name(int32_t topo, const char *name) {
+  if (name && name[0] != '\0') {
+    return std::string("Topology::") + name;
+  }
+  int i = vx_topology_device_index(topo, VX_TOPO_NPU_BASE);
+  if (i >= 0) {
+    return "Topology::NPU[" + std::to_string(i) + "]";
+  }
+  i = vx_topology_device_index(topo, VX_TOPO_GPU_BASE);
+  if (i >= 0) {
+    return "Topology::GPU[" + std::to_string(i) + "]";
+  }
+  if (topo == VX_TOPO_ANE) {
+    return "Topology::ANE";
+  }
+  return "topology " + std::to_string(topo);
+}
+
+/// Whether a kernel placed on a device can run on the CPU when nothing here
+/// runs it on the device. It is false under `VX_ENABLE_CPU_FALLBACK=0`, for a
+/// test or a benchmark that must use the device.
+static bool vx_cpu_fallback_enabled() {
+  static const bool on = [] {
+    const char *v = getenv("VX_ENABLE_CPU_FALLBACK");
+    return !v || strcmp(v, "0") != 0;
+  }();
+  return on;
+}
+
+/// The dispatcher calls this before a kernel runs on the CPU in place of its
+/// device. It stops the program when the fallback is off. It says when a kernel
+/// placed on the Neural Engine runs on the CPU because its CoreML route did not
+/// run. It says this once for each kernel, at any verbosity. The answer is the
+/// same, so nothing else shows it.
+static void vx_note_cpu_fallback(const void *payload, size_t size,
+                                 const char *kernel) {
+  const int32_t topo = vx_payload_topology(payload, size);
+  const std::string where =
+      vx_placement_name(topo, vx_payload_field(payload, size, "toponame="));
+  // The topology gives its `arch:` when it has one. Otherwise only its id.
+  const char *arch = vx_payload_field(payload, size, "arch=");
+  const bool on_host =
+      topo == VX_TOPO_CPU || topo == VX_TOPO_AMX ||
+      topo == VX_TOPO_CPU_AVX512 || topo == VX_TOPO_CPU_NEON ||
+      (arch && (strcmp(arch, "x86_64") == 0 || strcmp(arch, "aarch64") == 0));
+  if (!on_host && !vx_cpu_fallback_enabled()) {
+    fprintf(stderr,
+            "[Vx Dispatcher] FATAL: the program places %s on %s, but only the "
+            "CPU can run it here%s%s. VX_ENABLE_CPU_FALLBACK is 0, so it does "
+            "not run on the CPU.\n",
+            kernel, where.c_str(), vx_ane_miss.empty() ? "" : ": ",
+            vx_ane_miss.c_str());
+    abort();
+  }
+
+  const bool on_ane = vx_topology_device_index(topo, VX_TOPO_NPU_BASE) >= 0 ||
+                      topo == VX_TOPO_ANE;
+  if (!on_ane || vx_ane_miss.empty()) {
+    return;
+  }
+  static std::mutex mu;
+  static std::unordered_set<std::string> seen;
+  {
+    std::lock_guard<std::mutex> guard(mu);
+    if (!seen.insert(kernel).second) {
+      return;
+    }
+  }
+  fprintf(stderr,
+          "[Vx Dispatcher] the program places %s on %s, but it runs on the "
+          "CPU: %s.\n",
+          kernel, where.c_str(), vx_ane_miss.c_str());
+}
+
 extern "C" {
 #include <dlfcn.h>
 
@@ -585,6 +694,16 @@ void vx_metal_wait_for_launch(const void *payload, size_t payload_size,
                               void **device_args, const int32_t *arg_tags,
                               int64_t num_args);
 
+// GPU memory with one Metal buffer for its whole life. vx_metal_alloc returns
+// null for memory that `malloc` gives instead.
+void *vx_metal_alloc(size_t bytes);
+int vx_metal_free(void *memory);
+
+static void *alloc_gpu_memory(size_t bytes) {
+  void *ptr = vx_metal_alloc(bytes);
+  return ptr ? ptr : malloc(bytes);
+}
+
 // `space_access` is accepted and ignored: the Neural Engine's staging is host
 // memory this process can read, so a model claiming the host may read it is
 // telling the truth. Only a backend handing out memory the host cannot read has
@@ -602,11 +721,20 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
   if (vx_routing_try_alloc(bytes, host_ptr, topology_id, &remote)) {
     return remote;
   }
-  void *ptr = malloc(bytes);
+  void *ptr = alloc_gpu_memory(bytes);
   if (host_ptr) {
     memcpy(ptr, host_ptr, bytes);
   }
   return ptr;
+}
+
+/// A copy into host memory ends before it returns, so `transfer_async` is a
+/// `transfer` here.
+void *vx_plugin_alloc_and_transfer_async(size_t bytes, void *host_ptr,
+                                         uint32_t topology_id,
+                                         uint32_t space_access) {
+  return vx_plugin_alloc_and_transfer(bytes, host_ptr, topology_id,
+                                      space_access);
 }
 
 // Invoke the JIT-compiled kernel through its MLIR C-interface. The producer
@@ -669,6 +797,7 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
   // The 4x4 check that remains is a real constraint rather than a heuristic:
   // the ANE primitive is a CoreML model compiled for exactly that shape
   // (scripts/generate_ane_primitives.py). Anything else has no model to run on.
+  vx_ane_miss.clear();
   vx_gemm_plan plan;
   bool is_gemm = vx_gemm_plan_decode(binary_payload, payload_size, device_args,
                                      arg_tags, num_args, &plan);
@@ -781,7 +910,7 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
     }
   }
 
-#ifdef VX_ENABLE_CPU_FALLBACK
+  vx_note_cpu_fallback(binary_payload, payload_size, kernel_name);
   int workers = vx_host_worker_count_for(binary_payload, payload_size,
                                          device_args, arg_tags, num_args);
   VX_NPU_LOG("[Vx Dispatcher] Hardware backend unsupported for %s. Falling "
@@ -809,20 +938,17 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
     abort();
   }
   return 1;
-#else
-  std::cerr << "[Vx Dispatcher] FATAL: Kernel " << kernel_name
-            << " not explicitly handled, and CPU fallback is disabled!"
-            << std::endl;
-  assert(false && "CPU Fallback Disabled");
-  abort();
-#endif
 }
 
 uint64_t vx_plugin_dispatch_async_flat(float *xout, float *x, float *w, int n,
                                        int d) {
   vx_metal_wait();
   // Dispatch to Apple Neural Engine payload executor
-  vx_dispatch_ane(xout, x, w, n, d);
+  vx_ane_miss.clear();
+  if (!vx_dispatch_ane(xout, x, w, n, d)) {
+    fprintf(stderr, "[Vx Dispatcher] the CoreML matmul did not run: %s\n",
+            vx_ane_miss.c_str());
+  }
   return 1;
 }
 
@@ -861,7 +987,7 @@ void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
   vx_routing_refuse_handle("a peer handoff", src_device_ptr, src_topology_id);
   (void)src_topology_id;
   (void)dst_topology_id;
-  void *dst = malloc(bytes);
+  void *dst = alloc_gpu_memory(bytes);
   if (dst && src_device_ptr) {
     memcpy(dst, src_device_ptr, bytes);
   }
@@ -869,6 +995,10 @@ void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
 }
 
 void vx_plugin_free(void *device_ptr, uint32_t topology_id) {
+  // A handle of another machine can have the value of a local address.
+  if (!vx_routing_worker((int32_t)topology_id) && vx_metal_free(device_ptr)) {
+    return;
+  }
   // A handle of another machine is not memory of this process, and has no
   // size here.
   const size_t bytes = device_ptr ? malloc_size(device_ptr) : 0;

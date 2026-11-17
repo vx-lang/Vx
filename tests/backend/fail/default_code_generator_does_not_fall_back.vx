@@ -7,9 +7,9 @@
 //===----------------------------------------------------------------------===//
 // The test runner sets VX_NO_AST_FALLBACK for every RUN line. Then vxc stops with an error
 // when the default code generator does not support a program. It does not use the AST code
-// generator in its place. A match over an i64 remains unsupported.
-// RUN: not vxc %s --emit-mlir 2>&1 | FileCheck %s
-// CHECK: [flat-codegen] declined seven_or_nine: no flat lowering for a match subject that is not represented as an i32
+// generator in its place. VX_FLAT_DECLINE makes the flat code generator decline `seven_or_nine`.
+// RUN: VX_FLAT_DECLINE=seven_or_nine not vxc %s --emit-mlir 2>&1 | FileCheck %s # flat-codegen
+// CHECK: [flat-codegen] declined seven_or_nine: no flat lowering for the function that VX_FLAT_DECLINE names
 // CHECK: Cannot compile '{{.*}}default_code_generator_does_not_fall_back.vx' with the default code generator.
 // CHECK-NOT: func.func
 

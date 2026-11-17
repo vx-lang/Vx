@@ -11,6 +11,9 @@ cargo vx-bench compare powi --rounds 20 --json results.json
 
 ## What the harness does
 
+- Prints the commit, the machine and its CPU model, the version of `vxc`, and for each compiler
+  in `--cxx` its version and the version of its C++ standard library. On macOS, `clang++` can be
+  Apple clang or Homebrew clang, depending on PATH.
 - Builds the Vx program with `vxc --action emit-obj -O3`, linked against the same libraries as
   `vxc --run`.
 - Builds the C++ program with each compiler in `--cxx` (default `clang++,g++`), with
@@ -34,6 +37,19 @@ vx-bench <quantity>/<implementation> result  <sum of every repetition's answer>
 In Vx, `bench_report` from `std::time` prints them; in C++, `vxbench::measure` from `bench.hpp`
 does. Rows with the same quantity (the part before `/`) go in one table, and their answers
 should agree.
+
+Two kinds of comment line in the `.vx` file change how the harness builds and runs it:
+
+```
+// vx-bench flags: --host default --machine fleet/m4-uma.vx
+// vx-bench env: VX_METAL=0
+```
+
+- The harness gives the flags of each `vx-bench flags:` line to vxc. So does the test that
+  compiles every benchmark (`every_shipped_example_and_benchmark_compiles`).
+- For each `vx-bench env:` line, the harness runs the Vx program one more time, with these
+  environment variables. Its build column shows them, for example `vx VX_METAL=0`. The `vs vx`
+  column compares with the run that has no such variables.
 
 The compiler removes work whose result it can prove unused or unchanged. Each of these rules
 once produced a number that measured nothing:

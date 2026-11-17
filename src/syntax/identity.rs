@@ -108,6 +108,10 @@ pub(crate) fn write_topology_key(
         Topology::GPU(index) | Topology::NPU(index) | Topology::AccCore(index) => {
             key.atom("index", const_key(index)?)
         }
+        // A bare name is device 0, so `X` and `X[0]` share the key that `X` always had.
+        Topology::Custom(_, Some(index)) if crate::arch::const_topology_index(index) != Some(0) => {
+            key.atom("index", const_key(index)?)
+        }
         Topology::Slice(base, start, end) => {
             write_topology_key(base, key)?;
             write_const_key(start, key)?;

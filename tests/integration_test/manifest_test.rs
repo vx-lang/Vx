@@ -139,6 +139,7 @@ int main(int argc, char **argv) {{
     for (name, c_id) in names.iter().zip(&from_c) {
         let rust_id = vxc::arch::topology_dispatch_id(&vxc::syntax::Topology::Custom(
             vxc::symbol::Symbol::from(name.as_str()),
+            None,
         ));
         assert_eq!(
             rust_id, *c_id,

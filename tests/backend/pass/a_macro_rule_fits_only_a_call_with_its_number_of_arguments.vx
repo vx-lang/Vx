@@ -1,0 +1,50 @@
+//===- a_macro_rule_fits_only_a_call_with_its_number_of_arguments.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An `expr` in a macro pattern ends at a comma outside brackets. So a rule for 2 arguments does
+// not fit a call with 3, and the compiler tries the next rule. A comma inside the brackets of a
+// call, an index or a type stays in the capture.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}add 2 values: 3{{$}}
+// CHECK-NEXT: {{^}}add 3 values: 6{{$}}
+// CHECK-NEXT: {{^}}a call as an argument: 23{{$}}
+// CHECK-NEXT: {{^}}a type with a comma: 4{{$}}
+
+macro_rules add {
+  ($a : expr, $b : expr) => {
+    $a + $b
+  };
+  ($a : expr, $b : expr, $c : expr) => {
+    $a + $b + $c
+  };
+}
+
+macro_rules twice_plus {
+  ($a : expr, $b : expr) => {
+    $a * 2 + $b
+  };
+}
+
+macro_rules length_of {
+  ($t : ty, $n : expr) => {
+    $t::new().len() + $n
+  };
+}
+
+fn pick(a : i64, b : i64) -> i64 {
+  return a + b;
+}
+
+fn main() -> i32 {
+  println!("add 2 values: {}", add!(1, 2));
+  println!("add 3 values: {}", add!(1, 2, 3));
+  println!("a call as an argument: {}", twice_plus!(pick(5, 6), 1));
+  println!("a type with a comma: {}", length_of!(Tensor<i64, [3]>, 1));
+  return 0;
+}

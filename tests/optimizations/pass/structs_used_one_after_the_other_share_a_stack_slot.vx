@@ -20,7 +20,7 @@
 // REQUIRES: aarch64
 // Only because the ASM checks name the registers of these two machines.
 //
-// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s --check-prefix=IR
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s --check-prefix=IR # flat-codegen
 // RUN: vxc %s --action emit-obj -o %t.o
 // macOS adds `_` to each symbol name.
 // RUN: llvm-objdump -d --no-show-raw-insn --disassemble-symbols=two_blocks,_two_blocks %t.o | FileCheck %s --check-prefixes=ASM,ASM-%arch

@@ -601,7 +601,19 @@ impl<'a> TypeChecker<'a> {
         return_type: &Type,
         consume: bool,
     ) {
-        let prev_statement_span = std::mem::replace(&mut self.current_statement_span, stmt.span());
+        let prev_statement_span = self.errors.enter_statement(stmt.span());
+        let value = match &*stmt {
+            Statement::LetDecl(d) => Some(&d.expr),
+            Statement::Assign(a) => Some(&a.rhs),
+            Statement::Return(r) => r.expr.as_ref(),
+            _ => None,
+        };
+        if let Some(Expr::Range(_)) = value {
+            self.errors.push(
+                "a range (`a..b`) cannot be a value. Use it as the bound of a `for` loop"
+                    .to_string(),
+            );
+        }
         match stmt {
             Statement::LetDecl(decl) if crate::hir::check::tasks::is_spawn(&decl.expr) => {
                 self.check_spawn_let(decl, consume)
@@ -636,14 +648,19 @@ impl<'a> TypeChecker<'a> {
                 self.prove_invariants_for_the_next_pass(Some(c.span));
                 self.drops_exit("continue", &c.span, crate::hir::check::drops::ExitTo::Loop)
             }
-            Statement::Assign(AssignStmt { lhs, rhs, span }) => {
+            Statement::Assign(AssignStmt {
+                lhs,
+                rhs,
+                span,
+                in_place,
+            }) => {
                 let span = *span;
                 self.check_token_overwrite(lhs, &span);
                 if let Some(call) = self.container_store(lhs, None, rhs, span) {
                     *stmt = Statement::ExprStmt(ExprStmtStmt::new(call, true, span));
                     self.check_statement(stmt, return_type, consume);
                 } else {
-                    self.check_assign_stmt(lhs, None, rhs, consume, None)
+                    *in_place = self.check_assign_stmt(lhs, None, rhs, consume, None);
                 }
             }
             Statement::CompoundAssign(CompoundAssignStmt {
@@ -655,11 +672,34 @@ impl<'a> TypeChecker<'a> {
             }) => {
                 let op = op.clone();
                 let span = *span;
-                if let Some(call) = self.container_store(lhs, Some(&op), rhs, span) {
+                // `a += b` on a struct or an enum is `a = a + b`, through `Add`: Vx has no
+                // `AddAssign`. The left side is read twice, so it must name a variable or its
+                // fields, whose reads have no effect.
+                let on_user_type = Self::is_user_type(&self.check_expr_type_probe(lhs));
+                if on_user_type && !Self::names_a_variable_or_its_fields(lhs) {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3004,
+                        "a compound assignment on a struct or an enum reads its left side \
+                         twice, so the left side must be a variable, a field of one, or `*r`: \
+                         put the value in a variable, or write `a = a + b`"
+                            .to_string(),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+                    );
+                } else if on_user_type {
+                    let value = Expr::BinaryOp(BinaryOpExpr {
+                        lhs: Box::new(lhs.clone()),
+                        op,
+                        rhs: Box::new(rhs.clone()),
+                        span,
+                        operand_ty: None,
+                    });
+                    *stmt = Statement::Assign(AssignStmt::new(lhs.clone(), value, span));
+                    self.check_statement(stmt, return_type, consume);
+                } else if let Some(call) = self.container_store(lhs, Some(&op), rhs, span) {
                     *stmt = Statement::ExprStmt(ExprStmtStmt::new(call, true, span));
                     self.check_statement(stmt, return_type, consume);
                 } else {
-                    self.check_assign_stmt(lhs, Some(&op), rhs, consume, Some(operand_ty))
+                    self.check_assign_stmt(lhs, Some(&op), rhs, consume, Some(operand_ty));
                 }
             }
             Statement::Return(ret) => {
@@ -702,7 +742,17 @@ impl<'a> TypeChecker<'a> {
             Statement::Drop(_) | Statement::Error(_) => {}
         }
         self.check_frame_escape(stmt);
-        self.current_statement_span = prev_statement_span;
+        self.end_moved_tiles();
+        self.errors.at = prev_statement_span;
+    }
+
+    /// The tiles of the value of `let name`. A tensor that the initializer moved, as in
+    /// `let b = id(a)`, is gone before them.
+    fn place_for_let(&mut self, name: &str, ty: &Type, context: &str, span: &Span) {
+        self.end_moved_tiles();
+        let prev = self.traffic.tile_holder.replace(name.to_string());
+        self.check_type_placement(ty, context, span);
+        self.traffic.tile_holder = prev;
     }
 
     /// Check a `let` binding: type the initializer, bind the name (annotation wins), record the
@@ -735,10 +785,23 @@ impl<'a> TypeChecker<'a> {
             e => e,
         };
         let from_literal = ty_ann.is_none() && matches!(bare, Expr::Number(n) if n.ty.is_none());
+        // `let s = "abc"` makes `s` a name for the text, so `==` on `s` compares the text.
+        let text_len = match &*expr {
+            Expr::StringLiteral(l) if !*_is_mut => Some(l.value.as_ref().len()),
+            _ => None,
+        };
         let prev_expected = self.expected_type.take();
         self.expected_type = ty_ann.clone();
         self.let_closure = matches!(&*expr, Expr::Closure(_)).then_some(*span);
-        let ty = self.check_expr_type_flag(expr, consume);
+        let prev_holder = self.traffic.tile_holder.take();
+        if matches!(&*expr, Expr::Transfer(_)) {
+            self.traffic.tile_holder = Some(name.to_string());
+        }
+        // The parser's `let` for the sum in `let r = (v + w)[1]` holds what was the base of an
+        // index. Reading an index does not move its base, so `v` and `w` stay usable.
+        let consume = consume && !name.starts_with(crate::syntax::expr::INDEXED_TEMPORARY);
+        let ty = self.check_whole_value(expr, |c, e| c.check_expr_type_flag(e, consume));
+        self.traffic.tile_holder = prev_holder;
         self.let_closure = None;
         let ty = crate::hir::check::operators::round_narrow_arithmetic(expr, ty, ty_ann.as_ref());
         self.expected_type = prev_expected;
@@ -795,7 +858,7 @@ impl<'a> TypeChecker<'a> {
             }
             // Capacity: a placed tensor annotation must fit its memory space.
             if !memory_already_recorded {
-                self.check_type_placement(ann, &context, span);
+                self.place_for_let(name, ann, &context, span);
             }
             self.shadow_borrows(name);
             self.insert(name.to_string(), ann.clone());
@@ -806,7 +869,7 @@ impl<'a> TypeChecker<'a> {
             // only in the initializer -- the ordinary spelling -- escaped capacity admission,
             // element-type admission, and the working set.
             if !memory_already_recorded {
-                self.check_type_placement(&ty, &context, span);
+                self.place_for_let(name, &ty, &context, span);
             }
             self.shadow_borrows(name);
             self.insert(name.to_string(), ty.clone());
@@ -818,6 +881,13 @@ impl<'a> TypeChecker<'a> {
             }
             ty
         };
+        let depth = self.current_scope_depth();
+        if let Some(len) = text_len {
+            self.string_literal_lets
+                .insert(name.to_string(), (depth, len));
+        } else if self.string_literal_lets.get(name.as_ref()).map(|(d, _)| *d) == Some(depth) {
+            self.string_literal_lets.remove(name.as_ref());
+        }
 
         // The region's device has to represent what the body builds. A type annotation, or a
         // type inferred from an untyped literal, has no expression that carries it, so the
@@ -830,8 +900,24 @@ impl<'a> TypeChecker<'a> {
         if !self.borrow.views.contains_key(name.as_ref()) {
             self.check_spawn_capture_moved(expr);
         }
-        if !self.speculating && !Self::views_foreign_memory(expr) {
-            self.drops_note_owner(name.as_ref(), &binding_ty);
+        // A view of a `*const` pointer stays read-only also when another name takes it.
+        let read_only_view = match crate::syntax::expr::bare_unsafe_value(expr) {
+            Expr::Identifier(id) => self.borrow.const_views.contains(&id.name),
+            e => Self::foreign_view_pointer(e).is_some_and(|p| self.is_const_pointer(p)),
+        };
+        if read_only_view {
+            self.borrow.const_views.insert(name.clone());
+        } else {
+            self.borrow.const_views.remove(name);
+        }
+        if let Some(p) = Self::foreign_view_pointer(expr) {
+            let provenance = self.ref_provenance_of(p);
+            self.borrow.foreign_views.insert(name.clone(), provenance);
+        } else {
+            self.borrow.foreign_views.remove(name);
+            if !self.speculating {
+                self.drops_note_owner(name.as_ref(), &binding_ty);
+            }
         }
         if let Expr::Identifier(from) = &*expr {
             if !self.speculating {
@@ -892,6 +978,7 @@ impl<'a> TypeChecker<'a> {
         self.pointer_facts.forget(name.as_ref());
         self.note_pointer_value(name.as_ref(), pointer);
         self.pointer_facts_name_the_result(name.as_ref(), expr);
+        self.pointer_facts_note_an_owner(name.as_ref(), expr);
         // `raw::extent(t)` folds to its literal element count first: the prover cannot
         // lower a function call, so `let n = raw::extent(src)` would otherwise record
         // an unlowerable fact and every bound written against `n` would be unprovable
@@ -902,19 +989,84 @@ impl<'a> TypeChecker<'a> {
         // must be one that the prover can model, so that no new program warns.
         let recorded = !*_is_mut || crate::hir::prover::is_modelled(&value);
         if recorded && !crate::hir::check::raw::expr_mentions(&value, name.as_ref()) {
-            let id_expr = Expr::Identifier(IdentifierExpr {
+            // A call can change its arguments. Re-evaluating it in a later proof would use
+            // their new values, not the values from when the result was returned.
+            let changes_an_argument = matches!(&value, Expr::FunctionCall(c)
+                if c.args.iter().any(|a| self.call_may_change_argument(a)));
+            if !changes_an_argument {
+                let id_expr = Expr::Identifier(IdentifierExpr {
+                    name: name.clone(),
+                    span: Span::default(),
+                });
+                let eq_expr = Expr::RelationalOp(RelationalOpExpr {
+                    lhs: Box::new(id_expr),
+                    op: RelationalOp::Eq,
+                    rhs: Box::new(value),
+                    span: Span::default(),
+                    operand_ty: None,
+                });
+                self.consteval.constraints.push(eq_expr);
+            }
+            self.keep_call_result_ensures(name, expr);
+        }
+    }
+
+    /// Whether a call can change the value behind the argument `arg`: a `&mut` or a pointer.
+    fn call_may_change_argument(&self, arg: &Expr) -> bool {
+        matches!(arg, Expr::Borrow(b) if b.is_mut)
+            || matches!(
+                self.check_expr_type_probe(arg),
+                Type::Borrow { is_mut: true, .. } | Type::Pointer(..) | Type::Ref(..)
+            )
+    }
+
+    /// A returned number keeps its postconditions even when a later call changes an input
+    /// buffer. The equation `name == call(args)` does not: a later proof evaluates the call
+    /// again with the new buffer.
+    fn keep_call_result_ensures(&mut self, name: &crate::symbol::Symbol, value: &Expr) {
+        let Expr::FunctionCall(call) = crate::syntax::bare_unsafe_value(value) else {
+            return;
+        };
+        let Some((params, return_type, ensures)) = self.declared_callee(&call.name) else {
+            return;
+        };
+        let changed: Vec<_> = call
+            .args
+            .iter()
+            .filter(|arg| self.call_may_change_argument(arg))
+            .filter_map(|arg| Self::arg_reborrow_base(arg).map(|(root, _)| root))
+            .collect();
+        let mut names: HashMap<_, _> = params
+            .iter()
+            .map(|(p, _)| p.clone())
+            .zip(
+                call.args
+                    .iter()
+                    .map(|a| crate::hir::prover::without_borrow(a).clone()),
+            )
+            .collect();
+        names.insert(
+            "return".into(),
+            Expr::Identifier(IdentifierExpr {
                 name: name.clone(),
                 span: Span::default(),
-            });
-            let eq_expr = Expr::RelationalOp(RelationalOpExpr {
-                lhs: Box::new(id_expr),
-                op: RelationalOp::Eq,
-                rhs: Box::new(value),
-                span: Span::default(),
-                operand_ty: None,
-            });
-            self.consteval.constraints.push(eq_expr);
-        }
+            }),
+        );
+        let facts: Vec<_> = ensures
+            .iter()
+            .filter(|e| crate::hir::check::atomic_contracts::is_prover_clause(e))
+            .map(|e| {
+                let typed = self.typed_callee_contract(e, params, return_type);
+                hir::prover::substitute_names(&typed, &names)
+            })
+            .filter(hir::prover::is_modelled)
+            .filter(|e| {
+                !changed
+                    .iter()
+                    .any(|root| crate::hir::check::raw::expr_mentions(e, root))
+            })
+            .collect();
+        self.consteval.constraints.extend(facts);
     }
 
     /// Check a `for` loop: type the iterable, bind the induction variable's element type, prove
@@ -975,6 +1127,15 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Whether `e` is a tensor, or a reference to one, that a `for` loop reads by index.
+    fn is_tensor_or_reference_to_one(&mut self, e: &Expr) -> bool {
+        let mut ty = self.check_expr_type_probe(e);
+        while let Type::Borrow { inner, .. } | Type::Ref(inner, _) = ty {
+            ty = *inner;
+        }
+        matches!(ty, Type::Tensor(..))
+    }
+
     fn check_for_loop_stmt(&mut self, floop: &mut ForLoopStmt, consume: bool, return_type: &Type) {
         let ForLoopStmt {
             iter,
@@ -1004,10 +1165,30 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
+        // `for x in &t` reads the tensor as `for x in t` does: neither moves it. An `across` loop
+        // goes over a range, and the check of `across` refuses a tensor.
+        let over_tensor = across.is_none();
+        if let (Expr::Borrow(b), true) = (&**iterable, over_tensor) {
+            if self.is_tensor_or_reference_to_one(&b.expr) {
+                if b.is_mut && !self.speculating {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3046,
+                        "a `for` loop over a tensor gives copies of its elements, so it cannot \
+                         change them; write `for i in 0..t.len() { t[i] = ..; }`"
+                            .to_string(),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(
+                            &iterable.span(),
+                        )),
+                    );
+                }
+                **iterable = (*b.expr).clone();
+            }
+        }
         // `for x in t` over a tensor reads it by index: `for $i in 0..t.len() { let x = t[$i]; .. }`.
-        // A tensor of rank 2 or more gives its rows.
-        if matches!(&**iterable, Expr::Array(_))
-            || matches!(self.check_expr_type_probe(iterable), Type::Tensor(..))
+        // A tensor of rank 2 or more gives its rows. `t` can also be a reference to a tensor.
+        if over_tensor
+            && (matches!(&**iterable, Expr::Array(_))
+                || self.is_tensor_or_reference_to_one(iterable))
         {
             if let Expr::Identifier(id) = &**iterable {
                 let index = format!("$for_index_{}_{}", loop_span.line, loop_span.column);
@@ -1353,6 +1534,7 @@ impl<'a> TypeChecker<'a> {
                 var: iter.as_str().into(),
                 bounds,
                 used: false,
+                across: across.is_some(),
             });
         let pointers_at_head = match ordered {
             true => self.pointer_facts.clone(),
@@ -1841,6 +2023,16 @@ impl<'a> TypeChecker<'a> {
         None
     }
 
+    /// `x`, `x.f.g` or `*r`: a place whose read has no effect, so it can be read twice.
+    fn names_a_variable_or_its_fields(place: &Expr) -> bool {
+        match place {
+            Expr::Identifier(_) => true,
+            Expr::MemberAccess(m) => Self::names_a_variable_or_its_fields(&m.base),
+            Expr::Dereference(d) => Self::names_a_variable_or_its_fields(&d.expr),
+            _ => false,
+        }
+    }
+
     /// Check an assignment / compound assignment: type the LHS, then the RHS expecting the LHS
     /// type (#240), verify assignability, and fold a const RHS into the eval environment.
     /// `op` is `Some` for a compound assignment, and carries the operator that sits between
@@ -1866,6 +2058,100 @@ impl<'a> TypeChecker<'a> {
                 });
             }
             place = base;
+        }
+    }
+
+    /// Is `e` a `*const` pointer?
+    pub(crate) fn is_const_pointer(&self, e: &Expr) -> bool {
+        matches!(self.check_expr_type_probe(e), Type::Pointer(_, _, false))
+    }
+
+    /// What a write to `place` goes through that only allows reading, as the program names it:
+    /// a `*const` pointer on the way to the place (`*p`, `p[i]`, `(*p).f`), or a view of memory
+    /// from one. The flag is true for a view. `None` when the write goes through no `*const`
+    /// pointer.
+    pub(crate) fn const_pointer_in_place(&self, place: &Expr) -> Option<(String, bool)> {
+        let name_of = |e: &Expr| match Self::extract_base_and_path(e) {
+            Some((root, path)) => crate::hir::places::display_place(&root, &path),
+            None => "a pointer".to_string(),
+        };
+        let mut place = crate::syntax::expr::bare_unsafe_value(place);
+        loop {
+            if let Expr::Identifier(id) = place {
+                if self.borrow.const_views.contains(&id.name) {
+                    return Some((id.name.to_string(), true));
+                }
+            }
+            if let Some(p) = Self::foreign_view_pointer(place) {
+                if self.is_const_pointer(p) {
+                    return Some((name_of(p), false));
+                }
+            }
+            let base = match place {
+                Expr::Dereference(d) => &*d.expr,
+                Expr::MemberAccess(m) => &*m.base,
+                Expr::IndexAccess(i) => &*i.base,
+                _ => return None,
+            };
+            if self.is_const_pointer(base) {
+                return Some((name_of(base), false));
+            }
+            place = crate::syntax::expr::bare_unsafe_value(base);
+        }
+    }
+
+    /// Whether `place` is reached through a shared reference (`&T`) that a parameter holds, and
+    /// the parameter is not declared `mut`: `t` with `t : &Tensor`, or `layer.codes` with
+    /// `layer : &Layer` or `codes : &Tensor`. Nothing can write such a place until the call
+    /// returns. A local reference does not count: its borrow can end before the function does.
+    pub(crate) fn borrowed_for_the_call(&self, place: &Expr) -> bool {
+        let mut place = crate::syntax::expr::bare_unsafe_value(place);
+        let mut through_shared = false;
+        loop {
+            if matches!(
+                self.check_expr_type_probe(place),
+                Type::Borrow { is_mut: false, .. }
+            ) {
+                through_shared = true;
+            }
+            let base = match place {
+                Expr::Identifier(id) => {
+                    return through_shared
+                        && self.borrow.current_params.contains_key(&id.name)
+                        && !self.is_mutable(id.name.as_ref());
+                }
+                Expr::MemberAccess(m) => &*m.base,
+                Expr::IndexAccess(i) => &*i.base,
+                Expr::Dereference(d) => &*d.expr,
+                _ => return false,
+            };
+            place = crate::syntax::expr::bare_unsafe_value(base);
+        }
+    }
+
+    /// E4006 for a change, `what`, to memory that `place` reaches through a `*const` pointer.
+    pub(crate) fn check_const_pointer_change(&mut self, place: &Expr, what: &str) {
+        if self.speculating {
+            return;
+        }
+        if let Some((name, is_view)) = self.const_pointer_in_place(place) {
+            let message = if is_view {
+                format!(
+                    "{what} memory through `{name}`, a view of memory from a `*const` pointer. \
+                     It only allows reading. Make the view from a `*mut` pointer to change the \
+                     memory"
+                )
+            } else {
+                format!(
+                    "{what} memory through `{name}`, a `*const` pointer. It only allows \
+                     reading. Use a `*mut` pointer to change the memory"
+                )
+            };
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E4006,
+                message,
+                Some(crate::diagnostic::SourceSpan::from_ast_span(&place.span())),
+            );
         }
     }
 
@@ -1933,7 +2219,7 @@ impl<'a> TypeChecker<'a> {
         rhs: &mut Expr,
         consume: bool,
         operand_ty: Option<&mut Option<crate::syntax::ElementType>>,
-    ) {
+    ) -> bool {
         self.strip_tensor_deref_at_root(lhs);
         // Assigning to a moved variable gives it a value again. A write does not read what
         // was there, so the move stops being in the way -- and the mark has to go before the
@@ -1942,11 +2228,14 @@ impl<'a> TypeChecker<'a> {
         // Only a plain `x = v`. `x op= v` reads `x` first, and `a[i] = v` writes *through* a
         // value the name no longer owns; both stay refused.
         let mut owner_before = None;
+        let mut holds_its_buffer = false;
+        let mut in_place = false;
         let mut moved_fields_before = Vec::new();
         let moved_before = self.moved_snapshot();
         if op.is_none() {
             if let Expr::Identifier(id) = lhs {
                 owner_before = self.drops_owner_state(id.name.as_ref());
+                holds_its_buffer = self.holds_its_buffer(id.name.as_ref());
                 self.unconsume(id.name.as_ref());
             }
             // `p.a = v` after `p.a` was moved out gives the field a value again.
@@ -1969,7 +2258,12 @@ impl<'a> TypeChecker<'a> {
         // The check is what turns `v[i]` into that call, so the place is looked at after it.
         let before_lhs = self.borrow.snapshot();
         self.checking_assign_lhs = true;
-        let lhs_ty = self.check_expr_type_flag(lhs, false);
+        // `b = a` replaces the whole of `b`, and `b += a` reads it.
+        let lhs_ty = if op.is_none() {
+            self.check_whole_value(lhs, |c, e| c.check_expr_type_flag(e, false))
+        } else {
+            self.check_expr_type_flag(lhs, false)
+        };
         self.checking_assign_lhs = false;
         self.check_field_change(lhs, "this assignment changes");
         let temporary_place = matches!(lhs, Expr::Dereference(d)
@@ -1980,6 +2274,9 @@ impl<'a> TypeChecker<'a> {
             let added = self.borrow.added_since(&before_lhs);
             self.borrow.reserve(&added)
         });
+        if !matches!(lhs, Expr::Identifier(_)) {
+            self.check_const_pointer_change(lhs, "this assigns to");
+        }
         if let Some(shared) = self.shared_reference_in_place(lhs) {
             if !self.speculating {
                 self.errors.error_with_code(
@@ -2052,8 +2349,9 @@ impl<'a> TypeChecker<'a> {
             }
         }
         let before_rhs = self.borrow.snapshot();
-        let mut rhs_ty =
-            self.check_expr_expecting(rhs, Some(lhs_ty.clone()), consume && !copies_into_tensor);
+        let mut rhs_ty = self.check_whole_value(rhs, |c, e| {
+            c.check_expr_expecting(e, Some(lhs_ty.clone()), consume && !copies_into_tensor)
+        });
         rhs_ty = crate::hir::check::operators::round_narrow_arithmetic(rhs, rhs_ty, Some(&lhs_ty));
         // What the value left in the target is stored there, not borrowed only for a call.
         if let Some(target) = self.current_assignment_target.take() {
@@ -2091,7 +2389,8 @@ impl<'a> TypeChecker<'a> {
         if op.is_none() {
             self.check_view_assign(lhs, rhs, &rhs_ty);
             if let Expr::Identifier(id) = lhs {
-                self.drops_note_assign(id.name.as_ref(), owner_before, rhs, id.span.line);
+                in_place = holds_its_buffer && self.writes_in_place(id.name.as_ref(), rhs);
+                self.drops_note_assign(id.name.as_ref(), owner_before, id.span.line, in_place);
                 self.unconsume(id.name.as_ref());
                 self.borrow.views.remove(id.name.as_ref());
                 if let Expr::Identifier(from) = &*rhs {
@@ -2119,7 +2418,7 @@ impl<'a> TypeChecker<'a> {
         if let Some(op) = op {
             let span = lhs.span();
             if !self.check_restricted_operands(op, &lhs_ty, &rhs_ty, &span) {
-                return;
+                return false;
             }
             let narrow = [&lhs_ty, &rhs_ty]
                 .iter()
@@ -2134,7 +2433,7 @@ impl<'a> TypeChecker<'a> {
                     ),
                     Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                 );
-                return;
+                return false;
             }
         }
         // A moved variable reads as `Unknown`, and E4001 already reported it.
@@ -2155,7 +2454,9 @@ impl<'a> TypeChecker<'a> {
             } else {
                 match self.literal_default_note(lhs, &lhs_ty, &rhs_ty) {
                     Some(note) => {
-                        format!("Type mismatch in assignment: cannot assign {rhs_ty} to {lhs_ty}; {note}")
+                        format!(
+                            "Type mismatch in assignment: cannot assign {rhs_ty} to {lhs_ty}; {note}"
+                        )
                     }
                     None => format!(
                         "Type mismatch in assignment: cannot assign {} to {}; write an explicit \
@@ -2223,7 +2524,7 @@ impl<'a> TypeChecker<'a> {
         }
         // The old value of a type with a drop is dropped, which can free memory.
         if !self.drops_glue(&lhs_ty).is_empty() {
-            let at = self.current_statement_span;
+            let at = self.errors.at;
             self.pointer_facts_event(at, |_| "an assignment that drops the old value".to_string());
         }
         // After the event, so that the event does not end the new fact.
@@ -2293,6 +2594,7 @@ impl<'a> TypeChecker<'a> {
             }
             _ => {}
         }
+        in_place
     }
 
     /// Which constant scope each known name currently lives in, innermost winning.
@@ -2497,7 +2799,7 @@ impl<'a> TypeChecker<'a> {
         let prev_expected = self.expected_type.take();
         self.expected_type = Some(return_type.clone());
         self.consteval.comptime_return_is_value = matches!(&*expr, Expr::ComptimeBlock(_));
-        let ty = self.check_expr_type_flag(expr, consume);
+        let ty = self.check_whole_value(expr, |c, e| c.check_expr_type_flag(e, consume));
         self.consteval.comptime_return_is_value = false;
         let ty = crate::hir::check::operators::round_narrow_arithmetic(expr, ty, Some(return_type));
         self.expected_type = prev_expected;
@@ -2670,38 +2972,58 @@ impl<'a> TypeChecker<'a> {
     /// parameters and the fresh name in place of `return`. A method call is a call of its
     /// instance by then, with the receiver as the first argument.
     fn abstract_calls(&self, e: &Expr, calls: &mut usize, facts: &mut Vec<Expr>) -> Expr {
-        let mut sub = |x: &Expr| Box::new(self.abstract_calls(x, calls, facts));
+        let typed = hir::prover::with_integer_types(e, &|e| self.prover_int_type(e));
+        self.abstract_typed_calls(&typed, calls, facts)
+    }
+
+    fn abstract_typed_calls(&self, e: &Expr, calls: &mut usize, facts: &mut Vec<Expr>) -> Expr {
+        let mut sub = |x: &Expr| Box::new(self.abstract_typed_calls(x, calls, facts));
         match e {
             Expr::FunctionCall(c) => {
-                let args: Vec<Expr> = c
-                    .args
-                    .iter()
-                    .map(|a| *sub(hir::prover::without_borrow(a)))
-                    .collect();
                 let result = Expr::Identifier(IdentifierExpr {
                     name: format!("$call_{}", *calls).into(),
                     span: c.span,
                 });
                 *calls += 1;
-                let callee = self
-                    .env
-                    .syntax_functions
-                    .get(c.name.as_ref())
-                    .copied()
-                    .or_else(|| {
-                        self.mono
-                            .functions
-                            .iter()
-                            .find(|(f, _)| f.name == c.name)
-                            .map(|(f, _)| f)
-                    })
-                    .map(|f| (&f.params, &f.ensures))
-                    // The compiler trusts the `ensures` of an `extern` function.
-                    .or_else(|| {
-                        let ext = self.env.externs.iter().find(|x| x.name == c.name)?;
-                        Some((&ext.params, &ext.ensures))
-                    });
-                if let Some((params, ensures)) = callee {
+                let callee = self.declared_callee(&c.name);
+                // Keep the declared scalar type after replacing a call with a fresh name.
+                let result = match callee.map(|(_, ret, _)| ret) {
+                    Some(Type::Scalar(ty))
+                        if ty.int_bits().is_some() && *ty != ElementType::Bool =>
+                    {
+                        Expr::AsCast(AsCastExpr {
+                            expr: Box::new(result),
+                            target_ty: Type::Scalar(ty.clone()),
+                            source_ty: Some(Type::Scalar(ty.clone())),
+                            span: c.span,
+                        })
+                    }
+                    _ => result,
+                };
+                let args: Vec<Expr> =
+                    c.args
+                        .iter()
+                        .enumerate()
+                        .map(|(i, arg)| {
+                            let expected = callee
+                                .and_then(|(params, _, _)| params.get(i))
+                                .and_then(|(_, ty)| match ty {
+                                    Type::Scalar(e)
+                                        if e.int_bits().is_some() && *e != ElementType::Bool =>
+                                    {
+                                        Some(e.clone())
+                                    }
+                                    _ => None,
+                                });
+                            let arg = hir::prover::with_integer_context(
+                                hir::prover::without_borrow(arg),
+                                expected,
+                                &|e| self.prover_int_type(e),
+                            );
+                            self.abstract_typed_calls(&arg, calls, facts)
+                        })
+                        .collect();
+                if let Some((params, return_type, ensures)) = callee {
                     let mut names: HashMap<crate::symbol::Symbol, Expr> =
                         params.iter().map(|(p, _)| p.clone()).zip(args).collect();
                     names.insert("return".into(), result.clone());
@@ -2709,7 +3031,8 @@ impl<'a> TypeChecker<'a> {
                         .iter()
                         .filter(|e| crate::hir::check::atomic_contracts::is_prover_clause(e))
                     {
-                        facts.push(hir::prover::substitute_names(ens, &names));
+                        let typed = self.typed_callee_contract(ens, params, return_type);
+                        facts.push(hir::prover::substitute_names(&typed, &names));
                     }
                 }
                 result
@@ -2746,12 +3069,102 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// The integer type of the name `n` in a contract, a variable in scope or `return`, and
-    /// whether its range is a fact. Only a parameter's range is: a fact can be about another
-    /// variable of the same name, from a `let` or an arm that hides it, and a range of the
-    /// wrong type would contradict that fact and so prove anything. `return` is bounded by its
-    /// operands.
-    fn prover_int_type(&self, n: &str) -> Option<(ElementType, bool)> {
+    /// The parameters, return type and `ensures` that the declaration of `name` states.
+    #[allow(clippy::type_complexity)]
+    fn declared_callee(
+        &self,
+        name: &crate::symbol::Symbol,
+    ) -> Option<(&[(crate::symbol::Symbol, Type)], &Type, &[Expr])> {
+        self.env
+            .syntax_functions
+            .get(name.as_ref())
+            .copied()
+            .or_else(|| {
+                self.mono
+                    .functions
+                    .iter()
+                    .find(|(f, _)| f.name == *name)
+                    .map(|(f, _)| f)
+            })
+            .map(|f| (&f.params[..], &f.return_type, &f.ensures[..]))
+            // The compiler trusts the `ensures` of an `extern` function.
+            .or_else(|| {
+                let ext = self.env.externs.iter().find(|x| x.name == *name)?;
+                Some((&ext.params[..], &ext.return_type, &ext.ensures[..]))
+            })
+    }
+
+    /// Resolve clauses in the callee's scope before replacing its names.
+    pub(crate) fn typed_callee_contract(
+        &self,
+        expr: &Expr,
+        params: &[(crate::symbol::Symbol, Type)],
+        return_type: &Type,
+    ) -> Expr {
+        fn declared_type(
+            checker: &TypeChecker<'_>,
+            expr: &Expr,
+            params: &[(crate::symbol::Symbol, Type)],
+            return_type: &Type,
+        ) -> Option<Type> {
+            match expr {
+                Expr::Identifier(id) if id.name.as_ref() == "return" => Some(return_type.clone()),
+                Expr::Identifier(id) => params
+                    .iter()
+                    .find(|(name, _)| *name == id.name)
+                    .map(|(_, ty)| ty.clone()),
+                Expr::MemberAccess(m) => {
+                    let mut base = declared_type(checker, &m.base, params, return_type)?;
+                    while let Type::Borrow { inner, .. }
+                    | Type::Pointer(inner, ..)
+                    | Type::Ref(inner, _) = base
+                    {
+                        base = *inner;
+                    }
+                    match base {
+                        Type::Struct(name, _) => checker.struct_field_type(&name, &[], &m.member),
+                        Type::GenericInstance(base, args) => match *base {
+                            Type::Struct(name, _) => {
+                                checker.struct_field_type(&name, &args, &m.member)
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    }
+                }
+                // The declared return type, not a type found in the caller's scope: a caller
+                // name can hide a callee parameter of another type.
+                Expr::FunctionCall(c) => Some(checker.declared_callee(&c.name)?.1.clone()),
+                _ => None,
+            }
+        }
+        hir::prover::with_integer_types(expr, &|e| match declared_type(
+            self,
+            e,
+            params,
+            return_type,
+        )? {
+            Type::Scalar(ty) if ty.int_bits().is_some() && ty != ElementType::Bool => {
+                Some((ty, false))
+            }
+            _ => None,
+        })
+    }
+
+    /// The integer type of an expression. Parameters and saved old values have range facts.
+    /// Other names can hide an earlier binding, so their ranges cannot be assumed.
+    /// A range from the wrong binding could contradict valid facts and prove anything.
+    /// The return value is bounded by its operands.
+    fn prover_int_type(&self, expr: &Expr) -> Option<(ElementType, bool)> {
+        let Expr::Identifier(id) = expr else {
+            return match self.check_expr_type_probe(expr) {
+                Type::Scalar(e) if e.int_bits().is_some() && e != ElementType::Bool => {
+                    Some((e, false))
+                }
+                _ => None,
+            };
+        };
+        let n = id.name.as_ref();
         // An old value has the type of its variable, and no `let` can hide its name.
         if let Some(old) = n.strip_prefix("$old_") {
             let int = old
@@ -2900,6 +3313,64 @@ impl<'a> TypeChecker<'a> {
             }
             Exact::Term(_) | Exact::Sum(_) => false,
         }
+    }
+
+    /// Whether `goal` holds, when its form decides it with no solver: each comparison in it
+    /// compares two sums with the same terms apart from whole numbers. `None` when the form does
+    /// not decide it.
+    pub(crate) fn decide_by_form(
+        &self,
+        goal: &crate::hir::check::pointer_facts::Exact,
+    ) -> Option<bool> {
+        use crate::hir::check::pointer_facts::Exact;
+        let mut prover = hir::prover::SmtProver::new();
+        let (mut calls, mut facts) = (0, Vec::new());
+        // The terms of a sum that are not whole numbers, sorted, and the total of the numbers.
+        type Split = Option<(Vec<String>, i128)>;
+        let mut split = |e: &Exact| -> Split {
+            let parts = match e {
+                Exact::Sum(ts) => ts.as_slice(),
+                e => std::slice::from_ref(e),
+            };
+            let (mut terms, mut total) = (Vec::new(), 0i128);
+            for t in parts {
+                let Exact::Term(_) = t else {
+                    return None;
+                };
+                let s = self.lower_exact(t, &mut prover, &mut calls, &mut facts)?;
+                match s.parse::<i128>() {
+                    Ok(n) => total = total.checked_add(n)?,
+                    Err(_) => terms.push(s),
+                }
+            }
+            terms.sort();
+            Some((terms, total))
+        };
+        fn decide(goal: &Exact, split: &mut dyn FnMut(&Exact) -> Split) -> Option<bool> {
+            match goal {
+                // One false part decides an `and`, and one true part decides an `or`, even when
+                // another part is unknown.
+                Exact::And(gs) | Exact::Or(gs) => {
+                    let decisive = matches!(goal, Exact::Or(_));
+                    let mut unknown = false;
+                    for g in gs {
+                        match decide(g, split) {
+                            Some(v) if v == decisive => return Some(v),
+                            Some(_) => {}
+                            None => unknown = true,
+                        }
+                    }
+                    (!unknown).then_some(!decisive)
+                }
+                Exact::Le(a, b) => {
+                    let (a, x) = split(a)?;
+                    let (b, y) = split(b)?;
+                    (a == b).then_some(x <= y)
+                }
+                Exact::Term(_) | Exact::Sum(_) => None,
+            }
+        }
+        decide(goal, &mut split)
     }
 
     fn lower_exact(
@@ -3670,7 +4141,7 @@ impl<'a> TypeChecker<'a> {
             Statement::Assign(AssignStmt {
                 lhs: Expr::Identifier(IdentifierExpr { name, span: _ }),
                 rhs,
-                span: _,
+                ..
             }) => {
                 match self.eval_expr(rhs, env) {
                     Some(val) => env.insert(name.clone(), val),
@@ -3691,11 +4162,7 @@ impl<'a> TypeChecker<'a> {
                     operand_ty: None,
                 });
                 self.eval_statement(
-                    &Statement::Assign(AssignStmt {
-                        lhs: lhs.clone(),
-                        rhs: folded,
-                        span: *span,
-                    }),
+                    &Statement::Assign(AssignStmt::new(lhs.clone(), folded, *span)),
                     env,
                 )
             }
@@ -3709,7 +4176,7 @@ impl<'a> TypeChecker<'a> {
                         span: _,
                     }),
                 rhs,
-                span: _,
+                ..
             }) => {
                 if let Some(root) = Self::place_root(lhs) {
                     // Only a write straight into a variable is carried out. A nested place
@@ -3937,7 +4404,6 @@ impl MutReferenceTypes<'_> {
                 }
                 Type::Unknown => true,
                 Type::Tensor(..)
-                | Type::Matrix
                 | Type::Scalar(..)
                 | Type::Generic(..)
                 | Type::Module(..)

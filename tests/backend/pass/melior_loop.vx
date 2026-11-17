@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // The loop lowers to an affine loop. Its body holds an `if`, so the body is a region of
 // blocks: one that compares the loop variable, and one that stores to sum.
 // CHECK-LABEL: func.func @main() -> i32

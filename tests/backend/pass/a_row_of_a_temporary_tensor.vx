@@ -1,0 +1,88 @@
+//===- a_row_of_a_temporary_tensor.vx - Vx Compiler ---------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `(v + w)[1]` is a row of the sum, and no variable holds the sum. A `let` of the row keeps
+// the sum alive as long as the row, as Rust keeps a temporary that a `let` borrows. As with
+// any index, `v` and `w` stay usable. A row of a named sum works too.
+//
+// `row_of_sum` frees the sum once, after its last use. The default code generator puts the sum
+// on the stack and ends its lifetime. The AST code generator frees its heap buffer. In
+// `row_in_a_region`, the sum is made inside the `spawn` region, where the program wrote it. An
+// index of an array literal in a `comptime` block stays in that block too, so the array does
+// not exist when the program runs.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s --check-prefix=FLAT
+// RUN: vxc %s --action emit-llvm --legacy-codegen 2>&1 | FileCheck %s --check-prefix=AST
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=REGION
+// RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s --check-prefix=REGION
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=COMPTIME
+// RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s --check-prefix=COMPTIME
+// CHECK: {{^}}sum: 3 3, product: 2 2, clone: 1 1, element: 3{{$}}
+// CHECK: {{^}}named sum: 3 3, function: 6, region: 6{{$}}
+// CHECK: {{^}}comptime: 50{{$}}
+//
+// FLAT-LABEL: llvm.func hidden @row_of_sum(
+// FLAT-NOT: @malloc
+// FLAT: %[[SUM:[0-9]+]] = llvm.alloca %{{[0-9]+}} x f32
+// FLAT-NOT: @malloc
+// FLAT: llvm.intr.lifetime.end %[[SUM]]
+// FLAT-NOT: @malloc
+// FLAT: llvm.return
+//
+// AST-LABEL: llvm.func hidden @row_of_sum(
+// AST: %[[SUM:[0-9]+]] = llvm.call @malloc(
+// AST-NOT: @malloc
+// AST: llvm.call @free(%[[SUM]])
+// AST-NOT: @malloc
+// AST: llvm.return
+//
+// REGION-LABEL: func.func @row_in_a_region(
+// REGION-NOT: linalg.add
+// REGION: vx.spawn
+// REGION-NOT: func.func
+// REGION: linalg.add
+//
+// COMPTIME-LABEL: func.func @main(
+// COMPTIME-NOT: arith.constant 60
+// COMPTIME: return
+
+fn row_of_sum(v : &Tensor<f32, [4, 2]>, w : &Tensor<f32, [4, 2]>) -> f32 {
+  let r = (v + w)[1];
+  return r[0] + r[1];
+}
+
+fn row_in_a_region(v : &Tensor<f32, [4, 2]>, w : &Tensor<f32, [4, 2]>) -> f32 {
+  let mut out = 0.0;
+  spawn on(Topology::CPU) {
+    let r = (v + w)[2];
+    out = r[0] + r[1];
+  }
+  return out;
+}
+
+fn main() -> i32 {
+  let v = Tensor<f32, [4, 2]>::fill(1.0);
+  let w = Tensor<f32, [4, 2]>::fill(2.0);
+  let sum = (v + w)[1];
+  let product = (v * w)[2];
+  let clone = v.clone()[3];
+  let element = (v + w)[1][0];
+  println!("sum: {} {}, product: {} {}, clone: {} {}, element: {}", sum[0] as i32, sum[1] as i32, product[0] as i32, product[1] as i32, clone[0] as i32, clone[1] as i32, element as i32);
+  let function = row_of_sum(&v, &w);
+  let region = row_in_a_region(&v, &w);
+  let s = v + w;
+  let r = s[1];
+  println!("named sum: {} {}, function: {}, region: {}", r[0] as i32, r[1] as i32, function as i32, region as i32);
+  let k = comptime {
+    let x = ([40, 50, 60])[1];
+    x
+  };
+  println!("comptime: {}", k);
+  return 0;
+}

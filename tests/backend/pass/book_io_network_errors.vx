@@ -1,0 +1,59 @@
+//===- book_io_network_errors.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on files, input and time (www/book/src/files-input-time.md):
+// a network call gives a `Result`, and its `Err` holds a `NetError`. It uses no other host.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}bad address{{$}}
+// CHECK: {{^}}bound a UDP socket{{$}}
+
+// ANCHOR: program
+import core::result;
+import std::net;
+
+// Prints why a network call did not work.
+fn describe(e : NetError) -> void {
+  match e {
+    NetError::BadAddress => {
+      println!("bad address");
+    }
+    NetError::Refused => {
+      println!("refused");
+    }
+    NetError::Os(code) => {
+      println!("system error {}", code);
+    }
+    _ => {
+      println!("another error");
+    }
+  }
+}
+
+fn main() -> i32 {
+  // An address must be `host:port`. This one has no port.
+  match unsafe { TcpStream::connect("localhost") } {
+    Result<TcpStream, NetError>::Ok(_stream) => {
+      println!("connected");
+    }
+    Result<TcpStream, NetError>::Err(e) => {
+      describe(e);
+    }
+  }
+  // Port 0 asks the system for any free port.
+  match unsafe { UdpSocket::bind("127.0.0.1:0") } {
+    Result<UdpSocket, NetError>::Ok(_socket) => {
+      println!("bound a UDP socket");
+    }
+    Result<UdpSocket, NetError>::Err(e) => {
+      describe(e);
+    }
+  }
+  return 0;
+}
+// ANCHOR_END: program

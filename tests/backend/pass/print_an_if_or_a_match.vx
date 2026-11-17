@@ -1,0 +1,38 @@
+//===- print_an_if_or_a_match.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `println!` can print an `if` or a `match` directly, with no `let` first. The AST code
+// generator (`--legacy-codegen`) used to fail on the `if` and print 0 for the `match`.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+
+fn main() -> i32 {
+  let x = 4;
+  println!("if takes else: {}", if x > 10 {
+    10
+  } else {
+    x
+  });
+  // CHECK: {{^}}if takes else: 4{{$}}
+  println!("if takes then: {}", if x > 1 {
+    7
+  } else {
+    x
+  });
+  // CHECK-NEXT: {{^}}if takes then: 7{{$}}
+  println!("match: {}", match x {
+    4 => {
+      9
+    },
+    _ => {
+      2
+    }
+  });
+  // CHECK-NEXT: {{^}}match: 9{{$}}
+  return 0;
+}

@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 // Test struct definitions, field access, method calls, and impl blocks.
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: call @"Point::new"(%{{.*}}, %{{.*}}) : (i32, i32) -> !llvm.struct<(i32, i32)>
 // CHECK: call @"Point::new"(%{{.*}}, %{{.*}}) : (i32, i32) -> !llvm.struct<(i32, i32)>

@@ -11,6 +11,7 @@
 // The third RUN line starts the shared runtime with one worker thread. The first task holds
 // it, so the second task can run only when the runtime adds a worker.
 //
+// NO-SEED-SWEEP: a task loops with no wait until another task acts, and one thread cannot run the other task.
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error

@@ -1,5 +1,5 @@
 //===- coverage_advanced_types_pass.vx ------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 
 enum MyEnum {
   VariantA,

@@ -1,4 +1,4 @@
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: call @Closure_1_call(%{{.*}}) : (!llvm.ptr) -> !llvm.struct<()>
 // CHECK: call @Closure_2_call(%{{.*}}) : (!llvm.ptr) -> i32

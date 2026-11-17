@@ -1,0 +1,18 @@
+//===- an_error_in_a_machine_file_names_that_file.vx - Vx Compiler *- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: mkdir -p %t.d
+// RUN: printf '// A machine file.\n\nMemory Stalled {\n  capacity: 1 MiB, bandwidth: 0 TB/s, managed: explicit, scope: device\n}\n' > %t.d/machine.vx
+// RUN: not vxc --machine %t.d/machine.vx %s 2>&1 | FileCheck %s
+//
+// The error about a memory space in a machine file names the machine file and the line of the
+// space.
+// CHECK: Error[E6008] at {{.*}}machine.vx:3:8: memory space 'Stalled' has a non-positive `bandwidth`
+
+fn main() -> i32 {
+  return 0;
+}

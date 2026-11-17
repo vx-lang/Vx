@@ -1,0 +1,101 @@
+// Kernels with `across subgroups` on the Apple GPU. A subgroup is a SIMD-group of 32 threads, and
+// the end of a lane loop in a subgroup loop is a barrier for the lanes of that subgroup only.
+//
+// `row_sums` sums each row with `lanes::sum` in the code of a subgroup, with one row for each of
+// the 4 subgroups of a block. `reverse_rows` writes each row of 32 values to shared memory in one
+// lane loop, and reads it back in the other order in the next. So each lane reads a value that
+// another lane of its subgroup wrote. The GPU must give the values of the CPU copy.
+//
+// The lanes of a SIMD-group run together, so these values do not show whether the barrier is
+// there. apple_gpu_kernels_in_metal_shading_language.vx checks the barrier in the MSL.
+//
+// REQUIRES: macos
+// RUN: env VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/m4-uma.vx 2>%t.gpu | FileCheck %s
+// RUN: FileCheck %s --check-prefix=GPU --input-file=%t.gpu
+// RUN: env VX_METAL=0 vxc %s --host default --machine fleet/m4-uma.vx | FileCheck %s
+//
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 4 x 1 x 1, block 128
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 4 x 1 x 1, block 128
+// CHECK: {{^}}sum of row 0: 2016{{$}}
+// CHECK-NEXT: {{^}}sum of row 13: 55264{{$}}
+// CHECK-NEXT: {{^}}rows reversed: 16 of 16{{$}}
+import core::convert;
+
+pub fn row_sums(y : &mut Tensor<f32, [?], Memory::HBM>, w : &Tensor<f32, [?], Memory::HBM>, rows : i32, cols : i32) -> void {
+  spawn on(Topology::Device) {
+    for rb in 0..rows / 4 across blocks {
+      let mut part = unsafe { Tensor<f32, [4, 32], Memory::SMEM>::uninit() };
+      for s in 0..4 across subgroups {
+        for l in 0..32 across lanes(32) {
+          let r = rb * 4 + s;
+          let mut acc : f32 = 0.0;
+          let mut c = l;
+          while c < cols {
+            acc = acc + w[r * cols + c];
+            c = c + 32;
+          }
+          part[s][l] = acc;
+        }
+        let t = lanes::sum(&part[s], 32);
+        y[rb * 4 + s] = t;
+      }
+    }
+  }
+  return;
+}
+
+pub fn reverse_rows(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for rb in 0..rows / 4 across blocks {
+      let mut row = unsafe { Tensor<f32, [4, 32], Memory::SMEM>::uninit() };
+      for s in 0..4 across subgroups {
+        for l in 0..32 across lanes(32) {
+          row[s][l] = x[(rb * 4 + s) * 32 + l];
+        }
+        for l in 0..32 across lanes(32) {
+          out[(rb * 4 + s) * 32 + l] = row[s][31 - l];
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  // Row r of w holds r * 64, r * 64 + 1, and so on, so row r sums to 64 * 64 * r + 2016.
+  let rows = 16;
+  let cols = 64;
+  let mut hw = Tensor<f32>([rows * cols]);
+  for i in 0..rows * cols {
+    hw[i] = i as f32;
+  }
+  let w = transfer(hw, Memory::HBM);
+  let mut y = transfer(Tensor<f32>([rows]), Memory::HBM);
+  row_sums(&mut y, &w, rows, cols);
+  let mut hx = Tensor<f32>([rows * 32]);
+  for i in 0..rows * 32 {
+    hx[i] = (i * 7 % 101) as f32;
+  }
+  let x = transfer(hx, Memory::HBM);
+  let mut out = transfer(Tensor<f32>([rows * 32]), Memory::HBM);
+  reverse_rows(&mut out, &x, rows);
+  let hy = transfer(&y, Memory::CPU_DRAM);
+  let ho = transfer(&out, Memory::CPU_DRAM);
+  let hx2 = transfer(&x, Memory::CPU_DRAM);
+  println!("sum of row 0: {}", hy[0]);
+  println!("sum of row 13: {}", hy[13]);
+  let mut good = 0;
+  for r in 0..rows {
+    let mut same = true;
+    for l in 0..32 {
+      if ho[r * 32 + l] != hx2[r * 32 + 31 - l] {
+        same = false;
+      }
+    }
+    if same {
+      good = good + 1;
+    }
+  }
+  println!("rows reversed: {} of {}", good, rows);
+  return 0;
+}

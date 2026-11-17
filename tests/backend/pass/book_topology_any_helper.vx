@@ -1,0 +1,40 @@
+//===- book_topology_any_helper.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on topologies (www/book/src/heterogeneous.md): `main` and a GPU
+// region call the same two helpers, one written with `on Topology::Any` and one with `<D : Topology>`.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}gpu 5 13 host 0 -2{{$}}
+
+// ANCHOR: program
+fn clamp(v : i32, lo : i32, hi : i32) on Topology::Any -> i32 {
+  if v < lo {
+    return lo;
+  }
+  if v > hi {
+    return hi;
+  }
+  return v;
+}
+
+fn add_one<D : Topology>(v : i32) on Topology::D -> i32 {
+  return v + 1;
+}
+
+fn main() -> i32 {
+  let a = spawn on(Topology::GPU) {
+    clamp(12, 0, 5)
+  };
+  let b = spawn on(Topology::GPU) {
+    add_one(12)
+  };
+  println!("gpu {} {} host {} {}", a, b, clamp(-3, 0, 5), add_one(-3));
+  return 0;
+}
+// ANCHOR_END: program

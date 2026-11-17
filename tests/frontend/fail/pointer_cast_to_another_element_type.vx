@@ -11,7 +11,7 @@
 
 fn main() -> i32 {
   let lit : *const i8 = "xyz";
-  // CHECK: Unsupported cast: cannot cast from Pointer(Scalar(I8), None, false) to Pointer(Scalar(I64), None, false)
+  // CHECK: Unsupported cast: cannot cast from `*const i8` to `*const i64`
   let wide : *const i64 = lit as *const i64;
   return 0;
 }

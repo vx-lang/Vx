@@ -17,14 +17,13 @@
 // the type rather than assuming one.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: E3019
-// CHECK-SAME: match arm literal '99999999999999999999'
-// CHECK-SAME: not representable in the scrutinee's type 'i32'
-// CHECK-SAME: can never be selected
 
 fn main() -> i32 {
   let n = 0;
   match n {
+    // CHECK: Error[E3019] at {{.*}}match_arm_literal_out_of_range.vx:[[@LINE+3]]:5: match arm literal '99999999999999999999'
+    // CHECK-SAME: not representable in the scrutinee's type 'i32'
+    // CHECK-SAME: can never be selected
     99999999999999999999 => {
       print(777);
     }

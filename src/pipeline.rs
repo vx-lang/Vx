@@ -746,12 +746,6 @@ fn nominal_gid(ty: &syntax::Type) -> Option<crate::gid::TypeId> {
             id.words[2] = crate::gid::ESCAPE_HATCH_MASK | crate::gid::generic_digest(&ids);
             Some(id)
         }
-        Type::Matrix => Some(crate::gid::TypeId::new(
-            0,
-            crate::hash::DefPath::Named("$matrix").compute_symbol_hash(),
-            0,
-            0,
-        )),
         // `Module` and `Unknown` genuinely have no type identity. They should not reach a generic
         // argument position; `emit_type_gid` now declines the whole instantiation rather than
         // silently interning it with the argument missing.

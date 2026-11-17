@@ -21,14 +21,14 @@
 // EXPECT: [1,   2]]
 
 Memory CPU_DRAM {}
-Memory GPU_HBM {
+Memory DEV_HBM {
   within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
 }
 Topology Dev {
   arch: spirv64,
-  memory: Memory::GPU_HBM,
-  visible: [Memory::GPU_HBM],
-  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 63 GB/s
 }
 
 fn main() -> i32 {
@@ -40,8 +40,8 @@ fn main() -> i32 {
       o[i][d] = 0.0;
     }
   }
-  let ad = transfer(a, Memory::GPU_HBM);
-  let mut od = transfer(o, Memory::GPU_HBM);
+  let ad = transfer(a, Memory::DEV_HBM);
+  let mut od = transfer(o, Memory::DEV_HBM);
   spawn on(Topology::Dev) {
     for i in 0..2 {
       for d in 0..2 {

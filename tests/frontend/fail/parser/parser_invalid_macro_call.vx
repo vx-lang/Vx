@@ -1,6 +1,6 @@
 //===- parser_invalid_macro_call.vx - Vx Compiler -------------------*- Vx
 //-*-===//
-// CHECK: Undefined static method 'Vec<i32>::new'.
+// CHECK: Error at {{.*}}parser_invalid_macro_call.vx:12:4: Undefined static method 'Vec<i32>::new'.
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.

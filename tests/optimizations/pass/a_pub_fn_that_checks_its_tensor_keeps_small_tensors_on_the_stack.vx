@@ -3,7 +3,7 @@
 // `doubled` must still go on the stack: its 4 floats get an `llvm.alloca`.
 // At -O3 the optimizer removes `doubled`, so the test uses the default level.
 //
-// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s # flat-codegen
 // CHECK-LABEL: llvm.func @scaled_sum(
 // CHECK: %[[FOUR:[0-9]+]] = llvm.mlir.constant(4 : index) : i64
 // CHECK: llvm.icmp "eq" %arg4, {{%[0-9]+}} : i64

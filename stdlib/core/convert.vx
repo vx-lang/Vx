@@ -58,50 +58,64 @@ macro_rules stamp_from {
   };
 }
 
+// Integer conversions also expose exact value preservation to callers' contracts.
+macro_rules stamp_integer_from {
+  ($from : ident , $to : ident) => {
+    impl From<$from> for $to {
+      fn from(v : $from) -> $to
+      ensures writes_only()
+      ensures return == v
+      {
+        return v as $to;
+      }
+    }
+  };
+}
+
 // Every type converts from itself, which is the one case a pair of distinct types cannot
 // cover.
-stamp_from!(i8 , i8);
-stamp_from!(i16 , i16);
-stamp_from!(i32 , i32);
-stamp_from!(i64 , i64);
-stamp_from!(u8 , u8);
-stamp_from!(u16 , u16);
-stamp_from!(u32 , u32);
-stamp_from!(u64 , u64);
-stamp_from!(usize , usize);
+stamp_integer_from!(i8 , i8);
+stamp_integer_from!(i16 , i16);
+stamp_integer_from!(i32 , i32);
+stamp_integer_from!(i64 , i64);
+stamp_integer_from!(u8 , u8);
+stamp_integer_from!(u16 , u16);
+stamp_integer_from!(u32 , u32);
+stamp_integer_from!(u64 , u64);
+stamp_integer_from!(usize , usize);
 stamp_from!(f32 , f32);
 stamp_from!(f64 , f64);
 stamp_from!(bool , bool);
 
-stamp_from!(i8 , i16);
-stamp_from!(i8 , i32);
-stamp_from!(i8 , i64);
-stamp_from!(i16 , i32);
-stamp_from!(i16 , i64);
-stamp_from!(i32 , i64);
+stamp_integer_from!(i8 , i16);
+stamp_integer_from!(i8 , i32);
+stamp_integer_from!(i8 , i64);
+stamp_integer_from!(i16 , i32);
+stamp_integer_from!(i16 , i64);
+stamp_integer_from!(i32 , i64);
 
-stamp_from!(u8 , u16);
-stamp_from!(u8 , u32);
-stamp_from!(u8 , u64);
-stamp_from!(u16 , u32);
-stamp_from!(u16 , u64);
-stamp_from!(u32 , u64);
+stamp_integer_from!(u8 , u16);
+stamp_integer_from!(u8 , u32);
+stamp_integer_from!(u8 , u64);
+stamp_integer_from!(u16 , u32);
+stamp_integer_from!(u16 , u64);
+stamp_integer_from!(u32 , u64);
 
 // An unsigned value fits in a signed type one step wider, never in the same width.
-stamp_from!(u8 , i16);
-stamp_from!(u8 , i32);
-stamp_from!(u8 , i64);
-stamp_from!(u16 , i32);
-stamp_from!(u16 , i64);
-stamp_from!(u32 , i64);
+stamp_integer_from!(u8 , i16);
+stamp_integer_from!(u8 , i32);
+stamp_integer_from!(u8 , i64);
+stamp_integer_from!(u16 , i32);
+stamp_integer_from!(u16 , i64);
+stamp_integer_from!(u32 , i64);
 
 // A `usize` holds 0 to the largest `i64`, so every `u32` fits in it, and it fits in both
 // `u64` and `i64`.
-stamp_from!(u8 , usize);
-stamp_from!(u16 , usize);
-stamp_from!(u32 , usize);
-stamp_from!(usize , u64);
-stamp_from!(usize , i64);
+stamp_integer_from!(u8 , usize);
+stamp_integer_from!(u16 , usize);
+stamp_integer_from!(u32 , usize);
+stamp_integer_from!(usize , u64);
+stamp_integer_from!(usize , i64);
 
 // `f32` carries 24 bits of mantissa and `f64` carries 53, so the widest integer each
 // converts from exactly is 16 and 32 bits.

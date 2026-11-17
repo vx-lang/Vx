@@ -44,6 +44,13 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
                                    uint32_t topology_id,
                                    uint32_t space_access);
 
+/// As `vx_plugin_alloc_and_transfer`, for `transfer_async`: a device may still
+/// copy when this returns. Each later use of the result waits for the copy. The
+/// caller may free `host_ptr` when this returns.
+void *vx_plugin_alloc_and_transfer_async(size_t bytes, void *host_ptr,
+                                         uint32_t topology_id,
+                                         uint32_t space_access);
+
 /// Per-argument ABI tag layout, produced by abiTagForType/LaunchOpLowering in
 /// src/dialect/VxLowering.cpp.
 ///
@@ -393,7 +400,8 @@ static inline size_t vx_payload_text_end(const void *payload,
 /// computes, "matmul", so a plugin can route it to a vendor library instead of
 /// guessing from buffer shapes -- which cannot be done for square operands,
 /// where every operand assignment conforms), `roles=`, `outkind=`, `topo=` (the
-/// dispatch id, decoded by vx_payload_topology), `toponame=`, `grid=`, `block=`
+/// dispatch id, decoded by vx_payload_topology), `toponame=`, `offload=`,
+/// `arch=` (the `arch:` of a declared topology), `grid=`, `block=`
 /// and `grid_loops=` (the launch shape of an `across` kernel, vx_launch_shape),
 /// `host_blocks=` (the host copy shares the blocks of axis x among the host's
 /// workers, vx_host_worker_count_for), `launch=`, `coop=`, `format=` (what the
@@ -421,6 +429,10 @@ vx_payload_field(const void *payload, size_t payload_size, const char *key) {
 
   const char *base = (const char *)payload;
   size_t key_len = strlen(key);
+  /* When the last byte is NUL, a NUL ends each entry inside the blob. Then a
+     match can return before the walk finds the end of its entry, and finding
+     `image=` does not read the whole image. */
+  const int terminated = base[payload_size - 1] == '\0';
 
   /* Skip the kernel name, then walk the remaining NUL-terminated entries. memchr rather
      than a byte loop: an `image=` entry holds a whole module's PTX, and looking up a field
@@ -434,6 +446,9 @@ vx_payload_field(const void *payload, size_t payload_size, const char *key) {
   while (pos < payload_size) {
     const char *entry = base + pos;
     size_t remaining = payload_size - pos;
+    if (terminated && remaining > key_len && memcmp(entry, key, key_len) == 0) {
+      return entry + key_len;
+    }
     const char *end = (const char *)memchr(entry, '\0', remaining);
     if (!end) {
       /* Unterminated: refuse rather than read past the blob. */
@@ -560,6 +575,8 @@ static inline int64_t vx_payload_section(const void *payload,
 #define VX_TOPO_AMX 300
 #define VX_TOPO_ANE 400
 #define VX_TOPO_GPU_BASE 500
+#define VX_TOPO_CPU_AVX512 600
+#define VX_TOPO_CPU_NEON 700
 // Network memory, as a `vx.transfer` target. Distinct bands rather than the
 // shared 300 they used to answer, which was `VX_TOPO_AMX` -- a transfer into a
 // peer's memory arrived indistinguishable from a request for Apple's matrix

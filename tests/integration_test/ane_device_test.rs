@@ -177,3 +177,245 @@ fn the_dispatcher_reports_the_device_coreml_chose() {
          the dispatcher must say so from the plan rather than from the route:\n{log}"
     );
 }
+
+/// A kernel placed on the Neural Engine says when it runs on the CPU, and
+/// `VX_ENABLE_CPU_FALLBACK=0` stops the program instead.
+///
+/// The program runs from an empty directory, so the CoreML model of its f16
+/// matmul is not on the search path. The matmul runs twice. A region on
+/// `Topology::CpuNeon` runs first. The program places it on the CPU, so the
+/// switch must not stop it.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_neural_engine_kernel_with_no_model_says_it_runs_on_the_cpu() {
+    const PROGRAM: &str = r#"
+fn main() -> i32 {
+  let mut d = Tensor<f32, [4]>::new();
+  spawn on(Topology::CpuNeon) {
+    for i in 0..4 {
+      d[i] = 1.5;
+    }
+  }
+  print(d[0]);
+  print(" ");
+  let mut c = Tensor<f16, [512, 512], Memory::NPU_HBM>::new();
+  for _k in 0..2 {
+    let mut a = Tensor<f16, [512, 512], Memory::NPU_HBM>::new();
+    let mut b = Tensor<f16, [512, 512], Memory::NPU_HBM>::new();
+    for i in 0..512 {
+      for j in 0..512 {
+        a[i][j] = 2.0;
+        b[i][j] = 1.0;
+      }
+    }
+    spawn on(Topology::NPU[0]) {
+      c = a @ b;
+    }
+  }
+  print(c[0][0]);
+  return 0;
+}
+"#;
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let vxc = PathBuf::from(env!("CARGO_BIN_EXE_vxc"));
+    let dir =
+        PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("a_neural_engine_kernel_with_no_model");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("failed to make the test directory");
+    let program = dir.join("two_matmuls.vx");
+    std::fs::write(&program, PROGRAM).expect("failed to write the program");
+
+    // Runs the program in `cwd`, and gives whether it succeeded, its stdout and its stderr.
+    let run = |cwd: &PathBuf, fallback: Option<&str>| {
+        let mut cmd = Command::new(&vxc);
+        cmd.current_dir(cwd)
+            .arg(&program)
+            .env_remove("VX_ANE_MODEL_DIR")
+            .env_remove("VX_DISPATCH_VERBOSE")
+            .env_remove("VX_ENABLE_CPU_FALLBACK");
+        if let Some(value) = fallback {
+            cmd.env("VX_ENABLE_CPU_FALLBACK", value);
+        }
+        let out = cmd.output().expect("failed to run vxc");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+
+    let (ok, stdout, stderr) = run(&dir, None);
+    assert!(
+        ok && stdout.contains("1.5 1024"),
+        "the program failed:\n{stdout}{stderr}"
+    );
+    let notes: Vec<&str> = stderr
+        .lines()
+        .filter(|l| {
+            l.starts_with("[Vx Dispatcher] the program places vx_npu_kernel_")
+                && l.contains(
+                    " on Topology::NPU[0], but it runs on the CPU: \
+                     no matmul_512x512_fp16.mlmodelc in ",
+                )
+        })
+        .collect();
+    assert_eq!(
+        notes.len(),
+        1,
+        "the kernel ran twice, and the dispatcher must say once that it ran on the CPU:\n{stderr}"
+    );
+    assert!(
+        notes[0].contains(&format!("{}/ane-primitives", dir.display())),
+        "the line must name the directories that the dispatcher searched:\n{stderr}"
+    );
+
+    let (ok, stdout, stderr) = run(&dir, Some("0"));
+    assert!(
+        !ok,
+        "VX_ENABLE_CPU_FALLBACK=0 did not stop the program:\n{stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("1.5") && !stdout.contains("1024"),
+        "the region on Topology::CpuNeon must run, and the matmul must not:\n{stdout}{stderr}"
+    );
+    assert!(
+        stderr.contains("FATAL: the program places vx_npu_kernel_")
+            && stderr.contains(
+                " on Topology::NPU[0], but only the CPU can run it here: \
+                 no matmul_512x512_fp16.mlmodelc in "
+            ),
+        "the dispatcher must name the kernel and the reason when it stops:\n{stderr}"
+    );
+
+    // From the checkout, the model is on the search path, so CoreML runs the
+    // matmul and the dispatcher says nothing.
+    if root
+        .join("ane-primitives/matmul_512x512_fp16.mlmodelc")
+        .is_dir()
+    {
+        let (ok, stdout, stderr) = run(&root, None);
+        assert!(
+            ok && stdout.contains("1.5 1024"),
+            "the program failed:\n{stdout}{stderr}"
+        );
+        assert!(
+            !stderr.contains("runs on the CPU"),
+            "CoreML ran the matmul, but the dispatcher said it ran on the CPU:\n{stderr}"
+        );
+    }
+}
+
+/// `VX_ENABLE_CPU_FALLBACK=0` does not stop a region on a topology that a machine
+/// file declares with a CPU arch. It stops a region on a topology with another
+/// arch, or with no arch.
+///
+/// Each region writes its own number, and the program prints it after the
+/// region. The third region is on `Accelerator` (`arch: amdgcn`) in one run, and
+/// on `Unknown` (no `arch:`) in another.
+#[cfg(target_os = "macos")]
+#[test]
+fn the_fallback_switch_does_not_stop_a_declared_cpu_topology() {
+    const PROGRAM: &str = r#"
+Topology HostCores {
+  arch: aarch64,
+  memory: Memory::CPU_DRAM,
+  visible: [Memory::CPU_DRAM]
+}
+
+Topology OtherCores {
+  arch: x86_64,
+  memory: Memory::CPU_DRAM,
+  visible: [Memory::CPU_DRAM]
+}
+
+Topology Accelerator {
+  arch: amdgcn,
+  memory: Memory::CPU_DRAM,
+  visible: [Memory::CPU_DRAM]
+}
+
+Topology Unknown {
+  memory: Memory::CPU_DRAM,
+  visible: [Memory::CPU_DRAM]
+}
+
+fn main() -> i32 {
+  let mut d = Tensor<f32, [4]>::new();
+  spawn on(Topology::HostCores) {
+    for i in 0..4 {
+      d[i] = 1.5;
+    }
+  }
+  print(d[0]);
+  print(" ");
+  spawn on(Topology::OtherCores) {
+    for i in 0..4 {
+      d[i] = 2.5;
+    }
+  }
+  print(d[0]);
+  print(" ");
+  spawn on(Topology::THIRD) {
+    for i in 0..4 {
+      d[i] = 3.5;
+    }
+  }
+  print(d[0]);
+  return 0;
+}
+"#;
+    let vxc = PathBuf::from(env!("CARGO_BIN_EXE_vxc"));
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("a_declared_cpu_topology");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("failed to make the test directory");
+
+    // Runs `program` with the fallback switch at `fallback`, and gives whether it
+    // succeeded, its stdout and its stderr.
+    let run = |program: &PathBuf, codegen: Option<&str>, fallback: &str| {
+        let mut cmd = Command::new(&vxc);
+        cmd.arg(program)
+            .env_remove("VX_DISPATCH_VERBOSE")
+            .env("VX_ENABLE_CPU_FALLBACK", fallback);
+        if let Some(flag) = codegen {
+            cmd.arg(flag);
+        }
+        let out = cmd.output().expect("failed to run vxc");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+
+    for (third, arch) in [("Accelerator", "arch: amdgcn"), ("Unknown", "no arch")] {
+        let program = dir.join(format!("third_on_{third}.vx"));
+        std::fs::write(&program, PROGRAM.replace("THIRD", third))
+            .expect("failed to write the program");
+
+        let (ok, stdout, stderr) = run(&program, None, "1");
+        assert!(
+            ok && stdout.contains("1.5 2.5 3.5"),
+            "with the fallback on, each region must run:\n{stdout}{stderr}"
+        );
+
+        for codegen in [None, Some("--legacy-codegen")] {
+            let how = codegen.unwrap_or("the flat code generator");
+            let (ok, stdout, stderr) = run(&program, codegen, "0");
+            assert!(
+                stdout.contains("1.5 "),
+                "{how}: the switch stopped the region on HostCores (arch: aarch64):\n{stdout}{stderr}"
+            );
+            assert!(
+                stdout.contains("1.5 2.5 "),
+                "{how}: the switch stopped the region on OtherCores (arch: x86_64):\n{stdout}{stderr}"
+            );
+            assert!(
+                !ok && !stdout.contains("3.5")
+                    && stderr.contains(&format!(
+                        " on Topology::{third}, but only the CPU can run it here"
+                    )),
+                "{how}: the switch did not stop the region on {third} ({arch}):\n{stdout}{stderr}"
+            );
+        }
+    }
+}

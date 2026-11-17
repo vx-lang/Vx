@@ -80,6 +80,21 @@ fn impl_display(trait_name: &crate::symbol::Symbol, ib: &decl::ImplBlock) -> Str
     format!("{}<{}>", trait_name, args.join(", "))
 }
 
+/// The byte index of the first `::` in `name` that is outside angle brackets.
+fn top_level_path_sep(name: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    let bytes = name.as_bytes();
+    for i in 0..bytes.len() {
+        match bytes[i] {
+            b'<' => depth += 1,
+            b'>' => depth -= 1,
+            b':' if depth == 0 && bytes.get(i + 1) == Some(&b':') => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
 impl<'a> TypeChecker<'a> {
     pub(crate) fn check_indirectcall_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         let (callee, args, call_span) = match expr {
@@ -728,11 +743,13 @@ impl<'a> TypeChecker<'a> {
                 continue;
             }
             if !*is_borrow_lit {
+                // What the result keeps of an argument behind a `&` is a shared borrow, also
+                // when the result is a `*mut`: nothing mutable comes through a `&`.
                 self.track_reference_arg_borrow(
                     base,
                     path.clone(),
                     *is_mut_param,
-                    plan.result_is_mut || (plan.ret_holds_ref && *is_mut_param),
+                    *is_mut_param && (plan.result_is_mut || plan.ret_holds_ref),
                     persists(*i),
                     span,
                 );
@@ -829,7 +846,13 @@ impl<'a> TypeChecker<'a> {
         });
         let Some((params, requires)) = callee.filter(|f| !f.requires.is_empty()).map(|f| {
             let params: Vec<_> = f.params.iter().map(|(p, _)| p.clone()).collect();
-            (params, f.requires.clone())
+            (
+                params,
+                f.requires
+                    .iter()
+                    .map(|req| self.typed_callee_contract(req, &f.params, &f.return_type))
+                    .collect::<Vec<_>>(),
+            )
         }) else {
             return;
         };
@@ -958,7 +981,7 @@ impl<'a> TypeChecker<'a> {
                 // storage behind it; it takes nothing (#336). `Verified(t)` is `t` itself,
                 // wrapped, so it moves `t`.
                 let is_builtin_ref = resolved_name == "print".into()
-                    || resolved_name == "tensor_view_2d".into()
+                    || crate::syntax::expr::tensor_view_rank(resolved_name.as_ref()).is_some()
                     || resolved_name == "matmul_into".into();
                 // A call moves what it takes by value, whatever happens to its own result: inside
                 // `print(take(t))`, `t` is moved into `take` though `print` takes nothing.
@@ -975,6 +998,7 @@ impl<'a> TypeChecker<'a> {
                 let lane_bases: Vec<(String, Option<Vec<BorrowRecord>>)> =
                     if resolved_name.as_ref().starts_with("lanes::")
                         && resolved_name.as_ref() != "lanes::copy_async"
+                        && resolved_name.as_ref() != crate::hir::check::lanes::COPY_ROWS_ASYNC
                         && !self.speculating
                     {
                         args.iter()
@@ -1003,8 +1027,17 @@ impl<'a> TypeChecker<'a> {
                     self.give_panic_its_place(args, span);
                 }
                 let errors_before_args = self.errors.inner.len();
+                // A function written in Vx gets the handle of a tensor. Its own body is checked
+                // where it runs. A built-in such as `print` reads the elements here.
+                let declared = self.env.functions.contains_key(base_name.as_ref())
+                    || self.env.generic_functions.contains_key(base_name.as_ref());
                 for arg in args.iter_mut() {
-                    arg_types.push(self.check_expr_type_flag(arg, arg_consume));
+                    let ty = if declared {
+                        self.check_whole_value(arg, |c, e| c.check_expr_type_flag(e, arg_consume))
+                    } else {
+                        self.check_expr_type_flag(arg, arg_consume)
+                    };
+                    arg_types.push(ty);
                 }
                 if resolved_name == "Tensor".into() {
                     self.fold_shape_args(args);
@@ -1043,6 +1076,24 @@ impl<'a> TypeChecker<'a> {
                 }
                 if resolved_name == "print".into() && args.len() == 1 {
                     Self::prepare_print_operand(&mut args[0], &arg_types[0]);
+                }
+                // `channel<T>(n)` of `std::sync::channel`, which returns its two ends.
+                let makes_a_channel = base_name.as_ref() == "channel"
+                    && self
+                        .env
+                        .generic_functions
+                        .get("channel")
+                        .is_some_and(|(f, _)| {
+                            matches!(&f.return_type, Type::GenericInstance(_, ends)
+                            if ends.len() == 2 && ends.iter().all(Self::is_channel_end_type))
+                        });
+                if let (true, [t], Some(n)) = (
+                    makes_a_channel,
+                    explicit_generic_args.as_slice(),
+                    args.first(),
+                ) {
+                    let (t, n) = (t.clone(), n.clone());
+                    self.count_channel_room(&t, &n, span);
                 }
                 if let Some(intrinsic_ty) = self.resolve_intrinsic_function(
                     &resolved_name,
@@ -1617,6 +1668,47 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// E6003: a generic parameter that names no memory, `Tensor<T, [4]>`, matches a tensor in
+    /// any memory, and the body then reads it as a tensor here. So it must not take a tensor in
+    /// a memory that the active topology cannot see.
+    fn refuse_an_unseen_tensor(
+        &mut self,
+        callee: &str,
+        i: usize,
+        param_ty: &Type,
+        arg_ty: &Type,
+        span: &crate::syntax::Span,
+    ) {
+        let (param, arg) = match (param_ty, arg_ty) {
+            (Type::Borrow { inner: p, .. }, Type::Borrow { inner: a, .. }) => (&**p, &**a),
+            pair => pair,
+        };
+        let (Type::Tensor(_, _, None), Some(place)) = (param, arg.placement()) else {
+            return;
+        };
+        let here = self.active_topology.clone();
+        if self.speculating
+            || self
+                .transfer_cost_graph
+                .is_type_accessible(&here, &here, arg)
+        {
+            return;
+        }
+        let memory = self.transfer_cost_graph.placement_space(place).name();
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E6003,
+            format!(
+                "argument {} of '{callee}' is a tensor in {memory}, and {} cannot see {memory}. \
+                 The parameter type {param_ty} names no memory, so '{callee}' reads the tensor \
+                 on {}. Transfer the tensor first, or write its memory in the parameter type",
+                i + 1,
+                here.display_name(),
+                here.display_name(),
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+    }
+
     /// Refuse a call whose mapping leaves one of the callee's type parameters unbound (E3016,
     /// once per parameter). Left alone, the parameter travels into the instance's symbol name
     /// as its bare letter and `sizeof<T>()` in the body folds to a default. Const and topology
@@ -1913,7 +2005,8 @@ impl<'a> TypeChecker<'a> {
         arg_types: &[Type],
         span: &crate::syntax::Span,
     ) -> Type {
-        let idx = resolved_name.find("::").expect("caller guards on `::`");
+        // The first `::` outside `<..>`: `Vec<Tensor<f32, [4], Memory::W>>::new` names `new`.
+        let idx = top_level_path_sep(resolved_name).expect("caller guards on `::`");
         let mut struct_name = resolved_name[..idx].to_string();
         let mut method_name = resolved_name[idx + 2..].to_string();
         let mut explicit_ty_str = String::new();
@@ -2382,9 +2475,11 @@ impl<'a> TypeChecker<'a> {
                 {
                     *is_mut = false;
                 }
-                if !self.unify_types(param_ty, &arg_ty, &mut mapping)
-                    && !self.accepts_like_a_plain_call(param_ty, &mapping, arg, &arg_ty)
-                {
+                let unified = self.unify_types(param_ty, &arg_ty, &mut mapping);
+                if unified {
+                    self.refuse_an_unseen_tensor(name, i, param_ty, &arg_ty, span);
+                }
+                if !unified && !self.accepts_like_a_plain_call(param_ty, &mapping, arg, &arg_ty) {
                     if !self.speculating {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E3003,
@@ -2417,7 +2512,7 @@ impl<'a> TypeChecker<'a> {
                 let _ = self.unify_types(&ret_ty, &expected, &mut mapping);
             }
             // `on Topology::D` with no argument that binds `D` runs where it is called.
-            if let Topology::Custom(d) = &generic_func.topology {
+            if let Topology::Custom(d, None) = &generic_func.topology {
                 if self.mono.pending_topo_vars.contains(d)
                     && !self.mono.pending_topo_bindings.contains_key(d)
                 {
@@ -2590,7 +2685,11 @@ impl<'a> TypeChecker<'a> {
         let unsigned = match ty {
             Type::Scalar(e) => matches!(
                 e,
-                ElementType::U8 | ElementType::U16 | ElementType::U32 | ElementType::U64
+                ElementType::U8
+                    | ElementType::U16
+                    | ElementType::U32
+                    | ElementType::U64
+                    | ElementType::U128
             ),
             Type::Tensor(e, _, _) => matches!(
                 e,
@@ -2945,17 +3044,22 @@ impl<'a> TypeChecker<'a> {
             }
             // `void` is spelled as a struct name in this type system.
             Some(Type::Struct("void".into(), None))
-        } else if resolved_name == "tensor_view_2d" {
-            // A rank-2 tensor over memory it does not own, with no copy (#336).
+        } else if let Some(rank) = crate::syntax::expr::tensor_view_rank(resolved_name) {
+            // A rank-1 or rank-2 tensor over memory it does not own, with no copy (#336).
             // The element type comes from the pointer, so the view cannot
             // reinterpret f32 storage as f64 by accident.
             //
             // Unsafe because nothing checks that the extents describe the
             // memory truthfully -- the same claim `*mut T` indexing already
             // makes, and the reason the view exists is to wrap foreign buffers.
-            if args.len() != 3 {
+            let form = if rank == 1 {
+                "(ptr, len)"
+            } else {
+                "(ptr, rows, cols)"
+            };
+            if args.len() != rank + 1 {
                 self.errors
-                    .push("Function 'tensor_view_2d' expects (ptr, rows, cols)".to_string());
+                    .push(format!("Function '{resolved_name}' expects {form}"));
             }
             if self.unsafe_is_missing() {
                 self.errors
@@ -2975,7 +3079,7 @@ impl<'a> TypeChecker<'a> {
             };
             match elem {
                 // The extents are ordinary arguments, so the same rule the constructor gets
-                // applies: a view whose rows and cols evaluate at compile time is statically
+                // applies: a view whose extents evaluate at compile time is statically
                 // shaped, and one over run-time extents has `?` there (Vx#399).
                 Some(e) => {
                     let mut env = HashMap::new();
@@ -2984,8 +3088,8 @@ impl<'a> TypeChecker<'a> {
                             env.insert(k.clone(), v.clone());
                         }
                     }
-                    let dims = match args.get(1..3) {
-                        Some(ext) if ext.len() == 2 => ext
+                    let dims = match args.get(1..rank + 1) {
+                        Some(ext) => ext
                             .iter()
                             .map(|a| {
                                 if self.eval_expr(a, &env).is_some() {
@@ -2995,14 +3099,14 @@ impl<'a> TypeChecker<'a> {
                                 }
                             })
                             .collect(),
-                        _ => vec![Dim::Dyn, Dim::Dyn],
+                        None => vec![Dim::Dyn; rank],
                     };
                     Some(Type::Tensor(e, dims, place))
                 }
                 None => {
                     if !self.speculating {
                         self.errors.push(format!(
-                            "Function 'tensor_view_2d' expects a pointer to a scalar, got {:?}",
+                            "Function '{resolved_name}' expects a pointer to a scalar, got {:?}",
                             arg_types.first()
                         ));
                     }
@@ -3353,6 +3457,8 @@ impl<'a> TypeChecker<'a> {
                     }
                     let change = format!("`{method}` takes `&mut self`, so it can change");
                     self.check_field_change(obj, &change);
+                    let what = format!("`{method}` takes `&mut self`, and this calls it on");
+                    self.check_const_pointer_change(obj, &what);
                 } else if matches!(base_ty, Type::Borrow { is_mut: false, .. }) && !self.speculating
                 {
                     self.errors.error_with_code(
@@ -3507,12 +3613,23 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 let errors_before_args = self.errors.inner.len();
+                let receiver = match &base_ty {
+                    Type::Borrow { inner, .. } => &**inner,
+                    ty => ty,
+                };
+                let of_a_struct = matches!(receiver, Type::Struct(..) | Type::GenericInstance(..));
                 let mut checked_arg_types: Vec<Type> = Vec::with_capacity(args.len());
                 for (i, arg) in args.iter_mut().enumerate() {
                     // Only `reduce`'s start value gets an expected type here; every other
                     // argument keeps the one it inherits.
                     let Some(init_ty) = reduce_init_ty.clone().filter(|_| i == 0) else {
-                        checked_arg_types.push(self.check_expr_type(arg));
+                        // A method of a struct is written in Vx, as a function is.
+                        let ty = if of_a_struct {
+                            self.check_whole_value(arg, |c, e| c.check_expr_type(e))
+                        } else {
+                            self.check_expr_type(arg)
+                        };
+                        checked_arg_types.push(ty);
                         continue;
                     };
                     let prev = self.expected_type.replace(init_ty);
@@ -3761,10 +3878,15 @@ impl<'a> TypeChecker<'a> {
                         && base_ty.is_linear()
                         && !self.is_copy(&base_ty)
                     {
-                        if let Expr::Identifier(id) = &**obj {
-                            if !self.refuse_move_behind_ref(&id.name, &id.name, &id.span) {
+                        match &**obj {
+                            Expr::Identifier(id)
+                                if !self.refuse_move_behind_ref(&id.name, &id.name, &id.span) =>
+                            {
                                 self.consume(&id.name);
                             }
+                            // `p.a.take()` moves `p.a` out of `p`, as `take(p.a)` does.
+                            Expr::MemberAccess(_) => self.move_field_out(obj, &base_ty),
+                            _ => {}
                         }
                     }
                     let method_params = generic_method.params.clone();
@@ -3888,10 +4010,13 @@ impl<'a> TypeChecker<'a> {
                     *expr = Expr::Transfer(TransferExpr {
                         expr: obj.clone(),
                         space: target_mem,
+                        device: None,
                         cost: None,
                         lowering: None,
                         is_async: false,
                         shared: false,
+                        read_only_source: false,
+                        source_borrowed_for_call: false,
                         span: method_span,
                     });
                     // Mark it so the per-seam obligation in `check_transfer_expr` sends
@@ -3904,10 +4029,13 @@ impl<'a> TypeChecker<'a> {
                     *expr = Expr::Transfer(TransferExpr {
                         expr: obj.clone(),
                         space: target_mem,
+                        device: None,
                         cost: None,
                         lowering: None,
                         is_async: false,
                         shared: false,
+                        read_only_source: false,
+                        source_borrowed_for_call: false,
                         span: Span::default(),
                     });
                 } else if _method.as_ref() == "as_ptr" || **_method == *"as_mut_ptr" {

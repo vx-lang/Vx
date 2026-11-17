@@ -15,13 +15,22 @@
 // RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ptx 2>&1 | FileCheck %s --check-prefix=WARN --implicit-check-not=Warning: '--implicit-check-not=Warning in'
 // WARN: Warning[W1029]
 // RUN: FileCheck %s --check-prefix=PTX < %t.ptx
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ast.ptx 2>&1 | FileCheck %s --check-prefix=WARN --implicit-check-not=Warning: '--implicit-check-not=Warning in'
+// RUN: FileCheck %s --check-prefix=PTX < %t.ast.ptx
+// The kernel that `--run` launches also reads `x` with `ld.global.nc`.
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-llvm 2>&1 | FileCheck %s --check-prefix=LAUNCHED
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --emit-llvm 2>&1 | FileCheck %s --check-prefix=LAUNCHED
+// LAUNCHED: ld.global.nc.b32
 // PTX-LABEL: .entry pick_on_the_gpu(
 // PTX-DAG: ld.global.nc.b32
 // PTX-DAG: st.global.b32
-// The AST code generator (`--legacy-codegen`) cannot write PTX, so its MLIR is checked. The
-// value that the `if` gives is the value that is stored.
+// With the AST code generator (`--legacy-codegen`), each tensor parameter is a slot that holds
+// the tensor, with marks for the tensor in it. The value that the `if` gives is the value that
+// is stored.
 // RUN: vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --emit-mlir 2>&1 | FileCheck %s --check-prefix=AST --implicit-check-not=unrealized_conversion_cast --implicit-check-not=Warning: '--implicit-check-not=Warning in'
 // AST-LABEL: func.func @pick_on_the_gpu(
+// AST-SAME: %arg0: memref<memref<?xf32, 1>> {vx.align = 16 : i64, vx.tensor_access = "noalias"}
+// AST-SAME: %arg1: memref<memref<?xf32, 1>> {vx.align = 16 : i64, vx.tensor_access = "readonly"}
 // AST: ^bb{{[0-9]+}}(%[[V:[0-9]+]]: f32):
 // AST: memref.store %[[V]],
 

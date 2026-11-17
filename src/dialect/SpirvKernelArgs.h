@@ -37,12 +37,25 @@ std::optional<std::string> spirvRefusalOf(Operation *op);
 /// cannot use this. SPIR-V's typed pointers reject the descriptor struct the
 /// memref would become.
 ///
-/// Returns failure and sets `error` to a message naming the construct when a
-/// kernel holds something the rewrite cannot express. It never leaves a kernel
-/// half-rewritten: a mistranslated kernel is a wrong answer on a machine the
-/// compiler is not running on.
-LogicalResult flattenSpirvKernelArgs(gpu::GPUModuleOp gpuModule,
-                                     std::string &error);
+/// A kernel that the flattening cannot rewrite, and the reason in the words a
+/// warning gives the author.
+struct SpirvKernelRefusal {
+  std::string kernel;
+  std::string reason;
+};
+
+/// Returns failure when the module holds something the rewrite cannot express.
+/// A kernel that failed may be half rewritten, so the caller must discard the
+/// module: a mistranslated kernel is a wrong answer on a machine the compiler
+/// is not running on.
+///
+/// On failure exactly one of the two outputs is set. `refused` gets every
+/// kernel that holds such a construct, in the module's order. `error` gets the
+/// reason when no kernel holds it, for example a global or a function that a
+/// kernel calls.
+LogicalResult
+flattenSpirvKernelArgs(gpu::GPUModuleOp gpuModule, std::string &error,
+                       SmallVectorImpl<SpirvKernelRefusal> &refused);
 
 /// The flattening as a pass, for `vx-opt`, which is where the address
 /// arithmetic it builds can be read without a GPU.

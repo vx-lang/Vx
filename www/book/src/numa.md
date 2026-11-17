@@ -145,17 +145,16 @@ Measured on `c5.metal`, 8 GiB, 96 threads:
 a competent operator already does on a two-socket box. Comparing against naive first-touch would be
 comparing against the worst case.
 
-That 1.34× also needs the *threads* placed as well as the pages. Vx's host backend currently runs
-an outlined kernel on one thread — `vx_host_call_kernel` is a single `ffi_call` — so what it
-delivers today is one thread's local-versus-remote, about 1.5× on memory-bound work. A threaded
-host backend is what would close the gap, and is separate work.
+That 1.34× also needs the *threads* placed as well as the pages. Vx's host backend runs an
+outlined kernel on a pool of threads. After a placed dispatch, the pool uses only the CPUs of the
+NUMA node that holds the arguments. `VX_HOST_THREADS=n` sets the number of threads.
 
 `utils/campaign/placement_bench.c` is the benchmark those numbers come from.
 
 ## Seeing it happen
 
 ```bash
-VX_DISPATCH_VERBOSE=1 vxc prog.vx --host default --machine fleet/xeon-8275cl.vx --run
+VX_DISPATCH_VERBOSE=1 vxc prog.vx --host default --machine $HOME/.vx/current/fleet/xeon-8275cl.vx --run
 ```
 
 ```
@@ -175,6 +174,4 @@ quietly read as one that was.
 ## Where to next
 
 - [Machine files](machine-files.md) — the full field reference for `Memory` and `Topology`
-- [Carrying facts across boundaries](correlation.md) — the other six places a fact crosses a
-  boundary rather than being re-derived
 - [Topologies and memory](heterogeneous.md) — how placement and reachability are checked

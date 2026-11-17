@@ -1,0 +1,223 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=Warning # flat-codegen
+
+import core::convert;
+
+struct Small {
+  value : i32,
+}
+struct Nested {
+  small : Small,
+}
+struct Unsigned {
+  value : u32,
+}
+
+fn _signed_field(p : Small) -> i64
+requires p.value == -8
+ensures return == p.value % 10 {
+  return -8i64;
+}
+
+fn _nested_field(p : Nested) -> i64
+requires p.small.value == -8
+ensures return == p.small.value % 10 {
+  return -8i64;
+}
+
+fn _unsigned_field(p : Unsigned) -> i64
+requires p.value == 4294967295u32
+ensures return == p.value % 10 {
+  return 5i64;
+}
+
+fn narrow(value : i64) -> i32
+requires value >= 0i64 && value < 100i64
+ensures return == (value as i32) {
+  return value as i32;
+}
+
+fn _cast_field(p : Small) -> i8
+requires p.value == 255
+ensures return == (p.value as i8) {
+  return -1;
+}
+
+fn consume(value : i64) -> i32
+requires (value as i32) == 99
+ensures return == (value as i32) {
+  return value as i32;
+}
+
+fn _identity32(value : i32) -> i32
+ensures return == value {
+  return value;
+}
+
+fn _identity64(value : i64) -> i64
+ensures return == value {
+  return value;
+}
+
+fn _call_remainder(value : i32) -> i64
+requires value == -8
+ensures return == _identity32(value) % 10 {
+  return -8i64;
+}
+
+fn _call_cast(value : i64) -> i32
+requires value >= 0i64 && value < 100i64
+ensures return == (_identity64(value) as i32) {
+  return value as i32;
+}
+
+fn _from_u32_to_u64(value : u32) -> u64
+ensures return == value {
+  return u64::from(value);
+}
+
+fn _from_u32_to_i64(value : u32) -> i64
+ensures return == value {
+  return i64::from(value);
+}
+
+fn _from_u32_to_usize(value : u32) -> usize
+ensures return == value {
+  return usize::from(value);
+}
+
+fn _from_usize_to_i64(value : usize) -> i64
+ensures return == value {
+  return i64::from(value);
+}
+
+fn _from_usize_to_u64(value : usize) -> u64
+ensures return == value {
+  return u64::from(value);
+}
+
+fn _from_u64_to_u64(value : u64) -> u64
+ensures return == value {
+  return u64::from(value);
+}
+
+fn main() -> i32 {
+  let _narrow = narrow(99i64);
+  return consume(99i64) - 99;
+}
+
+// CHECK: module attributes {vx.drops} {
+// CHECK:   func.func private @vx_init_signals()
+// CHECK:   func.func @main() -> i32 {
+// CHECK:     call @vx_init_signals() : () -> ()
+// CHECK:     %c99_i64 = arith.constant 99 : i64
+// CHECK:     %0 = call @narrow(%c99_i64) : (i64) -> i32
+// CHECK:     %c99_i64_0 = arith.constant 99 : i64
+// CHECK:     %1 = call @consume(%c99_i64_0) : (i64) -> i32
+// CHECK:     %c99_i32 = arith.constant 99 : i32
+// CHECK:     %2 = arith.subi %1, %c99_i32 : i32
+// CHECK:     return %2 : i32
+// CHECK:   }
+// CHECK:   func.func @narrow(%arg0: i64) -> i32 {
+// CHECK:     %0 = arith.trunci %arg0 : i64 to i32
+// CHECK:     return %0 : i32
+// CHECK:   }
+// CHECK:   func.func @consume(%arg0: i64) -> i32 {
+// CHECK:     %0 = arith.trunci %arg0 : i64 to i32
+// CHECK:     return %0 : i32
+// CHECK:   }
+// CHECK:   func.func @_from_u64_to_u64(%arg0: i64) -> i64 {
+// CHECK:     %0 = call @"u64::From$u64$from"(%arg0) : (i64) -> i64
+// CHECK:     return %0 : i64
+// CHECK:   }
+// CHECK:   func.func @"u64::From$u64$from"(%arg0: i64) -> i64 {
+// CHECK:     return %arg0 : i64
+// CHECK:   }
+// CHECK:   func.func @_from_usize_to_u64(%arg0: i64) -> i64 {
+// CHECK:     %0 = call @"u64::From$usize$from"(%arg0) : (i64) -> i64
+// CHECK:     return %0 : i64
+// CHECK:   }
+// CHECK:   func.func @"u64::From$usize$from"(%arg0: i64) -> i64 {
+// CHECK:     return %arg0 : i64
+// CHECK:   }
+// CHECK:   func.func @_from_usize_to_i64(%arg0: i64) -> i64 {
+// CHECK:     %0 = call @"i64::From$usize$from"(%arg0) : (i64) -> i64
+// CHECK:     return %0 : i64
+// CHECK:   }
+// CHECK:   func.func @"i64::From$usize$from"(%arg0: i64) -> i64 {
+// CHECK:     return %arg0 : i64
+// CHECK:   }
+// CHECK:   func.func @_from_u32_to_usize(%arg0: i32) -> i64 {
+// CHECK:     %0 = call @"usize::From$u32$from"(%arg0) : (i32) -> i64
+// CHECK:     return %0 : i64
+// CHECK:   }
+// CHECK:   func.func @"usize::From$u32$from"(%arg0: i32) -> i64 {
+// CHECK:     %0 = arith.extui %arg0 : i32 to i64
+// CHECK:     return %0 : i64
+// CHECK:   }
+// CHECK:   func.func @_from_u32_to_i64(%arg0: i32) -> i64 {
+// CHECK:     %0 = call @"i64::From$u32$from"(%arg0) : (i32) -> i64
+// CHECK:     return %0 : i64
+// CHECK:   }
+// CHECK:   func.func @"i64::From$u32$from"(%arg0: i32) -> i64 {
+// CHECK:     %0 = arith.extui %arg0 : i32 to i64
+// CHECK:     return %0 : i64
+// CHECK:   }
+// CHECK:   func.func @_from_u32_to_u64(%arg0: i32) -> i64 {
+// CHECK:     %0 = call @"u64::From$u32$from"(%arg0) : (i32) -> i64
+// CHECK:     return %0 : i64
+// CHECK:   }
+// CHECK:   func.func @"u64::From$u32$from"(%arg0: i32) -> i64 {
+// CHECK:     %0 = arith.extui %arg0 : i32 to i64
+// CHECK:     return %0 : i64
+// CHECK:   }
+// CHECK:   func.func @_call_cast(%arg0: i64) -> i32 {
+// CHECK:     %0 = arith.trunci %arg0 : i64 to i32
+// CHECK:     return %0 : i32
+// CHECK:   }
+// CHECK:   func.func @_call_remainder(%arg0: i32) -> i64 {
+// CHECK:     %c8_i64 = arith.constant 8 : i64
+// CHECK:     %c0_i64 = arith.constant 0 : i64
+// CHECK:     %0 = arith.subi %c0_i64, %c8_i64 : i64
+// CHECK:     return %0 : i64
+// CHECK:   }
+// CHECK:   func.func @_identity64(%arg0: i64) -> i64 {
+// CHECK:     return %arg0 : i64
+// CHECK:   }
+// CHECK:   func.func @_identity32(%arg0: i32) -> i32 {
+// CHECK:     return %arg0 : i32
+// CHECK:   }
+// CHECK:   func.func @_cast_field(%arg0: !llvm.struct<(i32)>) -> i8 {
+// CHECK:     %0 = llvm.mlir.constant(1 : i32) : i32
+// CHECK:     %1 = llvm.alloca %0 x !llvm.struct<(i32)> : (i32) -> !llvm.ptr
+// CHECK:     llvm.store %arg0, %1 : !llvm.struct<(i32)>, !llvm.ptr
+// CHECK:     %c1_i8 = arith.constant 1 : i8
+// CHECK:     %c0_i8 = arith.constant 0 : i8
+// CHECK:     %2 = arith.subi %c0_i8, %c1_i8 : i8
+// CHECK:     return %2 : i8
+// CHECK:   }
+// CHECK:   func.func @_unsigned_field(%arg0: !llvm.struct<(i32)>) -> i64 {
+// CHECK:     %0 = llvm.mlir.constant(1 : i32) : i32
+// CHECK:     %1 = llvm.alloca %0 x !llvm.struct<(i32)> : (i32) -> !llvm.ptr
+// CHECK:     llvm.store %arg0, %1 : !llvm.struct<(i32)>, !llvm.ptr
+// CHECK:     %c5_i64 = arith.constant 5 : i64
+// CHECK:     return %c5_i64 : i64
+// CHECK:   }
+// CHECK:   func.func @_nested_field(%arg0: !llvm.struct<(struct<(i32)>)>) -> i64 {
+// CHECK:     %0 = llvm.mlir.constant(1 : i32) : i32
+// CHECK:     %1 = llvm.alloca %0 x !llvm.struct<(struct<(i32)>)> : (i32) -> !llvm.ptr
+// CHECK:     llvm.store %arg0, %1 : !llvm.struct<(struct<(i32)>)>, !llvm.ptr
+// CHECK:     %c8_i64 = arith.constant 8 : i64
+// CHECK:     %c0_i64 = arith.constant 0 : i64
+// CHECK:     %2 = arith.subi %c0_i64, %c8_i64 : i64
+// CHECK:     return %2 : i64
+// CHECK:   }
+// CHECK:   func.func @_signed_field(%arg0: !llvm.struct<(i32)>) -> i64 {
+// CHECK:     %0 = llvm.mlir.constant(1 : i32) : i32
+// CHECK:     %1 = llvm.alloca %0 x !llvm.struct<(i32)> : (i32) -> !llvm.ptr
+// CHECK:     llvm.store %arg0, %1 : !llvm.struct<(i32)>, !llvm.ptr
+// CHECK:     %c8_i64 = arith.constant 8 : i64
+// CHECK:     %c0_i64 = arith.constant 0 : i64
+// CHECK:     %2 = arith.subi %c0_i64, %c8_i64 : i64
+// CHECK:     return %2 : i64
+// CHECK:   }
+// CHECK: }

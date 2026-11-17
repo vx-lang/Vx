@@ -69,10 +69,10 @@ impl<T, E> Result<T, E> {
   fn is_ok(self : &Result<T, E>) -> bool {
     let mut ret = false;
     match *self {
-      Result<T, E>::Ok(v) => {
+      Result<T, E>::Ok(_) => {
         ret = true;
       }
-      Result<T, E>::Err(e) => {
+      Result<T, E>::Err(_) => {
         ret = false;
       }
     }

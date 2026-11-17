@@ -35,12 +35,12 @@ fn grow(v : &mut Vec<i64>) -> i32 {
 fn main() -> i32 {
   let mut a = Vec<i64>::with_capacity(1);
   a.push(1i64);
-  // CHECK: Error[E3062] at {{.*}}.vx:[[@LINE+1]]:11: the field `x` comes after `y`, but `Pair` declares `x` first. Write the fields in the order of the declaration: x, y
+  // CHECK: Error[E3062] at {{.*}}.vx:[[@LINE+2]]:16: the field `x` comes after `y`, but `Pair` declares `x` first. Write the fields in the order of the declaration: x, y
   let p = Pair {
     y : 1, x : 2
   };
   let b = Vec<i64>::new();
-  // CHECK: Error[E3062] at {{.*}}.vx:[[@LINE+1]]:11: the field `n` comes after `v`
+  // CHECK: Error[E3062] at {{.*}}.vx:[[@LINE+2]]:16: the field `n` comes after `v`
   let m = Moved {
     v : b, n : 0
   };

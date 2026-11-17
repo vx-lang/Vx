@@ -1,4 +1,4 @@
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // A trait-impl method's name carries the trait and its arguments, so two impls of
 // one trait for one type do not collide. Only an argument-bearing trait contributes
 // the segment -- `impl Math for f32` is still `f32$abs`. The trait is declared here because

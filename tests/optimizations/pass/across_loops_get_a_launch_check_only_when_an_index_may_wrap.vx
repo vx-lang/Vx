@@ -15,7 +15,7 @@
 // wrap for any `i32` size. A value from outside the loop moves every pass by the same amount, so
 // the passes still write different elements when `off + b * 256 + l` wraps.
 //
-// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-mlir 2>&1 | FileCheck %s --check-prefix=TWO --implicit-check-not="so an index of the loop wraps"
 // TWO-COUNT-2: so an index of the loop wraps
 // CHECK-DAG: cf.assert {{.*}}"the end of the `across` loop at line [[#@LINE+4]] is larger than 8388608, so an index of the loop wraps. Compute the index with a wider type, such as `i64`\0A  at {{.*}}.vx:[[#@LINE+4]]"

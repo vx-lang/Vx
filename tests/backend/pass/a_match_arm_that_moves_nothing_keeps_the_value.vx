@@ -1,0 +1,164 @@
+//===- a_match_arm_that_moves_nothing_keeps_the_value.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Only an arm whose pattern moves a part of `t` takes `t`. When another arm runs, `t` stays,
+// and it drops at the end of its block. Each `drop` prints `d` and its number:
+//
+// - `other_arm_runs`: `One(_)` moves nothing, so `t` drops after `x`.
+// - `moving_arm_runs`: `Pair(a, _)` takes `t` and drops its parts, and `t` does not drop again.
+// - `other_arm_returns`: the `return` drops `t`.
+// - `other_arm_moves_t`: an arm that moves no part can move all of `t`.
+// - `of_a_parameter`: as `other_arm_runs`, for a parameter.
+// - `every_arm_moves`: `t` is gone after the `match`, so its borrow of `x` ends there.
+//
+// EXPECT: o x d1 | a2 d2 d3 x | o d4 | took d5 x | o x d6 | h sees 7 x8 | end
+
+enum Parts {
+  Pair(Noisy, Noisy),
+  One(Noisy),
+}
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print!("d{} ", self.id);
+  }
+}
+
+fn pair(id : i32) -> Parts {
+  return Parts::Pair(Noisy {
+    id: id
+  }, Noisy {
+    id: id + 1
+  });
+}
+
+fn one(id : i32) -> Parts {
+  return Parts::One(Noisy {
+    id: id
+  });
+}
+
+fn take(_t : Parts) -> void {
+  print!("took ");
+}
+
+fn other_arm_runs() -> void {
+  let t = one(1);
+  match t {
+    Parts::Pair(a, _) => {
+      print!("a{} ", a.id);
+    }
+    Parts::One(_) => {
+      print!("o ");
+    }
+  }
+  print!("x ");
+}
+
+fn moving_arm_runs() -> void {
+  let t = pair(2);
+  match t {
+    Parts::Pair(a, _) => {
+      print!("a{} ", a.id);
+    }
+    Parts::One(_) => {
+      print!("o ");
+    }
+  }
+  print!("x ");
+}
+
+fn other_arm_returns() -> void {
+  let t = one(4);
+  match t {
+    Parts::Pair(a, _) => {
+      print!("a{} ", a.id);
+    }
+    Parts::One(_) => {
+      print!("o ");
+      return;
+    }
+  }
+  print!("x ");
+}
+
+fn other_arm_moves_t() -> void {
+  let t = one(5);
+  match t {
+    Parts::Pair(a, _) => {
+      print!("a{} ", a.id);
+    }
+    Parts::One(_) => {
+      take(t);
+    }
+  }
+  print!("x ");
+}
+
+fn of_a_parameter(t : Parts) -> void {
+  match t {
+    Parts::Pair(a, _) => {
+      print!("a{} ", a.id);
+    }
+    Parts::One(_) => {
+      print!("o ");
+    }
+  }
+  print!("x ");
+}
+
+struct Reader {
+  r : &i32,
+}
+
+impl Drop for Reader {
+  fn drop(self : &mut Reader) -> void {
+    print!("sees {} ", *self.r);
+  }
+}
+
+enum Two {
+  Has(Reader),
+  Gone(Reader),
+}
+
+fn every_arm_moves() -> void {
+  let mut x = 7;
+  let t = Two::Has(Reader {
+    r: &x
+  });
+  match t {
+    Two::Has(a) => {
+      print!("h ");
+    }
+    Two::Gone(b) => {
+      print!("g ");
+    }
+  }
+  x = 8;
+  print!("x{} ", x);
+}
+
+fn main() -> i32 {
+  other_arm_runs();
+  print!("| ");
+  moving_arm_runs();
+  print!("| ");
+  other_arm_returns();
+  print!("| ");
+  other_arm_moves_t();
+  print!("| ");
+  of_a_parameter(one(6));
+  print!("| ");
+  every_arm_moves();
+  print!("| end\n");
+  return 0;
+}

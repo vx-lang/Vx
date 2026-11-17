@@ -55,11 +55,7 @@ impl<'a> Parser<'a> {
                 self.pending_stmts.extend(out);
                 return Ok(first);
             }
-            Ok(Statement::Assign(AssignStmt {
-                lhs: expr,
-                rhs,
-                span,
-            }))
+            Ok(Statement::Assign(AssignStmt::new(expr, rhs, span)))
         } else if let Some(op) = self.compound_assign_op() {
             let rhs = self.parse_expr()?;
             self.consume(&TokenType::Semicolon, "Expected ';'")?;
@@ -130,8 +126,36 @@ impl<'a> Parser<'a> {
                     type_annotation = Some(self.parse_type()?);
                 }
                 self.consume(&TokenType::Equals, "Expected '='")?;
-                let expr = self.parse_expr()?;
+                let mut expr = self.parse_expr()?;
                 self.consume(&TokenType::Semicolon, "Expected ';'")?;
+                // `let r = (v + w)[1]`: `r` is a row of the sum, so the sum must live as long as
+                // `r`, as Rust keeps a temporary that a `let` borrows. A `let` before this one
+                // holds the sum.
+                if let Some(value) = temporary_under_index(&mut expr) {
+                    let temp = format!(
+                        "{}{}",
+                        crate::syntax::expr::INDEXED_TEMPORARY,
+                        self.tuple_lets
+                    );
+                    self.tuple_lets += 1;
+                    let value = std::mem::replace(
+                        value,
+                        Expr::Identifier(IdentifierExpr {
+                            name: temp.clone().into(),
+                            span: value.span(),
+                        }),
+                    );
+                    self.prefix_stmts.push(Statement::LetDecl(LetDeclStmt {
+                        name: temp.into(),
+                        is_mut: false,
+                        ty_ann: None,
+                        expr: value,
+                        span: Span::default(),
+                    }));
+                }
+                if !is_mut && matches!(expr, Expr::StringLiteral(_)) {
+                    self.string_literal_names.insert(name.clone().into());
+                }
                 Ok(Statement::LetDecl(LetDeclStmt {
                     // The `let` keyword's own token: a diagnostic about the binding (a type
                     // mismatch, an unused variable) points at the declaration, not at 0:0.
@@ -398,7 +422,7 @@ impl<'a> Parser<'a> {
             | TokenType::Unsafe
             | TokenType::Spawn
             | TokenType::Tasks => {
-                let expr = self.parse_primary_expr()?;
+                let expr = self.parse_as_expr()?;
                 self.parse_expr_or_assign_stmt(expr, token_span)
             }
             _ => {
@@ -550,7 +574,7 @@ impl<'a> Parser<'a> {
                         name: format!("_{temp}_size").into(),
                         is_mut: false,
                         ty_ann: None,
-                        expr: super::tuple_match::has_elements(elems.len(), &temp_expr),
+                        expr: super::tuple_match::has_elements(elems.len(), &temp_expr, span),
                         span,
                     }));
                 }
@@ -589,7 +613,7 @@ impl<'a> Parser<'a> {
         out: &mut Vec<Statement>,
     ) -> ParseResult<'a, ()> {
         let Expr::StructInit(lit) = lhs else {
-            out.push(Statement::Assign(AssignStmt { lhs, rhs, span }));
+            out.push(Statement::Assign(AssignStmt::new(lhs, rhs, span)));
             return Ok(());
         };
         if let Expr::StructInit(r) = &rhs {
@@ -629,11 +653,7 @@ impl<'a> Parser<'a> {
             if Self::is_tuple_literal(&place) {
                 self.lower_tuple_assign(place, element, span, start, out)?;
             } else {
-                out.push(Statement::Assign(AssignStmt {
-                    lhs: place,
-                    rhs: element,
-                    span,
-                }));
+                out.push(Statement::Assign(AssignStmt::new(place, element, span)));
             }
         }
         Ok(())
@@ -647,4 +667,23 @@ enum TuplePattern {
     /// A name, and whether it was written `mut`.
     Bind(String, bool),
     Tuple(Vec<TuplePattern>),
+}
+
+/// The value that `e` indexes, when `e` indexes a value that no variable holds: the sum in
+/// `(v + w)[1]` or `(v + w)[1][0]`, or the result of `f()` in `f()[1]`.
+fn temporary_under_index(e: &mut Expr) -> Option<&mut Expr> {
+    let Expr::IndexAccess(ix) = e else {
+        return None;
+    };
+    let mut root: &mut Expr = &mut ix.base;
+    while let Expr::IndexAccess(inner) = root {
+        root = &mut inner.base;
+    }
+    if matches!(
+        root,
+        Expr::Identifier(_) | Expr::MemberAccess(_) | Expr::Dereference(_)
+    ) {
+        return None;
+    }
+    Some(root)
 }

@@ -1,0 +1,83 @@
+// Every lane runs the code between lane loops when that code writes no memory, changes no
+// variable from outside it, and reads no value that only lane 0 has. So a later lane loop can
+// read a value that such code sets. The GPU must give the values of the CPU copy.
+//
+// `in_the_other_block`: lane 0 alone sets `a` in the first block of an `if`. The second block
+// makes `y` from `a`, and every lane runs that code.
+// `made_again_each_turn`: lane 0 alone sets `x` at the end of a turn. The next turn makes `x`
+// again on every lane, before the lane loop reads it. So the compiler accepts the program.
+//
+// REQUIRES: macos
+// RUN: env VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/m4-uma.vx 2>%t.gpu | FileCheck %s
+// RUN: FileCheck %s --check-prefix=GPU --input-file=%t.gpu
+// RUN: env VX_DISPATCH_VERBOSE=1 vxc %s --legacy-codegen --host default --machine fleet/m4-uma.vx 2>%t.ast.gpu | FileCheck %s
+// RUN: FileCheck %s --check-prefix=GPU --input-file=%t.ast.gpu
+// RUN: env VX_METAL=0 vxc %s --host default --machine fleet/m4-uma.vx | FileCheck %s
+//
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 1 x 1 x 1, block 32
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 1 x 1 x 1, block 32
+// CHECK: {{^}}in the other block: 32 of 32{{$}}
+// CHECK-NEXT: {{^}}made again each turn: 64 of 64{{$}}
+
+pub fn in_the_other_block(out : &mut Tensor<i32, [?], Memory::HBM>, c : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut a = 0;
+      if c > 0 {
+        for l in 0..32 across lanes {
+          out[l] = 5;
+        }
+        a = 5;
+      } else {
+        for l in 0..32 across lanes {
+          out[l] = 2;
+        }
+        let y = a + 1;
+        for l in 0..32 across lanes {
+          out[32 + l] = y;
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn made_again_each_turn(out : &mut Tensor<i32, [?], Memory::HBM>, picks : &mut Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for t in 0..2 {
+        let mut x = t + 10;
+        for l in 0..32 across lanes {
+          out[t * 32 + l] = x;
+        }
+        picks[t] = x;
+        x = 7;
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut out = transfer(Tensor<i32>([64]), Memory::HBM);
+  in_the_other_block(&mut out, 0);
+  let h = transfer(&out, Memory::CPU_DRAM);
+  let mut right = 0;
+  for i in 32..64 {
+    if h[i] == 1 {
+      right = right + 1;
+    }
+  }
+  println!("in the other block: {} of 32", right);
+  let mut picks = transfer(Tensor<i32>([2]), Memory::HBM);
+  made_again_each_turn(&mut out, &mut picks);
+  let h2 = transfer(&out, Memory::CPU_DRAM);
+  right = 0;
+  for i in 0..64 {
+    if h2[i] == i / 32 + 10 {
+      right = right + 1;
+    }
+  }
+  println!("made again each turn: {} of 64", right);
+  return 0;
+}

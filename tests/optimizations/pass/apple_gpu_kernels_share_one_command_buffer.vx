@@ -1,4 +1,4 @@
-// Kernels on the Apple GPU go into one command buffer, and the GPU runs them only at a wait.
+// Kernels on the Apple GPU go into one batch until a wait, and the GPU runs them in order.
 // Each part of `main` ends at a different kind of wait:
 //
 // - `fill`, `add_one` and `add` run one after another, and each reads what the ones before it

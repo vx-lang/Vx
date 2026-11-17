@@ -21,6 +21,7 @@ use melior::ir::{
 };
 
 use crate::syntax;
+pub(crate) mod across;
 mod control_flow;
 pub(crate) mod expr;
 mod seam_cert;
@@ -436,6 +437,61 @@ fn is_plain_scalar(text: &str) -> bool {
     parse_scalar_type(text).is_some()
 }
 
+/// Check the original value before a cast to usize can discard any bits.
+pub(crate) fn check_usize_cast<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    value: melior::ir::Value<'c, 'c>,
+    from: &ElementType,
+) -> Result<(), LowerError> {
+    if *from == ElementType::USize || from.int_bits().is_none() {
+        return Ok(());
+    }
+    let ty = value.r#type();
+    let checks = [
+        (from.is_signed_int(), 0, 5),
+        (
+            from.int_bits().is_some_and(|bits| bits > 63),
+            i64::MAX,
+            if from.is_signed_int() { 3 } else { 7 },
+        ),
+    ];
+    for (needed, bound, predicate) in checks {
+        if !needed {
+            continue;
+        }
+        let bound = block.append_operation(
+            OperationBuilder::new("arith.constant", gen.loc())
+                .add_results(&[ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    IntegerAttribute::new(ty, bound).into(),
+                )])
+                .build()?,
+        );
+        let fits = block.append_operation(
+            OperationBuilder::new("arith.cmpi", gen.loc())
+                .add_operands(&[value, bound.result(0)?.into()])
+                .add_results(&[gen.i1_ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "predicate"),
+                    IntegerAttribute::new(gen.i64_ty, predicate).into(),
+                )])
+                .build()?,
+        );
+        block.append_operation(
+            OperationBuilder::new("cf.assert", gen.loc())
+                .add_operands(&[fits.result(0)?.into()])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "msg"),
+                    StringAttribute::new(gen.context, "cast to usize is out of range").into(),
+                )])
+                .build()?,
+        );
+    }
+    Ok(())
+}
+
 /// `a op b` on `usize`, for the operators that can leave its range: `+`, `-`, `*` and `<<`.
 /// The operands are checked first and a failed check traps through `cf.assert`; the operation
 /// itself then never wraps and carries `overflow<nsw, nuw>`. Checking the result instead would
@@ -581,6 +637,29 @@ fn parse_scalar_type(text: &str) -> Option<syntax::Type> {
     }
 }
 
+/// The value of an integer constant of type `ty`, from its decimal text. MLIR reads the text at
+/// the width of `ty`: a `u64` above `i64::MAX` keeps its 64 bits, and an `i128` keeps its value.
+/// The checker refuses a value that `ty` cannot hold, so such a value is a compiler bug.
+pub(crate) fn integer_constant<'c>(
+    context: &'c Context,
+    ty: melior::ir::Type<'c>,
+    text: &str,
+) -> Attribute<'c> {
+    // A loop counter is an `index`.
+    assert!(
+        melior::ir::TypeLike::is_integer(&ty) || melior::ir::TypeLike::is_index(&ty),
+        "an integer constant of the type {ty}: {text}"
+    );
+    // MLIR fills the upper bits of a type wider than 64 bits with zeroes, so -5 would turn
+    // into 2^64 - 5 in an `i128`.
+    let wide = melior::ir::r#type::IntegerType::try_from(ty).is_ok_and(|t| t.width() > 64);
+    if let (false, Ok(value)) = (wide, text.parse::<i64>()) {
+        return IntegerAttribute::new(ty, value).into();
+    }
+    Attribute::parse(context, &format!("{text} : {ty}"))
+        .unwrap_or_else(|| panic!("integer literal out of range for {ty}: {text}"))
+}
+
 pub fn generate_match_chain<'c>(
     gen: &mut MeliorGenerator<'c>,
     arms: &[MatchArm],
@@ -686,34 +765,53 @@ pub fn generate_match_chain<'c>(
             );
             cmp_op.result(0)?.into()
         }
-        // A scalar literal arm (`0 => …`, `1 => …`) over an integer scrutinee: compare the
+        // A scalar literal arm (`0 => …`, `1 => …`) over a number scrutinee: compare the
         // scrutinee against the literal with the same `arith.cmpi eq` shape as the enum-tag path,
         // but against `match_val` directly (no tag extraction). Without this, an integer `match`
         // ICE'd here — `Unsupported pattern in codegen` (#263).
         Pattern::Literal(lit) => {
+            let float = crate::codegen::generator::is_float_text(&_match_ty.to_string());
             let lit_val = match &**lit {
-                Expr::Number(n) => n.value.as_ref().parse::<i64>().unwrap_or(0),
+                // A number arm of a float `match`, `2` or `0.1`, is a float of that type.
+                Expr::Number(n) if float => {
+                    let v = n.value.as_ref();
+                    let v = v
+                        .parse::<f64>()
+                        .unwrap_or_else(|_| panic!("float match arm that does not parse: {v}"));
+                    melior::ir::attribute::FloatAttribute::new(gen.context, _match_ty, v).into()
+                }
+                // E3019 refuses an arm that the type of the match cannot hold.
+                Expr::Number(n) => integer_constant(gen.context, _match_ty, n.value.as_ref()),
+                Expr::Identifier(id) if id.name.as_ref() == "true" => {
+                    IntegerAttribute::new(_match_ty, 1).into()
+                }
+                Expr::Identifier(id) if id.name.as_ref() == "false" => {
+                    IntegerAttribute::new(_match_ty, 0).into()
+                }
                 other => panic!("Unsupported literal pattern in codegen: {:?}", other),
             };
             let const_op = block.append_operation(
                 OperationBuilder::new("arith.constant", gen.loc())
                     .add_results(&[_match_ty])
-                    .add_attributes(&[(
-                        Identifier::new(gen.context, "value"),
-                        IntegerAttribute::new(_match_ty, lit_val).into(),
-                    )])
+                    .add_attributes(&[(Identifier::new(gen.context, "value"), lit_val)])
                     .build()?,
             );
             let const_val = const_op.result(0)?.into();
+            // `oeq` for a float and `eq` for an integer: each has the number 1 and 0.
+            let (cmp, predicate) = if float {
+                ("arith.cmpf", 1)
+            } else {
+                ("arith.cmpi", 0)
+            };
             let cmp_op = block.append_operation(
-                OperationBuilder::new("arith.cmpi", gen.loc())
+                OperationBuilder::new(cmp, gen.loc())
                     .add_operands(&[match_val, const_val])
                     .add_results(&[melior::ir::r#type::IntegerType::new(gen.context, 1).into()])
                     .add_attributes(&[(
                         Identifier::new(gen.context, "predicate"),
                         IntegerAttribute::new(
                             melior::ir::r#type::IntegerType::new(gen.context, 64).into(),
-                            0, // eq
+                            predicate,
                         )
                         .into(),
                     )])
@@ -737,12 +835,18 @@ pub fn generate_match_chain<'c>(
 
     // Each name in the pattern is bound to the payload value at its position, read from that
     // position's slot. `_` binds nothing.
+    let mut payload_tensors = Vec::new();
     if let Pattern::EnumVariant(en, vn, Some(payloads)) = &arm.pattern {
         let opt_ty_str = _match_ty.to_string();
         let slots = crate::codegen::lower::expr::enum_payload_slot_texts(&opt_ty_str);
         for (position, pattern) in payloads.iter().enumerate() {
             let Pattern::Identifier(name) = pattern else {
                 continue;
+            };
+            // The Vx type of the name, so a later `transfer` of it knows where its data is.
+            match crate::codegen::lower::expr::variant_payload_type(gen, en, vn, position, None) {
+                Some(ty) => gen.ast_env.insert(name.to_string().into(), ty),
+                None => gen.ast_env.remove(name.as_ref()),
             };
             let Some(slot_text) = slots.get(position) else {
                 continue;
@@ -783,6 +887,28 @@ pub fn generate_match_chain<'c>(
                     declared_payload_ty(gen, en.as_ref(), vn.as_ref(), position, &opt_ty_str)
                 })
             };
+            // A tensor payload is its descriptor, which becomes the memref again.
+            let tensor = gen
+                .enum_tensor_payloads
+                .borrow()
+                .get(struct_name)
+                .and_then(|m| m.get(&(vn.to_string(), position)))
+                .cloned();
+            let as_tensor = |gen: &mut MeliorGenerator<'c>,
+                             val: melior::ir::Value<'c, 'c>,
+                             ty: melior::ir::Type<'c>|
+             -> Result<
+                (melior::ir::Value<'c, 'c>, melior::ir::Type<'c>),
+                LowerError,
+            > {
+                let Some(text) = &tensor else {
+                    return Ok((val, ty));
+                };
+                let memref = melior::ir::Type::parse(gen.context, text)
+                    .ok_or_else(|| LowerError::ParseType(text.clone()))?;
+                let val = crate::codegen::lower::expr::memref_of(gen, &then_block, val, memref)?;
+                Ok((val, memref))
+            };
 
             // A byte slot holds payloads of different kinds. Read it back as this variant's.
             if payload_ty_str.starts_with("!llvm.array<") {
@@ -801,6 +927,10 @@ pub fn generate_match_chain<'c>(
                     ty,
                     payload_ty,
                 )?;
+                let (val, ty) = as_tensor(gen, val, ty)?;
+                if tensor.is_some() {
+                    payload_tensors.push(name.clone());
+                }
                 gen.note_shadow(name.as_ref());
                 gen.env.insert(name.to_string().into(), (val, ty));
                 continue;
@@ -853,13 +983,20 @@ pub fn generate_match_chain<'c>(
                 }
                 None => (payload_val, payload_ty),
             };
+            let (payload_val, payload_ty) = as_tensor(gen, payload_val, payload_ty)?;
+            if tensor.is_some() {
+                payload_tensors.push(name.clone());
+            }
             gen.note_shadow(name.as_ref());
             gen.env
                 .insert(name.to_string().into(), (payload_val, payload_ty));
         }
     }
 
+    let outer = gen.payload_tensors.clone();
+    gen.payload_tensors.extend(payload_tensors);
     lower_match_arm_body(gen, &arm.body, then_block, merge_block, value_ty)?;
+    gen.payload_tensors = outer;
     gen.close_blocks_to(depth);
 
     generate_match_chain(
@@ -1370,7 +1507,11 @@ pub(crate) fn pick_scalar_print<'c>(
         Expr::AsCast(c) => match &c.target_ty {
             VxType::Scalar(e) => matches!(
                 e,
-                ElementType::U8 | ElementType::U16 | ElementType::U32 | ElementType::U64
+                ElementType::U8
+                    | ElementType::U16
+                    | ElementType::U32
+                    | ElementType::U64
+                    | ElementType::U128
             ),
             _ => false,
         },
@@ -1386,6 +1527,8 @@ pub(crate) fn pick_scalar_print<'c>(
         ("i8" | "i16", false) => ("print_i32", Some(("arith.extsi", "i32"))),
         ("i32", false) => ("print_i32", None),
         ("i64", false) => ("print_i64", None),
+        ("i128", true) => ("print_u128", None),
+        ("i128", false) => ("print_i128", None),
         // A `for` variable over a range is an `index` here.
         ("index", _) => ("print_i64", Some(("arith.index_cast", "i64"))),
         ("f4E2M1FN" | "f8E4M3FN" | "f8E5M2" | "f16" | "bf16", _) => {
@@ -1416,6 +1559,43 @@ pub(crate) fn call_scalar_print<'c>(
     arg_val: Value<'c, 'c>,
     arg_ty_str: &str,
 ) -> Result<Value<'c, 'c>, LowerError> {
+    if arg_ty_str == "i128" {
+        // The helper takes the low and the high 64 bits, as two `i64`s.
+        let i64_ty = gen.i64_ty;
+        let i128_ty =
+            Type::parse(gen.context, "i128").ok_or_else(|| LowerError::from("i128".to_string()))?;
+        let op = |name: &str, operands: &[Value<'c, 'c>], ty: Type<'c>| {
+            OperationBuilder::new(name, gen.loc())
+                .add_operands(operands)
+                .add_results(&[ty])
+                .build()
+        };
+        let low = block
+            .append_operation(op("arith.trunci", &[arg_val], i64_ty)?)
+            .result(0)?
+            .into();
+        let sixty_four = block
+            .append_operation(
+                OperationBuilder::new("arith.constant", gen.loc())
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "value"),
+                        IntegerAttribute::new(i128_ty, 64).into(),
+                    )])
+                    .add_results(&[i128_ty])
+                    .build()?,
+            )
+            .result(0)?
+            .into();
+        let shifted = block
+            .append_operation(op("arith.shrui", &[arg_val, sixty_four], i128_ty)?)
+            .result(0)?
+            .into();
+        let high = block
+            .append_operation(op("arith.trunci", &[shifted], i64_ty)?)
+            .result(0)?
+            .into();
+        return call_runtime_fn(gen, block, fn_name, &[(low, "i64"), (high, "i64")], "i32");
+    }
     call_runtime_fn(gen, block, fn_name, &[(arg_val, arg_ty_str)], "i32")
 }
 

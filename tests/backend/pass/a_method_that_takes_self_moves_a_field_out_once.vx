@@ -1,0 +1,117 @@
+//===- a_method_that_takes_self_moves_a_field_out_once.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Four ways to move a field out of a struct, and each drops the value once. The drop of a
+// `Noisy` prints its id. Each function moves `o.b` out of `o`, and the caller drops the value
+// that it gives, after the caller reads it. So each "dropped" line comes after its "gave" line.
+// In `by_method`, `o.b.take()` calls a method that takes `self` by value, which moves `o.b` as
+// `take1(o.b)` does.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=dropped
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=dropped
+// CHECK: {{^}}by_method gave 1{{$}}
+// CHECK-NEXT: {{^}}dropped 1{{$}}
+// CHECK-NEXT: {{^}}by_function gave 2{{$}}
+// CHECK-NEXT: {{^}}dropped 2{{$}}
+// CHECK-NEXT: {{^}}by_path gave 3{{$}}
+// CHECK-NEXT: {{^}}dropped 3{{$}}
+// CHECK-NEXT: {{^}}by_local gave 4{{$}}
+// CHECK-NEXT: {{^}}dropped 4{{$}}
+// CHECK-NEXT: {{^}}end{{$}}
+
+import core::mem;
+
+struct Noisy {
+  id : i64,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    println!("dropped {}", self.id);
+  }
+}
+
+struct Box1<T> {
+  v : T,
+}
+
+fn take1<T>(b : Box1<T>) -> T {
+  return b.v;
+}
+
+impl<T> Box1<T> {
+  fn take(self : Box1<T>) -> T {
+    return self.v;
+  }
+}
+
+struct Box2<T> {
+  b : Box1<T>,
+  n : i64,
+}
+
+// A method call on a field, in a method.
+fn by_method(o : Box2<Noisy>) -> Noisy {
+  return o.b.take();
+}
+
+// A function call with a field, in a function.
+fn by_function(o : Box2<Noisy>) -> Noisy {
+  return take1(o.b);
+}
+
+// A field of a field.
+fn by_path(o : Box2<Noisy>) -> Noisy {
+  return o.b.v;
+}
+
+// The field into a local first.
+fn by_local(o : Box2<Noisy>) -> Noisy {
+  let inner = o.b;
+  return inner.take();
+}
+
+fn main() -> i32 {
+  let a = by_method(Box2<Noisy> {
+    b : Box1<Noisy> {
+      v : Noisy {
+        id : 1
+      }
+    }, n : 0
+  });
+  println!("by_method gave {}", a.id);
+  drop(a);
+  let b = by_function(Box2<Noisy> {
+    b : Box1<Noisy> {
+      v : Noisy {
+        id : 2
+      }
+    }, n : 0
+  });
+  println!("by_function gave {}", b.id);
+  drop(b);
+  let c = by_path(Box2<Noisy> {
+    b : Box1<Noisy> {
+      v : Noisy {
+        id : 3
+      }
+    }, n : 0
+  });
+  println!("by_path gave {}", c.id);
+  drop(c);
+  let d = by_local(Box2<Noisy> {
+    b : Box1<Noisy> {
+      v : Noisy {
+        id : 4
+      }
+    }, n : 0
+  });
+  println!("by_local gave {}", d.id);
+  drop(d);
+  println!("end");
+  return 0;
+}

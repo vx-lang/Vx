@@ -379,6 +379,20 @@ impl<'a> TypeChecker<'a> {
         );
     }
 
+    /// Run `check` on an expression whose whole value is moved. When it is a name, the name
+    /// is marked, so a placed tensor there is allowed where its memory is not visible.
+    pub(crate) fn check_whole_value<R>(
+        &mut self,
+        expr: &mut Expr,
+        check: impl FnOnce(&mut Self, &mut Expr) -> R,
+    ) -> R {
+        let name = matches!(expr, Expr::Identifier(_)).then(|| expr.span());
+        let old = std::mem::replace(&mut self.whole_value_name, name);
+        let result = check(self, expr);
+        self.whole_value_name = old;
+        result
+    }
+
     pub(crate) fn check_identifier_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::Identifier(id) => {
@@ -582,8 +596,14 @@ impl<'a> TypeChecker<'a> {
                         let by_value = matches!(ty, Type::Scalar(_))
                             && !self.is_mutable(name.as_ref())
                             && self.borrowed_name != Some(span);
+                        // A move of a placed tensor copies its pointer and its shape, and a
+                        // host drop frees it through the runtime. Neither reads an element.
+                        let handle_only =
+                            ty.placement().is_some() && self.whole_value_name == Some(span);
                         let is_valid = matches!(&ty, Type::Borrow { inner, .. } if inner.placement().is_some())
                             || by_value
+                            || handle_only
+                            || self.report_host_only_on_a_device(name.as_ref(), &ty, &span)
                             || self.transfer_cost_graph.is_type_accessible(
                                 &self.active_topology,
                                 &top,
@@ -1308,6 +1328,69 @@ impl<'a> TypeChecker<'a> {
             .any(|m| m.name == *name && m.scope == Some(crate::syntax::Scope::Thread))
     }
 
+    /// Whether a tensor placed in `placement` is in the shared memory of a block: its space is
+    /// declared `scope: sm` or `scope: cta`.
+    fn is_shared_space(&self, placement: Option<&crate::syntax::Placement>) -> bool {
+        let Some(p) = placement else {
+            return false;
+        };
+        let crate::syntax::MemorySpace::Custom(name) = &p.space else {
+            return false;
+        };
+        self.env.memories.values().any(|m| {
+            m.name == *name
+                && matches!(
+                    m.scope,
+                    Some(crate::syntax::Scope::Sm | crate::syntax::Scope::Cta)
+                )
+        })
+    }
+
+    /// docs/lane_reductions.md: `obj[idx]`, an element of a tensor in shared memory whose last
+    /// index `idx` is the variable of an `across` loop, may belong to that lane alone. The GPU
+    /// kernel keeps such an element in a register when the other indices are known when
+    /// compiling. So the code generator unrolls the `for` loops of their variables, as for a
+    /// register tensor. Nothing is reported when it cannot.
+    fn unroll_for_lane_element(&mut self, obj: &Expr, idx: &Expr) {
+        if self.speculating {
+            return;
+        }
+        let Expr::Identifier(lane) = idx else {
+            return;
+        };
+        let across = |c: &crate::hir::env::UnrollCandidate| c.across;
+        if !self
+            .unroll_candidates
+            .iter()
+            .rev()
+            .find(|c| c.var == lane.name)
+            .is_some_and(across)
+        {
+            return;
+        }
+        let mut e = obj;
+        while let Expr::IndexAccess(r) = e {
+            let mut names = Vec::new();
+            if Self::index_names(&r.index, &mut names) {
+                for name in names {
+                    let candidate = self
+                        .unroll_candidates
+                        .iter_mut()
+                        .rev()
+                        .find(|c| c.var == name);
+                    if let Some(c) = candidate {
+                        if !c.across
+                            && matches!(c.bounds, Some((lo, hi)) if hi - lo <= MAX_UNROLLED_PASSES)
+                        {
+                            c.used = true;
+                        }
+                    }
+                }
+            }
+            e = &r.base;
+        }
+    }
+
     /// A tensor in a `scope: thread` space stays in registers, and a register has no address.
     /// So each index must be a constant, or made of constants and the variables of `for` loops
     /// with constant bounds. Such a loop is marked, and the code generator unrolls it.
@@ -1450,6 +1533,61 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The type of `q[a..b]`: rows `a` to `b - 1`, so `q`'s dimensions with the first one
+    /// replaced by `b - a`. Both ends must be literal numbers, and the rows must exist.
+    fn range_index_type(
+        &mut self,
+        el_ty: ElementType,
+        dims: &[Dim],
+        top: Option<Placement>,
+        range: &RangeExpr,
+        span: &crate::syntax::Span,
+    ) -> Type {
+        use crate::diagnostic::DiagnosticCode;
+        let at = Some(crate::diagnostic::SourceSpan::from_ast_span(span));
+        let rows = match dims.first() {
+            Some(Dim::Static(Expr::Number(n))) => n.value.parse::<u64>().ok(),
+            _ => None,
+        };
+        let problem = match range.literal_ends() {
+            None => Some((
+                DiagnosticCode::E3065,
+                "the ends of a range index must be literal numbers, such as `q[1..3]`: the \
+                 number of rows is part of the type of the range"
+                    .to_string(),
+            )),
+            Some((a, b)) if b <= a => Some((
+                DiagnosticCode::E3065,
+                format!("the range `{a}..{b}` is empty: its end must be greater than its start"),
+            )),
+            Some((a, b)) => rows.filter(|rows| b > *rows).map(|rows| {
+                (
+                    DiagnosticCode::E8003,
+                    format!("the range `{a}..{b}` goes past the end: this dimension has {rows} elements"),
+                )
+            }),
+        };
+        if let Some((code, message)) = problem {
+            if !self.speculating {
+                self.errors.error_with_code(code, message, at);
+            }
+            // Keep the tensor's own type, so one wrong range gives one error.
+            return Type::Tensor(el_ty, dims.to_vec(), top);
+        }
+        let (a, b) = range
+            .literal_ends()
+            .expect("a range with other ends was refused above");
+        let mut new_dims = dims.to_vec();
+        if let Some(first) = new_dims.first_mut() {
+            *first = Dim::Static(Expr::Number(NumberExpr::new(
+                (b - a).to_string(),
+                None,
+                *span,
+            )));
+        }
+        Type::Tensor(el_ty, new_dims, top)
+    }
+
     pub(crate) fn check_indexaccess_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         // `a[i]` on a struct or an enum whose type implements `Index` reads `*a.index(i)`, and
         // a write, `a[i] = x`, goes through `*a.index_mut(i)`, as in Rust.
@@ -1516,7 +1654,10 @@ impl<'a> TypeChecker<'a> {
                 self.indexed_name = None;
                 if let Some((name, mut path)) = place {
                     if !self.borrow.skip_borrow_check && !self.speculating {
-                        path.push(crate::hir::places::index_element(idx));
+                        crate::hir::places::push_path_element(
+                            &mut path,
+                            crate::hir::places::index_element(idx),
+                        );
                         let live = self.borrow.live_borrows(&name).to_vec();
                         let conflict = live.iter().find(|b| {
                             b.is_mut && crate::hir::places::paths_may_alias(&path, &b.path)
@@ -1552,23 +1693,29 @@ impl<'a> TypeChecker<'a> {
                 // tensor stopped being checked the moment `transfer` started returning
                 // a placed tensor -- and the failure was silent, since an unchecked
                 // read simply compiles.
-                let located_on = match &obj_ty {
+                // The check on a reference lets it through, so its index checks what it refers to.
+                let read_ty = match &obj_ty {
+                    Type::Borrow { inner, .. } => inner.as_ref(),
+                    other => other,
+                };
+                let located_on = match read_ty {
                     Type::Pinned(_, top) => Some(top.clone()),
-                    _ => obj_ty.placement().map(|p| p.topology.clone()),
+                    _ => read_ty.placement().map(|p| p.topology.clone()),
                 };
                 if let Some(value_top) = located_on {
                     if !self.transfer_cost_graph.is_type_accessible(
                         &self.active_topology,
                         &value_top,
-                        &obj_ty,
+                        read_ty,
                     ) && !self.speculating
                     {
                         // A place whose root variable is not placed itself, such as the field
-                        // `h.t` of a struct, was not named by the check on the variable, so name
-                        // it here with the transfer that fixes it.
+                        // `h.t` of a struct or the reference `r`, was not named by the check on
+                        // the variable, so name it here with the transfer that fixes it.
+                        let through_ref = !std::ptr::eq(read_ty, &obj_ty);
                         let unnamed_place =
                             crate::hir::places::base_and_path(obj).filter(|(root, path)| {
-                                !path.is_empty()
+                                (through_ref || !path.is_empty())
                                     && self.lookup_with_depth(root.as_ref()).is_some_and(
                                         |(t, _, _)| {
                                             t.placement().is_none()
@@ -1579,17 +1726,27 @@ impl<'a> TypeChecker<'a> {
                         let reach = self.transfer_cost_graph.reachable(
                             &self.active_topology,
                             &value_top,
-                            &obj_ty,
+                            read_ty,
                         );
+                        // In `o[0][0]`, the index `o[0]` already reported the read.
+                        let reported = index_root_span(obj)
+                            .is_some_and(|at| self.unreadable_reported.contains(&at));
                         match (unnamed_place, reach) {
+                            _ if reported => {}
                             (Some((root, path)), crate::arch::Reachability::NeedsSeam { cost }) => {
-                                let what = crate::hir::places::display_place(root.as_ref(), &path);
-                                self.report_needs_transfer(
-                                    &what, &obj_ty, &value_top, cost, &ix_span,
-                                );
+                                let mut what =
+                                    crate::hir::places::display_place(root.as_ref(), &path);
+                                let mut at = ix_span;
+                                if through_ref {
+                                    what.insert(0, '*');
+                                    at = index_root_span(obj).unwrap_or(ix_span);
+                                    self.unreadable_reported.insert(at);
+                                }
+                                self.report_needs_transfer(&what, read_ty, &value_top, cost, &at);
                             }
-                            _ if index_root_span(obj)
-                                .is_some_and(|at| self.unreadable_reported.contains(&at)) => {}
+                            // A memory with no path to it, such as one that no topology holds,
+                            // was reported where the type names it.
+                            _ if through_ref => {}
                             _ => self.errors.push(format!(
                                 "Cross-topology access error: a value on {} cannot be read from {}",
                                 value_top.display_name(),
@@ -1624,6 +1781,9 @@ impl<'a> TypeChecker<'a> {
                     if self.is_register_space(placement.as_ref()) {
                         self.check_register_index(obj, idx, &ix_span);
                     }
+                    if dims.len() == 1 && self.is_shared_space(placement.as_ref()) {
+                        self.unroll_for_lane_element(obj, idx);
+                    }
                 }
                 if !self.speculating && !type_reported {
                     let tmp_env = self.consteval_snapshot();
@@ -1655,6 +1815,9 @@ impl<'a> TypeChecker<'a> {
                 }
                 if let Type::Pointer(inner, _, _) = base {
                     *inner
+                } else if let (Type::Tensor(el_ty, dims, top), Expr::Range(range)) = (&base, &**idx)
+                {
+                    self.range_index_type(el_ty.clone(), dims, top.clone(), range, &ix_span)
                 } else if let Type::Tensor(el_ty, dims, top) = base {
                     if dims.len() > 1 {
                         // Partial index (S1): a rank-reduced slice of the remaining dimensions,
@@ -1804,6 +1967,7 @@ impl<'a> TypeChecker<'a> {
                     if let Some(root) = self.read_only_root(inner) {
                         self.report_read_only(&root, "it cannot be borrowed `&mut`", span);
                     }
+                    self.check_const_pointer_change(inner, "this makes a `&mut` borrow of");
                     self.check_field_change(inner, "this `&mut` can change");
                     // `&mut *r` through a shared `r` would make a `&mut` out of a `&`.
                     if let Expr::Dereference(d) = &**inner {
@@ -2005,7 +2169,10 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::IndexAccess(i) => {
                 let (root, mut path) = self.reborrow_base_and_path(&i.base)?;
-                path.push(crate::hir::places::index_element(&i.index));
+                crate::hir::places::push_path_element(
+                    &mut path,
+                    crate::hir::places::index_element(&i.index),
+                );
                 Some((root, path))
             }
             _ => None,
@@ -2077,7 +2244,15 @@ impl<'a> TypeChecker<'a> {
                         _ => break,
                     }
                 }
+                // `&mut tensor_view_2d(p, ..)` names the memory `p` points at, as `&mut *p` does.
+                // So does a borrow of a variable that holds such a view, or of a part of it.
+                if let Some(p) = Self::foreign_view_pointer(place) {
+                    return self.ref_provenance_of(p);
+                }
                 if let Some((base, _path)) = Self::extract_base_and_path(&b.expr) {
+                    if let Some(provenance) = self.borrow.foreign_views.get(base.as_str()) {
+                        return *provenance;
+                    }
                     match self.borrow.current_params.get(base.as_str()) {
                         Some(pty) if Self::is_ref_type(pty) => Some(RefProvenance::External),
                         _ => Some(RefProvenance::Local(self.frame_depth_of(&base))),

@@ -1,0 +1,30 @@
+//===- a_struct_named_matrix.vx - Vx Compiler -----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program can name a struct `Matrix` and use it as a type. `Matrix` is not a built-in type.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: size 6
+
+struct Matrix {
+  rows : i32,
+  cols : i32,
+}
+
+fn size(m : &Matrix) -> i32 {
+  return m.rows * m.cols;
+}
+
+fn main() -> i32 {
+  let m = Matrix {
+    rows: 2,
+    cols: 3
+  };
+  println!("size {}", size(&m));
+  return 0;
+}

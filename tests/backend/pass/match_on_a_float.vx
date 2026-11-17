@@ -1,0 +1,59 @@
+//===- match_on_a_float.vx - Vx Compiler ---------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `match` on a float selects a number arm when the value is equal to it, as `==` does. The
+// arm `2` means 2.0, and the arm `0.1` on an `f64` is the `f64` 0.1. A `match` on a float used
+// to stop the compiler.
+//
+// EXPECT: 1 2 0 3 0 4
+
+fn pick(x : f64) -> i32 {
+  let mut found = 0;
+  match x {
+    2 => {
+      found = 1;
+    }
+    0.1 => {
+      found = 2;
+    }
+    _ => {
+      found = 0;
+    }
+  }
+  return found;
+}
+
+fn pick_single(x : f32) -> i32 {
+  let mut found = 0;
+  match x {
+    1.5 => {
+      found = 3;
+    }
+    -0.5 => {
+      found = 4;
+    }
+    _ => {
+      found = 0;
+    }
+  }
+  return found;
+}
+
+fn main() -> i32 {
+  print(pick(2.0));
+  print(" ");
+  print(pick(0.1));
+  print(" ");
+  print(pick(3.0));
+  print(" ");
+  print(pick_single(1.5));
+  print(" ");
+  print(pick_single(2.5));
+  print(" ");
+  print(pick_single(0.0 - 0.5));
+  return 0;
+}

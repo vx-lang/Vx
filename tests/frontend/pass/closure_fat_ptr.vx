@@ -1,5 +1,5 @@
 // `my_closure as ||->i32` makes the pair `{ env, func }`. A call through the pair passes `env` to `func`.
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=FLAT
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=FLAT # flat-codegen
 // RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s
 // FLAT-LABEL: func.func @main() -> i32
 // FLAT: %[[ENVSTRUCT:.*]] = llvm.alloca %{{.*}} x !llvm.struct<(i32)>

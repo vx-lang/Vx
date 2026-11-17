@@ -23,28 +23,28 @@ fn takes_usize(v : usize) -> usize {
 }
 
 fn pick<T>(x : T) -> T {
-  // CHECK-DAG: E3045{{.*}}300 does not fit `u8`
+  // CHECK-DAG: Error[E3045] at {{.*}}.vx:[[@LINE+1]]:18: 300 does not fit `u8`
   let big : u8 = 300;
   return x;
 }
 
 fn wide() -> u16 {
-  // CHECK-DAG: E3045{{.*}}70000 does not fit `u16`
+  // CHECK-DAG: Error[E3045] at {{.*}}.vx:[[@LINE+1]]:10: 70000 does not fit `u16`
   return 70000;
 }
 
 fn main() -> i32 {
-  // CHECK-DAG: E3045{{.*}}300 does not fit `u8`
+  // CHECK-DAG: Error[E3045] at {{.*}}.vx:[[@LINE+1]]:16: 300 does not fit `u8`
   let a : u8 = 300;
-  // CHECK-DAG: E3045{{.*}}-129 does not fit `i8`
+  // CHECK-DAG: Error[E3045] at {{.*}}.vx:[[@LINE+1]]:16: -129 does not fit `i8`
   let b : i8 = -129;
-  // CHECK-DAG: E3045{{.*}}3000000000 does not fit `i32`
+  // CHECK-DAG: Error[E3045] at {{.*}}.vx:[[@LINE+1]]:17: 3000000000 does not fit `i32`
   let c : i32 = 3000000000;
-  // CHECK-DAG: E3045{{.*}}256 does not fit `u8`
+  // CHECK-DAG: Error[E3045] at {{.*}}.vx:[[@LINE+1]]:11: 256 does not fit `u8`
   let d = 256u8;
-  // CHECK-DAG: E3045{{.*}}200 does not fit `i8`
+  // CHECK-DAG: Error[E3045] at {{.*}}.vx:[[@LINE+1]]:25: 200 does not fit `i8`
   let e : i8 = takes_i8(200);
-  // CHECK-DAG: E3045{{.*}}-200 does not fit `i8`
+  // CHECK-DAG: Error[E3045] at {{.*}}.vx:[[@LINE+1]]:20: -200 does not fit `i8`
   let f = takes_i8(-200);
   // CHECK-DAG: E3030{{.*}}`-` does not apply to a `usize`
   let h = takes_usize(-5);
@@ -52,7 +52,7 @@ fn main() -> i32 {
   let h2 : usize = takes_usize(-5);
   let s = pick(5) + 1;
   let mut g : u8 = 0;
-  // CHECK-DAG: E3045{{.*}}1000 does not fit `u8`
+  // CHECK-DAG: Error[E3045] at {{.*}}.vx:[[@LINE+1]]:7: 1000 does not fit `u8`
   g = 1000;
   println!("{} {} {} {} {} {} {} {} {} {} {}", a, b, c, d, e, f, g, h, h2, s, wide());
   return 0;

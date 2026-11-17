@@ -1,0 +1,38 @@
+//===- a_range_is_not_a_value.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A range (`a..b`) is the bound of a `for` loop. It is not a value, so the checker refuses one
+// as the value of a `let`, of an assignment and of a `return`, with both code generators.
+//
+// RUN: not vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: not vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-COUNT-3: a range (`a..b`) cannot be a value. Use it as the bound of a `for` loop
+// CHECK-NOT: a range
+// CHECK: 3 error(s) emitted
+
+fn in_a_let() -> i32 {
+  let r = 0..4;
+  return 0;
+}
+
+fn in_an_assignment() -> i32 {
+  let mut r = 0;
+  r = 0..4;
+  return r;
+}
+
+fn in_a_return() -> i32 {
+  return 0..4;
+}
+
+fn main() -> i32 {
+  let mut sum = 0;
+  for i in 0..4 {
+    sum = sum + i;
+  }
+  return sum + in_a_let() + in_an_assignment() + in_a_return();
+}

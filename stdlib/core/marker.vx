@@ -19,6 +19,8 @@
 // of a type, so a type does not implement them by hand. A raw pointer is neither, and a type that
 // holds one opts in with `unsafe impl`.
 //
+// `HostOnly` marks a type that a device body must not use.
+//
 // `Sized` is a no-op: every type Vx has is sized, and the bound exists to be written.
 
 /// A type that is duplicated rather than moved when it is assigned.
@@ -72,6 +74,11 @@ trait Sync {}
 /// The compiler derives it as it derives `Send`. A raw pointer is `Owned`: unsafe code answers for
 /// what it points at.
 trait Owned {}
+
+/// A type whose methods can wait for the host, such as a channel end or a lock. A `spawn on` body
+/// for a device must not use one (E6038): a GPU does not promise that its threads make progress, so
+/// a wait on the device for the host can wait forever. A type that holds one is also refused.
+trait HostOnly {}
 
 /// A type whose size is known at compile time, which every Vx type is. The bound exists to be
 /// written; nothing is excluded by it.

@@ -1,0 +1,83 @@
+//===- a_deadlock_report_prints_no_cycle_through_a_sender_sent_on_a_channel.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The first task gets the `Sender` of channel 2 through another channel, and then waits for the
+// second task on channel 1. The second task waits for a value on channel 2. The tasks wait for
+// each other, but the runtime knows only the ends that a task moves at its `spawn`. The second
+// task moves a `Sender` of channel 1, and the main code keeps another one. So the report names
+// no holder for either wait, counts the `Sender`s of each channel, and prints no cycle.
+//
+// RUN: not vxc %s --run 2>&1 | FileCheck %s
+// RUN: not vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+// RUN: env VX_TASK_RUNTIME=shared not vxc %s --run 2>&1 | FileCheck %s
+
+// CHECK: vx: deadlock: each task of the program waits, and nothing can wake one. The program stops.
+// CHECK-NEXT: {{^}}  the main code waits for the end of the task from the `spawn` at {{.*}}.vx:41{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `recv` at {{.*}}.vx:61 on channel 1, made at {{.*}}.vx:34{{$}}
+// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:41{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `recv` at {{.*}}.vx:61 on channel 2, made at {{.*}}.vx:32{{$}}
+// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:44{{$}}
+// CHECK-NEXT: {{^}}  the channels of these waits:{{$}}
+// CHECK-NEXT: {{^}}    channel 1, made at {{.*}}.vx:34: 1 wait in `recv` and 0 in `send`. 2 `Sender`s are not dropped.{{$}}
+// CHECK-NEXT: {{^}}    channel 2, made at {{.*}}.vx:32: 1 wait in `recv` and 0 in `send`. 1 `Sender` is not dropped.{{$}}
+// CHECK-NEXT: {{^}}Program was killed by signal 6
+
+import std::sync::channel;
+
+fn main() -> i32 {
+  let (tx, rx) = channel<i64>(1);
+  let (pass_tx, pass_rx) = channel<Sender<i64>>(1);
+  let (back_tx, back_rx) = channel<i64>(1);
+  let spare = back_tx.clone();
+  match pass_tx.send(tx) {
+    Result<void, SendError<Sender<i64>>>::Ok() => {}
+    Result<void, SendError<Sender<i64>>>::Err(_e) => {}
+  }
+  tasks {
+    spawn {
+      get_the_sender_and_wait(pass_rx, back_rx);
+    };
+    spawn {
+      wait_and_answer(rx, back_tx);
+    };
+  };
+  drop(spare);
+  return 0;
+}
+
+fn send_on(tx : &Sender<i64>, v : i64) -> void {
+  match tx.send(v) {
+    Result<void, SendError<i64>>::Ok() => {}
+    Result<void, SendError<i64>>::Err(_e) => {}
+  }
+}
+
+fn receive(rx : &Receiver<i64>) -> i64 {
+  let mut v : i64 = 0;
+  match rx.recv() {
+    Result<i64, RecvError>::Ok(got) => {
+      v = got;
+    }
+    Result<i64, RecvError>::Err(_e) => {}
+  }
+  return v;
+}
+
+// Takes the `Sender` from `pass_rx`, and waits on `back_rx` before it sends.
+fn get_the_sender_and_wait(pass_rx : Receiver<Sender<i64>>, back_rx : Receiver<i64>) -> void {
+  match pass_rx.recv() {
+    Result<Sender<i64>, RecvError>::Ok(tx) => {
+      send_on(&tx, receive(&back_rx));
+    }
+    Result<Sender<i64>, RecvError>::Err(_e) => {}
+  }
+}
+
+// Waits on `rx` before it answers on `back_tx`.
+fn wait_and_answer(rx : Receiver<i64>, back_tx : Sender<i64>) -> void {
+  send_on(&back_tx, receive(&rx));
+}

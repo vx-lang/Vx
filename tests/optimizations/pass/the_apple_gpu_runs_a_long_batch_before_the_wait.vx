@@ -1,0 +1,44 @@
+// The runtime commits the command buffer of a batch after every 16 launches, so the GPU runs them
+// while the CPU makes the next launches. Here 40 launches of `add_one` make one batch. Two
+// command buffers of 16 launches go to the GPU before the wait, and the wait commits the last 8.
+// Each launch adds 1 to each element of `x`, so `x` ends at 40.
+//
+// REQUIRES: macos
+// RUN: env VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/m4-uma.vx 2>%t.gpu | FileCheck %s --check-prefix=OUT
+// RUN: FileCheck %s --check-prefix=GPU --input-file=%t.gpu
+// RUN: env VX_METAL=0 vxc %s --host default --machine fleet/m4-uma.vx | FileCheck %s --check-prefix=OUT
+//
+// GPU: [Vx Metal] committed 16 kernels before the wait
+// GPU-NOT: waited
+// GPU: [Vx Metal] committed 16 kernels before the wait
+// GPU-NOT: waited
+// GPU: [Vx Metal] waited for 40 kernels,
+// GPU-NOT: committed
+//
+// OUT: {{^}}x 40 40{{$}}
+
+// x[i] = x[i] + 1
+fn add_one(x : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for g in 0..(n + 255) / 256 across blocks {
+      for l in 0..256 across lanes(256) {
+        let i = g * 256 + l;
+        if i < n {
+          x[i] = x[i] + 1.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let n : i32 = 64000;
+  let mut x = transfer(Tensor<f32, [64000]>::fill(0.0), Memory::HBM);
+  for k in 0..40 {
+    add_one(&mut x, n);
+  }
+  let h = transfer(x, Memory::CPU_DRAM);
+  println!("x {} {}", h[0], h[63999]);
+  return 0;
+}

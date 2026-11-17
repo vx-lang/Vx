@@ -1,0 +1,22 @@
+//===- starts_a_task_that_panics.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A module that starts a task that panics, for
+// tests/backend/fail/a_panic_in_a_task_from_a_module_names_the_file_of_its_spawn.vx.
+
+fn start_a_task_that_panics(n : i32) -> i32 {
+  let r = tasks {
+    let a = spawn {
+      if n > 1 {
+        panic("too big in the module");
+      }
+      n
+    };
+    a.join()
+  };
+  return r;
+}

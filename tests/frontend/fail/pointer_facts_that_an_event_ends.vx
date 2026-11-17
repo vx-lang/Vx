@@ -134,14 +134,15 @@ requires valid(p, n)
   return need_valid(p, n) + z;
 }
 
-// The drop of `_v` at the end of the branch can free memory. The note gives the line of the `if`.
+// `_v` holds a vector of the caller, so its drop at the end of the branch can free memory. The
+// note gives the line of the `if`.
 // CHECK: E8006] at {{.*}}pointer_facts_that_an_event_ends.vx:[[@LINE+8]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
 // CHECK-NEXT: note: a fact that proves it ended at the end of the scope of `_v`, which drops its value, in the branch where `c` is true (at [[@LINE+4]]:3)
-fn after_a_drop(p : *const i64, n : i64, c : bool) -> i64
+fn after_a_drop(p : *const i64, n : i64, c : bool, w : Vec<i64>) -> i64
 requires valid(p, n)
 {
   if c {
-    let _v = Vec<i64>::new();
+    let _v = w;
   }
   return need_valid(p, n);
 }

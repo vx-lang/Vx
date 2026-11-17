@@ -134,6 +134,23 @@ impl Function {
     }
 }
 
+/// Where a declaration is written: its file, and the place of its name there. A diagnostic about
+/// the declaration points at it. Two declarations compare equal whatever their places: one
+/// machine file that a program reaches twice declares one memory space.
+#[derive(Debug, Clone, Default)]
+pub struct DeclPlace {
+    pub file: Option<Symbol>,
+    pub span: Span,
+}
+
+impl PartialEq for DeclPlace {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for DeclPlace {}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct StructDecl {
     pub name: Symbol,
@@ -142,8 +159,7 @@ pub struct StructDecl {
     /// The `invariant` clauses, in which `self` is a value of the type. Only the module that
     /// declares a type with an invariant can change its fields.
     pub invariants: Vec<crate::syntax::Expr>,
-    /// The file of the module that declares the struct, as a [`Function`] has it.
-    pub file: Option<Symbol>,
+    pub place: DeclPlace,
     pub doc_comment: Option<String>,
 }
 
@@ -152,6 +168,7 @@ pub struct EnumDecl {
     pub name: Symbol,
     pub generics: Vec<GenericParam>,
     pub variants: Vec<(Symbol, Option<Vec<Type>>)>,
+    pub place: DeclPlace,
     pub doc_comment: Option<String>,
 }
 
@@ -202,6 +219,7 @@ pub struct TraitDecl {
     /// `type Item;`. A name the trait's signatures may write as `Self::Item`, which every
     /// impl binds to a type of its own.
     pub assoc_types: Vec<Symbol>,
+    pub place: DeclPlace,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -223,6 +241,8 @@ pub struct ImplBlock {
     /// `unsafe impl`: the programmer states a fact that the compiler cannot check. Only
     /// `Send` and `Sync` take it.
     pub is_unsafe: bool,
+    /// At the `impl` keyword.
+    pub place: DeclPlace,
 }
 
 impl ImplBlock {
@@ -235,6 +255,7 @@ impl ImplBlock {
             assoc_bindings: self.assoc_bindings.clone(),
             copied_defaults: self.copied_defaults.clone(),
             is_unsafe: self.is_unsafe,
+            place: self.place.clone(),
             // Always preserve method bodies: methods only exist in impl blocks, so
             // method-call monomorphization clones the body from the type-check env
             // (env.impls). Dropping it (as the signature clone does for free
@@ -397,6 +418,7 @@ pub struct MemoryDecl {
     /// `None` means the space is not a NUMA domain, which is every space on every accelerator
     /// in fleet/ -- a GPU has one memory and nothing to choose between.
     pub numa_node: Option<u64>,
+    pub place: DeclPlace,
     pub doc_comment: Option<String>,
 }
 
@@ -431,6 +453,8 @@ pub struct TransferImplDecl {
     /// an alias returns a view) is sema's question, not the parser's, so the parser accepts any
     /// `fn` items here.
     pub methods: Vec<Function>,
+    /// At the `impl` keyword.
+    pub place: DeclPlace,
     pub doc_comment: Option<String>,
 }
 
@@ -488,7 +512,7 @@ impl Program {
         self.functions.push(func);
     }
 
-    /// Give every function and struct in the program the program's file. Run after macro
+    /// Give every function and declaration in the program the program's file. Run after macro
     /// expansion, which can add items the parser never saw.
     pub fn name_file_on_items(&mut self) {
         let file = self.file.clone();
@@ -501,8 +525,15 @@ impl Program {
         for f in functions.chain(methods).chain(lowerings) {
             f.file = file.clone();
         }
-        for s in &mut self.structs {
-            s.file = file.clone();
+        let places = self.structs.iter_mut().map(|s| &mut s.place);
+        let places = places.chain(self.enums.iter_mut().map(|e| &mut e.place));
+        let places = places.chain(self.traits.iter_mut().map(|t| &mut t.place));
+        let places = places.chain(self.impls.iter_mut().map(|i| &mut i.place));
+        let places = places.chain(self.memories.iter_mut().map(|m| &mut m.place));
+        let places = places.chain(self.topologies.iter_mut().map(|t| &mut t.place));
+        let places = places.chain(self.transfer_impls.iter_mut().map(|t| &mut t.place));
+        for place in places {
+            place.file = file.clone();
         }
     }
 
@@ -544,6 +575,7 @@ impl Program {
                     to: t.to.clone(),
                     topology: t.topology.clone(),
                     methods: t.methods.iter().map(|f| f.clone_signature(true)).collect(),
+                    place: t.place.clone(),
                     doc_comment: t.doc_comment.clone(),
                 })
                 .collect(),

@@ -1,0 +1,181 @@
+//===- pointer_facts_that_a_local_vector_ends.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A vector that the function made keeps the facts about other memory only while it holds only
+// new memory and no pointer points into it. In each function here, that is not true, so a call
+// through the vector ends the facts, and the call to `first` gets E8006. `outside(b)` gives a box
+// that, as far as the compiler knows, can hold memory of the caller.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+import std::vec;
+import std::box;
+import core::ptr;
+
+fn first(p : *const i64) -> i64
+requires valid(p, 1i64)
+requires initialized(p, 1i64)
+{
+  return unsafe { p[0] };
+}
+
+fn outside(_b : &Box<i64>) -> Box<i64> {
+  return Box<i64>::new(1i64);
+}
+
+// `q` points into the buffer, and a `push` can move the buffer.
+fn a_pointer_into_the_vector() -> i64 {
+  let mut v = Vec<i64>::new();
+  v.push(1i64);
+  let q = v.as_mut_ptr() as *const i64;
+  unsafe { assume valid(q, 1i64); assume initialized(q, 1i64); }
+  v.push(2i64);
+  // CHECK: E8006] at {{.*}}.vx:[[@LINE+2]]:10: this call to 'first' may not meet its precondition `valid(p, 1)`
+  // CHECK-NEXT: note: a fact that proves it ended at the call to 'push', which can free memory through `&mut v` (at [[@LINE-2]]:5)
+  return first(q);
+}
+
+fn a_box_from_outside(p : *const i64, b : Box<i64>) -> i64 {
+  let mut v = Vec<Box<i64>>::new();
+  v.push(b);
+  unsafe { assume valid(p, 1i64); assume initialized(p, 1i64); }
+  v.pop();
+  // CHECK: E8006] at {{.*}}.vx:[[@LINE+2]]:10: this call to 'first' may not meet its precondition `valid(p, 1)`
+  // CHECK-NEXT: note: a fact that proves it ended at the call to 'pop', which can free memory through `&mut v` (at [[@LINE-2]]:5)
+  return first(p);
+}
+
+// Code can change the vector through `r`.
+fn a_reference_to_the_vector(p : *const i64) -> i64
+requires valid(p, 1i64)
+requires initialized(p, 1i64)
+{
+  let mut v = Vec<i64>::new();
+  let r = &v;
+  print(r.len());
+  v.push(1i64);
+  // CHECK: E8006] at {{.*}}.vx:[[@LINE+2]]:10: this call to 'first' may not meet its precondition `valid(p, 1)`
+  // CHECK-NEXT: note: a fact that proves it ended at the call to 'push', which can free memory through `&mut v` (at [[@LINE-2]]:5)
+  return first(p);
+}
+
+fn a_closure_that_names_the_vector(p : *const i64, b : &Box<i64>) -> i64 {
+  let mut v = Vec<Box<i64>>::new();
+  let f = || v.push(outside(b));
+  f();
+  unsafe { assume valid(p, 1i64); assume initialized(p, 1i64); }
+  v.pop();
+  // CHECK: E8006] at {{.*}}.vx:[[@LINE+2]]:10: this call to 'first' may not meet its precondition `valid(p, 1)`
+  // CHECK-NEXT: note: a fact that proves it ended at the call to 'pop', which can free memory through `&mut v` (at [[@LINE-2]]:5)
+  return first(p);
+}
+
+fn a_branch_that_puts_memory_in(p : *const i64, b : &Box<i64>, c : bool) -> i64 {
+  let mut v = Vec<Box<i64>>::new();
+  if c {
+    v.push(outside(b));
+  }
+  unsafe { assume valid(p, 1i64); assume initialized(p, 1i64); }
+  v.pop();
+  // CHECK: E8006] at {{.*}}.vx:[[@LINE+2]]:10: this call to 'first' may not meet its precondition `valid(p, 1)`
+  // CHECK-NEXT: note: a fact that proves it ended at the call to 'pop', which can free memory through `&mut v` (at [[@LINE-2]]:5)
+  return first(p);
+}
+
+// The `push` at the end of a pass comes before the `pop` of the next pass.
+fn a_loop_that_puts_memory_in_later(p : *const i64, b : &Box<i64>, n : i64) -> i64 {
+  let mut v = Vec<Box<i64>>::new();
+  let mut sum = 0i64;
+  for _ in 0i64..n {
+    unsafe { assume valid(p, 1i64); assume initialized(p, 1i64); }
+    v.pop();
+    // CHECK: E8006] at {{.*}}.vx:[[@LINE+2]]:17: this call to 'first' may not meet its precondition `valid(p, 1)`
+    // CHECK-NEXT: note: a fact that proves it ended at the call to 'pop', which can free memory through `&mut v` (at [[@LINE-2]]:7)
+    sum = sum + first(p);
+    v.push(outside(b));
+  }
+  return sum;
+}
+
+// After the `unsafe` block, `v` is the parameter again.
+fn a_parameter_with_the_same_name(p : *const i64, v : &mut Vec<i64>) -> i64 {
+  unsafe { let mut v = Vec<i64>::new(); v.push(1i64); }
+  unsafe { assume valid(p, 1i64); assume initialized(p, 1i64); }
+  v.push(2i64);
+  // CHECK: E8006] at {{.*}}.vx:[[@LINE+2]]:10: this call to 'first' may not meet its precondition `valid(p, 1)`
+  // CHECK-NEXT: note: a fact that proves it ended at the call to 'push', which can free memory through `v` (at [[@LINE-2]]:5)
+  return first(p);
+}
+
+// In the arm, `v` is the vector of the caller.
+fn a_pattern_with_the_same_name(p : *const i64, o : Option<&mut Vec<i64>>) -> i64
+requires valid(p, 1i64)
+requires initialized(p, 1i64)
+{
+  let v = Vec<i64>::new();
+  match o {
+    Option<&mut Vec<i64>>::Some(v) => {
+      v.push(1i64);
+    }
+    Option<&mut Vec<i64>>::None => {}
+  }
+  // CHECK: E8006] at {{.*}}.vx:[[@LINE+2]]:11: this call to 'first' may not meet its precondition `valid(p, 1)`
+  // CHECK-NEXT: note: a fact that proves it ended at the call to 'push', which can free memory through `v`, in the arm for `Some` (at [[@LINE-5]]:9)
+  let r = first(p);
+  print(v.len());
+  return r;
+}
+
+fn copy_of(_w : &Vec<Box<i64>>) -> Vec<Box<i64>> {
+  return Vec<Box<i64>>::new();
+}
+
+// `copy_of` gets a vector of the caller, so its result can hold memory of the caller.
+fn a_vector_from_a_call_that_gets_outside_memory(p : *const i64, w : &Vec<Box<i64>>) -> i64 {
+  let mut v = copy_of(w);
+  unsafe { assume valid(p, 1i64); assume initialized(p, 1i64); }
+  v.pop();
+  // CHECK: E8006] at {{.*}}.vx:[[@LINE+2]]:10: this call to 'first' may not meet its precondition `valid(p, 1)`
+  // CHECK-NEXT: note: a fact that proves it ended at the call to 'pop', which can free memory through `&mut v` (at [[@LINE-2]]:5)
+  return first(p);
+}
+
+// A closure can give memory that it captures.
+fn a_vector_from_a_closure(p : *const i64, w : &Vec<Box<i64>>) -> i64 {
+  let g = |_n : i64| copy_of(w);
+  let mut v = g(1i64);
+  unsafe { assume valid(p, 1i64); assume initialized(p, 1i64); }
+  v.pop();
+  // CHECK: E8006] at {{.*}}.vx:[[@LINE+2]]:10: this call to 'first' may not meet its precondition `valid(p, 1)`
+  // CHECK-NEXT: note: a fact that proves it ended at the call to 'pop', which can free memory through `&mut v` (at [[@LINE-2]]:5)
+  return first(p);
+}
+
+fn new_buffer() -> *const i64 {
+  return null<i64>();
+}
+
+fn release(_q : *const i64) -> void
+ensures frees(_q)
+{}
+
+// `q` is a pointer, so `release(q)` frees the memory that the facts about `q` are about.
+fn a_pointer_from_a_call() -> i64 {
+  let q = new_buffer();
+  unsafe { assume valid(q, 1i64); assume initialized(q, 1i64); }
+  release(q);
+  // CHECK: E8006] at {{.*}}.vx:[[@LINE+2]]:10: this call to 'first' may not meet its precondition `valid(p, 1)`
+  // CHECK-NEXT: note: a fact that proves it ended at the call to 'release', which can free memory through `q` (at [[@LINE-2]]:3)
+  return first(q);
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// Each function above has an error for `valid` and one for `initialized`, and no other.
+// CHECK: {{^}}Semantic check failed on {{.*}}: 22 error(s) emitted

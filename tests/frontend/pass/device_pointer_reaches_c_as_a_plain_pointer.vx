@@ -13,7 +13,7 @@
 // Only the MLIR is checked: `vendor_scale` is not a real library function, so
 // the program cannot be linked or run here.
 //
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // CHECK: func.func private @vendor_scale(!llvm.ptr, i32) -> i32
 // CHECK: memref.extract_strided_metadata
 // CHECK: memref.extract_aligned_pointer_as_index

@@ -1,0 +1,61 @@
+//===- book_channel_of_gpu_tensors.vx - Vx Compiler ---------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on tasks (www/book/src/tasks.md): a task sends tensors that live
+// in the GPU memory `W` through a channel, and the code of the block copies each one back to read
+// it: 0 + 1 + 2 + 3 + 4 + 5 = 15.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}got 6 tensors, sum 15{{$}}
+
+// ANCHOR: program
+import std::sync::channel;
+
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 64 KiB, managed: explicit, scope: device
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10,
+  transfer Memory::W -> Memory::CPU_DRAM : 10
+}
+
+fn main() -> i32 {
+  // Room for 4 tensors of 4 KiB each.
+  let (tx, rx) = channel<Tensor<f32, [1024], Memory::W>>(4);
+  let mut count = 0;
+  let mut sum = 0.0;
+  tasks {
+    spawn {
+      for i in 0..6 {
+        let t = transfer(Tensor<f32, [1024]>::fill(i as f32), Memory::W);
+        let _ = tx.send(t);
+      }
+      drop(tx);
+    };
+    let mut open = true;
+    while open {
+      match rx.recv() {
+        Result<Tensor<f32, [1024], Memory::W>, RecvError>::Ok(t) => {
+          let here = transfer(t, Memory::CPU_DRAM);
+          count = count + 1;
+          sum = sum + here[0];
+        }
+        Result<Tensor<f32, [1024], Memory::W>, RecvError>::Err(_e) => {
+          open = false;
+        }
+      }
+    }
+  };
+  println!("got {} tensors, sum {}", count, sum);
+  return 0;
+}
+// ANCHOR_END: program

@@ -38,12 +38,12 @@ impl<'a> TypeChecker<'a> {
     /// The struct with an invariant that `ty` names, when another module declares it.
     fn invariant_type_of_another_module(&self, ty: &Type) -> Option<&'a StructDecl> {
         self.struct_decl_of(ty)
-            .filter(|decl| !decl.invariants.is_empty() && decl.file != self.errors.file)
+            .filter(|decl| !decl.invariants.is_empty() && decl.place.file != self.errors.file)
     }
 
     /// The file name of the module of `decl`, for a message.
     fn module_file_name(decl: &StructDecl) -> String {
-        let file = decl.file.as_deref().unwrap_or("its module");
+        let file = decl.place.file.as_deref().unwrap_or("its module");
         let name = std::path::Path::new(file).file_name();
         name.map_or(file.to_string(), |n| n.to_string_lossy().into_owned())
     }
@@ -98,7 +98,7 @@ impl<'a> TypeChecker<'a> {
         let Some(decl) = self.env.structs.get(name).copied() else {
             return;
         };
-        if self.speculating || decl.invariants.is_empty() || decl.file == self.errors.file {
+        if self.speculating || decl.invariants.is_empty() || decl.place.file == self.errors.file {
             return;
         }
         let message = format!(
@@ -124,7 +124,7 @@ impl<'a> TypeChecker<'a> {
             .collect();
         decls.sort_by(|a, b| a.name.cmp(&b.name));
         for decl in decls {
-            let prev_file = std::mem::replace(&mut self.errors.file, decl.file.clone());
+            let prev_file = std::mem::replace(&mut self.errors.file, decl.place.file.clone());
             for invariant in &decl.invariants {
                 if let Err((span, why)) = self.check_invariant_expr(decl, invariant) {
                     self.errors.error_with_code(

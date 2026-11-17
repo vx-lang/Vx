@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 // Test generic structs, generic enums, and generic function instantiation.
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
 // `Pair<i32>` is a synthesized instance layout, read through the method's receiver;
 // `Maybe<i32>` a `{ tag, payload }` matched by tag. The program compiles on the flat path; the
 // AST path still fails on the payload extraction (Vx#398).

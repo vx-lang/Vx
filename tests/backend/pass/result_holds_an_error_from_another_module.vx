@@ -1,0 +1,30 @@
+//===- result_holds_an_error_from_another_module.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// The error of a `Result` is a struct from another module, with an `Option` field.
+// In a parallel compile, each worker builds the layout of `Error` on its own.
+// EXPECT: 4294967301 2 -9000000000
+
+import core::option;
+import core::result;
+import tests::modules::an_error_with_an_optional_code;
+
+fn fail(n: i32) -> Result<u64, Error> {
+  if n > 0 {
+    return Result<u64, Error>::Err(make_error(-9000000000));
+  }
+  return Result<u64, Error>::Ok(4294967301u64);
+}
+
+fn main() -> i32 {
+  print(fail(0).unwrap());
+  print!(" ");
+  let e = fail(1).unwrap_err();
+  print(e.small);
+  print!(" ");
+  print(e.code.unwrap_or(99));
+  return 0;
+}

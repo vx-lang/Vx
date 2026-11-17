@@ -1,0 +1,49 @@
+//===- the_memory_of_several_devices_names_no_device.vx --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each of the two devices of `Card` has its own copy of `CARD_RAM`. So
+// `Memory::CARD_RAM` alone does not say which copy, in a type or in a
+// `transfer`, and neither does a slice of devices. Each is error E6025. A
+// transfer that names a device is fine, unless the device does not exist.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+Memory CPU_DRAM {}
+Memory CARD_RAM {
+  within: Memory::CPU_DRAM, capacity: 4 KiB, managed: explicit, scope: device
+}
+Topology Card {
+  count: 2,
+  memory: Memory::CARD_RAM,
+  visible: [Memory::CARD_RAM],
+  transfer Memory::CPU_DRAM -> Memory::CARD_RAM : 10,
+  transfer Memory::CARD_RAM -> Memory::CPU_DRAM : 10
+}
+
+// CHECK: Error[E6025] at {{.*}}.vx:[[@LINE+1]]:{{[0-9]+}}: `Memory::CARD_RAM` in parameter '_t' of function 'by_memory' names no location: it is the memory of each of the 2 devices of 'Card', so it does not say which device. Name the device instead: `Topology::Card[0]` to `Topology::Card[1]`
+fn by_memory(_t : Tensor<f32, [4], Memory::CARD_RAM>) -> i32 {
+  return 0;
+}
+
+// CHECK: Error[E6025] at {{.*}}.vx:[[@LINE+1]]:{{[0-9]+}}: `Topology::Card[0..2]` in parameter '_t' of function 'on_a_slice' names no location: a tensor is in the memory of one device, so place it on one device of 'Card', such as `Topology::Card[0]`
+fn on_a_slice(_t : Tensor<f32, [4], Topology::Card[0..2]>) -> i32 {
+  return 0;
+}
+
+fn main() -> i32 {
+  // CHECK: Error[E6025] at {{.*}}.vx:[[@LINE+1]]:{{[0-9]+}}: `transfer(.., Memory::CARD_RAM)` names no location: it is the memory of each of the 2 devices of 'Card'
+  let a = transfer(Tensor<f32, [4]>::fill(1.0), Memory::CARD_RAM);
+  // CHECK: Error[E6025] at {{.*}}.vx:[[@LINE+1]]:{{[0-9]+}}: `transfer(.., Topology::Card[2])` names no device: 'Card' has 2 devices, so device 2 does not exist
+  let b = transfer(Tensor<f32, [4]>::fill(1.0), Topology::Card[2]);
+  let c = transfer(Tensor<f32, [4]>::fill(1.0), Topology::Card[1]);
+  let d = transfer(a, Memory::CPU_DRAM);
+  let e = transfer(b, Memory::CPU_DRAM);
+  let f = transfer(c, Memory::CPU_DRAM);
+  print(d[0] + e[0] + f[0]);
+  // CHECK: 4 error(s) emitted
+  return 0;
+}

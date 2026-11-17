@@ -119,6 +119,61 @@ fn provenance() -> (String, String) {
     (commit, machine)
 }
 
+/// The CPU model, from `/proc/cpuinfo` on Linux and from `sysctl` on macOS.
+fn cpu_model_name() -> String {
+    if cfg!(target_os = "macos") {
+        capture("sysctl", &["-n", "machdep.cpu.brand_string"])
+    } else {
+        capture(
+            "sh",
+            &["-c", "grep -m1 'model name' /proc/cpuinfo | cut -d: -f2"],
+        )
+    }
+}
+
+/// The first line of `compiler --version`, and the version of the C++ standard library that
+/// `compiler` uses. The library version comes from the macros of its `<version>` header.
+fn cxx_versions(compiler: &str) -> (String, String) {
+    let version = capture(compiler, &["--version"])
+        .lines()
+        .next()
+        .unwrap_or("unknown")
+        .to_string();
+    let macros = capture(
+        compiler,
+        &[
+            "-std=c++20",
+            "-dM",
+            "-E",
+            "-x",
+            "c++",
+            "-include",
+            "version",
+            "/dev/null",
+        ],
+    );
+    let get = |name: &str| {
+        macros.lines().find_map(|l| {
+            let value = l.strip_prefix("#define ")?.strip_prefix(name)?;
+            value.strip_prefix(' ').map(|v| v.trim().to_string())
+        })
+    };
+    let library = if let Some(v) = get("_LIBCPP_VERSION") {
+        // Since LLVM 16 the number is major * 10000 + minor * 100 + patch.
+        match v.parse::<u32>() {
+            Ok(n) if n >= 160000 => {
+                format!("libc++ {}.{}.{}", n / 10000, n / 100 % 100, n % 100)
+            }
+            _ => format!("libc++ {v}"),
+        }
+    } else if let Some(v) = get("_GLIBCXX_RELEASE") {
+        format!("libstdc++ {v} ({})", get("__GLIBCXX__").unwrap_or_default())
+    } else {
+        "unknown".to_string()
+    };
+    (version, library)
+}
+
 /// Parse `vx-bench <name> <unit> <value>` out of a run's stdout, ignoring the JIT
 /// chatter it is mixed into.
 fn records_from(benchmark: &str, stdout: &str) -> Vec<Record> {
@@ -253,7 +308,10 @@ fn run_manifest() -> ExitCode {
 /// `cargo vx-bench compare`: build each benchmark in Vx and in C++, run the programs in
 /// alternating rounds, and compare what they report.
 mod compare {
-    use super::{capture, provenance, records_from, vxc_path, CompareArgs, Record};
+    use super::{
+        capture, cpu_model_name, cxx_versions, provenance, records_from, vxc_path, CompareArgs,
+        Record,
+    };
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
     use std::process::{Command, ExitCode};
@@ -264,6 +322,43 @@ mod compare {
         /// `vx`, or the C++ compiler and its extra flag.
         label: String,
         exe: PathBuf,
+        /// Environment variables for the run, from a `// vx-bench env:` line.
+        env: Vec<(String, String)>,
+    }
+
+    /// What the comments of a `.vx` benchmark ask for. Each `// vx-bench flags:` line gives
+    /// flags for vxc. Each `// vx-bench env: NAME=VALUE ...` line gives one more run of the
+    /// program, with these variables.
+    #[derive(Default)]
+    struct VxHeader {
+        flags: Vec<String>,
+        envs: Vec<Vec<(String, String)>>,
+    }
+
+    fn read_header(src: &Path) -> Result<VxHeader, String> {
+        let text = std::fs::read_to_string(src)
+            .map_err(|e| format!("cannot read {}: {e}", src.display()))?;
+        let mut header = VxHeader::default();
+        for line in text.lines().map(str::trim_start) {
+            if let Some(rest) = line.strip_prefix("// vx-bench flags:") {
+                header
+                    .flags
+                    .extend(rest.split_whitespace().map(String::from));
+            } else if let Some(rest) = line.strip_prefix("// vx-bench env:") {
+                let mut env = Vec::new();
+                for pair in rest.split_whitespace() {
+                    let (name, value) = pair.split_once('=').ok_or_else(|| {
+                        format!(
+                            "{}: `{pair}` in a `vx-bench env:` line is not NAME=VALUE",
+                            src.display()
+                        )
+                    })?;
+                    env.push((name.to_string(), value.to_string()));
+                }
+                header.envs.push(env);
+            }
+        }
+        Ok(header)
     }
 
     /// Everything one build reported for one `quantity/implementation`, over all rounds.
@@ -299,13 +394,22 @@ mod compare {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
-    /// Compiles `src` with `vxc --action emit-obj -O3` and links it the way `--run` does.
-    fn build_vx(vxc: &Path, src: &Path, out_dir: &Path, stem: &str) -> Result<PathBuf, String> {
+    /// Compiles `src` with `vxc --action emit-obj -O3` and `flags`, and links it the way `--run`
+    /// does.
+    fn build_vx(
+        vxc: &Path,
+        src: &Path,
+        flags: &[String],
+        out_dir: &Path,
+        stem: &str,
+    ) -> Result<PathBuf, String> {
         let obj = out_dir.join(format!("{stem}.o"));
         let exe = out_dir.join(format!("{stem}-vx"));
         let mut cmd = Command::new(vxc);
         cmd.arg(src)
-            .args(["--action", "emit-obj", "-O3", "-o"])
+            .args(["--action", "emit-obj", "-O3"])
+            .args(flags)
+            .arg("-o")
             .arg(&obj);
         run_to_completion(cmd, &format!("vxc on {}", src.display()))?;
         if !obj.exists() {
@@ -407,11 +511,22 @@ mod compare {
         };
         let vxc = args.vxc.clone().unwrap_or_else(vxc_path);
         let (commit, machine) = provenance();
-        let cpu_model = capture(
-            "sh",
-            &["-c", "grep -m1 'model name' /proc/cpuinfo | cut -d: -f2"],
-        );
+        let cpu_model = cpu_model_name();
         println!("commit {commit}   machine {machine}   cpu {cpu_model}");
+        let vxc_version = capture(&vxc.to_string_lossy(), &["--version"]);
+        println!("{vxc_version}");
+        // (compiler, its version, its C++ standard library)
+        let compilers: Vec<(String, String, String)> = args
+            .cxx
+            .iter()
+            .map(|c| {
+                let (version, library) = cxx_versions(c);
+                (c.clone(), version, library)
+            })
+            .collect();
+        for (c, version, library) in &compilers {
+            println!("{c}: {version}, {library}");
+        }
 
         // Build everything first, so a round measures only running.
         let mut failures: Vec<String> = Vec::new();
@@ -424,12 +539,27 @@ mod compare {
             }
             let vx_src = dir.join(format!("{name}.vx"));
             if vx_src.exists() {
-                match build_vx(&vxc, &vx_src, &out_dir, name) {
-                    Ok(exe) => builds.push(Build {
-                        benchmark: name.clone(),
-                        label: "vx".into(),
-                        exe,
-                    }),
+                match read_header(&vx_src)
+                    .and_then(|h| Ok((build_vx(&vxc, &vx_src, &h.flags, &out_dir, name)?, h)))
+                {
+                    Ok((exe, header)) => {
+                        builds.push(Build {
+                            benchmark: name.clone(),
+                            label: "vx".into(),
+                            exe: exe.clone(),
+                            env: Vec::new(),
+                        });
+                        for env in header.envs {
+                            let pairs: Vec<String> =
+                                env.iter().map(|(k, v)| format!("{k}={v}")).collect();
+                            builds.push(Build {
+                                benchmark: name.clone(),
+                                label: format!("vx {}", pairs.join(" ")),
+                                exe: exe.clone(),
+                                env,
+                            });
+                        }
+                    }
                     Err(e) => failures.push(format!("{name} (vx): {e}")),
                 }
             }
@@ -450,6 +580,7 @@ mod compare {
                                 benchmark: name.clone(),
                                 label,
                                 exe,
+                                env: Vec::new(),
                             }),
                             Err(e) => failures.push(format!("{name} ({label}): {e}")),
                         }
@@ -484,7 +615,7 @@ mod compare {
                     }
                     None => Command::new(&b.exe),
                 };
-                cmd.current_dir(&root);
+                cmd.current_dir(&root).envs(b.env.iter().cloned());
                 let what = format!("{} ({})", b.benchmark, b.label);
                 let stdout = match run_to_completion(cmd, &what) {
                     Ok(s) => s,
@@ -617,10 +748,21 @@ mod compare {
 
         if let Some(path) = &args.json {
             let mut out = format!(
-                "{{\n  \"commit\": {},\n  \"machine\": {},\n  \"cpu_model\": {},\n  \"rounds\": {},\n  \"cpu\": {},\n  \"rows\": [\n",
+                "{{\n  \"commit\": {},\n  \"machine\": {},\n  \"cpu_model\": {},\n  \"vxc\": {},\n  \"cxx\": [{}],\n  \"rounds\": {},\n  \"cpu\": {},\n  \"rows\": [\n",
                 json_str(&commit),
                 json_str(&machine),
                 json_str(&cpu_model),
+                json_str(&vxc_version),
+                compilers
+                    .iter()
+                    .map(|(c, version, library)| format!(
+                        "{{\"compiler\": {}, \"version\": {}, \"library\": {}}}",
+                        json_str(c),
+                        json_str(version),
+                        json_str(library)
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 args.rounds,
                 args.cpu.map_or("null".to_string(), |c| c.to_string()),
             );

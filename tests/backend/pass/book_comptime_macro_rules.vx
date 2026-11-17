@@ -1,0 +1,74 @@
+//===- book_comptime_macro_rules.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on compile-time evaluation (www/book/src/comptime.md, "Macros"):
+// a macro with two rules, a macro that writes a function, and a macro that writes an impl.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}clamp 15 to 10: 10{{$}}
+// CHECK: {{^}}clamp -4 to 0..10: 0{{$}}
+// CHECK: {{^}}ten 10, twenty 20{{$}}
+// CHECK: {{^}}sizes 4 8{{$}}
+
+// ANCHOR: program
+macro_rules clamp {
+  ($x : expr, $low : expr, $high : expr) => {
+    if $x < $low {
+      $low
+    } else {
+      clamp!($x, $high)
+    }
+  };
+  ($x : expr, $high : expr) => {
+    if $x > $high {
+      $high
+    } else {
+      $x
+    }
+  };
+}
+
+macro_rules constant {
+  ($name : ident, $value : expr) => {
+    fn $name() -> i32 {
+      return $value;
+    }
+  };
+}
+
+trait Size {
+  fn bytes(self : Self) -> i32;
+}
+
+macro_rules size_of {
+  ($t : ty, $n : expr) => {
+    impl Size for $t {
+      fn bytes(self : $t) -> i32 {
+        return $n;
+      }
+    }
+  };
+}
+
+constant!(ten, 10);
+constant!(twenty, 2 * 10);
+size_of!(i32, 4);
+size_of!(f64, 8);
+
+fn main() -> i32 {
+  let high = clamp!(15, 10);
+  let low = clamp!(-4, 0, 10);
+  println!("clamp 15 to 10: {}", high);
+  println!("clamp -4 to 0..10: {}", low);
+  println!("ten {}, twenty {}", ten(), twenty());
+  let a : i32 = 1;
+  let b : f64 = 1.0;
+  println!("sizes {} {}", a.bytes(), b.bytes());
+  return 0;
+}
+// ANCHOR_END: program

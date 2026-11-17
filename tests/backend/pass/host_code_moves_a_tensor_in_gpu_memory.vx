@@ -1,0 +1,62 @@
+//===- host_code_moves_a_tensor_in_gpu_memory.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Host code can hold a tensor that lives in the GPU memory `W`, and move it. A move copies
+// only the pointer and the shape of the tensor, so it does not read an element. The tensor
+// goes through a `let`, an assignment, a function argument, a `return` and a method argument.
+// Then it comes back to host memory, where the host reads it. A `drop` on the host frees the
+// tensor through the runtime.
+//
+// EXPECT: 2 7
+//===----------------------------------------------------------------------===//
+
+import core::mem;
+
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 4 MiB, managed: explicit, scope: device
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10,
+  transfer Memory::W -> Memory::CPU_DRAM : 10
+}
+
+struct Counter {
+  n : i32,
+}
+
+impl Counter {
+  fn give_back(self : &Counter, t : Tensor<f32, [4], Memory::W>) -> Tensor<f32, [4], Memory::W> {
+    return t;
+  }
+}
+
+fn pass_on(t : Tensor<f32, [4], Memory::W>) -> Tensor<f32, [4], Memory::W> {
+  return t;
+}
+
+fn main() -> i32 {
+  let two = transfer(Tensor<f32, [4]>::fill(2.0), Memory::W);
+  let a = two;
+  let mut b = transfer(Tensor<f32, [4]>::fill(0.0), Memory::W);
+  b = a;
+  let c = pass_on(b);
+  let counter = Counter {
+    n : 1
+  };
+  let seven = transfer(Tensor<f32, [4]>::fill(7.0), Memory::W);
+  let d = counter.give_back(seven);
+  let first = transfer(c, Memory::CPU_DRAM);
+  let second = transfer(d, Memory::CPU_DRAM);
+  print!("{} {}", first[1], second[3]);
+  let e = transfer(Tensor<f32, [4]>::fill(1.0), Memory::W);
+  drop(e);
+  return 0;
+}

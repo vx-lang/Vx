@@ -1,0 +1,29 @@
+// RUN: not vxc %s --action emit-mlir 2>&1 | FileCheck %s
+
+fn incorrect_count(value : i64) -> usize
+requires value == 1i64
+ensures return == 0usize {
+  // CHECK: Error[E8001]
+  // CHECK-SAME: Function 'incorrect_count' cannot prove postcondition
+  return value as usize;
+}
+
+fn incorrect_wide_count(value : u128) -> usize
+requires value == 9223372036854775807u128
+ensures return == 0usize {
+  // CHECK: Error[E8001]
+  // CHECK-SAME: Function 'incorrect_wide_count' cannot prove postcondition
+  return value as usize;
+}
+
+fn narrowing_count_changes_value(value : usize) -> i32
+requires value == 2147483648usize
+ensures return == value {
+  // CHECK: Error[E8001]
+  // CHECK-SAME: Function 'narrowing_count_changes_value' cannot prove postcondition
+  return value as i32;
+}
+
+fn main() -> i32 {
+  return 0;
+}

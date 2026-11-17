@@ -1,0 +1,53 @@
+//===- a_task_that_waits_in_a_closure_lets_other_tasks_run.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A task waits for a channel inside the closure that it gives to `within`. Only Vx code calls
+// that closure, so the wait parks the task, and the other task can send on the same thread.
+// With `VX_TASK_SEED=2` the waiting task runs first. If the wait blocked the thread instead, the
+// send could not run, and the task would get -1 when the 5 seconds of `within` end.
+//
+// The IR checks, with each code generator: the closure's call function has no wrapper that tells
+// the runtime about a call from C.
+//
+// RUN: vxc %s --action emit-llvm > %t.flat 2>&1
+// RUN: vxc %s --legacy-codegen --action emit-llvm > %t.ast 2>&1
+// RUN: FileCheck %s --input-file=%t.flat --check-prefix=IR --implicit-check-not=from_foreign
+// RUN: FileCheck %s --input-file=%t.ast --check-prefix=IR --implicit-check-not=from_foreign
+// RUN: env VX_TASK_SEED=2 vxc %s 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
+//
+// IR-LABEL: llvm.func {{.*}}@recv_in_within(
+// IR: llvm.mlir.addressof @Closure_1_call :
+//
+// OUT: {{^}}the task in within got 7{{$}}
+
+import core::time;
+import std::sync::channel;
+import std::sync::wait;
+
+fn recv_in_within(rx : Receiver<i64>) -> void {
+  let got = within(Duration::from_secs(5), || -> i64 {
+    return rx.recv().unwrap_or(-1);
+  });
+  println!("the task in within got {}", got);
+}
+
+fn send_7(tx : Sender<i64>) -> void {
+  tx.send(7);
+}
+
+fn main() -> i32 {
+  let (tx, rx) = channel<i64>(1);
+  tasks {
+    spawn {
+      recv_in_within(rx);
+    };
+    spawn {
+      send_7(tx);
+    };
+  };
+  return 0;
+}

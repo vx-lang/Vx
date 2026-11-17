@@ -73,11 +73,21 @@ impl TypeChecker<'_> {
             },
             _ => return,
         };
-        let channel_end = match method {
-            "send" => "Sender",
-            _ => "Receiver",
+        // The ends whose `send` or `recv` can wait. The `send` of a oneshot and of a watch
+        // channel does not wait.
+        let waits = match (method, name.split('<').next()) {
+            ("send", Some(end)) => matches!(end, "Sender" | "BroadcastSender"),
+            (_, Some(end)) => matches!(
+                end,
+                "Receiver"
+                    | "OneshotReceiver"
+                    | "BroadcastReceiver"
+                    | "WatchReceiver"
+                    | "WorkReceiver"
+            ),
+            _ => false,
         };
-        if name.split('<').next() != Some(channel_end) {
+        if !waits {
             return;
         }
         if self.in_wait_limit {

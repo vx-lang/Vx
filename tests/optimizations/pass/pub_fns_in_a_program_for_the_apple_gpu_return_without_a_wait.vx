@@ -4,6 +4,7 @@
 // for the GPU where `main` reads the result.
 //
 // RUN: vxc %s --host default --machine fleet/m4-uma.vx --action emit-llvm -o - 2>/dev/null | FileCheck %s --implicit-check-not="llvm.call @vx_plugin_control("
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/m4-uma.vx --action emit-llvm -o - 2>/dev/null | FileCheck %s --implicit-check-not="llvm.call @vx_plugin_control("
 //
 // CHECK-LABEL: llvm.func @add_one(
 // CHECK: llvm.call @vx_plugin_dispatch_async(

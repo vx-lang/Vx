@@ -1,0 +1,37 @@
+//===- book_tooling_expect_eq.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on the compiler (www/book/src/tooling.md, "Writing tests"): a
+// test checks two functions with `expect_eq`, and each check passes.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}square passed{{$}}
+// CHECK: {{^}}half passed{{$}}
+
+// ANCHOR: program
+import std::googletest;
+
+fn square(x : i32) -> i32 {
+  return x * x;
+}
+
+fn half(x : f32) -> f32 {
+  return x / 2.0;
+}
+
+fn main() -> i32 {
+  expect_eq(square(0), 0);
+  expect_eq(square(-3), 9);
+  expect_eq(square(12), 144);
+  println!("square passed");
+  expect_eq(half(5.0), 2.5);
+  expect_eq(half(-1.0), -0.5);
+  println!("half passed");
+  return 0;
+}
+// ANCHOR_END: program

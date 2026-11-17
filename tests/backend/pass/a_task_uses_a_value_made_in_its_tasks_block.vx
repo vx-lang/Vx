@@ -1,0 +1,214 @@
+//===- a_task_uses_a_value_made_in_its_tasks_block.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A task can use a value that its `tasks` block makes. The task can run until the block ends, so
+// the block drops the value after its tasks end. The compiler dropped it right after the `spawn`,
+// and the task then read freed memory.
+//
+// RUN: env VX_PRINT_DROPS=1 vxc %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s --check-prefix=DROPS
+// RUN: vxc %s 2>&1 | FileCheck %s
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s
+//
+// DROPS-DAG: drop in made_in_the_block: b, once the tasks of its `tasks` block end
+// DROPS-DAG: drop in joined: b, after the statement on line 74
+// DROPS-DAG: drop in spawned_in_an_if: b, once the tasks of its `tasks` block end
+// DROPS-DAG: drop in through_a_reference: b, once the tasks of its `tasks` block end
+// DROPS-DAG: drop in a_block_with_a_value: b, once the tasks of its `tasks` block end
+// DROPS-DAG: drop in leaves_early: b, before the return on line 126
+// DROPS-DAG: drop in leaves_early: b, once the tasks of its `tasks` block end
+// DROPS-DAG: drop in a_struct_with_a_drop: l, once the tasks of its `tasks` block end
+// DROPS-DAG: drop in the_value_of_the_block_sends_to_the_task: b, once the tasks of its `tasks` block end
+// DROPS-DAG: drop in the_wait_cancels_no_task: b, once the tasks of its `tasks` block end
+//
+// CHECK: {{^}}made in the block 2{{$}}
+// CHECK-NEXT: {{^}}joined 3{{$}}
+// CHECK-NEXT: {{^}}in an if 4{{$}}
+// CHECK-NEXT: {{^}}through a reference 5{{$}}
+// CHECK-NEXT: {{^}}a block with a value 7 6{{$}}
+// CHECK-NEXT: {{^}}leaves early with 1{{$}}
+// CHECK-NEXT: {{^}}leaves early 8{{$}}
+// CHECK-NEXT: {{^}}task sees loud 9{{$}}
+// CHECK-NEXT: {{^}}drop loud 9{{$}}
+// CHECK-NEXT: {{^}}task got 5 and sees 10{{$}}
+// CHECK-NEXT: {{^}}sent true{{$}}
+// CHECK-NEXT: {{^}}first task got 5 and sees 11{{$}}
+
+import core::result;
+import core::time;
+import std::sync::channel;
+import std::time;
+
+struct Loud {
+  id : i32,
+}
+
+impl Drop for Loud {
+  fn drop(self : &mut Loud) -> void {
+    println!("drop loud {}", self.id);
+  }
+}
+
+fn made_in_the_block() -> void {
+  let mut seen = 0.0;
+  tasks {
+    let b = Tensor<f32, [4]>::fill(2.0);
+    spawn {
+      seen = b[0];
+    };
+  };
+  println!("made in the block {}", seen);
+}
+
+// The join ends the task, so `b` is dropped after the join.
+fn joined() -> void {
+  let mut seen = 0.0;
+  tasks {
+    let b = Tensor<f32, [4]>::fill(3.0);
+    let h = spawn {
+      seen = b[0];
+    };
+    h.join();
+  };
+  println!("joined {}", seen);
+}
+
+fn spawned_in_an_if(go : bool) -> void {
+  let mut seen = 0.0;
+  tasks {
+    let b = Tensor<f32, [4]>::fill(4.0);
+    if go {
+      spawn {
+        seen = b[0];
+      };
+    }
+  };
+  println!("in an if {}", seen);
+}
+
+fn through_a_reference() -> void {
+  let mut seen = 0.0;
+  tasks {
+    let b = Tensor<f32, [4]>::fill(5.0);
+    let r = &b;
+    spawn {
+      seen = r[0];
+    };
+  };
+  println!("through a reference {}", seen);
+}
+
+// The value of the block also reads `b`.
+fn a_block_with_a_value() -> void {
+  let mut seen = 0.0;
+  let x = tasks {
+    let b = Tensor<f32, [4]>::fill(6.0);
+    spawn {
+      seen = b[0];
+    };
+    b[1] + 1.0
+  };
+  println!("a block with a value {} {}", x, seen);
+}
+
+// The `return` waits for the task, and then drops `b`.
+fn leaves_early(stop : bool) -> i32 {
+  let mut seen = 0.0;
+  tasks {
+    let b = Tensor<f32, [4]>::fill(8.0);
+    spawn {
+      seen = b[0];
+    };
+    if stop {
+      return 1;
+    }
+  };
+  println!("leaves early {}", seen);
+  return 0;
+}
+
+fn a_struct_with_a_drop() -> void {
+  tasks {
+    let l = Loud {
+      id: 9
+    };
+    spawn {
+      println!("task sees loud {}", l.id);
+    };
+  };
+}
+
+fn send_five(tx : &Sender<i64>) -> bool {
+  match tx.send(5) {
+    Result<void, SendError<i64>>::Ok(_) => {
+      return true;
+    }
+    Result<void, SendError<i64>>::Err(_e) => {
+      return false;
+    }
+  }
+}
+
+// The task waits for the value that the block's last value sends. So that value runs before the
+// block waits for the task.
+fn the_value_of_the_block_sends_to_the_task() -> void {
+  let sent = tasks {
+    let b = Tensor<f32, [4]>::fill(10.0);
+    let (tx, rx) = channel<i64>(1);
+    spawn {
+      let r = rx;
+      match r.recv() {
+        Result<i64, RecvError>::Ok(v) => {
+          println!("task got {} and sees {}", v, b[0]);
+        }
+        Result<i64, RecvError>::Err(_e) => {
+          println!("task got nothing");
+        }
+      }
+    };
+    send_five(&tx)
+  };
+  println!("sent {}", sent);
+}
+
+// The block waits for its tasks before it drops `b`, and the wait cancels no task. So the first
+// task still gets the value that the second task sends later.
+fn the_wait_cancels_no_task() -> void {
+  tasks {
+    let b = Tensor<f32, [4]>::fill(11.0);
+    let (tx, rx) = channel<i64>(1);
+    spawn {
+      let r = rx;
+      match r.recv() {
+        Result<i64, RecvError>::Ok(v) => {
+          println!("first task got {} and sees {}", v, b[0]);
+        }
+        Result<i64, RecvError>::Err(_e) => {
+          println!("first task got nothing");
+        }
+      }
+    };
+    spawn {
+      let t = tx;
+      sleep(Duration::from_millis(50));
+      let _s = send_five(&t);
+    };
+  };
+}
+
+fn main() -> i32 {
+  made_in_the_block();
+  joined();
+  spawned_in_an_if(true);
+  through_a_reference();
+  a_block_with_a_value();
+  println!("leaves early with {}", leaves_early(true));
+  let _b = leaves_early(false);
+  a_struct_with_a_drop();
+  the_value_of_the_block_sends_to_the_task();
+  the_wait_cancels_no_task();
+  return 0;
+}

@@ -160,9 +160,10 @@ impl AggregateIdentities {
         fn normalize_topology(topology: &mut crate::syntax::Topology) {
             use crate::syntax::Topology;
             match topology {
-                Topology::GPU(index) | Topology::NPU(index) | Topology::AccCore(index) => {
-                    normalize_constant(index)
-                }
+                Topology::GPU(index)
+                | Topology::NPU(index)
+                | Topology::AccCore(index)
+                | Topology::Custom(_, Some(index)) => normalize_constant(index),
                 Topology::Slice(base, start, end) => {
                     normalize_topology(base);
                     normalize_constant(start);

@@ -1,6 +1,6 @@
 //===- npu_vector_transfer.vx ---------------------------------*- Vx -*-===//
-// RUN: vxc %s --emit-mlir -O0 2>&1 | FileCheck %s
-// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s --check-prefix=STD
+// RUN: vxc %s --emit-mlir -O0 2>&1 | FileCheck %s # flat-codegen
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s --check-prefix=STD # flat-codegen
 // RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s --check-prefix=LLVM
 // FileCheck %s
 
