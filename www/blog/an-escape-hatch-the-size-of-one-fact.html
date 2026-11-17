@@ -46,8 +46,8 @@
 <blockquote class="tldr"><strong>TL;DR</strong> — a GPU kernel that writes at rows from an index
 tensor, <code>y[idx[b]]</code>, cannot be proved free of races. No analysis can do it, because the
 rows are data at run time. Vx's new type <code>Distinct&lt;..&gt;</code> lets the programmer add
-the one missing fact: no two elements of <code>idx</code> are equal. The compiler trusts that fact
-and still checks everything else. C's <code>restrict</code> cannot state this fact. The C tools that
+the one missing fact: no two elements of <code>idx</code> are equal. A check on the CPU, or an
+<code>unsafe</code> block, supplies the fact, and the compiler still checks everything else. C's <code>restrict</code> cannot state this fact. The C tools that
 get such a loop through do it by turning off the check for the whole loop.</blockquote>
 
 <p class="lede">A mixture-of-experts layer sends each token to a few experts. The kernel of one
@@ -152,10 +152,23 @@ kernel:</p>
 
 <pre><code>idx : &amp;<span class="t">Distinct</span>&lt;<span class="t">Tensor</span>&lt;<span class="t">i32</span>, [?], Memory::HBM&gt;&gt;</code></pre>
 
-<p>and the kernel compiles. The caller makes the tensor with an <code>unsafe</code> block:</p>
+<p>and the kernel compiles. The caller makes the tensor with <code>Distinct::check</code>. It
+sorts a copy of the values on the CPU, and gives <code>None</code> when two are equal:</p>
 
-<pre><code><span class="k">let</span> rows = <span class="k">unsafe</span> { <span class="f">Distinct</span>(<span class="f">transfer</span>(tokens, Memory::HBM)) };
-<span class="f">add_to_rows</span>(&amp;<span class="k">mut</span> y, &amp;rows, &amp;x);</code></pre>
+<pre><code><span class="k">match</span> <span class="t">Distinct</span>::<span class="f">check</span>(tokens) {
+  <span class="t">Option</span>&lt;<span class="t">Distinct</span>&lt;<span class="t">Tensor</span>&lt;<span class="t">i32</span>, [?]&gt;&gt;&gt;::<span class="f">Some</span>(rows) =&gt; {
+    <span class="k">let</span> on_gpu = <span class="f">transfer</span>(rows, Memory::HBM);
+    <span class="f">add_to_rows</span>(&amp;<span class="k">mut</span> y, &amp;on_gpu, &amp;x);
+  }
+  <span class="t">Option</span>&lt;<span class="t">Distinct</span>&lt;<span class="t">Tensor</span>&lt;<span class="t">i32</span>, [?]&gt;&gt;&gt;::<span class="f">None</span> =&gt; {
+    <span class="f">println!</span>(<span class="n">"a token is in the list twice"</span>);
+  }
+}</code></pre>
+
+<p>This is the inspector from the last section, with one change: the type keeps its verdict. The
+program pays for one sort when it makes the tensor, and every launch that takes the tensor after
+that pays nothing. A program that made the indices itself, and knows that they differ, can skip
+the sort with <code>unsafe { Distinct(tokens) }</code>.</p>
 
 <p>The fact is: if <code>idx[a] == idx[b]</code>, then <code>a == b</code>. The checker uses it in
 one way. A read <code>idx[e]</code> becomes a new variable of the pass, and that variable fixes
@@ -179,9 +192,10 @@ does this, and so does an <code>unsafe</code> block around a loop. <code>Distinc
 fact about one tensor, and everything else stays checked:</p>
 
 <ul>
-<li><strong>Making one needs <code>unsafe</code>.</strong> <code>Distinct(t)</code> outside an
-<code>unsafe</code> block is E5001. It takes only a tensor of integers with one dimension (E3004).
-It moves <code>t</code>, so no old name can change the values later.</li>
+<li><strong>Making one needs a check or <code>unsafe</code>.</strong>
+<code>Distinct::check(t)</code> checks the values. <code>Distinct(t)</code> does not, and outside an
+<code>unsafe</code> block it is E5001. Both take only a tensor of integers with one dimension
+(E3004), and both move <code>t</code>, so no old name can change the values later.</li>
 <li><strong>It is read only.</strong> A write to an element is E4006, because a write could make
 two elements equal.</li>
 <li><strong>It is in the signature.</strong> The caller makes the claim, and the kernel relies on
@@ -202,17 +216,21 @@ different elements can then give the same index. With <code>i32</code> elements 
 <code>i64</code>, the product cannot wrap, and the write compiles. The fact says that the elements
 differ. It says nothing about the arithmetic that follows.</p>
 
-<p>If the claim is false, two passes write the same element. That is a data race, and Vx makes no
-promise about the result. This is what the <code>unsafe</code> means. But the program makes the
-claim at one line, where it makes the tensor, and only the code that fills the tensor needs an
-audit. A kernel that takes a <code>Distinct</code> has no <code>unsafe</code> in it.</p>
+<p>After <code>Distinct::check</code>, no safe code can change the values, so the claim stays
+true. With <code>unsafe { Distinct(t) }</code>, the claim can be false. Then two passes write the
+same element. That is a data
+race, and Vx makes no promise about the result. This is what the <code>unsafe</code> means. But the
+program makes the claim at one line, where it makes the tensor, and only the code that fills the
+tensor needs an audit. A kernel that takes a <code>Distinct</code> has no <code>unsafe</code> in
+it.</p>
 
 <p>We rejected three other designs:</p>
 
 <ul>
 <li><strong>A <code>requires</code> clause</strong>, <code>requires idx.distinct()</code>, checked
 on the host at each launch. Each launch pays for a pass over the indices, and the fact does not
-travel to the next function.</li>
+travel to the next function. <code>Distinct::check</code> pays once, and the type carries the
+result.</li>
 <li><strong><code>unsafe</code> on each write.</strong> That turns off the check at each place,
 and it states nothing about the data.</li>
 <li><strong>Finding the fact in the caller.</strong> The values come from the router at run time,
@@ -277,7 +295,7 @@ LLVM's <code>noalias</code> on function parameters.</li>
 <tr><td>States</td><td>Two pointers do not overlap</td><td>No two passes touch one element</td><td>No two elements of a tensor are equal</td></tr>
 <tr><td>About</td><td>Pointers</td><td>Every access in a loop</td><td>The values in one tensor</td></tr>
 <tr><td>Where it lives</td><td>A parameter, dropped from the function type</td><td>A loop</td><td>The type, in the signature</td></tr>
-<tr><td>Checked by the compiler</td><td>No</td><td>No</td><td>Everything except the one fact</td></tr>
+<tr><td>Checked</td><td>No</td><td>No</td><td>Every access by the compiler. The fact by <code>Distinct::check</code> at run time, or by no one after <code>unsafe</code></td></tr>
 <tr><td>Can state that <code>idx</code> has no repeats</td><td>No</td><td>Only as part of a claim about the whole loop</td><td>Yes</td></tr>
 </table>
 </div>
@@ -285,11 +303,11 @@ LLVM's <code>noalias</code> on function parameters.</li>
 <h2 id="what-is-left"><a href="#what-is-left">What is left</a></h2>
 
 <ul>
-<li><strong>A check.</strong> <code>Distinct::check(t)</code>, an inspector that makes one pass
-over the values on the host and returns a <code>Distinct</code>, is planned
-(<a href="https://github.com/vx-lang/Vx/issues/3562">#3562</a>). So are library routines that make
-distinct indices by construction, such as an argsort or a partition by key. They would need no
-<code>unsafe</code> at all.</li>
+<li><strong>Distinct indices on the GPU.</strong> <code>Distinct::check</code> runs on the CPU.
+A router on the GPU must copy its ids back to the CPU for the check, and that is the wait that the
+Qwen app pays today. Library routines that make distinct indices on the GPU, such as a partition by
+key, are planned (<a href="https://github.com/vx-lang/Vx/issues/3562">#3562</a>). They would need
+no check and no <code>unsafe</code>.</li>
 <li><strong>The optimizer.</strong> #3561 plans to pass the fact to MLIR, so that tiling and
 fusion can use it too.</li>
 <li><strong>The combine.</strong> A token goes to several experts, and their results add into one

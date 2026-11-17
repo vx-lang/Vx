@@ -80,8 +80,13 @@ a language model needs this write: the kernel of each expert writes its results 
 tokens.
 
 When no two elements of `idx` are equal, say so in its type:
-`Distinct<Tensor<i32, [?], Memory::HBM>>`. Then `idx[b]` fixes `b`, as `b` does. In this program,
-block `b` adds row `b` of `x` to row `rows[b]` of `y` (`book_gpu_rows_from_a_distinct_tensor.vx`):
+`Distinct<Tensor<i32, [?], Memory::HBM>>`. Then `idx[b]` fixes `b`, as `b` does.
+
+`Distinct::check(t)` makes a `Distinct` tensor. It reads the values of `t` on the CPU, and returns
+`Some` with a `Distinct` tensor when no two are equal, and `None` when two are. A program that
+matches on the result imports `core::option`. In this program, the rows 5, 1 and 6 pass the check
+and move to GPU memory. Then block `b` adds row `b` of `x` to row `rows[b]` of `y`
+(`book_gpu_rows_from_a_distinct_tensor.vx`):
 
 ```rust
 {{#include ../../../tests/optimizations/pass/book_gpu_rows_from_a_distinct_tensor.vx:program}}
@@ -89,12 +94,18 @@ block `b` adds row `b` of `x` to row `rows[b]` of `y` (`book_gpu_rows_from_a_dis
 
 It prints `column 0: 1 3 1 1 1 2 4 1` and the same line for column 63.
 
-`unsafe { Distinct(t) }` makes a `Distinct` tensor from a tensor `t` of integers with one
-dimension. It moves `t`, so no other name can change the values. The compiler does not check the
-values. If two elements are equal, two passes write the same element. That is a data race, and Vx
-makes no promise about the result. This is why `Distinct(t)` needs `unsafe`. A function that checks
-the values on the host and returns a `Distinct` tensor is planned
-([Vx#3562](https://github.com/vx-lang/Vx/issues/3562)).
+`Distinct::check(t)` takes `t` by value: a tensor with one dimension of `i32`, `i64`, `u32` or
+`u64`. It sorts a copy of the values and compares each value with the next, so it costs one sort
+on the CPU. When two values are equal, it returns `None` and drops `t`. It cannot read a tensor in
+GPU memory, so check the tensor first, and then `transfer` the `Distinct` tensor. A `transfer` of
+a `Distinct` tensor gives a `Distinct` tensor in the new memory.
+
+When the program made the values itself and knows that no two are equal, `unsafe { Distinct(t) }`
+makes a `Distinct` tensor with no check. It takes a tensor of integers with one dimension, and it
+moves `t`, so no other name can change the values. If two elements are equal, two passes write the
+same element. That is a data race, and Vx makes no promise about the result. This is why
+`Distinct(t)` needs `unsafe`. Routines of the library that make distinct indices on the GPU, such
+as a partition by key, are planned ([Vx#3562](https://github.com/vx-lang/Vx/issues/3562)).
 
 The compiler adds one fact, that no two elements are equal, and checks everything else as before:
 
