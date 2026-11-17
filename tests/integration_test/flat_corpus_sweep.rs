@@ -287,6 +287,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/a_tensor_that_a_called_function_writes_is_not_const_on_the_apple_gpu.vx",
         // needs --machine
         "optimizations/pass/blocks_write_at_rows_from_a_distinct_tensor.vx",
+        // needs --machine
+        "optimizations/pass/distinct_check_makes_rows_for_a_kernel.vx",
     ];
     // Each program is its own run of vxc, so the programs run in parallel. `collect` keeps the
     // order of the corpus, so the messages below do not change from run to run.

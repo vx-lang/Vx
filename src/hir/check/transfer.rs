@@ -2549,6 +2549,13 @@ impl<'a> TypeChecker<'a> {
             // and would not assign to one another. `Pinned` also carries only a topology, so the
             // space the transfer named was not recorded on the value at all.
             Type::Tensor(el, dims, _) => Type::Tensor(el, dims, Some(placement)),
+            // A copy has the same values, so it is still `Distinct`.
+            Type::Distinct(inner) if matches!(*inner, Type::Tensor(..)) => {
+                let Type::Tensor(el, dims, _) = *inner else {
+                    unreachable!("matched above")
+                };
+                Type::Distinct(Box::new(Type::Tensor(el, dims, Some(placement))))
+            }
             Type::Verified(_inner) => {
                 if let Expr::Transfer(t) = expr {
                     let inner_pinned = self.check_expr_type_flag(&mut t.expr, consume);

@@ -8822,6 +8822,7 @@ fn enum_payload_size_align(ty: &Type) -> Option<(u64, u64)> {
         Type::Pointer(..) | Type::Borrow { .. } | Type::Ref(..) => Some((8, 8)),
         // A tensor is its descriptor: two pointers, an offset, and a size and a stride per rank.
         Type::Tensor(_, shape, ..) => Some((8 * (3 + 2 * shape.len() as u64), 8)),
+        Type::Distinct(inner) => enum_payload_size_align(inner),
         _ => None,
     }
 }
