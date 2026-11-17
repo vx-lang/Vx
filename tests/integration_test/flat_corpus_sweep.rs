@@ -198,6 +198,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/lane_routines_run_in_parallel_on_both_code_generators.vx", // needs --machine
         "optimizations/pass/lane_sorts_on_the_cpu.vx",                        // needs --machine
         "optimizations/pass/lane_sorts_on_the_gpu.vx",                        // needs --machine
+        "optimizations/pass/values_at_the_start_of_block_code_reach_every_lane.vx", // needs --machine
         "optimizations/pass/lane_matmuls_on_the_cpu.vx",                      // needs --machine
         "optimizations/pass/lane_matmuls_on_the_gpu.vx",                      // needs --machine
         "optimizations/pass/matmul_tiles_in_shared_memory_avoid_bank_conflicts.vx", // needs --machine
@@ -239,6 +240,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/apple_gpu_short_loops_of_constant_bounds_are_unrolled.vx",
         // needs --machine
         "optimizations/pass/apple_gpu_shared_memory_offsets_go_in_the_address.vx",
+        // needs --machine
+        "optimizations/pass/nvidia_gpu_short_loops_of_constant_bounds_are_unrolled.vx",
         // split-file
         "optimizations/pass/gpu_only_code_on_the_cpu_with_the_programs_own_write.vx",
         "optimizations/pass/gpu_region_that_ends_in_a_value_runs_on_the_gpu.vx", // needs --machine
@@ -280,6 +283,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/book_gpu_blocks_and_lanes.vx", // needs --machine
         "optimizations/pass/book_gpu_histogram_with_atomics.vx", // needs --machine
         "optimizations/pass/book_gpu_row_sums_in_shared_memory.vx", // needs --machine
+        "optimizations/pass/book_gpu_rows_from_a_distinct_tensor.vx", // needs --machine
         "optimizations/pass/std_nn_kernels_match_loops_on_the_cpu.vx", // needs --machine
         "optimizations/pass/std_nn_fp8_kernels_match_loops_on_the_cpu.vx", // needs --machine
         "optimizations/pass/std_nn_moe_kernels_match_loops_on_the_cpu.vx", // needs --machine

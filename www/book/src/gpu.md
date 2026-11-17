@@ -72,13 +72,61 @@ So `c[b * 64 + (i / 2) * 32 + j]` fixes `b`.
 The same check refuses a read of an element that another pass writes, a write to a variable from
 outside the loop, `println!`, and a call that can write through its argument.
 
+## Rows from a tensor of indices
+
 An index can also come from a tensor, as in `y[idx[b]]`. The compiler cannot see the values in
-`idx`, so two passes may get the same row. Give `idx` the type
-`Distinct<Tensor<i32, [?], Memory::HBM>>` to say that no two of its elements are equal. Then
-`idx[b]` fixes `b`, as `b` does. A `Distinct` tensor is read only, and `idx.len()` gives its
-length. `unsafe { Distinct(t) }` makes one from a tensor `t` of integers with one dimension. The
-program does not check the values, so make sure that no two are equal. If two are equal, two
-passes write the same element, and the result is wrong.
+`idx`, so two passes may get the same row, and the write is E6032. A mixture-of-experts layer in
+a language model needs this write: the kernel of each expert writes its results to the rows of its
+tokens.
+
+When no two elements of `idx` are equal, say so in its type:
+`Distinct<Tensor<i32, [?], Memory::HBM>>`. Then `idx[b]` fixes `b`, as `b` does.
+
+`Distinct::check(t)` makes a `Distinct` tensor. It reads the values of `t` on the CPU, and returns
+`Some` with a `Distinct` tensor when no two are equal, and `None` when two are. A program that
+matches on the result imports `core::option`. In this program, the rows 5, 1 and 6 pass the check
+and move to GPU memory. Then block `b` adds row `b` of `x` to row `rows[b]` of `y`
+(`book_gpu_rows_from_a_distinct_tensor.vx`):
+
+```rust
+{{#include ../../../tests/optimizations/pass/book_gpu_rows_from_a_distinct_tensor.vx:program}}
+```
+
+It prints `column 0: 1 3 1 1 1 2 4 1` and the same line for column 63.
+
+`Distinct::check(t)` takes `t` by value: a tensor with one dimension of `i32`, `i64`, `u32` or
+`u64`. It sorts a copy of the values and compares each value with the next, so it costs one sort
+on the CPU. When two values are equal, it returns `None` and drops `t`. It cannot read a tensor in
+GPU memory, so check the tensor first, and then `transfer` the `Distinct` tensor. A `transfer` of
+a `Distinct` tensor gives a `Distinct` tensor in the new memory.
+
+When the program made the values itself and knows that no two are equal, `unsafe { Distinct(t) }`
+makes a `Distinct` tensor with no check. It takes a tensor of integers with one dimension, and it
+moves `t`, so no other name can change the values. If two elements are equal, two passes write the
+same element. That is a data race, and Vx makes no promise about the result. This is why
+`Distinct(t)` needs `unsafe`.
+
+A function of the library can make the claim for its caller. `nn_moe_group` in `std::nn` groups
+the token-expert pairs of a mixture-of-experts layer by expert, on the GPU. It returns the grouped
+order as a `Distinct` tensor. Its `unsafe { Distinct(order) }` is inside the library, so the caller
+needs no check and no `unsafe`.
+
+The compiler adds one fact, that no two elements are equal, and checks everything else as before:
+
+- A `Distinct` tensor is read only. A write to one of its elements is E4006, because a write could
+  make two elements equal. `rows.len()` gives its length.
+- Only a parameter of the function counts. A `Distinct` local or field, or a parameter whose name
+  the function binds again, does not fix `b`. So write the kernel in a function that takes the
+  tensor as a parameter, as `add_to_rows` does.
+- `rows[e]` fixes what `e` fixes, so `rows[b / 2]` does not fix `b`. A read of `y[b]`, or of
+  `y[rows[b + 1]]`, in the same loop is still E6032, because another pass may write that row.
+- The other rules for an index still apply. `(rows[b] as i64) * 4 + (l as i64)`, with `l` below 4,
+  fixes `b`, as `b * 4 + l` does. With `i64` elements, `rows[b] * 4` can wrap, so two different
+  elements can give the same index, and the write is E6032.
+
+A `Distinct` tensor does not help when two passes add to the same row. In a mixture-of-experts
+layer, a token goes to several experts, and their results add into the row of the token. Use
+[atomics](#atomics-on-the-elements-of-a-tensor) for that, or a separate pass.
 
 ## A tile in shared memory
 

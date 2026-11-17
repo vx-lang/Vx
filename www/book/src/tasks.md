@@ -165,7 +165,8 @@ gives `Cancelled`, and `send(v)` gives `v` back with `cancelled` set. The task s
 compiler warns about a loop that waits again after a `Cancelled` (W1035), because each wait in a
 cancelled task gives `Cancelled` at once, and such a loop never ends.
 
-A `join()` and a `lock()` cannot be cancelled.
+`sleep(d)` and the `tick()` of an `Interval` can be cancelled too: `sleep` gives `false`, and `tick`
+gives `None`. A `join()` and a `lock()` cannot be cancelled.
 
 When each task waits and nothing can wake one, the program has a deadlock. The runtime then stops
 the program with the message `vx: deadlock: ...`, so that it does not hang. It never reports a

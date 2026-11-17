@@ -711,7 +711,9 @@ pub enum DiagnosticCode {
     /// topology does not name, a loop outside a `spawn on` region or in the wrong order, a size
     /// that is not known when the kernel is compiled or is over the limit, or a jump out of the
     /// loop. Also a lane reduction (`lanes::sum` and the others) outside the code of a loop of
-    /// blocks or subgroups, or with a tensor that is too large.
+    /// blocks or subgroups, or with a tensor that is too large. Also two passes of the loop that
+    /// may write the same element, or a pass that may read an element that another pass writes.
+    /// A row from a `Distinct` tensor parameter, as in `y[idx[b]]`, keeps the passes apart.
     E6032,
     /// An index into a tensor in a `scope: thread` space that is not known when compiling. Such
     /// a tensor stays in registers, and a register has no address. So each index must be a
