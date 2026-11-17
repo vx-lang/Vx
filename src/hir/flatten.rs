@@ -4517,7 +4517,11 @@ impl<'r> Lowerer<'r> {
                 self.lower_stmt(stmt)?;
             }
             self.stride_next_for = false;
-            par.map(|(_, t)| t).unwrap_or(0)
+            match par {
+                Some((_, crate::hir::check::parallel::RUN_TIME_TRIP)) => SPAWN_RUN_TIME_TRIP,
+                Some((_, trip)) => trip,
+                None => 0,
+            }
         } else if let Some((btrip, plan)) = two_level {
             self.stride_plan = Some(plan);
             for stmt in stmts {
@@ -9187,6 +9191,10 @@ pub const SPAWN_TWO_LEVEL: u64 = 1 << 62;
 /// whole walk before the next thread stages its rows, which is a different program. The
 /// runtime must refuse to run it on the host rather than compute confidently wrong numbers.
 pub const SPAWN_COOP: u64 = 1 << 61;
+
+/// The `SpawnEnd` imm bit that says "the outermost loop runs in parallel, and its trip count is
+/// known only at run time". The low 32 bits are then 0.
+pub const SPAWN_RUN_TIME_TRIP: u64 = 1 << 60;
 
 pub(crate) mod across;
 mod affine;
