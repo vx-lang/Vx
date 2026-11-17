@@ -1078,8 +1078,10 @@ impl<'a> TypeChecker<'a> {
                 let errors_before_args = self.errors.inner.len();
                 // A function written in Vx gets the handle of a tensor. Its own body is checked
                 // where it runs. A built-in such as `print` reads the elements here.
+                // `Distinct(t)` and `Verified(t)` wrap `t` and read nothing.
                 let declared = self.env.functions.contains_key(base_name.as_ref())
-                    || self.env.generic_functions.contains_key(base_name.as_ref());
+                    || self.env.generic_functions.contains_key(base_name.as_ref())
+                    || matches!(base_name.as_ref(), "Distinct" | "Verified");
                 for arg in args.iter_mut() {
                     let ty = if declared {
                         self.check_whole_value(arg, |c, e| c.check_expr_type_flag(e, arg_consume))
