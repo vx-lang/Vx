@@ -1125,7 +1125,7 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     if (auto chip = op->getAttrOfType<StringAttr>("chip"))
       kernelOp->setAttr("chip", chip);
     if (auto maxnreg = op->getAttrOfType<IntegerAttr>("vx.maxnreg"))
-       kernelOp->setAttr("vx.maxnreg", maxnreg);
+      kernelOp->setAttr("vx.maxnreg", maxnreg);
 
     if (auto bytes = op->getAttrOfType<IntegerAttr>("shared_bytes"))
       kernelOp->setAttr("shared_bytes", bytes);
