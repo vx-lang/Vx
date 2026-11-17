@@ -148,8 +148,12 @@ impl FnEmit<'_> {
     // block) go in the region's entry block, so open a label for it. The low half of `imm` is the
     // topology dispatch id (the AST path's `topology` attribute), the high half its name's index.
     pub(crate) fn op_spawn(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
-        self.spawn_stack
-            .push((ins.imm as u32 as i64, self.body.len(), ins.imm >> 32));
+        self.spawn_stack.push((
+            ins.imm as u32 as i64,
+            self.body.len(),
+            ins.imm >> 32,
+            ins.operand1.0,
+        ));
         self.region_slots.push(None);
         self.body += &format!("  \"vx.spawn\"() ({{\n^bbspawn{idx}:\n");
         self.terminated = false;
@@ -214,7 +218,7 @@ impl FnEmit<'_> {
     }
 
     pub(crate) fn op_spawn_end(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
-        let (topo, open_at, name) = self.spawn_stack.pop().ok_or(crate::emitter_gap!())?;
+        let (topo, open_at, name, maxnreg) = self.spawn_stack.pop().ok_or(crate::emitter_gap!())?;
         let across = matches!(self.region_slots.pop(), Some(Some(_)));
         // The topology's name as the program wrote it, from the function's string table. A task
         // has no name: its high half is the line of its `spawn`.
@@ -310,6 +314,9 @@ impl FnEmit<'_> {
             if let Some(bytes) = declared.shared_bytes {
                 attrs.push_str(&format!("shared_bytes = {bytes} : i64, "));
             }
+        }
+        if maxnreg > 0 {
+            attrs.push_str(&format!("vx.maxnreg = {maxnreg} : i32, "));
         }
 
         self.body += &format!(

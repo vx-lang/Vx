@@ -2412,7 +2412,8 @@ pub(crate) struct FnEmit<'a> {
     /// stamp the `topology` attribute, and where in `body` its op begins, so a region with a
     /// value can be given its result name when the value is known. Empty outside a spawn.
     /// The third field is the spawn's name index, as its `imm` carries it.
-    pub(crate) spawn_stack: Vec<(i64, usize, u64)>,
+    /// The fourth field is max_registers (maxnreg).
+    pub(crate) spawn_stack: Vec<(i64, usize, u64, u32)>,
     /// For each open `vx.spawn`, where its stack slots go: the end of the slots in its first
     /// block for a region with `across` loops, and `None` for another region.
     pub(crate) region_slots: Vec<Option<usize>>,
@@ -2498,7 +2499,7 @@ impl<'a> FnEmit<'a> {
             // lifted out of it stops being the kernel's own scratch and becomes
             // a value defined above it -- which outlining captures and passes
             // in, handing a device kernel a host stack pointer. Those stay.
-            Some((t, _, _)) if *t != 0 => self.body += text,
+            Some((t, ..)) if *t != 0 => self.body += text,
             // A host region is inlined where it was written, so its slots
             // belong to the enclosing function like any other.
             _ => self.entry += text,

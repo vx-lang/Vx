@@ -2323,22 +2323,16 @@ impl<'r> Lowerer<'r> {
             // `let v = spawn on(..) { .. }`: the region's tail is the value. A region with no
             // value, the trailing expression of an `unsafe` block, gets the placeholder a void
             // call gets: a type never read.
-            Expr::SpawnOn(sp) => {
-                if sp.max_registers.is_some() {
-                    return Err(Decline::UnsupportedExpr("SpawnOn with maxnreg"));
-                }
-
-                match self.lower_spawn(sp, sp.ret.is_some())? {
-                    Some(v) => Ok(v),
-                    None => Ok(self.emit_value(
-                        Opcode::Const,
-                        Register(0),
-                        Register(0),
-                        ElementType::I32,
-                        0,
-                    )),
-                }
-            }
+            Expr::SpawnOn(sp) => match self.lower_spawn(sp, sp.ret.is_some())? {
+                Some(v) => Ok(v),
+                None => Ok(self.emit_value(
+                    Opcode::Const,
+                    Register(0),
+                    Register(0),
+                    ElementType::I32,
+                    0,
+                )),
+            },
             Expr::InlineMlir(im) => self.lower_inline_mlir(im),
             // `let status = print!(..)`: the arguments print as in statement position, and the
             // value is a placeholder `i32`; the status the AST path's helper returns is never
@@ -4084,6 +4078,7 @@ impl<'r> Lowerer<'r> {
             s.ret.as_deref(),
             want_value,
             true,
+            s.max_registers.unwrap_or(0),
         );
         self.across = outer;
         if let (Ok(_), Some(count)) = (&lowered, count) {
@@ -4205,6 +4200,7 @@ impl<'r> Lowerer<'r> {
                 u.ret.as_deref(),
                 want_value,
                 false,
+                0,
             );
             if task {
                 self.task_bodies.pop();
@@ -4267,6 +4263,7 @@ impl<'r> Lowerer<'r> {
             u.ret.as_deref(),
             false,
             false,
+            0,
         );
         let exits = self.tasks_exits.pop().expect("pushed above").exits;
         lowered?;
@@ -4451,10 +4448,11 @@ impl<'r> Lowerer<'r> {
         ret: Option<&Expr>,
         want_value: bool,
         offer_parallel: bool,
+        max_registers: u32,
     ) -> Lowered<Option<Val>> {
         let tail_slot = self.region_tail_slot.take();
         let cancels_on_err = self.region_cancels_on_err.take();
-        self.emit_effect(Opcode::Spawn, Register(0), Register(0), imm);
+        self.emit_effect(Opcode::Spawn, Register(max_registers), Register(0), imm);
         if launch.across {
             self.emit_effect(Opcode::AcrossRegion, Register(0), Register(0), 0);
         }
