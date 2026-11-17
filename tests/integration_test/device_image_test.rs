@@ -694,6 +694,87 @@ fn fp8_and_fp4_kernels_get_a_valid_spirv_module() {
     }
 }
 
+/// The opcodes of a SPIR-V module, and the OpenCL.std instruction numbers of
+/// its `OpExtInst`s.
+fn opcodes_and_opencl_instructions(module: &[u8]) -> (Vec<u32>, Vec<u32>) {
+    let words: Vec<u32> = module
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|w| u32::from_le_bytes(*w))
+        .collect();
+    let (mut opcodes, mut opencl) = (Vec::new(), Vec::new());
+    // The header is five words. Each instruction starts with its word count
+    // and its opcode.
+    let mut at = 5;
+    while at < words.len() {
+        let count = (words[at] >> 16) as usize;
+        let opcode = words[at] & 0xffff;
+        assert!(
+            count > 0 && at + count <= words.len(),
+            "a SPIR-V instruction runs past the end of the module"
+        );
+        opcodes.push(opcode);
+        // OpExtInst %type %result %set %instruction ...
+        if opcode == 12 {
+            opencl.push(words[at + 4]);
+        }
+        at += count;
+    }
+    (opcodes, opencl)
+}
+
+/// A kernel that can fail an `assert` gets a SPIR-V module that reports it
+/// through a flag: OpenCL's `printf`, then an atomic `or` into the flag. The
+/// module calls no `puts` or `abort`, which no OpenCL device has, and only that
+/// kernel's payload asks for the flag.
+#[test]
+fn a_kernel_with_an_assert_reports_it_through_a_flag() {
+    let ir = emit_llvm("spirv_device_image_assert.vx");
+    let payloads: Vec<Vec<u8>> = ["vx_npu_kernel_0", "vx_npu_kernel_1"]
+        .iter()
+        .map(|k| payload_bytes(&ir, k))
+        .collect();
+    let has = |payload: &[u8], needle: &[u8]| payload.windows(needle.len()).any(|w| w == needle);
+    let flagged: Vec<&Vec<u8>> = payloads
+        .iter()
+        .filter(|p| has(p, b"assert_flag=1\0"))
+        .collect();
+    assert_eq!(
+        flagged.len(),
+        1,
+        "one of the two kernels has an assert, so one payload should ask for the flag"
+    );
+    let payload = flagged[0];
+    assert!(
+        has(payload, b"format=spirv\0"),
+        "the kernel has no SPIR-V image"
+    );
+    let section = payload_section(payload);
+    for name in [&b"puts\0"[..], &b"abort\0"[..]] {
+        assert!(
+            !has(section, name),
+            "the module names `{}`, which no OpenCL device has",
+            String::from_utf8_lossy(&name[..name.len() - 1])
+        );
+    }
+    let (opcodes, opencl) = opcodes_and_opencl_instructions(section);
+    // OpenCL.std's printf is 184, and OpAtomicOr is 241.
+    assert!(
+        opencl.contains(&184),
+        "the module does not print the message with `printf`"
+    );
+    assert!(
+        opcodes.contains(&241),
+        "the module does not set the flag with OpAtomicOr"
+    );
+    match spirv_val(section) {
+        Some(Ok(())) => {}
+        Some(Err(report)) => panic!("spirv-val rejected the module:\n{report}"),
+        None => println!("spirv-val is not installed, so the module was not validated"),
+    }
+}
+
 /// A placed region that calls the runtime -- `print` inside the region -- also
 /// reaches no device image, and now says so, naming the callee it could not
 /// bring along (#1137).
