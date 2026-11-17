@@ -17,7 +17,7 @@
 // did, and a uniform row cannot tell a correct lane order from a broadcast of
 // one element. This tier compiles rather than executes, so the values are here
 // for the reader and for whatever runs the file next; run with `--action
-// run-jit` and the four rows print 0.75, 6, 1.25 and 2.
+// run-jit` and the five rows print 0.75, 6, 1.25, 2 and 0.5.
 //
 // The RUN line checks the MLIR of the default code generator.
 // a_cast_over_a_half_slice.vx checks the values on both code generators.
@@ -28,6 +28,10 @@ fn main() -> i32 {
   let mut h = Tensor<f16, [ 2, 4 ]>::new();
   let mut b = Tensor<bf16, [ 2, 4 ]>::new();
   let mut f = Tensor<f32, [ 2, 4 ]>::new();
+  let mut w = Tensor<f16, [ 2, 8 ]>::new();
+  for d in 0..8 {
+    w[0][d] = 1.0 + (d as f16);
+  }
   for d in 0..4 {
     h[0][d] = 1.5 + (d as f16);
     h[1][d] = 3.0 + (d as f16);
@@ -71,9 +75,16 @@ fn main() -> i32 {
   // CHECK-NEXT: vector.broadcast {{.*}} : f32 to vector<4xf32>
   f[1] = f[1] * s16;
 
+  // A row of eight halves is 16 bytes long, so its load and store are 16-byte aligned. The
+  // rows of four halves above are 8 bytes long and have no alignment attribute.
+  // CHECK: vector.load {{.*}} {alignment = 16 : i64} : memref<8xf16{{.*}}>, vector<8xf16>
+  // CHECK: vector.store {{.*}} {alignment = 16 : i64} : memref<8xf16{{.*}}>, vector<8xf16>
+  w[0] = (w[0] * s32) as f16;
+
   print(h[0][0]);
   print(h[1][0]);
   print(b[0][0]);
   print(f[0][0]);
+  print(w[0][0]);
   return 0;
 }
