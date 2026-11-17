@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vx meets Postgres</title>
+<meta name="author" content="Minzy Fox">
+<meta name="description" content="VxVector is a PostgreSQL extension that trains the centroids of a vector index in Vx, on the CPU or the GPU. What it does today, and the compiler bugs and language questions that building it raised.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="Vx meets Postgres">
+<meta property="og:description" content="A PostgreSQL extension that trains vector-index centroids in Vx, on the CPU or an Apple GPU, and what building it did for the compiler.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-11-15T18:00:00Z">
+<meta property="og:url" content="https://vxlang.org/blog/vx-meets-postgres.html">
+<meta property="og:image" content="https://vxlang.org/cards/blog-vx-meets-postgres.png">
+<meta property="og:image:alt" content="Vx meets Postgres: k-means for a vector index, trained in Vx on the CPU or the GPU.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://vxlang.org/cards/blog-vx-meets-postgres.png">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>Vx meets Postgres</h1>
+<p class="post-meta">Minzy Fox &middot; 15 November 2026</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> — <a href="https://github.com/minzyfox/VxVector">VxVector</a> is a PostgreSQL extension whose
+core is written in Vx. One SQL call samples a table of vectors, trains k-means centroids in Vx,
+and hands them to VectorChord to build a vector-search index. The same Vx source trains on the
+CPU, on an Apple GPU through Metal, and now builds for an NVIDIA A100. On an M2 Pro, GPU training
+is 24 to 28 times faster than the single-threaded CPU kernel, with the same bits for L2 and inner
+product. We built the extension and the compiler side by side, and the extension paid for itself
+in bug reports: six prover issues fixed upstream, one with our own pull request, more open, and a
+list of language questions that only a real application asks.</blockquote>
+
+<p class="lede">Small test programs check one compiler feature at a time. An application checks
+how they meet. VxVector's first commit, on 20 October, was a k-means kernel in Vx. Four weeks later it is a
+PostgreSQL extension that trains on a GPU, and along the way it asked the compiler questions that
+no unit test had asked.</p>
+
+<h2 id="what-vxvector-does"><a href="#what-vxvector-does">What VxVector does</a></h2>
+
+<p>An application that stores embeddings in PostgreSQL usually wants the nearest ones to a query:
+the ten documents closest to a question, or the images most like a photo. An exact search compares
+the query with every row. That is too slow for millions of rows, so a vector index searches only a
+part of the table.</p>
+
+<p>VectorChord's <code>vchordrq</code> index is an IVF index ("inverted file"). It groups the
+vectors into lists, one list for each centroid. A query first finds the centroids nearest to it,
+then searches only their lists. The centroids come from k-means, and their quality decides how many
+true neighbors a query finds. Training k-means is also the slow part of building the index. Each
+iteration compares every sampled vector with every centroid, which is a good fit for a GPU.</p>
+
+<h3 id="the-projects-it-builds-on"><a href="#the-projects-it-builds-on">The projects it builds on</a></h3>
+
+<p>VxVector does not replace a vector database. It adds one step to tools that already work, and
+it borrows its design from them.</p>
+
+<ul>
+  <li><a href="https://github.com/pgvector/pgvector">pgvector</a> gives PostgreSQL the
+  <code>vector</code> type and the distance operators: <code>&lt;-&gt;</code> for L2,
+  <code>&lt;#&gt;</code> for inner product and <code>&lt;=&gt;</code> for cosine. VxVector reads
+  pgvector columns, and queries use these operators unchanged.</li>
+  <li><a href="https://github.com/tensorchord/VectorChord">VectorChord</a>, by TensorChord, provides
+  the <code>vchordrq</code> index and serves every query. Normally it trains its own centroids
+  inside <code>CREATE INDEX</code>. It also has an
+  <a href="https://docs.vectorchord.ai/vectorchord/usage/external-index-precomputation.html">external
+  build</a>: you give it a table of centroids, and it builds the index from them. That table is the
+  whole interface between VxVector and VectorChord. VectorChord's own trainer is also our recall
+  baseline.</li>
+  <li><a href="https://github.com/EnterpriseDB/pgpu">pgpu</a>, by EnterpriseDB, started the
+  project. It trains the centroids on an NVIDIA GPU with
+  <a href="https://github.com/rapidsai/cuvs">cuVS</a> and hands them to VectorChord through the
+  same external build. Our first thought was simple: let us do this in Vx. We followed its source
+  for the exact centroid table and the <code>CREATE INDEX</code> options. VxVector's SQL function follows the arguments of
+  <code>pgpu.create_vector_index_on_gpu</code>, so a pgpu user already knows most of its
+  API.</li>
+  <li><a href="https://github.com/facebookresearch/faiss">Faiss</a> is the reference for
+  correctness. Our tests compare the CPU kernel with Faiss 1.15.1 in 48 matched cases, with the
+  same samples, starting centers and iteration count.</li>
+</ul>
+
+<p>pgpu uses a GPU library that NVIDIA's engineers tuned, and as far as we know it needs NVIDIA
+hardware. VxVector writes its kernels as plain Vx loops and lets the compiler generate the GPU
+code. The same kernels run on an Apple GPU through Metal. When no usable GPU is present, the
+extension trains on the CPU. Training also runs in a separate process, so a GPU failure cannot stop
+the database.</p>
+
+<p>We have not measured VxVector against pgpu yet, because our GPU so far is an Apple one. The
+NVIDIA build of VxVector compiles and links. A comparison with pgpu and cuVS on the same NVIDIA GPU
+comes next.</p>
+
+<h3 id="one-sql-call"><a href="#one-sql-call">One SQL call</a></h3>
+
+<p>VxVector adds one SQL function:</p>
+
+<pre><code><span class="k">SELECT</span> vxvector.<span class="f">create_vector_index</span>(
+    <span class="n">'public.items'</span>, <span class="n">'features'</span>, <span class="k">ARRAY</span>[<span class="n">256</span>],
+    sampling_factor =&gt; <span class="n">40</span>,
+    kmeans_iterations =&gt; <span class="n">10</span>,
+    distance_operator =&gt; <span class="n">'l2'</span>,
+    seed =&gt; <span class="n">42</span>,
+    centroid_table =&gt; <span class="n">'items_centroids'</span>,
+    index_name =&gt; <span class="n">'items_idx'</span>);</code></pre>
+
+<p><code>ARRAY[256]</code> asks for 256 lists. <code>ARRAY[16, 256]</code> asks for a two-level
+tree: 16 top centroids, each with its own leaves. The distance can be <code>l2</code>,
+<code>ip</code> or <code>cos</code>. Other options set the number of restarts, normalize the
+centroids for directional data, or stop after the centroid table without building the index.</p>
+
+<p>The call does five things:</p>
+
+<ol>
+  <li>It reads the table in PostgreSQL and streams the rows to a separate worker process. A crash
+  or a timeout kills the worker, not the database.</li>
+  <li>The worker samples at most 40 rows for each list, in Vx. One seeded sampler serves every
+  backend, so the same seed gives the same sample on the CPU and the GPU.</li>
+  <li>It chooses the GPU or the CPU before any training starts, and reports which one and why.</li>
+  <li>It trains the centroids and writes them to a table in VectorChord's format.</li>
+  <li>VectorChord builds its index from that table over all the rows, and serves the queries.</li>
+</ol>
+
+<p>The centroid table is a tree. A flat index has a zero root and one leaf for each list:</p>
+
+<pre><code> id | parent | vector
+----+--------+-------------
+  0 |        | [0,0,...,0]
+  1 |      0 | [c1]
+  2 |      0 | [c2]
+ ...
+256 |      0 | [c256]</code></pre>
+
+<p>Every step runs in the caller's transaction. If any step fails, PostgreSQL rolls back the
+centroid table and the index together, and nothing is left behind. The setting
+<code>vxvector.backend_mode</code> is <code>auto</code> by default. Set it to <code>cpu</code> to
+force the CPU, or to <code>gpu</code> to get an error when no GPU can do the work.</p>
+
+<p>The result is JSON that names the backend, the device and the time of each stage:</p>
+
+<pre><code>"backend": "gpu",
+"device": "Apple M2 Pro",
+"gpu_version": "Metal, Vx 889a1fbb",
+"backend_reason": "GPU available and supports the request",</code></pre>
+
+<p>After that, a query is ordinary pgvector SQL. VectorChord picks the index:</p>
+
+<pre><code><span class="k">SET</span> vchordrq.probes = <span class="n">'16'</span>;
+<span class="k">SELECT</span> id <span class="k">FROM</span> items
+<span class="k">ORDER BY</span> features &lt;-&gt; <span class="n">'[...]'</span>::vector
+<span class="k">LIMIT</span> <span class="n">10</span>;</code></pre>
+
+<p>On Linux, the Docker image has no GPU library and trains on the CPU. To train on an Apple GPU
+from SQL, PostgreSQL and the worker must run natively on macOS. We tested that on one machine with
+PostgreSQL 17, pgvector 0.8.2 and VectorChord 1.1.1.</p>
+
+<h2 id="what-is-written-in-vx"><a href="#what-is-written-in-vx">What is written in Vx</a></h2>
+
+<p>The goal was an extension whose logic is in Vx, with C only where Vx cannot go. C remains for
+PostgreSQL internals, for process and pipe handling, and for a few choices that tests need, such as
+replacing <code>malloc</code> to fail each allocation in turn.</p>
+
+<div class="table-scroll">
+<table>
+<tr><th>Part</th><th>Language</th><th>Lines</th></tr>
+<tr><td>Sampling, row checks, the CPU k-means kernel, backend selection</td><td>Vx</td><td>1,419</td></tr>
+<tr><td>GPU kernels and the GPU training loop</td><td>Vx</td><td>505</td></tr>
+<tr><td>C API, allocation, messages</td><td>C</td><td>262</td></tr>
+<tr><td>GPU memory and the call into the Vx loop</td><td>C</td><td>303</td></tr>
+<tr><td>One file per GPU: Metal or CUDA</td><td>Objective-C, C</td><td>65, 80</td></tr>
+<tr><td>Worker process</td><td>C</td><td>219</td></tr>
+<tr><td>PostgreSQL bridge</td><td>C and Rust</td><td>590</td></tr>
+</table>
+</div>
+
+<p>It did not start this way. A review on 8 November found that the Vx part was small and read
+like C. The sampler and the row checks were in C, and the kernel had a second sampler of its own.
+We moved that layer into Vx, removed the second sampler, and proved what we could about it. A
+sampled row index is below the row count. A probe stays inside the hash table. Every copy into the
+sample stays in bounds. Each proof has a mutation that breaks it, and the compiler refuses each
+mutation.</p>
+
+<h2 id="what-it-can-do"><a href="#what-it-can-do">What it can do today</a></h2>
+
+<p>Every number here comes from one Apple M2 Pro. These are single-machine measurements, not
+benchmarks.</p>
+
+<div class="table-scroll">
+<table>
+<tr><th>Check</th><th>Result</th></tr>
+<tr><td>GPU against CPU, SIFT-128, 32,768 rows, k = 256</td><td>0.29 s against 6.94 s, 24&times;</td></tr>
+<tr><td>GPU against CPU, SIFT-128, 65,536 rows, k = 1,024</td><td>1.99 s against 54.83 s, 28&times;</td></tr>
+<tr><td>L2 and inner product, GPU against CPU</td><td>The same bits in every test</td></tr>
+<tr><td>Cosine and spherical centers, GPU against CPU</td><td>Can differ at float32 near-ties, with the objective within 1e-3. The largest gap seen was 3.5e-4</td></tr>
+<tr><td>Recall on synthetic data, against an exact scan. Each query needs recall@10 of at least 0.95</td><td>120 queries, recall@10 of 1.0 in each</td></tr>
+<tr><td>Recall on SIFT-128 and GloVe-25, against VectorChord's own trainer. Each query needs recall@10 of at least 0.95 at conservative settings. At each practical setting, the mean recall of VxVector may trail VectorChord's by at most 0.05</td><td>3,072 queries, every one within both limits, every VxVector build on the GPU</td></tr>
+<tr><td>Worker failure, timeout, cancellation, rollback</td><td>Each one leaves no table or index behind</td></tr>
+</table>
+</div>
+
+<p>The CPU kernel runs on one thread, and the M2 Pro has ten CPU cores. A parallel CPU kernel would
+narrow the gap.</p>
+
+<p>The kernels are ordinary Vx loops. This one adds each sample to the sum of its center. One block
+owns a center and one lane owns a dimension, so no two lanes write the same value, and the compiler
+proves that before it emits the kernel. The Metal code generator of Vx has no float atomics, and this design needs none.</p>
+
+<pre><code><span class="k">spawn</span> <span class="f">on</span>(<span class="t">Topology</span>::Device) {
+  <span class="k">for</span> c <span class="k">in</span> <span class="n">0</span>..k <span class="k">across</span> blocks {
+    <span class="k">for</span> d <span class="k">in</span> <span class="n">0</span>..dims <span class="k">across</span> <span class="f">lanes</span>(<span class="n">256</span>) {
+      <span class="k">let</span> <span class="k">mut</span> sum = sums[c][d];
+      <span class="k">for</span> r <span class="k">in</span> first_row..first_row + rows {
+        <span class="k">if</span> labels[r] == c {
+          sum = sum + samples[r][d];
+        }
+      }
+      sums[c][d] = sum;
+    }
+  }
+}</code></pre>
+
+<h3 id="one-source-two-gpus"><a href="#one-source-two-gpus">One source, two GPUs</a></h3>
+
+<p>The first NVIDIA version was separate: its own Vx kernels, which ran one thread per block, and
+475 lines of C++ that loaded PTX and launched it through the CUDA driver. This week the Metal source
+replaced it. <code>gpu_kmeans.vx</code> compiles to A100 PTX unchanged, with 256 threads per block,
+and the Vx CUDA runtime launches it. Each GPU now adds one small C file with six functions: allocate,
+free, copy in, copy out, wait, and the device name.</p>
+
+<p>The split changed no Metal result: all 902 outputs of the GPU checks have the same bits as
+before. The CUDA library compiles and links on Linux against the Vx CUDA runtime. It has not run on
+an NVIDIA GPU yet.</p>
+
+<h2 id="what-the-compiler-learned"><a href="#what-the-compiler-learned">What the compiler learned</a></h2>
+
+<p>Each time VxVector needed something the compiler could not do, we wrote the smallest program
+that showed it, checked it against Vx <code>main</code>, and filed it. Most reports came from two
+places: the contract prover, and the boundary between Vx, C and the GPU.</p>
+
+<h3 id="the-prover"><a href="#the-prover">The prover</a></h3>
+
+<p>VxVector's contracts are about indices: a center index below <code>k</code>, a buffer offset
+below its length. Real code with loops, branches and buffer writes broke the prover in ways the
+tests had not.</p>
+
+<div class="table-scroll">
+<table>
+<tr><th>Issue</th><th>What went wrong</th><th>Status</th></tr>
+<tr><td><a href="https://github.com/vx-lang/Vx/issues/2847">#2847</a></td><td>Bounds were lost across branches, and checked loop invariants were dropped at the loop exit</td><td>Fixed</td></tr>
+<tr><td><a href="https://github.com/vx-lang/Vx/issues/2848">#2848</a>, <a href="https://github.com/vx-lang/Vx/pull/2852">#2852</a></td><td>Writing to a buffer erased the bounds of a scalar result that did not change. #2852 is our fix</td><td>Fixed</td></tr>
+<tr><td><a href="https://github.com/vx-lang/Vx/issues/2849">#2849</a></td><td>Queries used z3's linear mode, which cannot multiply two variables, and the response handling was not strict</td><td>Fixed</td></tr>
+<tr><td><a href="https://github.com/vx-lang/Vx/issues/2850">#2850</a></td><td><code>i64::from(i32)</code> did not say that it keeps the value</td><td>Fixed</td></tr>
+<tr><td><a href="https://github.com/vx-lang/Vx/issues/2895">#2895</a></td><td>No proofs through remainders and narrowing casts</td><td>Fixed</td></tr>
+<tr><td><a href="https://github.com/vx-lang/Vx/issues/2987">#2987</a></td><td>Booleans were declared as integers, so z3 rejected about 23,000 of 26,000 queries, and the tests still passed</td><td>Fixed</td></tr>
+<tr><td><a href="https://github.com/vx-lang/Vx/issues/3040">#3040</a></td><td><code>let r = f(..)</code> keeps <code>f</code>'s <code>ensures</code>, but <code>x = f(..)</code> can lose it</td><td>Open</td></tr>
+<tr><td><a href="https://github.com/vx-lang/Vx/issues/3145">#3145</a></td><td>A float comparison in a branch condition crashed the compiler</td><td>Open</td></tr>
+<tr><td><a href="https://github.com/vx-lang/Vx/issues/2896">#2896</a>, <a href="https://github.com/vx-lang/Vx/issues/2986">#2986</a></td><td>A count read from a buffer cannot be proved nonnegative. A <code>usize</code> <code>+</code> counts as exact in a contract, but stops the program on overflow</td><td>Open</td></tr>
+</table>
+</div>
+
+<p>#2987 is the one we think about most. Every test passed while z3 skipped most of its questions.
+<a href="/blog/what-compiling-against-z3-taught-us-about-trusting-provers.html">What compiling
+against z3 taught us about trusting provers</a> tells that story in full. VxVector's answer is the
+same one the compiler now uses: a proof counts only when a mutation of it fails.</p>
+
+<p>Some gaps are still open, and the code says so. VxVector proves that a sampled row index is in
+range. It does not prove that its buffer sizes cannot overflow, because the prover does not model
+integer division yet. That is tested, and written down as not proved.</p>
+
+<h3 id="the-boundary-between-vx-c-and-the-gpu"><a href="#the-boundary-between-vx-c-and-the-gpu">The boundary between Vx, C and the GPU</a></h3>
+
+<p>A PostgreSQL extension is a C program. It calls Vx through objects that <code>vxc --action
+emit-obj</code> writes, and Vx calls back into C. That boundary raised most of the language
+questions.</p>
+
+<ul>
+  <li><strong>Waiting for the GPU before C reads its memory.</strong> On a Mac, C can read GPU
+  memory directly, so it must wait for the kernels that write it.
+  <a href="https://github.com/vx-lang/Vx/pull/3153">#3153</a> makes the compiler wait before a call
+  to a C function that gets a pointer into GPU memory. VxVector found the case it misses: a call
+  through a function pointer gets no wait, and C reads the old values. The training loop waits by
+  hand until the compiler does.</li>
+  <li><strong>Pure library functions in GPU loops.</strong> An <code>across</code> loop may call only
+  functions that write no memory. <code>f32::is_finite</code> writes none, but it does not say so,
+  and a user cannot add the contract to a library function
+  (<a href="https://github.com/vx-lang/Vx/issues/3433">#3433</a>). VxVector tests
+  <code>x - x == 0.0</code> instead.</li>
+  <li><strong>Linking two Vx objects into one library.</strong> Each object carries its own copy of
+  the library functions it uses and numbers its kernels from zero, so two objects collide at link
+  time (<a href="https://github.com/vx-lang/Vx/issues/3434">#3434</a>). A function that is not
+  <code>pub</code> is also exported. One was named <code>finite</code>, the same as the C library's
+  <code>finite()</code>.</li>
+  <li><strong>Calling C that does not exist yet.</strong> <code>emit-obj</code> resolves every
+  <code>extern</code> function while the compiler runs. A library cannot call a function that the
+  program linking it will define, which is the usual case for a callback. So VxVector passes C
+  functions in as function pointers, which leads back to the first point.</li>
+  <li><strong>A launch that macOS stops.</strong> On a Mac the GPU also draws the screen, and macOS
+  can stop a launch that holds it for too long, about 80 ms in our runs. The Vx runtime then aborts
+  the process. VxVector splits its work into launches of about 2 ms, which gives the same results,
+  because each sum still adds the same numbers in the same order.</li>
+  <li><strong>Running on the CPU without saying so.</strong> When Metal is off, the runtime runs the
+  CPU copy of a kernel and does not tell the caller. On Linux without the CUDA toolkit, Vx builds a
+  dispatch library that does the same for "GPU" kernels. VxVector allocates GPU memory first, which
+  fails without a device, and its CUDA build refuses any dispatch library but the CUDA one.</li>
+</ul>
+
+<p>The issues not yet filed are drafted with complete reproductions: returning a GPU fault instead of
+aborting, splitting long launches in the runtime, letting C ask whether kernels run on the GPU, a
+stable path to the dispatch library, and letting the CPU write GPU memory in place on unified
+memory.</p>
+
+<h2 id="building-both-at-once"><a href="#building-both-at-once">Building both at once</a></h2>
+
+<p>We pinned VxVector to an exact Vx commit and moved the pin often, seven times between 4 and 15
+November.
+Each move rebuilt the kernels, and the first six reran every check against the new compiler. A
+move that changed nothing was also a result. At <code>889a1fbb</code>, 68 commits after the pin before it, the compiler wrote
+the same CPU object, Metal library and A100 PTX, byte for byte. So every earlier check still
+holds.</p>
+
+<p>Building the two together helped in both directions.</p>
+
+<ul>
+  <li><strong>Bugs arrive with a reason to fix them.</strong> A unit test shows that a feature
+  breaks. An application shows that it matters, and the reduced program comes with the context
+  that motivated it.</li>
+  <li><strong>The fix gets a real test the same day.</strong> When #2852 landed, we tried the
+  code that had needed a workaround, a distance helper kept separate so that a bound survived. The
+  inlined version compiled and proved on the new pin.</li>
+  <li><strong>Design questions come from use, not from guessing.</strong> Should
+  <code>emit-obj</code> leave <code>extern</code> symbols for the linker, as a C compiler does?
+  Should a non-<code>pub</code> function be internal? Should the pure methods of
+  <code>core::num</code> state <code>writes_only()</code>? Each question came from code that needed
+  the answer.</li>
+  <li><strong>Workarounds are written down where they live.</strong> A workaround in VxVector
+  names its issue in a comment, such as #3145 and #3040 in <code>kmeans.vx</code>. When the issue
+  closes, the comment says what to remove.</li>
+</ul>
+
+<p>The application also found bugs that were not Vx's. A worker sometimes hung until its timeout,
+about one call in seventy. The cause is in macOS: a blocked <code>read()</code> on a socket pair can
+miss the other side's <code>shutdown()</code> after the reader has written to the socket. And
+VectorChord did not load in native PostgreSQL on macOS 27, because a stripped library has a
+misaligned string table there. Both have small reproductions and workarounds, and both are drafted
+for upstream. A full stack finds bugs at every layer, and the compiler is only one of them.</p>
+
+<h2 id="what-comes-next"><a href="#what-comes-next">What comes next</a></h2>
+
+<ul>
+  <li><strong>Run the shared kernels on an A100.</strong> The same checks as on Metal: the CPU
+  comparison, every metric, and spherical centers. Then the old CUDA prototype goes.</li>
+  <li><strong>File the remaining drafts.</strong> The function-pointer wait and the Metal abort come
+  first, because one gives a wrong result without a word and the other crashes the process.</li>
+  <li><strong>Make the CPU path fast as well.</strong> The CPU kernel is single-threaded and does not
+  use SIMD yet. <code>across</code> loops already run blocks on several CPU workers.</li>
+  <li><strong>Compare with cuVS</strong> on the same NVIDIA hardware, with the same semantics and
+  timing boundaries.</li>
+</ul>
+
+<p class="post-foot">The source of VxVector, with a dated record of each step, is at
+<a href="https://github.com/minzyfox/VxVector">minzyfox/VxVector</a>. It pins Vx <a href="https://github.com/vx-lang/Vx/commit/889a1fbb"><code>889a1fbb</code></a>. The issues above are on
+<a href="https://github.com/vx-lang/Vx/issues">vx-lang/Vx</a>. To try the Vx side yourself,
+<a href="/docs/getting-started.html">install Vx</a> and start with the
+<a href="/docs/tour.html">language tour</a>.</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
+</footer>
+
+<script src="/blog/copy-code.js" defer></script>
+</body>
+</html>

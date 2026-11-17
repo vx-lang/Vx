@@ -18,6 +18,15 @@
   </entry>
 
   <entry>
+    <title>Vx meets Postgres</title>
+    <link href="https://vxlang.org/blog/vx-meets-postgres.html"/>
+    <id>https://vxlang.org/blog/vx-meets-postgres.html</id>
+    <updated>2026-11-15T18:00:00Z</updated>
+    <author><name>Minzy Fox</name></author>
+    <summary>VxVector is a PostgreSQL extension whose core is written in Vx. One SQL call samples a table of vectors, trains k-means centroids in Vx, and hands them to VectorChord to build a vector-search index. The same Vx source trains on the CPU and on an Apple GPU, and now builds for an NVIDIA A100. On an M2 Pro, GPU training is 24 to 28 times faster than the single-threaded CPU kernel, with the same bits for L2 and inner product. Building the extension beside the compiler found six prover bugs that are now fixed upstream, more that are open, and language questions about the boundary between Vx, C and the GPU: waiting before C reads GPU memory through a function pointer, pure library functions in across loops, linking two Vx objects, and calling C functions that the linking program defines.</summary>
+  </entry>
+
+  <entry>
     <title>Plain loops at the speed of CUDA</title>
     <link href="https://vxlang.org/blog/plain-loops-at-the-speed-of-cuda.html"/>
     <id>https://vxlang.org/blog/plain-loops-at-the-speed-of-cuda.html</id>
