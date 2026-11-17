@@ -887,8 +887,10 @@ const INTEGER_OPCODES: [u32; 11] = [128, 130, 132, 134, 135, 137, 138, 139, 194,
 /// `bool` or a vector of `bool`.
 fn integer_instructions_on_bool(module: &[u8]) -> Vec<u32> {
     let words: Vec<u32> = module
-        .chunks_exact(4)
-        .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|w| u32::from_le_bytes(*w))
         .collect();
     let mut bools = std::collections::HashSet::new();
     let mut found = Vec::new();
