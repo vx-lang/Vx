@@ -772,6 +772,11 @@ fn lower_stretches<'c>(
                 Some(b) => block = b,
                 None => return Ok(None),
             }
+            // The code after an `mlir!` block with `threads` may read what any thread of it
+            // wrote.
+            if crate::hir::check::across_lanes::threadgroup_block(&stmts[i]).is_some() {
+                barrier(gen, block, level)?;
+            }
             i += 1;
             continue;
         }

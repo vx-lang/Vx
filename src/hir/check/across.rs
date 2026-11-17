@@ -224,6 +224,34 @@ impl Walk<'_> {
         self.errors.push((msg, at));
     }
 
+    /// An `mlir!` block with `threads : N`. Every thread of the threadgroup runs it, so it is in
+    /// the code of a loop of blocks, and the block of the topology has `N` lanes.
+    fn threadgroup_block(&mut self, m: &crate::syntax::expr::InlineMlirExpr, ctx: &Ctx) {
+        if !ctx.axes.last().is_some_and(|a| a.kind == LevelKind::Blocks) {
+            self.error(
+                "an `mlir!` block with `threads` must be in the code of a loop of blocks, outside \
+                 its subgroup and lane loops, because every thread of the block runs it"
+                    .to_string(),
+                m.span,
+            );
+            return;
+        }
+        let n = u64::from(m.threads.unwrap_or(1));
+        let region = ctx.region.as_ref();
+        let max = region
+            .and_then(|r| r.levels.as_ref())
+            .and_then(|levels| levels.iter().find_map(|l| l.max_lanes));
+        if let (Some(max), Some(r)) = (max, region) {
+            if n > max {
+                let message = format!(
+                    "this `mlir!` block asks for {n} threads, but a block of `{}` has at most {max}",
+                    r.name
+                );
+                self.error(message, m.span);
+            }
+        }
+    }
+
     fn stmts(&mut self, stmts: &[Statement], ctx: &Ctx) {
         let mut ctx = ctx.clone();
         // L5: the code of a blocks or subgroups body outside its lane loops falls into
@@ -403,6 +431,9 @@ impl Walk<'_> {
     }
 
     fn stmt(&mut self, s: &Statement, ctx: &Ctx) {
+        if let Some(m) = across_lanes::threadgroup_block(s) {
+            self.threadgroup_block(m, ctx);
+        }
         match s {
             Statement::ForLoop(f) => {
                 self.expr(&f.iterable, ctx);

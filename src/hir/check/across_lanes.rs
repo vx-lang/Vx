@@ -16,21 +16,37 @@ use crate::syntax::stmt::Statement;
 use crate::syntax::{Expr, Span};
 use std::collections::HashSet;
 
-/// Whether `s` holds an `across` loop, a lane reduction, a lane copy or a lane matmul at any
-/// depth. Every lane of the block or the subgroup must get to each of them.
+/// The `mlir!` block with `threads : N` that `s` is, as `let x = mlir!(..)` or a statement of its
+/// own. Every thread of the threadgroup runs it.
+pub(crate) fn threadgroup_block(s: &Statement) -> Option<&crate::syntax::expr::InlineMlirExpr> {
+    let e = match s {
+        Statement::LetDecl(l) => &l.expr,
+        Statement::ExprStmt(e) => &e.expr,
+        _ => return None,
+    };
+    match e {
+        Expr::InlineMlir(m) if m.threads.is_some() => Some(m),
+        _ => None,
+    }
+}
+
+/// Whether `s` holds an `across` loop, a lane reduction, a lane copy, a lane matmul or an `mlir!`
+/// block with `threads` at any depth. Every lane of the block or the subgroup must get to each of
+/// them.
 pub(crate) fn holds_across(s: &Statement) -> bool {
     use crate::hir::check::lanes;
     let mut found = false;
     visit_stmts(std::slice::from_ref(s), &mut |s| {
-        found |= match s {
-            Statement::ForLoop(f) => f.across.is_some(),
-            Statement::LetDecl(l) => lanes::bare_lanes_call(&l.expr).is_some(),
-            Statement::ExprStmt(e) => lanes::bare_lane_statement(&e.expr).is_some(),
-            Statement::Assign(a) => {
-                lanes::lane_matmul(a).is_some() || lanes::next_copy(a).is_some()
-            }
-            _ => false,
-        };
+        found |= threadgroup_block(s).is_some()
+            || match s {
+                Statement::ForLoop(f) => f.across.is_some(),
+                Statement::LetDecl(l) => lanes::bare_lanes_call(&l.expr).is_some(),
+                Statement::ExprStmt(e) => lanes::bare_lane_statement(&e.expr).is_some(),
+                Statement::Assign(a) => {
+                    lanes::lane_matmul(a).is_some() || lanes::next_copy(a).is_some()
+                }
+                _ => false,
+            };
     });
     found
 }

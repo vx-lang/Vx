@@ -153,6 +153,8 @@ pub struct InlineBlock {
     pub void: bool,
     pub line: usize,
     pub column: usize,
+    /// `threads : N`: every thread of the threadgroup runs the block, so the CPU cannot.
+    pub threads: bool,
 }
 
 /// The stable per-instance GID of a monomorphized generic struct whose layout depends on its
@@ -6063,6 +6065,7 @@ impl<'r> Lowerer<'r> {
             void: im.returns.is_none(),
             line: im.span.line,
             column: im.span.column,
+            threads: im.threads.is_some(),
         });
         Ok(self.emit_typed(Opcode::InlineMlir, Register(0), Register(0), ty, imm))
     }
