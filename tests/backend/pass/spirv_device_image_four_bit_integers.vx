@@ -1,0 +1,54 @@
+//===- spirv_device_image_four_bit_integers.vx --------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A kernel compares `i4` values, converts them to `i32`, and adds `u4` values
+// so that the sum wraps. LLVM's SPIR-V backend keeps a 4-bit integer in 8 bits
+// and does not clear the upper bits, so the image computes each one in 8 bits
+// itself. device_image_test.rs checks the instructions that do this.
+//
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s # flat-codegen
+// CHECK: format=spirv
+// EXPECT: -80 -10 1 8
+
+Memory CPU_DRAM {}
+Memory DEV_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached, scope: device
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 63 GB/s,
+  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 63 GB/s
+}
+
+fn main() -> i32 {
+  let mut a = unsafe { Tensor<i4, [8]>::uninit() };
+  let mut b = unsafe { Tensor<u4, [8]>::uninit() };
+  for i in 0..8 {
+    a[i] = (i - 8) as i4;
+    b[i] = (i + 8) as u4;
+  }
+  let ga = transfer(a, Memory::DEV_HBM);
+  let gb = transfer(b, Memory::DEV_HBM);
+  let mut gx = transfer(unsafe { Tensor<i32, [8]>::uninit() }, Memory::DEV_HBM);
+  let mut gs = transfer(unsafe { Tensor<u4, [8]>::uninit() }, Memory::DEV_HBM);
+  spawn on(Topology::Dev) {
+    for i in 0..8 {
+      gx[i] = if ga[i] < (0 as i4) {
+        (ga[i] as i32) * 10
+      } else {
+        1
+      };
+      gs[i] = gb[i] + (9 as u4);
+    }
+  }
+  let x = transfer(gx, Memory::CPU_DRAM);
+  let s = transfer(gs, Memory::CPU_DRAM);
+  println!("{} {} {} {}", x[0], x[7], s[0] as i32, s[7] as i32);
+  return 0;
+}
