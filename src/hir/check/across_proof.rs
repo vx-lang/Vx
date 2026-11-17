@@ -543,6 +543,72 @@ impl Proof<'_> {
             });
     }
 
+    /// The writes that the clause `writes_only(t)` or `writes_only(t[i][j])` of an `mlir!` block
+    /// declares. An index `lo..lo + k`, with a number `k`, is one more index of the pass, as the
+    /// index of a serial loop is.
+    fn declared_write(&mut self, name: &str, indices: &[&Expr], at: Span) {
+        for i in indices {
+            match i {
+                Expr::Range(r) => {
+                    self.expr(&r.start);
+                    self.expr(&r.end);
+                }
+                _ => self.expr(i),
+            }
+        }
+        if !self.outside(name) {
+            return;
+        }
+        if indices.is_empty() {
+            self.fail(
+                format!(
+                    "`writes_only({name})` says that the block may write any element of \
+                     `{name}`, and each pass runs the block. Name the elements that one pass \
+                     writes, such as `writes_only({name}[i])`"
+                ),
+                at,
+            );
+            return;
+        }
+        let mut forms = Vec::new();
+        for i in indices {
+            let Expr::Range(r) = i else {
+                forms.push(self.affine(i));
+                continue;
+            };
+            let lo = self.affine(&r.start);
+            let width = lo
+                .clone()
+                .zip(self.affine(&r.end))
+                .and_then(|(lo, hi)| hi.add(&lo, -1))
+                .and_then(|w| w.as_constant())
+                .filter(|&w| w > 0);
+            let (Some(lo), Some(width)) = (lo, width) else {
+                self.fail(
+                    "a range in a `writes_only` clause must be `lo..lo + k`, with a number `k` \
+                     above 0"
+                        .to_string(),
+                    r.span,
+                );
+                return;
+            };
+            let key = format!("{name}[..]#{}", self.next_key);
+            self.next_key += 1;
+            self.ranges.insert(key.clone(), Some((0, width)));
+            forms.push(lo.add(&Affine::var(key), 1));
+        }
+        self.accesses
+            .entry(name.to_string())
+            .or_default()
+            .push(Access {
+                write: true,
+                atomic: false,
+                indices: forms,
+                span: at,
+                pass: self.pass,
+            });
+    }
+
     /// An atomic access to the tensor that `arg` passes. A tensor that the pass makes needs
     /// nothing.
     fn atomic_arg(&mut self, arg: &Expr) {
@@ -780,9 +846,21 @@ impl Proof<'_> {
             // A block with clauses changes only the tensors that they name.
             Expr::InlineMlir(m) if !m.ensures.is_empty() => {
                 let named = crate::hir::check::atomic_contracts::atomic_inputs(m);
+                let mut written = HashSet::new();
+                for clause in &m.ensures {
+                    if let Some((name, indices)) =
+                        crate::hir::check::atomic_contracts::writes_only_target(clause)
+                    {
+                        written.insert(name);
+                        self.declared_write(name, &indices, clause.span());
+                    }
+                }
                 for (_, input, _) in &m.inputs {
+                    let written_here = crate::hir::check::atomic_contracts::written_tensor(input)
+                        .is_some_and(|n| written.contains(n));
                     match crate::hir::check::atomic_contracts::passed_tensor(input) {
                         Some(n) if named.contains(n) => self.atomic_arg(input),
+                        _ if written_here => {}
                         _ => self.expr(input),
                     }
                 }
