@@ -466,6 +466,28 @@ impl<'a> TypeChecker<'a> {
                 for (_, arg_expr, _) in &mut e.inputs {
                     self.check_expr_type_flag(arg_expr, consume);
                 }
+                // The indices of `writes_only(t[i][j])`, so the race proof knows their types.
+                for clause in &mut e.ensures {
+                    let Expr::FunctionCall(fc) = clause else {
+                        continue;
+                    };
+                    if fc.name.as_ref() != "writes_only" {
+                        continue;
+                    }
+                    let mut at = fc.args.first_mut();
+                    while let Some(Expr::IndexAccess(ix)) = at {
+                        match ix.index.as_mut() {
+                            Expr::Range(r) => {
+                                self.check_expr_type_flag(&mut r.start, false);
+                                self.check_expr_type_flag(&mut r.end, false);
+                            }
+                            index => {
+                                self.check_expr_type_flag(index, false);
+                            }
+                        }
+                        at = Some(ix.base.as_mut());
+                    }
+                }
                 self.check_atomic_block(e);
                 self.check_block_dialects(e);
                 // The block can free memory through a pointer that it gets.

@@ -224,6 +224,12 @@ spawn on(Topology::Gpu) {
   `ensures : [reads_only(t)]`, reads all of `t` and writes none of it. It races with no other
   read. The function may only read elements of `t`, ask for its length, or pass it to code that
   says `reads_only` for it.
+- An `mlir!` block with `ensures : [writes_only(t[i][j])]` writes only those elements of `t`.
+  The proof checks them as it checks `t[i][j] = ..`. An index can also be a range `lo..lo + k`
+  with a number `k`, as in `writes_only(out[b * 32..b * 32 + 32])`. With `writes_only(t)`, the
+  block may write any element of `t`, so `t` must be a tensor that the pass makes, passed as
+  `&mut t`. The compiler checks that the block writes no other memref input, also through a view
+  such as `memref.subview`. It trusts that the block writes only the elements that it names.
 - Each lane loop ends with a barrier. Lane 0 runs the code between lane loops that writes
   memory or changes a variable from outside it. A lane loop may not read a value that only lane 0
   has. In the body of a loop, that includes a value that later code sets for the next turn.
