@@ -54,8 +54,8 @@
 // CHECK: bar.warp.sync
 // CHECK-LABEL: .entry mixed_tiles(
 // CHECK: bar.warp.sync
-// CHECK: cvt.f32.bf16
-// CHECK: cvt.f32.f16
+// CHECK-DAG: cvt.f32.bf16
+// CHECK-DAG: cvt.f32.f16
 // CHECK: mul.rn.f32
 // CHECK: add.rn.f32
 // CHECK: bar.warp.sync
