@@ -201,14 +201,15 @@ on one H100 core:
      65,536 registers / 2,048 threads = 32 registers per thread
 ```
 
-So many of these kernels report exactly 32 registers. `-maxrregcount 64` did not lift the cap.
-Only a change to the PTX did:
+So many of these kernels report exactly 32 registers. The ptxas option `-maxrregcount 64` did
+not lift the cap. A directive in the PTX did:
 
 | `topk_mb_list_at`, ptxas 13.1, sm_90 | Before | After |
 | --- | --- | --- |
 | As built (`.maxntid 1024`) | 32 regs, 4 B spill | 32 regs, 24 B spill |
 | Without the `.maxntid` line | 44 regs, 0 spill | 44 regs, 0 spill |
 | With `.minnctapersm 1` also | 60 regs, 0 spill | 56 regs, 0 spill |
+| With `.maxnreg 64` also | 60 regs, 0 spill | 56 regs, 0 spill |
 
 ```
   registers the kernel needs:     before  ############################################  44
@@ -219,7 +220,12 @@ Only a change to the PTX did:
 
 Without the cap, the unrolled kernel needs no more registers than before. Both versions need
 more than 32, so both spill under the cap, and only the amount of the spill differs. If such a
-kernel runs one block per core, `.minnctapersm 1` removes the spills in both versions.
+kernel runs one block per core, `.minnctapersm 1` or `.maxnreg 64` removes the spills in both
+versions. glm-vx's PTX build script can already add `.maxnreg N` to a kernel.
+
+A higher limit is not free. `mla_heads_at` also spills at 32 registers. With `.maxnreg 64`, it
+uses 64 registers, so only half as many of its blocks fit on a core. Time a kernel before you
+raise its limit.
 
 An earlier build (48a3229d9) gave 40 registers against 44 without the cap. That build still ran
 SROA on the kernel itself.
@@ -255,5 +261,5 @@ limit of 17, and marks on outer loops.
 - No GPU timings yet. A top-k timing on an H200 will show whether the unrolled kernels are
   faster, and whether the extra spill in `topk_mb_list_at` costs time.
 - #3589: why SROA before `-O3` lowers registers in many kernels, and adds spills to one.
-- A `.minnctapersm 1` hint for kernels that run one block per core would remove the spills in
-  `topk_mb_list_at`. Nothing in Vx sets it today.
+- A kernel attribute in Vx that emits `.maxnreg` or `.minnctapersm`. Today only a PTX patch
+  after the build can set them.
