@@ -9937,8 +9937,8 @@ wideIntegerRefusals(llvm::Module &module) {
         found == wide.end())
       continue;
     auto [bits, where] = found->second;
-    std::string reason = "it computes with a " + std::to_string(bits) +
-                         "-bit integer";
+    std::string reason =
+        "it computes with a " + std::to_string(bits) + "-bit integer";
     if (where != &f)
       reason += " in `" + where->getName().str() + "`";
     refused.push_back(
