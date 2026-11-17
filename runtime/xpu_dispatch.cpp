@@ -1071,12 +1071,13 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
       if (!warned) {
         warned = true;
         fprintf(stderr,
-                "[Vx XPU] WARNING: node %d asked for its memory; this library "
-                "has no node placement, so the bytes are ordinary host "
+                "[Vx XPU] WARNING: an allocation asked for NUMA node %d; this "
+                "library has no node placement, so the bytes are ordinary host "
                 "memory.\n"
                 "          Results are unaffected and every access is slower "
-                "than a placed allocation. A machine that needs the placement "
-                "must run the x86 backend.\n",
+                "than a placed allocation. To place the memory, build the "
+                "program with VX_DISABLE_XPU=1, which selects the x86 "
+                "backend.\n",
                 numa_node);
       }
     }
@@ -1376,9 +1377,9 @@ int32_t vx_plugin_control(uint32_t opcode, void *payload) {
   case VX_CTRL_WAIT:
   case VX_CTRL_WAIT_FOR_TENSORS:
   case VX_CTRL_WAIT_FOR_THREAD:
-    /* The compiler sends these before it reads a tensor a launch wrote in
-       place, at the return of a `pub fn` in a library, and at exit. Every
-       launch here waits for the command queue before it returns
+    /* The compiler sends these before it reads a tensor that a launch wrote in
+       place, and at the return of a `pub fn` in a library. Every launch here
+       waits for the command queue before it returns
        (`zeCommandQueueSynchronize`), so nothing is in flight when one arrives,
        which the header allows a backend to answer this way.
 
