@@ -1117,25 +1117,47 @@ fn nn_moe_group_offsets<M : Memory>(base : &mut Tensor<i32, [?, ?], Memory::M>, 
       let tiles = tile_expert.len();
       let mut first = unsafe { Tensor<i32, [1024], Memory::SMEM>::uninit() };
       let mut size = unsafe { Tensor<i32, [1024], Memory::SMEM>::uninit() };
+      let mut group = unsafe { Tensor<i32, [32], Memory::SMEM>::uninit() };
       let mut end = unsafe { Tensor<i32, [1], Memory::SMEM>::uninit() };
-      // Lane e counts the pairs of expert e before each block.
+      // Lane e counts the pairs of expert e. A loop step reads eight rows, so that the eight
+      // loads wait for memory together and not one after another.
       for e in 0..1024 across lanes {
-        let mut before = 0;
         if e < experts {
-          for b in 0..(n + 255) / 256 {
-            base[b][e] = before;
-            before = before + counts[b][e];
+          let mut total = 0;
+          let mut b = 0;
+          while b + 8 <= (n + 255) / 256 {
+            total = total + counts[b][e] + counts[b + 1][e] + counts[b + 2][e] + counts[b + 3][e] + counts[b + 4][e] + counts[b + 5][e] + counts[b + 6][e] + counts[b + 7][e];
+            b = b + 8;
+          }
+          while b < (n + 255) / 256 {
+            total = total + counts[b][e];
+            b = b + 1;
+          }
+          size[e] = total;
+          first[e] = (total + align - 1) / align * align;
+        }
+      }
+      // The start of each group is the sum of the padded sizes before it. Lane g adds the sizes
+      // of experts 32 * g to 32 * g + 31, and then lane 0 adds the sums of those 32 groups.
+      for g in 0..32 across lanes {
+        let mut sum = 0;
+        for k in 0..32 {
+          let x = 32 * g + k;
+          if x < experts {
+            let padded = first[x];
+            first[x] = sum;
+            sum = sum + padded;
           }
         }
-        size[e] = before;
+        group[g] = sum;
       }
-      // Lane 0 turns the size of each group, with its padding, into the start of the group.
-      for e in 0..1024 across lanes {
-        if e == 0 {
+      for g in 0..32 across lanes {
+        if g == 0 {
           let mut sum = 0;
-          for x in 0..experts {
-            first[x] = sum;
-            sum = sum + (size[x] + align - 1) / align * align;
+          for h in 0..32 {
+            let added = group[h];
+            group[h] = sum;
+            sum = sum + added;
           }
           starts[experts] = sum;
           end[0] = sum;
@@ -1143,29 +1165,78 @@ fn nn_moe_group_offsets<M : Memory>(base : &mut Tensor<i32, [?, ?], Memory::M>, 
       }
       for e in 0..1024 across lanes {
         if e < experts {
-          let start = first[e];
-          let stop = start + (size[e] + align - 1) / align * align;
+          let start = first[e] + group[e / 32];
+          first[e] = start;
           starts[e] = start;
-          for b in 0..(n + 255) / 256 {
-            base[b][e] = base[b][e] + start;
+          let mut before = start;
+          let mut b = 0;
+          while b + 8 <= (n + 255) / 256 {
+            let c0 = counts[b][e];
+            let c1 = counts[b + 1][e];
+            let c2 = counts[b + 2][e];
+            let c3 = counts[b + 3][e];
+            let c4 = counts[b + 4][e];
+            let c5 = counts[b + 5][e];
+            let c6 = counts[b + 6][e];
+            let c7 = counts[b + 7][e];
+            base[b][e] = before;
+            base[b + 1][e] = before + c0;
+            base[b + 2][e] = before + c0 + c1;
+            base[b + 3][e] = before + c0 + c1 + c2;
+            base[b + 4][e] = before + c0 + c1 + c2 + c3;
+            base[b + 5][e] = before + c0 + c1 + c2 + c3 + c4;
+            base[b + 6][e] = before + c0 + c1 + c2 + c3 + c4 + c5;
+            base[b + 7][e] = before + c0 + c1 + c2 + c3 + c4 + c5 + c6;
+            before = before + c0 + c1 + c2 + c3 + c4 + c5 + c6 + c7;
+            b = b + 8;
           }
-          for i in start + size[e]..stop {
-            atomic_store_i32(order, i, n + i, AtomicOrdering::Relaxed);
-          }
-          for t in start / align..stop / align {
-            atomic_store_i32(tile_expert, t, e, AtomicOrdering::Relaxed);
+          while b < (n + 255) / 256 {
+            base[b][e] = before;
+            before = before + counts[b][e];
+            b = b + 1;
           }
         }
-        // The positions and the tiles after the last group.
+      }
+      // Lane l writes tiles l, l + 1024, l + 2048 and so on, so a large group does not make one
+      // lane write all its tiles. A binary search over `first` finds the expert of a tile. The
+      // expert only grows with the tile, so each search starts at the last expert.
+      for l in 0..1024 across lanes {
         let last = end[0];
-        let mut i = last + e;
-        while i < room {
-          atomic_store_i32(order, i, n + i, AtomicOrdering::Relaxed);
-          i = i + 1024;
-        }
-        let mut t = (last + align - 1) / align + e;
+        let mut e = 0;
+        let mut t = l;
         while t < tiles {
-          atomic_store_i32(tile_expert, t, -1, AtomicOrdering::Relaxed);
+          let at = t * align;
+          if at < last {
+            let mut above = experts;
+            while above - e > 1 {
+              let mid = (e + above) / 2;
+              let below = first[mid] <= at;
+              // Two `if`s, because the Metal translation cannot compile an `else` here yet.
+              if below {
+                e = mid;
+              }
+              if !below {
+                above = mid;
+              }
+            }
+            atomic_store_i32(tile_expert, t, e, AtomicOrdering::Relaxed);
+            // Only the last tile of a group can hold padding.
+            let mut i = first[e] + size[e];
+            if i < at {
+              i = at;
+            }
+            while i < at + align {
+              atomic_store_i32(order, i, n + i, AtomicOrdering::Relaxed);
+              i = i + 1;
+            }
+          } else {
+            atomic_store_i32(tile_expert, t, -1, AtomicOrdering::Relaxed);
+            let mut i = at;
+            while i < at + align && i < room {
+              atomic_store_i32(order, i, n + i, AtomicOrdering::Relaxed);
+              i = i + 1;
+            }
+          }
           t = t + 1024;
         }
       }

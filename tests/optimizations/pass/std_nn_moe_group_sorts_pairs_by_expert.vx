@@ -7,6 +7,9 @@
 // The cases: 600 pairs in 3 blocks of the sort, with 5 experts. 1000 pairs, 125 tokens of 8, with
 // 160 experts, once with `align` 1 and once with 16. The ids are below 128, and none is 64, so
 // experts 64 and 128 to 159 get no pair. 300 pairs with 1 expert, so the order is 0 to 299.
+// 2600 pairs in 11 blocks, with half of them at one expert, once with `align` 1 and once with
+// 2. The sort reads `counts` eight rows at a time, so 11 rows take one step of eight and three of
+// one. Both cases have more than 1024 tiles, so a lane of the sort writes more than one tile.
 //
 // The first two runs use the CPU copy of the kernels, with both code generators. The third uses
 // the Apple GPU on a Mac, and the CPU copy elsewhere. The last checks that each of the three
@@ -29,6 +32,10 @@
 // CHECK-NEXT: {{^}}1000 pairs, 160 experts, align 16, positions: ok{{$}}
 // CHECK-NEXT: {{^}}300 pairs, 1 expert: ok{{$}}
 // CHECK-NEXT: {{^}}300 pairs, 1 expert, positions: ok{{$}}
+// CHECK-NEXT: {{^}}2600 pairs, 40 experts, skewed: ok{{$}}
+// CHECK-NEXT: {{^}}2600 pairs, 40 experts, skewed, positions: ok{{$}}
+// CHECK-NEXT: {{^}}2600 pairs, 40 experts, skewed, align 2: ok{{$}}
+// CHECK-NEXT: {{^}}2600 pairs, 40 experts, skewed, align 2, positions: ok{{$}}
 import std::nn;
 
 /// Block `b` writes `b` into element `order[b]`, for each of the `room` positions.
@@ -48,6 +55,23 @@ fn say(ok : bool) -> void {
     println!(": ok");
   } else {
     println!(": wrong");
+  }
+  return;
+}
+
+fn title(name : i32) -> void {
+  if name == 0 {
+    print!("600 pairs, 5 experts");
+  } else if name == 1 {
+    print!("1000 pairs, 160 experts");
+  } else if name == 2 {
+    print!("300 pairs, 1 expert");
+  } else if name == 3 {
+    print!("1000 pairs, 160 experts, align 16");
+  } else if name == 4 {
+    print!("2600 pairs, 40 experts, skewed");
+  } else {
+    print!("2600 pairs, 40 experts, skewed, align 2");
   }
   return;
 }
@@ -116,25 +140,10 @@ fn check(name : i32, ids : Tensor<i32, [?]>, experts : i32, align : i32) -> void
   for i in 0..room {
     placed = placed && got_at[want[i]] == i;
   }
-  if name == 0 {
-    print!("600 pairs, 5 experts");
-  } else if name == 1 {
-    print!("1000 pairs, 160 experts");
-  } else if name == 2 {
-    print!("300 pairs, 1 expert");
-  } else {
-    print!("1000 pairs, 160 experts, align 16");
-  }
+  title(name);
   say(same);
-  if name == 0 {
-    print!("600 pairs, 5 experts, positions");
-  } else if name == 1 {
-    print!("1000 pairs, 160 experts, positions");
-  } else if name == 2 {
-    print!("300 pairs, 1 expert, positions");
-  } else {
-    print!("1000 pairs, 160 experts, align 16, positions");
-  }
+  title(name);
+  print!(", positions");
   say(placed);
   return;
 }
@@ -165,5 +174,18 @@ fn main() -> i32 {
 
   let c = Tensor<i32, [?]>::new([300]);
   check(2, c, 1, 1);
+
+  // Half of the pairs go to expert 3, and the others to experts 0 to 39 in turn.
+  let mut d = Tensor<i32, [?]>::new([2600]);
+  let mut d2 = Tensor<i32, [?]>::new([2600]);
+  for p in 0..2600 {
+    d[p] = 3;
+    if p % 2 == 1 {
+      d[p] = (p / 2) % 40;
+    }
+    d2[p] = d[p];
+  }
+  check(4, d, 40, 1);
+  check(5, d2, 40, 2);
   return 0;
 }
