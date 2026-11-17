@@ -104,8 +104,12 @@ When the program made the values itself and knows that no two are equal, `unsafe
 makes a `Distinct` tensor with no check. It takes a tensor of integers with one dimension, and it
 moves `t`, so no other name can change the values. If two elements are equal, two passes write the
 same element. That is a data race, and Vx makes no promise about the result. This is why
-`Distinct(t)` needs `unsafe`. Routines of the library that make distinct indices on the GPU, such
-as a partition by key, are planned ([Vx#3562](https://github.com/vx-lang/Vx/issues/3562)).
+`Distinct(t)` needs `unsafe`.
+
+A function of the library can make the claim for its caller. `nn_moe_group` in `std::nn` groups
+the token-expert pairs of a mixture-of-experts layer by expert, on the GPU. It returns the grouped
+order as a `Distinct` tensor. Its `unsafe { Distinct(order) }` is inside the library, so the caller
+needs no check and no `unsafe`.
 
 The compiler adds one fact, that no two elements are equal, and checks everything else as before:
 

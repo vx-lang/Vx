@@ -170,6 +170,12 @@ program pays for one sort when it makes the tensor, and every launch that takes 
 that pays nothing. A program that made the indices itself, and knows that they differ, can skip
 the sort with <code>unsafe { Distinct(tokens) }</code>.</p>
 
+<p>A function of the library can also make the claim. <code>nn_moe_group</code> in
+<code>std::nn</code> groups the token-expert pairs of a mixture-of-experts layer by expert, with a
+counting sort on the GPU. It returns the grouped order as a <code>Distinct</code> tensor. Its one
+<code>unsafe { Distinct(order) }</code> is inside the library, so the caller needs no check and no
+<code>unsafe</code>, and the expert ids do not go back to the CPU.</p>
+
 <p>The fact is: if <code>idx[a] == idx[b]</code>, then <code>a == b</code>. The checker uses it in
 one way. A read <code>idx[e]</code> becomes a new variable of the pass, and that variable fixes
 whatever <code>e</code> fixes. So <code>idx[b]</code> fixes <code>b</code>, as <code>b</code> does.
@@ -303,11 +309,8 @@ LLVM's <code>noalias</code> on function parameters.</li>
 <h2 id="what-is-left"><a href="#what-is-left">What is left</a></h2>
 
 <ul>
-<li><strong>Distinct indices on the GPU.</strong> <code>Distinct::check</code> runs on the CPU.
-A router on the GPU must copy its ids back to the CPU for the check, and that is the wait that the
-Qwen app pays today. Library routines that make distinct indices on the GPU, such as a partition by
-key, are planned (<a href="https://github.com/vx-lang/Vx/issues/3562">#3562</a>). They would need
-no check and no <code>unsafe</code>.</li>
+<li><strong>Speed of the grouping.</strong> <code>nn_moe_group</code> ran correctly on an H200,
+and its speed is still being tuned.</li>
 <li><strong>The optimizer.</strong> #3561 plans to pass the fact to MLIR, so that tiling and
 fusion can use it too.</li>
 <li><strong>The combine.</strong> A token goes to several experts, and their results add into one
