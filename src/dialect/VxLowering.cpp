@@ -705,6 +705,69 @@ static BlockArgument parameterOf(Value v) {
   return dyn_cast<BlockArgument>(v);
 }
 
+/// `v` before `spawn`: `v` itself when it is defined outside the region, or a
+/// copy of the pure operations in the region that compute it from such values.
+/// Null when an operation on the way is not pure.
+static Value valueBeforeSpawn(Value v, Operation *spawn, OpBuilder &b,
+                              IRMapping &copied, int depth = 0) {
+  if (copied.contains(v))
+    return copied.lookup(v);
+  Operation *def = v.getDefiningOp();
+  Operation *owner = def ? def : v.getParentBlock()->getParentOp();
+  if (!spawn->isAncestor(owner))
+    return v;
+  if (!def || depth > 8 || def->getNumRegions() != 0 || !isPure(def))
+    return nullptr;
+  for (Value operand : def->getOperands())
+    if (!valueBeforeSpawn(operand, spawn, b, copied, depth + 1))
+      return nullptr;
+  b.clone(*def, copied);
+  return copied.lookup(v);
+}
+
+/// The trip count of a region's parallel loop whose bounds are known only at
+/// run time, computed before `spawn` as an `i32` launch value:
+/// `max(end - start, 0)`, and at most the largest `i32`. The loop is
+/// grid-strided, so a smaller launch still covers every pass. Null when the
+/// bounds cannot be computed before the region.
+static Value runTimeTripBeforeSpawn(Operation *spawn, Region &body,
+                                    PatternRewriter &rewriter) {
+  SmallVector<Operation *> inits, bounds;
+  body.walk([&](Operation *o) {
+    if (o->hasAttr("vx.parallel_init"))
+      inits.push_back(o);
+    if (o->hasAttr("vx.parallel_bound"))
+      bounds.push_back(o);
+  });
+  if (inits.size() != 1 || bounds.size() != 1)
+    return nullptr;
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(spawn);
+  IRMapping copied;
+  Value start =
+      valueBeforeSpawn(inits.front()->getOperand(0), spawn, rewriter, copied);
+  Value end =
+      valueBeforeSpawn(bounds.front()->getOperand(0), spawn, rewriter, copied);
+  if (!start || !end || start.getType() != end.getType() ||
+      !start.getType().isSignlessInteger())
+    return nullptr;
+  Location loc = spawn->getLoc();
+  Type type = start.getType();
+  Value trip = rewriter.create<arith::SubIOp>(loc, end, start);
+  trip = rewriter.create<arith::MaxSIOp>(
+      loc, trip, rewriter.create<arith::ConstantIntOp>(loc, type, 0));
+  unsigned width = type.getIntOrFloatBitWidth();
+  Type i32 = rewriter.getI32Type();
+  if (width > 32) {
+    trip = rewriter.create<arith::MinSIOp>(
+        loc, trip, rewriter.create<arith::ConstantIntOp>(loc, type, INT32_MAX));
+    trip = rewriter.create<arith::TruncIOp>(loc, i32, trip);
+  } else if (width < 32) {
+    trip = rewriter.create<arith::ExtSIOp>(loc, i32, trip);
+  }
+  return trip;
+}
+
 /// A launch size as source text, from the parameters of `func` and numbers,
 /// for the `--emit-ptx` manifest: `(rows + 3) / 4`. Empty when the size comes
 /// from anything else.
@@ -989,6 +1052,18 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
           into += ",";
         into += text;
         rewriter.eraseOp(d);
+      }
+    }
+    // A parallel loop whose bounds are known only at run time (trip 0) passes
+    // its trip as a launch value, so the runtime can size the launch.
+    std::string launchTrip;
+    auto parallelTrip = op->getAttrOfType<IntegerAttr>("vx_parallel_trip");
+    if (parallelTrip && parallelTrip.getInt() == 0 &&
+        !op->hasAttr("vx_parallel_two_level")) {
+      if (Value trip = runTimeTripBeforeSpawn(op, spawnBody, rewriter)) {
+        launchTrip = "$" + std::to_string(launchValues.size());
+        launchValues.push_back(trip);
+        launchTexts.push_back(rewriter.getStringAttr(""));
       }
     }
 
@@ -1283,9 +1358,12 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       launchOp->setAttr("vx.launch_block", rewriter.getStringAttr(launchBlock));
       if (op->hasAttr("vx.across"))
         launchOp->setAttr("vx.across", rewriter.getUnitAttr());
+    }
+    if (!launchValues.empty())
       launchOp->setAttr("vx.launch_values",
                         rewriter.getI32IntegerAttr(launchValues.size()));
-    }
+    if (!launchTrip.empty())
+      launchOp->setAttr("vx.launch_trip", rewriter.getStringAttr(launchTrip));
     if (op->hasAttr("vx_parallel_two_level"))
       launchOp->setAttr("vx_parallel_two_level", rewriter.getUnitAttr());
     if (auto th = op->getAttrOfType<IntegerAttr>("vx_parallel_threads"))
@@ -8554,7 +8632,13 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
       }
     }
 
-    if (auto trip = op->getAttrOfType<IntegerAttr>("vx_parallel_trip")) {
+    // A trip known only at run time is a launch value, `$j`. With no launch
+    // value there is no `launch=`, and the kernel gets one thread.
+    auto trip = op->getAttrOfType<IntegerAttr>("vx_parallel_trip");
+    if (auto text = op->getAttrOfType<StringAttr>("vx.launch_trip")) {
+      payload += "launch=" + text.getValue().str();
+      payload.push_back('\0');
+    } else if (trip && trip.getInt() > 0) {
       payload += "launch=";
       payload += std::to_string(trip.getInt());
       // Two-level (Vx#379): "B,T" -- B blocks of T threads, where B is the
@@ -8843,10 +8927,9 @@ static void splitOuterLoopAcrossWorkers(func::FuncOp fn,
 
   // The arithmetic goes in front of the start's store, so both ends have to be
   // available there. A block argument always is; a computed value has to have
-  // been computed earlier in the same block. `parallel_outer_for` only proves a
-  // loop whose bounds are literals, so in practice these are constants hoisted
-  // to the top of the entry block -- this is the check that says so rather than
-  // assuming it.
+  // been computed earlier in the same block. A literal bound is a constant at
+  // the top of the entry block, and a bound known only at run time is often an
+  // argument. This is the check that says so rather than assuming it.
   auto reaches = [&](Value v) {
     Operation *def = v.getDefiningOp();
     if (!def)

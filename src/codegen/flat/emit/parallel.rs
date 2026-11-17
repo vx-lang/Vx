@@ -275,11 +275,13 @@ impl FnEmit<'_> {
         // `vx_parallel_coop` travels to the launch payload for exactly that refusal.
         let coop = ins.imm & crate::hir::flatten::SPAWN_COOP != 0;
         let trip_count = ins.imm & 0xffff_ffff;
+        // A trip of 0 says that the trip is known only at run time.
+        let run_time_trip = ins.imm & crate::hir::flatten::SPAWN_RUN_TIME_TRIP != 0;
         // Bits 32..47: the widest thread-loop trip, i.e. the block shape the launch
         // should use (Vx#379). Zero (a pre-two-level stream) falls back to 128.
         let threads = (ins.imm >> 32) & 0xffff;
         let across = if across { ", vx.across" } else { "" };
-        let trip = if trip_count > 0 {
+        let trip = if trip_count > 0 || run_time_trip {
             format!(
                 ", vx_parallel_trip = {trip_count} : i64{}",
                 if two_level {

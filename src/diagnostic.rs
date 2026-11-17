@@ -127,7 +127,7 @@ pub enum DiagnosticCode {
     /// The loop of a `spawn` region runs on one thread although each pass writes only memory of
     /// its own, so its passes could run at the same time. The warning points at what stops it: a
     /// call the compiler cannot show writes nothing, inline MLIR, a read of a row another pass
-    /// writes, bounds not known when compiling, and the like. A region that calls `barrier()` asks
+    /// writes, a `break` out of the loop, and the like. A region that calls `barrier()` asks
     /// for blocks and threads, so it is warned about whenever it runs on one thread, with the
     /// first thing that stopped the split: two threads that may write the same element, a `break`
     /// out of a loop that holds a `barrier()`, a write to block-shared memory with no `barrier()`
