@@ -10022,6 +10022,29 @@ static DeviceImage spirvImageOf(gpu::GPUModuleOp gpuModule, std::string &error,
   while (left.size() < kernels) {
     SmallVector<SpirvKernelRefusal> failed;
     DeviceImage image = spirvImageOfKernels(gpuModule, left, error, failed);
+    // A stage of the pipeline failed with no kernel to blame. Build each
+    // kernel alone, so that only the kernels that fail lose their image. The
+    // build above already printed what the stage said, so these are quiet.
+    if (failed.empty() && image.bytes.empty() && kernels - left.size() > 1) {
+      ScopedDiagnosticHandler quiet(gpuModule.getContext(),
+                                    [](Diagnostic &) { return success(); });
+      gpuModule.walk([&](gpu::GPUFuncOp kernel) {
+        if (left.contains(kernel.getName()))
+          return;
+        llvm::StringSet<> others = left;
+        gpuModule.walk([&](gpu::GPUFuncOp other) {
+          if (other != kernel)
+            others.insert(other.getName());
+        });
+        std::string alone;
+        SmallVector<SpirvKernelRefusal> own;
+        if (!spirvImageOfKernels(gpuModule, others, alone, own).bytes.empty())
+          return;
+        if (own.empty())
+          own.push_back({kernel.getName().str(), alone});
+        failed.append(own.begin(), own.end());
+      });
+    }
     if (failed.empty())
       return image;
     for (SpirvKernelRefusal &r : failed) {

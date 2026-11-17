@@ -209,6 +209,16 @@ Value linearIndex(OpBuilder &builder, Location loc, const FlatView &view,
   return linear;
 }
 
+/// The type an element is stored as. LLVM has no type for an 8-bit or 4-bit
+/// float, so such an element is stored as the integer of its width, as the
+/// host stores it.
+Type storageType(Type element) {
+  auto real = dyn_cast<FloatType>(element);
+  if (!real || LLVM::isCompatibleType(real))
+    return element;
+  return IntegerType::get(element.getContext(), real.getWidth());
+}
+
 /// `memref.store` as a store through a computed address.
 LogicalResult lowerStore(memref::StoreOp store, const FlatView &view,
                          std::string &error) {
@@ -223,10 +233,14 @@ LogicalResult lowerStore(memref::StoreOp store, const FlatView &view,
   OpBuilder builder(store);
   Location loc = store.getLoc();
   Value linear = linearIndex(builder, loc, view, store.getIndices());
-  auto gep = LLVM::GEPOp::create(
-      builder, loc, view.base.getType(), view.elementType, view.base,
-      ValueRange{linear}, LLVM::GEPNoWrapFlags::inbounds);
-  LLVM::StoreOp::create(builder, loc, store.getValueToStore(), gep);
+  Type storage = storageType(view.elementType);
+  auto gep =
+      LLVM::GEPOp::create(builder, loc, view.base.getType(), storage, view.base,
+                          ValueRange{linear}, LLVM::GEPNoWrapFlags::inbounds);
+  Value value = store.getValueToStore();
+  if (storage != view.elementType)
+    value = arith::BitcastOp::create(builder, loc, storage, value);
+  LLVM::StoreOp::create(builder, loc, value, gep);
   store.erase();
   return success();
 }
@@ -245,11 +259,14 @@ LogicalResult lowerLoad(memref::LoadOp load, const FlatView &view,
   OpBuilder builder(load);
   Location loc = load.getLoc();
   Value linear = linearIndex(builder, loc, view, load.getIndices());
-  auto gep = LLVM::GEPOp::create(
-      builder, loc, view.base.getType(), view.elementType, view.base,
-      ValueRange{linear}, LLVM::GEPNoWrapFlags::inbounds);
-  auto ld = LLVM::LoadOp::create(builder, loc, view.elementType, gep);
-  load.getResult().replaceAllUsesWith(ld);
+  Type storage = storageType(view.elementType);
+  auto gep =
+      LLVM::GEPOp::create(builder, loc, view.base.getType(), storage, view.base,
+                          ValueRange{linear}, LLVM::GEPNoWrapFlags::inbounds);
+  Value value = LLVM::LoadOp::create(builder, loc, storage, gep);
+  if (storage != view.elementType)
+    value = arith::BitcastOp::create(builder, loc, view.elementType, value);
+  load.getResult().replaceAllUsesWith(value);
   load.erase();
   return success();
 }
