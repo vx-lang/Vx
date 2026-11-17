@@ -76,6 +76,9 @@ copy. `--emit-msl` writes the MSL and the same manifest as `--emit-ptx`.
 - Each tensor is one buffer over the pages that it touches, made with no copy.
   Its sizes and strides go in a buffer of 32-bit words, so `index` is 32 bits,
   and the runtime refuses a tensor of 2^31 elements or more.
+- A transfer to GPU memory gets pages with one buffer for their whole life. A
+  Metal residency set keeps those buffers resident, so a command buffer does
+  not make them resident again.
 - `VX_METAL=0`, or `vx_metal_set_enabled(0)` on one thread, runs the CPU copy
   of each kernel on the same memory instead.
 - The GPU flushes a subnormal `f32` to 0, and the CPU copy does too, so the two

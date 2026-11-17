@@ -9,9 +9,9 @@
 // math, so a kernel gives the same bits as its host copy.
 //
 // Metal maps every page of a buffer when it makes the buffer. So GPU memory
-// from vx_metal_alloc gets one buffer over all of its pages, once. Other memory
-// gets a buffer at each batch, because the program can free it without telling
-// this file.
+// from vx_metal_alloc gets one buffer over all of its pages, once, and a
+// residency set keeps it resident. Other memory gets a buffer at each batch,
+// because the program can free it without telling this file.
 //
 // The launches of each host thread make one batch until a wait. The batch
 // commits its command buffer after every few launches, so the GPU runs them
@@ -94,6 +94,10 @@ bool enabled() {
 struct Gpu {
   id<MTLDevice> device;
   id<MTLCommandQueue> queue;
+  // The buffers of memory from vx_metal_alloc, an MTLResidencySet on macOS 15
+  // and later. Without it, each command buffer makes each of its buffers
+  // resident again, at a CPU cost for each page.
+  id resident;
 };
 
 Gpu &gpu() {
@@ -101,9 +105,34 @@ Gpu &gpu() {
     Gpu made;
     made.device = MTLCreateSystemDefaultDevice();
     made.queue = [made.device newCommandQueue];
+    if (@available(macOS 15.0, *)) {
+      MTLResidencySetDescriptor *d = [MTLResidencySetDescriptor new];
+      id<MTLResidencySet> set = [made.device newResidencySetWithDescriptor:d
+                                                                     error:nil];
+      if (set) {
+        [made.queue addResidencySet:set];
+        made.resident = set;
+      }
+    }
     return made;
   }();
   return g;
+}
+
+// Adds `buffer` to the buffers that stay resident, or removes it.
+void setResident(id<MTLBuffer> buffer, bool resident) {
+  if (@available(macOS 15.0, *)) {
+    id<MTLResidencySet> set = gpu().resident;
+    if (!set)
+      return;
+    if (resident)
+      [set addAllocation:buffer];
+    else
+      [set removeAllocation:buffer];
+    [set commit];
+    if (resident)
+      [set requestResidency];
+  }
 }
 
 // The bytes from `first` to before `last` that a launch reads, or writes when
@@ -535,43 +564,56 @@ extern "C" void vx_metal_wait_for_memory(const void *start, size_t bytes,
   finishEach([&](const Batch &b) { return b.mustPrecede(a); });
 }
 
+// Makes one buffer over the `length` bytes of mapped pages at `memory`, for
+// the whole life of the pages. Unmaps them and returns false when Metal
+// refuses. A batch can hold the buffer after vx_metal_free, so the pages go
+// when Metal releases the buffer.
+static bool keepPages(void *memory, size_t length) {
+  Region r;
+  r.start = reinterpret_cast<uintptr_t>(memory);
+  r.end = r.start + length;
+  r.buffer =
+      [gpu().device newBufferWithBytesNoCopy:memory
+                                      length:length
+                                     options:MTLResourceStorageModeShared
+                                 deallocator:^(void *pointer, NSUInteger n) {
+                                   munmap(pointer, n);
+                                 }];
+  if (!r.buffer) {
+    munmap(memory, length);
+    return false;
+  }
+  std::lock_guard<std::mutex> hold(keptLock);
+  kept()[r.start] = r;
+  setResident(r.buffer, true);
+  return true;
+}
+
+// The length in whole pages of `bytes` of GPU memory, or 0 when the GPU is
+// off or cannot have a buffer of that length.
+static size_t gpuPagesFor(size_t bytes) {
+  const size_t page = vm_page_size;
+  if (bytes == 0 || !enabledByEnvironment())
+    return 0;
+  id<MTLDevice> device = gpu().device;
+  const size_t length = (bytes + page - 1) & ~(page - 1);
+  return device && length <= device.maxBufferLength ? length : 0;
+}
+
 // Maps new pages for `bytes` of GPU memory, and makes their buffer. Returns
 // null when the GPU is off, when `bytes` is 0, or when Metal refuses. The
 // caller then uses `malloc`. A small tensor gets a whole page too: two tensors
 // from `malloc` can share a page, and a batch cannot have two buffers over one
 // page, so the second tensor would end the batch.
 extern "C" void *vx_metal_alloc(size_t bytes) {
-  const size_t page = vm_page_size;
-  if (bytes == 0 || !enabledByEnvironment())
-    return nullptr;
   @autoreleasepool {
-    id<MTLDevice> device = gpu().device;
-    const size_t length = (bytes + page - 1) & ~(page - 1);
-    if (!device || length > device.maxBufferLength)
+    const size_t length = gpuPagesFor(bytes);
+    if (length == 0)
       return nullptr;
     void *memory = mmap(nullptr, length, PROT_READ | PROT_WRITE,
                         MAP_ANON | MAP_PRIVATE, -1, 0);
-    if (memory == MAP_FAILED)
+    if (memory == MAP_FAILED || !keepPages(memory, length))
       return nullptr;
-    // A batch can hold the buffer after vx_metal_free, so the pages go when
-    // Metal releases the buffer.
-    Region r;
-    r.start = reinterpret_cast<uintptr_t>(memory);
-    r.end = r.start + length;
-    r.buffer = [device newBufferWithBytesNoCopy:memory
-                                         length:length
-                                        options:MTLResourceStorageModeShared
-                                    deallocator:^(void *pointer, NSUInteger n) {
-                                      munmap(pointer, n);
-                                    }];
-    if (!r.buffer) {
-      munmap(memory, length);
-      return nullptr;
-    }
-    {
-      std::lock_guard<std::mutex> hold(keptLock);
-      kept()[r.start] = r;
-    }
     if (verbose())
       fprintf(stderr, "[Vx Metal] made a buffer of %zu bytes of GPU memory\n",
               length);
@@ -594,7 +636,9 @@ extern "C" int vx_metal_free(void *memory) {
   vx_metal_wait_for_memory(memory, length, 1);
   {
     std::lock_guard<std::mutex> hold(keptLock);
-    kept().erase(at);
+    auto found = kept().find(at);
+    setResident(found->second.buffer, false);
+    kept().erase(found);
   }
   if (verbose())
     fprintf(stderr, "[Vx Metal] freed %zu bytes of GPU memory\n", length);
