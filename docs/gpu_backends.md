@@ -79,6 +79,13 @@ copy. `--emit-msl` writes the MSL and the same manifest as `--emit-ptx`.
 - A transfer to GPU memory gets pages with one buffer for their whole life. A
   Metal residency set keeps those buffers resident, so a command buffer does
   not make them resident again.
+- A transfer to GPU memory of a view of a read-only, shared mapping of a file
+  makes no copy, when the view starts on a page. The runtime makes one private
+  mapping of the file, and gives the tensor its pages of it. So a model can map
+  its weight file, and the GPU reads the weights from the file cache. A write
+  to the tensor copies only the page that it changes, and the file keeps its
+  bytes. `tests/optimizations/pass/apple_gpu_reads_a_mapped_file_with_no_copy.vx`
+  shows the steps.
 - `VX_METAL=0`, or `vx_metal_set_enabled(0)` on one thread, runs the CPU copy
   of each kernel on the same memory instead.
 - The GPU flushes a subnormal `f32` to 0, and the CPU copy does too, so the two

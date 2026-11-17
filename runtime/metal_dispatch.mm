@@ -9,9 +9,10 @@
 // math, so a kernel gives the same bits as its host copy.
 //
 // Metal maps every page of a buffer when it makes the buffer. So GPU memory
-// from vx_metal_alloc gets one buffer over all of its pages, once, and a
-// residency set keeps it resident. Other memory gets a buffer at each batch,
-// because the program can free it without telling this file.
+// from vx_metal_alloc and vx_metal_map_copy gets one buffer over all of its
+// pages, once, and a residency set keeps it resident. Other memory gets a
+// buffer at each batch, because the program can free it without telling this
+// file.
 //
 // The launches of each host thread make one batch until a wait. The batch
 // commits its command buffer after every few launches, so the GPU runs them
@@ -28,8 +29,16 @@
 #include "vx_dispatch_plan.h"
 #include "vx_kernel_launch.h"
 
+#include <fcntl.h>
+#include <libproc.h>
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
 #include <mach/vm_page_size.h>
+#include <mach/vm_prot.h>
 #include <sys/mman.h>
+#include <sys/param.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <cctype>
@@ -94,9 +103,9 @@ bool enabled() {
 struct Gpu {
   id<MTLDevice> device;
   id<MTLCommandQueue> queue;
-  // The buffers of memory from vx_metal_alloc, an MTLResidencySet on macOS 15
-  // and later. Without it, each command buffer makes each of its buffers
-  // resident again, at a CPU cost for each page.
+  // The buffers of memory from vx_metal_alloc and vx_metal_map_copy, an
+  // MTLResidencySet on macOS 15 and later. Without it, each command buffer
+  // makes each of its buffers resident again, at a CPU cost for each page.
   id resident;
 };
 
@@ -617,6 +626,125 @@ extern "C" void *vx_metal_alloc(size_t bytes) {
     if (verbose())
       fprintf(stderr, "[Vx Metal] made a buffer of %zu bytes of GPU memory\n",
               length);
+    return memory;
+  }
+}
+
+// A private mapping of all of a read-only mapping of a file. The time to make
+// a private mapping of a file, and to ask for the file of a mapping, grows
+// with the pages of the file in the file cache: 1,000 of each took 46 s for a
+// weight file of 17.8 GB. So each read-only mapping gets one private mapping,
+// and each tensor gets its own pages of it.
+struct FileCopy {
+  // The read-only mapping, the file offset of its start, and its file.
+  uintptr_t start = 0, end = 0;
+  uint64_t offset = 0;
+  std::string path;
+  // The private mapping of the same bytes of the file.
+  uintptr_t copy = 0;
+  // The pages of the read-only mapping that tensors have.
+  std::vector<std::pair<uintptr_t, uintptr_t>> given;
+};
+
+static std::mutex fileCopiesLock;
+
+static std::vector<FileCopy> &fileCopies() {
+  static auto *all = new std::vector<FileCopy>;
+  return *all;
+}
+
+// The private mapping of the read-only mapping from `start` to before `end`
+// at `offset` of the file at `path`, made the first time. Null when the path
+// no longer names the file of the mapping, or when the mapping fails.
+static FileCopy *fileCopyOf(uintptr_t start, uintptr_t end, uint64_t offset,
+                            const char *path) {
+  for (FileCopy &f : fileCopies())
+    if (f.start == start && f.end == end && f.offset == offset &&
+        f.path == path)
+      return &f;
+  struct proc_regionwithpathinfo info;
+  if (proc_pidinfo(getpid(), PROC_PIDREGIONPATHINFO, start, &info,
+                   sizeof info) != sizeof info)
+    return nullptr;
+  const int fd = open(path, O_RDONLY);
+  if (fd < 0)
+    return nullptr;
+  struct stat now;
+  const struct vinfo_stat &mapped = info.prp_vip.vip_vi.vi_stat;
+  void *copy = MAP_FAILED;
+  if (fstat(fd, &now) == 0 && (uint64_t)now.st_dev == mapped.vst_dev &&
+      (uint64_t)now.st_ino == mapped.vst_ino)
+    copy = mmap(nullptr, end - start, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd,
+                (off_t)offset);
+  close(fd);
+  if (copy == MAP_FAILED)
+    return nullptr;
+  FileCopy made;
+  made.start = start;
+  made.end = end;
+  made.offset = offset;
+  made.path = path;
+  made.copy = reinterpret_cast<uintptr_t>(copy);
+  fileCopies().push_back(made);
+  return &fileCopies().back();
+}
+
+// GPU memory that holds a copy of the `bytes` at `source`, made with no copy
+// when `source` starts a page of a read-only mapping of a file. Then the copy
+// is part of a private mapping of the same file: the CPU and the GPU read the
+// pages of the file cache, and a write copies only the page that it changes.
+// Returns null in every other case, and the caller copies.
+//
+// Like a copy, the result keeps the bytes that the file had when it was mapped
+// only if nothing writes the file. A program that maps its weights read-only
+// does not write them.
+extern "C" void *vx_metal_map_copy(const void *source, size_t bytes) {
+  const uintptr_t at = reinterpret_cast<uintptr_t>(source);
+  if (!source || at % vm_page_size != 0)
+    return nullptr;
+  @autoreleasepool {
+    const size_t length = gpuPagesFor(bytes);
+    if (length == 0)
+      return nullptr;
+    mach_vm_address_t start = at;
+    mach_vm_size_t size = 0;
+    vm_region_basic_info_data_64_t region;
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t object = MACH_PORT_NULL;
+    if (mach_vm_region(mach_task_self(), &start, &size, VM_REGION_BASIC_INFO_64,
+                       reinterpret_cast<vm_region_info_t>(&region), &count,
+                       &object) != KERN_SUCCESS)
+      return nullptr;
+    if (object != MACH_PORT_NULL)
+      mach_port_deallocate(mach_task_self(), object);
+    // The mapping must hold all the bytes, and must never allow a write, so
+    // that its pages are the pages of the file. A shared mapping of a file
+    // opened read-only is such a mapping.
+    char path[MAXPATHLEN];
+    if (at < start || at + length > start + size ||
+        (region.max_protection & VM_PROT_WRITE) != 0 ||
+        proc_regionfilename(getpid(), at, path, sizeof path) <= 0)
+      return nullptr;
+    void *memory = nullptr;
+    {
+      std::lock_guard<std::mutex> hold(fileCopiesLock);
+      FileCopy *file = fileCopyOf(start, start + size, region.offset, path);
+      if (!file)
+        return nullptr;
+      // Two tensors of the same bytes need two copies.
+      for (const auto &g : file->given)
+        if (at < g.second && g.first < at + length)
+          return nullptr;
+      file->given.push_back({at, at + length});
+      memory = reinterpret_cast<void *>(file->copy + (at - start));
+    }
+    if (!keepPages(memory, length))
+      return nullptr;
+    if (verbose())
+      fprintf(stderr,
+              "[Vx Metal] made a buffer over %zu bytes of the file %s, with "
+              "no copy\n",
+              length, path);
     return memory;
   }
 }
