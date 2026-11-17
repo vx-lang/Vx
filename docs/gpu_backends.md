@@ -113,6 +113,9 @@ copy. `--emit-msl` writes the MSL and the same manifest as `--emit-ptx`.
   `simd_sum` and the other functions of a SIMD-group.
 - A loop of constant bounds with at most 16 passes gets `#pragma clang loop unroll(full)`, as in
   llama.cpp's kernels. The Metal compiler does not unroll such a loop by itself.
+- In shared memory, an index `x + c` with a number `c` prints as `(tile + .. x ..)[c]`, so the
+  Metal compiler puts `c` in the address. With `tile[.. x + c ..]` it computed each address, and
+  an expert product took 6% longer. Device memory keeps `p[..]`, which was faster there.
 - `vx.subgroup_schedule_barrier` in an `mlir!` block prints as
   `simdgroup_barrier(mem_flags::mem_none)`: the threads of a SIMD-group meet there, and no memory
   is ordered. It helps the Metal compiler schedule the loads before a simdgroup multiply. Other

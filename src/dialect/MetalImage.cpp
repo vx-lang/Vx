@@ -323,11 +323,49 @@ bool Printer::viewOf(Value memref, View &out, Operation *user) {
   return true;
 }
 
+// In shared memory, an index `x + c` with a number `c`, as an unrolled loop
+// makes, prints as `(ptr + .. x ..)[c]`. The Metal compiler then puts `c` in
+// the address of the access. With `ptr[.. x + c ..]` it computed each
+// address, and an expert product with shared tiles took 6% longer. In device
+// memory the same form made a flash attention 4% slower, so it keeps
+// `ptr[..]`.
 std::string Printer::element(const View &v, ValueRange indices) {
   std::string at = v.origin;
-  for (auto [k, i] : llvm::enumerate(indices))
-    at += " + " + name(i) + " * " + v.strides[k];
-  return v.ptr + "[" + at + "]";
+  if (v.space != "threadgroup") {
+    for (auto [k, i] : llvm::enumerate(indices))
+      at += " + " + name(i) + " * " + v.strides[k];
+    return v.ptr + "[" + at + "]";
+  }
+  int64_t offset = 0;
+  for (auto [k, i] : llvm::enumerate(indices)) {
+    int64_t stride;
+    Value rest = i;
+    int64_t c = 0;
+    if (!StringRef(v.strides[k]).getAsInteger(10, stride)) {
+      // Vx computes an index in `i32` and casts it to `index`.
+      Value sum = i;
+      if (isa_and_nonnull<arith::IndexCastOp, arith::IndexCastUIOp>(
+              i.getDefiningOp()))
+        sum = i.getDefiningOp()->getOperand(0);
+      if (std::optional<int64_t> n = getConstantIntValue(i)) {
+        rest = nullptr;
+        c = *n;
+      } else if (auto add = sum.getDefiningOp<arith::AddIOp>()) {
+        if (std::optional<int64_t> n = getConstantIntValue(add.getRhs())) {
+          rest = add.getLhs();
+          c = *n;
+        } else if (std::optional<int64_t> n =
+                       getConstantIntValue(add.getLhs())) {
+          rest = add.getRhs();
+          c = *n;
+        }
+      }
+      offset += c * stride;
+    }
+    if (rest)
+      at += " + " + name(rest) + " * " + v.strides[k];
+  }
+  return "(" + v.ptr + " + " + at + ")[" + std::to_string(offset) + "]";
 }
 
 bool Printer::assignResults(ValueRange results, ValueRange values) {

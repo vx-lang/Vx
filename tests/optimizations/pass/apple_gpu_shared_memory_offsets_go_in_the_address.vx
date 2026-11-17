@@ -1,0 +1,28 @@
+// In shared memory, the Metal code generator prints an index `x + c` with a number `c` as
+// `(tile + .. x ..)[c]`, so that the Metal compiler puts `c` in the address of the access. With
+// `tile[.. x + c ..]`, an expert product with shared tiles took 6% longer. In device memory the
+// accesses keep the form `p[..]`, which was faster for a flash attention.
+//
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx --emit-msl -o %t.metal && FileCheck %s --input-file=%t.metal
+//
+// CHECK: threadgroup float [[TILE:vx_npu_kernel_[0-9]+_smem_0]][128];
+// CHECK: ([[TILE]] + 0 + {{v[0-9]+}} * 1)[0] = {{v[0-9]+}};
+// CHECK: float {{v[0-9]+}} = ([[TILE]] + 0 + {{v[0-9]+}} * 1)[0];
+// CHECK: float {{v[0-9]+}} = ([[TILE]] + 0 + {{v[0-9]+}} * 1)[3];
+// CHECK: p0[p0_o + {{v[0-9]+}} * p0_s0] = {{v[0-9]+}};
+
+pub fn ends(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut t = unsafe { Tensor<f32, [128], Memory::SMEM>::uninit() };
+      for l in 0..128 across lanes(128) {
+        t[l] = x[l];
+      }
+      for l in 0..32 across lanes(32) {
+        out[l] = t[l * 4] + t[l * 4 + 3];
+      }
+    }
+  }
+  return;
+}
+
