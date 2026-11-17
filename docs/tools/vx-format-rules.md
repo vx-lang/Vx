@@ -41,8 +41,15 @@ The command adapter owns file access, configuration, warnings, and exit status.
 1. Implement `roots` when the formatter owns independent source ranges.
 1. Return child nodes from the parent's layout through `context.child` when the parent owns their range.
 1. Register the formatter in `builtin_registry()`.
-1. Override `enabled(config)` when typed configuration can disable the owner.
-1. Add configuration only for behavior the formatter implements.
+1. Implement `rule` when projects can switch the formatter off.
+   Give the rule a name for `[format.rules]` and a default for each style edition.
+   `--print-config default` and the check for unknown rule names then include it.
+   Add the rule to the table in [the formatter guide](vx-format.md).
+   A formatter for part of a larger node has no rule of its own.
+1. Read widths from `Shape`, which starts at `max_width`.
+   Add a narrower width setting, like `fn_signature_width`, only when a construct needs one.
+1. Add other settings only for behavior the formatter implements.
+   A new default belongs to a new style edition, so that existing projects keep their output.
 1. Test output, preservation, nesting, exclusions, unknown syntax, and repeated-formatting stability.
 1. Verify each important assertion with a deliberate implementation regression.
 

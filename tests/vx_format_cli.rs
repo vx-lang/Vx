@@ -46,10 +46,13 @@ fn prints_defaults_without_reading_project_config_or_changing_files() -> Result<
     ensure!(output.status.success(), "{output:?}");
     ensure!(output.stderr.is_empty(), "{output:?}");
     let text = String::from_utf8(output.stdout)?;
-    check_equal(&text, &"[format]\nindent = 2\nfn_signature_width = 100\nspace_before_colon = false\nformat_function_headers = true\n")?;
+    check_equal(
+        &text,
+        &"[format]\nstyle_edition = \"2026\"\nindent = 2\nmax_width = 100\nfn_signature_width = 100\nspace_before_colon = false\n\n[format.rules]\nfunction_headers = true\n",
+    )?;
     check_equal(
         &vx_config::parse_format_config(Path::new("vx-format.toml"), &text)?,
-        &vx_config::FormatConfig::default(),
+        &vx_config::FormatConfig::default().with_rule("function_headers", true),
     )?;
     check_equal(&fs::read_to_string(project.join("main.vx"))?, &SOURCE)?;
     check_equal(
@@ -67,15 +70,15 @@ fn rejects_unsupported_print_modes_and_conflicting_arguments() -> Result<()> {
         vec!["--print-config"],
         vec!["--print-config", "unknown"],
         vec!["--print-config", "default", "--indent", "4"],
-        vec!["--print-config", "default", "--space-before-colon", "true"],
+        vec!["--print-config", "default", "--set", "max_width=80"],
         vec!["--print-config", "default", "--config", "vx-format.toml"],
         vec!["--print-config", "default", "main.vx"],
         vec!["--print-config", "default", "--check"],
         vec![
             "--print-config",
             "default",
-            "--format-function-headers",
-            "false",
+            "--set",
+            "rules.function_headers=false",
         ],
     ] {
         let output = formatter(directory.path(), &args)?;
@@ -169,11 +172,11 @@ fn colon_spacing_configuration_and_cli_override_apply_in_both_modes() -> Result<
 
     let output = formatter(
         &project,
-        &["--check", "--space-before-colon", "false", "main.vx"],
+        &["--check", "--set", "space_before_colon=false", "main.vx"],
     )?;
     check_equal(&output.status.code(), &Some(1)).with_context(|| format!("{output:?}"))?;
     check_equal(&fs::read_to_string(project.join("main.vx"))?, &spaced)?;
-    let output = formatter(&project, &["--space-before-colon", "false", "main.vx"])?;
+    let output = formatter(&project, &["--set", "space_before_colon=false", "main.vx"])?;
     ensure!(output.status.success(), "{output:?}");
     check_equal(&fs::read_to_string(project.join("main.vx"))?, &compact)?;
 
@@ -181,7 +184,7 @@ fn colon_spacing_configuration_and_cli_override_apply_in_both_modes() -> Result<
         project.join("vx-format.toml"),
         "[format]\nindent = 2\nspace_before_colon = false\n",
     )?;
-    let output = formatter(&project, &["--space-before-colon", "true", "main.vx"])?;
+    let output = formatter(&project, &["--set", "space_before_colon=true", "main.vx"])?;
     ensure!(output.status.success(), "{output:?}");
     check_equal(&fs::read_to_string(project.join("main.vx"))?, &spaced)?;
     Ok(())
@@ -434,7 +437,7 @@ fn disabled_headers_preserve_their_style_and_still_format_bodies() -> Result<()>
     let project = project(
         directory.path(),
         "project",
-        Some("[format]\nindent = 2\nfn_signature_width = 20\nformat_function_headers = false\n"),
+        Some("[format]\nindent = 2\nfn_signature_width = 20\n[format.rules]\nfunction_headers = false\n"),
     )?;
     let original = "fn   keep(a: i32, b : i32) -> i32 {\nreturn a;\n}\n";
     let preserved = "fn   keep(a: i32, b : i32) -> i32 {\n  return a;\n}\n";
@@ -442,7 +445,7 @@ fn disabled_headers_preserve_their_style_and_still_format_bodies() -> Result<()>
     let output = formatter(&project, &["--check", "main.vx"])?;
     check_equal(&output.status.code(), &Some(1)).with_context(|| format!("{output:?}"))?;
     check_equal(&fs::read_to_string(project.join("main.vx"))?, &original)?;
-    let output = formatter(&project, &["--space-before-colon", "true", "main.vx"])?;
+    let output = formatter(&project, &["--set", "space_before_colon=true", "main.vx"])?;
     ensure!(output.status.success(), "{output:?}");
     check_equal(&fs::read_to_string(project.join("main.vx"))?, &preserved)?;
     let output = formatter(&project, &["--check", "main.vx"])?;
@@ -450,17 +453,22 @@ fn disabled_headers_preserve_their_style_and_still_format_bodies() -> Result<()>
     ensure!(output.stdout.is_empty(), "{output:?}");
     let output = formatter(
         &project,
-        &["--check", "--format-function-headers", "true", "main.vx"],
+        &["--check", "--set", "rules.function_headers=true", "main.vx"],
     )?;
     check_equal(&output.status.code(), &Some(1)).with_context(|| format!("{output:?}"))?;
     ensure!(String::from_utf8_lossy(&output.stdout).contains("+fn keep("));
     fs::write(
         project.join("vx-format.toml"),
-        "[format]\nindent = 2\nformat_function_headers = true\n",
+        "[format]\nindent = 2\n[format.rules]\nfunction_headers = true\n",
     )?;
     let output = formatter(
         &project,
-        &["--check", "--format-function-headers", "false", "main.vx"],
+        &[
+            "--check",
+            "--set",
+            "rules.function_headers=false",
+            "main.vx",
+        ],
     )?;
     check_equal(&output.status.code(), &Some(0)).with_context(|| format!("{output:?}"))?;
     ensure!(output.stdout.is_empty(), "{output:?}");
@@ -498,19 +506,58 @@ fn enabled_headers_preserve_contract_layout_in_check_and_write_modes() -> Result
     fs::write(project.join("main.vx"), source)?;
     let check = formatter(
         &project,
-        &["--check", "--format-function-headers", "true", "main.vx"],
+        &["--check", "--set", "rules.function_headers=true", "main.vx"],
     )?;
     check_equal(&check.status.code(), &Some(1)).with_context(|| format!("{check:?}"))?;
     check_equal(&fs::read_to_string(project.join("main.vx"))?, &source)?;
-    let write = formatter(&project, &["--format-function-headers", "true", "main.vx"])?;
+    let write = formatter(
+        &project,
+        &["--set", "rules.function_headers=true", "main.vx"],
+    )?;
     ensure!(write.status.success(), "{write:?}");
     check_equal(&fs::read_to_string(project.join("main.vx"))?, &expected)?;
     let check = formatter(
         &project,
-        &["--check", "--format-function-headers", "true", "main.vx"],
+        &["--check", "--set", "rules.function_headers=true", "main.vx"],
     )?;
     check_equal(&check.status.code(), &Some(0)).with_context(|| format!("{check:?}"))?;
     ensure!(check.stdout.is_empty(), "{check:?}");
     ensure!(check.stderr.is_empty(), "{check:?}");
+    Ok(())
+}
+
+#[test]
+fn set_changes_one_setting_and_rejects_unknown_rules() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let project = project(directory.path(), "project", None)?;
+    let source = "fn add(first: i32, second: i32) -> i32 {\n  first\n}\n";
+    fs::write(project.join("main.vx"), source)?;
+    let output = formatter(&project, &["--check", "--set", "max_width=30", "main.vx"])?;
+    check_equal(&output.status.code(), &Some(1)).with_context(|| format!("{output:?}"))?;
+    ensure!(String::from_utf8(output.stdout)?.contains("+fn add(\n"));
+
+    for args in [
+        vec!["--set", "rules.no_such_rule=true", "main.vx"],
+        vec!["--set", "max_width", "main.vx"],
+        vec!["--set", "no_such_setting=1", "main.vx"],
+    ] {
+        let output = formatter(&project, &args)?;
+        check_equal(&output.status.code(), &Some(2)).with_context(|| format!("{output:?}"))?;
+        ensure!(
+            String::from_utf8_lossy(&output.stderr).contains(args[1]),
+            "{output:?}"
+        );
+    }
+
+    fs::write(
+        project.join("vx-format.toml"),
+        "[format]\nindent = 2\n[format.rules]\nno_such_rule = true\n",
+    )?;
+    let output = formatter(&project, &["main.vx"])?;
+    check_equal(&output.status.code(), &Some(2)).with_context(|| format!("{output:?}"))?;
+    let message = String::from_utf8_lossy(&output.stderr);
+    ensure!(message.contains("vx-format.toml"), "{message}");
+    ensure!(message.contains("no_such_rule"), "{message}");
+    check_equal(&fs::read_to_string(project.join("main.vx"))?, &source)?;
     Ok(())
 }

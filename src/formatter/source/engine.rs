@@ -175,7 +175,7 @@ fn render_file(
         column: 0,
         indent_level: 0,
         indent_spaces: config.indent,
-        width: config.fn_signature_width,
+        width: config.max_width,
     };
     let mut state = RenderState::new(shape);
     let mut cursor = 0;

@@ -17,8 +17,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use vx_config::{default_format_config_toml, resolve_format_config, FormatConfig};
-use vxc::formatter::format_file_with_report;
+use vx_config::{resolve_format_config, FormatConfig, SettingOverride};
+use vxc::formatter::{check_rule_names, default_config_toml, format_file_with_report};
 
 use clap::{Parser, ValueEnum};
 use rayon::prelude::*;
@@ -32,7 +32,7 @@ enum PrintConfig {
 #[command(author, version, about = "Vx Code Formatter")]
 struct Cli {
     /// Print built-in configuration as TOML without formatting files
-    #[arg(long, value_enum, conflicts_with_all = ["indent", "space_before_colon", "format_function_headers", "config", "files", "check"])]
+    #[arg(long, value_enum, conflicts_with_all = ["indent", "set", "config", "files", "check"])]
     print_config: Option<PrintConfig>,
 
     /// Show formatting differences without modifying files
@@ -43,13 +43,9 @@ struct Cli {
     #[arg(long)]
     indent: Option<usize>,
 
-    /// Override spacing before single colons in function headers (true or false)
-    #[arg(long, action = clap::ArgAction::Set)]
-    space_before_colon: Option<bool>,
-
-    /// Enable or disable function header formatting (true or false)
-    #[arg(long, action = clap::ArgAction::Set)]
-    format_function_headers: Option<bool>,
+    /// Override one setting of [format], as in `max_width=80` or `rules.function_headers=false`
+    #[arg(long, value_name = "KEY=VALUE", value_parser = SettingOverride::parse)]
+    set: Vec<SettingOverride>,
 
     /// Configuration file for all inputs (otherwise discover vx-format.toml per input)
     #[arg(long)]
@@ -97,8 +93,23 @@ fn run(cli: Cli) -> anyhow::Result<bool> {
     if let Some(PrintConfig::Default) = cli.print_config {
         std::io::stdout()
             .lock()
-            .write_all(default_format_config_toml().as_bytes())?;
+            .write_all(default_config_toml().as_bytes())?;
         return Ok(false);
+    }
+
+    let mut overrides: Vec<SettingOverride> = cli
+        .indent
+        .map(|indent| SettingOverride::parse(&format!("indent={indent}")))
+        .transpose()
+        .map_err(anyhow::Error::msg)?
+        .into_iter()
+        .collect();
+    overrides.extend(cli.set.iter().cloned());
+    for setting in &overrides {
+        if let Some(rule) = setting.key().strip_prefix("rules.") {
+            check_rule_names(&FormatConfig::default().with_rule(rule, true))
+                .map_err(|message| anyhow::anyhow!("--set {}: {message}", setting.text()))?;
+        }
     }
 
     // Validate every configuration and read every input before modifying files.
@@ -107,13 +118,12 @@ fn run(cli: Cli) -> anyhow::Result<bool> {
         .iter()
         .map(|file_path| {
             let path = Path::new(file_path);
-            let mut config = resolve_format_config(path, cli.config.as_deref(), cli.indent)?;
-            if let Some(space_before_colon) = cli.space_before_colon {
-                config.settings.space_before_colon = space_before_colon;
-            }
-            if let Some(format_function_headers) = cli.format_function_headers {
-                config.settings.format_function_headers = format_function_headers;
-            }
+            let config = resolve_format_config(path, cli.config.as_deref(), &overrides)?;
+            // The rules from `--set` are already checked, so an unknown one is in the file.
+            check_rule_names(&config.settings).map_err(|message| match &config.source {
+                Some(source) => anyhow::anyhow!("{}: {message}", source.display()),
+                None => anyhow::Error::msg(message),
+            })?;
             let content = fs::read_to_string(path)
                 .map_err(|error| anyhow::anyhow!("{}: {}", path.display(), error))?;
             Ok((file_path, content, config.settings))

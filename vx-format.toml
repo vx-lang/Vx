@@ -1,6 +1,8 @@
 [format]
 indent = 2
-fn_signature_width = 100
+max_width = 100
 space_before_colon = true
+
+[format.rules]
 # Preserve existing mixed header styles until the repository migrates them together.
-format_function_headers = false
+function_headers = false

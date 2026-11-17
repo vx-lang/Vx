@@ -9,19 +9,33 @@ Create `vx-format.toml` in your project:
 
 ```toml
 [format]
+style_edition = "2026"
 indent = 2
+max_width = 100
 fn_signature_width = 100
 space_before_colon = false
-format_function_headers = true
+
+[format.rules]
+function_headers = true
 ```
+
+Only `indent` is required.
+Each other setting takes its default from the style edition when the file does not set it.
+
+`style_edition` selects a set of defaults.
+It defaults to `"2026"`, the only edition so far.
+A later edition can change a default.
+A project that names an older edition keeps that edition's defaults, so its formatting does not change.
 
 `indent` sets the number of spaces per indentation level.
 Zero disables indentation.
-The formatter preserves its existing spacing and layout rules.
 
-`fn_signature_width` sets the preferred maximum width of a function declaration.
-It defaults to 100 when omitted and must be greater than zero.
-Existing configuration files containing only `indent` remain valid.
+`max_width` sets the preferred maximum width of a line, including indentation.
+It defaults to 100 and must be greater than zero.
+
+`fn_signature_width` sets a narrower width for function declarations.
+It defaults to `max_width` and must not be greater than `max_width`.
+A single long type or function name can still make a declaration wider.
 
 `space_before_colon` controls single colons in formatted function headers, including parameters and generic bounds.
 It defaults to `false`, which produces `value: i32`.
@@ -31,13 +45,25 @@ Paths such as `module::Type` remain unchanged.
 This setting does not change colon spacing in function bodies or struct declarations.
 The added spaces count toward `fn_signature_width`.
 
-`format_function_headers` defaults to `true`.
-Set it to `false` to preserve existing function header spacing, type spelling, wrapping, and contract-clause layout.
-Body formatting remains active.
-Header width and colon-spacing settings do not change disabled headers.
-The Vx repository's root `vx-format.toml` disables header formatting to preserve its existing mixed styles.
-CI and `scripts/pre-commit.sh` both discover that configuration without command-line style overrides.
-The built-in defaults above remain unchanged.
+## Formatting rules
+
+`[format.rules]` switches each formatting rule on or off by name.
+A rule that the table does not name uses its default.
+An unknown rule name is an error.
+`vx-format --print-config default` lists every rule with its default.
+
+| Rule | Default | What it formats |
+| --- | --- | --- |
+| `function_headers` | `true` | Spacing, type spelling, and wrapping of function declarations. |
+
+A switched-off rule keeps the original text of the code it formats.
+For example, `function_headers = false` keeps each header's spacing, wrapping, and contract-clause layout.
+Body formatting stays active, and width and colon settings do not change those headers.
+
+The Vx repository's root `vx-format.toml` switches off `function_headers` to keep its existing mixed styles.
+CI and `scripts/pre-commit.sh` both use that file.
+
+## Configuration files
 
 For each input, the formatter searches from the file's real parent directory upward.
 It uses the nearest `vx-format.toml` and does not merge ancestor files.
@@ -45,7 +71,7 @@ The search includes the first directory containing a `.git` file or directory, t
 Without a Git boundary, the search stops at the filesystem root.
 Inputs from different projects can use different configurations in one command.
 
-When no configuration file exists, the formatter defaults to two spaces.
+When no configuration file exists, the formatter uses the built-in defaults.
 An existing file must contain `[format]` and `indent`.
 Empty files, unknown settings, invalid types, and negative indentation values cause errors.
 Invalid or unreadable files never cause a fallback to defaults.
@@ -63,29 +89,35 @@ The command writes a complete TOML configuration to standard output:
 
 ```toml
 [format]
+style_edition = "2026"
 indent = 2
+max_width = 100
 fn_signature_width = 100
 space_before_colon = false
-format_function_headers = true
+
+[format.rules]
+function_headers = true
 ```
 
 Save it with `vx-format --print-config default > vx-format.toml`.
-Print mode cannot be combined with input files, `--config`, `--indent`, `--space-before-colon`, `--format-function-headers`, or `--check`.
+Print mode cannot be combined with input files, `--config`, `--indent`, `--set`, or `--check`.
 
 Use `--config FILE` to select one configuration file for all inputs.
 Relative configuration paths use the command's working directory.
 An explicitly selected missing file causes an error.
 
-Use `--indent 4` to override indentation from a valid configuration or the built-in default.
+Use `--set KEY=VALUE` to override one setting of `[format]` for this command.
+Use a dotted key for a rule, such as `rules.function_headers`.
+Repeat `--set` to override several settings.
+`--indent 4` is short for `--set indent=4`.
+The formatter checks each override like a setting in the file.
 Overrides do not hide errors in an existing configuration file.
-Use `--space-before-colon true` or `--space-before-colon false` to override the configured colon style.
-Use `--format-function-headers true` or `--format-function-headers false` to override the header-formatting setting.
 
 ```sh
 vx-format --config path/to/vx-format.toml file.vx
 vx-format --indent 4 file.vx
-vx-format --space-before-colon true file.vx
-vx-format --check --format-function-headers false file.vx
+vx-format --set max_width=80 --set space_before_colon=true file.vx
+vx-format --check --set rules.function_headers=false file.vx
 ```
 
 The formatter validates all configurations and reads all inputs before modifying any file.

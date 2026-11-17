@@ -380,11 +380,11 @@ fn disabled_function_headers_preserve_layout_types_and_contracts() {
     let header = "fn   long_name(a: Tensor< f32, [2, 2] >, b : i32) -> i32\nrequires b > 0\nensures return > 0 ";
     let input = format!("{header}{{\nreturn b;\n}}\n");
     let config = FormatConfig {
-        format_function_headers: false,
         fn_signature_width: 20,
         space_before_colon: true,
         ..FormatConfig::default()
-    };
+    }
+    .with_rule("function_headers", false);
     let result = format_file_with_report(&input, &config);
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
     assert_eq!(result.text, format!("{header}{{\n  return b;\n}}\n"));

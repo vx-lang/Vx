@@ -36,6 +36,22 @@ pub fn format_file_with_report(content: &str, config: &FormatConfig) -> FormatOu
     source::engine::format_source(content, config)
 }
 
+/// The built-in defaults as a complete configuration file, with every built-in rule.
+pub fn default_config_toml() -> String {
+    let edition = FormatConfig::default().style_edition;
+    let rules: Vec<_> = source::builtin_registry()
+        .rules()
+        .into_iter()
+        .map(|rule| (rule.name, (rule.enabled_by_default)(edition)))
+        .collect();
+    vx_config::default_format_config_toml(&rules)
+}
+
+/// An error when `config` switches on or off a rule that the formatter does not have.
+pub fn check_rule_names(config: &FormatConfig) -> Result<(), String> {
+    source::builtin_registry().check_rule_names(config)
+}
+
 /// Run the shared pipeline with explicitly registered syntax formatters.
 pub fn format_file_with_registry(
     content: &str,

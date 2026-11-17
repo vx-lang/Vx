@@ -1,5 +1,5 @@
 use super::dispatch::{
-    Coverage, FormatOutcome, NodeContext, NodeFormatter, NodeRegistry, SyntaxKind, SyntaxNode,
+    Coverage, FormatOutcome, NodeContext, NodeFormatter, NodeRegistry, Rule, SyntaxKind, SyntaxNode,
 };
 use super::document::{self, Document, RenderState, Shape};
 use super::ownership::{Owner, OwnershipMap};
@@ -53,7 +53,7 @@ pub fn format_declaration(
             column: entry.column,
             indent_level: entry.indent_level,
             indent_spaces: config.indent,
-            width: config.fn_signature_width,
+            width: config.max_width,
         };
         let layout =
             builtin_registry().format(SyntaxNode::Function(declaration), source, config, shape)?;
@@ -120,8 +120,11 @@ impl NodeFormatter for FunctionFormatter {
 }
 
 impl NodeFormatter for HeaderFormatter {
-    fn enabled(&self, config: &FormatConfig) -> bool {
-        config.format_function_headers
+    fn rule(&self) -> Option<Rule> {
+        Some(Rule {
+            name: "function_headers",
+            enabled_by_default: |_| true,
+        })
     }
 
     fn kind(&self) -> SyntaxKind {
@@ -142,6 +145,10 @@ impl NodeFormatter for HeaderFormatter {
     ) -> Result<Document, CoverageWarning> {
         let SyntaxNode::Header(view) = node else {
             return Err(unsupported(context, node));
+        };
+        let shape = Shape {
+            width: shape.width.min(context.config.fn_signature_width),
+            ..shape
         };
         let source = context.source;
         let bytes = source.token_bytes(view.tokens.clone());
