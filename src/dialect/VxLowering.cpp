@@ -63,6 +63,7 @@
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/LegacyPassManager.h"
@@ -80,6 +81,7 @@
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Scalar/EarlyCSE.h"
 #include "llvm/Transforms/Scalar/SROA.h"
+#include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/LoopUtils.h"
 
 #include <atomic>
@@ -9367,8 +9369,10 @@ static std::optional<DisjointConstant> disjointConstant(llvm::Value *v) {
 /// values with `j == 1`, `j == 2` and so on has a constant `j` in each copy,
 /// and the picks fold. The Metal code generator unrolls outer loops too, but
 /// on NVIDIA that added register spills to a top-k kernel. The loop counters
-/// are still in stack slots here, so SROA moves them to registers first:
-/// without that, LLVM cannot count the trips.
+/// are still in stack slots here, and LLVM cannot count the trips of such a
+/// loop. So SROA moves them to registers in a copy of the function, and the
+/// trips are counted there. SROA on the function itself, this early, added
+/// spills to another kernel.
 static void unrollShortLoops(llvm::Module &module) {
   constexpr unsigned maxUnrolledTrips = 16;
   llvm::LoopAnalysisManager loops;
@@ -9382,24 +9386,43 @@ static void unrollShortLoops(llvm::Module &module) {
   builder.registerLoopAnalyses(loops);
   builder.crossRegisterProxies(loops, functions, calls, modules);
   llvm::FunctionPassManager cleanup;
-  cleanup.addPass(llvm::SROAPass(llvm::SROAOptions::ModifyCFG));
-  for (llvm::Function &f : module) {
-    if (f.isDeclaration())
-      continue;
-    cleanup.run(f, functions);
-    llvm::LoopInfo &info = functions.getResult<llvm::LoopAnalysis>(f);
+  // The copy keeps the blocks of the function, so a loop of the copy and the
+  // loop of the function with the same header are the same loop.
+  cleanup.addPass(llvm::SROAPass(llvm::SROAOptions::PreserveCFG));
+  llvm::SmallVector<llvm::Function *> kernels;
+  for (llvm::Function &f : module)
+    if (!f.isDeclaration())
+      kernels.push_back(&f);
+  for (llvm::Function *f : kernels) {
+    llvm::ValueToValueMapTy copied;
+    llvm::Function *copy = llvm::CloneFunction(f, copied);
+    llvm::DenseMap<llvm::BasicBlock *, llvm::BasicBlock *> original;
+    for (llvm::BasicBlock &block : *f)
+      original[llvm::cast<llvm::BasicBlock>(copied[&block])] = &block;
+    cleanup.run(*copy, functions);
+    llvm::DominatorTree dominators(*f);
+    llvm::LoopInfo info(dominators);
     llvm::ScalarEvolution &evolution =
-        functions.getResult<llvm::ScalarEvolutionAnalysis>(f);
-    for (llvm::Loop *loop : info.getLoopsInPreorder()) {
+        functions.getResult<llvm::ScalarEvolutionAnalysis>(*copy);
+    for (llvm::Loop *loop :
+         functions.getResult<llvm::LoopAnalysis>(*copy).getLoopsInPreorder()) {
       // A loop that tests its condition at the top runs its header once more
       // than its body.
       unsigned trips = evolution.getSmallConstantTripCount(loop);
       llvm::BasicBlock *latch = loop->getLoopLatch();
       if (trips > 0 && latch && !loop->isLoopExiting(latch))
         --trips;
-      if (loop->isInnermost() && trips > 0 && trips <= maxUnrolledTrips)
-        llvm::addStringMetadataToLoop(loop, "llvm.loop.unroll.full");
+      if (!loop->isInnermost() || trips == 0 || trips > maxUnrolledTrips)
+        continue;
+      llvm::BasicBlock *header = original.lookup(loop->getHeader());
+      assert(header && "SROA kept the blocks of the copy");
+      llvm::Loop *same = info.getLoopFor(header);
+      assert(same && same->getHeader() == header && same->isInnermost() &&
+             "the copy has the loops of the function");
+      llvm::addStringMetadataToLoop(same, "llvm.loop.unroll.full");
     }
+    functions.clear(*copy, copy->getName());
+    copy->eraseFromParent();
   }
 }
 
