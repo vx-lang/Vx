@@ -9885,6 +9885,74 @@ static void legalizeOneBitArithmetic(llvm::Module &module) {
     inst->eraseFromParent();
 }
 
+/// The libm functions that an OpenCL device has under the same name. Each
+/// math method of `f32` calls `libm_<name>f`, of `f64` `libm_<name>`, of `f16`
+/// `libm_<name>f16`, and of `bf16` `libm_<name>_bf16`.
+static constexpr llvm::StringLiteral kOpenClMath[] = {
+    "exp",   "exp2",  "exp10", "expm1", "log",   "log2",  "log10",
+    "log1p", "sin",   "cos",   "tan",   "sinh",  "cosh",  "tanh",
+    "asin",  "acos",  "atan",  "atan2", "asinh", "acosh", "atanh",
+    "pow",   "hypot", "cbrt",  "erf",   "rsqrt"};
+
+/// Replace each call to a libm function in `gpuModule` with a call to the
+/// OpenCL built-in of the same name, which LLVM's SPIR-V backend writes as the
+/// device's own instruction. Vx's libm rounds correctly, but it computes in
+/// `f64`, which the Arc does not have, and it reads tables that an image
+/// cannot hold. A built-in can differ from the host in the last bits. An `f16`
+/// or `bf16` value is computed in `f32`.
+static void callOpenClMath(gpu::GPUModuleOp gpuModule) {
+  MLIRContext *context = gpuModule.getContext();
+  auto known = [](StringRef base) {
+    return llvm::is_contained(kOpenClMath, base);
+  };
+  SmallVector<func::CallOp> calls;
+  gpuModule.walk([&](func::CallOp call) { calls.push_back(call); });
+  for (func::CallOp call : calls) {
+    StringRef base = call.getCallee();
+    if (!base.consume_front("libm_"))
+      continue;
+    Type type;
+    if (base.consume_back("_bf16"))
+      type = BFloat16Type::get(context);
+    else if (base.consume_back("f16"))
+      type = Float16Type::get(context);
+    else if (base.ends_with("f") && known(base.drop_back()))
+      type = Float32Type::get(context), base = base.drop_back();
+    else
+      type = Float64Type::get(context);
+    unsigned arity = call.getNumOperands();
+    if (!known(base) || arity < 1 || arity > 2 || call.getNumResults() != 1 ||
+        call.getResult(0).getType() != type ||
+        llvm::any_of(call.getOperandTypes(), [&](Type t) { return t != type; }))
+      continue;
+    Type compute = type.isF64() ? type : Float32Type::get(context);
+    std::string name = "_Z" + std::to_string(base.size()) + base.str();
+    for (unsigned i = 0; i < arity; ++i)
+      name += compute.isF64() ? "d" : "f";
+    auto builtin = gpuModule.lookupSymbol<func::FuncOp>(name);
+    if (!builtin) {
+      OpBuilder top = OpBuilder::atBlockBegin(gpuModule.getBody());
+      builtin = func::FuncOp::create(
+          top, call.getLoc(), name,
+          FunctionType::get(context, SmallVector<Type>(arity, compute),
+                            {compute}));
+      builtin.setPrivate();
+    }
+    OpBuilder b(call);
+    SmallVector<Value> args;
+    for (Value v : call.getOperands())
+      args.push_back(type == compute
+                         ? v
+                         : arith::ExtFOp::create(b, call.getLoc(), compute, v));
+    Value result =
+        func::CallOp::create(b, call.getLoc(), builtin, args).getResult(0);
+    if (type != compute)
+      result = arith::TruncFOp::create(b, call.getLoc(), type, result);
+    call.getResult(0).replaceAllUsesWith(result);
+    call.erase();
+  }
+}
+
 /// Compile a `gpu.module` to a SPIR-V module.
 ///
 /// The pipeline `scripts/tools/spirv_module_check.sh` runs by hand on a `.vx`
@@ -9924,13 +9992,15 @@ spirvImageOfKernels(gpu::GPUModuleOp gpuModule, const llvm::StringSet<> &left,
   MLIRContext *context = gpuModule.getContext();
   OwningOpRef<ModuleOp> device = deviceModuleCopy(gpuModule);
 
-  // Remove the kernels that are left out. Then remove each helper and global
-  // that no kernel in the image uses any more.
-  if (!left.empty()) {
+  // Remove the kernels that are left out, and give the math methods the
+  // device's own functions. Then remove each helper and global that no kernel
+  // in the image uses any more, such as a libm table.
+  {
     gpu::GPUModuleOp copy = *device->getOps<gpu::GPUModuleOp>().begin();
     for (auto f : llvm::make_early_inc_range(copy.getOps<gpu::GPUFuncOp>()))
       if (left.contains(f.getName()))
         f.erase();
+    callOpenClMath(copy);
     for (bool changed = true; changed;) {
       changed = false;
       for (Operation &op : llvm::make_early_inc_range(copy.getOps())) {
