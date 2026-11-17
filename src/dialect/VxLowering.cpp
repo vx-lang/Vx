@@ -66,6 +66,7 @@
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InstIterator.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PatternMatch.h"
@@ -9816,6 +9817,68 @@ static LogicalResult serializeSpirv(std::unique_ptr<llvm::Module> module,
   return success();
 }
 
+/// Give each `i1` operation that LLVM's SPIR-V backend cannot write its logic
+/// form. The backend writes `mul`, division, remainder and the shifts of `i1`
+/// as integer instructions on `bool`, which SPIR-V does not allow, and it
+/// cannot lower the min and max of `i1` at all.
+static void legalizeOneBitArithmetic(llvm::Module &module) {
+  SmallVector<llvm::Instruction *> replaced;
+  for (llvm::Function &f : module) {
+    for (llvm::Instruction &inst : llvm::instructions(f)) {
+      if (!inst.getType()->isIntOrIntVectorTy(1))
+        continue;
+      llvm::IRBuilder<> b(&inst);
+      llvm::Value *logic = nullptr;
+      if (auto *op = dyn_cast<llvm::BinaryOperator>(&inst)) {
+        llvm::Value *x = op->getOperand(0);
+        llvm::Value *y = op->getOperand(1);
+        switch (op->getOpcode()) {
+        case llvm::Instruction::Mul:
+          logic = b.CreateAnd(x, y);
+          break;
+        // Each division and shift of `i1` that is defined gives `x`: it divides
+        // by `true` or shifts by 0.
+        case llvm::Instruction::UDiv:
+        case llvm::Instruction::SDiv:
+        case llvm::Instruction::Shl:
+        case llvm::Instruction::LShr:
+        case llvm::Instruction::AShr:
+          logic = x;
+          break;
+        case llvm::Instruction::URem:
+        case llvm::Instruction::SRem:
+          logic = llvm::Constant::getNullValue(inst.getType());
+          break;
+        // The backend already writes `add` and `sub` of `i1` as
+        // `OpLogicalNotEqual`, which is xor.
+        default:
+          break;
+        }
+      } else if (auto *call = dyn_cast<llvm::IntrinsicInst>(&inst)) {
+        // As a signed number, `true` is -1, so it is the smaller one.
+        switch (call->getIntrinsicID()) {
+        case llvm::Intrinsic::umax:
+        case llvm::Intrinsic::smin:
+          logic = b.CreateOr(call->getArgOperand(0), call->getArgOperand(1));
+          break;
+        case llvm::Intrinsic::umin:
+        case llvm::Intrinsic::smax:
+          logic = b.CreateAnd(call->getArgOperand(0), call->getArgOperand(1));
+          break;
+        default:
+          break;
+        }
+      }
+      if (logic) {
+        inst.replaceAllUsesWith(logic);
+        replaced.push_back(&inst);
+      }
+    }
+  }
+  for (llvm::Instruction *inst : replaced)
+    inst->eraseFromParent();
+}
+
 /// Compile a `gpu.module` to a SPIR-V module.
 ///
 /// The pipeline `scripts/tools/spirv_module_check.sh` runs by hand on a `.vx`
@@ -9932,6 +9995,7 @@ spirvImageOfKernels(gpu::GPUModuleOp gpuModule, const llvm::StringSet<> &left,
     error = "the SPIR-V module did not translate to LLVM IR";
     return {};
   }
+  legalizeOneBitArithmetic(*llvmModule);
 
   std::string image;
   if (failed(serializeSpirv(std::move(llvmModule), image, error)))
