@@ -10,6 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+use super::formatting::RecordedKind;
 use super::*;
 
 /// Split a numeric literal token into its numeric part and *explicit* element type.
@@ -537,6 +538,8 @@ impl<'a> Parser<'a> {
         mut call_name: String,
         span: Span,
     ) -> ParseResult<'a, Expr> {
+        // The caller has read the first name of the path.
+        let start = self.pos.saturating_sub(1);
         // In an impl, `Self { .. }`, `Self::new()` and `Self::Variant` name the impl's type,
         // spelled as the type prints: `Pair<T>`. `Self::Item::default()` keeps its `Self`.
         let mut self_type_args = None;
@@ -716,6 +719,7 @@ impl<'a> Parser<'a> {
                 self.advance(); // consume '{'
                 let mut fields = Vec::new();
                 while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+                    let field_start = self.pos;
                     let token_kind = self.advance().kind.clone();
                     let f_name = match token_kind {
                         TokenType::Identifier(f) => f.to_string(),
@@ -728,12 +732,14 @@ impl<'a> Parser<'a> {
                     };
                     self.consume(&TokenType::Colon, "Expected ':'")?;
                     let f_expr = self.parse_expr()?;
+                    self.record(RecordedKind::StructField, field_start);
                     fields.push((f_name.into(), f_expr));
                     if !self.match_token(&TokenType::Comma) {
                         break;
                     }
                 }
                 self.consume(&TokenType::RightBrace, "Expected '}'")?;
+                self.record(RecordedKind::StructLiteral, start);
                 Self::apply_type_args(&mut call_name, parsed_type_args);
                 Ok(Expr::StructInit(StructInitExpr {
                     name: call_name.into(),

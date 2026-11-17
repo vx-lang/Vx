@@ -68,6 +68,8 @@ pub struct FormatConfig {
     pub fn_signature_width: usize,
     /// Add a space before single colons in function headers.
     pub space_before_colon: bool,
+    /// The widest that the fields of a struct literal may be, for the literal to stay on one line.
+    pub struct_lit_width: usize,
     /// Formatting rules switched on or off by name. A rule that is not named uses its default.
     pub rules: BTreeMap<String, bool>,
 }
@@ -82,6 +84,7 @@ impl FormatConfig {
                 max_width: 100,
                 fn_signature_width: 100,
                 space_before_colon: false,
+                struct_lit_width: 18,
                 rules: BTreeMap::new(),
             },
         }
@@ -114,6 +117,7 @@ struct FileSettings {
     max_width: Option<usize>,
     fn_signature_width: Option<usize>,
     space_before_colon: Option<bool>,
+    struct_lit_width: Option<usize>,
     #[serde(default)]
     rules: BTreeMap<String, bool>,
 }
@@ -140,6 +144,12 @@ impl FileSettings {
                 "fn_signature_width ({fn_signature_width}) must not be greater than max_width ({max_width})"
             ));
         }
+        let struct_lit_width = self.struct_lit_width.unwrap_or(defaults.struct_lit_width);
+        if struct_lit_width > max_width {
+            return Err(format!(
+                "struct_lit_width ({struct_lit_width}) must not be greater than max_width ({max_width})"
+            ));
+        }
         Ok(FormatConfig {
             indent: self.indent,
             max_width,
@@ -147,6 +157,7 @@ impl FileSettings {
             space_before_colon: self
                 .space_before_colon
                 .unwrap_or(defaults.space_before_colon),
+            struct_lit_width,
             rules: self.rules,
             ..defaults
         })
@@ -158,12 +169,13 @@ impl FileSettings {
 pub fn default_format_config_toml(rules: &[(&str, bool)]) -> String {
     let defaults = FormatConfig::default();
     let mut text = format!(
-        "[format]\nstyle_edition = \"{}\"\nindent = {}\nmax_width = {}\nfn_signature_width = {}\nspace_before_colon = {}\n",
+        "[format]\nstyle_edition = \"{}\"\nindent = {}\nmax_width = {}\nfn_signature_width = {}\nspace_before_colon = {}\nstruct_lit_width = {}\n",
         defaults.style_edition,
         defaults.indent,
         defaults.max_width,
         defaults.fn_signature_width,
-        defaults.space_before_colon
+        defaults.space_before_colon,
+        defaults.struct_lit_width
     );
     if !rules.is_empty() {
         text.push_str("\n[format.rules]\n");
@@ -399,6 +411,9 @@ mod tests {
             "[format]\nindent = 2\nfn_signature_width = 18446744073709551616",
             "[format]\nindent = 2\nfn_signature_width = 101",
             "[format]\nindent = 2\nmax_width = 80\nfn_signature_width = 90",
+            "[format]\nindent = 2\nstruct_lit_width = 101",
+            "[format]\nindent = 2\nmax_width = 40\nstruct_lit_width = 50",
+            "[format]\nindent = 2\nstruct_lit_width = -1",
             "[format]\nindent = 2\nspace_before_colon = 'true'",
             "[format]\nindent = 2\nspace_before_colon = 1",
             "[format]\nindent = 2\nstyle_edition = '2015'",
@@ -450,6 +465,16 @@ mod tests {
         assert!(config.rule_enabled("future_rule", false));
         assert!(config.rule_enabled("unnamed_rule", true));
         assert!(!config.rule_enabled("unnamed_rule", false));
+    }
+
+    #[test]
+    fn reads_the_struct_literal_width() {
+        assert_eq!(
+            parse("[format]\nindent = 2\n").unwrap().struct_lit_width,
+            18
+        );
+        let config = parse("[format]\nindent = 2\nstruct_lit_width = 40\n").unwrap();
+        assert_eq!(config.struct_lit_width, 40);
     }
 
     #[test]

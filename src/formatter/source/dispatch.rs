@@ -1,6 +1,7 @@
 use super::document::{Document, Shape};
 use super::{
-    CoverageWarning, FunctionDeclView, FunctionHeaderView, ParameterView, SourceFileView, TypeView,
+    CoverageWarning, FunctionDeclView, FunctionHeaderView, ParameterView, SourceFileView,
+    StructLiteralView, TypeView,
 };
 use std::collections::HashSet;
 use std::ops::Range;
@@ -13,6 +14,7 @@ pub enum SyntaxKind {
     ParameterList,
     Parameter,
     Type,
+    StructLiteral,
 }
 
 #[derive(Clone, Copy)]
@@ -22,6 +24,7 @@ pub enum SyntaxNode<'a> {
     ParameterList(&'a FunctionHeaderView),
     Parameter(&'a ParameterView),
     Type(&'a TypeView),
+    StructLiteral(&'a StructLiteralView),
 }
 
 impl SyntaxNode<'_> {
@@ -32,6 +35,7 @@ impl SyntaxNode<'_> {
             Self::ParameterList(_) => SyntaxKind::ParameterList,
             Self::Parameter(_) => SyntaxKind::Parameter,
             Self::Type(_) => SyntaxKind::Type,
+            Self::StructLiteral(_) => SyntaxKind::StructLiteral,
         }
     }
     pub fn tokens(self) -> Range<usize> {
@@ -41,6 +45,7 @@ impl SyntaxNode<'_> {
             Self::ParameterList(view) => view.parameter_open.0..view.parameter_close.0 + 1,
             Self::Parameter(view) => view.tokens.clone(),
             Self::Type(view) => view.tokens.clone(),
+            Self::StructLiteral(view) => view.tokens.clone(),
         }
     }
 }

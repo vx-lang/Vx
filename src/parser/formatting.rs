@@ -42,6 +42,10 @@ pub(crate) enum RecordedKind {
     ImplBlock,
     TraitBlock,
     ExternBlock,
+    /// `Name { field: value, ... }`, from the first name of the path to the `}`.
+    StructLiteral,
+    /// One `field: value` of a struct literal.
+    StructField,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

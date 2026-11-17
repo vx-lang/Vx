@@ -14,9 +14,11 @@ indent = 2
 max_width = 100
 fn_signature_width = 100
 space_before_colon = false
+struct_lit_width = 18
 
 [format.rules]
 function_headers = true
+struct_literals = true
 ```
 
 Only `indent` is required.
@@ -45,6 +47,9 @@ Paths such as `module::Type` remain unchanged.
 This setting does not change colon spacing in function bodies or struct declarations.
 The added spaces count toward `fn_signature_width`.
 
+`struct_lit_width` sets how wide the fields of a struct literal may be, for the literal to stay on one line.
+It defaults to 18, as in Rustfmt, and must not be greater than `max_width`.
+
 ## Formatting rules
 
 `[format.rules]` switches each formatting rule on or off by name.
@@ -55,6 +60,7 @@ An unknown rule name is an error.
 | Rule | Default | What it formats |
 | --- | --- | --- |
 | `function_headers` | `true` | Spacing, type spelling, and wrapping of function declarations. |
+| `struct_literals` | `true` | Puts a short struct literal on one line, and a long one with one field on each line. |
 
 A switched-off rule leaves its code to the base formatting, as if the rule did not exist.
 The base formatting changes only indentation and the line breaks around blocks.
@@ -95,9 +101,11 @@ indent = 2
 max_width = 100
 fn_signature_width = 100
 space_before_colon = false
+struct_lit_width = 18
 
 [format.rules]
 function_headers = true
+struct_literals = true
 ```
 
 Save it with `vx-format --print-config default > vx-format.toml`.
@@ -206,6 +214,28 @@ Clauses on following lines do not force short parameter lists to wrap.
 
 The width is a preference: a single long type or function name can still exceed it.
 Declarations without parameters remain on one line.
+
+## Struct literals
+
+A struct literal stays on one line when its fields fit in `struct_lit_width` columns and the line fits in `max_width`:
+
+```text
+let p = Point { x: 1, y: 2 };
+```
+
+Otherwise each field goes on a line of its own:
+
+```text
+return Wide {
+  negative: d.negative,
+  exponent: d.exponent
+};
+```
+
+A literal with a comma after its last field always has one field on each line, because the formatter keeps every token.
+A literal with a comment between its fields gets the base formatting.
+The rule formats a struct literal inside a field value the same way.
+The base formatting formats the field values themselves.
 
 ## Extending the formatter
 

@@ -524,3 +524,50 @@ fn pub_belongs_to_the_function_header() {
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
     assert_eq!(result.text, "pub fn add(a: i32) -> i32 {\n  return a;\n}");
 }
+
+/// A header layout whose one-line alternative is the base formatting of the header, and whose
+/// other alternative keeps the header as written.
+struct RegionOrOriginalHeader;
+
+impl NodeFormatter for RegionOrOriginalHeader {
+    fn kind(&self) -> SyntaxKind {
+        SyntaxKind::Header
+    }
+    fn roots<'a>(&self, source: &'a SourceFileView<'_>) -> Vec<SyntaxNode<'a>> {
+        source
+            .functions
+            .iter()
+            .map(|function| SyntaxNode::Header(&function.header))
+            .collect()
+    }
+    fn format(
+        &self,
+        node: SyntaxNode<'_>,
+        context: &NodeContext<'_, '_, '_>,
+        shape: Shape,
+    ) -> Result<Document, CoverageWarning> {
+        let bytes = context.source.token_bytes(node.tokens());
+        Ok(Document::Choice {
+            flat: Box::new(Document::Region {
+                bytes: bytes.clone(),
+                indent_level: shape.indent_level,
+            }),
+            expanded: Box::new(Document::Preserve {
+                bytes,
+                keep_column: false,
+            }),
+        })
+    }
+}
+
+#[test]
+fn a_one_line_layout_that_breaks_a_line_falls_back_to_the_other_layout() {
+    // The base formatting re-indents the second line of the header, so the one-line alternative
+    // holds a line break. The renderer must reject it and keep the header as written.
+    let owners: &[&dyn NodeFormatter] = &[&RegionOrOriginalHeader];
+    let registry = NodeRegistry::new(owners).unwrap();
+    let input = "fn f(a: i32,\n        b: i32) -> i32 {\n  a\n}\n";
+    let result = format_file_with_registry(input, &FormatConfig::default(), &registry);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.text, input);
+}

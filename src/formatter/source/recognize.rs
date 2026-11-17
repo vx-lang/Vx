@@ -1,5 +1,5 @@
 use super::*;
-use crate::parser::formatting::{ClauseKind, RecordedKind};
+use crate::parser::formatting::{ClauseKind, RecordedKind, SyntaxRecord};
 use crate::parser::Parser;
 
 fn trivia(kind: &TokenType<'_>) -> bool {
@@ -394,6 +394,72 @@ impl<'source> SourceFileView<'source> {
                 },
             });
         }
+        self.find_struct_literals(&records, &to_source);
+    }
+
+    fn find_struct_literals(
+        &mut self,
+        records: &[SyntaxRecord],
+        to_source: &dyn Fn(&Range<usize>) -> Range<usize>,
+    ) {
+        let fields: Vec<_> = records
+            .iter()
+            .filter(|record| record.kind == RecordedKind::StructField)
+            .map(|record| to_source(&record.tokens))
+            .collect();
+        for literal in records
+            .iter()
+            .filter(|record| record.kind == RecordedKind::StructLiteral)
+        {
+            let tokens = to_source(&literal.tokens);
+            // The parser also reads `return { ... }` this way. Only a name starts a struct literal.
+            if !matches!(
+                self.tokens[tokens.start].token.kind,
+                TokenType::Identifier(_)
+            ) {
+                continue;
+            }
+            let open = (tokens.clone())
+                .find(|index| matches!(self.tokens[*index].token.kind, TokenType::LeftBrace))
+                .expect("a struct literal has a `{`");
+            let close = tokens.end - 1;
+            // The fields of this literal, not those of a literal inside one of its values.
+            let mut own: Vec<Range<usize>> = Vec::new();
+            for field in fields
+                .iter()
+                .filter(|field| open < field.start && field.end <= close)
+            {
+                if own.last().is_none_or(|last| last.end <= field.start) {
+                    own.push(field.clone());
+                }
+            }
+            let commas = own
+                .iter()
+                .map(|field| {
+                    self.next_significant(field.end)
+                        .filter(|index| matches!(self.tokens[*index].token.kind, TokenType::Comma))
+                        .map(TokenId)
+                })
+                .collect();
+            let name_end = (tokens.start..open)
+                .rev()
+                .find(|index| !trivia(&self.tokens[*index].token.kind))
+                .expect("a struct literal starts with its name")
+                + 1;
+            self.struct_literals.push(StructLiteralView {
+                name: tokens.start..name_end,
+                tokens,
+                open: TokenId(open),
+                close: TokenId(close),
+                fields: own,
+                commas,
+            });
+        }
+    }
+
+    /// The first token from `from` on that is not whitespace or a comment.
+    fn next_significant(&self, from: usize) -> Option<usize> {
+        (from..self.tokens.len()).find(|index| !trivia(&self.tokens[*index].token.kind))
     }
 
     /// Ignore excluded text in grammar probes, but retain delimiters that connect to outside code.

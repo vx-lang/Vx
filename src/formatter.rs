@@ -65,6 +65,9 @@ pub fn format_file_with_registry(
 mod activation_tests;
 
 #[cfg(test)]
+mod struct_literal_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::lexer::{Lexer, TokenType};

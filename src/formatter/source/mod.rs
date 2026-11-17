@@ -6,6 +6,7 @@ pub(crate) mod engine;
 mod formatters;
 pub mod ownership;
 mod recognize;
+mod struct_literals;
 
 #[cfg(test)]
 mod tests;
@@ -100,6 +101,20 @@ pub struct FunctionDeclView {
     pub header: FunctionHeaderView,
 }
 
+/// `Name { field: value, ... }`.
+#[derive(Clone, Debug)]
+pub struct StructLiteralView {
+    pub tokens: Range<usize>,
+    /// The tokens of the type name, such as `Point` or `Pair<i32>`.
+    pub name: Range<usize>,
+    pub open: TokenId,
+    pub close: TokenId,
+    /// The tokens of each `field: value`.
+    pub fields: Vec<Range<usize>>,
+    /// The comma after each field. Only the last field can have none.
+    pub commas: Vec<Option<TokenId>>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeclarationContext {
     Root,
@@ -132,6 +147,7 @@ pub struct SourceFileView<'a> {
     pub macros: Vec<MacroView>,
     pub exclusions: Vec<Range<usize>>,
     pub functions: Vec<FunctionDeclView>,
+    pub struct_literals: Vec<StructLiteralView>,
     pub gaps: Vec<ConstrainedGap>,
     pub warnings: Vec<CoverageWarning>,
     matching: Vec<Option<usize>>,
@@ -373,6 +389,7 @@ impl<'a> SourceFileView<'a> {
             macros: Vec::new(),
             exclusions: Vec::new(),
             functions: Vec::new(),
+            struct_literals: Vec::new(),
             gaps: Vec::new(),
             warnings: Vec::new(),
         }

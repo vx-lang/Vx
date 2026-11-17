@@ -48,11 +48,13 @@ fn prints_defaults_without_reading_project_config_or_changing_files() -> Result<
     let text = String::from_utf8(output.stdout)?;
     check_equal(
         &text,
-        &"[format]\nstyle_edition = \"2026\"\nindent = 2\nmax_width = 100\nfn_signature_width = 100\nspace_before_colon = false\n\n[format.rules]\nfunction_headers = true\n",
+        &"[format]\nstyle_edition = \"2026\"\nindent = 2\nmax_width = 100\nfn_signature_width = 100\nspace_before_colon = false\nstruct_lit_width = 18\n\n[format.rules]\nfunction_headers = true\nstruct_literals = true\n",
     )?;
     check_equal(
         &vx_config::parse_format_config(Path::new("vx-format.toml"), &text)?,
-        &vx_config::FormatConfig::default().with_rule("function_headers", true),
+        &vx_config::FormatConfig::default()
+            .with_rule("function_headers", true)
+            .with_rule("struct_literals", true),
     )?;
     check_equal(&fs::read_to_string(project.join("main.vx"))?, &SOURCE)?;
     check_equal(
