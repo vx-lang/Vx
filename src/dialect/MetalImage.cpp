@@ -323,12 +323,10 @@ bool Printer::viewOf(Value memref, View &out, Operation *user) {
   return true;
 }
 
-// In shared memory, an index `x + c` with a number `c`, as an unrolled loop
-// makes, prints as `(ptr + .. x ..)[c]`. The Metal compiler then puts `c` in
-// the address of the access. With `ptr[.. x + c ..]` it computed each
-// address, and an expert product with shared tiles took 6% longer. In device
-// memory the same form made a flash attention 4% slower, so it keeps
-// `ptr[..]`.
+// An access to shared memory prints as `(ptr + origin + ..)[c]`, with the
+// indices that are constants in `c` (`splitSharedOffsets` makes such
+// indices). The Metal compiler then puts `c` in the address of the access.
+// Device memory keeps `ptr[..]`.
 std::string Printer::element(const View &v, ValueRange indices) {
   std::string at = v.origin;
   if (v.space != "threadgroup") {
@@ -339,31 +337,11 @@ std::string Printer::element(const View &v, ValueRange indices) {
   int64_t offset = 0;
   for (auto [k, i] : llvm::enumerate(indices)) {
     int64_t stride;
-    Value rest = i;
-    int64_t c = 0;
-    if (!StringRef(v.strides[k]).getAsInteger(10, stride)) {
-      // Vx computes an index in `i32` and casts it to `index`.
-      Value sum = i;
-      if (isa_and_nonnull<arith::IndexCastOp, arith::IndexCastUIOp>(
-              i.getDefiningOp()))
-        sum = i.getDefiningOp()->getOperand(0);
-      if (std::optional<int64_t> n = getConstantIntValue(i)) {
-        rest = nullptr;
-        c = *n;
-      } else if (auto add = sum.getDefiningOp<arith::AddIOp>()) {
-        if (std::optional<int64_t> n = getConstantIntValue(add.getRhs())) {
-          rest = add.getLhs();
-          c = *n;
-        } else if (std::optional<int64_t> n =
-                       getConstantIntValue(add.getLhs())) {
-          rest = add.getRhs();
-          c = *n;
-        }
-      }
-      offset += c * stride;
-    }
-    if (rest)
-      at += " + " + name(rest) + " * " + v.strides[k];
+    std::optional<int64_t> c = getConstantIntValue(i);
+    if (c && !StringRef(v.strides[k]).getAsInteger(10, stride))
+      offset += *c * stride;
+    else
+      at += " + " + name(i) + " * " + v.strides[k];
   }
   return "(" + v.ptr + " + " + at + ")[" + std::to_string(offset) + "]";
 }
@@ -2270,6 +2248,105 @@ bool Printer::switchOp(scf::IndexSwitchOp s) {
 
 // Makes each kernel of `m` structured: no calls, numbers in values instead of
 // stack slots, and `scf` instead of a CFG.
+
+// The memref and the indices of an access to memory, or none for another op.
+static std::optional<std::pair<OpOperand *, MutableOperandRange>>
+accessOf(Operation *op) {
+  if (auto x = dyn_cast<memref::LoadOp>(op))
+    return {{&x.getMemrefMutable(), x.getIndicesMutable()}};
+  if (auto x = dyn_cast<memref::StoreOp>(op))
+    return {{&x.getMemrefMutable(), x.getIndicesMutable()}};
+  if (auto x = dyn_cast<vector::LoadOp>(op))
+    return {{&x.getBaseMutable(), x.getIndicesMutable()}};
+  if (auto x = dyn_cast<vector::StoreOp>(op))
+    return {{&x.getBaseMutable(), x.getIndicesMutable()}};
+  if (auto x = dyn_cast<gpu::SubgroupMmaLoadMatrixOp>(op))
+    return {{&x.getSrcMemrefMutable(), x.getIndicesMutable()}};
+  if (auto x = dyn_cast<gpu::SubgroupMmaStoreMatrixOp>(op))
+    return {{&x.getDstMemrefMutable(), x.getIndicesMutable()}};
+  return std::nullopt;
+}
+
+// An access to shared memory at an index `x + c`, with a number `c`, as an
+// unrolled loop makes, becomes an access at `c` of a view that starts at `x`.
+// The printer then prints `(tile + x)[c]`, and the Metal compiler puts `c` in
+// the address. With `tile[x + c]` it computed each address, and an expert
+// product took 6% longer. Only a memref with a static identity layout, and
+// not device memory: there the same form made a flash attention 4% slower.
+static void splitSharedOffsets(gpu::GPUModuleOp m) {
+  SmallVector<Operation *> accesses;
+  m.walk([&](Operation *op) {
+    if (accessOf(op))
+      accesses.push_back(op);
+  });
+  for (Operation *op : accesses) {
+    auto [memref, indices] = *accessOf(op);
+    auto t = cast<MemRefType>(memref->get().getType());
+    auto space = dyn_cast_or_null<IntegerAttr>(t.getMemorySpace());
+    bool shared = (space && space.getInt() == 3) ||
+                  isa_and_nonnull<gpu::AddressSpaceAttr>(t.getMemorySpace());
+    if (!shared || !t.getLayout().isIdentity() || !t.hasStaticShape())
+      continue;
+    SmallVector<int64_t> strides;
+    int64_t offset;
+    if (failed(t.getStridesAndOffset(strides, offset)))
+      continue;
+    OpBuilder b(op);
+    Location loc = op->getLoc();
+    Value start;
+    SmallVector<Value> rest;
+    for (auto [k, use] : llvm::enumerate(indices)) {
+      Value i = use.get();
+      // Vx computes an index in `i32` and casts it to `index`.
+      Value sum = i;
+      if (isa_and_nonnull<arith::IndexCastOp, arith::IndexCastUIOp>(
+              i.getDefiningOp()))
+        sum = i.getDefiningOp()->getOperand(0);
+      Value x;
+      int64_t c = 0;
+      if (auto add = sum.getDefiningOp<arith::AddIOp>()) {
+        if (std::optional<int64_t> n = getConstantIntValue(add.getRhs())) {
+          x = add.getLhs();
+          c = *n;
+        } else if (std::optional<int64_t> n =
+                       getConstantIntValue(add.getLhs())) {
+          x = add.getRhs();
+          c = *n;
+        }
+      }
+      if (!x) {
+        rest.push_back(i);
+        continue;
+      }
+      if (!x.getType().isIndex())
+        x = arith::IndexCastOp::create(b, loc, b.getIndexType(), x);
+      Value scaled = strides[k] == 1
+                         ? x
+                         : arith::MulIOp::create(b, loc, x,
+                                                 arith::ConstantIndexOp::create(
+                                                     b, loc, strides[k]));
+      start = start ? arith::AddIOp::create(b, loc, start, scaled).getResult()
+                    : scaled;
+      rest.push_back(arith::ConstantIndexOp::create(b, loc, c));
+    }
+    if (!start)
+      continue;
+    SmallVector<OpFoldResult> sizes, unit;
+    for (int64_t n : t.getShape())
+      sizes.push_back(b.getIndexAttr(n));
+    for (int64_t st : strides)
+      unit.push_back(b.getIndexAttr(st));
+    auto viewType = MemRefType::get(
+        t.getShape(), t.getElementType(),
+        StridedLayoutAttr::get(b.getContext(), ShapedType::kDynamic, strides),
+        t.getMemorySpace());
+    Value view = memref::ReinterpretCastOp::create(
+        b, loc, viewType, memref->get(), OpFoldResult(start), sizes, unit);
+    memref->set(view);
+    indices.assign(rest);
+  }
+}
+
 LogicalResult structure(gpu::GPUModuleOp m, std::string &error) {
   MLIRContext *context = m.getContext();
   {
@@ -2358,6 +2435,15 @@ LogicalResult structure(gpu::GPUModuleOp m, std::string &error) {
   if (failed(applyPatternsGreedily(m, std::move(uplift)))) {
     error = "making the loops of a kernel `for` loops failed";
     return failure();
+  }
+  splitSharedOffsets(m);
+  {
+    PassManager pm(context, gpu::GPUModuleOp::getOperationName());
+    pm.addPass(createCSEPass());
+    if (failed(pm.run(m))) {
+      error = "merging the views of shared memory failed";
+      return failure();
+    }
   }
   return success();
 }
