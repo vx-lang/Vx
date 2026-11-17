@@ -110,17 +110,23 @@ pub(super) struct Tail {
     pub flag: Option<Val>,
 }
 
-/// One pass of a nest of blocks has ended, on lane 0: a release fence, an atomic add to the
-/// count of its group, and an acquire fence. Each fence is for the device, so the writes of every
-/// pass are visible to the last one. The last pass of a group sets the count back to 0, so the
+/// One pass of a nest of blocks has ended, on lane 0: an atomic add to the count of its group,
+/// with release and acquire order for the device, so the writes of every pass are visible to the
+/// last one. `memref.atomic_rmw` has no scope, so it would order for the whole system, which
+/// costs NVIDIA two more fences. The last pass of a group sets the count back to 0, so the
 /// next launch can use it again, and the flag says whether this pass was the last. The flag is
 /// in address space 3, the shared memory of every GPU arch that launches `across` loops.
-const ARRIVE: &str = r#"llvm.fence syncscope("device") release
+const ARRIVE: &str = r#"%vx_base = memref.extract_aligned_pointer_as_index %count : memref<?xi32> -> index
+%vx_buf, %vx_off, %vx_size, %vx_stride = memref.extract_strided_metadata %count : memref<?xi32> -> memref<i32>, index, index, index
 %vx_group = arith.index_cast %group : i32 to index
+%vx_index = arith.addi %vx_off, %vx_group : index
+%vx_base_int = arith.index_cast %vx_base : index to i64
+%vx_ptr = llvm.inttoptr %vx_base_int : i64 to !llvm.ptr
+%vx_index_int = arith.index_cast %vx_index : index to i64
+%vx_at_count = llvm.getelementptr %vx_ptr[%vx_index_int] : (!llvm.ptr, i64) -> !llvm.ptr, i32
 %vx_one = arith.constant 1 : i32
-%vx_old = memref.atomic_rmw addi %vx_one, %count[%vx_group] : (i32, memref<?xi32>) -> i32
+%vx_old = llvm.atomicrmw add %vx_at_count, %vx_one syncscope("device") acq_rel : !llvm.ptr, i32
 %vx_is_last = arith.cmpi eq, %vx_old, %last : i32
-llvm.fence syncscope("device") acquire
 scf.if %vx_is_last {
   %vx_none = arith.constant 0 : i32
   memref.store %vx_none, %count[%vx_group] : memref<?xi32>
