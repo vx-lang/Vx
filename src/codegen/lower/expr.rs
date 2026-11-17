@@ -5811,6 +5811,15 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
                 let (mut payload_val, mut payload_val_ty, next) =
                     gen.generate_expr(payload_expr, block)?;
                 block = next;
+                // A memref that goes in a slot for a descriptor is a tensor whose type the
+                // expression does not show, such as `unsafe { Distinct(t) }`.
+                let rank = rank.or_else(|| {
+                    let memref = melior::ir::r#type::MemRefType::try_from(payload_val_ty).ok()?;
+                    let rank = memref.rank();
+                    (full_llvm_type_text(slots.get(i)?)
+                        == crate::codegen::generator::tensor_descriptor_str(rank))
+                    .then_some(rank)
+                });
                 // A tensor goes in as its descriptor.
                 if let Some(rank) = rank {
                     payload_val = tensor_into_field(

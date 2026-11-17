@@ -2448,6 +2448,11 @@ impl<'c> MeliorGenerator<'c> {
                     Some(m) => ty.substitute(m),
                     None => ty.clone(),
                 };
+                // At run time a `Distinct` tensor is its tensor.
+                let ty = match ty {
+                    syntax::Type::Distinct(inner) => *inner,
+                    ty => ty,
+                };
                 let mut lowered = self.lower_type_str(&ty)?;
                 // A tensor is its descriptor, as in a struct field, so its shape travels with it.
                 if let (syntax::Type::Tensor(_, dims, _), true) =

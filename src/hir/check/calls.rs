@@ -906,6 +906,55 @@ impl<'a> TypeChecker<'a> {
                 return Type::Struct("void".into(), None);
             }
         }
+        // `Distinct::check(t)` is a call of the function in `core::distinct` for the element type
+        // of `t`, which the parser imports for such a program.
+        if let Expr::FunctionCall(fc) = expr {
+            if fc.name.as_ref() == "Distinct::check" {
+                let ty = match fc.args.as_slice() {
+                    [t] => self.operand_type(t),
+                    _ => Type::Unknown,
+                };
+                if let Type::Tensor(_, _, Some(p)) = &ty {
+                    if p.space != crate::syntax::MemorySpace::CPUDRAM {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E3004,
+                            format!(
+                                "`Distinct::check(t)` reads the values of `t` on the CPU, but `t` \
+                                 is in {}. Check the tensor before the transfer, and transfer \
+                                 the `Distinct` tensor",
+                                p.space.name()
+                            ),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&fc.span)),
+                        );
+                        return Type::Unknown;
+                    }
+                }
+                let checked = match fc.args.as_slice() {
+                    [_] => match ty {
+                        Type::Tensor(el, dims, _) if dims.len() == 1 => match el {
+                            ElementType::I32 => Some("distinct_check_i32"),
+                            ElementType::I64 => Some("distinct_check_i64"),
+                            ElementType::U32 => Some("distinct_check_u32"),
+                            ElementType::U64 => Some("distinct_check_u64"),
+                            _ => None,
+                        },
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let Some(name) = checked else {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3004,
+                        "`Distinct::check(t)` takes one tensor with one dimension of `i32`, \
+                         `i64`, `u32` or `u64`, by value"
+                            .to_string(),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&fc.span)),
+                    );
+                    return Type::Unknown;
+                };
+                fc.name = name.into();
+            }
+        }
         // A closure literal written as the `body` of `within` runs within its time limit.
         if let Expr::FunctionCall(fc) = expr {
             if fc.name.rsplit("::").next() == Some("within") && fc.args.len() == 2 {
