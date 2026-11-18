@@ -949,14 +949,22 @@ impl<'a> TypeChecker<'a> {
             if !(is_bool(lhs_ty) && is_bool(rhs_ty)) {
                 return true;
             }
+            // A shaped tensor has no `&`, `|` or `^` either, so the hint is for single values.
+            let hint = if Self::single_value_elem(lhs_ty).is_some()
+                && Self::single_value_elem(rhs_ty).is_some()
+            {
+                ". For bools, use `&` (and), `|` (or) or `^` (xor)"
+            } else {
+                ""
+            };
             self.errors.error_with_code(
                 crate::diagnostic::DiagnosticCode::E3030,
                 format!(
-                    "`{}` takes two numbers, got {} and {}. For bools, use `&` (and), `|` (or) \
-                     or `^` (xor)",
+                    "`{}` takes two numbers, got {} and {}{}",
                     binary_op_symbol(op),
                     lhs_ty,
-                    rhs_ty
+                    rhs_ty,
+                    hint
                 ),
                 Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
             );

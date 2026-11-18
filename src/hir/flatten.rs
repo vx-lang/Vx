@@ -1904,8 +1904,19 @@ impl<'r> Lowerer<'r> {
                 // `barrier()` (Vx#379): an effect, not a call -- there is no callee anywhere.
                 // The checker typed it i32, so hand back a constant for the value position
                 // nobody should be using it in.
-                if let Some((op, ordered)) = crate::hir::check::lanes::lane_routine(&fc.name) {
-                    return self.lower_lane_reduce(fc, op, ordered);
+                if let Some(routine) = crate::hir::check::lanes::lane_routine(&fc.name) {
+                    let args: Vec<&Expr> = fc.args.iter().collect();
+                    return match self.lower_lane_call(routine, &args)? {
+                        Some(v) => Ok(v),
+                        // The value of a routine with no value, which nothing reads.
+                        None => Ok(self.emit_value(
+                            Opcode::Const,
+                            Register(0),
+                            Register(0),
+                            ElementType::I32,
+                            0,
+                        )),
+                    };
                 }
                 // Around the call of a `Drop` impl's `drop` (F6, F6a): an effect on the
                 // runtime, with the time limit of the drop in nanoseconds.
@@ -4517,7 +4528,11 @@ impl<'r> Lowerer<'r> {
                 self.lower_stmt(stmt)?;
             }
             self.stride_next_for = false;
-            par.map(|(_, t)| t).unwrap_or(0)
+            match par {
+                Some((_, crate::hir::check::parallel::RUN_TIME_TRIP)) => SPAWN_RUN_TIME_TRIP,
+                Some((_, trip)) => trip,
+                None => 0,
+            }
         } else if let Some((btrip, plan)) = two_level {
             self.stride_plan = Some(plan);
             for stmt in stmts {
@@ -9099,8 +9114,7 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             | Opcode::TensorDim
             // `PtrIndex` reads base+index; `PtrStore` reads place+value (#242).
             | Opcode::PtrIndex
-            | Opcode::PtrStore
-            | Opcode::LaneReduce => {
+            | Opcode::PtrStore => {
                 assert!(
                     ins.operand1.0 < i && ins.operand2.0 < i,
                     "HIR operand not dominated at instruction {i}"
@@ -9187,6 +9201,10 @@ pub const SPAWN_TWO_LEVEL: u64 = 1 << 62;
 /// whole walk before the next thread stages its rows, which is a different program. The
 /// runtime must refuse to run it on the host rather than compute confidently wrong numbers.
 pub const SPAWN_COOP: u64 = 1 << 61;
+
+/// The `SpawnEnd` imm bit that says "the outermost loop runs in parallel, and its trip count is
+/// known only at run time". The low 32 bits are then 0.
+pub const SPAWN_RUN_TIME_TRIP: u64 = 1 << 60;
 
 pub(crate) mod across;
 mod affine;

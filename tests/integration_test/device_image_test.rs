@@ -737,6 +737,27 @@ fn four_bit_integers_are_computed_in_eight_bits() {
     }
 }
 
+/// Kernels that read and write 8-bit and 4-bit floats each get a SPIR-V module
+/// that `spirv-val` accepts. LLVM has no type for these floats, so the image
+/// must store them as integers.
+#[test]
+fn fp8_and_fp4_kernels_get_a_valid_spirv_module() {
+    let ir = emit_llvm("spirv_device_image_fp8_and_fp4.vx");
+    for kernel in ["vx_npu_kernel_0", "vx_npu_kernel_1"] {
+        let payload = payload_bytes(&ir, kernel);
+        let has = |needle: &[u8]| payload.windows(needle.len()).any(|w| w == needle);
+        assert!(
+            has(b"format=spirv\0"),
+            "{kernel} has no SPIR-V image in its payload"
+        );
+        match spirv_val(payload_section(&payload)) {
+            Some(Ok(())) => {}
+            Some(Err(report)) => panic!("spirv-val rejected the module of {kernel}:\n{report}"),
+            None => println!("spirv-val is not installed, so the module was not validated"),
+        }
+    }
+}
+
 /// A placed region that calls the runtime -- `print` inside the region -- also
 /// reaches no device image, and now says so, naming the callee it could not
 /// bring along (#1137).

@@ -708,6 +708,69 @@ static BlockArgument parameterOf(Value v) {
   return dyn_cast<BlockArgument>(v);
 }
 
+/// `v` before `spawn`: `v` itself when it is defined outside the region, or a
+/// copy of the pure operations in the region that compute it from such values.
+/// Null when an operation on the way is not pure.
+static Value valueBeforeSpawn(Value v, Operation *spawn, OpBuilder &b,
+                              IRMapping &copied, int depth = 0) {
+  if (copied.contains(v))
+    return copied.lookup(v);
+  Operation *def = v.getDefiningOp();
+  Operation *owner = def ? def : v.getParentBlock()->getParentOp();
+  if (!spawn->isAncestor(owner))
+    return v;
+  if (!def || depth > 8 || def->getNumRegions() != 0 || !isPure(def))
+    return nullptr;
+  for (Value operand : def->getOperands())
+    if (!valueBeforeSpawn(operand, spawn, b, copied, depth + 1))
+      return nullptr;
+  b.clone(*def, copied);
+  return copied.lookup(v);
+}
+
+/// The trip count of a region's parallel loop whose bounds are known only at
+/// run time, computed before `spawn` as an `i32` launch value:
+/// `max(end - start, 0)`, and at most the largest `i32`. The loop is
+/// grid-strided, so a smaller launch still covers every pass. Null when the
+/// bounds cannot be computed before the region.
+static Value runTimeTripBeforeSpawn(Operation *spawn, Region &body,
+                                    PatternRewriter &rewriter) {
+  SmallVector<Operation *> inits, bounds;
+  body.walk([&](Operation *o) {
+    if (o->hasAttr("vx.parallel_init"))
+      inits.push_back(o);
+    if (o->hasAttr("vx.parallel_bound"))
+      bounds.push_back(o);
+  });
+  if (inits.size() != 1 || bounds.size() != 1)
+    return nullptr;
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(spawn);
+  IRMapping copied;
+  Value start =
+      valueBeforeSpawn(inits.front()->getOperand(0), spawn, rewriter, copied);
+  Value end =
+      valueBeforeSpawn(bounds.front()->getOperand(0), spawn, rewriter, copied);
+  if (!start || !end || start.getType() != end.getType() ||
+      !start.getType().isSignlessInteger())
+    return nullptr;
+  Location loc = spawn->getLoc();
+  Type type = start.getType();
+  Value trip = rewriter.create<arith::SubIOp>(loc, end, start);
+  trip = rewriter.create<arith::MaxSIOp>(
+      loc, trip, rewriter.create<arith::ConstantIntOp>(loc, type, 0));
+  unsigned width = type.getIntOrFloatBitWidth();
+  Type i32 = rewriter.getI32Type();
+  if (width > 32) {
+    trip = rewriter.create<arith::MinSIOp>(
+        loc, trip, rewriter.create<arith::ConstantIntOp>(loc, type, INT32_MAX));
+    trip = rewriter.create<arith::TruncIOp>(loc, i32, trip);
+  } else if (width < 32) {
+    trip = rewriter.create<arith::ExtSIOp>(loc, i32, trip);
+  }
+  return trip;
+}
+
 /// A launch size as source text, from the parameters of `func` and numbers,
 /// for the `--emit-ptx` manifest: `(rows + 3) / 4`. Empty when the size comes
 /// from anything else.
@@ -992,6 +1055,18 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
           into += ",";
         into += text;
         rewriter.eraseOp(d);
+      }
+    }
+    // A parallel loop whose bounds are known only at run time (trip 0) passes
+    // its trip as a launch value, so the runtime can size the launch.
+    std::string launchTrip;
+    auto parallelTrip = op->getAttrOfType<IntegerAttr>("vx_parallel_trip");
+    if (parallelTrip && parallelTrip.getInt() == 0 &&
+        !op->hasAttr("vx_parallel_two_level")) {
+      if (Value trip = runTimeTripBeforeSpawn(op, spawnBody, rewriter)) {
+        launchTrip = "$" + std::to_string(launchValues.size());
+        launchValues.push_back(trip);
+        launchTexts.push_back(rewriter.getStringAttr(""));
       }
     }
 
@@ -1286,9 +1361,12 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       launchOp->setAttr("vx.launch_block", rewriter.getStringAttr(launchBlock));
       if (op->hasAttr("vx.across"))
         launchOp->setAttr("vx.across", rewriter.getUnitAttr());
+    }
+    if (!launchValues.empty())
       launchOp->setAttr("vx.launch_values",
                         rewriter.getI32IntegerAttr(launchValues.size()));
-    }
+    if (!launchTrip.empty())
+      launchOp->setAttr("vx.launch_trip", rewriter.getStringAttr(launchTrip));
     if (op->hasAttr("vx_parallel_two_level"))
       launchOp->setAttr("vx_parallel_two_level", rewriter.getUnitAttr());
     if (auto th = op->getAttrOfType<IntegerAttr>("vx_parallel_threads"))
@@ -3548,10 +3626,12 @@ static void expandLaneCopyOnDevice(OpBuilder &b, const LaneCopy &op,
     cpAsync(b);
   }
   b.create<NVVM::CpAsyncCommitGroupOp>(loc);
+  // The count never wraps, which lets LLVM pick the larger of two tokens.
   b.create<memref::StoreOp>(
       loc,
       b.create<arith::AddIOp>(loc, n,
-                              b.create<arith::ConstantIntOp>(loc, i32, 1)),
+                              b.create<arith::ConstantIntOp>(loc, i32, 1),
+                              arith::IntegerOverflowFlags::nuw),
       count);
   Value(op.token).replaceAllUsesWith(token);
 }
@@ -3559,17 +3639,17 @@ static void expandLaneCopyOnDevice(OpBuilder &b, const LaneCopy &op,
 /// Waits for the `cp.async` groups of the copy of `token`. The groups that the
 /// lane started after it may still run: `cp.async.wait_group` takes that number
 /// as a constant, so each case of a small number has its own wait, and a
-/// larger number waits for all but the last 3, which is earlier than it must.
+/// larger number waits for all but the last 7, which is earlier than it must.
 static void laneCopyWaitGroups(OpBuilder &b, Location loc, Value started,
                                Value token) {
   Value after = b.create<arith::SubIOp>(
       loc, b.create<arith::SubIOp>(loc, started, token),
       b.create<arith::ConstantIntOp>(loc, b.getI32Type(), 1));
-  constexpr int64_t most = 3;
+  constexpr int64_t most = 7;
   auto cases = b.create<scf::IndexSwitchOp>(
       loc, TypeRange{},
       b.create<arith::IndexCastOp>(loc, b.getIndexType(), after),
-      ArrayRef<int64_t>{0, 1, 2}, /*caseRegionsCount=*/3);
+      llvm::to_vector(llvm::seq<int64_t>(0, most)), /*caseRegionsCount=*/most);
   auto fill = [&](Region &region, int64_t n) {
     OpBuilder::InsertionGuard guard(b);
     b.setInsertionPointToStart(&region.emplaceBlock());
@@ -3911,6 +3991,25 @@ static void expandLaneScaleRowsOnDevice(OpBuilder &b, vx::LaneScaleRowsOp op) {
   } else {
     b.create<gpu::BarrierOp>(loc);
   }
+}
+
+/// The wait right after `wait`, when only ops that touch no memory come between
+/// them and both are `cp.async` waits of the same lanes. Copies finish in the
+/// order that they started, so a wait there for the later of the two tokens
+/// does the work of both.
+static vx::LaneCopyWaitOp nextLaneCopyWait(vx::LaneCopyWaitOp wait,
+                                           const LaneCopyState &s) {
+  if (s.ring || wait.getSerial())
+    return {};
+  for (Operation *op = wait->getNextNode(); op; op = op->getNextNode()) {
+    if (auto next = dyn_cast<vx::LaneCopyWaitOp>(op))
+      return !next.getSerial() && next.getSubgroup() == wait.getSubgroup()
+                 ? next
+                 : vx::LaneCopyWaitOp();
+    if (!isMemoryEffectFree(op))
+      return {};
+  }
+  return {};
 }
 
 /// Element (i, j) of a lane matmul: the sum of the products from 0, in the
@@ -7451,8 +7550,13 @@ struct ConvertVxToStandardPass
         for (Operation *op : copyOps) {
           OpBuilder b(op);
           if (auto wait = dyn_cast<vx::LaneCopyWaitOp>(op)) {
-            if (!wait.getSerial())
+            if (vx::LaneCopyWaitOp next = nextLaneCopyWait(wait, copies)) {
+              OpBuilder nb(next);
+              next.getTokenMutable().assign(nb.create<arith::MaxUIOp>(
+                  next.getLoc(), wait.getToken(), next.getToken()));
+            } else if (!wait.getSerial()) {
               expandLaneCopyWaitOnDevice(b, wait, copies);
+            }
           } else if (op->hasAttr("serial")) {
             expandLaneCopyOnHost(b, laneCopyOf(op));
           } else {
@@ -8557,7 +8661,13 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
       }
     }
 
-    if (auto trip = op->getAttrOfType<IntegerAttr>("vx_parallel_trip")) {
+    // A trip known only at run time is a launch value, `$j`. With no launch
+    // value there is no `launch=`, and the kernel gets one thread.
+    auto trip = op->getAttrOfType<IntegerAttr>("vx_parallel_trip");
+    if (auto text = op->getAttrOfType<StringAttr>("vx.launch_trip")) {
+      payload += "launch=" + text.getValue().str();
+      payload.push_back('\0');
+    } else if (trip && trip.getInt() > 0) {
       payload += "launch=";
       payload += std::to_string(trip.getInt());
       // Two-level (Vx#379): "B,T" -- B blocks of T threads, where B is the
@@ -8846,10 +8956,9 @@ static void splitOuterLoopAcrossWorkers(func::FuncOp fn,
 
   // The arithmetic goes in front of the start's store, so both ends have to be
   // available there. A block argument always is; a computed value has to have
-  // been computed earlier in the same block. `parallel_outer_for` only proves a
-  // loop whose bounds are literals, so in practice these are constants hoisted
-  // to the top of the entry block -- this is the check that says so rather than
-  // assuming it.
+  // been computed earlier in the same block. A literal bound is a constant at
+  // the top of the entry block, and a bound known only at run time is often an
+  // argument. This is the check that says so rather than assuming it.
   auto reaches = [&](Value v) {
     Operation *def = v.getDefiningOp();
     if (!def)
@@ -10252,6 +10361,75 @@ narrowIntegerRefusals(llvm::Module &module) {
   return refused;
 }
 
+/// The width of the widest integer in `type`, or 0 when it holds none.
+static unsigned widestInteger(llvm::Type *type) {
+  unsigned widest = 0;
+  if (auto *integer = dyn_cast<llvm::IntegerType>(type))
+    widest = integer->getBitWidth();
+  for (llvm::Type *sub : type->subtypes())
+    widest = std::max(widest, widestInteger(sub));
+  return widest;
+}
+
+/// The kernels that compute with an integer wider than 64 bits, each with its
+/// reason. SPIR-V has no such integer, and LLVM's SPIR-V backend stops the
+/// whole process when it meets one, so such a kernel must not reach it.
+static SmallVector<SpirvKernelRefusal>
+wideIntegerRefusals(llvm::Module &module) {
+  // For each function that uses one, the widest integer and the function that
+  // uses it, which is the function itself or one that it calls.
+  llvm::DenseMap<const llvm::Function *,
+                 std::pair<unsigned, const llvm::Function *>>
+      wide;
+  for (llvm::Function &f : module) {
+    unsigned widest = widestInteger(f.getFunctionType());
+    for (llvm::Instruction &inst : llvm::instructions(f)) {
+      widest = std::max(widest, widestInteger(inst.getType()));
+      for (llvm::Use &use : inst.operands())
+        widest = std::max(widest, widestInteger(use->getType()));
+      if (auto *gep = dyn_cast<llvm::GetElementPtrInst>(&inst))
+        widest = std::max(widest, widestInteger(gep->getSourceElementType()));
+      if (auto *slot = dyn_cast<llvm::AllocaInst>(&inst))
+        widest = std::max(widest, widestInteger(slot->getAllocatedType()));
+    }
+    if (widest > 64)
+      wide[&f] = {widest, &f};
+  }
+  // A caller of such a function puts it in the image too.
+  for (bool changed = true; changed;) {
+    changed = false;
+    for (llvm::Function &f : module) {
+      if (wide.contains(&f))
+        continue;
+      for (llvm::Instruction &inst : llvm::instructions(f)) {
+        auto *call = dyn_cast<llvm::CallBase>(&inst);
+        auto found = call ? wide.find(call->getCalledFunction()) : wide.end();
+        if (found != wide.end()) {
+          wide[&f] = found->second;
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
+  SmallVector<SpirvKernelRefusal> refused;
+  for (llvm::Function &f : module) {
+    auto found = wide.find(&f);
+    if (f.getCallingConv() != llvm::CallingConv::SPIR_KERNEL ||
+        found == wide.end())
+      continue;
+    auto [bits, where] = found->second;
+    std::string reason =
+        "it computes with a " + std::to_string(bits) + "-bit integer";
+    if (where != &f)
+      reason += " in `" + where->getName().str() + "`";
+    refused.push_back(
+        {f.getName().str(),
+         reason + ", and a SPIR-V image holds integers of at most 64 bits"});
+  }
+  return refused;
+}
+
 /// Compile a `gpu.module` to a SPIR-V module.
 ///
 /// The pipeline `scripts/tools/spirv_module_check.sh` runs by hand on a `.vx`
@@ -10377,6 +10555,11 @@ spirvImageOfKernels(gpu::GPUModuleOp gpuModule, const llvm::StringSet<> &left,
     refused.append(narrow.begin(), narrow.end());
     return {};
   }
+  SmallVector<SpirvKernelRefusal> wide = wideIntegerRefusals(*llvmModule);
+  if (!wide.empty()) {
+    refused.append(wide.begin(), wide.end());
+    return {};
+  }
 
   std::string image;
   if (failed(serializeSpirv(std::move(llvmModule), image, error)))
@@ -10397,6 +10580,29 @@ static DeviceImage spirvImageOf(gpu::GPUModuleOp gpuModule, std::string &error,
   while (left.size() < kernels) {
     SmallVector<SpirvKernelRefusal> failed;
     DeviceImage image = spirvImageOfKernels(gpuModule, left, error, failed);
+    // A stage of the pipeline failed with no kernel to blame. Build each
+    // kernel alone, so that only the kernels that fail lose their image. The
+    // build above already printed what the stage said, so these are quiet.
+    if (failed.empty() && image.bytes.empty() && kernels - left.size() > 1) {
+      ScopedDiagnosticHandler quiet(gpuModule.getContext(),
+                                    [](Diagnostic &) { return success(); });
+      gpuModule.walk([&](gpu::GPUFuncOp kernel) {
+        if (left.contains(kernel.getName()))
+          return;
+        llvm::StringSet<> others = left;
+        gpuModule.walk([&](gpu::GPUFuncOp other) {
+          if (other != kernel)
+            others.insert(other.getName());
+        });
+        std::string alone;
+        SmallVector<SpirvKernelRefusal> own;
+        if (!spirvImageOfKernels(gpuModule, others, alone, own).bytes.empty())
+          return;
+        if (own.empty())
+          own.push_back({kernel.getName().str(), alone});
+        failed.append(own.begin(), own.end());
+      });
+    }
     if (failed.empty())
       return image;
     for (SpirvKernelRefusal &r : failed) {
