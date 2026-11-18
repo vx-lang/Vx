@@ -258,7 +258,7 @@ pub struct DriverOptions {
     /// `-fguarded-load-versioning`: when eight or more `if`s guard loads with `c + k < n`
     /// for growing `k`, check only the last one. When it holds, run all the loads without
     /// their checks, so that sm_90 predicate registers are not exhausted. The default,
-    /// `-fguarded-load-versioning`, is enabled for GPU kernels.
+    /// `-fguarded-load-versioning`, is enabled for GPU kernels on sm_90 and later.
     /// `-fno-guarded-load-versioning` disables it.
     ///
     /// For each feature, the last one wins

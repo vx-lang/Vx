@@ -15,7 +15,10 @@
 // 5. neg_partial_sum: intermediate computation between guards used outside batch.
 // 6. neg_scale_between: instruction between comparison and branch.
 // 7. neg_if_between: control flow between comparison and branch.
-// 8. kernel_a100: sm_80 architecture stays unversioned even with valid batch.
+// 8. neg_negative_first_offset: the first guard's offset is negative. The
+//    batch is refused, because `c` near the smallest i32 plus that offset can
+//    wrap, and the wrap check looks only at the last offset.
+// 9. kernel_a100: sm_80 architecture stays unversioned even with valid batch.
 //
 // REQUIRES: flat-codegen
 // RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t_h100.ptx
@@ -55,6 +58,12 @@
 
 // neg_if_between has control flow between cmp and branch, so all 8 guards remain unversioned:
 // CHECK-LABEL: .visible .entry neg_if_between
+// CHECK: setp.ge.s32
+// CHECK-COUNT-7: setp.ge.s32
+
+// neg_negative_first_offset starts at a negative offset, so the batch is
+// refused and all 8 guards remain unversioned:
+// CHECK-LABEL: .visible .entry neg_negative_first_offset
 // CHECK: setp.ge.s32
 // CHECK-COUNT-7: setp.ge.s32
 
@@ -491,7 +500,65 @@ flag: bool
   return;
 }
 
-pub fn kernel_a100(
+pub fn neg_negative_first_offset(
+out: &mut Tensor<f32, [?], Memory::HBM>,
+w: &Tensor<f32, [?], Memory::HBM>,
+x: &Tensor<f32, [?], Memory::HBM>,
+cols: i32
+) -> void {
+  spawn on(Topology::Device) {
+    for g in 0..1 across blocks {
+      for lane in 0..32 across lanes(32) {
+        for batch in 0..((cols + 255) / 256) {
+          let c: i32 = lane + batch * 256;
+          let t0: f32 = if c + (0 - 32) < cols {
+            w[c + (0 - 32)] * x[c + (0 - 32)]
+          } else {
+            0.0
+          };
+          let t1: f32 = if c < cols {
+            w[c] * x[c]
+          } else {
+            0.0
+          };
+          let t2: f32 = if c + 32 < cols {
+            w[c + 32] * x[c + 32]
+          } else {
+            0.0
+          };
+          let t3: f32 = if c + 64 < cols {
+            w[c + 64] * x[c + 64]
+          } else {
+            0.0
+          };
+          let t4: f32 = if c + 96 < cols {
+            w[c + 96] * x[c + 96]
+          } else {
+            0.0
+          };
+          let t5: f32 = if c + 128 < cols {
+            w[c + 128] * x[c + 128]
+          } else {
+            0.0
+          };
+          let t6: f32 = if c + 160 < cols {
+            w[c + 160] * x[c + 160]
+          } else {
+            0.0
+          };
+          let t7: f32 = if c + 192 < cols {
+            w[c + 192] * x[c + 192]
+          } else {
+            0.0
+          };
+          out[lane] = t0 + t1 + t2 + t3 + t4 + t5 + t6 + t7;
+        }
+      }
+    }
+  }
+}
+
+fn kernel_a100(
 out: &mut Tensor<f32, [?], Memory::HBM>,
 w: &Tensor<f32, [?], Memory::HBM>,
 x: &Tensor<f32, [?], Memory::HBM>,

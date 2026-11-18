@@ -53,6 +53,81 @@
 // NOOPT-LABEL: .visible .entry matvec8
 // NOOPT: setp.ge.s32
 // NOOPT-COUNT-7: setp.ge.s32
+//
+// matvec8_mut: the base is reloaded from a `let mut` variable by each guard.
+// The loads of the fast path sit together, with no setp between any pair.
+//
+// CHECK-LABEL: .visible .entry matvec8_mut
+// CHECK: ld.global.nc.b32
+// CHECK-NOT: setp
+// CHECK: ld.global.nc.b32
+// CHECK-NOT: setp
+// CHECK: ld.global.nc.b32
+// CHECK-NOT: setp
+// CHECK: ld.global.nc.b32
+// CHECK-NOT: setp
+// CHECK: ld.global.nc.b32
+// CHECK-NOT: setp
+// CHECK: ld.global.nc.b32
+// CHECK-NOT: setp
+// CHECK: ld.global.nc.b32
+// CHECK-NOT: setp
+// CHECK: ld.global.nc.b32
+// CHECK-NOT: setp
+// CHECK: ld.global.nc.b32
+// CHECK-NOT: setp
+// CHECK: ld.global.nc.b32
+// CHECK-NOT: setp
+// CHECK: ld.global.nc.b32
+// CHECK-NOT: setp
+// CHECK: ld.global.nc.b32
+// CHECK-NOT: setp
+// CHECK: ld.global.nc.b32
+// CHECK-NOT: setp
+// CHECK: ld.global.nc.b32
+// CHECK-NOT: setp
+// CHECK: ld.global.nc.b32
+//
+// NOOPT-LABEL: .visible .entry matvec8_mut
+// NOOPT: setp.ge.s32
+// NOOPT-COUNT-7: setp.ge.s32
+//
+// matvec8_start: the base starts at a parameter, so the batch check cannot be
+// proven to never wrap, and the wrap check stays in the PTX.
+//
+// CHECK-LABEL: .visible .entry matvec8_start
+// CHECK: setp.lt.s32 {{%p[0-9]+}}, {{%r[0-9]+}}, 2147483424;
+// CHECK: ld.global.nc.b32
+// CHECK-NOT: setp
+// CHECK: ld.global.nc.b32
+// CHECK-NOT: setp
+// CHECK: ld.global.nc.b32
+// CHECK-NOT: setp
+// CHECK: ld.global.nc.b32
+// CHECK-NOT: setp
+// CHECK: ld.global.nc.b32
+// CHECK-NOT: setp
+// CHECK: ld.global.nc.b32
+// CHECK-NOT: setp
+// CHECK: ld.global.nc.b32
+// CHECK-NOT: setp
+// CHECK: ld.global.nc.b32
+// CHECK-NOT: setp
+// CHECK: ld.global.nc.b32
+// CHECK-NOT: setp
+// CHECK: ld.global.nc.b32
+// CHECK-NOT: setp
+// CHECK: ld.global.nc.b32
+// CHECK-NOT: setp
+// CHECK: ld.global.nc.b32
+// CHECK-NOT: setp
+// CHECK: ld.global.nc.b32
+// CHECK-NOT: setp
+// CHECK: ld.global.nc.b32
+//
+// NOOPT-LABEL: .visible .entry matvec8_start
+// NOOPT: setp.ge.s32
+// NOOPT-COUNT-7: setp.ge.s32
 
 fn matvec8(
 out: &mut Tensor<f32, [?], Memory::HBM>,
@@ -65,6 +140,124 @@ cols: i32
       for lane in 0..32 across lanes(32) {
         for batch in 0..((cols + 255) / 256) {
           let c: i32 = lane + batch * 256;
+          let t0: f32 = if c < cols {
+            w[c] * x[c]
+          } else {
+            0.0
+          };
+          let t1: f32 = if c + 32 < cols {
+            w[c + 32] * x[c + 32]
+          } else {
+            0.0
+          };
+          let t2: f32 = if c + 64 < cols {
+            w[c + 64] * x[c + 64]
+          } else {
+            0.0
+          };
+          let t3: f32 = if c + 96 < cols {
+            w[c + 96] * x[c + 96]
+          } else {
+            0.0
+          };
+          let t4: f32 = if c + 128 < cols {
+            w[c + 128] * x[c + 128]
+          } else {
+            0.0
+          };
+          let t5: f32 = if c + 160 < cols {
+            w[c + 160] * x[c + 160]
+          } else {
+            0.0
+          };
+          let t6: f32 = if c + 192 < cols {
+            w[c + 192] * x[c + 192]
+          } else {
+            0.0
+          };
+          let t7: f32 = if c + 224 < cols {
+            w[c + 224] * x[c + 224]
+          } else {
+            0.0
+          };
+          out[lane] = t0 + t1 + t2 + t3 + t4 + t5 + t6 + t7;
+        }
+      }
+    }
+  }
+}
+
+fn matvec8_mut(
+out: &mut Tensor<f32, [?], Memory::HBM>,
+w: &Tensor<f32, [?], Memory::HBM>,
+x: &Tensor<f32, [?], Memory::HBM>,
+cols: i32
+) -> void {
+  spawn on(Topology::Device) {
+    for g in 0..1 across blocks {
+      for lane in 0..32 across lanes(32) {
+        let mut c: i32 = lane;
+        for batch in 0..((cols + 255) / 256) {
+          let t0: f32 = if c < cols {
+            w[c] * x[c]
+          } else {
+            0.0
+          };
+          let t1: f32 = if c + 32 < cols {
+            w[c + 32] * x[c + 32]
+          } else {
+            0.0
+          };
+          let t2: f32 = if c + 64 < cols {
+            w[c + 64] * x[c + 64]
+          } else {
+            0.0
+          };
+          let t3: f32 = if c + 96 < cols {
+            w[c + 96] * x[c + 96]
+          } else {
+            0.0
+          };
+          let t4: f32 = if c + 128 < cols {
+            w[c + 128] * x[c + 128]
+          } else {
+            0.0
+          };
+          let t5: f32 = if c + 160 < cols {
+            w[c + 160] * x[c + 160]
+          } else {
+            0.0
+          };
+          let t6: f32 = if c + 192 < cols {
+            w[c + 192] * x[c + 192]
+          } else {
+            0.0
+          };
+          let t7: f32 = if c + 224 < cols {
+            w[c + 224] * x[c + 224]
+          } else {
+            0.0
+          };
+          out[lane] = t0 + t1 + t2 + t3 + t4 + t5 + t6 + t7;
+          c = c + 256;
+        }
+      }
+    }
+  }
+}
+
+fn matvec8_start(
+out: &mut Tensor<f32, [?], Memory::HBM>,
+w: &Tensor<f32, [?], Memory::HBM>,
+x: &Tensor<f32, [?], Memory::HBM>,
+cols: i32,
+start: i32
+) -> void {
+  spawn on(Topology::Device) {
+    for g in 0..1 across blocks {
+      for lane in 0..32 across lanes(32) {
+        for batch in 0..((cols + 255) / 256) {
+          let c: i32 = start + lane;
           let t0: f32 = if c < cols {
             w[c] * x[c]
           } else {

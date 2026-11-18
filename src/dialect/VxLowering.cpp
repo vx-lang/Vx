@@ -6982,6 +6982,14 @@ static Value baseAllocaMemref(Value base) {
   return nullptr;
 }
 
+// Two loads of one alloca with the same indices read one value, so the
+// headers of a batch share a base even when the base is a `let mut` variable
+// that each guard reloads. A store to that alloca inside the batch would
+// break this: the diamond check refuses every store but one to a scalar
+// slot, and findGuardedDiamondBatch refuses a store to the base's own alloca.
+// A write through any other path, a call or a raw pointer, is not visible
+// here; the borrow checker refuses to hand out either for a scalar local, so
+// none reaches a batch from Vx source.
 static bool areEquivalentBases(Value b1, Value b2) {
   if (b1 == b2)
     return true;
@@ -7044,12 +7052,19 @@ static bool isGuardedDiamond(Block *header, GuardedDiamond &d) {
       base = add.getRhs();
       offset = *cst;
     } else {
-      // Non-constant add (e.g. lane + batch * 256) is the base itself with offset 0.
+      // Non-constant add (e.g. lane + batch * 256) is the base itself with
+      // offset 0.
       base = lhs;
       offset = 0;
     }
   }
 
+  if (offset < 0)
+    return false;
+
+  // A negative offset can wrap when `c` is near the smallest `i32`, and the
+  // wrap check looks only at the last offset, so the fast path would still run
+  // this load.
   if (offset < 0)
     return false;
 
@@ -7156,7 +7171,8 @@ static bool findGuardedDiamondBatch(
     if (!safeStores)
       continue;
 
-    // Invariant 2: No value computed in the batch may be used outside the batch.
+    // Invariant 2: No value computed in the batch may be used outside the
+    // batch.
     bool valuesEscape = false;
     for (Block *b : batchBlocks) {
       for (Operation &op : *b) {
@@ -7200,11 +7216,11 @@ static void versionGuardedLoadBatches(gpu::GPUFuncOp gpuFunc) {
 
     OpBuilder b(first.header, first.header->end());
     Location loc = first.cmpOp.getLoc();
-    Value maxOffsetCst = b.create<arith::ConstantIntOp>(
-        loc, first.base.getType(), last.offset);
+    Value maxOffsetCst =
+        b.create<arith::ConstantIntOp>(loc, first.base.getType(), last.offset);
     Value maxLhs = b.create<arith::AddIOp>(loc, first.base, maxOffsetCst);
-    Value noWrap = b.create<arith::CmpIOp>(
-        loc, arith::CmpIPredicate::sge, maxLhs, first.base);
+    Value noWrap = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge,
+                                           maxLhs, first.base);
     Value inBound =
         b.create<arith::CmpIOp>(loc, first.pred, maxLhs, first.bound);
     Value versionCond = b.create<arith::AndIOp>(loc, noWrap, inBound);
