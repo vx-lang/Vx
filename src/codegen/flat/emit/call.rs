@@ -134,7 +134,6 @@ impl FnEmit<'_> {
                     && crate::codegen::fits_on_the_stack(slot_ty))
             {
                 self.emit_slot(&format!("  {slot} = memref.alloca() : {slot_ty}\n"));
-                self.stack_of[idx] = true;
             } else if callee.ret_storage == Storage::Heap {
                 self.body += &format!("  {slot} = memref.alloc() {{vx.heap}} : {slot_ty}\n");
             } else {

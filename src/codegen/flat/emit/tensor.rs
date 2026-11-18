@@ -177,10 +177,6 @@ impl FnEmit<'_> {
     // `vx.drop`: convert-vx-to-standard frees the buffer when it is on the heap.
     pub(crate) fn op_tensor_drop(&mut self, _idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let r = ins.operand1.0 as usize;
-        // A stack slot is freed when its frame ends, so there is nothing to drop.
-        if self.stack_of.get(r).copied().unwrap_or(false) {
-            return Ok(());
-        }
         // A small elementwise result held in a vector register has no buffer.
         if self.vec_of.get(r).cloned().flatten().is_some() {
             return Ok(());
@@ -285,7 +281,6 @@ impl FnEmit<'_> {
             ));
             self.names[idx] = n;
             self.mem_of[idx] = Some(memty);
-            self.stack_of[idx] = true;
             return Ok(());
         }
         let extents = self
