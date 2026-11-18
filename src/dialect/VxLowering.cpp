@@ -10096,8 +10096,12 @@ wideIntegerRefusals(llvm::Module &module) {
     auto [bits, where] = found->second;
     std::string reason =
         "it computes with a " + std::to_string(bits) + "-bit integer";
+    // A function that runs on any topology has an instance for each one,
+    // named `<name>$topology$<key>`. The program wrote `<name>`.
+    StringRef name = where->getName();
+    name = name.take_front(name.find("$topology$"));
     if (where != &f)
-      reason += " in `" + where->getName().str() + "`";
+      reason += " in `" + name.str() + "`";
     refused.push_back(
         {f.getName().str(),
          reason + ", and a SPIR-V image holds integers of at most 64 bits"});
