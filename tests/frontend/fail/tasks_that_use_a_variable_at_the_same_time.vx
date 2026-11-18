@@ -145,9 +145,33 @@ fn copy_a_raw_pointer() -> i32 {
   return x;
 }
 
+// A closure type does not say what the closure captures, so tasks must not share one.
+// CHECK: Error[E3055] at {{.*}}tasks_that_use_a_variable_at_the_same_time.vx:[[@LINE+3]]:5: the task reads 'f', which the code around the task can read at the same time, so its type '|i32| -> i32' must be `Sync`: '|i32| -> i32' is a closure type, which does not say what the closure captures
+fn call_a_closure_parameter(f : | i32 | -> i32) -> void {
+  tasks {
+    spawn {
+      f(1);
+    };
+  }
+}
+
+// A closure holds a reference to each variable that it reads, here to a `SharedCell`.
+// CHECK: Error[E3055] at {{.*}}tasks_that_use_a_variable_at_the_same_time.vx:[[@LINE+7]]:5: the task reads 'get', which the code around the task can read at the same time, so its type 'Closure_{{[0-9]+}}' must be `Sync`: field 'c' of 'Closure_{{[0-9]+}}' has type '&SharedCell<i32>', and '&SharedCell<i32>' shares a 'SharedCell<i32>', which is not `Sync`
+fn call_a_closure_that_reads_a_shared_cell() -> void {
+  let c = SharedCell<i32>::new(1);
+  let get = | | -> i32 {
+    unsafe { *c.get() }
+  };
+  tasks {
+    spawn {
+      get();
+    };
+  }
+}
+
 fn main() -> i32 {
   return 0;
 }
 
 // The errors above are all the errors.
-// CHECK: {{^}}Semantic check failed on {{.*}}: 10 error(s) emitted
+// CHECK: {{^}}Semantic check failed on {{.*}}: 12 error(s) emitted

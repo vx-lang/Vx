@@ -263,7 +263,7 @@ impl Walk<'_> {
             Expr::Borrow(b) if b.is_mut == is_mut => self.row_of(&b.expr, row).is_some(),
             _ => false,
         };
-        let op = lane_routine(&fc.name).map(|(op, _)| op);
+        let op = lane_routine(&fc.name).map(|routine| routine.op);
         let at = match op {
             Some(LaneOp::Fill | LaneOp::ScaleRows) => fc
                 .args

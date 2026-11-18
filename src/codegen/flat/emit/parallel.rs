@@ -345,308 +345,78 @@ impl FnEmit<'_> {
         Ok(())
     }
 
-    /// `vx.lane_matmul`: `operand1` is the accumulator, `operand2` the left tile, and the `Arg`
-    /// before is the right tile.
-    fn op_lane_matmul(&mut self, ins: &HirInstruction) -> Lowered<()> {
-        let rhs = self.pending_args.pop().ok_or(crate::emitter_gap!())?;
+    /// A call to a lane routine: its op, with the `Arg`s before as its operands. The lowering of
+    /// each copy of the kernel expands the op, on the GPU and into loops on the CPU.
+    pub(crate) fn op_lane_call(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        use crate::hir::check::lanes::{LaneArg, LaneAttr, LANE_ROUTINES};
+        let call = crate::bytecode::LaneCallImm::decode(ins.imm);
+        let routine = LANE_ROUTINES
+            .get(call.routine)
+            .ok_or(crate::emitter_gap!())?;
+        let kinds = routine
+            .operand_kinds(call.operands)
+            .ok_or(crate::emitter_gap!())?;
+        if self.pending_args.len() < call.operands {
+            return Err(crate::emitter_gap!());
+        }
+        let regs = self
+            .pending_args
+            .split_off(self.pending_args.len() - call.operands);
         let mut names = Vec::new();
         let mut types = Vec::new();
-        for r in [ins.operand1.0, ins.operand2.0, rhs] {
-            names.push(
-                self.names
-                    .get(r as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone(),
-            );
-            types.push(
-                self.mem_of
-                    .get(r as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone()
+        for (r, kind) in regs.into_iter().zip(kinds) {
+            let r = r as usize;
+            names.push(self.names.get(r).ok_or(crate::emitter_gap!())?.clone());
+            types.push(match kind {
+                kind if kind.is_tensor() => self
+                    .mem_of
+                    .get(r)
+                    .cloned()
+                    .flatten()
                     .ok_or(crate::emitter_gap!())?,
-            );
+                LaneArg::I32 => "i32".to_string(),
+                _ => {
+                    let e = self
+                        .etypes
+                        .get(r)
+                        .cloned()
+                        .flatten()
+                        .ok_or(crate::emitter_gap!())?;
+                    mlir_scalar(&e).ok_or(crate::emitter_gap!())?.to_string()
+                }
+            });
         }
-        let mut attrs = String::from("subgroup");
-        if ins.imm & crate::bytecode::LANE_REDUCE_ACCUMULATE != 0 {
-            attrs += ", accumulate";
-        }
-        if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP_ROW != 0 {
-            attrs += ", subgroup_row";
-        }
-        self.body += &format!(
-            "  \"vx.lane_matmul\"({}) {{{attrs}}} : ({}) -> ()\n",
+        let attrs: Vec<String> = routine
+            .op_attributes(&call.site)
+            .into_iter()
+            .map(|(name, value)| match value {
+                LaneAttr::Unit => name.to_string(),
+                LaneAttr::Str(s) => format!("{name} = \"{s}\""),
+                LaneAttr::I64(n) => format!("{name} = {n} : i64"),
+            })
+            .collect();
+        let attrs = if attrs.is_empty() {
+            String::new()
+        } else {
+            format!(" {{{}}}", attrs.join(", "))
+        };
+        let op = format!(
+            "\"{}\"({}){attrs} : ({})",
+            routine.mlir,
             names.join(", "),
             types.join(", ")
         );
-        Ok(())
-    }
-
-    /// `vx.lane_reduce`: the lowering of each copy of the kernel expands it, into shuffles on the
-    /// GPU and into loops on the CPU.
-    pub(crate) fn op_lane_reduce(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
-        if ins.imm & crate::bytecode::LANE_REDUCE_COPY_WAIT != 0 {
-            let t = self
-                .names
-                .get(ins.operand1.0 as usize)
-                .ok_or(crate::emitter_gap!())?
-                .clone();
-            let attrs = if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
-                " {subgroup}"
-            } else {
-                ""
-            };
-            self.body += &format!("  \"vx.lane_copy_wait\"({t}){attrs} : (i32) -> ()\n");
-            return Ok(());
-        }
-        if ins.imm & crate::bytecode::LANE_REDUCE_COPY != 0 {
-            return self.op_lane_copy(idx, ins);
-        }
-        if ins.imm & crate::bytecode::LANE_REDUCE_FILL != 0 {
-            return self.op_lane_fill(ins);
-        }
-        if ins.imm & crate::bytecode::LANE_REDUCE_SCALE_ROWS != 0 {
-            return self.op_lane_scale_rows(ins);
-        }
-        if ins.imm & crate::bytecode::LANE_REDUCE_MATMUL != 0 {
-            return self.op_lane_matmul(ins);
-        }
-        let t = self
-            .names
-            .get(ins.operand1.0 as usize)
-            .ok_or(crate::emitter_gap!())?
-            .clone();
-        let memty = self
-            .mem_of
-            .get(ins.operand1.0 as usize)
-            .ok_or(crate::emitter_gap!())?
-            .clone()
-            .ok_or(crate::emitter_gap!())?;
-        if ins.imm & crate::bytecode::LANE_REDUCE_SORT != 0 {
-            let n = self
-                .names
-                .get(ins.operand2.0 as usize)
-                .ok_or(crate::emitter_gap!())?
-                .clone();
-            let mut attrs = format!("lanes = {} : i64", ins.imm >> 32);
-            if ins.imm & crate::bytecode::LANE_REDUCE_DESCENDING != 0 {
-                attrs += ", descending";
-            }
-            if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
-                attrs += ", subgroup";
-            }
-            self.body +=
-                &format!("  \"vx.lane_sort\"({t}, {n}) {{{attrs}}} : ({memty}, i32) -> ()\n");
-            return Ok(());
-        }
-        let argmax = ins.imm & crate::bytecode::LANE_REDUCE_ARGMAX != 0;
-        // The count: `operand2` for a sum or a larger value, the `Arg` before for the argmax.
-        let count = if argmax {
-            self.pending_args.pop().ok_or(crate::emitter_gap!())?
-        } else {
-            ins.operand2.0
-        };
-        let n = self
-            .names
-            .get(count as usize)
-            .ok_or(crate::emitter_gap!())?
-            .clone();
-        let kind = if ins.imm & crate::bytecode::LANE_REDUCE_MAX != 0 {
-            "max"
-        } else {
-            "sum"
-        };
-        let mut attrs = if argmax {
-            String::new()
-        } else {
-            format!("kind = \"{kind}\"")
-        };
-        let mut add = |a: &str| {
-            if !attrs.is_empty() {
-                attrs += ", ";
-            }
-            attrs += a;
-        };
-        if ins.imm & crate::bytecode::LANE_REDUCE_ORDERED != 0 {
-            add("ordered");
-        }
-        if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
-            add("subgroup");
-        }
-        if ins.imm & crate::bytecode::LANE_REDUCE_LANE_OWN != 0 {
-            add("vx.lane_own");
-        }
-        if ins.imm & crate::bytecode::LANE_REDUCE_OWN_ROW != 0 {
-            add("own_row");
-            let row = ins.imm >> crate::bytecode::LANE_ROW_SHIFT;
-            if row > 0 {
-                add(&format!("vx.lane_row = {row} : i64"));
+        match routine.result {
+            None => self.body += &format!("  {op} -> ()\n"),
+            Some(value) => {
+                let elem = value.element();
+                let v = format!("%v{idx}");
+                let ty = mlir_scalar(&elem).ok_or(crate::emitter_gap!())?;
+                self.body += &format!("  {v} = {op} -> {ty}\n");
+                self.names[idx] = v;
+                self.etypes[idx] = Some(elem);
             }
         }
-        let v = format!("%v{idx}");
-        if argmax {
-            let i = self
-                .names
-                .get(ins.operand2.0 as usize)
-                .ok_or(crate::emitter_gap!())?
-                .clone();
-            let imemty = self
-                .mem_of
-                .get(ins.operand2.0 as usize)
-                .ok_or(crate::emitter_gap!())?
-                .clone()
-                .ok_or(crate::emitter_gap!())?;
-            self.body += &format!(
-                "  {v} = \"vx.lane_argmax\"({t}, {i}, {n}) {{{attrs}}} : ({memty}, {imemty}, i32) \
-                 -> i32\n"
-            );
-            self.names[idx] = v;
-            self.etypes[idx] = Some(ElementType::I32);
-            return Ok(());
-        }
-        self.body +=
-            &format!("  {v} = \"vx.lane_reduce\"({t}, {n}) {{{attrs}}} : ({memty}, i32) -> f32\n");
-        self.names[idx] = v;
-        self.etypes[idx] = Some(ElementType::F32);
-        Ok(())
-    }
-
-    /// `vx.lane_fill`: the tile and the value of each element.
-    fn op_lane_fill(&mut self, ins: &HirInstruction) -> Lowered<()> {
-        let name = |r: u32| {
-            self.names
-                .get(r as usize)
-                .cloned()
-                .ok_or(crate::emitter_gap!())
-        };
-        let (t, v) = (name(ins.operand1.0)?, name(ins.operand2.0)?);
-        let memty = self
-            .mem_of
-            .get(ins.operand1.0 as usize)
-            .cloned()
-            .flatten()
-            .ok_or(crate::emitter_gap!())?;
-        let e = self
-            .etypes
-            .get(ins.operand2.0 as usize)
-            .cloned()
-            .flatten()
-            .ok_or(crate::emitter_gap!())?;
-        let vty = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
-        let mut subgroup = if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
-            ", subgroup".to_string()
-        } else {
-            String::new()
-        };
-        if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP_ROW != 0 {
-            subgroup += ", subgroup_row";
-        }
-        self.body += &format!(
-            "  \"vx.lane_fill\"({t}, {v}) {{lanes = {} : i64{subgroup}}} : ({memty}, {vty}) -> ()\n",
-            ins.imm >> 32
-        );
-        Ok(())
-    }
-
-    /// `vx.lane_scale_rows`: the tile and the tile of the scale of each row.
-    fn op_lane_scale_rows(&mut self, ins: &HirInstruction) -> Lowered<()> {
-        let operand = |r: u32| {
-            let name = self.names.get(r as usize).cloned();
-            let memty = self.mem_of.get(r as usize).cloned().flatten();
-            name.zip(memty).ok_or(crate::emitter_gap!())
-        };
-        let ((t, tty), (s, sty)) = (operand(ins.operand1.0)?, operand(ins.operand2.0)?);
-        let mut attrs = format!("lanes = {} : i64", ins.imm >> 32);
-        if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
-            attrs += ", subgroup";
-        }
-        if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP_ROW != 0 {
-            attrs += ", subgroup_row";
-        }
-        self.body +=
-            &format!("  \"vx.lane_scale_rows\"({t}, {s}) {{{attrs}}} : ({tty}, {sty}) -> ()\n");
-        Ok(())
-    }
-
-    /// `vx.lane_copy_async`: the tile, the tensor and the place of the tile, which the `Arg`s
-    /// before hold. The result is the token. `vx.lane_copy` takes the tensor that it writes and
-    /// the one that it reads, and has no result.
-    fn op_lane_copy(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
-        let rank = ((ins.imm >> 16) & 0xff) as usize;
-        if self.pending_args.len() < rank {
-            return Err(crate::emitter_gap!());
-        }
-        let at = self.pending_args.split_off(self.pending_args.len() - rank);
-        // `lanes::copy_rows_async`: the tensor of ids is the `Arg` before the place.
-        let rows = ins.imm & crate::bytecode::LANE_REDUCE_COPY_ROWS != 0;
-        let mut tensors = vec![ins.operand1.0, ins.operand2.0];
-        if rows {
-            tensors.push(self.pending_args.pop().ok_or(crate::emitter_gap!())?);
-        }
-        let mut operands = Vec::new();
-        let mut types = Vec::new();
-        for r in tensors {
-            operands.push(
-                self.names
-                    .get(r as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone(),
-            );
-            types.push(
-                self.mem_of
-                    .get(r as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone()
-                    .ok_or(crate::emitter_gap!())?,
-            );
-        }
-        for r in at {
-            operands.push(
-                self.names
-                    .get(r as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone(),
-            );
-            let e = self
-                .etypes
-                .get(r as usize)
-                .cloned()
-                .flatten()
-                .ok_or(crate::emitter_gap!())?;
-            types.push(mlir_scalar(&e).ok_or(crate::emitter_gap!())?.to_string());
-        }
-        let v = format!("%v{idx}");
-        let mut subgroup = if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
-            ", subgroup".to_string()
-        } else {
-            String::new()
-        };
-        if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP_ROW != 0 {
-            subgroup += ", subgroup_row";
-        }
-        if ins.imm & crate::bytecode::LANE_REDUCE_COPY_NOW != 0 {
-            // `lanes::copy` gives no token, so its value is a 0 that nothing reads.
-            self.body += &format!(
-                "  \"vx.lane_copy\"({}) {{lanes = {} : i64{subgroup}}} : ({}) -> ()\n  {v} = \
-                 arith.constant 0 : i32\n",
-                operands.join(", "),
-                ins.imm >> 32,
-                types.join(", ")
-            );
-        } else {
-            let op = if rows {
-                "vx.lane_copy_rows_async"
-            } else {
-                "vx.lane_copy_async"
-            };
-            self.body += &format!(
-                "  {v} = \"{op}\"({}) {{lanes = {} : i64{subgroup}}} : ({}) -> i32\n",
-                operands.join(", "),
-                ins.imm >> 32,
-                types.join(", ")
-            );
-        }
-        self.names[idx] = v;
-        self.etypes[idx] = Some(ElementType::I32);
         Ok(())
     }
 

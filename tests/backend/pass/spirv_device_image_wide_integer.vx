@@ -5,16 +5,14 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// `hypot` on `f64` computes with a 128-bit integer, and SPIR-V has no integer
-// wider than 64 bits. So the first region gets no SPIR-V image and runs on the
-// host. The compiler does not stop, and the second region keeps its image.
+// `high_bits` computes with an `i128`, and SPIR-V has no integer wider than
+// 64 bits. So the first region gets no SPIR-V image and runs on the host. The
+// compiler does not stop, and the second region keeps its image.
 //
 // RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s # flat-codegen
-// CHECK: cannot become a `spirv64` device image: it computes with a 128-bit integer in `libm_hypot_exact`, and a SPIR-V image holds integers of at most 64 bits
+// CHECK: cannot become a `spirv64` device image: it computes with a 128-bit integer in `high_bits`, and a SPIR-V image holds integers of at most 64 bits
 // CHECK: format=spirv
-// EXPECT: 5 10
-
-import core::num;
+// EXPECT: 499499 998998
 
 Memory CPU_DRAM {}
 Memory DEV_HBM {
@@ -28,22 +26,28 @@ Topology Dev {
   transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 63 GB/s
 }
 
+// `x` times 9223372036854775, without its lower 64 bits: about `x` / 2000.
+fn high_bits(x : i64) on Topology::Any -> i64 {
+  let wide = (x as i128) * 9223372036854775i128;
+  return (wide >> 64) as i64;
+}
+
 fn main() -> i32 {
-  let mut a = unsafe { Tensor<f64, [1000]>::uninit() };
+  let mut a = unsafe { Tensor<i64, [1000]>::uninit() };
   for i in 0..1000 {
-    a[i] = 3.0;
+    a[i] = (i as i64) * 1000000i64;
   }
   let ga = transfer(a, Memory::DEV_HBM);
-  let mut gh = transfer(unsafe { Tensor<f64, [1000]>::uninit() }, Memory::DEV_HBM);
-  let mut gs = transfer(unsafe { Tensor<f64, [1000]>::uninit() }, Memory::DEV_HBM);
+  let mut gh = transfer(unsafe { Tensor<i64, [1000]>::uninit() }, Memory::DEV_HBM);
+  let mut gs = transfer(unsafe { Tensor<i64, [1000]>::uninit() }, Memory::DEV_HBM);
   spawn on(Topology::Dev) {
     for i in 0..1000 {
-      gh[i] = ga[i].hypot(4.0);
+      gh[i] = high_bits(ga[i]);
     }
   }
   spawn on(Topology::Dev) {
     for i in 0..1000 {
-      gs[i] = gh[i] * 2.0;
+      gs[i] = gh[i] * 2i64;
     }
   }
   let h = transfer(gh, Memory::CPU_DRAM);
