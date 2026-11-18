@@ -53,7 +53,7 @@ Vx has no private functions yet, so a program can still call these declarations.
 
 ## Safe API gates
 
-The deprecated `File::open`, `read`, `write` and `seek` keep their signatures until they are removed.
+The deprecated `File::open`, `read`, `write` and `seek` keep their signatures until a release removes them.
 Until then, a new safe API needs a new name. The names in the table below are placeholders. No API in it has an implementation yet.
 
 | Prerequisite | API it enables | Required safety contract |
@@ -67,9 +67,38 @@ Byte counts use `usize`; absolute file offsets use `u64`.
 The intended basic `Read` and `Write` operations return `Result<usize, Error>`.
 `read_exact` and `write_all` return `Result<void, Error>` and retry interrupted calls.
 Basic operations report interruption. Exact reads report `UnexpectedEof`, and complete writes report `WriteZero` when progress stops.
-Safe borrowed slices are tracked in #534, safe text in #532, and formatting in the core-library plan.
 `Seek::rewind` is also deferred until generic `Result<void, Error>::unwrap` works on both code generators.
 This branch does not implement those prerequisites or claim the gated interfaces are usable.
+
+## Blockers and their issues
+
+A program that makes a file and writes a string to it needs about 40 lines today (see the book chapter on files).
+The table lists what makes it long, and what removes each part. "No issue yet" means that nobody filed one.
+
+| Problem today | What removes it | Issue |
+| --- | --- | --- |
+| Each call needs `unsafe`, because a buffer is a raw pointer and its size is not checked. | Bounded byte slices | #534 |
+| A path is a raw C string. | A `Path` type that keeps Unix path bytes and refuses an embedded NUL | No issue yet |
+| A string literal is `*const i8`, but `write_raw` takes `*const u8`. A program must copy the text into a `Vec<u8>`. | `str` with `as_bytes()` | #532 |
+| Vx cannot cast `*const i8` to `*const u8`. | A pointer cast between byte types. This is smaller than `str`, and helps before it. | No issue yet |
+| A write needs a loop, because `write_raw` can take fewer bytes. A read of an exact size also needs a loop. | `write_all` and `read_exact` on slices. Before slices, `write_all_raw` and `read_exact_raw` on raw pointers can remove the loop. | No issue yet |
+| An `Error` cannot print itself, so a program calls `message_c_str`. | Text formatting traits, from the core-library plan | No issue yet |
+| `Vec` lengths are `i32`. | `Vec` with 64-bit lengths | #3271 |
+| Each program imports `core::result`, `std::fs` and `std::io`. | A prelude | #529 |
+| A program cannot test a raw pointer for null. | Null checks on raw pointers | #714 |
+| Device code that uses a `File` gets E6038 with a reason for channels and locks. | A message that is true for each `HostOnly` type | #3620 |
+
+Two compiler bugs made the example in the book chapter harder to write:
+
+- #3621: `let text = "hi"; text[0]` gives a wrong value, with no error. The workaround is `let text : *const i8 = "hi";`.
+- #3622: with the AST code generator, a `match` with a `return` arm fails after `import std::string`. The flat code generator compiles it. A program also reaches the AST code generator when the flat code generator declines a function, for example because of #3621.
+
+These questions are open, and have no issue yet:
+
+- Can `main` return a `Result`, so that `?` works in `main`?
+- Inside a task, the Rust bridge sends each file call to a helper thread, so that the task's worker can run other tasks. That costs a heap allocation, atomic operations, a wake and a park for each call. A benchmark against Rust must measure it, from a plain thread and from inside a task.
+
+[`file_read_and_write_make_one_runtime_call.vx`](../../tests/optimizations/pass/file_read_and_write_make_one_runtime_call.vx) checks that `read_raw` and `write_raw` make one runtime call and no other work after `opt -O3`.
 
 ## Target caller experience
 
@@ -120,6 +149,15 @@ For this plan, assume three prerequisite fixes have merged: `vx_file_drop` has t
 - [ ] Capture the platform error immediately after a failed call and convert it to `std::io::Error`. Do not rely on a later read of process or thread error state.
 - [ ] Use real positioned operations for `read_at` and `write_at`; a seek followed by a read or write changes shared cursor state and is not equivalent.
 - [ ] Keep raw host calls inside the backend. Remove the file-specific `vx_file_*` Rust wrappers only after the Vx backend passes the same behavior tests. This does not require removing unrelated Rust core services in the same change.
+
+The Vx backend needs these language and runtime features first. None of them has an issue yet:
+
+- **Code and constants for each OS.** `O_CREAT` is `0x200` on macOS and `0x40` on Linux, and `EAGAIN` is 35 on macOS and 11 on Linux. The program reads `errno` through `__error()` on macOS and `__errno_location()` on Linux. Vx has no way to choose code or constants for each OS.
+- **Variadic `extern` functions.** C declares `open(path, flags, ...)`, and the mode is a variadic argument. On Apple arm64, a variadic argument goes on the stack, so a declaration without `...` passes the mode in the wrong place. `stdlib/std/libc.vx` declares `open` with two parameters today.
+- **No call between the system call and the `errno` read.** The generated code must not put a call there. The optimized IR of a file program has runtime calls such as `vx_cancel_on`. A test must check where they go.
+- **A way to run a call off the task's worker.** `off_the_worker` is part of the Rust scheduler. A Vx backend needs an entry point that Vx can call, or it must accept that a file call blocks the worker.
+
+Removing Rust from `Vec` and `String` is separate work: #3271 for `Vec`, and #846 for `String`.
 
 ### Provide safe paths and byte storage
 
