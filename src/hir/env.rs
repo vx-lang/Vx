@@ -1568,7 +1568,7 @@ impl<'a> TypeChecker<'a> {
                     true
                 }
             }
-            (Type::Tensor(e1, d1, t1), Type::Tensor(e2, d2, t2)) => {
+            (Type::Tensor(e1, d1, t1, _), Type::Tensor(e2, d2, t2, _)) => {
                 // A pattern that names no place applies wherever the receiver lives; one that
                 // names a place applies only there.
                 let e1_match = Self::unify_tensor_elem(e1, e2, mapping);
@@ -2723,7 +2723,7 @@ mod specialization_identity_tests {
     use crate::syntax::{ElementType, MemorySpace, NumberExpr, Placement, Span};
 
     fn tensor(placement: Option<Placement>) -> Type {
-        Type::Tensor(ElementType::F32, vec![], placement)
+        Type::Tensor(ElementType::F32, vec![], placement, Storage::Auto)
     }
     fn pointer(inner: Type) -> Type {
         Type::Pointer(Box::new(inner), None, false)

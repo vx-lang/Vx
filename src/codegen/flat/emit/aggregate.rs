@@ -195,7 +195,7 @@ impl FnEmit<'_> {
             .get(ins.type_idx.0 as usize)
             .and_then(|g| self.ctx.tensors.get(g))
         {
-            Some((_, shape)) if payload.is_some() => memref_descriptor_ty(shape.len()),
+            Some((_, shape, _)) if payload.is_some() => memref_descriptor_ty(shape.len()),
             _ => fty,
         };
         let load_ty = if pointer {
@@ -223,7 +223,7 @@ impl FnEmit<'_> {
         self.names[idx] = n;
         // A tensor field comes out as its descriptor, cast back to the memref the result names.
         let gid_res = self.types.get(ins.type_idx.0 as usize).copied();
-        if let Some((elem, shape)) = gid_res.and_then(|g| self.ctx.tensors.get(&g).cloned()) {
+        if let Some((elem, shape, _)) = gid_res.and_then(|g| self.ctx.tensors.get(&g).cloned()) {
             let memty = tensor_memref_ty(&elem, &shape).ok_or(crate::emitter_gap!())?;
             let d = self.names[idx].clone();
             let m = format!("%fm{idx}");
@@ -319,14 +319,14 @@ impl FnEmit<'_> {
         let elem_is_ptr = gid == ptr_gid();
         // A tensor element (`*mut Tensor<f32, [4]>`, a channel's buffer) is its descriptor.
         let tensor_memty = match self.ctx.tensors.get(&gid) {
-            Some((elem, shape)) => {
+            Some((elem, shape, _)) => {
                 Some(tensor_memref_ty(elem, shape).ok_or(crate::emitter_gap!())?)
             }
             None => None,
         };
         let (et, scalar_e, agg_gid) = if elem_is_ptr {
             ("!llvm.ptr".to_string(), None, None)
-        } else if let Some((_, shape)) = self.ctx.tensors.get(&gid) {
+        } else if let Some((_, shape, _)) = self.ctx.tensors.get(&gid) {
             (memref_descriptor_ty(shape.len()), None, None)
         } else if let Some(e) = elem_of_gid(gid) {
             (

@@ -41,7 +41,7 @@ The default matches the output of `vx-format'."
   "Keywords of Vx, as listed in src/lexer.rs, plus `self'.")
 
 (defconst vx-builtin-types
-  '("Topology" "Memory" "Ref" "Verified" "Pinned" "HardwareState")
+  '("Topology" "Memory" "Storage" "Ref" "Verified" "Pinned" "HardwareState")
   "Type names that the Vx lexer treats as keywords.")
 
 (defconst vx-primitive-types

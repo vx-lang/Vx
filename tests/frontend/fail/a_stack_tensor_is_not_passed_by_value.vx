@@ -1,0 +1,21 @@
+//===- a_stack_tensor_is_not_passed_by_value.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A callee could keep a stack tensor it gets by value after this function returns. Pass it with `&`.
+
+// CHECK: passes a stack tensor by value
+fn take(t : Tensor<f32, [4]>) -> f32 {
+  return t[0];
+}
+
+fn main() -> i32 {
+  let t : Tensor<f32, [4], Storage::Stack> = Tensor<f32, [4], Storage::Stack>::new();
+  let x = take(t);
+  return 0;
+}

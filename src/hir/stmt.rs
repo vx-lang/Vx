@@ -836,7 +836,7 @@ impl<'a> TypeChecker<'a> {
             if ty != Type::Unknown && !self.is_assignable(ann, &ty) {
                 let splat = matches!(
                     (&*ann, &ty),
-                    (Type::Tensor(el, dims, _), Type::Scalar(s)) if !dims.is_empty() && el == s
+                    (Type::Tensor(el, dims, _, _), Type::Scalar(s)) if !dims.is_empty() && el == s
                 );
                 if splat {
                     self.errors.error_with_code(
@@ -1382,7 +1382,7 @@ impl<'a> TypeChecker<'a> {
                         Type::Scalar(ElementType::I64)
                     }
                 }
-                Type::Tensor(el_ty, _, _) => Type::Scalar(el_ty),
+                Type::Tensor(el_ty, _, _, _) => Type::Scalar(el_ty),
                 // A scalar iterable is an integer range (`a..b`); the induction variable takes
                 // the range's element type, so `for i in 0..10` binds `i: i32` and code like
                 // `sum + i` / `return i` type-checks without a coercion (#240). The flat
@@ -2316,7 +2316,7 @@ impl<'a> TypeChecker<'a> {
         // `?` extent does not promise.
         let copies_into_tensor =
             matches!(lhs, Expr::Dereference(_)) && matches!(lhs_ty, Type::Tensor(..));
-        if let (true, Type::Tensor(_, dims, _)) = (copies_into_tensor, &lhs_ty) {
+        if let (true, Type::Tensor(_, dims, _, _)) = (copies_into_tensor, &lhs_ty) {
             if dims.iter().any(|d| d.as_static().is_none()) && !self.speculating {
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E3003,

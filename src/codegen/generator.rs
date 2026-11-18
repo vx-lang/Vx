@@ -2347,7 +2347,7 @@ impl<'c> MeliorGenerator<'c> {
             | syntax::Type::Verified(inner)
             | syntax::Type::Distinct(inner) => self.type_size_align(inner, depth),
             // A tensor is held as its memref descriptor. A rank-0 tensor is a plain number.
-            syntax::Type::Tensor(_, dims, _) if !dims.is_empty() => {
+            syntax::Type::Tensor(_, dims, _, _) if !dims.is_empty() => {
                 Some((crate::layout::tensor_descriptor_bytes(dims.len()), 8))
             }
             // `Holder<i64>`: the fields with `T` replaced by `i64`.
@@ -2455,7 +2455,7 @@ impl<'c> MeliorGenerator<'c> {
                 };
                 let mut lowered = self.lower_type_str(&ty)?;
                 // A tensor is its descriptor, as in a struct field, so its shape travels with it.
-                if let (syntax::Type::Tensor(_, dims, _), true) =
+                if let (syntax::Type::Tensor(_, dims, _, _), true) =
                     (&ty, lowered.starts_with("memref<"))
                 {
                     self.enum_tensor_payloads
@@ -2539,7 +2539,7 @@ impl<'c> MeliorGenerator<'c> {
         let syntax::Type::Borrow { is_mut, inner, .. } = ty else {
             return "{}".to_string();
         };
-        let syntax::Type::Tensor(_, _, placement) = inner.as_ref() else {
+        let syntax::Type::Tensor(_, _, placement, _) = inner.as_ref() else {
             return "{}".to_string();
         };
         let access = if *is_mut { "noalias" } else { "readonly" };
@@ -2629,7 +2629,7 @@ impl<'c> MeliorGenerator<'c> {
             return self.lower_type(inner);
         }
         let ty_str = match ty {
-            syntax::Type::Tensor(el_ty, dims, top) => {
+            syntax::Type::Tensor(el_ty, dims, top, _) => {
                 return self.lower_tensor_type(el_ty, dims, top);
             }
             syntax::Type::Scalar(el_ty) => {
@@ -3095,7 +3095,7 @@ impl<'c> MeliorGenerator<'c> {
                         _ => fc.args.clone(),
                     };
                     let dims = dims.into_iter().map(syntax::Dim::Static).collect();
-                    return Some(syntax::Type::Tensor(el_ty, dims, None));
+                    return Some(syntax::Type::Tensor(el_ty, dims, None, Storage::Auto));
                 }
                 // `tensor_view_1d(p, len)` or `tensor_view_2d(p, rows, cols)` over literal
                 // extents is a statically shaped view, which is how the checker types it.
@@ -3119,7 +3119,7 @@ impl<'c> MeliorGenerator<'c> {
                         };
                         if let Some(el_ty) = el_ty {
                             let dims = dims.into_iter().map(syntax::Dim::Static).collect();
-                            return Some(syntax::Type::Tensor(el_ty, dims, None));
+                            return Some(syntax::Type::Tensor(el_ty, dims, None, Storage::Auto));
                         }
                     }
                 }
@@ -3132,10 +3132,11 @@ impl<'c> MeliorGenerator<'c> {
             // The transfer of a borrowed tensor is a new tensor in `space`, not a borrow.
             Expr::Transfer(e) => match self.infer_ast_type(&e.expr)? {
                 syntax::Type::Borrow { inner, .. } => match *inner {
-                    syntax::Type::Tensor(el, dims, _) => Some(syntax::Type::Tensor(
+                    syntax::Type::Tensor(el, dims, _, _) => Some(syntax::Type::Tensor(
                         el,
                         dims,
                         Some(syntax::Placement::at(e.space.clone())),
+                        Storage::Auto,
                     )),
                     _ => None,
                 },
@@ -3154,7 +3155,7 @@ impl<'c> MeliorGenerator<'c> {
                 }
                 // `t.as_ptr()` on a tensor: a pointer to its elements, in the tensor's memory,
                 // as the checker types it.
-                if let syntax::Type::Tensor(el, _, place) = &base_ty {
+                if let syntax::Type::Tensor(el, _, place, _) = &base_ty {
                     if matches!(mc.method_name.as_ref(), "as_ptr" | "as_mut_ptr") {
                         return Some(syntax::Type::Pointer(
                             Box::new(syntax::Type::Scalar(el.clone())),
@@ -3316,7 +3317,7 @@ pub(crate) fn tensor_descriptor_str(rank: usize) -> String {
 /// data.
 pub(crate) fn tensor_field_rank(ty: &syntax::Type) -> Option<usize> {
     match ty {
-        syntax::Type::Tensor(_, dims, _) => Some(dims.len()),
+        syntax::Type::Tensor(_, dims, _, _) => Some(dims.len()),
         // `Pinned<T, ..>` and `Verified<T>` are a tensor with a claim about it.
         syntax::Type::Pinned(inner, _)
         | syntax::Type::Verified(inner)
@@ -3374,7 +3375,7 @@ pub(crate) fn owned_tensor(ty: &syntax::Type) -> Option<Option<syntax::Placement
         return owned_tensor(inner);
     }
     match ty {
-        syntax::Type::Tensor(_, _, placement) => Some(placement.clone()),
+        syntax::Type::Tensor(_, _, placement, _) => Some(placement.clone()),
         syntax::Type::Verified(inner) | syntax::Type::Distinct(inner) => owned_tensor(inner),
         syntax::Type::Pinned(inner, top) => match owned_tensor(inner)? {
             Some(p) => Some(Some(p)),
@@ -3391,7 +3392,7 @@ pub(crate) fn owned_tensor(ty: &syntax::Type) -> Option<Option<syntax::Placement
 /// this one gives the tensor's memref a memory space, which keeps it out of a return slot.
 pub(crate) fn written_placement(ty: &syntax::Type) -> Option<&syntax::Placement> {
     match ty {
-        syntax::Type::Tensor(_, _, placement) => placement.as_ref(),
+        syntax::Type::Tensor(_, _, placement, _) => placement.as_ref(),
         syntax::Type::Verified(inner)
         | syntax::Type::Distinct(inner)
         | syntax::Type::Pinned(inner, _) => written_placement(inner),

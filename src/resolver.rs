@@ -541,7 +541,7 @@ impl ConstExtents<'_> {
 
     fn fold_type(&self, ty: &mut Type) {
         match ty {
-            Type::Tensor(_, dims, _) => {
+            Type::Tensor(_, dims, _, _) => {
                 for dim in dims {
                     if let Dim::Static(e) = dim {
                         self.fold_extent(e, true);
@@ -711,7 +711,7 @@ mod tests {
             .find(|f| f.name.as_ref() == name)
             .expect("no such function");
         match &func.params[0].1 {
-            Type::Tensor(_, dims, _) => dims
+            Type::Tensor(_, dims, _, _) => dims
                 .iter()
                 .map(|d| d.literal().map(str::to_string))
                 .collect(),

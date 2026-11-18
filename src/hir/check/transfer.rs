@@ -538,11 +538,11 @@ impl<'a> TypeChecker<'a> {
                 // may count or compare them. Its width is the target's, not the program's
                 // choice. A tensor or vector of `usize` is data, and stays checked below.
                 Type::Scalar(ElementType::USize) => {}
-                Type::Scalar(e) | Type::Simd(e, _) | Type::Tensor(e, _, None) => out.push(e),
+                Type::Scalar(e) | Type::Simd(e, _) | Type::Tensor(e, _, None, _) => out.push(e),
                 // These name the device that holds the value, and the placement checks ask
                 // that device. Asking the region's device instead would report against a
                 // machine the value never touches.
-                Type::Tensor(_, _, Some(_)) | Type::Pinned(..) => {}
+                Type::Tensor(_, _, Some(_), _) | Type::Pinned(..) => {}
                 Type::Ref(inner, _)
                 | Type::Verified(inner)
                 | Type::Distinct(inner)
@@ -1449,7 +1449,7 @@ impl<'a> TypeChecker<'a> {
                     self.check_alignments_in(a, context, span);
                 }
             }
-            Type::Tensor(_, _, Some(p)) => {
+            Type::Tensor(_, _, Some(p), _) => {
                 let Some(n) = p.alignment else {
                     return;
                 };
@@ -2548,13 +2548,13 @@ impl<'a> TypeChecker<'a> {
             // `Tensor<f16, [n, n], Memory::NPU_HBM>` were two different types for the same fact
             // and would not assign to one another. `Pinned` also carries only a topology, so the
             // space the transfer named was not recorded on the value at all.
-            Type::Tensor(el, dims, _) => Type::Tensor(el, dims, Some(placement)),
+            Type::Tensor(el, dims, _, storage) => Type::Tensor(el, dims, Some(placement), storage),
             // A copy has the same values, so it is still `Distinct`.
             Type::Distinct(inner) if matches!(*inner, Type::Tensor(..)) => {
-                let Type::Tensor(el, dims, _) = *inner else {
+                let Type::Tensor(el, dims, _, storage) = *inner else {
                     unreachable!("matched above")
                 };
-                Type::Distinct(Box::new(Type::Tensor(el, dims, Some(placement))))
+                Type::Distinct(Box::new(Type::Tensor(el, dims, Some(placement), storage)))
             }
             Type::Verified(_inner) => {
                 if let Expr::Transfer(t) = expr {
@@ -2677,6 +2677,11 @@ impl<'a> TypeChecker<'a> {
 
     pub(crate) fn check_spawnon_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         let unused = std::mem::replace(&mut self.value_unused, false);
+        if let Expr::SpawnOn(s) = expr {
+            if !self.speculating {
+                self.check_stack_tensor_uses_in_task(&s.stmts, s.ret.as_deref());
+            }
+        }
         match expr {
             Expr::SpawnOn(SpawnOnExpr {
                 top,

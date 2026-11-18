@@ -117,7 +117,7 @@ impl FnEmit<'_> {
             }
         } else if gid == ptr_gid() {
             self.body += &format!("  func.return {a} : !llvm.ptr\n"); // a pointer return (#235)
-        } else if let Some((elem, shape)) = self.ctx.tensors.get(&gid) {
+        } else if let Some((elem, shape, _)) = self.ctx.tensors.get(&gid) {
             let slot = self.ret_slot.clone();
             if let Some(vecty) = self.vec_of.get(ins.operand1.0 as usize).cloned().flatten() {
                 // An elementwise result is a vector register; the result is a buffer. Store the

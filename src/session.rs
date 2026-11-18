@@ -118,7 +118,12 @@ pub struct LocalWorkerState {
     /// in the nominal registry), so codegen can't reconstruct a tensor's memref type from the stream
     /// alone -- most acutely for `TensorAlloc`. The lowerer records it here as it emits tensor values;
     /// the flat codegen consumes it (the tensor analogue of the registry's struct `layouts`).
-    pub local_tensor_types: Vec<(TypeId, crate::syntax::ElementType, Vec<String>)>,
+    pub local_tensor_types: Vec<(
+        TypeId,
+        crate::syntax::ElementType,
+        Vec<String>,
+        crate::syntax::Storage,
+    )>,
 
     /// String side table: the string-literal bytes for each `PrintStr` this function's stream emits,
     /// indexed by the opcode's `imm`. A `PrintStr` can't carry the bytes inline (its `imm` is a 64-bit

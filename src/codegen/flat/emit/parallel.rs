@@ -32,7 +32,7 @@ impl FnEmit<'_> {
                 .types
                 .get(ins.type_idx.0 as usize)
                 .ok_or(crate::emitter_gap!())?;
-            let (elem, shape) = self
+            let (elem, shape, _) = self
                 .ctx
                 .tensors
                 .get(&result_gid)

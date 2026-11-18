@@ -212,7 +212,7 @@ impl FnEmit<'_> {
             .types
             .get(ins.type_idx.0 as usize)
             .ok_or(crate::emitter_gap!())?;
-        let (elem, shape) = self
+        let (elem, shape, _) = self
             .ctx
             .tensors
             .get(&gid)
@@ -258,22 +258,30 @@ impl FnEmit<'_> {
             .types
             .get(ins.type_idx.0 as usize)
             .ok_or(crate::emitter_gap!())?;
-        let (elem, shape) = self.ctx.tensors.get(&gid).ok_or(crate::emitter_gap!())?;
+        let (elem, shape, storage) = self.ctx.tensors.get(&gid).ok_or(crate::emitter_gap!())?;
+        let storage = *storage;
         let memty = tensor_memref_ty(elem, shape).ok_or(crate::emitter_gap!())?;
-        // This is the buffer the function returns, and the caller already allocated it: build in
-        // place and allocate nothing. Named return value optimization, the same move C++ and Rust
-        // make. `op_ret` then returns without copying, because the value already *is* the slot.
         if let Some(slot) = self.nrvo_slot(idx, &memty) {
             self.names[idx] = slot;
             self.mem_of[idx] = Some(memty);
             return Ok(());
         }
         let n = format!("%v{idx}");
-        // A `?` dimension's extent is the `Arg` before this instruction, one per `?` in order:
-        // `memref.alloc(%d0, %d1)` takes them as indices.
         let dyn_count = shape.iter().filter(|d| *d == DYN_DIM).count();
         if self.pending_args.len() < dyn_count {
             return Err(crate::emitter_gap!());
+        }
+        if storage == Storage::Stack {
+            assert_eq!(dyn_count, 0, "a stack tensor must have a static shape");
+            // The written `aligned(N)` of the type sets the slot's alignment, at least 16.
+            let align = ins.operand1.0 as u64;
+            self.emit_slot(&format!(
+                "  {n} = memref.alloca() {{alignment = {} : i64}} : {memty}\n",
+                align.max(16)
+            ));
+            self.names[idx] = n;
+            self.mem_of[idx] = Some(memty);
+            return Ok(());
         }
         let extents = self
             .pending_args
@@ -369,7 +377,14 @@ impl FnEmit<'_> {
                     if let Some(device) = device {
                         self.copy_after_fill.insert(idx, device);
                     }
-                    self.body += &format!("  {n} = memref.alloc({sizes}) : {memty}\n");
+                    // `Storage::Heap` asks for a heap buffer. The mark keeps the stack promotion
+                    // pass from moving it.
+                    let mark = if storage == Storage::Heap {
+                        " {vx.heap}"
+                    } else {
+                        ""
+                    };
+                    self.body += &format!("  {n} = memref.alloc({sizes}){mark} : {memty}\n");
                 }
             }
             self.names[idx] = n;
@@ -405,7 +420,7 @@ impl FnEmit<'_> {
             .types
             .get(ins.type_idx.0 as usize)
             .ok_or(crate::emitter_gap!())?;
-        let (elem, shape) = self
+        let (elem, shape, _) = self
             .ctx
             .tensors
             .get(&gid)
@@ -596,7 +611,7 @@ impl FnEmit<'_> {
             .types
             .get(ins.type_idx.0 as usize)
             .ok_or(crate::emitter_gap!())?;
-        let (elem, shape) = self
+        let (elem, shape, _) = self
             .ctx
             .tensors
             .get(&gid)
@@ -676,7 +691,7 @@ impl FnEmit<'_> {
             .types
             .get(ins.type_idx.0 as usize)
             .ok_or(crate::emitter_gap!())?;
-        let (elem, shape) = self
+        let (elem, shape, _) = self
             .ctx
             .tensors
             .get(&gid)
@@ -828,7 +843,7 @@ impl FnEmit<'_> {
             .types
             .get(ins.type_idx.0 as usize)
             .ok_or(crate::emitter_gap!())?;
-        let (elem, shape) = self
+        let (elem, shape, _) = self
             .ctx
             .tensors
             .get(&gid)
@@ -1170,7 +1185,7 @@ impl FnEmit<'_> {
             if base_memty.contains("strided") {
                 return self.strided_row(idx, &base, &base_memty, &ic);
             }
-            let (elem, shape) = self
+            let (elem, shape, _) = self
                 .ctx
                 .tensors
                 .get(&result_gid)
@@ -1268,7 +1283,7 @@ impl FnEmit<'_> {
             .ctx
             .tensors
             .get(&result_gid)
-            .and_then(|(_, shape)| shape.first().cloned())
+            .and_then(|(_, shape, _)| shape.first().cloned())
             .ok_or(crate::emitter_gap!())?;
         // The strides of the tensor as its type gives them: from its layout, or row-major when
         // it has none.
@@ -1557,7 +1572,7 @@ impl FnEmit<'_> {
             .types
             .get(ins.type_idx.0 as usize)
             .ok_or(crate::emitter_gap!())?;
-        let (elem, shape) = self.ctx.tensors.get(&gid).ok_or(crate::emitter_gap!())?;
+        let (elem, shape, _) = self.ctx.tensors.get(&gid).ok_or(crate::emitter_gap!())?;
         let (elem, shape) = (elem.clone(), shape.clone());
         let md = tensor_memref_ty(&elem, &shape).ok_or(crate::emitter_gap!())?;
         // Floats only, on the same terms as `MatmulInto`: linalg's integer semantics are not

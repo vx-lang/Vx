@@ -1742,7 +1742,7 @@ impl<'a> TypeChecker<'a> {
                 .map(|d| d.literal().and_then(|v| v.parse().ok()))
                 .collect()
         };
-        let Some((Type::Tensor(elem, dims, _), _)) = self.lookup(name) else {
+        let Some((Type::Tensor(elem, dims, _, _), _)) = self.lookup(name) else {
             return false;
         };
         let c = extents(dims);
@@ -1756,7 +1756,7 @@ impl<'a> TypeChecker<'a> {
                 Type::Borrow { inner, .. } => (inner.as_ref().clone(), true),
                 t => (t.clone(), false),
             };
-            let Type::Tensor(el, d, _) = ty else {
+            let Type::Tensor(el, d, _, _) = ty else {
                 return None;
             };
             Some((root.to_string(), el, extents(&d), borrowed))
