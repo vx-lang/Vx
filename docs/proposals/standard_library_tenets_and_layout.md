@@ -324,8 +324,10 @@ core layer        core::  needs nothing. Each item states where it runs (R1).
   `on Topology::Any` or generic over a topology. A core function with no `on` clause runs on the
   CPU only, and its "Runs on" line (D4) says why. Each public item in the OS layer is host only.
   Where the allocation layer runs depends on open question Q1.
-- **Domain code moves out.** `std::nn`, `std::llama`, `std::bulk_hash` and `stdlib/graph` leave
-  the standard library. Open question Q6 asks where they go.
+- **Domain libraries move out.** `std::nn` (transformer kernels), `std::llama` (a model loader),
+  `std::bulk_hash` (a GPU hash table) and `stdlib/graph` (graph algorithms) leave the standard
+  library. Each one becomes a package in `libs/` (Q6). General modules such as `num`, `string`
+  and `vec` stay.
 
 The core library plan (`docs/implementation_plans/core_library.md`, phase 4) planned to split
 `std` into `alloc` and `std`. This RFC proposes the dependency rule in place of that split. If a
@@ -564,8 +566,8 @@ program written for Go 1 keeps working.
 
 ## 7. Cryptography
 
-**Proposal: cryptographic algorithms stay out of the standard library.** Three small items stay
-in, because other modules need them.
+**Decision (Q13): cryptographic algorithms stay out of the standard library.** Three small items
+stay in, because other modules need them.
 
 Languages differ on this point. Go, Zig, Java and Python put cryptography in the standard library.
 Rust, C++ and Mojo do not. Mojo's `hash` package has only AHash and FNV-1a, which are not
@@ -605,7 +607,7 @@ code. A GPU batch hash, such as SHA-256 over many blocks, could be a distinctive
 | `std::sync::{mutex, channel, wait}` | `std::sync` | No change. |
 | `std::googletest` | `std::testing` or tools | Q17. |
 | `std::tensor`, `std::simd`, `std::collective` | undecided | Q5. |
-| `std::nn`, `std::llama`, `std::bulk_hash`, `stdlib/graph` | outside the standard library | Q6. Committee decision. |
+| `std::nn`, `std::llama`, `std::bulk_hash`, `stdlib/graph` | `libs/nn`, `libs/llama`, `libs/bulk_hash`, `libs/graph` | Packages, imported with `--package` (Q6). |
 
 ## 9. How the library changes
 
@@ -637,10 +639,17 @@ code. A GPU batch hash, such as SHA-256 over many blocks, could be a distinctive
 - **Q5. Tensors, SIMD and collectives.** Do `std::tensor`, `std::simd` and `std::collective`
   belong in `core`, in `std`, or in a device library? Do the `lanes::` routines become library
   functions (L1)?
-- **Q6. Domain modules.** Do `std::nn`, `std::llama`, `std::bulk_hash` and `stdlib/graph` leave
-  the standard library? If they leave, do they go to a directory in this repository or to separate
-  repositories? Vx has no package manager yet (#1275), and two Vx objects cannot be linked into
-  one library today (#3434).
+- **Q6. Domain libraries. Proposed decision, for the committee to approve.** Each domain library
+  becomes a package in a `libs/` directory of this repository: `libs/nn`, `libs/llama`,
+  `libs/bulk_hash` and `libs/graph`. CI builds and tests each one. A program asks for a package
+  with the existing `--package` flag, and the import line names the package. For example,
+  `vxc app.vx --package nn=libs/nn` lets `app.vx` write `import nn::decoder;`. `libs/` is not a default search root, so a program that does not ask for `nn` cannot import it.
+  Separate repositories must wait: Vx has no package manager yet (#1275), and two Vx objects
+  cannot be linked into one library today (#3434). When a library moves to its own repository
+  later, only the directory after `=` changes. The import line stays the same. The move is
+  cheapest now, because no domain path is stable and only tests and one benchmark import these
+  modules. This PR moves no code. After approval, each library gets a tracking issue for its
+  move.
 - **Q7. Paths, re-exports and the prelude.** This RFC keeps every public path. Does Vx need a
   re-export feature anyway, so that a later move can keep the old path as an alias? Should
   `std::` re-export the `core::` modules, so that a program can write one path? Do new
@@ -648,8 +657,9 @@ code. A GPU batch hash, such as SHA-256 over many blocks, could be a distinctive
   goes in the implicit prelude (#529)?
 - **Q12. Formats.** Do JSON, compression or regular expressions belong in `std`? This RFC proposes
   no.
-- **Q13. Cryptography.** Does the committee agree that cryptographic algorithms stay out, and
-  that OS random bytes and a constant-time comparison stay in?
+- **Q13. Cryptography. Closed.** Cryptographic algorithms stay out of the standard library. OS
+  random bytes and a constant-time comparison stay in. The first review agreed, for the
+  constant-time reason in Section 7.
 - **Q17. Tests.** Is a test framework part of `std`, or part of the tools?
 
 **Traits and API style**
