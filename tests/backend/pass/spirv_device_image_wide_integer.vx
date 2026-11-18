@@ -1,0 +1,53 @@
+//===- spirv_device_image_wide_integer.vx -------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `hypot` on `f64` computes with a 128-bit integer, and SPIR-V has no integer
+// wider than 64 bits. So the first region gets no SPIR-V image and runs on the
+// host. The compiler does not stop, and the second region keeps its image.
+//
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s # flat-codegen
+// CHECK: cannot become a `spirv64` device image: it computes with a 128-bit integer in `libm_hypot_exact`, and a SPIR-V image holds integers of at most 64 bits
+// CHECK: format=spirv
+// EXPECT: 5 10
+
+import core::num;
+
+Memory CPU_DRAM {}
+Memory DEV_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached, scope: device
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 63 GB/s,
+  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 63 GB/s
+}
+
+fn main() -> i32 {
+  let mut a = unsafe { Tensor<f64, [1000]>::uninit() };
+  for i in 0..1000 {
+    a[i] = 3.0;
+  }
+  let ga = transfer(a, Memory::DEV_HBM);
+  let mut gh = transfer(unsafe { Tensor<f64, [1000]>::uninit() }, Memory::DEV_HBM);
+  let mut gs = transfer(unsafe { Tensor<f64, [1000]>::uninit() }, Memory::DEV_HBM);
+  spawn on(Topology::Dev) {
+    for i in 0..1000 {
+      gh[i] = ga[i].hypot(4.0);
+    }
+  }
+  spawn on(Topology::Dev) {
+    for i in 0..1000 {
+      gs[i] = gh[i] * 2.0;
+    }
+  }
+  let h = transfer(gh, Memory::CPU_DRAM);
+  let s = transfer(gs, Memory::CPU_DRAM);
+  println!("{} {}", h[999], s[999]);
+  return 0;
+}

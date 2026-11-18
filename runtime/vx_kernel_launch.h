@@ -306,6 +306,28 @@ static inline long vx_launch_size(const char **text, void *const *device_args,
   return value;
 }
 
+/* The trip count of a region's grid-strided loop, from the payload's `launch=`
+   entry: a number, or `$j` for launch value j when the loop's bounds are known
+   only at run time. A two-level region gives `B,T`, and then this returns B
+   and writes T to `threads`. Otherwise `threads` is 0. Returns 0 when there is
+   no `launch=` entry, and -1 when launch value j is not an `i32`. */
+static inline long vx_launch_trip(const void *payload, size_t payload_size,
+                                  void *const *device_args,
+                                  const int32_t *arg_tags, int64_t num_args,
+                                  long *threads) {
+  const char *at = vx_payload_field(payload, payload_size, "launch=");
+  long trip;
+  *threads = 0;
+  if (!at) {
+    return 0;
+  }
+  trip = vx_launch_size(&at, device_args, arg_tags, num_args);
+  if (trip >= 0 && *at) {
+    *threads = vx_launch_size(&at, device_args, arg_tags, num_args);
+  }
+  return trip;
+}
+
 /* The launch shape of a region, from the payload's `grid=` and `block=`
    entries, which the `across` loops give (#252). Returns 1 and fills `grid` and
    `block`, 0 when the payload has no shape, or -1 with the reason in `why` when
