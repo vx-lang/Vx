@@ -19,7 +19,7 @@ SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 - `File` implements `Seek::seek_to`. `SeekFrom::Start(u64)`, `Current(i64)` and `End(i64)` give the position.
 - `Seek::stream_position` returns the position.
 - `File` owns its handle, and `Drop` closes it. A failed open makes no `File`.
-- `File` implements `HostOnly`, so device code cannot use it (E6038).
+- `File` implements `HostOnly`, so device code cannot use it (E6038). The E6038 message gives the reason for a channel or a lock ("can wait for the host"), which is wrong for a file. Issue #3620 tracks the fix. Until then, `a_file_in_a_device_body.vx` checks only the start of the message.
 - `Error::from_kind` makes an error with no OS code. `from_raw_os_error` keeps the OS code and gets its kind on this host.
 - `Error::with_operation` sets the operation. `message_c_str` returns the name of the kind as a C string, until Vx has text formatting.
 
