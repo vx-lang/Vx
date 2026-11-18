@@ -1582,9 +1582,10 @@ bool Printer::gpuOp(Operation *o) {
     return true;
   }
   if (auto red = dyn_cast<gpu::SubgroupReduceOp>(o)) {
-    // The whole SIMD-group of 32 threads, as `simd_sum` and the others.
-    if (red.getClusterSize() || isa<VectorType>(red.getType()))
-      return fail(o, "a subgroup reduction of a cluster or of a vector");
+    // The whole SIMD-group of 32 threads, as `simd_sum` and the others. They
+    // take a vector too, and reduce each element on its own.
+    if (red.getClusterSize())
+      return fail(o, "a subgroup reduction of a cluster");
     std::string ty, uty;
     if (!type(red.getType(), ty, o) || !unsignedType(red.getType(), uty, o))
       return false;
