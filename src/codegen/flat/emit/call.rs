@@ -306,7 +306,7 @@ impl FnEmit<'_> {
                 let t = mlir_scalar(&e).ok_or(crate::emitter_gap!())?.to_string();
                 self.etypes[idx] = Some(e);
                 Some(t)
-            } else if let Some((e, shape)) = self.ctx.tensors.get(&gid) {
+            } else if let Some((e, shape, _)) = self.ctx.tensors.get(&gid) {
                 let t = tensor_memref_ty(e, shape).ok_or(crate::emitter_gap!())?;
                 self.mem_of[idx] = Some(t.clone());
                 Some(t)

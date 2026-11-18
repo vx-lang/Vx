@@ -777,9 +777,11 @@ impl<'a> TypeChecker<'a> {
                     other => other,
                 };
                 match base {
-                    Type::Tensor(el, dims, _) if dims.len() <= 1 => Type::Scalar(el),
-                    Type::Tensor(el, dims, top) if !matches!(&*ix.index, Expr::Range(_)) => {
-                        Type::Tensor(el, dims[1..].to_vec(), top)
+                    Type::Tensor(el, dims, _, _) if dims.len() <= 1 => Type::Scalar(el),
+                    Type::Tensor(el, dims, top, storage)
+                        if !matches!(&*ix.index, Expr::Range(_)) =>
+                    {
+                        Type::Tensor(el, dims[1..].to_vec(), top, storage)
                     }
                     _ => Type::Unknown,
                 }

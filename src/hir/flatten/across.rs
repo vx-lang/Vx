@@ -540,7 +540,7 @@ impl Lowerer<'_> {
             }
             let v = self.lower_expr(arg)?;
             if kind.is_tensor() {
-                let LoweredTy::Tensor { elem, shape } = &v.ty else {
+                let LoweredTy::Tensor { elem, shape, .. } = &v.ty else {
                     return Err(Decline::TypeNotModelled {
                         what: "a lane routine of something that is not a tensor",
                     });

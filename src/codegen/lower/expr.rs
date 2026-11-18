@@ -60,7 +60,7 @@ fn load_rank_zero<'c>(
 
 /// A `Tensor<T, []>` local: its `memref<T>` is the tensor, not a cell holding a scalar.
 fn is_rank_zero_tensor(gen: &MeliorGenerator<'_>, name: &crate::symbol::Symbol) -> bool {
-    matches!(gen.ast_env.get(name), Some(syntax::Type::Tensor(_, dims, _)) if dims.is_empty())
+    matches!(gen.ast_env.get(name), Some(syntax::Type::Tensor(_, dims, _, _)) if dims.is_empty())
 }
 
 impl<'c> LowerToMelior<'c> for IdentifierExpr {
@@ -476,9 +476,9 @@ impl<'c> LowerToMelior<'c> for BorrowExpr {
             let element_of_a_tensor = indices > 0
                 && matches!(root, Expr::Identifier(_))
                 && match gen.infer_ast_type(root) {
-                    Some(syntax::Type::Tensor(_, dims, _)) => dims.len() == indices,
+                    Some(syntax::Type::Tensor(_, dims, _, _)) => dims.len() == indices,
                     Some(syntax::Type::Borrow { inner, .. }) => {
-                        matches!(&*inner, syntax::Type::Tensor(_, dims, _) if dims.len() == indices)
+                        matches!(&*inner, syntax::Type::Tensor(_, dims, _, _) if dims.len() == indices)
                     }
                     // A `let` bound to a row has no inferred type here; its slot's memref type
                     // says the rank.
@@ -904,7 +904,7 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
             if let Some(syntax::Type::Pointer(inner, _, _)) = gen.infer_ast_type(self.base.as_ref())
             {
                 let el = gen.lower_type_str(&inner)?;
-                if let syntax::Type::Tensor(_, dims, _) = &*inner {
+                if let syntax::Type::Tensor(_, dims, _, _) = &*inner {
                     tensor = Some(el.clone());
                     inferred_el_ty_str =
                         Some(crate::codegen::generator::tensor_descriptor_str(dims.len()));
@@ -995,7 +995,7 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
             };
             // Each extent, or `None` for one only known when the program runs.
             let base_dims: Vec<Option<i64>> = match base_ty {
-                Some(syntax::Type::Tensor(_, dims, _)) => dims
+                Some(syntax::Type::Tensor(_, dims, _, _)) => dims
                     .iter()
                     .map(|d| d.literal().and_then(|v| v.parse::<i64>().ok()))
                     .collect(),
@@ -3986,7 +3986,7 @@ fn shared_tile(
     written: Option<&syntax::Type>,
     elem: &str,
 ) -> Option<(String, u64)> {
-    let syntax::Type::Tensor(_, dims, Some(p)) = written? else {
+    let syntax::Type::Tensor(_, dims, Some(p), _) = written? else {
         return None;
     };
     let decl = gen.memories.get(&p.space)?;
@@ -4110,12 +4110,12 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             let (elem, shape_args): (syntax::Type, Vec<Expr>) = match written {
                 // A shape with a run-time extent is not in the type, so it stays where it was
                 // written; a static one is rebuilt from the type as the one array argument.
-                Some(syntax::Type::Tensor(el, dims, _))
+                Some(syntax::Type::Tensor(el, dims, _, _))
                     if dims.iter().any(|d| matches!(d, syntax::Dim::Dyn)) =>
                 {
                     (syntax::Type::Scalar(el.clone()), args.to_vec())
                 }
-                Some(syntax::Type::Tensor(el, dims, _)) => (
+                Some(syntax::Type::Tensor(el, dims, _, _)) => (
                     syntax::Type::Scalar(el.clone()),
                     vec![Expr::Array(syntax::ArrayExpr::new(
                         dims.iter().filter_map(|d| d.as_static().cloned()).collect(),
@@ -4249,7 +4249,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             // A tensor placed in a device's memory. `uninit()` is allocated there; one that is
             // filled is filled on the host and copied there, since the host cannot write it.
             let device = match written {
-                Some(syntax::Type::Tensor(_, _, Some(p))) => {
+                Some(syntax::Type::Tensor(_, _, Some(p), _)) => {
                     gen.placed_topology(p).filter(|t| *t != 0)
                 }
                 _ => None,
@@ -4346,7 +4346,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             // the Vx type still knows back on it.
             let mut arg_val = load_tensor_slot(gen, &block, arg_val, &mut expr_ty)?;
             if expr_ty.to_string().contains('?') {
-                if let Some(syntax::Type::Tensor(_, dims, _)) = gen.infer_ast_type(&args[0]) {
+                if let Some(syntax::Type::Tensor(_, dims, _, _)) = gen.infer_ast_type(&args[0]) {
                     let extents: Option<Vec<&str>> = dims.iter().map(|d| d.literal()).collect();
                     let el = extract_mlir_element_type(&expr_ty.to_string())
                         .unwrap_or_else(|e| panic!("{}", e));
@@ -5810,7 +5810,7 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
             let slots = enum_payload_slot_texts(&struct_ty.to_string());
             for (i, payload_expr) in payload_exprs.iter().enumerate() {
                 let rank = match gen.infer_ast_type(payload_expr) {
-                    Some(syntax::Type::Tensor(_, dims, _)) => Some(dims.len()),
+                    Some(syntax::Type::Tensor(_, dims, _, _)) => Some(dims.len()),
                     _ => None,
                 };
                 let (mut payload_val, mut payload_val_ty, next) =
@@ -6234,9 +6234,9 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
         // A slice `as` converts each element: the value widens to a `vector<Dxf32>`, and a cast
         // to a half type narrows it.
         let tensor_dims = match self.source_ty.as_ref() {
-            Some(syntax::Type::Tensor(_, dims, _)) => Some(dims),
+            Some(syntax::Type::Tensor(_, dims, _, _)) => Some(dims),
             Some(syntax::Type::Borrow { inner, .. }) => match &**inner {
-                syntax::Type::Tensor(_, dims, _) => Some(dims),
+                syntax::Type::Tensor(_, dims, _, _) => Some(dims),
                 _ => None,
             },
             _ => None,

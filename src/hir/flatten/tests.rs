@@ -570,7 +570,7 @@ fn enum_construction_and_matching_keep_tensor_types() {
         let Type::Pointer(inner, _, false) = payload else {
             panic!("{name} must retain its pointer payload");
         };
-        let Type::Tensor(ElementType::F32, dims, placement) = inner.as_ref() else {
+        let Type::Tensor(ElementType::F32, dims, placement, _) = inner.as_ref() else {
             panic!("{name} must retain the tensor type inside its pointer");
         };
         assert_eq!(dims.len(), 1, "tensor rank retained in {name}");
@@ -1348,7 +1348,7 @@ fn enum_layouts_erase_local_borrow_regions() {
 
 #[test]
 fn aggregate_identity_ignores_named_expression_source_locations() {
-    use crate::syntax::{IdentifierExpr, Placement, Span, Topology};
+    use crate::syntax::{IdentifierExpr, Placement, Span, Storage, Topology};
     let name = |text: &str, column| {
         Expr::Identifier(IdentifierExpr::new(
             text.into(),
@@ -1366,6 +1366,7 @@ fn aggregate_identity_ignores_named_expression_source_locations() {
                 ElementType::F32,
                 vec![Dim::Static(name(text, column))],
                 None,
+                Storage::Auto,
             ),
             Type::Const(Box::new(Expr::BinaryOp(crate::syntax::BinaryOpExpr::new(
                 Box::new(name(text, column)),
@@ -1475,6 +1476,7 @@ fn aggregate_identity_preserves_tensor_placement() {
                     crate::syntax::Span::default(),
                 )))],
                 placement,
+                Storage::Auto,
             )),
             None,
             false,
@@ -1588,6 +1590,7 @@ fn aggregate_identity_ignores_tensor_dimension_source_annotations() {
                     },
                 )))],
                 None,
+                Storage::Auto,
             )),
             None,
             false,
@@ -1673,6 +1676,7 @@ fn enum_variant_metadata_does_not_keep_a_tensor_temporary_alive(#[case] real_use
             LoweredTy::Tensor {
                 elem: ElementType::F32,
                 shape: vec!["4".into()],
+                storage: crate::syntax::Storage::Auto,
             },
             0,
         );
@@ -1912,8 +1916,8 @@ fn matmul_result_is_the_product_shape_not_the_left_operand() {
     let shape = w
         .local_tensor_types
         .iter()
-        .find(|(g, _, _)| *g == gid)
-        .map(|(_, _, s)| s.clone())
+        .find(|(g, _, _, _)| *g == gid)
+        .map(|(_, _, s, _)| s.clone())
         .expect("the result's shape is recorded");
     assert_eq!(shape, vec!["2".to_string(), "4".to_string()]);
     verify_hir_stream(&w);
@@ -1938,8 +1942,8 @@ fn half_matmul_keeps_its_element_type() {
     let elem = w
         .local_tensor_types
         .iter()
-        .find(|(g, _, _)| *g == gid)
-        .map(|(_, e, _)| e.clone())
+        .find(|(g, _, _, _)| *g == gid)
+        .map(|(_, e, _, _)| e.clone())
         .expect("the result's element type is recorded");
     assert_eq!(elem, ElementType::F16);
     verify_hir_stream(&w);
@@ -2564,7 +2568,7 @@ fn wrapper_types_peel_to_their_runtime_type() {
         ))
     };
     let dims = vec![Dim::Static(num("2")), Dim::Static(num("2"))];
-    let tensor = Type::Tensor(ElementType::F32, dims, None);
+    let tensor = Type::Tensor(ElementType::F32, dims, None, Storage::Auto);
     let wrapped = Type::Verified(Box::new(Type::Ref(
         Box::new(tensor),
         crate::syntax::MemorySpace::NPUHBM,

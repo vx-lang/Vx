@@ -268,7 +268,7 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
         // `let t : Tensor<f32, []> = 1.0`: a rank-0 tensor is a buffer holding one value, so the
         // scalar the initializer produced is stored into one.
         let (val, ty) = match ty_ann {
-            Some(syntax::Type::Tensor(_, dims, _)) if dims.is_empty() && !gen.is_memref(&ty) => {
+            Some(syntax::Type::Tensor(_, dims, _, _)) if dims.is_empty() && !gen.is_memref(&ty) => {
                 let buffer_ty =
                     Type::parse(gen.context, &format!("memref<{ty}>")).ok_or_else(|| {
                         crate::codegen::lower::LowerError::ParseType(format!("memref<{ty}>"))
@@ -837,7 +837,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
             indices > 0
                 && matches!(
                     gen.infer_ast_type(base),
-                    Some(syntax::Type::Tensor(_, dims, _)) if dims.len() > indices
+                    Some(syntax::Type::Tensor(_, dims, _, _)) if dims.len() > indices
                 )
         };
         // Only a tensor variable or a row on the right: an expression such as `a[i] + b[i]` is

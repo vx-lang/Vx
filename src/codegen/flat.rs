@@ -32,8 +32,8 @@ use crate::gid::TypeId;
 use crate::hir::flatten::{ptr_gid, scalar_gid, tensor_gid_of, DYN_DIM};
 use crate::mlir_ty::{mlir_scalar, mlir_vector, VectorTy};
 use crate::registry::ImmutableGlobalRegistry;
-use crate::syntax::scalar_of;
 use crate::syntax::{is_void_ty, Dim, ElementType, Function, Type};
+use crate::syntax::{scalar_of, Storage};
 use rayon::prelude::*;
 use std::collections::HashMap;
 
@@ -262,7 +262,7 @@ fn peel_wrappers(ty: &Type) -> &Type {
 /// here never contradicts what the body produces.
 fn tensor_memref_of_type(ty: &Type) -> Option<String> {
     match peel_wrappers(ty) {
-        Type::Tensor(elem, dims, _) => {
+        Type::Tensor(elem, dims, _, _) => {
             let mut shape = Vec::with_capacity(dims.len());
             for d in dims {
                 shape.push(match d {
@@ -465,7 +465,7 @@ fn param_alias_attrs(ty: &Type, ctx: &EmitCtx) -> String {
     // A borrowed tensor has the `alignment:` of its space. A GPU kernel puts it on the pointer.
     let align = match ty {
         Type::Borrow { inner, .. } => match inner.as_ref() {
-            Type::Tensor(_, _, Some(p)) => ctx
+            Type::Tensor(_, _, Some(p), _) => ctx
                 .subspaces
                 .get(&(crate::arch::memory_space_dispatch_id(&p.space) as u64))
                 .and_then(|s| s.alignment),
@@ -1129,7 +1129,7 @@ fn pointer_pointee_layout(
 /// A tensor type recovered by GID: its element and shape (dim expressions, numeric or symbolic).
 /// The tensor analogue of `AggLayout`, but sourced from the lowerer's side table rather than the
 /// registry (tensor types are structural, not nominal).
-pub type TensorMap = HashMap<TypeId, (ElementType, Vec<String>)>;
+pub type TensorMap = HashMap<TypeId, (ElementType, Vec<String>, Storage)>;
 
 /// The resolution context a flat stream references by GID: callee signatures (for `Call`), aggregate
 /// layouts (for struct ops), and tensor types (for tensor ops). Bundling them keeps the emitter
@@ -1597,7 +1597,7 @@ pub(crate) fn ty_mlir(ty: &Type, ctx: &EmitCtx) -> Lowered<String> {
             what: "a vector element with no MLIR spelling",
         })
     } else if let Some(gid) = tensor_gid_of(ty) {
-        let (elem, shape) = ctx.tensors.get(&gid).ok_or(Decline::TypeNotModelled {
+        let (elem, shape, _) = ctx.tensors.get(&gid).ok_or(Decline::TypeNotModelled {
             what: "a tensor with no recorded shape",
         })?;
         let memty = tensor_memref_ty(elem, shape).ok_or(Decline::TypeNotModelled {
@@ -1709,7 +1709,7 @@ fn mlir_block_error(text: &str, location: &str, message: &str) -> Option<String>
 pub fn emit_module_mlir(
     funcs: &[(&Function, &[HirInstruction], &[TypeId])],
     registry: &ImmutableGlobalRegistry,
-    tensor_types: &[(TypeId, ElementType, Vec<String>)],
+    tensor_types: &[(TypeId, ElementType, Vec<String>, Storage)],
     string_tables: &[&[String]],
     inline_tables: &[&[crate::hir::flatten::InlineBlock]],
     agg_layouts: &[crate::layout::GeneratedAggregateLayout],
@@ -1739,10 +1739,10 @@ pub fn emit_module_mlir(
     for (id, arch) in topo_archs {
         ctx.topo_archs.insert(*id, arch.clone());
     }
-    for (gid, elem, shape) in tensor_types {
+    for (gid, elem, shape, storage) in tensor_types {
         ctx.tensors
             .entry(*gid)
-            .or_insert_with(|| (elem.clone(), shape.clone()));
+            .or_insert_with(|| (elem.clone(), shape.clone(), *storage));
     }
     // Generated struct and enum instance layouts are local to the lowerer, outside the frozen registry.
     // Install their storage shapes so aggregate allocation and field access can find them.

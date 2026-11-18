@@ -18,7 +18,7 @@ impl<'a> TypeChecker<'a> {
     /// shape for at all, such as a struct or a pointer.
     fn differentiable_elem(ty: &Type) -> Option<&ElementType> {
         match ty {
-            Type::Tensor(e, _, _) | Type::Scalar(e) | Type::Simd(e, _) => Some(e),
+            Type::Tensor(e, _, _, _) | Type::Scalar(e) | Type::Simd(e, _) => Some(e),
             _ => None,
         }
     }

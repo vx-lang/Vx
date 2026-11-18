@@ -212,6 +212,23 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse the allocation class of a tensor: `Storage::Stack` or `Storage::Heap`. `Storage::Auto`
+    /// is the absence of a choice and lets the compiler decide.
+    pub(crate) fn parse_storage(&mut self) -> ParseResult<'a, Storage> {
+        self.consume(&TokenType::Storage, "Expected 'Storage'")?;
+        self.consume(&TokenType::DoubleColon, "Expected '::' after 'Storage'")?;
+        let ident = match &self.advance().kind {
+            TokenType::Identifier(s) => s.to_string(),
+            _ => return Err(self.error("Expected storage class after Storage::")),
+        };
+        match ident.as_str() {
+            "Auto" => Ok(Storage::Auto),
+            "Stack" => Ok(Storage::Stack),
+            "Heap" => Ok(Storage::Heap),
+            other => Err(self.error(&format!("Unknown storage class `Storage::{other}`"))),
+        }
+    }
+
     /// A function's return type: any type, or `!` for a function that never returns.
     pub(crate) fn parse_return_type(&mut self) -> ParseResult<'a, Type> {
         if self.match_token(&TokenType::Bang) {
@@ -554,14 +571,28 @@ impl<'a> Parser<'a> {
                     }
 
                     let mut top = None;
-                    if self.match_token(&TokenType::Comma) {
-                        top = Some(self.parse_placement()?);
-                    }
-                    // `aligned(N)` after the placement: the tensor starts at a multiple of N
-                    // bytes.
-                    if let Some(p) = top.as_mut() {
-                        if self.match_token(&TokenType::Comma) {
-                            p.alignment = Some(self.parse_tensor_alignment()?);
+                    let mut storage = Storage::Auto;
+                    loop {
+                        if !self.match_token(&TokenType::Comma) {
+                            break;
+                        }
+                        if self.check(&TokenType::Storage) {
+                            storage = self.parse_storage()?;
+                        } else if self.check(&TokenType::Topology) || self.check(&TokenType::Memory)
+                        {
+                            let mut p = self.parse_placement()?;
+                            if self.check(&TokenType::Comma)
+                                && self.peek_n(1).kind == TokenType::Identifier("aligned")
+                            {
+                                self.advance();
+                                p.alignment = Some(self.parse_tensor_alignment()?);
+                            }
+                            top = Some(p);
+                        } else {
+                            return Err(self.error(
+                                "Expected a tensor qualifier: `Memory::X`, `Topology::X`, \
+                                 `aligned(N)`, or `Storage::Stack`",
+                            ));
                         }
                     }
 
@@ -576,7 +607,7 @@ impl<'a> Parser<'a> {
                     if !saw_dims_list {
                         return Err(self.error(DIMS_REQUIRED));
                     }
-                    Ok(Type::Tensor(el_ty, dims, top))
+                    Ok(Type::Tensor(el_ty, dims, top, storage))
                 }
             }
             // The old spelling of a rank-2 tensor with run-time extents. Refused with the

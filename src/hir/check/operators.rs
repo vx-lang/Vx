@@ -132,8 +132,8 @@ impl<'a> TypeChecker<'a> {
         };
         let placed = match self.check_expr_type_flag(&mut mc.base, false) {
             Type::Pinned(_, top) => Some(top),
-            Type::Tensor(_, _, Some(p)) => Some(p.topology),
-            Type::Tensor(_, _, None) => None,
+            Type::Tensor(_, _, Some(p), _) => Some(p.topology),
+            Type::Tensor(_, _, None, _) => None,
             _ => return None, // a user method that happens to be called `topology`
         };
         let expected = match other {
@@ -269,16 +269,16 @@ impl<'a> TypeChecker<'a> {
             // `t as f32`: a cast of each element of a float tensor, to a tensor of the same
             // shape. On a slice, it narrows a widened slice back into half storage, which the
             // assignment rules require rather than performing silently.
-            (Type::Tensor(src_el, dims, top), Type::Scalar(dst_el))
+            (Type::Tensor(src_el, dims, top, storage), Type::Scalar(dst_el))
                 if src_el.is_float() && dst_el.is_float() =>
             {
-                return Type::Tensor(dst_el.clone(), dims.clone(), top.clone());
+                return Type::Tensor(dst_el.clone(), dims.clone(), top.clone(), *storage);
             }
             // A borrowed tensor, such as a parameter `a : &Tensor<bf16, ..>`.
             (Type::Borrow { inner, .. }, Type::Scalar(dst_el)) if dst_el.is_float() => {
-                if let Type::Tensor(src_el, dims, top) = &**inner {
+                if let Type::Tensor(src_el, dims, top, storage) = &**inner {
                     if src_el.is_float() {
-                        return Type::Tensor(dst_el.clone(), dims.clone(), top.clone());
+                        return Type::Tensor(dst_el.clone(), dims.clone(), top.clone(), *storage);
                     }
                 }
             }
@@ -713,6 +713,7 @@ impl<'a> TypeChecker<'a> {
                                 el_ty_l.clone(),
                                 vec![dims_l[0].clone(), dims_r[1].clone()],
                                 top_l.clone(),
+                                Self::as_tensor_storage(&lhs_ty),
                             );
                         }
                     }
@@ -763,7 +764,12 @@ impl<'a> TypeChecker<'a> {
                             // A half slice with another float type: the f32 result is a new
                             // tensor of the same shape and placement, not a borrow.
                             if let Some((_, dims, top)) = Self::as_tensor_operand(shape_side) {
-                                return Type::Tensor(ElementType::F32, dims.clone(), top.clone());
+                                return Type::Tensor(
+                                    ElementType::F32,
+                                    dims.clone(),
+                                    top.clone(),
+                                    Self::as_tensor_storage(shape_side),
+                                );
                             }
                         }
                         return shape_side.clone();
@@ -826,7 +832,7 @@ impl<'a> TypeChecker<'a> {
             Type::Scalar(e) => Some(e.clone()),
             // Comparing element to element does not read the shape, so both tensor spellings
             // answer here (Vx#399).
-            Type::Tensor(e, _, _) => Some(e.clone()),
+            Type::Tensor(e, _, _, _) => Some(e.clone()),
             Type::Pinned(inner, _) => Self::scalar_elem(inner),
             Type::Ref(inner, _) => Self::scalar_elem(inner),
             Type::Borrow { inner, .. } => Self::scalar_elem(inner),
@@ -1009,7 +1015,7 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn single_value_elem(ty: &Type) -> Option<ElementType> {
         match ty {
             Type::Scalar(e) => Some(e.clone()),
-            Type::Tensor(e, dims, _) if dims.is_empty() => Some(e.clone()),
+            Type::Tensor(e, dims, _, _) if dims.is_empty() => Some(e.clone()),
             Type::Pinned(inner, _) => Self::single_value_elem(inner),
             Type::Ref(inner, _) => Self::single_value_elem(inner),
             Type::Borrow { inner, .. } => Self::single_value_elem(inner),

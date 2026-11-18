@@ -664,7 +664,7 @@ Topology SmemDev {
 
 fn placement_of(m: &VxModule, fn_idx: usize) -> vxc::syntax::Placement {
     match param_ty(m, fn_idx) {
-        Type::Tensor(_, _, Some(p)) => p,
+        Type::Tensor(_, _, Some(p), _) => p,
         other => panic!("expected a placed tensor parameter, got {other:?}"),
     }
 }

@@ -1802,14 +1802,14 @@ mod tests {
     use crate::syntax::DeclPlace;
 
     use super::*;
-    use syntax::{ElementType, Expr, NumberExpr, Span};
+    use syntax::{ElementType, Expr, NumberExpr, Span, Storage};
 
     // The topology registry is `thread_local` (see `TOPOLOGY_REGISTRY`), and libtest runs each
     // test on its own thread, so registry-mutating tests are isolated by construction -- no
     // serialization guard is needed.
 
     fn make_tensor() -> Type {
-        Type::Tensor(ElementType::F32, vec![], None)
+        Type::Tensor(ElementType::F32, vec![], None, Storage::Auto)
     }
 
     fn make_npu() -> Topology {

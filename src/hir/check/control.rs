@@ -298,7 +298,7 @@ impl<'a> TypeChecker<'a> {
     /// first element made the whole array an `i32` array.
     pub(crate) fn give_numbers_the_type(value: &mut Expr, ty: &Type) {
         let elem = match ty {
-            Type::Scalar(elem) | Type::Tensor(elem, _, _) => elem,
+            Type::Scalar(elem) | Type::Tensor(elem, _, _, _) => elem,
             _ => return,
         };
         match value {
@@ -1610,6 +1610,7 @@ impl<'a> TypeChecker<'a> {
                         ElementType::F32,
                         vec![],
                         None,
+                        Storage::Auto,
                     ))
                 })
             }
@@ -1807,7 +1808,7 @@ impl<'a> TypeChecker<'a> {
                     }
                     // A tensor is moved into the closure, as before.
                     for (name, ty) in &captured_vars {
-                        if matches!(ty, Type::Tensor(_, _, _))
+                        if matches!(ty, Type::Tensor(_, _, _, _))
                             && (self.is_copy(ty)
                                 || !self.refuse_move_behind_ref(name, name, &e.span))
                         {
@@ -1818,7 +1819,7 @@ impl<'a> TypeChecker<'a> {
                         .iter()
                         .filter(|(name, ty)| {
                             !borrows.contains_key(name)
-                                && !matches!(ty, Type::Struct(_, _) | Type::Tensor(_, _, _))
+                                && !matches!(ty, Type::Struct(_, _) | Type::Tensor(_, _, _, _))
                         })
                         .map(|(name, _)| name.to_string())
                         .collect();

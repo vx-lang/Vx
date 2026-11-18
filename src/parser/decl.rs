@@ -2212,7 +2212,8 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
             Type::Verified(Box::new(Type::Tensor(
                 ElementType::F32,
                 vec![Dim::Dyn, Dim::Dyn],
-                None
+                None,
+                Storage::Auto,
             )))
         );
 
@@ -2269,7 +2270,8 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
                 &Some(Type::Tensor(
                     ElementType::F32,
                     vec![Dim::Dyn, Dim::Dyn],
-                    None
+                    None,
+                    Storage::Auto,
                 ))
             );
             if let Expr::FunctionCall(FunctionCallExpr {
@@ -2698,7 +2700,12 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
         if let Type::Pointer(inner, None, true) = &program.externs[0].return_type {
             assert_eq!(
                 **inner,
-                Type::Tensor(ElementType::F32, vec![Dim::Dyn, Dim::Dyn], None)
+                Type::Tensor(
+                    ElementType::F32,
+                    vec![Dim::Dyn, Dim::Dyn],
+                    None,
+                    Storage::Auto,
+                )
             );
         } else {
             panic!("Expected pointer return type");

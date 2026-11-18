@@ -16,7 +16,7 @@ use petgraph::algo::toposort;
 use petgraph::graph::DiGraph;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::gid::TypeId;
+use crate::{gid::TypeId, syntax::Storage};
 
 /// Structural layout definition of a nominal type.
 #[derive(Debug, Clone)]
@@ -58,6 +58,8 @@ pub struct FnSig {
     /// The length of an `ensures valid(return, n)`, when it is a parameter or a number. The code
     /// generator tells LLVM after each call that the result points at `n` elements.
     pub ret_valid: Option<crate::hir::check::pointer_clauses::Length>,
+
+    pub ret_storage: Storage,
 }
 
 /// The generic field-type information the flat path needs to resolve a member access *through a
@@ -209,7 +211,7 @@ impl ConstTable {
     /// `Err` with the reason when it is a tensor `const` this compiler cannot build yet.
     pub fn from_decl(decl: &crate::syntax::ConstDecl) -> Result<Option<ConstTable>, String> {
         use crate::syntax::{Dim, ElementType::*, Expr, Type, UnaryOp};
-        let Type::Tensor(elem, dims, placement) = &decl.ty else {
+        let Type::Tensor(elem, dims, placement, _) = &decl.ty else {
             return Ok(None);
         };
         if placement.is_some() {
@@ -1044,6 +1046,7 @@ mod tests {
             gid: TypeId::new(w0, w1, 0, 0),
             params: Vec::new(),
             ret_ty: crate::syntax::Type::Scalar(crate::syntax::types::ElementType::I32),
+            ret_storage: crate::syntax::Storage::Auto,
             ret_prov: 0,
             is_unsafe: false,
             ret_valid: None,
