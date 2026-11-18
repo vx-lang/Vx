@@ -559,8 +559,15 @@ macro_rules! instantiate_file_ffi {
                                     len: usize,
                                 ) -> isize;
                             }
+                            // macOS refuses a read of more than i32::MAX bytes, so ask for
+                            // less there, as Rust's File::read does. A short read is normal.
+                            #[cfg(target_vendor = "apple")]
+                            let limit = std::ffi::c_int::MAX as usize - 1;
+                            #[cfg(not(target_vendor = "apple"))]
+                            let limit = isize::MAX as usize;
                             // POSIX read initializes only the bytes it returns.
-                            let count = read(file.as_raw_fd(), buffer.cast(), len as usize);
+                            let count =
+                                read(file.as_raw_fd(), buffer.cast(), (len as usize).min(limit));
                             if count < 0 {
                                 Err(std::io::Error::last_os_error())
                             } else {

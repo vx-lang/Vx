@@ -851,3 +851,43 @@ fn fallible_seek_reports_positions_errors_and_invalid_arguments() -> Result<(), 
     expect_equal(position, 0, "failed seek does not return a position")?;
     Ok(())
 }
+
+// macOS refuses a `read` call that asks for more than `i32::MAX` bytes. A read of 3 GiB from a
+// 1-byte file must still succeed with a count of 1, as a short read. The buffer is reserved
+// memory that the read never touches past its first byte, so the test uses no disk and little RAM.
+#[test]
+fn a_read_larger_than_i32_max_is_a_short_read() -> Result<(), String> {
+    use std::io::Write;
+
+    let mut file = tempfile::tempfile().map_err(|error| format!("create file: {error}"))?;
+    file.write_all(b"A")
+        .map_err(|error| format!("write file: {error}"))?;
+    std::io::Seek::rewind(&mut file).map_err(|error| format!("rewind file: {error}"))?;
+    let file = into_ffi_file(file);
+
+    let len: usize = 3 << 30;
+    let layout = std::alloc::Layout::from_size_align(len, 1).map_err(|error| error.to_string())?;
+    let buffer = unsafe { std::alloc::alloc(layout) };
+    if buffer.is_null() {
+        vx_file_drop(file);
+        return Err("could not reserve a 3 GiB buffer".to_string());
+    }
+    let (mut count, mut code, mut has_code) = (0u64, 0, false);
+    let status = unsafe {
+        vx_file_try_read(
+            file,
+            buffer,
+            len as u64,
+            &mut count,
+            &mut code,
+            &mut has_code,
+        )
+    };
+    let first = unsafe { *buffer };
+    unsafe { std::alloc::dealloc(buffer, layout) };
+    vx_file_drop(file);
+    expect_equal((status, code, has_code), (0, 0, false), "large read status")?;
+    expect_equal(count, 1, "large read count")?;
+    expect_equal(first, b'A', "large read byte")?;
+    Ok(())
+}
