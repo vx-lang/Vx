@@ -38,12 +38,10 @@ pub struct MeliorGenerator<'c> {
     pub(crate) env: HashMap<crate::symbol::Symbol, (Value<'c, 'c>, Type<'c>)>,
     pub(crate) ast_env: HashMap<crate::symbol::Symbol, syntax::Type>,
     /// Locals bound to a tensor the compiler allocated, as against a view over memory it does
-    /// not control. Only these can be filled in place by `c = a @ b` (Vx#391).
+    /// not control.
     pub(crate) owned_tensors: std::collections::HashSet<crate::symbol::Symbol>,
     /// The `printMemref*` helpers declared so far; each is declared on its first use.
     pub(crate) declared_tensor_prints: std::collections::HashSet<&'static str>,
-    /// Locals whose element pointer the function takes: a view through it can share their memory.
-    pub(crate) pointer_taken: std::collections::HashSet<crate::symbol::Symbol>,
     /// The locals of the function being lowered that are borrowed with `&x`. Each gets a stack
     /// slot, so every borrow of it is the same address.
     pub(crate) address_taken: std::collections::HashSet<crate::symbol::Symbol>,
@@ -1092,7 +1090,6 @@ impl<'c> MeliorGenerator<'c> {
             ast_env: HashMap::new(),
             owned_tensors: std::collections::HashSet::new(),
             declared_tensor_prints: std::collections::HashSet::new(),
-            pointer_taken: std::collections::HashSet::new(),
             address_taken: std::collections::HashSet::new(),
             memories: HashMap::new(),
             transfer_impls: HashMap::new(),
@@ -1587,7 +1584,6 @@ impl<'c> MeliorGenerator<'c> {
         self.started_slots.clear();
         self.function_file = func.file.as_ref().map(|f| f.to_string());
         self.subspace_offsets.clear(); // per-function sub-space bump allocator (SS2)
-        self.pointer_taken = syntax::locals_with_pointer_taken(&func.body);
         self.address_taken = syntax::locals_with_address_taken(&func.body);
         let is_main = func.name.as_ref() == "main";
         let true_ret_ty = self.lower_type(&func.return_type)?;
@@ -2347,9 +2343,9 @@ impl<'c> MeliorGenerator<'c> {
             syntax::Type::Pointer(..) | syntax::Type::Borrow { .. } | syntax::Type::Ref(..) => {
                 Some((8, 8))
             }
-            syntax::Type::Pinned(inner, _) | syntax::Type::Verified(inner) => {
-                self.type_size_align(inner, depth)
-            }
+            syntax::Type::Pinned(inner, _)
+            | syntax::Type::Verified(inner)
+            | syntax::Type::Distinct(inner) => self.type_size_align(inner, depth),
             // A tensor is held as its memref descriptor. A rank-0 tensor is a plain number.
             syntax::Type::Tensor(_, dims, _) if !dims.is_empty() => {
                 Some((crate::layout::tensor_descriptor_bytes(dims.len()), 8))
@@ -2451,6 +2447,11 @@ impl<'c> MeliorGenerator<'c> {
                 let ty = match mapping {
                     Some(m) => ty.substitute(m),
                     None => ty.clone(),
+                };
+                // At run time a `Distinct` tensor is its tensor.
+                let ty = match ty {
+                    syntax::Type::Distinct(inner) => *inner,
+                    ty => ty,
                 };
                 let mut lowered = self.lower_type_str(&ty)?;
                 // A tensor is its descriptor, as in a struct field, so its shape travels with it.
@@ -2640,7 +2641,9 @@ impl<'c> MeliorGenerator<'c> {
             syntax::Type::Ref(inner, _mem) => {
                 return self.lower_type(inner);
             }
-            syntax::Type::Verified(inner) => return self.lower_type(inner),
+            syntax::Type::Verified(inner) | syntax::Type::Distinct(inner) => {
+                return self.lower_type(inner)
+            }
             syntax::Type::Pinned(inner, _top) => {
                 let inner_ty_str = self.lower_type(inner)?.to_string();
                 inner_ty_str
@@ -3315,7 +3318,9 @@ pub(crate) fn tensor_field_rank(ty: &syntax::Type) -> Option<usize> {
     match ty {
         syntax::Type::Tensor(_, dims, _) => Some(dims.len()),
         // `Pinned<T, ..>` and `Verified<T>` are a tensor with a claim about it.
-        syntax::Type::Pinned(inner, _) | syntax::Type::Verified(inner) => tensor_field_rank(inner),
+        syntax::Type::Pinned(inner, _)
+        | syntax::Type::Verified(inner)
+        | syntax::Type::Distinct(inner) => tensor_field_rank(inner),
         syntax::Type::Borrow { inner, .. } if matches!(**inner, syntax::Type::Tensor(..)) => {
             tensor_field_rank(inner)
         }
@@ -3370,7 +3375,7 @@ pub(crate) fn owned_tensor(ty: &syntax::Type) -> Option<Option<syntax::Placement
     }
     match ty {
         syntax::Type::Tensor(_, _, placement) => Some(placement.clone()),
-        syntax::Type::Verified(inner) => owned_tensor(inner),
+        syntax::Type::Verified(inner) | syntax::Type::Distinct(inner) => owned_tensor(inner),
         syntax::Type::Pinned(inner, top) => match owned_tensor(inner)? {
             Some(p) => Some(Some(p)),
             None => {
@@ -3387,7 +3392,9 @@ pub(crate) fn owned_tensor(ty: &syntax::Type) -> Option<Option<syntax::Placement
 pub(crate) fn written_placement(ty: &syntax::Type) -> Option<&syntax::Placement> {
     match ty {
         syntax::Type::Tensor(_, _, placement) => placement.as_ref(),
-        syntax::Type::Verified(inner) | syntax::Type::Pinned(inner, _) => written_placement(inner),
+        syntax::Type::Verified(inner)
+        | syntax::Type::Distinct(inner)
+        | syntax::Type::Pinned(inner, _) => written_placement(inner),
         _ => None,
     }
 }

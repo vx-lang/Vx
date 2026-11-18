@@ -403,9 +403,10 @@ static inline size_t vx_payload_text_end(const void *payload,
 /// `arch=` (the `arch:` of a declared topology), `grid=`, `block=`
 /// and `grid_loops=` (the launch shape of an `across` kernel, vx_launch_shape),
 /// `host_blocks=` (the host copy shares the blocks of axis x among the host's
-/// workers, vx_host_worker_count_for), `launch=`, `coop=`, `format=` (what the
-/// image is: `ptx`, `spirv`, or `msl` for the Apple GPU), and `image=` (a
-/// device image that is text, which means PTX or MSL).
+/// workers, vx_host_worker_count_for), `launch=`, `coop=`, `assert_flag=` (the
+/// kernel takes a flag that a failed `assert` sets, vx_launch_takes_assert_flag),
+/// `format=` (what the image is: `ptx`, `spirv`, or `msl` for the Apple GPU),
+/// and `image=` (a device image that is text, which means PTX or MSL).
 ///
 /// Every entry is optional to a reader, and that is what let each of them land
 /// without breaking a consumer that predates it. `kind=` absent means

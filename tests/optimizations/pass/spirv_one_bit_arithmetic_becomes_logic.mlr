@@ -1,0 +1,103 @@
+//===- spirv_one_bit_arithmetic_becomes_logic.mlr ---------------*- MLIR -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A SPIR-V kernel that does arithmetic on `i1` values still gets an image.
+// LLVM's SPIR-V backend writes add and subtract as xor. It writes the other
+// operations as integer instructions on `bool`, which SPIR-V does not allow,
+// or cannot lower them at all. The compiler gives those their logic form first.
+// device_image_test.rs checks that the image has no integer instruction on
+// `bool` and that `spirv-val` accepts it.
+//
+// RUN: vx-opt %s --vx-to-llvm 2>&1 | FileCheck %s
+// CHECK-NOT: cannot become a `spirv64` device image
+// CHECK: @bits_str("bits\00abi=1\00topo=501\00toponame=Dev\00format=spirv\00
+
+module {
+  func.func @main(%in: memref<2xi8>, %out: memref<15xi8>) -> i32 {
+    %c0 = arith.constant 0 : i32
+    vx.launch @bits(%in, %out) {topology = 501 : i32, vx.topology_name = "Dev"} : (memref<2xi8>, memref<15xi8>) -> ()
+    return %c0 : i32
+  }
+  vx.kernel @bits(501) {arch = "spirv64"} : (memref<2xi8>, memref<15xi8>) -> () {
+  ^bb0(%in: memref<2xi8>, %out: memref<15xi8>):
+    vx.return
+  }
+  gpu.module @kernels {
+    gpu.func @bits(%in: memref<2xi8>, %out: memref<15xi8>) kernel {
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %xb = memref.load %in[%c0] : memref<2xi8>
+      %yb = memref.load %in[%c1] : memref<2xi8>
+      %x = arith.trunci %xb : i8 to i1
+      %y = arith.trunci %yb : i8 to i1
+      %add = arith.addi %x, %y : i1
+      %sub = arith.subi %x, %y : i1
+      %mul = arith.muli %x, %y : i1
+      %divu = arith.divui %x, %y : i1
+      %divs = arith.divsi %x, %y : i1
+      %remu = arith.remui %x, %y : i1
+      %rems = arith.remsi %x, %y : i1
+      %shl = arith.shli %x, %y : i1
+      %shru = arith.shrui %x, %y : i1
+      %shrs = arith.shrsi %x, %y : i1
+      %maxu = arith.maxui %x, %y : i1
+      %minu = arith.minui %x, %y : i1
+      %maxs = arith.maxsi %x, %y : i1
+      %mins = arith.minsi %x, %y : i1
+      %vx = vector.broadcast %x : i1 to vector<2xi1>
+      %vy = vector.broadcast %y : i1 to vector<2xi1>
+      %vmul = arith.muli %vx, %vy : vector<2xi1>
+      %vmul0 = vector.extract %vmul[0] : i1 from vector<2xi1>
+      %i0 = arith.constant 0 : index
+      %b0 = arith.extui %mul : i1 to i8
+      memref.store %b0, %out[%i0] : memref<15xi8>
+      %i1 = arith.constant 1 : index
+      %b1 = arith.extui %divu : i1 to i8
+      memref.store %b1, %out[%i1] : memref<15xi8>
+      %i2 = arith.constant 2 : index
+      %b2 = arith.extui %divs : i1 to i8
+      memref.store %b2, %out[%i2] : memref<15xi8>
+      %i3 = arith.constant 3 : index
+      %b3 = arith.extui %remu : i1 to i8
+      memref.store %b3, %out[%i3] : memref<15xi8>
+      %i4 = arith.constant 4 : index
+      %b4 = arith.extui %rems : i1 to i8
+      memref.store %b4, %out[%i4] : memref<15xi8>
+      %i5 = arith.constant 5 : index
+      %b5 = arith.extui %shl : i1 to i8
+      memref.store %b5, %out[%i5] : memref<15xi8>
+      %i6 = arith.constant 6 : index
+      %b6 = arith.extui %shru : i1 to i8
+      memref.store %b6, %out[%i6] : memref<15xi8>
+      %i7 = arith.constant 7 : index
+      %b7 = arith.extui %shrs : i1 to i8
+      memref.store %b7, %out[%i7] : memref<15xi8>
+      %i8 = arith.constant 8 : index
+      %b8 = arith.extui %maxu : i1 to i8
+      memref.store %b8, %out[%i8] : memref<15xi8>
+      %i9 = arith.constant 9 : index
+      %b9 = arith.extui %minu : i1 to i8
+      memref.store %b9, %out[%i9] : memref<15xi8>
+      %i10 = arith.constant 10 : index
+      %b10 = arith.extui %maxs : i1 to i8
+      memref.store %b10, %out[%i10] : memref<15xi8>
+      %i11 = arith.constant 11 : index
+      %b11 = arith.extui %mins : i1 to i8
+      memref.store %b11, %out[%i11] : memref<15xi8>
+      %i12 = arith.constant 12 : index
+      %b12 = arith.extui %vmul0 : i1 to i8
+      memref.store %b12, %out[%i12] : memref<15xi8>
+      %i13 = arith.constant 13 : index
+      %b13 = arith.extui %add : i1 to i8
+      memref.store %b13, %out[%i13] : memref<15xi8>
+      %i14 = arith.constant 14 : index
+      %b14 = arith.extui %sub : i1 to i8
+      memref.store %b14, %out[%i14] : memref<15xi8>
+      gpu.return
+    }
+  }
+}

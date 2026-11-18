@@ -193,7 +193,7 @@ impl AggregateIdentities {
                 *region_id = 0;
                 self.normalize_type(inner)?;
             }
-            Type::Ref(inner, ..) | Type::Verified(inner) => {
+            Type::Ref(inner, ..) | Type::Verified(inner) | Type::Distinct(inner) => {
                 self.normalize_type(inner)?;
             }
             Type::Pointer(inner, placement, _) => {
@@ -277,6 +277,11 @@ fn aggregate_type_key(ty: &Type, identities: &AggregateIdentities) -> Option<Str
             }
             Type::Verified(inner) => {
                 key.begin("verified");
+                write(inner, identities, key)?;
+                key.end();
+            }
+            Type::Distinct(inner) => {
+                key.begin("distinct");
                 write(inner, identities, key)?;
                 key.end();
             }

@@ -8,7 +8,9 @@
 // The PTX of `lanes::copy`. Into a tile, each lane loads its elements from global memory and
 // stores them in shared memory. Out of a tile, each lane loads its elements from shared memory and
 // stores them in global memory. Then every lane of the block waits (`bar.sync`). In the code of a
-// subgroup, only the lanes of the subgroup wait (`bar.warp.sync`).
+// subgroup, only the lanes of the subgroup wait (`bar.warp.sync`). When the whole tile is inside
+// the tensor, the elements need no check, and LLVM joins the accesses to shared memory in pairs.
+// Otherwise each element is checked.
 //
 // RUN: vxc %s --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ptx
 // RUN: FileCheck %s < %t.ptx --implicit-check-not=local_depot
@@ -17,12 +19,14 @@
 
 // CHECK-LABEL: .entry through_a_tile(
 // CHECK: ld.global.nc.b32
-// CHECK: st.shared.b32
+// CHECK: st.shared.v2.b32
 // CHECK: bar.sync 0;
-// CHECK: ld.shared.b32
-// CHECK-NEXT: st.global.b32
+// CHECK: ld.shared.v2.b32
+// CHECK: st.global.b32
 // CHECK: bar.sync 0;
 // CHECK-NEXT: $L__BB
+// CHECK: setp.ge.u64
+// CHECK: st.shared.b32
 pub fn through_a_tile(y : &mut Tensor<f32, [?, ?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
   spawn on(Topology::Device) {
     for b in 0..1 across blocks {

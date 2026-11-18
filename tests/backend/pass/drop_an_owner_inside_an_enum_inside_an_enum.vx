@@ -1,0 +1,101 @@
+//===- drop_an_owner_inside_an_enum_inside_an_enum.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Dropping an enum drops the value that its active variant holds, also when that value is
+// itself an enum. Each case runs in its own function between two markers. So a drop that
+// runs in the wrong case, runs twice, or does not run, changes the output.
+//
+// - `ok_some`: `Ok(Some(Noisy 11))` in a `Result<Option<Noisy>, Noisy>` drops 11.
+// - `ok_none`: `Ok(None)` drops nothing.
+// - `err_noisy`: `Err(Noisy 22)` drops 22.
+// - `err_holder`: `Err(Holder { code: Some(Noisy 5) })` in a `Result<u64, Holder>` drops 5.
+// - `ok_number`: `Ok(7)` in a `Result<u64, Holder>` drops nothing.
+//
+// The first two RUN lines also check that the default code generator compiled the program,
+// in a normal compile and in a parallel compile (`-j 2`).
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=flat-codegen --implicit-check-not=drop
+// RUN: vxc %s -j 2 2>&1 | FileCheck %s --check-prefixes=PARALLEL,CHECK --implicit-check-not=Error --implicit-check-not=flat-codegen --implicit-check-not=drop
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=drop
+// PARALLEL: {{^}}[parallel-frontend] emitted module with -j 2{{$}}
+// CHECK: {{^}}ok_some start{{$}}
+// CHECK-NEXT: {{^}}drop 11{{$}}
+// CHECK-NEXT: {{^}}ok_some end{{$}}
+// CHECK-NEXT: {{^}}ok_none start{{$}}
+// CHECK-NEXT: {{^}}ok_none end{{$}}
+// CHECK-NEXT: {{^}}err_noisy start{{$}}
+// CHECK-NEXT: {{^}}drop 22{{$}}
+// CHECK-NEXT: {{^}}err_noisy end{{$}}
+// CHECK-NEXT: {{^}}err_holder start{{$}}
+// CHECK-NEXT: {{^}}drop 5{{$}}
+// CHECK-NEXT: {{^}}err_holder end{{$}}
+// CHECK-NEXT: {{^}}ok_number start{{$}}
+// CHECK-NEXT: {{^}}ok_number end{{$}}
+
+import core::option;
+import core::result;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    println!("drop {}", self.id);
+  }
+}
+
+struct Holder {
+  code : Option<Noisy>,
+}
+
+fn ok_some() -> void {
+  let _r = Result<Option<Noisy>, Noisy>::Ok(Option<Noisy>::Some(Noisy {
+    id: 11
+  }));
+}
+
+fn ok_none() -> void {
+  let _r = Result<Option<Noisy>, Noisy>::Ok(Option<Noisy>::None());
+}
+
+fn err_noisy() -> void {
+  let _r = Result<Option<Noisy>, Noisy>::Err(Noisy {
+    id: 22
+  });
+}
+
+fn err_holder() -> void {
+  let _r = Result<u64, Holder>::Err(Holder {
+    code: Option<Noisy>::Some(Noisy {
+      id: 5
+    })
+  });
+}
+
+fn ok_number() -> void {
+  let _r = Result<u64, Holder>::Ok(7);
+}
+
+fn main() -> i32 {
+  println!("ok_some start");
+  ok_some();
+  println!("ok_some end");
+  println!("ok_none start");
+  ok_none();
+  println!("ok_none end");
+  println!("err_noisy start");
+  err_noisy();
+  println!("err_noisy end");
+  println!("err_holder start");
+  err_holder();
+  println!("err_holder end");
+  println!("ok_number start");
+  ok_number();
+  println!("ok_number end");
+  return 0;
+}

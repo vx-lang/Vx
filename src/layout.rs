@@ -188,7 +188,9 @@ pub(crate) fn structural_field_info(ty: &Type) -> Option<(usize, usize, FieldTy)
             let (size, align) = vector_size_align(el, *n)?;
             Some((size, align, FieldTy::Vector(el.clone(), *n)))
         }
-        Type::Pinned(inner, _) | Type::Verified(inner) => structural_field_info(inner),
+        Type::Pinned(inner, _) | Type::Verified(inner) | Type::Distinct(inner) => {
+            structural_field_info(inner)
+        }
         _ => None,
     }
 }
@@ -458,7 +460,9 @@ impl<'a> LayoutComputer<'a> {
         }
 
         match ty {
-            Type::Pinned(inner, _) | Type::Verified(inner) => self.field_info(inner),
+            Type::Pinned(inner, _) | Type::Verified(inner) | Type::Distinct(inner) => {
+                self.field_info(inner)
+            }
             Type::Struct(_, Some(id)) | Type::Enum(_, Some(id)) => {
                 let layout = self.layout_of(*id)?;
                 Some((layout.size, layout.align, FieldTy::Nominal(*id)))

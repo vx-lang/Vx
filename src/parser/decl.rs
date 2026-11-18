@@ -1856,13 +1856,25 @@ impl<'a> Parser<'a> {
                 path: vec!["core".into(), "tuple".into()],
             });
         }
+        // `Distinct::check(t)` is a call of a function in `core::distinct`.
+        if self.uses_distinct_check
+            && !imports.iter().any(|i: &ImportDecl| {
+                i.path.len() == 2 && &*i.path[0] == "core" && &*i.path[1] == "distinct"
+            })
+        {
+            imports.push(ImportDecl {
+                path: vec!["core".into(), "distinct".into()],
+            });
+        }
         // `==` with a string literal is a call of `core::c_str`'s `c_str_equals`, so it brings
         // that module with it. The module itself compares no literals, so it does not import
         // itself.
         let compares_text = functions
             .iter()
             .chain(impls.iter().flat_map(|i: &ImplBlock| i.methods.iter()))
-            .any(|f: &Function| crate::syntax::compares_with_a_string_literal(&f.body));
+            .any(|f: &Function| {
+                crate::syntax::compares_with_a_string_literal(&f.body, &self.string_literal_names)
+            });
         if compares_text
             && !imports.iter().any(|i: &ImportDecl| {
                 i.path.len() == 2 && &*i.path[0] == "core" && &*i.path[1] == "c_str"
@@ -2440,7 +2452,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
                 panic!("Expected Range expression for iterable");
             }
             assert_eq!(body.len(), 1);
-            if let Statement::Assign(AssignStmt { lhs, rhs, span: _ }) = &body[0] {
+            if let Statement::Assign(AssignStmt { lhs, rhs, .. }) = &body[0] {
                 if let Expr::Identifier(id) = lhs {
                     assert_eq!(id.name.as_ref(), "x");
                 } else {

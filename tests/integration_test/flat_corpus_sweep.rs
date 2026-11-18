@@ -178,6 +178,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/across_loops_run_in_order_on_the_cpu.vx",         // needs --machine
         "optimizations/pass/atomic_adds_in_across_loops.vx",                  // needs --machine
         "optimizations/pass/functions_generic_over_memory.vx",                // needs --machine
+        "optimizations/pass/whole_tensor_assignments_write_into_the_destination.vx", // needs --machine
         "optimizations/pass/a_tensor_from_gpu_memory_is_passed_by_value_and_freed_once.vx", // needs --machine
         "optimizations/pass/functions_that_run_where_they_are_called.vx",     // needs --machine
         "optimizations/pass/element_atomics_in_across_loops.vx",              // needs --machine
@@ -197,6 +198,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/lane_routines_run_in_parallel_on_both_code_generators.vx", // needs --machine
         "optimizations/pass/lane_sorts_on_the_cpu.vx",                        // needs --machine
         "optimizations/pass/lane_sorts_on_the_gpu.vx",                        // needs --machine
+        "optimizations/pass/values_at_the_start_of_block_code_reach_every_lane.vx", // needs --machine
         "optimizations/pass/lane_matmuls_on_the_cpu.vx",                      // needs --machine
         "optimizations/pass/lane_matmuls_on_the_gpu.vx",                      // needs --machine
         "optimizations/pass/matmul_tiles_in_shared_memory_avoid_bank_conflicts.vx", // needs --machine
@@ -210,6 +212,10 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/lane_scale_rows_keeps_the_sums_in_registers.vx",  // needs --machine
         "optimizations/pass/a_gpu_kernel_reads_a_borrowed_host_tensor_with_no_copy.vx", // needs --machine
         "optimizations/pass/weights_in_a_struct_reach_the_gpu_with_no_copy.vx", // needs --machine
+        "optimizations/pass/lane_copies_check_the_whole_tile_once.vx", // needs --machine
+        "optimizations/pass/lane_matmul_sums_in_registers_take_no_shared_memory.vx", // needs --machine
+        "optimizations/pass/lane_matmul_sums_in_simdgroup_matrices_take_no_threadgroup_memory.vx", // needs --machine
+        "optimizations/pass/a_tile_copied_into_a_row_of_a_tensor_parameter.vx", // needs --machine
         "optimizations/pass/lane_stores_of_neighbouring_bf16_join_into_one.vx", // needs --machine
         "optimizations/pass/lane_matmul_result_goes_from_registers_to_the_tensor.vx", // needs --machine
         "optimizations/pass/lane_copies_with_tma.vx",                         // needs --machine
@@ -230,6 +236,18 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/code_after_the_blocks_in_a_kernel_for_emit_ptx.vx", // needs --machine
         "optimizations/pass/a_shared_tile_in_the_code_after_the_blocks.vx", // needs --machine
         "optimizations/pass/a_tensor_in_gpu_memory_in_a_struct_or_enum_is_freed_by_its_plugin.vx", // split-file
+        // needs --machine
+        "optimizations/pass/apple_gpu_short_loops_of_constant_bounds_are_unrolled.vx",
+        // needs --machine
+        "optimizations/pass/apple_gpu_shared_memory_offsets_go_in_the_address.vx",
+        // needs --machine and the path of a file
+        "optimizations/pass/apple_gpu_reads_a_mapped_file_with_no_copy.vx",
+        // needs --machine
+        "optimizations/pass/apple_gpu_sums_vectors_across_a_simd_group.vx",
+        // needs --machine
+        "optimizations/pass/nvidia_gpu_short_loops_of_constant_bounds_are_unrolled.vx",
+        // split-file
+        "optimizations/pass/gpu_only_code_on_the_cpu_with_the_programs_own_write.vx",
         "optimizations/pass/gpu_region_that_ends_in_a_value_runs_on_the_gpu.vx", // needs --machine
         "optimizations/pass/lane_copies_of_rows_by_id.vx", // needs --machine
         "optimizations/pass/lane_copies_of_rows_on_the_gpu.vx", // needs --machine
@@ -271,6 +289,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/book_gpu_blocks_and_lanes.vx", // needs --machine
         "optimizations/pass/book_gpu_histogram_with_atomics.vx", // needs --machine
         "optimizations/pass/book_gpu_row_sums_in_shared_memory.vx", // needs --machine
+        "optimizations/pass/book_gpu_rows_from_a_distinct_tensor.vx", // needs --machine
         "optimizations/pass/std_nn_kernels_match_loops_on_the_cpu.vx", // needs --machine
         "optimizations/pass/std_nn_fp8_kernels_match_loops_on_the_cpu.vx", // needs --machine
         "optimizations/pass/std_nn_moe_kernels_match_loops_on_the_cpu.vx", // needs --machine
@@ -279,6 +298,14 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/methods_that_return_a_reference_to_a_tensor_field.vx",
         // needs --machine
         "optimizations/pass/a_tensor_that_a_called_function_writes_is_not_const_on_the_apple_gpu.vx",
+        // needs --machine
+        "optimizations/pass/blocks_write_at_rows_from_a_distinct_tensor.vx",
+        // needs --machine
+        "optimizations/pass/distinct_check_makes_rows_for_a_kernel.vx",
+        // needs --machine
+        "optimizations/pass/std_nn_moe_group_sorts_pairs_by_expert.vx",
+        // needs --machine
+        "optimizations/pass/emit_ptx_names_the_kernels_of_a_generic_function.vx",
     ];
     // Each program is its own run of vxc, so the programs run in parallel. `collect` keeps the
     // order of the corpus, so the messages below do not change from run to run.

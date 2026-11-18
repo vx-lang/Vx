@@ -132,6 +132,14 @@ fn construction_tail(e: &Expr) -> bool {
 }
 
 /// Whether two extents agree: equal, or either a `?`, which agrees with anything.
+/// One argument of a `print!`, lowered and not printed yet.
+enum PrintPiece {
+    Text(String),
+    Value(Val),
+    /// A NUL-terminated copy of a `String`, which the runtime made and printing frees.
+    StringCopy(Val),
+}
+
 fn extents_agree(x: &str, y: &str) -> bool {
     x == y || x == DYN_DIM || y == DYN_DIM
 }
@@ -145,6 +153,8 @@ pub struct InlineBlock {
     pub void: bool,
     pub line: usize,
     pub column: usize,
+    /// `threads : N`: every thread of the threadgroup runs the block, so the CPU cannot.
+    pub threads: bool,
 }
 
 /// The stable per-instance GID of a monomorphized generic struct whose layout depends on its
@@ -182,6 +192,11 @@ pub fn tensor_gid_of(ty: &Type) -> Option<TypeId> {
 /// element, or a dim that isn't a literal/name). The shape is what the flat lowerer rank-reduces on
 /// indexing.
 fn tensor_elem_shape(ty: &Type) -> Option<(ElementType, Vec<String>)> {
+    // At run time, a `Distinct` tensor is its tensor.
+    let ty = match ty {
+        Type::Distinct(inner) => inner.as_ref(),
+        ty => ty,
+    };
     let Type::Tensor(elem, dims, _) = ty else {
         return None;
     };
@@ -507,17 +522,12 @@ struct Lowerer<'r> {
     /// One frame per block being lowered: what each name a `let` in the block shadows meant
     /// before it, put back when the block ends.
     block_frames: Vec<Vec<Shadowed>>,
-    /// Locals bound to a tensor the compiler allocated, as against a view over memory it does
-    /// not control. Only these can be filled in place by `c = a @ b` (Vx#391).
-    owned_tensors: std::collections::HashSet<Symbol>,
     /// The slots whose lifetime `start_lifetime` started. Only these get an end: a task writes
     /// into the slot of its `let` while the code goes on, so that slot gets neither.
     started_slots: std::collections::HashSet<u32>,
     /// The tensors that a `match` moved out of an enum's payload. Like a struct field, a payload
     /// holds only heap buffers, so the drop of such a tensor frees it.
     payload_tensors: std::collections::HashSet<u32>,
-    /// Locals whose element pointer the function takes: a view through it can share their memory.
-    pointer_taken: std::collections::HashSet<Symbol>,
     /// Generated struct and enum layouts, transferred to the worker without discarding metadata.
     agg_layouts: Vec<crate::layout::GeneratedAggregateLayout>,
     /// Look up generated layouts by ID while keeping their insertion order in `agg_layouts`.
@@ -659,10 +669,8 @@ impl<'r> Lowerer<'r> {
             ast_types: HashMap::new(),
             transfer_lowerings: std::sync::Arc::default(),
             block_frames: Vec::new(),
-            owned_tensors: std::collections::HashSet::new(),
             started_slots: std::collections::HashSet::new(),
             payload_tensors: std::collections::HashSet::new(),
-            pointer_taken: std::collections::HashSet::new(),
             agg_layouts: Vec::new(),
             agg_layout_indices: HashMap::new(),
             inline_blocks: Vec::new(),
@@ -1028,8 +1036,14 @@ impl<'r> Lowerer<'r> {
         if to_stderr {
             self.emit_print_stream(true);
         }
+        // Every argument is evaluated, left to right, before anything is printed, so a call in
+        // an argument that prints cannot split the line.
+        let mut pieces = Vec::with_capacity(args.len());
         for arg in args {
-            self.lower_print_arg(arg)?;
+            pieces.push(self.lower_print_arg(arg)?);
+        }
+        for piece in pieces {
+            self.emit_print_piece(piece)?;
         }
         if newline {
             self.emit_print_str("\n");
@@ -1040,12 +1054,33 @@ impl<'r> Lowerer<'r> {
         Ok(())
     }
 
-    /// Lower one `print!`/`println!` argument: a string literal emits a `PrintStr`; any other argument
-    /// is lowered as a value and `print`ed (routing to the scalar/tensor `print_*` helper by type).
-    fn lower_print_arg(&mut self, arg: &Expr) -> Lowered<()> {
+    /// Print what `lower_print_arg` made of one argument.
+    fn emit_print_piece(&mut self, piece: PrintPiece) -> Lowered<()> {
+        match piece {
+            PrintPiece::Text(text) => self.emit_print_str(&text),
+            PrintPiece::Value(v) => self.emit_print(v)?,
+            // A NUL-terminated copy of a `String`, freed once it is printed.
+            PrintPiece::StringCopy(c) => {
+                self.emit_print(c.clone())?;
+                self.emit_runtime_call(
+                    "vx_string_free_c_str",
+                    &[c.reg],
+                    LoweredTy::Scalar(ElementType::I32),
+                )
+                .ok_or(Decline::TypeNotModelled {
+                    what: "a String print without std::string's runtime entry points in scope",
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Lower one `print!`/`println!` argument to what is printed: a string literal is text, and
+    /// any other argument is lowered as a value, which `emit_print` routes to the scalar or tensor
+    /// `print_*` helper by its type.
+    fn lower_print_arg(&mut self, arg: &Expr) -> Lowered<PrintPiece> {
         if let Expr::StringLiteral(sl) = arg {
-            self.emit_print_str(sl.value.as_ref());
-            return Ok(());
+            return Ok(PrintPiece::Text(sl.value.to_string()));
         }
         // A `String` value prints its bytes: the runtime hands out a C copy of the handle in
         // the `ptr` field, `print_str` prints it, and the copy is freed. The runtime's entry
@@ -1070,19 +1105,12 @@ impl<'r> Lowerer<'r> {
             };
             let c = self
                 .emit_runtime_call("vx_string_as_c_str", &[handle.reg], LoweredTy::Ptr)
-                .ok_or(missing.clone())?;
-            self.emit_print(c.clone())?;
-            self.emit_runtime_call(
-                "vx_string_free_c_str",
-                &[c.reg],
-                LoweredTy::Scalar(ElementType::I32),
-            )
-            .ok_or(missing)?;
-            return Ok(());
+                .ok_or(missing)?;
+            return Ok(PrintPiece::StringCopy(c));
         }
-        let v = self.lower_expr(Self::print_operand(arg))?;
-        self.emit_print(v)?;
-        Ok(())
+        Ok(PrintPiece::Value(
+            self.lower_expr(Self::print_operand(arg))?,
+        ))
     }
 
     /// A call to a runtime entry point the registry knows by name (an `extern` a stdlib module
@@ -1564,15 +1592,20 @@ impl<'r> Lowerer<'r> {
                 // carries the left operand's type. When either operand is a tensor the op is
                 // *elementwise* and the result is the tensor type (a scalar operand broadcasts) -- an
                 // arith opcode with a tensor result type is the flat HIR's elementwise form, mirroring
-                // `arith.mulf` on a vector in codegen. A rank-1 HALF tensor operand widens the
-                // result to f32 (Vx#320): the checker types it so, and codegen loads the half row
-                // through an extf. The checker keeps the half type from rank 2 up, so this does too.
+                // `arith.mulf` on a vector in codegen. A rank-1 HALF tensor with an operand of
+                // another float type gives f32, as the checker types it, and codegen loads the
+                // half row through an extf. Two operands of one type keep that type.
+                let elem_of = |t: &LoweredTy| match t {
+                    LoweredTy::Scalar(e) | LoweredTy::Tensor { elem: e, .. } => Some(e.clone()),
+                    _ => None,
+                };
+                let mixed = elem_of(&l.ty) != elem_of(&r.ty);
                 let widen = |t: &LoweredTy| -> LoweredTy {
                     match t {
                         LoweredTy::Tensor {
                             elem: ElementType::F16 | ElementType::BF16,
                             shape,
-                        } if shape.len() == 1 => LoweredTy::Tensor {
+                        } if mixed && shape.len() == 1 => LoweredTy::Tensor {
                             elem: ElementType::F32,
                             shape: shape.clone(),
                         },
@@ -1871,8 +1904,19 @@ impl<'r> Lowerer<'r> {
                 // `barrier()` (Vx#379): an effect, not a call -- there is no callee anywhere.
                 // The checker typed it i32, so hand back a constant for the value position
                 // nobody should be using it in.
-                if let Some((op, ordered)) = crate::hir::check::lanes::lane_routine(&fc.name) {
-                    return self.lower_lane_reduce(fc, op, ordered);
+                if let Some(routine) = crate::hir::check::lanes::lane_routine(&fc.name) {
+                    let args: Vec<&Expr> = fc.args.iter().collect();
+                    return match self.lower_lane_call(routine, &args)? {
+                        Some(v) => Ok(v),
+                        // The value of a routine with no value, which nothing reads.
+                        None => Ok(self.emit_value(
+                            Opcode::Const,
+                            Register(0),
+                            Register(0),
+                            ElementType::I32,
+                            0,
+                        )),
+                    };
                 }
                 // Around the call of a `Drop` impl's `drop` (F6, F6a): an effect on the
                 // runtime, with the time limit of the drop in nanoseconds.
@@ -2140,9 +2184,14 @@ impl<'r> Lowerer<'r> {
                 }
                 // `&self.data[i]`: the address of an element behind a raw pointer, as `Vec::get_ref`
                 // takes it. Lowering the element as a value would hand back a copy in this
-                // function's frame, which dangles once it returns.
+                // function's frame, which dangles once it returns. A tensor element is the
+                // exception: a reference to a tensor is the tensor, and the copy of its descriptor
+                // names the buffer that the element names.
                 if let Expr::IndexAccess(ix) = &*b.expr {
-                    if matches!(self.infer_ast_type(&ix.base), Some(Type::Pointer(..))) {
+                    if let Some(Type::Pointer(elem, ..)) = self.infer_ast_type(&ix.base) {
+                        if matches!(*elem, Type::Tensor(..)) {
+                            return self.lower_expr(&b.expr);
+                        }
                         let place = self.lower_place(&b.expr)?;
                         return Ok(Val {
                             reg: place.reg,
@@ -4479,7 +4528,11 @@ impl<'r> Lowerer<'r> {
                 self.lower_stmt(stmt)?;
             }
             self.stride_next_for = false;
-            par.map(|(_, t)| t).unwrap_or(0)
+            match par {
+                Some((_, crate::hir::check::parallel::RUN_TIME_TRIP)) => SPAWN_RUN_TIME_TRIP,
+                Some((_, trip)) => trip,
+                None => 0,
+            }
         } else if let Some((btrip, plan)) = two_level {
             self.stride_plan = Some(plan);
             for stmt in stmts {
@@ -6037,6 +6090,7 @@ impl<'r> Lowerer<'r> {
             void: im.returns.is_none(),
             line: im.span.line,
             column: im.span.column,
+            threads: im.threads.is_some(),
         });
         Ok(self.emit_typed(Opcode::InlineMlir, Register(0), Register(0), ty, imm))
     }
@@ -6550,7 +6604,7 @@ impl<'r> Lowerer<'r> {
     fn lower_call(&mut self, fc: &crate::syntax::FunctionCallExpr) -> Lowered<Val> {
         // `Verified(x)` is the checker-level wrapper in value position -- the identity at
         // runtime, exactly as the AST path erases it. Lower the wrapped value directly.
-        if fc.name.as_ref() == "Verified" && fc.args.len() == 1 {
+        if matches!(fc.name.as_ref(), "Verified" | "Distinct") && fc.args.len() == 1 {
             return self.lower_expr(&fc.args[0]);
         }
         // An indirect call: the callee name is a local holding a function pointer (a fn-pointer
@@ -6778,40 +6832,11 @@ impl<'r> Lowerer<'r> {
         }
     }
 
-    /// Is `dst` a different tensor from both operands of the matmul assigned to it?
-    ///
-    /// Filling `dst` in place zeroes it before the multiply reads its inputs, so an operand that
-    /// names the same buffer reads zeros. Each of the three has to be a local declared a tensor
-    /// -- a name bound to a borrow denotes whatever it points at, and following that is the
-    /// analysis this check exists to avoid.
-    /// A destination whose pointer is taken can be read under another name, through a view.
-    fn matmul_assign_is_disjoint(&self, dst: &Expr, a: &Expr, b: &Expr) -> bool {
-        let root = |e: &Expr| -> Option<crate::symbol::Symbol> {
-            let root = crate::syntax::matmul_operand_root(e)?;
-            // A name declared a borrow or a pointer denotes whatever it points at, which is the
-            // alias the destination's own name does not reveal.
-            match self.ast_types.get(root) {
-                Some(Type::Borrow { .. } | Type::Pointer(..)) => None,
-                _ => Some(root.clone()),
-            }
-        };
-        let (Some(d), Some(l), Some(r)) = (root(dst), root(a), root(b)) else {
-            return false;
-        };
-        self.owned_tensors.contains(&d) && !self.pointer_taken.contains(&d) && d != l && d != r
-    }
-
-    /// Lower `c = a @ b` into `c`'s own buffer.
+    /// Lower `c = a @ b` into `c`'s own buffer, which the checker chose
+    /// (`AssignStmt::in_place`): `c` is neither operand, and every extent is a number.
     ///
     /// `matmul_into(&mut c, &a, &b)` is the same operation with a name, and emits the same op.
-    /// Only statically shaped rank-2 operands take this path: a dynamic operand has no product
-    /// shape for the checker to have compared `c` against, so writing into `c` could run past
-    /// it, and the AST path stays the oracle for that form.
     fn lower_matmul_assign(&mut self, dst: &Expr, a: &Expr, b: &Expr) -> Lowered<()> {
-        assert!(
-            self.matmul_assign_is_disjoint(dst, a, b),
-            "a matmul fills a destination that may be one of its operands"
-        );
         let dst = self.lower_expr(dst)?;
         let a = self.lower_expr(a)?;
         let b = self.lower_expr(b)?;
@@ -6840,10 +6865,49 @@ impl<'r> Lowerer<'r> {
         Ok(())
     }
 
+    /// Lower `c = a + b` (or `-`, `*`, `/`) into `c`'s own buffer, which the checker chose
+    /// (`AssignStmt::in_place`): both operands are tensors of the shape of `c`.
+    fn lower_elementwise_assign(
+        &mut self,
+        dst: &Expr,
+        bin: &crate::syntax::expr::BinaryOpExpr,
+    ) -> Lowered<()> {
+        let op = match bin.op {
+            BinaryOp::Add => Opcode::Add,
+            BinaryOp::Sub => Opcode::Sub,
+            BinaryOp::Mul => Opcode::Mul,
+            BinaryOp::Div => Opcode::Div,
+            _ => unreachable!("the checker writes only `+`, `-`, `*` and `/` in place"),
+        };
+        let dst = self.lower_expr(dst)?;
+        let a = self.lower_expr(&bin.lhs)?;
+        let b = self.lower_expr(&bin.rhs)?;
+        let same_shape = match (&dst.ty, &a.ty, &b.ty) {
+            (
+                LoweredTy::Tensor { shape: ds, .. },
+                LoweredTy::Tensor { shape: as_, .. },
+                LoweredTy::Tensor { shape: bs, .. },
+            ) => ds == as_ && ds == bs,
+            _ => false,
+        };
+        if !same_shape {
+            return Err(Decline::Unsupported {
+                what: "an elementwise assignment whose operands are not tensors of its shape",
+            });
+        }
+        self.emit_effect(
+            Opcode::ElementwiseInto,
+            a.reg,
+            b.reg,
+            crate::bytecode::elementwise_into_imm(dst.reg, op),
+        );
+        Ok(())
+    }
+
     /// Lower an assignment `lhs = rhs`, dispatching on the place kind. Factored out of `lower_stmt` so a
     /// write through a symbolic place (`*r = v` where `r` is a `Binding::Place`) re-dispatches as a
     /// write to the borrowed place expression itself (§5 Example C). (#242/#275)
-    fn lower_assign(&mut self, lhs: &Expr, rhs: &Expr) -> Lowered<()> {
+    fn lower_assign(&mut self, lhs: &Expr, rhs: &Expr, in_place: bool) -> Lowered<()> {
         // `*r = v` where `r` is a non-escaping place: re-lower as a write to the borrowed lvalue —
         // `p.x = v` `FieldStore`s the field, `x = v` rebinds the local. No pointer is materialized. (#275)
         if let Expr::Dereference(d) = lhs {
@@ -6855,7 +6919,7 @@ impl<'r> Lowerer<'r> {
                     // Restore the prior tag afterwards so a nested/adjacent write isn't mis-tagged. (#275)
                     let prev = self.pending_place_write.take();
                     self.pending_place_write = crate::hir::places::base_and_path(&place);
-                    let r = self.lower_assign(&place, rhs);
+                    let r = self.lower_assign(&place, rhs, false);
                     self.pending_place_write = prev;
                     return r;
                 }
@@ -6993,17 +7057,17 @@ impl<'r> Lowerer<'r> {
             }
             return Ok(());
         }
-        // `c = a @ b` where `c` already names a buffer: fill it, rather than allocating a second
-        // one and rebinding the name. The destination is a tensor the program asked for and the
-        // checker has compared its shape against the product, so the buffer to write is in hand
-        // and the assignment is the same `MatmulInto` the builtin spelling emits (Vx#391).
-        // When `c` may be an operand, the product goes into a new tensor that `c` then names.
-        if let Expr::BinaryOp(bin) = rhs {
-            if matches!(bin.op, BinaryOp::MatMul)
-                && self.matmul_assign_is_disjoint(lhs, &bin.lhs, &bin.rhs)
-            {
-                return self.lower_matmul_assign(lhs, &bin.lhs, &bin.rhs);
-            }
+        // `c = a @ b` or `c = a + b` where the checker chose to write into the buffer `c`
+        // holds, rather than to make a second buffer and give `c` that one (Vx#391).
+        if in_place {
+            let Expr::BinaryOp(bin) = rhs else {
+                unreachable!("the checker writes only an operator's value in place")
+            };
+            return if matches!(bin.op, BinaryOp::MatMul) {
+                self.lower_matmul_assign(lhs, &bin.lhs, &bin.rhs)
+            } else {
+                self.lower_elementwise_assign(lhs, bin)
+            };
         }
         // `name = expr` (simple identifier target). The value already matches the slot's type (the
         // checker types a literal RHS to the target and rejects a mismatch, #240).
@@ -7114,7 +7178,9 @@ impl<'r> Lowerer<'r> {
         for (i, ins) in self.code.iter().enumerate().skip(r.0 as usize + 1) {
             let uses = ins.operand1 == r
                 || ins.operand2 == r
-                || (ins.opcode == Opcode::MatmulInto && ins.imm == r.0 as u64);
+                || (ins.opcode == Opcode::MatmulInto && ins.imm == r.0 as u64)
+                || (ins.opcode == Opcode::ElementwiseInto
+                    && crate::bytecode::elementwise_into_parts(ins.imm).0 == r);
             if !uses {
                 continue;
             }
@@ -7143,6 +7209,7 @@ impl<'r> Lowerer<'r> {
                 | Opcode::Cmp
                 | Opcode::Matmul
                 | Opcode::MatmulInto
+                | Opcode::ElementwiseInto
                 | Opcode::TensorClone
                 | Opcode::TensorTranspose
                 | Opcode::TensorPad
@@ -7204,9 +7271,6 @@ impl<'r> Lowerer<'r> {
                     .or(fn_value_ty)
                 {
                     self.ast_types.insert(l.name.clone(), t);
-                }
-                if crate::syntax::is_tensor_construction(&l.expr) {
-                    self.owned_tensors.insert(l.name.clone());
                 }
                 // `let r = &<lvalue>` the escape analysis realized as a place (§5): bind `r` to the
                 // borrowed *place expression* itself, so `*r` re-lowers it (a bare local reads directly
@@ -7542,7 +7606,7 @@ impl<'r> Lowerer<'r> {
                         return self.lower_lane_matmul(&m);
                     }
                 }
-                self.lower_assign(&a.lhs, &a.rhs)
+                self.lower_assign(&a.lhs, &a.rhs, a.in_place)
             }
             // Read the place, combine its value with the right side, and store the result back.
             Statement::CompoundAssign(a) => {
@@ -7559,7 +7623,7 @@ impl<'r> Lowerer<'r> {
                         span: a.span,
                         operand_ty: a.operand_ty.clone(),
                     });
-                    return self.lower_assign(&a.lhs, &value);
+                    return self.lower_assign(&a.lhs, &value, false);
                 }
                 // Save the base and index registers so the read and write share one evaluation.
                 let indexed_place = if matches!(&a.lhs, Expr::IndexAccess(_)) {
@@ -7819,7 +7883,6 @@ fn try_lower<'r>(
     // (`&x`) and those reassigned (`x = ..`), so `bind_local` can slot exactly the locals that need it.
     // Must run before params bind, since a param can be address-taken or reassigned too.
     let uses = analyze_local_uses(&func.body);
-    lw.pointer_taken = crate::syntax::locals_with_pointer_taken(&func.body);
     lw.materialized = uses.materialized;
     lw.mutated = uses.mutated;
     lw.place_bindings = uses.place_bindings;
@@ -7834,8 +7897,6 @@ fn try_lower<'r>(
                 what: "a reference local in a user transfer lowering",
             });
         }
-        lw.pointer_taken
-            .extend(crate::syntax::locals_with_pointer_taken(&body.body));
         lw.materialized.extend(body_uses.materialized);
         lw.mutated.extend(body_uses.mutated);
     }
@@ -7972,9 +8033,10 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
         Type::GenericInstance(base, _) => lowered_ty(base, registry),
         // `Verified<T>`, `Ref<T, Memory>`, `Pinned<T, Topology>` are checker-level wrappers; the
         // runtime value is the inner type, exactly as the AST codegen's `lower_type` peels them.
-        Type::Verified(inner) | Type::Ref(inner, _) | Type::Pinned(inner, _) => {
-            lowered_ty(inner, registry)
-        }
+        Type::Verified(inner)
+        | Type::Distinct(inner)
+        | Type::Ref(inner, _)
+        | Type::Pinned(inner, _) => lowered_ty(inner, registry),
         _ => None,
     }
 }
@@ -7986,9 +8048,10 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
 fn is_dyn_tensor(ty: &Type) -> bool {
     match ty {
         Type::Tensor(_, dims, _) => dims.iter().any(|d| matches!(d, Dim::Dyn)),
-        Type::Verified(inner) | Type::Ref(inner, _) | Type::Pinned(inner, _) => {
-            is_dyn_tensor(inner)
-        }
+        Type::Verified(inner)
+        | Type::Distinct(inner)
+        | Type::Ref(inner, _)
+        | Type::Pinned(inner, _) => is_dyn_tensor(inner),
         Type::Borrow { inner, .. } => is_dyn_tensor(inner),
         _ => false,
     }
@@ -8774,6 +8837,7 @@ fn enum_payload_size_align(ty: &Type) -> Option<(u64, u64)> {
         Type::Pointer(..) | Type::Borrow { .. } | Type::Ref(..) => Some((8, 8)),
         // A tensor is its descriptor: two pointers, an offset, and a size and a stride per rank.
         Type::Tensor(_, shape, ..) => Some((8 * (3 + 2 * shape.len() as u64), 8)),
+        Type::Distinct(inner) => enum_payload_size_align(inner),
         _ => None,
     }
 }
@@ -9050,8 +9114,7 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             | Opcode::TensorDim
             // `PtrIndex` reads base+index; `PtrStore` reads place+value (#242).
             | Opcode::PtrIndex
-            | Opcode::PtrStore
-            | Opcode::LaneReduce => {
+            | Opcode::PtrStore => {
                 assert!(
                     ins.operand1.0 < i && ins.operand2.0 < i,
                     "HIR operand not dominated at instruction {i}"
@@ -9138,6 +9201,10 @@ pub const SPAWN_TWO_LEVEL: u64 = 1 << 62;
 /// whole walk before the next thread stages its rows, which is a different program. The
 /// runtime must refuse to run it on the host rather than compute confidently wrong numbers.
 pub const SPAWN_COOP: u64 = 1 << 61;
+
+/// The `SpawnEnd` imm bit that says "the outermost loop runs in parallel, and its trip count is
+/// known only at run time". The low 32 bits are then 0.
+pub const SPAWN_RUN_TIME_TRIP: u64 = 1 << 60;
 
 pub(crate) mod across;
 mod affine;

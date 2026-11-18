@@ -545,6 +545,10 @@ fn write_type(w: &mut Writer, ty: &Type) -> Result<(), String> {
             w.u8(8);
             write_type(w, inner)?;
         }
+        Distinct(inner) => {
+            w.u8(16);
+            write_type(w, inner)?;
+        }
         GenericInstance(base, args) => {
             w.u8(9);
             write_type(w, base)?;
@@ -687,6 +691,7 @@ fn read_type(r: &mut Reader) -> Result<Type, String> {
             }
             Tensor(e, dims, top)
         }
+        16 => Distinct(Box::new(read_type(r)?)),
         t => return Err(format!("vxlib: bad Type tag {t}")),
     })
 }

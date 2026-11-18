@@ -376,6 +376,22 @@ static inline int vx_launch_misaligned(const vx_launch_params *params,
   return -1;
 }
 
+/// Whether the kernel takes the flag that a failed `assert` sets
+/// (`assert_flag=1`).
+///
+/// Such a kernel takes one more parameter than the dispatch carries, after all
+/// of them: a pointer to a 4-byte integer in device memory. The dispatch
+/// library sets the integer to 0 before the launch. A failed assert prints its
+/// message with the device's `printf`, sets the integer, and the kernel goes
+/// on. After the launch, a value that is not 0 means that an assert failed, and
+/// the library stops the program, as a failed assert on the host does. An
+/// OpenCL or Level Zero device has no `abort` to stop the kernel itself.
+static inline int vx_launch_takes_assert_flag(const void *payload,
+                                              size_t payload_size) {
+  const char *flag = vx_payload_field(payload, payload_size, "assert_flag=");
+  return flag && strcmp(flag, "1") == 0;
+}
+
 /* One size of a launch shape, from `text`: `$j` is the `i32` launch value j,
    which the compiled code puts after the kernel's `num_args` arguments, and a
    number is that size. Moves `*text` past the entry and its comma. Returns -1
@@ -399,6 +415,28 @@ static inline long vx_launch_size(const char **text, void *const *device_args,
     ++*text;
   }
   return value;
+}
+
+/* The trip count of a region's grid-strided loop, from the payload's `launch=`
+   entry: a number, or `$j` for launch value j when the loop's bounds are known
+   only at run time. A two-level region gives `B,T`, and then this returns B
+   and writes T to `threads`. Otherwise `threads` is 0. Returns 0 when there is
+   no `launch=` entry, and -1 when launch value j is not an `i32`. */
+static inline long vx_launch_trip(const void *payload, size_t payload_size,
+                                  void *const *device_args,
+                                  const int32_t *arg_tags, int64_t num_args,
+                                  long *threads) {
+  const char *at = vx_payload_field(payload, payload_size, "launch=");
+  long trip;
+  *threads = 0;
+  if (!at) {
+    return 0;
+  }
+  trip = vx_launch_size(&at, device_args, arg_tags, num_args);
+  if (trip >= 0 && *at) {
+    *threads = vx_launch_size(&at, device_args, arg_tags, num_args);
+  }
+  return trip;
 }
 
 /* The launch shape of a region, from the payload's `grid=` and `block=`

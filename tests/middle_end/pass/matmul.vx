@@ -38,7 +38,7 @@ fn main() -> i32 {
 // CHECK:     %[[B:.*]] = memref.alloc(%{{.*}}, %{{.*}}) : memref<?x?xf32>
 // CHECK:     %[[VB:.*]] = arith.constant 1.000000e+00 : f32
 // CHECK:     linalg.fill ins(%[[VB]] : f32) outs(%[[B]] : memref<?x?xf32>)
-// CHECK:     %[[SLOT:.*]] = memref.alloca() : memref<128x256xf32>
+// CHECK:     %[[SLOT:.*]] = memref.alloc() : memref<128x256xf32>
 // CHECK:     %[[CA:.*]] = memref.cast %[[A]] : memref<?x?xf32> to memref<128x64xf32>
 // CHECK:     %[[CB:.*]] = memref.cast %[[B]] : memref<?x?xf32> to memref<64x256xf32>
 // CHECK:     call @my_matmul(%[[SLOT]], %[[CA]], %[[CB]]) : (memref<128x256xf32>, memref<128x64xf32>, memref<64x256xf32>) -> ()

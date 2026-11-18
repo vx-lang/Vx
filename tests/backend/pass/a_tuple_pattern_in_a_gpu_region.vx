@@ -1,0 +1,43 @@
+//===- a_tuple_pattern_in_a_gpu_region.vx ------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A GPU region takes a tuple apart with `let (q, r) = ...`. The compiler checks
+// the size of the tuple with a call that it adds itself, and that call runs on
+// the GPU too. So the region compiles, and it gets a device image.
+//
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s # flat-codegen
+// CHECK: format=spirv
+// EXPECT: [0,  21,  42,  70]
+
+Memory CPU_DRAM {}
+Memory DEV_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached, scope: device
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 63 GB/s,
+  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 63 GB/s
+}
+
+fn divmod(a : i32, b : i32) on Topology::Any -> (i32, i32) {
+  return (a / b, a % b);
+}
+
+fn main() -> i32 {
+  let mut go = transfer(unsafe { Tensor<i32, [4]>::uninit() }, Memory::DEV_HBM);
+  spawn on(Topology::Dev) {
+    for i in 0..4 {
+      let (q, r) = divmod(i * 7, 3);
+      go[i] = q * 10 + r;
+    }
+  }
+  let back = transfer(go, Memory::CPU_DRAM);
+  print(back);
+  return 0;
+}

@@ -1120,6 +1120,55 @@ impl<'a> Parser<'a> {
                     span: Span::default(),
                 })
             }
+            // `Distinct::check(t)` checks the values of `t` and calls `core::distinct`.
+            TokenType::Distinct if self.peek_n(1).kind == TokenType::DoubleColon => {
+                self.advance();
+                self.advance();
+                match &self.advance().kind {
+                    TokenType::Identifier(s) if *s == "check" => {}
+                    _ => return Err(self.error("Expected 'check' after 'Distinct::'")),
+                }
+                self.consume(&TokenType::LeftParen, "Expected '(' after Distinct::check")?;
+                let mut args = Vec::new();
+                if !self.check(&TokenType::RightParen) {
+                    args.push(self.parse_expr()?);
+                    while self.match_token(&TokenType::Comma) {
+                        args.push(self.parse_expr()?);
+                    }
+                }
+                self.consume(&TokenType::RightParen, "Expected ')'")?;
+                self.uses_distinct_check = true;
+                Expr::FunctionCall(FunctionCallExpr {
+                    owner_type_args: None,
+                    name: "Distinct::check".to_string().into(),
+                    type_args: None,
+                    args,
+                    span: Span {
+                        line: peeked_token.line,
+                        column: peeked_token.column,
+                        length: peeked_token.length,
+                        expansion: self.expansion(),
+                    },
+                })
+            }
+            TokenType::Distinct => {
+                self.advance();
+                self.consume(&TokenType::LeftParen, "Expected '(' after Distinct")?;
+                let inner = self.parse_expr()?;
+                self.consume(&TokenType::RightParen, "Expected ')'")?;
+                Expr::FunctionCall(FunctionCallExpr {
+                    owner_type_args: None,
+                    name: "Distinct".to_string().into(),
+                    type_args: None,
+                    args: vec![inner],
+                    span: Span {
+                        line: peeked_token.line,
+                        column: peeked_token.column,
+                        length: peeked_token.length,
+                        expansion: self.expansion(),
+                    },
+                })
+            }
             TokenType::Grad => {
                 self.advance();
                 self.consume(&TokenType::LeftParen, "Expected '(' after 'grad'")?;
@@ -1318,7 +1367,10 @@ impl<'a> Parser<'a> {
                         let mut stmts = Vec::new();
                         let mut ret_expr = None;
                         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+                            // A statement that a desugaring puts before this one goes in the block.
+                            let mark = self.prefix_stmts.len();
                             let stmt = self.parse_statement()?;
+                            stmts.extend(self.prefix_stmts.drain(mark..));
                             // Only a last expression with no `;` is the block's value. A last
                             // statement that ends with `;` stays one of the block's statements.
                             if self.check(&TokenType::RightBrace) {
@@ -1414,7 +1466,10 @@ impl<'a> Parser<'a> {
                         let mut stmts = Vec::new();
                         let mut ret_expr = None;
                         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+                            // A statement that a desugaring puts before this one goes in the block.
+                            let mark = self.prefix_stmts.len();
                             let stmt = self.parse_statement()?;
+                            stmts.extend(self.prefix_stmts.drain(mark..));
                             if self.check(&TokenType::RightBrace) {
                                 if let Statement::ExprStmt(ExprStmtStmt {
                                     expr: e,
@@ -1447,6 +1502,15 @@ impl<'a> Parser<'a> {
                     }
                     TokenType::Unknown('"') => {
                         return Err(self.error_at(&token, super::UNCLOSED_STRING))
+                    }
+                    TokenType::UnknownEscape(c, _) => {
+                        return Err(self.error_at(
+                            &token,
+                            &format!(
+                                "this string has the escape `\\{c}`, which Vx does not know. A \
+                                 string can use `\\n`, `\\t`, `\\r`, `\\\"` and `\\\\`"
+                            ),
+                        ))
                     }
                     _ => {
                         return Err(self.error_at(

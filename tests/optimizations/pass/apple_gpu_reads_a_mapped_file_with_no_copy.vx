@@ -1,0 +1,80 @@
+//===- apple_gpu_reads_a_mapped_file_with_no_copy.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A model maps its weight file read-only, and transfers each weight to the GPU. On a Mac, the
+// transfer of a view of such a mapping makes no copy: the runtime maps the same pages of the file
+// again, as a private mapping. The GPU then reads the pages of the file cache. A write to the
+// transferred tensor changes only the tensor, as with a copy, and the file keeps its bytes.
+//
+// The program maps this file and reads its first 1,024 bytes as 256 u32 words.
+//
+// REQUIRES: macos
+// RUN: env VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/m4-uma.vx -- %s 2>&1 >/dev/null | FileCheck %s --check-prefix=MAP
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx -- %s 2>/dev/null | FileCheck %s
+// MAP: made a buffer over 16384 bytes of the file {{.*}}apple_gpu_reads_a_mapped_file_with_no_copy.vx, with no copy
+// CHECK: the GPU tripled 256 of 256 words
+// CHECK: the copy holds 7, the file holds 1027419951
+
+import core::convert;
+import std::libc;
+import std::mmap;
+
+const WORDS : i32 = 256;
+
+fn triple(y : &mut Tensor<u32, [?], Memory::HBM>, w : &Tensor<u32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..(n + 31) / 32 across blocks {
+      for l in 0..32 across lanes {
+        let i = b * 32 + l;
+        if i < n {
+          y[i] = w[i] * 3;
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn write_seven(w : &mut Tensor<u32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..32 across lanes {
+        if l == 0 {
+          w[0] = 7;
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn main(argc : i32, argv : *mut *mut i8) -> i32 {
+  assert(argc == 2, "give the path of this file");
+  let fd : i32 = unsafe { open(argv[1], 0) };
+  assert(fd >= 0, "cannot open the file");
+  // PROT_READ and MAP_SHARED.
+  let base : *mut i8 = unsafe {
+    mmap(0 as *mut i8, 4 * i64::from(WORDS), 1, 1, fd, 0)
+  };
+  let words : *mut u32 = base;
+  let file = unsafe { tensor_view_1d(words as *const u32, WORDS) };
+  let mut w = transfer(&file, Memory::HBM);
+  let mut y = transfer(Tensor<u32>([WORDS]), Memory::HBM);
+  triple(&mut y, &w, WORDS);
+  write_seven(&mut w);
+  let tripled = transfer(y, Memory::CPU_DRAM);
+  let copy = transfer(w, Memory::CPU_DRAM);
+  let mut right = 0;
+  for i in 0..WORDS {
+    if tripled[i] == file[i] * 3 {
+      right = right + 1;
+    }
+  }
+  println!("the GPU tripled {} of {} words", right, WORDS);
+  println!("the copy holds {}, the file holds {}", copy[0], file[0]);
+  return 0;
+}

@@ -54,15 +54,21 @@
 #include "mlir/Transforms/RegionUtils.h"
 #include "vx_hardware_runtime.h"
 #include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/TypeSwitch.h"
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/IR/ConstantFold.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InstIterator.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PatternMatch.h"
@@ -77,6 +83,10 @@
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Scalar/EarlyCSE.h"
+#include "llvm/Transforms/Scalar/SROA.h"
+#include "llvm/Transforms/Utils/Cloning.h"
+#include "llvm/Transforms/Utils/Local.h"
+#include "llvm/Transforms/Utils/LoopUtils.h"
 
 #include <atomic>
 #include <set>
@@ -698,6 +708,69 @@ static BlockArgument parameterOf(Value v) {
   return dyn_cast<BlockArgument>(v);
 }
 
+/// `v` before `spawn`: `v` itself when it is defined outside the region, or a
+/// copy of the pure operations in the region that compute it from such values.
+/// Null when an operation on the way is not pure.
+static Value valueBeforeSpawn(Value v, Operation *spawn, OpBuilder &b,
+                              IRMapping &copied, int depth = 0) {
+  if (copied.contains(v))
+    return copied.lookup(v);
+  Operation *def = v.getDefiningOp();
+  Operation *owner = def ? def : v.getParentBlock()->getParentOp();
+  if (!spawn->isAncestor(owner))
+    return v;
+  if (!def || depth > 8 || def->getNumRegions() != 0 || !isPure(def))
+    return nullptr;
+  for (Value operand : def->getOperands())
+    if (!valueBeforeSpawn(operand, spawn, b, copied, depth + 1))
+      return nullptr;
+  b.clone(*def, copied);
+  return copied.lookup(v);
+}
+
+/// The trip count of a region's parallel loop whose bounds are known only at
+/// run time, computed before `spawn` as an `i32` launch value:
+/// `max(end - start, 0)`, and at most the largest `i32`. The loop is
+/// grid-strided, so a smaller launch still covers every pass. Null when the
+/// bounds cannot be computed before the region.
+static Value runTimeTripBeforeSpawn(Operation *spawn, Region &body,
+                                    PatternRewriter &rewriter) {
+  SmallVector<Operation *> inits, bounds;
+  body.walk([&](Operation *o) {
+    if (o->hasAttr("vx.parallel_init"))
+      inits.push_back(o);
+    if (o->hasAttr("vx.parallel_bound"))
+      bounds.push_back(o);
+  });
+  if (inits.size() != 1 || bounds.size() != 1)
+    return nullptr;
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(spawn);
+  IRMapping copied;
+  Value start =
+      valueBeforeSpawn(inits.front()->getOperand(0), spawn, rewriter, copied);
+  Value end =
+      valueBeforeSpawn(bounds.front()->getOperand(0), spawn, rewriter, copied);
+  if (!start || !end || start.getType() != end.getType() ||
+      !start.getType().isSignlessInteger())
+    return nullptr;
+  Location loc = spawn->getLoc();
+  Type type = start.getType();
+  Value trip = rewriter.create<arith::SubIOp>(loc, end, start);
+  trip = rewriter.create<arith::MaxSIOp>(
+      loc, trip, rewriter.create<arith::ConstantIntOp>(loc, type, 0));
+  unsigned width = type.getIntOrFloatBitWidth();
+  Type i32 = rewriter.getI32Type();
+  if (width > 32) {
+    trip = rewriter.create<arith::MinSIOp>(
+        loc, trip, rewriter.create<arith::ConstantIntOp>(loc, type, INT32_MAX));
+    trip = rewriter.create<arith::TruncIOp>(loc, i32, trip);
+  } else if (width < 32) {
+    trip = rewriter.create<arith::ExtSIOp>(loc, i32, trip);
+  }
+  return trip;
+}
+
 /// A launch size as source text, from the parameters of `func` and numbers,
 /// for the `--emit-ptx` manifest: `(rows + 3) / 4`. Empty when the size comes
 /// from anything else.
@@ -984,6 +1057,18 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
         rewriter.eraseOp(d);
       }
     }
+    // A parallel loop whose bounds are known only at run time (trip 0) passes
+    // its trip as a launch value, so the runtime can size the launch.
+    std::string launchTrip;
+    auto parallelTrip = op->getAttrOfType<IntegerAttr>("vx_parallel_trip");
+    if (parallelTrip && parallelTrip.getInt() == 0 &&
+        !op->hasAttr("vx_parallel_two_level")) {
+      if (Value trip = runTimeTripBeforeSpawn(op, spawnBody, rewriter)) {
+        launchTrip = "$" + std::to_string(launchValues.size());
+        launchValues.push_back(trip);
+        launchTexts.push_back(rewriter.getStringAttr(""));
+      }
+    }
 
     addLaneCopyTensorMaps(rewriter, op, spawnBody);
 
@@ -1124,6 +1209,8 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       kernelOp->setAttr("arch", arch);
     if (auto chip = op->getAttrOfType<StringAttr>("chip"))
       kernelOp->setAttr("chip", chip);
+    if (auto bytes = op->getAttrOfType<IntegerAttr>("shared_bytes"))
+      kernelOp->setAttr("shared_bytes", bytes);
     // The function that holds the region, and the function parameter that
     // fills each kernel parameter (-1 for a value that is not a parameter).
     // `--emit-ptx` names the kernel and describes its parameters from these.
@@ -1274,9 +1361,12 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       launchOp->setAttr("vx.launch_block", rewriter.getStringAttr(launchBlock));
       if (op->hasAttr("vx.across"))
         launchOp->setAttr("vx.across", rewriter.getUnitAttr());
+    }
+    if (!launchValues.empty())
       launchOp->setAttr("vx.launch_values",
                         rewriter.getI32IntegerAttr(launchValues.size()));
-    }
+    if (!launchTrip.empty())
+      launchOp->setAttr("vx.launch_trip", rewriter.getStringAttr(launchTrip));
     if (op->hasAttr("vx_parallel_two_level"))
       launchOp->setAttr("vx_parallel_two_level", rewriter.getUnitAttr());
     if (auto th = op->getAttrOfType<IntegerAttr>("vx_parallel_threads"))
@@ -3536,10 +3626,12 @@ static void expandLaneCopyOnDevice(OpBuilder &b, const LaneCopy &op,
     cpAsync(b);
   }
   b.create<NVVM::CpAsyncCommitGroupOp>(loc);
+  // The count never wraps, which lets LLVM pick the larger of two tokens.
   b.create<memref::StoreOp>(
       loc,
       b.create<arith::AddIOp>(loc, n,
-                              b.create<arith::ConstantIntOp>(loc, i32, 1)),
+                              b.create<arith::ConstantIntOp>(loc, i32, 1),
+                              arith::IntegerOverflowFlags::nuw),
       count);
   Value(op.token).replaceAllUsesWith(token);
 }
@@ -3547,17 +3639,17 @@ static void expandLaneCopyOnDevice(OpBuilder &b, const LaneCopy &op,
 /// Waits for the `cp.async` groups of the copy of `token`. The groups that the
 /// lane started after it may still run: `cp.async.wait_group` takes that number
 /// as a constant, so each case of a small number has its own wait, and a
-/// larger number waits for all but the last 3, which is earlier than it must.
+/// larger number waits for all but the last 7, which is earlier than it must.
 static void laneCopyWaitGroups(OpBuilder &b, Location loc, Value started,
                                Value token) {
   Value after = b.create<arith::SubIOp>(
       loc, b.create<arith::SubIOp>(loc, started, token),
       b.create<arith::ConstantIntOp>(loc, b.getI32Type(), 1));
-  constexpr int64_t most = 3;
+  constexpr int64_t most = 7;
   auto cases = b.create<scf::IndexSwitchOp>(
       loc, TypeRange{},
       b.create<arith::IndexCastOp>(loc, b.getIndexType(), after),
-      ArrayRef<int64_t>{0, 1, 2}, /*caseRegionsCount=*/3);
+      llvm::to_vector(llvm::seq<int64_t>(0, most)), /*caseRegionsCount=*/most);
   auto fill = [&](Region &region, int64_t n) {
     OpBuilder::InsertionGuard guard(b);
     b.setInsertionPointToStart(&region.emplaceBlock());
@@ -3680,9 +3772,58 @@ static void expandLaneCopyNowOnHost(OpBuilder &b, vx::LaneCopyOp op) {
                      });
 }
 
+/// Whether the whole tile of a `vx.lane_copy` is inside its tensor, and the
+/// elements of a row of the tensor are next to each other. Then also a view of
+/// the tensor whose last stride is the number 1.
+static std::pair<Value, Value> laneCopyNowInside(OpBuilder &b, Location loc,
+                                                 vx::LaneCopyOp op,
+                                                 const LaneCopyNow &c) {
+  auto tile = cast<MemRefType>(c.tile.getType());
+  auto tensor = cast<MemRefType>(c.tensor.getType());
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  auto meta = b.create<memref::ExtractStridedMetadataOp>(loc, c.tensor);
+  int64_t last = tensor.getRank() - 1;
+  Value inside = b.create<arith::CmpIOp>(
+      loc, arith::CmpIPredicate::eq, meta.getStrides()[last],
+      b.create<arith::ConstantIndexOp>(loc, 1));
+  for (int64_t d = 0; d <= last; ++d) {
+    Value at =
+        b.create<arith::IndexCastOp>(loc, b.getIndexType(), op.getPlace()[d]);
+    Value end = b.create<arith::AddIOp>(
+        loc, at, b.create<arith::ConstantIndexOp>(loc, tile.getDimSize(d)));
+    inside = b.create<arith::AndIOp>(
+        loc, inside,
+        b.create<arith::AndIOp>(
+            loc,
+            b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge, at, zero),
+            b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sle, end,
+                                    meta.getSizes()[d])));
+  }
+  SmallVector<int64_t> strides(tensor.getRank(), ShapedType::kDynamic);
+  strides[last] = 1;
+  auto rowsType = MemRefType::get(
+      tensor.getShape(), tensor.getElementType(),
+      StridedLayoutAttr::get(b.getContext(), ShapedType::kDynamic, strides),
+      tensor.getMemorySpace());
+  SmallVector<OpFoldResult> sizes;
+  for (int64_t d = 0; d <= last; ++d)
+    sizes.push_back(tensor.isDynamicDim(d)
+                        ? OpFoldResult(meta.getSizes()[d])
+                        : OpFoldResult(b.getIndexAttr(tensor.getDimSize(d))));
+  SmallVector<OpFoldResult> mixed(meta.getStrides().begin(),
+                                  meta.getStrides().end());
+  mixed[last] = b.getIndexAttr(1);
+  Value rows = b.create<memref::ReinterpretCastOp>(
+      loc, rowsType, meta.getBaseBuffer(), OpFoldResult(meta.getOffset()),
+      sizes, mixed);
+  return {inside, rows};
+}
+
 /// A `vx.lane_copy` on the GPU: each lane copies the elements `lane`,
 /// `lane + lanes`, and so on, of the tile, and then every lane of the block or
-/// the subgroup waits, so each lane sees the whole copy.
+/// the subgroup waits, so each lane sees the whole copy. When the whole tile
+/// is inside the tensor and its rows are next to each other, which is the
+/// usual case, no element needs a check.
 static void expandLaneCopyNowOnDevice(OpBuilder &b, vx::LaneCopyOp op) {
   Location loc = op.getLoc();
   LaneCopyNow c = laneCopyNowOf(op);
@@ -3694,20 +3835,49 @@ static void expandLaneCopyNowOnDevice(OpBuilder &b, vx::LaneCopyOp op) {
                    ? b.create<arith::RemUIOp>(
                          loc, tid, b.create<arith::ConstantIndexOp>(loc, lanes))
                    : tid;
-  b.create<scf::ForOp>(
-      loc, lane, b.create<arith::ConstantIndexOp>(loc, tile.getNumElements()),
-      b.create<arith::ConstantIndexOp>(loc, lanes), ValueRange{},
-      [&](OpBuilder &nb, Location l, Value e, ValueRange) {
-        SmallVector<Value> ivs(tile.getRank());
-        Value rest = e;
-        for (int64_t d = tile.getRank() - 1; d >= 0; --d) {
-          Value size = nb.create<arith::ConstantIndexOp>(l, tile.getDimSize(d));
-          ivs[d] = nb.create<arith::RemUIOp>(l, rest, size);
-          rest = nb.create<arith::DivUIOp>(l, rest, size);
-        }
-        laneCopyNowElement(nb, l, op, c, ivs);
-        nb.create<scf::YieldOp>(l);
-      });
+  auto elements = [&](OpBuilder &ob, Value rows) {
+    ob.create<scf::ForOp>(
+        loc, lane,
+        ob.create<arith::ConstantIndexOp>(loc, tile.getNumElements()),
+        ob.create<arith::ConstantIndexOp>(loc, lanes), ValueRange{},
+        [&](OpBuilder &nb, Location l, Value e, ValueRange) {
+          SmallVector<Value> ivs(tile.getRank());
+          Value rest = e;
+          for (int64_t d = tile.getRank() - 1; d >= 0; --d) {
+            Value size =
+                nb.create<arith::ConstantIndexOp>(l, tile.getDimSize(d));
+            ivs[d] = nb.create<arith::RemUIOp>(l, rest, size);
+            rest = nb.create<arith::DivUIOp>(l, rest, size);
+          }
+          if (!rows) {
+            laneCopyNowElement(nb, l, op, c, ivs);
+          } else {
+            SmallVector<Value> at;
+            for (auto [d, i] : llvm::enumerate(ivs))
+              at.push_back(nb.create<arith::AddIOp>(
+                  l,
+                  nb.create<arith::IndexCastOp>(l, nb.getIndexType(),
+                                                op.getPlace()[d]),
+                  i));
+            if (c.toTensor)
+              nb.create<memref::StoreOp>(
+                  l, nb.create<memref::LoadOp>(l, c.tile, ivs), rows, at);
+            else
+              nb.create<memref::StoreOp>(
+                  l, nb.create<memref::LoadOp>(l, rows, at), c.tile, ivs);
+          }
+          nb.create<scf::YieldOp>(l);
+        });
+  };
+  auto [inside, rows] = laneCopyNowInside(b, loc, op, c);
+  auto pick = b.create<scf::IfOp>(loc, inside, /*withElseRegion=*/true);
+  {
+    OpBuilder::InsertionGuard guard(b);
+    b.setInsertionPoint(pick.getThenRegion().front().getTerminator());
+    elements(b, rows);
+    b.setInsertionPoint(pick.getElseRegion().front().getTerminator());
+    elements(b, Value());
+  }
   if (op.getSubgroup()) {
     auto bar = b.create<vx::BarrierOp>(loc);
     bar->setAttr("subgroup", b.getUnitAttr());
@@ -3821,6 +3991,25 @@ static void expandLaneScaleRowsOnDevice(OpBuilder &b, vx::LaneScaleRowsOp op) {
   } else {
     b.create<gpu::BarrierOp>(loc);
   }
+}
+
+/// The wait right after `wait`, when only ops that touch no memory come between
+/// them and both are `cp.async` waits of the same lanes. Copies finish in the
+/// order that they started, so a wait there for the later of the two tokens
+/// does the work of both.
+static vx::LaneCopyWaitOp nextLaneCopyWait(vx::LaneCopyWaitOp wait,
+                                           const LaneCopyState &s) {
+  if (s.ring || wait.getSerial())
+    return {};
+  for (Operation *op = wait->getNextNode(); op; op = op->getNextNode()) {
+    if (auto next = dyn_cast<vx::LaneCopyWaitOp>(op))
+      return !next.getSerial() && next.getSubgroup() == wait.getSubgroup()
+                 ? next
+                 : vx::LaneCopyWaitOp();
+    if (!isMemoryEffectFree(op))
+      return {};
+  }
+  return {};
 }
 
 /// Element (i, j) of a lane matmul: the sum of the products from 0, in the
@@ -4449,12 +4638,12 @@ constexpr StringLiteral simdgroupRegistersAttr = "simdgroup_registers";
 /// matrices of each subgroup in the whole kernel, and gives its tile no shared
 /// memory, as `expandLaneMatmulWithoutTile` does on the tensor cores. This
 /// happens when each other use of the tile is a `vx.lane_fill` of it, a
-/// `vx.lane_copy` out of it to an f32 tensor of 2 dimensions, or another
-/// matmul that adds to it. Each of them takes the row of its subgroup
-/// (`subgroup_row`), so each subgroup holds the same row in all of them. Marks
-/// them with `simdgroup_registers` = `number`, and leaves them to the Metal
-/// printer (src/dialect/MetalImage.cpp). Puts the other matmuls in `marked`.
-/// Returns false, and changes nothing, when the tile has another use.
+/// `vx.lane_scale_rows` of it, a `vx.lane_copy` out of it to an f32 tensor of
+/// 2 dimensions, or another matmul that adds to it. Each of them takes the row
+/// of its subgroup (`subgroup_row`), so each subgroup holds the same row in all
+/// of them. Marks them with `simdgroup_registers` = `number`, and leaves them
+/// to the Metal printer (src/dialect/MetalImage.cpp). Puts the other matmuls in
+/// `marked`. Returns false, and changes nothing, when the tile has another use.
 static bool keepSimdgroupSumsInRegisters(vx::LaneMatmulOp op, int64_t number,
                                          SmallPtrSetImpl<Operation *> &marked) {
   Type accType = op.getAcc().getType();
@@ -4486,6 +4675,13 @@ static bool keepSimdgroupSumsInRegisters(vx::LaneMatmulOp op, int64_t number,
     if (fill && fill.getSubgroupRow() && !fill.getSerial() &&
         fill.getTile().getType() == accType) {
       others.push_back(fill);
+      continue;
+    }
+    auto scale = dyn_cast<vx::LaneScaleRowsOp>(use);
+    if (scale && scale.getSubgroupRow() && !scale.getSerial() &&
+        scale.getTile().getType() == accType &&
+        laneCopyTileAlloca(scale.getScale()) != tile) {
+      others.push_back(scale);
       continue;
     }
     auto copy = dyn_cast<vx::LaneCopyOp>(use);
@@ -5389,7 +5585,8 @@ static bool collectDeviceCallees(Operation *op, ModuleOp module, bool inCallee,
   }
   // A barrier in a callee becomes `gpu.barrier` in its device copy, as in a
   // kernel body.
-  if (inCallee && isa<func::ReturnOp, vx::BarrierOp>(op))
+  if (inCallee &&
+      isa<func::ReturnOp, vx::BarrierOp, vx::SubgroupScheduleBarrierOp>(op))
     return true;
   if (inCallee && isa<memref::AllocOp>(op))
     return false;
@@ -5546,7 +5743,7 @@ static bool runsOnDevice(Operation *op, ModuleOp module,
   // Rewritten to `gpu.return` and `gpu.barrier` in the device clone (Vx#379).
   // A `vx.launch_dim` leaves the region when it is outlined.
   if (isa<vx::YieldOp, vx::ReturnOp, vx::BarrierOp, vx::LaunchDimOp,
-          vx::LaneOpInterface>(op))
+          vx::LaneOpInterface, vx::SubgroupScheduleBarrierOp>(op))
     return true;
   // The SPIR-V path's own rules, from the one place that holds them. NVPTX
   // compiles the shapes they name, so they apply to this pipeline alone.
@@ -7214,6 +7411,14 @@ struct ConvertVxToStandardPass
               b.create<gpu::BarrierOp>(bar.getLoc());
               bar.erase();
             }
+            // Only the Metal printer has a meaning for this hint.
+            if (pipelineOfKernel(kernel) != DevicePipeline::Metal) {
+              SmallVector<vx::SubgroupScheduleBarrierOp> hints;
+              copy->walk(
+                  [&](vx::SubgroupScheduleBarrierOp h) { hints.push_back(h); });
+              for (vx::SubgroupScheduleBarrierOp h : hints)
+                h.erase();
+            }
           }
       }
     }
@@ -7345,8 +7550,13 @@ struct ConvertVxToStandardPass
         for (Operation *op : copyOps) {
           OpBuilder b(op);
           if (auto wait = dyn_cast<vx::LaneCopyWaitOp>(op)) {
-            if (!wait.getSerial())
+            if (vx::LaneCopyWaitOp next = nextLaneCopyWait(wait, copies)) {
+              OpBuilder nb(next);
+              next.getTokenMutable().assign(nb.create<arith::MaxUIOp>(
+                  next.getLoc(), wait.getToken(), next.getToken()));
+            } else if (!wait.getSerial()) {
               expandLaneCopyWaitOnDevice(b, wait, copies);
+            }
           } else if (op->hasAttr("serial")) {
             expandLaneCopyOnHost(b, laneCopyOf(op));
           } else {
@@ -7442,10 +7652,26 @@ struct ConvertVxToStandardPass
           if (space && space.getInt() == 3 && t.hasStaticShape())
             smemAllocas.push_back(a);
         });
+        // A tile in simdgroup matrices keeps its alloca, which the Metal
+        // printer gives no memory. It becomes a global below, but takes no
+        // part in the size of the shared memory.
+        SmallVector<memref::AllocaOp> inRegisters;
+        llvm::erase_if(smemAllocas, [&](memref::AllocaOp a) {
+          SmallVector<Operation *> uses;
+          accessesOf(a.getResult(), uses);
+          bool registers =
+              !uses.empty() && llvm::all_of(uses, [](Operation *u) {
+                return u->hasAttr(simdgroupRegistersAttr);
+              });
+          if (registers)
+            inRegisters.push_back(a);
+          return registers;
+        });
         // Static `.shared` storage is limited to 48 KiB a block. Past that the
         // tensors are views at offsets into dynamic shared memory, and the
         // kernel says how much it needs (`vx.dynamic_shared`), which the
-        // launch passes.
+        // launch passes. Metal has no such limit for static `threadgroup`
+        // arrays, and the Metal printer checks the limit of the device.
         auto alignOf = [](memref::AllocaOp a) -> int64_t {
           return a.getAlignment() ? (int64_t)a.getAlignment().value() : 16;
         };
@@ -7457,7 +7683,21 @@ struct ConvertVxToStandardPass
         int64_t total = 0;
         for (memref::AllocaOp a : smemAllocas)
           total = llvm::alignTo(total, alignOf(a)) + bytesOf(a);
-        if (total > kMaxStaticSharedBytes) {
+        // The checker leaves out a tile of sums that it expects in registers.
+        // When the lowering kept such a tile in shared memory, the kernel can
+        // need more than the memory has.
+        if (auto limit = kernel->getAttrOfType<IntegerAttr>("shared_bytes");
+            limit && total > limit.getInt()) {
+          kernel.emitError("this GPU kernel needs ")
+              << total << " bytes of shared memory, but its memory has "
+              << limit.getInt()
+              << ". The checker may have expected the sums of a lane matmul "
+                 "in registers, which the lowering kept in shared memory";
+          signalPassFailure();
+          return;
+        }
+        if (total > kMaxStaticSharedBytes &&
+            pipelineOfKernel(kernel) != DevicePipeline::Metal) {
           OpBuilder atEntry(&gpuFunc.getBody().front(),
                             gpuFunc.getBody().front().begin());
           Location loc = gpuFunc.getLoc();
@@ -7495,6 +7735,7 @@ struct ConvertVxToStandardPass
                            atEntry.getI64IntegerAttr(most));
           smemAllocas.clear();
         }
+        smemAllocas.append(inRegisters.begin(), inRegisters.end());
         int smemIdx = 0;
         for (memref::AllocaOp a : smemAllocas) {
           std::string gname =
@@ -7756,8 +7997,14 @@ struct ConvertVxToStandardPass
     RewritePatternSet patterns(&getContext());
     patterns.add<SpawnOpLowering, TransferOpLowering>(&getContext());
 
-    if (failed(applyPatternsAndFoldGreedily(getOperation(),
-                                            std::move(patterns))) ||
+    // `Normal`, not the default `Aggressive`, which merges blocks. A merge
+    // turns two branches that read different tensors into one block that
+    // takes the tensor as an argument, which a SPIR-V image cannot do.
+    // `Disabled` would also stop the removal of dead block arguments.
+    GreedyRewriteConfig config;
+    config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                     config)) ||
         failed(lowerHostFrees(getOperation()))) {
       signalPassFailure();
       return;
@@ -8285,6 +8532,8 @@ struct FreeOpLowering : public OpRewritePattern<vx::FreeOp> {
 struct DeviceImage {
   std::string format;
   std::string bytes;
+  /// The kernels whose last parameter is the flag a failed `assert` sets.
+  llvm::StringSet<> assertFlag;
 
   /// Whether the image can ride in a NUL-terminated `image=` entry.
   bool isText() const { return format == "ptx" || format == "msl"; }
@@ -8414,7 +8663,13 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
       }
     }
 
-    if (auto trip = op->getAttrOfType<IntegerAttr>("vx_parallel_trip")) {
+    // A trip known only at run time is a launch value, `$j`. With no launch
+    // value there is no `launch=`, and the kernel gets one thread.
+    auto trip = op->getAttrOfType<IntegerAttr>("vx_parallel_trip");
+    if (auto text = op->getAttrOfType<StringAttr>("vx.launch_trip")) {
+      payload += "launch=" + text.getValue().str();
+      payload.push_back('\0');
+    } else if (trip && trip.getInt() > 0) {
       payload += "launch=";
       payload += std::to_string(trip.getInt());
       // Two-level (Vx#379): "B,T" -- B blocks of T threads, where B is the
@@ -8477,6 +8732,12 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
     if (deviceImages) {
       auto image = deviceImages->find(callee);
       if (image != deviceImages->end()) {
+        // The kernel takes one more parameter than the program passes: a
+        // pointer to a 4-byte flag that a failed `assert` sets.
+        if (image->second.assertFlag.contains(callee)) {
+          payload += "assert_flag=1";
+          payload.push_back('\0');
+        }
         // What the image is, before the image itself: a dispatch library that
         // meets a format it does not know refuses instead of guessing.
         payload += "format=";
@@ -8703,10 +8964,9 @@ static void splitOuterLoopAcrossWorkers(func::FuncOp fn,
 
   // The arithmetic goes in front of the start's store, so both ends have to be
   // available there. A block argument always is; a computed value has to have
-  // been computed earlier in the same block. `parallel_outer_for` only proves a
-  // loop whose bounds are literals, so in practice these are constants hoisted
-  // to the top of the entry block -- this is the check that says so rather than
-  // assuming it.
+  // been computed earlier in the same block. A literal bound is a constant at
+  // the top of the entry block, and a bound known only at run time is often an
+  // argument. This is the check that says so rather than assuming it.
   auto reaches = [&](Value v) {
     Operation *def = v.getDefiningOp();
     if (!def)
@@ -8822,6 +9082,18 @@ struct BarrierOpLowering : public OpRewritePattern<vx::BarrierOp> {
   using OpRewritePattern<vx::BarrierOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(vx::BarrierOp op,
+                                PatternRewriter &rewriter) const override {
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+/// A scheduling hint of the Apple GPU means nothing on the CPU.
+struct SubgroupScheduleBarrierOpLowering
+    : public OpRewritePattern<vx::SubgroupScheduleBarrierOp> {
+  using OpRewritePattern<vx::SubgroupScheduleBarrierOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vx::SubgroupScheduleBarrierOp op,
                                 PatternRewriter &rewriter) const override {
     rewriter.eraseOp(op);
     return success();
@@ -9218,6 +9490,69 @@ static std::optional<DisjointConstant> disjointConstant(llvm::Value *v) {
   return DisjointConstant{c->zext(v->getType()->getScalarSizeInBits()), x, ext};
 }
 
+/// Asks LLVM to unroll each loop of a kernel that runs at most 16 times and
+/// holds no other loop. LLVM unrolls such a loop by itself only when its body
+/// is small. Unrolled, a loop such as `for j in 0..8` that picks one of eight
+/// values with `j == 1`, `j == 2` and so on has a constant `j` in each copy,
+/// and the picks fold. The Metal code generator unrolls outer loops too, but
+/// on NVIDIA that added register spills to a top-k kernel. The loop counters
+/// are still in stack slots here, and LLVM cannot count the trips of such a
+/// loop. So SROA moves them to registers in a copy of the function, and the
+/// trips are counted there. SROA on the function itself, this early, added
+/// spills to another kernel.
+static void unrollShortLoops(llvm::Module &module) {
+  constexpr unsigned maxUnrolledTrips = 16;
+  llvm::LoopAnalysisManager loops;
+  llvm::FunctionAnalysisManager functions;
+  llvm::CGSCCAnalysisManager calls;
+  llvm::ModuleAnalysisManager modules;
+  llvm::PassBuilder builder;
+  builder.registerModuleAnalyses(modules);
+  builder.registerCGSCCAnalyses(calls);
+  builder.registerFunctionAnalyses(functions);
+  builder.registerLoopAnalyses(loops);
+  builder.crossRegisterProxies(loops, functions, calls, modules);
+  llvm::FunctionPassManager cleanup;
+  // The copy keeps the blocks of the function, so a loop of the copy and the
+  // loop of the function with the same header are the same loop.
+  cleanup.addPass(llvm::SROAPass(llvm::SROAOptions::PreserveCFG));
+  llvm::SmallVector<llvm::Function *> kernels;
+  for (llvm::Function &f : module)
+    if (!f.isDeclaration())
+      kernels.push_back(&f);
+  for (llvm::Function *f : kernels) {
+    llvm::ValueToValueMapTy copied;
+    llvm::Function *copy = llvm::CloneFunction(f, copied);
+    llvm::DenseMap<llvm::BasicBlock *, llvm::BasicBlock *> original;
+    for (llvm::BasicBlock &block : *f)
+      original[llvm::cast<llvm::BasicBlock>(copied[&block])] = &block;
+    cleanup.run(*copy, functions);
+    llvm::DominatorTree dominators(*f);
+    llvm::LoopInfo info(dominators);
+    llvm::ScalarEvolution &evolution =
+        functions.getResult<llvm::ScalarEvolutionAnalysis>(*copy);
+    for (llvm::Loop *loop :
+         functions.getResult<llvm::LoopAnalysis>(*copy).getLoopsInPreorder()) {
+      // A loop that tests its condition at the top runs its header once more
+      // than its body.
+      unsigned trips = evolution.getSmallConstantTripCount(loop);
+      llvm::BasicBlock *latch = loop->getLoopLatch();
+      if (trips > 0 && latch && !loop->isLoopExiting(latch))
+        --trips;
+      if (!loop->isInnermost() || trips == 0 || trips > maxUnrolledTrips)
+        continue;
+      llvm::BasicBlock *header = original.lookup(loop->getHeader());
+      assert(header && "SROA kept the blocks of the copy");
+      llvm::Loop *same = info.getLoopFor(header);
+      assert(same && same->getHeader() == header && same->isInnermost() &&
+             "the copy has the loops of the function");
+      llvm::addStringMetadataToLoop(same, "llvm.loop.unroll.full");
+    }
+    functions.clear(*copy, copy->getName());
+    copy->eraseFromParent();
+  }
+}
+
 /// Moves a constant that a disjoint `or` adds to an index outward, in the LLVM
 /// IR of a kernel, where known bits show that this is exact. Here `D` is
 /// `or disjoint X, C`, or a `zext` or a `sext` of it, and `Y` is `X` or its
@@ -9463,8 +9798,7 @@ static DeviceImage deviceImageOf(gpu::GPUModuleOp gpuModule,
           symbols.emplace(*device);
         return &*symbols;
       },
-      /*initialLlvmIRCallback=*/{}, /*linkedLlvmIRCallback=*/{},
-      moveDisjointConstantsOut);
+      /*initialLlvmIRCallback=*/{}, unrollShortLoops, moveDisjointConstantsOut);
   if (failed(gpu::transformGpuModulesToBinaries(*device, nullptr, binary))) {
     error = "the NVPTX pipeline failed";
     return {};
@@ -9609,6 +9943,867 @@ static LogicalResult serializeSpirv(std::unique_ptr<llvm::Module> module,
   return success();
 }
 
+/// Arithmetic on bf16 in f32, rounded to bf16 after each operation, as the CPU
+/// does. SPIR-V has a bf16 type only through an extension that not every driver
+/// has. An operation that this cannot rewrite keeps its bf16, and
+/// `bf16Refusals` then leaves its kernel out of the image.
+static void computeBf16InF32(gpu::GPUModuleOp gpuModule) {
+  MLIRContext *context = gpuModule.getContext();
+  TypeConverter converter;
+  arith::populateEmulateUnsupportedFloatsConversions(
+      converter, {BFloat16Type::get(context)}, Float32Type::get(context));
+  RewritePatternSet patterns(context);
+  arith::populateEmulateUnsupportedFloatsPatterns(patterns, converter);
+  ConversionTarget target(*context);
+  arith::populateEmulateUnsupportedFloatsLegality(target, converter);
+  (void)applyPartialConversion(gpuModule, target, std::move(patterns));
+  expandBf16Conversions(gpuModule);
+}
+
+/// Whether `type` is bf16, or holds bf16.
+static bool holdsBf16(llvm::Type *type) {
+  if (type->isBFloatTy())
+    return true;
+  return llvm::any_of(type->subtypes(), holdsBf16);
+}
+
+/// Load, store, select and carry bf16 as i16, which holds the same two bytes.
+/// The `bitcast` that a conversion makes of a bf16 value then meets a `bitcast`
+/// that undoes it, and the two fold away.
+static void storeBf16AsI16(llvm::Module &module) {
+  auto asI16 = [&](llvm::Type *type) -> llvm::Type * {
+    if (!type->getScalarType()->isBFloatTy())
+      return nullptr;
+    llvm::Type *i16 = llvm::Type::getInt16Ty(module.getContext());
+    if (auto *vector = dyn_cast<llvm::VectorType>(type))
+      return llvm::VectorType::get(i16, vector->getElementCount());
+    return i16;
+  };
+  SmallVector<llvm::Instruction *> work;
+  for (llvm::Function &f : module)
+    for (llvm::Instruction &inst : llvm::instructions(f))
+      if (isa<llvm::LoadInst, llvm::StoreInst, llvm::GetElementPtrInst,
+              llvm::PHINode, llvm::SelectInst>(inst))
+        work.push_back(&inst);
+  SmallVector<llvm::Instruction *> replaced;
+  for (llvm::Instruction *inst : work) {
+    if (auto *load = dyn_cast<llvm::LoadInst>(inst)) {
+      if (llvm::Type *word = asI16(load->getType())) {
+        llvm::IRBuilder<> b(load);
+        llvm::Value *bits =
+            b.CreateAlignedLoad(word, load->getPointerOperand(),
+                                load->getAlign(), load->isVolatile());
+        load->replaceAllUsesWith(b.CreateBitCast(bits, load->getType()));
+        replaced.push_back(load);
+      }
+    } else if (auto *store = dyn_cast<llvm::StoreInst>(inst)) {
+      llvm::Value *value = store->getValueOperand();
+      if (llvm::Type *word = asI16(value->getType())) {
+        llvm::IRBuilder<> b(store);
+        store->setOperand(0, b.CreateBitCast(value, word));
+      }
+    } else if (auto *gep = dyn_cast<llvm::GetElementPtrInst>(inst)) {
+      llvm::Type *word = asI16(gep->getSourceElementType());
+      if (word && gep->getNumIndices() == 1) {
+        gep->setSourceElementType(word);
+        gep->setResultElementType(word);
+      }
+    } else if (auto *phi = dyn_cast<llvm::PHINode>(inst)) {
+      if (llvm::Type *word = asI16(phi->getType())) {
+        auto *bits = llvm::PHINode::Create(word, phi->getNumIncomingValues(),
+                                           "", phi->getIterator());
+        for (unsigned i = 0; i < phi->getNumIncomingValues(); ++i) {
+          llvm::IRBuilder<> b(phi->getIncomingBlock(i)->getTerminator());
+          bits->addIncoming(b.CreateBitCast(phi->getIncomingValue(i), word),
+                            phi->getIncomingBlock(i));
+        }
+        llvm::IRBuilder<> b(phi->getParent(),
+                            phi->getParent()->getFirstInsertionPt());
+        phi->replaceAllUsesWith(b.CreateBitCast(bits, phi->getType()));
+        replaced.push_back(phi);
+      }
+    } else if (auto *select = dyn_cast<llvm::SelectInst>(inst)) {
+      if (llvm::Type *word = asI16(select->getType())) {
+        llvm::IRBuilder<> b(select);
+        llvm::Value *bits =
+            b.CreateSelect(select->getCondition(),
+                           b.CreateBitCast(select->getTrueValue(), word),
+                           b.CreateBitCast(select->getFalseValue(), word));
+        select->replaceAllUsesWith(b.CreateBitCast(bits, select->getType()));
+        replaced.push_back(select);
+      }
+    }
+  }
+  for (llvm::Instruction *inst : replaced)
+    inst->eraseFromParent();
+  for (bool changed = true; changed;) {
+    changed = false;
+    for (llvm::Function &f : module) {
+      for (llvm::Instruction &inst :
+           llvm::make_early_inc_range(llvm::instructions(f))) {
+        auto *cast = dyn_cast<llvm::BitCastInst>(&inst);
+        if (!cast)
+          continue;
+        auto *inner = dyn_cast<llvm::BitCastInst>(cast->getOperand(0));
+        if (inner && inner->getOperand(0)->getType() == cast->getType()) {
+          cast->replaceAllUsesWith(inner->getOperand(0));
+          cast->eraseFromParent();
+          changed = true;
+        } else if (cast->use_empty()) {
+          cast->eraseFromParent();
+          changed = true;
+        }
+      }
+    }
+  }
+}
+
+/// The kernels that still use a bf16 value, in themselves or in a function
+/// they call, after `storeBf16AsI16`. LLVM's SPIR-V backend stops the process
+/// on a bf16 type, so these kernels have to be left out first.
+static SmallVector<SpirvKernelRefusal> bf16Refusals(llvm::Module &module) {
+  llvm::DenseSet<const llvm::Function *> usesBf16;
+  for (llvm::Function &f : module) {
+    bool uses = llvm::any_of(
+        f.args(), [](llvm::Argument &a) { return holdsBf16(a.getType()); });
+    for (llvm::Instruction &inst : llvm::instructions(f)) {
+      uses = uses || holdsBf16(inst.getType()) ||
+             llvm::any_of(inst.operands(),
+                          [](llvm::Use &u) { return holdsBf16(u->getType()); });
+      if (auto *gep = dyn_cast<llvm::GetElementPtrInst>(&inst))
+        uses = uses || holdsBf16(gep->getSourceElementType());
+      if (auto *slot = dyn_cast<llvm::AllocaInst>(&inst))
+        uses = uses || holdsBf16(slot->getAllocatedType());
+    }
+    if (uses)
+      usesBf16.insert(&f);
+  }
+  // A caller of a function that uses bf16 uses it too.
+  for (bool changed = true; changed;) {
+    changed = false;
+    for (llvm::Function &f : module) {
+      if (usesBf16.contains(&f))
+        continue;
+      for (llvm::Instruction &inst : llvm::instructions(f)) {
+        auto *call = dyn_cast<llvm::CallBase>(&inst);
+        if (call && usesBf16.contains(call->getCalledFunction())) {
+          usesBf16.insert(&f);
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
+  SmallVector<SpirvKernelRefusal> refused;
+  for (llvm::Function &f : module)
+    if (f.getCallingConv() == llvm::CallingConv::SPIR_KERNEL &&
+        usesBf16.contains(&f))
+      refused.push_back({f.getName().str(),
+                         "it uses a `bf16` value in a way that a SPIR-V image "
+                         "cannot hold yet"});
+  return refused;
+}
+
+/// Give each `i1` operation that LLVM's SPIR-V backend cannot write its logic
+/// form. The backend writes `mul`, division, remainder and the shifts of `i1`
+/// as integer instructions on `bool`, which SPIR-V does not allow, and it
+/// cannot lower the min and max of `i1` at all.
+static void legalizeOneBitArithmetic(llvm::Module &module) {
+  SmallVector<llvm::Instruction *> replaced;
+  for (llvm::Function &f : module) {
+    for (llvm::Instruction &inst : llvm::instructions(f)) {
+      if (!inst.getType()->isIntOrIntVectorTy(1))
+        continue;
+      llvm::IRBuilder<> b(&inst);
+      llvm::Value *logic = nullptr;
+      if (auto *op = dyn_cast<llvm::BinaryOperator>(&inst)) {
+        llvm::Value *x = op->getOperand(0);
+        llvm::Value *y = op->getOperand(1);
+        switch (op->getOpcode()) {
+        case llvm::Instruction::Mul:
+          logic = b.CreateAnd(x, y);
+          break;
+        // Each division and shift of `i1` that is defined gives `x`: it divides
+        // by `true` or shifts by 0.
+        case llvm::Instruction::UDiv:
+        case llvm::Instruction::SDiv:
+        case llvm::Instruction::Shl:
+        case llvm::Instruction::LShr:
+        case llvm::Instruction::AShr:
+          logic = x;
+          break;
+        case llvm::Instruction::URem:
+        case llvm::Instruction::SRem:
+          logic = llvm::Constant::getNullValue(inst.getType());
+          break;
+        // The backend already writes `add` and `sub` of `i1` as
+        // `OpLogicalNotEqual`, which is xor.
+        default:
+          break;
+        }
+      } else if (auto *call = dyn_cast<llvm::IntrinsicInst>(&inst)) {
+        // As a signed number, `true` is -1, so it is the smaller one.
+        switch (call->getIntrinsicID()) {
+        case llvm::Intrinsic::umax:
+        case llvm::Intrinsic::smin:
+          logic = b.CreateOr(call->getArgOperand(0), call->getArgOperand(1));
+          break;
+        case llvm::Intrinsic::umin:
+        case llvm::Intrinsic::smax:
+          logic = b.CreateAnd(call->getArgOperand(0), call->getArgOperand(1));
+          break;
+        default:
+          break;
+        }
+      }
+      if (logic) {
+        inst.replaceAllUsesWith(logic);
+        replaced.push_back(&inst);
+      }
+    }
+  }
+  for (llvm::Instruction *inst : replaced)
+    inst->eraseFromParent();
+}
+
+/// Whether `type` is an integer of 2 to 7 bits. Vx's `i4` and `u4` are such
+/// integers, and so is the storage of an `f4e2m1`.
+static bool isNarrowInteger(llvm::Type *type) {
+  auto *integer = dyn_cast<llvm::IntegerType>(type);
+  return integer && integer->getBitWidth() > 1 && integer->getBitWidth() < 8;
+}
+
+/// Whether `type` holds an integer of 2 to 7 bits anywhere in it.
+static bool holdsNarrowInteger(llvm::Type *type) {
+  return isNarrowInteger(type) ||
+         llvm::any_of(type->subtypes(), holdsNarrowInteger);
+}
+
+/// `type` with each integer of 2 to 7 bits in it made 8 bits wide. An
+/// integer of 2 to 7 bits takes one byte of memory, so the layout of a vector
+/// or an array of them does not change. Null for a struct that holds one.
+static llvm::Type *inBytes(llvm::Type *type) {
+  if (isNarrowInteger(type))
+    return llvm::Type::getInt8Ty(type->getContext());
+  if (!holdsNarrowInteger(type))
+    return type;
+  if (auto *vector = dyn_cast<llvm::VectorType>(type))
+    return llvm::VectorType::get(inBytes(vector->getElementType()),
+                                 vector->getElementCount());
+  if (auto *array = dyn_cast<llvm::ArrayType>(type))
+    if (llvm::Type *element = inBytes(array->getElementType()))
+      return llvm::ArrayType::get(element, array->getNumElements());
+  return nullptr;
+}
+
+/// Whether `inst` takes, gives or addresses an integer of 2 to 7 bits.
+static bool usesNarrowInteger(llvm::Instruction &inst) {
+  if (holdsNarrowInteger(inst.getType()) ||
+      llvm::any_of(inst.operands(), [](llvm::Use &use) {
+        return holdsNarrowInteger(use->getType());
+      }))
+    return true;
+  if (auto *gep = dyn_cast<llvm::GetElementPtrInst>(&inst))
+    return holdsNarrowInteger(gep->getSourceElementType());
+  if (auto *slot = dyn_cast<llvm::AllocaInst>(&inst))
+    return holdsNarrowInteger(slot->getAllocatedType());
+  return false;
+}
+
+/// Whether `computeInBytes` can rewrite each use of an integer of 2 to 7
+/// bits in `f`. A function that passes one to a call, or that does something
+/// else with one that is not listed here, is left as it is.
+static bool canComputeInBytes(llvm::Function &f) {
+  if (holdsNarrowInteger(f.getFunctionType()))
+    return false;
+  for (llvm::Instruction &inst : llvm::instructions(f)) {
+    if (!usesNarrowInteger(inst))
+      continue;
+    // A value of a scalar or a vector type, not a struct or an array.
+    auto plain = [](llvm::Type *type) {
+      return isNarrowInteger(type->getScalarType()) ||
+             !holdsNarrowInteger(type);
+    };
+    if (!plain(inst.getType()) ||
+        !llvm::all_of(inst.operands(),
+                      [&](llvm::Use &use) { return plain(use->getType()); }))
+      return false;
+    if (auto *call = dyn_cast<llvm::IntrinsicInst>(&inst)) {
+      switch (call->getIntrinsicID()) {
+      case llvm::Intrinsic::umin:
+      case llvm::Intrinsic::umax:
+      case llvm::Intrinsic::smin:
+      case llvm::Intrinsic::smax:
+      case llvm::Intrinsic::abs:
+        continue;
+      default:
+        return false;
+      }
+    }
+    if (isa<llvm::GetElementPtrInst, llvm::AllocaInst>(inst) &&
+        !inBytes(
+            isa<llvm::GetElementPtrInst>(inst)
+                ? cast<llvm::GetElementPtrInst>(inst).getSourceElementType()
+                : cast<llvm::AllocaInst>(inst).getAllocatedType()))
+      return false;
+    if (auto *gep = dyn_cast<llvm::GetElementPtrInst>(&inst))
+      if (llvm::any_of(gep->indices(), [](llvm::Use &use) {
+            return holdsNarrowInteger(use->getType());
+          }))
+        return false;
+    switch (inst.getOpcode()) {
+    case llvm::Instruction::Load:
+    case llvm::Instruction::Store:
+    case llvm::Instruction::GetElementPtr:
+    case llvm::Instruction::Alloca:
+    case llvm::Instruction::Trunc:
+    case llvm::Instruction::ZExt:
+    case llvm::Instruction::SExt:
+    case llvm::Instruction::Add:
+    case llvm::Instruction::Sub:
+    case llvm::Instruction::Mul:
+    case llvm::Instruction::Shl:
+    case llvm::Instruction::LShr:
+    case llvm::Instruction::AShr:
+    case llvm::Instruction::And:
+    case llvm::Instruction::Or:
+    case llvm::Instruction::Xor:
+    case llvm::Instruction::UDiv:
+    case llvm::Instruction::SDiv:
+    case llvm::Instruction::URem:
+    case llvm::Instruction::SRem:
+    case llvm::Instruction::ICmp:
+    case llvm::Instruction::Select:
+    case llvm::Instruction::PHI:
+    case llvm::Instruction::SIToFP:
+    case llvm::Instruction::UIToFP:
+    case llvm::Instruction::FPToSI:
+    case llvm::Instruction::FPToUI:
+    case llvm::Instruction::Freeze:
+    case llvm::Instruction::ExtractElement:
+    case llvm::Instruction::InsertElement:
+    case llvm::Instruction::ShuffleVector:
+      continue;
+    default:
+      return false;
+    }
+  }
+  return true;
+}
+
+/// Compute each integer of 2 to 7 bits in `f` in 8 bits. Each value is held
+/// with its upper bits clear, which is how the host stores it, and each
+/// operation that can set them clears them again. A signed operation first
+/// copies the sign bit into the upper bits.
+static void computeInBytes(llvm::Function &f) {
+  llvm::removeUnreachableBlocks(f);
+  llvm::DenseMap<llvm::Value *, llvm::Value *> held;
+  auto get = [&](llvm::Value *v) -> llvm::Value * {
+    if (!isNarrowInteger(v->getType()->getScalarType()))
+      return v;
+    auto found = held.find(v);
+    if (found != held.end())
+      return found->second;
+    llvm::Constant *wide = llvm::ConstantFoldCastInstruction(
+        llvm::Instruction::ZExt, cast<llvm::Constant>(v),
+        inBytes(v->getType()));
+    assert(wide && "a 4-bit constant that does not fold to 8 bits");
+    return wide;
+  };
+  // The 8-bit value with only its low `bits` bits kept.
+  auto clear = [](llvm::IRBuilder<> &b, llvm::Value *v, unsigned bits) {
+    return b.CreateAnd(v, (1u << bits) - 1);
+  };
+  // The 8-bit value with bit `bits - 1` copied into the upper bits.
+  auto withSign = [](llvm::IRBuilder<> &b, llvm::Value *v, unsigned bits) {
+    return b.CreateAShr(b.CreateShl(v, 8 - bits), 8 - bits);
+  };
+  auto widthOf = [](llvm::Type *type) {
+    return type->getScalarType()->getIntegerBitWidth();
+  };
+
+  // A phi gets its 8-bit form first, so that a value from a later block can
+  // flow into it. Its incoming values are filled in at the end.
+  SmallVector<std::pair<llvm::PHINode *, llvm::PHINode *>> phis;
+  for (llvm::BasicBlock &block : f)
+    for (llvm::PHINode &phi : block.phis())
+      if (isNarrowInteger(phi.getType()->getScalarType())) {
+        auto *wide = llvm::PHINode::Create(inBytes(phi.getType()),
+                                           phi.getNumIncomingValues(), "",
+                                           phi.getIterator());
+        held[&phi] = wide;
+        phis.push_back({&phi, wide});
+      }
+
+  SmallVector<llvm::Instruction *> dead;
+  llvm::ReversePostOrderTraversal<llvm::Function *> order(&f);
+  for (llvm::BasicBlock *block : order) {
+    for (llvm::Instruction &inst : llvm::make_early_inc_range(*block)) {
+      if (!usesNarrowInteger(inst) || isa<llvm::PHINode>(inst))
+        continue;
+      if (auto *gep = dyn_cast<llvm::GetElementPtrInst>(&inst)) {
+        gep->setSourceElementType(inBytes(gep->getSourceElementType()));
+        gep->setResultElementType(inBytes(gep->getResultElementType()));
+        continue;
+      }
+      llvm::IRBuilder<> b(&inst);
+      llvm::Value *out = nullptr;
+      llvm::Type *type = inst.getType();
+      bool narrow = isNarrowInteger(type->getScalarType());
+      if (auto *slot = dyn_cast<llvm::AllocaInst>(&inst)) {
+        auto *wide =
+            b.CreateAlloca(inBytes(slot->getAllocatedType()),
+                           slot->getAddressSpace(), slot->getArraySize());
+        wide->setAlignment(slot->getAlign());
+        out = wide;
+      } else if (auto *load = dyn_cast<llvm::LoadInst>(&inst)) {
+        auto *wide =
+            b.CreateAlignedLoad(inBytes(type), load->getPointerOperand(),
+                                load->getAlign(), load->isVolatile());
+        out = clear(b, wide, widthOf(type));
+      } else if (auto *store = dyn_cast<llvm::StoreInst>(&inst)) {
+        out = b.CreateAlignedStore(get(store->getValueOperand()),
+                                   store->getPointerOperand(),
+                                   store->getAlign(), store->isVolatile());
+      } else if (auto *cast = dyn_cast<llvm::CastInst>(&inst)) {
+        llvm::Value *from = cast->getOperand(0);
+        llvm::Type *fromType = from->getType();
+        bool narrowFrom = isNarrowInteger(fromType->getScalarType());
+        llvm::Type *to = narrow ? inBytes(type) : type;
+        switch (cast->getOpcode()) {
+        case llvm::Instruction::Trunc:
+        case llvm::Instruction::ZExt:
+        case llvm::Instruction::SExt: {
+          llvm::Value *v = get(from);
+          if (cast->getOpcode() == llvm::Instruction::SExt) {
+            if (narrowFrom)
+              v = withSign(b, v, widthOf(fromType));
+            v = b.CreateSExtOrTrunc(v, to);
+          } else {
+            v = b.CreateZExtOrTrunc(v, to);
+          }
+          out = narrow ? clear(b, v, widthOf(type)) : v;
+          break;
+        }
+        case llvm::Instruction::SIToFP:
+          out = b.CreateSIToFP(withSign(b, get(from), widthOf(fromType)), type);
+          break;
+        case llvm::Instruction::UIToFP:
+          out = b.CreateUIToFP(get(from), type);
+          break;
+        case llvm::Instruction::FPToSI:
+          out = clear(b, b.CreateFPToSI(from, to), widthOf(type));
+          break;
+        case llvm::Instruction::FPToUI:
+          out = clear(b, b.CreateFPToUI(from, to), widthOf(type));
+          break;
+        default:
+          llvm_unreachable("canComputeInBytes allows no other cast");
+        }
+      } else if (auto *op = dyn_cast<llvm::BinaryOperator>(&inst)) {
+        unsigned bits = widthOf(type);
+        llvm::Value *x = get(op->getOperand(0));
+        llvm::Value *y = get(op->getOperand(1));
+        switch (op->getOpcode()) {
+        case llvm::Instruction::Add:
+        case llvm::Instruction::Sub:
+        case llvm::Instruction::Mul:
+        case llvm::Instruction::Shl:
+          out = clear(b, b.CreateBinOp(op->getOpcode(), x, y), bits);
+          break;
+        case llvm::Instruction::SDiv:
+        case llvm::Instruction::SRem:
+          out = clear(b,
+                      b.CreateBinOp(op->getOpcode(), withSign(b, x, bits),
+                                    withSign(b, y, bits)),
+                      bits);
+          break;
+        case llvm::Instruction::AShr:
+          out = clear(b, b.CreateAShr(withSign(b, x, bits), y), bits);
+          break;
+        default:
+          // And, or, xor, and the unsigned division, remainder and shift keep
+          // the upper bits clear.
+          out = b.CreateBinOp(op->getOpcode(), x, y);
+          break;
+        }
+      } else if (auto *compare = dyn_cast<llvm::ICmpInst>(&inst)) {
+        unsigned bits = widthOf(compare->getOperand(0)->getType());
+        llvm::Value *x = get(compare->getOperand(0));
+        llvm::Value *y = get(compare->getOperand(1));
+        if (compare->isSigned()) {
+          x = withSign(b, x, bits);
+          y = withSign(b, y, bits);
+        }
+        out = b.CreateICmp(compare->getPredicate(), x, y);
+      } else if (auto *choice = dyn_cast<llvm::SelectInst>(&inst)) {
+        out =
+            b.CreateSelect(choice->getCondition(), get(choice->getTrueValue()),
+                           get(choice->getFalseValue()));
+      } else if (auto *frozen = dyn_cast<llvm::FreezeInst>(&inst)) {
+        out = b.CreateFreeze(get(frozen->getOperand(0)));
+      } else if (auto *extract = dyn_cast<llvm::ExtractElementInst>(&inst)) {
+        out = b.CreateExtractElement(get(extract->getVectorOperand()),
+                                     extract->getIndexOperand());
+      } else if (auto *insert = dyn_cast<llvm::InsertElementInst>(&inst)) {
+        out = b.CreateInsertElement(get(insert->getOperand(0)),
+                                    get(insert->getOperand(1)),
+                                    insert->getOperand(2));
+      } else if (auto *shuffle = dyn_cast<llvm::ShuffleVectorInst>(&inst)) {
+        out = b.CreateShuffleVector(get(shuffle->getOperand(0)),
+                                    get(shuffle->getOperand(1)),
+                                    shuffle->getShuffleMask());
+      } else if (auto *call = dyn_cast<llvm::IntrinsicInst>(&inst)) {
+        unsigned bits = widthOf(type);
+        llvm::Value *x = get(call->getArgOperand(0));
+        llvm::Intrinsic::ID id = call->getIntrinsicID();
+        if (id == llvm::Intrinsic::abs) {
+          out = clear(b,
+                      b.CreateBinaryIntrinsic(id, withSign(b, x, bits),
+                                              call->getArgOperand(1)),
+                      bits);
+        } else {
+          llvm::Value *y = get(call->getArgOperand(1));
+          bool isSigned =
+              id == llvm::Intrinsic::smin || id == llvm::Intrinsic::smax;
+          out = isSigned
+                    ? clear(b,
+                            b.CreateBinaryIntrinsic(id, withSign(b, x, bits),
+                                                    withSign(b, y, bits)),
+                            bits)
+                    : b.CreateBinaryIntrinsic(id, x, y);
+        }
+      }
+      assert(out && "canComputeInBytes allowed an instruction with no rewrite");
+      if (narrow)
+        held[&inst] = out;
+      else if (!inst.getType()->isVoidTy())
+        inst.replaceAllUsesWith(out);
+      dead.push_back(&inst);
+    }
+  }
+  for (auto [phi, wide] : phis) {
+    for (unsigned i = 0; i < phi->getNumIncomingValues(); ++i)
+      wide->addIncoming(get(phi->getIncomingValue(i)),
+                        phi->getIncomingBlock(i));
+    dead.push_back(phi);
+  }
+  for (llvm::Instruction *inst : dead)
+    inst->dropAllReferences();
+  for (llvm::Instruction *inst : dead)
+    inst->eraseFromParent();
+}
+
+/// The kernels that still use an integer of 2 to 7 bits, each with its
+/// reason. LLVM's SPIR-V backend keeps such an integer in 8 bits and never
+/// clears the upper bits, so the kernel would compute a wrong answer.
+static SmallVector<SpirvKernelRefusal>
+narrowIntegerRefusals(llvm::Module &module) {
+  llvm::DenseSet<const llvm::Function *> narrow;
+  for (llvm::Function &f : module)
+    if (holdsNarrowInteger(f.getFunctionType()) ||
+        llvm::any_of(llvm::instructions(f), usesNarrowInteger))
+      narrow.insert(&f);
+  // A caller of such a function uses one too.
+  for (bool changed = true; changed;) {
+    changed = false;
+    for (llvm::Function &f : module) {
+      if (narrow.contains(&f))
+        continue;
+      for (llvm::Instruction &inst : llvm::instructions(f)) {
+        auto *call = dyn_cast<llvm::CallBase>(&inst);
+        if (call && narrow.contains(call->getCalledFunction())) {
+          narrow.insert(&f);
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
+  SmallVector<SpirvKernelRefusal> refused;
+  for (llvm::Function &f : module)
+    if (f.getCallingConv() == llvm::CallingConv::SPIR_KERNEL &&
+        narrow.contains(&f))
+      refused.push_back({f.getName().str(),
+                         "it uses a 4-bit integer in a way that a SPIR-V "
+                         "image cannot compute yet"});
+  return refused;
+}
+
+/// The libm functions that an OpenCL device has under the same name. Each
+/// math method of `f32` calls `libm_<name>f`, of `f64` `libm_<name>`, of `f16`
+/// `libm_<name>f16`, and of `bf16` `libm_<name>_bf16`.
+static constexpr llvm::StringLiteral kOpenClMath[] = {
+    "exp",   "exp2",  "exp10", "expm1", "log",   "log2",  "log10",
+    "log1p", "sin",   "cos",   "tan",   "sinh",  "cosh",  "tanh",
+    "asin",  "acos",  "atan",  "atan2", "asinh", "acosh", "atanh",
+    "pow",   "hypot", "cbrt",  "erf",   "rsqrt"};
+
+/// Replace each call to a libm function in `gpuModule` with a call to the
+/// OpenCL built-in of the same name, which LLVM's SPIR-V backend writes as the
+/// device's own instruction. Vx's libm rounds correctly, but it computes in
+/// `f64`, which the Arc does not have, and it reads tables that an image
+/// cannot hold. A built-in can differ from the host in the last bits. An `f16`
+/// or `bf16` value is computed in `f32`.
+static void callOpenClMath(gpu::GPUModuleOp gpuModule) {
+  MLIRContext *context = gpuModule.getContext();
+  auto known = [](StringRef base) {
+    return llvm::is_contained(kOpenClMath, base);
+  };
+  SmallVector<func::CallOp> calls;
+  gpuModule.walk([&](func::CallOp call) { calls.push_back(call); });
+  for (func::CallOp call : calls) {
+    StringRef base = call.getCallee();
+    if (!base.consume_front("libm_"))
+      continue;
+    Type type;
+    if (base.consume_back("_bf16"))
+      type = BFloat16Type::get(context);
+    else if (base.consume_back("f16"))
+      type = Float16Type::get(context);
+    else if (base.ends_with("f") && known(base.drop_back()))
+      type = Float32Type::get(context), base = base.drop_back();
+    else
+      type = Float64Type::get(context);
+    unsigned arity = call.getNumOperands();
+    if (!known(base) || arity < 1 || arity > 2 || call.getNumResults() != 1 ||
+        call.getResult(0).getType() != type ||
+        llvm::any_of(call.getOperandTypes(), [&](Type t) { return t != type; }))
+      continue;
+    Type compute = type.isF64() ? type : Float32Type::get(context);
+    std::string name = "_Z" + std::to_string(base.size()) + base.str();
+    for (unsigned i = 0; i < arity; ++i)
+      name += compute.isF64() ? "d" : "f";
+    auto builtin = gpuModule.lookupSymbol<func::FuncOp>(name);
+    if (!builtin) {
+      OpBuilder top = OpBuilder::atBlockBegin(gpuModule.getBody());
+      builtin = func::FuncOp::create(
+          top, call.getLoc(), name,
+          FunctionType::get(context, SmallVector<Type>(arity, compute),
+                            {compute}));
+      builtin.setPrivate();
+    }
+    OpBuilder b(call);
+    SmallVector<Value> args;
+    for (Value v : call.getOperands())
+      args.push_back(type == compute
+                         ? v
+                         : arith::ExtFOp::create(b, call.getLoc(), compute, v));
+    Value result =
+        func::CallOp::create(b, call.getLoc(), builtin, args).getResult(0);
+    if (type != compute)
+      result = arith::TruncFOp::create(b, call.getLoc(), type, result);
+    call.getResult(0).replaceAllUsesWith(result);
+    call.erase();
+  }
+}
+
+/// The width of the widest integer in `type`, or 0 when it holds none.
+static unsigned widestInteger(llvm::Type *type) {
+  unsigned widest = 0;
+  if (auto *integer = dyn_cast<llvm::IntegerType>(type))
+    widest = integer->getBitWidth();
+  for (llvm::Type *sub : type->subtypes())
+    widest = std::max(widest, widestInteger(sub));
+  return widest;
+}
+
+/// The kernels that compute with an integer wider than 64 bits, each with its
+/// reason. SPIR-V has no such integer, and LLVM's SPIR-V backend stops the
+/// whole process when it meets one, so such a kernel must not reach it.
+static SmallVector<SpirvKernelRefusal>
+wideIntegerRefusals(llvm::Module &module) {
+  // For each function that uses one, the widest integer and the function that
+  // uses it, which is the function itself or one that it calls.
+  llvm::DenseMap<const llvm::Function *,
+                 std::pair<unsigned, const llvm::Function *>>
+      wide;
+  for (llvm::Function &f : module) {
+    unsigned widest = widestInteger(f.getFunctionType());
+    for (llvm::Instruction &inst : llvm::instructions(f)) {
+      widest = std::max(widest, widestInteger(inst.getType()));
+      for (llvm::Use &use : inst.operands())
+        widest = std::max(widest, widestInteger(use->getType()));
+      if (auto *gep = dyn_cast<llvm::GetElementPtrInst>(&inst))
+        widest = std::max(widest, widestInteger(gep->getSourceElementType()));
+      if (auto *slot = dyn_cast<llvm::AllocaInst>(&inst))
+        widest = std::max(widest, widestInteger(slot->getAllocatedType()));
+    }
+    if (widest > 64)
+      wide[&f] = {widest, &f};
+  }
+  // A caller of such a function puts it in the image too.
+  for (bool changed = true; changed;) {
+    changed = false;
+    for (llvm::Function &f : module) {
+      if (wide.contains(&f))
+        continue;
+      for (llvm::Instruction &inst : llvm::instructions(f)) {
+        auto *call = dyn_cast<llvm::CallBase>(&inst);
+        auto found = call ? wide.find(call->getCalledFunction()) : wide.end();
+        if (found != wide.end()) {
+          wide[&f] = found->second;
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
+  SmallVector<SpirvKernelRefusal> refused;
+  for (llvm::Function &f : module) {
+    auto found = wide.find(&f);
+    if (f.getCallingConv() != llvm::CallingConv::SPIR_KERNEL ||
+        found == wide.end())
+      continue;
+    auto [bits, where] = found->second;
+    std::string reason =
+        "it computes with a " + std::to_string(bits) + "-bit integer";
+    // A function that runs on any topology has an instance for each one,
+    // named `<name>$topology$<key>`. The program wrote `<name>`.
+    StringRef name = where->getName();
+    name = name.take_front(name.find("$topology$"));
+    if (where != &f)
+      reason += " in `" + name.str() + "`";
+    refused.push_back(
+        {f.getName().str(),
+         reason + ", and a SPIR-V image holds integers of at most 64 bits"});
+  }
+  return refused;
+}
+
+/// Report each failed `assert` in a SPIR-V kernel through a flag, and return
+/// the names of the kernels that take one.
+///
+/// OpenCL has no `abort`, and LLVM writes `llvm.trap` as OpUnreachable, which
+/// a device need not stop at. So a kernel that can fail an assert takes one
+/// more parameter, last: a pointer to a 4-byte flag that the dispatch library
+/// clears before the launch. A failed assert prints its message with OpenCL's
+/// `printf`, sets the flag, and goes on. After the launch the library reads
+/// the flag and stops the program. A function that the kernel calls takes the
+/// pointer too, when it can fail an assert, and passes it on.
+static llvm::StringSet<> reportAssertsThroughAFlag(gpu::GPUModuleOp gpuModule) {
+  MLIRContext *context = gpuModule.getContext();
+  SmallVector<cf::AssertOp> asserts;
+  gpuModule.walk([&](cf::AssertOp a) { asserts.push_back(a); });
+  if (asserts.empty())
+    return {};
+  // The functions that can fail an assert: each one that holds one, and each
+  // one that calls such a function.
+  llvm::SetVector<Operation *> failing;
+  for (cf::AssertOp a : asserts)
+    failing.insert(a->getParentOfType<FunctionOpInterface>());
+  for (bool changed = true; changed;) {
+    changed = false;
+    gpuModule.walk([&](func::CallOp call) {
+      Operation *callee = gpuModule.lookupSymbol(call.getCalleeAttr());
+      if (callee && failing.contains(callee))
+        changed |= failing.insert(call->getParentOfType<FunctionOpInterface>());
+    });
+  }
+  auto global = LLVM::LLVMPointerType::get(context, 1);
+  for (Operation *op : failing) {
+    auto f = cast<FunctionOpInterface>(op);
+    (void)f.insertArgument(f.getNumArguments(), global,
+                           DictionaryAttr::get(context), f.getLoc());
+  }
+  auto flagOf = [](Operation *op) {
+    auto f = op->getParentOfType<FunctionOpInterface>();
+    return f.getArgument(f.getNumArguments() - 1);
+  };
+  gpuModule.walk([&](func::CallOp call) {
+    Operation *callee = gpuModule.lookupSymbol(call.getCalleeAttr());
+    if (callee && failing.contains(callee))
+      call.getOperandsMutable().append(flagOf(call));
+  });
+
+  // OpenCL's `printf` reads its format from constant memory.
+  Location loc = gpuModule.getLoc();
+  OpBuilder top = OpBuilder::atBlockBegin(gpuModule.getBody());
+  auto i8 = IntegerType::get(context, 8);
+  auto i32 = IntegerType::get(context, 32);
+  auto constant = LLVM::LLVMPointerType::get(context, 2);
+  auto printf = gpuModule.lookupSymbol<LLVM::LLVMFuncOp>("printf");
+  if (!printf)
+    printf = LLVM::LLVMFuncOp::create(
+        top, loc, "printf",
+        LLVM::LLVMFunctionType::get(i32, {constant}, /*isVarArg=*/true));
+  unsigned count = 0;
+  for (cf::AssertOp a : asserts) {
+    // The message and a newline, as a failed assert on the host prints it,
+    // with each `%` doubled so that `printf` prints it as it is.
+    std::string text;
+    for (char c : a.getMsg()) {
+      text += c;
+      if (c == '%')
+        text += '%';
+    }
+    text += "\n";
+    text.push_back('\0');
+    std::string name = "vx_assert_message_" + std::to_string(count++);
+    LLVM::GlobalOp::create(top, loc, LLVM::LLVMArrayType::get(i8, text.size()),
+                           /*isConstant=*/true, LLVM::Linkage::Internal, name,
+                           StringAttr::get(context, text), /*alignment=*/0,
+                           /*addrSpace=*/2);
+    OpBuilder b(a);
+    Value holds = a.getArg();
+    Value fails = arith::XOrIOp::create(
+        b, a.getLoc(), holds,
+        arith::ConstantOp::create(b, a.getLoc(), b.getBoolAttr(true)));
+    auto check = scf::IfOp::create(b, a.getLoc(), fails, /*withElse=*/false);
+    OpBuilder in = check.getThenBodyBuilder();
+    Value message = LLVM::AddressOfOp::create(in, a.getLoc(), constant, name);
+    LLVM::CallOp::create(in, a.getLoc(), printf, ValueRange{message});
+    Value one =
+        LLVM::ConstantOp::create(in, a.getLoc(), i32, in.getI32IntegerAttr(1));
+    LLVM::AtomicRMWOp::create(in, a.getLoc(), LLVM::AtomicBinOp::_or, flagOf(a),
+                              one, LLVM::AtomicOrdering::monotonic);
+    a.erase();
+  }
+  llvm::StringSet<> kernels;
+  for (Operation *op : failing)
+    if (auto kernel = dyn_cast<gpu::GPUFuncOp>(op))
+      kernels.insert(kernel.getName());
+  return kernels;
+}
+
+/// Inline each function that calls `printf` into its callers, until every
+/// `printf` is in a kernel. LLVM's SPIR-V backend can take the format string
+/// of a `printf` in another function as not constant, and it then stops with
+/// "SPV_EXT_relaxed_printf_string_address_space is required".
+static void inlinePrintfIntoKernels(llvm::Module &module) {
+  llvm::Function *printf = module.getFunction("printf");
+  if (!printf)
+    return;
+  auto callsPrintf = [&](llvm::Function &f) {
+    return llvm::any_of(printf->users(), [&](llvm::User *user) {
+      auto *call = dyn_cast<llvm::CallBase>(user);
+      return call && call->getFunction() == &f;
+    });
+  };
+  // Each round moves each `printf` up one call. A recursive function would
+  // never end the rounds, so a limit stops them.
+  for (int round = 0; round < 16; ++round) {
+    SmallVector<llvm::CallBase *> calls;
+    for (llvm::Function &f : module)
+      for (llvm::Instruction &inst : llvm::instructions(f))
+        if (auto *call = dyn_cast<llvm::CallBase>(&inst))
+          if (llvm::Function *callee = call->getCalledFunction())
+            if (!callee->isDeclaration() &&
+                callee->getCallingConv() != llvm::CallingConv::SPIR_KERNEL &&
+                callsPrintf(*callee))
+              calls.push_back(call);
+    if (calls.empty())
+      break;
+    for (llvm::CallBase *call : calls) {
+      llvm::InlineFunctionInfo info;
+      (void)llvm::InlineFunction(*call, info);
+    }
+  }
+  for (llvm::Function &f : llvm::make_early_inc_range(module))
+    if (!f.isDeclaration() && f.use_empty() && f.hasLocalLinkage())
+      f.eraseFromParent();
+}
+
 /// Compile a `gpu.module` to a SPIR-V module.
 ///
 /// The pipeline `scripts/tools/spirv_module_check.sh` runs by hand on a `.vx`
@@ -9648,13 +10843,15 @@ spirvImageOfKernels(gpu::GPUModuleOp gpuModule, const llvm::StringSet<> &left,
   MLIRContext *context = gpuModule.getContext();
   OwningOpRef<ModuleOp> device = deviceModuleCopy(gpuModule);
 
-  // Remove the kernels that are left out. Then remove each helper and global
-  // that no kernel in the image uses any more.
-  if (!left.empty()) {
+  // Remove the kernels that are left out, and give the math methods the
+  // device's own functions. Then remove each helper and global that no kernel
+  // in the image uses any more, such as a libm table.
+  {
     gpu::GPUModuleOp copy = *device->getOps<gpu::GPUModuleOp>().begin();
     for (auto f : llvm::make_early_inc_range(copy.getOps<gpu::GPUFuncOp>()))
       if (left.contains(f.getName()))
         f.erase();
+    callOpenClMath(copy);
     for (bool changed = true; changed;) {
       changed = false;
       for (Operation &op : llvm::make_early_inc_range(copy.getOps())) {
@@ -9680,8 +10877,10 @@ spirvImageOfKernels(gpu::GPUModuleOp gpuModule, const llvm::StringSet<> &left,
     error = "the device module vanished in the pipeline";
     return {};
   }
+  computeBf16InF32(*kernels.begin());
   if (failed(flattenSpirvKernelArgs(*kernels.begin(), error, refused)))
     return {};
+  llvm::StringSet<> assertFlag = reportAssertsThroughAFlag(*kernels.begin());
 
   PassManager toSpv(context, ModuleOp::getOperationName());
   toSpv.nest<gpu::GPUModuleOp>().addPass(createSCFToControlFlowPass());
@@ -9725,11 +10924,32 @@ spirvImageOfKernels(gpu::GPUModuleOp gpuModule, const llvm::StringSet<> &left,
     error = "the SPIR-V module did not translate to LLVM IR";
     return {};
   }
+  legalizeOneBitArithmetic(*llvmModule);
+  inlinePrintfIntoKernels(*llvmModule);
+  storeBf16AsI16(*llvmModule);
+  SmallVector<SpirvKernelRefusal> bf16 = bf16Refusals(*llvmModule);
+  if (!bf16.empty()) {
+    refused.append(bf16.begin(), bf16.end());
+    return {};
+  }
+  for (llvm::Function &f : *llvmModule)
+    if (!f.isDeclaration() && canComputeInBytes(f))
+      computeInBytes(f);
+  SmallVector<SpirvKernelRefusal> narrow = narrowIntegerRefusals(*llvmModule);
+  if (!narrow.empty()) {
+    refused.append(narrow.begin(), narrow.end());
+    return {};
+  }
+  SmallVector<SpirvKernelRefusal> wide = wideIntegerRefusals(*llvmModule);
+  if (!wide.empty()) {
+    refused.append(wide.begin(), wide.end());
+    return {};
+  }
 
   std::string image;
   if (failed(serializeSpirv(std::move(llvmModule), image, error)))
     return {};
-  return DeviceImage{"spirv", std::move(image)};
+  return DeviceImage{"spirv", std::move(image), std::move(assertFlag)};
 }
 
 /// The SPIR-V image of the kernels in `gpuModule` that can become one. Each
@@ -9745,6 +10965,29 @@ static DeviceImage spirvImageOf(gpu::GPUModuleOp gpuModule, std::string &error,
   while (left.size() < kernels) {
     SmallVector<SpirvKernelRefusal> failed;
     DeviceImage image = spirvImageOfKernels(gpuModule, left, error, failed);
+    // A stage of the pipeline failed with no kernel to blame. Build each
+    // kernel alone, so that only the kernels that fail lose their image. The
+    // build above already printed what the stage said, so these are quiet.
+    if (failed.empty() && image.bytes.empty() && kernels - left.size() > 1) {
+      ScopedDiagnosticHandler quiet(gpuModule.getContext(),
+                                    [](Diagnostic &) { return success(); });
+      gpuModule.walk([&](gpu::GPUFuncOp kernel) {
+        if (left.contains(kernel.getName()))
+          return;
+        llvm::StringSet<> others = left;
+        gpuModule.walk([&](gpu::GPUFuncOp other) {
+          if (other != kernel)
+            others.insert(other.getName());
+        });
+        std::string alone;
+        SmallVector<SpirvKernelRefusal> own;
+        if (!spirvImageOfKernels(gpuModule, others, alone, own).bytes.empty())
+          return;
+        if (own.empty())
+          own.push_back({kernel.getName().str(), alone});
+        failed.append(own.begin(), own.end());
+      });
+    }
     if (failed.empty())
       return image;
     for (SpirvKernelRefusal &r : failed) {
@@ -10034,6 +11277,21 @@ nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule,
     StringRef name = fnName.getValue();
     Location loc = kernel.getLoc();
 
+    // An instance of a generic function, such as `nn_matvec$...`, gets the name
+    // of its function, or that name and `_1`, `_2` and so on when it is taken.
+    std::string instanceName;
+    if (size_t cut = name.find('$'); cut != StringRef::npos && cut > 0) {
+      StringRef base = name.take_front(cut);
+      instanceName = base.str();
+      for (int k = 1; taken.contains(instanceName) ||
+                      SymbolTable::lookupSymbolIn(gpuModule, instanceName);
+           ++k)
+        instanceName = (base + "_" + Twine(k)).str();
+    }
+    StringRef function = name;
+    if (!instanceName.empty())
+      name = instanceName;
+
     bool ptxName = !name.empty() && (llvm::isAlpha(name[0]) || name[0] == '_');
     for (char c : name)
       ptxName &= llvm::isAlnum(c) || c == '_';
@@ -10115,7 +11373,12 @@ nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule,
       params.push_back(std::move(p));
     }
     SymbolTable::setSymbolName(f, name);
-    llvm::json::Object entry{{"name", name}, {"params", std::move(params)}};
+    // A json value keeps a reference to a StringRef, and the name of an
+    // instance lives only in this loop, so the entry gets copies.
+    llvm::json::Object entry{{"name", name.str()},
+                             {"params", std::move(params)}};
+    if (function != name)
+      entry["function"] = function.str();
     // A launch of this kernel passes this many bytes of dynamic shared memory.
     if (auto bytes = f->getAttrOfType<IntegerAttr>("vx.dynamic_shared"))
       entry["dynamic_shared_bytes"] = bytes.getInt();
@@ -10520,9 +11783,12 @@ struct ConvertVxToLLVMPass
       }
       // Of those, the ones that hold GPU ops or call one that does. So the
       // message names the function the program wrote, not an `mlir!` block.
+      // An `mlir!` block with `threads` is one too: every thread of a
+      // threadgroup runs it together.
       llvm::SmallPtrSet<Operation *, 8> gpuOnly;
       for (Operation *f : kernelOnly)
-        if (holdsGpuOps(cast<func::FuncOp>(f)))
+        if (holdsGpuOps(cast<func::FuncOp>(f)) ||
+            f->hasAttr("vx.threadgroup_block"))
           gpuOnly.insert(f);
       for (bool changed = true; changed;) {
         changed = false;
@@ -10550,24 +11816,49 @@ struct ConvertVxToLLVMPass
                             "' runs only on a GPU, but no GPU ran the kernel "
                             "that calls it, so the CPU did\n")
                                .str();
+        if (auto at = f->getAttrOfType<StringAttr>("vx.threadgroup_block"))
+          text = ("vx: the `mlir!` block with `threads` at " + at.getValue() +
+                  " runs only on a GPU, but no GPU ran its kernel, so the CPU "
+                  "did\n")
+                     .str();
         Value message = LLVM::createGlobalString(
             loc, b, ("__vx_gpu_only_" + f.getSymName()).str(), text,
             LLVM::Linkage::Internal);
         auto i32 = IntegerType::get(ctx, 32);
         auto i64 = IntegerType::get(ctx, 64);
-        auto write =
-            LLVM::lookupOrCreateFn(b, module, "write", {i32, ptrTy, i64}, i64);
-        auto abortFn = LLVM::lookupOrCreateFn(b, module, "abort", {},
-                                              LLVM::LLVMVoidType::get(ctx));
-        if (succeeded(write)) {
+        auto none = LLVM::LLVMVoidType::get(ctx);
+        // Whether the module has no `name`, or only libc's declaration of it.
+        // A program can define its own `write` or `abort`, and a second
+        // declaration of the name would clash with it.
+        auto libc = [&](StringRef name, LLVM::LLVMFunctionType ty) {
+          auto declared =
+              dyn_cast_or_null<LLVM::LLVMFuncOp>(module.lookupSymbol(name));
+          return !module.lookupSymbol(name) ||
+                 (declared && declared.isExternal() &&
+                  declared.getFunctionType() == ty);
+        };
+        Value size = b.create<LLVM::ConstantOp>(loc, i64, text.size());
+        if (libc("write",
+                 LLVM::LLVMFunctionType::get(i64, {i32, ptrTy, i64}))) {
+          auto write = LLVM::lookupOrCreateFn(b, module, "write",
+                                              {i32, ptrTy, i64}, i64);
+          assert(succeeded(write) && "libc's write has one declaration");
           Value fd = b.create<LLVM::ConstantOp>(loc, i32, 2);
-          Value size = b.create<LLVM::ConstantOp>(loc, i64, text.size());
           b.create<LLVM::CallOp>(loc, *write, ValueRange{fd, message, size});
+        } else {
+          auto write = LLVM::lookupOrCreateFn(b, module, "vx_stderr_write",
+                                              {ptrTy, i64}, i64);
+          assert(succeeded(write) &&
+                 "the runtime function has one declaration");
+          b.create<LLVM::CallOp>(loc, *write, ValueRange{message, size});
         }
-        if (succeeded(abortFn))
+        if (libc("abort", LLVM::LLVMFunctionType::get(none, {}))) {
+          auto abortFn = LLVM::lookupOrCreateFn(b, module, "abort", {}, none);
+          assert(succeeded(abortFn) && "libc's abort has one declaration");
           b.create<LLVM::CallOp>(loc, *abortFn, ValueRange{});
-        else
+        } else {
           b.create<LLVM::Trap>(loc);
+        }
         b.create<LLVM::UnreachableOp>(loc);
       }
     }
@@ -10691,6 +11982,7 @@ struct ConvertVxToLLVMPass
     // pattern rather than letting the op leak to mlir-translate, which does
     // not know the vx dialect (Vx#379).
     target.addIllegalOp<vx::BarrierOp>();
+    target.addIllegalOp<vx::SubgroupScheduleBarrierOp>();
 
     LLVMTypeConverter typeConverter(&getContext());
     RewritePatternSet patterns(&getContext());
@@ -10702,6 +11994,7 @@ struct ConvertVxToLLVMPass
     patterns.add<KernelOpLowering>(&getContext());
     patterns.add<ReturnOpLowering>(&getContext());
     patterns.add<BarrierOpLowering>(&getContext());
+    patterns.add<SubgroupScheduleBarrierOpLowering>(&getContext());
     patterns.add<LaneOpLowering>(&getContext());
 
     adoptDeclaredRuntimeFns(getOperation());
@@ -11943,6 +13236,13 @@ struct BoundedInlinerPass
   static bool worthInlining(const Inliner::ResolvedCall &call) {
     Region *body = call.targetNode->getCallableRegion();
     if (!body)
+      return false;
+    // MLIR's inliner takes the last operation of a `func.func` with one block
+    // to be a return. An `mlir!` block that ends in `llvm.unreachable` has that
+    // shape, and the inliner lost the `llvm.unreachable`. Such a callee stays a
+    // call.
+    if (isa<func::FuncOp>(body->getParentOp()) && body->hasOneBlock() &&
+        (body->front().empty() || !isa<func::ReturnOp>(body->front().back())))
       return false;
     unsigned ops = 0;
     body->walk([&](Operation *) { ++ops; });
