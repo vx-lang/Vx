@@ -482,6 +482,10 @@ struct Lowerer<'r> {
     code: Vec<HirInstruction>,
     types: Vec<TypeId>,
     scope: HashMap<Symbol, Binding>,
+    /// The slots whose value cannot change, with that value: the slot of a local that is not
+    /// `mut`, such as a parameter whose address is taken. A device region uses the value, because
+    /// it cannot read a stack slot of the host.
+    fixed_slots: HashMap<u32, Val>,
     /// The frozen nominal-type registry — the source of aggregate layouts (size/align/field offsets)
     /// used to size an aggregate's `Alloca` and select field indices.
     registry: &'r ImmutableGlobalRegistry,
@@ -656,6 +660,7 @@ impl<'r> Lowerer<'r> {
             code: Vec::new(),
             types: Vec::new(),
             scope: HashMap::new(),
+            fixed_slots: HashMap::new(),
             registry,
             memory: false,
             next_block: 1,
@@ -1360,7 +1365,9 @@ impl<'r> Lowerer<'r> {
     }
 
     /// `starts_lifetime`: a struct's slot starts its lifetime here, for a `let` the checker ends.
-    fn bind_local(&mut self, name: Symbol, v: Val, starts_lifetime: bool) {
+    /// `may_change`: the local is a `let mut` or a `mut` parameter. The slot of any other local
+    /// keeps the value that it starts with.
+    fn bind_local(&mut self, name: Symbol, v: Val, starts_lifetime: bool, may_change: bool) {
         if matches!(v.ty, LoweredTy::Tensor { .. }) {
             self.tensor_depth.insert(v.reg.0, self.block_frames.len());
         }
@@ -1416,6 +1423,15 @@ impl<'r> Lowerer<'r> {
                 self.start_lifetime(&slot);
             }
             self.emit_effect(Opcode::Store, slot.reg, v.reg, 0);
+            // A value that code of lane 0 alone made may not reach the code after it, so the slot
+            // keeps it.
+            let a_value = matches!(
+                v.ty,
+                LoweredTy::Scalar(_) | LoweredTy::Ptr | LoweredTy::Vector { .. }
+            );
+            if a_value && !may_change && !self.across.on_lane0 {
+                self.fixed_slots.insert(slot.reg.0, v.clone());
+            }
             self.scope.insert(
                 name,
                 Binding::Slot {
@@ -3292,7 +3308,7 @@ impl<'r> Lowerer<'r> {
                                 let tensor = matches!(pval.ty, LoweredTy::Tensor { .. });
                                 self.note_shadow(pname);
                                 self.ast_types.insert(pname.clone(), payload_type);
-                                self.bind_local(pname.clone(), pval, false);
+                                self.bind_local(pname.clone(), pval, false, false);
                                 if tensor {
                                     match self.scope.get(pname) {
                                         Some(Binding::Reg(v)) => {
@@ -3965,7 +3981,7 @@ impl<'r> Lowerer<'r> {
         if let [item] = args {
             self.ast_types.insert(f.iter.as_str().into(), item.clone());
         }
-        self.bind_local(f.iter.as_str().into(), x, false);
+        self.bind_local(f.iter.as_str().into(), x, false, false);
         self.loop_stack.push((header, exit)); // continue -> header, break -> exit
         self.lower_block(&f.body)?;
         self.loop_stack.pop();
@@ -4471,6 +4487,25 @@ impl<'r> Lowerer<'r> {
     ) -> Lowered<Option<Val>> {
         let tail_slot = self.region_tail_slot.take();
         let cancels_on_err = self.region_cancels_on_err.take();
+        let on_device = !matches!(
+            imm as u32 as i32,
+            crate::arch::TASK_DISPATCH_ID | crate::arch::TASKS_BLOCK_DISPATCH_ID
+        );
+        // A device cannot read a stack slot of the host. So in the region, a name in a slot whose
+        // value cannot change means that value.
+        let fixed: Vec<_> = if on_device {
+            self.scope
+                .iter()
+                .filter_map(|(name, b)| match b {
+                    Binding::Slot { reg, .. } => {
+                        Some((name.clone(), self.fixed_slots.get(&reg.0)?.clone()))
+                    }
+                    _ => None,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         self.emit_effect(Opcode::Spawn, Register(0), Register(0), imm);
         if launch.across {
             self.emit_effect(Opcode::AcrossRegion, Register(0), Register(0), 0);
@@ -4506,11 +4541,11 @@ impl<'r> Lowerer<'r> {
         // ownership. Failing both, the region lowers serially -- rejection is always free.
         // The region is a block: its `let`s end with it.
         let depth = self.open_block();
+        for (name, v) in fixed {
+            self.note_shadow(&name);
+            self.scope.insert(name, Binding::Reg(v));
+        }
         self.spawn_depth += 1;
-        let on_device = !matches!(
-            imm as u32 as i32,
-            crate::arch::TASK_DISPATCH_ID | crate::arch::TASKS_BLOCK_DISPATCH_ID
-        );
         self.device_depth += on_device as u32;
         let par = if offer_parallel {
             parallel_outer_for(stmts)
@@ -7448,7 +7483,7 @@ impl<'r> Lowerer<'r> {
                     // A task writes its result into the slot while the code goes on, so the
                     // slot's lifetime cannot start after the `spawn`.
                     let from_a_task = matches!(&l.expr, Expr::UnsafeBlock(u) if u.task.is_some());
-                    self.bind_local(l.name.clone(), v, !from_a_task);
+                    self.bind_local(l.name.clone(), v, !from_a_task, l.is_mut);
                 }
                 Ok(())
             }
@@ -7945,7 +7980,8 @@ fn try_lower<'r>(
         {
             lw.scope.insert(name.clone(), Binding::Reg(incoming));
         } else {
-            lw.bind_local(name.clone(), incoming, false);
+            let may_change = func.mut_params.contains(name);
+            lw.bind_local(name.clone(), incoming, false, may_change);
         }
     }
     for (si, stmt) in func.body.iter().enumerate() {

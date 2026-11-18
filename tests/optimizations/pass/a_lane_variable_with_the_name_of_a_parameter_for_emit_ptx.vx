@@ -1,0 +1,40 @@
+//===- a_lane_variable_with_the_name_of_a_parameter_for_emit_ptx.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each lane has its own `let mut n`, which hides the parameter `n` in the lane loop. The loop of
+// blocks `0..n` outside the lane loop uses the parameter. The kernel must read the parameter as
+// a parameter. It read it from a stack slot of the host, because the compiler saw the name `n`
+// assigned and kept the parameter in a slot. A GPU cannot read that slot, so the kernel got
+// wrong values, and `--emit-ptx` refused it.
+//
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s < %t.ptx
+// CHECK: .entry shadowed(
+
+pub fn shadowed(y : &mut Tensor<f32, [?, ?], Memory::HBM>, n : i32, k : i32) -> void {
+  spawn on(Topology::Device) {
+    for r in 0..4 across blocks {
+      for pos in 0..n across blocks {
+        let mut part = unsafe { Tensor<f32, [1, 32], Memory::SMEM>::uninit() };
+        for s in 0..1 across subgroups {
+          for l in 0..32 across lanes(32) {
+            let mut acc = 0.0;
+            let mut n = l;
+            while n < k {
+              acc = acc + 1.0;
+              n = n + 32;
+            }
+            part[s][l] = acc;
+          }
+          let total = lanes::sum(&part[s], 32);
+          y[pos][r] = total;
+        }
+      }
+    }
+  }
+  return;
+}
