@@ -1,14 +1,12 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
 
-// Note: On macOS, `libunwind` from a signal handler truncates the stack trace
-// when crossing JIT frames. It usually stops after capturing the faulting frame
-// (or the frame it got inlined into, like `_f4` here). Therefore, we only check
-// what is actually reliably captured.
+// The handler prints the backtrace with `backtrace_symbols_fd`, which is safe in a signal
+// handler. It names only the exported functions, such as the handler in the runtime library. The
+// functions of the program are hidden, so on Linux their frames have only an offset.
 
 // CHECK: Caught SIGSEGV: Segmentation Fault!
 // CHECK: Backtrace
 // CHECK: vx_sigsegv_handler
-// CHECK: {{_?}}f4
 // The runtime's own handler prints the SIGSEGV above, then aborts -- so what the
 // JIT sees is the abort, named. This line used to read "exited with non-zero
 // code: -1", which is what an exit status reports when the process was killed
