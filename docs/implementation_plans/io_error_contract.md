@@ -31,7 +31,6 @@ let invalid = Error::from_kind(ErrorKind::InvalidInput()).with_operation(Operati
 
 The public test `file_structured_errors.vx` checks native-code preservation, unknown codes, and Vx-generated errors.
 
-
 ## Current fallible bridge status encoding
 
 `vx_file_try_open`, `vx_file_try_read`, and `vx_file_try_write` return an `i32` status and write to `count : *mut u64`, `native_code : *mut i32`, and `has_native_code : *mut bool`. These integers are a private bridge ABI, not enum ordinals or native OS codes. All three calls use the same mapping. Open writes a handle through `out : *mut *mut i8` instead of a byte count.
