@@ -2413,7 +2413,7 @@ pub(crate) struct FnEmit<'a> {
     /// value can be given its result name when the value is known. Empty outside a spawn.
     /// The third field is the spawn's name index, as its `imm` carries it.
     /// The fourth field is max_registers (maxnreg).
-    pub(crate) spawn_stack: Vec<(i64, usize, u64, u32)>,
+    pub(crate) spawn_stack: Vec<(i64, usize, u64, u64)>,
     /// For each open `vx.spawn`, where its stack slots go: the end of the slots in its first
     /// block for a region with `across` loops, and `None` for another region.
     pub(crate) region_slots: Vec<Option<usize>>,

@@ -11,6 +11,7 @@
 // RUN: vxc %s --machine fleet/h200.vx --action emit-ptx -o %t.ptx && FileCheck %s < %t.ptx
 // RUN: vxc %s --machine fleet/h200.vx --action emit-ptx --legacy-codegen -o %t_legacy.ptx && FileCheck %s < %t_legacy.ptx
 // CHECK: .maxnreg 96
+// CHECK: .maxnreg 255
 
 fn scale(
 out: &mut Tensor<f32, [16, 256], Memory::GPU_HBM>,
@@ -26,11 +27,26 @@ factor: f32
   }
 }
 
+fn scale255(
+out: &mut Tensor<f32, [16, 256], Memory::GPU_HBM>,
+inp: &Tensor<f32, [16, 256], Memory::GPU_HBM>,
+factor: f32
+) -> void {
+  spawn on(Topology::GPU[0], max_registers: 255) {
+    for y in 0..16 {
+      for x in 0..256 {
+        out[y][x] = inp[y][x] * factor;
+      }
+    }
+  }
+}
+
 fn main() -> i32 {
   let mut out = Tensor<f32, [16, 256], Memory::GPU_HBM>::fill(0.0);
   let inp = Tensor<f32, [16, 256], Memory::GPU_HBM>::fill(1.0);
 
   scale(&mut out, &inp, 2.0);
+  scale255(&mut out, &inp, 2.0);
 
   return 0;
 }

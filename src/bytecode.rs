@@ -72,6 +72,8 @@ pub enum Opcode {
     /// (`arch::topology_dispatch_id`). The high 32 bits are one more than the index of the
     /// topology's name in the function's string table, since the id alone cannot give the name
     /// back. The instructions up to the matching `SpawnEnd` form the spawned kernel body.
+    /// `operand1` carries the register budget of `on(...)` (`max_registers`), 0 when there is
+    /// none. It is a number, not a register.
     Spawn = 20,
     /// Closes the `vx.spawn` region opened by the nearest preceding `Spawn` (maps to `vx.yield`).
     /// A region with a value yields `operand1` and is typed with it; this instruction's register

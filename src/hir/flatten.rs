@@ -423,7 +423,7 @@ enum Binding {
 struct RegionLaunch<'a> {
     shape: &'a [(u64, Val)],
     across: bool,
-    max_registers: u32,
+    max_registers: u64,
 }
 
 /// A name a `let` in a block shadows, with the binding and type it had before the block.
@@ -4453,7 +4453,7 @@ impl<'r> Lowerer<'r> {
         let cancels_on_err = self.region_cancels_on_err.take();
         self.emit_effect(
             Opcode::Spawn,
-            Register(launch.max_registers),
+            Register(launch.max_registers as u32),
             Register(0),
             imm,
         );
@@ -7156,7 +7156,8 @@ impl<'r> Lowerer<'r> {
             return false;
         }
         for (i, ins) in self.code.iter().enumerate().skip(r.0 as usize + 1) {
-            let uses = ins.operand1 == r
+            // `Spawn`'s `operand1` carries the register budget, not a register (bytecode.rs).
+            let uses = (ins.operand1 == r && ins.opcode != Opcode::Spawn)
                 || ins.operand2 == r
                 || (ins.opcode == Opcode::MatmulInto && ins.imm == r.0 as u64)
                 || (ins.opcode == Opcode::ElementwiseInto

@@ -5,13 +5,13 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// `max_registers` is only supported on NVIDIA GPU targets (`arch: nvptx64`).
-// Specifying `max_registers` on a CPU target is reported as error E6043.
+// Only an NVIDIA GPU target (`arch: nvptx64`) takes `max_registers`. The
+// compiler reports error E6043 when the target is a CPU.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
 
 fn main() -> i32 {
-  // CHECK: Error[E6043] at {{.*}}max_registers_on_cpu_target.vx:[[@LINE+1]]:3: `max_registers` is only supported on NVIDIA GPU targets (`arch: nvptx64`), but `Topology::CPU` has no `arch:`
+  // CHECK: Error[E6043] at {{.*}}max_registers_on_cpu_target.vx:[[@LINE+1]]:3: Only an NVIDIA GPU target (`arch: nvptx64`) takes `max_registers`, but `Topology::CPU` has no `arch:`
   spawn on(Topology::CPU, max_registers: 96) {
     let mut x: i32 = 0;
     x = x + 1;

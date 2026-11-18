@@ -152,7 +152,7 @@ impl FnEmit<'_> {
             ins.imm as u32 as i64,
             self.body.len(),
             ins.imm >> 32,
-            ins.operand1.0,
+            ins.operand1.0 as u64,
         ));
         self.region_slots.push(None);
         self.body += &format!("  \"vx.spawn\"() ({{\n^bbspawn{idx}:\n");

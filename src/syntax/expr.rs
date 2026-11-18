@@ -141,7 +141,7 @@ pub struct SpawnOnExpr {
         crate::syntax::MemorySpace,
         Option<crate::syntax::MemorySpace>,
     )>,
-    pub max_registers: Option<u32>,
+    pub max_registers: Option<u64>,
 }
 impl SpawnOnExpr {
     pub fn new(top: Topology, stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self {

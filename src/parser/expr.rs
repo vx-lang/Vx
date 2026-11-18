@@ -1430,6 +1430,12 @@ impl<'a> Parser<'a> {
                             self.advance();
                             match opt_name.as_ref() {
                                 "max_registers" => {
+                                    if max_registers.is_some() {
+                                        return Err(self.error_at(
+                                            &opt_token,
+                                            "Duplicate option 'max_registers' in 'on(...)'",
+                                        ));
+                                    }
                                     self.consume(
                                         &TokenType::Colon,
                                         "Expected ':' after 'max_registers'",
@@ -1437,7 +1443,16 @@ impl<'a> Parser<'a> {
                                     let val_token = self.peek().clone();
                                     if let TokenType::Number(n_str) = val_token.kind {
                                         self.advance();
-                                        match n_str.parse::<u32>() {
+                                        // A `Number` token keeps its type suffix (`96i32`), so the
+                                        // digits run to the first letter. The value is parsed as
+                                        // `u64` and the checker compares it, so a value that PTX
+                                        // cannot take is error E6044, not a parse error.
+                                        let digits =
+                                            match n_str.find(|c: char| c.is_ascii_alphabetic()) {
+                                                Some(pos) => &n_str[..pos],
+                                                None => n_str.as_ref(),
+                                            };
+                                        match digits.parse::<u64>() {
                                             Ok(val) => max_registers = Some(val),
                                             Err(_) => {
                                                 return Err(self.error_at(
