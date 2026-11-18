@@ -5,7 +5,7 @@
 On NVIDIA Hopper (`sm_90`), SASS provides 7 predicate registers (`P0` through `P6`).
 When a kernel issues eight guarded memory access steps in a loop:
 
-- Each step $k \\in {0..7}$ tests a condition of the form `c + k * 32 < cols`.
+- Each step k in 0..7 tests a condition of the form `c + k * 32 < cols`.
 - In PTX, each condition generates a `setp` instruction that writes to a predicate register.
 - To keep all 16 loads in flight simultaneously, `ptxas` needs 8 live predicate registers.
 - Because only 7 predicate registers exist in hardware, `ptxas` runs out of predicate registers at step 7.
@@ -16,28 +16,34 @@ When a kernel issues eight guarded memory access steps in a loop:
 
 ## 2. Proposed Solution
 
-When $N$ guarded memory access steps test monotonic affine indices against a common upper bound:
+When N guarded memory access steps test monotonic affine indices against a common upper bound:
 
-$$\\text{guard}\_k: \\quad c + \\text{offset}\_k < \\text{bound}, \\quad \\text{where } 0 \\le \\text{offset}\_0 < \\text{offset}_1 < \\dots < \\text{offset}_{N-1}$$
+```text
+guard_k:  c + offset_k < bound,  where 0 <= offset_0 < offset_1 < ... < offset_{N-1}
+```
 
 Because the stride is positive, when arithmetic does not overflow, the maximum condition strictly implies all earlier conditions:
 
-$$(c + \\text{offset}\_{N-1} < \\text{bound}) \\implies (c + \\text{offset}\_k < \\text{bound}) \\quad \\forall k < N-1$$
+```text
+(c + offset_{N-1} < bound) implies (c + offset_k < bound)  for every k < N-1
+```
 
-In 32-bit signed arithmetic, $c + \\text{offset}_{N-1}$ can wrap around to negative numbers if $c + \\text{offset}_{N-1} > \\text{INT32_MAX}$.
+In 32-bit signed arithmetic, `c + offset_{N-1}` can wrap around to negative numbers when it goes past INT32_MAX.
 To prevent integer wrap-around from triggering the fast path on out-of-bounds indices, the optimization emits a combined check:
 
-$$\\text{versionCond} = (c + \\text{offset}_{N-1} \\ge c) \\land (c + \\text{offset}_{N-1} < \\text{bound})$$
+```text
+versionCond = (c + offset_{N-1} >= c) and (c + offset_{N-1} < bound)
+```
 
 We transform the candidate sequence into two paths:
 
 1. Fast Path (Batch in Range):
    - Guarded by the combined non-wrapping in-bound condition.
-   - All $N$ load steps execute unconditionally without predicates or branches.
+   - All N load steps execute unconditionally without predicates or branches.
    - All loads are issued back-to-back into the memory pipeline.
    - Zero predicate registers are used for load guarding.
 1. Slow Path (Fallback / Remainder):
-   - Taken when either integer overflow occurs or $c + \\text{offset}\_{N-1} \\ge \\text{bound}$.
+   - Taken when either integer overflow occurs or `c + offset_{N-1} >= bound`.
    - Runs the original individually guarded steps to handle edge elements safely.
 
 ## 3. Location in the Compiler Pipeline
@@ -60,10 +66,10 @@ The optimization must verify all of the following rules before transforming a ca
    - All guards in the sequence must compare against the exact same bound SSA value using signed less-than (`arith::CmpIPredicate::slt`). Unsigned comparisons are rejected.
    - The base SSA values must be equivalent. The pass accepts identical SSA values, base values loaded from identical indices of the same stack alloca (`memref.alloca`) without intervening stores, and non-constant `arith::AddIOp` bases with offset 0.
 1. Strictly Monotonic Non-Negative Offsets:
-   - Offsets must be compile-time constants satisfying $0 \\le \\text{offset}\_0 < \\text{offset}_1 < \\dots < \\text{offset}_{N-1}$.
+   - Offsets must be compile-time constants, and `0 <= offset_0 < offset_1 < ... < offset_{N-1}` must hold.
    - Negative, decreasing, or non-monotonic offsets invalidate the implication and are rejected.
 1. Non-Wrapping Arithmetic Guard:
-   - The fast path is reached only when $c + \\text{offset}_{N-1} \\ge c$ and $c + \\text{offset}_{N-1} < \\text{bound}$ both hold.
+   - The fast path is reached only when `c + offset_{N-1} >= c` and `c + offset_{N-1} < bound` both hold.
    - This prevents out-of-bounds access when large values of $c$ wrap around to negative numbers in signed 32-bit arithmetic.
 1. No Intervening Mutating Stores:
    - No store operation to the base alloca or to external non-alloca memory may occur within any block of the candidate batch.
