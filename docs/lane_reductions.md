@@ -205,6 +205,31 @@ elements that are inside.
 Each other matmul uses the lanes of the subgroup: they share the elements of the result, and each
 lane computes its elements in the order above.
 
+### Matmuls of tiles with block scales
+
+```rust
+lanes::matmul_scaled(&mut acc[w], &a[w], &sa[w], &b[w], &sb[w]);
+```
+
+This is a matmul of NVFP4 tiles: `a` and `b` are `f4e2m1` matrices, and each 16 values along `k`
+share one `f8e4m3` scale in `sa` or `sb`.
+
+- With `acc` of [M, N] and `a` of [M, K], `b` is [K, N], `sa` is [M, K / B] and `sb` is
+  [K / B, N]. The block size B divides K. The five tensors are in shared memory, and their sizes
+  are numbers.
+- Each element of `acc` gets the sum over `k` of `a[i][k] * sa[i][k / B] * b[k][j] * sb[k / B][j]`,
+  from 0 and in the order of `k`. Then the matmul adds the old value of the element. Each term is
+  exact in `f32`.
+- A scale counts without its sign bit, because the tensor core reads an NVFP4 scale as unsigned.
+- NVFP4 also has one `f32` scale for each tensor. The program multiplies `acc` by it after the
+  matmul.
+- The call must be in the code of a subgroup, outside its lane loops. E6032 refuses it in the code
+  of a block. The lanes of the subgroup share the elements of `acc`, as for a matmul with `@`, and
+  then they wait for each other.
+
+It has no tensor-core path yet. The `mma.sync` of `sm_120a` and the `tcgen05.mma` of `sm_100a` are
+the next steps ([#3645](https://github.com/vx-lang/Vx/issues/3645)).
+
 ## Copies
 
 `lanes::copy_async(&mut tile, &x, [i, j])` starts a copy of the tile of `x` that starts at

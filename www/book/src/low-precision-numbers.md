@@ -82,7 +82,9 @@ two different narrow types, for example an `f4e2m1` tensor times an `f8e4m3` ten
 
 ## Block-scaled fp4: NVFP4 and MXFP4
 
-The compiler does not support this part yet ([#1877]).
+The compiler does not support the scaled tensor type yet ([#1877]). In the code of a GPU subgroup,
+`lanes::matmul_scaled` already multiplies two NVFP4 tiles whose scales are in tensors of their own
+([#3645]).
 
 An `f4e2m1` value is a number from -6 to 6. To hold real weights, NVFP4 and MXFP4
 put the values in blocks, and give each block a scale. A value is its `f4e2m1` number times the
@@ -108,3 +110,4 @@ and 1 MiB of scales, so it needs 9 MiB.
 
 [#1876]: https://github.com/vx-lang/Vx/issues/1876
 [#1877]: https://github.com/vx-lang/Vx/issues/1877
+[#3645]: https://github.com/vx-lang/Vx/issues/3645
