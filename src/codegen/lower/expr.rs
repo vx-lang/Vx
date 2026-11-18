@@ -3070,9 +3070,20 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
             span: _,
         } = self;
         // The field of a reference is in the value that it points to. As a place, a `let mut`
-        // reference would give its own stack slot, so its value is lowered instead.
+        // reference would give its own stack slot, and a field that holds a reference would give
+        // its own address in the struct. So the value of the reference is lowered instead.
         let prev_lvalue = gen.is_lvalue_context;
-        if matches!(&**base, Expr::Identifier(id) if holds_a_reference(gen, &id.name)) {
+        let base_is_a_reference = match &**base {
+            Expr::Identifier(id) => holds_a_reference(gen, &id.name),
+            Expr::MemberAccess(_) => matches!(
+                gen.infer_ast_type(base),
+                Some(
+                    syntax::Type::Pointer(..) | syntax::Type::Borrow { .. } | syntax::Type::Ref(..)
+                )
+            ),
+            _ => false,
+        };
+        if base_is_a_reference {
             gen.is_lvalue_context = false;
         }
         let lowered = gen.generate_expr(base, block);
