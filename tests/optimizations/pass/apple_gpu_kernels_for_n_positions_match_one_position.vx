@@ -280,7 +280,7 @@ fn main() -> i32 {
   let s_gu = halves(experts * 2 * inter * cols / 32, 5);
   let down = codes(experts * cols * inter / 8, 9u32);
   let s_d = halves(experts * cols * inter / 32, 2);
-  let mut mid = transfer(Tensor<f32>([experts, n, inter]), Memory::HBM);
+  let mut mid = transfer(Tensor<f32>([n * kk, inter]), Memory::HBM);
   nn_moe_swiglu_q4_rows(&mut mid, &gate_up, &s_gu, &ids, &x, n, kk, inter, cols, experts);
   let mut yx = rows_of(n, cols);
   nn_moe_down_q4_add_rows(&mut yx, &down, &s_d, &ids, &wts, &mid, n, kk, cols, inter, experts);

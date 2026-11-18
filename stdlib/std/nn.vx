@@ -2310,7 +2310,7 @@ fn nn_check_cache(a : i32, b : i32, c : i32, pos : i32, heads : i32, head_dim : 
 // token: x[t] is the input of position t. A block runs the body of the one-position kernel for
 // each position, with the same lanes and the same order of sums. So row t of the output is
 // bit-identical to the one-position kernel on x[t], and the weights of a block come from memory
-// once for all n positions. The dense Q4 products take two positions in each pass and unpack
+// once for all n positions. The dense Q4 products take two positions in each block and unpack
 // each weight once for both.
 
 /// y[t][r] = (row r of the Q4_0 matrix w) . x[t], for t below n and r below `rows`.
@@ -2322,13 +2322,14 @@ fn nn_matvec_q4_rows<M : Memory>(y : &mut Tensor<f32, [?, ?], Memory::M>, w : &T
   let groups = cols / 32;
   spawn on(Topology::Device) {
     for rb in 0..rows / 8 across blocks {
-      let mut part = unsafe {
-        Tensor<f32, [2, 8, 32], Memory::SMEM>::uninit()
-      };
-      for tp in 0..(n + 1) / 2 {
-        // Two positions a pass: t0, and t1 after it, or t0 again when t0 is the last one.
+      for tp in 0..(n + 1) / 2 across blocks {
+        let mut part = unsafe {
+          Tensor<f32, [2, 8, 32], Memory::SMEM>::uninit()
+        };
+        // Positions t0 and t1 = t0 + 1. When t0 is the last position, t1 wraps to 0, and its
+        // results are not written.
         let t0 = tp * 2;
-        let t1 = t0 + 1 - (t0 + 2) / (n + 1);
+        let t1 = (tp * 2 + 1) % n;
         for s in 0..1 across subgroups {
           for l in 0..32 across lanes(32) {
             let mut a0 = unsafe { Tensor<f32, [8]>::uninit() };
@@ -2340,44 +2341,44 @@ fn nn_matvec_q4_rows<M : Memory>(y : &mut Tensor<f32, [?, ?], Memory::M>, w : &T
             let mut i = l * 2;
             while i < words {
               let c = i * 8;
-              let mut xa = unsafe { Tensor<f32, [16]>::uninit() };
-              let mut xb = unsafe { Tensor<f32, [16]>::uninit() };
+              let mut x0 = unsafe { Tensor<f32, [16]>::uninit() };
+              let mut x1 = unsafe { Tensor<f32, [16]>::uninit() };
               for q in 0..16 {
-                xa[q] = x[t0][c + q];
+                x0[q] = x[t0][c + q];
               }
-              let sa = 8.0 * (xa[0] + xa[1] + xa[2] + xa[3] + xa[4] + xa[5] + xa[6] + xa[7] + xa[8] + xa[9] + xa[10] + xa[11] + xa[12] + xa[13] + xa[14] + xa[15]);
-              xa[1] = xa[1] * 0.0625;
-              xa[2] = xa[2] * 0.00390625;
-              xa[3] = xa[3] * 0.000244140625;
-              xa[4] = xa[4] * 0.0000152587890625;
-              xa[5] = xa[5] * 0.00000095367431640625;
-              xa[6] = xa[6] * 0.000000059604644775390625;
-              xa[7] = xa[7] * 0.0000000037252902984619140625;
-              xa[9] = xa[9] * 0.0625;
-              xa[10] = xa[10] * 0.00390625;
-              xa[11] = xa[11] * 0.000244140625;
-              xa[12] = xa[12] * 0.0000152587890625;
-              xa[13] = xa[13] * 0.00000095367431640625;
-              xa[14] = xa[14] * 0.000000059604644775390625;
-              xa[15] = xa[15] * 0.0000000037252902984619140625;
+              let s0 = 8.0 * (x0[0] + x0[1] + x0[2] + x0[3] + x0[4] + x0[5] + x0[6] + x0[7] + x0[8] + x0[9] + x0[10] + x0[11] + x0[12] + x0[13] + x0[14] + x0[15]);
+              x0[1] = x0[1] * 0.0625;
+              x0[2] = x0[2] * 0.00390625;
+              x0[3] = x0[3] * 0.000244140625;
+              x0[4] = x0[4] * 0.0000152587890625;
+              x0[5] = x0[5] * 0.00000095367431640625;
+              x0[6] = x0[6] * 0.000000059604644775390625;
+              x0[7] = x0[7] * 0.0000000037252902984619140625;
+              x0[9] = x0[9] * 0.0625;
+              x0[10] = x0[10] * 0.00390625;
+              x0[11] = x0[11] * 0.000244140625;
+              x0[12] = x0[12] * 0.0000152587890625;
+              x0[13] = x0[13] * 0.00000095367431640625;
+              x0[14] = x0[14] * 0.000000059604644775390625;
+              x0[15] = x0[15] * 0.0000000037252902984619140625;
               for q in 0..16 {
-                xb[q] = x[t1][c + q];
+                x1[q] = x[t1][c + q];
               }
-              let sb = 8.0 * (xb[0] + xb[1] + xb[2] + xb[3] + xb[4] + xb[5] + xb[6] + xb[7] + xb[8] + xb[9] + xb[10] + xb[11] + xb[12] + xb[13] + xb[14] + xb[15]);
-              xb[1] = xb[1] * 0.0625;
-              xb[2] = xb[2] * 0.00390625;
-              xb[3] = xb[3] * 0.000244140625;
-              xb[4] = xb[4] * 0.0000152587890625;
-              xb[5] = xb[5] * 0.00000095367431640625;
-              xb[6] = xb[6] * 0.000000059604644775390625;
-              xb[7] = xb[7] * 0.0000000037252902984619140625;
-              xb[9] = xb[9] * 0.0625;
-              xb[10] = xb[10] * 0.00390625;
-              xb[11] = xb[11] * 0.000244140625;
-              xb[12] = xb[12] * 0.0000152587890625;
-              xb[13] = xb[13] * 0.00000095367431640625;
-              xb[14] = xb[14] * 0.000000059604644775390625;
-              xb[15] = xb[15] * 0.0000000037252902984619140625;
+              let s1 = 8.0 * (x1[0] + x1[1] + x1[2] + x1[3] + x1[4] + x1[5] + x1[6] + x1[7] + x1[8] + x1[9] + x1[10] + x1[11] + x1[12] + x1[13] + x1[14] + x1[15]);
+              x1[1] = x1[1] * 0.0625;
+              x1[2] = x1[2] * 0.00390625;
+              x1[3] = x1[3] * 0.000244140625;
+              x1[4] = x1[4] * 0.0000152587890625;
+              x1[5] = x1[5] * 0.00000095367431640625;
+              x1[6] = x1[6] * 0.000000059604644775390625;
+              x1[7] = x1[7] * 0.0000000037252902984619140625;
+              x1[9] = x1[9] * 0.0625;
+              x1[10] = x1[10] * 0.00390625;
+              x1[11] = x1[11] * 0.000244140625;
+              x1[12] = x1[12] * 0.0000152587890625;
+              x1[13] = x1[13] * 0.00000095367431640625;
+              x1[14] = x1[14] * 0.000000059604644775390625;
+              x1[15] = x1[15] * 0.0000000037252902984619140625;
               for j in 0..8 {
                 let row = rb * 8 + j;
                 let at = row * words + i;
@@ -2400,10 +2401,10 @@ fn nn_matvec_q4_rows<M : Memory>(y : &mut Tensor<f32, [?, ?], Memory::M>, w : &T
                 let f13 = (w1 & 15728640u32) as f32;
                 let f14 = (w1 & 251658240u32) as f32;
                 let f15 = (w1 & 4026531840u32) as f32;
-                let da = f0 * xa[0] + f1 * xa[1] + f2 * xa[2] + f3 * xa[3] + f4 * xa[4] + f5 * xa[5] + f6 * xa[6] + f7 * xa[7] + f8 * xa[8] + f9 * xa[9] + f10 * xa[10] + f11 * xa[11] + f12 * xa[12] + f13 * xa[13] + f14 * xa[14] + f15 * xa[15];
-                a0[j] = a0[j] + (da - sa) * sc;
-                let db = f0 * xb[0] + f1 * xb[1] + f2 * xb[2] + f3 * xb[3] + f4 * xb[4] + f5 * xb[5] + f6 * xb[6] + f7 * xb[7] + f8 * xb[8] + f9 * xb[9] + f10 * xb[10] + f11 * xb[11] + f12 * xb[12] + f13 * xb[13] + f14 * xb[14] + f15 * xb[15];
-                a1[j] = a1[j] + (db - sb) * sc;
+                let d0 = f0 * x0[0] + f1 * x0[1] + f2 * x0[2] + f3 * x0[3] + f4 * x0[4] + f5 * x0[5] + f6 * x0[6] + f7 * x0[7] + f8 * x0[8] + f9 * x0[9] + f10 * x0[10] + f11 * x0[11] + f12 * x0[12] + f13 * x0[13] + f14 * x0[14] + f15 * x0[15];
+                a0[j] = a0[j] + (d0 - s0) * sc;
+                let d1 = f0 * x1[0] + f1 * x1[1] + f2 * x1[2] + f3 * x1[3] + f4 * x1[4] + f5 * x1[5] + f6 * x1[6] + f7 * x1[7] + f8 * x1[8] + f9 * x1[9] + f10 * x1[10] + f11 * x1[11] + f12 * x1[12] + f13 * x1[13] + f14 * x1[14] + f15 * x1[15];
+                a1[j] = a1[j] + (d1 - s1) * sc;
               }
               i = i + 64;
             }
@@ -2412,38 +2413,40 @@ fn nn_matvec_q4_rows<M : Memory>(y : &mut Tensor<f32, [?, ?], Memory::M>, w : &T
               part[1][j][l] = a1[j];
             }
           }
-          let p0 = lanes::sum(&part[0][0], 32);
-          let p1 = lanes::sum(&part[0][1], 32);
-          let p2 = lanes::sum(&part[0][2], 32);
-          let p3 = lanes::sum(&part[0][3], 32);
-          let p4 = lanes::sum(&part[0][4], 32);
-          let p5 = lanes::sum(&part[0][5], 32);
-          let p6 = lanes::sum(&part[0][6], 32);
-          let p7 = lanes::sum(&part[0][7], 32);
-          let q0 = lanes::sum(&part[1][0], 32);
-          let q1 = lanes::sum(&part[1][1], 32);
-          let q2 = lanes::sum(&part[1][2], 32);
-          let q3 = lanes::sum(&part[1][3], 32);
-          let q4 = lanes::sum(&part[1][4], 32);
-          let q5 = lanes::sum(&part[1][5], 32);
-          let q6 = lanes::sum(&part[1][6], 32);
-          let q7 = lanes::sum(&part[1][7], 32);
-          y[t0][rb * 8 + 0] = p0;
-          y[t0][rb * 8 + 1] = p1;
-          y[t0][rb * 8 + 2] = p2;
-          y[t0][rb * 8 + 3] = p3;
-          y[t0][rb * 8 + 4] = p4;
-          y[t0][rb * 8 + 5] = p5;
-          y[t0][rb * 8 + 6] = p6;
-          y[t0][rb * 8 + 7] = p7;
-          y[t1][rb * 8 + 0] = q0;
-          y[t1][rb * 8 + 1] = q1;
-          y[t1][rb * 8 + 2] = q2;
-          y[t1][rb * 8 + 3] = q3;
-          y[t1][rb * 8 + 4] = q4;
-          y[t1][rb * 8 + 5] = q5;
-          y[t1][rb * 8 + 6] = q6;
-          y[t1][rb * 8 + 7] = q7;
+          let r0_0 = lanes::sum(&part[0][0], 32);
+          let r0_1 = lanes::sum(&part[0][1], 32);
+          let r0_2 = lanes::sum(&part[0][2], 32);
+          let r0_3 = lanes::sum(&part[0][3], 32);
+          let r0_4 = lanes::sum(&part[0][4], 32);
+          let r0_5 = lanes::sum(&part[0][5], 32);
+          let r0_6 = lanes::sum(&part[0][6], 32);
+          let r0_7 = lanes::sum(&part[0][7], 32);
+          let r1_0 = lanes::sum(&part[1][0], 32);
+          let r1_1 = lanes::sum(&part[1][1], 32);
+          let r1_2 = lanes::sum(&part[1][2], 32);
+          let r1_3 = lanes::sum(&part[1][3], 32);
+          let r1_4 = lanes::sum(&part[1][4], 32);
+          let r1_5 = lanes::sum(&part[1][5], 32);
+          let r1_6 = lanes::sum(&part[1][6], 32);
+          let r1_7 = lanes::sum(&part[1][7], 32);
+          y[tp * 2][rb * 8 + 0] = r0_0;
+          y[tp * 2][rb * 8 + 1] = r0_1;
+          y[tp * 2][rb * 8 + 2] = r0_2;
+          y[tp * 2][rb * 8 + 3] = r0_3;
+          y[tp * 2][rb * 8 + 4] = r0_4;
+          y[tp * 2][rb * 8 + 5] = r0_5;
+          y[tp * 2][rb * 8 + 6] = r0_6;
+          y[tp * 2][rb * 8 + 7] = r0_7;
+          if tp * 2 + 1 < n {
+            y[tp * 2 + 1][rb * 8 + 0] = r1_0;
+            y[tp * 2 + 1][rb * 8 + 1] = r1_1;
+            y[tp * 2 + 1][rb * 8 + 2] = r1_2;
+            y[tp * 2 + 1][rb * 8 + 3] = r1_3;
+            y[tp * 2 + 1][rb * 8 + 4] = r1_4;
+            y[tp * 2 + 1][rb * 8 + 5] = r1_5;
+            y[tp * 2 + 1][rb * 8 + 6] = r1_6;
+            y[tp * 2 + 1][rb * 8 + 7] = r1_7;
+          }
         }
       }
     }
@@ -2463,13 +2466,14 @@ fn nn_matvec_q4_heads_add_rows<M : Memory>(y : &mut Tensor<f32, [?, ?], Memory::
   let groups = cols / 32;
   spawn on(Topology::Device) {
     for rb in 0..rows / 8 across blocks {
-      let mut part = unsafe {
-        Tensor<f32, [2, 8, 32], Memory::SMEM>::uninit()
-      };
-      for tp in 0..(n + 1) / 2 {
-        // Two positions a pass: t0, and t1 after it, or t0 again when t0 is the last one.
+      for tp in 0..(n + 1) / 2 across blocks {
+        let mut part = unsafe {
+          Tensor<f32, [2, 8, 32], Memory::SMEM>::uninit()
+        };
+        // Positions t0 and t1 = t0 + 1. When t0 is the last position, t1 wraps to 0, and its
+        // results are not written.
         let t0 = tp * 2;
-        let t1 = t0 + 1 - (t0 + 2) / (n + 1);
+        let t1 = (tp * 2 + 1) % n;
         for s in 0..1 across subgroups {
           for l in 0..32 across lanes(32) {
             let mut a0 = unsafe { Tensor<f32, [8]>::uninit() };
@@ -2486,50 +2490,50 @@ fn nn_matvec_q4_heads_add_rows<M : Memory>(y : &mut Tensor<f32, [?, ?], Memory::
               let d0 = c - h0 * head_dim;
               let h1 = (c + 8) / head_dim;
               let d1 = c + 8 - h1 * head_dim;
-              let mut xa = unsafe { Tensor<f32, [16]>::uninit() };
-              let mut xb = unsafe { Tensor<f32, [16]>::uninit() };
+              let mut x0 = unsafe { Tensor<f32, [16]>::uninit() };
+              let mut x1 = unsafe { Tensor<f32, [16]>::uninit() };
               for q in 0..8 {
-                xa[q] = x[t0][h0][d0 + q];
+                x0[q] = x[t0][h0][d0 + q];
               }
               for q in 0..8 {
-                xa[8 + q] = x[t0][h1][d1 + q];
+                x0[8 + q] = x[t0][h1][d1 + q];
               }
-              let sa = 8.0 * (xa[0] + xa[1] + xa[2] + xa[3] + xa[4] + xa[5] + xa[6] + xa[7] + xa[8] + xa[9] + xa[10] + xa[11] + xa[12] + xa[13] + xa[14] + xa[15]);
-              xa[1] = xa[1] * 0.0625;
-              xa[2] = xa[2] * 0.00390625;
-              xa[3] = xa[3] * 0.000244140625;
-              xa[4] = xa[4] * 0.0000152587890625;
-              xa[5] = xa[5] * 0.00000095367431640625;
-              xa[6] = xa[6] * 0.000000059604644775390625;
-              xa[7] = xa[7] * 0.0000000037252902984619140625;
-              xa[9] = xa[9] * 0.0625;
-              xa[10] = xa[10] * 0.00390625;
-              xa[11] = xa[11] * 0.000244140625;
-              xa[12] = xa[12] * 0.0000152587890625;
-              xa[13] = xa[13] * 0.00000095367431640625;
-              xa[14] = xa[14] * 0.000000059604644775390625;
-              xa[15] = xa[15] * 0.0000000037252902984619140625;
+              let s0 = 8.0 * (x0[0] + x0[1] + x0[2] + x0[3] + x0[4] + x0[5] + x0[6] + x0[7] + x0[8] + x0[9] + x0[10] + x0[11] + x0[12] + x0[13] + x0[14] + x0[15]);
+              x0[1] = x0[1] * 0.0625;
+              x0[2] = x0[2] * 0.00390625;
+              x0[3] = x0[3] * 0.000244140625;
+              x0[4] = x0[4] * 0.0000152587890625;
+              x0[5] = x0[5] * 0.00000095367431640625;
+              x0[6] = x0[6] * 0.000000059604644775390625;
+              x0[7] = x0[7] * 0.0000000037252902984619140625;
+              x0[9] = x0[9] * 0.0625;
+              x0[10] = x0[10] * 0.00390625;
+              x0[11] = x0[11] * 0.000244140625;
+              x0[12] = x0[12] * 0.0000152587890625;
+              x0[13] = x0[13] * 0.00000095367431640625;
+              x0[14] = x0[14] * 0.000000059604644775390625;
+              x0[15] = x0[15] * 0.0000000037252902984619140625;
               for q in 0..8 {
-                xb[q] = x[t1][h0][d0 + q];
+                x1[q] = x[t1][h0][d0 + q];
               }
               for q in 0..8 {
-                xb[8 + q] = x[t1][h1][d1 + q];
+                x1[8 + q] = x[t1][h1][d1 + q];
               }
-              let sb = 8.0 * (xb[0] + xb[1] + xb[2] + xb[3] + xb[4] + xb[5] + xb[6] + xb[7] + xb[8] + xb[9] + xb[10] + xb[11] + xb[12] + xb[13] + xb[14] + xb[15]);
-              xb[1] = xb[1] * 0.0625;
-              xb[2] = xb[2] * 0.00390625;
-              xb[3] = xb[3] * 0.000244140625;
-              xb[4] = xb[4] * 0.0000152587890625;
-              xb[5] = xb[5] * 0.00000095367431640625;
-              xb[6] = xb[6] * 0.000000059604644775390625;
-              xb[7] = xb[7] * 0.0000000037252902984619140625;
-              xb[9] = xb[9] * 0.0625;
-              xb[10] = xb[10] * 0.00390625;
-              xb[11] = xb[11] * 0.000244140625;
-              xb[12] = xb[12] * 0.0000152587890625;
-              xb[13] = xb[13] * 0.00000095367431640625;
-              xb[14] = xb[14] * 0.000000059604644775390625;
-              xb[15] = xb[15] * 0.0000000037252902984619140625;
+              let s1 = 8.0 * (x1[0] + x1[1] + x1[2] + x1[3] + x1[4] + x1[5] + x1[6] + x1[7] + x1[8] + x1[9] + x1[10] + x1[11] + x1[12] + x1[13] + x1[14] + x1[15]);
+              x1[1] = x1[1] * 0.0625;
+              x1[2] = x1[2] * 0.00390625;
+              x1[3] = x1[3] * 0.000244140625;
+              x1[4] = x1[4] * 0.0000152587890625;
+              x1[5] = x1[5] * 0.00000095367431640625;
+              x1[6] = x1[6] * 0.000000059604644775390625;
+              x1[7] = x1[7] * 0.0000000037252902984619140625;
+              x1[9] = x1[9] * 0.0625;
+              x1[10] = x1[10] * 0.00390625;
+              x1[11] = x1[11] * 0.000244140625;
+              x1[12] = x1[12] * 0.0000152587890625;
+              x1[13] = x1[13] * 0.00000095367431640625;
+              x1[14] = x1[14] * 0.000000059604644775390625;
+              x1[15] = x1[15] * 0.0000000037252902984619140625;
               for j in 0..8 {
                 let row = rb * 8 + j;
                 let at = row * words + i;
@@ -2552,10 +2556,10 @@ fn nn_matvec_q4_heads_add_rows<M : Memory>(y : &mut Tensor<f32, [?, ?], Memory::
                 let f13 = (w1 & 15728640u32) as f32;
                 let f14 = (w1 & 251658240u32) as f32;
                 let f15 = (w1 & 4026531840u32) as f32;
-                let da = f0 * xa[0] + f1 * xa[1] + f2 * xa[2] + f3 * xa[3] + f4 * xa[4] + f5 * xa[5] + f6 * xa[6] + f7 * xa[7] + f8 * xa[8] + f9 * xa[9] + f10 * xa[10] + f11 * xa[11] + f12 * xa[12] + f13 * xa[13] + f14 * xa[14] + f15 * xa[15];
-                a0[j] = a0[j] + (da - sa) * sc;
-                let db = f0 * xb[0] + f1 * xb[1] + f2 * xb[2] + f3 * xb[3] + f4 * xb[4] + f5 * xb[5] + f6 * xb[6] + f7 * xb[7] + f8 * xb[8] + f9 * xb[9] + f10 * xb[10] + f11 * xb[11] + f12 * xb[12] + f13 * xb[13] + f14 * xb[14] + f15 * xb[15];
-                a1[j] = a1[j] + (db - sb) * sc;
+                let d0 = f0 * x0[0] + f1 * x0[1] + f2 * x0[2] + f3 * x0[3] + f4 * x0[4] + f5 * x0[5] + f6 * x0[6] + f7 * x0[7] + f8 * x0[8] + f9 * x0[9] + f10 * x0[10] + f11 * x0[11] + f12 * x0[12] + f13 * x0[13] + f14 * x0[14] + f15 * x0[15];
+                a0[j] = a0[j] + (d0 - s0) * sc;
+                let d1 = f0 * x1[0] + f1 * x1[1] + f2 * x1[2] + f3 * x1[3] + f4 * x1[4] + f5 * x1[5] + f6 * x1[6] + f7 * x1[7] + f8 * x1[8] + f9 * x1[9] + f10 * x1[10] + f11 * x1[11] + f12 * x1[12] + f13 * x1[13] + f14 * x1[14] + f15 * x1[15];
+                a1[j] = a1[j] + (d1 - s1) * sc;
               }
               i = i + 64;
             }
@@ -2564,39 +2568,39 @@ fn nn_matvec_q4_heads_add_rows<M : Memory>(y : &mut Tensor<f32, [?, ?], Memory::
               part[1][j][l] = a1[j];
             }
           }
-          let p0 = lanes::sum(&part[0][0], 32);
-          let p1 = lanes::sum(&part[0][1], 32);
-          let p2 = lanes::sum(&part[0][2], 32);
-          let p3 = lanes::sum(&part[0][3], 32);
-          let p4 = lanes::sum(&part[0][4], 32);
-          let p5 = lanes::sum(&part[0][5], 32);
-          let p6 = lanes::sum(&part[0][6], 32);
-          let p7 = lanes::sum(&part[0][7], 32);
-          let q0 = lanes::sum(&part[1][0], 32);
-          let q1 = lanes::sum(&part[1][1], 32);
-          let q2 = lanes::sum(&part[1][2], 32);
-          let q3 = lanes::sum(&part[1][3], 32);
-          let q4 = lanes::sum(&part[1][4], 32);
-          let q5 = lanes::sum(&part[1][5], 32);
-          let q6 = lanes::sum(&part[1][6], 32);
-          let q7 = lanes::sum(&part[1][7], 32);
-          y[t0][rb * 8 + 0] = y[t0][rb * 8 + 0] + p0;
-          y[t0][rb * 8 + 1] = y[t0][rb * 8 + 1] + p1;
-          y[t0][rb * 8 + 2] = y[t0][rb * 8 + 2] + p2;
-          y[t0][rb * 8 + 3] = y[t0][rb * 8 + 3] + p3;
-          y[t0][rb * 8 + 4] = y[t0][rb * 8 + 4] + p4;
-          y[t0][rb * 8 + 5] = y[t0][rb * 8 + 5] + p5;
-          y[t0][rb * 8 + 6] = y[t0][rb * 8 + 6] + p6;
-          y[t0][rb * 8 + 7] = y[t0][rb * 8 + 7] + p7;
-          if t1 != t0 {
-            y[t1][rb * 8 + 0] = y[t1][rb * 8 + 0] + q0;
-            y[t1][rb * 8 + 1] = y[t1][rb * 8 + 1] + q1;
-            y[t1][rb * 8 + 2] = y[t1][rb * 8 + 2] + q2;
-            y[t1][rb * 8 + 3] = y[t1][rb * 8 + 3] + q3;
-            y[t1][rb * 8 + 4] = y[t1][rb * 8 + 4] + q4;
-            y[t1][rb * 8 + 5] = y[t1][rb * 8 + 5] + q5;
-            y[t1][rb * 8 + 6] = y[t1][rb * 8 + 6] + q6;
-            y[t1][rb * 8 + 7] = y[t1][rb * 8 + 7] + q7;
+          let r0_0 = lanes::sum(&part[0][0], 32);
+          let r0_1 = lanes::sum(&part[0][1], 32);
+          let r0_2 = lanes::sum(&part[0][2], 32);
+          let r0_3 = lanes::sum(&part[0][3], 32);
+          let r0_4 = lanes::sum(&part[0][4], 32);
+          let r0_5 = lanes::sum(&part[0][5], 32);
+          let r0_6 = lanes::sum(&part[0][6], 32);
+          let r0_7 = lanes::sum(&part[0][7], 32);
+          let r1_0 = lanes::sum(&part[1][0], 32);
+          let r1_1 = lanes::sum(&part[1][1], 32);
+          let r1_2 = lanes::sum(&part[1][2], 32);
+          let r1_3 = lanes::sum(&part[1][3], 32);
+          let r1_4 = lanes::sum(&part[1][4], 32);
+          let r1_5 = lanes::sum(&part[1][5], 32);
+          let r1_6 = lanes::sum(&part[1][6], 32);
+          let r1_7 = lanes::sum(&part[1][7], 32);
+          y[tp * 2][rb * 8 + 0] = y[tp * 2][rb * 8 + 0] + r0_0;
+          y[tp * 2][rb * 8 + 1] = y[tp * 2][rb * 8 + 1] + r0_1;
+          y[tp * 2][rb * 8 + 2] = y[tp * 2][rb * 8 + 2] + r0_2;
+          y[tp * 2][rb * 8 + 3] = y[tp * 2][rb * 8 + 3] + r0_3;
+          y[tp * 2][rb * 8 + 4] = y[tp * 2][rb * 8 + 4] + r0_4;
+          y[tp * 2][rb * 8 + 5] = y[tp * 2][rb * 8 + 5] + r0_5;
+          y[tp * 2][rb * 8 + 6] = y[tp * 2][rb * 8 + 6] + r0_6;
+          y[tp * 2][rb * 8 + 7] = y[tp * 2][rb * 8 + 7] + r0_7;
+          if tp * 2 + 1 < n {
+            y[tp * 2 + 1][rb * 8 + 0] = y[tp * 2 + 1][rb * 8 + 0] + r1_0;
+            y[tp * 2 + 1][rb * 8 + 1] = y[tp * 2 + 1][rb * 8 + 1] + r1_1;
+            y[tp * 2 + 1][rb * 8 + 2] = y[tp * 2 + 1][rb * 8 + 2] + r1_2;
+            y[tp * 2 + 1][rb * 8 + 3] = y[tp * 2 + 1][rb * 8 + 3] + r1_3;
+            y[tp * 2 + 1][rb * 8 + 4] = y[tp * 2 + 1][rb * 8 + 4] + r1_4;
+            y[tp * 2 + 1][rb * 8 + 5] = y[tp * 2 + 1][rb * 8 + 5] + r1_5;
+            y[tp * 2 + 1][rb * 8 + 6] = y[tp * 2 + 1][rb * 8 + 6] + r1_6;
+            y[tp * 2 + 1][rb * 8 + 7] = y[tp * 2 + 1][rb * 8 + 7] + r1_7;
           }
         }
       }
@@ -2620,13 +2624,14 @@ fn nn_qkv_q4_rows<M : Memory>(q : &mut Tensor<f32, [?, ?, ?], Memory::M>, k : &m
   spawn on(Topology::Device) {
     for h in 0..heads across blocks {
       for d8 in 0..head_dim / 8 across blocks {
-        let mut part = unsafe {
-          Tensor<f32, [2, 8, 32], Memory::SMEM>::uninit()
-        };
-        for tp in 0..(n + 1) / 2 {
-          // Two positions a pass: t0, and t1 after it, or t0 again when t0 is the last one.
+        for tp in 0..(n + 1) / 2 across blocks {
+          let mut part = unsafe {
+            Tensor<f32, [2, 8, 32], Memory::SMEM>::uninit()
+          };
+          // Positions t0 and t1 = t0 + 1. When t0 is the last position, t1 wraps to 0, and its
+          // results are not written.
           let t0 = tp * 2;
-          let t1 = t0 + 1 - (t0 + 2) / (n + 1);
+          let t1 = (tp * 2 + 1) % n;
           for s in 0..1 across subgroups {
             let first = h * head_dim + d8 * 8;
             for l in 0..32 across lanes(32) {
@@ -2639,44 +2644,44 @@ fn nn_qkv_q4_rows<M : Memory>(q : &mut Tensor<f32, [?, ?, ?], Memory::M>, k : &m
               let mut i = l * 2;
               while i < words {
                 let c = i * 8;
-                let mut xa = unsafe { Tensor<f32, [16]>::uninit() };
-                let mut xb = unsafe { Tensor<f32, [16]>::uninit() };
+                let mut x0 = unsafe { Tensor<f32, [16]>::uninit() };
+                let mut x1 = unsafe { Tensor<f32, [16]>::uninit() };
                 for q in 0..16 {
-                  xa[q] = x[t0][c + q];
+                  x0[q] = x[t0][c + q];
                 }
-                let sa = 8.0 * (xa[0] + xa[1] + xa[2] + xa[3] + xa[4] + xa[5] + xa[6] + xa[7] + xa[8] + xa[9] + xa[10] + xa[11] + xa[12] + xa[13] + xa[14] + xa[15]);
-                xa[1] = xa[1] * 0.0625;
-                xa[2] = xa[2] * 0.00390625;
-                xa[3] = xa[3] * 0.000244140625;
-                xa[4] = xa[4] * 0.0000152587890625;
-                xa[5] = xa[5] * 0.00000095367431640625;
-                xa[6] = xa[6] * 0.000000059604644775390625;
-                xa[7] = xa[7] * 0.0000000037252902984619140625;
-                xa[9] = xa[9] * 0.0625;
-                xa[10] = xa[10] * 0.00390625;
-                xa[11] = xa[11] * 0.000244140625;
-                xa[12] = xa[12] * 0.0000152587890625;
-                xa[13] = xa[13] * 0.00000095367431640625;
-                xa[14] = xa[14] * 0.000000059604644775390625;
-                xa[15] = xa[15] * 0.0000000037252902984619140625;
+                let s0 = 8.0 * (x0[0] + x0[1] + x0[2] + x0[3] + x0[4] + x0[5] + x0[6] + x0[7] + x0[8] + x0[9] + x0[10] + x0[11] + x0[12] + x0[13] + x0[14] + x0[15]);
+                x0[1] = x0[1] * 0.0625;
+                x0[2] = x0[2] * 0.00390625;
+                x0[3] = x0[3] * 0.000244140625;
+                x0[4] = x0[4] * 0.0000152587890625;
+                x0[5] = x0[5] * 0.00000095367431640625;
+                x0[6] = x0[6] * 0.000000059604644775390625;
+                x0[7] = x0[7] * 0.0000000037252902984619140625;
+                x0[9] = x0[9] * 0.0625;
+                x0[10] = x0[10] * 0.00390625;
+                x0[11] = x0[11] * 0.000244140625;
+                x0[12] = x0[12] * 0.0000152587890625;
+                x0[13] = x0[13] * 0.00000095367431640625;
+                x0[14] = x0[14] * 0.000000059604644775390625;
+                x0[15] = x0[15] * 0.0000000037252902984619140625;
                 for q in 0..16 {
-                  xb[q] = x[t1][c + q];
+                  x1[q] = x[t1][c + q];
                 }
-                let sb = 8.0 * (xb[0] + xb[1] + xb[2] + xb[3] + xb[4] + xb[5] + xb[6] + xb[7] + xb[8] + xb[9] + xb[10] + xb[11] + xb[12] + xb[13] + xb[14] + xb[15]);
-                xb[1] = xb[1] * 0.0625;
-                xb[2] = xb[2] * 0.00390625;
-                xb[3] = xb[3] * 0.000244140625;
-                xb[4] = xb[4] * 0.0000152587890625;
-                xb[5] = xb[5] * 0.00000095367431640625;
-                xb[6] = xb[6] * 0.000000059604644775390625;
-                xb[7] = xb[7] * 0.0000000037252902984619140625;
-                xb[9] = xb[9] * 0.0625;
-                xb[10] = xb[10] * 0.00390625;
-                xb[11] = xb[11] * 0.000244140625;
-                xb[12] = xb[12] * 0.0000152587890625;
-                xb[13] = xb[13] * 0.00000095367431640625;
-                xb[14] = xb[14] * 0.000000059604644775390625;
-                xb[15] = xb[15] * 0.0000000037252902984619140625;
+                let s1 = 8.0 * (x1[0] + x1[1] + x1[2] + x1[3] + x1[4] + x1[5] + x1[6] + x1[7] + x1[8] + x1[9] + x1[10] + x1[11] + x1[12] + x1[13] + x1[14] + x1[15]);
+                x1[1] = x1[1] * 0.0625;
+                x1[2] = x1[2] * 0.00390625;
+                x1[3] = x1[3] * 0.000244140625;
+                x1[4] = x1[4] * 0.0000152587890625;
+                x1[5] = x1[5] * 0.00000095367431640625;
+                x1[6] = x1[6] * 0.000000059604644775390625;
+                x1[7] = x1[7] * 0.0000000037252902984619140625;
+                x1[9] = x1[9] * 0.0625;
+                x1[10] = x1[10] * 0.00390625;
+                x1[11] = x1[11] * 0.000244140625;
+                x1[12] = x1[12] * 0.0000152587890625;
+                x1[13] = x1[13] * 0.00000095367431640625;
+                x1[14] = x1[14] * 0.000000059604644775390625;
+                x1[15] = x1[15] * 0.0000000037252902984619140625;
                 for j in 0..8 {
                   let row = first + j;
                   let at = row * words + i;
@@ -2699,10 +2704,10 @@ fn nn_qkv_q4_rows<M : Memory>(q : &mut Tensor<f32, [?, ?, ?], Memory::M>, k : &m
                   let f13 = (w1 & 15728640u32) as f32;
                   let f14 = (w1 & 251658240u32) as f32;
                   let f15 = (w1 & 4026531840u32) as f32;
-                  let da = f0 * xa[0] + f1 * xa[1] + f2 * xa[2] + f3 * xa[3] + f4 * xa[4] + f5 * xa[5] + f6 * xa[6] + f7 * xa[7] + f8 * xa[8] + f9 * xa[9] + f10 * xa[10] + f11 * xa[11] + f12 * xa[12] + f13 * xa[13] + f14 * xa[14] + f15 * xa[15];
-                  a0[j] = a0[j] + (da - sa) * sc;
-                  let db = f0 * xb[0] + f1 * xb[1] + f2 * xb[2] + f3 * xb[3] + f4 * xb[4] + f5 * xb[5] + f6 * xb[6] + f7 * xb[7] + f8 * xb[8] + f9 * xb[9] + f10 * xb[10] + f11 * xb[11] + f12 * xb[12] + f13 * xb[13] + f14 * xb[14] + f15 * xb[15];
-                  a1[j] = a1[j] + (db - sb) * sc;
+                  let d0 = f0 * x0[0] + f1 * x0[1] + f2 * x0[2] + f3 * x0[3] + f4 * x0[4] + f5 * x0[5] + f6 * x0[6] + f7 * x0[7] + f8 * x0[8] + f9 * x0[9] + f10 * x0[10] + f11 * x0[11] + f12 * x0[12] + f13 * x0[13] + f14 * x0[14] + f15 * x0[15];
+                  a0[j] = a0[j] + (d0 - s0) * sc;
+                  let d1 = f0 * x1[0] + f1 * x1[1] + f2 * x1[2] + f3 * x1[3] + f4 * x1[4] + f5 * x1[5] + f6 * x1[6] + f7 * x1[7] + f8 * x1[8] + f9 * x1[9] + f10 * x1[10] + f11 * x1[11] + f12 * x1[12] + f13 * x1[13] + f14 * x1[14] + f15 * x1[15];
+                  a1[j] = a1[j] + (d1 - s1) * sc;
                 }
                 i = i + 64;
               }
@@ -2711,77 +2716,79 @@ fn nn_qkv_q4_rows<M : Memory>(q : &mut Tensor<f32, [?, ?, ?], Memory::M>, k : &m
                 part[1][j][l] = a1[j];
               }
             }
-            let p0 = lanes::sum(&part[0][0], 32);
-            let p1 = lanes::sum(&part[0][1], 32);
-            let p2 = lanes::sum(&part[0][2], 32);
-            let p3 = lanes::sum(&part[0][3], 32);
-            let p4 = lanes::sum(&part[0][4], 32);
-            let p5 = lanes::sum(&part[0][5], 32);
-            let p6 = lanes::sum(&part[0][6], 32);
-            let p7 = lanes::sum(&part[0][7], 32);
-            let q0 = lanes::sum(&part[1][0], 32);
-            let q1 = lanes::sum(&part[1][1], 32);
-            let q2 = lanes::sum(&part[1][2], 32);
-            let q3 = lanes::sum(&part[1][3], 32);
-            let q4 = lanes::sum(&part[1][4], 32);
-            let q5 = lanes::sum(&part[1][5], 32);
-            let q6 = lanes::sum(&part[1][6], 32);
-            let q7 = lanes::sum(&part[1][7], 32);
+            let r0_0 = lanes::sum(&part[0][0], 32);
+            let r0_1 = lanes::sum(&part[0][1], 32);
+            let r0_2 = lanes::sum(&part[0][2], 32);
+            let r0_3 = lanes::sum(&part[0][3], 32);
+            let r0_4 = lanes::sum(&part[0][4], 32);
+            let r0_5 = lanes::sum(&part[0][5], 32);
+            let r0_6 = lanes::sum(&part[0][6], 32);
+            let r0_7 = lanes::sum(&part[0][7], 32);
+            let r1_0 = lanes::sum(&part[1][0], 32);
+            let r1_1 = lanes::sum(&part[1][1], 32);
+            let r1_2 = lanes::sum(&part[1][2], 32);
+            let r1_3 = lanes::sum(&part[1][3], 32);
+            let r1_4 = lanes::sum(&part[1][4], 32);
+            let r1_5 = lanes::sum(&part[1][5], 32);
+            let r1_6 = lanes::sum(&part[1][6], 32);
+            let r1_7 = lanes::sum(&part[1][7], 32);
             if h < q_heads {
-              q[t0][h][d8 * 8 + 0] = p0 + (b[first + 0] as f32);
-              q[t0][h][d8 * 8 + 1] = p1 + (b[first + 1] as f32);
-              q[t0][h][d8 * 8 + 2] = p2 + (b[first + 2] as f32);
-              q[t0][h][d8 * 8 + 3] = p3 + (b[first + 3] as f32);
-              q[t0][h][d8 * 8 + 4] = p4 + (b[first + 4] as f32);
-              q[t0][h][d8 * 8 + 5] = p5 + (b[first + 5] as f32);
-              q[t0][h][d8 * 8 + 6] = p6 + (b[first + 6] as f32);
-              q[t0][h][d8 * 8 + 7] = p7 + (b[first + 7] as f32);
+              q[tp * 2][h][d8 * 8 + 0] = r0_0 + (b[first + 0] as f32);
+              q[tp * 2][h][d8 * 8 + 1] = r0_1 + (b[first + 1] as f32);
+              q[tp * 2][h][d8 * 8 + 2] = r0_2 + (b[first + 2] as f32);
+              q[tp * 2][h][d8 * 8 + 3] = r0_3 + (b[first + 3] as f32);
+              q[tp * 2][h][d8 * 8 + 4] = r0_4 + (b[first + 4] as f32);
+              q[tp * 2][h][d8 * 8 + 5] = r0_5 + (b[first + 5] as f32);
+              q[tp * 2][h][d8 * 8 + 6] = r0_6 + (b[first + 6] as f32);
+              q[tp * 2][h][d8 * 8 + 7] = r0_7 + (b[first + 7] as f32);
             } else if h < q_heads + kv_heads {
-              k[t0][h - q_heads][d8 * 8 + 0] = p0 + (b[first + 0] as f32);
-              k[t0][h - q_heads][d8 * 8 + 1] = p1 + (b[first + 1] as f32);
-              k[t0][h - q_heads][d8 * 8 + 2] = p2 + (b[first + 2] as f32);
-              k[t0][h - q_heads][d8 * 8 + 3] = p3 + (b[first + 3] as f32);
-              k[t0][h - q_heads][d8 * 8 + 4] = p4 + (b[first + 4] as f32);
-              k[t0][h - q_heads][d8 * 8 + 5] = p5 + (b[first + 5] as f32);
-              k[t0][h - q_heads][d8 * 8 + 6] = p6 + (b[first + 6] as f32);
-              k[t0][h - q_heads][d8 * 8 + 7] = p7 + (b[first + 7] as f32);
+              k[tp * 2][h - q_heads][d8 * 8 + 0] = r0_0 + (b[first + 0] as f32);
+              k[tp * 2][h - q_heads][d8 * 8 + 1] = r0_1 + (b[first + 1] as f32);
+              k[tp * 2][h - q_heads][d8 * 8 + 2] = r0_2 + (b[first + 2] as f32);
+              k[tp * 2][h - q_heads][d8 * 8 + 3] = r0_3 + (b[first + 3] as f32);
+              k[tp * 2][h - q_heads][d8 * 8 + 4] = r0_4 + (b[first + 4] as f32);
+              k[tp * 2][h - q_heads][d8 * 8 + 5] = r0_5 + (b[first + 5] as f32);
+              k[tp * 2][h - q_heads][d8 * 8 + 6] = r0_6 + (b[first + 6] as f32);
+              k[tp * 2][h - q_heads][d8 * 8 + 7] = r0_7 + (b[first + 7] as f32);
             } else {
-              v[t0][h - q_heads - kv_heads][d8 * 8 + 0] = p0 + (b[first + 0] as f32);
-              v[t0][h - q_heads - kv_heads][d8 * 8 + 1] = p1 + (b[first + 1] as f32);
-              v[t0][h - q_heads - kv_heads][d8 * 8 + 2] = p2 + (b[first + 2] as f32);
-              v[t0][h - q_heads - kv_heads][d8 * 8 + 3] = p3 + (b[first + 3] as f32);
-              v[t0][h - q_heads - kv_heads][d8 * 8 + 4] = p4 + (b[first + 4] as f32);
-              v[t0][h - q_heads - kv_heads][d8 * 8 + 5] = p5 + (b[first + 5] as f32);
-              v[t0][h - q_heads - kv_heads][d8 * 8 + 6] = p6 + (b[first + 6] as f32);
-              v[t0][h - q_heads - kv_heads][d8 * 8 + 7] = p7 + (b[first + 7] as f32);
+              v[tp * 2][h - q_heads - kv_heads][d8 * 8 + 0] = r0_0 + (b[first + 0] as f32);
+              v[tp * 2][h - q_heads - kv_heads][d8 * 8 + 1] = r0_1 + (b[first + 1] as f32);
+              v[tp * 2][h - q_heads - kv_heads][d8 * 8 + 2] = r0_2 + (b[first + 2] as f32);
+              v[tp * 2][h - q_heads - kv_heads][d8 * 8 + 3] = r0_3 + (b[first + 3] as f32);
+              v[tp * 2][h - q_heads - kv_heads][d8 * 8 + 4] = r0_4 + (b[first + 4] as f32);
+              v[tp * 2][h - q_heads - kv_heads][d8 * 8 + 5] = r0_5 + (b[first + 5] as f32);
+              v[tp * 2][h - q_heads - kv_heads][d8 * 8 + 6] = r0_6 + (b[first + 6] as f32);
+              v[tp * 2][h - q_heads - kv_heads][d8 * 8 + 7] = r0_7 + (b[first + 7] as f32);
             }
-            if h < q_heads {
-              q[t1][h][d8 * 8 + 0] = q0 + (b[first + 0] as f32);
-              q[t1][h][d8 * 8 + 1] = q1 + (b[first + 1] as f32);
-              q[t1][h][d8 * 8 + 2] = q2 + (b[first + 2] as f32);
-              q[t1][h][d8 * 8 + 3] = q3 + (b[first + 3] as f32);
-              q[t1][h][d8 * 8 + 4] = q4 + (b[first + 4] as f32);
-              q[t1][h][d8 * 8 + 5] = q5 + (b[first + 5] as f32);
-              q[t1][h][d8 * 8 + 6] = q6 + (b[first + 6] as f32);
-              q[t1][h][d8 * 8 + 7] = q7 + (b[first + 7] as f32);
-            } else if h < q_heads + kv_heads {
-              k[t1][h - q_heads][d8 * 8 + 0] = q0 + (b[first + 0] as f32);
-              k[t1][h - q_heads][d8 * 8 + 1] = q1 + (b[first + 1] as f32);
-              k[t1][h - q_heads][d8 * 8 + 2] = q2 + (b[first + 2] as f32);
-              k[t1][h - q_heads][d8 * 8 + 3] = q3 + (b[first + 3] as f32);
-              k[t1][h - q_heads][d8 * 8 + 4] = q4 + (b[first + 4] as f32);
-              k[t1][h - q_heads][d8 * 8 + 5] = q5 + (b[first + 5] as f32);
-              k[t1][h - q_heads][d8 * 8 + 6] = q6 + (b[first + 6] as f32);
-              k[t1][h - q_heads][d8 * 8 + 7] = q7 + (b[first + 7] as f32);
-            } else {
-              v[t1][h - q_heads - kv_heads][d8 * 8 + 0] = q0 + (b[first + 0] as f32);
-              v[t1][h - q_heads - kv_heads][d8 * 8 + 1] = q1 + (b[first + 1] as f32);
-              v[t1][h - q_heads - kv_heads][d8 * 8 + 2] = q2 + (b[first + 2] as f32);
-              v[t1][h - q_heads - kv_heads][d8 * 8 + 3] = q3 + (b[first + 3] as f32);
-              v[t1][h - q_heads - kv_heads][d8 * 8 + 4] = q4 + (b[first + 4] as f32);
-              v[t1][h - q_heads - kv_heads][d8 * 8 + 5] = q5 + (b[first + 5] as f32);
-              v[t1][h - q_heads - kv_heads][d8 * 8 + 6] = q6 + (b[first + 6] as f32);
-              v[t1][h - q_heads - kv_heads][d8 * 8 + 7] = q7 + (b[first + 7] as f32);
+            if tp * 2 + 1 < n {
+              if h < q_heads {
+                q[tp * 2 + 1][h][d8 * 8 + 0] = r1_0 + (b[first + 0] as f32);
+                q[tp * 2 + 1][h][d8 * 8 + 1] = r1_1 + (b[first + 1] as f32);
+                q[tp * 2 + 1][h][d8 * 8 + 2] = r1_2 + (b[first + 2] as f32);
+                q[tp * 2 + 1][h][d8 * 8 + 3] = r1_3 + (b[first + 3] as f32);
+                q[tp * 2 + 1][h][d8 * 8 + 4] = r1_4 + (b[first + 4] as f32);
+                q[tp * 2 + 1][h][d8 * 8 + 5] = r1_5 + (b[first + 5] as f32);
+                q[tp * 2 + 1][h][d8 * 8 + 6] = r1_6 + (b[first + 6] as f32);
+                q[tp * 2 + 1][h][d8 * 8 + 7] = r1_7 + (b[first + 7] as f32);
+              } else if h < q_heads + kv_heads {
+                k[tp * 2 + 1][h - q_heads][d8 * 8 + 0] = r1_0 + (b[first + 0] as f32);
+                k[tp * 2 + 1][h - q_heads][d8 * 8 + 1] = r1_1 + (b[first + 1] as f32);
+                k[tp * 2 + 1][h - q_heads][d8 * 8 + 2] = r1_2 + (b[first + 2] as f32);
+                k[tp * 2 + 1][h - q_heads][d8 * 8 + 3] = r1_3 + (b[first + 3] as f32);
+                k[tp * 2 + 1][h - q_heads][d8 * 8 + 4] = r1_4 + (b[first + 4] as f32);
+                k[tp * 2 + 1][h - q_heads][d8 * 8 + 5] = r1_5 + (b[first + 5] as f32);
+                k[tp * 2 + 1][h - q_heads][d8 * 8 + 6] = r1_6 + (b[first + 6] as f32);
+                k[tp * 2 + 1][h - q_heads][d8 * 8 + 7] = r1_7 + (b[first + 7] as f32);
+              } else {
+                v[tp * 2 + 1][h - q_heads - kv_heads][d8 * 8 + 0] = r1_0 + (b[first + 0] as f32);
+                v[tp * 2 + 1][h - q_heads - kv_heads][d8 * 8 + 1] = r1_1 + (b[first + 1] as f32);
+                v[tp * 2 + 1][h - q_heads - kv_heads][d8 * 8 + 2] = r1_2 + (b[first + 2] as f32);
+                v[tp * 2 + 1][h - q_heads - kv_heads][d8 * 8 + 3] = r1_3 + (b[first + 3] as f32);
+                v[tp * 2 + 1][h - q_heads - kv_heads][d8 * 8 + 4] = r1_4 + (b[first + 4] as f32);
+                v[tp * 2 + 1][h - q_heads - kv_heads][d8 * 8 + 5] = r1_5 + (b[first + 5] as f32);
+                v[tp * 2 + 1][h - q_heads - kv_heads][d8 * 8 + 6] = r1_6 + (b[first + 6] as f32);
+                v[tp * 2 + 1][h - q_heads - kv_heads][d8 * 8 + 7] = r1_7 + (b[first + 7] as f32);
+              }
             }
           }
         }
@@ -2943,122 +2950,109 @@ fn nn_embed_rows<M : Memory>(x : &mut Tensor<f32, [?, ?], Memory::M>, table : &T
   return;
 }
 
-/// The SwiGLU input of the experts of n positions, as `nn_moe_swiglu_q4` for each. The block of an
-/// expert serves every position that chose it, so the union of the experts comes from memory
-/// once. out[e][t] gets the output of expert e for position t, for each expert e in ids[t]; the
-/// other rows of `out` are not written.
-fn nn_moe_swiglu_q4_rows<M : Memory>(out : &mut Tensor<f32, [?, ?, ?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, ids : &Tensor<i32, [?, ?], Memory::M>, x : &Tensor<f32, [?, ?], Memory::M>, n : i32, k : i32, rows : i32, cols : i32, experts : i32) -> void {
-  assert(k > 0 && ids.extent(1) >= k && out.extent(0) >= experts && out.extent(2) >= rows, "nn_moe_swiglu_q4_rows: `ids` needs k values in a row, and `out` a row of rows values for each expert and position");
-  assert(n > 0 && ids.extent(0) >= n && x.extent(0) >= n && out.extent(1) >= n, "nn rows: `ids`, `x` and `out` need n rows");
-  assert(rows % 8 == 0, "nn_moe_swiglu_q4_rows: rows must be a multiple of 8");
+/// The SwiGLU input of the experts of n positions, as `nn_moe_swiglu_q4` for each:
+/// out[t * k + e] gets the output of expert ids[t][e] for position t. A block runs the body of
+/// `nn_moe_swiglu_q4` for one position and expert. The row-block loop is outside, so the blocks
+/// that read the same rows of an expert run close together, and the union of the experts comes
+/// from memory about once.
+fn nn_moe_swiglu_q4_rows<M : Memory>(out : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, ids : &Tensor<i32, [?, ?], Memory::M>, x : &Tensor<f32, [?, ?], Memory::M>, n : i32, k : i32, rows : i32, cols : i32, experts : i32) -> void {
+  assert(k > 0 && n > 0 && ids.extent(0) >= n && ids.extent(1) >= k && x.extent(0) >= n && out.extent(0) >= n * k && out.extent(1) >= rows, "nn_moe_swiglu_q4_rows: `ids` needs n rows of k values, `x` n rows, and `out` a row of rows values for each of the n * k");
+  assert(rows % 8 == 0, "nn_moe_swiglu_q4: rows must be a multiple of 8");
   nn_check_q4(w.len(), scales.len(), x.extent(1), experts * 2 * rows, cols);
   let words = cols / 8;
   let groups = cols / 32;
   spawn on(Topology::Device) {
-    for id in 0..experts across blocks {
-      for rb in 0..rows / 8 across blocks {
+    for rb in 0..rows / 8 across blocks {
+      for u in 0..n * k across blocks {
         let mut part = unsafe {
           Tensor<f32, [1, 16, 32], Memory::SMEM>::uninit()
         };
-        let mut used = unsafe { Tensor<f32, [32], Memory::SMEM>::uninit() };
-        for t in 0..n {
-          for s in 0..1 across subgroups {
-            for l in 0..32 across lanes(32) {
-              // Whether position t chose this expert. Every lane finds the same answer.
-              let mut hit = false;
-              for e in 0..k {
-                if ids[t][e] == id {
-                  hit = true;
-                }
+        let pos = u / k;
+        let e = u - pos * k;
+        // One SIMD group, so that the sums over its lanes need no barrier of the whole block.
+        for s in 0..1 across subgroups {
+          for l in 0..32 across lanes(32) {
+            // acc[0..8] are the gate rows, and acc[8..16] the up rows that pair with them.
+            let mut acc = unsafe { Tensor<f32, [16]>::uninit() };
+            for j in 0..16 {
+              acc[j] = 0.0;
+            }
+            let id = ids[pos][e];
+            assert(id >= 0 && id < experts, "nn_moe_swiglu_q4_rows: an id is not the number of an expert");
+            let first = id * 2 * rows + rb * 8 + s * 8;
+            let mut i = l * 2;
+            while i < words {
+              let c = i * 8;
+              let mut xp = unsafe { Tensor<f32, [16]>::uninit() };
+              for t in 0..16 {
+                xp[t] = x[pos][c + t];
               }
-              used[l] = 0.0;
-              if l == 0 && hit {
-                used[l] = 1.0;
-              }
-              let mut acc = unsafe { Tensor<f32, [16]>::uninit() };
+              let sum8 = 8.0 * (xp[0] + xp[1] + xp[2] + xp[3] + xp[4] + xp[5] + xp[6] + xp[7] + xp[8] + xp[9] + xp[10] + xp[11] + xp[12] + xp[13] + xp[14] + xp[15]);
+              xp[1] = xp[1] * 0.0625;
+              xp[2] = xp[2] * 0.00390625;
+              xp[3] = xp[3] * 0.000244140625;
+              xp[4] = xp[4] * 0.0000152587890625;
+              xp[5] = xp[5] * 0.00000095367431640625;
+              xp[6] = xp[6] * 0.000000059604644775390625;
+              xp[7] = xp[7] * 0.0000000037252902984619140625;
+              xp[9] = xp[9] * 0.0625;
+              xp[10] = xp[10] * 0.00390625;
+              xp[11] = xp[11] * 0.000244140625;
+              xp[12] = xp[12] * 0.0000152587890625;
+              xp[13] = xp[13] * 0.00000095367431640625;
+              xp[14] = xp[14] * 0.000000059604644775390625;
+              xp[15] = xp[15] * 0.0000000037252902984619140625;
               for j in 0..16 {
-                acc[j] = 0.0;
+                let row = first + j % 8 + (j / 8) * rows;
+                let at = row * words + i;
+                let w0 = w[at];
+                let w1 = w[at + 1];
+                let dot = ((w0 & 15u32) as f32) * xp[0] + ((w0 & 240u32) as f32) * xp[1] + ((w0 & 3840u32) as f32) * xp[2] + ((w0 & 61440u32) as f32) * xp[3] + ((w0 & 983040u32) as f32) * xp[4] + ((w0 & 15728640u32) as f32) * xp[5] + ((w0 & 251658240u32) as f32) * xp[6] + ((w0 & 4026531840u32) as f32) * xp[7] + ((w1 & 15u32) as f32) * xp[8] + ((w1 & 240u32) as f32) * xp[9] + ((w1 & 3840u32) as f32) * xp[10] + ((w1 & 61440u32) as f32) * xp[11] + ((w1 & 983040u32) as f32) * xp[12] + ((w1 & 15728640u32) as f32) * xp[13] + ((w1 & 251658240u32) as f32) * xp[14] + ((w1 & 4026531840u32) as f32) * xp[15];
+                acc[j] = acc[j] + (dot - sum8) * (scales[row * groups + i / 4] as f32);
               }
-              if hit {
-                let first = id * 2 * rows + rb * 8 + s * 8;
-                let mut i = l * 2;
-                while i < words {
-                  let c = i * 8;
-                  let mut xp = unsafe { Tensor<f32, [16]>::uninit() };
-                  for q in 0..16 {
-                    xp[q] = x[t][c + q];
-                  }
-                  let sum8 = 8.0 * (xp[0] + xp[1] + xp[2] + xp[3] + xp[4] + xp[5] + xp[6] + xp[7] + xp[8] + xp[9] + xp[10] + xp[11] + xp[12] + xp[13] + xp[14] + xp[15]);
-                  xp[1] = xp[1] * 0.0625;
-                  xp[2] = xp[2] * 0.00390625;
-                  xp[3] = xp[3] * 0.000244140625;
-                  xp[4] = xp[4] * 0.0000152587890625;
-                  xp[5] = xp[5] * 0.00000095367431640625;
-                  xp[6] = xp[6] * 0.000000059604644775390625;
-                  xp[7] = xp[7] * 0.0000000037252902984619140625;
-                  xp[9] = xp[9] * 0.0625;
-                  xp[10] = xp[10] * 0.00390625;
-                  xp[11] = xp[11] * 0.000244140625;
-                  xp[12] = xp[12] * 0.0000152587890625;
-                  xp[13] = xp[13] * 0.00000095367431640625;
-                  xp[14] = xp[14] * 0.000000059604644775390625;
-                  xp[15] = xp[15] * 0.0000000037252902984619140625;
-                  for j in 0..16 {
-                    let row = first + j % 8 + (j / 8) * rows;
-                    let at = row * words + i;
-                    let w0 = w[at];
-                    let w1 = w[at + 1];
-                    let dot = ((w0 & 15u32) as f32) * xp[0] + ((w0 & 240u32) as f32) * xp[1] + ((w0 & 3840u32) as f32) * xp[2] + ((w0 & 61440u32) as f32) * xp[3] + ((w0 & 983040u32) as f32) * xp[4] + ((w0 & 15728640u32) as f32) * xp[5] + ((w0 & 251658240u32) as f32) * xp[6] + ((w0 & 4026531840u32) as f32) * xp[7] + ((w1 & 15u32) as f32) * xp[8] + ((w1 & 240u32) as f32) * xp[9] + ((w1 & 3840u32) as f32) * xp[10] + ((w1 & 61440u32) as f32) * xp[11] + ((w1 & 983040u32) as f32) * xp[12] + ((w1 & 15728640u32) as f32) * xp[13] + ((w1 & 251658240u32) as f32) * xp[14] + ((w1 & 4026531840u32) as f32) * xp[15];
-                    acc[j] = acc[j] + (dot - sum8) * (scales[row * groups + i / 4] as f32);
-                  }
-                  i = i + 64;
-                }
-              }
-              part[s][0][l] = acc[0];
-              part[s][1][l] = acc[1];
-              part[s][2][l] = acc[2];
-              part[s][3][l] = acc[3];
-              part[s][4][l] = acc[4];
-              part[s][5][l] = acc[5];
-              part[s][6][l] = acc[6];
-              part[s][7][l] = acc[7];
-              part[s][8][l] = acc[8];
-              part[s][9][l] = acc[9];
-              part[s][10][l] = acc[10];
-              part[s][11][l] = acc[11];
-              part[s][12][l] = acc[12];
-              part[s][13][l] = acc[13];
-              part[s][14][l] = acc[14];
-              part[s][15][l] = acc[15];
+              i = i + 64;
             }
-            let found = lanes::sum(&used, 32);
-            if found > 0.5 {
-              let g0 = lanes::sum(&part[s][0], 32);
-              let u0 = lanes::sum(&part[s][8], 32);
-              out[id][t][rb * 8 + s * 8 + 0] = g0 / (1.0 + (0.0 - g0).fast_exp()) * u0;
-              let g1 = lanes::sum(&part[s][1], 32);
-              let u1 = lanes::sum(&part[s][9], 32);
-              out[id][t][rb * 8 + s * 8 + 1] = g1 / (1.0 + (0.0 - g1).fast_exp()) * u1;
-              let g2 = lanes::sum(&part[s][2], 32);
-              let u2 = lanes::sum(&part[s][10], 32);
-              out[id][t][rb * 8 + s * 8 + 2] = g2 / (1.0 + (0.0 - g2).fast_exp()) * u2;
-              let g3 = lanes::sum(&part[s][3], 32);
-              let u3 = lanes::sum(&part[s][11], 32);
-              out[id][t][rb * 8 + s * 8 + 3] = g3 / (1.0 + (0.0 - g3).fast_exp()) * u3;
-              let g4 = lanes::sum(&part[s][4], 32);
-              let u4 = lanes::sum(&part[s][12], 32);
-              out[id][t][rb * 8 + s * 8 + 4] = g4 / (1.0 + (0.0 - g4).fast_exp()) * u4;
-              let g5 = lanes::sum(&part[s][5], 32);
-              let u5 = lanes::sum(&part[s][13], 32);
-              out[id][t][rb * 8 + s * 8 + 5] = g5 / (1.0 + (0.0 - g5).fast_exp()) * u5;
-              let g6 = lanes::sum(&part[s][6], 32);
-              let u6 = lanes::sum(&part[s][14], 32);
-              out[id][t][rb * 8 + s * 8 + 6] = g6 / (1.0 + (0.0 - g6).fast_exp()) * u6;
-              let g7 = lanes::sum(&part[s][7], 32);
-              let u7 = lanes::sum(&part[s][15], 32);
-              out[id][t][rb * 8 + s * 8 + 7] = g7 / (1.0 + (0.0 - g7).fast_exp()) * u7;
-            }
+            part[s][0][l] = acc[0];
+            part[s][1][l] = acc[1];
+            part[s][2][l] = acc[2];
+            part[s][3][l] = acc[3];
+            part[s][4][l] = acc[4];
+            part[s][5][l] = acc[5];
+            part[s][6][l] = acc[6];
+            part[s][7][l] = acc[7];
+            part[s][8][l] = acc[8];
+            part[s][9][l] = acc[9];
+            part[s][10][l] = acc[10];
+            part[s][11][l] = acc[11];
+            part[s][12][l] = acc[12];
+            part[s][13][l] = acc[13];
+            part[s][14][l] = acc[14];
+            part[s][15][l] = acc[15];
           }
+          let g0 = lanes::sum(&part[s][0], 32);
+          let u0 = lanes::sum(&part[s][8], 32);
+          out[u][rb * 8 + s * 8 + 0] = g0 / (1.0 + (0.0 - g0).fast_exp()) * u0;
+          let g1 = lanes::sum(&part[s][1], 32);
+          let u1 = lanes::sum(&part[s][9], 32);
+          out[u][rb * 8 + s * 8 + 1] = g1 / (1.0 + (0.0 - g1).fast_exp()) * u1;
+          let g2 = lanes::sum(&part[s][2], 32);
+          let u2 = lanes::sum(&part[s][10], 32);
+          out[u][rb * 8 + s * 8 + 2] = g2 / (1.0 + (0.0 - g2).fast_exp()) * u2;
+          let g3 = lanes::sum(&part[s][3], 32);
+          let u3 = lanes::sum(&part[s][11], 32);
+          out[u][rb * 8 + s * 8 + 3] = g3 / (1.0 + (0.0 - g3).fast_exp()) * u3;
+          let g4 = lanes::sum(&part[s][4], 32);
+          let u4 = lanes::sum(&part[s][12], 32);
+          out[u][rb * 8 + s * 8 + 4] = g4 / (1.0 + (0.0 - g4).fast_exp()) * u4;
+          let g5 = lanes::sum(&part[s][5], 32);
+          let u5 = lanes::sum(&part[s][13], 32);
+          out[u][rb * 8 + s * 8 + 5] = g5 / (1.0 + (0.0 - g5).fast_exp()) * u5;
+          let g6 = lanes::sum(&part[s][6], 32);
+          let u6 = lanes::sum(&part[s][14], 32);
+          out[u][rb * 8 + s * 8 + 6] = g6 / (1.0 + (0.0 - g6).fast_exp()) * u6;
+          let g7 = lanes::sum(&part[s][7], 32);
+          let u7 = lanes::sum(&part[s][15], 32);
+          out[u][rb * 8 + s * 8 + 7] = g7 / (1.0 + (0.0 - g7).fast_exp()) * u7;
         }
       }
     }
@@ -3067,40 +3061,41 @@ fn nn_moe_swiglu_q4_rows<M : Memory>(out : &mut Tensor<f32, [?, ?, ?], Memory::M
 }
 
 /// The down projection of the experts of n positions, as `nn_moe_down_q4_add` for each, with the
-/// SwiGLU outputs that `nn_moe_swiglu_q4_rows` wrote: the input of expert e for position t is
-/// h[e][t].
-fn nn_moe_down_q4_add_rows<M : Memory>(y : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, ids : &Tensor<i32, [?, ?], Memory::M>, weights : &Tensor<f32, [?, ?], Memory::M>, h : &Tensor<f32, [?, ?, ?], Memory::M>, n : i32, k : i32, rows : i32, cols : i32, experts : i32) -> void {
-  assert(k > 0 && ids.extent(1) >= k && weights.extent(1) >= k && h.extent(0) >= experts && h.extent(2) >= cols, "nn_moe_down_q4_add_rows: `ids` and `weights` need k values in a row, and `h` a row of cols values for each expert and position");
-  assert(n > 0 && ids.extent(0) >= n && weights.extent(0) >= n && h.extent(1) >= n && y.extent(0) >= n, "nn rows: `ids`, `weights`, `h` and `y` need n rows");
+/// SwiGLU outputs that `nn_moe_swiglu_q4_rows` wrote: the input of expert ids[t][e] for position
+/// t is h[t * k + e]. A block runs the body of `nn_moe_down_q4_add` for one position.
+fn nn_moe_down_q4_add_rows<M : Memory>(y : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, ids : &Tensor<i32, [?, ?], Memory::M>, weights : &Tensor<f32, [?, ?], Memory::M>, h : &Tensor<f32, [?, ?], Memory::M>, n : i32, k : i32, rows : i32, cols : i32, experts : i32) -> void {
+  assert(k > 0 && n > 0 && ids.extent(0) >= n && ids.extent(1) >= k && weights.extent(0) >= n && weights.extent(1) >= k && h.extent(0) >= n * k && h.extent(1) >= cols && y.extent(0) >= n, "nn_moe_down_q4_add_rows: `ids` and `weights` need n rows of k values, `h` a row of cols values for each of the n * k, and `y` n rows");
   nn_check_q4(w.len(), scales.len(), cols, experts * rows, cols);
   assert(rows % 8 == 0 && y.extent(1) >= rows, "nn q4: rows must be a multiple of 8, and the output needs rows values");
   let words = cols / 8;
   let groups = cols / 32;
   spawn on(Topology::Device) {
     for rb in 0..rows / 8 across blocks {
-      let mut part = unsafe {
-        Tensor<f32, [1, 8, 32], Memory::SMEM>::uninit()
-      };
-      for t in 0..n {
+      for pos in 0..n across blocks {
+        let mut part = unsafe {
+          Tensor<f32, [1, 8, 32], Memory::SMEM>::uninit()
+        };
+        // One SIMD group, so that the sums over its lanes need no barrier of the whole block.
         for s in 0..1 across subgroups {
           for l in 0..32 across lanes(32) {
             let mut acc = unsafe { Tensor<f32, [8]>::uninit() };
             for j in 0..8 {
               acc[j] = 0.0;
             }
+            // Step `step` of the block takes 2 words of each row of expert step / pairs.
             let pairs = words / 2;
-            let mut p = l;
-            while p < k * pairs {
-              let e = p / pairs;
-              let i = (p - e * pairs) * 2;
-              let id = ids[t][e];
+            let mut step = l;
+            while step < k * pairs {
+              let e = step / pairs;
+              let i = (step - e * pairs) * 2;
+              let id = ids[pos][e];
               assert(id >= 0 && id < experts, "nn_moe_down_q4_add_rows: an id is not the number of an expert");
               let first = id * rows + rb * 8;
-              let we = weights[t][e];
+              let we = weights[pos][e];
               let c = i * 8;
               let mut xp = unsafe { Tensor<f32, [16]>::uninit() };
-              for q in 0..16 {
-                xp[q] = h[id][t][c + q];
+              for t in 0..16 {
+                xp[t] = h[pos * k + e][c + t];
               }
               let sum8 = 8.0 * (xp[0] + xp[1] + xp[2] + xp[3] + xp[4] + xp[5] + xp[6] + xp[7] + xp[8] + xp[9] + xp[10] + xp[11] + xp[12] + xp[13] + xp[14] + xp[15]);
               xp[1] = xp[1] * 0.0625;
@@ -3125,7 +3120,7 @@ fn nn_moe_down_q4_add_rows<M : Memory>(y : &mut Tensor<f32, [?, ?], Memory::M>, 
                 let dot = ((w0 & 15u32) as f32) * xp[0] + ((w0 & 240u32) as f32) * xp[1] + ((w0 & 3840u32) as f32) * xp[2] + ((w0 & 61440u32) as f32) * xp[3] + ((w0 & 983040u32) as f32) * xp[4] + ((w0 & 15728640u32) as f32) * xp[5] + ((w0 & 251658240u32) as f32) * xp[6] + ((w0 & 4026531840u32) as f32) * xp[7] + ((w1 & 15u32) as f32) * xp[8] + ((w1 & 240u32) as f32) * xp[9] + ((w1 & 3840u32) as f32) * xp[10] + ((w1 & 61440u32) as f32) * xp[11] + ((w1 & 983040u32) as f32) * xp[12] + ((w1 & 15728640u32) as f32) * xp[13] + ((w1 & 251658240u32) as f32) * xp[14] + ((w1 & 4026531840u32) as f32) * xp[15];
                 acc[j] = acc[j] + we * (dot - sum8) * (scales[row * groups + i / 4] as f32);
               }
-              p = p + 32;
+              step = step + 32;
             }
             part[s][0][l] = acc[0];
             part[s][1][l] = acc[1];
@@ -3144,14 +3139,14 @@ fn nn_moe_down_q4_add_rows<M : Memory>(y : &mut Tensor<f32, [?, ?], Memory::M>, 
           let s5 = lanes::sum(&part[s][5], 32);
           let s6 = lanes::sum(&part[s][6], 32);
           let s7 = lanes::sum(&part[s][7], 32);
-          y[t][rb * 8] = y[t][rb * 8] + s0;
-          y[t][rb * 8 + 1] = y[t][rb * 8 + 1] + s1;
-          y[t][rb * 8 + 2] = y[t][rb * 8 + 2] + s2;
-          y[t][rb * 8 + 3] = y[t][rb * 8 + 3] + s3;
-          y[t][rb * 8 + 4] = y[t][rb * 8 + 4] + s4;
-          y[t][rb * 8 + 5] = y[t][rb * 8 + 5] + s5;
-          y[t][rb * 8 + 6] = y[t][rb * 8 + 6] + s6;
-          y[t][rb * 8 + 7] = y[t][rb * 8 + 7] + s7;
+          y[pos][rb * 8] = y[pos][rb * 8] + s0;
+          y[pos][rb * 8 + 1] = y[pos][rb * 8 + 1] + s1;
+          y[pos][rb * 8 + 2] = y[pos][rb * 8 + 2] + s2;
+          y[pos][rb * 8 + 3] = y[pos][rb * 8 + 3] + s3;
+          y[pos][rb * 8 + 4] = y[pos][rb * 8 + 4] + s4;
+          y[pos][rb * 8 + 5] = y[pos][rb * 8 + 5] + s5;
+          y[pos][rb * 8 + 6] = y[pos][rb * 8 + 6] + s6;
+          y[pos][rb * 8 + 7] = y[pos][rb * 8 + 7] + s7;
         }
       }
     }
