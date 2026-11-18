@@ -334,8 +334,8 @@ static uint64_t runDirect(const char *image, size_t imageSize,
   }
   if (takesAssertFlag) {
     void *flag = failedAssert;
-    L0_CHECK(zeKernelSetArgumentValue(kernel, kOperands * 7, sizeof(void *),
-                                      &flag));
+    L0_CHECK(
+        zeKernelSetArgumentValue(kernel, kOperands * 7, sizeof(void *), &flag));
   }
 
   ze_group_count_t groups = {kGroups, 1, 1};
