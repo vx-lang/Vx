@@ -1450,7 +1450,7 @@ impl<'a> Parser<'a> {
                                         let digits =
                                             match n_str.find(|c: char| c.is_ascii_alphabetic()) {
                                                 Some(pos) => &n_str[..pos],
-                                                None => n_str.as_ref(),
+                                                None => n_str,
                                             };
                                         match digits.parse::<u64>() {
                                             Ok(val) => max_registers = Some(val),
