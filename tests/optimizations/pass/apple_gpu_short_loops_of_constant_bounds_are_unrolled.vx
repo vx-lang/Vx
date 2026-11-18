@@ -1,0 +1,40 @@
+// The Metal compiler does not unroll a short loop by itself. So the Metal code generator asks for
+// it before a loop of constant bounds with at most 16 passes, as llama.cpp's kernels do. Here the
+// loop of 8 passes gets `#pragma clang loop unroll(full)`. The loop of 17 passes and the loop to
+// `n` do not.
+//
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx --emit-msl -o %t.metal && FileCheck %s --input-file=%t.metal
+//
+// CHECK-DAG: int [[EIGHT:v[0-9]+]] = (int)8u;
+// CHECK-DAG: int [[SEVENTEEN:v[0-9]+]] = (int)17u;
+// CHECK: #pragma clang loop unroll(full)
+// CHECK-NEXT: for (int {{v[0-9]+}} = {{v[0-9]+}}; {{v[0-9]+}} < [[EIGHT]];
+// CHECK-NOT: #pragma
+// CHECK: for (int {{v[0-9]+}} = {{v[0-9]+}}; {{v[0-9]+}} < [[SEVENTEEN]];
+// CHECK-NOT: #pragma
+// CHECK: for (int {{v[0-9]+}} = {{v[0-9]+}}; {{v[0-9]+}} < p2;
+// CHECK-NOT: #pragma
+
+pub fn sums(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      for l in 0..32 across lanes(32) {
+        let i = b * 32 + l;
+        let mut eight : f32 = 0.0;
+        for j in 0..8 {
+          eight = eight + x[i * 8 + j];
+        }
+        let mut seventeen : f32 = 0.0;
+        for j in 0..17 {
+          seventeen = seventeen + x[j];
+        }
+        let mut some : f32 = 0.0;
+        for j in 0..n {
+          some = some + x[j];
+        }
+        out[i] = eight + seventeen + some;
+      }
+    }
+  }
+  return;
+}

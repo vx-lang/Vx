@@ -1,0 +1,116 @@
+//===- lane_copies_of_rows_by_id.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `lanes::copy_rows_async(&mut tile, &x, &ids, [first, col])` copies row `ids[first + r]` of `x`,
+// from column `col`, into row `r` of the tile. A row whose id is not a row of `x`, or past the end
+// of `ids`, is zeros, and so is a column past the end of `x`.
+//
+// Element `[r][c]` of `x` is `100 * r + c + 1`, and `ids` is `[3, -1, 9, 10, 0, 5, 2, 7]`. A block
+// copies three 4x4 tiles, and the host prints the first and the last element of each row. Then
+// each of two subgroups copies four rows of `bf16` into its own row of a tensor, with ids from
+// its own row of a tile of ids. `h[r][c]` is `8 * r + c % 8`, and the host prints column 9.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+
+// Ids 9, 10, 0 and 5 from column 3. There is no row 10.
+// CHECK: tile 0 row 0: 904 907
+// CHECK-NEXT: tile 0 row 1: 0 0
+// CHECK-NEXT: tile 0 row 2: 4 7
+// CHECK-NEXT: tile 0 row 3: 504 507
+// Ids 5, 2 and 7 from column 8, and the place after the last id. Columns 10 and 11 are past the
+// end.
+// CHECK-NEXT: tile 1 row 0: 509 0
+// CHECK-NEXT: tile 1 row 1: 209 0
+// CHECK-NEXT: tile 1 row 2: 709 0
+// CHECK-NEXT: tile 1 row 3: 0 0
+// Ids 3, -1, 9 and 10 from column 0.
+// CHECK-NEXT: tile 2 row 0: 301 304
+// CHECK-NEXT: tile 2 row 1: 0 0
+// CHECK-NEXT: tile 2 row 2: 901 904
+// CHECK-NEXT: tile 2 row 3: 0 0
+// Subgroup 0 has ids 1, 4, -5 and 9, and subgroup 1 has ids 6, 0, 2 and 3.
+// CHECK-NEXT: subgroup 0: 9 33 0 73
+// CHECK-NEXT: subgroup 1: 49 1 17 25
+
+fn main() -> i32 {
+  let mut src = Tensor<f32, [10, 10]>::fill(0.0);
+  for r in 0..10 {
+    for c in 0..10 {
+      src[r][c] = (100 * r + c + 1) as f32;
+    }
+  }
+  let x = transfer(src, Memory::HBM);
+  let mut hsrc = Tensor<bf16, [10, 16]>::fill(0.0 as bf16);
+  for r in 0..10 {
+    for c in 0..16 {
+      hsrc[r][c] = (8 * r + c % 8) as bf16;
+    }
+  }
+  let h = transfer(hsrc, Memory::HBM);
+  let mut list = Tensor<i32, [16]>::fill(0);
+  let values = [3, -1, 9, 10, 0, 5, 2, 7, 1, 4, -5, 9, 6, 0, 2, 3];
+  for i in 0..16 {
+    list[i] = values[i];
+  }
+  let id_list = transfer(list, Memory::HBM);
+  let mut out = transfer(Tensor<f32, [48]>::fill(-1.0), Memory::HBM);
+  let mut columns = transfer(Tensor<f32, [8]>::fill(-1.0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut ids = unsafe { Tensor<i32, [8], Memory::SMEM>::uninit() };
+      for t in 0..8 across lanes(32) {
+        ids[t] = id_list[t];
+      }
+      let mut tiles = unsafe {
+        Tensor<f32, [2, 4, 4], Memory::SMEM>::uninit()
+      };
+      let first = lanes::copy_rows_async(&mut tiles[0], &x, &ids, [2, 3]);
+      let second = lanes::copy_rows_async(&mut tiles[1], &x, &ids, [5, 8]);
+      first.wait();
+      for t in 0..16 across lanes(32) {
+        out[t] = tiles[0][t / 4][t % 4];
+      }
+      second.wait();
+      for t in 0..16 across lanes(32) {
+        out[16 + t] = tiles[1][t / 4][t % 4];
+      }
+      let third = lanes::copy_rows_async(&mut tiles[0], &x, &ids, [0, 0]);
+      third.wait();
+      for t in 0..16 across lanes(32) {
+        out[32 + t] = tiles[0][t / 4][t % 4];
+      }
+      let mut row_ids = unsafe { Tensor<i32, [2, 4], Memory::SMEM>::uninit() };
+      let mut part = unsafe {
+        Tensor<bf16, [2, 4, 16], Memory::SMEM>::uninit()
+      };
+      for w in 0..2 across subgroups {
+        for t in 0..4 across lanes(32) {
+          row_ids[w][t] = id_list[8 + 4 * w + t];
+        }
+        let copy = lanes::copy_rows_async(&mut part[w], &h, &row_ids[w], [0, 0]);
+        copy.wait();
+        for t in 0..4 across lanes(32) {
+          columns[w * 4 + t] = part[w][t][9] as f32;
+        }
+      }
+    }
+  }
+  let o = transfer(out, Memory::CPU_DRAM);
+  for tile in 0..3 {
+    for row in 0..4 {
+      let at = tile * 16 + row * 4;
+      println!("tile {} row {}: {} {}", tile, row, o[at], o[at + 3]);
+    }
+  }
+  let c = transfer(columns, Memory::CPU_DRAM);
+  for w in 0..2 {
+    let at = w * 4;
+    println!("subgroup {}: {} {} {} {}", w, c[at], c[at + 1], c[at + 2], c[at + 3]);
+  }
+  return 0;
+}

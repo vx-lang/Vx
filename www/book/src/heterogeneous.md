@@ -98,8 +98,10 @@ let tile = first.wait();
 ```
 
 A program must wait for each token. A token that the program drops with no `.wait()` gets the
-error E6036. Today the copy ends before `transfer_async` returns, so `.wait()` only gives the
-tensor. A later runtime will run the copy in the background, and the program will not change.
+error E6036. On an NVIDIA GPU, the copy runs in the background, and a kernel can run during it.
+The copy takes its data from host memory before `transfer_async` returns, so the program can
+change or free that memory after the call. On other devices the copy ends before `transfer_async`
+returns.
 
 A `spawn on` can also be in a task. So a `tasks` block can give work to several devices, one task
 for each device (see [Tasks and channels](tasks.md)).

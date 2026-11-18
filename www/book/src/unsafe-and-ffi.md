@@ -32,6 +32,10 @@ Two kinds, matching the two kinds of reference:
 | `*const T` | A raw pointer you may read through. |
 | `*mut T` | A raw pointer you may read and write through. |
 
+A write through a `*const T` is error E4006, and so is a `&mut` borrow through one. The same is
+true for a view of memory made from a `*const T`, such as `tensor_view_2d(p, rows, cols)`. To write,
+cast the pointer: `p as *mut T`.
+
 Unlike `&T` and `&mut T`, raw pointers are not tracked by the borrow checker. Nothing stops two
 `*mut T` pointing at the same value. That is exactly why dereferencing one needs `unsafe`.
 

@@ -87,12 +87,17 @@ struct Walk<'g> {
     templates: HashSet<String>,
     /// The size of the tensor of each lane reduction, from the type checker.
     lane_sizes: HashMap<Span, u64>,
+    /// The shape of the tile of each `lanes::copy` out of shared memory, from the type checker.
+    lane_copies_out: HashMap<Span, Vec<u64>>,
     /// The lane reductions in a place that allows them.
     lane_calls: Vec<LaneCall>,
     /// The `@` of each lane matmul in the code of a subgroup.
     lane_matmuls: HashSet<Span>,
     /// The parameters of the function that are `&` tensors, not `&mut`.
     read_only: HashSet<String>,
+    /// The parameters that are `Distinct` tensors, with the type of their elements. A name that
+    /// the body binds again is not here.
+    distinct: HashMap<String, ElementType>,
 }
 
 /// A lane reduction in the code of a level.
@@ -119,6 +124,26 @@ impl crate::hir::TypeChecker<'_> {
                     if matches!(**inner, crate::syntax::Type::Tensor(..)))
             })
             .map(|(name, _)| name.as_ref().to_string())
+            .collect();
+        let bound = bound_names(body);
+        let distinct = params
+            .iter()
+            .filter(|(name, _)| !bound.contains(name.as_ref()))
+            .filter_map(|(name, ty)| {
+                let ty = match ty {
+                    crate::syntax::Type::Borrow { inner, .. } => inner,
+                    ty => ty,
+                };
+                match ty {
+                    crate::syntax::Type::Distinct(t) => match &**t {
+                        crate::syntax::Type::Tensor(el, ..) => {
+                            Some((name.as_ref().to_string(), el.clone()))
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            })
             .collect();
         let shared = self
             .env
@@ -147,9 +172,11 @@ impl crate::hir::TypeChecker<'_> {
                 .map(|k| k.as_ref().to_string())
                 .collect(),
             lane_sizes: self.lane_reductions.clone(),
+            lane_copies_out: self.lane_copies_out.clone(),
             lane_calls: Vec::new(),
             lane_matmuls: HashSet::new(),
             read_only,
+            distinct,
         };
         walk.stmts(body, &Ctx::default());
         mark_stmts(body, &walk.found);
@@ -167,6 +194,59 @@ impl crate::hir::TypeChecker<'_> {
             );
         }
     }
+}
+
+/// The names that a `let`, a loop, a closure or a `match` arm in `stmts` binds, at any depth.
+fn bound_names(stmts: &[Statement]) -> HashSet<String> {
+    fn pattern(p: &crate::syntax::expr::Pattern, out: &mut HashSet<String>) {
+        match p {
+            crate::syntax::expr::Pattern::Identifier(n) => {
+                out.insert(n.as_ref().to_string());
+            }
+            crate::syntax::expr::Pattern::EnumVariant(_, _, Some(ps)) => {
+                ps.iter().for_each(|p| pattern(p, out));
+            }
+            _ => {}
+        }
+    }
+    fn walk(stmts: &[Statement], out: &mut HashSet<String>) {
+        for s in stmts {
+            match s {
+                Statement::LetDecl(l) => {
+                    out.insert(l.name.as_ref().to_string());
+                }
+                Statement::ForLoop(f) => {
+                    out.insert(f.iter.to_string());
+                    walk(&f.body, out);
+                }
+                Statement::Loop(l) => walk(&l.body, out),
+                _ => {}
+            }
+        }
+        crate::syntax::visit_exprs(stmts, &mut |e| match e {
+            Expr::If(i) => {
+                walk(&i.then_block, out);
+                if let Some(b) = &i.else_block {
+                    walk(b, out);
+                }
+            }
+            Expr::Match(m) => m.arms.iter().for_each(|a| {
+                pattern(&a.pattern, out);
+                walk(&a.body, out);
+            }),
+            Expr::UnsafeBlock(b) => walk(&b.stmts, out),
+            Expr::ComptimeBlock(b) => walk(&b.stmts, out),
+            Expr::SpawnOn(b) => walk(&b.stmts, out),
+            Expr::TaskBlock(b) => walk(&b.stmts, out),
+            Expr::Closure(c) => c.params.iter().for_each(|(n, _)| {
+                out.insert(n.as_ref().to_string());
+            }),
+            _ => {}
+        });
+    }
+    let mut out = HashSet::new();
+    walk(stmts, &mut out);
+    out
 }
 
 /// The integer that `e` is when it is a literal.
@@ -219,6 +299,34 @@ fn kind_word(kind: LevelKind) -> &'static str {
 impl Walk<'_> {
     fn error(&mut self, msg: String, at: Span) {
         self.errors.push((msg, at));
+    }
+
+    /// An `mlir!` block with `threads : N`. Every thread of the threadgroup runs it, so it is in
+    /// the code of a loop of blocks, and the block of the topology has `N` lanes.
+    fn threadgroup_block(&mut self, m: &crate::syntax::expr::InlineMlirExpr, ctx: &Ctx) {
+        if !ctx.axes.last().is_some_and(|a| a.kind == LevelKind::Blocks) {
+            self.error(
+                "an `mlir!` block with `threads` must be in the code of a loop of blocks, outside \
+                 its subgroup and lane loops, because every thread of the block runs it"
+                    .to_string(),
+                m.span,
+            );
+            return;
+        }
+        let n = u64::from(m.threads.unwrap_or(1));
+        let region = ctx.region.as_ref();
+        let max = region
+            .and_then(|r| r.levels.as_ref())
+            .and_then(|levels| levels.iter().find_map(|l| l.max_lanes));
+        if let (Some(max), Some(r)) = (max, region) {
+            if n > max {
+                let message = format!(
+                    "this `mlir!` block asks for {n} threads, but a block of `{}` has at most {max}",
+                    r.name
+                );
+                self.error(message, m.span);
+            }
+        }
     }
 
     fn stmts(&mut self, stmts: &[Statement], ctx: &Ctx) {
@@ -301,9 +409,7 @@ impl Walk<'_> {
                 continue;
             }
             let start = i;
-            while i < stmts.len() && !across_lanes::holds_across(&stmts[i]) {
-                i += 1;
-            }
+            i = across_lanes::stretch_end(stmts, start, &lane0);
             across_lanes::runs_on_lane0(&stmts[start..i], &mut lane0);
             after.extend(std::iter::repeat_n(lane0.clone(), i - start));
         }
@@ -400,6 +506,9 @@ impl Walk<'_> {
     }
 
     fn stmt(&mut self, s: &Statement, ctx: &Ctx) {
+        if let Some(m) = across_lanes::threadgroup_block(s) {
+            self.threadgroup_block(m, ctx);
+        }
         match s {
             Statement::ForLoop(f) => {
                 self.expr(&f.iterable, ctx);
@@ -711,7 +820,7 @@ impl Walk<'_> {
             }
         });
         for (name, at) in elsewhere {
-            let place = if lanes::lane_routine(&name).is_some_and(|(op, _)| op.is_statement()) {
+            let place = if lanes::lane_routine(&name).is_some_and(|r| r.is_statement()) {
                 "a statement of its own"
             } else {
                 "the whole value of a `let`"
@@ -727,13 +836,27 @@ impl Walk<'_> {
         }
         let calls = std::mem::take(&mut self.lane_calls);
         for c in &calls {
-            let copy = lanes::lane_routine(&c.name).is_some_and(|(op, _)| {
-                matches!(op, lanes::LaneOp::CopyAsync | lanes::LaneOp::CopyWait)
+            let copy = lanes::lane_routine(&c.name).is_some_and(|r| {
+                matches!(
+                    r.op,
+                    lanes::LaneOp::CopyAsync
+                        | lanes::LaneOp::CopyWait
+                        | lanes::LaneOp::Copy
+                        | lanes::LaneOp::Fill
+                        | lanes::LaneOp::ScaleRows
+                )
             });
             if copy {
                 // The copy reports the size, so its wait does not report it again.
-                let start = lanes::lane_routine(&c.name)
-                    .is_some_and(|(op, _)| op == lanes::LaneOp::CopyAsync);
+                let start = lanes::lane_routine(&c.name).is_some_and(|r| {
+                    matches!(
+                        r.op,
+                        lanes::LaneOp::CopyAsync
+                            | lanes::LaneOp::Copy
+                            | lanes::LaneOp::Fill
+                            | lanes::LaneOp::ScaleRows
+                    )
+                });
                 if start && c.scope == LevelKind::Subgroups {
                     self.needs_subgroups_of_32(c);
                 }
@@ -742,7 +865,7 @@ impl Walk<'_> {
             let Some(&n) = self.lane_sizes.get(&c.at) else {
                 continue;
             };
-            if lanes::lane_routine(&c.name).is_some_and(|(op, _)| op.is_sort()) {
+            if lanes::lane_routine(&c.name).is_some_and(|r| r.op.is_sort()) {
                 self.lane_sort_sizes(c, n, &block_lanes);
                 continue;
             }
@@ -1282,6 +1405,8 @@ impl Walk<'_> {
             kind_word(level.kind),
             &self.contracts,
             &self.templates,
+            &self.lane_copies_out,
+            &self.distinct,
         ) {
             Err((why, at)) => self.error(why, at),
             Ok(ends) => {

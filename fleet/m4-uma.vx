@@ -85,11 +85,19 @@ Topology Device {
   // data types" -- so no f64 here, unlike every other row in the fleet. `bfloat` is Metal
   // 3.1 and later. No fp8 or fp4 type exists in the language.
   dtypes: [f32, bf16, f16, i8, u8, i16, u16, i32, u32, i64, u64, bool],
-  transfer Memory::CPU_DRAM -> Memory::HBM : 120 GB/s,
-  // The CPU reads the GPU's memory directly. A transfer of a `&` tensor back to the CPU is
-  // still a copy for the type system, but when the program only reads the copy, the CPU
-  // waits for the GPU and reads the tensor in place. An owned tensor is still copied.
+  // The CPU and the GPU share one memory, so each reads the other's memory directly. A
+  // `transfer` of a tensor is still a copy for the type system. When the program only reads
+  // the copy of a `&` tensor, it reads the tensor in place. An owned tensor is still copied.
+  transfer Memory::CPU_DRAM -> Memory::HBM : shared,
   transfer Memory::HBM -> Memory::CPU_DRAM : shared,
   transfer Memory::HBM -> Memory::L2,
   transfer Memory::L2 -> Memory::SMEM
+}
+// spec: CoreML on Apple silicon plans no f32 matmul for the Neural Engine at any
+// size. The engine represents f16 for matrix work, and the scalar types
+// cover loop counters and shapes. A more detailed spec for this part would point
+// to the CoreML specification here.
+Topology NPU {
+  memory: Memory::NPU_HBM,
+  dtypes: [f16, i32, u32, bool]
 }

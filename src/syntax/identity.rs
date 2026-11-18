@@ -176,7 +176,8 @@ pub(crate) fn specialization_type_name(ty: &Type) -> Option<String> {
             | Type::Borrow { inner, .. }
             | Type::Ref(inner, _)
             | Type::Pinned(inner, _)
-            | Type::Verified(inner) => {
+            | Type::Verified(inner)
+            | Type::Distinct(inner) => {
                 visit(inner, &format!("{path}/inner"), entries)?;
             }
             Type::GenericInstance(base, args) => {

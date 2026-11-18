@@ -545,6 +545,7 @@ impl<'a> TypeChecker<'a> {
                 Type::Tensor(_, _, Some(_)) | Type::Pinned(..) => {}
                 Type::Ref(inner, _)
                 | Type::Verified(inner)
+                | Type::Distinct(inner)
                 | Type::Borrow { inner, .. }
                 | Type::Pointer(inner, _, _) => stack.push(*inner),
                 Type::Struct(..) | Type::GenericInstance(..) => {
@@ -824,25 +825,56 @@ impl<'a> TypeChecker<'a> {
             (rounded, cap)
         };
         let (rounded, cap) = sized;
+        // A tile of f32 in shared memory, with a row for each subgroup, which a lane matmul may
+        // keep in registers. The checker knows that only at the end of the function.
+        let shared_tile = {
+            let h = crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
+            let shared = h.descriptor(space).is_some_and(|d| {
+                matches!(
+                    d.scope,
+                    Some(crate::syntax::Scope::Sm | crate::syntax::Scope::Cta)
+                )
+            });
+            let sizes: Option<Vec<u64>> = dims
+                .iter()
+                .map(|d| d.literal().and_then(|v| v.parse::<u64>().ok()))
+                .collect();
+            sizes
+                .filter(|_| shared && copies == 1)
+                .map(|s| (elem.clone(), s))
+        };
+        let may_be_registers = record
+            && self.traffic.tile_holder.is_some()
+            && shared_tile
+                .as_ref()
+                .is_some_and(|(e, s)| *e == ElementType::F32 && s.len() == 3);
+        let mut held_e6009 = None;
         // Precise per-tile check: a single tile larger than the whole space is always wrong.
         if rounded > cap {
-            self.errors
-                .error_with_code(
-                    crate::diagnostic::DiagnosticCode::E6009,
-                    format!(
-                        "{context} needs {rounded} bytes but memory space '{}' has capacity {cap} bytes",
-                        space.name()
-                    ),
-                    // The room of a channel is at the `channel` call.
-                    (copies > 1).then(|| crate::diagnostic::SourceSpan::from_ast_span(span)),
-                )
-                // Machine-readable form of the same verdict, for `--diagnostics-json` (#282).
-                .facts = Some(crate::diagnostic::DiagnosticFacts::Capacity {
+            let message = format!(
+                "{context} needs {rounded} bytes but memory space '{}' has capacity {cap} bytes",
+                space.name()
+            );
+            // The room of a channel is at the `channel` call.
+            let at = (copies > 1).then(|| crate::diagnostic::SourceSpan::from_ast_span(span));
+            // Machine-readable form of the same verdict, for `--diagnostics-json` (#282).
+            let facts = crate::diagnostic::DiagnosticFacts::Capacity {
                 space: space.name(),
                 required_bytes: rounded,
                 available_bytes: cap,
                 tiles: None,
-            });
+            };
+            if may_be_registers {
+                held_e6009 = Some(crate::hir::check_state::HeldE6009 {
+                    message,
+                    span: at,
+                    facts,
+                });
+            } else {
+                self.errors
+                    .error_with_code(crate::diagnostic::DiagnosticCode::E6009, message, at)
+                    .facts = Some(facts);
+            }
         }
         if !record {
             return;
@@ -916,6 +948,8 @@ impl<'a> TypeChecker<'a> {
                 tasks: self.tasks.task_chain(),
                 holder: self.traffic.tile_holder.clone(),
                 end,
+                shared_tile,
+                held_e6009,
             },
         );
     }
@@ -1341,6 +1375,7 @@ impl<'a> TypeChecker<'a> {
             | Type::Borrow { inner, .. }
             | Type::Pointer(inner, _, _)
             | Type::Verified(inner)
+            | Type::Distinct(inner)
             | Type::Pinned(inner, _) => self.collect_placed_tensors(inner, out),
             // A channel end holds no tensor: `channel` counts the room of the channel.
             Type::GenericInstance(base, _) if Self::is_channel_end(base) => return,
@@ -1677,6 +1712,13 @@ impl<'a> TypeChecker<'a> {
             && self
                 .transfer_cost_graph
                 .is_shared_edge(&source_mem, &target_mem);
+        // `transfer(&v, M)` of a view made from a `*const` pointer: nothing can write `v`.
+        let source_place = match &*t.expr {
+            Expr::Borrow(b) => &*b.expr,
+            e => e,
+        };
+        t.read_only_source = t.shared && self.const_pointer_in_place(source_place).is_some();
+        t.source_borrowed_for_call = t.shared && self.borrowed_for_the_call(source_place);
 
         // Capacity: a statically-shaped tensor transferred into a declared space must fit.
         if let Some((e, d)) = Self::tensor_of(&inner_ty) {
@@ -2374,6 +2416,8 @@ impl<'a> TypeChecker<'a> {
                 lowering: None,
                 is_async: false,
                 shared: false,
+                read_only_source: false,
+                source_borrowed_for_call: false,
                 span: t.span,
             });
         }
@@ -2387,6 +2431,8 @@ impl<'a> TypeChecker<'a> {
             lowering: None,
             is_async: t.is_async,
             shared: false,
+            read_only_source: false,
+            source_borrowed_for_call: false,
             span: t.span,
         });
         // Propagate the relaxed marker so each rewritten single-hop transfer is checked with the
@@ -2503,6 +2549,13 @@ impl<'a> TypeChecker<'a> {
             // and would not assign to one another. `Pinned` also carries only a topology, so the
             // space the transfer named was not recorded on the value at all.
             Type::Tensor(el, dims, _) => Type::Tensor(el, dims, Some(placement)),
+            // A copy has the same values, so it is still `Distinct`.
+            Type::Distinct(inner) if matches!(*inner, Type::Tensor(..)) => {
+                let Type::Tensor(el, dims, _) = *inner else {
+                    unreachable!("matched above")
+                };
+                Type::Distinct(Box::new(Type::Tensor(el, dims, Some(placement))))
+            }
             Type::Verified(_inner) => {
                 if let Expr::Transfer(t) = expr {
                     let inner_pinned = self.check_expr_type_flag(&mut t.expr, consume);

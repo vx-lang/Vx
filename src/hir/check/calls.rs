@@ -743,11 +743,13 @@ impl<'a> TypeChecker<'a> {
                 continue;
             }
             if !*is_borrow_lit {
+                // What the result keeps of an argument behind a `&` is a shared borrow, also
+                // when the result is a `*mut`: nothing mutable comes through a `&`.
                 self.track_reference_arg_borrow(
                     base,
                     path.clone(),
                     *is_mut_param,
-                    plan.result_is_mut || (plan.ret_holds_ref && *is_mut_param),
+                    *is_mut_param && (plan.result_is_mut || plan.ret_holds_ref),
                     persists(*i),
                     span,
                 );
@@ -904,6 +906,55 @@ impl<'a> TypeChecker<'a> {
                 return Type::Struct("void".into(), None);
             }
         }
+        // `Distinct::check(t)` is a call of the function in `core::distinct` for the element type
+        // of `t`, which the parser imports for such a program.
+        if let Expr::FunctionCall(fc) = expr {
+            if fc.name.as_ref() == "Distinct::check" {
+                let ty = match fc.args.as_slice() {
+                    [t] => self.operand_type(t),
+                    _ => Type::Unknown,
+                };
+                if let Type::Tensor(_, _, Some(p)) = &ty {
+                    if p.space != crate::syntax::MemorySpace::CPUDRAM {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E3004,
+                            format!(
+                                "`Distinct::check(t)` reads the values of `t` on the CPU, but `t` \
+                                 is in {}. Check the tensor before the transfer, and transfer \
+                                 the `Distinct` tensor",
+                                p.space.name()
+                            ),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&fc.span)),
+                        );
+                        return Type::Unknown;
+                    }
+                }
+                let checked = match fc.args.as_slice() {
+                    [_] => match ty {
+                        Type::Tensor(el, dims, _) if dims.len() == 1 => match el {
+                            ElementType::I32 => Some("distinct_check_i32"),
+                            ElementType::I64 => Some("distinct_check_i64"),
+                            ElementType::U32 => Some("distinct_check_u32"),
+                            ElementType::U64 => Some("distinct_check_u64"),
+                            _ => None,
+                        },
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let Some(name) = checked else {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3004,
+                        "`Distinct::check(t)` takes one tensor with one dimension of `i32`, \
+                         `i64`, `u32` or `u64`, by value"
+                            .to_string(),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&fc.span)),
+                    );
+                    return Type::Unknown;
+                };
+                fc.name = name.into();
+            }
+        }
         // A closure literal written as the `body` of `within` runs within its time limit.
         if let Expr::FunctionCall(fc) = expr {
             if fc.name.rsplit("::").next() == Some("within") && fc.args.len() == 2 {
@@ -979,7 +1030,7 @@ impl<'a> TypeChecker<'a> {
                 // storage behind it; it takes nothing (#336). `Verified(t)` is `t` itself,
                 // wrapped, so it moves `t`.
                 let is_builtin_ref = resolved_name == "print".into()
-                    || resolved_name == "tensor_view_2d".into()
+                    || crate::syntax::expr::tensor_view_rank(resolved_name.as_ref()).is_some()
                     || resolved_name == "matmul_into".into();
                 // A call moves what it takes by value, whatever happens to its own result: inside
                 // `print(take(t))`, `t` is moved into `take` though `print` takes nothing.
@@ -996,6 +1047,7 @@ impl<'a> TypeChecker<'a> {
                 let lane_bases: Vec<(String, Option<Vec<BorrowRecord>>)> =
                     if resolved_name.as_ref().starts_with("lanes::")
                         && resolved_name.as_ref() != "lanes::copy_async"
+                        && resolved_name.as_ref() != crate::hir::check::lanes::COPY_ROWS_ASYNC
                         && !self.speculating
                     {
                         args.iter()
@@ -1026,8 +1078,10 @@ impl<'a> TypeChecker<'a> {
                 let errors_before_args = self.errors.inner.len();
                 // A function written in Vx gets the handle of a tensor. Its own body is checked
                 // where it runs. A built-in such as `print` reads the elements here.
+                // `Distinct(t)` and `Verified(t)` wrap `t` and read nothing.
                 let declared = self.env.functions.contains_key(base_name.as_ref())
-                    || self.env.generic_functions.contains_key(base_name.as_ref());
+                    || self.env.generic_functions.contains_key(base_name.as_ref())
+                    || matches!(base_name.as_ref(), "Distinct" | "Verified");
                 for arg in args.iter_mut() {
                     let ty = if declared {
                         self.check_whole_value(arg, |c, e| c.check_expr_type_flag(e, arg_consume))
@@ -1102,6 +1156,8 @@ impl<'a> TypeChecker<'a> {
                     return intrinsic_ty;
                 }
 
+                // A call through a variable reads the variable, so a task takes it.
+                self.note_task_use(&resolved_name, span);
                 if let Some((Type::Function(param_types, ret_ty, callee_unsafe), _)) =
                     self.lookup(&resolved_name).cloned()
                 {
@@ -2682,7 +2738,11 @@ impl<'a> TypeChecker<'a> {
         let unsigned = match ty {
             Type::Scalar(e) => matches!(
                 e,
-                ElementType::U8 | ElementType::U16 | ElementType::U32 | ElementType::U64
+                ElementType::U8
+                    | ElementType::U16
+                    | ElementType::U32
+                    | ElementType::U64
+                    | ElementType::U128
             ),
             Type::Tensor(e, _, _) => matches!(
                 e,
@@ -2882,6 +2942,33 @@ impl<'a> TypeChecker<'a> {
             }
             let inner_ty = arg_types[0].clone();
             Some(Type::Verified(Box::new(inner_ty)))
+        } else if resolved_name == "Distinct" {
+            // The checker cannot see the values, so the program states that no two are equal.
+            if self.unsafe_is_missing() {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E5001,
+                    "`Distinct(t)` is unsafe and needs an `unsafe` block: it states that no two \
+                     elements of `t` are equal, and the program does not check it. Two blocks \
+                     that write at the rows it gives may then write the same row",
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&call_span)),
+                );
+            }
+            match arg_types {
+                [ty @ Type::Tensor(elem, dims, _)]
+                    if dims.len() == 1 && (elem.is_signed_int() || elem.is_unsigned_int()) =>
+                {
+                    Some(Type::Distinct(Box::new(ty.clone())))
+                }
+                _ => {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3004,
+                        "`Distinct(t)` takes one tensor of integers with one dimension, by value"
+                            .to_string(),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&call_span)),
+                    );
+                    Some(Type::Unknown)
+                }
+            }
         // The older spelling, `Tensor<f32>([2, 3])`, names the constructor by its prefix. A name
         // holding `::` is a path -- the four constructors above are matched exactly, so anything
         // else is a method nothing defines, and reporting it undefined beats building a tensor
@@ -3037,17 +3124,22 @@ impl<'a> TypeChecker<'a> {
             }
             // `void` is spelled as a struct name in this type system.
             Some(Type::Struct("void".into(), None))
-        } else if resolved_name == "tensor_view_2d" {
-            // A rank-2 tensor over memory it does not own, with no copy (#336).
+        } else if let Some(rank) = crate::syntax::expr::tensor_view_rank(resolved_name) {
+            // A rank-1 or rank-2 tensor over memory it does not own, with no copy (#336).
             // The element type comes from the pointer, so the view cannot
             // reinterpret f32 storage as f64 by accident.
             //
             // Unsafe because nothing checks that the extents describe the
             // memory truthfully -- the same claim `*mut T` indexing already
             // makes, and the reason the view exists is to wrap foreign buffers.
-            if args.len() != 3 {
+            let form = if rank == 1 {
+                "(ptr, len)"
+            } else {
+                "(ptr, rows, cols)"
+            };
+            if args.len() != rank + 1 {
                 self.errors
-                    .push("Function 'tensor_view_2d' expects (ptr, rows, cols)".to_string());
+                    .push(format!("Function '{resolved_name}' expects {form}"));
             }
             if self.unsafe_is_missing() {
                 self.errors
@@ -3067,7 +3159,7 @@ impl<'a> TypeChecker<'a> {
             };
             match elem {
                 // The extents are ordinary arguments, so the same rule the constructor gets
-                // applies: a view whose rows and cols evaluate at compile time is statically
+                // applies: a view whose extents evaluate at compile time is statically
                 // shaped, and one over run-time extents has `?` there (Vx#399).
                 Some(e) => {
                     let mut env = HashMap::new();
@@ -3076,8 +3168,8 @@ impl<'a> TypeChecker<'a> {
                             env.insert(k.clone(), v.clone());
                         }
                     }
-                    let dims = match args.get(1..3) {
-                        Some(ext) if ext.len() == 2 => ext
+                    let dims = match args.get(1..rank + 1) {
+                        Some(ext) => ext
                             .iter()
                             .map(|a| {
                                 if self.eval_expr(a, &env).is_some() {
@@ -3087,14 +3179,14 @@ impl<'a> TypeChecker<'a> {
                                 }
                             })
                             .collect(),
-                        _ => vec![Dim::Dyn, Dim::Dyn],
+                        None => vec![Dim::Dyn; rank],
                     };
                     Some(Type::Tensor(e, dims, place))
                 }
                 None => {
                     if !self.speculating {
                         self.errors.push(format!(
-                            "Function 'tensor_view_2d' expects a pointer to a scalar, got {:?}",
+                            "Function '{resolved_name}' expects a pointer to a scalar, got {:?}",
                             arg_types.first()
                         ));
                     }
@@ -3445,6 +3537,8 @@ impl<'a> TypeChecker<'a> {
                     }
                     let change = format!("`{method}` takes `&mut self`, so it can change");
                     self.check_field_change(obj, &change);
+                    let what = format!("`{method}` takes `&mut self`, and this calls it on");
+                    self.check_const_pointer_change(obj, &what);
                 } else if matches!(base_ty, Type::Borrow { is_mut: false, .. }) && !self.speculating
                 {
                     self.errors.error_with_code(
@@ -3693,7 +3787,16 @@ impl<'a> TypeChecker<'a> {
                 // Typed `i32` like `extent` and like `Vec::len`. A rank-0 tensor holds one value
                 // and has no axis to count, so it is refused rather than answered.
                 if _method.as_ref() == "len" {
-                    if let Some((_, dims, _)) = Self::as_tensor_operand(&base_ty) {
+                    // A `Distinct` tensor has the length of its tensor.
+                    let counted = match &base_ty {
+                        Type::Borrow { inner, .. } => inner.as_ref(),
+                        t => t,
+                    };
+                    let counted = match counted {
+                        Type::Distinct(t) => t.as_ref(),
+                        _ => &base_ty,
+                    };
+                    if let Some((_, dims, _)) = Self::as_tensor_operand(counted) {
                         if !args.is_empty() {
                             self.errors.error_with_code(
                                 crate::diagnostic::DiagnosticCode::E3025,
@@ -4001,6 +4104,8 @@ impl<'a> TypeChecker<'a> {
                         lowering: None,
                         is_async: false,
                         shared: false,
+                        read_only_source: false,
+                        source_borrowed_for_call: false,
                         span: method_span,
                     });
                     // Mark it so the per-seam obligation in `check_transfer_expr` sends
@@ -4018,6 +4123,8 @@ impl<'a> TypeChecker<'a> {
                         lowering: None,
                         is_async: false,
                         shared: false,
+                        read_only_source: false,
+                        source_borrowed_for_call: false,
                         span: Span::default(),
                     });
                 } else if _method.as_ref() == "as_ptr" || **_method == *"as_mut_ptr" {

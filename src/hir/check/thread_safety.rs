@@ -105,7 +105,7 @@ impl<'a> TypeChecker<'a> {
                 is_mut: true,
                 ..
             } => self.thread_trait_fails(inner, which, visiting),
-            Type::Verified(inner) | Type::Pinned(inner, _) => {
+            Type::Verified(inner) | Type::Distinct(inner) | Type::Pinned(inner, _) => {
                 self.thread_trait_fails(inner, which, visiting)
             }
             Type::Struct(..) | Type::Enum(..) | Type::GenericInstance(..) => {
@@ -236,7 +236,15 @@ impl<'a> TypeChecker<'a> {
                 .collect();
             ty.substitute(&mapping)
         };
-        if let Some(decl) = self.env.structs.get(name.as_ref()) {
+        // The struct of a closure's captures is made by the checker, not declared.
+        let closure_env = || self.mono.generated_structs.iter().find(|s| s.name == *name);
+        if let Some(decl) = self
+            .env
+            .structs
+            .get(name.as_ref())
+            .copied()
+            .or_else(closure_env)
+        {
             return decl
                 .fields
                 .iter()

@@ -1,0 +1,48 @@
+//===- range_index_with_wrong_ends.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// `q[a..b]` is rows `a` to `b - 1` of `q`. The ends must be literal numbers, and the rows
+// must exist. Each function below breaks one of these rules.
+
+// `q` has 4 rows, so row 5 does not exist.
+fn past_the_last_row() -> f32 {
+  let q = Tensor<f32, [4, 3]>::new();
+  let r = q[3..6];
+  return r[0][0];
+}
+
+// The end is before the start.
+fn backwards() -> f32 {
+  let q = Tensor<f32, [4, 3]>::new();
+  let r = q[3..1];
+  return r[0][0];
+}
+
+// The start is the same as the end, so there are no rows.
+fn empty() -> f32 {
+  let q = Tensor<f32, [4, 3]>::new();
+  let r = q[2..2];
+  return r[0][0];
+}
+
+// The number of rows is not known when the program is compiled.
+fn ends_that_are_not_literal_numbers(i : i32) -> f32 {
+  let q = Tensor<f32, [4, 3]>::new();
+  let r = q[i..i + 2];
+  return r[0][0];
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: Error[E8003] at {{.*}}range_index_with_wrong_ends.vx:16:12: the range `3..6` goes past the end: this dimension has 4 elements
+// CHECK: Error[E3065] at {{.*}}range_index_with_wrong_ends.vx:23:12: the range `3..1` is empty: its end must be greater than its start
+// CHECK: Error[E3065] at {{.*}}range_index_with_wrong_ends.vx:30:12: the range `2..2` is empty: its end must be greater than its start
+// CHECK: Error[E3065] at {{.*}}range_index_with_wrong_ends.vx:37:12: the ends of a range index must be literal numbers

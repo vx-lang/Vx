@@ -336,6 +336,44 @@ void launch_shapes() {
         "a launch value that is not an i32 is refused");
 }
 
+/// The trip of a grid-strided loop, from `launch=`: a number, `$j` for a loop
+/// whose bounds are known only at run time, or `B,T` for a two-level region.
+void launch_trips() {
+  int32_t rows = 9000;
+  int64_t wide = 9000;
+  float data[4] = {};
+  void *ptr = data;
+  /* One kernel argument, then the launch values. */
+  void *args[3] = {&ptr, &rows, &wide};
+  const int32_t tags[3] = {0, 4, 5};
+  long threads = -7;
+
+  const char number[] = "k\0launch=64\0";
+  check(vx_launch_trip(number, sizeof number, args, tags, 1, &threads) == 64 &&
+            threads == 0,
+        "launch=64 is a trip of 64 with no thread count");
+
+  const char value[] = "k\0launch=$0\0";
+  check(vx_launch_trip(value, sizeof value, args, tags, 1, &threads) == 9000 &&
+            threads == 0,
+        "launch=$0 is launch value 0, the first value after the arguments");
+
+  const char two_level[] = "k\0launch=8,128\0";
+  check(vx_launch_trip(two_level, sizeof two_level, args, tags, 1, &threads) ==
+                8 &&
+            threads == 128,
+        "launch=8,128 is 8 blocks of 128 threads");
+
+  const char none[] = "k\0abi=1\0";
+  check(vx_launch_trip(none, sizeof none, args, tags, 1, &threads) == 0 &&
+            threads == 0,
+        "a payload without launch= has a trip of 0");
+
+  const char not_i32[] = "k\0launch=$1\0";
+  check(vx_launch_trip(not_i32, sizeof not_i32, args, tags, 1, &threads) == -1,
+        "a launch value that is not an i32 gives -1");
+}
+
 /* With a stream set by the host program, a wait covers that stream, and a
    graph recording refuses a wait. Memory from cudaMallocAsync is freed in
    stream order, so a recording can hold its free. */
@@ -360,6 +398,16 @@ void caller_streams() {
         "a recording refuses a free that needs a wait");
 }
 
+/* A kernel that can fail an assert takes a flag, and its payload says so. */
+void assert_flags() {
+  const char with[] = "k\0abi=1\0assert_flag=1\0format=spirv\0";
+  check(vx_launch_takes_assert_flag(with, sizeof with),
+        "a payload with assert_flag=1 asks for the flag");
+  const char without[] = "k\0abi=1\0format=spirv\0";
+  check(!vx_launch_takes_assert_flag(without, sizeof without),
+        "a payload without assert_flag= does not");
+}
+
 int main() {
   widths();
   the_four_operand_signature();
@@ -369,7 +417,9 @@ int main() {
   entry_parameter_counting();
   aligned_parameters();
   launch_shapes();
+  launch_trips();
   caller_streams();
+  assert_flags();
 
   if (failures != 0) {
     fprintf(stderr, "%d check(s) failed\n", failures);

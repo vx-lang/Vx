@@ -1,0 +1,37 @@
+//===- strings_in_an_mlir_block_keep_mlir_escapes.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A string in an `mlir!` block reaches MLIR as MLIR reads it. In `two_lines`, `\0A` is MLIR's
+// escape for a line feed. Vx does not know that escape, and the string became `0`. In
+// `two_lines_again`, `\n` is Vx's escape for a line feed, which goes to MLIR as `\n`. So both
+// blocks give the assembly `nop`, a line feed, and `nop`. `nop` is an instruction on x86-64 and
+// on arm64.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// OUT: {{^}}7 8{{$}}
+// CHECK-COUNT-2: llvm.inline_asm {{.*}}"nop\0Anop", "=r,0"
+
+fn two_lines(a : u64) -> u64 {
+  return mlir!( inputs : (%a = a : i64), returns : u64, dialects : ["llvm"]) {
+    %r = llvm.inline_asm has_side_effects "nop\0Anop", "=r,0" %a : (i64) -> i64
+    macro.yield %r : i64
+  };
+}
+
+fn two_lines_again(a : u64) -> u64 {
+  return mlir!( inputs : (%a = a : i64), returns : u64, dialects : ["llvm"]) {
+    %r = llvm.inline_asm has_side_effects "nop\nnop", "=r,0" %a : (i64) -> i64
+    macro.yield %r : i64
+  };
+}
+
+fn main() -> i32 {
+  println!("{} {}", two_lines(7), two_lines_again(8));
+  return 0;
+}

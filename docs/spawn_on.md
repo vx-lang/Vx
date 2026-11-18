@@ -224,9 +224,24 @@ spawn on(Topology::Gpu) {
   `ensures : [reads_only(t)]`, reads all of `t` and writes none of it. It races with no other
   read. The function may only read elements of `t`, ask for its length, or pass it to code that
   says `reads_only` for it.
+- An `mlir!` block with `ensures : [writes_only(t[i][j])]` writes only those elements of `t`.
+  The proof checks them as it checks `t[i][j] = ..`. An index can also be a range `lo..lo + k`
+  with a number `k`, as in `writes_only(out[b * 32..b * 32 + 32])`. With `writes_only(t)`, the
+  block may write any element of `t`, so `t` must be a tensor that the pass makes, passed as
+  `&mut t`. The compiler checks that the block writes no other memref input, also through a view
+  such as `memref.subview`. It trusts that the block writes only the elements that it names.
+- An `mlir!` block with `threads : N` in the code of a loop of blocks is the body of a block of at
+  least `N` threads, and every thread runs it. It can use `gpu.thread_id`, `gpu.barrier` and the
+  simdgroup matrices, so a sum can stay in registers through a loop with barriers. Its clauses
+  name what the whole block writes. The compiler trusts that all threads reach each barrier in
+  it. A barrier follows the block. The CPU copy of the kernel cannot run such a block, so with
+  `VX_METAL=0` the program stops with a message.
 - Each lane loop ends with a barrier. Lane 0 runs the code between lane loops that writes
   memory or changes a variable from outside it. A lane loop may not read a value that only lane 0
-  has. In the body of a loop, that includes a value that later code sets for the next turn.
+  has. In the body of a loop, that includes a value that later code sets for the next turn. The
+  `let`s at the start of such code that are not `mut`, write nothing, and read no value that only
+  lane 0 has are not part of it: every lane computes them. So put them before a fill of a shared
+  tile.
 - A condition or a bound around a lane loop may read an element of a `&` tensor parameter. Only
   an atomic operation can change one, and then every access must be atomic. So every lane reads
   the same value. A replayed CUDA graph gets a value such as the number of splits this way.

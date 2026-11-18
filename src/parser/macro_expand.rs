@@ -965,6 +965,7 @@ impl<'a> MacroExpander<'a> {
         let mut returns = None;
         let mut dialects = Vec::new();
         let mut ensures = Vec::new();
+        let mut threads = None;
 
         let tokens = match tt {
             TokenTree::Delimited(_, inner) => {
@@ -993,7 +994,8 @@ impl<'a> MacroExpander<'a> {
                 crate::lexer::TokenType::Ensures => "ensures".to_string(),
                 _ => {
                     return Err(
-                        "Expected 'inputs', 'clobbers', 'returns', 'dialects' or 'ensures'"
+                        "Expected 'inputs', 'clobbers', 'returns', 'dialects', 'ensures' or \
+                         'threads'"
                             .to_string(),
                     )
                 }
@@ -1135,6 +1137,19 @@ impl<'a> MacroExpander<'a> {
                         .consume(&crate::lexer::TokenType::RightBracket, "Expected ']'")
                         .map_err(|e| e.format("", None))?;
                 }
+                // Every thread of a threadgroup of at least this many runs the block.
+                "threads" => match &parser.advance().kind {
+                    crate::lexer::TokenType::Number(n) => match n.parse::<u32>() {
+                        Ok(n) if n > 0 => threads = Some(n),
+                        _ => {
+                            return Err(format!(
+                                "`threads` of an mlir! block is a number of threads above 0, \
+                                 not '{n}'"
+                            ))
+                        }
+                    },
+                    _ => return Err("`threads` of an mlir! block is a number".to_string()),
+                },
                 _ => return Err(format!("Unknown field '{}' in mlir! macro", field_name)),
             }
 
@@ -1152,7 +1167,14 @@ impl<'a> MacroExpander<'a> {
             let mut current_col = 0;
 
             for tok in t {
-                let text = tok.kind.to_string();
+                // A string goes to MLIR with MLIR's escapes. One with an escape that Vx does not
+                // know, such as `\0A`, is already as it was written.
+                let text = match &tok.kind {
+                    crate::lexer::TokenTypeBase::StringLiteral(s) => {
+                        format!("\"{}\"", mlir_escaped(s))
+                    }
+                    kind => kind.to_string(),
+                };
                 // A delimiter synthesized when the token tree was built carries no position.
                 // Laying one out by column drove the rest of its line hundreds of columns to
                 // the right, and the block stopped parsing (Vx#414).
@@ -1207,8 +1229,25 @@ impl<'a> MacroExpander<'a> {
             returns,
             dialects,
             ensures,
+            threads,
             block_str,
             span,
         }))
     }
+}
+
+/// `s` as an MLIR string literal writes it, without the quotes.
+fn mlir_escaped(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 || c == '\u{7f}' => out.push_str(&format!("\\{:02X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }

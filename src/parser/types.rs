@@ -296,6 +296,11 @@ impl<'a> Parser<'a> {
             let inner = self.parse_type()?;
             self.consume(&TokenType::RightAngle, "Expected '>'")?;
             Ok(Type::Verified(Box::new(inner)))
+        } else if self.match_token(&TokenType::Distinct) {
+            self.consume(&TokenType::LeftAngle, "Expected '<'")?;
+            let inner = self.parse_type()?;
+            self.consume(&TokenType::RightAngle, "Expected '>'")?;
+            Ok(Type::Distinct(Box::new(inner)))
         } else if self.match_token(&TokenType::Pinned) {
             self.consume(&TokenType::LeftAngle, "Expected '<'")?;
             let inner = self.parse_type()?;

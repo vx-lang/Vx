@@ -26,8 +26,13 @@ pub(crate) struct Blocker {
 }
 
 /// What `outer_for` found out about a region.
+/// The trip count of a parallel loop whose bounds are known only at run time. A loop with
+/// literal bounds has at least one pass, so 0 is free to mean this.
+pub(crate) const RUN_TIME_TRIP: u64 = 0;
+
 enum Verdict {
-    /// The loop at this statement index runs in parallel, with this many passes.
+    /// The loop at this statement index runs in parallel, with this many passes, or with
+    /// `RUN_TIME_TRIP`.
     Parallel(usize, u64),
     /// The region is not one loop meant to be split: it has no single loop over a range, or
     /// its passes write memory another pass may write too.
@@ -124,8 +129,9 @@ fn only_scratch_drops_after(stmts: &[Statement], idx: usize) -> bool {
 /// depot). The region's pre-loop declarations replicate too, but one thread keeps its copy for
 /// all of its passes. So the rule this walker enforces, conservatively and syntactically, is:
 ///
-/// - the region is `[zero or more local declarations] for iv in lo..hi { body }` and nothing else,
-///   with literal integer bounds (the trip count sizes the launch);
+/// - the region is `[zero or more local declarations] for iv in lo..hi { body }` and nothing else.
+///   Literal bounds give the trip count that sizes the launch. Other bounds must pass the same
+///   no-side-door walk as a read in the body, and the trip is then `RUN_TIME_TRIP`;
 /// - every write in the body lands either in a name declared inside the region, or in a captured
 ///   tensor indexed **first by `iv`** — each iteration then owns row `iv` and no other;
 /// - a pass reads a name declared before the loop that the body writes only after it set that
@@ -193,11 +199,6 @@ fn outer_for(stmts: &[Statement], explain: bool) -> Verdict {
         if hi <= lo {
             return Verdict::NotSplittable;
         }
-    } else if !scan.refuse(
-        "its bounds are not numbers known when compiling",
-        f.iterable.span(),
-    ) {
-        return Verdict::NotSplittable;
     }
 
     for s in &stmts[..idx] {
@@ -228,6 +229,12 @@ fn outer_for(stmts: &[Statement], explain: bool) -> Verdict {
             return Verdict::NotSplittable;
         }
     }
+    // A bound known only at run time is read once, before the loop, and every thread reads
+    // the same value: the body cannot write a captured name, and a name declared before the
+    // loop has a copy in each thread.
+    if bounds.is_none() && !(scan.expr(&r.start) && scan.expr(&r.end)) {
+        return Verdict::NotSplittable;
+    }
     if !scan.declare(&f.iter, f.span) || !scan.split_body(&f.body) {
         return Verdict::NotSplittable;
     }
@@ -243,7 +250,7 @@ fn outer_for(stmts: &[Statement], explain: bool) -> Verdict {
             span,
         }),
         (None, Some((lo, hi))) => Verdict::Parallel(idx, (hi - lo) as u64),
-        (None, None) => Verdict::NotSplittable,
+        (None, None) => Verdict::Parallel(idx, RUN_TIME_TRIP),
     }
 }
 

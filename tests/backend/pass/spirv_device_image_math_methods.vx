@@ -1,0 +1,56 @@
+//===- spirv_device_image_math_methods.vx -------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A kernel calls `exp`, `tanh`, `sin`, `ln`, `powf`, `atan2` and `erf`. On a
+// SPIR-V device each one is the device's own function, not Vx's libm, which
+// computes in `f64` and reads tables. So the kernel gets an image, and it
+// needs no `f64`. device_image_test.rs checks the instructions in the image.
+// The host copy prints the values below. A device can differ in the last bits.
+//
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s # flat-codegen
+// CHECK: format=spirv
+// EXPECT: 2.7182817 0.7615942 0.84147096 0 1 0.7853982 0.8427008 2
+
+import core::num;
+
+Memory CPU_DRAM {}
+Memory DEV_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached, scope: device
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 63 GB/s,
+  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 63 GB/s
+}
+
+fn main() -> i32 {
+  let mut a = unsafe { Tensor<f32, [4]>::uninit() };
+  for i in 0..4 {
+    a[i] = (i + 1) as f32;
+  }
+  let ga = transfer(a, Memory::DEV_HBM);
+  let mut go = transfer(unsafe { Tensor<f32, [4, 8]>::uninit() }, Memory::DEV_HBM);
+  spawn on(Topology::Dev) {
+    for i in 0..4 {
+      let x = ga[i];
+      let mut row = go[i];
+      row[0] = x.exp();
+      row[1] = x.tanh();
+      row[2] = x.sin();
+      row[3] = x.ln();
+      row[4] = x.powf(2.0);
+      row[5] = x.atan2(x);
+      row[6] = x.erf();
+      row[7] = (x * x * x * 8.0).cbrt();
+    }
+  }
+  let o = transfer(go, Memory::CPU_DRAM);
+  println!("{} {} {} {} {} {} {} {}", o[0][0], o[0][1], o[0][2], o[0][3], o[0][4], o[0][5], o[0][6], o[0][7]);
+  return 0;
+}

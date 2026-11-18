@@ -22,13 +22,17 @@
 // rest of the two forms always differ by less than it: `4 * j + c`, with `c` below 3, and
 // `4 * j + 3` never meet.
 //
-// `v / n` and `v % n`, where `v` is the loop's variable, are two more variables of the pass. When
-// one index fixes `v / n` and another fixes `v % n`, the two together fix `v`. `n` is a number above
-// zero, or a value from outside the loop that is a factor of the loop's end, as in `0..m * n`: when
-// `n` is zero, the loop has no passes.
+// `v / n` and `v % n`, where `v` is the variable of the loop or of a loop in it, are two more
+// variables of the pass. When one index fixes `v / n` and another fixes `v % n`, the two together
+// fix `v`. `n` is a number above zero, or a value from outside the loop that is a factor of the
+// loop's end, as in `0..m * n`: when `n` is zero, the loop has no passes.
 //
 // An access in `if v == c`, where `v` is the loop's variable and `c` a number, is made by one
 // pass only. Two such accesses with the same `c` are made by the same pass, so they never race.
+//
+// No two elements of a `Distinct` tensor are equal. So a read `idx[e]` of one is a variable of
+// the pass that fixes whatever `e` fixes: two passes that read the same value read it at the
+// same `e`.
 //
 //===----------------------------------------------------------------------===//
 
@@ -37,6 +41,7 @@ use crate::hir::flatten::is_tensor_alloc_call;
 use crate::syntax::stmt::{AcrossClause, ForLoopStmt, Statement};
 use crate::syntax::types::{scalar_of, ElementType};
 use crate::syntax::{BinaryOp, Expr, LogicalOp, RelationalOp, Span, UnaryOp};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// `Σ coefficient · variable + constant`. A variable is a loop index of this pass, by a name that
@@ -116,6 +121,9 @@ struct Proof<'c> {
     contracts: &'c HashMap<String, Vec<usize>>,
     /// The names of the generic functions.
     templates: &'c HashSet<String>,
+    /// The shape of the tile of each `lanes::copy` out of shared memory, by the position of its
+    /// call.
+    copies_out: &'c HashMap<Span, Vec<u64>>,
     /// The key of the loop's own variable.
     own: String,
     /// The values from outside the loop that are factors of its end, by key.
@@ -145,6 +153,11 @@ struct Proof<'c> {
     slots: HashMap<String, (String, i64)>,
     /// The tensor argument of each call that takes a slot.
     slot_calls: HashSet<Span>,
+    /// The `Distinct` tensors from outside the loop, with the type of their elements.
+    distinct: &'c HashMap<String, ElementType>,
+    /// Each read `idx[e]` of a `Distinct` tensor: the tensor and the form of `e`. The key of the
+    /// read as a variable is the tensor, then `#distinct` and its place in this list.
+    distinct_reads: RefCell<Vec<(String, Affine)>>,
 }
 
 /// The position of an `across` clause, the largest end that its loop may have, and the type of
@@ -166,6 +179,8 @@ pub(crate) fn across_loop_race(
     level: &str,
     contracts: &HashMap<String, Vec<usize>>,
     templates: &HashSet<String>,
+    copies_out: &HashMap<Span, Vec<u64>>,
+    distinct: &HashMap<String, ElementType>,
 ) -> Result<Vec<LargestEnd>, (String, Span)> {
     let range = match &*f.iterable {
         Expr::Range(r) => int(&r.start).zip(int(&r.end)),
@@ -179,6 +194,7 @@ pub(crate) fn across_loop_race(
         let mut p = Proof {
             contracts,
             templates,
+            copies_out,
             own: String::new(),
             end_factors: match &*f.iterable {
                 Expr::Range(r) => factors(&r.end),
@@ -197,6 +213,8 @@ pub(crate) fn across_loop_race(
             pass: None,
             slots: HashMap::new(),
             slot_calls: HashSet::new(),
+            distinct,
+            distinct_reads: RefCell::new(Vec::new()),
         };
         p.own = p.bind_index(&f.iter, &f.iterable, range, f.across.as_ref());
         p.stmts(&f.body);
@@ -538,6 +556,72 @@ impl Proof<'_> {
             });
     }
 
+    /// The writes that the clause `writes_only(t)` or `writes_only(t[i][j])` of an `mlir!` block
+    /// declares. An index `lo..lo + k`, with a number `k`, is one more index of the pass, as the
+    /// index of a serial loop is.
+    fn declared_write(&mut self, name: &str, indices: &[&Expr], at: Span) {
+        for i in indices {
+            match i {
+                Expr::Range(r) => {
+                    self.expr(&r.start);
+                    self.expr(&r.end);
+                }
+                _ => self.expr(i),
+            }
+        }
+        if !self.outside(name) {
+            return;
+        }
+        if indices.is_empty() {
+            self.fail(
+                format!(
+                    "`writes_only({name})` says that the block may write any element of \
+                     `{name}`, and each pass runs the block. Name the elements that one pass \
+                     writes, such as `writes_only({name}[i])`"
+                ),
+                at,
+            );
+            return;
+        }
+        let mut forms = Vec::new();
+        for i in indices {
+            let Expr::Range(r) = i else {
+                forms.push(self.affine(i));
+                continue;
+            };
+            let lo = self.affine(&r.start);
+            let width = lo
+                .clone()
+                .zip(self.affine(&r.end))
+                .and_then(|(lo, hi)| hi.add(&lo, -1))
+                .and_then(|w| w.as_constant())
+                .filter(|&w| w > 0);
+            let (Some(lo), Some(width)) = (lo, width) else {
+                self.fail(
+                    "a range in a `writes_only` clause must be `lo..lo + k`, with a number `k` \
+                     above 0"
+                        .to_string(),
+                    r.span,
+                );
+                return;
+            };
+            let key = format!("{name}[..]#{}", self.next_key);
+            self.next_key += 1;
+            self.ranges.insert(key.clone(), Some((0, width)));
+            forms.push(lo.add(&Affine::var(key), 1));
+        }
+        self.accesses
+            .entry(name.to_string())
+            .or_default()
+            .push(Access {
+                write: true,
+                atomic: false,
+                indices: forms,
+                span: at,
+                pass: self.pass,
+            });
+    }
+
     /// An atomic access to the tensor that `arg` passes. A tensor that the pass makes needs
     /// nothing.
     fn atomic_arg(&mut self, arg: &Expr) {
@@ -562,6 +646,65 @@ impl Proof<'_> {
                 arg.span(),
             ),
         }
+    }
+
+    /// `lanes::copy(&mut x, &tile, [i, j, ..])`, which writes the part of `x` that starts at
+    /// `[i, j, ..]` and has the shape `tile`. Each index of the part is the place plus an index
+    /// below the size of the tile in that dimension.
+    fn copy_out(&mut self, fc: &crate::syntax::expr::FunctionCallExpr, tile: &[u64]) {
+        let (Some(dst), Some(src), Some(Expr::Array(place))) =
+            (fc.args.first(), fc.args.get(1), fc.args.get(2))
+        else {
+            self.fail(
+                "the checker cannot see which part of a tensor this copy writes".to_string(),
+                fc.span,
+            );
+            return;
+        };
+        self.expr(src);
+        place.elements.iter().for_each(|e| self.expr(e));
+        // `&mut y`, or `y` for a parameter `y : &mut Tensor<..>`.
+        let (dst, at) = match dst {
+            Expr::Borrow(b) => (b.expr.as_ref(), b.span),
+            e => (e, e.span()),
+        };
+        let (name, rows) = match dst {
+            Expr::Identifier(id) => (id.name.as_ref(), Vec::new()),
+            e => match Self::element(e) {
+                Some(found) => found,
+                None => {
+                    self.fail(
+                        "the checker cannot see which tensor this copy writes. Pass the tensor \
+                         by name"
+                            .to_string(),
+                        at,
+                    );
+                    return;
+                }
+            },
+        };
+        rows.iter().for_each(|i| self.expr(i));
+        if !self.outside(name) {
+            return;
+        }
+        let mut indices: Vec<Option<Affine>> = rows.iter().map(|i| self.affine(i)).collect();
+        for (at, &size) in place.elements.iter().zip(tile) {
+            let key = format!("copy#{}", self.next_key);
+            self.next_key += 1;
+            self.ranges
+                .insert(key.clone(), i64::try_from(size).ok().map(|n| (0, n)));
+            indices.push(self.affine(at).and_then(|a| a.add(&Affine::var(key), 1)));
+        }
+        self.accesses
+            .entry(name.to_string())
+            .or_default()
+            .push(Access {
+                write: true,
+                atomic: false,
+                indices,
+                span: at,
+                pass: self.pass,
+            });
     }
 
     fn target(&mut self, lhs: &Expr, at: Span) {
@@ -655,10 +798,14 @@ impl Proof<'_> {
                     self.fail(why, fc.span);
                     return;
                 }
+                if let Some(tile) = self.copies_out.get(&fc.span) {
+                    self.copy_out(fc, tile);
+                    return;
+                }
                 // A lane sort and a lane copy write the tensor that they borrow first: a row
                 // `t[w]`, or a tensor of this pass.
                 let sort = crate::hir::check::lanes::lane_routine(&fc.name)
-                    .is_some_and(|(op, _)| op.writes_first());
+                    .is_some_and(|r| r.writes_first);
                 if let (true, Some(Expr::Borrow(b))) = (sort, fc.args.first()) {
                     if let Some((name, indices)) = Self::element(&b.expr) {
                         for i in &indices {
@@ -712,9 +859,21 @@ impl Proof<'_> {
             // A block with clauses changes only the tensors that they name.
             Expr::InlineMlir(m) if !m.ensures.is_empty() => {
                 let named = crate::hir::check::atomic_contracts::atomic_inputs(m);
+                let mut written = HashSet::new();
+                for clause in &m.ensures {
+                    if let Some((name, indices)) =
+                        crate::hir::check::atomic_contracts::writes_only_target(clause)
+                    {
+                        written.insert(name);
+                        self.declared_write(name, &indices, clause.span());
+                    }
+                }
                 for (_, input, _) in &m.inputs {
+                    let written_here = crate::hir::check::atomic_contracts::written_tensor(input)
+                        .is_some_and(|n| written.contains(n));
                     match crate::hir::check::atomic_contracts::passed_tensor(input) {
                         Some(n) if named.contains(n) => self.atomic_arg(input),
+                        _ if written_here => {}
                         _ => self.expr(input),
                     }
                 }
@@ -775,6 +934,25 @@ impl Proof<'_> {
                 // From outside the loop: the same in every pass.
                 None => Some(Affine::var(format!("{}#outside", id.name))),
             },
+            Expr::IndexAccess(ix) => {
+                let Expr::Identifier(id) = &*ix.base else {
+                    return None;
+                };
+                let name = id.name.as_ref();
+                if !self.outside(name) || !self.distinct.contains_key(name) {
+                    return None;
+                }
+                let index = self.affine(&ix.index)?;
+                let mut reads = self.distinct_reads.borrow_mut();
+                let at = match reads.iter().position(|(t, f)| t == name && *f == index) {
+                    Some(at) => at,
+                    None => {
+                        reads.push((name.to_string(), index));
+                        reads.len() - 1
+                    }
+                };
+                Some(Affine::var(format!("{name}#distinct{at}")))
+            }
             Expr::AsCast(c) => {
                 let form = self.affine(&c.expr)?;
                 let (min, max) = scalar_of(&c.target_ty)
@@ -820,11 +998,15 @@ impl Proof<'_> {
         }
     }
 
-    /// `v / n` or `v % n` as a variable of its own, when `v` is the loop's variable, `v` is never
-    /// below zero, and `n` is a number above zero or a factor of the loop's end. Its key is the key
-    /// of `v`, then `/` or `%`, then `n` in parentheses.
+    /// `v / n` or `v % n` as a variable of its own, when `v` is a loop index of the pass, `v` is
+    /// never below zero, and `n` is a number above zero or a factor of the loop's end. Its key is
+    /// the key of `v`, then `/` or `%`, then `n` in parentheses.
     fn part(&self, v: &Affine, n: &Affine, quotient: bool) -> Option<Affine> {
-        if *v != Affine::var(self.own.clone()) || self.index_range(&self.own)?.0 < 0 {
+        let index = v.terms.keys().next()?;
+        if *v != Affine::var(index.clone())
+            || !self.ranges.contains_key(index)
+            || self.index_range(index)?.0 < 0
+        {
             return None;
         }
         let n = match n.as_constant() {
@@ -844,11 +1026,11 @@ impl Proof<'_> {
         };
         let op = if quotient { '/' } else { '%' };
         // The key cannot end with `#outside`, which marks a value from outside the loop.
-        Some(Affine::var(format!("{}{op}({n})", self.own)))
+        Some(Affine::var(format!("{index}{op}({n})")))
     }
 
-    /// The key of the loop's variable, whether the key is of `v / n`, and `n`, for a key that
-    /// `part` made.
+    /// The key of the loop index, whether the key is of `v / n`, and `n`, for a key that `part`
+    /// made.
     fn part_of(key: &str) -> Option<(&str, bool, &str)> {
         let at = key.find(['/', '%'])?;
         let n = key[at + 1..].strip_prefix('(')?.strip_suffix(')')?;
@@ -892,11 +1074,25 @@ impl Proof<'_> {
         }
     }
 
+    /// The tensor and the form of the index of the read of a `Distinct` tensor whose key is
+    /// `v`.
+    fn distinct_read(&self, v: &str) -> Option<(String, Affine)> {
+        let (_, at) = v.rsplit_once("#distinct")?;
+        self.distinct_reads
+            .borrow()
+            .get(at.parse::<usize>().ok()?)
+            .cloned()
+    }
+
     /// The least and the greatest value of the loop index `v`, from its range or its type.
     fn index_range(&self, v: &str) -> Option<(i128, i128)> {
+        // A read of a `Distinct` tensor is any value of its element type.
+        if let Some((tensor, _)) = self.distinct_read(v) {
+            return ComptimeInterpreter::integer_range(&self.distinct[&tensor]);
+        }
         // `v` is never below zero. A remainder is below `n`, and neither part is above `v`.
-        if let Some((own, quotient, n)) = Self::part_of(v) {
-            let (lo, hi) = self.index_range(own)?;
+        if let Some((index, quotient, n)) = Self::part_of(v) {
+            let (lo, hi) = self.index_range(index)?;
             return Some(match (n.parse::<i128>(), quotient) {
                 (Ok(n), true) => (lo / n, hi / n),
                 (Ok(n), false) => (0, hi.min(n - 1)),
@@ -970,7 +1166,14 @@ impl Proof<'_> {
 
     /// As `fixes_own_with`, for the variable `key` of the pass.
     fn fixes_with(&self, form: &Affine, key: &str, gap: Option<i64>) -> bool {
-        if !form.terms.contains_key(key) {
+        // Two passes with the same value of `idx[e]` have the same `e`.
+        let fixes = |v: &String| {
+            v == key
+                || self
+                    .distinct_read(v)
+                    .is_some_and(|(_, index)| self.fixes_with(&index, key, None))
+        };
+        if !form.terms.keys().any(fixes) {
             return false;
         }
         // A value from outside the loop is the same in both passes, so it cancels.
@@ -979,10 +1182,12 @@ impl Proof<'_> {
             .iter()
             .filter(|(v, _)| !v.ends_with("#outside"))
             .map(|(v, c)| {
+                // The number of values that `v` can have.
                 let span = match Self::part_of(v) {
-                    Some((own, ..)) if self.ranges.get(own).copied().flatten().is_some() => self
-                        .index_range(v)
-                        .and_then(|(lo, hi)| i64::try_from(hi - lo).ok()),
+                    Some((index, ..)) if self.ranges.get(index).copied().flatten().is_some() => {
+                        self.index_range(v)
+                            .and_then(|(lo, hi)| i64::try_from(hi - lo + 1).ok())
+                    }
                     Some(_) => None,
                     None => self
                         .ranges
