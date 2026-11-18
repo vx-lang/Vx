@@ -673,6 +673,69 @@ fn a_kernel_with_a_struct_local_gets_a_spirv_module() {
     }
 }
 
+/// The OpenCL.std instructions in a SPIR-V module, by their number in that
+/// set, and the capabilities that the module declares.
+fn opencl_instructions_and_capabilities(module: &[u8]) -> (Vec<u32>, Vec<u32>) {
+    let words: Vec<u32> = module
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|w| u32::from_le_bytes(*w))
+        .collect();
+    let (mut instructions, mut capabilities) = (Vec::new(), Vec::new());
+    // The header is five words. Each instruction starts with its word count
+    // and its opcode.
+    let mut at = 5;
+    while at < words.len() {
+        let count = (words[at] >> 16) as usize;
+        let opcode = words[at] & 0xffff;
+        assert!(
+            count > 0 && at + count <= words.len(),
+            "a SPIR-V instruction runs past the end of the module"
+        );
+        let operands = &words[at + 1..at + count];
+        match opcode {
+            // OpCapability %capability
+            17 => capabilities.push(operands[0]),
+            // OpExtInst %type %result %set %instruction ...
+            12 => instructions.push(operands[3]),
+            _ => {}
+        }
+        at += count;
+    }
+    (instructions, capabilities)
+}
+
+/// A kernel that calls `exp`, `tanh` and other libm methods on `f32` gets a
+/// SPIR-V module that computes them with the device's own functions. It needs
+/// no `f64`, which Vx's libm computes in and the Arc does not have.
+#[test]
+fn math_methods_use_the_devices_own_functions() {
+    let ir = emit_llvm("spirv_device_image_math_methods.vx");
+    let payload = payload_bytes(&ir, "vx_npu_kernel_0");
+    let has = |needle: &[u8]| payload.windows(needle.len()).any(|w| w == needle);
+    assert!(has(b"format=spirv\0"), "the kernel has no SPIR-V image");
+    let section = payload_section(&payload);
+    let (instructions, capabilities) = opencl_instructions_and_capabilities(section);
+    // OpenCL.std numbers: exp is 19 and tanh is 63.
+    for (number, name) in [(19, "exp"), (63, "tanh")] {
+        assert!(
+            instructions.contains(&number),
+            "the module does not use OpenCL's `{name}`. Its OpenCL.std instructions are {instructions:?}"
+        );
+    }
+    // The Float64 capability is number 10.
+    assert!(
+        !capabilities.contains(&10),
+        "the module needs `f64`. Its capabilities are {capabilities:?}"
+    );
+    match spirv_val(section) {
+        Some(Ok(())) => {}
+        Some(Err(report)) => panic!("spirv-val rejected the module:\n{report}"),
+        None => println!("spirv-val is not installed, so the module was not validated"),
+    }
+}
+
 /// Kernels that read and write 8-bit and 4-bit floats each get a SPIR-V module
 /// that `spirv-val` accepts. LLVM has no type for these floats, so the image
 /// must store them as integers.
