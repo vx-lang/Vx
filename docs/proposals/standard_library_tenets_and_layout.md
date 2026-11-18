@@ -283,7 +283,7 @@ This replaces the "ecosystem delegation" plan of `docs/std_library_design.md`.
 
 **What the rules need.** Today no tool enforces them, and no doc comment in the standard
 library has an example. `standard_library_docs_lifecycle_and_testing.md` in this directory
-proposes the tools and the tests that enforce these rules.
+proposes the tools that enforce these rules.
 
 Until Vx has `pub` (#489), "public" means every item whose name does not start with `_`. The doc
 rules apply to new and changed items at once. The existing modules meet them before they become
