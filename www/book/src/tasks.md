@@ -312,48 +312,17 @@ the task was cancelled. `acquire_for(limit)` also gives `TimedOut` after the tim
 permit is free. The tasks do not get the permits in the order of their `acquire` calls. So when
 many tasks compete, one waiter can wait without limit.
 
-## Run jobs with at most `n` tasks
-
-`run_jobs(context, jobs, n, work)` from `std::sync::jobs` calls `work(context, job)` for each
-job in the vector `jobs`. It starts at most `n` tasks, and gives the results in the order of the
-jobs (`book_run_jobs_gives_results_in_job_order.vx`):
-
-```rust
-{{#include ../../../tests/backend/pass/book_run_jobs_gives_results_in_job_order.vx:program}}
-```
-
-It prints `scaled 10 20 30 40 50 60 70 80`.
-
-`run_jobs` starts its tasks in a `tasks` block, so the call returns only after each task ends.
-The tasks borrow `context` and `jobs`, so their types must be `Sync`. Each task takes the next
-job from a counter, so a slow job does not hold up the other tasks.
-
-`work` is a function, not a closure. A closure type does not say what the closure captures, so
-the compiler cannot check that two tasks can call it at the same time. Put the data that the
-jobs share in `context`.
-
-When the `tasks` block around the call is cancelled, the jobs that did not start do not run, and
-`run_jobs` gives `None`. `try_run_jobs` takes a `work` that gives a `Result`. The first `Err`
-cancels the tasks, so the jobs that did not start do not run. The call then gives
-`Failed` with that error, and drops the results that arrived before it. A panic in `work` stops
-the program, as a panic in any task does.
-
-### Compared with Rust
-
-`run_jobs` does parallel work on a list, as `std::thread::scope` and rayon's
-`par_iter().map().collect()` do. As with those, the tasks borrow the data of the caller, and the
-results come in the order of the jobs. Two things differ:
-
-- A cancel of the `tasks` block around the call stops the jobs that did not start, and a task
-  that waits in `acquire`. The cancel follows the blocks of the program, so it needs no extra
-  code. In tokio, `JoinSet::abort_all`, `JoinHandle::abort` or the drop of a `JoinSet` cancels a
-  task at its next `.await`.
-- When each task waits and nothing can wake one, the runtime stops the program. Its report names
-  each `acquire` that waits, its line, and the line that made the `Semaphore`.
+### Compared with tokio
 
 tokio's `Semaphore` gives the permits in the order of the `acquire` calls, and the Vx
 `Semaphore` does not. tokio's also has `acquire_many`, `add_permits` and `close`, which the Vx
-`Semaphore` does not have yet.
+`Semaphore` does not have yet. Two things differ in the other direction:
+
+- A cancel of the `tasks` block stops a task that waits in `acquire`. The cancel follows the
+  blocks of the program, so it needs no extra code. In tokio, a task stops at its next `.await`
+  when `JoinHandle::abort` or the drop of a `JoinSet` cancels it.
+- When each task waits and nothing can wake one, the runtime stops the program. Its report names
+  each `acquire` that waits, its line, and the line that made the `Semaphore`.
 
 ## `Arc`
 
@@ -426,5 +395,4 @@ tasks. The language is the same for both runtimes.
 | Cancel the other tasks | When the block leaves or a task fails | Each program writes it | `context`, by hand |
 | Functions that wait | Normal functions | `async fn`, or a blocked thread | Normal functions |
 | Wait on many channels | `select` over a list of receivers | A crate, such as `crossbeam` | `select` statement |
-| Run jobs with at most `n` tasks | `run_jobs`, results in job order | A `JoinSet` and a `Semaphore` | Each program writes it |
 | Kinds of channel | `channel`, oneshot, work queue, broadcast, watch | The same in tokio | One kind, `chan` |
