@@ -1,0 +1,99 @@
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+// EXPECT: file options and typed seeking preserve their contracts
+import core::mem;
+import core::result;
+import std::fs;
+import std::io;
+
+extern {
+  fn vx_get_temp_file(name : *const i8) -> *mut i8;
+  fn vx_free_temp_file(path : *mut i8) -> i32;
+  fn remove(path : *const i8) -> i32;
+}
+
+fn position<S : Seek>(source : &mut S) -> Result<u64, Error> {
+  return source.stream_position();
+}
+
+fn main() -> i32 {
+  let path = unsafe { vx_get_temp_file("file_options_seek") };
+  unsafe { remove(path); }
+  let empty_options = OpenOptions::new();
+  let invalid = (unsafe { empty_options.open_raw(path) }).unwrap_err();
+  let invalid_kind = match invalid.kind() {
+    ErrorKind::InvalidInput() => {
+      true
+    }, _ => {
+      false
+    }
+  };
+  assert(invalid_kind, "an empty configuration is invalid");
+
+  let byte : u8 = 65;
+  let mut file = (unsafe { File::create_new_raw(path) }).unwrap();
+  assert((unsafe { file.write_raw((&byte) as *const u8, 1) }).unwrap() == 1, "create_new write count");
+  assert(position(&mut file).unwrap() == 1, "generic Seek current position");
+  assert(file.seek_to(SeekFrom::Current(-1)).unwrap() == 0, "signed relative seek");
+  assert(file.seek_to(SeekFrom::End(0)).unwrap() == 1, "seek from end");
+  assert(file.seek_to(SeekFrom::Start(0)).unwrap() == 0, "seek to start");
+  assert(file.stream_position().unwrap() == 0, "position after seek to start");
+  let seek_error = file.seek_to(SeekFrom::Current(-1)).unwrap_err();
+  let seek_operation = match seek_error.operation() {
+    Operation::Seek() => {
+      true
+    }, _ => {
+      false
+    }
+  };
+  assert(seek_operation, "seek error operation");
+  drop(file);
+
+  let duplicate = (unsafe { File::create_new_raw(path) }).unwrap_err();
+  let exists = match duplicate.kind() {
+    ErrorKind::AlreadyExists() => {
+      true
+    }, _ => {
+      false
+    }
+  };
+  assert(exists, "exclusive creation reports an existing file");
+
+  let options = OpenOptions::new().write(true);
+  let mut preserved = (unsafe { options.open_raw(path) }).unwrap();
+  assert(preserved.seek_to(SeekFrom::End(0)).unwrap() == 1, "write access preserves contents");
+  drop(preserved);
+  let append_options = OpenOptions::new().append(true);
+  let mut appended = (unsafe { append_options.open_raw(path) }).unwrap();
+  appended.seek_to(SeekFrom::Start(0)).unwrap();
+  assert((unsafe { appended.write_raw((&byte) as *const u8, 1) }).unwrap() == 1, "append write count");
+  assert(appended.stream_position().unwrap() == 2, "append ignores the seek position for writes");
+  drop(appended);
+
+  let disabled = OpenOptions::new().write(true).truncate(true).truncate(false).read(true);
+  let mut preserved_reader = (unsafe { disabled.open_raw(path) }).unwrap();
+  assert(preserved_reader.seek_to(SeekFrom::End(0)).unwrap() == 2, "disabled truncate preserves contents");
+  drop(preserved_reader);
+  let read_only = OpenOptions::new().read(true).write(true).write(false);
+  let mut reader = (unsafe { read_only.open_raw(path) }).unwrap();
+  let denied_result = unsafe { reader.write_raw((&byte) as *const u8, 1) };
+  assert(denied_result.is_err(), "disabled write removes write access");
+  let denied = denied_result.unwrap_err();
+  let denied_operation = match denied.operation() {
+    Operation::Write() => {
+      true
+    }, _ => {
+      false
+    }
+  };
+  assert(denied_operation, "disabled write reports its operation");
+  assert(reader.seek_to(SeekFrom::Start(18446744073709551615u64)).is_err(), "start offsets do not wrap into relative seeks");
+  drop(reader);
+  let mut truncated = (unsafe { File::create_raw(path) }).unwrap();
+  assert(truncated.seek_to(SeekFrom::End(0)).unwrap() == 0, "create truncates existing contents");
+  drop(truncated);
+  unsafe { remove(path); vx_free_temp_file(path); }
+  println!("file options and typed seeking preserve their contracts");
+  return 0;
+}
