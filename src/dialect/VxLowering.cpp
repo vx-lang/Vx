@@ -9940,6 +9940,167 @@ static LogicalResult serializeSpirv(std::unique_ptr<llvm::Module> module,
   return success();
 }
 
+/// Arithmetic on bf16 in f32, rounded to bf16 after each operation, as the CPU
+/// does. SPIR-V has a bf16 type only through an extension that not every driver
+/// has. An operation that this cannot rewrite keeps its bf16, and
+/// `bf16Refusals` then leaves its kernel out of the image.
+static void computeBf16InF32(gpu::GPUModuleOp gpuModule) {
+  MLIRContext *context = gpuModule.getContext();
+  TypeConverter converter;
+  arith::populateEmulateUnsupportedFloatsConversions(
+      converter, {BFloat16Type::get(context)}, Float32Type::get(context));
+  RewritePatternSet patterns(context);
+  arith::populateEmulateUnsupportedFloatsPatterns(patterns, converter);
+  ConversionTarget target(*context);
+  arith::populateEmulateUnsupportedFloatsLegality(target, converter);
+  (void)applyPartialConversion(gpuModule, target, std::move(patterns));
+  expandBf16Conversions(gpuModule);
+}
+
+/// Whether `type` is bf16, or holds bf16.
+static bool holdsBf16(llvm::Type *type) {
+  if (type->isBFloatTy())
+    return true;
+  return llvm::any_of(type->subtypes(), holdsBf16);
+}
+
+/// Load, store, select and carry bf16 as i16, which holds the same two bytes.
+/// The `bitcast` that a conversion makes of a bf16 value then meets a `bitcast`
+/// that undoes it, and the two fold away.
+static void storeBf16AsI16(llvm::Module &module) {
+  auto asI16 = [&](llvm::Type *type) -> llvm::Type * {
+    if (!type->getScalarType()->isBFloatTy())
+      return nullptr;
+    llvm::Type *i16 = llvm::Type::getInt16Ty(module.getContext());
+    if (auto *vector = dyn_cast<llvm::VectorType>(type))
+      return llvm::VectorType::get(i16, vector->getElementCount());
+    return i16;
+  };
+  SmallVector<llvm::Instruction *> work;
+  for (llvm::Function &f : module)
+    for (llvm::Instruction &inst : llvm::instructions(f))
+      if (isa<llvm::LoadInst, llvm::StoreInst, llvm::GetElementPtrInst,
+              llvm::PHINode, llvm::SelectInst>(inst))
+        work.push_back(&inst);
+  SmallVector<llvm::Instruction *> replaced;
+  for (llvm::Instruction *inst : work) {
+    if (auto *load = dyn_cast<llvm::LoadInst>(inst)) {
+      if (llvm::Type *word = asI16(load->getType())) {
+        llvm::IRBuilder<> b(load);
+        llvm::Value *bits =
+            b.CreateAlignedLoad(word, load->getPointerOperand(),
+                                load->getAlign(), load->isVolatile());
+        load->replaceAllUsesWith(b.CreateBitCast(bits, load->getType()));
+        replaced.push_back(load);
+      }
+    } else if (auto *store = dyn_cast<llvm::StoreInst>(inst)) {
+      llvm::Value *value = store->getValueOperand();
+      if (llvm::Type *word = asI16(value->getType())) {
+        llvm::IRBuilder<> b(store);
+        store->setOperand(0, b.CreateBitCast(value, word));
+      }
+    } else if (auto *gep = dyn_cast<llvm::GetElementPtrInst>(inst)) {
+      llvm::Type *word = asI16(gep->getSourceElementType());
+      if (word && gep->getNumIndices() == 1) {
+        gep->setSourceElementType(word);
+        gep->setResultElementType(word);
+      }
+    } else if (auto *phi = dyn_cast<llvm::PHINode>(inst)) {
+      if (llvm::Type *word = asI16(phi->getType())) {
+        auto *bits = llvm::PHINode::Create(word, phi->getNumIncomingValues(),
+                                           "", phi->getIterator());
+        for (unsigned i = 0; i < phi->getNumIncomingValues(); ++i) {
+          llvm::IRBuilder<> b(phi->getIncomingBlock(i)->getTerminator());
+          bits->addIncoming(b.CreateBitCast(phi->getIncomingValue(i), word),
+                            phi->getIncomingBlock(i));
+        }
+        llvm::IRBuilder<> b(phi->getParent(),
+                            phi->getParent()->getFirstInsertionPt());
+        phi->replaceAllUsesWith(b.CreateBitCast(bits, phi->getType()));
+        replaced.push_back(phi);
+      }
+    } else if (auto *select = dyn_cast<llvm::SelectInst>(inst)) {
+      if (llvm::Type *word = asI16(select->getType())) {
+        llvm::IRBuilder<> b(select);
+        llvm::Value *bits =
+            b.CreateSelect(select->getCondition(),
+                           b.CreateBitCast(select->getTrueValue(), word),
+                           b.CreateBitCast(select->getFalseValue(), word));
+        select->replaceAllUsesWith(b.CreateBitCast(bits, select->getType()));
+        replaced.push_back(select);
+      }
+    }
+  }
+  for (llvm::Instruction *inst : replaced)
+    inst->eraseFromParent();
+  for (bool changed = true; changed;) {
+    changed = false;
+    for (llvm::Function &f : module) {
+      for (llvm::Instruction &inst :
+           llvm::make_early_inc_range(llvm::instructions(f))) {
+        auto *cast = dyn_cast<llvm::BitCastInst>(&inst);
+        if (!cast)
+          continue;
+        auto *inner = dyn_cast<llvm::BitCastInst>(cast->getOperand(0));
+        if (inner && inner->getOperand(0)->getType() == cast->getType()) {
+          cast->replaceAllUsesWith(inner->getOperand(0));
+          cast->eraseFromParent();
+          changed = true;
+        } else if (cast->use_empty()) {
+          cast->eraseFromParent();
+          changed = true;
+        }
+      }
+    }
+  }
+}
+
+/// The kernels that still use a bf16 value, in themselves or in a function
+/// they call, after `storeBf16AsI16`. LLVM's SPIR-V backend stops the process
+/// on a bf16 type, so these kernels have to be left out first.
+static SmallVector<SpirvKernelRefusal> bf16Refusals(llvm::Module &module) {
+  llvm::DenseSet<const llvm::Function *> usesBf16;
+  for (llvm::Function &f : module) {
+    bool uses = llvm::any_of(
+        f.args(), [](llvm::Argument &a) { return holdsBf16(a.getType()); });
+    for (llvm::Instruction &inst : llvm::instructions(f)) {
+      uses = uses || holdsBf16(inst.getType()) ||
+             llvm::any_of(inst.operands(),
+                          [](llvm::Use &u) { return holdsBf16(u->getType()); });
+      if (auto *gep = dyn_cast<llvm::GetElementPtrInst>(&inst))
+        uses = uses || holdsBf16(gep->getSourceElementType());
+      if (auto *slot = dyn_cast<llvm::AllocaInst>(&inst))
+        uses = uses || holdsBf16(slot->getAllocatedType());
+    }
+    if (uses)
+      usesBf16.insert(&f);
+  }
+  // A caller of a function that uses bf16 uses it too.
+  for (bool changed = true; changed;) {
+    changed = false;
+    for (llvm::Function &f : module) {
+      if (usesBf16.contains(&f))
+        continue;
+      for (llvm::Instruction &inst : llvm::instructions(f)) {
+        auto *call = dyn_cast<llvm::CallBase>(&inst);
+        if (call && usesBf16.contains(call->getCalledFunction())) {
+          usesBf16.insert(&f);
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
+  SmallVector<SpirvKernelRefusal> refused;
+  for (llvm::Function &f : module)
+    if (f.getCallingConv() == llvm::CallingConv::SPIR_KERNEL &&
+        usesBf16.contains(&f))
+      refused.push_back({f.getName().str(),
+                         "it uses a `bf16` value in a way that a SPIR-V image "
+                         "cannot hold yet"});
+  return refused;
+}
+
 /// Give each `i1` operation that LLVM's SPIR-V backend cannot write its logic
 /// form. The backend writes `mul`, division, remainder and the shifts of `i1`
 /// as integer instructions on `bool`, which SPIR-V does not allow, and it
@@ -10349,6 +10510,7 @@ spirvImageOfKernels(gpu::GPUModuleOp gpuModule, const llvm::StringSet<> &left,
     error = "the device module vanished in the pipeline";
     return {};
   }
+  computeBf16InF32(*kernels.begin());
   if (failed(flattenSpirvKernelArgs(*kernels.begin(), error, refused)))
     return {};
   llvm::StringSet<> assertFlag = reportAssertsThroughAFlag(*kernels.begin());
@@ -10397,6 +10559,12 @@ spirvImageOfKernels(gpu::GPUModuleOp gpuModule, const llvm::StringSet<> &left,
   }
   legalizeOneBitArithmetic(*llvmModule);
   inlinePrintfIntoKernels(*llvmModule);
+  storeBf16AsI16(*llvmModule);
+  SmallVector<SpirvKernelRefusal> bf16 = bf16Refusals(*llvmModule);
+  if (!bf16.empty()) {
+    refused.append(bf16.begin(), bf16.end());
+    return {};
+  }
   SmallVector<SpirvKernelRefusal> wide = wideIntegerRefusals(*llvmModule);
   if (!wide.empty()) {
     refused.append(wide.begin(), wide.end());
