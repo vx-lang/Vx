@@ -1,0 +1,89 @@
+//===- run_jobs_gives_the_results_in_job_order_with_at_most_n_tasks.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `run_jobs` runs `square` on 12 jobs with at most 3 tasks. The jobs sleep for different times,
+// so they end in an order that is not the job order. The results must still come in job order.
+//
+// `square` counts the jobs that run at the same time in `inside`, and keeps the highest count in
+// `most`. It must be 3: never more, and the sleeps let 3 jobs run at the same time. `ran` counts
+// the jobs, so each job ran once.
+//
+// `try_run_jobs` with a `work` that never fails gives its results in job order too.
+//
+// The RUN lines with `env` run the same program on the shared runtime: with one worker thread,
+// and with seeds that pick the order of the tasks.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_SEED=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_SEED=2 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}squares 0 1 4 9 16 25 36 49 64 81 100 121{{$}}
+// CHECK-NEXT: {{^}}most jobs at once: 3{{$}}
+// CHECK-NEXT: {{^}}jobs that ran: 12{{$}}
+// CHECK-NEXT: {{^}}doubles 0 2 4 6 8 10 12 14 16 18 20 22{{$}}
+
+import core::option;
+import core::result;
+import core::sync::atomic;
+import core::time;
+import std::sync::jobs;
+import std::time;
+import std::vec;
+
+struct Counts {
+  inside : AtomicI64,
+  most : AtomicI64,
+  ran : AtomicI64,
+}
+
+struct Job {
+  number : i64,
+  sleep_ms : u64,
+}
+
+fn square(counts : &Counts, job : &Job) -> i64 {
+  let now = counts.inside.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+  counts.most.fetch_max(now, AtomicOrdering::SeqCst);
+  counts.ran.fetch_add(1, AtomicOrdering::SeqCst);
+  sleep(Duration::from_millis(job.sleep_ms));
+  counts.inside.fetch_sub(1, AtomicOrdering::SeqCst);
+  return job.number * job.number;
+}
+
+fn double(_counts : &Counts, job : &Job) -> Result<i64, i32> {
+  sleep(Duration::from_millis(job.sleep_ms));
+  return Result<i64, i32>::Ok(2 * job.number);
+}
+
+fn main() -> i32 {
+  let mut jobs = Vec<Job>::new();
+  for i in 0..12 {
+    // Early jobs sleep longest, so later jobs end first.
+    jobs.push(Job {
+      number : i64::from(i), sleep_ms : (13 - i) as u64
+    });
+  }
+  let counts = Counts {
+    inside : AtomicI64::new(0), most : AtomicI64::new(0), ran : AtomicI64::new(0)
+  };
+  let squares = run_jobs(&counts, &jobs, 3, square).unwrap();
+  print!("squares");
+  for i in 0..squares.len() {
+    print!(" {}", squares.get(i));
+  }
+  println!("");
+  println!("most jobs at once: {}", counts.most.load(AtomicOrdering::SeqCst));
+  println!("jobs that ran: {}", counts.ran.load(AtomicOrdering::SeqCst));
+  let doubles = try_run_jobs(&counts, &jobs, 3, double).unwrap();
+  print!("doubles");
+  for i in 0..doubles.len() {
+    print!(" {}", doubles.get(i));
+  }
+  println!("");
+  return 0;
+}

@@ -1,0 +1,49 @@
+//===- a_panic_in_a_job_of_try_run_jobs_stops_the_program.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `work` panics on job 3, and gives no `Err`. The panic stops the program, as in `run_jobs`: it
+// does not become an error of `try_run_jobs`. The message names the line of the panic and the
+// task that `try_run_jobs` started, and the program prints nothing after the call.
+//
+// RUN: not vxc %s --run 2>&1 | FileCheck %s --implicit-check-not="after try_run_jobs"
+// RUN: not vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not="after try_run_jobs"
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 not vxc %s --run 2>&1 | FileCheck %s --implicit-check-not="after try_run_jobs"
+
+// CHECK: {{^}}panic: job 3 cannot be done{{$}}
+
+import core::panic;
+import core::result;
+import std::sync::jobs;
+import std::vec;
+
+fn fails_on_three(_c : &i64, job : &i64) -> Result<i64, i64> {
+  if *job == 3 {
+    // CHECK-NEXT: {{^}}  at {{.*}}a_panic_in_a_job_of_try_run_jobs_stops_the_program.vx:[[@LINE+1]]{{$}}
+    panic("job 3 cannot be done");
+  }
+  return Result<i64, i64>::Ok(*job * 2);
+}
+
+// CHECK-NEXT: {{^}}  in the task from the `spawn` at {{.*}}jobs.vx:{{[0-9]+}}{{$}}
+// CHECK-NEXT: {{^}}Program was killed by signal 6
+
+fn main() -> i32 {
+  let mut numbers = Vec<i64>::new();
+  for i in 1..9 {
+    numbers.push(i64::from(i));
+  }
+  let c : i64 = 0;
+  match try_run_jobs(&c, &numbers, 3, fails_on_three) {
+    Result<Vec<i64>, JobsError<i64>>::Ok(r) => {
+      println!("after try_run_jobs: {} results", r.len());
+    }
+    Result<Vec<i64>, JobsError<i64>>::Err(_e) => {
+      println!("after try_run_jobs: an error");
+    }
+  }
+  return 0;
+}
