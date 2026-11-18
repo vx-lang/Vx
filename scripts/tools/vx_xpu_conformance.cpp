@@ -612,8 +612,8 @@ static std::vector<char> referenceOf(Op op, const DType &dt, int64_t M,
         const double a = storedValue(dt, inputA(op, i, j));
         const double b = storedValue(dt, inputB(op, i, j));
         const double c = storedValue(dt, inputC(op, i, j));
-        const double v = dt.code == VX_DTYPE_I1 ? orTyped(andTyped(a, b), c)
-                                               : a * b + c;
+        const double v =
+            dt.code == VX_DTYPE_I1 ? orTyped(andTyped(a, b), c) : a * b + c;
         storeElem(out, (size_t)(i * N + j), dt, v);
       }
   } else if (op == Op::Reduce) {
