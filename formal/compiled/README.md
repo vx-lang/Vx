@@ -48,8 +48,12 @@ GenMC cannot read IR that loads or stores a whole struct, so the script optimize
 | Client | Executions at each level | Time |
 | --- | --- | --- |
 | `mutex_three_tasks.vx` | 33678 | 21 s |
+| `semaphore_three_tasks.vx` | 15690, and 538 blocked | 15 s |
 | `channel_keeps_the_order_of_one_sender.vx` | 15537 | 10 s |
 | `arc_two_holders.vx` | 4 | < 1 s |
+
+GenMC stops an execution as blocked when a loop runs again and nothing changed. In the semaphore,
+this is probably a task that wakes, finds no free permit and sleeps again.
 
 A channel with two senders did not finish in 20 minutes, with room for 1 value or for 2.
 
@@ -59,6 +63,10 @@ Each of these changes to a copy of the library made the check fail:
   Without the flag the check passes, because a `Relaxed` read is an `Acquire` read.
 - The drop of the guard adds to `serving` with `Relaxed`: a lost wake.
 - The drop of the guard wakes only when two threads sleep: a lost wake.
+- `acquire` takes a permit with `Relaxed`, with `-fweak-relaxed-atomics`: a data race on the value.
+  Without the flag the check passes.
+- The drop of a `Permit` gives the permit back with `Relaxed`: a data race on the value.
+- The drop of a `Permit` wakes only when two threads sleep: a lost wake.
 - The drop of an `Arc` takes 1 from the count with `Relaxed`: an access to freed memory.
 - `send` marks its slot full with a `Relaxed` store: a data race on the slot.
 
