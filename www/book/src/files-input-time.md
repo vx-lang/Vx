@@ -39,16 +39,24 @@ gives 0. A `-` is not a sign. `parse_int` does not check for overflow.
 
 ## Files
 
-The file APIs currently require explicit raw pointers. Safe paths and bounded byte slices are still prerequisites.
-`File::open_raw(path)` opens an existing file for reading. `File::create_raw(path)` creates or truncates a writable file.
-Both return `Result<File, Error>`. Paths must be NUL-terminated and remain valid during the call.
-For other choices, use `OpenOptions::new()` with named `read`, `write`, `append`, `create`, `truncate`, and `create_new` options.
+`File::open_raw(path)` opens a file that exists, for reading. `File::create_raw(path)` makes a
+file for writing. If the file exists, it makes the file empty. `path` is a text that ends with a
+zero byte, such as a string literal. Both functions give a `Result`: `Ok` holds the `File`, and
+`Err` holds an `Error`. [Errors](errors.md) explains `Result`.
 
-`read_raw(buffer, len)` and `write_raw(buffer, len)` return `Result<usize, Error>`.
-The caller supplies valid memory and therefore uses `unsafe`.
-A short transfer succeeds. A zero-byte nonempty read means EOF, while an error returns `Err`.
-`seek_to(SeekFrom::Start(offset))`, `Current(delta)`, and `End(delta)` return the new absolute position or an error.
-`stream_position()` inspects the position. Seek to `SeekFrom::Start(0)` to return to byte zero.
+For other ways to open a file, use `OpenOptions`. Start with `OpenOptions::new()`, and turn on
+each choice that you want: `read`, `write`, `append`, `create`, `truncate` or `create_new`.
+
+`write_raw(buffer, len)` writes up to `len` bytes from a buffer, and gives how many it wrote.
+`read_raw(buffer, len)` reads up to `len` bytes into a buffer, and gives how many it read. A count
+of 0 from `read_raw` means the end of the file. Both functions give a `Result`, so an error is an
+`Err` and not a count. The buffer is a raw pointer, and Vx cannot check its size. So each call
+goes in an `unsafe` block.
+
+`seek_to` moves the position of the next read or write, and gives the new position.
+`SeekFrom::Start(n)` counts from the start of the file, `SeekFrom::Current(n)` from the current
+position, and `SeekFrom::End(n)` from the end. `stream_position()` gives the position and does
+not move it.
 
 `File` implements `Drop`, so a file closes at the end of its scope. You do not close it by hand.
 [Ownership and borrowing](ownership.md) explains `Drop`.
@@ -69,13 +77,15 @@ the file ends at byte 14
 byte 4 is 116, the letter t
 ```
 
-`write_text` copies the literal into a `Vec<u8>`, because `write` takes a pointer to `u8` bytes.
-`out` closes at the end of `write_text`. So `main` reads all 14 bytes.
+`write_text` copies the literal into a `Vec<u8>`, because `write_raw` takes a pointer to `u8`
+bytes. `out` closes at the end of `write_text`. So `main` reads all 14 bytes.
 
-A failed fallible open returns `Err`, so a missing file differs from an empty file.
-The example uses `unwrap` for brevity. Applications should handle or propagate the error.
-The existing `File::open(path, OpenMode)`, `read`, `write`, and integer-based `seek` remain available for compatibility.
-New code should use the fallible alternatives shown here. These recommendations do not yet produce deprecation warnings.
+The program calls `unwrap`, which stops the program on an `Err`. A real program checks the error.
+For example, `error.kind()` gives `ErrorKind::NotFound()` when the file does not exist.
+
+The older `File::open(path, mode)`, `read`, `write` and `seek` are deprecated. A failed `open`
+gives a `File` that does nothing, and the program cannot tell a missing file from an empty one.
+Use the functions above in new code.
 
 ## Standard input and output
 

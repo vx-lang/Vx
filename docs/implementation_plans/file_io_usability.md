@@ -6,52 +6,55 @@ SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 # File I/O usability in the Vx standard library
 
-**Status:** experimental. Fallible raw file APIs and typed seeking are implemented. Safe path and byte-buffer APIs remain gated.
+**Status:** incubating, with the feature name `file_io_errors`. The `Result` file API and typed seeking work. Safe path and byte-buffer APIs wait for slices and text.
 
 ## Current API and migration
 
-- `File::open_raw(path)` opens an existing file for reading and returns `Result<File, Error>`.
-- `File::create_raw(path)` creates or truncates a writable file.
-- `File::create_new_raw(path)` creates a writable file atomically and fails if it exists.
-- `OpenOptions::new()` starts with every option disabled. Its `read`, `write`, `append`, `create`, `truncate`, and `create_new` setters accept booleans.
-- `OpenOptions::open_raw(path)` validates combinations and returns a structured error on failure.
-- `File::read_raw` and `write_raw` take raw buffers with `usize` lengths and return `Result<usize, Error>`.
-- `File` implements `Seek::seek_to`, which keeps the existing `File::seek(offset, whence)` available. `SeekFrom::Start(u64)`, `Current(i64)`, and `End(i64)` provide typed offsets.
-- `Seek::stream_position` returns the position. Seek to `SeekFrom::Start(0)` to return to the beginning.
-- `File` owns its handle and closes it through `Drop`. A failed fallible open does not produce a `File`.
-- `Error::from_kind` constructs a portable error. `from_raw_os_error` classifies the native code on this host.
-- `Error::with_operation` attaches context. `message_c_str` explicitly exposes the temporary C-string representation.
+- `File::open_raw(path)` opens a file that exists, for reading. It returns `Result<File, Error>`.
+- `File::create_raw(path)` makes a file for writing, or makes an existing file empty.
+- `File::create_new_raw(path)` makes a new file for reading and writing, in one step. It fails if the file exists. This is Rust's `File::create_new`.
+- `OpenOptions::new()` turns every choice off. Its setters `read`, `write`, `append`, `create`, `truncate` and `create_new` take a `bool`.
+- `OpenOptions::open_raw(path)` checks the combination of choices, and returns an `Error` when the open fails.
+- `File::read_raw` and `write_raw` take a raw buffer and a `usize` length. They return `Result<usize, Error>`.
+- `File` implements `Seek::seek_to`. `SeekFrom::Start(u64)`, `Current(i64)` and `End(i64)` give the position.
+- `Seek::stream_position` returns the position.
+- `File` owns its handle, and `Drop` closes it. A failed open makes no `File`.
+- `File` implements `HostOnly`, so device code cannot use it (E6038).
+- `Error::from_kind` makes an error with no OS code. `from_raw_os_error` keeps the OS code and gets its kind on this host.
+- `Error::with_operation` sets the operation. `message_c_str` returns the name of the kind as a C string, until Vx has text formatting.
 
-Raw opening requires a live NUL-terminated path. Unix preserves non-UTF-8 bytes.
-Raw reading requires writable memory. Raw writing requires initialized readable memory.
-Short transfers succeed, EOF is distinct from failure, and empty requests succeed without accessing buffer memory.
-On Unix, reads accept uninitialized writable memory without clearing the full request first.
-The existing file bridge remains the backend. [The error contract](io_error_contract.md) specifies its status ABI.
+A raw path must point to a NUL-terminated string. On Unix, the path can hold bytes that are not UTF-8.
+A read buffer must hold `len` bytes that the program can write. A write buffer must hold `len` bytes with values.
+A buffer must not be null, also for an empty request. The `requires valid(buffer, len)` contract says this, and the compiler tells LLVM that the pointer is not null.
+A short transfer is not an error. A read count of 0 is the end of the file, and an error is an `Err`.
+On Unix, a read does not clear the buffer first. On macOS, a read asks for at most `i32::MAX - 1` bytes, because macOS refuses a larger request.
+The Rust file bridge still does the work. [The error contract](io_error_contract.md) gives its status codes.
 
-The existing APIs retain their names, signatures, safety qualifiers, and behavior:
+`Error` is `Copy` today. A later message or cause, as in Rust's `io::Error`, cannot be `Copy`. So adding one removes `Copy`, which breaks a program that copies an `Error`. The doc comment of `Error` warns about this. RFC question Q3 decides the shape of the error type, and `Copy` must not decide it first.
 
-| Compatibility API | Recommended alternative for new code |
+## Deprecated APIs
+
+These APIs are deprecated since 0.0.5. Each doc comment has a `# Stage` section that names the replacement. Vx has no deprecation attribute yet, so the compiler gives no warning.
+
+| Deprecated API | Replacement |
 | --- | --- |
-| `File::open(path, OpenMode) -> File` | `File::open_raw`, `create_raw`, or `OpenOptions::open_raw` |
+| `OpenMode` | `OpenOptions` |
+| `File::open(path, OpenMode) -> File` | `File::open_raw`, `create_raw` or `OpenOptions::open_raw` |
 | `File::read(buffer, u64) -> u64` | `File::read_raw(buffer, usize) -> Result<usize, Error>` |
 | `File::write(buffer, u64) -> u64` | `File::write_raw(buffer, usize) -> Result<usize, Error>` |
-| `File::seek(offset, whence) -> i64` | `File::seek_to(SeekFrom) -> Result<u64, Error>` or `Seek::seek_to` |
+| `File::seek(offset, whence) -> i64` | `Seek::seek_to(SeekFrom) -> Result<u64, Error>` |
 
-`OpenMode` and its three variants remain available. Existing callers need no migration.
-The old operations retain their error-hiding behavior. New code should use the fallible alternatives.
-Vx has no implemented deprecation annotations, so this recommendation is documentation-only.
-Add compiler deprecation warnings when that facility exists. Do not remove or rename the compatibility APIs in a routine release.
-The intermediate `try_*` names were introduced only during this branch and are not released compatibility APIs.
+The deprecated APIs hide errors: a failed open gives a `File` with a null handle, and a failed read gives 0.
+They keep their names, signatures and behavior until they are removed. The standard library RFC (section 6) says that a deprecated item stays for at least one release before 1.0.
+After the removal, a later safe API can use the names `open`, `read`, `write` and `seek` again. The RFC decides this, not this plan.
 
-New runtime declarations live in `std::fs::raw`. Existing runtime and C declarations remain in `std::fs` to preserve their paths.
-New application code should prefer the fallible `File` methods.
-Vx does not yet provide Rust-style private function visibility, so module placement alone does not enforce backend privacy.
+New runtime declarations are in `std::fs::raw`. The old runtime and C declarations stay in `std::fs`, so their paths do not change.
+Vx has no private functions yet, so a program can still call these declarations.
 
 ## Safe API gates
 
-Existing `File::open`, `read`, `write`, and `seek` remain compatibility APIs.
-Future safe APIs must be additive, through new methods, types, or trait-qualified operations.
-Do not replace existing signatures to reclaim a preferred name. Gated APIs have no placeholder implementations.
+The deprecated `File::open`, `read`, `write` and `seek` keep their signatures until they are removed.
+Until then, a new safe API needs a new name. The names in the table below are placeholders. No API in it has an implementation yet.
 
 | Prerequisite | API it enables | Required safety contract |
 | --- | --- | --- |
