@@ -28,15 +28,20 @@
 // JSON-NEXT: "kind": "arrivals",
 // JSON: "zero_before_first_launch": true
 // The count goes up by 1, the last pass sets it back to 0, and the flag for the lanes is in
-// shared memory.
+// shared memory. The add orders memory for the GPU only, with one fence before it and one after.
+// A fence for the whole system (`.sys`) costs about 1.5 us a launch on an H200.
 // PTX: .entry merge_heads(
-// PTX: atom.global.add.u32 [[COUNT:%r[a-z]*[0-9]+]], {{\[}}[[AT:%rd[0-9]+]]{{\]}}, 1;
+// PTX: fence.acq_rel.gpu;
+// PTX-NEXT: atom.global.add.u32 [[COUNT:%r[a-z]*[0-9]+]], {{\[}}[[AT:%rd[0-9]+]]{{\]}}, 1;
+// PTX-NEXT: fence.acq_rel.gpu;
 // PTX: st.global.b32 {{\[}}[[AT]]{{\]}}, 0;
 // PTX: st.shared.b32
 // PTX: bar.sync
 // PTX: ld.shared.b32
 // PTX: .entry sum_all(
-// PTX: atom.global.add.u32
+// PTX: fence.acq_rel.gpu;
+// PTX-NEXT: atom.global.add.u32
+// PTX-NEXT: fence.acq_rel.gpu;
 
 pub fn merge_heads(partial : &mut Tensor<i32, [?, ?], Memory::HBM>, merged : &mut Tensor<i32, [?, ?], Memory::HBM>, heads : i32, splits : i32) -> void {
   spawn on(Topology::Device) {
