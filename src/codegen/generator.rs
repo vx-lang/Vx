@@ -2326,13 +2326,14 @@ impl<'c> MeliorGenerator<'c> {
         }
     }
 
-    /// Byte size + alignment of a type for `sizeof<T>()`, computed the way the layout pass does
-    /// (`crate::layout::LayoutComputer::struct_layout`): a scalar by its element, any pointer/borrow
-    /// 8, and a nominal struct (or a monomorphized generic instance of one) as the aligned sum of its
-    /// recursively-sized fields. Name-keyed, because the generator holds struct decls by name, not
-    /// GID. `None` for an unmodelled type (tensor, closure, generic scalar, data-carrying enum) — the
-    /// caller falls back to a conservative default. This replaces `SizeOfExpr::lower`'s old hardcoded
-    /// `8` for aggregates, which under-sized a `Vec<struct>`'s element buffer (a `Vec<Vec<T>>` UB). (#242)
+    /// Byte size + alignment of a type for `sizeof<T>()`: a scalar by its element, any pointer/borrow
+    /// 8, a tensor by its memref descriptor, and a nominal struct (or a monomorphized generic
+    /// instance of one) as the aligned sum of its recursively-sized fields, as the layout pass does
+    /// (`crate::layout::LayoutComputer::struct_layout`). An enum is sized from the type that it
+    /// lowers to (`enum_size_align`), because this generator stores an enum as a tag and a slot
+    /// that the layout pass does not know. Only a tensor needs its own case: it lowers to a memref,
+    /// which is not an LLVM type. `None` for an unmodelled type (closure, generic scalar), and the
+    /// caller falls back to 8.
     pub(crate) fn type_size_align(&self, ty: &syntax::Type, depth: u32) -> Option<(usize, usize)> {
         use crate::layout::scalar_size_align;
         if depth > 32 {
