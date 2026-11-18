@@ -750,37 +750,10 @@ fn lower_lane_matmul<'c>(
     block: melior::ir::BlockRef<'c, 'c>,
     m: &crate::hir::check::lanes::LaneMatmul,
 ) -> Result<melior::ir::BlockRef<'c, 'c>, LowerError> {
-    let mut block = block;
-    let mut operands = Vec::new();
-    for e in [m.acc, m.lhs, m.rhs] {
-        let (v, mut ty, b) = gen.generate_expr(e, block)?;
-        block = b;
-        operands.push(super::expr::load_tensor_slot(gen, &block, v, &mut ty)?);
-    }
-    let unit = melior::ir::attribute::Attribute::unit(gen.context);
-    let mapped = gen.across_map.is_some();
-    let mut attrs = vec![(Identifier::new(gen.context, "subgroup"), unit)];
-    if !mapped {
-        attrs.push((Identifier::new(gen.context, "serial"), unit));
-    }
-    if m.accumulate {
-        attrs.push((Identifier::new(gen.context, "accumulate"), unit));
-    }
-    if gen
-        .across_map
-        .as_ref()
-        .is_some_and(|map| map.row_of_subgroup(m.acc))
-    {
-        attrs.push((Identifier::new(gen.context, "subgroup_row"), unit));
-    }
-    block.append_operation(
-        OperationBuilder::new("vx.lane_matmul", gen.loc())
-            .add_operands(&operands)
-            .add_attributes(&attrs)
-            .build()?,
-    );
+    let routine = crate::hir::check::lanes::matmul_routine(m.accumulate);
+    let (_, block) = super::expr::lower_lane_call(gen, block, routine, &[m.acc, m.lhs, m.rhs])?;
     // Each lane of the subgroup writes some elements of `acc`, and reads the others after this.
-    if mapped {
+    if gen.across_map.is_some() {
         super::across::barrier(gen, block, super::across::Level::Subgroup)?;
     }
     Ok(block)
