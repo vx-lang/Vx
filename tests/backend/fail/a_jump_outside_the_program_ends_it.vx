@@ -6,13 +6,16 @@
 //
 //===----------------------------------------------------------------------===//
 // The program calls code at an address outside every loaded image, so it faults with that
-// address as its program counter. The handler of the runtime must print its message, and the
-// program must end. On macOS, the unwinder of Rust used to loop on such an address, so the program
-// ran at 100% CPU and printed nothing.
+// address as its program counter. The handler of the runtime must print its message and that
+// address, and the program must end. The unwinder reads the code at that address, so the report
+// has no other frames. On macOS, the unwinder of Rust used to loop on such an address, so the
+// program ran at 100% CPU and printed nothing.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not="after the jump"
 // CHECK: {{^}}before the jump{{$}}
 // CHECK: {{^}}Caught SIGSEGV: Segmentation Fault!{{$}}
+// CHECK-NEXT: {{^}}Backtrace:{{$}}
+// CHECK-NEXT: {{^}}#0 0x00000000a7105c4c outside every loaded image{{$}}
 // CHECK: Program was killed by signal
 
 // Calls the code at `address`.

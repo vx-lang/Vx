@@ -20,38 +20,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 // Math & Core Functions
 // ============================================================================
 
-/// The frames that the SIGSEGV handler prints at most.
-const CRASH_FRAMES: usize = 64;
-
-/// The seconds that the SIGSEGV handler may take before SIGALRM ends the program.
-const CRASH_REPORT_SECONDS: libc::c_uint = 10;
-
-#[no_mangle]
-pub extern "C" fn vx_sigsegv_handler(sig: libc::c_int) {
-    // A wild memory access can surface as either SIGSEGV (unmapped page) or
-    // SIGBUS (e.g. a far out-of-range address on arm64); catch both so the crash
-    // is always reported with a backtrace rather than a silent signal death.
-    //
-    // The code that faulted can hold any lock, and its program counter can be outside every
-    // image. So the handler uses only `write`, `backtrace` and `backtrace_symbols_fd`, and not
-    // `println!` or the unwinder of Rust, which hung at 100% CPU on such a program counter. The
-    // alarm ends the program if the report still hangs.
-    let message: &[u8] = if sig == libc::SIGBUS {
-        b"Caught SIGBUS: Bus Error!\nBacktrace:\n"
-    } else {
-        b"Caught SIGSEGV: Segmentation Fault!\nBacktrace:\n"
-    };
-    unsafe {
-        libc::signal(libc::SIGALRM, libc::SIG_DFL);
-        libc::alarm(CRASH_REPORT_SECONDS);
-        libc::write(2, message.as_ptr() as *const libc::c_void, message.len());
-        let mut frames = [ptr::null_mut(); CRASH_FRAMES];
-        let count = libc::backtrace(frames.as_mut_ptr(), CRASH_FRAMES as libc::c_int);
-        libc::backtrace_symbols_fd(frames.as_ptr(), count, 2);
-        libc::abort();
-    }
-}
-
 /// A failed check prints its message with `puts` and then calls `abort`. Standard output is
 /// buffered when it is a pipe, and `abort` does not flush it, so the message was lost. Flush,
 /// then say which task stopped, then let the abort go on.
@@ -68,6 +36,7 @@ extern "C" fn vx_sigabrt_handler(_sig: libc::c_int) {
 pub extern "C" fn vx_init_signals() {
     // A bad value stops the program now, and not at its first `drop`.
     crate::ffi::tasks::drop_wait_cap_ns();
+    crate::ffi::crash_report::prepare();
     unsafe {
         // The first `backtrace` call of glibc loads libgcc_s, which allocates. Make it here, so
         // that the call in the SIGSEGV handler does not.
@@ -76,14 +45,6 @@ pub extern "C" fn vx_init_signals() {
         libc::signal(
             libc::SIGABRT,
             vx_sigabrt_handler as *const () as libc::sighandler_t,
-        );
-        libc::signal(
-            libc::SIGSEGV,
-            vx_sigsegv_handler as *const () as libc::sighandler_t,
-        );
-        libc::signal(
-            libc::SIGBUS,
-            vx_sigsegv_handler as *const () as libc::sighandler_t,
         );
     }
 }
