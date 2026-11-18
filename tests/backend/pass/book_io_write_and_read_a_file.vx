@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 // A program of the book chapter on files, input and time (www/book/src/files-input-time.md):
-// it writes a file, reads it back byte by byte, and moves the position with `seek`.
+// it writes a file, reads it back byte by byte, and moves the position with `seek_to`.
 // The RUN lines give the path in NOTES. The test runner gives no such variable, so NO_EXEC.
 //
 // NO_EXEC

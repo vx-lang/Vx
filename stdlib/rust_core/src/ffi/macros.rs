@@ -289,6 +289,16 @@ macro_rules! instantiate_file_ffi {
         const VX_FILE_ERROR_UNSUPPORTED: i32 = 11;
         const VX_FILE_ERROR_OTHER: i32 = 12;
 
+        // The bits of `vx_file_open_options`. Keep them in sync with `OpenOptions` in
+        // stdlib/std/fs.vx.
+        const VX_FILE_OPEN_READ: i32 = 1;
+        const VX_FILE_OPEN_WRITE: i32 = 2;
+        const VX_FILE_OPEN_APPEND: i32 = 4;
+        const VX_FILE_OPEN_CREATE: i32 = 8;
+        const VX_FILE_OPEN_TRUNCATE: i32 = 16;
+        const VX_FILE_OPEN_CREATE_NEW: i32 = 32;
+        const VX_FILE_OPEN_ALL: i32 = 63;
+
         fn vx_file_error_kind(kind: std::io::ErrorKind) -> i32 {
             match kind {
                 std::io::ErrorKind::NotFound => VX_FILE_ERROR_NOT_FOUND,
@@ -405,10 +415,11 @@ macro_rules! instantiate_file_ffi {
             code: *mut i32,
             has_code: *mut bool,
         ) -> i32 {
+            // The three `OpenMode` values: Read, Write and ReadWriteCreate.
             let options = match mode {
-                0 => 1,
-                1 => 26,
-                2 => 11,
+                0 => VX_FILE_OPEN_READ,
+                1 => VX_FILE_OPEN_WRITE | VX_FILE_OPEN_CREATE | VX_FILE_OPEN_TRUNCATE,
+                2 => VX_FILE_OPEN_READ | VX_FILE_OPEN_WRITE | VX_FILE_OPEN_CREATE,
                 _ => -1,
             };
             unsafe { vx_file_open_options(path, options, out, code, has_code) }
@@ -453,16 +464,16 @@ macro_rules! instantiate_file_ffi {
             {
                 return VX_FILE_STATUS_INVALID_ARGUMENT;
             }
-            if !(0..64).contains(&options) {
+            if !(0..=VX_FILE_OPEN_ALL).contains(&options) {
                 return VX_FILE_STATUS_INVALID_ARGUMENT;
             }
             let mut opts = std::fs::OpenOptions::new();
-            opts.read(options & 1 != 0)
-                .write(options & 2 != 0)
-                .append(options & 4 != 0)
-                .create(options & 8 != 0)
-                .truncate(options & 16 != 0)
-                .create_new(options & 32 != 0);
+            opts.read(options & VX_FILE_OPEN_READ != 0)
+                .write(options & VX_FILE_OPEN_WRITE != 0)
+                .append(options & VX_FILE_OPEN_APPEND != 0)
+                .create(options & VX_FILE_OPEN_CREATE != 0)
+                .truncate(options & VX_FILE_OPEN_TRUNCATE != 0)
+                .create_new(options & VX_FILE_OPEN_CREATE_NEW != 0);
 
             let c_path = unsafe { std::ffi::CStr::from_ptr(c_path) };
             #[cfg(unix)]

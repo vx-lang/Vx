@@ -4,6 +4,7 @@
 //
 // EXPECT: public file operations preserve structured errors
 // Public file calls distinguish errors, short reads, empty requests, and EOF.
+// The bridge tests in tests/file_error_status.rs check a null buffer. A Vx caller must not pass one.
 import core::mem;
 import core::result;
 import core::option;
@@ -95,8 +96,8 @@ fn main() -> i32 {
   assert((unsafe { reader.read_raw(output, 2) }).unwrap() == 1, "short read count");
   assert(unsafe { *output } == 65u8, "read byte");
   assert((unsafe { reader.read_raw(output, 1) }).unwrap() == 0, "EOF count");
-  assert((unsafe { reader.read_raw(0 as *mut u8, 0) }).unwrap() == 0, "empty read count");
-  assert((unsafe { reader.write_raw(0 as *const u8, 0) }).unwrap() == 0, "empty write count");
+  assert((unsafe { reader.read_raw(output, 0) }).unwrap() == 0, "empty read count");
+  assert((unsafe { reader.write_raw(output as *const u8, 0) }).unwrap() == 0, "empty write count");
   let write_error = (unsafe { reader.write_raw((&byte) as *const u8, 1) }).unwrap_err();
   let write_operation = match write_error.operation() {
     Operation::Write() => {
@@ -108,17 +109,6 @@ fn main() -> i32 {
   };
   assert(write_operation, "write error operation");
   assert(write_error.raw_os_error().is_some(), "write error native code");
-  let bad_buffer = (unsafe { reader.read_raw(0 as *mut u8, 1) }).unwrap_err();
-  let buffer_category = match bad_buffer.kind() {
-    ErrorKind::InvalidInput() => {
-      true
-    },
-    _ => {
-      false
-    }
-  };
-  assert(buffer_category, "invalid buffer category");
-  assert(bad_buffer.raw_os_error().is_none(), "invalid buffer has no native code");
   drop(reader);
   unsafe { free(output); remove(path); vx_free_temp_file(path); }
   println!("public file operations preserve structured errors");

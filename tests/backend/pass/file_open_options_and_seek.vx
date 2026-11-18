@@ -39,6 +39,10 @@ fn main() -> i32 {
   assert(file.seek_to(SeekFrom::End(0)).unwrap() == 1, "seek from end");
   assert(file.seek_to(SeekFrom::Start(0)).unwrap() == 0, "seek to start");
   assert(file.stream_position().unwrap() == 0, "position after seek to start");
+  let mut read_back : u8 = 0;
+  assert((unsafe { file.read_raw((&mut read_back) as *mut u8, 1) }).unwrap() == 1, "create_new also opens for reading");
+  assert(read_back == byte, "create_new reads the byte it wrote");
+  assert(file.seek_to(SeekFrom::Start(0)).unwrap() == 0, "seek to start after the read");
   let seek_error = file.seek_to(SeekFrom::Current(-1)).unwrap_err();
   let seek_operation = match seek_error.operation() {
     Operation::Seek() => {

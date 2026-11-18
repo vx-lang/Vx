@@ -1,0 +1,75 @@
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// EXPECT: a file closes on every path
+// A `File` closes when the program drops it: after a normal use, inside a `Result`, and when `?`
+// returns an error early. A failed open leaves no file open. Each loop runs 50 times, and then
+// checks that the lowest free file descriptor did not change. One file that stays open would
+// change it, because POSIX `dup` returns the lowest free descriptor.
+import core::mem;
+import core::result;
+import std::fs;
+import std::io;
+
+extern {
+  fn vx_get_temp_file(name : *const i8) -> *mut i8;
+  fn vx_free_temp_file(path : *mut i8) -> i32;
+  fn remove(path : *const i8) -> i32;
+  fn dup(fd : i32) -> i32;
+  fn close(fd : i32) -> i32;
+}
+
+fn lowest_free_descriptor() -> i32 {
+  let fd = unsafe { dup(1) };
+  assert(fd >= 0, "dup of standard output works");
+  unsafe { close(fd); }
+  return fd;
+}
+
+// Opens `path` for reading and writes to it. The write fails, so `?` returns while `file` is open.
+unsafe fn write_to_a_reader(path : *const i8) -> Result<usize, Error> {
+  let mut file = (unsafe { File::open_raw(path) })?;
+  let byte : u8 = 65;
+  let count = (unsafe { file.write_raw((&byte) as *const u8, 1) })?;
+  return Result<usize, Error>::Ok(count);
+}
+
+fn main() -> i32 {
+  let path = unsafe { vx_get_temp_file("a_file_closes_on_every_path") };
+  let missing = unsafe {
+    vx_get_temp_file("a_file_closes_on_every_path_missing")
+  };
+  unsafe { remove(missing); }
+  let first = (unsafe { File::create_raw(path) }).unwrap();
+  drop(first);
+  let start = lowest_free_descriptor();
+
+  for _i in 0..50 {
+    let mut file = (unsafe { File::open_raw(path) }).unwrap();
+    assert(file.stream_position().unwrap() == 0, "the file opened");
+  }
+  assert(lowest_free_descriptor() == start, "a file closes at the end of its scope");
+
+  for _i in 0..50 {
+    let opened = unsafe { File::open_raw(path) };
+    assert(opened.is_ok(), "the file opened");
+  }
+  assert(lowest_free_descriptor() == start, "a file inside a Result closes");
+
+  for _i in 0..50 {
+    assert((unsafe { File::open_raw(missing) }).is_err(), "the file does not exist");
+  }
+  assert(lowest_free_descriptor() == start, "a failed open leaves no file open");
+
+  for _i in 0..50 {
+    assert((unsafe { write_to_a_reader(path) }).is_err(), "the write fails");
+  }
+  assert(lowest_free_descriptor() == start, "a file closes when ? returns an error");
+
+  unsafe {
+    remove(path); vx_free_temp_file(path); vx_free_temp_file(missing);
+  }
+  println!("a file closes on every path");
+  return 0;
+}
