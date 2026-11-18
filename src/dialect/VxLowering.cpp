@@ -4089,28 +4089,50 @@ static void expandLaneMatmulOnDevice(OpBuilder &b, vx::LaneMatmulOp op) {
                        });
 }
 
-/// Whether `chip` has `mma.sync.m16n8k16` for bf16 and f16: `sm_80` and later.
-static bool chipHasMmaSync(StringRef chip) {
-  unsigned version = 0;
-  return chip.consume_front("sm_") &&
-         !chip.take_while(llvm::isDigit).getAsInteger(10, version) &&
-         version >= 80;
+/// The number of an NVIDIA chip, such as 89 for `sm_89` and 90 for `sm_90a`,
+/// or 0.
+static unsigned chipNumber(StringRef chip) {
+  unsigned number = 0;
+  if (!chip.consume_front("sm_") ||
+      chip.take_while(llvm::isDigit).getAsInteger(10, number))
+    return 0;
+  return number;
 }
 
-/// The element type of the tiles of a lane matmul that `mma.sync.m16n8k16`
-/// can take: both bf16 or both f16, an f32 result, and static sizes that are
-/// multiples of 16 x 8 x 16. Otherwise null.
+/// The unit attribute of a GPU module with an fp8 `mma.sync`, which needs PTX
+/// 8.4.
+constexpr StringLiteral fp8MmaAttr = "vx.fp8_mma";
+
+/// Whether `type` is an fp8 type that `mma.sync.m16n8k32` takes.
+static bool isMmaFp8(Type type) {
+  return isa<Float8E4M3FNType, Float8E5M2Type>(type);
+}
+
+/// The element type of the tiles of a lane matmul that `mma.sync` can take:
+/// both bf16 or both f16 in multiples of 16 x 8 x 16, or both `f8e4m3` or
+/// both `f8e5m2` in multiples of 16 x 8 x 32. The result is f32, and the sizes
+/// are static. Otherwise null.
 static Type mmaElementOf(vx::LaneMatmulOp op) {
   auto acc = cast<MemRefType>(op.getAcc().getType());
   auto lhs = cast<MemRefType>(op.getLhs().getType());
   auto rhs = cast<MemRefType>(op.getRhs().getType());
   Type elem = lhs.getElementType();
   if (!acc.getElementType().isF32() || rhs.getElementType() != elem ||
-      !(elem.isBF16() || elem.isF16()) || !acc.hasStaticShape() ||
-      !lhs.hasStaticShape() || !rhs.hasStaticShape())
+      !(elem.isBF16() || elem.isF16() || isMmaFp8(elem)) ||
+      !acc.hasStaticShape() || !lhs.hasStaticShape() || !rhs.hasStaticShape())
     return {};
   int64_t m = acc.getDimSize(0), n = acc.getDimSize(1), k = lhs.getDimSize(1);
-  if (m % 16 || n % 8 || k % 16 || k == 0)
+  int64_t depth = isMmaFp8(elem) ? 32 : 16;
+  if (m % 16 || n % 8 || k % depth || k == 0)
+    return {};
+  return elem;
+}
+
+/// As `mmaElementOf`, when `chip` has `mma.sync` for the type: `sm_80` and
+/// later for bf16 and f16, and `sm_89` and later for fp8.
+static Type mmaElementFor(vx::LaneMatmulOp op, StringRef chip) {
+  Type elem = mmaElementOf(op);
+  if (!elem || chipNumber(chip) < (isMmaFp8(elem) ? 89u : 80u))
     return {};
   return elem;
 }
@@ -4222,18 +4244,23 @@ static bool ldmatrixFits(Value tile) {
 }
 
 /// A lane matmul on the tensor cores. Each 16 x 8 piece of `acc` is one chain
-/// of `mma.sync.m16n8k16`, one for each 16 columns of `lhs`. Lane `l` holds
-/// the elements of row `l / 4` and `l / 4 + 8`, and of the columns
-/// `2 * (l % 4)` and the one after. When `ldmatrixRowStride` accepts a tile,
-/// `ldmatrix` loads its fragments, transposed for `rhs`, and otherwise each
-/// lane loads its elements one at a time. The tensor core adds the products in
-/// an order of its own, so the last bits can differ from the expansion on the
-/// host.
+/// of `mma.sync`, one for each 16 columns of `lhs` (`m16n8k16`), or for each
+/// 32 columns of fp8 tiles (`m16n8k32`). Lane `l` holds the elements of row
+/// `l / 4` and `l / 4 + 8`, and of the columns `2 * (l % 4)` and the one after.
+/// Each register of an input holds 2 elements of 16 bits or 4 of 8 bits that
+/// are next to each other in K. When `ldmatrixFits` accepts a tile, `ldmatrix`
+/// loads its fragments, transposed for `rhs`, and otherwise each lane loads its
+/// elements one at a time. The tensor core adds the products in an order of its
+/// own, so the last bits can differ from the expansion on the host.
 static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
                                     Type elem, Value fragments = {}) {
   Location loc = op.getLoc();
   MLIRContext *ctx = b.getContext();
-  Type f32 = b.getF32Type(), i16 = b.getI16Type(), i32 = b.getI32Type();
+  Type f32 = b.getF32Type(), i32 = b.getI32Type();
+  bool fp8 = isMmaFp8(elem);
+  unsigned bits = elem.getIntOrFloatBitWidth();
+  // The elements in one register, and the columns of `lhs` in one `mma.sync`.
+  int64_t perRegister = 32 / bits, depthStep = fp8 ? 32 : 16;
   auto acc = cast<MemRefType>(op.getAcc().getType());
   int64_t m = acc.getDimSize(0), n = acc.getDimSize(1);
   int64_t k = cast<MemRefType>(op.getLhs().getType()).getDimSize(1);
@@ -4244,22 +4271,27 @@ static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
       b.create<gpu::ThreadIdOp>(loc, b.getIndexType(), gpu::Dimension::x);
   Value lane = b.create<arith::RemUIOp>(loc, tid, index(32));
   Value group = b.create<arith::DivUIOp>(loc, lane, index(4));
-  Value pair = b.create<arith::MulIOp>(
-      loc, b.create<arith::RemUIOp>(loc, lane, index(4)), index(2));
+  Value quad = b.create<arith::RemUIOp>(loc, lane, index(4));
+  Value pair = b.create<arith::MulIOp>(loc, quad, index(2));
+  // The first column of K of this lane in each half of a `mma.sync`.
+  Value first = b.create<arith::MulIOp>(loc, quad, index(perRegister));
   Value zero = index(0), one = index(1), eight = index(8);
+  Value half = index(depthStep / 2);
   Value zeroF =
       b.create<arith::ConstantFloatOp>(loc, b.getF32Type(), APFloat(0.0f));
-  // Two elements in one register, the first in the low 16 bits. f16 goes to
-  // the tensor core as `vector<2xf16>` and bf16 as `i32`.
-  auto pack = [&](OpBuilder &nb, Location l, Value lo, Value hi) -> Value {
-    auto bits = [&](Value v) -> Value {
-      return nb.create<arith::ExtUIOp>(l, i32,
-                                       nb.create<arith::BitcastOp>(l, i16, v));
-    };
-    Value word = nb.create<arith::OrIOp>(
-        l, bits(lo),
-        nb.create<arith::ShLIOp>(l, bits(hi),
-                                 nb.create<arith::ConstantIntOp>(l, i32, 16)));
+  // The elements in one register, the first in the low bits. f16 goes to the
+  // tensor core as `vector<2xf16>`, and bf16 and fp8 as `i32`.
+  auto pack = [&](OpBuilder &nb, Location l, ArrayRef<Value> values) -> Value {
+    Type narrow = nb.getIntegerType(bits);
+    Value word;
+    for (auto [e, v] : llvm::enumerate(values)) {
+      Value part = nb.create<arith::ExtUIOp>(
+          l, i32, nb.create<arith::BitcastOp>(l, narrow, v));
+      if (e)
+        part = nb.create<arith::ShLIOp>(
+            l, part, nb.create<arith::ConstantIntOp>(l, i32, e * bits));
+      word = word ? nb.create<arith::OrIOp>(l, word, part).getResult() : part;
+    }
     if (elem.isF16())
       return nb.create<LLVM::BitcastOp>(l, VectorType::get({2}, elem), word);
     return word;
@@ -4289,6 +4321,17 @@ static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
     return regs;
   };
   Type result = LLVM::LLVMStructType::getLiteral(ctx, {f32, f32, f32, f32});
+  // NVVM has no fp8 `mma.sync`, so it goes in as PTX, which needs PTX 8.4.
+  std::string fp8Mma;
+  if (fp8) {
+    StringRef name = isa<Float8E4M3FNType>(elem) ? "e4m3" : "e5m2";
+    fp8Mma = ("mma.sync.aligned.m16n8k32.row.col.f32." + name + "." + name +
+              ".f32 {$0, $1, $2, $3}, {$4, $5, $6, $7}, {$8, $9}, "
+              "{$10, $11, $12, $13};")
+                 .str();
+    op->getParentOfType<gpu::GPUModuleOp>()->setAttr(fp8MmaAttr,
+                                                     b.getUnitAttr());
+  }
   std::array<NVVM::MMATypes, 2> types = {
       elem.isF16() ? NVVM::MMATypes::f16 : NVVM::MMATypes::bf16,
       elem.isF16() ? NVVM::MMATypes::f16 : NVVM::MMATypes::bf16};
@@ -4318,38 +4361,58 @@ static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
                 : zeroF);
     }
     auto chain = nb.create<scf::ForOp>(
-        l, zero, index(k), index(16), start,
+        l, zero, index(k), index(depthStep), start,
         [&](OpBuilder &kb, Location kl, Value depth, ValueRange c) {
-          Value k0 = add(kb, kl, depth, pair), k1 = add(kb, kl, k0, one);
-          Value k8 = add(kb, kl, k0, eight), k9 = add(kb, kl, k1, eight);
-          auto lhs = [&](Value i, Value j) -> Value {
-            return kb.create<memref::LoadOp>(kl, op.getLhs(), ValueRange{i, j});
+          Value kA = add(kb, kl, depth, first), kB = add(kb, kl, kA, half);
+          // The elements of one register of `lhs` in row `i`, or of `rhs`.
+          auto lhs = [&](Value i, Value from) -> Value {
+            SmallVector<Value> values;
+            for (int64_t e = 0; e < perRegister; ++e)
+              values.push_back(kb.create<memref::LoadOp>(
+                  kl, op.getLhs(), ValueRange{i, add(kb, kl, from, index(e))}));
+            return pack(kb, kl, values);
           };
-          auto rhs = [&](Value i) -> Value {
-            return kb.create<memref::LoadOp>(kl, op.getRhs(),
-                                             ValueRange{i, col});
+          auto rhs = [&](Value from) -> Value {
+            SmallVector<Value> values;
+            for (int64_t e = 0; e < perRegister; ++e)
+              values.push_back(kb.create<memref::LoadOp>(
+                  kl, op.getRhs(),
+                  ValueRange{add(kb, kl, from, index(e)), col}));
+            return pack(kb, kl, values);
           };
           SmallVector<Value> a =
               lhsLdmatrix
                   ? ldmatrix(kb, kl, op.getLhs(), add(kb, kl, top, row16),
                              add(kb, kl, depth, half8), 4, /*transpose=*/false)
-                  : SmallVector<Value>{
-                        pack(kb, kl, lhs(row0, k0), lhs(row0, k1)),
-                        pack(kb, kl, lhs(row1, k0), lhs(row1, k1)),
-                        pack(kb, kl, lhs(row0, k8), lhs(row0, k9)),
-                        pack(kb, kl, lhs(row1, k8), lhs(row1, k9))};
+                  : SmallVector<Value>{lhs(row0, kA), lhs(row1, kA),
+                                       lhs(row0, kB), lhs(row1, kB)};
           SmallVector<Value> bv =
               rhsLdmatrix ? ldmatrix(kb, kl, op.getRhs(),
                                      add(kb, kl, depth, row16), left, 2,
                                      /*transpose=*/true)
-                          : SmallVector<Value>{pack(kb, kl, rhs(k0), rhs(k1)),
-                                               pack(kb, kl, rhs(k8), rhs(k9))};
-          auto mma = kb.create<NVVM::MmaOp>(
-              kl, result, a, bv, c, ArrayRef<int64_t>{16, 8, 16}, std::nullopt,
-              std::nullopt, types, layouts);
+                          : SmallVector<Value>{rhs(kA), rhs(kB)};
+          Value sums;
+          if (fp8) {
+            SmallVector<Value> operands(a);
+            llvm::append_range(operands, bv);
+            llvm::append_range(operands, c);
+            sums = kb.create<LLVM::InlineAsmOp>(
+                         kl, result, operands, fp8Mma,
+                         "=f,=f,=f,=f,r,r,r,r,r,r,0,1,2,3",
+                         /*has_side_effects=*/false,
+                         /*is_align_stack=*/false,
+                         LLVM::tailcallkind::TailCallKind::None,
+                         LLVM::AsmDialectAttr(), ArrayAttr())
+                       .getResult(0);
+          } else {
+            sums = kb.create<NVVM::MmaOp>(
+                         kl, result, a, bv, c, ArrayRef<int64_t>{16, 8, 16},
+                         std::nullopt, std::nullopt, types, layouts)
+                       .getRes();
+          }
           SmallVector<Value> d;
           for (int64_t e = 0; e < 4; ++e)
-            d.push_back(kb.create<LLVM::ExtractValueOp>(kl, mma.getRes(), e));
+            d.push_back(kb.create<LLVM::ExtractValueOp>(kl, sums, e));
           kb.create<scf::YieldOp>(kl, d);
         });
     for (auto [e, ij] : llvm::enumerate(place)) {
@@ -4840,18 +4903,18 @@ static bool expandLaneMatmulInRegisters(gpu::GPUFuncOp func,
 }
 
 /// Replaces a lane matmul with its expansion: the host's loops with `serial`,
-/// and otherwise the expansion that `device` picks. `tensorCores` says that
-/// the kernel goes to an NVIDIA chip with `mma.sync`. `simdgroupMatrices` says
+/// and otherwise the expansion that `device` picks. `mmaChip` is the NVIDIA
+/// chip of the kernel, or empty. `simdgroupMatrices` says
 /// that it goes to the Apple GPU, whose printer prints a matmul that fits
 /// `fitsSimdgroupMatrices`, so that one stays.
 static void expandLaneMatmul(OpBuilder &b, vx::LaneMatmulOp op, bool device,
-                             bool tensorCores = false,
+                             StringRef mmaChip = {},
                              bool simdgroupMatrices = false) {
   if (device && !op.getSerial() && simdgroupMatrices &&
       fitsSimdgroupMatrices(op))
     return;
   if (device && !op.getSerial()) {
-    if (Type elem = tensorCores ? mmaElementOf(op) : Type())
+    if (Type elem = mmaElementFor(op, mmaChip))
       expandLaneMatmulWithMma(b, op, elem);
     else
       expandLaneMatmulOnDevice(b, op);
@@ -7492,8 +7555,8 @@ struct ConvertVxToStandardPass
         SmallVector<vx::LaneMatmulOp> matmuls;
         gpuFunc.walk([&](vx::LaneMatmulOp op) { matmuls.push_back(op); });
         DevicePipeline pipeline = pipelineOfKernel(kernel);
-        bool tensorCores = pipeline == DevicePipeline::Nvptx &&
-                           chipHasMmaSync(deviceChip(gpuModule));
+        std::string mmaChip =
+            pipeline == DevicePipeline::Nvptx ? deviceChip(gpuModule) : "";
         bool simdgroupMatrices = pipeline == DevicePipeline::Metal;
         SmallPtrSet<Operation *, 4> expanded;
         int64_t registerTiles = 0;
@@ -7505,8 +7568,7 @@ struct ConvertVxToStandardPass
             ++registerTiles;
             continue;
           }
-          Type elem =
-              tensorCores && !op.getSerial() ? mmaElementOf(op) : Type();
+          Type elem = op.getSerial() ? Type() : mmaElementFor(op, mmaChip);
           memref::AllocaOp tile = laneCopyTileAlloca(op.getAcc());
           if (elem &&
               expandLaneMatmulWithoutTile(gpuFunc, op, elem, expanded)) {
@@ -7519,8 +7581,7 @@ struct ConvertVxToStandardPass
             continue;
           }
           OpBuilder b(op);
-          expandLaneMatmul(b, op, /*device=*/true, tensorCores,
-                           simdgroupMatrices);
+          expandLaneMatmul(b, op, /*device=*/true, mmaChip, simdgroupMatrices);
         }
         // Each lane op whose expansion looks at no other op. After the
         // matmuls, which can keep a tile in registers when its fills and
@@ -9697,6 +9758,10 @@ static DeviceImage deviceImageOf(gpu::GPUModuleOp gpuModule,
   GpuNVVMAttachTargetOptions attach;
   attach.chip = deviceChip(gpuModule);
   attach.features = ptxFeatureFor(attach.chip);
+  unsigned ptx = 0;
+  StringRef(attach.features).drop_front(4).getAsInteger(10, ptx);
+  if (gpuModule->hasAttr(fp8MmaAttr) && ptx < 84)
+    attach.features = "+ptx84";
   std::string libdevice = deviceLibdevice();
   if (!libdevice.empty())
     attach.linkLibs.push_back(libdevice);

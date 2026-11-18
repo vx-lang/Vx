@@ -80,6 +80,17 @@ let c : Tensor<f32, [64, 64]> = a @ b;      // a and b are f4e2m1 tensors
 The result type can be `f32`, `f16`, `bf16`, `f8e4m3`, `f8e5m2` or `f4e2m1`. The operands can be of
 two different narrow types, for example an `f4e2m1` tensor times an `f8e4m3` tensor.
 
+A matmul of tiles in the code of a subgroup loop already works with fp8, when the result is `f32`
+and both tiles have the same type:
+
+```rust
+acc[w] = acc[w] + (sa[w] as f32) @ (sb[w] as f32);   // sa and sb are f8e4m3 tiles
+```
+
+On an NVIDIA GPU from `sm_89` on, it runs on the tensor cores when the sizes are multiples of
+16 x 8 x 32. The tensor cores add the products in an order of their own, so the last bits of a sum
+can differ from the sum on the CPU.
+
 ## Block-scaled fp4: NVFP4 and MXFP4
 
 The compiler does not support this part yet ([#1877]).

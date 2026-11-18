@@ -2215,6 +2215,8 @@ fn get_optimization_pipeline(
         // that round exactly. Left to LLVM, an x86 CPU with AVX512-BF16 converts with
         // `vcvtneps2bf16`, which flushes a subnormal to zero.
         passes.push("vx-to-llvm".to_string());
+        // `vx-to-llvm` expands a lane matmul on the CPU, which converts fp8 tiles to f32.
+        passes.push("vx-expand-narrow-floats".to_string());
         passes.push("arith-expand{include-bf16=true}".to_string());
         passes.push("func.func(convert-linalg-to-loops,lower-affine)".to_string());
         passes.push("convert-scf-to-cf".to_string());
