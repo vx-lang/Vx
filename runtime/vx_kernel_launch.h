@@ -281,6 +281,22 @@ static inline int vx_launch_misaligned(const vx_launch_params *params,
   return -1;
 }
 
+/// Whether the kernel takes the flag that a failed `assert` sets
+/// (`assert_flag=1`).
+///
+/// Such a kernel takes one more parameter than the dispatch carries, after all
+/// of them: a pointer to a 4-byte integer in device memory. The dispatch
+/// library sets the integer to 0 before the launch. A failed assert prints its
+/// message with the device's `printf`, sets the integer, and the kernel goes
+/// on. After the launch, a value that is not 0 means that an assert failed, and
+/// the library stops the program, as a failed assert on the host does. An
+/// OpenCL or Level Zero device has no `abort` to stop the kernel itself.
+static inline int vx_launch_takes_assert_flag(const void *payload,
+                                              size_t payload_size) {
+  const char *flag = vx_payload_field(payload, payload_size, "assert_flag=");
+  return flag && strcmp(flag, "1") == 0;
+}
+
 /* One size of a launch shape, from `text`: `$j` is the `i32` launch value j,
    which the compiled code puts after the kernel's `num_args` arguments, and a
    number is that size. Moves `*text` past the entry and its comma. Returns -1

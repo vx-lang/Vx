@@ -14,8 +14,9 @@ rounded too. The comment above each method in `stdlib/core/num.vx` says when one
 `f64` `tanh`, which is almost always correctly rounded.
 
 Because the methods are Vx code, the CPU, an NVIDIA GPU and the CPU copy of a GPU kernel run the
-same code and give the same bits. A test can compare the bits of a result, and two machines give
-the same answer.
+same code and give the same bits. Vx does not promise the same bits on every target. A kernel on an
+Intel GPU (`arch: spirv64`) calls the device's own function for each method, because the methods
+compute in `f64`, and an Arc GPU has no `f64`. Its last bits can differ from the CPU.
 
 ## The cost on a GPU
 
@@ -58,3 +59,4 @@ A100, the GELU kernel of llm.c ran about 1.25 times as fast with `fast_tanh` as 
   the kernel, and a difference in the last bits does not matter. Activation functions and softmax
   in machine learning are examples.
 - Test a program that uses them with a tolerance, as the program above does, not by comparing bits.
+  Test a program that runs kernels on an Intel GPU with a tolerance too.

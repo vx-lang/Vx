@@ -398,6 +398,16 @@ void caller_streams() {
         "a recording refuses a free that needs a wait");
 }
 
+/* A kernel that can fail an assert takes a flag, and its payload says so. */
+void assert_flags() {
+  const char with[] = "k\0abi=1\0assert_flag=1\0format=spirv\0";
+  check(vx_launch_takes_assert_flag(with, sizeof with),
+        "a payload with assert_flag=1 asks for the flag");
+  const char without[] = "k\0abi=1\0format=spirv\0";
+  check(!vx_launch_takes_assert_flag(without, sizeof without),
+        "a payload without assert_flag= does not");
+}
+
 int main() {
   widths();
   the_four_operand_signature();
@@ -409,6 +419,7 @@ int main() {
   launch_shapes();
   launch_trips();
   caller_streams();
+  assert_flags();
 
   if (failures != 0) {
     fprintf(stderr, "%d check(s) failed\n", failures);
