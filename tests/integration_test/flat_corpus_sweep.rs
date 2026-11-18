@@ -255,6 +255,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         // needs --machine
         "optimizations/pass/apple_gpu_sums_vectors_across_a_simd_group.vx",
         // needs --machine
+        "optimizations/pass/apple_gpu_kernels_for_n_positions_match_one_position.vx",
+        // needs --machine
         "optimizations/pass/nvidia_gpu_short_loops_of_constant_bounds_are_unrolled.vx",
         // split-file
         "optimizations/pass/gpu_only_code_on_the_cpu_with_the_programs_own_write.vx",

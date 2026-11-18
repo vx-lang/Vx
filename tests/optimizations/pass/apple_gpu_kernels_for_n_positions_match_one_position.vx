@@ -1,0 +1,315 @@
+// Each `_rows` kernel of std::nn runs a kernel of one position for n positions at once. This
+// test runs each one for 5 positions and compares every output value, bit for bit, with 5 calls
+// of the one-position kernel. The 5 positions share some experts, so the expert kernels serve
+// one expert for several positions.
+//
+// REQUIRES: macos
+// RUN: vxc %s -O3 --host default --machine fleet/m4-uma.vx 2>/dev/null | FileCheck %s
+//
+// CHECK: {{^}}q4 product: 0 of 320 values differ{{$}}
+// CHECK-NEXT: {{^}}q4 product with heads, added: 0 of 320 values differ{{$}}
+// CHECK-NEXT: {{^}}qkv: 0 of 2560 values differ{{$}}
+// CHECK-NEXT: {{^}}bf16 product: 0 of 80 values differ{{$}}
+// CHECK-NEXT: {{^}}rms norm: 0 of 1280 values differ{{$}}
+// CHECK-NEXT: {{^}}embed: 0 of 1280 values differ{{$}}
+// CHECK-NEXT: {{^}}argmax: 0 of 5 values differ{{$}}
+// CHECK-NEXT: {{^}}top k: 0 of 40 values differ{{$}}
+// CHECK-NEXT: {{^}}experts: 0 of 1280 values differ, 15 experts for 5 positions{{$}}
+import core::convert;
+import std::nn;
+
+fn codes(len : i32, seed : u32) -> Tensor<u32, [?], Memory::HBM> {
+  let mut h = Tensor<u32>([len]);
+  for i in 0..len {
+    h[i] = ((i as u32) + seed) * 2654435761u32;
+  }
+  return transfer(&h, Memory::HBM);
+}
+
+fn halves(len : i32, seed : i32) -> Tensor<f16, [?], Memory::HBM> {
+  let mut h = Tensor<f16>([len]);
+  for i in 0..len {
+    h[i] = (0.001 * ((((i + seed) * 7) % 13) + 1) as f32) as f16;
+  }
+  return transfer(&h, Memory::HBM);
+}
+
+fn brains(len : i32, seed : i32) -> Tensor<bf16, [?], Memory::HBM> {
+  let mut h = Tensor<bf16>([len]);
+  for i in 0..len {
+    h[i] = ((((i + seed) * 7919) % 101) as f32 * 0.02 - 1.0) as bf16;
+  }
+  return transfer(&h, Memory::HBM);
+}
+
+fn value(t : i32, i : i32) -> f32 {
+  return (((t * 4099 + i) * 7919) % 97) as f32 * 0.01 - 0.4;
+}
+
+fn rows_of(n : i32, len : i32) -> Tensor<f32, [?, ?], Memory::HBM> {
+  let mut h = Tensor<f32>([n, len]);
+  for t in 0..n {
+    for i in 0..len {
+      h[t][i] = value(t, i);
+    }
+  }
+  return transfer(&h, Memory::HBM);
+}
+
+fn row_of(t : i32, len : i32) -> Tensor<f32, [?], Memory::HBM> {
+  let mut h = Tensor<f32>([len]);
+  for i in 0..len {
+    h[i] = value(t, i);
+  }
+  return transfer(&h, Memory::HBM);
+}
+
+fn heads_of(n : i32, heads : i32, dim : i32) -> Tensor<f32, [?, ?, ?], Memory::HBM> {
+  let mut h = Tensor<f32>([n, heads, dim]);
+  for t in 0..n {
+    for a in 0..heads {
+      for d in 0..dim {
+        h[t][a][d] = value(t, a * dim + d);
+      }
+    }
+  }
+  return transfer(&h, Memory::HBM);
+}
+
+fn head_row_of(t : i32, heads : i32, dim : i32) -> Tensor<f32, [?, ?], Memory::HBM> {
+  let mut h = Tensor<f32>([heads, dim]);
+  for a in 0..heads {
+    for d in 0..dim {
+      h[a][d] = value(t, a * dim + d);
+    }
+  }
+  return transfer(&h, Memory::HBM);
+}
+
+/// The count of values of row t of `many` that differ from `one` in their bits.
+fn differ(many : &Tensor<f32, [?, ?], Memory::HBM>, t : i32, one : &Tensor<f32, [?], Memory::HBM>, len : i32) -> i32 {
+  let a = transfer(many, Memory::CPU_DRAM);
+  let b = transfer(one, Memory::CPU_DRAM);
+  let mut d = 0;
+  for i in 0..len {
+    if a[t][i].to_bits() != b[i].to_bits() {
+      d = d + 1;
+    }
+  }
+  return d;
+}
+
+fn main() -> i32 {
+  let n = 5;
+  let rows = 64;
+  let cols = 256;
+
+  let w = codes(rows * cols / 8, 1u32);
+  let sc = halves(rows * cols / 32, 3);
+  let x = rows_of(n, cols);
+  let mut y = transfer(Tensor<f32>([n, rows]), Memory::HBM);
+  nn_matvec_q4_rows(&mut y, &w, &sc, &x, n, rows, cols);
+  let mut d = 0;
+  for t in 0..n {
+    let xt = row_of(t, cols);
+    let mut yt = transfer(Tensor<f32>([rows]), Memory::HBM);
+    nn_matvec_q4(&mut yt, &w, &sc, &xt, rows, cols);
+    d = d + differ(&y, t, &yt, rows);
+  }
+  println!("q4 product: {} of {} values differ", d, n * rows);
+
+  let heads = 4;
+  let dim = 64;
+  let xh = heads_of(n, heads, dim);
+  let mut ya = rows_of(n, rows);
+  nn_matvec_q4_heads_add_rows(&mut ya, &w, &sc, &xh, n, rows, heads, dim);
+  d = 0;
+  for t in 0..n {
+    let xt = head_row_of(t, heads, dim);
+    let mut yt = row_of(t, rows);
+    nn_matvec_q4_heads_add(&mut yt, &w, &sc, &xt, rows, heads, dim);
+    d = d + differ(&ya, t, &yt, rows);
+  }
+  println!("q4 product with heads, added: {} of {} values differ", d, n * rows);
+
+  let qh = 4;
+  let kvh = 2;
+  let all = (qh + 2 * kvh) * dim;
+  let wq = codes(all * cols / 8, 5u32);
+  let sq = halves(all * cols / 32, 1);
+  let bias = brains(all, 2);
+  let mut q = transfer(Tensor<f32>([n, qh, dim]), Memory::HBM);
+  let mut k = transfer(Tensor<f32>([n, kvh, dim]), Memory::HBM);
+  let mut v = transfer(Tensor<f32>([n, kvh, dim]), Memory::HBM);
+  nn_qkv_q4_rows(&mut q, &mut k, &mut v, &wq, &sq, &bias, &x, n, qh, kvh, dim, cols);
+  let hq = transfer(&q, Memory::CPU_DRAM);
+  let hk = transfer(&k, Memory::CPU_DRAM);
+  let hv = transfer(&v, Memory::CPU_DRAM);
+  d = 0;
+  for t in 0..n {
+    let xt = row_of(t, cols);
+    let mut q1 = transfer(Tensor<f32>([qh, dim]), Memory::HBM);
+    let mut k1 = transfer(Tensor<f32>([kvh, dim]), Memory::HBM);
+    let mut v1 = transfer(Tensor<f32>([kvh, dim]), Memory::HBM);
+    nn_qkv_q4(&mut q1, &mut k1, &mut v1, &wq, &sq, &bias, &xt, qh, kvh, dim, cols);
+    let a = transfer(&q1, Memory::CPU_DRAM);
+    let b = transfer(&k1, Memory::CPU_DRAM);
+    let c = transfer(&v1, Memory::CPU_DRAM);
+    for e in 0..dim {
+      for i in 0..qh {
+        if a[i][e].to_bits() != hq[t][i][e].to_bits() {
+          d = d + 1;
+        }
+      }
+      for i in 0..kvh {
+        if b[i][e].to_bits() != hk[t][i][e].to_bits() {
+          d = d + 1;
+        }
+        if c[i][e].to_bits() != hv[t][i][e].to_bits() {
+          d = d + 1;
+        }
+      }
+    }
+  }
+  println!("qkv: {} of {} values differ", d, n * all);
+
+  let r16 = 16;
+  let wb = brains(r16 * cols, 4);
+  let mut yb = transfer(Tensor<f32>([n, r16]), Memory::HBM);
+  nn_matvec_rows(&mut yb, &wb, &x, n, r16, cols);
+  d = 0;
+  for t in 0..n {
+    let xt = row_of(t, cols);
+    let mut yt = transfer(Tensor<f32>([r16]), Memory::HBM);
+    nn_matvec(&mut yt, &wb, &xt, r16, cols);
+    d = d + differ(&yb, t, &yt, r16);
+  }
+  println!("bf16 product: {} of {} values differ", d, n * r16);
+
+  let gain = brains(cols, 6);
+  let mut yn = transfer(Tensor<f32>([n, cols]), Memory::HBM);
+  nn_rms_norm_rows(&mut yn, &x, &gain, n, cols, 0.000001);
+  d = 0;
+  for t in 0..n {
+    let xt = row_of(t, cols);
+    let mut yt = transfer(Tensor<f32>([cols]), Memory::HBM);
+    nn_rms_norm(&mut yt, &xt, &gain, cols, 0.000001);
+    d = d + differ(&yn, t, &yt, cols);
+  }
+  println!("rms norm: {} of {} values differ", d, n * cols);
+
+  let table = brains(50 * cols, 8);
+  let mut toks = Tensor<i32>([n]);
+  for t in 0..n {
+    toks[t] = (t * 17 + 3) % 50;
+  }
+  let tokens = transfer(&toks, Memory::HBM);
+  let mut ye = transfer(Tensor<f32>([n, cols]), Memory::HBM);
+  nn_embed_rows(&mut ye, &table, &tokens, n, cols);
+  d = 0;
+  for t in 0..n {
+    let mut one = Tensor<i32>([1]);
+    one[0] = toks[t];
+    let tok = transfer(&one, Memory::HBM);
+    let mut yt = transfer(Tensor<f32>([cols]), Memory::HBM);
+    nn_embed(&mut yt, &table, &tok, cols);
+    d = d + differ(&ye, t, &yt, cols);
+  }
+  println!("embed: {} of {} values differ", d, n * cols);
+
+  let count = 1000;
+  let logits = rows_of(n, count);
+  let mut best = transfer(Tensor<i32>([n]), Memory::HBM);
+  nn_argmax_rows(&mut best, &logits, n, count);
+  let hb = transfer(&best, Memory::CPU_DRAM);
+  d = 0;
+  for t in 0..n {
+    let lt = row_of(t, count);
+    let mut bt = transfer(Tensor<i32>([1]), Memory::HBM);
+    nn_argmax(&mut bt, &lt, count);
+    let one = transfer(&bt, Memory::CPU_DRAM);
+    if one[0] != hb[t] {
+      d = d + 1;
+    }
+  }
+  println!("argmax: {} of {} values differ", d, n);
+
+  // The router: 16 experts, 4 for each position. Position t sees logits that favor experts near
+  // 3 * t, so neighbors share some experts.
+  let experts = 16;
+  let kk = 4;
+  let mut hl = Tensor<f32>([n, experts]);
+  for t in 0..n {
+    for e in 0..experts {
+      let near = (e - 3 * t) * (e - 3 * t);
+      hl[t][e] = 0.0 - (near as f32) * 0.1 + value(t, e) * 0.01;
+    }
+  }
+  let router = transfer(&hl, Memory::HBM);
+  let mut ids = transfer(Tensor<i32>([n, kk]), Memory::HBM);
+  let mut wts = transfer(Tensor<f32>([n, kk]), Memory::HBM);
+  nn_top_k_rows(&mut ids, &mut wts, &router, n, experts, kk);
+  let hi = transfer(&ids, Memory::CPU_DRAM);
+  let hw = transfer(&wts, Memory::CPU_DRAM);
+  d = 0;
+  for t in 0..n {
+    let mut lt = Tensor<f32>([experts]);
+    for e in 0..experts {
+      lt[e] = hl[t][e];
+    }
+    let rt = transfer(&lt, Memory::HBM);
+    let mut i1 = transfer(Tensor<i32>([kk]), Memory::HBM);
+    let mut w1 = transfer(Tensor<f32>([kk]), Memory::HBM);
+    nn_top_k(&mut i1, &mut w1, &rt, experts, kk);
+    let a = transfer(&i1, Memory::CPU_DRAM);
+    let b = transfer(&w1, Memory::CPU_DRAM);
+    for e in 0..kk {
+      if a[e] != hi[t][e] {
+        d = d + 1;
+      }
+      if b[e].to_bits() != hw[t][e].to_bits() {
+        d = d + 1;
+      }
+    }
+  }
+  println!("top k: {} of {} values differ", d, 2 * n * kk);
+
+  // The experts: SwiGLU of inter rows from x, then the down projection back to cols, added to y.
+  let inter = 64;
+  let gate_up = codes(experts * 2 * inter * cols / 8, 7u32);
+  let s_gu = halves(experts * 2 * inter * cols / 32, 5);
+  let down = codes(experts * cols * inter / 8, 9u32);
+  let s_d = halves(experts * cols * inter / 32, 2);
+  let mut mid = transfer(Tensor<f32>([experts, n, inter]), Memory::HBM);
+  nn_moe_swiglu_q4_rows(&mut mid, &gate_up, &s_gu, &ids, &x, n, kk, inter, cols, experts);
+  let mut yx = rows_of(n, cols);
+  nn_moe_down_q4_add_rows(&mut yx, &down, &s_d, &ids, &wts, &mid, n, kk, cols, inter, experts);
+  d = 0;
+  let mut seen = Tensor<i32>([experts]);
+  for e in 0..experts {
+    seen[e] = 0;
+  }
+  for t in 0..n {
+    let mut it = Tensor<i32>([kk]);
+    let mut wt = Tensor<f32>([kk]);
+    for e in 0..kk {
+      it[e] = hi[t][e];
+      wt[e] = hw[t][e];
+      seen[hi[t][e]] = 1;
+    }
+    let i1 = transfer(&it, Memory::HBM);
+    let w1 = transfer(&wt, Memory::HBM);
+    let xt = row_of(t, cols);
+    let mut m1 = transfer(Tensor<f32>([kk, inter]), Memory::HBM);
+    nn_moe_swiglu_q4(&mut m1, &gate_up, &s_gu, &i1, &xt, kk, inter, cols, experts);
+    let mut yt = row_of(t, cols);
+    nn_moe_down_q4_add(&mut yt, &down, &s_d, &i1, &w1, &m1, kk, cols, inter, experts);
+    d = d + differ(&yx, t, &yt, cols);
+  }
+  let mut used = 0;
+  for e in 0..experts {
+    used = used + seen[e];
+  }
+  println!("experts: {} of {} values differ, {} experts for {} positions", d, n * cols, used, n);
+  return 0;
+}
