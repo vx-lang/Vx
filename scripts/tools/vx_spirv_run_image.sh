@@ -50,7 +50,7 @@ ulimit -c 0 || true
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 OUT="${TMPDIR:-/tmp}/vx-spirv-run-image"
-FIXTURE="$ROOT/tests/backend/pass/spirv_device_image_loop_kernel.vx"
+FIXTURE="${FIXTURE:-$ROOT/tests/backend/pass/spirv_device_image_loop_kernel.vx}"
 KERNEL=vx_npu_kernel_0
 EXPECTED_ARGS=28
 mkdir -p "$OUT"
@@ -116,6 +116,15 @@ echo "==> validating the image"
 spirv-val "$OUT/loop.spv"
 echo "    spirv-val accepts $OUT/loop.spv"
 
+# A kernel with an `assert` takes one more parameter than the ABI packs: the
+# pointer to the integer a failed assert sets. The fixture above has none, and
+# this keeps the count right for a copy that does.
+TAKES_FLAG=0
+if grep -qa "assert_flag=1" "$OUT/loop.payload"; then
+  TAKES_FLAG=1
+fi
+WANT_ARGS=$((EXPECTED_ARGS + TAKES_FLAG))
+
 echo "==> checking the launch's argument count"
 spirv-dis "$OUT/loop.spv" -o "$OUT/loop.spvasm"
 # The parameters of the entry point, not of the module: a kernel that calls a
@@ -134,14 +143,15 @@ PARAMS="$(awk -v want="\"$KERNEL\"" '
   inside && op == "OpFunctionEnd" { inside = 0 }
   END { print n + 0 }
 ' "$OUT/loop.spvasm")"
-echo "    spirv-dis reports $PARAMS OpFunctionParameter (vx_launch_param_width: $EXPECTED_ARGS)"
-if [ "$PARAMS" != "$EXPECTED_ARGS" ]; then
-  echo "error: the image takes $PARAMS arguments, the ABI packs $EXPECTED_ARGS" >&2
+echo "    spirv-dis reports $PARAMS OpFunctionParameter (vx_launch_param_width: $WANT_ARGS)"
+if [ "$PARAMS" != "$WANT_ARGS" ]; then
+  echo "error: the image takes $PARAMS arguments, the ABI packs $WANT_ARGS" >&2
   exit 1
 fi
 
 echo "==> building the launcher against $DISPATCH_LIB"
-"${CXX:-g++}" -std=c++17 -O2 -I"$ROOT/include" -o "$OUT/run_image" \
+"${CXX:-g++}" -std=c++17 -O2 -I"$ROOT/include" -I"$ROOT/runtime" \
+  -o "$OUT/run_image" \
   "$HERE/vx_spirv_run_image.cpp" \
   -L"$DISPATCH_DIR" -lvx_xpu_dispatch -Wl,-rpath,"$DISPATCH_DIR" -lze_loader
 

@@ -17,16 +17,18 @@
 # What is compared, and how:
 #
 #   elementwise  `o = a*b + c` in each element type the Arc machine model
-#                declares. Every value is a small integer its type holds
-#                exactly, so the comparison is equality. Each declared type
-#                has its own region, and every region is run: thirteen of them
-#                through the dispatch ABI, one at a time, and the whole program
-#                through vxc's driver on both backends, which prints one sum
-#                per type. i4 and u4 ride in one byte each, so their ABI tag
-#                names i8 and the values compared are the four-bit ones. The
-#                CPU run is checked against an independent reference first, so
-#                a region paired with the wrong element type stops the run
-#                rather than looking like a backend disagreement.
+#                declares, and `o = (a & b) | c` for bool, whose two operands
+#                take the boolean operators and not arithmetic. Every value is
+#                a small integer its type holds exactly, so the comparison is
+#                equality. Each declared type has its own region, and every
+#                region is run: thirteen of them through the dispatch ABI, one
+#                at a time, and the whole program through vxc's driver on both
+#                backends, which prints one sum per type. i4 and u4 ride in one
+#                byte each, so their ABI tag names i8 and the values compared
+#                are the four-bit ones. The CPU run is checked against an
+#                independent reference first, so a region paired with the wrong
+#                element type stops the run rather than looking like a backend
+#                disagreement.
 #   reduce       a row sum, so the device holds an accumulator.
 #   transpose    a transposing write, so both operands' strides are exercised.
 #   matmul       oneMKL on the Arc against the CPU backend's own GEMM, at 1024
@@ -71,6 +73,13 @@
 #                numbers. The case requires exit 0 on the Arc, the exact
 #                answer, and the library's own line saying it took the slot
 #                path rather than falling back to the host copy.
+#   assert       a region with an `assert` that holds, which takes one more
+#                kernel parameter than the dispatch carries: a pointer to a
+#                4-byte integer that a failed assert sets, because Level Zero
+#                has no `abort` that stops a kernel. The payload says
+#                `assert_flag=1`. Both backends have to print the same numbers,
+#                and the same region with one negative input has to stop with
+#                the assert's message and print no numbers.
 #
 # A kernel the device cannot run is reported, not skipped: the compiler's
 # refusal or the host fallback is the result for that case. Two programs are
@@ -922,6 +931,86 @@ if ! diff -q "$OUT/elementwise_on_the_arc.cpu.out" \
   exit 1
 fi
 echo "    both backends print the same number"
+
+# A kernel with an `assert` takes one more parameter than the dispatch carries:
+# a pointer to a 4-byte integer that a failed assert sets. The payload says
+# `assert_flag=1`, and the library has to count that parameter, pass the flag
+# and read it after the wait. Without the count, every kernel with an assert
+# aborts on the check that the image and the arguments agree.
+echo "==> a region with an assert that holds"
+assert_cpu_status=0
+run_whole_program cpu "$OUT/an_assert_that_passes.cpu.raw" \
+  "$OUT/an_assert_that_passes.cpu.run.txt" \
+  --machine "$ROOT/fleet/arc-a770.vx" --host default \
+  "$PROGRAMS/an_assert_that_passes.vx" || assert_cpu_status=$?
+if [ "$assert_cpu_status" != 0 ]; then
+  echo "error: vxc failed on the CPU backend for the assert program" >&2
+  tail -10 "$OUT/an_assert_that_passes.cpu.run.txt" >&2
+  exit 1
+fi
+assert_arc_status=0
+run_whole_program arc "$OUT/an_assert_that_passes.arc.raw" \
+  "$OUT/an_assert_that_passes.arc.run.txt" \
+  --machine "$ROOT/fleet/arc-a770.vx" --host default \
+  "$PROGRAMS/an_assert_that_passes.vx" || assert_arc_status=$?
+if [ "$assert_arc_status" != 0 ]; then
+  echo "error: vxc failed on the Arc for the assert program" >&2
+  tail -10 "$OUT/an_assert_that_passes.arc.run.txt" >&2
+  exit 1
+fi
+collect_numbers "$OUT/an_assert_that_passes.cpu.raw" \
+  "$OUT/an_assert_that_passes.cpu.out" 3 "the CPU assert run"
+collect_numbers "$OUT/an_assert_that_passes.arc.raw" \
+  "$OUT/an_assert_that_passes.arc.out" 3 "the Arc assert run"
+if ! grep -q "ran from its own image" "$OUT/an_assert_that_passes.arc.run.txt"; then
+  echo "error: the Arc run of the assert program did not load a device image," >&2
+  echo "       so nothing here went through the flag" >&2
+  exit 1
+fi
+echo "    cpu: $(cat "$OUT/an_assert_that_passes.cpu.out")"
+echo "    arc: $(cat "$OUT/an_assert_that_passes.arc.out")"
+if ! diff -q "$OUT/an_assert_that_passes.cpu.out" \
+  "$OUT/an_assert_that_passes.arc.out" >/dev/null; then
+  echo "error: the two backends disagree on the assert program" >&2
+  exit 1
+fi
+
+# The same region with one negative input. The assert fails inside the kernel,
+# so the device cannot stop it: the message comes from the device's printf and
+# the library stops the program after the wait. A run that continued would
+# print the number and exit 0, which is what a library without the flag does.
+echo "==> a region with an assert that fails"
+assert_fail_arc_status=0
+run_whole_program arc "$OUT/an_assert_that_fails.arc.raw" \
+  "$OUT/an_assert_that_fails.arc.run.txt" \
+  --machine "$ROOT/fleet/arc-a770.vx" --host default \
+  "$PROGRAMS/an_assert_that_fails.vx" || assert_fail_arc_status=$?
+if [ "$assert_fail_arc_status" = 0 ]; then
+  echo "error: a region whose assert failed ran to the end on the Arc" >&2
+  echo "       and printed: $(cat "$OUT/an_assert_that_fails.arc.raw")" >&2
+  exit 1
+fi
+if ! cat "$OUT/an_assert_that_fails.arc.raw" \
+  "$OUT/an_assert_that_fails.arc.run.txt" | grep -q "a negative input"; then
+  echo "error: the failed assert's message was not printed" >&2
+  tail -10 "$OUT/an_assert_that_fails.arc.run.txt" >&2
+  exit 1
+fi
+if ! grep -q "an assert failed in" "$OUT/an_assert_that_fails.arc.run.txt"; then
+  echo "error: the run stopped without saying that an assert failed," >&2
+  echo "       so the message could have come from anywhere" >&2
+  tail -10 "$OUT/an_assert_that_fails.arc.run.txt" >&2
+  exit 1
+fi
+grep -h "a negative input\|an assert failed in" \
+  "$OUT/an_assert_that_fails.arc.raw" \
+  "$OUT/an_assert_that_fails.arc.run.txt" | sed 's/^/    /'
+if grep -qE '^-?[0-9]+( +-?[0-9]+)* *$' "$OUT/an_assert_that_fails.arc.raw"; then
+  echo "error: the failed assert printed a result anyway" >&2
+  sed 's/^/         /' "$OUT/an_assert_that_fails.arc.raw" >&2
+  exit 1
+fi
+echo "    stopped with the assert's own message, and printed no numbers"
 
 echo "==> the card after the run"
 clinfo -l 2>/dev/null | grep "Arc" | sed 's/^/    /'

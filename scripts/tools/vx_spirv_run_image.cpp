@@ -22,7 +22,10 @@
 // `spirv-dis` on the image shows exactly 28 `OpFunctionParameter`s. The library
 // re-derives that count from the image and refuses to launch when the arguments
 // do not produce it, so a wrong parameter list is caught before the kernel
-// runs.
+// runs. A kernel that contains an `assert` takes one more, after the others: a
+// pointer to a 4-byte integer that a failed assert sets, which its payload
+// names with `assert_flag=1`. Both paths here pass it when the payload says so
+// and stop the program after the wait, as the library does.
 //
 // `direct` mode keeps a launch through Level Zero alone as a control: the same
 // image with the same descriptors, without the library. It tells a wrong result
@@ -38,6 +41,7 @@
 // Build and run: scripts/tools/vx_spirv_run_image.sh
 
 #include "vram_ceiling.h"
+#include "vx_kernel_launch.h"
 
 #include <level_zero/ze_api.h>
 #include <vx_hardware_runtime.h>
@@ -195,7 +199,7 @@ template <typename Run> static double bestOf(const Run &run) {
 /// same payload's image and the same flattened argument list the library
 /// builds, with nothing between them and the driver.
 static uint64_t runDirect(const char *image, size_t imageSize,
-                          const char *kernelName) {
+                          const char *kernelName, int takesAssertFlag) {
   std::vector<float> a, b, c, expected;
   fillReference(a, b, c, expected);
 
@@ -284,6 +288,21 @@ static uint64_t runDirect(const char *image, size_t imageSize,
   L0_CHECK(zeKernelCreate(module, &kernelDesc, &kernel));
   L0_CHECK(zeKernelSetGroupSize(kernel, kWorkgroup, 1, 1));
 
+  // A kernel with an `assert` takes one more parameter than the ABI produces:
+  // a pointer to a 4-byte integer that a failed assert sets. The payload says
+  // `assert_flag=1`, and the control launch has to pass it too, or the
+  // arguments and the image would disagree by one.
+  int *failedAssert = nullptr;
+  if (takesAssertFlag) {
+    ze_device_mem_alloc_desc_t flagDevice = {};
+    flagDevice.stype = ZE_STRUCTURE_TYPE_DEVICE_MEM_ALLOC_DESC;
+    ze_host_mem_alloc_desc_t flagHost = {};
+    flagHost.stype = ZE_STRUCTURE_TYPE_HOST_MEM_ALLOC_DESC;
+    L0_CHECK(zeMemAllocShared(context, &flagDevice, &flagHost, sizeof(int), 4,
+                              device,
+                              reinterpret_cast<void **>(&failedAssert)));
+  }
+
   std::vector<float> o(kElems, 0.0f);
   struct {
     void *buf;
@@ -313,14 +332,29 @@ static uint64_t runDirect(const char *image, size_t imageSize,
     L0_CHECK(zeKernelSetArgumentValue(kernel, base + 5, sizeof(uint64_t), &s0));
     L0_CHECK(zeKernelSetArgumentValue(kernel, base + 6, sizeof(uint64_t), &s1));
   }
+  if (takesAssertFlag) {
+    void *flag = failedAssert;
+    L0_CHECK(zeKernelSetArgumentValue(kernel, kOperands * 7, sizeof(void *),
+                                      &flag));
+  }
 
   ze_group_count_t groups = {kGroups, 1, 1};
   auto run = [&]() {
+    if (takesAssertFlag) {
+      const int zero = 0;
+      L0_CHECK(zeCommandListAppendMemoryFill(list, failedAssert, &zero,
+                                             sizeof zero, sizeof zero, nullptr,
+                                             0, nullptr));
+    }
     L0_CHECK(zeCommandListAppendLaunchKernel(list, kernel, &groups, nullptr, 0,
                                              nullptr));
     L0_CHECK(zeCommandListClose(list));
     L0_CHECK(zeCommandQueueExecuteCommandLists(queue, 1, &list, nullptr));
     L0_CHECK(zeCommandQueueSynchronize(queue, UINT64_MAX));
+    if (takesAssertFlag && *failedAssert != 0) {
+      std::fprintf(stderr, "an assert failed in %s\n", kernelName);
+      std::exit(1);
+    }
     L0_CHECK(zeCommandListReset(list));
   };
 
@@ -465,9 +499,15 @@ int main(int argc, char **argv) {
   }
   const size_t imageOffset = (const char *)image - payload.data();
 
+  // The payload says whether the kernel takes the flag a failed `assert` sets,
+  // and both paths below have to pass it or their arguments disagree with the
+  // image by one.
+  const int takesAssertFlag =
+      vx_launch_takes_assert_flag(payload.data(), payload.size());
+
   if (std::strcmp(mode, "direct") == 0)
     return runDirect(static_cast<const char *>(image), (size_t)imageSize,
-                     kernelName) != 0;
+                     kernelName, takesAssertFlag) != 0;
 
   if (std::strcmp(mode, "corrupt-image") == 0) {
     // Corrupt a copy of the image, then put it back so the library reads the

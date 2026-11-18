@@ -310,27 +310,15 @@ static double storedValue(const DType &dt, double value) {
   }
 }
 
-// `a * b` the way the element type does it. A bool multiplies as one bit, so
-// the result is 1 only when both operands are.
-static double mulTyped(const DType &dt, double a, double b) {
-  if (dt.is_float)
-    return a * b;
-  if (dt.code == VX_DTYPE_I1)
-    return (a != 0.0 && b != 0.0) ? 1.0 : 0.0;
-  return a * b;
+// `a & b` and `a | b` for bool, which are the two operators the language has
+// for it: the checker refuses `*` and `+` on two bools, so a bool element is
+// computed as `(a & b) | c` and not as arithmetic.
+static double andTyped(double a, double b) {
+  return (a != 0.0 && b != 0.0) ? 1.0 : 0.0;
 }
 
-// `a + b` the way the element type does it. A bool adds as one bit, so
-// `true + true` wraps to false -- which is what the compiler's i1 add does and
-// what both backends compute. It is not a logical or.
-static double addTyped(const DType &dt, double a, double b) {
-  if (dt.is_float)
-    return a + b;
-  if (dt.code == VX_DTYPE_I1) {
-    const int sum = (a != 0.0 ? 1 : 0) + (b != 0.0 ? 1 : 0);
-    return (double)(sum & 1);
-  }
-  return a + b;
+static double orTyped(double a, double b) {
+  return (a != 0.0 || b != 0.0) ? 1.0 : 0.0;
 }
 
 // ---------------------------------------------------------------- operands
@@ -611,8 +599,9 @@ static Call buildCall(Op op, const DType &dt, int64_t M, int64_t N, int64_t K,
 /// backends is still caught.
 ///
 /// The arithmetic is the element type's: every operand is first the value its
-/// type stores, and a product or a sum wraps at the type's width. For bool that
-/// is one bit, so `true * true + true` is 0, not 1.
+/// type stores, and a product or a sum is stored back at the type's width, so a
+/// narrow type wraps. Bool is not arithmetic: the kernel writes
+/// `(a & b) | c`, which is what the language has for two bools.
 static std::vector<char> referenceOf(Op op, const DType &dt, int64_t M,
                                      int64_t N, int64_t K) {
   std::vector<char> out;
@@ -623,7 +612,8 @@ static std::vector<char> referenceOf(Op op, const DType &dt, int64_t M,
         const double a = storedValue(dt, inputA(op, i, j));
         const double b = storedValue(dt, inputB(op, i, j));
         const double c = storedValue(dt, inputC(op, i, j));
-        const double v = addTyped(dt, mulTyped(dt, a, b), c);
+        const double v = dt.code == VX_DTYPE_I1 ? orTyped(andTyped(a, b), c)
+                                               : a * b + c;
         storeElem(out, (size_t)(i * N + j), dt, v);
       }
   } else if (op == Op::Reduce) {
@@ -632,7 +622,7 @@ static std::vector<char> referenceOf(Op op, const DType &dt, int64_t M,
       double sum = 0.0;
       for (int64_t j = 0; j < N; ++j) {
         const double a = storedValue(dt, inputA(op, i, j));
-        sum = addTyped(dt, sum, a);
+        sum = sum + a;
       }
       storeElem(out, (size_t)i, dt, sum);
     }
@@ -650,7 +640,7 @@ static std::vector<char> referenceOf(Op op, const DType &dt, int64_t M,
         for (int64_t k = 0; k < K; ++k) {
           const double a = storedValue(dt, inputA(op, i, k));
           const double b = storedValue(dt, inputB(op, k, j));
-          sum = addTyped(dt, sum, mulTyped(dt, a, b));
+          sum = sum + a * b;
         }
         storeElem(out, (size_t)(i * N + j), dt, sum);
       }

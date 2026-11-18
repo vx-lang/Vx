@@ -536,6 +536,23 @@ bool run_device_image(const void *payload, size_t payload_size,
             kernel_name, (long long)image_size);
   }
 
+  /* A kernel that contains an `assert` takes one more parameter than the
+     dispatch carries, after all of the others: a pointer to a 4-byte integer
+     in device memory. The payload says so with `assert_flag=1`. A failed
+     assert prints its message with the device's `printf`, sets the integer,
+     and the kernel goes on, because Level Zero has no `abort` that stops a
+     kernel. This reads the integer after the wait and stops the program
+     itself, as a failed assert on the host does.
+
+     One integer for the whole library is enough: the lock above serializes
+     launches, and every launch clears it on its own list. */
+  const bool takes_assert_flag =
+      vx_launch_takes_assert_flag(payload, payload_size) != 0;
+  static int *failed_assert = nullptr;
+  if (takes_assert_flag && !failed_assert) {
+    failed_assert = static_cast<int *>(device_alloc(sizeof(int)));
+  }
+
   vx_launch_params params;
   if (!vx_launch_build_params(device_args, arg_tags, num_args, &params)) {
     if (verbose()) {
@@ -590,12 +607,13 @@ bool run_device_image(const void *payload, size_t payload_size,
   LoadedKernel loaded =
       load_kernel(key, kernel_name, image, (size_t)image_size);
   ze_kernel_handle_t kernel = loaded.kernel;
-  if (loaded.param_count != params.count) {
+  const int64_t given = params.count + (takes_assert_flag ? 1 : 0);
+  if (loaded.param_count != given) {
     fprintf(stderr,
             "[Vx XPU] FATAL: %s declares %d parameters and its arguments "
-            "produced %d.\n"
+            "produced %lld.\n"
             "          Launching would read past what was supplied.\n",
-            kernel_name, loaded.param_count, params.count);
+            kernel_name, loaded.param_count, (long long)given);
     abort();
   }
 
@@ -651,9 +669,22 @@ bool run_device_image(const void *payload, size_t payload_size,
     VX_XPU_CHECK(
         zeKernelSetArgumentValue(kernel, i, widths[i], params.params[i]));
   }
+  if (takes_assert_flag) {
+    void *flag = failed_assert;
+    VX_XPU_CHECK(
+        zeKernelSetArgumentValue(kernel, params.count, sizeof(void *), &flag));
+  }
 
   LaunchQueue &lq = launch_queue();
   VX_XPU_CHECK(zeCommandListReset(lq.list));
+  if (takes_assert_flag) {
+    /* Cleared on the list, so the launch sees zero whatever the last launch
+       of this kernel left, and the wait below is what makes it visible. */
+    const int zero = 0;
+    VX_XPU_CHECK(zeCommandListAppendMemoryFill(lq.list, failed_assert, &zero,
+                                               sizeof zero, sizeof zero,
+                                               nullptr, 0, nullptr));
+  }
   ze_group_count_t group_count = {grid[0], grid[1], grid[2]};
   VX_XPU_CHECK(zeCommandListAppendLaunchKernel(lq.list, kernel, &group_count,
                                                nullptr, 0, nullptr));
@@ -661,6 +692,14 @@ bool run_device_image(const void *payload, size_t payload_size,
   VX_XPU_CHECK(
       zeCommandQueueExecuteCommandLists(lq.queue, 1, &lq.list, nullptr));
   VX_XPU_CHECK(zeCommandQueueSynchronize(lq.queue, UINT64_MAX));
+
+  /* The device's `printf` output comes out at the wait above, so the message
+     of the failed assert has already been printed when this says which kernel
+     it was in. */
+  if (takes_assert_flag && *failed_assert != 0) {
+    fprintf(stderr, "[Vx XPU] FATAL: an assert failed in %s\n", kernel_name);
+    abort();
+  }
 
   if (announce) {
     fprintf(stderr,

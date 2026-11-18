@@ -582,6 +582,8 @@ void spirv_parameter_counting() {
                                             "vx_npu_kernel_0") == -1,
           "a module with a name and no OpEntryPoint has no entry");
   }
+}
+
 /* A kernel that can fail an assert takes a flag, and its payload says so. */
 void assert_flags() {
   const char with[] = "k\0abi=1\0assert_flag=1\0format=spirv\0";

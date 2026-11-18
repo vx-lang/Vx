@@ -6,9 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 // One placed region per element type the Arc machine model declares, each
-// computing `o = a * b + c` over a 32x32 tensor. The values stay inside the
-// narrowest type (i4), so a type the device stores differently from the host
-// shows up as a wrong number rather than as an overflow.
+// computing `o = a * b + c` over a 32x32 tensor, except bool, whose two
+// operands take the boolean operators: `o = (a & b) | c`. The values stay
+// inside the narrowest type (i4), so a type the device stores differently from
+// the host shows up as a wrong number rather than as an overflow.
 //
 // Each region's result is summed back on the host and printed, one number per
 // type, so running the whole program on the CPU and on the Arc and comparing
@@ -521,10 +522,10 @@ fn main() -> i32 {
   for i in 0..32 {
     for j in 0..32 {
       // `a` alternates so the region is not all one value; `b` is false and `c`
-      // is true, so every element of `a * b + c` is true. This used to read
-      // `2 as bool` and `0 as bool`, which the checker now refuses because a
-      // cast from an integer to a bool has no defined rule; under the old
-      // low-bit rule `2` was false, so these values keep the same bytes.
+      // is true, so every element of `(a & b) | c` is true. Two bools take `&`,
+      // `|` or `^` and not `*` or `+`: the checker refuses arithmetic on them,
+      // so this region is the one that writes the boolean operators, and the
+      // bytes it computes are the same ones the old `*` and `+` gave here.
       a12[i][j] = ((i + j) % 2) == 1;
       b12[i][j] = false;
       c12[i][j] = true;
@@ -542,7 +543,7 @@ fn main() -> i32 {
       let cr = gc12[i];
       let mut orow = go12[i];
       for j in 0..32 {
-        orow[j] = ar[j] * br[j] + cr[j];
+        orow[j] = (ar[j] & br[j]) | cr[j];
       }
     }
   }
