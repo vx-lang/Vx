@@ -24,7 +24,7 @@ stable. This RFC proposes the following:
    library has traits and types that Rust and Zig do not need.
 1. The **rule for where code runs**: how a function, a type or a trait impl says that it runs
    only on the host or also on a device.
-1. The **life cycle of an API**: experimental, stable, deprecated and removed.
+1. The **life cycle of an API**: incubating, stable and removed, with a deprecation notice.
 
 This RFC is about structure. It does not design each module. Each module gets its own tracking
 issue later. Section 3 gives one or two lines per module to show its direction.
@@ -63,7 +63,7 @@ The last section lists open questions for the committee.
    Nothing says whether they belong there.
 1. **Vx runs on more than one kind of hardware.** Rust and Zig assume one kind of processor. Vx
    needs rules for library code that runs on a GPU, and for types that must never reach one.
-1. **There is no stability promise.** Users cannot tell an experimental API from a settled one.
+1. **There is no stability promise.** Users cannot tell an incubating API from a settled one.
    Vx has no way to mark an API as deprecated.
 
 ## 1. Tenets
@@ -151,7 +151,7 @@ What the standard library will not contain:
 - **A10. Generic code, not dynamic dispatch.** Library APIs are generic over traits. Open question
   Q4 covers dynamic dispatch.
 - **A11. Every public item MUST have a doc comment, and every public function and method MUST
-  have a working example.** Section 1.8 gives the rules and the tools that enforce them.
+  have a working example.** Section 1.8 gives the rules and the few exceptions.
 - **A12. Plain English.** Doc comments and error messages follow the project's writing rules
   (`agents/AGENTS.md`).
 
@@ -248,9 +248,13 @@ This replaces the "ecosystem delegation" plan of `docs/std_library_design.md`.
 
 - **D1. Every public item MUST have a doc comment.** This covers modules, types, traits,
   functions, methods and constants. "The name says it all" is not an exception.
-- **D2. Every public function and method MUST have at least one example.** The example MUST
-  compile and run. It MUST check its own result with `assert`, so that a wrong result fails the
-  test. An example that only compiles is not enough.
+- **D2. Every public function and method MUST have at least one example.** By default, the
+  example MUST compile and run. It MUST check its own result with `assert`, so that a wrong result
+  fails the test. An example that only compiles is not enough by default. These exceptions need a
+  stated reason that a reviewer accepts:
+  - One example covers a small group of related items, such as the getters of one type.
+  - An item has no example of its own, for example a trait method that the trait's example uses.
+  - An example compiles but does not run, for example because it needs hardware that CI lacks.
 - **D3. CI runs every example on both code generators.** A function that runs on a device also
   has an example inside a `spawn on` region. CI runs it on each device target that it has.
 - **D4. A doc comment has these sections when they apply:**
@@ -261,25 +265,19 @@ This replaces the "ecosystem delegation" plan of `docs/std_library_design.md`.
   - "Runs on": its device rule (Section 5).
   - "Allocates": whether it allocates, and how much.
   - "Complexity": the cost of each container operation.
-  - "Stage": experimental or deprecated, with the replacement.
+  - "Stage": incubating, or deprecated with the replacement.
 - **D5. A module header states the module's purpose, layer, device rule and stage, and where it
   differs from Rust.**
 - **D6. Doc comments are in plain English**, as `agents/AGENTS.md` requires. The STE lint
   checks them.
 
-**What the rules need.** Today no tool enforces them:
+**What the rules need.** Today no tool enforces them, and no doc comment in the standard
+library has an example. `standard_library_docs_lifecycle_and_testing.md` in this directory
+proposes the tools and the tests that enforce these rules.
 
-- No doc comment in the standard library has an example. A search for a fenced block in a `///`
-  comment finds none.
-- `scripts/tools/check_doc_examples.py` checks the Vx examples in markdown files and on the web
-  site. It does not read `.vx` files. It also only parses most blocks. It runs a block only when a
-  marker asks for it.
-
-So the library needs three tools: a test runner for the examples in `///` comments, a check
-that fails CI when a public item has no doc comment or no example, and a generated API
-reference. Until Vx has `pub` (#489), "public" means every item whose name does not start with
-`_`. The doc rules apply to new and changed items at once. The existing modules meet them before
-they become stable.
+Until Vx has `pub` (#489), "public" means every item whose name does not start with `_`. The doc
+rules apply to new and changed items at once. The existing modules meet them before they become
+stable.
 
 ## 2. Layout
 
@@ -491,15 +489,22 @@ APIs will stay and how a change reaches them.
 | Stage | Meaning | How a user sees it |
 |---|---|---|
 | Internal | Not for users. It can change at any time. | The name starts with `_` until item visibility exists (#489). |
-| Experimental | Open for trial. It can change or disappear in any release. It has a tracking issue. | The compiler refuses a use unless the program turns the feature on by name, for example `--enable-experimental=slice`. The error names the flag. |
+| Incubating | Open for trial. It can change or disappear in any release. It has a tracking issue. | The compiler refuses a use unless the program turns on the feature by name. The error says how to turn it on. |
 | Stable | The API shape stays. A change goes through deprecation. | No marker. |
-| Deprecated | It still works. A replacement exists. | A warning at each use names the replacement and the release that removes the item. |
 | Removed | Gone. | The release notes list it with its replacement. |
+
+**Deprecated is a notice, not a stage.** An incubating or a stable item can be deprecated. It
+keeps its stage, its feature name and its history. It still works. A warning at each use names
+the replacement, or explains why there is none, and the release that removes the item.
+
+The spelling of the opt-in is open (Q10). A command-line flag such as
+`--enable-incubating=slice` is one possible form. Whatever the form, a feature that a library
+turns on for itself must not turn on for the programs that use that library.
 
 **To become stable**, an API must have all of the following:
 
 - A doc comment on every public item, and a working example for every public function and
-  method (Section 1.8).
+  method, or an accepted exception (Section 1.8).
 - Its contracts, stated and proved in CI (Section 1.7).
 - Tests on both code generators, and no decline by the flat code generator.
 - A benchmark, if the API is on a hot path (P3).
@@ -523,8 +528,10 @@ APIs will stay and how a change reaches them.
 
 **What the language must add.** Vx has no item attributes and no visibility today. The stages
 above need both: something like `#[deprecated(since = "0.0.5", note = "use Slice::get")]`,
-`#[experimental(feature = "slice", issue = 534)]`, and `pub`. Until they exist, a doc comment
-tag such as `/// @experimental slice #534`, checked by a lint, is a possible interim step (Q10).
+`#[incubating(feature = "slice", issue = 534)]`, and `pub`. Until they exist, a doc comment
+tag such as `/// @incubating slice #534`, checked by a lint, is a possible interim step (Q10).
+`standard_library_docs_lifecycle_and_testing.md` proposes the fields that this metadata holds and
+how the compiler enforces it.
 
 **Prior art.** Rust marks each library item stable or unstable, and unstable items work only on
 nightly behind a feature flag. Zig makes no promise before 1.0 and lists breaking changes in its
@@ -580,7 +587,7 @@ code. A GPU batch hash, such as SHA-256 over many blocks, could be a distinctive
 
 - A change to a public API needs a PR and a short design note in its issue.
 - CI refuses a PR that adds a public item with no doc comment, or a public function with no
-  working example (Section 1.8), once the tools exist.
+  working example and no accepted exception (Section 1.8), once the tools exist.
 - A new module, a new trait in `core`, or a change to a tenet needs an RFC in `docs/proposals/`
   and a committee review.
 - Each module has an owner.
@@ -670,7 +677,8 @@ code. A GPU batch hash, such as SHA-256 over many blocks, could be a distinctive
 **Process**
 
 - **Q10. Stability markers.** Do item attributes and `pub` visibility (#489) come first, or does a
-  doc comment tag with a lint come first as an interim step?
+  doc comment tag with a lint come first as an interim step? What is the spelling of the opt-in
+  for an incubating feature? What is the schema of the attributes?
 
 ## References
 
