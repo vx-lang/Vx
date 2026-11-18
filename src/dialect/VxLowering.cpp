@@ -8529,6 +8529,8 @@ struct FreeOpLowering : public OpRewritePattern<vx::FreeOp> {
 struct DeviceImage {
   std::string format;
   std::string bytes;
+  /// The kernels whose last parameter is the flag a failed `assert` sets.
+  llvm::StringSet<> assertFlag;
 
   /// Whether the image can ride in a NUL-terminated `image=` entry.
   bool isText() const { return format == "ptx" || format == "msl"; }
@@ -8727,6 +8729,12 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
     if (deviceImages) {
       auto image = deviceImages->find(callee);
       if (image != deviceImages->end()) {
+        // The kernel takes one more parameter than the program passes: a
+        // pointer to a 4-byte flag that a failed `assert` sets.
+        if (image->second.assertFlag.contains(callee)) {
+          payload += "assert_flag=1";
+          payload.push_back('\0');
+        }
         // What the image is, before the image itself: a dispatch library that
         // meets a format it does not know refuses instead of guessing.
         payload += "format=";
@@ -10135,6 +10143,139 @@ wideIntegerRefusals(llvm::Module &module) {
   return refused;
 }
 
+/// Report each failed `assert` in a SPIR-V kernel through a flag, and return
+/// the names of the kernels that take one.
+///
+/// OpenCL has no `abort`, and LLVM writes `llvm.trap` as OpUnreachable, which
+/// a device need not stop at. So a kernel that can fail an assert takes one
+/// more parameter, last: a pointer to a 4-byte flag that the dispatch library
+/// clears before the launch. A failed assert prints its message with OpenCL's
+/// `printf`, sets the flag, and goes on. After the launch the library reads
+/// the flag and stops the program. A function that the kernel calls takes the
+/// pointer too, when it can fail an assert, and passes it on.
+static llvm::StringSet<> reportAssertsThroughAFlag(gpu::GPUModuleOp gpuModule) {
+  MLIRContext *context = gpuModule.getContext();
+  SmallVector<cf::AssertOp> asserts;
+  gpuModule.walk([&](cf::AssertOp a) { asserts.push_back(a); });
+  if (asserts.empty())
+    return {};
+  // The functions that can fail an assert: each one that holds one, and each
+  // one that calls such a function.
+  llvm::SetVector<Operation *> failing;
+  for (cf::AssertOp a : asserts)
+    failing.insert(a->getParentOfType<FunctionOpInterface>());
+  for (bool changed = true; changed;) {
+    changed = false;
+    gpuModule.walk([&](func::CallOp call) {
+      Operation *callee = gpuModule.lookupSymbol(call.getCalleeAttr());
+      if (callee && failing.contains(callee))
+        changed |= failing.insert(call->getParentOfType<FunctionOpInterface>());
+    });
+  }
+  auto global = LLVM::LLVMPointerType::get(context, 1);
+  for (Operation *op : failing) {
+    auto f = cast<FunctionOpInterface>(op);
+    (void)f.insertArgument(f.getNumArguments(), global,
+                           DictionaryAttr::get(context), f.getLoc());
+  }
+  auto flagOf = [](Operation *op) {
+    auto f = op->getParentOfType<FunctionOpInterface>();
+    return f.getArgument(f.getNumArguments() - 1);
+  };
+  gpuModule.walk([&](func::CallOp call) {
+    Operation *callee = gpuModule.lookupSymbol(call.getCalleeAttr());
+    if (callee && failing.contains(callee))
+      call.getOperandsMutable().append(flagOf(call));
+  });
+
+  // OpenCL's `printf` reads its format from constant memory.
+  Location loc = gpuModule.getLoc();
+  OpBuilder top = OpBuilder::atBlockBegin(gpuModule.getBody());
+  auto i8 = IntegerType::get(context, 8);
+  auto i32 = IntegerType::get(context, 32);
+  auto constant = LLVM::LLVMPointerType::get(context, 2);
+  auto printf = gpuModule.lookupSymbol<LLVM::LLVMFuncOp>("printf");
+  if (!printf)
+    printf = LLVM::LLVMFuncOp::create(
+        top, loc, "printf",
+        LLVM::LLVMFunctionType::get(i32, {constant}, /*isVarArg=*/true));
+  unsigned count = 0;
+  for (cf::AssertOp a : asserts) {
+    // The message and a newline, as a failed assert on the host prints it,
+    // with each `%` doubled so that `printf` prints it as it is.
+    std::string text;
+    for (char c : a.getMsg()) {
+      text += c;
+      if (c == '%')
+        text += '%';
+    }
+    text += "\n";
+    text.push_back('\0');
+    std::string name = "vx_assert_message_" + std::to_string(count++);
+    LLVM::GlobalOp::create(top, loc, LLVM::LLVMArrayType::get(i8, text.size()),
+                           /*isConstant=*/true, LLVM::Linkage::Internal, name,
+                           StringAttr::get(context, text), /*alignment=*/0,
+                           /*addrSpace=*/2);
+    OpBuilder b(a);
+    Value holds = a.getArg();
+    Value fails = arith::XOrIOp::create(
+        b, a.getLoc(), holds,
+        arith::ConstantOp::create(b, a.getLoc(), b.getBoolAttr(true)));
+    auto check = scf::IfOp::create(b, a.getLoc(), fails, /*withElse=*/false);
+    OpBuilder in = check.getThenBodyBuilder();
+    Value message = LLVM::AddressOfOp::create(in, a.getLoc(), constant, name);
+    LLVM::CallOp::create(in, a.getLoc(), printf, ValueRange{message});
+    Value one =
+        LLVM::ConstantOp::create(in, a.getLoc(), i32, in.getI32IntegerAttr(1));
+    LLVM::AtomicRMWOp::create(in, a.getLoc(), LLVM::AtomicBinOp::_or, flagOf(a),
+                              one, LLVM::AtomicOrdering::monotonic);
+    a.erase();
+  }
+  llvm::StringSet<> kernels;
+  for (Operation *op : failing)
+    if (auto kernel = dyn_cast<gpu::GPUFuncOp>(op))
+      kernels.insert(kernel.getName());
+  return kernels;
+}
+
+/// Inline each function that calls `printf` into its callers, until every
+/// `printf` is in a kernel. LLVM's SPIR-V backend can take the format string
+/// of a `printf` in another function as not constant, and it then stops with
+/// "SPV_EXT_relaxed_printf_string_address_space is required".
+static void inlinePrintfIntoKernels(llvm::Module &module) {
+  llvm::Function *printf = module.getFunction("printf");
+  if (!printf)
+    return;
+  auto callsPrintf = [&](llvm::Function &f) {
+    return llvm::any_of(printf->users(), [&](llvm::User *user) {
+      auto *call = dyn_cast<llvm::CallBase>(user);
+      return call && call->getFunction() == &f;
+    });
+  };
+  // Each round moves each `printf` up one call. A recursive function would
+  // never end the rounds, so a limit stops them.
+  for (int round = 0; round < 16; ++round) {
+    SmallVector<llvm::CallBase *> calls;
+    for (llvm::Function &f : module)
+      for (llvm::Instruction &inst : llvm::instructions(f))
+        if (auto *call = dyn_cast<llvm::CallBase>(&inst))
+          if (llvm::Function *callee = call->getCalledFunction())
+            if (!callee->isDeclaration() &&
+                callee->getCallingConv() != llvm::CallingConv::SPIR_KERNEL &&
+                callsPrintf(*callee))
+              calls.push_back(call);
+    if (calls.empty())
+      break;
+    for (llvm::CallBase *call : calls) {
+      llvm::InlineFunctionInfo info;
+      (void)llvm::InlineFunction(*call, info);
+    }
+  }
+  for (llvm::Function &f : llvm::make_early_inc_range(module))
+    if (!f.isDeclaration() && f.use_empty() && f.hasLocalLinkage())
+      f.eraseFromParent();
+}
+
 /// Compile a `gpu.module` to a SPIR-V module.
 ///
 /// The pipeline `scripts/tools/spirv_module_check.sh` runs by hand on a `.vx`
@@ -10210,6 +10351,7 @@ spirvImageOfKernels(gpu::GPUModuleOp gpuModule, const llvm::StringSet<> &left,
   }
   if (failed(flattenSpirvKernelArgs(*kernels.begin(), error, refused)))
     return {};
+  llvm::StringSet<> assertFlag = reportAssertsThroughAFlag(*kernels.begin());
 
   PassManager toSpv(context, ModuleOp::getOperationName());
   toSpv.nest<gpu::GPUModuleOp>().addPass(createSCFToControlFlowPass());
@@ -10254,6 +10396,7 @@ spirvImageOfKernels(gpu::GPUModuleOp gpuModule, const llvm::StringSet<> &left,
     return {};
   }
   legalizeOneBitArithmetic(*llvmModule);
+  inlinePrintfIntoKernels(*llvmModule);
   SmallVector<SpirvKernelRefusal> wide = wideIntegerRefusals(*llvmModule);
   if (!wide.empty()) {
     refused.append(wide.begin(), wide.end());
@@ -10263,7 +10406,7 @@ spirvImageOfKernels(gpu::GPUModuleOp gpuModule, const llvm::StringSet<> &left,
   std::string image;
   if (failed(serializeSpirv(std::move(llvmModule), image, error)))
     return {};
-  return DeviceImage{"spirv", std::move(image)};
+  return DeviceImage{"spirv", std::move(image), std::move(assertFlag)};
 }
 
 /// The SPIR-V image of the kernels in `gpuModule` that can become one. Each
