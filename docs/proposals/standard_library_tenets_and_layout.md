@@ -24,7 +24,8 @@ stable. This RFC proposes the following:
    library has traits and types that Rust and Zig do not need.
 1. The **rule for where code runs**: how a function, a type or a trait impl says that it runs
    only on the host or also on a device.
-1. The **life cycle of an API**: incubating, stable and removed, with a deprecation notice.
+1. The **life cycle of an API**: internal, incubating, stable and removed, with a deprecation
+   notice.
 
 This RFC is about structure. It does not design each module. Each module gets its own tracking
 issue later. Section 3 gives one or two lines per module to show its direction.
@@ -107,7 +108,10 @@ The rules for this line:
   the compiler recognizes some names: the tensor reductions (`dot`, `sum`, `max`, `min`), the
   `lanes::` routines (`src/hir/check/lanes.rs`) and the print macros. Each one either becomes a
   library function over a general feature, or the language reference documents it as a built-in.
-  Issue #3468 is the first step for `lanes::`.
+  Issue #3468 is the first step for `lanes::`. The race proof also knows library names. `slot_of`
+  in `src/hir/check/across_proof.rs` matches `atomic_fetch_add_i32`, `_u32`, `_i64` and `_u64` by
+  name for its counter rule, and #3450 extends that rule. Under L1, the counter rule becomes a
+  contract clause on the function, not a name match.
 - **L2. A missing feature goes into the language, not into one type.** When the library cannot
   express something, the fix is a general language feature that any library can use. Issue #536
   shows how: each language item says which library module needs it.
@@ -139,8 +143,11 @@ What the standard library will not contain:
   errors. The doc comment has a "Panics" line that says when.
 - **A5. A checked form first, an unchecked form second.** `get` checks the index. `get_unchecked`
   is `unsafe` and states its precondition as a contract where the language can express it.
-- **A6. Sizes and indices are 64-bit.** A new API does not use `i32` for a length, a capacity or
-  an index. Open question Q11 covers `usize` against `i64`.
+- **A6. Host containers use 64-bit sizes and indices.** A new API in the allocation layer or the
+  OS layer does not use `i32` for a length, a capacity or an index. Device code is different. On
+  a GPU, 64-bit index arithmetic costs registers and instructions. The indices of `across` loops
+  are `i32` today, and so are the indices of the atomic tensor functions in `core::sync::atomic`.
+  Open question Q11 covers `usize` against `i64`, and the index type in device code.
 - **A7. Borrow when the function only reads.** A function that reads takes a slice or a `&str`,
   not an owned `Vec` or `String`.
 - **A8. No hidden allocation.** `core` never allocates. A `std` function that allocates says so
@@ -181,8 +188,8 @@ What the standard library will not contain:
 - **H3. A type that cannot exist on a device is `HostOnly`.** Files, sockets, a mutex that waits
   for the host, and anything that holds a host pointer are `HostOnly`. The compiler refuses them in
   device code.
-- **H4. No vendor names in the public API.** The public API has no `cuda` or `metal` module. Vendor
-  code lives in target implementations (Section 4.3) or in topology files.
+- **H4. No vendor names in the public API.** The public API has no `cuda` or `metal` module.
+  Vendor code lives in target implementations inside the library (Section 4.3).
 - **H5. Device vocabulary may enter the library. Device algorithms may not.** Lane indices,
   barriers, scoped atomics and target queries are vocabulary that every device library needs.
   A matrix multiply or an attention kernel is a domain algorithm.
@@ -223,17 +230,20 @@ This replaces the "ecosystem delegation" plan of `docs/std_library_design.md`.
 
 **The rules.**
 
-- **C1. A public function states its contract.** A precondition that a caller can prove is a
-  `requires`. A result that callers need is an `ensures`, for example a length, a range, `valid`
-  or `!frees`. A precondition that the prover cannot express stays a run-time check, with a
-  "Panics" line in the doc comment.
+- **C1. A public function states its contract.** A result that callers need is an `ensures`, for
+  example a length, a range, `valid` or `!frees`. A precondition is a run-time check by default,
+  with a "Panics" line in the doc comment. Only the proven form of C3 has a `requires`. Vx fails
+  the compile when it cannot prove a `requires`, and it has no run-time fallback. So a `requires`
+  on an ordinary function, such as `split_at`, puts a proof on every call.
 - **C2. A type with a rule about its fields declares it as an `invariant`.** `Vec` does this
   today: `self.len <= self.capacity`.
 - **C3. An access has up to three forms.**
-  - A checked form, such as `get`. It checks at run time and panics on a bad index.
-  - A proven form. It has a `requires`, such as `i < self.len()`, and no run-time check. It
-    needs no `unsafe`, because the caller's proof replaces the check. Rust, Zig and Mojo cannot
-    offer this form without `unsafe`. Q20 asks for its name.
+  - A checked form, such as `get`. It checks at run time and panics on a bad index. This is the
+    default form. Its call asks the prover nothing.
+  - A proven form. It has a `requires`, such as `i < self.len()`, and no run-time check. It needs
+    no `unsafe`, because the caller's proof replaces the check. Rust, Zig and Mojo cannot offer
+    this form without `unsafe`. It has its own name, so that a call shows that it needs a proof.
+    Q20 asks for that name.
   - An `unsafe` form, such as `get_unchecked`, for a caller whose proof the prover cannot follow.
 - **C4. A contract is part of the API.** A stronger `requires` or a weaker `ensures` can break a
   caller. Such a change goes through deprecation (Section 6).
@@ -291,7 +301,7 @@ OS layer          std::   needs an operating system. Host only.
 allocation layer  std::   needs an allocator, never the operating system.
                           alloc  box  vec  string  hash_map  hash_set  sync::arc
   ^
-core layer        core::  needs nothing. Runs on any topology unless an item says otherwise.
+core layer        core::  needs nothing. Each item states where it runs (R1).
                           marker cmp ops clone default convert option result num iter
                           slice str char ascii hash fmt mem ptr cell sync::atomic time
                           tuple panic hint device target
@@ -309,8 +319,11 @@ core layer        core::  needs nothing. Runs on any topology unless an item say
 - **One direction.** Each layer imports only its own layer and the layers below it. A test
   enforces this, as the purity test does for `core` today. So an allocation-layer module never
   imports `std::fs`, even though both are under `std::`.
-- **One device rule for each layer.** The core layer runs everywhere by default. The OS layer is
-  host only. Where the allocation layer runs depends on open question Q1.
+- **A layer does not decide where code runs.** The signature decides it (R1). The module path
+  does not change it. The layer test checks that each public function in the core layer is
+  `on Topology::Any` or generic over a topology. A core function with no `on` clause runs on the
+  CPU only, and its "Runs on" line (D4) says why. Each public item in the OS layer is host only.
+  Where the allocation layer runs depends on open question Q1.
 - **Domain code moves out.** `std::nn`, `std::llama`, `std::bulk_hash` and `stdlib/graph` leave
   the standard library. Open question Q6 asks where they go.
 
@@ -421,12 +434,15 @@ model loaders and the GPU hash table. They are domain libraries (H5).
 
 Some functions need a different body on each target. Examples are `print`, the clock, math
 intrinsics, atomic scopes and stack allocation. The library needs one defined place for "the CUDA
-form of `f32::exp`". The public function stays the same (H2). The topology file, or a target
-module inside the library, supplies the body.
+form of `f32::exp`". The public function stays the same (H2). A target module inside the library
+supplies the body, and the library selects it by the target's `arch:`.
 
-This matches the existing rule that a topology file supplies its own transfer code
-(`docs/custom_transfer_contract.md`). Each target body has the same contract as the public
-function, and a test runs the same cases on each target that CI has.
+Fleet files do not hold target bodies. One `arch` serves many fleet files: `h100`, `h200` and
+others are all `nvptx64`. So a body in a fleet file would be copied into each one. Fleet files
+hold hardware facts, with citations to the hardware specification.
+
+Each target body has the same contract as the public function, and a test runs the same cases on
+each target that CI has.
 
 ## 5. Where library code runs
 
@@ -447,7 +463,8 @@ The rules below apply to every public item in the library.
     `Type::method(..)` "checks no placement".
   - So device code can call `x.exp()` and the other `core::num` methods, which have no `on`
     clause. It can also call a method whose body calls a CPU-only function. In one probe, the
-    Apple GPU code generator compiled that CPU-only function into the kernel.
+    Apple GPU code generator compiled that CPU-only function into the kernel. This is a soundness
+    bug, and #3638 tracks its fix apart from this RFC.
   - Other checks still protect device code. Inside an `across` loop, the compiler checks
     the `writes_only()` contract through every call, and an `extern` function cannot claim it
     (E8011). The
@@ -457,7 +474,14 @@ The rules below apply to every public item in the library.
   This is why `bulk_hash_fmix32`, a free function, says `on Topology::Any`, but the methods of
   `core::num` say nothing. Under R1, a function and a method with the same signature follow the
   same rule. That also follows the parallel-compiler rule that a signature is the whole contract.
-  Q8 asks how to reach R1 without breaking the kernels that call `core::num` today.
+
+  **How to reach R1.** First, give each method in `core` that kernels call an `on Topology::Any`
+  clause. Then turn on the placement check for every method call (#3638). The other order breaks
+  every kernel that calls a `core::num` method today.
+
+  This RFC does not change the default. A default of "runs where the caller runs" changes the
+  meaning of every program. Every host function that calls the operating system would then fail
+  to compile until it gets a host-only mark.
 
 - **R2. A type states if it is `HostOnly`.** A library type that holds an operating system
   handle, a host pointer or a wait for the host implements `HostOnly`:
@@ -600,9 +624,16 @@ code. A GPU batch hash, such as SHA-256 over many blocks, could be a distinctive
 
 **Layout and scope**
 
-- **Q1. Memory spaces in collections.** Do `Slice`, `Vec` and `Allocator` carry a memory space,
-  as in `Slice<T, Memory::M>`? If yes, one byte reader or column kernel works in any memory. If
-  no, Vx needs separate device types. This choice shapes most of the allocation layer.
+- **Q1. Memory spaces in collections.** This RFC proposes that `Slice` carries a memory space, as
+  in `Slice<T, Memory::M>`. The language already decides most of this. Pointers carry a memory
+  space (`*mut f32 in Memory::GPU_HBM`), and so do tensors. A `Slice` is a pointer and a length.
+  Without a memory space, it is either a hole in the placement checks or a host-only type. With
+  one, one byte reader or column kernel works in any memory. An owning memory map in `std::fs`
+  can then give a view in device memory where the machine declares a `: shared` edge (#3498).
+  `Slice<T, Memory::M>` and a rank-1 view `Tensor<T, [?], Memory::M>` (#400) must not be two
+  names for one idea (A2). This RFC proposes the following line. `Tensor` is for numbers, with
+  shapes and operators. `Slice` is rank 1, for any `T`. Still open: do `Vec` and `Allocator`
+  carry a memory space too? This choice shapes most of the allocation layer.
 - **Q5. Tensors, SIMD and collectives.** Do `std::tensor`, `std::simd` and `std::collective`
   belong in `core`, in `std`, or in a device library? Do the `lanes::` routines become library
   functions (L1)?
@@ -624,33 +655,27 @@ code. A GPU batch hash, such as SHA-256 over many blocks, could be a distinctive
 **Traits and API style**
 
 - **Q2. Text output.** One `Writable` trait, as in Mojo, or `Display` plus `Debug`, as in Rust?
-  Today `Display` and `Debug` cannot coexist on one type, because both name their method `fmt`.
-  One trait avoids that problem. It also joins `fmt::Write` and `io::Write` into one byte-sink
-  trait.
+  One trait joins `fmt::Write` and `io::Write` into one byte-sink trait. Two traits separate the
+  text for users from the text for programmers. The committee decides on the merits of each
+  design. A compiler limit does not decide it. Today `Display` and `Debug` cannot both be on one
+  type, because both name their method `fmt`. Under L2, that is a language gap to fix.
 - **Q3. Errors.** An `Error` trait, as in Rust, or one concrete error type with a kind and a
   message, as in Mojo?
 - **Q4. Dynamic dispatch and derive.** Does Vx get trait objects (`dyn`)? Does it get generated
   impls (`derive`) for `Clone`, `Hash`, `PartialEq` and debug output? Both are language decisions,
   but the library API depends on them.
-- **Q11. Size type.** Are lengths and indices `usize` or `i64`? Vx's `usize` traps on overflow and
-  wraps at 2^63.
+- **Q11. Size type.** Are lengths and indices of host containers `usize` or `i64`? Vx's `usize`
+  traps on overflow and wraps at 2^63. Which index type does device code use? Today the indices
+  of `across` loops and of the atomic tensor functions are `i32`. Before a kernel starts, the
+  host checks the size, so that these indices do not overflow (A6).
 - **Q14. Allocation failure.** Does a failed allocation abort, as in Rust, or return an error, as
   in Zig? A device with a fixed amount of memory may need the error.
 
 **Devices**
 
-- **Q8. Placement checks on methods.** R1 needs the compiler to check method calls as it checks
-  plain calls. That change breaks every kernel that calls a `core::num` method today. Which order
-  is right?
-
-  - First give each device-safe method in `core` an `on Topology::Any` clause. Then turn on the
-    check.
-  - Or change the default, so that a function or a method with no `on` clause runs where its
-    caller runs. Then mark host-only items explicitly. This changes the meaning of every existing
-    program.
-
-  Was the missing check on static methods deliberate? What is the syntax for a trait that
-  requires its methods to run anywhere (R4)?
+- **Q8. A trait whose methods run anywhere.** What is the syntax for a trait that requires its
+  methods to run anywhere (R4)? Section 5, under R1, gives the order in which the method check
+  turns on.
 
 - **Q9. The device-crossing trait.** What is its name? Is it separate from `Send`? Does the
   compiler always derive it, or can a type opt out?
@@ -667,12 +692,12 @@ code. A GPU batch hash, such as SHA-256 over many blocks, could be a distinctive
   LLVM as an `llvm.intr.assume`? Then `-O3` could remove the matching run-time check. An assume
   is only as sound as the prover. Too many assumes can also slow LLVM's optimizations. Or should
   the compiler remove the checks itself, as #1142 plans for `usize`?
-- **Q19. The cost of proofs.** Contracts make Z3 a hard requirement for any program that calls a
-  library function with a `requires`. Each compile also checks the library's bodies again, until
-  the library ships precompiled (#220). I did not measure this cost. Is it acceptable, and what
-  is the limit?
-- **Q20. The proven form of an access.** What is the name of the proven form in C3: `get` with a
-  `requires`, or a separate name such as `at`? Does every container have one?
+- **Q19. The cost of proofs.** Under C1, only a call to a proven form asks the prover for a
+  proof. Contracts make Z3 a hard requirement for a program that makes such a call. Each compile
+  also checks the library's bodies again, until the library ships precompiled (#220). I did not
+  measure this cost. Is it acceptable, and what is the limit?
+- **Q20. The proven form of an access.** The proven form in C3 has its own name. What is that
+  name, for example `at`? Does every container have one?
 
 **Process**
 
@@ -688,7 +713,6 @@ code. A GPU batch hash, such as SHA-256 over many blocks, could be a distinctive
 - `docs/language_rules_for_a_parallel_compiler.md`: why a signature must state where a function
   runs.
 - `docs/lane_reductions.md` and issue #3468: the lane routines.
-- `docs/custom_transfer_contract.md`: how a topology supplies its own code.
 - Rust: the `core`, `alloc` and `std` split, the stability attributes, and RFC 1105 (API
   evolution).
 - Zig: explicit allocators, no hidden allocation, and `std.crypto`.

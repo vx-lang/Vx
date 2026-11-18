@@ -3,6 +3,11 @@
 **Author:** aditya@
 **Date:** May 11, 2026
 
+> **Replaced.** This document is history. The standard library RFC replaces it:
+> [`docs/proposals/standard_library_tenets_and_layout.md`](proposals/standard_library_tenets_and_layout.md).
+> Issue #2144 reversed the "ecosystem delegation" plan below. Plain code moves from the Rust
+> runtime into Vx.
+
 ## 1. Executive Summary & Strategic Vision
 
 A systems programming language cannot achieve critical mass without a robust, highly optimized standard library. However, reimplementing collections, networking, and file I/O from scratch introduces years of bug-fixing and security vulnerabilities.
