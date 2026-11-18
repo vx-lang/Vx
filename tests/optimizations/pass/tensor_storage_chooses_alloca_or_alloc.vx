@@ -5,17 +5,25 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// `Storage::Stack` makes a `memref.alloca` with no drop, and `Storage::Heap` makes a `memref.alloc`
-// marked `vx.heap`, whatever the size.
+// `Storage::Stack` makes a `memref.alloca`, and `Storage::Heap` makes a `memref.alloc` marked
+// `vx.heap`, whatever the size. A stack slot is freed with its frame: its drop stays in the MLIR
+// and the lowering erases it, while the drop of the heap buffer frees it. The LLVM IR shows one
+// malloc and one free, for the heap buffer only.
 //
 // The legacy code generator does not read the storage yet (Vx#3546), so the checks run on the
 // default one.
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s --check-prefix=LLVM
 //
 // CHECK-DAG: memref.alloca() {{.*}} : memref<16384xf32>
 // CHECK-DAG: memref.alloc() {vx.heap} : memref<4xf32>
-// CHECK-NOT: vx.drop %alloca
+// CHECK-DAG: vx.drop %alloca : memref<16384xf32>
+// CHECK-DAG: vx.drop %alloc : memref<4xf32>
+// LLVM: llvm.call @malloc
+// LLVM-NOT: llvm.call @malloc
+// LLVM: llvm.call @free
+// LLVM-NOT: llvm.call @free
 
 fn main() -> i32 {
   let mut tile : Tensor<f32, [16384], Storage::Stack> = Tensor<f32, [16384], Storage::Stack>::new();
