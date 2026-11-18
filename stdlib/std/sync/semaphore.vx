@@ -132,21 +132,13 @@ impl Semaphore {
   fn available_permits(self : &Semaphore) -> i64 {
     return self.permits.load(AtomicOrdering::SeqCst);
   }
-
-  /// Give back the permit of a `Permit`, and wake the sleepers. Only the drop of a `Permit`
-  /// calls this.
-  fn permit_dropped(self : &Semaphore) -> void {
-    self.permits.fetch_add(1, AtomicOrdering::SeqCst);
-    if self.sleepers.load(AtomicOrdering::SeqCst) > 0 {
-      wake_all(&self.permits);
-    }
-  }
 }
 
 impl Drop for Permit {
   fn drop(self : &mut Permit) -> void {
-    // A method of `Semaphore`, because `--legacy-codegen` gets an atomic call through the
-    // `semaphore` field wrong: the call has no effect.
-    self.semaphore.permit_dropped();
+    self.semaphore.permits.fetch_add(1, AtomicOrdering::SeqCst);
+    if self.semaphore.sleepers.load(AtomicOrdering::SeqCst) > 0 {
+      wake_all(&self.semaphore.permits);
+    }
   }
 }
