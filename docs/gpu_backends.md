@@ -119,8 +119,8 @@ copy. `--emit-msl` writes the MSL and the same manifest as `--emit-ptx`.
 - An `mlir!` block can also use the simdgroup matrices of 8 x 8 elements of `f16` or `f32`:
   `gpu.subgroup_mma_load_matrix` (with `transpose`), `_store_matrix`, `_compute` and
   `_constant_matrix`, from device or shared memory. `leadDimension = 0` is the row stride of a
-  memref of 2 dimensions, so the stride can be a value at run time. `gpu.subgroup_reduce` is
-  `simd_sum` and the other functions of a SIMD-group.
+  memref of 2 dimensions, so the stride can be a value at run time. `gpu.subgroup_reduce` of a
+  scalar or a vector is `simd_sum` and the other functions of a SIMD-group.
 - A loop of constant bounds with at most 16 passes gets `#pragma clang loop unroll(full)`, as in
   llama.cpp's kernels. The Metal compiler does not unroll such a loop by itself.
 - Before printing, an access to shared memory at an index `x + c`, with a number `c`, becomes an
