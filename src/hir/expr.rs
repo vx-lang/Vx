@@ -697,14 +697,20 @@ impl<'a> TypeChecker<'a> {
         // to move data across memory boundaries.
 
         // Allow numeric coercions for scalar literals (mock behavior for now)
-        if let Type::Tensor(t_target, dims_target, top_target, _) = target {
-            if let Type::Tensor(t_source, dims_source, top_source, _) = &source {
+        if let Type::Tensor(t_target, dims_target, top_target, sto_target) = target {
+            if let Type::Tensor(t_source, dims_source, top_source, sto_source) = &source {
                 let mut el_match = false;
                 if *t_target == *t_source {
                     el_match = true;
                 }
 
                 if !el_match {
+                    return false;
+                }
+
+                // The storage is part of a tensor's type. A stack buffer must not reach a place
+                // that expects another storage, since that place would treat it as heap memory.
+                if sto_target != sto_source {
                     return false;
                 }
 
@@ -906,11 +912,15 @@ impl<'a> TypeChecker<'a> {
                 // A reference inside `&mut` is invariant: a write through the outer reference
                 // stores it, so the two inner references must fit each other both ways,
                 // lifetimes included. `&mut Tensor<f32, [4]>` still passes as `[?]`.
+                // A borrow of any storage fits a borrow that does not name one: the callee reads
+                // or writes the buffer and does not keep it.
+                let target_inner_ns = without_storage(target_inner);
+                let source_inner_ns = without_storage(source_inner);
                 let inner_is_reference = matches!(**target_inner, Type::Borrow { .. });
-                let inner_fits = self.is_assignable(target_inner, source_inner)
+                let inner_fits = self.is_assignable(&target_inner_ns, &source_inner_ns)
                     && (!*target_mut
                         || !inner_is_reference
-                        || self.is_assignable(source_inner, target_inner));
+                        || self.is_assignable(&source_inner_ns, &target_inner_ns));
                 if target_mem == source_mem && (!*target_mut || *source_mut) && inner_fits {
                     // Hook up 256-bit FastPath Borrow Checker algorithm from src/borrow.rs
                     let id_target = self.lower_to_type_id(target);
@@ -950,5 +960,19 @@ impl<'a> TypeChecker<'a> {
             | Type::Distinct(inner) => Self::tensor_of(inner),
             _ => None,
         }
+    }
+}
+
+/// The type with every tensor's storage set to `Auto`, through the wrappers that hold a tensor.
+fn without_storage(ty: &Type) -> Type {
+    match ty {
+        Type::Tensor(e, d, p, _) => Type::Tensor(
+            e.clone(),
+            d.clone(),
+            p.clone(),
+            crate::syntax::Storage::Auto,
+        ),
+        Type::Distinct(inner) => Type::Distinct(Box::new(without_storage(inner))),
+        other => other.clone(),
     }
 }

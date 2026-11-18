@@ -674,6 +674,8 @@ pub struct Callee {
     /// The memref spelling when the callee returns a statically shaped tensor (wrappers peeled) --
     /// the call's result is then a memref value tracked in `mem_of`.
     pub ret_tensor: Option<String>,
+    /// Where the returned tensor's buffer lives, as the callee's return type says it.
+    pub ret_storage: Storage,
     /// The vector type a callee returning `<N x T>` gives back.
     pub ret_vec: Option<VectorTy>,
     /// Whether the returned tensor is placed in another memory. Such a result is handed back
@@ -823,6 +825,7 @@ pub fn build_callee_map(
                 ret_void: is_void_ty(&sig.ret_ty),
                 ret_tensor: tensor_memref_of_type(&sig.ret_ty)
                     .or_else(|| borrowed_tensor_memref(&sig.ret_ty)),
+                ret_storage: sig.ret_storage,
                 ret_vec: match peel_wrappers(&sig.ret_ty) {
                     Type::Simd(e, lanes) => VectorTy::new(e, *lanes),
                     _ => None,
@@ -2356,6 +2359,9 @@ pub(crate) struct FnEmit<'a> {
     /// The memref type string for each register that holds a tensor (from `TensorAlloc`), so a
     /// `TensorIndex`/`TensorStore` on it prints the right `memref<...>`.
     pub(crate) mem_of: Vec<Option<String>>,
+    /// Whether each register's buffer is a stack slot this function allocated. Such a buffer is
+    /// not freed: its `vx.drop` is left out.
+    pub(crate) stack_of: Vec<bool>,
     /// For a scalar-element *place* register (a `TensorIndex` with `imm = 1`): the base memref
     /// name, an `index`-typed index SSA name, and the base memref type — everything the following
     /// `TensorStore` needs to emit `memref.store %v, %base[%idx]`.
@@ -2903,6 +2909,7 @@ pub fn emit_function_mlir(
         agg_of: vec![None; hir.len()],
         agg_val_of: vec![None; hir.len()],
         mem_of: vec![None; hir.len()],
+        stack_of: vec![false; hir.len()],
         place_of: vec![None; hir.len()],
         pptr_elem: vec![None; hir.len()],
         vec_of: vec![None; hir.len()],

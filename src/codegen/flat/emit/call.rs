@@ -127,8 +127,16 @@ impl FnEmit<'_> {
             .cloned();
         if let Some(slot_ty) = &ret_slot_ty {
             let slot = format!("%rs{idx}");
-            if crate::codegen::fits_on_the_stack(slot_ty) {
+            // The callee's return type says where the buffer goes. `Stack` always takes a slot in
+            // this frame, `Heap` always takes the heap, and `Auto` keeps the size rule.
+            if callee.ret_storage == Storage::Stack
+                || (callee.ret_storage == Storage::Auto
+                    && crate::codegen::fits_on_the_stack(slot_ty))
+            {
                 self.emit_slot(&format!("  {slot} = memref.alloca() : {slot_ty}\n"));
+                self.stack_of[idx] = true;
+            } else if callee.ret_storage == Storage::Heap {
+                self.body += &format!("  {slot} = memref.alloc() {{vx.heap}} : {slot_ty}\n");
             } else {
                 // A large result goes on the heap, as a large local does: 50 MB on the stack
                 // overflowed it. The buffer is made here, not in the entry block, because the drop

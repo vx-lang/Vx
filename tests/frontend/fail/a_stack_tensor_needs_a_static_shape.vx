@@ -1,0 +1,16 @@
+//===- a_stack_tensor_needs_a_static_shape.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// The compiler sizes a stack buffer when it compiles, so a `?` dimension is refused.
+
+// CHECK: needs a shape the compiler knows
+fn main() -> i32 {
+  let t : Tensor<f32, [?], Storage::Stack> = Tensor<f32, [4]>::new();
+  return 0;
+}

@@ -1775,6 +1775,43 @@ mod tests {
         assert!(deserialize_registry_interface(&good[..good.len() - 4]).is_err());
     }
 
+    /// A function that returns `Storage::Stack` keeps that storage through an interface file, so a
+    /// caller in another module still allocates the result in its stack.
+    #[test]
+    fn a_stack_return_keeps_its_storage_through_an_interface() {
+        let mut reg = ImmutableGlobalRegistry::build_and_validate(vec![]).unwrap();
+        reg.fn_sigs.insert(
+            Symbol::from("scratch"),
+            FnSig {
+                gid: TypeId::new(1, 3, 0, 0),
+                params: Vec::new(),
+                ret_ty: Type::Tensor(
+                    ElementType::F32,
+                    vec![crate::syntax::Dim::Static(crate::syntax::Expr::Number(
+                        crate::syntax::NumberExpr::new(
+                            "4".to_string(),
+                            Some(ElementType::I32),
+                            crate::syntax::Span::default(),
+                        ),
+                    ))],
+                    None,
+                    Storage::Stack,
+                ),
+                ret_storage: Storage::Stack,
+                ret_prov: 0,
+                is_unsafe: false,
+                ret_valid: None,
+            },
+        );
+        let bytes = serialize_registry_interface(&reg);
+        let back = deserialize_registry_interface(&bytes).unwrap();
+        let sig = back
+            .resolve_fn(&Symbol::from("scratch"))
+            .expect("the signature is read back");
+        assert_eq!(sig.ret_storage, Storage::Stack);
+        assert_eq!(sig.ret_ty.storage(), Storage::Stack);
+    }
+
     /// The #292 acceptance: a deliberately unencodable signature is skipped from the artifact AND
     /// reported — named, counted, with the codec's reason — instead of silently dropped.
     #[test]

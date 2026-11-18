@@ -215,14 +215,16 @@ type ::=
 // neither `Tensor` nor `Tensor<f32>` is a type. `[]` is the shape of a scalar and `?` marks an
 // extent that is a run-time value. The optional third argument is the placement, written either
 // as the memory space or as the topology that owns it; the compiler derives whichever was not
-// written (see types.md).
+// written (see types.md). The last optional argument is the storage: where the buffer is
+// allocated. `Storage::Auto` is the default and lets the compiler choose.
 named_type ::= 
-    | "Tensor" "<" element_type "," "[" ( shape_dim ","? )* "]" ( "," placement )? ">"
+    | "Tensor" "<" element_type "," "[" ( shape_dim ","? )* "]" ( "," placement )? ( "," storage )? ">"
     | element_type
     | identifier ( "<" type ( "," type )* ">" )?
 
 shape_dim ::= expr | "?"
 placement ::= memory_space | topology
+storage ::= "Storage" "::" ( "Auto" | "Stack" | "Heap" )
 
 // An `identifier` in type position must name a declaration. It parses as a nominal type and is
 // then resolved; a name that resolves to nothing is E3029 rather than being silently accepted.

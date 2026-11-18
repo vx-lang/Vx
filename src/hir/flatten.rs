@@ -742,7 +742,7 @@ impl<'r> Lowerer<'r> {
         } = &ty
         {
             self.tensor_types
-                .push((ty.gid(), elem.clone(), shape.clone(), storage.clone()));
+                .push((ty.gid(), elem.clone(), shape.clone(), *storage));
             if makes_a_fresh_tensor(opcode) {
                 self.note_temp(Register(self.code.len() as u32));
             }
@@ -1016,7 +1016,7 @@ impl<'r> Lowerer<'r> {
         } = &v.ty
         {
             self.tensor_types
-                .push((v.ty.gid(), elem.clone(), shape.clone(), storage.clone()));
+                .push((v.ty.gid(), elem.clone(), shape.clone(), *storage));
         }
         self.code.push(HirInstruction::new(
             Opcode::Print,
@@ -8954,7 +8954,7 @@ fn enum_payload_size_align(ty: &Type) -> Option<(u64, u64)> {
         }
         Type::Pointer(..) | Type::Borrow { .. } | Type::Ref(..) => Some((8, 8)),
         // A tensor is its descriptor: two pointers, an offset, and a size and a stride per rank.
-        Type::Tensor(_, shape, .., _) => Some((8 * (3 + 2 * shape.len() as u64), 8)),
+        Type::Tensor(_, shape, ..) => Some((8 * (3 + 2 * shape.len() as u64), 8)),
         Type::Distinct(inner) => enum_payload_size_align(inner),
         _ => None,
     }

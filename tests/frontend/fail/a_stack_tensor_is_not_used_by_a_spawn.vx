@@ -1,0 +1,22 @@
+//===- a_stack_tensor_is_not_used_by_a_spawn.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A task can run after the function that started it returns, so it cannot use a stack tensor.
+
+// CHECK: this task uses a stack tensor
+fn main() -> i32 {
+  let t : Tensor<f32, [4], Storage::Stack> = Tensor<f32, [4], Storage::Stack>::new();
+  tasks {
+    let h = spawn {
+      let v = t[0];
+      return v;
+    };
+  }
+  return 0;
+}

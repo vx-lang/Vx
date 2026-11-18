@@ -1,0 +1,21 @@
+//===- tensor_storage_stack_and_heap.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// A tensor type can name its storage: `Storage::Stack` or `Storage::Heap`.
+// Printed: the first element of the stack tensor, then the first element of the heap tensor.
+//
+// EXPECT: 7 9
+
+fn main() -> i32 {
+  let mut tile : Tensor<f32, [16384], Storage::Stack> = Tensor<f32, [16384], Storage::Stack>::new();
+  tile[0] = 7.0;
+  let mut small : Tensor<f32, [4], Storage::Heap> = Tensor<f32, [4], Storage::Heap>::new();
+  small[0] = 9.0;
+  print(tile[0]);
+  print!(" ");
+  print(small[0]);
+  return 0;
+}

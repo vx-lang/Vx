@@ -607,6 +607,13 @@ impl<'a> Parser<'a> {
                     if !saw_dims_list {
                         return Err(self.error(DIMS_REQUIRED));
                     }
+                    // A stack buffer has a size the compiler knows.
+                    if storage == Storage::Stack && dims.iter().any(|d| matches!(d, Dim::Dyn)) {
+                        return Err(self.error(
+                            "A `Storage::Stack` tensor needs a shape the compiler knows, \
+                             so no dimension can be `?`",
+                        ));
+                    }
                     Ok(Type::Tensor(el_ty, dims, top, storage))
                 }
             }

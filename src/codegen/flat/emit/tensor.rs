@@ -177,6 +177,10 @@ impl FnEmit<'_> {
     // `vx.drop`: convert-vx-to-standard frees the buffer when it is on the heap.
     pub(crate) fn op_tensor_drop(&mut self, _idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let r = ins.operand1.0 as usize;
+        // A stack slot is freed when its frame ends, so there is nothing to drop.
+        if self.stack_of.get(r).copied().unwrap_or(false) {
+            return Ok(());
+        }
         // A small elementwise result held in a vector register has no buffer.
         if self.vec_of.get(r).cloned().flatten().is_some() {
             return Ok(());
@@ -273,11 +277,15 @@ impl FnEmit<'_> {
         }
         if storage == Storage::Stack {
             assert_eq!(dyn_count, 0, "a stack tensor must have a static shape");
+            // The written `aligned(N)` of the type sets the slot's alignment, at least 16.
+            let align = ins.operand1.0 as u64;
             self.emit_slot(&format!(
-                "  {n} = memref.alloca() {{alignment = 16 : i64}} : {memty}\n"
+                "  {n} = memref.alloca() {{alignment = {} : i64}} : {memty}\n",
+                align.max(16)
             ));
             self.names[idx] = n;
             self.mem_of[idx] = Some(memty);
+            self.stack_of[idx] = true;
             return Ok(());
         }
         let extents = self
@@ -374,7 +382,14 @@ impl FnEmit<'_> {
                     if let Some(device) = device {
                         self.copy_after_fill.insert(idx, device);
                     }
-                    self.body += &format!("  {n} = memref.alloc({sizes}) : {memty}\n");
+                    // `Storage::Heap` asks for a heap buffer. The mark keeps the stack promotion
+                    // pass from moving it.
+                    let mark = if storage == Storage::Heap {
+                        " {vx.heap}"
+                    } else {
+                        ""
+                    };
+                    self.body += &format!("  {n} = memref.alloc({sizes}){mark} : {memty}\n");
                 }
             }
             self.names[idx] = n;

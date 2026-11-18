@@ -1,0 +1,28 @@
+//===- tensor_storage_chooses_alloca_or_alloc.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Storage::Stack` makes a `memref.alloca` with no drop, and `Storage::Heap` makes a `memref.alloc`
+// marked `vx.heap`, whatever the size.
+//
+// The legacy code generator does not read the storage yet (Vx#3546), so the checks run on the
+// default one.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// CHECK-DAG: memref.alloca() {{.*}} : memref<16384xf32>
+// CHECK-DAG: memref.alloc() {vx.heap} : memref<4xf32>
+// CHECK-NOT: vx.drop %alloca
+
+fn main() -> i32 {
+  let mut tile : Tensor<f32, [16384], Storage::Stack> = Tensor<f32, [16384], Storage::Stack>::new();
+  tile[0] = 7.0;
+  let mut small : Tensor<f32, [4], Storage::Heap> = Tensor<f32, [4], Storage::Heap>::new();
+  small[0] = 9.0;
+  print(tile[0]);
+  print(small[0]);
+  return 0;
+}

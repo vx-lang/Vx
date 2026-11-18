@@ -1,0 +1,23 @@
+//===- tensor_stack_return_goes_to_the_callers_slot.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A function that returns `Storage::Stack` writes its result into the caller's stack, so the
+// caller's buffer outlives the call. Printed: the element written in the callee.
+//
+// EXPECT: 2
+
+fn make() -> Tensor<f32, [4], Storage::Stack> {
+  let mut t : Tensor<f32, [4], Storage::Stack> = Tensor<f32, [4], Storage::Stack>::new();
+  t[1] = 2.0;
+  return t;
+}
+
+fn main() -> i32 {
+  let m = make();
+  print(m[1]);
+  return 0;
+}

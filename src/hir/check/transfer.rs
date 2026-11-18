@@ -2677,6 +2677,11 @@ impl<'a> TypeChecker<'a> {
 
     pub(crate) fn check_spawnon_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         let unused = std::mem::replace(&mut self.value_unused, false);
+        if let Expr::SpawnOn(s) = expr {
+            if !self.speculating {
+                self.check_stack_tensor_uses_in_task(&s.stmts, s.ret.as_deref());
+            }
+        }
         match expr {
             Expr::SpawnOn(SpawnOnExpr {
                 top,
