@@ -54,6 +54,7 @@
 #include "mlir/Transforms/RegionUtils.h"
 #include "vx_hardware_runtime.h"
 #include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/StringExtras.h"
@@ -63,6 +64,7 @@
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/IR/ConstantFold.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InstIterator.h"
@@ -83,6 +85,7 @@
 #include "llvm/Transforms/Scalar/EarlyCSE.h"
 #include "llvm/Transforms/Scalar/SROA.h"
 #include "llvm/Transforms/Utils/Cloning.h"
+#include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Transforms/Utils/LoopUtils.h"
 
 #include <atomic>
@@ -10163,6 +10166,370 @@ static void legalizeOneBitArithmetic(llvm::Module &module) {
     inst->eraseFromParent();
 }
 
+/// Whether `type` is an integer of 2 to 7 bits. Vx's `i4` and `u4` are such
+/// integers, and so is the storage of an `f4e2m1`.
+static bool isNarrowInteger(llvm::Type *type) {
+  auto *integer = dyn_cast<llvm::IntegerType>(type);
+  return integer && integer->getBitWidth() > 1 && integer->getBitWidth() < 8;
+}
+
+/// Whether `type` holds an integer of 2 to 7 bits anywhere in it.
+static bool holdsNarrowInteger(llvm::Type *type) {
+  return isNarrowInteger(type) ||
+         llvm::any_of(type->subtypes(), holdsNarrowInteger);
+}
+
+/// `type` with each integer of 2 to 7 bits in it made 8 bits wide. An
+/// integer of 2 to 7 bits takes one byte of memory, so the layout of a vector
+/// or an array of them does not change. Null for a struct that holds one.
+static llvm::Type *inBytes(llvm::Type *type) {
+  if (isNarrowInteger(type))
+    return llvm::Type::getInt8Ty(type->getContext());
+  if (!holdsNarrowInteger(type))
+    return type;
+  if (auto *vector = dyn_cast<llvm::VectorType>(type))
+    return llvm::VectorType::get(inBytes(vector->getElementType()),
+                                 vector->getElementCount());
+  if (auto *array = dyn_cast<llvm::ArrayType>(type))
+    if (llvm::Type *element = inBytes(array->getElementType()))
+      return llvm::ArrayType::get(element, array->getNumElements());
+  return nullptr;
+}
+
+/// Whether `inst` takes, gives or addresses an integer of 2 to 7 bits.
+static bool usesNarrowInteger(llvm::Instruction &inst) {
+  if (holdsNarrowInteger(inst.getType()) ||
+      llvm::any_of(inst.operands(), [](llvm::Use &use) {
+        return holdsNarrowInteger(use->getType());
+      }))
+    return true;
+  if (auto *gep = dyn_cast<llvm::GetElementPtrInst>(&inst))
+    return holdsNarrowInteger(gep->getSourceElementType());
+  if (auto *slot = dyn_cast<llvm::AllocaInst>(&inst))
+    return holdsNarrowInteger(slot->getAllocatedType());
+  return false;
+}
+
+/// Whether `computeInBytes` can rewrite each use of an integer of 2 to 7
+/// bits in `f`. A function that passes one to a call, or that does something
+/// else with one that is not listed here, is left as it is.
+static bool canComputeInBytes(llvm::Function &f) {
+  if (holdsNarrowInteger(f.getFunctionType()))
+    return false;
+  for (llvm::Instruction &inst : llvm::instructions(f)) {
+    if (!usesNarrowInteger(inst))
+      continue;
+    // A value of a scalar or a vector type, not a struct or an array.
+    auto plain = [](llvm::Type *type) {
+      return isNarrowInteger(type->getScalarType()) ||
+             !holdsNarrowInteger(type);
+    };
+    if (!plain(inst.getType()) ||
+        !llvm::all_of(inst.operands(),
+                      [&](llvm::Use &use) { return plain(use->getType()); }))
+      return false;
+    if (auto *call = dyn_cast<llvm::IntrinsicInst>(&inst)) {
+      switch (call->getIntrinsicID()) {
+      case llvm::Intrinsic::umin:
+      case llvm::Intrinsic::umax:
+      case llvm::Intrinsic::smin:
+      case llvm::Intrinsic::smax:
+      case llvm::Intrinsic::abs:
+        continue;
+      default:
+        return false;
+      }
+    }
+    if (isa<llvm::GetElementPtrInst, llvm::AllocaInst>(inst) &&
+        !inBytes(
+            isa<llvm::GetElementPtrInst>(inst)
+                ? cast<llvm::GetElementPtrInst>(inst).getSourceElementType()
+                : cast<llvm::AllocaInst>(inst).getAllocatedType()))
+      return false;
+    if (auto *gep = dyn_cast<llvm::GetElementPtrInst>(&inst))
+      if (llvm::any_of(gep->indices(), [](llvm::Use &use) {
+            return holdsNarrowInteger(use->getType());
+          }))
+        return false;
+    switch (inst.getOpcode()) {
+    case llvm::Instruction::Load:
+    case llvm::Instruction::Store:
+    case llvm::Instruction::GetElementPtr:
+    case llvm::Instruction::Alloca:
+    case llvm::Instruction::Trunc:
+    case llvm::Instruction::ZExt:
+    case llvm::Instruction::SExt:
+    case llvm::Instruction::Add:
+    case llvm::Instruction::Sub:
+    case llvm::Instruction::Mul:
+    case llvm::Instruction::Shl:
+    case llvm::Instruction::LShr:
+    case llvm::Instruction::AShr:
+    case llvm::Instruction::And:
+    case llvm::Instruction::Or:
+    case llvm::Instruction::Xor:
+    case llvm::Instruction::UDiv:
+    case llvm::Instruction::SDiv:
+    case llvm::Instruction::URem:
+    case llvm::Instruction::SRem:
+    case llvm::Instruction::ICmp:
+    case llvm::Instruction::Select:
+    case llvm::Instruction::PHI:
+    case llvm::Instruction::SIToFP:
+    case llvm::Instruction::UIToFP:
+    case llvm::Instruction::FPToSI:
+    case llvm::Instruction::FPToUI:
+    case llvm::Instruction::Freeze:
+    case llvm::Instruction::ExtractElement:
+    case llvm::Instruction::InsertElement:
+    case llvm::Instruction::ShuffleVector:
+      continue;
+    default:
+      return false;
+    }
+  }
+  return true;
+}
+
+/// Compute each integer of 2 to 7 bits in `f` in 8 bits. Each value is held
+/// with its upper bits clear, which is how the host stores it, and each
+/// operation that can set them clears them again. A signed operation first
+/// copies the sign bit into the upper bits.
+static void computeInBytes(llvm::Function &f) {
+  llvm::removeUnreachableBlocks(f);
+  llvm::DenseMap<llvm::Value *, llvm::Value *> held;
+  auto get = [&](llvm::Value *v) -> llvm::Value * {
+    if (!isNarrowInteger(v->getType()->getScalarType()))
+      return v;
+    auto found = held.find(v);
+    if (found != held.end())
+      return found->second;
+    llvm::Constant *wide = llvm::ConstantFoldCastInstruction(
+        llvm::Instruction::ZExt, cast<llvm::Constant>(v),
+        inBytes(v->getType()));
+    assert(wide && "a 4-bit constant that does not fold to 8 bits");
+    return wide;
+  };
+  // The 8-bit value with only its low `bits` bits kept.
+  auto clear = [](llvm::IRBuilder<> &b, llvm::Value *v, unsigned bits) {
+    return b.CreateAnd(v, (1u << bits) - 1);
+  };
+  // The 8-bit value with bit `bits - 1` copied into the upper bits.
+  auto withSign = [](llvm::IRBuilder<> &b, llvm::Value *v, unsigned bits) {
+    return b.CreateAShr(b.CreateShl(v, 8 - bits), 8 - bits);
+  };
+  auto widthOf = [](llvm::Type *type) {
+    return type->getScalarType()->getIntegerBitWidth();
+  };
+
+  // A phi gets its 8-bit form first, so that a value from a later block can
+  // flow into it. Its incoming values are filled in at the end.
+  SmallVector<std::pair<llvm::PHINode *, llvm::PHINode *>> phis;
+  for (llvm::BasicBlock &block : f)
+    for (llvm::PHINode &phi : block.phis())
+      if (isNarrowInteger(phi.getType()->getScalarType())) {
+        auto *wide = llvm::PHINode::Create(inBytes(phi.getType()),
+                                           phi.getNumIncomingValues(), "",
+                                           phi.getIterator());
+        held[&phi] = wide;
+        phis.push_back({&phi, wide});
+      }
+
+  SmallVector<llvm::Instruction *> dead;
+  llvm::ReversePostOrderTraversal<llvm::Function *> order(&f);
+  for (llvm::BasicBlock *block : order) {
+    for (llvm::Instruction &inst : llvm::make_early_inc_range(*block)) {
+      if (!usesNarrowInteger(inst) || isa<llvm::PHINode>(inst))
+        continue;
+      if (auto *gep = dyn_cast<llvm::GetElementPtrInst>(&inst)) {
+        gep->setSourceElementType(inBytes(gep->getSourceElementType()));
+        gep->setResultElementType(inBytes(gep->getResultElementType()));
+        continue;
+      }
+      llvm::IRBuilder<> b(&inst);
+      llvm::Value *out = nullptr;
+      llvm::Type *type = inst.getType();
+      bool narrow = isNarrowInteger(type->getScalarType());
+      if (auto *slot = dyn_cast<llvm::AllocaInst>(&inst)) {
+        auto *wide =
+            b.CreateAlloca(inBytes(slot->getAllocatedType()),
+                           slot->getAddressSpace(), slot->getArraySize());
+        wide->setAlignment(slot->getAlign());
+        out = wide;
+      } else if (auto *load = dyn_cast<llvm::LoadInst>(&inst)) {
+        auto *wide =
+            b.CreateAlignedLoad(inBytes(type), load->getPointerOperand(),
+                                load->getAlign(), load->isVolatile());
+        out = clear(b, wide, widthOf(type));
+      } else if (auto *store = dyn_cast<llvm::StoreInst>(&inst)) {
+        out = b.CreateAlignedStore(get(store->getValueOperand()),
+                                   store->getPointerOperand(),
+                                   store->getAlign(), store->isVolatile());
+      } else if (auto *cast = dyn_cast<llvm::CastInst>(&inst)) {
+        llvm::Value *from = cast->getOperand(0);
+        llvm::Type *fromType = from->getType();
+        bool narrowFrom = isNarrowInteger(fromType->getScalarType());
+        llvm::Type *to = narrow ? inBytes(type) : type;
+        switch (cast->getOpcode()) {
+        case llvm::Instruction::Trunc:
+        case llvm::Instruction::ZExt:
+        case llvm::Instruction::SExt: {
+          llvm::Value *v = get(from);
+          if (cast->getOpcode() == llvm::Instruction::SExt) {
+            if (narrowFrom)
+              v = withSign(b, v, widthOf(fromType));
+            v = b.CreateSExtOrTrunc(v, to);
+          } else {
+            v = b.CreateZExtOrTrunc(v, to);
+          }
+          out = narrow ? clear(b, v, widthOf(type)) : v;
+          break;
+        }
+        case llvm::Instruction::SIToFP:
+          out = b.CreateSIToFP(withSign(b, get(from), widthOf(fromType)), type);
+          break;
+        case llvm::Instruction::UIToFP:
+          out = b.CreateUIToFP(get(from), type);
+          break;
+        case llvm::Instruction::FPToSI:
+          out = clear(b, b.CreateFPToSI(from, to), widthOf(type));
+          break;
+        case llvm::Instruction::FPToUI:
+          out = clear(b, b.CreateFPToUI(from, to), widthOf(type));
+          break;
+        default:
+          llvm_unreachable("canComputeInBytes allows no other cast");
+        }
+      } else if (auto *op = dyn_cast<llvm::BinaryOperator>(&inst)) {
+        unsigned bits = widthOf(type);
+        llvm::Value *x = get(op->getOperand(0));
+        llvm::Value *y = get(op->getOperand(1));
+        switch (op->getOpcode()) {
+        case llvm::Instruction::Add:
+        case llvm::Instruction::Sub:
+        case llvm::Instruction::Mul:
+        case llvm::Instruction::Shl:
+          out = clear(b, b.CreateBinOp(op->getOpcode(), x, y), bits);
+          break;
+        case llvm::Instruction::SDiv:
+        case llvm::Instruction::SRem:
+          out = clear(b,
+                      b.CreateBinOp(op->getOpcode(), withSign(b, x, bits),
+                                    withSign(b, y, bits)),
+                      bits);
+          break;
+        case llvm::Instruction::AShr:
+          out = clear(b, b.CreateAShr(withSign(b, x, bits), y), bits);
+          break;
+        default:
+          // And, or, xor, and the unsigned division, remainder and shift keep
+          // the upper bits clear.
+          out = b.CreateBinOp(op->getOpcode(), x, y);
+          break;
+        }
+      } else if (auto *compare = dyn_cast<llvm::ICmpInst>(&inst)) {
+        unsigned bits = widthOf(compare->getOperand(0)->getType());
+        llvm::Value *x = get(compare->getOperand(0));
+        llvm::Value *y = get(compare->getOperand(1));
+        if (compare->isSigned()) {
+          x = withSign(b, x, bits);
+          y = withSign(b, y, bits);
+        }
+        out = b.CreateICmp(compare->getPredicate(), x, y);
+      } else if (auto *choice = dyn_cast<llvm::SelectInst>(&inst)) {
+        out =
+            b.CreateSelect(choice->getCondition(), get(choice->getTrueValue()),
+                           get(choice->getFalseValue()));
+      } else if (auto *frozen = dyn_cast<llvm::FreezeInst>(&inst)) {
+        out = b.CreateFreeze(get(frozen->getOperand(0)));
+      } else if (auto *extract = dyn_cast<llvm::ExtractElementInst>(&inst)) {
+        out = b.CreateExtractElement(get(extract->getVectorOperand()),
+                                     extract->getIndexOperand());
+      } else if (auto *insert = dyn_cast<llvm::InsertElementInst>(&inst)) {
+        out = b.CreateInsertElement(get(insert->getOperand(0)),
+                                    get(insert->getOperand(1)),
+                                    insert->getOperand(2));
+      } else if (auto *shuffle = dyn_cast<llvm::ShuffleVectorInst>(&inst)) {
+        out = b.CreateShuffleVector(get(shuffle->getOperand(0)),
+                                    get(shuffle->getOperand(1)),
+                                    shuffle->getShuffleMask());
+      } else if (auto *call = dyn_cast<llvm::IntrinsicInst>(&inst)) {
+        unsigned bits = widthOf(type);
+        llvm::Value *x = get(call->getArgOperand(0));
+        llvm::Intrinsic::ID id = call->getIntrinsicID();
+        if (id == llvm::Intrinsic::abs) {
+          out = clear(b,
+                      b.CreateBinaryIntrinsic(id, withSign(b, x, bits),
+                                              call->getArgOperand(1)),
+                      bits);
+        } else {
+          llvm::Value *y = get(call->getArgOperand(1));
+          bool isSigned =
+              id == llvm::Intrinsic::smin || id == llvm::Intrinsic::smax;
+          out = isSigned
+                    ? clear(b,
+                            b.CreateBinaryIntrinsic(id, withSign(b, x, bits),
+                                                    withSign(b, y, bits)),
+                            bits)
+                    : b.CreateBinaryIntrinsic(id, x, y);
+        }
+      }
+      assert(out && "canComputeInBytes allowed an instruction with no rewrite");
+      if (narrow)
+        held[&inst] = out;
+      else if (!inst.getType()->isVoidTy())
+        inst.replaceAllUsesWith(out);
+      dead.push_back(&inst);
+    }
+  }
+  for (auto [phi, wide] : phis) {
+    for (unsigned i = 0; i < phi->getNumIncomingValues(); ++i)
+      wide->addIncoming(get(phi->getIncomingValue(i)),
+                        phi->getIncomingBlock(i));
+    dead.push_back(phi);
+  }
+  for (llvm::Instruction *inst : dead)
+    inst->dropAllReferences();
+  for (llvm::Instruction *inst : dead)
+    inst->eraseFromParent();
+}
+
+/// The kernels that still use an integer of 2 to 7 bits, each with its
+/// reason. LLVM's SPIR-V backend keeps such an integer in 8 bits and never
+/// clears the upper bits, so the kernel would compute a wrong answer.
+static SmallVector<SpirvKernelRefusal>
+narrowIntegerRefusals(llvm::Module &module) {
+  llvm::DenseSet<const llvm::Function *> narrow;
+  for (llvm::Function &f : module)
+    if (holdsNarrowInteger(f.getFunctionType()) ||
+        llvm::any_of(llvm::instructions(f), usesNarrowInteger))
+      narrow.insert(&f);
+  // A caller of such a function uses one too.
+  for (bool changed = true; changed;) {
+    changed = false;
+    for (llvm::Function &f : module) {
+      if (narrow.contains(&f))
+        continue;
+      for (llvm::Instruction &inst : llvm::instructions(f)) {
+        auto *call = dyn_cast<llvm::CallBase>(&inst);
+        if (call && narrow.contains(call->getCalledFunction())) {
+          narrow.insert(&f);
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
+  SmallVector<SpirvKernelRefusal> refused;
+  for (llvm::Function &f : module)
+    if (f.getCallingConv() == llvm::CallingConv::SPIR_KERNEL &&
+        narrow.contains(&f))
+      refused.push_back({f.getName().str(),
+                         "it uses a 4-bit integer in a way that a SPIR-V "
+                         "image cannot compute yet"});
+  return refused;
+}
+
 /// The libm functions that an OpenCL device has under the same name. Each
 /// math method of `f32` calls `libm_<name>f`, of `f64` `libm_<name>`, of `f16`
 /// `libm_<name>f16`, and of `bf16` `libm_<name>_bf16`.
@@ -10563,6 +10930,14 @@ spirvImageOfKernels(gpu::GPUModuleOp gpuModule, const llvm::StringSet<> &left,
   SmallVector<SpirvKernelRefusal> bf16 = bf16Refusals(*llvmModule);
   if (!bf16.empty()) {
     refused.append(bf16.begin(), bf16.end());
+    return {};
+  }
+  for (llvm::Function &f : *llvmModule)
+    if (!f.isDeclaration() && canComputeInBytes(f))
+      computeInBytes(f);
+  SmallVector<SpirvKernelRefusal> narrow = narrowIntegerRefusals(*llvmModule);
+  if (!narrow.empty()) {
+    refused.append(narrow.begin(), narrow.end());
     return {};
   }
   SmallVector<SpirvKernelRefusal> wide = wideIntegerRefusals(*llvmModule);

@@ -838,6 +838,70 @@ fn a_kernel_with_an_assert_reports_it_through_a_flag() {
     }
 }
 
+/// The opcodes of the instructions in a SPIR-V module whose result type is an
+/// 8-bit integer.
+fn instructions_on_bytes(module: &[u8]) -> Vec<u32> {
+    let words: Vec<u32> = module
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|w| u32::from_le_bytes(*w))
+        .collect();
+    let mut bytes = std::collections::HashSet::new();
+    let mut found = Vec::new();
+    // The header is five words. Each instruction starts with its word count
+    // and its opcode, and a result type comes first after that.
+    let mut at = 5;
+    while at < words.len() {
+        let count = (words[at] >> 16) as usize;
+        let opcode = words[at] & 0xffff;
+        assert!(
+            count > 0 && at + count <= words.len(),
+            "a SPIR-V instruction runs past the end of the module"
+        );
+        let operands = &words[at + 1..at + count];
+        match opcode {
+            // OpTypeInt %result 8 %signedness
+            21 if operands[1] == 8 => {
+                bytes.insert(operands[0]);
+            }
+            _ if count > 2 && bytes.contains(&operands[0]) => found.push(opcode),
+            _ => {}
+        }
+        at += count;
+    }
+    found
+}
+
+/// A kernel that compares `i4` values, converts them to `i32` and adds `u4`
+/// values gets a SPIR-V module that computes them in 8 bits: it copies the
+/// sign bit into the upper bits before a signed use, and it clears the upper
+/// bits after a sum.
+#[test]
+fn four_bit_integers_are_computed_in_eight_bits() {
+    let ir = emit_llvm("spirv_device_image_four_bit_integers.vx");
+    let payload = payload_bytes(&ir, "vx_npu_kernel_0");
+    let has = |needle: &[u8]| payload.windows(needle.len()).any(|w| w == needle);
+    assert!(has(b"format=spirv\0"), "the kernel has no SPIR-V image");
+    let section = payload_section(&payload);
+    let on_bytes = instructions_on_bytes(section);
+    assert!(
+        on_bytes.contains(&195),
+        "no OpShiftRightArithmetic on an 8-bit integer, so no `i4` value gets its sign. \
+         The 8-bit instructions are {on_bytes:?}"
+    );
+    assert!(
+        on_bytes.contains(&199),
+        "no OpBitwiseAnd on an 8-bit integer, so no 4-bit value gets its upper bits cleared. \
+         The 8-bit instructions are {on_bytes:?}"
+    );
+    match spirv_val(section) {
+        Some(Ok(())) => {}
+        Some(Err(report)) => panic!("spirv-val rejected the module:\n{report}"),
+        None => println!("spirv-val is not installed, so the module was not validated"),
+    }
+}
+
 /// A placed region that calls the runtime -- `print` inside the region -- also
 /// reaches no device image, and now says so, naming the callee it could not
 /// bring along (#1137).
