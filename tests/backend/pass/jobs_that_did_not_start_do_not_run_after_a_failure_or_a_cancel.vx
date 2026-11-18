@@ -12,7 +12,7 @@
 // did not start then do not run. So fewer than 20 jobs start.
 //
 // `run_jobs`: a task calls it, and after 30 ms the code of the `tasks` block around the task
-// returns. That cancels the task, so `run_jobs` gives `None`, and fewer than 20 jobs start.
+// returns. That cancels the task, so `run_jobs` gives `Cancelled`, and fewer than 20 jobs start.
 //
 // `try_run_jobs` and a cancel: the same, with a `work` that never fails. The call gives
 // `Cancelled`, and fewer than 20 jobs start.
@@ -26,7 +26,7 @@
 // RUN: env VX_TASK_SEED=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}try_run_jobs failed with 2{{$}}
 // CHECK-NEXT: {{^}}fewer than 20 jobs started: true{{$}}
-// CHECK-NEXT: {{^}}run_jobs gave None: true{{$}}
+// CHECK-NEXT: {{^}}run_jobs gave Cancelled: true{{$}}
 // CHECK-NEXT: {{^}}fewer than 20 jobs started: true{{$}}
 // CHECK-NEXT: {{^}}try_run_jobs gave Cancelled{{$}}
 // CHECK-NEXT: {{^}}fewer than 20 jobs started: true{{$}}
@@ -57,16 +57,16 @@ fn slow_and_never_fails(started : &AtomicI64, job : &i64) -> Result<i64, i64> {
   return Result<i64, i64>::Ok(slow(started, job));
 }
 
-fn report_failure(r : Result<Vec<i64>, JobsError<i64>>) -> void {
+fn report_failure(r : Result<Vec<i64>, TryRunJobsError<i64>>) -> void {
   if r.is_ok() {
     println!("try_run_jobs gave each result");
     return;
   }
   match r.unwrap_err() {
-    JobsError<i64>::Failed(job) => {
+    TryRunJobsError<i64>::Failed(job) => {
       println!("try_run_jobs failed with {}", job);
     }
-    JobsError<i64>::Cancelled => {
+    TryRunJobsError<i64>::Cancelled => {
       println!("try_run_jobs gave Cancelled");
     }
   }
@@ -76,8 +76,8 @@ fn report_failure(r : Result<Vec<i64>, JobsError<i64>>) -> void {
 fn run_and_leave(started : &AtomicI64, jobs : &Vec<i64>) -> i32 {
   tasks {
     spawn {
-      let results = run_jobs(started, jobs, 2, slow);
-      println!("run_jobs gave None: {}", results.is_none());
+      let results = run_jobs(jobs, 2, started, slow);
+      println!("run_jobs gave Cancelled: {}", results.is_err());
     };
     sleep(Duration::from_millis(30));
     return 1;
@@ -89,7 +89,7 @@ fn run_and_leave(started : &AtomicI64, jobs : &Vec<i64>) -> i32 {
 fn try_run_and_leave(started : &AtomicI64, jobs : &Vec<i64>) -> i32 {
   tasks {
     spawn {
-      report_failure(try_run_jobs(started, jobs, 2, slow_and_never_fails));
+      report_failure(try_run_jobs(jobs, 2, started, slow_and_never_fails));
     };
     sleep(Duration::from_millis(30));
     return 1;
@@ -103,7 +103,7 @@ fn main() -> i32 {
     jobs.push(i64::from(i));
   }
   let started = AtomicI64::new(0);
-  report_failure(try_run_jobs(&started, &jobs, 2, slow_or_fail));
+  report_failure(try_run_jobs(&jobs, 2, &started, slow_or_fail));
   println!("fewer than 20 jobs started: {}", started.load(AtomicOrdering::SeqCst) < 20);
 
   let started_too = AtomicI64::new(0);

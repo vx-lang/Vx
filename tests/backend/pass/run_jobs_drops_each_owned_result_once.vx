@@ -27,7 +27,7 @@
 // CHECK-NEXT: {{^}}each value dropped once after the results go: true{{$}}
 // CHECK-NEXT: {{^}}try_run_jobs failed with job 4{{$}}
 // CHECK-NEXT: {{^}}each value dropped once after the error goes: true{{$}}
-// CHECK-NEXT: {{^}}run_jobs gave None: true{{$}}
+// CHECK-NEXT: {{^}}run_jobs gave Cancelled: true{{$}}
 // CHECK-NEXT: {{^}}each value dropped once after the cancel: true{{$}}
 
 import core::mem;
@@ -126,8 +126,8 @@ fn make_slowly(ctx : &Ctx, job : &i64) -> Tracked {
 fn run_and_leave(ctx : &Ctx, jobs : &Vec<i64>) -> i32 {
   tasks {
     spawn {
-      let results = run_jobs(ctx, jobs, 2, make_slowly);
-      println!("run_jobs gave None: {}", results.is_none());
+      let results = run_jobs(jobs, 2, ctx, make_slowly);
+      println!("run_jobs gave Cancelled: {}", results.is_err());
     };
     sleep(Duration::from_millis(30));
     return 1;
@@ -147,7 +147,7 @@ fn main() -> i32 {
   let ctx = Ctx {
     counts : (&mut counts) as *mut Counts
   };
-  let results = run_jobs(&ctx, &jobs, 3, make_one).unwrap();
+  let results = run_jobs(&jobs, 3, &ctx, make_one).unwrap();
   print!("first values in job order:");
   let mut complete = true;
   for i in 0..results.len() {
@@ -168,16 +168,16 @@ fn main() -> i32 {
   let ctx_two = Ctx {
     counts : (&mut counts_two) as *mut Counts
   };
-  match try_run_jobs(&ctx_two, &jobs, 2, make_or_fail) {
-    Result<Vec<Tracked>, JobsError<Tracked>>::Ok(_r) => {
+  match try_run_jobs(&jobs, 2, &ctx_two, make_or_fail) {
+    Result<Vec<Tracked>, TryRunJobsError<Tracked>>::Ok(_r) => {
       println!("try_run_jobs gave each result");
     }
-    Result<Vec<Tracked>, JobsError<Tracked>>::Err(e) => {
+    Result<Vec<Tracked>, TryRunJobsError<Tracked>>::Err(e) => {
       match e {
-        JobsError<Tracked>::Failed(t) => {
+        TryRunJobsError<Tracked>::Failed(t) => {
           println!("try_run_jobs failed with job {}", t.job);
         }
-        JobsError<Tracked>::Cancelled => {
+        TryRunJobsError<Tracked>::Cancelled => {
           println!("try_run_jobs gave Cancelled");
         }
       }

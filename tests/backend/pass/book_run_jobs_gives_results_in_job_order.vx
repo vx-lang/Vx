@@ -30,15 +30,15 @@ fn main() -> i32 {
   }
   let factor : i64 = 10;
   // At most 3 tasks. The call returns after each task ends.
-  match run_jobs(&factor, &numbers, 3, scale) {
-    Option<Vec<i64>>::Some(scaled) => {
+  match run_jobs(&numbers, 3, &factor, scale) {
+    Result<Vec<i64>, RunJobsError>::Ok(scaled) => {
       print!("scaled");
       for i in 0..scaled.len() {
         print!(" {}", scaled.get(i));
       }
       println!("");
     }
-    Option<Vec<i64>>::None => {
+    Result<Vec<i64>, RunJobsError>::Err(_e) => {
       // The `tasks` block around the call was cancelled, so not every job ran.
       println!("cancelled");
     }

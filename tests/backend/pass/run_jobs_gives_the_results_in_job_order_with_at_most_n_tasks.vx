@@ -14,6 +14,10 @@
 //
 // `try_run_jobs` with a `work` that never fails gives its results in job order too.
 //
+// Then three edge cases. No jobs give no results. With at most 1 task, the jobs run one at a time,
+// in job order. A limit larger than the number of jobs, in an `i64` variable, still gives the
+// results in job order.
+//
 // The RUN lines with `env` run the same program on the shared runtime: with one worker thread,
 // and with seeds that pick the order of the tasks.
 //
@@ -26,6 +30,10 @@
 // CHECK-NEXT: {{^}}most jobs at once: 3{{$}}
 // CHECK-NEXT: {{^}}jobs that ran: 12{{$}}
 // CHECK-NEXT: {{^}}doubles 0 2 4 6 8 10 12 14 16 18 20 22{{$}}
+// CHECK-NEXT: {{^}}results for no jobs: 0{{$}}
+// CHECK-NEXT: {{^}}squares 0 1 4 9 16 25 36 49 64 81 100 121{{$}}
+// CHECK-NEXT: {{^}}most jobs at once with 1 task: 1{{$}}
+// CHECK-NEXT: {{^}}squares 0 1 4 9 16 25 36 49 64 81 100 121{{$}}
 
 import core::option;
 import core::result;
@@ -60,6 +68,20 @@ fn double(_counts : &Counts, job : &Job) -> Result<i64, i32> {
   return Result<i64, i32>::Ok(2 * job.number);
 }
 
+fn print_all(label : *const i8, values : &Vec<i64>) -> void {
+  print!("{}", label);
+  for i in 0..values.len() {
+    print!(" {}", values.get(i));
+  }
+  println!("");
+}
+
+fn new_counts() -> Counts {
+  return Counts {
+    inside : AtomicI64::new(0), most : AtomicI64::new(0), ran : AtomicI64::new(0)
+  };
+}
+
 fn main() -> i32 {
   let mut jobs = Vec<Job>::new();
   for i in 0..12 {
@@ -71,7 +93,7 @@ fn main() -> i32 {
   let counts = Counts {
     inside : AtomicI64::new(0), most : AtomicI64::new(0), ran : AtomicI64::new(0)
   };
-  let squares = run_jobs(&counts, &jobs, 3, square).unwrap();
+  let squares = run_jobs(&jobs, 3, &counts, square).unwrap();
   print!("squares");
   for i in 0..squares.len() {
     print!(" {}", squares.get(i));
@@ -79,11 +101,17 @@ fn main() -> i32 {
   println!("");
   println!("most jobs at once: {}", counts.most.load(AtomicOrdering::SeqCst));
   println!("jobs that ran: {}", counts.ran.load(AtomicOrdering::SeqCst));
-  let doubles = try_run_jobs(&counts, &jobs, 3, double).unwrap();
-  print!("doubles");
-  for i in 0..doubles.len() {
-    print!(" {}", doubles.get(i));
-  }
-  println!("");
+  let doubles = try_run_jobs(&jobs, 3, &counts, double).unwrap();
+  print_all("doubles", &doubles);
+
+  let no_jobs = Vec<Job>::new();
+  println!("results for no jobs: {}", run_jobs(&no_jobs, 3, &counts, square).unwrap().len());
+
+  let one_task = new_counts();
+  print_all("squares", &run_jobs(&jobs, 1, &one_task, square).unwrap());
+  println!("most jobs at once with 1 task: {}", one_task.most.load(AtomicOrdering::SeqCst));
+
+  let limit : i64 = 100;
+  print_all("squares", &run_jobs(&jobs, limit, &counts, square).unwrap());
   return 0;
 }

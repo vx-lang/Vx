@@ -37,11 +37,11 @@ fn main() -> i32 {
     numbers.push(i64::from(i));
   }
   let c : i64 = 0;
-  match try_run_jobs(&c, &numbers, 3, fails_on_three) {
-    Result<Vec<i64>, JobsError<i64>>::Ok(r) => {
+  match try_run_jobs(&numbers, 3, &c, fails_on_three) {
+    Result<Vec<i64>, TryRunJobsError<i64>>::Ok(r) => {
       println!("after try_run_jobs: {} results", r.len());
     }
-    Result<Vec<i64>, JobsError<i64>>::Err(_e) => {
+    Result<Vec<i64>, TryRunJobsError<i64>>::Err(_e) => {
       println!("after try_run_jobs: an error");
     }
   }
