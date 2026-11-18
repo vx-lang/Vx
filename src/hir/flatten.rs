@@ -6247,10 +6247,20 @@ impl<'r> Lowerer<'r> {
     /// it does for a call argument. Any other value lowers unchanged.
     /// The result is a value, never a construction slot, so a caller must not load it again.
     fn lower_expr_for(&mut self, e: &Expr, target: &Type) -> Lowered<Val> {
-        if self.converts_closure(e, target) {
-            return self.try_adapt_closure_arg(e);
+        self.lower_call_arg(e, Some(target)).map(|(value, _)| value)
+    }
+
+    /// Infer a closure argument's type once before converting its capture record.
+    fn lower_call_arg(&mut self, arg: &Expr, target: Option<&Type>) -> Lowered<(Val, bool)> {
+        if target.is_some_and(is_nominal_closure) {
+            if let Some(Type::Struct(name, _)) = self.infer_ast_type(arg) {
+                if name.as_ref().starts_with("Closure_") {
+                    let value = self.try_adapt_closure_arg(arg, name.as_ref())?;
+                    return Ok((value, true));
+                }
+            }
         }
-        self.lower_expr(e)
+        self.lower_expr(arg).map(|value| (value, false))
     }
 
     /// Whether `lower_expr_for(e, target)` turns a closure literal into a `ClosureK` value.
@@ -6278,14 +6288,8 @@ impl<'r> Lowerer<'r> {
         }
     }
 
-    /// If `arg` is a closure literal environment (`Closure_N`), materialize the nominal `ClosureK`
-    /// fat struct `{ env, func }` the stdlib API expects (`.map`'s `f : Closure1<T, NewItem>`): `env`
-    /// is the address of the closure's environment aggregate (its captures), `func` a `FuncConst`
-    /// pointer to the generated `Closure_N_call`. Every `ClosureK` layout is structurally `{ ptr, ptr }`
-    /// (the flat aggregates are anonymous structs), so any is a valid target — the arity only matters at
-    /// the eventual `CallIndirect`, which rebuilds the function type from the actual arguments. Returns
-    /// the adapted value (passed by value), or `None` if `arg` isn't a closure. (#242)
-    fn try_adapt_closure_arg(&mut self, arg: &Expr) -> Lowered<Val> {
+    /// Convert a checked closure capture record to the library's `{ env, func }` pair.
+    fn try_adapt_closure_arg(&mut self, arg: &Expr, name: &str) -> Lowered<Val> {
         // Target `ClosureK` layout `{ env: ptr, func: ptr }` — structurally identical for every arity.
         let ck_gid =
             self.registry
@@ -6293,7 +6297,7 @@ impl<'r> Lowerer<'r> {
                 .ok_or(Decline::TypeNotModelled {
                     what: "the Closure1 layout",
                 })?;
-        self.closure_value(arg, ck_gid)
+        self.closure_value_named(arg, ck_gid, name)
     }
 
     /// The `{ env, func }` value of the closure literal `arg`, in the pair layout `ck_gid`.
@@ -6301,15 +6305,18 @@ impl<'r> Lowerer<'r> {
         let cn_name = match self.infer_ast_type(arg).ok_or(Decline::TypeNotModelled {
             what: "an argument whose type cannot be inferred",
         })? {
-            Type::Struct(name, _) if name.as_ref().starts_with("Closure_") => {
-                name.as_ref().to_string()
-            }
+            Type::Struct(name, _) if name.as_ref().starts_with("Closure_") => name,
             _ => {
                 return Err(Decline::TypeNotModelled {
                     what: "an argument that is not a closure",
                 })
             }
         };
+        self.closure_value_named(arg, ck_gid, cn_name.as_ref())
+    }
+
+    /// Build the closure pair with a capture type that the caller already checked.
+    fn closure_value_named(&mut self, arg: &Expr, ck_gid: TypeId, cn_name: &str) -> Lowered<Val> {
         // env = the address of the closure's environment aggregate (its captured variables).
         let (env_ptr, _cn_gid) = self.lower_agg_base(arg)?;
         // func = a pointer to the closure's generated call function `Closure_N_call`.
@@ -6633,10 +6640,7 @@ impl<'r> Lowerer<'r> {
             // adapted to the `{ env, func }` fat struct; any other argument lowers normally. (#242)
             // The adapted value is already loaded, although the checker wrote the closure as a
             // struct literal (`Closure_1 { k }`).
-            let (v, adapted) = match self.try_adapt_closure_arg(arg) {
-                Ok(v) => (v, true),
-                Err(_) => (self.lower_expr(arg)?, false),
-            };
+            let (v, adapted) = self.lower_call_arg(arg, sig.params.get(n))?;
             // A construction (`Option<i32>::Some(7)`, `Pair { .. }`) lowers to its slot, and the
             // callee takes the aggregate by value: load it off the slot here, the load a nested
             // construction gets in `lower_struct_init`.

@@ -6,58 +6,67 @@ SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 # File I/O usability in the Vx standard library
 
-**Status:** partial implementation. The proposed `std::io::Error` is deferred until file operations can return it. The existing `std::fs::File` can open, read, write, seek, and close a host file through Rust FFI. This document records what a Vx caller must do to read a file today and the work needed to make ordinary file reading safe and convenient.
+**Status:** experimental. Fallible raw file APIs and typed seeking are implemented. Safe path and byte-buffer APIs remain gated.
 
-File I/O belongs in host `std`, not device-portable `core`. The purity rule in [the core library plan](core_library.md) forbids `extern` in `core`; host `std::fs` may call the operating system. The intended end state is for Vx to own the file API and its implementation above those operating-system calls, without the Rust file bridge. The [roadmap](../../ROADMAP.md) marks native file I/O complete, but that checkmark describes the basic host path, not an end-user file API.
+## Current API and migration
 
-## Current implementation status
+- `File::open_raw(path)` opens an existing file for reading and returns `Result<File, Error>`.
+- `File::create_raw(path)` creates or truncates a writable file.
+- `File::create_new_raw(path)` creates a writable file atomically and fails if it exists.
+- `OpenOptions::new()` starts with every option disabled. Its `read`, `write`, `append`, `create`, `truncate`, and `create_new` setters accept booleans.
+- `OpenOptions::open_raw(path)` validates combinations and returns a structured error on failure.
+- `File::read_raw` and `write_raw` take raw buffers with `usize` lengths and return `Result<usize, Error>`.
+- `File` implements `Seek::seek_to`, which keeps the existing `File::seek(offset, whence)` available. `SeekFrom::Start(u64)`, `Current(i64)`, and `End(i64)` provide typed offsets.
+- `Seek::stream_position` returns the position. Seek to `SeekFrom::Start(0)` to return to the beginning.
+- `File` owns its handle and closes it through `Drop`. A failed fallible open does not produce a `File`.
+- `Error::from_kind` constructs a portable error. `from_raw_os_error` classifies the native code on this host.
+- `Error::with_operation` attaches context. `message_c_str` explicitly exposes the temporary C-string representation.
 
-- `std::io` currently exposes raw standard-stream calls. The [error contract](io_error_contract.md) records the proposed portable category, operation, optional native code, and deferred message; those public types are not implemented.
-- There is no public Vx I/O error type or public error test yet. Rust bridge tests cover every supported error-kind mapping, unknown-code fallback, a real nonblocking `WouldBlock` read, native-code preservation, and a synthetic error with no native code through the shared error conversion path. Add a public Vx error test when the file API returns the proposed type.
-- `File::open` accepts `OpenMode::Read`, `OpenMode::Write`, or `OpenMode::ReadWriteCreate`. The raw bridge reports an unknown mode integer and aborts before checking the path, even if the path is null. A null return would look like an ordinary open failure. Callers that declare `vx_file_open` directly must pass one of the three valid mode codes; unknown values previously opened with read/write/create. Combinations such as append and exclusive create are still unspecified.
-- The Rust bridge has separate fallible byte-transfer calls. They return a byte count on success and capture the native code and portable category on failure. Rust tests cover short reads and writes, EOF, empty requests, failed reads and writes, invalid pointers and lengths, and preservation of the native code. A Vx backend test calls both bridge functions directly to check their status and output types across success and failure. `std::fs::File` does not expose these calls yet: Vx currently fails to generate valid code for `Result<u64, std::io::Error>`, whose variants carry differently shaped values. Keep that compiler work separate from the file API.
-- `std::fs::File` still has raw-pointer methods and returns a `File` or a byte count, rather than a fallible result. `File` now implements `Drop`, so its handle is released automatically. The Rust file bridge still handles host calls and can turn a read failure into a zero byte count.
+Raw opening requires a live NUL-terminated path. Unix preserves non-UTF-8 bytes.
+Raw reading requires writable memory. Raw writing requires initialized readable memory.
+Short transfers succeed, EOF is distinct from failure, and empty requests succeed without accessing buffer memory.
+On Unix, reads accept uninitialized writable memory without clearing the full request first.
+The existing file bridge remains the backend. [The error contract](io_error_contract.md) specifies its status ABI.
 
-The next step is to make Vx's `Result<u64, std::io::Error>` code generation work, then connect the fallible bridge calls to `File` methods. The raw-pointer and ownership work below is still needed before file reading can be safe for ordinary callers. Replacing the Rust bridge can follow as a separate backend change while keeping the public error contract.
+The existing APIs retain their names, signatures, safety qualifiers, and behavior:
 
-## Reading a file today
+| Compatibility API | Recommended alternative for new code |
+| --- | --- |
+| `File::open(path, OpenMode) -> File` | `File::open_raw`, `create_raw`, or `OpenOptions::open_raw` |
+| `File::read(buffer, u64) -> u64` | `File::read_raw(buffer, usize) -> Result<usize, Error>` |
+| `File::write(buffer, u64) -> u64` | `File::write_raw(buffer, usize) -> Result<usize, Error>` |
+| `File::seek(offset, whence) -> i64` | `File::seek_to(SeekFrom) -> Result<u64, Error>` or `Seek::seek_to` |
 
-This is the shape of a program that reads four bytes from a Parquet file using `std::fs::File`. The path and buffer size are examples; this code reads bytes, not Parquet rows.
+`OpenMode` and its three variants remain available. Existing callers need no migration.
+The old operations retain their error-hiding behavior. New code should use the fallible alternatives.
+Vx has no implemented deprecation annotations, so this recommendation is documentation-only.
+Add compiler deprecation warnings when that facility exists. Do not remove or rename the compatibility APIs in a routine release.
+The intermediate `try_*` names were introduced only during this branch and are not released compatibility APIs.
 
-```vx
-import core::mem;
-import std::fs;
-import std::io;
+New runtime declarations live in `std::fs::raw`. Existing runtime and C declarations remain in `std::fs` to preserve their paths.
+New application code should prefer the fallible `File` methods.
+Vx does not yet provide Rust-style private function visibility, so module placement alone does not enforce backend privacy.
 
-extern {
-  fn malloc(size : i64) -> *mut u8;
-  fn free(ptr : *mut u8) -> void;
-}
+## Safe API gates
 
-fn main() -> i32 {
-  unsafe {
-    let mut file = File::open("/path/to/example.parquet", OpenMode::Read());
-    let buffer = malloc(4);
+Existing `File::open`, `read`, `write`, and `seek` remain compatibility APIs.
+Future safe APIs must be additive, through new methods, types, or trait-qualified operations.
+Do not replace existing signatures to reclaim a preferred name. Gated APIs have no placeholder implementations.
 
-    let count = file.read(buffer, 4);
-    print!("Bytes read: ");
-    print!(count);
-    print!("\nHeader: ");
-    let _printed = stdout_write(buffer, count);
-    print!("\n");
+| Prerequisite | API it enables | Required safety contract |
+| --- | --- | --- |
+| Safe paths and text | `File::open_path(path)`, `create(path)`, `OpenOptions::open(path)` | Preserve Unix path bytes and reject embedded NUL. |
+| Bounded borrowed byte slices | `Read::read(&mut bytes)`, `Write::write(&bytes)` | Enforce bounds, initialization, exclusive mutable access, and owner lifetime. |
+| Bounded slices and reusable byte traits | `read_exact`, `write_all`, buffered adapters | Handle short operations, interruption, EOF, and zero-progress writes consistently. |
+| Safe text and formatting traits | `Display`, `Debug`, error messages and causes | Format without exposing C pointers or requiring eager allocation. |
 
-    drop(file);
-    free(buffer);
-  }
-  return 0;
-}
-```
-
-On a valid Parquet file, the first four bytes are `PAR1`. A four-byte read is useful for demonstrating the API; it does not establish that the rest of the file is valid Parquet.
-
-The example uses one broad `unsafe` block for brevity. `File::open` takes a raw pointer to a NUL-terminated path, `File::read` takes a raw pointer and a separately supplied byte count, and a raw pointer retained after `File` drops can dangle. `malloc` and `free` are declared locally only to provide a four-byte buffer: `std::fs` does not allocate one for the caller. The repository also exposes C allocation functions in `std::alloc`, but callers still have to manage the buffer. `print!` and `seek` do not themselves need an unsafe block.
-
-There is no reliable failure path in this example. `File::open` returns a `File` containing a null pointer when opening fails, but Vx cannot test that pointer for null (Vx#714). `read` returns zero for end of file, a null file or buffer, and an I/O error. The Rust FFI currently converts a read error to zero with `unwrap_or(0)`. A short read is possible and must be handled separately when an exact number of bytes is required. The `File` handle now closes when dropped; the caller must still free the raw buffer on every exit path. See [`stdlib/std/fs.vx`](../../stdlib/std/fs.vx) and the Rust [file FFI](../../stdlib/rust_core/src/ffi/macros.rs).
+Byte counts use `usize`; absolute file offsets use `u64`.
+The intended basic `Read` and `Write` operations return `Result<usize, Error>`.
+`read_exact` and `write_all` return `Result<void, Error>` and retry interrupted calls.
+Basic operations report interruption. Exact reads report `UnexpectedEof`, and complete writes report `WriteZero` when progress stops.
+Safe borrowed slices are tracked in #534, safe text in #532, and formatting in the core-library plan.
+`Seek::rewind` is also deferred until generic `Result<void, Error>::unwrap` works on both code generators.
+This branch does not implement those prerequisites or claim the gated interfaces are usable.
 
 ## Target caller experience
 
@@ -92,10 +101,10 @@ For this plan, assume three prerequisite fixes have merged: `vx_file_drop` has t
 
 ### Define the byte I/O contract
 
-- [x] Document the proposed `std::io::Error` contract: portable category, operation, optional native error code, and message on request. Public types remain deferred pending Vx#570 and file API integration.
+- [x] Document the `std::io::Error` contract: portable category, operation, optional native error code, and message on request. Public types and fallible raw file methods are implemented.
 - [x] Define the current three open modes as named choices in Vx. Reject an unknown integer passed directly to the Rust bridge instead of treating it as read/write/create. Richer open options remain future work.
-- [x] Specify byte-transfer results: success returns a count from zero through the requested length; a short positive transfer succeeds. Zero means EOF for a nonempty regular-file read or success for an empty request. An error returns no count and carries a portable category and optional native code. The bridge follows this contract; the Vx `File` methods do not yet expose it.
-- [ ] Expose the fallible result through `File` once Vx can generate code for `Result<u64, std::io::Error>`. Preserve the old unsafe count-only methods until callers can migrate.
+- [x] Specify byte-transfer results: success returns a count from zero through the requested length; a short positive transfer succeeds. Zero means EOF for a nonempty regular-file read or success for an empty request. An error returns no count and carries a portable category and optional native code. The bridge follows this contract; the Vx `read_raw` and `write_raw` methods expose it.
+- [x] Expose fallible open/read/write through `File::open_raw`, `read_raw`, and `write_raw`. Preserve the explicit legacy methods during migration.
 - [ ] Specify what happens on an interrupted call, a write that makes no progress, an invalid handle, and a failed close. Document whether an explicit close consumes the handle even when the OS reports an error.
 - [ ] Define positioned `read_at` and `write_at` using a file byte offset. Keep them independent of the shared file cursor so separate requests can run concurrently. Define how sequential `read`, `write`, and `seek` use that cursor.
 - [ ] When more than one reader or writer needs shared operations, define reusable sequential and positioned interfaces over bounded byte views. Preserve implementation-specific errors, or use an explicit common error type until Vx can support associated error types. Keep `File` usable without requiring these interfaces first.

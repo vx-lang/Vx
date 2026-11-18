@@ -39,17 +39,16 @@ gives 0. A `-` is not a sign. `parse_int` does not check for overflow.
 
 ## Files
 
-`File::open(path, mode)` opens a file. `path` is a text that ends with a zero byte, such as a
-string literal. The mode is one of the three values of `OpenMode`:
+The file APIs currently require explicit raw pointers. Safe paths and bounded byte slices are still prerequisites.
+`File::open_raw(path)` opens an existing file for reading. `File::create_raw(path)` creates or truncates a writable file.
+Both return `Result<File, Error>`. Paths must be NUL-terminated and remain valid during the call.
+For other choices, use `OpenOptions::new()` with named `read`, `write`, `append`, `create`, `truncate`, and `create_new` options.
 
-- `OpenMode::Read()` opens a file that exists, for reading.
-- `OpenMode::Write()` makes the file, or makes an existing file empty, for writing.
-- `OpenMode::ReadWriteCreate()` opens the file for both, and makes it if it does not exist. It
-  keeps the bytes that the file has.
-
-`write(buffer, len)` writes `len` bytes from a buffer and gives how many it wrote. `read(buffer, len)` reads up to `len` bytes into a buffer and gives how many it read. 0 means the end of the
-file. `seek(offset, whence)` moves the position of the next read or write, and gives the new
-position. `whence` is 0 for the start of the file, 1 for the current position and 2 for the end.
+`read_raw(buffer, len)` and `write_raw(buffer, len)` return `Result<usize, Error>`.
+The caller supplies valid memory and therefore uses `unsafe`.
+A short transfer succeeds. A zero-byte nonempty read means EOF, while an error returns `Err`.
+`seek_to(SeekFrom::Start(offset))`, `Current(delta)`, and `End(delta)` return the new absolute position or an error.
+`stream_position()` inspects the position. Seek to `SeekFrom::Start(0)` to return to byte zero.
 
 `File` implements `Drop`, so a file closes at the end of its scope. You do not close it by hand.
 [Ownership and borrowing](ownership.md) explains `Drop`.
@@ -73,8 +72,10 @@ byte 4 is 116, the letter t
 `write_text` copies the literal into a `Vec<u8>`, because `write` takes a pointer to `u8` bytes.
 `out` closes at the end of `write_text`. So `main` reads all 14 bytes.
 
-A failed `open` gives a `File` that does nothing: each later `read` and `write` gives 0. A missing
-file and an empty file look the same. So check the count that `read` and `write` give.
+A failed fallible open returns `Err`, so a missing file differs from an empty file.
+The example uses `unwrap` for brevity. Applications should handle or propagate the error.
+The existing `File::open(path, OpenMode)`, `read`, `write`, and integer-based `seek` remain available for compatibility.
+New code should use the fallible alternatives shown here. These recommendations do not yet produce deprecation warnings.
 
 ## Standard input and output
 
