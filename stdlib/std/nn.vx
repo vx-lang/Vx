@@ -2307,10 +2307,11 @@ fn nn_check_cache(a : i32, b : i32, c : i32, pos : i32, heads : i32, head_dim : 
 
 // Kernels for n positions at once, for a model that checks several draft tokens in one pass. Each
 // is the kernel of the same name without `_rows`, with one more index in front of each tensor of a
-// token: x[t] is the input of position t. A block runs the body of the one-position kernel once
-// for each position, with the same lanes and the same order of sums. So row t of the output is
+// token: x[t] is the input of position t. A block runs the body of the one-position kernel for
+// each position, with the same lanes and the same order of sums. So row t of the output is
 // bit-identical to the one-position kernel on x[t], and the weights of a block come from memory
-// once for all n positions.
+// once for all n positions. The dense Q4 products take two positions in each pass and unpack
+// each weight once for both.
 
 /// y[t][r] = (row r of the Q4_0 matrix w) . x[t], for t below n and r below `rows`.
 fn nn_matvec_q4_rows<M : Memory>(y : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, x : &Tensor<f32, [?, ?], Memory::M>, n : i32, rows : i32, cols : i32) -> void {
@@ -2322,73 +2323,127 @@ fn nn_matvec_q4_rows<M : Memory>(y : &mut Tensor<f32, [?, ?], Memory::M>, w : &T
   spawn on(Topology::Device) {
     for rb in 0..rows / 8 across blocks {
       let mut part = unsafe {
-        Tensor<f32, [1, 8, 32], Memory::SMEM>::uninit()
+        Tensor<f32, [2, 8, 32], Memory::SMEM>::uninit()
       };
-      for t in 0..n {
+      for tp in 0..(n + 1) / 2 {
+        // Two positions a pass: t0, and t1 after it, or t0 again when t0 is the last one.
+        let t0 = tp * 2;
+        let t1 = t0 + 1 - (t0 + 2) / (n + 1);
         for s in 0..1 across subgroups {
           for l in 0..32 across lanes(32) {
-            let first = rb * 8 + s * 8;
-            let mut acc = unsafe { Tensor<f32, [8]>::uninit() };
+            let mut a0 = unsafe { Tensor<f32, [8]>::uninit() };
+            let mut a1 = unsafe { Tensor<f32, [8]>::uninit() };
             for j in 0..8 {
-              acc[j] = 0.0;
+              a0[j] = 0.0;
+              a1[j] = 0.0;
             }
             let mut i = l * 2;
             while i < words {
               let c = i * 8;
-              let mut xp = unsafe { Tensor<f32, [16]>::uninit() };
+              let mut xa = unsafe { Tensor<f32, [16]>::uninit() };
+              let mut xb = unsafe { Tensor<f32, [16]>::uninit() };
               for q in 0..16 {
-                xp[q] = x[t][c + q];
+                xa[q] = x[t0][c + q];
               }
-              let sum8 = 8.0 * (xp[0] + xp[1] + xp[2] + xp[3] + xp[4] + xp[5] + xp[6] + xp[7] + xp[8] + xp[9] + xp[10] + xp[11] + xp[12] + xp[13] + xp[14] + xp[15]);
-              xp[1] = xp[1] * 0.0625;
-              xp[2] = xp[2] * 0.00390625;
-              xp[3] = xp[3] * 0.000244140625;
-              xp[4] = xp[4] * 0.0000152587890625;
-              xp[5] = xp[5] * 0.00000095367431640625;
-              xp[6] = xp[6] * 0.000000059604644775390625;
-              xp[7] = xp[7] * 0.0000000037252902984619140625;
-              xp[9] = xp[9] * 0.0625;
-              xp[10] = xp[10] * 0.00390625;
-              xp[11] = xp[11] * 0.000244140625;
-              xp[12] = xp[12] * 0.0000152587890625;
-              xp[13] = xp[13] * 0.00000095367431640625;
-              xp[14] = xp[14] * 0.000000059604644775390625;
-              xp[15] = xp[15] * 0.0000000037252902984619140625;
+              let sa = 8.0 * (xa[0] + xa[1] + xa[2] + xa[3] + xa[4] + xa[5] + xa[6] + xa[7] + xa[8] + xa[9] + xa[10] + xa[11] + xa[12] + xa[13] + xa[14] + xa[15]);
+              xa[1] = xa[1] * 0.0625;
+              xa[2] = xa[2] * 0.00390625;
+              xa[3] = xa[3] * 0.000244140625;
+              xa[4] = xa[4] * 0.0000152587890625;
+              xa[5] = xa[5] * 0.00000095367431640625;
+              xa[6] = xa[6] * 0.000000059604644775390625;
+              xa[7] = xa[7] * 0.0000000037252902984619140625;
+              xa[9] = xa[9] * 0.0625;
+              xa[10] = xa[10] * 0.00390625;
+              xa[11] = xa[11] * 0.000244140625;
+              xa[12] = xa[12] * 0.0000152587890625;
+              xa[13] = xa[13] * 0.00000095367431640625;
+              xa[14] = xa[14] * 0.000000059604644775390625;
+              xa[15] = xa[15] * 0.0000000037252902984619140625;
+              for q in 0..16 {
+                xb[q] = x[t1][c + q];
+              }
+              let sb = 8.0 * (xb[0] + xb[1] + xb[2] + xb[3] + xb[4] + xb[5] + xb[6] + xb[7] + xb[8] + xb[9] + xb[10] + xb[11] + xb[12] + xb[13] + xb[14] + xb[15]);
+              xb[1] = xb[1] * 0.0625;
+              xb[2] = xb[2] * 0.00390625;
+              xb[3] = xb[3] * 0.000244140625;
+              xb[4] = xb[4] * 0.0000152587890625;
+              xb[5] = xb[5] * 0.00000095367431640625;
+              xb[6] = xb[6] * 0.000000059604644775390625;
+              xb[7] = xb[7] * 0.0000000037252902984619140625;
+              xb[9] = xb[9] * 0.0625;
+              xb[10] = xb[10] * 0.00390625;
+              xb[11] = xb[11] * 0.000244140625;
+              xb[12] = xb[12] * 0.0000152587890625;
+              xb[13] = xb[13] * 0.00000095367431640625;
+              xb[14] = xb[14] * 0.000000059604644775390625;
+              xb[15] = xb[15] * 0.0000000037252902984619140625;
               for j in 0..8 {
-                let row = first + j;
+                let row = rb * 8 + j;
                 let at = row * words + i;
                 let w0 = w[at];
                 let w1 = w[at + 1];
-                let dot = ((w0 & 15u32) as f32) * xp[0] + ((w0 & 240u32) as f32) * xp[1] + ((w0 & 3840u32) as f32) * xp[2] + ((w0 & 61440u32) as f32) * xp[3] + ((w0 & 983040u32) as f32) * xp[4] + ((w0 & 15728640u32) as f32) * xp[5] + ((w0 & 251658240u32) as f32) * xp[6] + ((w0 & 4026531840u32) as f32) * xp[7] + ((w1 & 15u32) as f32) * xp[8] + ((w1 & 240u32) as f32) * xp[9] + ((w1 & 3840u32) as f32) * xp[10] + ((w1 & 61440u32) as f32) * xp[11] + ((w1 & 983040u32) as f32) * xp[12] + ((w1 & 15728640u32) as f32) * xp[13] + ((w1 & 251658240u32) as f32) * xp[14] + ((w1 & 4026531840u32) as f32) * xp[15];
-                acc[j] = acc[j] + (dot - sum8) * (scales[row * groups + i / 4] as f32);
+                let sc = scales[row * groups + i / 4] as f32;
+                let f0 = (w0 & 15u32) as f32;
+                let f1 = (w0 & 240u32) as f32;
+                let f2 = (w0 & 3840u32) as f32;
+                let f3 = (w0 & 61440u32) as f32;
+                let f4 = (w0 & 983040u32) as f32;
+                let f5 = (w0 & 15728640u32) as f32;
+                let f6 = (w0 & 251658240u32) as f32;
+                let f7 = (w0 & 4026531840u32) as f32;
+                let f8 = (w1 & 15u32) as f32;
+                let f9 = (w1 & 240u32) as f32;
+                let f10 = (w1 & 3840u32) as f32;
+                let f11 = (w1 & 61440u32) as f32;
+                let f12 = (w1 & 983040u32) as f32;
+                let f13 = (w1 & 15728640u32) as f32;
+                let f14 = (w1 & 251658240u32) as f32;
+                let f15 = (w1 & 4026531840u32) as f32;
+                let da = f0 * xa[0] + f1 * xa[1] + f2 * xa[2] + f3 * xa[3] + f4 * xa[4] + f5 * xa[5] + f6 * xa[6] + f7 * xa[7] + f8 * xa[8] + f9 * xa[9] + f10 * xa[10] + f11 * xa[11] + f12 * xa[12] + f13 * xa[13] + f14 * xa[14] + f15 * xa[15];
+                a0[j] = a0[j] + (da - sa) * sc;
+                let db = f0 * xb[0] + f1 * xb[1] + f2 * xb[2] + f3 * xb[3] + f4 * xb[4] + f5 * xb[5] + f6 * xb[6] + f7 * xb[7] + f8 * xb[8] + f9 * xb[9] + f10 * xb[10] + f11 * xb[11] + f12 * xb[12] + f13 * xb[13] + f14 * xb[14] + f15 * xb[15];
+                a1[j] = a1[j] + (db - sb) * sc;
               }
               i = i + 64;
             }
-            part[s][0][l] = acc[0];
-            part[s][1][l] = acc[1];
-            part[s][2][l] = acc[2];
-            part[s][3][l] = acc[3];
-            part[s][4][l] = acc[4];
-            part[s][5][l] = acc[5];
-            part[s][6][l] = acc[6];
-            part[s][7][l] = acc[7];
+            for j in 0..8 {
+              part[0][j][l] = a0[j];
+              part[1][j][l] = a1[j];
+            }
           }
-          let s0 = lanes::sum(&part[s][0], 32);
-          let s1 = lanes::sum(&part[s][1], 32);
-          let s2 = lanes::sum(&part[s][2], 32);
-          let s3 = lanes::sum(&part[s][3], 32);
-          let s4 = lanes::sum(&part[s][4], 32);
-          let s5 = lanes::sum(&part[s][5], 32);
-          let s6 = lanes::sum(&part[s][6], 32);
-          let s7 = lanes::sum(&part[s][7], 32);
-          y[t][rb * 8 + s * 8 + 0] = s0;
-          y[t][rb * 8 + s * 8 + 1] = s1;
-          y[t][rb * 8 + s * 8 + 2] = s2;
-          y[t][rb * 8 + s * 8 + 3] = s3;
-          y[t][rb * 8 + s * 8 + 4] = s4;
-          y[t][rb * 8 + s * 8 + 5] = s5;
-          y[t][rb * 8 + s * 8 + 6] = s6;
-          y[t][rb * 8 + s * 8 + 7] = s7;
+          let p0 = lanes::sum(&part[0][0], 32);
+          let p1 = lanes::sum(&part[0][1], 32);
+          let p2 = lanes::sum(&part[0][2], 32);
+          let p3 = lanes::sum(&part[0][3], 32);
+          let p4 = lanes::sum(&part[0][4], 32);
+          let p5 = lanes::sum(&part[0][5], 32);
+          let p6 = lanes::sum(&part[0][6], 32);
+          let p7 = lanes::sum(&part[0][7], 32);
+          let q0 = lanes::sum(&part[1][0], 32);
+          let q1 = lanes::sum(&part[1][1], 32);
+          let q2 = lanes::sum(&part[1][2], 32);
+          let q3 = lanes::sum(&part[1][3], 32);
+          let q4 = lanes::sum(&part[1][4], 32);
+          let q5 = lanes::sum(&part[1][5], 32);
+          let q6 = lanes::sum(&part[1][6], 32);
+          let q7 = lanes::sum(&part[1][7], 32);
+          y[t0][rb * 8 + 0] = p0;
+          y[t0][rb * 8 + 1] = p1;
+          y[t0][rb * 8 + 2] = p2;
+          y[t0][rb * 8 + 3] = p3;
+          y[t0][rb * 8 + 4] = p4;
+          y[t0][rb * 8 + 5] = p5;
+          y[t0][rb * 8 + 6] = p6;
+          y[t0][rb * 8 + 7] = p7;
+          y[t1][rb * 8 + 0] = q0;
+          y[t1][rb * 8 + 1] = q1;
+          y[t1][rb * 8 + 2] = q2;
+          y[t1][rb * 8 + 3] = q3;
+          y[t1][rb * 8 + 4] = q4;
+          y[t1][rb * 8 + 5] = q5;
+          y[t1][rb * 8 + 6] = q6;
+          y[t1][rb * 8 + 7] = q7;
         }
       }
     }
@@ -2409,80 +2464,140 @@ fn nn_matvec_q4_heads_add_rows<M : Memory>(y : &mut Tensor<f32, [?, ?], Memory::
   spawn on(Topology::Device) {
     for rb in 0..rows / 8 across blocks {
       let mut part = unsafe {
-        Tensor<f32, [1, 8, 32], Memory::SMEM>::uninit()
+        Tensor<f32, [2, 8, 32], Memory::SMEM>::uninit()
       };
-      for t in 0..n {
+      for tp in 0..(n + 1) / 2 {
+        // Two positions a pass: t0, and t1 after it, or t0 again when t0 is the last one.
+        let t0 = tp * 2;
+        let t1 = t0 + 1 - (t0 + 2) / (n + 1);
         for s in 0..1 across subgroups {
           for l in 0..32 across lanes(32) {
-            let first = rb * 8 + s * 8;
-            let mut acc = unsafe { Tensor<f32, [8]>::uninit() };
+            let mut a0 = unsafe { Tensor<f32, [8]>::uninit() };
+            let mut a1 = unsafe { Tensor<f32, [8]>::uninit() };
             for j in 0..8 {
-              acc[j] = 0.0;
+              a0[j] = 0.0;
+              a1[j] = 0.0;
             }
             let mut i = l * 2;
             while i < words {
               let c = i * 8;
-              let mut xp = unsafe { Tensor<f32, [16]>::uninit() };
+              // head_dim is a multiple of 8, so each run of 8 values is in one head.
               let h0 = c / head_dim;
               let d0 = c - h0 * head_dim;
-              for q in 0..8 {
-                xp[q] = x[t][h0][d0 + q];
-              }
               let h1 = (c + 8) / head_dim;
               let d1 = c + 8 - h1 * head_dim;
+              let mut xa = unsafe { Tensor<f32, [16]>::uninit() };
+              let mut xb = unsafe { Tensor<f32, [16]>::uninit() };
               for q in 0..8 {
-                xp[8 + q] = x[t][h1][d1 + q];
+                xa[q] = x[t0][h0][d0 + q];
               }
-              let sum8 = 8.0 * (xp[0] + xp[1] + xp[2] + xp[3] + xp[4] + xp[5] + xp[6] + xp[7] + xp[8] + xp[9] + xp[10] + xp[11] + xp[12] + xp[13] + xp[14] + xp[15]);
-              xp[1] = xp[1] * 0.0625;
-              xp[2] = xp[2] * 0.00390625;
-              xp[3] = xp[3] * 0.000244140625;
-              xp[4] = xp[4] * 0.0000152587890625;
-              xp[5] = xp[5] * 0.00000095367431640625;
-              xp[6] = xp[6] * 0.000000059604644775390625;
-              xp[7] = xp[7] * 0.0000000037252902984619140625;
-              xp[9] = xp[9] * 0.0625;
-              xp[10] = xp[10] * 0.00390625;
-              xp[11] = xp[11] * 0.000244140625;
-              xp[12] = xp[12] * 0.0000152587890625;
-              xp[13] = xp[13] * 0.00000095367431640625;
-              xp[14] = xp[14] * 0.000000059604644775390625;
-              xp[15] = xp[15] * 0.0000000037252902984619140625;
+              for q in 0..8 {
+                xa[8 + q] = x[t0][h1][d1 + q];
+              }
+              let sa = 8.0 * (xa[0] + xa[1] + xa[2] + xa[3] + xa[4] + xa[5] + xa[6] + xa[7] + xa[8] + xa[9] + xa[10] + xa[11] + xa[12] + xa[13] + xa[14] + xa[15]);
+              xa[1] = xa[1] * 0.0625;
+              xa[2] = xa[2] * 0.00390625;
+              xa[3] = xa[3] * 0.000244140625;
+              xa[4] = xa[4] * 0.0000152587890625;
+              xa[5] = xa[5] * 0.00000095367431640625;
+              xa[6] = xa[6] * 0.000000059604644775390625;
+              xa[7] = xa[7] * 0.0000000037252902984619140625;
+              xa[9] = xa[9] * 0.0625;
+              xa[10] = xa[10] * 0.00390625;
+              xa[11] = xa[11] * 0.000244140625;
+              xa[12] = xa[12] * 0.0000152587890625;
+              xa[13] = xa[13] * 0.00000095367431640625;
+              xa[14] = xa[14] * 0.000000059604644775390625;
+              xa[15] = xa[15] * 0.0000000037252902984619140625;
+              for q in 0..8 {
+                xb[q] = x[t1][h0][d0 + q];
+              }
+              for q in 0..8 {
+                xb[8 + q] = x[t1][h1][d1 + q];
+              }
+              let sb = 8.0 * (xb[0] + xb[1] + xb[2] + xb[3] + xb[4] + xb[5] + xb[6] + xb[7] + xb[8] + xb[9] + xb[10] + xb[11] + xb[12] + xb[13] + xb[14] + xb[15]);
+              xb[1] = xb[1] * 0.0625;
+              xb[2] = xb[2] * 0.00390625;
+              xb[3] = xb[3] * 0.000244140625;
+              xb[4] = xb[4] * 0.0000152587890625;
+              xb[5] = xb[5] * 0.00000095367431640625;
+              xb[6] = xb[6] * 0.000000059604644775390625;
+              xb[7] = xb[7] * 0.0000000037252902984619140625;
+              xb[9] = xb[9] * 0.0625;
+              xb[10] = xb[10] * 0.00390625;
+              xb[11] = xb[11] * 0.000244140625;
+              xb[12] = xb[12] * 0.0000152587890625;
+              xb[13] = xb[13] * 0.00000095367431640625;
+              xb[14] = xb[14] * 0.000000059604644775390625;
+              xb[15] = xb[15] * 0.0000000037252902984619140625;
               for j in 0..8 {
-                let row = first + j;
+                let row = rb * 8 + j;
                 let at = row * words + i;
                 let w0 = w[at];
                 let w1 = w[at + 1];
-                let dot = ((w0 & 15u32) as f32) * xp[0] + ((w0 & 240u32) as f32) * xp[1] + ((w0 & 3840u32) as f32) * xp[2] + ((w0 & 61440u32) as f32) * xp[3] + ((w0 & 983040u32) as f32) * xp[4] + ((w0 & 15728640u32) as f32) * xp[5] + ((w0 & 251658240u32) as f32) * xp[6] + ((w0 & 4026531840u32) as f32) * xp[7] + ((w1 & 15u32) as f32) * xp[8] + ((w1 & 240u32) as f32) * xp[9] + ((w1 & 3840u32) as f32) * xp[10] + ((w1 & 61440u32) as f32) * xp[11] + ((w1 & 983040u32) as f32) * xp[12] + ((w1 & 15728640u32) as f32) * xp[13] + ((w1 & 251658240u32) as f32) * xp[14] + ((w1 & 4026531840u32) as f32) * xp[15];
-                acc[j] = acc[j] + (dot - sum8) * (scales[row * groups + i / 4] as f32);
+                let sc = scales[row * groups + i / 4] as f32;
+                let f0 = (w0 & 15u32) as f32;
+                let f1 = (w0 & 240u32) as f32;
+                let f2 = (w0 & 3840u32) as f32;
+                let f3 = (w0 & 61440u32) as f32;
+                let f4 = (w0 & 983040u32) as f32;
+                let f5 = (w0 & 15728640u32) as f32;
+                let f6 = (w0 & 251658240u32) as f32;
+                let f7 = (w0 & 4026531840u32) as f32;
+                let f8 = (w1 & 15u32) as f32;
+                let f9 = (w1 & 240u32) as f32;
+                let f10 = (w1 & 3840u32) as f32;
+                let f11 = (w1 & 61440u32) as f32;
+                let f12 = (w1 & 983040u32) as f32;
+                let f13 = (w1 & 15728640u32) as f32;
+                let f14 = (w1 & 251658240u32) as f32;
+                let f15 = (w1 & 4026531840u32) as f32;
+                let da = f0 * xa[0] + f1 * xa[1] + f2 * xa[2] + f3 * xa[3] + f4 * xa[4] + f5 * xa[5] + f6 * xa[6] + f7 * xa[7] + f8 * xa[8] + f9 * xa[9] + f10 * xa[10] + f11 * xa[11] + f12 * xa[12] + f13 * xa[13] + f14 * xa[14] + f15 * xa[15];
+                a0[j] = a0[j] + (da - sa) * sc;
+                let db = f0 * xb[0] + f1 * xb[1] + f2 * xb[2] + f3 * xb[3] + f4 * xb[4] + f5 * xb[5] + f6 * xb[6] + f7 * xb[7] + f8 * xb[8] + f9 * xb[9] + f10 * xb[10] + f11 * xb[11] + f12 * xb[12] + f13 * xb[13] + f14 * xb[14] + f15 * xb[15];
+                a1[j] = a1[j] + (db - sb) * sc;
               }
               i = i + 64;
             }
-            part[s][0][l] = acc[0];
-            part[s][1][l] = acc[1];
-            part[s][2][l] = acc[2];
-            part[s][3][l] = acc[3];
-            part[s][4][l] = acc[4];
-            part[s][5][l] = acc[5];
-            part[s][6][l] = acc[6];
-            part[s][7][l] = acc[7];
+            for j in 0..8 {
+              part[0][j][l] = a0[j];
+              part[1][j][l] = a1[j];
+            }
           }
-          let s0 = lanes::sum(&part[s][0], 32);
-          let s1 = lanes::sum(&part[s][1], 32);
-          let s2 = lanes::sum(&part[s][2], 32);
-          let s3 = lanes::sum(&part[s][3], 32);
-          let s4 = lanes::sum(&part[s][4], 32);
-          let s5 = lanes::sum(&part[s][5], 32);
-          let s6 = lanes::sum(&part[s][6], 32);
-          let s7 = lanes::sum(&part[s][7], 32);
-          y[t][rb * 8 + s * 8 + 0] = y[t][rb * 8 + s * 8 + 0] + s0;
-          y[t][rb * 8 + s * 8 + 1] = y[t][rb * 8 + s * 8 + 1] + s1;
-          y[t][rb * 8 + s * 8 + 2] = y[t][rb * 8 + s * 8 + 2] + s2;
-          y[t][rb * 8 + s * 8 + 3] = y[t][rb * 8 + s * 8 + 3] + s3;
-          y[t][rb * 8 + s * 8 + 4] = y[t][rb * 8 + s * 8 + 4] + s4;
-          y[t][rb * 8 + s * 8 + 5] = y[t][rb * 8 + s * 8 + 5] + s5;
-          y[t][rb * 8 + s * 8 + 6] = y[t][rb * 8 + s * 8 + 6] + s6;
-          y[t][rb * 8 + s * 8 + 7] = y[t][rb * 8 + s * 8 + 7] + s7;
+          let p0 = lanes::sum(&part[0][0], 32);
+          let p1 = lanes::sum(&part[0][1], 32);
+          let p2 = lanes::sum(&part[0][2], 32);
+          let p3 = lanes::sum(&part[0][3], 32);
+          let p4 = lanes::sum(&part[0][4], 32);
+          let p5 = lanes::sum(&part[0][5], 32);
+          let p6 = lanes::sum(&part[0][6], 32);
+          let p7 = lanes::sum(&part[0][7], 32);
+          let q0 = lanes::sum(&part[1][0], 32);
+          let q1 = lanes::sum(&part[1][1], 32);
+          let q2 = lanes::sum(&part[1][2], 32);
+          let q3 = lanes::sum(&part[1][3], 32);
+          let q4 = lanes::sum(&part[1][4], 32);
+          let q5 = lanes::sum(&part[1][5], 32);
+          let q6 = lanes::sum(&part[1][6], 32);
+          let q7 = lanes::sum(&part[1][7], 32);
+          y[t0][rb * 8 + 0] = y[t0][rb * 8 + 0] + p0;
+          y[t0][rb * 8 + 1] = y[t0][rb * 8 + 1] + p1;
+          y[t0][rb * 8 + 2] = y[t0][rb * 8 + 2] + p2;
+          y[t0][rb * 8 + 3] = y[t0][rb * 8 + 3] + p3;
+          y[t0][rb * 8 + 4] = y[t0][rb * 8 + 4] + p4;
+          y[t0][rb * 8 + 5] = y[t0][rb * 8 + 5] + p5;
+          y[t0][rb * 8 + 6] = y[t0][rb * 8 + 6] + p6;
+          y[t0][rb * 8 + 7] = y[t0][rb * 8 + 7] + p7;
+          if t1 != t0 {
+            y[t1][rb * 8 + 0] = y[t1][rb * 8 + 0] + q0;
+            y[t1][rb * 8 + 1] = y[t1][rb * 8 + 1] + q1;
+            y[t1][rb * 8 + 2] = y[t1][rb * 8 + 2] + q2;
+            y[t1][rb * 8 + 3] = y[t1][rb * 8 + 3] + q3;
+            y[t1][rb * 8 + 4] = y[t1][rb * 8 + 4] + q4;
+            y[t1][rb * 8 + 5] = y[t1][rb * 8 + 5] + q5;
+            y[t1][rb * 8 + 6] = y[t1][rb * 8 + 6] + q6;
+            y[t1][rb * 8 + 7] = y[t1][rb * 8 + 7] + q7;
+          }
         }
       }
     }
@@ -2506,100 +2621,167 @@ fn nn_qkv_q4_rows<M : Memory>(q : &mut Tensor<f32, [?, ?, ?], Memory::M>, k : &m
     for h in 0..heads across blocks {
       for d8 in 0..head_dim / 8 across blocks {
         let mut part = unsafe {
-          Tensor<f32, [1, 8, 32], Memory::SMEM>::uninit()
+          Tensor<f32, [2, 8, 32], Memory::SMEM>::uninit()
         };
-        for t in 0..n {
+        for tp in 0..(n + 1) / 2 {
+          // Two positions a pass: t0, and t1 after it, or t0 again when t0 is the last one.
+          let t0 = tp * 2;
+          let t1 = t0 + 1 - (t0 + 2) / (n + 1);
           for s in 0..1 across subgroups {
-            let first = h * head_dim + d8 * 8 + s * 8;
+            let first = h * head_dim + d8 * 8;
             for l in 0..32 across lanes(32) {
-              let mut acc = unsafe { Tensor<f32, [8]>::uninit() };
+              let mut a0 = unsafe { Tensor<f32, [8]>::uninit() };
+              let mut a1 = unsafe { Tensor<f32, [8]>::uninit() };
               for j in 0..8 {
-                acc[j] = 0.0;
+                a0[j] = 0.0;
+                a1[j] = 0.0;
               }
               let mut i = l * 2;
               while i < words {
                 let c = i * 8;
-                let mut xp = unsafe { Tensor<f32, [16]>::uninit() };
-                for e in 0..16 {
-                  xp[e] = x[t][c + e];
+                let mut xa = unsafe { Tensor<f32, [16]>::uninit() };
+                let mut xb = unsafe { Tensor<f32, [16]>::uninit() };
+                for q in 0..16 {
+                  xa[q] = x[t0][c + q];
                 }
-                let sum8 = 8.0 * (xp[0] + xp[1] + xp[2] + xp[3] + xp[4] + xp[5] + xp[6] + xp[7] + xp[8] + xp[9] + xp[10] + xp[11] + xp[12] + xp[13] + xp[14] + xp[15]);
-                xp[1] = xp[1] * 0.0625;
-                xp[2] = xp[2] * 0.00390625;
-                xp[3] = xp[3] * 0.000244140625;
-                xp[4] = xp[4] * 0.0000152587890625;
-                xp[5] = xp[5] * 0.00000095367431640625;
-                xp[6] = xp[6] * 0.000000059604644775390625;
-                xp[7] = xp[7] * 0.0000000037252902984619140625;
-                xp[9] = xp[9] * 0.0625;
-                xp[10] = xp[10] * 0.00390625;
-                xp[11] = xp[11] * 0.000244140625;
-                xp[12] = xp[12] * 0.0000152587890625;
-                xp[13] = xp[13] * 0.00000095367431640625;
-                xp[14] = xp[14] * 0.000000059604644775390625;
-                xp[15] = xp[15] * 0.0000000037252902984619140625;
+                let sa = 8.0 * (xa[0] + xa[1] + xa[2] + xa[3] + xa[4] + xa[5] + xa[6] + xa[7] + xa[8] + xa[9] + xa[10] + xa[11] + xa[12] + xa[13] + xa[14] + xa[15]);
+                xa[1] = xa[1] * 0.0625;
+                xa[2] = xa[2] * 0.00390625;
+                xa[3] = xa[3] * 0.000244140625;
+                xa[4] = xa[4] * 0.0000152587890625;
+                xa[5] = xa[5] * 0.00000095367431640625;
+                xa[6] = xa[6] * 0.000000059604644775390625;
+                xa[7] = xa[7] * 0.0000000037252902984619140625;
+                xa[9] = xa[9] * 0.0625;
+                xa[10] = xa[10] * 0.00390625;
+                xa[11] = xa[11] * 0.000244140625;
+                xa[12] = xa[12] * 0.0000152587890625;
+                xa[13] = xa[13] * 0.00000095367431640625;
+                xa[14] = xa[14] * 0.000000059604644775390625;
+                xa[15] = xa[15] * 0.0000000037252902984619140625;
+                for q in 0..16 {
+                  xb[q] = x[t1][c + q];
+                }
+                let sb = 8.0 * (xb[0] + xb[1] + xb[2] + xb[3] + xb[4] + xb[5] + xb[6] + xb[7] + xb[8] + xb[9] + xb[10] + xb[11] + xb[12] + xb[13] + xb[14] + xb[15]);
+                xb[1] = xb[1] * 0.0625;
+                xb[2] = xb[2] * 0.00390625;
+                xb[3] = xb[3] * 0.000244140625;
+                xb[4] = xb[4] * 0.0000152587890625;
+                xb[5] = xb[5] * 0.00000095367431640625;
+                xb[6] = xb[6] * 0.000000059604644775390625;
+                xb[7] = xb[7] * 0.0000000037252902984619140625;
+                xb[9] = xb[9] * 0.0625;
+                xb[10] = xb[10] * 0.00390625;
+                xb[11] = xb[11] * 0.000244140625;
+                xb[12] = xb[12] * 0.0000152587890625;
+                xb[13] = xb[13] * 0.00000095367431640625;
+                xb[14] = xb[14] * 0.000000059604644775390625;
+                xb[15] = xb[15] * 0.0000000037252902984619140625;
                 for j in 0..8 {
                   let row = first + j;
                   let at = row * words + i;
                   let w0 = w[at];
                   let w1 = w[at + 1];
-                  let dot = ((w0 & 15u32) as f32) * xp[0] + ((w0 & 240u32) as f32) * xp[1] + ((w0 & 3840u32) as f32) * xp[2] + ((w0 & 61440u32) as f32) * xp[3] + ((w0 & 983040u32) as f32) * xp[4] + ((w0 & 15728640u32) as f32) * xp[5] + ((w0 & 251658240u32) as f32) * xp[6] + ((w0 & 4026531840u32) as f32) * xp[7] + ((w1 & 15u32) as f32) * xp[8] + ((w1 & 240u32) as f32) * xp[9] + ((w1 & 3840u32) as f32) * xp[10] + ((w1 & 61440u32) as f32) * xp[11] + ((w1 & 983040u32) as f32) * xp[12] + ((w1 & 15728640u32) as f32) * xp[13] + ((w1 & 251658240u32) as f32) * xp[14] + ((w1 & 4026531840u32) as f32) * xp[15];
-                  acc[j] = acc[j] + (dot - sum8) * (scales[row * groups + i / 4] as f32);
+                  let sc = scales[row * groups + i / 4] as f32;
+                  let f0 = (w0 & 15u32) as f32;
+                  let f1 = (w0 & 240u32) as f32;
+                  let f2 = (w0 & 3840u32) as f32;
+                  let f3 = (w0 & 61440u32) as f32;
+                  let f4 = (w0 & 983040u32) as f32;
+                  let f5 = (w0 & 15728640u32) as f32;
+                  let f6 = (w0 & 251658240u32) as f32;
+                  let f7 = (w0 & 4026531840u32) as f32;
+                  let f8 = (w1 & 15u32) as f32;
+                  let f9 = (w1 & 240u32) as f32;
+                  let f10 = (w1 & 3840u32) as f32;
+                  let f11 = (w1 & 61440u32) as f32;
+                  let f12 = (w1 & 983040u32) as f32;
+                  let f13 = (w1 & 15728640u32) as f32;
+                  let f14 = (w1 & 251658240u32) as f32;
+                  let f15 = (w1 & 4026531840u32) as f32;
+                  let da = f0 * xa[0] + f1 * xa[1] + f2 * xa[2] + f3 * xa[3] + f4 * xa[4] + f5 * xa[5] + f6 * xa[6] + f7 * xa[7] + f8 * xa[8] + f9 * xa[9] + f10 * xa[10] + f11 * xa[11] + f12 * xa[12] + f13 * xa[13] + f14 * xa[14] + f15 * xa[15];
+                  a0[j] = a0[j] + (da - sa) * sc;
+                  let db = f0 * xb[0] + f1 * xb[1] + f2 * xb[2] + f3 * xb[3] + f4 * xb[4] + f5 * xb[5] + f6 * xb[6] + f7 * xb[7] + f8 * xb[8] + f9 * xb[9] + f10 * xb[10] + f11 * xb[11] + f12 * xb[12] + f13 * xb[13] + f14 * xb[14] + f15 * xb[15];
+                  a1[j] = a1[j] + (db - sb) * sc;
                 }
                 i = i + 64;
               }
-              part[s][0][l] = acc[0];
-              part[s][1][l] = acc[1];
-              part[s][2][l] = acc[2];
-              part[s][3][l] = acc[3];
-              part[s][4][l] = acc[4];
-              part[s][5][l] = acc[5];
-              part[s][6][l] = acc[6];
-              part[s][7][l] = acc[7];
+              for j in 0..8 {
+                part[0][j][l] = a0[j];
+                part[1][j][l] = a1[j];
+              }
             }
-            let s0 = lanes::sum(&part[s][0], 32);
-            let s1 = lanes::sum(&part[s][1], 32);
-            let s2 = lanes::sum(&part[s][2], 32);
-            let s3 = lanes::sum(&part[s][3], 32);
-            let s4 = lanes::sum(&part[s][4], 32);
-            let s5 = lanes::sum(&part[s][5], 32);
-            let s6 = lanes::sum(&part[s][6], 32);
-            let s7 = lanes::sum(&part[s][7], 32);
-            let r0 = s0 + (b[first + 0] as f32);
-            let r1 = s1 + (b[first + 1] as f32);
-            let r2 = s2 + (b[first + 2] as f32);
-            let r3 = s3 + (b[first + 3] as f32);
-            let r4 = s4 + (b[first + 4] as f32);
-            let r5 = s5 + (b[first + 5] as f32);
-            let r6 = s6 + (b[first + 6] as f32);
-            let r7 = s7 + (b[first + 7] as f32);
+            let p0 = lanes::sum(&part[0][0], 32);
+            let p1 = lanes::sum(&part[0][1], 32);
+            let p2 = lanes::sum(&part[0][2], 32);
+            let p3 = lanes::sum(&part[0][3], 32);
+            let p4 = lanes::sum(&part[0][4], 32);
+            let p5 = lanes::sum(&part[0][5], 32);
+            let p6 = lanes::sum(&part[0][6], 32);
+            let p7 = lanes::sum(&part[0][7], 32);
+            let q0 = lanes::sum(&part[1][0], 32);
+            let q1 = lanes::sum(&part[1][1], 32);
+            let q2 = lanes::sum(&part[1][2], 32);
+            let q3 = lanes::sum(&part[1][3], 32);
+            let q4 = lanes::sum(&part[1][4], 32);
+            let q5 = lanes::sum(&part[1][5], 32);
+            let q6 = lanes::sum(&part[1][6], 32);
+            let q7 = lanes::sum(&part[1][7], 32);
             if h < q_heads {
-              q[t][h][d8 * 8 + s * 8 + 0] = r0;
-              q[t][h][d8 * 8 + s * 8 + 1] = r1;
-              q[t][h][d8 * 8 + s * 8 + 2] = r2;
-              q[t][h][d8 * 8 + s * 8 + 3] = r3;
-              q[t][h][d8 * 8 + s * 8 + 4] = r4;
-              q[t][h][d8 * 8 + s * 8 + 5] = r5;
-              q[t][h][d8 * 8 + s * 8 + 6] = r6;
-              q[t][h][d8 * 8 + s * 8 + 7] = r7;
+              q[t0][h][d8 * 8 + 0] = p0 + (b[first + 0] as f32);
+              q[t0][h][d8 * 8 + 1] = p1 + (b[first + 1] as f32);
+              q[t0][h][d8 * 8 + 2] = p2 + (b[first + 2] as f32);
+              q[t0][h][d8 * 8 + 3] = p3 + (b[first + 3] as f32);
+              q[t0][h][d8 * 8 + 4] = p4 + (b[first + 4] as f32);
+              q[t0][h][d8 * 8 + 5] = p5 + (b[first + 5] as f32);
+              q[t0][h][d8 * 8 + 6] = p6 + (b[first + 6] as f32);
+              q[t0][h][d8 * 8 + 7] = p7 + (b[first + 7] as f32);
             } else if h < q_heads + kv_heads {
-              k[t][h - q_heads][d8 * 8 + s * 8 + 0] = r0;
-              k[t][h - q_heads][d8 * 8 + s * 8 + 1] = r1;
-              k[t][h - q_heads][d8 * 8 + s * 8 + 2] = r2;
-              k[t][h - q_heads][d8 * 8 + s * 8 + 3] = r3;
-              k[t][h - q_heads][d8 * 8 + s * 8 + 4] = r4;
-              k[t][h - q_heads][d8 * 8 + s * 8 + 5] = r5;
-              k[t][h - q_heads][d8 * 8 + s * 8 + 6] = r6;
-              k[t][h - q_heads][d8 * 8 + s * 8 + 7] = r7;
+              k[t0][h - q_heads][d8 * 8 + 0] = p0 + (b[first + 0] as f32);
+              k[t0][h - q_heads][d8 * 8 + 1] = p1 + (b[first + 1] as f32);
+              k[t0][h - q_heads][d8 * 8 + 2] = p2 + (b[first + 2] as f32);
+              k[t0][h - q_heads][d8 * 8 + 3] = p3 + (b[first + 3] as f32);
+              k[t0][h - q_heads][d8 * 8 + 4] = p4 + (b[first + 4] as f32);
+              k[t0][h - q_heads][d8 * 8 + 5] = p5 + (b[first + 5] as f32);
+              k[t0][h - q_heads][d8 * 8 + 6] = p6 + (b[first + 6] as f32);
+              k[t0][h - q_heads][d8 * 8 + 7] = p7 + (b[first + 7] as f32);
             } else {
-              v[t][h - q_heads - kv_heads][d8 * 8 + s * 8 + 0] = r0;
-              v[t][h - q_heads - kv_heads][d8 * 8 + s * 8 + 1] = r1;
-              v[t][h - q_heads - kv_heads][d8 * 8 + s * 8 + 2] = r2;
-              v[t][h - q_heads - kv_heads][d8 * 8 + s * 8 + 3] = r3;
-              v[t][h - q_heads - kv_heads][d8 * 8 + s * 8 + 4] = r4;
-              v[t][h - q_heads - kv_heads][d8 * 8 + s * 8 + 5] = r5;
-              v[t][h - q_heads - kv_heads][d8 * 8 + s * 8 + 6] = r6;
-              v[t][h - q_heads - kv_heads][d8 * 8 + s * 8 + 7] = r7;
+              v[t0][h - q_heads - kv_heads][d8 * 8 + 0] = p0 + (b[first + 0] as f32);
+              v[t0][h - q_heads - kv_heads][d8 * 8 + 1] = p1 + (b[first + 1] as f32);
+              v[t0][h - q_heads - kv_heads][d8 * 8 + 2] = p2 + (b[first + 2] as f32);
+              v[t0][h - q_heads - kv_heads][d8 * 8 + 3] = p3 + (b[first + 3] as f32);
+              v[t0][h - q_heads - kv_heads][d8 * 8 + 4] = p4 + (b[first + 4] as f32);
+              v[t0][h - q_heads - kv_heads][d8 * 8 + 5] = p5 + (b[first + 5] as f32);
+              v[t0][h - q_heads - kv_heads][d8 * 8 + 6] = p6 + (b[first + 6] as f32);
+              v[t0][h - q_heads - kv_heads][d8 * 8 + 7] = p7 + (b[first + 7] as f32);
+            }
+            if h < q_heads {
+              q[t1][h][d8 * 8 + 0] = q0 + (b[first + 0] as f32);
+              q[t1][h][d8 * 8 + 1] = q1 + (b[first + 1] as f32);
+              q[t1][h][d8 * 8 + 2] = q2 + (b[first + 2] as f32);
+              q[t1][h][d8 * 8 + 3] = q3 + (b[first + 3] as f32);
+              q[t1][h][d8 * 8 + 4] = q4 + (b[first + 4] as f32);
+              q[t1][h][d8 * 8 + 5] = q5 + (b[first + 5] as f32);
+              q[t1][h][d8 * 8 + 6] = q6 + (b[first + 6] as f32);
+              q[t1][h][d8 * 8 + 7] = q7 + (b[first + 7] as f32);
+            } else if h < q_heads + kv_heads {
+              k[t1][h - q_heads][d8 * 8 + 0] = q0 + (b[first + 0] as f32);
+              k[t1][h - q_heads][d8 * 8 + 1] = q1 + (b[first + 1] as f32);
+              k[t1][h - q_heads][d8 * 8 + 2] = q2 + (b[first + 2] as f32);
+              k[t1][h - q_heads][d8 * 8 + 3] = q3 + (b[first + 3] as f32);
+              k[t1][h - q_heads][d8 * 8 + 4] = q4 + (b[first + 4] as f32);
+              k[t1][h - q_heads][d8 * 8 + 5] = q5 + (b[first + 5] as f32);
+              k[t1][h - q_heads][d8 * 8 + 6] = q6 + (b[first + 6] as f32);
+              k[t1][h - q_heads][d8 * 8 + 7] = q7 + (b[first + 7] as f32);
+            } else {
+              v[t1][h - q_heads - kv_heads][d8 * 8 + 0] = q0 + (b[first + 0] as f32);
+              v[t1][h - q_heads - kv_heads][d8 * 8 + 1] = q1 + (b[first + 1] as f32);
+              v[t1][h - q_heads - kv_heads][d8 * 8 + 2] = q2 + (b[first + 2] as f32);
+              v[t1][h - q_heads - kv_heads][d8 * 8 + 3] = q3 + (b[first + 3] as f32);
+              v[t1][h - q_heads - kv_heads][d8 * 8 + 4] = q4 + (b[first + 4] as f32);
+              v[t1][h - q_heads - kv_heads][d8 * 8 + 5] = q5 + (b[first + 5] as f32);
+              v[t1][h - q_heads - kv_heads][d8 * 8 + 6] = q6 + (b[first + 6] as f32);
+              v[t1][h - q_heads - kv_heads][d8 * 8 + 7] = q7 + (b[first + 7] as f32);
             }
           }
         }
