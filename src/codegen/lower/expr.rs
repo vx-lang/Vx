@@ -5455,9 +5455,10 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
                     .unwrap_or_else(|| crate::parser::expr::default_number_elem(n.value.as_ref()));
                 gen.lower_type(&syntax::Type::Scalar(elem)).ok()
             }
-            other => gen
-                .infer_ast_type(other)
-                .or_else(|| payload_binding_type(gen, arm, other, scrutinee_ty.as_ref()))
+            // A name that the arm's pattern binds hides any outer local of that name, so the
+            // payload type comes first.
+            other => payload_binding_type(gen, arm, other, scrutinee_ty.as_ref())
+                .or_else(|| gen.infer_ast_type(other))
                 .or_else(|| match other {
                     // `r * 3`: the checker gives the operands' type, which is the result's.
                     Expr::BinaryOp(b) if b.op != syntax::expr::BinaryOp::MatMul => {
