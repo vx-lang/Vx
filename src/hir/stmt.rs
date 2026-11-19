@@ -4363,6 +4363,7 @@ impl MutReferenceTypes<'_> {
                 Type::Ref(inner, _)
                 | Type::Verified(inner)
                 | Type::Distinct(inner)
+                | Type::DisjointRanges(inner)
                 | Type::Pinned(inner, _) => visit(types, inner, seen),
                 Type::GenericInstance(base, args) => {
                     visit(types, base, seen) || args.iter().any(|arg| visit(types, arg, seen))

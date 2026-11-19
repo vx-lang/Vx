@@ -858,7 +858,10 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
-        if let (Type::Distinct(inner_target), Type::Distinct(inner_source)) = (target, source) {
+        if let (Type::Distinct(inner_target), Type::Distinct(inner_source))
+        | (Type::DisjointRanges(inner_target), Type::DisjointRanges(inner_source)) =
+            (target, source)
+        {
             if self.is_assignable(inner_target, inner_source) {
                 return true;
             }
@@ -943,7 +946,8 @@ impl<'a> TypeChecker<'a> {
             Type::Ref(inner, _)
             | Type::Pinned(inner, _)
             | Type::Verified(inner)
-            | Type::Distinct(inner) => Self::tensor_of(inner),
+            | Type::Distinct(inner)
+            | Type::DisjointRanges(inner) => Self::tensor_of(inner),
             _ => None,
         }
     }

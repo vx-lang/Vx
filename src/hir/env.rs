@@ -2042,6 +2042,7 @@ impl<'a> TypeChecker<'a> {
                     | Type::Pinned(i, _)
                     | Type::Verified(i)
                     | Type::Distinct(i)
+                    | Type::DisjointRanges(i)
                     | Type::Borrow { inner: i, .. } => walk(i, out),
                     Type::GenericInstance(b, args) => {
                         walk(b, out);

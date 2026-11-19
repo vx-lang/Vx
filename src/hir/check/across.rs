@@ -14,6 +14,7 @@
 //===----------------------------------------------------------------------===//
 
 use crate::arch::{Level, LevelKind};
+use crate::hir::check::across_proof::Claim;
 use crate::hir::check::{across_lanes, lanes};
 use crate::syntax::stmt::{ForLoopStmt, Statement};
 use crate::syntax::{ElementType, Expr, RelationalOp, Span};
@@ -95,9 +96,9 @@ struct Walk<'g> {
     lane_matmuls: HashSet<Span>,
     /// The parameters of the function that are `&` tensors, not `&mut`.
     read_only: HashSet<String>,
-    /// The parameters that are `Distinct` tensors, with the type of their elements. A name that
-    /// the body binds again is not here.
-    distinct: HashMap<String, ElementType>,
+    /// The parameters that are `Distinct` tensors or `DisjointRanges` tables, with the type of
+    /// their elements. A name that the body binds again is not here.
+    claims: HashMap<String, (Claim, ElementType)>,
 }
 
 /// A lane reduction in the code of a level.
@@ -126,7 +127,7 @@ impl crate::hir::TypeChecker<'_> {
             .map(|(name, _)| name.as_ref().to_string())
             .collect();
         let bound = bound_names(body);
-        let distinct = params
+        let claims = params
             .iter()
             .filter(|(name, _)| !bound.contains(name.as_ref()))
             .filter_map(|(name, ty)| {
@@ -134,13 +135,15 @@ impl crate::hir::TypeChecker<'_> {
                     crate::syntax::Type::Borrow { inner, .. } => inner,
                     ty => ty,
                 };
-                match ty {
-                    crate::syntax::Type::Distinct(t) => match &**t {
-                        crate::syntax::Type::Tensor(el, ..) => {
-                            Some((name.as_ref().to_string(), el.clone()))
-                        }
-                        _ => None,
-                    },
+                let (claim, t) = match ty {
+                    crate::syntax::Type::Distinct(t) => (Claim::Distinct, t),
+                    crate::syntax::Type::DisjointRanges(t) => (Claim::DisjointRanges, t),
+                    _ => return None,
+                };
+                match &**t {
+                    crate::syntax::Type::Tensor(el, ..) => {
+                        Some((name.as_ref().to_string(), (claim, el.clone())))
+                    }
                     _ => None,
                 }
             })
@@ -176,7 +179,7 @@ impl crate::hir::TypeChecker<'_> {
             lane_calls: Vec::new(),
             lane_matmuls: HashSet::new(),
             read_only,
-            distinct,
+            claims,
         };
         walk.stmts(body, &Ctx::default());
         mark_stmts(body, &walk.found);
@@ -1414,7 +1417,7 @@ impl Walk<'_> {
             &self.contracts,
             &self.templates,
             &self.lane_copies_out,
-            &self.distinct,
+            &self.claims,
         ) {
             Err((why, at)) => self.error(why, at),
             Ok(ends) => {

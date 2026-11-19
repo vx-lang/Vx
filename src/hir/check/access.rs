@@ -293,6 +293,7 @@ impl<'a> TypeChecker<'a> {
             | Type::Borrow { inner, .. }
             | Type::Verified(inner)
             | Type::Distinct(inner)
+            | Type::DisjointRanges(inner)
             | Type::Pinned(inner, _) => self.fold_extents(inner),
             Type::GenericInstance(base, args) => {
                 self.fold_extents(base);
@@ -1700,7 +1701,7 @@ impl<'a> TypeChecker<'a> {
                     other => other,
                 };
                 let read_ty = match read_ty {
-                    Type::Distinct(inner) => inner.as_ref(),
+                    Type::Distinct(inner) | Type::DisjointRanges(inner) => inner.as_ref(),
                     other => other,
                 };
                 let located_on = match read_ty {
@@ -1784,6 +1785,18 @@ impl<'a> TypeChecker<'a> {
                                 crate::diagnostic::DiagnosticCode::E4006,
                                 "a `Distinct` tensor is read only: a write could make two of its \
                                  elements equal"
+                                    .to_string(),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&ix_span)),
+                            );
+                        }
+                        *inner
+                    }
+                    Type::DisjointRanges(inner) => {
+                        if self.checking_assign_lhs && !self.speculating {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E4006,
+                                "a `DisjointRanges` table is read only: a write could make two of \
+                                 its ranges overlap"
                                     .to_string(),
                                 Some(crate::diagnostic::SourceSpan::from_ast_span(&ix_span)),
                             );
@@ -2533,7 +2546,8 @@ impl<'a> TypeChecker<'a> {
             Type::Pointer(inner, ..)
             | Type::Pinned(inner, _)
             | Type::Verified(inner)
-            | Type::Distinct(inner) => self.type_can_hold_reference_in(inner, seen),
+            | Type::Distinct(inner)
+            | Type::DisjointRanges(inner) => self.type_can_hold_reference_in(inner, seen),
             _ => false,
         }
     }

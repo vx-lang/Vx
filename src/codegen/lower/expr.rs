@@ -4031,7 +4031,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             type_args,
             span: _,
         } = self;
-        if matches!(name.as_ref(), "Verified" | "Distinct") {
+        if matches!(name.as_ref(), "Verified" | "Distinct" | "DisjointRanges") {
             return gen.generate_expr(&args[0], block);
         }
         // The eight raw:: transfer-lowering primitives (#353). They reach codegen

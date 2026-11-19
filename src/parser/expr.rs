@@ -1151,14 +1151,19 @@ impl<'a> Parser<'a> {
                     },
                 })
             }
-            TokenType::Distinct => {
+            TokenType::Distinct | TokenType::DisjointRanges => {
+                let name = if peeked_token.kind == TokenType::Distinct {
+                    "Distinct"
+                } else {
+                    "DisjointRanges"
+                };
                 self.advance();
-                self.consume(&TokenType::LeftParen, "Expected '(' after Distinct")?;
+                self.consume(&TokenType::LeftParen, &format!("Expected '(' after {name}"))?;
                 let inner = self.parse_expr()?;
                 self.consume(&TokenType::RightParen, "Expected ')'")?;
                 Expr::FunctionCall(FunctionCallExpr {
                     owner_type_args: None,
-                    name: "Distinct".to_string().into(),
+                    name: name.to_string().into(),
                     type_args: None,
                     args: vec![inner],
                     span: Span {

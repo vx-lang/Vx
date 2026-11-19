@@ -2349,7 +2349,8 @@ impl<'c> MeliorGenerator<'c> {
             }
             syntax::Type::Pinned(inner, _)
             | syntax::Type::Verified(inner)
-            | syntax::Type::Distinct(inner) => self.type_size_align(inner, depth),
+            | syntax::Type::Distinct(inner)
+            | syntax::Type::DisjointRanges(inner) => self.type_size_align(inner, depth),
             // A tensor is held as its memref descriptor. A rank-0 tensor is a plain number.
             syntax::Type::Tensor(_, dims, _) if !dims.is_empty() => {
                 Some((crate::layout::tensor_descriptor_bytes(dims.len()), 8))
@@ -2481,7 +2482,7 @@ impl<'c> MeliorGenerator<'c> {
                 };
                 // At run time a `Distinct` tensor is its tensor.
                 let ty = match ty {
-                    syntax::Type::Distinct(inner) => *inner,
+                    syntax::Type::Distinct(inner) | syntax::Type::DisjointRanges(inner) => *inner,
                     ty => ty,
                 };
                 let mut lowered = self.lower_type_str(&ty)?;
@@ -2672,9 +2673,9 @@ impl<'c> MeliorGenerator<'c> {
             syntax::Type::Ref(inner, _mem) => {
                 return self.lower_type(inner);
             }
-            syntax::Type::Verified(inner) | syntax::Type::Distinct(inner) => {
-                return self.lower_type(inner)
-            }
+            syntax::Type::Verified(inner)
+            | syntax::Type::Distinct(inner)
+            | syntax::Type::DisjointRanges(inner) => return self.lower_type(inner),
             syntax::Type::Pinned(inner, _top) => {
                 let inner_ty_str = self.lower_type(inner)?.to_string();
                 inner_ty_str
@@ -3351,7 +3352,8 @@ pub(crate) fn tensor_field_rank(ty: &syntax::Type) -> Option<usize> {
         // `Pinned<T, ..>` and `Verified<T>` are a tensor with a claim about it.
         syntax::Type::Pinned(inner, _)
         | syntax::Type::Verified(inner)
-        | syntax::Type::Distinct(inner) => tensor_field_rank(inner),
+        | syntax::Type::Distinct(inner)
+        | syntax::Type::DisjointRanges(inner) => tensor_field_rank(inner),
         syntax::Type::Borrow { inner, .. } if matches!(**inner, syntax::Type::Tensor(..)) => {
             tensor_field_rank(inner)
         }
@@ -3406,7 +3408,9 @@ pub(crate) fn owned_tensor(ty: &syntax::Type) -> Option<Option<syntax::Placement
     }
     match ty {
         syntax::Type::Tensor(_, _, placement) => Some(placement.clone()),
-        syntax::Type::Verified(inner) | syntax::Type::Distinct(inner) => owned_tensor(inner),
+        syntax::Type::Verified(inner)
+        | syntax::Type::Distinct(inner)
+        | syntax::Type::DisjointRanges(inner) => owned_tensor(inner),
         syntax::Type::Pinned(inner, top) => match owned_tensor(inner)? {
             Some(p) => Some(Some(p)),
             None => {
@@ -3425,6 +3429,7 @@ pub(crate) fn written_placement(ty: &syntax::Type) -> Option<&syntax::Placement>
         syntax::Type::Tensor(_, _, placement) => placement.as_ref(),
         syntax::Type::Verified(inner)
         | syntax::Type::Distinct(inner)
+        | syntax::Type::DisjointRanges(inner)
         | syntax::Type::Pinned(inner, _) => written_placement(inner),
         _ => None,
     }

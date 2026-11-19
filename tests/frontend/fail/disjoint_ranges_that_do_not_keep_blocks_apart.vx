@@ -1,0 +1,126 @@
+//===- disjoint_ranges_that_do_not_keep_blocks_apart.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// No two ranges `[tiles[t][0], tiles[t][1])` of a `DisjointRanges` table overlap. Each function
+// here still lets two blocks use the same element of `y`, or it breaks the rules of the table.
+//
+// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
+
+// No test keeps the row below the end of the range, so the row can be in the next range.
+pub fn no_test_of_the_end(y : &mut Tensor<f32, [?, ?], Memory::HBM>, tiles : &DisjointRanges<Tensor<i32, [?, 2], Memory::HBM>>) -> void {
+  spawn on(Topology::Device) {
+    for t in 0..tiles.len() across blocks {
+      for r in 0..4 across lanes(32) {
+        // CHECK: Error[E6032] at {{.*}}:[[#@LINE+1]]:9: two passes of this block loop may write the same element of `y`: an index of the write must fix `t`
+        y[(tiles[t][0] as i64) + (r as i64)][0] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+// The test uses the end of the next range.
+pub fn end_of_another_range(y : &mut Tensor<f32, [?, ?], Memory::HBM>, tiles : &DisjointRanges<Tensor<i32, [?, 2], Memory::HBM>>) -> void {
+  spawn on(Topology::Device) {
+    for t in 0..tiles.len() - 1 across blocks {
+      for r in 0..4 across lanes(32) {
+        let row = (tiles[t][0] as i64) + (r as i64);
+        if row < (tiles[t + 1][1] as i64) {
+          // CHECK: Error[E6032] at {{.*}}:[[#@LINE+1]]:11: two passes of this block loop may write the same element of `y`: an index of the write must fix `t`
+          y[row][0] = 1.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+// `row` can be one below the start of the range, so it can be in the range before it.
+pub fn below_the_start(y : &mut Tensor<f32, [?, ?], Memory::HBM>, tiles : &DisjointRanges<Tensor<i32, [?, 2], Memory::HBM>>) -> void {
+  spawn on(Topology::Device) {
+    for t in 0..tiles.len() across blocks {
+      for r in 0..4 across lanes(32) {
+        let row = (tiles[t][0] as i64) + (r as i64) - 1;
+        if row < (tiles[t][1] as i64) {
+          // CHECK: Error[E6032] at {{.*}}:[[#@LINE+1]]:11: two passes of this block loop may write the same element of `y`: an index of the write must fix `t`
+          y[row][0] = 1.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+// Every block writes the rows of range 0.
+pub fn the_same_range_in_every_block(y : &mut Tensor<f32, [?, ?], Memory::HBM>, tiles : &DisjointRanges<Tensor<i32, [?, 2], Memory::HBM>>) -> void {
+  spawn on(Topology::Device) {
+    for t in 0..tiles.len() across blocks {
+      for r in 0..4 across lanes(32) {
+        let row = (tiles[0][0] as i64) + (r as i64);
+        if row < (tiles[0][1] as i64) {
+          // CHECK: Error[E6032] at {{.*}}:[[#@LINE+1]]:11: two passes of this block loop may write the same element of `y`: an index of the write must fix `t`
+          y[row][0] = 1.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+// The write after the `if` has no test, so it can be in the next range.
+pub fn a_write_after_the_test(y : &mut Tensor<f32, [?, ?], Memory::HBM>, tiles : &DisjointRanges<Tensor<i32, [?, 2], Memory::HBM>>) -> void {
+  spawn on(Topology::Device) {
+    for t in 0..tiles.len() across blocks {
+      for r in 0..4 across lanes(32) {
+        let row = (tiles[t][0] as i64) + (r as i64);
+        if row < (tiles[t][1] as i64) {
+          y[row][0] = 1.0;
+        }
+        // CHECK: Error[E6032] at {{.*}}:[[#@LINE+1]]:9: two passes of this block loop may write the same element of `y`: the writes must use the same index that fixes `t`
+        y[row][0] = 2.0;
+      }
+    }
+  }
+  return;
+}
+
+// `row` is an `i32` sum, which can wrap past the largest `i32` to a row of another range.
+pub fn a_sum_that_can_wrap(y : &mut Tensor<f32, [?, ?], Memory::HBM>, tiles : &DisjointRanges<Tensor<i32, [?, 2], Memory::HBM>>) -> void {
+  spawn on(Topology::Device) {
+    for t in 0..tiles.len() across blocks {
+      for r in 0..4 across lanes(32) {
+        let row = tiles[t][0] + r;
+        if row < tiles[t][1] {
+          // CHECK: Error[E6032] at {{.*}}:[[#@LINE+1]]:11: two passes of this block loop may write the same element of `y`: an index of the write must fix `t`
+          y[row][0] = 1.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+// A write could make two ranges overlap.
+pub fn writes_a_range(tiles : &mut DisjointRanges<Tensor<i32, [?, 2]>>) -> void {
+  // CHECK: Error[E4006] at {{.*}}:[[#@LINE+1]]:8: a `DisjointRanges` table is read only: a write could make two of its ranges overlap
+  tiles[0] = Tensor<i32, [2]>::fill(0);
+  // CHECK: Error[E4006] at {{.*}}:[[#@LINE+1]]:8: a `DisjointRanges` table is read only
+  tiles[0][1] = 3;
+  return;
+}
+
+fn main() -> i32 {
+  // CHECK: Error[E5001] at {{.*}}:[[#@LINE+1]]:15: `DisjointRanges(t)` is unsafe and needs an `unsafe` block
+  let _rows = DisjointRanges(Tensor<i32, [4, 2]>::fill(0));
+  // CHECK: Error[E3004] at {{.*}}:[[#@LINE+1]]:24: `DisjointRanges(t)` takes one tensor of integers of shape `[?, 2]`, by value
+  let _flat = unsafe { DisjointRanges(Tensor<i32, [4]>::fill(0)) };
+  // CHECK: Error[E3004] at {{.*}}:[[#@LINE+1]]:27: `DisjointRanges(t)` takes one tensor of integers of shape `[?, 2]`
+  let _triples = unsafe { DisjointRanges(Tensor<i32, [4, 3]>::fill(0)) };
+  // CHECK: Error[E3004] at {{.*}}:[[#@LINE+1]]:26: `DisjointRanges(t)` takes one tensor of integers of shape `[?, 2]`
+  let _floats = unsafe { DisjointRanges(Tensor<f32, [4, 2]>::fill(0.0)) };
+  return 0;
+}

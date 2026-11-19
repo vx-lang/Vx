@@ -194,7 +194,7 @@ pub fn tensor_gid_of(ty: &Type) -> Option<TypeId> {
 fn tensor_elem_shape(ty: &Type) -> Option<(ElementType, Vec<String>)> {
     // At run time, a `Distinct` tensor is its tensor.
     let ty = match ty {
-        Type::Distinct(inner) => inner.as_ref(),
+        Type::Distinct(inner) | Type::DisjointRanges(inner) => inner.as_ref(),
         ty => ty,
     };
     let Type::Tensor(elem, dims, _) = ty else {
@@ -6639,7 +6639,9 @@ impl<'r> Lowerer<'r> {
     fn lower_call(&mut self, fc: &crate::syntax::FunctionCallExpr) -> Lowered<Val> {
         // `Verified(x)` is the checker-level wrapper in value position -- the identity at
         // runtime, exactly as the AST path erases it. Lower the wrapped value directly.
-        if matches!(fc.name.as_ref(), "Verified" | "Distinct") && fc.args.len() == 1 {
+        if matches!(fc.name.as_ref(), "Verified" | "Distinct" | "DisjointRanges")
+            && fc.args.len() == 1
+        {
             return self.lower_expr(&fc.args[0]);
         }
         // An indirect call: the callee name is a local holding a function pointer (a fn-pointer
@@ -8071,6 +8073,7 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
         // runtime value is the inner type, exactly as the AST codegen's `lower_type` peels them.
         Type::Verified(inner)
         | Type::Distinct(inner)
+        | Type::DisjointRanges(inner)
         | Type::Ref(inner, _)
         | Type::Pinned(inner, _) => lowered_ty(inner, registry),
         _ => None,
@@ -8086,6 +8089,7 @@ fn is_dyn_tensor(ty: &Type) -> bool {
         Type::Tensor(_, dims, _) => dims.iter().any(|d| matches!(d, Dim::Dyn)),
         Type::Verified(inner)
         | Type::Distinct(inner)
+        | Type::DisjointRanges(inner)
         | Type::Ref(inner, _)
         | Type::Pinned(inner, _) => is_dyn_tensor(inner),
         Type::Borrow { inner, .. } => is_dyn_tensor(inner),
@@ -8873,7 +8877,7 @@ fn enum_payload_size_align(ty: &Type) -> Option<(u64, u64)> {
         Type::Pointer(..) | Type::Borrow { .. } | Type::Ref(..) => Some((8, 8)),
         // A tensor is its descriptor: two pointers, an offset, and a size and a stride per rank.
         Type::Tensor(_, shape, ..) => Some((8 * (3 + 2 * shape.len() as u64), 8)),
-        Type::Distinct(inner) => enum_payload_size_align(inner),
+        Type::Distinct(inner) | Type::DisjointRanges(inner) => enum_payload_size_align(inner),
         _ => None,
     }
 }

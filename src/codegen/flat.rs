@@ -250,7 +250,9 @@ fn pointee_agg_gid(ty: &Type, ctx: &EmitCtx) -> Option<TypeId> {
 /// down to the runtime type, as the AST codegen's `lower_type` does.
 fn peel_wrappers(ty: &Type) -> &Type {
     match ty {
-        Type::Verified(inner) | Type::Distinct(inner) => peel_wrappers(inner),
+        Type::Verified(inner) | Type::Distinct(inner) | Type::DisjointRanges(inner) => {
+            peel_wrappers(inner)
+        }
         Type::Ref(inner, _) | Type::Pinned(inner, _) => peel_wrappers(inner),
         _ => ty,
     }

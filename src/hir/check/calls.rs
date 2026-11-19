@@ -1081,7 +1081,10 @@ impl<'a> TypeChecker<'a> {
                 // `Distinct(t)` and `Verified(t)` wrap `t` and read nothing.
                 let declared = self.env.functions.contains_key(base_name.as_ref())
                     || self.env.generic_functions.contains_key(base_name.as_ref())
-                    || matches!(base_name.as_ref(), "Distinct" | "Verified");
+                    || matches!(
+                        base_name.as_ref(),
+                        "Distinct" | "DisjointRanges" | "Verified"
+                    );
                 for arg in args.iter_mut() {
                     let ty = if declared {
                         self.check_whole_value(arg, |c, e| c.check_expr_type_flag(e, arg_consume))
@@ -2969,6 +2972,36 @@ impl<'a> TypeChecker<'a> {
                     Some(Type::Unknown)
                 }
             }
+        } else if resolved_name == "DisjointRanges" {
+            // The checker cannot see the values, so the program states that no ranges overlap.
+            if self.unsafe_is_missing() {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E5001,
+                    "`DisjointRanges(t)` is unsafe and needs an `unsafe` block: it states that no \
+                     two ranges `[t[i][0], t[i][1])` overlap, and the program does not check it. \
+                     Two blocks that write the rows of their ranges may then write the same row",
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&call_span)),
+                );
+            }
+            match arg_types {
+                [ty @ Type::Tensor(elem, dims, _)]
+                    if dims.len() == 2
+                        && dims[1].literal() == Some("2")
+                        && (elem.is_signed_int() || elem.is_unsigned_int()) =>
+                {
+                    Some(Type::DisjointRanges(Box::new(ty.clone())))
+                }
+                _ => {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3004,
+                        "`DisjointRanges(t)` takes one tensor of integers of shape `[?, 2]`, by \
+                         value: the start and the end of each range"
+                            .to_string(),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&call_span)),
+                    );
+                    Some(Type::Unknown)
+                }
+            }
         // The older spelling, `Tensor<f32>([2, 3])`, names the constructor by its prefix. A name
         // holding `::` is a path -- the four constructors above are matched exactly, so anything
         // else is a method nothing defines, and reporting it undefined beats building a tensor
@@ -3793,7 +3826,7 @@ impl<'a> TypeChecker<'a> {
                         t => t,
                     };
                     let counted = match counted {
-                        Type::Distinct(t) => t.as_ref(),
+                        Type::Distinct(t) | Type::DisjointRanges(t) => t.as_ref(),
                         _ => &base_ty,
                     };
                     if let Some((_, dims, _)) = Self::as_tensor_operand(counted) {
