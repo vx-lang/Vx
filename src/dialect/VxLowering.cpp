@@ -4204,18 +4204,23 @@ static bool isMmaFp8(Type type) {
   return isa<Float8E4M3FNType, Float8E5M2Type>(type);
 }
 
-/// The element type of the tiles of a lane matmul that `mma.sync` can take:
-/// both bf16 or both f16 in multiples of 16 x 8 x 16, or both `f8e4m3` or
-/// both `f8e5m2` in multiples of 16 x 8 x 32. The result is f32, and the sizes
-/// are static. Otherwise null.
+/// The element type that `mma.sync` multiplies for a lane matmul: bf16 or f16
+/// when both tiles have it, in multiples of 16 x 8 x 16, and `f8e4m3` or
+/// `f8e5m2` when both tiles have it, in multiples of 16 x 8 x 32. When one tile
+/// is f16 and the other is fp8, it is f16, in multiples of 16 x 8 x 16: f16
+/// holds each fp8 value exactly. The result is f32, and the sizes are static.
+/// Otherwise null.
 static Type mmaElementOf(vx::LaneMatmulOp op) {
   auto acc = cast<MemRefType>(op.getAcc().getType());
   auto lhs = cast<MemRefType>(op.getLhs().getType());
   auto rhs = cast<MemRefType>(op.getRhs().getType());
-  Type elem = lhs.getElementType();
-  if (!acc.getElementType().isF32() || rhs.getElementType() != elem ||
-      !(elem.isBF16() || elem.isF16() || isMmaFp8(elem)) ||
-      !acc.hasStaticShape() || !lhs.hasStaticShape() || !rhs.hasStaticShape())
+  Type a = lhs.getElementType(), b = rhs.getElementType(), elem;
+  if (a == b && (a.isBF16() || a.isF16() || isMmaFp8(a)))
+    elem = a;
+  else if ((a.isF16() && isMmaFp8(b)) || (isMmaFp8(a) && b.isF16()))
+    elem = Float16Type::get(op.getContext());
+  if (!elem || !acc.getElementType().isF32() || !acc.hasStaticShape() ||
+      !lhs.hasStaticShape() || !rhs.hasStaticShape())
     return {};
   int64_t m = acc.getDimSize(0), n = acc.getDimSize(1), k = lhs.getDimSize(1);
   int64_t depth = isMmaFp8(elem) ? 32 : 16;
@@ -4224,11 +4229,16 @@ static Type mmaElementOf(vx::LaneMatmulOp op) {
   return elem;
 }
 
-/// As `mmaElementOf`, when `chip` has `mma.sync` for the type: `sm_80` and
-/// later for bf16 and f16, and `sm_89` and later for fp8.
+/// As `mmaElementOf`, when `chip` has the instructions for the types: `sm_80`
+/// and later for bf16 and f16, and `sm_89` and later for a tile of fp8, which
+/// has `mma.sync` for fp8 and `cvt.rn.f16x2` from fp8.
 static Type mmaElementFor(vx::LaneMatmulOp op, StringRef chip) {
   Type elem = mmaElementOf(op);
-  if (!elem || chipNumber(chip) < (isMmaFp8(elem) ? 89u : 80u))
+  auto elemOf = [](Value tile) {
+    return cast<MemRefType>(tile.getType()).getElementType();
+  };
+  bool fp8 = isMmaFp8(elemOf(op.getLhs())) || isMmaFp8(elemOf(op.getRhs()));
+  if (!elem || chipNumber(chip) < (fp8 ? 89u : 80u))
     return {};
   return elem;
 }
@@ -4346,8 +4356,10 @@ static bool ldmatrixFits(Value tile) {
 /// Each register of an input holds 2 elements of 16 bits or 4 of 8 bits that
 /// are next to each other in K. When `ldmatrixFits` accepts a tile, `ldmatrix`
 /// loads its fragments, transposed for `rhs`, and otherwise each lane loads its
-/// elements one at a time. The tensor core adds the products in an order of its
-/// own, so the last bits can differ from the expansion on the host.
+/// elements one at a time. When `elem` is f16 and a tile is fp8, each lane
+/// converts two fp8 elements to f16 with one `cvt.rn.f16x2`. The tensor core
+/// adds the products in an order of its own, so the last bits can differ from
+/// the expansion on the host.
 static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
                                     Type elem, Value fragments = {}) {
   Location loc = op.getLoc();
@@ -4391,6 +4403,30 @@ static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
     if (elem.isF16())
       return nb.create<LLVM::BitcastOp>(l, VectorType::get({2}, elem), word);
     return word;
+  };
+  // Two fp8 elements as the two f16 halves of a register, the first in the low
+  // half. f16 holds each fp8 value exactly.
+  auto widen = [&](OpBuilder &nb, Location l, ArrayRef<Value> values) -> Value {
+    Type i8 = nb.getI8Type(), i16 = nb.getI16Type();
+    auto byte = [&](Value v) -> Value {
+      return nb.create<arith::ExtUIOp>(l, i16,
+                                       nb.create<arith::BitcastOp>(l, i8, v));
+    };
+    Value pair = nb.create<arith::OrIOp>(
+        l, byte(values[0]),
+        nb.create<arith::ShLIOp>(l, byte(values[1]),
+                                 nb.create<arith::ConstantIntOp>(l, i16, 8)));
+    StringRef name =
+        isa<Float8E4M3FNType>(values[0].getType()) ? "e4m3x2" : "e5m2x2";
+    Value word =
+        nb.create<LLVM::InlineAsmOp>(
+              l, i32, ValueRange{pair},
+              ("cvt.rn.f16x2." + name + " $0, $1;").str(), "=r,h",
+              /*has_side_effects=*/false,
+              /*is_align_stack=*/false, LLVM::tailcallkind::TailCallKind::None,
+              LLVM::AsmDialectAttr(), ArrayAttr())
+            .getResult(0);
+    return nb.create<LLVM::BitcastOp>(l, VectorType::get({2}, elem), word);
   };
   auto add = [&](OpBuilder &nb, Location l, Value x, Value y) -> Value {
     return nb.create<arith::AddIOp>(l, x, y);
@@ -4466,7 +4502,8 @@ static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
             for (int64_t e = 0; e < perRegister; ++e)
               values.push_back(kb.create<memref::LoadOp>(
                   kl, op.getLhs(), ValueRange{i, add(kb, kl, from, index(e))}));
-            return pack(kb, kl, values);
+            return isMmaFp8(values[0].getType()) && !fp8 ? widen(kb, kl, values)
+                                                         : pack(kb, kl, values);
           };
           auto rhs = [&](Value from) -> Value {
             SmallVector<Value> values;
@@ -4474,7 +4511,8 @@ static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
               values.push_back(kb.create<memref::LoadOp>(
                   kl, op.getRhs(),
                   ValueRange{add(kb, kl, from, index(e)), col}));
-            return pack(kb, kl, values);
+            return isMmaFp8(values[0].getType()) && !fp8 ? widen(kb, kl, values)
+                                                         : pack(kb, kl, values);
           };
           SmallVector<Value> a =
               lhsLdmatrix
