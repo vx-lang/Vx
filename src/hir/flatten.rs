@@ -2539,6 +2539,11 @@ impl<'r> Lowerer<'r> {
     fn infer_ast_type(&self, e: &Expr) -> Option<Type> {
         match e {
             Expr::Identifier(id) => self.ast_types.get(&id.name).cloned(),
+            Expr::StringLiteral(_) => Some(Type::Pointer(
+                Box::new(Type::Scalar(ElementType::I8)),
+                None,
+                false,
+            )),
             Expr::EnumVariant(ev) => enum_construct_type(ev),
             // A numeric literal's own scalar type (`let x = 5` -> `i32`), so an unannotated `let`
             // records its type in `ast_types` and a later chain resolves — `&x : &i32`, `&&x : &&i32`,
