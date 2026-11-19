@@ -157,6 +157,12 @@ The rules:
   `tiles.len()` gives the number of ranges.
 - As for `Distinct`, only a parameter of the function counts.
 
+`DisjointRanges::check(t)` makes a table, as `Distinct::check` makes a `Distinct` tensor. It takes
+`t` by value: a tensor of shape `[?, 2]` of `i32`, `i64`, `u32` or `u64`, on the CPU. It returns
+`None` when two ranges overlap or a range ends before it starts. An empty range `[s, s)` overlaps a
+range that has `s` inside it, but not a range that starts or ends at `s`. The check sorts a copy of
+the ranges, so it costs one sort on the CPU.
+
 `unsafe { DisjointRanges(t) }` makes a table with no check. It takes a tensor of integers of shape
 `[?, 2]`, and it moves `t`. If two ranges overlap, two blocks write the same row. That is a data
 race, and Vx makes no promise about the result.
