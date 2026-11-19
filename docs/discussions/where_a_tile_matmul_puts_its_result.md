@@ -106,7 +106,7 @@ tile in `Memory::REG`, that case is a compile error that names the access that n
 
 - The guarantee is about the code that Vx writes: Vx makes no buffer for the tile. `ptxas`
   assigns the registers later, and it can still spill some of them to local memory. That is
-  outside the language. A kernel that must have no spills is written by hand, in `mlir!`, until
-  Vx has its own assembler.
+  outside the language. For a kernel that must have no spills, kernel writers write the PTX by
+  hand in `mlir!`, until Vx has its own assembler.
 - The error needs the source line of the access. The legacy code generator gives the operations
   of MLIR the locations of the Vx source. The flat code generator does not yet (#3643).
