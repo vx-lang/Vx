@@ -17,6 +17,8 @@
 //
 //   cargo build --release
 //   target/release/vxc benchmarks/metal_wait_probe.vx --host default --machine fleet/m4-uma.vx
+//
+// vx-bench flags: --host default --machine fleet/m4-uma.vx
 
 import core::convert;
 import std::time;
