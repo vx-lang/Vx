@@ -428,3 +428,18 @@ pub fn subgroup_remainder_too_wide_for_its_digit(c : &mut Tensor<f32, [?, 64], M
 fn main() -> i32 {
   return 0;
 }
+
+// `o` is declared outside the loop, so a `&mut` borrow of all of it may write the elements of
+// other passes. A tensor that the pass declares itself has no such problem
+// (`lane_own_tensors_borrowed_as_mut_in_across_loops.vx`).
+pub fn borrows_all_of_it(o : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for t in 0..32 across lanes {
+        // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:[[# @LINE + 1]]:{{.*}}a `&mut` borrow in an `across` loop may write any element
+        let r = &mut o;
+      }
+    }
+  }
+  return;
+}

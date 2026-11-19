@@ -823,6 +823,12 @@ impl Proof<'_> {
                 fc.args.iter().for_each(|a| self.expr(a));
             }
             Expr::Borrow(b) => {
+                // A tensor that the pass declares is its own, so no other pass can write it.
+                if let Expr::Identifier(id) = &*b.expr {
+                    if b.is_mut && !self.outside(&id.name) {
+                        return;
+                    }
+                }
                 if b.is_mut {
                     self.fail(
                         "a `&mut` borrow in an `across` loop may write any element".to_string(),
