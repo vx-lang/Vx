@@ -97,4 +97,16 @@ nothing else reads the tile (`k_loop` in `lane_matmuls_on_the_gpu.vx`), but no r
 
 A later change can let a programmer write `Memory::REG` on a tile of a subgroup, with this
 meaning. The compiler would then check that the part of each lane fits in the register budget,
-and that only that subgroup reads the tile. This needs its own design.
+and that only that subgroup reads the tile.
+
+The lowering in MLIR can give the guarantee. Today, when it cannot keep an accumulator in
+registers, it keeps the tile in shared memory, and says nothing. Examples are another op that
+reads the tile, or an index that is not known at compile time. For a tile in `Memory::REG`, that
+case becomes a compile error that names the access that needs memory. This guarantee has two
+limits:
+
+- It covers what MLIR decides: the compiler makes no buffer for the tile. `ptxas` assigns the
+  registers later, and it can still spill some of them to local memory when a kernel needs too
+  many. When `ptxas` runs, the compiler can report its spills for these tiles.
+- The error needs the source line of the access. The legacy code generator gives the operations
+  of MLIR the locations of the Vx source. The flat code generator does not yet (#3643).
