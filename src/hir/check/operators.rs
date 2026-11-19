@@ -723,23 +723,18 @@ impl<'a> TypeChecker<'a> {
                 // slice's shape (here `*` is elementwise; matmul is `@`/MatMul, handled above).
                 // These lower to vector ops (load/broadcast + arith.{mulf,addf,subf,divf}).
                 //
-                // Half-precision slices participate as STORAGE (Vx#320): they widen to f32 on
-                // load, so any op touching an f16/bf16 slice yields an F32 slice -- storage
-                // precision and arithmetic precision are separate decisions, and arithmetic is
-                // always f32. Narrowing back happens only at an explicit store into a half
-                // tensor, which the assignment rules govern.
+                // Two operands of one element type give that type, as scalars and tensors of
+                // rank 2 do: f16 + f16 is f16. Operands of two float types, such as an f16
+                // slice and an f32 scalar, give f32, which holds every f16 and bf16 value.
                 if matches!(
                     op,
                     BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
                 ) {
-                    let l_half = Self::is_half_slice(&lhs_ty);
-                    let r_half = Self::is_half_slice(&rhs_ty);
-                    let l_slice = Self::is_f32_slice(&lhs_ty) || l_half;
-                    let r_slice = Self::is_f32_slice(&rhs_ty) || r_half;
+                    let l_slice = Self::is_f32_slice(&lhs_ty) || Self::is_half_slice(&lhs_ty);
+                    let r_slice = Self::is_f32_slice(&rhs_ty) || Self::is_half_slice(&rhs_ty);
                     // A half scalar is admitted alongside f32 for the same reason a half slice
-                    // is (Vx#320): it widens to f32 and the arithmetic happens there. Refusing
-                    // it here left `slice * f16_scalar` to fall through to the splat rule, which
-                    // typed it as a half slice and crashed the emitter.
+                    // is. Refusing it here left `slice * f16_scalar` to fall through to the
+                    // splat rule, which crashed the emitter.
                     let float_scalar = |t: &Type| {
                         matches!(
                             t,
@@ -750,14 +745,6 @@ impl<'a> TypeChecker<'a> {
                     };
                     let l_scalar = float_scalar(&lhs_ty);
                     let r_scalar = float_scalar(&rhs_ty);
-                    let l_half_scalar = matches!(
-                        lhs_ty,
-                        Type::Scalar(ElementType::F16) | Type::Scalar(ElementType::BF16)
-                    );
-                    let r_half_scalar = matches!(
-                        rhs_ty,
-                        Type::Scalar(ElementType::F16) | Type::Scalar(ElementType::BF16)
-                    );
                     // At least one slice operand; the other must be a slice or an f32 scalar.
                     let slice_op = match (l_slice, r_slice) {
                         (true, true) => true,      // slice OP slice
@@ -767,9 +754,15 @@ impl<'a> TypeChecker<'a> {
                     };
                     if slice_op {
                         let shape_side = if l_slice { &lhs_ty } else { &rhs_ty };
-                        if l_half || r_half || l_half_scalar || r_half_scalar {
-                            // The widened result: same shape and placement, f32 element.
-                            if let Type::Tensor(_, dims, top) = shape_side {
+                        let elem = |t: &Type| match t {
+                            Type::Scalar(e) => Some(e.clone()),
+                            other => Self::as_tensor_operand(other).map(|(e, _, _)| e.clone()),
+                        };
+                        let shape_elem = elem(shape_side);
+                        if elem(&lhs_ty) != elem(&rhs_ty) && shape_elem != Some(ElementType::F32) {
+                            // A half slice with another float type: the f32 result is a new
+                            // tensor of the same shape and placement, not a borrow.
+                            if let Some((_, dims, top)) = Self::as_tensor_operand(shape_side) {
                                 return Type::Tensor(ElementType::F32, dims.clone(), top.clone());
                             }
                         }
@@ -919,8 +912,9 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// The operand rule for `%`, the bitwise operators and the shifts: the three that have
-    /// no elementwise lowering and are not defined on every element type. Returns false,
-    /// having reported E3030, when the operands are outside what the operator accepts.
+    /// no elementwise lowering and are not defined on every element type. `+`, `-`, `*`
+    /// and `/` only refuse two bools. Returns false, having reported E3030, when the operands
+    /// are outside what the operator accepts.
     ///
     /// Shared by `a % b` and `a %= b` so the two cannot drift apart. Before this was
     /// shared, the compound form was checked by the plain assignment rule, which does not
@@ -944,6 +938,38 @@ impl<'a> TypeChecker<'a> {
     ) -> bool {
         let bitwise = matches!(op, BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor);
         let shift = matches!(op, BinaryOp::Shl | BinaryOp::Shr);
+        // The other arithmetic operators take tensors too, so they refuse only two bools.
+        // As 1-bit integers, `true + true` would be `false`.
+        if matches!(
+            op,
+            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
+        ) {
+            let is_bool = |t: &Type| Self::scalar_elem(t) == Some(ElementType::Bool);
+            // One `bool` and one number is a type mismatch, which the caller reports.
+            if !(is_bool(lhs_ty) && is_bool(rhs_ty)) {
+                return true;
+            }
+            // A shaped tensor has no `&`, `|` or `^` either, so the hint is for single values.
+            let hint = if Self::single_value_elem(lhs_ty).is_some()
+                && Self::single_value_elem(rhs_ty).is_some()
+            {
+                ". For bools, use `&` (and), `|` (or) or `^` (xor)"
+            } else {
+                ""
+            };
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3030,
+                format!(
+                    "`{}` takes two numbers, got {} and {}{}",
+                    binary_op_symbol(op),
+                    lhs_ty,
+                    rhs_ty,
+                    hint
+                ),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
+            return false;
+        }
         if *op != BinaryOp::Rem && !bitwise && !shift {
             return true;
         }

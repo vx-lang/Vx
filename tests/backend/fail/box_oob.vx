@@ -1,4 +1,4 @@
-// RUN: not vxc %s | FileCheck %s
+// RUN: not vxc %s 2>&1 | FileCheck %s
 // CHECK: Caught SIGSEGV
 // CHECK: Backtrace:
 import std::box;

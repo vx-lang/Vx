@@ -1202,6 +1202,9 @@ pub struct InlineMlirExpr {
     pub dialects: Vec<String>,
     /// What the block writes, as `atomic(t)` clauses. Not evaluated, so visitors skip them.
     pub ensures: Vec<Expr>,
+    /// `threads : N`: every thread of a threadgroup of at least `N` runs the block. `None` for a
+    /// block that runs as the code around it runs.
+    pub threads: Option<u32>,
     pub block_str: String,
     pub span: Span,
 }
@@ -2093,6 +2096,7 @@ impl Expr {
                     .map(|t| substitute_mlir_returns(t, mapping)),
                 dialects: e.dialects.clone(),
                 ensures: e.ensures.iter().map(|ex| ex.substitute(mapping)).collect(),
+                threads: e.threads,
                 block_str: substitute_words(&e.block_str, mapping),
                 span: e.span,
             }),

@@ -5,10 +5,11 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// A row of `f16` or `bf16` values is multiplied by a scalar and cast back with `as`. The row
-// widens to `f32` for the arithmetic, and the cast narrows the result. Each lane has its own
-// value, so a wrong lane order or a broadcast of one element changes the output. Both code
-// generators run it.
+// A row of `f16` or `bf16` values is multiplied by a scalar and cast with `as`. With an `f32`
+// scalar, the row widens to `f32` and the cast narrows the result. With an `f16` scalar, the
+// product is `f16`, and the last line casts it to `f32`. Each lane has its own value, so a
+// wrong lane order or a broadcast of one element changes the output. Both code generators run
+// it.
 //
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
@@ -16,6 +17,7 @@
 // CHECK: {{^}}f16 by f16 6 8 10 12{{$}}
 // CHECK: {{^}}bf16 by f32 1.25 1.75 2.25 2.75{{$}}
 // CHECK: {{^}}f32 by f32 2 2.5 3 3.5{{$}}
+// CHECK: {{^}}f16 by f16 as f32 12 16 20 24{{$}}
 
 fn main() -> i32 {
   let mut h = Tensor<f16, [2, 4]>::new();
@@ -34,10 +36,12 @@ fn main() -> i32 {
   h[1] = (h[1] * s16) as f16;
   b[0] = (b[0] * s32) as bf16;
   f[0] = f[0] * s32;
+  f[1] = (h[1] * s16) as f32;
 
   println!("f16 by f32 {} {} {} {}", h[0][0], h[0][1], h[0][2], h[0][3]);
   println!("f16 by f16 {} {} {} {}", h[1][0], h[1][1], h[1][2], h[1][3]);
   println!("bf16 by f32 {} {} {} {}", b[0][0], b[0][1], b[0][2], b[0][3]);
   println!("f32 by f32 {} {} {} {}", f[0][0], f[0][1], f[0][2], f[0][3]);
+  println!("f16 by f16 as f32 {} {} {} {}", f[1][0], f[1][1], f[1][2], f[1][3]);
   return 0;
 }

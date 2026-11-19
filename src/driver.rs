@@ -1773,7 +1773,7 @@ impl CompilerDriver {
                 crate::intern_mode::timed("mlir_print", || println!("{}", module.as_operation()));
             }
             Action::RunJit => {
-                let mlir_str = format!("{}", module.as_operation());
+                let mlir_str = module_text_with_locations(&module)?;
                 let out = crate::jit::execute_mlir_streams(
                     &mlir_str,
                     self.options.program_args.clone(),
@@ -1826,7 +1826,7 @@ impl CompilerDriver {
                 // each function an exported wrapper `_mlir_<name>`, after the program's symbols
                 // were hidden. The engine's machine code shared stack slots also at `-O0`, as
                 // `llc` does only from `-O1` up, so `llc` runs at `-O2` or higher.
-                let mlir_str = format!("{}", module.as_operation());
+                let mlir_str = module_text_with_locations(&module)?;
                 let temp_dir = tempfile::tempdir().map_err(|e| e.to_string())?;
                 let obj = crate::jit::compile_mlir_to_object_with_codegen_level(
                     &mlir_str,
@@ -2162,6 +2162,15 @@ impl CompilerDriver {
     }
 }
 
+/// The module as text with its source locations, so that `mlir-translate` can make DWARF.
+fn module_text_with_locations(module: &melior::ir::Module) -> Result<String, String> {
+    use melior::ir::operation::{OperationLike, OperationPrintingFlags};
+    module
+        .as_operation()
+        .to_string_with_flags(OperationPrintingFlags::new().enable_debug_info(true, false))
+        .map_err(|e| format!("could not print the MLIR module: {e}"))
+}
+
 fn get_optimization_pipeline(
     opt_level: u8,
     llvm_lower: bool,
@@ -2215,6 +2224,8 @@ fn get_optimization_pipeline(
         // that round exactly. Left to LLVM, an x86 CPU with AVX512-BF16 converts with
         // `vcvtneps2bf16`, which flushes a subnormal to zero.
         passes.push("vx-to-llvm".to_string());
+        // `vx-to-llvm` expands a lane matmul on the CPU, which converts fp8 tiles to f32.
+        passes.push("vx-expand-narrow-floats".to_string());
         passes.push("arith-expand{include-bf16=true}".to_string());
         passes.push("func.func(convert-linalg-to-loops,lower-affine)".to_string());
         passes.push("convert-scf-to-cf".to_string());

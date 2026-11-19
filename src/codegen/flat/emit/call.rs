@@ -47,7 +47,7 @@ impl FnEmit<'_> {
         } else if callee.ret_ptr {
             "!llvm.ptr".to_string() // an FFI pointer-returning callee (#235)
         } else if let Some(v) = &callee.ret_vec {
-            v.clone()
+            v.to_string()
         } else if callee.ret_void {
             "()".to_string()
         } else {
@@ -86,7 +86,7 @@ impl FnEmit<'_> {
             } else if self.is_pointer_value(*a as usize)? {
                 "!llvm.ptr".to_string()
             } else if let Some(v) = self.vec_of.get(*a as usize).cloned().flatten() {
-                v
+                v.to_string()
             } else {
                 self.mem_of
                     .get(*a as usize)
@@ -339,9 +339,18 @@ impl FnEmit<'_> {
             }
         }
         let ret_sig = ret.map(|rt| format!(" -> {rt}")).unwrap_or_default();
+        // The CPU copy of a kernel cannot run a block that every thread of a threadgroup runs.
+        let attrs = if blk.threads {
+            format!(
+                " attributes {{vx.threadgroup_block = \"line {}, column {}\"}}",
+                blk.line, blk.column
+            )
+        } else {
+            String::new()
+        };
         // The comments let `parse_emitted_module` find the block that an MLIR error is in.
         self.wrappers += &format!(
-            "{}{} {}\nfunc.func private @{fname}({}){ret_sig} {{\n{}\n}}\n{}\n",
+            "{}{} {}\nfunc.func private @{fname}({}){ret_sig}{attrs} {{\n{}\n}}\n{}\n",
             crate::codegen::flat::MLIR_BLOCK_START,
             blk.line,
             blk.column,
@@ -496,7 +505,7 @@ impl FnEmit<'_> {
             } else if self.is_pointer_value(*a as usize)? {
                 "!llvm.ptr".to_string()
             } else if let Some(v) = self.vec_of.get(*a as usize).cloned().flatten() {
-                v
+                v.to_string()
             } else {
                 self.mem_of
                     .get(*a as usize)

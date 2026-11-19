@@ -153,6 +153,8 @@ pub struct InlineBlock {
     pub void: bool,
     pub line: usize,
     pub column: usize,
+    /// `threads : N`: every thread of the threadgroup runs the block, so the CPU cannot.
+    pub threads: bool,
 }
 
 /// The stable per-instance GID of a monomorphized generic struct whose layout depends on its
@@ -190,6 +192,11 @@ pub fn tensor_gid_of(ty: &Type) -> Option<TypeId> {
 /// element, or a dim that isn't a literal/name). The shape is what the flat lowerer rank-reduces on
 /// indexing.
 fn tensor_elem_shape(ty: &Type) -> Option<(ElementType, Vec<String>)> {
+    // At run time, a `Distinct` tensor is its tensor.
+    let ty = match ty {
+        Type::Distinct(inner) => inner.as_ref(),
+        ty => ty,
+    };
     let Type::Tensor(elem, dims, _) = ty else {
         return None;
     };
@@ -476,6 +483,10 @@ struct Lowerer<'r> {
     code: Vec<HirInstruction>,
     types: Vec<TypeId>,
     scope: HashMap<Symbol, Binding>,
+    /// The slots whose value cannot change, with that value: the slot of a local that is not
+    /// `mut`, such as a parameter whose address is taken. A device region uses the value, because
+    /// it cannot read a stack slot of the host.
+    fixed_slots: HashMap<u32, Val>,
     /// The frozen nominal-type registry — the source of aggregate layouts (size/align/field offsets)
     /// used to size an aggregate's `Alloca` and select field indices.
     registry: &'r ImmutableGlobalRegistry,
@@ -650,6 +661,7 @@ impl<'r> Lowerer<'r> {
             code: Vec::new(),
             types: Vec::new(),
             scope: HashMap::new(),
+            fixed_slots: HashMap::new(),
             registry,
             memory: false,
             next_block: 1,
@@ -1354,7 +1366,9 @@ impl<'r> Lowerer<'r> {
     }
 
     /// `starts_lifetime`: a struct's slot starts its lifetime here, for a `let` the checker ends.
-    fn bind_local(&mut self, name: Symbol, v: Val, starts_lifetime: bool) {
+    /// `may_change`: the local is a `let mut` or a `mut` parameter. The slot of any other local
+    /// keeps the value that it starts with.
+    fn bind_local(&mut self, name: Symbol, v: Val, starts_lifetime: bool, may_change: bool) {
         if matches!(v.ty, LoweredTy::Tensor { .. }) {
             self.tensor_depth.insert(v.reg.0, self.block_frames.len());
         }
@@ -1410,6 +1424,15 @@ impl<'r> Lowerer<'r> {
                 self.start_lifetime(&slot);
             }
             self.emit_effect(Opcode::Store, slot.reg, v.reg, 0);
+            // A value that code of lane 0 alone made may not reach the code after it, so the slot
+            // keeps it.
+            let a_value = matches!(
+                v.ty,
+                LoweredTy::Scalar(_) | LoweredTy::Ptr | LoweredTy::Vector { .. }
+            );
+            if a_value && !may_change && !self.across.on_lane0 {
+                self.fixed_slots.insert(slot.reg.0, v.clone());
+            }
             self.scope.insert(
                 name,
                 Binding::Slot {
@@ -1586,15 +1609,20 @@ impl<'r> Lowerer<'r> {
                 // carries the left operand's type. When either operand is a tensor the op is
                 // *elementwise* and the result is the tensor type (a scalar operand broadcasts) -- an
                 // arith opcode with a tensor result type is the flat HIR's elementwise form, mirroring
-                // `arith.mulf` on a vector in codegen. A rank-1 HALF tensor operand widens the
-                // result to f32 (Vx#320): the checker types it so, and codegen loads the half row
-                // through an extf. The checker keeps the half type from rank 2 up, so this does too.
+                // `arith.mulf` on a vector in codegen. A rank-1 HALF tensor with an operand of
+                // another float type gives f32, as the checker types it, and codegen loads the
+                // half row through an extf. Two operands of one type keep that type.
+                let elem_of = |t: &LoweredTy| match t {
+                    LoweredTy::Scalar(e) | LoweredTy::Tensor { elem: e, .. } => Some(e.clone()),
+                    _ => None,
+                };
+                let mixed = elem_of(&l.ty) != elem_of(&r.ty);
                 let widen = |t: &LoweredTy| -> LoweredTy {
                     match t {
                         LoweredTy::Tensor {
                             elem: ElementType::F16 | ElementType::BF16,
                             shape,
-                        } if shape.len() == 1 => LoweredTy::Tensor {
+                        } if mixed && shape.len() == 1 => LoweredTy::Tensor {
                             elem: ElementType::F32,
                             shape: shape.clone(),
                         },
@@ -1893,8 +1921,19 @@ impl<'r> Lowerer<'r> {
                 // `barrier()` (Vx#379): an effect, not a call -- there is no callee anywhere.
                 // The checker typed it i32, so hand back a constant for the value position
                 // nobody should be using it in.
-                if let Some((op, ordered)) = crate::hir::check::lanes::lane_routine(&fc.name) {
-                    return self.lower_lane_reduce(fc, op, ordered);
+                if let Some(routine) = crate::hir::check::lanes::lane_routine(&fc.name) {
+                    let args: Vec<&Expr> = fc.args.iter().collect();
+                    return match self.lower_lane_call(routine, &args)? {
+                        Some(v) => Ok(v),
+                        // The value of a routine with no value, which nothing reads.
+                        None => Ok(self.emit_value(
+                            Opcode::Const,
+                            Register(0),
+                            Register(0),
+                            ElementType::I32,
+                            0,
+                        )),
+                    };
                 }
                 // Around the call of a `Drop` impl's `drop` (F6, F6a): an effect on the
                 // runtime, with the time limit of the drop in nanoseconds.
@@ -3270,7 +3309,7 @@ impl<'r> Lowerer<'r> {
                                 let tensor = matches!(pval.ty, LoweredTy::Tensor { .. });
                                 self.note_shadow(pname);
                                 self.ast_types.insert(pname.clone(), payload_type);
-                                self.bind_local(pname.clone(), pval, false);
+                                self.bind_local(pname.clone(), pval, false, false);
                                 if tensor {
                                     match self.scope.get(pname) {
                                         Some(Binding::Reg(v)) => {
@@ -3943,7 +3982,7 @@ impl<'r> Lowerer<'r> {
         if let [item] = args {
             self.ast_types.insert(f.iter.as_str().into(), item.clone());
         }
-        self.bind_local(f.iter.as_str().into(), x, false);
+        self.bind_local(f.iter.as_str().into(), x, false, false);
         self.loop_stack.push((header, exit)); // continue -> header, break -> exit
         self.lower_block(&f.body)?;
         self.loop_stack.pop();
@@ -4451,12 +4490,26 @@ impl<'r> Lowerer<'r> {
     ) -> Lowered<Option<Val>> {
         let tail_slot = self.region_tail_slot.take();
         let cancels_on_err = self.region_cancels_on_err.take();
-        self.emit_effect(
-            Opcode::Spawn,
-            Register(launch.max_registers as u32),
-            Register(0),
-            imm,
+        let on_device = !matches!(
+            imm as u32 as i32,
+            crate::arch::TASK_DISPATCH_ID | crate::arch::TASKS_BLOCK_DISPATCH_ID
         );
+        // A device cannot read a stack slot of the host. So in the region, a name in a slot whose
+        // value cannot change means that value.
+        let fixed: Vec<_> = if on_device {
+            self.scope
+                .iter()
+                .filter_map(|(name, b)| match b {
+                    Binding::Slot { reg, .. } => {
+                        Some((name.clone(), self.fixed_slots.get(&reg.0)?.clone()))
+                    }
+                    _ => None,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        self.emit_effect(Opcode::Spawn, Register(0), Register(0), imm);
         if launch.across {
             self.emit_effect(Opcode::AcrossRegion, Register(0), Register(0), 0);
         }
@@ -4491,11 +4544,11 @@ impl<'r> Lowerer<'r> {
         // ownership. Failing both, the region lowers serially -- rejection is always free.
         // The region is a block: its `let`s end with it.
         let depth = self.open_block();
+        for (name, v) in fixed {
+            self.note_shadow(&name);
+            self.scope.insert(name, Binding::Reg(v));
+        }
         self.spawn_depth += 1;
-        let on_device = !matches!(
-            imm as u32 as i32,
-            crate::arch::TASK_DISPATCH_ID | crate::arch::TASKS_BLOCK_DISPATCH_ID
-        );
         self.device_depth += on_device as u32;
         let par = if offer_parallel {
             parallel_outer_for(stmts)
@@ -4513,7 +4566,11 @@ impl<'r> Lowerer<'r> {
                 self.lower_stmt(stmt)?;
             }
             self.stride_next_for = false;
-            par.map(|(_, t)| t).unwrap_or(0)
+            match par {
+                Some((_, crate::hir::check::parallel::RUN_TIME_TRIP)) => SPAWN_RUN_TIME_TRIP,
+                Some((_, trip)) => trip,
+                None => 0,
+            }
         } else if let Some((btrip, plan)) = two_level {
             self.stride_plan = Some(plan);
             for stmt in stmts {
@@ -6071,6 +6128,7 @@ impl<'r> Lowerer<'r> {
             void: im.returns.is_none(),
             line: im.span.line,
             column: im.span.column,
+            threads: im.threads.is_some(),
         });
         Ok(self.emit_typed(Opcode::InlineMlir, Register(0), Register(0), ty, imm))
     }
@@ -6584,7 +6642,7 @@ impl<'r> Lowerer<'r> {
     fn lower_call(&mut self, fc: &crate::syntax::FunctionCallExpr) -> Lowered<Val> {
         // `Verified(x)` is the checker-level wrapper in value position -- the identity at
         // runtime, exactly as the AST path erases it. Lower the wrapped value directly.
-        if fc.name.as_ref() == "Verified" && fc.args.len() == 1 {
+        if matches!(fc.name.as_ref(), "Verified" | "Distinct") && fc.args.len() == 1 {
             return self.lower_expr(&fc.args[0]);
         }
         // An indirect call: the callee name is a local holding a function pointer (a fn-pointer
@@ -7429,7 +7487,7 @@ impl<'r> Lowerer<'r> {
                     // A task writes its result into the slot while the code goes on, so the
                     // slot's lifetime cannot start after the `spawn`.
                     let from_a_task = matches!(&l.expr, Expr::UnsafeBlock(u) if u.task.is_some());
-                    self.bind_local(l.name.clone(), v, !from_a_task);
+                    self.bind_local(l.name.clone(), v, !from_a_task, l.is_mut);
                 }
                 Ok(())
             }
@@ -7926,7 +7984,8 @@ fn try_lower<'r>(
         {
             lw.scope.insert(name.clone(), Binding::Reg(incoming));
         } else {
-            lw.bind_local(name.clone(), incoming, false);
+            let may_change = func.mut_params.contains(name);
+            lw.bind_local(name.clone(), incoming, false, may_change);
         }
     }
     for (si, stmt) in func.body.iter().enumerate() {
@@ -8014,9 +8073,10 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
         Type::GenericInstance(base, _) => lowered_ty(base, registry),
         // `Verified<T>`, `Ref<T, Memory>`, `Pinned<T, Topology>` are checker-level wrappers; the
         // runtime value is the inner type, exactly as the AST codegen's `lower_type` peels them.
-        Type::Verified(inner) | Type::Ref(inner, _) | Type::Pinned(inner, _) => {
-            lowered_ty(inner, registry)
-        }
+        Type::Verified(inner)
+        | Type::Distinct(inner)
+        | Type::Ref(inner, _)
+        | Type::Pinned(inner, _) => lowered_ty(inner, registry),
         _ => None,
     }
 }
@@ -8028,9 +8088,10 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
 fn is_dyn_tensor(ty: &Type) -> bool {
     match ty {
         Type::Tensor(_, dims, _) => dims.iter().any(|d| matches!(d, Dim::Dyn)),
-        Type::Verified(inner) | Type::Ref(inner, _) | Type::Pinned(inner, _) => {
-            is_dyn_tensor(inner)
-        }
+        Type::Verified(inner)
+        | Type::Distinct(inner)
+        | Type::Ref(inner, _)
+        | Type::Pinned(inner, _) => is_dyn_tensor(inner),
         Type::Borrow { inner, .. } => is_dyn_tensor(inner),
         _ => false,
     }
@@ -8816,6 +8877,7 @@ fn enum_payload_size_align(ty: &Type) -> Option<(u64, u64)> {
         Type::Pointer(..) | Type::Borrow { .. } | Type::Ref(..) => Some((8, 8)),
         // A tensor is its descriptor: two pointers, an offset, and a size and a stride per rank.
         Type::Tensor(_, shape, ..) => Some((8 * (3 + 2 * shape.len() as u64), 8)),
+        Type::Distinct(inner) => enum_payload_size_align(inner),
         _ => None,
     }
 }
@@ -9092,8 +9154,7 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             | Opcode::TensorDim
             // `PtrIndex` reads base+index; `PtrStore` reads place+value (#242).
             | Opcode::PtrIndex
-            | Opcode::PtrStore
-            | Opcode::LaneReduce => {
+            | Opcode::PtrStore => {
                 assert!(
                     ins.operand1.0 < i && ins.operand2.0 < i,
                     "HIR operand not dominated at instruction {i}"
@@ -9180,6 +9241,10 @@ pub const SPAWN_TWO_LEVEL: u64 = 1 << 62;
 /// whole walk before the next thread stages its rows, which is a different program. The
 /// runtime must refuse to run it on the host rather than compute confidently wrong numbers.
 pub const SPAWN_COOP: u64 = 1 << 61;
+
+/// The `SpawnEnd` imm bit that says "the outermost loop runs in parallel, and its trip count is
+/// known only at run time". The low 32 bits are then 0.
+pub const SPAWN_RUN_TIME_TRIP: u64 = 1 << 60;
 
 pub(crate) mod across;
 mod affine;

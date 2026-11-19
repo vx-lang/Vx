@@ -1585,15 +1585,21 @@ bool run_device_image(const void *payload, size_t payload_size,
   }
   if (set_by_program) {
     grid = shape[0];
-  } else if (const char *launch =
-                 vx_payload_field(payload, payload_size, "launch=")) {
-    char *rest = nullptr;
-    long trip = strtol(launch, &rest, 10);
-    if (rest && *rest == ',') {
+  } else {
+    long t = 0;
+    long trip = vx_launch_trip(payload, payload_size, device_args, arg_tags,
+                               num_args, &t);
+    if (trip < 0 || t < 0) {
+      fprintf(stderr,
+              "[Vx CUDA] FATAL: %s: `launch=` names a launch value that is "
+              "not an i32\n",
+              kernel_name);
+      abort();
+    }
+    if (t != 0) {
       /* Two-level "B,T" (Vx#379): B is a block count -- the block loop
          strides by gridDim, so capping it is correct, not lossy -- and T is
          the block shape the compiler suggested. */
-      long t = strtol(rest + 1, nullptr, 10);
       if (trip > 0 && t > 0) {
         grid = trip > 4096 ? 4096u : (unsigned)trip;
         block = t > 1024 ? 1024u : (unsigned)t;
@@ -1801,8 +1807,8 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
     if (span.view >= 0) {
       vx_view_copy_blocks(&views[span.view], copy_block_to_host, span.copy);
     } else {
-      VX_CUDA_CHECK(cudaMemcpy(span.copy, (const void *)span.start,
-                               span.bytes, cudaMemcpyDeviceToHost));
+      VX_CUDA_CHECK(cudaMemcpy(span.copy, (const void *)span.start, span.bytes,
+                               cudaMemcpyDeviceToHost));
     }
     if (verbose()) {
       fprintf(stderr,

@@ -1120,6 +1120,55 @@ impl<'a> Parser<'a> {
                     span: Span::default(),
                 })
             }
+            // `Distinct::check(t)` checks the values of `t` and calls `core::distinct`.
+            TokenType::Distinct if self.peek_n(1).kind == TokenType::DoubleColon => {
+                self.advance();
+                self.advance();
+                match &self.advance().kind {
+                    TokenType::Identifier(s) if *s == "check" => {}
+                    _ => return Err(self.error("Expected 'check' after 'Distinct::'")),
+                }
+                self.consume(&TokenType::LeftParen, "Expected '(' after Distinct::check")?;
+                let mut args = Vec::new();
+                if !self.check(&TokenType::RightParen) {
+                    args.push(self.parse_expr()?);
+                    while self.match_token(&TokenType::Comma) {
+                        args.push(self.parse_expr()?);
+                    }
+                }
+                self.consume(&TokenType::RightParen, "Expected ')'")?;
+                self.uses_distinct_check = true;
+                Expr::FunctionCall(FunctionCallExpr {
+                    owner_type_args: None,
+                    name: "Distinct::check".to_string().into(),
+                    type_args: None,
+                    args,
+                    span: Span {
+                        line: peeked_token.line,
+                        column: peeked_token.column,
+                        length: peeked_token.length,
+                        expansion: self.expansion(),
+                    },
+                })
+            }
+            TokenType::Distinct => {
+                self.advance();
+                self.consume(&TokenType::LeftParen, "Expected '(' after Distinct")?;
+                let inner = self.parse_expr()?;
+                self.consume(&TokenType::RightParen, "Expected ')'")?;
+                Expr::FunctionCall(FunctionCallExpr {
+                    owner_type_args: None,
+                    name: "Distinct".to_string().into(),
+                    type_args: None,
+                    args: vec![inner],
+                    span: Span {
+                        line: peeked_token.line,
+                        column: peeked_token.column,
+                        length: peeked_token.length,
+                        expansion: self.expansion(),
+                    },
+                })
+            }
             TokenType::Grad => {
                 self.advance();
                 self.consume(&TokenType::LeftParen, "Expected '(' after 'grad'")?;

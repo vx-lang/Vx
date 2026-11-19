@@ -54,7 +54,7 @@ impl FnEmit<'_> {
             // A `<N x T>` parameter: a `vector<NxT>` block argument. The spelling comes off the
             // declared type rather than a GID side table -- a vector carries no shape beyond its
             // element and lane count, both of which the declaration already states.
-            self.vec_of[idx] = mlir_vector(e, *lanes);
+            self.vec_of[idx] = VectorTy::new(e, *lanes);
         }
         Ok(())
     }

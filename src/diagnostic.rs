@@ -127,7 +127,7 @@ pub enum DiagnosticCode {
     /// The loop of a `spawn` region runs on one thread although each pass writes only memory of
     /// its own, so its passes could run at the same time. The warning points at what stops it: a
     /// call the compiler cannot show writes nothing, inline MLIR, a read of a row another pass
-    /// writes, bounds not known when compiling, and the like. A region that calls `barrier()` asks
+    /// writes, a `break` out of the loop, and the like. A region that calls `barrier()` asks
     /// for blocks and threads, so it is warned about whenever it runs on one thread, with the
     /// first thing that stopped the split: two threads that may write the same element, a `break`
     /// out of a loop that holds a `barrier()`, a write to block-shared memory with no `barrier()`
@@ -307,10 +307,11 @@ pub enum DiagnosticCode {
     /// parses as a user nominal, so without this a typo -- or a type constructor removed from the
     /// language -- compiled silently and did nothing.
     E3029,
-    /// An operator applied to operand types it is not defined on -- `%` on a shaped tensor or on
-    /// a `bool`, or `-` on an unsigned integer or a `bool`. For `%`, the flat emitter would
-    /// decline and fall back to a path that cannot lower it either, and an `i1` operand would
-    /// reach `arith.remsi` and verify. `-` on an unsigned integer would wrap with no error.
+    /// An operator applied to operand types it is not defined on -- `%` on a shaped tensor,
+    /// `+`, `-`, `*`, `/` or `%` on a `bool`, or `-` on an unsigned integer or a `bool`. For
+    /// `%`, the flat emitter would decline and fall back to a path that cannot lower it
+    /// either, and an `i1` operand would reach `arith.remsi` and verify. `-` on an unsigned
+    /// integer would wrap with no error, and `true + true` would be `false`.
     E3030,
     /// `impl Copy for X` where one of `X`'s fields is a type that moves. `Copy` promises a
     /// value survives being assigned elsewhere, and a field that does not survive it breaks
@@ -711,7 +712,9 @@ pub enum DiagnosticCode {
     /// topology does not name, a loop outside a `spawn on` region or in the wrong order, a size
     /// that is not known when the kernel is compiled or is over the limit, or a jump out of the
     /// loop. Also a lane reduction (`lanes::sum` and the others) outside the code of a loop of
-    /// blocks or subgroups, or with a tensor that is too large.
+    /// blocks or subgroups, or with a tensor that is too large. Also two passes of the loop that
+    /// may write the same element, or a pass that may read an element that another pass writes.
+    /// A row from a `Distinct` tensor parameter, as in `y[idx[b]]`, keeps the passes apart.
     E6032,
     /// An index into a tensor in a `scope: thread` space that is not known when compiling. Such
     /// a tensor stays in registers, and a register has no address. So each index must be a

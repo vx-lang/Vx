@@ -18,6 +18,7 @@
 //   Row `pos` holds the token at position `pos`.
 // - Head h of Q uses head h / (q_heads / kv_heads) of K and V (grouped-query attention).
 import core::num;
+import core::sync::atomic;
 
 /// y[r] = (row r of w) . x, for r below `rows`.
 fn nn_matvec<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<bf16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
@@ -1049,6 +1050,247 @@ fn nn_moe_down_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor
     }
   }
   return;
+}
+
+// Grouping the pairs of a mixture-of-experts layer by expert, for batched prefill. Pair p is slot
+// p % k of token p / k, and ids[p] is its expert. The grouped order holds the pairs of expert 0,
+// then those of expert 1, and so on, each group in the order of p. With `align` above 1, each group
+// starts at a multiple of `align`, so a tile of `align` positions holds the pairs of one expert.
+// The padding at position i holds n + i, so no two positions hold the same value, and a value of
+// n or more is not a pair.
+//
+// It is a counting sort in three kernels, each in a function of its own: `nn_moe_group_count`,
+// `nn_moe_group_offsets` and `nn_moe_group_place`, in that order. `nn_moe_group` runs all three.
+// Each kernel reads only the parameters of its function, so `--emit-ptx` can describe its launch.
+// A block of the sort takes 256 pairs, so `counts` and `base` have a row for each 256 pairs and
+// a column for each expert. `experts` is at most 1024.
+
+/// counts[b][e] = the number of pairs of expert e among the pairs 256 * b to 256 * b + 255, of
+/// the first n pairs of `ids`.
+fn nn_moe_group_count<M : Memory>(counts : &mut Tensor<i32, [?, ?], Memory::M>, ids : &Tensor<i32, [?], Memory::M>, n : i32, experts : i32) -> void {
+  assert(experts > 0 && experts <= 1024 && n >= 0 && n <= ids.len(), "nn_moe_group_count: `experts` must be 1 to 1024, and `ids` needs n values");
+  assert(counts.extent(0) * 256 >= n && counts.extent(1) >= experts, "nn_moe_group_count: `counts` needs a row for each 256 pairs, and a column for each expert");
+  spawn on(Topology::Device) {
+    for b in 0..(n + 255) / 256 across blocks {
+      let mut keys = unsafe { Tensor<i32, [256], Memory::SMEM>::uninit() };
+      for l in 0..1024 across lanes {
+        if l < 256 {
+          let p = b * 256 + l;
+          let mut id = -1;
+          if p < n {
+            id = ids[p];
+            assert(id >= 0 && id < experts, "nn_moe_group_count: an id is not the number of an expert");
+          }
+          keys[l] = id;
+        }
+      }
+      for e in 0..1024 across lanes {
+        if e < experts {
+          let mut count = 0;
+          for j in 0..256 {
+            if keys[j] == e {
+              count = count + 1;
+            }
+          }
+          counts[b][e] = count;
+        }
+      }
+    }
+  }
+  return;
+}
+
+/// The start of each group, from `counts` of `nn_moe_group_count`. starts[e] is the position of
+/// the first pair of expert e, and starts[experts] is the end of the last group, with its
+/// padding. base[b][e] is the position of the first pair of expert e among the pairs of block b.
+/// tile_expert[t] is the expert of the positions align * t to align * t + align - 1, or -1 after
+/// the last group. It also writes n + i at each position i of `order` that holds no pair.
+/// `order` needs n + experts * (align - 1) positions, and `tile_expert` one for each `align` of
+/// them.
+fn nn_moe_group_offsets<M : Memory>(base : &mut Tensor<i32, [?, ?], Memory::M>, starts : &mut Tensor<i32, [?], Memory::M>, tile_expert : &Tensor<i32, [?], Memory::M>, order : &Tensor<i32, [?], Memory::M>, counts : &Tensor<i32, [?, ?], Memory::M>, n : i32, experts : i32, align : i32) -> void {
+  assert(experts > 0 && experts <= 1024 && align > 0, "nn_moe_group_offsets: `experts` must be 1 to 1024, and `align` above 0");
+  assert(starts.len() > experts && counts.extent(0) * 256 >= n && counts.extent(1) >= experts && base.extent(0) * 256 >= n && base.extent(1) >= experts, "nn_moe_group_offsets: `starts` needs experts + 1 values, and `counts` and `base` a row for each 256 pairs");
+  assert(order.len() >= n + experts * (align - 1) && tile_expert.len() * align >= order.len(), "nn_moe_group_offsets: `order` needs n + experts * (align - 1) positions, and `tile_expert` one for each align of them");
+  spawn on(Topology::Device) {
+    for one in 0..1 across blocks {
+      let room = order.len();
+      let tiles = tile_expert.len();
+      let mut first = unsafe { Tensor<i32, [1024], Memory::SMEM>::uninit() };
+      let mut size = unsafe { Tensor<i32, [1024], Memory::SMEM>::uninit() };
+      let mut group = unsafe { Tensor<i32, [32], Memory::SMEM>::uninit() };
+      let mut end = unsafe { Tensor<i32, [1], Memory::SMEM>::uninit() };
+      // Lane e counts the pairs of expert e. A loop step reads eight rows, so that the eight
+      // loads wait for memory together and not one after another.
+      for e in 0..1024 across lanes {
+        if e < experts {
+          let mut total = 0;
+          let mut b = 0;
+          while b + 8 <= (n + 255) / 256 {
+            total = total + counts[b][e] + counts[b + 1][e] + counts[b + 2][e] + counts[b + 3][e] + counts[b + 4][e] + counts[b + 5][e] + counts[b + 6][e] + counts[b + 7][e];
+            b = b + 8;
+          }
+          while b < (n + 255) / 256 {
+            total = total + counts[b][e];
+            b = b + 1;
+          }
+          size[e] = total;
+          first[e] = (total + align - 1) / align * align;
+        }
+      }
+      // The start of each group is the sum of the padded sizes before it. Lane g adds the sizes
+      // of experts 32 * g to 32 * g + 31, and then lane 0 adds the sums of those 32 groups.
+      for g in 0..32 across lanes {
+        let mut sum = 0;
+        for k in 0..32 {
+          let x = 32 * g + k;
+          if x < experts {
+            let padded = first[x];
+            first[x] = sum;
+            sum = sum + padded;
+          }
+        }
+        group[g] = sum;
+      }
+      for g in 0..32 across lanes {
+        if g == 0 {
+          let mut sum = 0;
+          for h in 0..32 {
+            let added = group[h];
+            group[h] = sum;
+            sum = sum + added;
+          }
+          starts[experts] = sum;
+          end[0] = sum;
+        }
+      }
+      for e in 0..1024 across lanes {
+        if e < experts {
+          let start = first[e] + group[e / 32];
+          first[e] = start;
+          starts[e] = start;
+          let mut before = start;
+          let mut b = 0;
+          while b + 8 <= (n + 255) / 256 {
+            let c0 = counts[b][e];
+            let c1 = counts[b + 1][e];
+            let c2 = counts[b + 2][e];
+            let c3 = counts[b + 3][e];
+            let c4 = counts[b + 4][e];
+            let c5 = counts[b + 5][e];
+            let c6 = counts[b + 6][e];
+            let c7 = counts[b + 7][e];
+            base[b][e] = before;
+            base[b + 1][e] = before + c0;
+            base[b + 2][e] = before + c0 + c1;
+            base[b + 3][e] = before + c0 + c1 + c2;
+            base[b + 4][e] = before + c0 + c1 + c2 + c3;
+            base[b + 5][e] = before + c0 + c1 + c2 + c3 + c4;
+            base[b + 6][e] = before + c0 + c1 + c2 + c3 + c4 + c5;
+            base[b + 7][e] = before + c0 + c1 + c2 + c3 + c4 + c5 + c6;
+            before = before + c0 + c1 + c2 + c3 + c4 + c5 + c6 + c7;
+            b = b + 8;
+          }
+          while b < (n + 255) / 256 {
+            base[b][e] = before;
+            before = before + counts[b][e];
+            b = b + 1;
+          }
+        }
+      }
+      // Lane l writes tiles l, l + 1024, l + 2048 and so on, so a large group does not make one
+      // lane write all its tiles. A binary search over `first` finds the expert of a tile. The
+      // expert only grows with the tile, so each search starts at the last expert.
+      for l in 0..1024 across lanes {
+        let last = end[0];
+        let mut e = 0;
+        let mut t = l;
+        while t < tiles {
+          let at = t * align;
+          if at < last {
+            let mut above = experts;
+            while above - e > 1 {
+              let mid = (e + above) / 2;
+              let below = first[mid] <= at;
+              // Two `if`s, because the Metal translation cannot compile an `else` here yet.
+              if below {
+                e = mid;
+              }
+              if !below {
+                above = mid;
+              }
+            }
+            atomic_store_i32(tile_expert, t, e, AtomicOrdering::Relaxed);
+            // Only the last tile of a group can hold padding.
+            let mut i = first[e] + size[e];
+            if i < at {
+              i = at;
+            }
+            while i < at + align {
+              atomic_store_i32(order, i, n + i, AtomicOrdering::Relaxed);
+              i = i + 1;
+            }
+          } else {
+            atomic_store_i32(tile_expert, t, -1, AtomicOrdering::Relaxed);
+            let mut i = at;
+            while i < at + align && i < room {
+              atomic_store_i32(order, i, n + i, AtomicOrdering::Relaxed);
+              i = i + 1;
+            }
+          }
+          t = t + 1024;
+        }
+      }
+    }
+  }
+  return;
+}
+
+/// Writes each pair p at its position in `order`: after the pairs of its expert in the blocks
+/// before its own, and after those in its own block with a smaller p. `base` is from
+/// `nn_moe_group_offsets`. An atomic store writes it, because the checker cannot see that no two
+/// pairs get the same position.
+fn nn_moe_group_place<M : Memory>(order : &Tensor<i32, [?], Memory::M>, ids : &Tensor<i32, [?], Memory::M>, base : &Tensor<i32, [?, ?], Memory::M>, n : i32) -> void {
+  assert(n >= 0 && n <= ids.len() && base.extent(0) * 256 >= n, "nn_moe_group_place: `ids` needs n values, and `base` a row for each 256 pairs");
+  spawn on(Topology::Device) {
+    for b in 0..(n + 255) / 256 across blocks {
+      let mut keys = unsafe { Tensor<i32, [256], Memory::SMEM>::uninit() };
+      for l in 0..256 across lanes {
+        let p = b * 256 + l;
+        let mut id = -1;
+        if p < n {
+          id = ids[p];
+        }
+        keys[l] = id;
+      }
+      for l in 0..256 across lanes {
+        let p = b * 256 + l;
+        if p < n {
+          let id = keys[l];
+          let mut rank = 0;
+          for j in 0..l {
+            if keys[j] == id {
+              rank = rank + 1;
+            }
+          }
+          atomic_store_i32(order, base[b][id] + rank, p, AtomicOrdering::Relaxed);
+        }
+      }
+    }
+  }
+  return;
+}
+
+/// The pairs of `ids` grouped by expert, with each group at a multiple of `align`, as the three
+/// kernels above make them, in `order`. `counts`, `base`, `starts` and `tile_expert` are as for
+/// those kernels. The result is `order` as a `Distinct` tensor, so a kernel can write at the rows
+/// that it names.
+fn nn_moe_group<M : Memory>(order : Tensor<i32, [?], Memory::M>, counts : &mut Tensor<i32, [?, ?], Memory::M>, base : &mut Tensor<i32, [?, ?], Memory::M>, starts : &mut Tensor<i32, [?], Memory::M>, tile_expert : &Tensor<i32, [?], Memory::M>, ids : &Tensor<i32, [?], Memory::M>, experts : i32, align : i32) -> Distinct<Tensor<i32, [?], Memory::M>> {
+  let n = ids.len();
+  nn_moe_group_count(counts, ids, n, experts);
+  nn_moe_group_offsets(base, starts, tile_expert, &order, counts, n, experts, align);
+  nn_moe_group_place(&order, ids, base, n);
+  // Each position holds a pair p below n, or n + i at a position i with no pair.
+  return unsafe { Distinct(order) };
 }
 
 // fp8 weights. A matrix of rows x cols is f8e4m3 codes (OCP, bias 7, no infinity), 4 in each u32

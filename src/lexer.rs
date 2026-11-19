@@ -65,6 +65,7 @@ pub enum TokenTypeBase<S, C> {
     Memory,
     Ref,
     Verified,
+    Distinct,
     Pinned,
     HardwareState,
 
@@ -182,6 +183,7 @@ impl<S: std::fmt::Display, C: std::fmt::Display> std::fmt::Display for TokenType
             TokenTypeBase::Memory => write!(f, "Memory"),
             TokenTypeBase::Ref => write!(f, "Ref"),
             TokenTypeBase::Verified => write!(f, "Verified"),
+            TokenTypeBase::Distinct => write!(f, "Distinct"),
             TokenTypeBase::Pinned => write!(f, "Pinned"),
             TokenTypeBase::HardwareState => write!(f, "HardwareState"),
 
@@ -297,6 +299,7 @@ impl<S, C> TokenTypeBase<S, C> {
                 | TokenTypeBase::Memory
                 | TokenTypeBase::Ref
                 | TokenTypeBase::Verified
+                | TokenTypeBase::Distinct
                 | TokenTypeBase::Pinned
                 | TokenTypeBase::HardwareState
         )
@@ -348,6 +351,7 @@ static KEYWORDS: Lazy<
     m.insert("Memory", TokenTypeBase::Memory);
     m.insert("Ref", TokenTypeBase::Ref);
     m.insert("Verified", TokenTypeBase::Verified);
+    m.insert("Distinct", TokenTypeBase::Distinct);
     m.insert("Pinned", TokenTypeBase::Pinned);
     m.insert("HardwareState", TokenTypeBase::HardwareState);
     m.insert("struct", TokenTypeBase::Struct);
@@ -962,6 +966,7 @@ impl<'a> Token<'a> {
             TokenTypeBase::Memory => TokenTypeBase::Memory,
             TokenTypeBase::Ref => TokenTypeBase::Ref,
             TokenTypeBase::Verified => TokenTypeBase::Verified,
+            TokenTypeBase::Distinct => TokenTypeBase::Distinct,
             TokenTypeBase::Pinned => TokenTypeBase::Pinned,
             TokenTypeBase::HardwareState => TokenTypeBase::HardwareState,
             TokenTypeBase::Identifier(s) => {
@@ -1083,6 +1088,7 @@ impl OwnedToken {
             TokenTypeBase::Memory => TokenTypeBase::Memory,
             TokenTypeBase::Ref => TokenTypeBase::Ref,
             TokenTypeBase::Verified => TokenTypeBase::Verified,
+            TokenTypeBase::Distinct => TokenTypeBase::Distinct,
             TokenTypeBase::Pinned => TokenTypeBase::Pinned,
             TokenTypeBase::HardwareState => TokenTypeBase::HardwareState,
             TokenTypeBase::Identifier(s) => TokenTypeBase::Identifier(&**s),

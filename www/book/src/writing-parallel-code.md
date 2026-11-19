@@ -54,6 +54,7 @@ the same in each run.
 | The same work on each element of a tensor | an `across` loop in a `spawn on` region |
 | A sum, a maximum or a sort over the lanes of a block | `lanes::sum`, `lanes::max`, `lanes::sort` |
 | Many passes that add to the same element of a tensor | `atomic_fetch_add_u32` and the other atomics on elements |
+| Each pass writes at a row that a tensor gives it | a `Distinct` tensor of rows ([Rows from a tensor of indices](gpu.md#rows-from-a-tensor-of-indices)) |
 | A copy into a tile while the lanes work | `lanes::copy_async` |
 | A copy of a tile to or from shared memory | `lanes::copy` |
 | The same value in each element of a tile in shared memory | `lanes::fill` |
@@ -66,6 +67,7 @@ the same in each run.
 | A change to more than one value at a time | a `Mutex` |
 | Values from more than one channel | a `Selector` |
 | A value that lives longer than its `tasks` block | an `Arc` |
+| At most `n` tasks that do one thing at the same time | a `Semaphore` |
 
 Use a channel when you are not sure. A channel moves each value to one owner, so two tasks never
 change the same data. A task can borrow the locals of the function around it, so most programs
@@ -160,6 +162,7 @@ of each kernel, and the result must be the same as on the GPU.
 | `async fn` and `.await` | a normal function: `recv()`, `join()` and `lock()` wait in place |
 | `tokio::sync::mpsc` | `std::sync::channel` |
 | `tokio::select!` | `Selector` |
+| `tokio::sync::Semaphore` | `std::sync::semaphore::Semaphore` |
 | `AtomicU64` with `Ordering::Relaxed` | `AtomicU64` with `AtomicOrdering::Relaxed` |
 
 Vx has no `async`. [Why Vx has no `async`](tasks.md#why-vx-has-no-async) explains this.

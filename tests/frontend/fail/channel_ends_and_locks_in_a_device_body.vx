@@ -5,14 +5,16 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// A `spawn on` body for a device must not use a channel end or a lock, because a wait on the
-// device for the host can wait forever. A body on the CPU can use them, and so can the code
-// before and after a `spawn on`.
+// A `spawn on` body for a device must not use a channel end, a lock or a semaphore, because a
+// wait on the device for the host can wait forever. A body on the CPU can use them, and so can
+// the code before and after a `spawn on`.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 
+import core::mem;
 import std::sync::channel;
 import std::sync::mutex;
+import std::sync::semaphore;
 
 struct Waiter {
   rx : Receiver<i64>,
@@ -80,6 +82,34 @@ fn a_guard_on_the_gpu(m : &Mutex<i64>) -> void {
   }
 }
 
+fn acquire_on_the_gpu(s : &Semaphore) -> void {
+  let mut r = unsafe { Tensor<f32, [4], Memory::GPU_HBM>::uninit() };
+  spawn on(Topology::GPU) {
+    r[0] = 1.0;
+    // CHECK-DAG: Error[E6038] at {{.*}}.vx:[[@LINE+1]]:14: {{.*}} it uses 's': 'Semaphore' can wait for the host.
+    let _p = s.acquire();
+  }
+}
+
+fn a_permit_on_the_gpu(permit : &Permit) -> void {
+  let mut r = unsafe { Tensor<f32, [4], Memory::GPU_HBM>::uninit() };
+  spawn on(Topology::GPU) {
+    r[0] = 1.0;
+    // CHECK-DAG: Error[E6038] at {{.*}}.vx:[[@LINE+1]]:17: {{.*}} it uses 'permit': 'Permit' can wait for the host.
+    let _held = permit;
+  }
+}
+
+fn a_semaphore_made_on_the_gpu() -> void {
+  let mut r = unsafe { Tensor<f32, [4], Memory::GPU_HBM>::uninit() };
+  spawn on(Topology::GPU) {
+    r[0] = 1.0;
+    let s = Semaphore::new(1);
+    // CHECK-DAG: Error[E6038] at {{.*}}.vx:[[@LINE+1]]:14: {{.*}} it uses 's': 'Semaphore' can wait for the host.
+    let _p = s.acquire();
+  }
+}
+
 // A `spawn on(Topology::CPU)` body runs on the host, so it can use a channel end.
 fn send_on_the_cpu(tx : &Sender<i64>) -> void {
   spawn on(Topology::CPU) {
@@ -101,6 +131,6 @@ fn main() -> i32 {
   return 0;
 }
 
-// The five errors above are the only ones. `--implicit-check-not` does not look past the last
+// The eight errors above are the only ones. `--implicit-check-not` does not look past the last
 // `CHECK-DAG` line, so this line counts them.
-// CHECK: {{^}}Semantic check failed on {{.*}}: 5 error(s) emitted
+// CHECK: {{^}}Semantic check failed on {{.*}}: 8 error(s) emitted

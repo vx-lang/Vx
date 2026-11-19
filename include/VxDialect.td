@@ -212,6 +212,20 @@ def Vx_BarrierOp : Vx_Op<"barrier", [MemoryEffects<[MemRead, MemWrite]>]> {
     let assemblyFormat = "attr-dict";
 }
 
+// A hint for the scheduler of the Apple GPU, which an `mlir!` block can write
+// between its simdgroup loads and its multiplies. It orders no memory. NOT
+// Pure, so that nothing moves or removes it before the Metal printer.
+def Vx_SubgroupScheduleBarrierOp : Vx_Op<"subgroup_schedule_barrier",
+                                         [MemoryEffects<[MemRead, MemWrite]>]> {
+    let summary = "The threads of a subgroup meet here. No memory is ordered.";
+    let description = [{
+        The Metal printer writes `simdgroup_barrier(mem_flags::mem_none)`. Every
+        other code generator drops the op. Every thread of the subgroup must
+        reach it.
+    }];
+    let assemblyFormat = "attr-dict";
+}
+
 // The op of a lane routine. Each one has two expansions, and each expansion
 // writes its code before the op. The caller then erases the op.
 def Vx_LaneOpInterface : OpInterface<"LaneOpInterface"> {
@@ -289,6 +303,22 @@ def Vx_LaneMatmulOp : Vx_Op<"lane_matmul", [MemoryEffects<[MemRead, MemWrite]>,
     let summary = "A matmul of tiles with the lanes of a subgroup.";
     let arguments = (ins AnyMemRef:$acc, AnyMemRef:$lhs, AnyMemRef:$rhs,
                      UnitAttr:$accumulate, UnitAttr:$subgroup,
+                     UnitAttr:$serial, UnitAttr:$subgroup_row);
+}
+
+// `lanes::matmul_scaled` in the code of a subgroup. `acc` is an `f32` matrix, `lhs`
+// and `rhs` are `f4E2M1FN` matrices, and `lhs_scale` and `rhs_scale` hold the
+// `f8E4M3FN` scale of each block of k. Each element (i, j) of `acc` gets the sum
+// over k of lhs[i][k] * lhs_scale[i][k / B] * rhs[k][j] * rhs_scale[k / B][j],
+// from 0 and in the order of k, and then its old value. B is the k size of `lhs`
+// over the k size of `lhs_scale`. A scale counts without its sign bit, as the
+// tensor core reads it. The device clone gives the elements to the lanes of the
+// subgroup, and the host lowering and `serial` compute them in loops.
+def Vx_LaneMatmulScaledOp : Vx_Op<"lane_matmul_scaled", [MemoryEffects<[MemRead, MemWrite]>,
+        DeclareOpInterfaceMethods<Vx_LaneOpInterface, ["expandInKernel"]>]> {
+    let summary = "A matmul of tiles with block scales, with the lanes of a subgroup.";
+    let arguments = (ins AnyMemRef:$acc, AnyMemRef:$lhs, AnyMemRef:$lhs_scale,
+                     AnyMemRef:$rhs, AnyMemRef:$rhs_scale, UnitAttr:$subgroup,
                      UnitAttr:$serial, UnitAttr:$subgroup_row);
 }
 

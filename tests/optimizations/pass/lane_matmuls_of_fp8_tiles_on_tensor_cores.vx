@@ -1,0 +1,193 @@
+//===- lane_matmuls_of_fp8_tiles_on_tensor_cores.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A matmul of `f8e4m3` or `f8e5m2` tiles in the code of a subgroup loop goes to the tensor cores
+// on `sm_89` and later, when the sizes are multiples of 16 x 8 x 32. Each 16 x 8 piece of the
+// result is a chain of `mma.sync.m16n8k32`, one for each 32 columns of the first tile. That PTX
+// instruction needs PTX 8.4. `e5m2_tiles` has 64 columns, so each chain has two. In `k_loop`, the
+// matmul adds to `acc` in each pass of a loop, so the lanes keep `acc` in registers until the loop
+// ends. `k16_tiles` has 16 columns, which is not a multiple of 32, so each lane multiplies and
+// adds its elements in f32. An `sm_80` chip has no fp8 `mma.sync`, and its PTX stays at 7.6.
+//
+// RUN: env -u VX_GPU_CHIP vxc %s --host default --machine fleet/h200.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s --implicit-check-not=local_depot < %t.ptx
+// RUN: env -u VX_GPU_CHIP vxc %s --legacy-codegen --host default --machine fleet/h200.vx --emit-ptx -o %t.ast.ptx
+// RUN: FileCheck %s --implicit-check-not=local_depot < %t.ast.ptx
+// RUN: env VX_GPU_CHIP=sm_89 vxc %s --host default --machine fleet/h200.vx --emit-ptx -o %t.sm89.ptx
+// RUN: FileCheck %s --implicit-check-not=local_depot < %t.sm89.ptx
+// RUN: env VX_GPU_CHIP=sm_80 vxc %s --host default --machine fleet/h200.vx --emit-ptx -o %t.sm80.ptx
+// RUN: FileCheck %s --check-prefix=SM80 --implicit-check-not=mma.sync < %t.sm80.ptx
+// CHECK: .version 8.4
+// CHECK-LABEL: .entry e4m3_tiles(
+// CHECK: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32
+// CHECK-LABEL: .entry e5m2_tiles(
+// CHECK-COUNT-2: mma.sync.aligned.m16n8k32.row.col.f32.e5m2.e5m2.f32
+// CHECK-LABEL: .entry k_loop(
+// CHECK: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32
+// CHECK-NOT: st.shared
+// CHECK: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32
+// CHECK-NOT: st.shared
+// CHECK: bar.sync 0;
+// CHECK-LABEL: .entry k16_tiles(
+// CHECK-NOT: mma.sync
+// CHECK: mul.rn.f32
+// SM80: .version 7.6
+// SM80-LABEL: .entry e4m3_tiles(
+// SM80: mul.rn.f32
+
+pub fn e4m3_tiles(c : &mut Tensor<f32, [?, 2, 32, 16], Memory::HBM>, a : &Tensor<f8e4m3, [?, 32], Memory::HBM>, b : &Tensor<f8e4m3, [32, 16], Memory::HBM>, blocks : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..blocks across blocks {
+      let mut sa = unsafe {
+        Tensor<f8e4m3, [2, 32, 32], Memory::SMEM>::uninit()
+      };
+      let mut sb = unsafe {
+        Tensor<f8e4m3, [2, 32, 16], Memory::SMEM>::uninit()
+      };
+      let mut acc = unsafe {
+        Tensor<f32, [2, 32, 16], Memory::SMEM>::uninit()
+      };
+      for w in 0..2 across subgroups {
+        for i in 0..32 across lanes {
+          for k in 0..32 {
+            sa[w][i][k] = a[blk * 64 + w * 32 + i][k];
+          }
+          for j in 0..16 {
+            sb[w][i][j] = b[i][j];
+            acc[w][i][j] = 1.0;
+          }
+        }
+        acc[w] = acc[w] + (sa[w] as f32) @ (sb[w] as f32);
+        for i in 0..32 across lanes {
+          for j in 0..16 {
+            c[blk][w][i][j] = acc[w][i][j];
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn e5m2_tiles(c : &mut Tensor<f32, [?, 2, 16, 8], Memory::HBM>, a : &Tensor<f8e5m2, [?, 64], Memory::HBM>, b : &Tensor<f8e5m2, [64, 8], Memory::HBM>, blocks : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..blocks across blocks {
+      let mut sa = unsafe {
+        Tensor<f8e5m2, [2, 16, 64], Memory::SMEM>::uninit()
+      };
+      let mut sb = unsafe {
+        Tensor<f8e5m2, [2, 64, 8], Memory::SMEM>::uninit()
+      };
+      let mut acc = unsafe { Tensor<f32, [2, 16, 8], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        for l in 0..32 across lanes {
+          for h in 0..2 {
+            let k = h * 32 + l;
+            for i in 0..16 {
+              sa[w][i][k] = a[blk * 32 + w * 16 + i][k];
+            }
+            for j in 0..8 {
+              sb[w][k][j] = b[k][j];
+            }
+          }
+        }
+        acc[w] = (sa[w] as f32) @ (sb[w] as f32);
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for j in 0..8 {
+              c[blk][w][i][j] = acc[w][i][j];
+            }
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn k_loop(c : &mut Tensor<f32, [?, 2, 16, 16], Memory::HBM>, a : &Tensor<f8e4m3, [?, ?], Memory::HBM>, b : &Tensor<f8e4m3, [?, 16], Memory::HBM>, k : i32, blocks : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..blocks across blocks {
+      let mut sa = unsafe {
+        Tensor<f8e4m3, [2, 16, 32], Memory::SMEM>::uninit()
+      };
+      let mut sb = unsafe { Tensor<f8e4m3, [32, 16], Memory::SMEM>::uninit() };
+      let mut acc = unsafe {
+        Tensor<f32, [2, 16, 16], Memory::SMEM>::uninit()
+      };
+      for w in 0..2 across subgroups {
+        for j in 0..32 across lanes {
+          if j < 16 {
+            for i in 0..16 {
+              acc[w][i][j] = 0.0;
+            }
+          }
+        }
+      }
+      for kt in 0..k / 32 {
+        for j in 0..16 across lanes {
+          for r in 0..32 {
+            sb[r][j] = b[kt * 32 + r][j];
+          }
+        }
+        for w in 0..2 across subgroups {
+          for kk in 0..32 across lanes {
+            for i in 0..16 {
+              sa[w][i][kk] = a[blk * 32 + w * 16 + i][kt * 32 + kk];
+            }
+          }
+          acc[w] = acc[w] + (sa[w] as f32) @ (sb as f32);
+        }
+      }
+      for w in 0..2 across subgroups {
+        for j in 0..32 across lanes {
+          if j < 16 {
+            for i in 0..16 {
+              c[blk][w][i][j] = acc[w][i][j];
+            }
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn k16_tiles(c : &mut Tensor<f32, [?, 2, 16, 8], Memory::HBM>, a : &Tensor<f8e4m3, [?, 16], Memory::HBM>, b : &Tensor<f8e4m3, [16, 8], Memory::HBM>, blocks : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..blocks across blocks {
+      let mut sa = unsafe {
+        Tensor<f8e4m3, [2, 16, 16], Memory::SMEM>::uninit()
+      };
+      let mut sb = unsafe {
+        Tensor<f8e4m3, [2, 16, 8], Memory::SMEM>::uninit()
+      };
+      let mut acc = unsafe { Tensor<f32, [2, 16, 8], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for k in 0..16 {
+              sa[w][i][k] = a[blk * 32 + w * 16 + i][k];
+            }
+            for j in 0..8 {
+              sb[w][i][j] = b[i][j];
+            }
+          }
+        }
+        acc[w] = (sa[w] as f32) @ (sb[w] as f32);
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for j in 0..8 {
+              c[blk][w][i][j] = acc[w][i][j];
+            }
+          }
+        }
+      }
+    }
+  }
+  return;
+}

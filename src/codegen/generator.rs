@@ -2326,26 +2326,30 @@ impl<'c> MeliorGenerator<'c> {
         }
     }
 
-    /// Byte size + alignment of a type for `sizeof<T>()`, computed the way the layout pass does
-    /// (`crate::layout::LayoutComputer::struct_layout`): a scalar by its element, any pointer/borrow
-    /// 8, and a nominal struct (or a monomorphized generic instance of one) as the aligned sum of its
-    /// recursively-sized fields. Name-keyed, because the generator holds struct decls by name, not
-    /// GID. `None` for an unmodelled type (tensor, closure, generic scalar, data-carrying enum) — the
-    /// caller falls back to a conservative default. This replaces `SizeOfExpr::lower`'s old hardcoded
-    /// `8` for aggregates, which under-sized a `Vec<struct>`'s element buffer (a `Vec<Vec<T>>` UB). (#242)
+    /// Byte size + alignment of a type for `sizeof<T>()`: a scalar by its element, any pointer/borrow
+    /// 8, a tensor by its memref descriptor, and a nominal struct (or a monomorphized generic
+    /// instance of one) as the aligned sum of its recursively-sized fields, as the layout pass does
+    /// (`crate::layout::LayoutComputer::struct_layout`). An enum is sized from the type that it
+    /// lowers to (`enum_size_align`), because this generator stores an enum as a tag and a slot
+    /// that the layout pass does not know. Only a tensor needs its own case: it lowers to a memref,
+    /// which is not an LLVM type. `None` for an unmodelled type (closure, generic scalar), and the
+    /// caller falls back to 8.
     pub(crate) fn type_size_align(&self, ty: &syntax::Type, depth: u32) -> Option<(usize, usize)> {
         use crate::layout::scalar_size_align;
         if depth > 32 {
             return None; // guard against a pathological/cyclic nesting
+        }
+        if let Some(size_align) = self.enum_size_align(ty) {
+            return Some(size_align);
         }
         match ty {
             syntax::Type::Scalar(e) => scalar_size_align(e),
             syntax::Type::Pointer(..) | syntax::Type::Borrow { .. } | syntax::Type::Ref(..) => {
                 Some((8, 8))
             }
-            syntax::Type::Pinned(inner, _) | syntax::Type::Verified(inner) => {
-                self.type_size_align(inner, depth)
-            }
+            syntax::Type::Pinned(inner, _)
+            | syntax::Type::Verified(inner)
+            | syntax::Type::Distinct(inner) => self.type_size_align(inner, depth),
             // A tensor is held as its memref descriptor. A rank-0 tensor is a plain number.
             syntax::Type::Tensor(_, dims, _) if !dims.is_empty() => {
                 Some((crate::layout::tensor_descriptor_bytes(dims.len()), 8))
@@ -2388,6 +2392,33 @@ impl<'c> MeliorGenerator<'c> {
             }
             _ => None,
         }
+    }
+
+    /// Byte size and alignment of an enum: the size of the type that it lowers to, a tag and a
+    /// payload slot. `None` when `ty` is not an enum. An enum that does not lower, or whose
+    /// lowered type has no size here, is a compiler bug: the caller's default of 8 bytes is the
+    /// wrong size that this function exists to replace, so it panics instead.
+    fn enum_size_align(&self, ty: &syntax::Type) -> Option<(usize, usize)> {
+        let name = match ty {
+            syntax::Type::GenericInstance(base, _) => match &**base {
+                syntax::Type::Struct(name, _) => name.to_string(),
+                _ => return None,
+            },
+            syntax::Type::Struct(name, _) => name.split('<').next()?.to_string(),
+            _ => return None,
+        };
+        if !self.enums.contains_key(name.as_str()) {
+            return None;
+        }
+        let lowered = self
+            .lower_type_str(ty)
+            .unwrap_or_else(|e| panic!("sizeof: the enum {name} does not lower: {e:?}"));
+        let size_align = llvm_type_size_align(&lowered);
+        assert!(
+            size_align.is_some(),
+            "sizeof: the enum {name} lowers to {lowered}, which has no known size"
+        );
+        size_align
     }
 
     /// Byte size and alignment of a struct with these field types, in order.
@@ -2447,6 +2478,11 @@ impl<'c> MeliorGenerator<'c> {
                 let ty = match mapping {
                     Some(m) => ty.substitute(m),
                     None => ty.clone(),
+                };
+                // At run time a `Distinct` tensor is its tensor.
+                let ty = match ty {
+                    syntax::Type::Distinct(inner) => *inner,
+                    ty => ty,
                 };
                 let mut lowered = self.lower_type_str(&ty)?;
                 // A tensor is its descriptor, as in a struct field, so its shape travels with it.
@@ -2636,7 +2672,9 @@ impl<'c> MeliorGenerator<'c> {
             syntax::Type::Ref(inner, _mem) => {
                 return self.lower_type(inner);
             }
-            syntax::Type::Verified(inner) => return self.lower_type(inner),
+            syntax::Type::Verified(inner) | syntax::Type::Distinct(inner) => {
+                return self.lower_type(inner)
+            }
             syntax::Type::Pinned(inner, _top) => {
                 let inner_ty_str = self.lower_type(inner)?.to_string();
                 inner_ty_str
@@ -3311,7 +3349,9 @@ pub(crate) fn tensor_field_rank(ty: &syntax::Type) -> Option<usize> {
     match ty {
         syntax::Type::Tensor(_, dims, _) => Some(dims.len()),
         // `Pinned<T, ..>` and `Verified<T>` are a tensor with a claim about it.
-        syntax::Type::Pinned(inner, _) | syntax::Type::Verified(inner) => tensor_field_rank(inner),
+        syntax::Type::Pinned(inner, _)
+        | syntax::Type::Verified(inner)
+        | syntax::Type::Distinct(inner) => tensor_field_rank(inner),
         syntax::Type::Borrow { inner, .. } if matches!(**inner, syntax::Type::Tensor(..)) => {
             tensor_field_rank(inner)
         }
@@ -3366,7 +3406,7 @@ pub(crate) fn owned_tensor(ty: &syntax::Type) -> Option<Option<syntax::Placement
     }
     match ty {
         syntax::Type::Tensor(_, _, placement) => Some(placement.clone()),
-        syntax::Type::Verified(inner) => owned_tensor(inner),
+        syntax::Type::Verified(inner) | syntax::Type::Distinct(inner) => owned_tensor(inner),
         syntax::Type::Pinned(inner, top) => match owned_tensor(inner)? {
             Some(p) => Some(Some(p)),
             None => {
@@ -3383,7 +3423,9 @@ pub(crate) fn owned_tensor(ty: &syntax::Type) -> Option<Option<syntax::Placement
 pub(crate) fn written_placement(ty: &syntax::Type) -> Option<&syntax::Placement> {
     match ty {
         syntax::Type::Tensor(_, _, placement) => placement.as_ref(),
-        syntax::Type::Verified(inner) | syntax::Type::Pinned(inner, _) => written_placement(inner),
+        syntax::Type::Verified(inner)
+        | syntax::Type::Distinct(inner)
+        | syntax::Type::Pinned(inner, _) => written_placement(inner),
         _ => None,
     }
 }
@@ -3405,4 +3447,29 @@ pub(crate) fn on_chip(space: Option<crate::arch::AddressSpace>) -> bool {
         space,
         Some(crate::arch::AddressSpace::Workgroup | crate::arch::AddressSpace::Private)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::llvm_type_size_align;
+
+    /// An enum whose variants carry one kind of payload lowers to a tag and that payload. The tag
+    /// is padded to the alignment of the payload.
+    #[test]
+    fn a_tag_and_one_payload_take_the_size_of_both() {
+        assert_eq!(
+            llvm_type_size_align("!llvm.struct<(i32, i64)>"),
+            Some((16, 8))
+        );
+    }
+
+    /// An enum whose variants carry different kinds of payload lowers to a tag and a slot of
+    /// bytes, written as an array of its most strictly aligned unit.
+    #[test]
+    fn a_tag_and_a_byte_slot_take_the_size_of_both() {
+        assert_eq!(
+            llvm_type_size_align("!llvm.struct<(i32, array<2 x i64>)>"),
+            Some((24, 8))
+        );
+    }
 }
