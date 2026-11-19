@@ -318,6 +318,24 @@ move some registers to local memory.
 `tests/optimizations/pass/lane_matmul_sums_in_memory_reg_stay_in_registers.vx` is a complete
 program.
 
+## Starting a kernel early
+
+On an H100 or a later NVIDIA GPU, a kernel can start while the kernel before it on the stream
+still runs. This hides the time that each kernel takes to start and to end, which matters in a
+program of many short kernels, such as the decode step of a language model. It takes two settings:
+
+- `VX_GPU_PDL=1` when you compile. Each kernel for `sm_90` or later then waits for the kernels
+  before it (`griddepcontrol.wait`) before its first read or write of global memory. Before the
+  wait, the blocks can only compute values and fill shared memory. After a launch in the usual way,
+  the wait has nothing to wait for.
+- `VX_CUDA_PDL=1` when you run. Vx's runtime then launches each kernel that waits with
+  programmatic dependent launch. It needs a CUDA 12 driver or later.
+
+A kernel that waits does not read its buffers through the read-only cache (`ld.global.nc`), because
+the kernel before it may still write them. A program that launches the kernels of `--emit-ptx`
+itself finds `"waits_for_earlier_kernels": true` in the manifest of each kernel that waits
+(`docs/lang/abi.md`, section 3.5).
+
 ## Math functions in a kernel
 
 `x.exp()` and `x.tanh()` are exact, and on a GPU they compute in `f64`, which is slow. In a kernel
