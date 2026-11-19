@@ -5299,6 +5299,7 @@ impl<'c> LowerToMelior<'c> for NumberExpr {
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
         let NumberExpr {
+            written: _,
             value: val_str,
             ty: ast_ty_opt,
             span: _,
@@ -5909,6 +5910,7 @@ impl<'c> LowerToMelior<'c> for VecMacroExpr {
             _ => {
                 if let Some(syntax::Type::Struct(s, _)) =
                     gen.infer_ast_type(self.elements.first().unwrap_or(&Expr::Number(NumberExpr {
+                        written: None,
                         value: "0".into(),
                         ty: None,
                         span: Span::default(),

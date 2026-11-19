@@ -616,6 +616,7 @@ fn test_expr_and_stmt_resolution() -> Result<(), String> {
                 is_mut: false,
                 ty_ann: Some(Type::Struct("Config".into(), None)),
                 expr: Expr::Number(NumberExpr {
+                    written: None,
                     value: "0.0".to_string().into(),
                     ty: Some(vxc::syntax::ElementType::F64),
                     span: Span::default(),

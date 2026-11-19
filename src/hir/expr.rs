@@ -16,6 +16,7 @@ use super::*;
 /// initializer list's nesting).
 pub(crate) fn int_dim_expr(n: usize) -> Expr {
     Expr::Number(NumberExpr {
+        written: None,
         value: n.to_string().into(),
         ty: Some(ElementType::I32),
         span: Span::default(),
