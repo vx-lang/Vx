@@ -100,6 +100,11 @@ using namespace mlir::vx;
 // (src/dialect/MetalImage.cpp). Empty with `error` set on failure.
 std::string mslImageOf(gpu::GPUModuleOp gpuModule, std::string &error);
 
+namespace mlir::vx {
+// `x`, a float scalar, as an f32 (src/dialect/NarrowFloats.cpp).
+Value floatToF32(OpBuilder &b, Location loc, Value x);
+} // namespace mlir::vx
+
 namespace {
 
 // Classify what an outlined region computes, for plugins that route to vendor
@@ -3991,6 +3996,97 @@ static void expandLaneScaleRowsOnDevice(OpBuilder &b, vx::LaneScaleRowsOp op) {
   } else {
     b.create<gpu::BarrierOp>(loc);
   }
+}
+
+/// A scale of a scaled lane matmul, as an f32. The tensor core reads an
+/// `f8E4M3FN` scale as unsigned, so its sign bit does not count.
+static Value laneMatmulScale(OpBuilder &b, Location loc, Value s) {
+  if (isa<Float8E4M3FNType>(s.getType())) {
+    Type i8 = b.getI8Type();
+    Value bits =
+        b.create<arith::AndIOp>(loc, b.create<arith::BitcastOp>(loc, i8, s),
+                                b.create<arith::ConstantIntOp>(loc, i8, 0x7F));
+    s = b.create<arith::BitcastOp>(loc, s.getType(), bits);
+  }
+  return vx::floatToF32(b, loc, s);
+}
+
+/// Element (i, j) of a scaled lane matmul: the sum of the scaled products from
+/// 0, in the order of `k`, and then the old value of the element.
+static void laneMatmulScaledElement(OpBuilder &b, Location loc,
+                                    vx::LaneMatmulScaledOp op, Value i,
+                                    Value j) {
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  Value one = b.create<arith::ConstantIndexOp>(loc, 1);
+  Value depth = b.create<memref::DimOp>(loc, op.getLhs(), 1);
+  Value block = b.create<arith::DivUIOp>(
+      loc, depth, b.create<memref::DimOp>(loc, op.getLhsScale(), 1));
+  Value start =
+      b.create<arith::ConstantFloatOp>(loc, b.getF32Type(), APFloat(0.0f));
+  auto sum = b.create<scf::ForOp>(
+      loc, zero, depth, one, ValueRange{start},
+      [&](OpBuilder &nb, Location l, Value k, ValueRange s) {
+        Value kb = nb.create<arith::DivUIOp>(l, k, block);
+        auto scaled = [&](Value values, Value scales, ValueRange at,
+                          ValueRange scaleAt) {
+          Value v =
+              vx::floatToF32(nb, l, nb.create<memref::LoadOp>(l, values, at));
+          Value scale = laneMatmulScale(
+              nb, l, nb.create<memref::LoadOp>(l, scales, scaleAt));
+          return nb.create<arith::MulFOp>(l, v, scale);
+        };
+        Value x = scaled(op.getLhs(), op.getLhsScale(), {i, k}, {i, kb});
+        Value y = scaled(op.getRhs(), op.getRhsScale(), {k, j}, {kb, j});
+        Value p = nb.create<arith::MulFOp>(l, x, y);
+        nb.create<scf::YieldOp>(
+            l, ValueRange{nb.create<arith::AddFOp>(l, s[0], p)});
+      });
+  Value old = b.create<memref::LoadOp>(loc, op.getAcc(), ValueRange{i, j});
+  b.create<memref::StoreOp>(loc,
+                            b.create<arith::AddFOp>(loc, old, sum.getResult(0)),
+                            op.getAcc(), ValueRange{i, j});
+}
+
+/// A scaled lane matmul in loops over the rows and the columns, for the host
+/// and for a kernel that runs on one lane.
+static void expandLaneMatmulScaledOnHost(OpBuilder &b,
+                                         vx::LaneMatmulScaledOp op) {
+  Location loc = op.getLoc();
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  Value one = b.create<arith::ConstantIndexOp>(loc, 1);
+  SmallVector<Value> upper;
+  for (int64_t d = 0; d < 2; ++d)
+    upper.push_back(b.create<memref::DimOp>(loc, op.getAcc(), d));
+  scf::buildLoopNest(b, loc, {zero, zero}, upper, {one, one},
+                     [&](OpBuilder &nb, Location l, ValueRange ivs) {
+                       laneMatmulScaledElement(nb, l, op, ivs[0], ivs[1]);
+                     });
+}
+
+/// A scaled lane matmul on the lanes of a subgroup: lane `l` computes the
+/// elements `l`, `l + 32` and so on, in row order. Then every lane of the
+/// subgroup waits, so that each lane can read what the others wrote.
+static void expandLaneMatmulScaledOnDevice(OpBuilder &b,
+                                           vx::LaneMatmulScaledOp op) {
+  assert(op.getSubgroup() && "the checker allows a scaled lane matmul only in "
+                             "the code of a subgroup");
+  Location loc = op.getLoc();
+  Value lanes = b.create<arith::ConstantIndexOp>(loc, 32);
+  Value tid =
+      b.create<gpu::ThreadIdOp>(loc, b.getIndexType(), gpu::Dimension::x);
+  Value lane = b.create<arith::RemUIOp>(loc, tid, lanes);
+  Value cols = b.create<memref::DimOp>(loc, op.getAcc(), 1);
+  Value all = b.create<arith::MulIOp>(
+      loc, b.create<memref::DimOp>(loc, op.getAcc(), 0), cols);
+  b.create<scf::ForOp>(loc, lane, all, lanes, ValueRange{},
+                       [&](OpBuilder &nb, Location l, Value e, ValueRange) {
+                         laneMatmulScaledElement(
+                             nb, l, op, nb.create<arith::DivUIOp>(l, e, cols),
+                             nb.create<arith::RemUIOp>(l, e, cols));
+                         nb.create<scf::YieldOp>(l);
+                       });
+  auto bar = b.create<vx::BarrierOp>(loc);
+  bar->setAttr("subgroup", b.getUnitAttr());
 }
 
 /// The wait right after `wait`, when only ops that touch no memory come between
@@ -9246,6 +9342,18 @@ FailureOr<Value> vx::LaneScaleRowsOp::expandInKernel(OpBuilder &b) {
   if (getSerial())
     return expandOnHost(b);
   expandLaneScaleRowsOnDevice(b, *this);
+  return Value();
+}
+
+Value vx::LaneMatmulScaledOp::expandOnHost(OpBuilder &b) {
+  expandLaneMatmulScaledOnHost(b, *this);
+  return Value();
+}
+
+FailureOr<Value> vx::LaneMatmulScaledOp::expandInKernel(OpBuilder &b) {
+  if (getSerial())
+    return expandOnHost(b);
+  expandLaneMatmulScaledOnDevice(b, *this);
   return Value();
 }
 

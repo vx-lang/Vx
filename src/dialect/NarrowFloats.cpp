@@ -281,6 +281,17 @@ struct ExpandNarrowFloatsPass
 
 namespace mlir {
 namespace vx {
+/// `x`, a float scalar, as an f32. A narrow value is decoded with integer
+/// operations, as this pass rewrites an `arith.extf` of one.
+Value floatToF32(OpBuilder &b, Location loc, Value x) {
+  Type t = x.getType();
+  if (t.isF32())
+    return x;
+  if (auto f = narrowFormat(t))
+    return Expander{b, loc, t}.decode(x, *f);
+  return b.create<arith::ExtFOp>(loc, b.getF32Type(), x);
+}
+
 std::unique_ptr<Pass> createExpandNarrowFloatsPass() {
   return std::make_unique<ExpandNarrowFloatsPass>();
 }

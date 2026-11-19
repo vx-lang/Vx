@@ -306,6 +306,22 @@ def Vx_LaneMatmulOp : Vx_Op<"lane_matmul", [MemoryEffects<[MemRead, MemWrite]>,
                      UnitAttr:$serial, UnitAttr:$subgroup_row);
 }
 
+// `lanes::matmul_scaled` in the code of a subgroup. `acc` is an `f32` matrix, `lhs`
+// and `rhs` are `f4E2M1FN` matrices, and `lhs_scale` and `rhs_scale` hold the
+// `f8E4M3FN` scale of each block of k. Each element (i, j) of `acc` gets the sum
+// over k of lhs[i][k] * lhs_scale[i][k / B] * rhs[k][j] * rhs_scale[k / B][j],
+// from 0 and in the order of k, and then its old value. B is the k size of `lhs`
+// over the k size of `lhs_scale`. A scale counts without its sign bit, as the
+// tensor core reads it. The device clone gives the elements to the lanes of the
+// subgroup, and the host lowering and `serial` compute them in loops.
+def Vx_LaneMatmulScaledOp : Vx_Op<"lane_matmul_scaled", [MemoryEffects<[MemRead, MemWrite]>,
+        DeclareOpInterfaceMethods<Vx_LaneOpInterface, ["expandInKernel"]>]> {
+    let summary = "A matmul of tiles with block scales, with the lanes of a subgroup.";
+    let arguments = (ins AnyMemRef:$acc, AnyMemRef:$lhs, AnyMemRef:$lhs_scale,
+                     AnyMemRef:$rhs, AnyMemRef:$rhs_scale, UnitAttr:$subgroup,
+                     UnitAttr:$serial, UnitAttr:$subgroup_row);
+}
+
 // `lanes::copy_async`: the lanes of a block copy the tile of `source` at `place`
 // into `tile`, in the background. An element past the end of `source` copies as
 // zero. The result is a token for `vx.lane_copy_wait`.
