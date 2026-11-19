@@ -107,7 +107,7 @@ Topology Device {
   // The FP4 row is what makes this field worth having: the same program refused on
   // h100-sxm is accepted here. FP6 has no ElementType, so it is not listed; nor does
   // INT4, which is emulated over int8 MMA on sm_100 rather than native.
-  dtypes: [f64, f32, bf16, f16, f8e4m3, f8e5m2, f4e2m1, i8, u8, i16, u16, i32, u32, i64, u64, bool],
+  dtypes: [f64, f32, bf16, f16, f8e4m3, f8e5m2, f4e2m1, f8e8m0, i8, u8, i16, u16, i32, u32, i64, u64, bool],
   // spec: PCIe Gen5 x16 = 63 GB/s per direction (32 GT/s x 16 lanes, 128b/130b).
   // UNVERIFIED on this SKU; a Grace/C2C-attached part reaches the host at ~450 GB/s instead,
   // a 7x difference in every host-seam prediction. Settling it is an open experiment (utils/memalg).

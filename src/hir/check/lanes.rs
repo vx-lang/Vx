@@ -1310,8 +1310,8 @@ impl crate::hir::TypeChecker<'_> {
     /// The type of a call `lanes::matmul_scaled(&mut acc, &a, &sa, &b, &sb)`. It adds to
     /// `acc[i][j]` the sum over `k` of `a[i][k] * sa[i][k / B] * b[k][j] * sb[k / B][j]`, where
     /// `B` is the k size of `a` over the k size of `sa`. `acc` is an `f32` matrix, `a` and `b`
-    /// are `f4e2m1` matrices and `sa` and `sb` are `f8e4m3` matrices. All five are in shared
-    /// memory, and their sizes are numbers.
+    /// are `f4e2m1` matrices, and `sa` and `sb` are matrices of one scale type, `f8e4m3` (NVFP4)
+    /// or `f8e8m0` (MXFP4). All five are in shared memory, and their sizes are numbers.
     fn check_matmul_scaled(
         &mut self,
         name: &str,
@@ -1353,22 +1353,44 @@ impl crate::hir::TypeChecker<'_> {
             let size = |d| crate::hir::memory::static_extent(d).filter(|&n| n >= 1);
             Some([size(&dims[0])?, size(&dims[1])?])
         };
+        // NVFP4 has `f8e4m3` scales and MXFP4 `f8e8m0` scales. `sb` has the type of `sa`.
+        let scale = match &arg_types[2] {
+            Type::Borrow { inner, .. }
+                if matches!(inner.as_ref(), Type::Tensor(ElementType::F8E8M0, ..)) =>
+            {
+                ElementType::F8E8M0
+            }
+            _ => ElementType::F8E4M3,
+        };
         let wanted = [
-            ("first", "`acc`", ElementType::F32, true),
-            ("second", "`a`", ElementType::F4E2M1, false),
-            ("third", "`sa`", ElementType::F8E4M3, false),
-            ("fourth", "`b`", ElementType::F4E2M1, false),
-            ("fifth", "`sb`", ElementType::F8E4M3, false),
+            ("first", "`acc`", ElementType::F32, true, "an `f32`"),
+            ("second", "`a`", ElementType::F4E2M1, false, "an `f4e2m1`"),
+            (
+                "third",
+                "`sa`",
+                scale.clone(),
+                false,
+                "an `f8e4m3` or `f8e8m0`",
+            ),
+            ("fourth", "`b`", ElementType::F4E2M1, false, "an `f4e2m1`"),
+            ("fifth", "`sb`", scale.clone(), false, "a scale"),
         ];
         let mut sizes = Vec::new();
-        for (t, (nth, what, elem, is_mut)) in arg_types.iter().zip(wanted) {
+        for (t, (nth, what, elem, is_mut, shown)) in arg_types.iter().zip(wanted) {
             let Some(size) = matrix(t, &elem, is_mut) else {
                 let borrow = if is_mut { "`&mut`" } else { "`&`" };
+                let shown = if nth == "fifth" {
+                    format!("an `{scale}`")
+                } else {
+                    shown.to_string()
+                };
+                let like_sa = if nth == "fifth" { ", as `sa` does" } else { "" };
                 self.errors.error_with_code(
                     DiagnosticCode::E3003,
                     format!(
-                        "the {nth} argument of `{name}`, {what}, must borrow an `{elem}` matrix in \
-                         shared memory as {borrow}, with sizes that are numbers, but it is `{t}`"
+                        "the {nth} argument of `{name}`, {what}, must borrow {shown} matrix in \
+                         shared memory as {borrow}{like_sa}, with sizes that are numbers, but it is \
+                         `{t}`"
                     ),
                     span,
                 );

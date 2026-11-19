@@ -3999,7 +3999,8 @@ static void expandLaneScaleRowsOnDevice(OpBuilder &b, vx::LaneScaleRowsOp op) {
 }
 
 /// A scale of a scaled lane matmul, as an f32. The tensor core reads an
-/// `f8E4M3FN` scale as unsigned, so its sign bit does not count.
+/// `f8E4M3FN` scale as unsigned, so its sign bit does not count. An
+/// `f8E8M0FNU` scale has no sign bit.
 static Value laneMatmulScale(OpBuilder &b, Location loc, Value s) {
   if (isa<Float8E4M3FNType>(s.getType())) {
     Type i8 = b.getI8Type();

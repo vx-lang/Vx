@@ -36,6 +36,7 @@ pub fn mlir_scalar(elem: &ElementType) -> Option<&'static str> {
         F8E4M3 => "f8E4M3FN",
         F8E5M2 => "f8E5M2",
         F4E2M1 => "f4E2M1FN",
+        F8E8M0 => "f8E8M0FNU",
         Generic(_) => return None,
     })
 }

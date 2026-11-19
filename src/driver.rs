@@ -2180,6 +2180,10 @@ fn get_optimization_pipeline(
     let mut passes = vec![];
 
     if opt_level > 0 || llvm_lower {
+        // First, because a pass that rewrites with patterns folds every op that it visits. MLIR
+        // would fold a conversion of a constant to an fp8 or fp4 type with rules of its own:
+        // it rounds `100 as f8e8m0` to the nearest value, 128, where `as f8e8m0` rounds down.
+        passes.push("vx-expand-narrow-floats".to_string());
         // Before the task lowering takes the address of each task body. See the pass.
         passes.push("vx-count-callbacks".to_string());
         // Before the lowerings, so that they reuse a program's own `malloc` and `free` rather
