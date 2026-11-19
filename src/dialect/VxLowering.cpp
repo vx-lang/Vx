@@ -4196,9 +4196,19 @@ static unsigned chipNumber(StringRef chip) {
   return number;
 }
 
-/// The unit attribute of a GPU module with an fp8 `mma.sync`, which needs PTX
-/// 8.4.
-constexpr StringLiteral fp8MmaAttr = "vx.fp8_mma";
+/// The integer attribute of a GPU module whose code needs at least that PTX
+/// version, such as 84 for an fp8 `mma.sync`.
+constexpr StringLiteral minPtxAttr = "vx.min_ptx";
+
+/// Raises the least PTX version of the GPU module of `op` to `version`.
+static void needPtx(Operation *op, int64_t version) {
+  auto module = op->getParentOfType<gpu::GPUModuleOp>();
+  auto least = module->getAttrOfType<IntegerAttr>(minPtxAttr);
+  if (!least || least.getInt() < version)
+    module->setAttr(
+        minPtxAttr,
+        IntegerAttr::get(IntegerType::get(module.getContext(), 32), version));
+}
 
 /// Whether `type` is an fp8 type that `mma.sync.m16n8k32` takes.
 static bool isMmaFp8(Type type) {
@@ -4242,6 +4252,188 @@ static Type mmaElementFor(vx::LaneMatmulOp op, StringRef chip) {
   if (!elem || chipNumber(chip) < (fp8 ? 89u : 80u))
     return {};
   return elem;
+}
+
+/// The block-scaled `mma.sync` of a scaled lane matmul: its kind, the number
+/// of scales in a register, the type of a scale, and the values of k that
+/// share one scale.
+struct ScaledMma {
+  StringRef kind;
+  int64_t scales;
+  StringRef scaleType;
+  int64_t block;
+};
+
+/// The block-scaled `mma.sync.m16n8k64` that `chip` has for `op`, if any.
+/// `sm_120a`, `sm_121a` and their families have it: NVFP4 with 16 values to
+/// a `ue4m3` scale, and MXFP4 with 16 or 32 values to a `ue8m0` scale. The
+/// tiles have static sizes, multiples of 16 x 8 x 64.
+static std::optional<ScaledMma> scaledMmaFor(vx::LaneMatmulScaledOp op,
+                                             StringRef chip) {
+  unsigned number = chipNumber(chip);
+  if ((number != 120 && number != 121) ||
+      !(chip.ends_with("a") || chip.ends_with("f")))
+    return std::nullopt;
+  auto acc = cast<MemRefType>(op.getAcc().getType());
+  auto lhs = cast<MemRefType>(op.getLhs().getType());
+  auto lhsScale = cast<MemRefType>(op.getLhsScale().getType());
+  for (Value v : op->getOperands())
+    if (!cast<MemRefType>(v.getType()).hasStaticShape())
+      return std::nullopt;
+  int64_t m = acc.getDimSize(0), n = acc.getDimSize(1), k = lhs.getDimSize(1);
+  if (m % 16 || n % 8 || k % 64)
+    return std::nullopt;
+  int64_t block = k / lhsScale.getDimSize(1);
+  Type scale = lhsScale.getElementType();
+  if (isa<Float8E4M3FNType>(scale) && block == 16)
+    return ScaledMma{"mxf4nvf4", 4, "ue4m3", 16};
+  if (isa<Float8E8M0FNUType>(scale) && block == 16)
+    return ScaledMma{"mxf4nvf4", 4, "ue8m0", 16};
+  if (isa<Float8E8M0FNUType>(scale) && block == 32)
+    return ScaledMma{"mxf4", 2, "ue8m0", 32};
+  return std::nullopt;
+}
+
+/// A scaled lane matmul on the tensor cores of `sm_120a`. Each 16 x 8 piece of
+/// `acc` is one chain of `mma.sync.m16n8k64`, one for each 64 values of k, from
+/// the old value of the piece. With g = l / 4, lane `l` holds the sums of rows
+/// g and g + 8, and of columns `2 * (l % 4)` and the one after. It gives 8
+/// values of k of `lhs`, from `8 * (l % 4)` and from 32 more, in each of those
+/// two rows, and the same values of k of `rhs` in column g. It also gives the
+/// scales of row `g + 8 * (l % 2)` of `lhs_scale`, and of column g of
+/// `rhs_scale`. The tensor core reads them from lanes 0 and 1 of each 4 for
+/// `lhs`, and from lane 0 of each 4 for `rhs` (`{0, 0}` selectors). A register
+/// holds 8 values of 4 bits, or the scales of a row or column of 8 bits each,
+/// the first in the low bits. The tensor core adds the products in an order of
+/// its own, so the last bits can differ from the expansion on the host.
+static void expandLaneMatmulScaledWithMma(OpBuilder &b,
+                                          vx::LaneMatmulScaledOp op,
+                                          const ScaledMma &mma) {
+  Location loc = op.getLoc();
+  MLIRContext *ctx = b.getContext();
+  Type f32 = b.getF32Type(), i32 = b.getI32Type();
+  auto acc = cast<MemRefType>(op.getAcc().getType());
+  int64_t m = acc.getDimSize(0), n = acc.getDimSize(1);
+  int64_t k = cast<MemRefType>(op.getLhs().getType()).getDimSize(1);
+  auto index = [&](int64_t v) -> Value {
+    return b.create<arith::ConstantIndexOp>(loc, v);
+  };
+  auto add = [](OpBuilder &nb, Location l, Value x, Value y) -> Value {
+    return nb.create<arith::AddIOp>(l, x, y);
+  };
+  Value tid =
+      b.create<gpu::ThreadIdOp>(loc, b.getIndexType(), gpu::Dimension::x);
+  Value lane = b.create<arith::RemUIOp>(loc, tid, index(32));
+  Value group = b.create<arith::DivUIOp>(loc, lane, index(4));
+  Value quad = b.create<arith::RemUIOp>(loc, lane, index(4));
+  Value pair = b.create<arith::MulIOp>(loc, quad, index(2));
+  Value first = b.create<arith::MulIOp>(loc, quad, index(8));
+  Value scaleRow =
+      add(b, loc, group,
+          b.create<arith::MulIOp>(
+              loc, b.create<arith::RemUIOp>(loc, lane, index(2)), index(8)));
+  // The values in one register, the first in the low bits. A scale of type
+  // f8E4M3FN goes without its sign bit, as the expansion on the host reads it.
+  auto pack = [&](OpBuilder &nb, Location l, ArrayRef<Value> values) -> Value {
+    Value word;
+    for (auto [e, v] : llvm::enumerate(values)) {
+      unsigned bits = v.getType().getIntOrFloatBitWidth();
+      Value part = nb.create<arith::BitcastOp>(l, nb.getIntegerType(bits), v);
+      if (isa<Float8E4M3FNType>(v.getType()))
+        part = nb.create<arith::AndIOp>(
+            l, part, nb.create<arith::ConstantIntOp>(l, part.getType(), 0x7F));
+      part = nb.create<arith::ExtUIOp>(l, i32, part);
+      if (e)
+        part = nb.create<arith::ShLIOp>(
+            l, part, nb.create<arith::ConstantIntOp>(l, i32, e * bits));
+      word = word ? nb.create<arith::OrIOp>(l, word, part).getResult() : part;
+    }
+    return word;
+  };
+  std::string text =
+      ("mma.sync.aligned.m16n8k64.row.col.kind::" + mma.kind +
+       ".block_scale.scale_vec::" + std::to_string(mma.scales) +
+       "X.f32.e2m1.e2m1.f32." + mma.scaleType +
+       " {$0, $1, $2, $3}, {$4, $5, $6, $7}, {$8, $9}, {$10, $11, $12, $13}, "
+       "{$14}, {0, 0}, {$15}, {0, 0};")
+          .str();
+  Type result = LLVM::LLVMStructType::getLiteral(ctx, {f32, f32, f32, f32});
+  auto piece = [&](OpBuilder &nb, Location l, Value top, Value left) {
+    Value row0 = add(nb, l, top, group), row1 = add(nb, l, row0, index(8));
+    Value col0 = add(nb, l, left, pair), col1 = add(nb, l, col0, index(1));
+    Value col = add(nb, l, left, group);
+    Value scaleOfRow = add(nb, l, top, scaleRow);
+    SmallVector<std::pair<Value, Value>> place = {
+        {row0, col0}, {row0, col1}, {row1, col0}, {row1, col1}};
+    SmallVector<Value> start;
+    for (auto [i, j] : place)
+      start.push_back(
+          nb.create<memref::LoadOp>(l, op.getAcc(), ValueRange{i, j}));
+    auto chain = nb.create<scf::ForOp>(
+        l, index(0), index(k), index(64), start,
+        [&](OpBuilder &kb, Location kl, Value depth, ValueRange c) {
+          Value kA = add(kb, kl, depth, first);
+          Value kB = add(kb, kl, kA, index(32));
+          auto lhs = [&](Value i, Value from) -> Value {
+            SmallVector<Value> values;
+            for (int64_t e = 0; e < 8; ++e)
+              values.push_back(kb.create<memref::LoadOp>(
+                  kl, op.getLhs(), ValueRange{i, add(kb, kl, from, index(e))}));
+            return pack(kb, kl, values);
+          };
+          auto rhs = [&](Value from) -> Value {
+            SmallVector<Value> values;
+            for (int64_t e = 0; e < 8; ++e)
+              values.push_back(kb.create<memref::LoadOp>(
+                  kl, op.getRhs(),
+                  ValueRange{add(kb, kl, from, index(e)), col}));
+            return pack(kb, kl, values);
+          };
+          Value blocks = kb.create<arith::DivUIOp>(kl, depth, index(mma.block));
+          SmallVector<Value> rowScales, colScales;
+          for (int64_t e = 0; e < mma.scales; ++e) {
+            Value at = add(kb, kl, blocks, index(e));
+            rowScales.push_back(kb.create<memref::LoadOp>(
+                kl, op.getLhsScale(), ValueRange{scaleOfRow, at}));
+            colScales.push_back(kb.create<memref::LoadOp>(kl, op.getRhsScale(),
+                                                          ValueRange{at, col}));
+          }
+          SmallVector<Value> operands = {lhs(row0, kA), lhs(row1, kA),
+                                         lhs(row0, kB), lhs(row1, kB),
+                                         rhs(kA),       rhs(kB)};
+          llvm::append_range(operands, c);
+          operands.push_back(pack(kb, kl, rowScales));
+          operands.push_back(pack(kb, kl, colScales));
+          Value sums = kb.create<LLVM::InlineAsmOp>(
+                             kl, result, operands, text,
+                             "=f,=f,=f,=f,r,r,r,r,r,r,0,1,2,3,r,r",
+                             /*has_side_effects=*/false,
+                             /*is_align_stack=*/false,
+                             LLVM::tailcallkind::TailCallKind::None,
+                             LLVM::AsmDialectAttr(), ArrayAttr())
+                           .getResult(0);
+          SmallVector<Value> d;
+          for (int64_t e = 0; e < 4; ++e)
+            d.push_back(kb.create<LLVM::ExtractValueOp>(kl, sums, e));
+          kb.create<scf::YieldOp>(kl, d);
+        });
+    for (auto [e, ij] : llvm::enumerate(place))
+      nb.create<memref::StoreOp>(l, chain.getResult(e), op.getAcc(),
+                                 ValueRange{ij.first, ij.second});
+  };
+  b.create<scf::ForOp>(loc, index(0), index(m), index(16), ValueRange{},
+                       [&](OpBuilder &rb, Location rl, Value top, ValueRange) {
+                         rb.create<scf::ForOp>(rl, index(0), index(n), index(8),
+                                               ValueRange{},
+                                               [&](OpBuilder &cb, Location cl,
+                                                   Value left, ValueRange) {
+                                                 piece(cb, cl, top, left);
+                                                 cb.create<scf::YieldOp>(cl);
+                                               });
+                         rb.create<scf::YieldOp>(rl);
+                       });
+  auto bar = b.create<vx::BarrierOp>(loc);
+  bar->setAttr("subgroup", b.getUnitAttr());
 }
 
 /// Whether the Metal printer can print a lane matmul with the simdgroup
@@ -4462,8 +4654,7 @@ static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
               ".f32 {$0, $1, $2, $3}, {$4, $5, $6, $7}, {$8, $9}, "
               "{$10, $11, $12, $13};")
                  .str();
-    op->getParentOfType<gpu::GPUModuleOp>()->setAttr(fp8MmaAttr,
-                                                     b.getUnitAttr());
+    needPtx(op, 84);
   }
   std::array<NVVM::MMATypes, 2> types = {
       elem.isF16() ? NVVM::MMATypes::f16 : NVVM::MMATypes::bf16,
@@ -7718,6 +7909,19 @@ struct ConvertVxToStandardPass
           OpBuilder b(op);
           expandLaneMatmul(b, op, /*device=*/true, mmaChip, simdgroupMatrices);
         }
+        // A scaled lane matmul on tensor cores with a block-scaled
+        // `mma.sync`. The others get the loops of `expandInKernel` below.
+        SmallVector<vx::LaneMatmulScaledOp> scaled;
+        gpuFunc.walk([&](vx::LaneMatmulScaledOp op) { scaled.push_back(op); });
+        for (vx::LaneMatmulScaledOp op : scaled) {
+          std::optional<ScaledMma> mma =
+              op.getSerial() ? std::nullopt : scaledMmaFor(op, mmaChip);
+          if (!mma)
+            continue;
+          OpBuilder b(op);
+          expandLaneMatmulScaledWithMma(b, op, *mma);
+          op.erase();
+        }
         // Each lane op whose expansion looks at no other op. After the
         // matmuls, which can keep a tile in registers when its fills and
         // copies are still ops. The Metal printer prints a fill or copy of a
@@ -9907,8 +10111,9 @@ static DeviceImage deviceImageOf(gpu::GPUModuleOp gpuModule,
   attach.features = ptxFeatureFor(attach.chip);
   unsigned ptx = 0;
   StringRef(attach.features).drop_front(4).getAsInteger(10, ptx);
-  if (gpuModule->hasAttr(fp8MmaAttr) && ptx < 84)
-    attach.features = "+ptx84";
+  if (auto least = gpuModule->getAttrOfType<IntegerAttr>(minPtxAttr))
+    if (ptx < least.getInt())
+      attach.features = "+ptx" + std::to_string(least.getInt());
   std::string libdevice = deviceLibdevice();
   if (!libdevice.empty())
     attach.linkLibs.push_back(libdevice);
