@@ -2508,6 +2508,11 @@ impl<'r> Lowerer<'r> {
 
     /// The type of a value `if`, which the checker stored on it.
     fn infer_if_ty(&mut self, iff: &crate::syntax::IfExpr) -> Option<LoweredTy> {
+        assert!(
+            iff.value_ty.is_some() || !crate::syntax::expr::if_gives_a_value(iff),
+            "the checker gave no type to an `if` that gives a value, at {:?}",
+            iff.span
+        );
         self.lower_ty_synth(iff.value_ty.as_ref()?)
     }
 

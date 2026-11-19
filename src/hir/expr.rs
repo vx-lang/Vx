@@ -968,13 +968,7 @@ fn store_value_type(expr: &mut Expr, ty: &Type) {
     let value = |gives: bool| gives.then(|| ty.clone());
     match expr {
         Expr::Match(m) => m.value_ty = value(crate::syntax::expr::match_yields_a_value(m)),
-        Expr::If(i) => {
-            let gives = crate::syntax::expr::block_gives_a_value(&i.then_block)
-                || i.else_block
-                    .as_deref()
-                    .is_some_and(crate::syntax::expr::block_gives_a_value);
-            i.value_ty = value(gives);
-        }
+        Expr::If(i) => i.value_ty = value(crate::syntax::expr::if_gives_a_value(i)),
         Expr::SpawnOn(s) => s.value_ty = value(s.ret.is_some()),
         // A block made from a task keeps the type that the check of tasks gave it.
         Expr::UnsafeBlock(u) if u.task.is_none() => u.value_ty = value(u.ret.is_some()),
