@@ -104,6 +104,23 @@ pub fn a_sum_that_can_wrap(y : &mut Tensor<f32, [?, ?], Memory::HBM>, tiles : &D
   return;
 }
 
+// The same kernel as `a_write_after_the_test` without that write, but `tiles` is a plain tensor:
+// nothing says that its ranges do not overlap.
+pub fn a_table_that_is_not_disjoint_ranges(y : &mut Tensor<f32, [?, ?], Memory::HBM>, tiles : &Tensor<i32, [?, 2], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for t in 0..tiles.len() across blocks {
+      for r in 0..4 across lanes(32) {
+        let row = (tiles[t][0] as i64) + (r as i64);
+        if row < (tiles[t][1] as i64) {
+          // CHECK: Error[E6032] at {{.*}}:[[#@LINE+1]]:11: two passes of this block loop may write the same element of `y`: an index of the write must fix `t`
+          y[row][0] = 1.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
 // A write could make two ranges overlap.
 pub fn writes_a_range(tiles : &mut DisjointRanges<Tensor<i32, [?, 2]>>) -> void {
   // CHECK: Error[E4006] at {{.*}}:[[#@LINE+1]]:8: a `DisjointRanges` table is read only: a write could make two of its ranges overlap
